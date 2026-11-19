@@ -106,11 +106,42 @@ export class MocoApiError extends Error {
   }
 }
 
+const SESSION_AUTH_TOKEN_KEY = "moco.session.authToken";
+let memoryAuthToken: string | null = null;
+
 export function getAuthTokenFromUrl(): string | null {
   try {
-    return new URLSearchParams(window.location.search).get("token");
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get("token");
+    if (fromUrl) {
+      memoryAuthToken = fromUrl;
+      try {
+        window.sessionStorage.setItem(SESSION_AUTH_TOKEN_KEY, fromUrl);
+      } catch {
+        // Ignore restricted sessionStorage environments; in-memory token remains active.
+      }
+      params.delete("token");
+      const nextSearch = params.toString();
+      const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`;
+      try {
+        window.history.replaceState(window.history.state, "", nextUrl);
+      } catch {
+        // Ignore history restrictions in non-standard browsing contexts.
+      }
+      return fromUrl;
+    }
+    try {
+      const stored = window.sessionStorage.getItem(SESSION_AUTH_TOKEN_KEY);
+      if (stored) {
+        memoryAuthToken = stored;
+        return stored;
+      }
+    } catch {
+      // Fall back to in-memory token if sessionStorage is unavailable.
+    }
+    return memoryAuthToken;
   } catch {
-    return null;
+    return memoryAuthToken;
   }
 }
 

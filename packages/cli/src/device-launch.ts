@@ -1,6 +1,6 @@
 import type { DevicePeerConfig, DeviceRoleTransition } from "@moco/protocol";
 import { randomBytes } from "node:crypto";
-import { discoverDevicePeer, DevicePeerInUseError, waitForPeerReady } from "@moco/env";
+import { discoverDevicePeer, DevicePeerInUseError, localPeerProxyToken, waitForPeerReady } from "@moco/env";
 import type { TuiChatOptions } from "./tui-chat.js";
 
 export function cliFlag(args: readonly string[], flag: string): string | undefined {
@@ -215,10 +215,32 @@ export async function findRunningDevicePeer(
   config: DevicePeerConfig,
   port = config.localPort ?? 7788,
   localToken?: string,
-): Promise<{ url: string; omitLocalToken?: boolean } | null> {
+): Promise<{ url: string; authToken?: string; omitLocalToken?: boolean } | null> {
   const verifiedPeer = async () => {
-    const existing = await discoverDevicePeer(config, localToken);
-    if (existing) return { url: existing.url.origin, ...(localToken && !existing.url.searchParams.has("token") ? { omitLocalToken: true } : {}) };
+    const derivedToken = localPeerProxyToken(config);
+    try {
+      const existing = await discoverDevicePeer(config, localToken);
+      if (existing) {
+        const token = existing.url.searchParams.get("token") ?? undefined;
+        return {
+          url: existing.url.origin,
+          ...(token ? { authToken: token } : {}),
+          ...(localToken && !token ? { omitLocalToken: true } : {}),
+        };
+      }
+    } catch (error) {
+      if (localToken && localToken !== derivedToken) {
+        try {
+          const fallback = await discoverDevicePeer(config, derivedToken);
+          if (fallback) {
+            return { url: fallback.url.origin, authToken: derivedToken, omitLocalToken: true };
+          }
+        } catch {
+          // Fall through and report the original management-key mismatch.
+        }
+      }
+      throw error;
+    }
   };
   const existing = await verifiedPeer();
   if (existing) return existing;

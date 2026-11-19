@@ -313,7 +313,7 @@ export type HubToEnvControlMessage =
       workspaceDir?: string;
       scratchDir?: string;
       protectedPaths?: string[];
-      network?: { localConnectPorts?: number[]; localListenPorts?: number[] };
+      network?: { localConnectPorts?: number[]; localListenPorts?: number[]; offline?: boolean };
     }
   | {
       type: "hub.stream_ack";

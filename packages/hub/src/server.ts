@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
 import http from "node:http";
 import path from "node:path";
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { URL, fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import { DeviceRoleTransitions, localListenerOrigin, renderPeerInstaller, type LocalInstanceOwner } from "@moco/env";
@@ -128,6 +128,27 @@ function sendJson(res: http.ServerResponse, status: number, payload: unknown): v
     "x-content-type-options": "nosniff",
   });
   res.end(JSON.stringify(payload));
+}
+
+function webUiContentSecurityPolicy(html: string): string {
+  const inlineHashes = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
+    .filter((match) => !/\bsrc\s*=/.test(match[1]!) && match[2]!.trim())
+    .map((match) => `'sha256-${createHash("sha256").update(match[2]!).digest("base64")}'`);
+  return [
+    "default-src 'self'",
+    `script-src 'self' 'wasm-unsafe-eval'${inlineHashes.length ? ` ${inlineHashes.join(" ")}` : ""}`,
+    "script-src-attr 'none'",
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self' data:",
+    "img-src 'self' data: blob: https: http:",
+    "media-src 'self' data: blob: https: http:",
+    "connect-src 'self' ws: wss:",
+    "worker-src 'self' blob:",
+    "frame-src 'self' about:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+  ].join("; ");
 }
 
 function streamStaticFile(filePath: string, res: http.ServerResponse, headers: http.OutgoingHttpHeaders): void {
@@ -886,6 +907,18 @@ export async function startMocoHubServer(
     const mime = MIME_BY_EXT[ext] ?? "application/octet-stream";
     const cacheHeader =
       ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable";
+    if (ext === ".html") {
+      const html = fs.readFileSync(canonicalFile, "utf8");
+      res.writeHead(200, {
+        "content-type": mime,
+        "cache-control": cacheHeader,
+        "content-security-policy": webUiContentSecurityPolicy(html),
+        "referrer-policy": "no-referrer",
+        "x-content-type-options": "nosniff",
+      });
+      res.end(html);
+      return true;
+    }
     streamStaticFile(canonicalFile, res, {
       "content-type": mime,
       "cache-control": cacheHeader,

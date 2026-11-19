@@ -467,6 +467,9 @@ export class MocoEnvAgent {
         });
         command = workerSandbox.command;
       } else {
+        if (message.readOnly || message.network?.offline || message.projectId || message.stagedTaskId) {
+          throw new Error("Sandboxed or constrained execution stream requires workspaceDir");
+        }
         command = [localDaemon()];
       }
     } catch (err) {

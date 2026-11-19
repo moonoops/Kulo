@@ -511,7 +511,15 @@ export function createLocalCustomizationRunner(options: {
   nodePath: string; dataDir: string; trustedRoot?: string; pnpmPath?: string; timeoutMs?: number; probePath?: string;
 }): CustomizationRunner {
   const node = fs.realpathSync(options.nodePath);
-  const run = async (request: { workRoot: string; signal?: AbortSignal }, cwd: string, executable: string, args: string[], allowLocalNetwork = false, payloadRoot?: string, toolchainPaths: string[] = []) => {
+  const run = async (
+    request: { workRoot: string; signal?: AbortSignal },
+    cwd: string,
+    executable: string,
+    args: string[],
+    networkMode: "offline" | "localhost" | "install" = "offline",
+    payloadRoot?: string,
+    toolchainPaths: string[] = [],
+  ) => {
     if (process.platform !== "darwin" || !fs.existsSync("/usr/bin/sandbox-exec")) {
       throw new CustomizationError("customization_isolation_unavailable", "当前设备尚未提供源码定制验证所需的系统隔离。");
     }
@@ -529,10 +537,13 @@ export function createLocalCustomizationRunner(options: {
     ].filter((value): value is string => Boolean(value)))];
     let profile = buildWorkerSandboxProfile({ writablePaths: [root], readOnlyPaths: runtimePaths, executable: node,
       protectedPaths: [...defaultProtectedPaths(), options.dataDir], workspaceRoot: root,
-      sandboxIdentity: identity, ...(payloadRoot ? { managedScratchRoot: payloadRoot } : {}) });
+      sandboxIdentity: identity, ...(payloadRoot ? { managedScratchRoot: payloadRoot } : {}),
+      ...(networkMode !== "install" ? { network: { offline: true } } : {}) });
     // Node's uname initialization reads this exact sysctl in addition to the shared OS metadata list.
     profile += '\n(allow sysctl-read (sysctl-name "kern.hostname"))';
-    if (allowLocalNetwork) {
+    if (networkMode === "offline") {
+      profile += '\n(deny network-bind (local ip))\n(deny network-inbound (local ip))\n(deny network-outbound (remote ip))';
+    } else if (networkMode === "localhost") {
       profile += '\n(allow network-bind (local ip "localhost:*"))\n(allow network-inbound (local ip "localhost:*"))\n(allow network-outbound (remote ip "localhost:*"))';
     }
     if (payloadRoot) profile += "\n(deny file-write* (subpath " + JSON.stringify(await fsp.realpath(payloadRoot)) + "))";
@@ -571,14 +582,14 @@ export function createLocalCustomizationRunner(options: {
       const bin = controlDirectory(workRoot, ".toolchain");
       const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
       writeControlFile(path.join(bin, "pnpm"), "#!/bin/sh\nexec " + quote(node) + " " + quote(toolchain.entry) + " \"$@\"\n", 0o700);
-      await run(request, request.sourceRoot, node, [toolchain.entry, "install", "--frozen-lockfile", "--ignore-scripts", "--store-dir", path.join(request.workRoot, ".store")], true, undefined, toolchain.readOnlyPaths);
-      await run(request, request.sourceRoot, node, [toolchain.entry, "typecheck"], true, undefined, toolchain.readOnlyPaths);
-      await run(request, request.sourceRoot, node, [toolchain.entry, "--filter", "@moco/protocol", "build"], true, undefined, toolchain.readOnlyPaths);
-      await run(request, request.sourceRoot, node, [toolchain.entry, "--filter", "@moco/web", "build"], true, undefined, toolchain.readOnlyPaths);
-      await run(request, request.sourceRoot, node, [toolchain.entry, "test", ...WEB_TEST_FILES, "--maxWorkers=4"], true, undefined, toolchain.readOnlyPaths);
+      await run(request, request.sourceRoot, node, [toolchain.entry, "install", "--frozen-lockfile", "--ignore-scripts", "--store-dir", path.join(request.workRoot, ".store")], "install", undefined, toolchain.readOnlyPaths);
+      await run(request, request.sourceRoot, node, [toolchain.entry, "typecheck"], "offline", undefined, toolchain.readOnlyPaths);
+      await run(request, request.sourceRoot, node, [toolchain.entry, "--filter", "@moco/protocol", "build"], "offline", undefined, toolchain.readOnlyPaths);
+      await run(request, request.sourceRoot, node, [toolchain.entry, "--filter", "@moco/web", "build"], "offline", undefined, toolchain.readOnlyPaths);
+      await run(request, request.sourceRoot, node, [toolchain.entry, "test", ...WEB_TEST_FILES, "--maxWorkers=4"], "offline", undefined, toolchain.readOnlyPaths);
       const script = "const m=await import(" + JSON.stringify(pathToFileURL(helper).href) + ");await m.prepareWebCustomizationPayload(" +
         JSON.stringify(request.outputRoot) + "," + JSON.stringify({ workRoot, sourceRoot: request.sourceRoot, basePayloadRoot, baseReleaseId: request.baseReleaseId }) + ");";
-      await run(request, request.sourceRoot, node, ["--input-type=module", "-e", script], true, basePayloadRoot, toolchain.readOnlyPaths);
+      await run(request, request.sourceRoot, node, ["--input-type=module", "-e", script], "offline", basePayloadRoot, toolchain.readOnlyPaths);
       return { checks: ["typecheck", "build", "build:web", "runtime:base-reused", "test", "candidate-test-plan:web-v1", "frontend-regression", "host-native:not-rerun"] };
     },
     probe: async (request) => {
@@ -593,7 +604,7 @@ export function createLocalCustomizationRunner(options: {
         throw new CustomizationError("customization_probe_unavailable", "受信运行验证程序尚未构建。");
       }
       const verificationRoot = controlDirectory(await customizationPrivateDirectory(request.workRoot), "probe-data");
-      await run(request, request.workRoot, node, [executableProbe, request.payloadRoot, request.runtimeEntry, request.webDir, verificationRoot], true, request.payloadRoot);
+      await run(request, request.workRoot, node, [executableProbe, request.payloadRoot, request.runtimeEntry, request.webDir, verificationRoot], "localhost", request.payloadRoot);
       return { checks: ["isolated-runtime-start", "http-ui-assets", "settings-contract"] };
     },
   };

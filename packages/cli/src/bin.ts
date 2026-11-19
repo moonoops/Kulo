@@ -233,12 +233,14 @@ async function main(runtime: { owner?: LocalInstanceOwner }): Promise<void> {
       confirmRunning: (config) => confirmRunningPeer(() => discoverDevicePeer(config, localToken)),
       findRunning: async (config, port) => {
         const found = await findRunningDevicePeer(config, port, localToken);
-        if (found?.omitLocalToken) localToken = undefined;
+        if (found?.authToken) localToken = found.authToken;
+        else if (found?.omitLocalToken) localToken = undefined;
         return found;
       },
       start: async (config, port) => {
         boundPort = port;
         const peer = await startCliPeer(config);
+        localToken = peer.authToken;
         return { url: peer.url, ready: peer.ready, close: closeRuntime };
       },
       runTui: (options) => runTuiChatClient({ ...options, authToken: localToken }),
