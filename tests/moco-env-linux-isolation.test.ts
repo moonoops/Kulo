@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildLinuxSeccompFilter } from "../packages/env/src/isolation-linux.js";
+import {
+  buildLinuxSandboxArguments,
+  buildLinuxSeccompFilter,
+  isRestrictedLinuxProxyAddress,
+} from "../packages/env/src/isolation-linux.js";
 
 function decide(filter: Buffer, architecture: number, syscall: number, cloneFlags = 0): number {
   const input = Buffer.alloc(64);
@@ -34,5 +38,38 @@ describe("Linux native seccomp policy", () => {
   it("closes the x32 ABI bypass and rejects unsupported host architectures", () => {
     expect(decide(buildLinuxSeccompFilter("x64"), 0xc000003e, 0x40000000 | 165)).toBe(0x00050001);
     expect(() => buildLinuxSeccompFilter("ia32")).toThrow("x64 and arm64");
+  });
+
+  it("omits network proxy socket mount and proxy env vars when offline is enabled", () => {
+    const common = {
+      workspaceDir: "/tmp/moco-ws",
+      workspaceRoot: "/tmp/moco-ws",
+      controlRoot: "/tmp/moco-ctl",
+      temporaryDir: "/tmp/moco-tmp",
+      executable: "/usr/bin/node",
+      port: 18080,
+    };
+    const offlineArgs = buildLinuxSandboxArguments({ ...common, network: { offline: true } });
+    expect(offlineArgs).not.toContain("/run/moco-network");
+    expect(offlineArgs).not.toContain("HTTP_PROXY");
+    expect(offlineArgs).not.toContain("HTTPS_PROXY");
+
+    const onlineArgs = buildLinuxSandboxArguments({ ...common, network: { offline: false } });
+    expect(onlineArgs).toContain("/run/moco-network");
+    expect(onlineArgs).toContain("HTTP_PROXY");
+  });
+
+  it("blocks RFC1918 LAN, Tailscale CGNAT, link-local, loopback, and IPv6 ULA proxy destinations", () => {
+    for (const blocked of [
+      "127.0.0.1", "::1", "0.0.0.0", "::",
+      "10.0.0.1", "172.16.0.5", "172.31.255.1", "192.168.1.10",
+      "100.64.0.1", "100.100.100.100", "169.254.169.254",
+      "fe80::1", "fc00::1", "fd12:3456::1", "ff02::1", "::ffff:192.168.0.1",
+    ]) {
+      expect(isRestrictedLinuxProxyAddress(blocked), blocked).toBe(true);
+    }
+    for (const allowed of ["1.1.1.1", "8.8.8.8", "172.32.0.1", "100.128.0.1", "2606:4700:4700::1111"]) {
+      expect(isRestrictedLinuxProxyAddress(allowed), allowed).toBe(false);
+    }
   });
 });

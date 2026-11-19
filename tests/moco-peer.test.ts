@@ -9,6 +9,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import {
   collectDeviceSystemInfo,
   installDevicePeer,
+  localPeerProxyToken,
   readPeerConfig,
   savePeerConfig,
   startDevicePeer,
@@ -62,8 +63,8 @@ function nextMessage(socket: WebSocket): Promise<Record<string, unknown>> {
   });
 }
 
-async function client(url: string): Promise<WebSocket> {
-  const socket = new WebSocket(url.replace("http:", "ws:") + "/ws/client");
+async function client(url: string, authToken?: string): Promise<WebSocket> {
+  const socket = new WebSocket(url.replace("http:", "ws:") + "/ws/client", authToken ? { headers: { authorization: `Bearer ${authToken}` } } : undefined);
   await new Promise<void>((resolve, reject) => {
     socket.once("open", resolve);
     socket.once("error", reject);
@@ -206,8 +207,8 @@ describe("joined device local access", () => {
     const peer = await launching;
     cleanup.push(() => peer.close());
     await peer.ready;
-    expect(await finding).toEqual({ url: peer.url });
-    expect(await findRunningDevicePeer(config, 1, token)).toEqual({ url: peer.url });
+    expect(await finding).toEqual({ url: peer.url, authToken: token });
+    expect(await findRunningDevicePeer(config, 1, token)).toEqual({ url: peer.url, authToken: token });
     await expect(findRunningDevicePeer(config, 0, "different-local-auth")).rejects.toThrow("管理密钥");
     await expect(findRunningDevicePeer(config, 0)).rejects.toThrow("管理密钥");
     expect(hub.registrations).toHaveLength(1);
@@ -215,25 +216,31 @@ describe("joined device local access", () => {
     const next = await startDevicePeer(config, { port: 0 });
     cleanup.push(() => next.close());
     await next.ready;
-    expect(await findRunningDevicePeer(config, 0, token)).toEqual({ url: next.url, omitLocalToken: true });
+    expect(await findRunningDevicePeer(config, 0, token)).toEqual({ url: next.url, authToken: next.authToken, omitLocalToken: true });
+    expect(await findRunningDevicePeer(config, 0)).toEqual({ url: next.url, authToken: next.authToken });
   });
 
-  it("uses separate client and Env credentials and keeps execution connected after closing a browser", async () => {
+  it("uses separate client and Env credentials, enforces local proxy auth by default, and keeps execution connected after closing a browser", async () => {
     const hub = await fakeHub();
     const config = peerConfig(hub.url);
     const peer = await startDevicePeer(config);
     cleanup.push(() => peer.close());
     await peer.ready;
     expect(hub.registrations[0]).toMatchObject({ envId: config.deviceId, token: config.envToken, info: { hostname: os.hostname() } });
+    // Unauthenticated local requests must be rejected rather than silently borrowing clientToken.
+    expect((await fetch(`${peer.url}/api/topics`)).status).toBe(401);
+    expect((await fetch(`${peer.url}/api/topics?token=wrong`, { headers: { authorization: "Bearer incoming-untrusted" } })).status).toBe(401);
     const response = await fetch(`${peer.url}/api/topics?token=ignored`, {
-      headers: { authorization: "Bearer incoming-untrusted", cookie: "untrusted=1" },
+      headers: { authorization: `Bearer ${peer.authToken}`, cookie: "untrusted=1" },
     });
     expect(response.status).toBe(200);
     expect(hub.requests.at(-1)).toEqual({ authorization: `Bearer ${config.clientToken}`, cookie: undefined, url: "/api/topics" });
-    const status = await fetch(`${peer.url}/_moco/peer-status`).then((result) => result.text());
+    const status = await fetch(`${peer.url}/_moco/peer-status`, {
+      headers: { authorization: `Bearer ${peer.authToken}` },
+    }).then((result) => result.text());
     expect(status).not.toContain(config.envToken);
     expect(status).not.toContain(config.clientToken);
-    const browser = await client(peer.url);
+    const browser = await client(peer.url, peer.authToken);
     const closed = new Promise<void>((resolve) => browser.once("close", () => resolve()));
     browser.close();
     await closed;
@@ -248,8 +255,8 @@ describe("joined device local access", () => {
     const peerB = await startDevicePeer(configB);
     cleanup.push(() => peerA.close(), () => peerB.close());
     await Promise.all([peerA.ready, peerB.ready]);
-    const browserA = await client(peerA.url);
-    const browserB = await client(peerB.url);
+    const browserA = await client(peerA.url, peerA.authToken);
+    const browserB = await client(peerB.url, peerB.authToken);
     const receivedA = nextMessage(browserA);
     const receivedB = nextMessage(browserB);
     browserA.send("same conversation");
@@ -261,7 +268,9 @@ describe("joined device local access", () => {
     const resumed = await startDevicePeer(readPeerConfig(file)!);
     cleanup.push(() => resumed.close());
     await resumed.ready;
-    const response = await fetch(`${resumed.url}/api/topics`).then((result) => result.json());
+    const response = await fetch(`${resumed.url}/api/topics`, {
+      headers: { authorization: `Bearer ${resumed.authToken}` },
+    }).then((result) => result.json());
     expect(response).toEqual({ items: [], conversations: ["same conversation"] });
     expect(hub.registrations.filter((entry) => entry.envId === "peer-a")).toHaveLength(2);
   });
@@ -333,7 +342,9 @@ describe("joined device local access", () => {
     cleanup.push(() => peer.close());
     await expect(peer.ready).rejects.toThrow("HTTP 401");
     expect(hub.registrations).toHaveLength(1);
-    const status = await fetch(`${peer.url}/_moco/peer-status`).then((result) => result.json());
+    const status = await fetch(`${peer.url}/_moco/peer-status`, {
+      headers: { authorization: `Bearer ${peer.authToken}` },
+    }).then((result) => result.json());
     expect(status).toMatchObject({ ready: false, error: "执行端已连接，但主脑拒绝了界面访问（HTTP 401）。" });
   });
 
@@ -343,11 +354,15 @@ describe("joined device local access", () => {
     const peer = await startDevicePeer(peerConfig(hub.url));
     cleanup.push(() => peer.close());
     await expect(peer.ready).rejects.toThrow("HTTP 503");
-    const failed = await fetch(`${peer.url}/_moco/peer-status`).then((result) => result.json());
+    const failed = await fetch(`${peer.url}/_moco/peer-status`, {
+      headers: { authorization: `Bearer ${peer.authToken}` },
+    }).then((result) => result.json());
     expect(failed.ready).toBe(false);
     availability.clientHttpStatus = 200;
     await vi.waitFor(async () => {
-      const recovered = await fetch(`${peer.url}/_moco/peer-status`).then((result) => result.json());
+      const recovered = await fetch(`${peer.url}/_moco/peer-status`, {
+        headers: { authorization: `Bearer ${peer.authToken}` },
+      }).then((result) => result.json());
       expect(recovered.ready).toBe(true);
       expect(recovered.error).toBeUndefined();
     }, { timeout: 3_000, interval: 50 });
@@ -436,7 +451,8 @@ describe("joined device local access", () => {
     expect(code, diagnostics).toBe(0);
     expect(saved).toMatchObject({ deviceId: "installed-peer", hubUrl: pairUrl, rootDir: path.join(directory, "Moco") });
     expect(saved!.rootDir.startsWith(path.dirname(configPath) + path.sep)).toBe(false);
-    const status = await fetch(`http://127.0.0.1:${localPort}/_moco/peer-status`).then((result) => result.json()) as { pid: number; ready: boolean };
+    const peerHeaders = (peerCfg: DevicePeerConfig) => ({ authorization: `Bearer ${localPeerProxyToken(peerCfg)}` });
+    const status = await fetch(`http://127.0.0.1:${localPort}/_moco/peer-status`, { headers: peerHeaders(saved!) }).then((result) => result.json()) as { pid: number; ready: boolean };
     let activePid = status.pid;
     const stopActivePeer = async () => {
       const pidFile = path.join(directory, ".moco/peer.pid");
@@ -509,7 +525,7 @@ describe("joined device local access", () => {
     if (!failedPeer.pid) throw new Error("Peer did not start");
     activePid = failedPeer.pid;
     await vi.waitFor(async () => {
-      const failedStatus = await fetch(`http://127.0.0.1:${localPort}/_moco/peer-status`).then((result) => result.json());
+      const failedStatus = await fetch(`http://127.0.0.1:${localPort}/_moco/peer-status`, { headers: peerHeaders(readPeerConfig(configPath)!) }).then((result) => result.json());
       expect(failedStatus.error).toContain("HTTP 503");
     }, { timeout: 3_000, interval: 30 });
     replacementPid = failedPeer.pid;
@@ -525,7 +541,7 @@ describe("joined device local access", () => {
     const unready = await runInstaller();
     expect(unready.code, unready.diagnostics).toBe(1);
     expect(readPeerConfig(configPath)?.deviceId).toBe("installed-peer");
-    const restored = await fetch(`http://127.0.0.1:${localPort}/_moco/peer-status`).then((result) => result.json());
+    const restored = await fetch(`http://127.0.0.1:${localPort}/_moco/peer-status`, { headers: peerHeaders(readPeerConfig(configPath)!) }).then((result) => result.json());
     expect(restored.deviceId).toBe("installed-peer");
     activePid = restored.pid;
     replacementPid = restored.pid;
@@ -533,7 +549,7 @@ describe("joined device local access", () => {
     uiStatus = 200;
     const replaced = await runInstaller();
     expect(replaced.code, replaced.diagnostics).toBe(0);
-    const replacement = await fetch(`http://127.0.0.1:${localPort}/_moco/peer-status`).then((result) => result.json());
+    const replacement = await fetch(`http://127.0.0.1:${localPort}/_moco/peer-status`, { headers: peerHeaders(readPeerConfig(configPath)!) }).then((result) => result.json());
     activePid = replacement.pid;
     expect(replacement).toMatchObject({ deviceId: "replacement-peer", ready: true });
     expect(readPeerConfig(configPath)?.deviceId).toBe("replacement-peer");

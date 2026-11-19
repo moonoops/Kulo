@@ -1095,6 +1095,7 @@ export class MocoHub implements OrchestratorController {
 
   #watchdogTimer: ReturnType<typeof setInterval> | null = null;
   #topicAutoArchiveTimer: ReturnType<typeof setInterval> | null = null;
+  #uploadCleanupTimer: ReturnType<typeof setInterval> | null = null;
   #topicAutoArchiveRun: Promise<TopicSummary[]> | null = null;
   readonly #topicActivityUpdates = new Map<string, Promise<void>>();
   #cleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1711,6 +1712,7 @@ export class MocoHub implements OrchestratorController {
     ];
     const uploads = new MocoUploadStore(path.join(config.stateDir, "uploads"));
     uploads.cleanupIncompleteUploads();
+    uploads.cleanupDrafts();
 
     fs.mkdirSync(config.stateDir, { recursive: true });
     fs.mkdirSync(mainWorkspaceDir, { recursive: true });
@@ -2849,6 +2851,7 @@ export class MocoHub implements OrchestratorController {
 
     await hub.archiveInactiveTopics(context);
     hub.#startTopicAutoArchive();
+    hub.#startUploadCleanup();
     return hub;
     } catch (error) {
       const cleanup = hubRef ? [() => hubRef!.close(BACKGROUND_CONTEXT)] :
@@ -6826,10 +6829,10 @@ export class MocoHub implements OrchestratorController {
       }, context);
     }
     this.connectionManager.cancelRequests(ticketId);
-    // The parent operation queue is held here. Fence descendants directly so an in-flight child cannot deadlock waiting to call its parent.
+    // Stop unfinished descendants top-down through each child's ticket queue (parent -> child DAG cannot deadlock).
     const childStops = await Promise.allSettled(Object.values(snapshot?.tickets ?? {})
       .filter(child => child.parentTicketId === ticketId && (isTicketUnfinished(child) || child.cleanupPending))
-      .map(child => this.#stopTicket(child.id, reason ?? "父任务已停止", context, undefined, undefined)));
+      .map(child => this.#queueTicketOperation(child.id, () => this.#stopTicket(child.id, reason ?? "父任务已停止", context, undefined, undefined))));
     const childCleanupPending = childStops.some(result => result.status === "rejected" || result.value.cleanupPending);
     for (const result of childStops) if (result.status === "rejected") console.error(`[MocoChildCleanup:${ticketId}]`, result.reason);
     for (const job of await this.mediaJobs.list({ ticketId })) {
@@ -7874,6 +7877,10 @@ export class MocoHub implements OrchestratorController {
       clearInterval(this.#topicAutoArchiveTimer);
       this.#topicAutoArchiveTimer = null;
     }
+    if (this.#uploadCleanupTimer) {
+      clearInterval(this.#uploadCleanupTimer);
+      this.#uploadCleanupTimer = null;
+    }
     await finish(() => this.#customizationInstance?.close());
     await finish(() => this.voiceCalls.close());
     await finish(() => this.voice.close());
@@ -8316,6 +8323,7 @@ export class MocoHub implements OrchestratorController {
     await conv.configure(
       {
         model: workerAgent.model,
+        ...(rolePreset?.thinkingLevel !== "auto" ? { thinkingLevel: workerAgent.thinkingLevel } : {}),
         ...this.#workerTools({
           executionDomain: ticket.executionDomain,
           androidTargetIds: androidTargets,
@@ -8356,6 +8364,7 @@ export class MocoHub implements OrchestratorController {
     await conv.configure(
       {
         model: subAgent.model,
+        ...(subPreset?.thinkingLevel !== "auto" ? { thinkingLevel: subAgent.thinkingLevel } : {}),
         ...this.#workerTools({
           executionDomain: ticket.executionDomain,
           androidTargetIds: androidTargets,
@@ -8706,6 +8715,7 @@ export class MocoHub implements OrchestratorController {
         const guard: WorkerRecoveryEntryData = { ticketId: target.id, rootTicketId: ticketId,
           startedAt, attempt: recovery.attempts, runEpoch: target.runEpoch };
         const topicTargetDeviceId = state.topics?.[target.originTopicId ?? "root"]?.targetDeviceId;
+        await injectEventToolsInTx(tx, origin.id, ["moco_inspect"]);
         await submitAutomaticChatInput(tx, origin, {
           type: "input", whenBusy: "followUp", requestId: `moco:recovery:${ticketId}:${startedAt}:${recovery.attempts}`,
           content: formatWorkerRecoveryMessage({
@@ -8749,6 +8759,20 @@ export class MocoHub implements OrchestratorController {
       });
     }, 60_000);
     this.#topicAutoArchiveTimer.unref?.();
+  }
+
+  #startUploadCleanup(): void {
+    if (this.#uploadCleanupTimer || this.#closed) return;
+    this.#uploadCleanupTimer = setInterval(() => {
+      if (this.#closed) return;
+      try {
+        this.uploads.cleanupIncompleteUploads();
+        this.uploads.cleanupDrafts();
+      } catch (error) {
+        console.warn("[MocoUploads] Periodic upload cleanup failed", error);
+      }
+    }, 60 * 60_000);
+    this.#uploadCleanupTimer.unref?.();
   }
 
   async #trackWorkerRunning(
@@ -8851,7 +8875,7 @@ export class MocoHub implements OrchestratorController {
         if (!ticket.externalExecution) {
           tracked = this.#trackedWorkers.get(ticket.id);
           if (!tracked || tracked.runEpoch !== ticket.runEpoch) {
-            this.#trackWorkerRunning(
+            await this.#trackWorkerRunning(
               ticket.id,
               ticket.workerConversationId,
               ticket.runEpoch,
@@ -8905,8 +8929,9 @@ export class MocoHub implements OrchestratorController {
           runningSec,
         });
 
-        await this.harness.commit((tx) => submitAutomaticChatInput(tx, originConv,
-          {
+        await this.harness.commit(async (tx) => {
+          await injectEventToolsInTx(tx, originConv.id, ["moco_inspect"]);
+          await submitAutomaticChatInput(tx, originConv, {
             type: "input",
             content: watchdogPrompt,
             whenBusy: "followUp",
@@ -8923,7 +8948,8 @@ export class MocoHub implements OrchestratorController {
                 runEpoch: ticket.runEpoch,
               },
             },
-          }), BACKGROUND_CONTEXT);
+          });
+        }, BACKGROUND_CONTEXT);
       }
     } catch {
       // Best-effort periodic watchdog check

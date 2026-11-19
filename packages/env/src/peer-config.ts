@@ -14,6 +14,10 @@ export function localPeerProof(config: DevicePeerConfig, challenge: string): str
   return createHmac("sha256", config.clientToken).update(JSON.stringify(["moco-local-peer-v1", config.deviceId, config.hubUrl, challenge])).digest("hex");
 }
 
+export function localPeerProxyToken(config: DevicePeerConfig): string {
+  return localPeerProof(config, "local-proxy-auth");
+}
+
 export function normalizePeerHubUrl(value: string): string {
   const url = new URL(value);
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password ||

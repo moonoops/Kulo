@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { cleanSupervisedExecution, processFingerprint, supervisedCommand } from "./worker-supervisor.js";
+import { defaultProtectedPaths } from "./isolation.js";
 import { ExternalAgentRpc, type ExternalAgentPipeFactory, type RpcValue } from "./external-agent-rpc.js";
 import { MOCO_VERSION, type ExternalAgentBinding, type ExternalAgentCapabilities, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalWorkspaceMode } from "@moco/protocol";
 
@@ -96,6 +97,47 @@ export function createExternalPipeFactory(options:{controlRoot:string;projectId?
 }
 function obj(v:unknown):RpcValue{return v&&typeof v==="object"&&!Array.isArray(v)?v as RpcValue:{};}
 function text(v:unknown):string{return typeof v==="string"?v:"";}
+function canonicalAcpPath(filePath: string, depth = 0): string {
+  if (depth > 40) throw new Error("ACP file path contains too many symbolic link levels");
+  const resolved = path.resolve(filePath);
+  const tail: string[] = [];
+  let cursor = resolved;
+  while (true) {
+    try {
+      const real = fs.realpathSync(cursor);
+      return tail.length ? path.join(real, ...tail.reverse()) : real;
+    } catch {
+      try {
+        const stat = fs.lstatSync(cursor);
+        if (stat.isSymbolicLink()) {
+          const linkTarget = path.resolve(path.dirname(cursor), fs.readlinkSync(cursor));
+          const combined = tail.length ? path.join(linkTarget, ...tail.reverse()) : linkTarget;
+          return canonicalAcpPath(combined, depth + 1);
+        }
+      } catch {
+        // Non-existent entry; continue walking up to the nearest existing ancestor.
+      }
+      const parent = path.dirname(cursor);
+      if (parent === cursor) return resolved;
+      tail.push(path.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+function isWithinAcpDir(target: string, root: string): boolean {
+  const rel = path.relative(canonicalAcpPath(root), target);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+function isProtectedAcpPath(canonicalTarget: string, includeGitControl: boolean): boolean {
+  const normalized = canonicalTarget.replace(/\\/g, "/");
+  if (/(?:^|\/)(?:\.moco-state|\.secure)(?:\/|$)/.test(normalized)) return true;
+  if (/(?:^|\/)(?:connection\.json|devices\.json|runtime-token|moco\.sqlite(?:-wal|-shm)?)$/.test(normalized)) return true;
+  if (includeGitControl && /(?:^|\/)\.git\/(?:hooks(?:\/|$)|config$)/.test(normalized)) return true;
+  for (const entry of defaultProtectedPaths()) {
+    if (isWithinAcpDir(canonicalTarget, entry)) return true;
+  }
+  return false;
+}
 function createAcpLocalClient(ctx:ExternalDriverContext){
   type Terminal={child:ChildProcessWithoutNullStreams;output:Buffer;limit:number;truncated:boolean;status?:{exitCode:number|null;signal:string|null};exited:Promise<{exitCode:number|null;signal:string|null}>;cleanup:()=>Promise<boolean>};
   const terminals=new Map<string,Terminal>();
@@ -104,23 +146,29 @@ function createAcpLocalClient(ctx:ExternalDriverContext){
     async request(method:string,params:RpcValue):Promise<unknown>{
       if(method==="fs/read_text_file"){
         if(typeof params.path!=="string"||!path.isAbsolute(params.path))throw new Error("ACP file path must be absolute");
-        const content=await fs.promises.readFile(params.path,"utf8");
+        const target=canonicalAcpPath(params.path);
+        if(isProtectedAcpPath(target,false))throw new Error("ACP file read is denied for protected system or Moco paths");
+        const content=await fs.promises.readFile(target,"utf8");
         if(params.line===undefined&&params.limit===undefined)return{content};
         if(params.line!==undefined&&(!Number.isSafeInteger(params.line)||Number(params.line)<1)||params.limit!==undefined&&(!Number.isSafeInteger(params.limit)||Number(params.limit)<0))throw new Error("Invalid ACP line range");
         const lines=content.split("\n"),start=Number(params.line??1)-1;return{content:lines.slice(start,params.limit===undefined?undefined:start+Number(params.limit)).join("\n")};
       }
       if(method==="fs/write_text_file"){
         if(typeof params.path!=="string"||!path.isAbsolute(params.path)||typeof params.content!=="string")throw new Error("Invalid ACP file write");
+        const target=canonicalAcpPath(params.path);
+        if(isProtectedAcpPath(target,true))throw new Error("ACP file write is denied for protected system, git control, or Moco paths");
         if(ctx.workspaceMode==="read_only"){
-          const allowedNotes=ctx.scratchNotesDir?path.resolve(ctx.scratchNotesDir):undefined;
-          const target=path.resolve(params.path);
-          const rel=allowedNotes?path.relative(allowedNotes,target):"../denied";
-          const inNotes=rel===""||rel!==".."&&!rel.startsWith(`..${path.sep}`)&&!path.isAbsolute(rel);
+          const inNotes=Boolean(ctx.scratchNotesDir&&isWithinAcpDir(target,ctx.scratchNotesDir));
           if(!inNotes)throw new Error("Read-only external task cannot modify files outside its scratch notes directory");
+        }else if(ctx.workspaceMode==="staged"){
+          const inStaged=isWithinAcpDir(target,ctx.cwd);
+          const inNotes=Boolean(ctx.scratchNotesDir&&isWithinAcpDir(target,ctx.scratchNotesDir));
+          if(!inStaged&&!inNotes)throw new Error("Staged external task cannot modify files outside its isolated staged workspace or scratch notes directory");
         }
-        await fs.promises.writeFile(params.path,params.content,"utf8");return{};
+        await fs.promises.writeFile(target,params.content,"utf8");return{};
       }
       if(method==="terminal/create"){
+        if(ctx.workspaceMode==="read_only")throw new Error("Read-only external task cannot spawn unrestricted ACP terminals");
         if(typeof params.command!=="string"||!params.command||params.args!==undefined&&(!Array.isArray(params.args)||params.args.some(value=>typeof value!=="string")))throw new Error("Invalid ACP terminal command");
         if(!ctx.controlRoot)throw new Error("ACP terminal process supervision is unavailable");
         const env:NodeJS.ProcessEnv={...nativeAgentEnvironment()};for(const item of Array.isArray(params.env)?params.env:[]){const value=obj(item);if(typeof value.name!=="string"||typeof value.value!=="string")throw new Error("Invalid ACP terminal environment");env[value.name]=value.value;}

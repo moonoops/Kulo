@@ -2,14 +2,14 @@ import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { Socket } from "node:net";
 import WebSocket, { WebSocketServer } from "ws";
 import { parseDeviceJoinInput, type DeviceChatInvitation, type DeviceInterconnectionView, type DevicePeerConfig } from "@moco/protocol";
 import { DeviceRoleTransitions, type PreparedDeviceRoleChange } from "./device-role-transitions.js";
 import { LocalInstanceOwner } from "./local-instance.js";
 import { claimDevicePeer } from "./peer-runtime-owner.js";
-import { authenticatedPeerHub, deviceHostUnreachable, getPeerConfigPath, invalidDeviceInvitation, readPeerConfig, validatePeerConfig } from "./peer-config.js";
+import { authenticatedPeerHub, deviceHostUnreachable, getPeerConfigPath, invalidDeviceInvitation, localPeerProxyToken, readPeerConfig, validatePeerConfig } from "./peer-config.js";
 export { getPeerConfigPath, readPeerConfig, savePeerConfig, removePeerConfig, installDevicePeer, normalizePeerHubUrl } from "./peer-config.js";
 import { MocoEnvAgent } from "./agent.js";
 import { collectDeviceSystemInfo } from "./device-info.js";
@@ -35,6 +35,7 @@ const STATIC_MIME_BY_EXT: Record<string, string> = {
 export interface DevicePeerRuntime {
   url: string;
   port: number;
+  authToken: string;
   /** Initial Env registration and authenticated access to the shared conversation API. */
   ready: Promise<void>;
   close(): Promise<void>;
@@ -89,6 +90,27 @@ function requestHeaders(headers: http.IncomingHttpHeaders, hub: URL, token: stri
   return forwarded;
 }
 
+function peerHtmlCsp(html: string): string {
+  const inlineHashes = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
+    .filter((match) => !/\bsrc\s*=/.test(match[1]!) && match[2]!.trim())
+    .map((match) => `'sha256-${createHash("sha256").update(match[2]!).digest("base64")}'`);
+  return [
+    "default-src 'self'",
+    `script-src 'self' 'wasm-unsafe-eval'${inlineHashes.length ? ` ${inlineHashes.join(" ")}` : ""}`,
+    "script-src-attr 'none'",
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self' data:",
+    "img-src 'self' data: blob: https: http:",
+    "media-src 'self' data: blob: https: http:",
+    "connect-src 'self' ws: wss:",
+    "worker-src 'self' blob:",
+    "frame-src 'self' about:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+  ].join("; ");
+}
+
 function tryServeLocalWebAsset(webDistDir: string | undefined, pathname: string, method: string | undefined, response: http.ServerResponse): boolean {
   if (!webDistDir || (method !== "GET" && method !== "HEAD") || !fs.existsSync(webDistDir)) return false;
   const canonicalRoot = fs.realpathSync(webDistDir);
@@ -111,11 +133,25 @@ function tryServeLocalWebAsset(webDistDir: string | undefined, pathname: string,
   const canonicalRel = path.relative(canonicalRoot, canonicalFile);
   if (canonicalRel.startsWith("..") || path.isAbsolute(canonicalRel)) return false;
   const ext = path.extname(canonicalFile).toLowerCase();
+  if (ext === ".html") {
+    const html = fs.readFileSync(canonicalFile, "utf8");
+    response.writeHead(200, {
+      "content-type": STATIC_MIME_BY_EXT[ext] ?? "text/html; charset=utf-8",
+      "content-length": String(Buffer.byteLength(html)),
+      "cache-control": "no-cache",
+      "content-security-policy": peerHtmlCsp(html),
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+    });
+    response.end(method === "HEAD" ? undefined : html);
+    return true;
+  }
   const stat = fs.statSync(canonicalFile);
   response.writeHead(200, {
     "content-type": STATIC_MIME_BY_EXT[ext] ?? "application/octet-stream",
     "content-length": String(stat.size),
-    "cache-control": ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable",
+    "cache-control": "public, max-age=31536000, immutable",
+    "referrer-policy": "no-referrer",
     "x-content-type-options": "nosniff",
   });
   if (method === "HEAD") {
@@ -175,10 +211,10 @@ async function listenDevicePeer(config: DevicePeerConfig, resolvedConfigPath: st
     if (origin && !hosts.some((host) => origin === `http://${host}`)) return false;
     return request.headers["sec-fetch-site"] !== "cross-site";
   };
+  const localAuthToken = options.authToken?.trim() || localPeerProxyToken(config);
   const isAuthorizedLocal = (request: http.IncomingMessage, parsed: URL): boolean => {
-    if (!options.authToken) return true;
     const bearer = /^Bearer\s+(\S+)$/i.exec(request.headers.authorization ?? "")?.[1];
-    return equalToken(bearer ?? parsed.searchParams.get("token") ?? undefined, options.authToken);
+    return equalToken(bearer ?? parsed.searchParams.get("token") ?? undefined, localAuthToken);
   };
   const isLocalControl = (request: http.IncomingMessage): boolean =>
     !request.headers.forwarded && !request.headers["x-forwarded-for"] && !request.headers["x-real-ip"] &&
@@ -246,8 +282,8 @@ async function listenDevicePeer(config: DevicePeerConfig, resolvedConfigPath: st
     }
     if (request.method === "GET" && target.pathname === "/_moco/instance") {
       const status = { role: "joined" as const, hubUrl: config.hubUrl, ready: initiallyReady && agent.registered && !readinessError, error: readinessError };
-      const verified = !closed && (owner.proveLocalIdentity(request, response, options.authToken, status) ||
-        options.runtimeOwner?.proveLocalIdentity(request, response, options.authToken, status));
+      const verified = !closed && (owner.proveLocalIdentity(request, response, localAuthToken, status) ||
+        options.runtimeOwner?.proveLocalIdentity(request, response, localAuthToken, status));
       response.writeHead(verified ? 200 : 403, { "cache-control": "no-store" }).end();
       return;
     }
@@ -454,7 +490,7 @@ async function listenDevicePeer(config: DevicePeerConfig, resolvedConfigPath: st
   const verifySharedUi = async () => {
     const response = await fetch(`http://127.0.0.1:${port}/api/topics`, {
       redirect: "error",
-      headers: options.authToken ? { authorization: `Bearer ${options.authToken}` } : undefined,
+      headers: { authorization: `Bearer ${localAuthToken}` },
       signal: AbortSignal.timeout(10_000),
     }).catch(() => { throw new Error("执行端已连接，但无法访问主脑对话，请检查主脑及网络连接。"); });
     if (!response.ok) throw new Error(`执行端已连接，但主脑拒绝了界面访问（HTTP ${response.status}）。`);
@@ -499,6 +535,7 @@ async function listenDevicePeer(config: DevicePeerConfig, resolvedConfigPath: st
   return {
     url: `http://127.0.0.1:${port}`,
     port,
+    authToken: localAuthToken,
     ready,
     close() {
       closing ??= (async () => {

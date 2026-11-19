@@ -325,12 +325,12 @@ describe("shared Hub through a real joined-device runtime", () => {
     expect(fs.readFileSync(filename, "utf8")).toBe("written through the official Pi Env daemon");
     await seedTask(f.hub, config.deviceId);
     const main = await client(f.server.clientWsUrl, HUB_TEST_ADMIN_TOKEN);
-    const joined = await client(wsUrl(peer.url));
+    const joined = await client(wsUrl(peer.url), peer.authToken);
     const [mainSnapshot, joinedSnapshot] = await Promise.all([main.waitFor("hub.snapshot"), joined.waitFor("hub.snapshot")]);
     expect(joinedSnapshot.topics).toEqual(mainSnapshot.topics);
     expect(joinedSnapshot.tickets).toEqual(mainSnapshot.tickets);
     expect(joinedSnapshot.envs.some((env) => env.id === config.deviceId && env.online)).toBe(true);
-    const createdResponse = await fetch(`${peer.url}/api/topics`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "在接入设备新建" }) });
+    const createdResponse = await fetch(`${peer.url}/api/topics`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${peer.authToken}` }, body: JSON.stringify({ title: "在接入设备新建" }) });
     expect(createdResponse.status).toBe(200);
     const topic = await createdResponse.json() as { id: string };
     await Promise.all([main.waitFor("hub.topics", (message) => message.topics.some((item) => item.id === topic.id)), joined.waitFor("hub.topics", (message) => message.topics.some((item) => item.id === topic.id))]);
@@ -345,7 +345,7 @@ describe("shared Hub through a real joined-device runtime", () => {
     const stopped = (message: Extract<HubToClientMessage, { type: "hub.tickets" }>) => message.tickets.some((ticket) => ticket.id === "T-SHARED" && ticket.status === "stopped");
     const [mainTasks, peerTasks] = await Promise.all([main.waitFor("hub.tickets", stopped), joined.waitFor("hub.tickets", stopped)]);
     expect(peerTasks.tickets).toEqual(mainTasks.tickets);
-    const topicsThroughPeer = await (await fetch(`${peer.url}/api/topics`)).json() as { items: Array<{ id: string }> };
+    const topicsThroughPeer = await (await fetch(`${peer.url}/api/topics`, { headers: { authorization: `Bearer ${peer.authToken}` } })).json() as { items: Array<{ id: string }> };
     expect(topicsThroughPeer.items.some((item) => item.id === topic.id)).toBe(true);
   });
 
@@ -357,14 +357,14 @@ describe("shared Hub through a real joined-device runtime", () => {
     const peer = await startDevicePeer(config, { port: 0 });
     cleanups.push(() => peer.close());
     await peer.ready;
-    const joined = await client(wsUrl(peer.url));
+    const joined = await client(wsUrl(peer.url), peer.authToken);
     await joined.waitFor("hub.snapshot");
     const closed = new Promise<void>((resolve) => joined.ws.once("close", () => resolve()));
     expect((await f.request(`/api/devices/${config.deviceId}`, "DELETE")).status).toBe(200);
     await closed;
     await waitUntil(() => !f.hub.envManager.listEnvs().some((env) => env.id === config.deviceId));
     expect((await f.request("/api/topics", "GET", undefined, config.clientToken)).status).toBe(401);
-    expect((await fetch(`${peer.url}/api/topics`)).status).toBe(401);
+    expect((await fetch(`${peer.url}/api/topics`, { headers: { authorization: `Bearer ${peer.authToken}` } })).status).toBe(401);
     const node = new WebSocket(f.server.envWsUrl);
     const rejected = new Promise<number>((resolve, reject) => {
       node.once("error", reject);
@@ -394,7 +394,7 @@ describe("shared Hub through a real joined-device runtime", () => {
     const peer = await startDevicePeer(saved, { port: 0 });
     cleanups.push(() => peer.close());
     await peer.ready;
-    const joined = await client(wsUrl(peer.url));
+    const joined = await client(wsUrl(peer.url), peer.authToken);
     const snapshot = await joined.waitFor("hub.snapshot");
     expect(snapshot.topics.some((item) => item.id === topic.id)).toBe(true);
     const view = await (await restored.request("/api/devices")).json() as DeviceInterconnectionView;

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import type { DevicePeerConfig } from "@moco/protocol";
 import { discoverLocalInstance, LocalInstanceInUseError, LocalInstanceOwner, type LocalInstanceFiles } from "./local-instance.js";
-import { getPeerConfigPath, localPeerProof } from "./peer-config.js";
+import { getPeerConfigPath, localPeerProof, localPeerProxyToken } from "./peer-config.js";
 
 function peerFiles(config: DevicePeerConfig, configPath: string): LocalInstanceFiles {
   const filename = path.resolve(configPath);
@@ -22,5 +22,6 @@ export function claimDevicePeer(config: DevicePeerConfig, configPath: string): L
 }
 
 export function discoverDevicePeer(config: DevicePeerConfig, localToken?: string, configPath = getPeerConfigPath()) {
-  return discoverLocalInstance(peerFiles(config, configPath), "/_moco/instance", localToken);
+  const token = localToken?.trim() || localPeerProxyToken(config);
+  return discoverLocalInstance(peerFiles(config, configPath), "/_moco/instance", token);
 }

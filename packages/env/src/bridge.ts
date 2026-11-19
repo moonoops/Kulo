@@ -1651,7 +1651,10 @@ export class EnvManager {
       if (!this.#localConnection || !this.#localDescriptor) {
         throw new Error("Local execution environment is not enabled on this Hub");
       }
-      if (options?.sandboxed && this.#localDescriptor.capabilities.includes("worker-isolation") && this.#localProjects) {
+      if (options?.sandboxed) {
+        if (!this.#localDescriptor.capabilities.includes("worker-isolation") || !this.#localProjects) {
+          throw new Error("Sandboxed execution requires native worker isolation on local Env; refusing unsandboxed fallback.");
+        }
         const canonicalCwd = canonicalExecutionPath(cwd);
         const protectedPaths = [...new Set([...(this.#options.getProtectedPaths?.() ?? []), ...this.#additionalProtectedPaths])];
         const protection = JSON.stringify(protectedPaths);
@@ -1706,11 +1709,13 @@ export class EnvManager {
           `Execution environment '${envId}' (${wsPeer.descriptor.name}) is currently offline`,
         );
       }
-      if (
-        options?.sandboxed &&
-        wsPeer.descriptor.capabilities.includes("worker-isolation") &&
-        (this.#options.workerEnvIds?.includes(envId) || this.#deviceTokens.has(envId))
-      ) {
+      if (options?.sandboxed) {
+        if (
+          !wsPeer.descriptor.capabilities.includes("worker-isolation") ||
+          !(this.#options.workerEnvIds?.includes(envId) || this.#deviceTokens.has(envId))
+        ) {
+          throw new Error(`Sandboxed execution requires native worker isolation on Env '${envId}'; refusing unsandboxed fallback.`);
+        }
         const protectedPaths = [...new Set([...(this.#options.getProtectedPaths?.() ?? []), ...this.#additionalProtectedPaths])];
         const protection = JSON.stringify(protectedPaths);
         if (protection !== this.#workerProtection) {
@@ -1764,6 +1769,9 @@ export class EnvManager {
 
     const sshPeer = this.#sshPeers.get(envId);
     if (sshPeer) {
+      if (options?.sandboxed) {
+        throw new Error(`Sandboxed execution is not supported on SSH Env '${envId}'; refusing unsandboxed fallback.`);
+      }
       return new RemoteExecutionEnv({
         connection: sshPeer.connection,
         id: `pi-env:${envId}`,

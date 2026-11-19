@@ -17,12 +17,12 @@ function flag(args: string[], name: string): string | undefined {
   return index >= 0 ? args[index + 1] : args.find((argument) => argument.startsWith(`${name}=`))?.slice(name.length + 1);
 }
 
-async function existingPeer(config: DevicePeerConfig, options: { ignoreReadinessError?: boolean } = {}): Promise<{ url: string; ready: boolean; pid: number } | null> {
+async function existingPeer(config: DevicePeerConfig, options: { ignoreReadinessError?: boolean } = {}): Promise<{ url: string; origin: string; ready: boolean; pid: number } | null> {
   const instance = await discoverDevicePeer(config);
   if (!instance) return null;
   const { status } = instance;
   if (status.error && !options.ignoreReadinessError) throw new Error(status.error);
-  return { url: instance.url.origin, ready: status.ready === true, pid: status.pid };
+  return { url: instance.url.toString(), origin: instance.url.origin, ready: status.ready === true, pid: status.pid };
 }
 
 function openBrowser(url: string): void {
@@ -50,10 +50,10 @@ function installLauncher(entry: string, configPath: string): string {
 
 async function ensureRunning(config: DevicePeerConfig, configPath: string, options: {
   staged?: string; allowOffline?: boolean; onSpawn?: (child: ChildProcess) => void;
-} = {}): Promise<string> {
+} = {}): Promise<{ url: string; origin: string }> {
   const statusOptions = { ignoreReadinessError: options.allowOffline };
   const existing = await existingPeer(config, statusOptions);
-  if (existing && (existing.ready || options.allowOffline)) return existing.url;
+  if (existing && (existing.ready || options.allowOffline)) return { url: existing.url, origin: existing.origin };
   let started: ChildProcess | undefined;
   if (!existing) {
     const logPath = path.join(path.dirname(configPath), "peer.log");
@@ -81,7 +81,7 @@ async function ensureRunning(config: DevicePeerConfig, configPath: string, optio
   while (Date.now() < deadline) {
     if (started && (started.exitCode !== null || started.signalCode !== null)) throw new Error("本机设备入口未能启动，请检查端口后用原命令重试。");
     const peer = await existingPeer(config, statusOptions);
-    if (peer && (peer.ready || options.allowOffline)) return peer.url;
+    if (peer && (peer.ready || options.allowOffline)) return { url: peer.url, origin: peer.origin };
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   throw new Error("尚未连接至主脑，请检查连接后重试。");
@@ -123,9 +123,9 @@ async function main(): Promise<void> {
     const launcher = installLauncher(fileURLToPath(import.meta.url), configPath);
     if (previous) await stopPeer(previous.pid);
     let child: ChildProcess | undefined;
-    let url: string;
+    let launched: { url: string; origin: string };
     try {
-      url = await ensureRunning(config, configPath, {
+      launched = await ensureRunning(config, configPath, {
         staged: pairingFingerprint(input), onSpawn: (started) => { child = started; },
       });
       activateStagedPeer(config, configPath);
@@ -135,7 +135,7 @@ async function main(): Promise<void> {
       if (previous && oldConfig) await ensureRunning(oldConfig, configPath, { allowOffline: true });
       throw error;
     }
-    console.log(`设备已加入主脑。\nMoco: ${url}\n启动命令: ${launcher}`);
+    console.log(`设备已加入主脑。\nMoco: ${launched.origin}\n启动命令: ${launcher}`);
     return;
   }
   const staged = command === "start" ? flag(args, "--staged") : undefined;
@@ -167,9 +167,9 @@ async function main(): Promise<void> {
     return;
   }
   if (command !== "open") throw new Error(`未知的设备命令: ${command}`);
-  const url = await ensureRunning(config, configPath, { allowOffline: true });
-  console.log(`Moco: ${url}`);
-  openBrowser(url);
+  const launched = await ensureRunning(config, configPath, { allowOffline: true });
+  console.log(`Moco: ${launched.origin}`);
+  openBrowser(launched.url);
 }
 
 main().catch((error: unknown) => {

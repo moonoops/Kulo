@@ -50,6 +50,30 @@ describe("native external client ownership",()=>{
   expect(options.settingSources).toEqual(["user","project","local"]);const suggestions=[{type:"setMode",mode:"acceptEdits",destination:"session"}];expect(await options.canUseTool!("Bash",{command:"native build"},{toolUseID:"native-permission",suggestions,signal:new AbortController().signal})).toEqual({behavior:"allow",updatedInput:{command:"native build"},updatedPermissions:suggestions});
   expect(claudeThinkingOptions("high")).toEqual({effort:"high"});expect(claudeThinkingOptions("none")).toEqual({thinking:{type:"disabled"}});expect(()=>claudeThinkingOptions("minimal")).toThrow("not supported");
  });
+ it("enforces ACP protected path, staged containment, and read-only terminal guards",async()=>{
+  const f=fixture("dsh");f.ctx.workspaceMode="staged";f.ctx.scratchNotesDir=path.join(f.root,"notes");fs.mkdirSync(f.ctx.scratchNotesDir);
+  const result=await connectAcp(f.ctx,true);
+  const outside=path.join(f.root,"outside-staged.txt");
+  expect((await f.request(801,"fs/write_text_file",{sessionId:"acp-native",path:outside,content:"nope"})).error).toBeDefined();
+  expect(fs.existsSync(outside)).toBe(false);
+  const gitHook=path.join(f.ctx.cwd,".git/hooks/pre-commit");fs.mkdirSync(path.dirname(gitHook),{recursive:true});
+  expect((await f.request(802,"fs/write_text_file",{sessionId:"acp-native",path:gitHook,content:"#!/bin/sh\n"})).error).toBeDefined();
+  expect(fs.existsSync(gitHook)).toBe(false);
+  const inside=path.join(f.ctx.cwd,"ok.txt");
+  expect(await f.request(803,"fs/write_text_file",{sessionId:"acp-native",path:inside,content:"staged ok"})).toMatchObject({result:{}});
+  expect(await f.request(804,"fs/read_text_file",{sessionId:"acp-native",path:inside})).toMatchObject({result:{content:"staged ok"}});
+  const devicesFile=path.join(f.ctx.cwd,"devices.json");fs.writeFileSync(devicesFile,"{}");
+  expect((await f.request(805,"fs/read_text_file",{sessionId:"acp-native",path:devicesFile})).error).toBeDefined();
+  result.driver.close();
+
+  const ro=fixture("dsh");ro.ctx.workspaceMode="read_only";ro.ctx.readOnly=true;ro.ctx.scratchNotesDir=path.join(ro.root,"notes");fs.mkdirSync(ro.ctx.scratchNotesDir);
+  const roResult=await connectAcp(ro.ctx,true);
+  expect((await ro.request(806,"terminal/create",{sessionId:"acp-native",command:process.execPath,args:["-v"]})).error).toBeDefined();
+  const escapeTarget=path.join(ro.root,"escaped.txt");const escapeLink=path.join(ro.ctx.scratchNotesDir,"link.txt");fs.symlinkSync(escapeTarget,escapeLink);
+  expect((await ro.request(807,"fs/write_text_file",{sessionId:"acp-native",path:escapeLink,content:"escape"})).error).toBeDefined();
+  expect(fs.existsSync(escapeTarget)).toBe(false);
+  roResult.driver.close();
+ });
  it("keeps client authentication and proxy settings while excluding Moco management credentials",()=>{
   vi.stubEnv("MOCO_AUTH_TOKEN","moco-private");vi.stubEnv("MOCO_ENV_PEER_CONFIG","private-peer");vi.stubEnv("ANTHROPIC_API_KEY","native-client-key");vi.stubEnv("HTTPS_PROXY","http://native-proxy.invalid");const env=nativeAgentEnvironment();expect(env.MOCO_AUTH_TOKEN).toBeUndefined();expect(env.MOCO_ENV_PEER_CONFIG).toBeUndefined();expect(env.ANTHROPIC_API_KEY).toBe("native-client-key");expect(env.HTTPS_PROXY).toBe("http://native-proxy.invalid");
  });

@@ -44,6 +44,7 @@ import {
 } from "./report-overflow.js";
 
 export const DEFAULT_WORKER_SHELL_TIMEOUT_SECONDS = 120;
+export const MAX_WORKER_SHELL_TIMEOUT_SECONDS = 1800;
 
 const DANGEROUS_SHELL_PATTERNS: readonly RegExp[] = [
   /(?:^|[;&|]\s*)rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+\/(?:\s|$)/i,
@@ -507,8 +508,15 @@ export function createWorkerExtension(options: {
             block: "Blocked access to Moco's private identity directory from background Worker.",
           };
         }
-        if (call.arguments.timeout === undefined) {
+        const rawTimeout = (call.arguments as { timeout?: unknown }).timeout;
+        if (rawTimeout === undefined) {
           return { arguments: { ...call.arguments, timeout: DEFAULT_WORKER_SHELL_TIMEOUT_SECONDS } };
+        }
+        if (typeof rawTimeout !== "number" || !Number.isFinite(rawTimeout) || rawTimeout <= 0 || rawTimeout > MAX_WORKER_SHELL_TIMEOUT_SECONDS) {
+          const clamped = typeof rawTimeout === "number" && Number.isFinite(rawTimeout)
+            ? Math.min(Math.max(1, rawTimeout), MAX_WORKER_SHELL_TIMEOUT_SECONDS)
+            : DEFAULT_WORKER_SHELL_TIMEOUT_SECONDS;
+          return { arguments: { ...call.arguments, timeout: clamped } };
         }
       }
 

@@ -1,12 +1,12 @@
 export { EnvManager, BRIDGE_EXTERNAL_AGENT_TOOL_ALLOWLIST, type EnvManagerOptions } from "./bridge.js";
 export { StreamResumeBuffer } from "./stream-resume.js";
 export { DeviceRoleTransitions, waitForPeerReady, type PreparedDeviceRoleChange } from "./device-role-transitions.js";
-export { activateStagedPeer, localPeerProof, stageDevicePeer } from "./peer-config.js";
+export { activateStagedPeer, localPeerProof, localPeerProxyToken, stageDevicePeer } from "./peer-config.js";
 export { FlowBrowserService, flowBrowserExecutable, type FlowBrowserDriver, type FlowBrowserServiceOptions } from "./browser.js";
 export { MocoEnvAgent, type MocoEnvAgentOptions } from "./agent.js";
 export { ComputerUseService, computerUseConfiguration } from "./computer-use.js";
 export { buildWorkerSandboxProfile, canonicalExecutionPath, createWorkerSandbox, defaultProtectedPaths, discoverGitWriteDeniedPaths, isApplicationPrivatePath, type WorkerExecutionOptions, type WorkerNetworkPolicy } from "./isolation.js";
-export { buildLinuxSandboxArguments } from "./isolation-linux.js";
+export { buildLinuxSandboxArguments, isRestrictedLinuxProxyAddress } from "./isolation-linux.js";
 export { buildWindowsSandboxPolicy } from "./isolation-windows.js";
 export { createMacSandboxCleanupCommand } from "./isolation-macos.js";
 export { collectDeviceSystemInfo } from "./device-info.js";
