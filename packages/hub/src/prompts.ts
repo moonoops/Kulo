@@ -1,0 +1,41 @@
+export {
+  MOCO_PHILOSOPHY_PROMPT,
+  buildPhilosophyPrompt,
+  createOrchestratorSections,
+  formatMediaRoutingSummary,
+} from "./prompts/orchestrator.js";
+export {
+   DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT,
+  composeSubagentInstructions,
+  composeWorkerInstructions,
+  createWorkerSections,
+  formatExternalAgentHandoffPrompt,
+  formatWorkerInitialPrompt,
+  type ComposeWorkerOptions,
+} from "./prompts/worker.js";
+export {
+  APPEARANCE_CUSTOMIZATION_GUIDE,
+  DEVICES_INTERCONNECTION_GUIDE,
+  EXTENSIONS_SETUP_GUIDE,
+  MEMORY_SETUP_GUIDE,
+  MODEL_CONFIGURATION_GUIDE,
+  VOICE_FALLBACK_INSTRUCTIONS,
+  buildSettingsAssistantPrompt,
+  buildVoiceCallInstructions,
+} from "./prompts/surfaces.js";
+export {
+  BILLION_SUMMARY_SYSTEM,
+  DEFAULT_COMPACTION_FOCUS_INSTRUCTIONS,
+  HINDSIGHT_RETAIN_MISSIONS,
+  NOTIFICATION_CLASSIFIER_INSTRUCTIONS,
+  RELATIONSHIP_REVIEW_INSTRUCTIONS,
+  SETTINGS_TITLE_INSTRUCTIONS,
+  TITLE_INSTRUCTIONS,
+  formatConnectionRequestMessage,
+  formatExternalPermissionMessage,
+  formatRecoveryExhaustedRelayMessage,
+  formatStagedDiffRelayLines,
+  formatWorkerRecoveryMessage,
+  formatWorkerRelayMessage,
+  formatWorkerWatchdogMessage,
+} from "./prompts/events-and-jobs.js";

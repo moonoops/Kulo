@@ -1,0 +1,27 @@
+@layer base {
+  :root[data-theme="light"] {
+    --focus: #737373;
+  }
+
+  :root[data-theme="dark"] {
+    --focus: #8a8a8a;
+  }
+}
+
+@layer components {
+  .moco-ui :is(.input, .textarea):is(:focus, [data-focused="true"]):not([data-invalid="true"], [aria-invalid="true"]),
+  .moco-ui :is(.search-field__group, .number-field__group):is(:focus-within, [data-focus-within="true"]):not([data-invalid="true"], [aria-invalid="true"]),
+  .moco-ui .input-group:has(.input-group__input:focus):not([data-invalid="true"], [aria-invalid="true"]) {
+    --moco-focus-field-width: 1px;
+    /* Keep HeroUI's shadow composition, including its browser-autofill cover. */
+    --tw-ring-shadow: var(--tw-ring-inset,) 0 0 0 calc(var(--moco-focus-field-width) + var(--tw-ring-offset-width)) var(--tw-ring-color, var(--focus));
+
+    &[data-focus-visible="true"] {
+      --moco-focus-field-width: 2px;
+    }
+  }
+
+  .moco-ui .moco-agent-profile-overview {
+    --tw-ring-inset: inset;
+  }
+}

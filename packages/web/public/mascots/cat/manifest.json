@@ -1,0 +1,320 @@
+{
+  "formatVersion": 1,
+  "appearances": 24,
+  "frames": 96,
+  "displaySize": 64,
+  "minimumPixelRatio": 4.3125,
+  "resampled": false,
+  "pixelRoundTripVerified": true,
+  "sourcePngBytes": 8799487,
+  "runtimeImageBytes": 5208846,
+  "sheets": [
+    {
+      "file": "actions-0.webp",
+      "width": 1256,
+      "height": 1256,
+      "bytes": 933488,
+      "sha256": "051b3fe8a296a3332beee8fe57fbc16b70cadf22f24c16f0eb1d3463fa53b8e7",
+      "pixelSha256": "ed1e2304e7124f79fb43e29721b91a67e004d4ef4a8efa9cb2ad6f1f6d298b56",
+      "lossless": true,
+      "cellSize": 314,
+      "columns": 4,
+      "rows": 4,
+      "frames": 16
+    },
+    {
+      "file": "actions-1.webp",
+      "width": 1256,
+      "height": 1256,
+      "bytes": 927496,
+      "sha256": "cf5492d22b8e99e70f34b4ca31f6248f87186ebfc871f9196cad69912fcdfc40",
+      "pixelSha256": "4b54b640b05e0de7e131ce95956531aaaf4be15fc43340872a27e94852ba323f",
+      "lossless": true,
+      "cellSize": 314,
+      "columns": 4,
+      "rows": 4,
+      "frames": 16
+    },
+    {
+      "file": "actions-2.webp",
+      "width": 1256,
+      "height": 1256,
+      "bytes": 920196,
+      "sha256": "13ead168ac8ce64d33ed268ba62e742f1929c1fce465822b44fcf97618cd2064",
+      "pixelSha256": "c784bf3f44a04bf7bb55435adea9f5c1a70510c3bc0b00662f93bbe68969b0da",
+      "lossless": true,
+      "cellSize": 314,
+      "columns": 4,
+      "rows": 4,
+      "frames": 16
+    },
+    {
+      "file": "actions-3.webp",
+      "width": 1256,
+      "height": 1256,
+      "bytes": 871148,
+      "sha256": "463e70a2228cfad37e3514ebb78bda77f445d73c89bc7f6db701cd9dbc0aee11",
+      "pixelSha256": "1a337a266e72996f837c4d9905fbdd7b77999e4b208df3e8634374ab7774f06b",
+      "lossless": true,
+      "cellSize": 314,
+      "columns": 4,
+      "rows": 4,
+      "frames": 16
+    },
+    {
+      "file": "actions-4.webp",
+      "width": 1256,
+      "height": 1256,
+      "bytes": 740078,
+      "sha256": "56a584bca8e58b165adbcc5d96e563d200c9b75517b65e803210d5c71df7ec18",
+      "pixelSha256": "2c2e1bd88df668a8d9fb6637c1f69b24c9fd79f4eeefd0bf6936cbc6b4c11c79",
+      "lossless": true,
+      "cellSize": 314,
+      "columns": 4,
+      "rows": 4,
+      "frames": 16
+    },
+    {
+      "file": "actions-5.webp",
+      "width": 1256,
+      "height": 1256,
+      "bytes": 778736,
+      "sha256": "22d1aa93b4d3ab406c9af6e7287592ee20285e5e10b2fe100e20e0ee924a25df",
+      "pixelSha256": "f3f0b3913a8db513b6bee5ec09ce66bedb7306d5fb4566f3d88ee1cd1fa30ae4",
+      "lossless": true,
+      "cellSize": 314,
+      "columns": 4,
+      "rows": 4,
+      "frames": 16
+    }
+  ],
+  "paper": {
+    "file": "paper.webp",
+    "width": 192,
+    "height": 192,
+    "bytes": 37704,
+    "sha256": "5df1ccc0fa0bf1a5d30a1eac92545365ee7ddfa5f8dad8b2631700cebbe049f7",
+    "pixelSha256": "68d1fc85c94d146cf0d2ed89122908665d44029f27400f0beb370c8d2e95f02c",
+    "lossless": true
+  },
+  "nativeFramePixelRatio": 4.90625,
+  "paperPixelRatio": 3.0,
+  "appearanceCrops": [
+    {
+      "id": "sunglasses",
+      "crop": [
+        10,
+        0,
+        297
+      ],
+      "pixelRatio": 4.640625
+    },
+    {
+      "id": "programmer",
+      "crop": [
+        5,
+        1,
+        309
+      ],
+      "pixelRatio": 4.828125
+    },
+    {
+      "id": "closeup",
+      "crop": [
+        7,
+        -1,
+        298
+      ],
+      "pixelRatio": 4.65625
+    },
+    {
+      "id": "headphones",
+      "crop": [
+        10,
+        -1,
+        298
+      ],
+      "pixelRatio": 4.65625
+    },
+    {
+      "id": "hat-scarf",
+      "crop": [
+        18,
+        20,
+        276
+      ],
+      "pixelRatio": 4.3125
+    },
+    {
+      "id": "beret",
+      "crop": [
+        15,
+        14,
+        281
+      ],
+      "pixelRatio": 4.390625
+    },
+    {
+      "id": "cap",
+      "crop": [
+        19,
+        19,
+        276
+      ],
+      "pixelRatio": 4.3125
+    },
+    {
+      "id": "beanie",
+      "crop": [
+        17,
+        18,
+        277
+      ],
+      "pixelRatio": 4.328125
+    },
+    {
+      "id": "bucket-hat",
+      "crop": [
+        20,
+        -2,
+        293
+      ],
+      "pixelRatio": 4.578125
+    },
+    {
+      "id": "raincoat",
+      "crop": [
+        22,
+        8,
+        285
+      ],
+      "pixelRatio": 4.453125
+    },
+    {
+      "id": "hoodie",
+      "crop": [
+        26,
+        13,
+        279
+      ],
+      "pixelRatio": 4.359375
+    },
+    {
+      "id": "nightcap",
+      "crop": [
+        25,
+        -7,
+        286
+      ],
+      "pixelRatio": 4.46875
+    },
+    {
+      "id": "thinking",
+      "crop": [
+        14,
+        15,
+        289
+      ],
+      "pixelRatio": 4.515625
+    },
+    {
+      "id": "reading",
+      "crop": [
+        12,
+        10,
+        294
+      ],
+      "pixelRatio": 4.59375
+    },
+    {
+      "id": "writing",
+      "crop": [
+        14,
+        16,
+        289
+      ],
+      "pixelRatio": 4.515625
+    },
+    {
+      "id": "idea",
+      "crop": [
+        14,
+        11,
+        292
+      ],
+      "pixelRatio": 4.5625
+    },
+    {
+      "id": "wave",
+      "crop": [
+        20,
+        21,
+        276
+      ],
+      "pixelRatio": 4.3125
+    },
+    {
+      "id": "celebrate",
+      "crop": [
+        19,
+        15,
+        282
+      ],
+      "pixelRatio": 4.40625
+    },
+    {
+      "id": "waiting",
+      "crop": [
+        18,
+        13,
+        284
+      ],
+      "pixelRatio": 4.4375
+    },
+    {
+      "id": "dozing",
+      "crop": [
+        14,
+        2,
+        289
+      ],
+      "pixelRatio": 4.515625
+    },
+    {
+      "id": "sleep-curled",
+      "crop": [
+        0,
+        0,
+        314
+      ],
+      "pixelRatio": 4.90625
+    },
+    {
+      "id": "sleep-side",
+      "crop": [
+        0,
+        0,
+        314
+      ],
+      "pixelRatio": 4.90625
+    },
+    {
+      "id": "sleep-belly-up",
+      "crop": [
+        0,
+        0,
+        314
+      ],
+      "pixelRatio": 4.90625
+    },
+    {
+      "id": "sleep-slumped",
+      "crop": [
+        0,
+        0,
+        314
+      ],
+      "pixelRatio": 4.90625
+    }
+  ]
+}

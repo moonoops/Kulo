@@ -1,0 +1,59 @@
+.moco-thinking-indicator {
+  display: inline-flex;
+  width: 38px;
+  height: 25px;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  perspective: 70px;
+  color: var(--foreground);
+}
+
+.moco-thinking-plane {
+  width: 7px;
+  height: 17px;
+  flex: none;
+  border-radius: 3px;
+  background: currentColor;
+  animation: moco-thinking-plane 1.8s cubic-bezier(.45, 0, .25, 1) infinite;
+}
+
+.moco-thinking-plane:nth-child(2) { animation-delay: -160ms; }
+.moco-thinking-plane:nth-child(3) { animation-delay: -320ms; }
+
+.moco-thinking-indicator--compact {
+  width: 12px;
+  height: 8px;
+  justify-content: center;
+  gap: 1.5px;
+  perspective: none;
+}
+
+.moco-thinking-indicator--compact .moco-thinking-plane {
+  width: 2.5px;
+  height: 6px;
+  border-radius: 1px;
+  animation-name: moco-thinking-compact;
+  animation-timing-function: ease-in-out;
+}
+
+.moco-thinking-indicator--compact .moco-thinking-plane:nth-child(2) { animation-delay: -180ms; }
+.moco-thinking-indicator--compact .moco-thinking-plane:nth-child(3) { animation-delay: -360ms; }
+
+@keyframes moco-thinking-compact {
+  0%, 100% { opacity: .55; }
+  45% { opacity: .8; }
+}
+
+@keyframes moco-thinking-plane {
+  0%, 100% { opacity: .28; transform: rotateY(0) scaleY(.65); }
+  35% { opacity: .9; transform: rotateY(60deg) scaleY(1.15); }
+  65% { opacity: .45; transform: rotateY(180deg) scaleY(.8); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .moco-thinking-plane,
+  .moco-thinking-indicator--compact .moco-thinking-plane { animation: none; opacity: .65; }
+}
+
+:root[data-reduce-motion="true"] .moco-thinking-plane { animation: none; opacity: .65; }

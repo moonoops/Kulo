@@ -1,0 +1,575 @@
+import { ROOT_CONVERSATION_ID, UserEntry, defineDoc, defineEntry, type EntryRecord, type InputSubmissionDraft, type JsonObject } from "@earendil-works/pi-durable";
+import path from "node:path";
+import {
+  compareTicketCards,
+  resolveRolePresetFromPool,
+  type RolePreset,
+  type SlotSummary,
+  type SubagentRecord,
+  type TicketCardView,
+  type TicketRecord,
+  type TicketStatus,
+  type TopicSummary,
+  type WorkerReportState,
+} from "@moco/protocol";
+import { clampTicketCardReport } from "./report-overflow.js";
+
+export type ProcessedCommandEntry = {
+  ticketId: string;
+  action: string;
+  at: number;
+};
+
+export type TopicTitleJob = {
+  status: "pending" | "done" | "failed" | "cancelled";
+  fallbackTitle: string;
+  userText: string;
+  attachmentNames: string[];
+  assistantText?: string;
+  conversationId?: number;
+  retryCount?: number;
+  failure?: { code: "thinking_configuration" | "provider_error" | "invalid_response" | "generation_error"; message: string };
+};
+
+export type MocoDurableState = {
+  nextTicketNumber: number;
+  tickets: Record<string, TicketRecord>;
+  commandIndex: Record<string, string>;
+  processedCommands?: Record<string, ProcessedCommandEntry>;
+  /** Pi retains request deduplication after the short command cache is retired. */
+  chatRequestTargets?: Record<string, string>;
+  /** A present key pauses automatic Router wakeups; reports wait here until the user resumes. */
+  pausedChats?: Record<string, InputSubmissionDraft[]>;
+  conversationToTicket: Record<string, string>;
+  subagents?: Record<string, SubagentRecord>;
+  conversationToSubagent?: Record<string, string>;
+  topics?: Record<string, TopicSummary>;
+  conversationToTopic?: Record<string, string>;
+  topicTitles?: Record<string, TopicTitleJob>;
+  fileDeliveryFailures?: Record<string, { runEpoch: number; errors: Record<string, string> }>;
+  workerArtifacts?: Record<string, import("@moco/protocol").ChatAttachment[]>;
+  slots: {
+    holders: string[];
+    writeHolders?: string[];
+  };
+};
+
+const MAX_PROCESSED_COMMANDS = 256;
+export const MOCO_STATE_VERSION = 2;
+
+export function recordProcessedCommand(
+  state: MocoDurableState,
+  commandId: string | undefined,
+  ticketId: string,
+  action: string,
+): void {
+  const clean = commandId?.trim();
+  if (!clean) return;
+  if (!state.processedCommands) {
+    state.processedCommands = {};
+  }
+  state.processedCommands[clean] = { ticketId, action, at: Date.now() };
+  const keys = Object.keys(state.processedCommands);
+  if (keys.length > MAX_PROCESSED_COMMANDS) {
+    keys
+      .sort(
+        (a, b) =>
+          (state.processedCommands![a]?.at ?? 0) -
+          (state.processedCommands![b]?.at ?? 0),
+      )
+      .slice(0, keys.length - MAX_PROCESSED_COMMANDS)
+      .forEach((k) => {
+        delete state.processedCommands![k];
+      });
+  }
+}
+
+export const MocoStateDoc = defineDoc<MocoDurableState & JsonObject>({
+  kind: "moco.state",
+  version: MOCO_STATE_VERSION,
+  scope: "session",
+  initial: () =>
+    ({
+      nextTicketNumber: 1,
+      tickets: {},
+      commandIndex: {},
+      processedCommands: {},
+      conversationToTicket: {},
+      subagents: {},
+      conversationToSubagent: {},
+      topics: {},
+      conversationToTopic: {},
+      slots: {
+        holders: [],
+      },
+    }) as MocoDurableState & JsonObject,
+  migrate: (value, fromVersion) => {
+    if (fromVersion !== 1) throw new Error(`Unsupported Moco state migration from version ${fromVersion}`);
+    const state = structuredClone(value) as MocoDurableState & JsonObject;
+    ensureHolders(state);
+    for (const ticket of Object.values(state.tickets)) {
+      if (ticket.status !== "blocked") continue;
+      ticket.waiting ??= {
+        reason: "user",
+        since: ticket.updatedAt,
+        detail: ticket.latestReport?.question ?? ticket.latestReport?.summary ?? "等待用户确认",
+      };
+      const unconfirmedChildren = Object.values(state.subagents ?? {}).some((child) =>
+        child.ticketId === ticket.id && (child.state === "running" || child.state === undefined),
+      );
+      if (unconfirmedChildren) {
+        ticket.status = "pausing";
+        // A legacy summary may belong to an earlier run; only explicit child states prove quiescence.
+        const holders = ensureHolders(state);
+        if (!holders.includes(ticket.id)) holders.push(ticket.id);
+      } else {
+        ticket.status = "waiting";
+        releaseSlot(state, ticket.id);
+      }
+    }
+    ensureWriteHolders(state);
+    return state;
+  },
+  checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
+});
+
+export function ensureDefaultRootTopic(
+  state: MocoDurableState,
+  agentName = "Moco",
+): TopicSummary {
+  state.topics ??= {};
+  state.conversationToTopic ??= {};
+  const rootConvNum = Number(ROOT_CONVERSATION_ID);
+  let root = state.topics.root;
+  if (!root) {
+    const now = Date.now();
+    root = {
+      id: "root",
+      conversationId: rootConvNum,
+      title: `与 ${agentName} 对话`,
+      master: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    state.topics.root = root;
+  }
+  state.conversationToTopic[String(rootConvNum)] = "root";
+  return root;
+}
+
+export function isOrchestratorConversation(
+  conversationId: unknown,
+  state: Readonly<MocoDurableState> | undefined,
+): boolean {
+  if (conversationId === ROOT_CONVERSATION_ID) return true;
+  const key = String(conversationId);
+  if (state?.conversationToTicket[key]) return false;
+  if (state?.conversationToSubagent?.[key]) return false;
+  return Boolean(state?.conversationToTopic?.[key]);
+}
+
+export interface TicketExecutionScope {
+  ticket: TicketRecord;
+  subagent?: SubagentRecord;
+  isSubagent: boolean;
+  role: string;
+  readOnly: boolean;
+}
+
+export function resolveTicketExecutionScope(
+  state: Readonly<MocoDurableState> | undefined,
+  conversationId: unknown,
+): TicketExecutionScope | undefined {
+  if (!state) return undefined;
+  const key = String(conversationId);
+  const directTicketId = state.conversationToTicket[key];
+  if (directTicketId) {
+    const ticket = state.tickets[directTicketId];
+    if (!ticket) return undefined;
+    return {
+      ticket,
+      isSubagent: false,
+      role: ticket.role,
+      readOnly: Boolean(ticket.readOnly),
+    };
+  }
+  const subagentId = state.conversationToSubagent?.[key];
+  if (subagentId) {
+    const subagent = state.subagents?.[subagentId];
+    if (!subagent) return undefined;
+    const ticket = state.tickets[subagent.ticketId];
+    if (!ticket) return undefined;
+    return {
+      ticket,
+      subagent,
+      isSubagent: true,
+      role: subagent.role,
+      readOnly: Boolean(ticket.readOnly || subagent.readOnly),
+    };
+  }
+  return undefined;
+}
+
+export type WorkerRelayEntryData = {
+  ticketId: string;
+  title: string;
+  role: string;
+  state: WorkerReportState;
+  summary: string;
+  deliverable: string | null;
+  pendingAssets?: string[];
+  question: string | null;
+  sources?: import("@moco/protocol").WebSource[];
+  searchSuggestions?: string[];
+};
+
+export const WorkerRelayEntry = defineEntry<WorkerRelayEntryData>("moco.worker_relay");
+
+export type WorkerWatchdogEntryData = {
+  ticketId: string;
+  title: string;
+  role: string;
+  reason: "stalled" | "long_running";
+  idleSec: number;
+  runningSec: number;
+  runEpoch: number;
+};
+
+export const WorkerWatchdogEntry = defineEntry<WorkerWatchdogEntryData>("moco.worker_watchdog");
+
+export type WorkerRecoveryEntryData = {
+  ticketId: string;
+  rootTicketId: string;
+  startedAt: number;
+  attempt: number;
+  runEpoch: number;
+};
+export const WorkerRecoveryEntry = defineEntry<WorkerRecoveryEntryData>("moco.worker_recovery");
+
+export function isRecoveryInputBoundary(entry: EntryRecord): boolean {
+  return WorkerRecoveryEntry.is(entry) || WorkerRelayEntry.is(entry) || WorkerWatchdogEntry.is(entry) ||
+    UserEntry.is(entry) || entry.kind === "moco.user" || entry.kind === "moco.voice.delegation";
+}
+
+function ensureHolders(state: MocoDurableState): string[] {
+  const rawSlots = state.slots as {
+    holders?: string[];
+    normalHolders?: string[];
+    urgentHolders?: string[];
+  };
+  if (!Array.isArray(rawSlots.holders)) {
+    const merged = [
+      ...(Array.isArray(rawSlots.normalHolders) ? rawSlots.normalHolders : []),
+      ...(Array.isArray(rawSlots.urgentHolders) ? rawSlots.urgentHolders : []),
+    ];
+    state.slots = { ...state.slots, holders: Array.from(new Set(merged)) };
+  }
+  return state.slots.holders;
+}
+
+export function isTicketUnfinished(ticket: Pick<TicketRecord, "status">): boolean {
+  return ["queued", "running", "pausing", "waiting", "blocked"].includes(ticket.status);
+}
+
+export function getActiveStagedCwd(
+  ticket: Pick<TicketRecord, "workspaceStaging" | "externalExecution">,
+): string | undefined {
+  if (
+    ticket.workspaceStaging?.mode === "staged" &&
+    !ticket.workspaceStaging.appliedAt &&
+    !ticket.workspaceStaging.discardedAt &&
+    ticket.workspaceStaging.stagedCwd
+  ) {
+    return ticket.workspaceStaging.stagedCwd;
+  }
+  if (
+    ticket.externalExecution?.workspaceMode === "staged" &&
+    !ticket.externalExecution.stagedAppliedAt &&
+    ticket.externalExecution.stagedCwd
+  ) {
+    return ticket.externalExecution.stagedCwd;
+  }
+  return undefined;
+}
+
+export function getEffectiveWorkspaceDir(
+  ticket: Pick<TicketRecord, "workspaceDir" | "workspaceStaging" | "externalExecution">,
+): string {
+  return getActiveStagedCwd(ticket) ?? ticket.workspaceDir;
+}
+
+export function hasPendingWorkspaceApply(
+  ticket: Pick<TicketRecord, "status" | "workspaceStaging" | "externalExecution">,
+): boolean {
+  if (ticket.status === "stopped" || ticket.status === "closed") return false;
+  const builtInPending = Boolean(
+    ticket.workspaceStaging?.mode === "staged" &&
+      !ticket.workspaceStaging.appliedAt &&
+      !ticket.workspaceStaging.discardedAt &&
+      ticket.workspaceStaging.stagedDiff?.hasChanges,
+  );
+  const externalPending = Boolean(
+    ticket.externalExecution?.workspaceMode === "staged" &&
+      !ticket.externalExecution.stagedAppliedAt &&
+      ticket.externalExecution.stagedDiff?.hasChanges,
+  );
+  return builtInPending || externalPending;
+}
+
+/** Keep execution time independent of progress updates and time spent queued or parked. */
+export function transitionTicketStatus(ticket: TicketRecord, status: TicketStatus, at: number): void {
+  const previous = ticket.status;
+  const wasExecuting = previous === "running" || previous === "pausing";
+  const executing = status === "running" || status === "pausing";
+  if (wasExecuting && !executing) {
+    const startedAt = ticket.startedRunningAt;
+    if (startedAt !== undefined || ticket.accumulatedRunningMs !== undefined) {
+      ticket.accumulatedRunningMs = (ticket.accumulatedRunningMs ?? 0) +
+        (startedAt === undefined ? 0 : Math.max(0, at - startedAt));
+    }
+    ticket.startedRunningAt = undefined;
+  } else if (status === "running" && (!wasExecuting || ticket.startedRunningAt === undefined)) {
+    ticket.accumulatedRunningMs ??= 0;
+    ticket.startedRunningAt = at;
+  }
+  if (status === "queued" && previous !== "queued") ticket.queuedAt = at;
+  if (status === "ready" && previous !== "ready") ticket.completedAt = at;
+  else if (status !== "ready" && status !== "closed") ticket.completedAt = undefined;
+  ticket.status = status;
+  if (status !== previous) ticket.updatedAt = at;
+}
+
+export function hasActiveSubagents(state: Readonly<MocoDurableState>, ticketId: string): boolean {
+  return Object.values(state.subagents ?? {}).some((subagent) =>
+    subagent.ticketId === ticketId && (
+      subagent.state === "running" ||
+      // Older records without a result have not established that their execution stopped.
+      (subagent.state === undefined && subagent.lastSummary === undefined)
+    ),
+  );
+}
+
+function normalizedWorkspace(value: string): { value: string; windows: boolean } {
+  const windows = /^[a-z]:[\\/]/i.test(value) || /^\\\\/.test(value);
+  const implementation = windows ? path.win32 : path.posix;
+  const normalized = implementation.normalize(value).replace(/[\\/]+$/, "") || implementation.parse(value).root;
+  return { value: windows ? normalized.toLowerCase() : normalized, windows };
+}
+
+export function ticketsShareWriteScope(a: Readonly<TicketRecord>, b: Readonly<TicketRecord>): boolean {
+  const aPhones = a.androidDeviceIds ?? (a.executionDomain === "android" ? [a.envId] : []);
+  const bPhones = b.androidDeviceIds ?? (b.executionDomain === "android" ? [b.envId] : []);
+  if (aPhones.some((id) => bPhones.includes(id))) return true;
+  if (a.executionDomain === "android" || b.executionDomain === "android") return false;
+  if (a.envId !== b.envId) return false;
+  if (a.directoryId && b.directoryId && a.directoryId === b.directoryId) return true;
+  const left = normalizedWorkspace(a.workspaceDir);
+  const right = normalizedWorkspace(b.workspaceDir);
+  if (left.windows !== right.windows) return false;
+  const implementation = left.windows ? path.win32 : path.posix;
+  const contains = (parent: string, child: string) => {
+    const relative = implementation.relative(parent, child);
+    return relative === "" || (!relative.startsWith(`..${implementation.sep}`) && relative !== ".." && !implementation.isAbsolute(relative));
+  };
+  return contains(left.value, right.value) || contains(right.value, left.value);
+}
+
+function ensureWriteHolders(state: MocoDurableState): string[] {
+  const holders = ensureHolders(state);
+  state.slots.writeHolders ??= [];
+  for (const id of holders) {
+    if (state.tickets[id]?.readOnly !== true && !state.slots.writeHolders.includes(id)) {
+      state.slots.writeHolders.push(id);
+    }
+  }
+  for (const ticket of Object.values(state.tickets)) {
+    if (
+      (ticket.cleanupPending || hasPendingWorkspaceApply(ticket)) &&
+      ticket.readOnly !== true &&
+      !state.slots.writeHolders.includes(ticket.id)
+    ) {
+      state.slots.writeHolders.push(ticket.id);
+    }
+  }
+  state.slots.writeHolders = state.slots.writeHolders.filter((id) => Boolean(state.tickets[id]));
+  return state.slots.writeHolders;
+}
+
+function canClaimWrite(state: MocoDurableState, ticket: Readonly<TicketRecord>): boolean {
+  if (ticket.readOnly) return true;
+  return !ensureWriteHolders(state).some((id) =>
+    id !== ticket.id && ticketsShareWriteScope(ticket, state.tickets[id]!),
+  );
+}
+
+function isQueueCandidate(ticket: Readonly<TicketRecord>): boolean {
+  return ticket.status === "queued" && !ticket.cleanupPending &&
+    (!ticket.waiting || ticket.waiting.reason === "project");
+}
+
+function compareQueueOrder(a: Readonly<TicketRecord>, b: Readonly<TicketRecord>): number {
+  return (a.queuedAt ?? a.createdAt) - (b.queuedAt ?? b.createdAt) ||
+    a.createdAt - b.createdAt || a.id.localeCompare(b.id);
+}
+
+export function tryClaimSlot(
+  state: MocoDurableState,
+  ticketId: string,
+  maxConcurrentWorkers: number,
+  options: { isRunnable?: (ticket: Readonly<TicketRecord>) => boolean } = {},
+): boolean {
+  const holders = ensureHolders(state);
+  if (holders.includes(ticketId)) {
+    return true;
+  }
+  if (holders.length >= maxConcurrentWorkers) {
+    return false;
+  }
+
+  const self = state.tickets[ticketId];
+  if (self) {
+    if (!isQueueCandidate(self) || options.isRunnable?.(self) === false || !canClaimWrite(state, self)) {
+      return false;
+    }
+    let olderQueued = 0;
+    for (const t of Object.values(state.tickets)) {
+      if (
+        t.id !== ticketId &&
+        isQueueCandidate(t) &&
+        !holders.includes(t.id) &&
+        compareQueueOrder(t, self) < 0 &&
+        options.isRunnable?.(t) !== false &&
+        canClaimWrite(state, t)
+      ) {
+        if (!t.readOnly && !self.readOnly && ticketsShareWriteScope(t, self)) return false;
+        olderQueued++;
+      }
+    }
+    if (holders.length + olderQueued >= maxConcurrentWorkers) {
+      return false;
+    }
+  }
+
+  holders.push(ticketId);
+  if (self && !self.readOnly) {
+    const writeHolders = ensureWriteHolders(state);
+    if (!writeHolders.includes(ticketId)) writeHolders.push(ticketId);
+  }
+  return true;
+}
+
+export function releaseProjectWrite(
+  state: MocoDurableState,
+  ticketId: string,
+  options: { force?: boolean } = {},
+): boolean {
+  const ticket = state.tickets[ticketId];
+  if (!options.force && (ticket?.cleanupPending || (ticket && hasPendingWorkspaceApply(ticket)))) return false;
+  const holders = ensureWriteHolders(state);
+  state.slots.writeHolders = holders.filter((id) => id !== ticketId);
+  return true;
+}
+
+export function releaseSlot(
+  state: MocoDurableState,
+  ticketId: string,
+  options: { force?: boolean; releaseWrite?: boolean } = {},
+): boolean {
+  if (!options.force && hasActiveSubagents(state, ticketId)) return false;
+  ensureWriteHolders(state);
+  const holders = ensureHolders(state);
+  state.slots.holders = holders.filter((id) => id !== ticketId);
+  if (options.releaseWrite !== false) releaseProjectWrite(state, ticketId);
+  return true;
+}
+
+export function computeSlotSummary(
+  state: Readonly<MocoDurableState>,
+  maxConcurrentWorkers: number,
+  queuedCount = Object.values(state.tickets).reduce((count, ticket) => count + Number(ticket.status === "queued"), 0),
+): SlotSummary {
+  const rawSlots = state.slots as {
+    holders?: string[];
+    normalHolders?: string[];
+    urgentHolders?: string[];
+  };
+  const used = Array.isArray(rawSlots.holders)
+    ? rawSlots.holders.length
+    : Array.from(
+        new Set([
+          ...(Array.isArray(rawSlots.normalHolders) ? rawSlots.normalHolders : []),
+          ...(Array.isArray(rawSlots.urgentHolders) ? rawSlots.urgentHolders : []),
+        ]),
+      ).length;
+
+  return {
+    used,
+    max: maxConcurrentWorkers,
+    queuedCount,
+  };
+}
+
+export function toTicketCardView(
+  ticket: Readonly<TicketRecord>,
+  roles: Record<string, RolePreset>,
+): TicketCardView {
+  const roleLabel =
+    roles[ticket.role]?.label ??
+    resolveRolePresetFromPool(roles, ticket.role).preset?.label ??
+    ticket.role;
+  return {
+    id: ticket.id,
+    ...(ticket.externalExecution ? { externalAgentKind: ticket.externalExecution.binding.kind } : {}),
+    ...(hasPendingWorkspaceApply(ticket) ? { pendingWorkspaceApply: true } : {}),
+    title: ticket.title,
+    ...(ticket.userSummary ? { userSummary: ticket.userSummary } : {}),
+    role: ticket.role,
+    roleLabel,
+    status: ticket.status,
+    envId: ticket.envId,
+    ...(ticket.executionDomain ? { executionDomain: ticket.executionDomain } : {}),
+    ...(ticket.androidDeviceIds?.length ? { androidDeviceIds: [...ticket.androidDeviceIds] } : {}),
+    workspaceDir: ticket.workspaceDir,
+    createdAt: ticket.createdAt,
+    updatedAt: ticket.updatedAt,
+    ...(ticket.startedRunningAt !== undefined ? { startedRunningAt: ticket.startedRunningAt } : {}),
+    ...(ticket.accumulatedRunningMs !== undefined ? { accumulatedRunningMs: ticket.accumulatedRunningMs } : {}),
+    ...(ticket.queuedAt !== undefined
+      ? { queuedAt: ticket.queuedAt }
+      : ticket.status === "queued" ? { queuedAt: ticket.createdAt } : {}),
+    ...(ticket.completedAt !== undefined
+      ? { completedAt: ticket.completedAt }
+      : ticket.status === "ready" && ticket.latestReport?.state === "ready"
+        ? { completedAt: ticket.latestReport.at }
+        : {}),
+    ...(ticket.latestReport ? { latestReport: clampTicketCardReport(ticket.latestReport) } : {}),
+    ...(ticket.stoppedReason ? { stoppedReason: ticket.stoppedReason } : {}),
+    ...(ticket.closure ? { closure: { ...ticket.closure } } : {}),
+    ...(ticket.recovery ? { recovery: { ...ticket.recovery } } : {}),
+    ...(ticket.originTopicId ? { originTopicId: ticket.originTopicId } : {}),
+    ...(ticket.projectId ? { projectId: ticket.projectId } : {}),
+    ...(ticket.waiting ? { waiting: { ...ticket.waiting } } : {}),
+    ...(ticket.cleanupPending ? { cleanupPending: true } : {}),
+    ...(ticket.schedule ? { schedule: { ...ticket.schedule } } : {}),
+  };
+}
+
+export function listSortedTicketCards(
+  state: Readonly<MocoDurableState>,
+  roles: Record<string, RolePreset>,
+): TicketCardView[] {
+  return Object.values(state.tickets)
+    .map((t) => toTicketCardView(t, roles))
+    .sort(compareTicketCards);
+}
+
+export function listSortedTopics(state: Readonly<MocoDurableState>): TopicSummary[] {
+  const map = state.topics ?? {};
+  return Object.values(map)
+    .filter((topic) => topic.deletedAt === undefined)
+    .map((t) => ({ ...t }))
+    .sort((a, b) => {
+      if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+      return b.updatedAt - a.updatedAt || b.createdAt - a.createdAt;
+    });
+}

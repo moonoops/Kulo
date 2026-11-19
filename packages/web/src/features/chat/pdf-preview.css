@@ -1,0 +1,16 @@
+@reference "../../moco.css";
+
+.moco-pdf-preview { min-width: 0; }
+.moco-pdf-toolbar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--moco-control-gap); padding: var(--moco-space-2); background: var(--surface); border-bottom: 1px solid var(--border); }
+.moco-pdf-controls { display: flex; align-items: center; gap: var(--moco-space-1); }
+.moco-pdf-page-label { font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); white-space: nowrap; }
+.moco-pdf-page-scroll { @apply scrollbar; min-width: 0; overflow-x: auto; }
+.moco-pdf-page { position: relative; width: max-content; min-height: 160px; color-scheme: only light; background: Canvas; }
+.moco-pdf-page > canvas { display: block; }
+.moco-pdf-rendering { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--foreground); background: var(--surface); }
+/* PDF.js owns the original document's glyph geometry, independent of application UI type. */
+.moco-pdf-text-layer { position: absolute; inset: 0; overflow: clip; text-align: initial; line-height: 1; letter-spacing: normal; word-spacing: normal; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; caret-color: CanvasText; --min-font-size: 1; --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size)); --min-font-size-inv: calc(1 / var(--min-font-size)); }
+.moco-pdf-text-layer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0 0; user-select: text; }
+.moco-pdf-text-layer > :not(.markedContent), .moco-pdf-text-layer .markedContent span:not(.markedContent) { z-index: 1; --font-height: 0; font-size: calc(var(--text-scale-factor) * var(--font-height)); --scale-x: 1; --rotate: 0deg; transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv)); }
+.moco-pdf-text-layer .markedContent { display: contents; }
+.moco-pdf-text-layer ::selection { background: Highlight; }

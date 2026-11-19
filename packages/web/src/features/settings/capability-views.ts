@@ -1,0 +1,31 @@
+import type { CapabilitiesWorkspaceSnapshot, SettingsAssistantContext } from "@moco/protocol";
+
+export const CAPABILITY_VIEWS = [
+  { id: "image", label: "图像", englishLabel: "Images" },
+  { id: "voice", label: "语音", englishLabel: "Voice" },
+  { id: "video", label: "视频", englishLabel: "Video" },
+  { id: "search", label: "搜索", englishLabel: "Search" },
+  { id: "skills", label: "技能", englishLabel: "Skills" },
+  { id: "colab", label: "Colab", englishLabel: "Colab" },
+  { id: "other", label: "其他", englishLabel: "Other" },
+] as const;
+
+export type CapabilityView = typeof CAPABILITY_VIEWS[number]["id"];
+
+export interface ImageAssistantRequest {
+  id: string | number;
+  action: "configure" | "discover" | "routing";
+  capabilityId?: string;
+}
+
+export const ADD_IMAGE_PROMPT = "添加图像模型。先读取当前图像配置和共享草稿；复用已有供应商时先搜索可用图像模型并展示勾选卡片，新增服务时根据模型或接口文档填写同一份共享配置。只补问缺少的信息，凭证使用保密输入。";
+export const IMAGE_ROUTING_PROMPT = "查看已配置图像模型及当前调用规则，解释系统如何按任务自动选择，并根据我的要求修改规则。保留明确指定模型的优先级，只补问缺少的偏好。";
+export const CONNECT_FLOW_PROMPT = "连接 Google Flow，用已有会员积分生成视频。请先确认要使用的设备，并引导我在该设备的浏览器完成登录。";
+export const IMPORT_SKILL_PROMPT = "导入一个 Skill，请先询问我来源。";
+
+export function capabilityTargetView(target: SettingsAssistantContext["target"], snapshot: CapabilitiesWorkspaceSnapshot | null): CapabilityView | undefined {
+  if (target?.kind === "skill") return "skills";
+  if (target?.kind === "extension") return "other";
+  if (target?.kind !== "capability") return undefined;
+  return snapshot?.capabilities.find((item) => item.id === target.id)?.kind;
+}

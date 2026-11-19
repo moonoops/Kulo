@@ -1,0 +1,35 @@
+# Dependencies & build outputs
+node_modules/
+dist/
+*.tsbuildinfo
+.vite-temp/
+
+# Runtime state, databases & logs
+.moco-state/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
+.env
+.env.*
+!.env.example
+
+# Local QA, test & browser automation artifacts
+output/
+coverage/
+.playwright-cli/
+.playwright-mcp/
+
+# Python virtual environments & caches (integrations/hindsight, scripts)
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Companion mobile connector binary (built externally via Moco-mobile)
+packages/hub/native/moco-connector-*
+
+# macOS metadata
+.DS_Store

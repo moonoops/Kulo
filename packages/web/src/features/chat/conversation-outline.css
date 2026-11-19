@@ -1,0 +1,114 @@
+@reference "../../moco.css";
+
+.moco-chat-stage {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.moco-chat-stage[data-has-outline="true"] .mc-chat-scroll { padding-inline-end: 52px; }
+.moco-chat-stage > .mc-chat-scroll { min-width: 0; }
+
+.moco-chat-outline {
+  position: absolute;
+  inset-block: 20px;
+  inset-inline-end: 18px;
+  display: flex;
+  align-items: center;
+  width: 40px;
+  opacity: 0;
+  visibility: hidden;
+  translate: 4px 0;
+  pointer-events: none;
+  transition: opacity 160ms ease-out, translate 160ms ease-out, visibility 0s linear 160ms;
+}
+
+.moco-chat-outline[data-visible="true"] {
+  opacity: 1;
+  visibility: visible;
+  translate: 0 0;
+  transition-delay: 0s;
+}
+
+.moco-chat-outline-list {
+  @apply scrollbar-none;
+  width: 100%;
+  max-height: min(100%, 360px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--moco-space-1) 2px;
+  pointer-events: none;
+}
+
+.moco-chat-outline[data-visible="true"] .moco-chat-outline-list { pointer-events: auto; }
+
+.moco-chat-outline-step {
+  display: flex;
+  justify-content: flex-end;
+  width: 36px;
+  min-width: 36px;
+  height: 12px;
+  min-height: 12px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.moco-chat-outline-tick {
+  width: 24px;
+  height: 2px;
+  flex: none;
+  border-radius: 2px;
+  background: var(--foreground);
+  opacity: var(--outline-opacity);
+  transform: scaleX(var(--outline-scale));
+  transform-origin: right center;
+  transition: transform 180ms ease-out, opacity 180ms ease-out;
+}
+
+.moco-chat-outline-step[aria-current="location"] .moco-chat-outline-tick,
+.moco-chat-outline-step[data-hovered="true"] .moco-chat-outline-tick,
+.moco-chat-outline-step[data-focus-visible="true"] .moco-chat-outline-tick { opacity: 1; }
+
+.moco-chat-outline-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--moco-space-2);
+  width: min(280px, calc(100vw - 80px));
+  padding: var(--moco-space-3) var(--moco-space-4);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--overlay);
+  color: var(--foreground);
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+
+.moco-chat-outline-title,
+.moco-chat-outline-excerpt {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0;
+  font-size: var(--moco-text-body);
+  line-height: var(--moco-leading-body);
+}
+
+.moco-chat-outline-title { -webkit-line-clamp: 2; font-weight: 600; }
+.moco-chat-outline-excerpt { -webkit-line-clamp: 4; color: var(--muted); }
+
+@media (pointer: coarse) {
+  .moco-chat-outline { width: 48px; inset-inline-end: 14px; }
+  .moco-chat-outline-step { width: 44px; min-width: 44px; height: 44px; min-height: 44px; padding-inline: 10px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .moco-chat-outline { transition: none; }
+  .moco-chat-outline-tick { transition: none; }
+}
+
+:root[data-reduce-motion="true"] .moco-chat-outline { transition: none; }
+:root[data-reduce-motion="true"] .moco-chat-outline-tick { transition: none; }

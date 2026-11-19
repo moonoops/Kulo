@@ -1,0 +1,5 @@
+.moco-call-status-icon { display: inline-flex; width: 20px; height: 20px; flex: none; align-items: center; justify-content: center; }
+.moco-call-status-icon--compact { width: 16px; height: 16px; }
+.moco-call-status-anchor { width: 100%; height: 100%; }
+.moco-call-status-icon .mc-icon { width: 100%; height: 100%; }
+.moco-call-status-dot { width: 6px; height: 6px; min-width: 6px; min-height: 6px; }

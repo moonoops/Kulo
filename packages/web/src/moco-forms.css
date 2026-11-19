@@ -1,0 +1,234 @@
+:root {
+  --moco-settings-control-width: 320px;
+  --moco-settings-number-width: 128px;
+  --moco-compact-label-width: 80px;
+}
+
+.moco-settings-list {
+  container: moco-settings-fields / inline-size;
+}
+
+.moco-settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--moco-settings-control-width));
+  align-items: center;
+  column-gap: var(--moco-form-gap);
+  row-gap: var(--moco-field-gap);
+  width: 100%;
+  min-width: 0;
+  min-height: 60px;
+  padding: var(--moco-list-padding-block) var(--moco-list-padding-inline);
+}
+
+.moco-settings-row > :is(.label, .moco-field-label) {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  font-weight: 400;
+}
+
+.moco-settings-row > :is(.input, .select__trigger, .combo-box__input-group, .number-field__group, .moco-field-control) {
+  grid-column: 2;
+  grid-row: 1;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.moco-settings-row > :is(.description, .field-error) {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.moco-settings-row--number > :is(.number-field__group, .moco-field-control) {
+  width: min(100%, var(--moco-settings-number-width));
+  justify-self: end;
+}
+
+/* Discrete preferences retain the common column without filling it with a short value. */
+.moco-settings-row--choice > .select__trigger {
+  width: fit-content;
+  max-width: 100%;
+  justify-self: end;
+}
+
+.moco-settings-row--toggle {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.moco-settings-row--toggle > .switch__control {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+}
+
+/* Immediate preferences keep labels beside controls independently of settings-page reflow. */
+.moco-compact-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--moco-form-gap);
+  width: 100%;
+  min-width: 0;
+  container: moco-compact-fields / inline-size;
+}
+
+.moco-compact-row {
+  display: grid;
+  grid-template-columns: minmax(0, var(--moco-compact-label-width)) minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--moco-control-gap);
+  row-gap: var(--moco-field-gap);
+  width: 100%;
+  min-width: 0;
+  min-height: var(--moco-control-height);
+}
+
+.moco-compact-row > :is(.label, .moco-field-label) {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  font-weight: 400;
+}
+
+.moco-compact-row > :is(.input, .select__trigger, .combo-box__input-group, .number-field__group, .moco-field-control) {
+  grid-column: 2;
+  grid-row: 1;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.moco-compact-row > :is(.description, .field-error) {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.moco-compact-row--choice > .select__trigger {
+  width: fit-content;
+  max-width: 100%;
+  justify-self: end;
+}
+
+.moco-compact-row--toggle {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.moco-compact-row--toggle > .switch__control {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+}
+
+.moco-field-label {
+  display: flex;
+  align-items: center;
+  gap: var(--moco-control-gap);
+}
+
+.moco-field-with-unit {
+  display: flex;
+  align-items: center;
+  gap: var(--moco-control-gap);
+  min-width: 0;
+}
+
+.moco-field-with-unit > .number-field__group {
+  flex: 1;
+  min-width: 0;
+}
+
+.moco-form-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--moco-form-gap);
+  width: 100%;
+  min-width: 0;
+  container: moco-form / inline-size;
+}
+
+.moco-form-field,
+.moco-context-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--moco-field-gap);
+  width: 100%;
+  min-width: 0;
+}
+
+.moco-form-field > :is(.input, .textarea, .input-group, .select__trigger, .combo-box__input-group, .number-field__group, .search-field__group) {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.moco-form-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--moco-form-gap);
+  width: 100%;
+  min-width: 0;
+}
+
+.moco-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  align-items: start;
+  gap: var(--moco-form-gap);
+  min-width: 0;
+}
+
+.moco-form-grid--port {
+  grid-template-columns: minmax(0, 1fr) 96px;
+}
+
+/* A field and its action stay together without changing the input's focus surface. */
+.moco-field-action-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--moco-control-gap);
+  min-width: 0;
+}
+
+.moco-field-action-row > :is(.moco-form-field, .moco-context-field) {
+  flex: 1;
+  min-width: 0;
+}
+
+@container moco-settings-fields (max-width: 640px) {
+  .moco-settings-row:not(.moco-settings-row--toggle) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .moco-settings-row:not(.moco-settings-row--toggle) > :is(.input, .select__trigger, .combo-box__input-group, .number-field__group, .moco-field-control) {
+    grid-column: 1;
+    grid-row: 2;
+    width: 100%;
+  }
+
+  .moco-settings-row > :is(.description, .field-error) {
+    grid-column: 1;
+  }
+}
+
+@container moco-form (max-width: 400px) {
+  .moco-form-grid--port {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container moco-compact-fields (max-width: 240px) {
+  .moco-compact-row:not(.moco-compact-row--toggle) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .moco-compact-row:not(.moco-compact-row--toggle) > :is(.input, .select__trigger, .combo-box__input-group, .number-field__group, .moco-field-control) {
+    grid-column: 1;
+    grid-row: 2;
+    width: 100%;
+  }
+
+  .moco-compact-row > :is(.description, .field-error) {
+    grid-column: 1;
+  }
+}

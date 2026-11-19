@@ -1,0 +1,172 @@
+/** Moco Settings Board & Right Settings Assistant Rail (HeroUI v3). */
+import { Alert, Button } from "@heroui/react";
+import type {
+  EnvNodeDescriptor,
+  MocoSettingsView,
+  SlotSummary,
+  CapabilitiesWorkspaceSnapshot,
+  ConnectionWorkspaceSnapshot,
+  TicketCardView,
+  TopicSummary,
+  ProjectView,
+} from "@moco/protocol";
+import { translate as t, useI18n } from "./moco-i18n";
+import { AppearanceModule } from "./features/settings/appearance-module";
+import { ArchivedConversationsModule } from "./features/settings/archived-conversations-module";
+import { AgentsModule } from "./features/settings/agents-module";
+import { IdentityModule } from "./features/settings/identity-module";
+import { MachinesModule } from "./features/settings/machines-module";
+import { SystemPermissionsModule } from "./features/settings/system-permissions-module";
+import type { SystemPermissionEntry } from "./features/system-permissions/system-permissions";
+import { ScheduledTasksModule, type ScheduledTaskActions } from "./features/settings/scheduled-tasks-module";
+import { ModelsModule } from "./features/settings/models-module";
+import { CapabilitiesModule, type CapabilityAssistantRequest, type CapabilityTarget } from "./features/settings/capabilities-module";
+import type { CapabilityView } from "./features/settings/capability-views";
+import {
+  SETTINGS_MODULES,
+  type SettingsModuleId,
+} from "./features/settings/settings-helpers";
+import { MocoSettingsRail } from "./features/settings/settings-rail";
+import type { SettingsAssistantEntryIntent } from "./features/settings/settings-assistant-actions";
+import { ConnectionsModule, type ConnectionPrepare } from "./features/settings/connections-module";
+import type { RecentWorkSource } from "./features/settings/recent-work-updates";
+
+export { MocoSettingsRail, SETTINGS_MODULES, type SettingsModuleId };
+
+export function MocoSettingsBoard({
+  module,
+  settings,
+  envs,
+  slots,
+  tickets = [],
+  ticketsLoaded = false,
+  scheduledTaskActions,
+  topics = [],
+  projects = [],
+  topicsLoaded = false,
+  snapshotError = null,
+  onSnapshotRefresh,
+  onTopicRestored,
+  onSettingsUpdated,
+  onDirtyChange,
+  entryIntent,
+  onIntentHandled,
+  capabilities,
+  clientId,
+  capabilitiesLoading = false,
+  capabilitiesError = null,
+  connected = true,
+  capabilityRequestsDisabled = false,
+  capabilityTarget,
+  capabilityView,
+  onCapabilityViewChange,
+  voiceSettingsRequested = false,
+  onCapabilityRequest,
+  onCapabilitiesRefresh,
+  topicId,
+  recentWorkSource,
+  connections,
+  connectionsLoading = false,
+  connectionsError = null,
+  connectionPreparing = false,
+  onConnectionPrepare,
+  onConnectionsRefresh,
+  permissionEntry,
+  onPermissionEntryHandled,
+  onOpenModels,
+}: {
+  module: SettingsModuleId;
+  settings: MocoSettingsView | null;
+  envs: EnvNodeDescriptor[];
+  slots?: SlotSummary;
+  tickets?: TicketCardView[];
+  ticketsLoaded?: boolean;
+  scheduledTaskActions?: ScheduledTaskActions;
+  topics?: TopicSummary[];
+  projects?: Pick<ProjectView, "id" | "name">[];
+  topicsLoaded?: boolean;
+  snapshotError?: string | null;
+  onSnapshotRefresh?: () => Promise<void> | void;
+  onTopicRestored?: (topic: TopicSummary) => void;
+  onSettingsUpdated: (next: MocoSettingsView) => void;
+  onDirtyChange?: (dirty: boolean) => void;
+  entryIntent?: SettingsAssistantEntryIntent | null;
+  onIntentHandled?: (id: string) => void;
+  capabilities?: CapabilitiesWorkspaceSnapshot | null;
+  clientId?: string;
+  capabilitiesLoading?: boolean;
+  capabilitiesError?: string | null;
+  connected?: boolean;
+  capabilityRequestsDisabled?: boolean;
+  capabilityTarget?: CapabilityTarget;
+  capabilityView?: CapabilityView;
+  onCapabilityViewChange?: (view: CapabilityView) => void;
+  voiceSettingsRequested?: boolean;
+  onCapabilityRequest?: CapabilityAssistantRequest;
+  onCapabilitiesRefresh?: () => void;
+  topicId?: string;
+  recentWorkSource?: RecentWorkSource;
+  connections?: ConnectionWorkspaceSnapshot | null;
+  connectionsLoading?: boolean;
+  connectionsError?: string | null;
+  connectionPreparing?: boolean;
+  onConnectionPrepare?: ConnectionPrepare;
+  onConnectionsRefresh?: () => void;
+  permissionEntry?: SystemPermissionEntry | null;
+  onPermissionEntryHandled?: (id: string) => void;
+  onOpenModels?: () => void;
+}) {
+  useI18n();
+  const needsHubSettings = module === "models" || module === "workers" || module === "identity";
+  return (
+    <div className="moco-settings-board" data-settings-module={module} data-moco-navigation-key={`settings:${module}`} data-moco-navigation="content">
+      <div key={module} className="moco-settings-page">
+        {needsHubSettings && !settings && (
+          <div className="moco-settings-form">
+            <Alert status={connected ? "default" : "warning"}>
+              <Alert.Indicator />
+              <Alert.Content>
+                <Alert.Title>{connected ? t("正在读取设置…", "Loading settings…") : t("与主机连接已断开，可在「设备互联」检查连接或断开主机。", "Disconnected from host. Check Device Connections to reconnect or leave.")}</Alert.Title>
+              </Alert.Content>
+              {onSnapshotRefresh && (
+                <Button size="sm" variant="tertiary" onPress={() => void onSnapshotRefresh()}>{t("重试", "Retry")}</Button>
+              )}
+            </Alert>
+          </div>
+        )}
+        {module === "connections" && <ConnectionsModule snapshot={connections ?? null} loading={connectionsLoading} error={connectionsError} connected={connected} preparing={connectionPreparing} onPrepare={onConnectionPrepare ?? (async () => {})} onRefresh={onConnectionsRefresh ?? (() => {})} entryIntent={entryIntent} onIntentHandled={onIntentHandled} />}
+        {module === "capabilities" && <CapabilitiesModule clientId={clientId} snapshot={capabilities ?? null} settings={settings} loading={capabilitiesLoading} error={capabilitiesError} connected={connected} requestsDisabled={capabilityRequestsDisabled} envs={envs} target={capabilityTarget} view={capabilityView} onViewChange={onCapabilityViewChange} voiceSettingsRequested={voiceSettingsRequested} onRequest={onCapabilityRequest ?? (() => {})} onRefresh={onCapabilitiesRefresh ?? (() => {})} onDirtyChange={onDirtyChange} onOpenModels={onOpenModels} />}
+        {module === "models" && settings && (
+          <ModelsModule settings={settings} onSettingsUpdated={onSettingsUpdated} onDirtyChange={onDirtyChange} entryIntent={entryIntent} onIntentHandled={onIntentHandled} />
+        )}
+        {module === "workers" && settings && (
+          <AgentsModule
+            settings={settings}
+            slots={slots}
+            envs={envs}
+            projects={projects}
+            onSettingsUpdated={onSettingsUpdated}
+            onDirtyChange={onDirtyChange}
+          />
+        )}
+        {module === "identity" && settings && (
+          <IdentityModule
+            connected={connected}
+            topicId={topicId}
+            recentWorkSource={recentWorkSource}
+            settings={settings}
+            onSettingsUpdated={onSettingsUpdated}
+            onDirtyChange={onDirtyChange}
+            entryIntent={entryIntent}
+            onIntentHandled={onIntentHandled}
+          />
+        )}
+        {module === "machines" && <MachinesModule envs={envs} entryIntent={entryIntent} onIntentHandled={onIntentHandled} onRoleChanged={onSnapshotRefresh} />}
+        {module === "permissions" && <SystemPermissionsModule envs={envs} connected={connected} entry={permissionEntry} onEntryHandled={onPermissionEntryHandled} />}
+        {module === "schedules" && <ScheduledTasksModule tickets={tickets} loaded={ticketsLoaded} connected={connected} loadError={snapshotError} onRefresh={onSnapshotRefresh} actions={scheduledTaskActions} />}
+        {module === "archives" && <ArchivedConversationsModule topics={topics} projects={projects} loaded={topicsLoaded} connected={connected} loadError={snapshotError} onRefresh={onSnapshotRefresh} onRestored={onTopicRestored} />}
+        {module === "appearance" && <AppearanceModule />}
+      </div>
+    </div>
+  );
+}

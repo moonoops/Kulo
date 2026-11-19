@@ -1,0 +1,25 @@
+.moco-ui[data-custom-appearance],
+html[data-custom-appearance] .moco-ui {
+  font-family: var(--moco-ui-font);
+}
+
+html[data-custom-appearance] .moco-chat-markdown,
+html[data-custom-appearance] .moco-chat-user-text,
+html[data-custom-appearance] .mc-user-message,
+html[data-custom-appearance] .moco-composer-input {
+  font-family: var(--moco-chat-font);
+}
+
+html[data-custom-appearance] .moco-chat-inline-code,
+html[data-custom-appearance] .moco-chat-code-pre,
+html[data-custom-appearance] .moco-ui .font-mono {
+  font-family: var(--moco-code-font);
+}
+
+.moco-appearance-customization-card { min-width: 0; gap: var(--moco-form-gap); }
+.moco-appearance-customization-preview { display: flex; min-width: 0; flex-direction: column; gap: var(--moco-control-gap); padding: var(--moco-list-padding-block) var(--moco-list-padding-inline); border-radius: var(--radius-xl); background: var(--surface); color: var(--foreground); font-family: var(--moco-ui-font); }
+.moco-appearance-customization-preview__chat { padding: var(--moco-space-2) var(--moco-space-3); border-radius: var(--radius-lg); background: var(--default); color: var(--default-foreground); font-family: var(--moco-chat-font); overflow-wrap: anywhere; }
+.moco-appearance-customization-preview__code { margin: 0; padding: var(--moco-space-2) var(--moco-space-3); border-radius: var(--radius-lg); background: var(--surface-secondary); color: var(--foreground); font-family: var(--moco-code-font); white-space: pre-wrap; overflow-wrap: anywhere; }
+.moco-appearance-customization-preview__input { padding: var(--moco-space-2) var(--moco-space-3); border-radius: var(--radius-lg); background: var(--field-background); color: var(--field-placeholder); }
+.moco-appearance-customization-preview__accent { align-self: flex-end; padding: var(--moco-space-1) var(--moco-space-3); border-radius: var(--radius-lg); background: var(--accent); color: var(--accent-foreground); }
+.moco-appearance-customization-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--moco-control-gap); }

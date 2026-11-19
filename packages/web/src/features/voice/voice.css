@@ -1,0 +1,18 @@
+@reference "../../moco.css";
+
+.moco-voice-settings { display: flex; min-width: 0; flex-direction: column; gap: var(--moco-space-6); container: moco-voice-settings / inline-size; }
+.moco-voice-settings-header-actions { display: flex; flex: none; align-items: center; gap: var(--moco-space-2); margin-left: auto; }
+.moco-voice-call { display: flex; min-width: 0; width: 100%; flex-direction: column; gap: var(--moco-space-2); padding: 0 var(--moco-space-3) var(--moco-space-2); color: var(--foreground); }
+.moco-voice-call-heading { display: flex; min-width: 0; width: 100%; align-items: center; gap: var(--moco-space-2); }
+.moco-voice-call-topic { display: flex; flex: 1; min-width: 0; height: 44px; min-height: 44px; justify-content: flex-start; align-items: center; gap: var(--moco-space-2); padding: 0; font-size: var(--moco-text-body); line-height: var(--moco-leading-body); }
+.moco-voice-call-topic > svg { flex: none; width: 16px; height: 16px; }
+.moco-voice-call-topic-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.moco-voice-call-duration { flex: none; color: var(--muted); font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); font-variant-numeric: tabular-nums; }
+.moco-voice-call-status { max-width: 100%; margin: 0; color: var(--muted); font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); text-align: center; overflow-wrap: anywhere; }
+.moco-voice-call-error { max-width: 100%; margin: 0; color: var(--danger); font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); text-align: center; overflow-wrap: anywhere; }
+.moco-voice-call-controls { display: flex; align-items: center; justify-content: center; gap: var(--moco-space-4); }
+.moco-voice-call-circle { flex: none; width: 44px; height: 44px; min-width: 44px; min-height: 44px; padding: 0; }
+.moco-voice-call-circle > svg { width: 22px; height: 22px; }
+.moco-voice-transcript-expanded { display: flex; align-items: flex-end; flex-direction: column; max-width: min(440px, 100%); padding: var(--moco-space-2) 0; }
+.moco-voice-transcript-expanded > p { margin: 0; font-size: var(--moco-text-body); line-height: var(--moco-leading-body); white-space: pre-wrap; overflow-wrap: anywhere; }
+.moco-voice-message-action-error { max-width: 280px; color: var(--danger); font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); overflow-wrap: anywhere; }

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/moco-icon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <title>Moco · SuperAgent Workbench</title>
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem("moco:appearance");
+          var mode = "dark";
+          if (raw) {
+            if (raw === "light" || raw === "dark" || raw === "system") {
+              mode = raw;
+            } else {
+              var parsed = JSON.parse(raw);
+              if (parsed && (parsed.mode === "light" || parsed.mode === "dark" || parsed.mode === "system")) {
+                mode = parsed.mode;
+              }
+            }
+          }
+          var resolved =
+            mode === "system"
+              ? window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light"
+              : mode;
+          var root = document.documentElement;
+          root.dataset.theme = resolved;
+          root.classList.remove("light", "dark");
+          root.classList.add(resolved);
+        } catch (_e) {}
+      })();
+    </script>
+  </head>
+  <body class="moco-ui bg-background text-foreground antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

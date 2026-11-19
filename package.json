@@ -1,0 +1,46 @@
+{
+  "name": "moco-monorepo",
+  "version": "0.1.0",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "description": "Moco: A self-hosted, always-on personal agent across devices",
+  "type": "module",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=22.20.0"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:hindsight": "uv run --project integrations/hindsight --extra test pytest integrations/hindsight/tests -q",
+    "dev": "pnpm build && node packages/cli/dist/bin.js dev",
+    "web:dev": "pnpm --filter @moco/web dev",
+    "hub": "pnpm build && node packages/cli/dist/bin.js hub",
+    "env": "pnpm build && node packages/cli/dist/bin.js env",
+    "chat": "pnpm build && node packages/cli/dist/bin.js chat",
+    "desktop:dev": "pnpm build && node packages/desktop/scripts/dev.mjs",
+    "desktop:package": "pnpm build && node packages/desktop/scripts/package.mjs",
+    "desktop:install": "pnpm build && node packages/desktop/scripts/install.mjs"
+  },
+  "devDependencies": {
+    "@earendil-works/chord": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-durable": "1.5.2",
+    "@earendil-works/pi-env": "1.5.2",
+    "@earendil-works/pi-schema": "1.5.2",
+    "@moco/cli": "workspace:*",
+    "@moco/env": "workspace:*",
+    "@moco/hub": "workspace:*",
+    "@moco/protocol": "workspace:*",
+    "@moco/recovery": "workspace:*",
+    "@types/node": "^22.15.0",
+    "@types/ws": "^8.18.1",
+    "acp-kernel": "0.0.101",
+    "esbuild": "0.28.2",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.3",
+    "ws": "^8.18.2"
+  }
+}

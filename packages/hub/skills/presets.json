@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "presets": [
+    {
+      "id": "browser-automation",
+      "directory": "browser-automation",
+      "audiences": ["chat", "worker"],
+      "enabled": true,
+      "condition": { "capability": "agent-browser" },
+      "upstream": { "repository": "vercel-labs/agent-browser", "ref": "1cc19526f3641c8543d55aa6700e7c55b37ac356", "version": "0.43.0", "sourcePath": "skill-data/core", "license": "Apache-2.0" }
+    },
+    {
+      "id": "desktop-automation",
+      "directory": "desktop-automation",
+      "audiences": ["chat", "worker"],
+      "enabled": true,
+      "condition": { "capability": "agent-desktop" },
+      "upstream": { "repository": "vercel-labs/agent-desktop", "ref": "b0b7277bea09b770ef9d1fb45aad667bc432cd57", "version": "1.3.1", "sourcePath": "skills/agent-desktop", "license": "Apache-2.0" }
+    },
+    {
+      "id": "desktop-macos",
+      "directory": "desktop-macos",
+      "audiences": ["chat", "worker"],
+      "enabled": true,
+      "condition": { "capability": "agent-desktop", "platform": "darwin" },
+      "upstream": { "repository": "vercel-labs/agent-desktop", "ref": "b0b7277bea09b770ef9d1fb45aad667bc432cd57", "version": "1.3.1", "sourcePath": "skills/agent-desktop-macos", "license": "Apache-2.0" }
+    },
+    {
+      "id": "desktop-linux",
+      "directory": "desktop-linux",
+      "audiences": ["chat", "worker"],
+      "enabled": true,
+      "condition": { "capability": "agent-desktop", "platform": "linux" },
+      "upstream": { "repository": "vercel-labs/agent-desktop", "ref": "b0b7277bea09b770ef9d1fb45aad667bc432cd57", "version": "1.3.1", "sourcePath": "skills/agent-desktop-linux", "license": "Apache-2.0" }
+    },
+    {
+      "id": "desktop-windows",
+      "directory": "desktop-windows",
+      "audiences": ["chat", "worker"],
+      "enabled": true,
+      "condition": { "capability": "agent-desktop", "platform": "win32" },
+      "upstream": { "repository": "vercel-labs/agent-desktop", "ref": "b0b7277bea09b770ef9d1fb45aad667bc432cd57", "version": "1.3.1", "sourcePath": "skills/agent-desktop-windows", "license": "Apache-2.0" }
+    },
+    {
+      "id": "vercel-react-best-practices",
+      "directory": "vercel-react-best-practices",
+      "audiences": ["worker"],
+      "enabled": true,
+      "condition": { "projectFramework": "react" },
+      "upstream": { "repository": "vercel-labs/agent-skills", "ref": "1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62", "sourcePath": "skills/react-best-practices", "license": "MIT" }
+    },
+    {
+      "id": "vercel-composition-patterns",
+      "directory": "vercel-composition-patterns",
+      "audiences": ["worker"],
+      "enabled": true,
+      "condition": { "projectFramework": "react" },
+      "upstream": { "repository": "vercel-labs/agent-skills", "ref": "1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62", "sourcePath": "skills/composition-patterns", "license": "MIT" }
+    },
+    {
+      "id": "web-design-guidelines",
+      "directory": "web-design-guidelines",
+      "audiences": ["worker"],
+      "enabled": true,
+      "condition": { "projectFramework": "react" },
+      "upstream": { "repository": "vercel-labs/agent-skills", "ref": "1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62", "sourcePath": "skills/web-design-guidelines", "license": "MIT" }
+    }
+  ]
+}

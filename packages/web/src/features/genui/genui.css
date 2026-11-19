@@ -1,0 +1,100 @@
+@reference "../../moco.css";
+
+.moco-genui-card {
+  width: 100%;
+  max-width: 560px;
+  min-width: 0;
+  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  border-radius: 16px;
+  padding: var(--moco-space-3);
+  gap: var(--moco-space-3);
+  color: var(--foreground);
+}
+
+.moco-genui-card[data-wide="true"] { max-width: 780px; }
+.moco-genui-card[data-enter="true"] { animation: moco-genui-ready 180ms ease-out both; }
+.moco-genui-shell { display: flex; flex-direction: column; min-width: 0; gap: var(--moco-space-3); }
+.moco-genui-header { display: flex; flex-direction: row; align-items: center; gap: var(--moco-space-2); }
+.moco-genui-title { flex: 1; min-width: 0; font-size: var(--moco-text-body); line-height: var(--moco-leading-body); font-weight: 600; overflow-wrap: anywhere; }
+.moco-genui-status { flex: 0 0 auto; }
+.moco-genui-toggle-heading { flex: 0 0 auto; margin: 0; }
+.moco-genui-content { min-width: 0; gap: var(--moco-space-3); }
+.moco-genui-section { padding: 0; gap: var(--moco-space-2); border-radius: 0; }
+.moco-genui-section-header { padding: 0; gap: var(--moco-space-1); }
+.moco-genui-section-content { padding: 0; min-width: 0; gap: var(--moco-form-gap); }
+.moco-genui-section-title { font-size: var(--moco-text-body); line-height: var(--moco-leading-body); }
+.moco-genui-section-description { font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); }
+.moco-genui-stack { display: flex; flex-direction: column; min-width: 0; gap: var(--moco-form-gap); }
+.moco-genui-stack[data-gap="sm"] { gap: var(--moco-space-2); }
+.moco-genui-stack[data-gap="lg"] { gap: var(--moco-space-6); }
+.moco-genui-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--moco-form-gap); min-width: 0; }
+.moco-genui-grid[data-columns="1"] { grid-template-columns: minmax(0, 1fr); }
+.moco-genui-grid[data-columns="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.moco-genui-text { margin: 0; font-size: var(--moco-text-body); line-height: var(--moco-leading-body); overflow-wrap: anywhere; white-space: pre-wrap; }
+.moco-genui-text[data-tone="muted"] { color: var(--muted); }
+.moco-genui-text[data-size="sm"] { font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); }
+.moco-genui-text[data-size="lg"] { font-size: var(--moco-text-heading); line-height: var(--moco-leading-heading); }
+.moco-genui-metric { display: grid; gap: var(--moco-space-1); min-width: 0; }
+.moco-genui-label { font-size: var(--moco-text-body); line-height: var(--moco-leading-body); color: var(--muted); }
+.moco-genui-metric-value { font-size: var(--moco-text-title); line-height: var(--moco-leading-title); font-weight: 600; letter-spacing: -.04em; }
+.moco-genui-metric-unit { font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); margin-inline-start: var(--moco-space-1); color: var(--muted); font-weight: 400; letter-spacing: normal; }
+.moco-genui-field { width: 100%; min-width: 0; }
+.moco-genui-choice { display: flex; flex-direction: column; width: 100%; gap: var(--moco-space-2); }
+.moco-genui-option { border: 1px solid var(--border); border-radius: 12px; margin: 0; padding: 0; min-width: 0; transition: background-color 100ms ease-out; }
+.moco-genui-option[data-selected="true"] { background: var(--accent-soft); }
+.moco-genui-option-content { display: flex; align-items: center; gap: var(--moco-control-gap); width: 100%; min-height: 44px; padding: var(--moco-space-2) var(--moco-space-3); }
+.moco-genui-option-text { display: flex; flex-direction: column; gap: var(--moco-space-1); min-width: 0; }
+.moco-genui-option-label { font-size: var(--moco-text-body); font-weight: 500; line-height: var(--moco-leading-body); }
+.moco-genui-option-description { font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); color: var(--muted); }
+.moco-genui-toggle-content { display: flex; align-items: center; gap: var(--moco-control-gap); min-height: var(--moco-control-height); }
+.moco-genui-slider-label { display: flex; align-items: center; justify-content: space-between; gap: var(--moco-space-3); }
+.moco-genui-action { align-self: flex-start; }
+.moco-genui-data { display: flex; flex-direction: column; min-width: 0; gap: var(--moco-space-2); }
+.moco-genui-data-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--moco-space-3); }
+.moco-genui-data-actions { display: flex; align-items: center; gap: var(--moco-control-gap); margin-inline-start: auto; }
+.moco-genui-table { min-width: 0; max-width: 100%; }
+.moco-genui-table-dialog { width: min(1040px, calc(100vw - 32px)); max-width: 1040px; }
+.moco-genui-chart { margin: 0; display: flex; flex-direction: column; gap: var(--moco-space-2); min-width: 0; }
+.moco-genui-chart-image { width: 100%; height: auto; max-height: 180px; color: var(--accent); }
+.moco-genui-chart-baseline { stroke: var(--border); stroke-width: 1; }
+.moco-genui-chart-labels { display: flex; gap: var(--moco-space-1); color: var(--muted); font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); }
+.moco-genui-chart-labels > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: center; }
+.moco-genui-result { display: flex; flex-direction: column; gap: var(--moco-space-2); }
+.moco-genui-result-summary { margin: 0; font-size: var(--moco-text-body); line-height: var(--moco-leading-body); white-space: pre-wrap; overflow-wrap: anywhere; }
+.moco-genui-result-values { margin: 0; display: grid; grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr); gap: var(--moco-space-2) var(--moco-space-4); font-size: var(--moco-text-body); line-height: var(--moco-leading-body); }
+.moco-genui-result-row { display: contents; }
+.moco-genui-result-key { color: var(--muted); }
+.moco-genui-result-value { margin: 0; overflow-wrap: anywhere; }
+.moco-genui-feedback { display: flex; flex-direction: column; gap: var(--moco-space-2); font-size: var(--moco-text-body); line-height: var(--moco-leading-body); }
+.moco-genui-error { margin: 0; color: var(--danger); font-size: var(--moco-text-body); line-height: var(--moco-leading-body); }
+.moco-genui-note { margin: 0; color: var(--muted); font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); }
+.moco-genui-footer { display: flex; flex-wrap: wrap; align-items: center; gap: var(--moco-space-2); }
+.moco-genui-fallback { margin: 0; font-size: var(--moco-text-body); line-height: var(--moco-leading-body); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.moco-genui-code-fallback { @apply scrollbar; margin: 0; max-height: 360px; overflow: auto; border-radius: 12px; padding: var(--moco-space-3); background: var(--surface-secondary); font-size: var(--moco-text-body); line-height: var(--moco-leading-body); white-space: pre; }
+.moco-genui-disclosure-body { padding: 0; min-width: 0; }
+.moco-genui-panel > .disclosure__body { padding: 0; }
+.moco-genui-disclosure-trigger { display: flex; align-items: center; justify-content: space-between; width: 100%; gap: var(--moco-space-3); text-align: start; }
+.moco-genui-disclosure-label { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+.moco-genui-tabs { min-width: 0; }
+.moco-genui-code { min-width: 0; }
+
+@keyframes moco-genui-ready { from { opacity: 0; } to { opacity: 1; } }
+
+@media (max-width: 480px) {
+  .moco-genui-grid[data-columns="3"], .moco-genui-grid { grid-template-columns: minmax(0, 1fr); }
+  .moco-genui-header { gap: var(--moco-space-2); }
+  .moco-genui-result-values { grid-template-columns: minmax(70px, 1fr) minmax(0, 2fr); gap: var(--moco-space-2) var(--moco-space-4); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .moco-genui-card[data-enter="true"] { animation: none; }
+  .moco-genui-option { transition: none; }
+}
+
+@media (pointer: coarse) {
+  .moco-genui-card .button, .moco-genui-table-dialog .button, .moco-genui-control { min-width: 44px; min-height: 44px; }
+  .moco-genui-table-check { min-width: 44px; min-height: 44px; }
+}
+
+:root[data-reduce-motion="true"] .moco-genui-card[data-enter="true"] { animation: none; }
+:root[data-reduce-motion="true"] .moco-genui-option { transition: none; }

@@ -1,0 +1,56 @@
+.moco-mobile-pairing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--moco-space-4);
+  min-width: 0;
+}
+
+.moco-mobile-pairing-qr {
+  display: flex;
+  justify-content: center;
+  align-self: center;
+  width: min(100%, 280px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: white;
+}
+
+.moco-mobile-pairing-qr svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.moco-mobile-pairing-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--moco-space-2);
+  color: var(--muted);
+  font-size: var(--moco-text-caption);
+  line-height: var(--moco-leading-caption);
+}
+
+.moco-mobile-pairing-status > span:last-child {
+  white-space: nowrap;
+}
+
+.moco-mobile-pairing-network {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--moco-space-2);
+  color: var(--muted);
+  font-size: var(--moco-text-caption);
+  line-height: var(--moco-leading-caption);
+}
+
+.moco-mobile-pairing-actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--moco-space-2);
+}

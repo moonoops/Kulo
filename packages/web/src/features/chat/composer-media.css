@@ -1,0 +1,65 @@
+.moco-composer-media-list { display: flex; flex-wrap: wrap; gap: var(--moco-space-2); padding: var(--moco-space-1); }
+.moco-composer-media-item { position: relative; display: grid; width: 70px; aspect-ratio: 1; min-width: 0; flex: none; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.moco-composer-media-item[data-status="error"] { border-color: var(--danger); }
+.moco-composer-media-item .moco-composer-thumbnail { width: 70px; height: 70px; border-radius: 12px; }
+.moco-composer-media-item .moco-composer-media-info { position: absolute; inset-inline: 0; bottom: 0; gap: 3px; padding: var(--moco-space-1) 5px; background: var(--overlay); }
+.moco-composer-media-item[data-kind="image"] .moco-composer-media-name,
+.moco-composer-media-item[data-kind="image"][data-status="ready"] .moco-composer-media-info { display: none; }
+.moco-composer-media-item[data-status="ready"] .moco-composer-media-status { display: none; }
+.moco-composer-media-item .moco-composer-attachment-action { position: absolute; top: 3px; right: 3px; width: 24px; height: 24px; min-width: 24px; min-height: 24px; }
+.moco-composer-media-item .moco-composer-retry-upload { width: 28px; height: 28px; min-width: 28px; min-height: 28px; }
+.moco-composer-media-item[data-status="error"] { display: flex; flex-wrap: wrap; width: min(100%, 240px); aspect-ratio: auto; gap: 6px; padding: 6px; }
+.moco-composer-media-item[data-status="error"] .moco-composer-media-info { position: static; flex: 1; min-width: 64px; padding: 0; background: transparent; }
+.moco-composer-media-item[data-status="error"] .moco-composer-attachment-action { position: static; width: 28px; height: 28px; min-width: 28px; min-height: 28px; }
+.moco-composer-media-info { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: var(--moco-space-1); overflow-wrap: anywhere; }
+.moco-composer-media-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); }
+.moco-composer-thumbnail { width: 44px; height: 44px; flex: none; padding: 0; overflow: hidden; border-radius: 8px; }
+.moco-composer-thumbnail img { width: 100%; height: 100%; object-fit: cover; }
+.moco-composer-type { display: grid; width: 70px; height: 70px; flex: none; place-items: center; padding: 0 8px 22px 0; border-radius: 12px; background: var(--surface); color: var(--muted); font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); }
+.moco-composer-input {
+  max-height: 200px;
+  min-height: var(--moco-control-height);
+  padding-block: calc((var(--moco-control-height) - 1lh) / 2);
+  /* The capsule provides the shared surface and focus ring for all input states. */
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+.moco-composer-input:placeholder-shown {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.moco-composer-input-row > .button,
+.moco-composer-voice-control,
+.moco-composer-microphone { height: var(--moco-control-height); }
+.moco-composer-button { width: var(--moco-control-height); min-width: var(--moco-control-height); height: var(--moco-control-height); flex-shrink: 0; }
+.moco-composer-upload-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; flex: none; }
+.moco-composer-voice-status { display: flex; align-items: center; gap: var(--moco-control-gap); min-width: 0; padding: var(--moco-space-1) var(--moco-space-3); font-size: var(--moco-text-body); line-height: var(--moco-leading-body); }
+.moco-composer-voice-status > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.moco-composer-voice-control { display: flex; align-items: center; gap: var(--moco-control-gap); flex: none; }
+.moco-composer-input-row[data-voice-active] { align-items: center; flex-wrap: nowrap; }
+.moco-composer-waveform { min-width: 0; height: 32px; flex: 1; color: var(--muted); }
+.moco-composer-waveform line { stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; }
+.moco-composer-recording-time { flex: none; color: var(--muted); font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.moco-composer-microphone { transition-property: background-color, color, box-shadow, transform; }
+.moco-composer-legacy-attachments { display: flex; min-width: 0; width: 100%; flex-direction: column; gap: var(--moco-space-2); }
+@media (max-width: 420px) {
+  .moco-composer-input-row { flex-wrap: wrap; }
+  .moco-composer-input-row .moco-composer-input { order: -1; flex-basis: 100%; }
+  .moco-composer-voice-control { margin-inline-start: auto; }
+  .moco-composer-input-row > .button:last-child { margin-inline-start: auto; }
+  .moco-composer-voice-control + .button:last-child { margin-inline-start: 0; }
+}
+@media (pointer: coarse) { .moco-composer-media-item > .button { min-width: 44px; min-height: 44px; } }
+@media (pointer: coarse) {
+  .moco-composer-media-item { display: flex; width: auto; aspect-ratio: auto; gap: var(--moco-space-1); border: 0; overflow: visible; background: transparent; }
+  .moco-composer-type { border: 1px solid var(--border); }
+  .moco-composer-media-item .moco-composer-media-info { inset-inline-end: 48px; }
+  .moco-composer-media-item .moco-composer-attachment-action,
+  .moco-composer-media-item .moco-composer-retry-upload { position: static; width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+  .moco-composer-media-item[data-status="error"] { width: min(100%, 280px); border: 1px solid var(--danger); }
+  .moco-composer-input-row > .button, .moco-composer-microphone { min-width: 44px; min-height: 44px; }
+}

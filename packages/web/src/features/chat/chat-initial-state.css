@@ -1,0 +1,64 @@
+.moco-conversation-scene {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.moco-conversation-transcript,
+.moco-conversation-history {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.moco-conversation-history[hidden] { display: none; }
+.moco-conversation-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: var(--moco-conversation-width);
+  margin-inline: auto;
+  padding: 24px 16px;
+}
+
+.moco-conversation-scene[data-intro] > .moco-conversation-composer {
+  transform: translateY(var(--moco-intro-offset, 0px));
+}
+
+.moco-conversation-welcome {
+  position: absolute;
+  inset-inline: 16px;
+  bottom: calc(100% + 16px);
+  text-align: center;
+  pointer-events: none;
+}
+
+.moco-conversation-welcome > .moco-page-title { margin: 0; }
+
+.moco-conversation-recommendations {
+  position: absolute;
+  inset-inline: 16px;
+  top: calc(100% + 4px);
+}
+
+.moco-recommended-tasks { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--moco-control-gap); }
+.moco-conversation-welcome[data-exiting],
+.moco-conversation-recommendations[data-exiting] { animation: moco-conversation-welcome-out 140ms ease-out both; }
+
+@keyframes moco-conversation-welcome-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .moco-conversation-welcome[data-exiting], .moco-conversation-recommendations[data-exiting] { animation: none; opacity: 0; }
+}
+
+:root[data-reduce-motion="true"] .moco-conversation-welcome[data-exiting],
+:root[data-reduce-motion="true"] .moco-conversation-recommendations[data-exiting] { animation: none; opacity: 0; }

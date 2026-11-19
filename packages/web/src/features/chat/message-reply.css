@@ -1,0 +1,9 @@
+.moco-message-reply { min-width: 0; max-width: min(100%, 480px); padding: var(--moco-space-2) var(--moco-space-3); border-inline-start: 3px solid var(--accent); border-radius: 4px 12px 12px 4px; background: var(--surface-secondary); text-align: start; }
+.moco-message-reply-author { display: block; color: var(--foreground); font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); font-weight: 500; }
+.moco-message-reply-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: var(--moco-space-1) 0 0; color: var(--muted); font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); overflow-wrap: anywhere; }
+.moco-message-reply-trigger { display: flex; flex-direction: column; align-items: flex-start; gap: 0; width: 100%; min-width: 0; height: auto; padding: 0; text-align: start; white-space: normal; }
+.moco-chat-content[data-role="user"] > .moco-message-reply { align-self: flex-end; max-width: 82%; }
+.moco-composer-reply { display: flex; align-items: flex-start; gap: var(--moco-control-gap); padding: var(--moco-space-1); }
+.moco-composer-reply > .moco-message-reply { flex: 1; max-width: none; background: var(--surface); }
+.moco-composer-reply-cancel { flex: none; }
+@media (pointer: coarse) { .moco-composer-reply-cancel, .moco-message-reply-trigger { min-width: 44px; min-height: 44px; } }

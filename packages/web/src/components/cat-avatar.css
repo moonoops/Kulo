@@ -1,0 +1,28 @@
+.moco-cat-avatar {
+  position: relative;
+  display: inline-block;
+  width: 48px;
+  height: 48px;
+  flex: none;
+  overflow: hidden;
+  border-radius: 20%;
+  background-image: url("/mascots/cat/paper.webp");
+  background-size: cover;
+  isolation: isolate;
+  contain: layout paint;
+}
+
+.moco-cat-avatar-sprite {
+  position: absolute;
+  display: block;
+  background-size: 400% 400%;
+  background-repeat: no-repeat;
+}
+
+.moco-cat-avatar[data-asset-state="error"] {
+  background-image: url("/moco-icon.png");
+}
+
+.moco-cat-avatar[data-asset-state="error"] .moco-cat-avatar-sprite {
+  visibility: hidden;
+}
