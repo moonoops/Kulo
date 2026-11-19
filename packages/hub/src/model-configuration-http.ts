@@ -22,19 +22,19 @@ export async function handleModelConfigurationHttp(service: MocoModelConfigurati
       send(res, 200, await service.prepare(body as unknown as ModelConfigurationPrepareRequest)); return true;
     }
     if (path === "/draft" && req.method === "PUT") {
-      allowed(body, ["clientId", "expectedRevision", "provider", "selectedModelIds", "defaultModelId"]);
+      allowed(body, ["clientId", "draftId", "expectedRevision", "provider", "selectedModelIds", "defaultModelId"]);
       send(res, 200, await service.updateDraft(body as unknown as ModelConfigurationUpdateRequest)); return true;
     }
     if (path === "/credential" && req.method === "POST") {
-      allowed(body, ["clientId", "expectedRevision", "apiKey"]);
+      allowed(body, ["clientId", "draftId", "expectedRevision", "apiKey"]);
       send(res, 200, await service.supplyCredential(body as unknown as Parameters<MocoModelConfiguration["supplyCredential"]>[0])); return true;
     }
     if (path === "/discover" && req.method === "POST") {
-      allowed(body, ["clientId", "expectedRevision"]);
-      send(res, 200, await service.discover(body.clientId as string, body.expectedRevision as number)); return true;
+      allowed(body, ["clientId", "draftId", "expectedRevision"]);
+      send(res, 200, await service.discover(body.clientId as string, body.expectedRevision as number, body.draftId as string | undefined)); return true;
     }
     if (path === "/test" && req.method === "POST") {
-      allowed(body, ["clientId", "expectedRevision", "modelId", "commandId"]);
+      allowed(body, ["clientId", "draftId", "expectedRevision", "modelId", "commandId"]);
       const controller = new AbortController();
       const closed = () => { if (!res.writableEnded) controller.abort(); };
       res.once("close", closed);
@@ -43,12 +43,12 @@ export async function handleModelConfigurationHttp(service: MocoModelConfigurati
       return true;
     }
     if (path === "/save" && req.method === "POST") {
-      allowed(body, ["clientId", "expectedRevision", "commandId"]);
+      allowed(body, ["clientId", "draftId", "expectedRevision", "commandId"]);
       send(res, 200, await service.save(body as unknown as Parameters<MocoModelConfiguration["save"]>[0])); return true;
     }
     if (path === "/draft" && req.method === "DELETE") {
-      allowed(body, ["clientId", "expectedRevision"]);
-      await service.discard(body.clientId as string, body.expectedRevision as number); send(res, 200, { removed: true }); return true;
+      allowed(body, ["clientId", "draftId", "expectedRevision"]);
+      await service.discard(body.clientId as string, body.expectedRevision as number, body.draftId as string | undefined); send(res, 200, { removed: true }); return true;
     }
     send(res, 404, { error: "模型配置操作不存在。" }); return true;
   } catch (cause) {

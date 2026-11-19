@@ -7,7 +7,7 @@ import { pauseOtherMedia } from "../chat/media-message";
 
 export interface VoiceSpeechState { key: string; phase: "loading" | "playing" | "error"; error?: string }
 export function voiceTtsFingerprint(snapshot: VoiceSnapshot): string {
-  return JSON.stringify([snapshot.revision, snapshot.tts.provider, snapshot.tts.modelId, snapshot.tts.voice, snapshot.tts.speed]);
+  return JSON.stringify([snapshot.revision, snapshot.tts.providerId ?? "", snapshot.tts.provider ?? "", snapshot.tts.modelId, snapshot.tts.voice, snapshot.tts.speed]);
 }
 export interface VoiceWorkspace {
   clientId: string;

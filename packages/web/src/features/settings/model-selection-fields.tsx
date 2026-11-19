@@ -80,8 +80,8 @@ export function ModelSelectionFields({
     </ComboBox>
     <Select
       aria-label={t(`${prefix}思考强度`, `${prefix}thinking effort`)} placeholder={t("未选择", "Not selected")} variant="secondary" fullWidth
-      value={efforts.some((item) => item.value === thinkingLevel) ? thinkingLevel : null}
-      className={effortFieldClass} isDisabled={isDisabled || efforts.length <= 1}
+      value={group && model && efforts.some((item) => item.value === thinkingLevel) ? thinkingLevel : null}
+      className={effortFieldClass} isDisabled={isDisabled || !group || !model || efforts.length <= 1}
       onChange={(key) => {
         if (key !== null && key !== thinkingLevel) onThinkingChange(String(key));
       }}

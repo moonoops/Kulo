@@ -181,7 +181,7 @@ describe("shared image configuration workspace", () => {
     expect((await f.capabilities.snapshot()).capabilities).toEqual([]);
   });
 
-  it("requires rediscovery after an origin changes and keeps model import disabled by default", async () => {
+  it("requires rediscovery after an origin changes and enables task generation by default", async () => {
     const f = await fixture();
     const found = await f.setup.discover("client-a");
     const request = { clientId: "client-a", discoveryId: found.id, candidateIds: [found.candidates[0]!.id], commandId: "import-origin" };
@@ -191,11 +191,11 @@ describe("shared image configuration workspace", () => {
     f.state.providers[0]!.baseUrl = found.candidates[0]!.baseUrl;
     const imported = await f.setup.importModels(request);
     expect(imported.added).toHaveLength(1);
-    expect(imported.added[0]).toMatchObject({ allowTaskGeneration: false });
+    expect(imported.added[0]).toMatchObject({ allowTaskGeneration: true });
     expect(await f.setup.importModels(request)).toEqual(imported);
-    const later = await f.setup.importModels({ ...request, commandId: "import-again", allowTaskGeneration: true });
+    const later = await f.setup.importModels({ ...request, commandId: "import-again", allowTaskGeneration: false });
     expect(later.added[0]!.id).toBe(imported.added[0]!.id);
-    expect(later.added[0]!.allowTaskGeneration).toBe(false);
+    expect(later.added[0]!.allowTaskGeneration).toBe(true);
     expect((await f.setup.workspace("client-a")).discovery!.candidates[0]!.alreadyAdded).toBe(true);
     expect((await f.capabilities.snapshot()).capabilities).toHaveLength(1);
     expect(await f.capabilities.listInputs("client-a")).toEqual([]);

@@ -128,7 +128,7 @@ export function clampModelEffort(effort: ThinkingEffort, model: ProviderModelIte
 }
 
 export function selectedDefaultProvider(model: MocoSettingsView["blocks"]["model"]["value"]): string {
-  return model.defaultProvider ?? (model.defaultModel ? "moco-gateway" : "");
+  return model.defaultProvider ?? (model.defaultModel && !model.gatewayDisabled ? "moco-gateway" : "");
 }
 
 export const CUSTOM_API_OPTIONS: Array<{ value: CustomProviderApi; label: string }> = [

@@ -276,4 +276,60 @@ describe("voice settings and capability isolation", () => {
       expect.any(Object),
     );
   });
+
+  it("starts with truly empty TTS and Live selections and rejects enabling without a model", async () => {
+    const f = await fixture();
+    const snap = await f.service.snapshot();
+    expect(snap.tts).toMatchObject({ enabled: false, modelId: "", voice: "", speed: "normal", hasCredential: false });
+    expect(snap.tts.provider).toBeUndefined();
+    expect(snap.call).toMatchObject({ enabled: false, modelId: "", voice: "", hasCredential: false, status: "unverified" });
+    expect(snap.call.provider).toBeUndefined();
+
+    await expect(f.service.configure({ expectedRevision: 0, tts: { enabled: true, modelId: "", voice: "", speed: "normal" } }))
+      .rejects.toMatchObject({ status: 409, code: "voice_model_required" });
+    await expect(f.service.configure({ expectedRevision: 0, call: { enabled: true, modelId: "", voice: "" } }))
+      .rejects.toMatchObject({ status: 409, code: "voice_model_required" });
+    await expect(f.service.synthesize("试听", undefined, { preview: true }))
+      .rejects.toMatchObject({ status: 409, code: "voice_model_required" });
+    await expect(f.service.liveConfig({ allowDisabled: true }))
+      .rejects.toMatchObject({ status: 409, code: "voice_model_required" });
+  });
+
+  it("migrates legacy phantom defaults to empty while preserving legacy standalone credentials", async () => {
+    const f = await fixture();
+    await f.harness.commit(async (tx) => {
+      const doc = await tx.doc(MocoVoiceDoc);
+      delete doc.defaultsMigratedV2;
+      doc.tts = { enabled: false, provider: "minimax-cn", modelId: "speech-2.8-turbo", voice: "male-qn-qingse", speed: "fast" };
+      doc.call = { enabled: false, provider: "openai", modelId: "gpt-live-1", voice: "marin", status: "unverified" };
+    }, context);
+    await f.service.initialize({ prepareAsr: false });
+    const migrated = await f.service.snapshot();
+    expect(migrated.tts).toMatchObject({ enabled: false, modelId: "", voice: "", speed: "fast" });
+    expect(migrated.tts.provider).toBeUndefined();
+    expect(migrated.call).toMatchObject({ enabled: false, modelId: "", voice: "" });
+    expect(migrated.call.provider).toBeUndefined();
+  });
+
+  it("auto-binds provider TTS/Live models while keeping switches off and clears deleted bindings", async () => {
+    const f = await fixture();
+    const changed = await f.service.syncProviderModels([
+      { purpose: "tts", providerId: "api-unauth", modelId: "tts-unauth", protocolAdapter: "openai-speech", voices: ["echo"], authenticated: false },
+      { purpose: "tts", providerId: "api-auth", modelId: "tts-auth", protocolAdapter: "openai-speech", voices: ["nova", "alloy"], authenticated: true },
+      { purpose: "live", providerId: "api-auth", modelId: "live-auth", protocolAdapter: "openai-realtime", voices: ["marin"], authenticated: true },
+    ]);
+    expect(changed).toBe(true);
+    const bound = await f.service.snapshot();
+    expect(bound.tts).toMatchObject({ enabled: false, provider: "openai", providerId: "api-auth", modelId: "tts-auth", voice: "nova" });
+    expect(bound.call).toMatchObject({ enabled: false, provider: "openai", providerId: "api-auth", modelId: "live-auth", voice: "marin" });
+
+    // Removing all provider voice models clears & disables them cleanly.
+    const cleared = await f.service.syncProviderModels([]);
+    expect(cleared).toBe(true);
+    const afterClear = await f.service.snapshot();
+    expect(afterClear.tts).toMatchObject({ enabled: false, modelId: "", voice: "" });
+    expect(afterClear.tts.providerId).toBeUndefined();
+    expect(afterClear.call).toMatchObject({ enabled: false, modelId: "", voice: "" });
+    expect(afterClear.call.providerId).toBeUndefined();
+  });
 });

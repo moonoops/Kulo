@@ -18,7 +18,7 @@ export interface VoiceSnapshot {
   };
   tts: {
     enabled: boolean;
-    provider: VoiceTtsProvider;
+    provider?: VoiceTtsProvider;
     providerId?: string;
     modelId: string;
     voice: string;
@@ -27,7 +27,7 @@ export interface VoiceSnapshot {
   };
   call: {
     enabled: boolean;
-    provider: VoiceLiveProvider;
+    provider?: VoiceLiveProvider;
     providerId?: string;
     modelId: string;
     voice: string;

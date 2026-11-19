@@ -34,6 +34,10 @@ import {
   WorkbenchShell,
   type WindowSizeClass,
 } from "./features/shell/workbench-shell";
+import {
+  readSettingsRailWidth,
+  writeSettingsRailWidth,
+} from "./features/shell/workbench-rail-resize";
 import { transitionSettingsLayout } from "./features/shell/settings-transition";
 import { composerDraftKey, resolveTaskChatReturn, restoreComposerDraft, restoredChatScroll, type TaskChatReturn } from "./features/tasks/task-navigation";
 import { TopicsSidebar } from "./features/topics/topics-sidebar";
@@ -98,6 +102,8 @@ import { buildConversationTurns, conversationTurnId, isConversationTurn } from "
 import { transcribeVoiceRecording } from "./features/chat/voice-transcription";
 import type { TranscribeVoice } from "./features/chat/voice-recorder";
 import { VoiceProvider, useVoiceWorkspace } from "./features/voice/voice-context";
+import { VoiceCallErrorBanner } from "./features/voice/voice-call-error-banner";
+import { hasSidebarVoiceCall } from "./features/voice/voice-call-panel";
 import { VoiceIcon } from "./features/voice/voice-icons";
 import {
   MocoSettingsBoard,
@@ -136,7 +142,7 @@ function readPref<T>(key: string, fallback: T): T {
 function AgentNavigationToggle({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
   useI18n();
   const voice = useVoiceWorkspace();
-  const returnToCall = Boolean(voice?.call.call) && !expanded;
+  const returnToCall = hasSidebarVoiceCall(voice?.call.call) && !expanded;
   return <Button size="sm" isIconOnly variant="ghost" className="moco-window-control"
     aria-label={returnToCall ? t("展开通话卡片", "Expand call") : expanded ? t("收起导航", "Collapse navigation") : t("展开导航", "Expand navigation")} aria-expanded={expanded}
     onPress={() => { if (returnToCall) voice?.call.expand(); onToggle(); }}>
@@ -290,6 +296,7 @@ function AppShell() {
 
   const [settingsMode, setSettingsMode] = useState(false);
   const [settingsRightCollapsed, setSettingsRightCollapsed] = useState(() => readPref("moco:settings-right-collapsed", false));
+  const [settingsRailWidth, setSettingsRailWidth] = useState<number | null>(() => readSettingsRailWidth());
   const [settingsModule, setSettingsModule] = useState<SettingsModuleId>("appearance");
   const [capabilityView, setCapabilityView] = useState<CapabilityView>("image");
   const [imageAssistantRequest, setImageAssistantRequest] = useState<ImageAssistantRequest>();
@@ -481,6 +488,10 @@ function AppShell() {
       // The preference still applies in this window if storage is unavailable.
     }
   }, [settingsRightCollapsed]);
+
+  useEffect(() => {
+    writeSettingsRailWidth(settingsRailWidth);
+  }, [settingsRailWidth]);
 
   // Browser beforeunload guard when settings or identity documents have unsaved edits
   useEffect(() => {
@@ -1614,6 +1625,16 @@ function AppShell() {
 
   const centerNode = (
     <>
+      <VoiceCallErrorBanner
+        connected={connected}
+        onOpenCall={openCallPanel}
+        onErrorShown={() => {
+          if (sizeClass === "compact") setSheet((current) => current === "left" ? undefined : current);
+        }}
+        onAfterDismiss={() => {
+          if (!settingsMode && !projectedTicketId) requestAnimationFrame(() => composerRef.current?.focus({ preventScroll: true }));
+        }}
+      />
       {topBannerError && !settingsMode && (
         <div className="shrink-0 px-4 pt-3">
           <Alert status="danger" className="flex items-start gap-3 rounded-2xl p-3">
@@ -2052,6 +2073,11 @@ function AppShell() {
         leftContent={sidebarNode}
         centerContent={centerNode}
         rightContent={rightNode}
+        rightResize={settingsMode ? {
+          width: settingsRailWidth,
+          onWidthChange: setSettingsRailWidth,
+          label: t("调整设置对话宽度", "Resize settings chat width"),
+        } : undefined}
       />
 
       <ConversationSearchDialog isOpen={conversationSearchOpen} onOpenChange={setConversationSearchOpen} topicId={activeTopicId} scopeKey={deliveryScope} initialScope={conversationSearchScope} scopeVersion={conversationSearchScopeVersion} onNavigate={navigateConversation} />

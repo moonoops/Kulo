@@ -41,6 +41,7 @@ import type {
   CustomProviderConfig,
   DiscoverModelsRequest,
   DiscoverModelsResponse,
+  ModelMetadataSource,
   ModelModality,
   ModelProtocolAdapter,
   ModelPurpose,
@@ -48,6 +49,8 @@ import type {
   OAuthSessionView,
   ProviderCatalogItem,
   ProviderModelItem,
+  ResolveModelMetadataRequest,
+  ResolveModelMetadataResponse,
   RolePreset,
   ThinkingEffort,
   ThinkingLevelMapConfig,
@@ -72,6 +75,14 @@ import {
 } from "./config.js";
 import { fetchLiveProviderModels, supportsApiModelDiscovery, type RawDiscoveredModel } from "./provider-discovery.js";
 import { subscriptionModelTemplate, validateSubscriptionModelTemplates } from "./subscription-models.js";
+import {
+  buildThinkingConfigFromRegistry,
+  isOfficialNativeSearchDefaultEligible,
+  normalizeModelIdCandidates,
+  resolveDefaultNativeTools,
+} from "./model-metadata-parser.js";
+import { MocoModelMetadataRegistry, type ModelMetadataRegistryOptions } from "./model-metadata-registry.js";
+import { allowedThinkingWireValuesForApi } from "./settings.js";
 import {
   MOCO_GATEWAY_PROVIDER_ID,
   openAIResponsesCompat,
@@ -769,6 +780,7 @@ export class MocoProviderManager {
   readonly stateDir: string;
   readonly credentials: CredentialStore;
   readonly modelsStore: FileModelsStore;
+  readonly metadataRegistry: MocoModelMetadataRegistry;
   readonly models: MutableModels;
   readonly #builtins: readonly Provider[];
   readonly #nativeBuiltinProviders = new Map<string, Provider<Api>>();
@@ -784,11 +796,15 @@ export class MocoProviderManager {
   #offlineRestored = false;
   #gatewayEnvironmentBaseUrl: string | null = null;
 
-  constructor(options: { stateDir: string; credentials?: CredentialStore }) {
+  constructor(options: { stateDir: string; credentials?: CredentialStore; metadataRegistry?: MocoModelMetadataRegistry; metadataRegistryOptions?: ModelMetadataRegistryOptions }) {
     ensureLazyBuiltinsRegistered();
     this.stateDir = options.stateDir;
     this.credentials = options.credentials ?? new FileCredentialStore(path.join(this.stateDir, "credentials.json"));
     this.modelsStore = new FileModelsStore(path.join(this.stateDir, "models-cache.json"));
+    this.metadataRegistry = options.metadataRegistry ?? new MocoModelMetadataRegistry({
+      stateDir: this.stateDir,
+      ...options.metadataRegistryOptions,
+    });
     this.models = createModels({
       credentials: this.credentials,
       modelsStore: this.modelsStore,
@@ -886,7 +902,7 @@ export class MocoProviderManager {
     const getModelConfig = () => this.#latestModelConfig ?? modelConfig;
     const getRoles = () => this.#latestRoles;
     const contextWindow = modelConfig.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
-    const defaultProvider = modelConfig.defaultProvider?.trim() || MOCO_GATEWAY_PROVIDER_ID;
+    const defaultProvider = modelConfig.defaultProvider?.trim() || (!modelConfig.gatewayDisabled ? MOCO_GATEWAY_PROVIDER_ID : "");
     const gatewayModelBaseUrl = modelConfig.apiMode === "google-vertex"
       ? buildVertexModelBaseUrl(modelConfig.baseUrl, modelConfig) : modelConfig.baseUrl;
     this.#syncSubscriptionModels(modelConfig.subscriptionModels);
@@ -1172,12 +1188,13 @@ export class MocoProviderManager {
     const config = this.#latestModelConfig;
     const ids = new Set<string>((providerId === MOCO_GATEWAY_PROVIDER_ID ? config?.gatewayModels
       : this.#customProviderMeta.get(providerId)?.models ?? this.#subscriptionModelsFor(providerId))?.map((model) => model.id) ?? []);
-    if ((config?.defaultProvider?.trim() || MOCO_GATEWAY_PROVIDER_ID) === providerId && config?.defaultModel.trim()) {
+    const fallbackProvider = config?.gatewayDisabled ? "" : MOCO_GATEWAY_PROVIDER_ID;
+    if ((config?.defaultProvider?.trim() || fallbackProvider) === providerId && config?.defaultModel.trim()) {
       ids.add(config.defaultModel.trim());
     }
     for (const role of Object.values(this.#latestRoles)) {
       if (role.external) continue;
-      if ((role.provider?.trim() || MOCO_GATEWAY_PROVIDER_ID) === providerId && role.modelId?.trim()) ids.add(role.modelId.trim());
+      if ((role.provider?.trim() || fallbackProvider) === providerId && role.modelId?.trim()) ids.add(role.modelId.trim());
     }
     return ids;
   }
@@ -1187,13 +1204,217 @@ export class MocoProviderManager {
     return subscriptions && Object.hasOwn(subscriptions, providerId) ? subscriptions[providerId] : undefined;
   }
 
-  async discoverModels(req: DiscoverModelsRequest): Promise<DiscoverModelsResponse> {
-    const startedAt = Date.now();
-    const presetMeta = req.preset
-      ? PRESET_BY_ID.get(req.preset.trim().toLowerCase())
-      : undefined;
+  #buildModelEnricher(options: {
+    presetMeta?: MainstreamProviderPreset;
+    targetApi: CustomProviderApi;
+    officialSource: boolean;
+  }): (raw: RawDiscoveredModel) => ProviderModelItem {
+    const { presetMeta, targetApi, officialSource } = options;
+    const presetBuiltinModels = presetMeta?.builtinId
+      ? this.models.getModels(presetMeta.builtinId)
+      : [];
+    const presetModelById = new Map<string, Model<Api>>(
+      presetBuiltinModels.map((m) => [m.id.toLowerCase(), m]),
+    );
+    const globalModelById = new Map<string, Model<Api>>();
+    for (const builtinId of this.#builtinIds) {
+      for (const m of this.models.getModels(builtinId)) {
+        const lower = m.id.toLowerCase();
+        if (!globalModelById.has(lower)) {
+          globalModelById.set(lower, m);
+        }
+        const slash = lower.indexOf("/");
+        if (slash > 0) {
+          const tail = lower.slice(slash + 1);
+          if (!globalModelById.has(tail)) {
+            globalModelById.set(tail, m);
+          }
+        }
+      }
+    }
+
+    return (raw: RawDiscoveredModel): ProviderModelItem => {
+      const candidates = normalizeModelIdCandidates(raw.id);
+      let match: Model<Api> | undefined;
+      for (const candidate of candidates) {
+        match = presetModelById.get(candidate);
+        if (match) break;
+      }
+      if (!match) {
+        for (const candidate of candidates) {
+          match = globalModelById.get(candidate);
+          if (match) break;
+        }
+      }
+      const baseItem = match ? toProviderModelItem(match, undefined, presetMeta?.id) : undefined;
+      const regEntry = this.metadataRegistry.lookup(raw.id, {
+        preset: presetMeta?.id,
+        api: targetApi,
+      });
+
+      const outputModalities = raw.outputModalities?.length
+        ? raw.outputModalities
+        : regEntry?.outputModalities?.length
+          ? regEntry.outputModalities
+          : baseItem?.outputModalities;
+
+      const inferred = inferModelPurpose({
+        id: raw.id,
+        ...(raw.purpose ? { purpose: raw.purpose } : regEntry?.purpose ? { purpose: regEntry.purpose } : {}),
+        ...(outputModalities ? { outputModalities } : {}),
+      });
+      const purpose = raw.purpose ?? regEntry?.purpose ?? baseItem?.purpose ?? (inferred !== "chat" ? inferred : undefined);
+
+      const metadataSource: ModelMetadataSource =
+        raw.contextWindow !== undefined || raw.maxTokens !== undefined || raw.inputModalities?.length
+          ? "provider-api"
+          : regEntry
+            ? regEntry.source
+            : baseItem
+              ? "pi-ai"
+              : "default";
+
+      if (purpose && purpose !== "chat") {
+        const item = nonChatConfigToProviderModelItem({
+          id: raw.id,
+          purpose,
+          ...(raw.name ? { name: raw.name } : regEntry?.name ? { name: regEntry.name } : baseItem?.name ? { name: baseItem.name } : {}),
+          ...(outputModalities ? { outputModalities } : {}),
+          ...(raw.contextWindow ? { contextWindow: raw.contextWindow } : regEntry?.contextWindow ? { contextWindow: regEntry.contextWindow } : {}),
+          ...(raw.maxTokens ? { maxTokens: raw.maxTokens } : regEntry?.maxTokens ? { maxTokens: regEntry.maxTokens } : {}),
+        }, targetApi, presetMeta?.id);
+        return { ...item, metadataSource };
+      }
+
+      const resolvedApi: CustomProviderApi =
+        presetMeta?.supportedApis && match?.api && (CUSTOM_PROVIDER_APIS as readonly string[]).includes(match.api)
+          ? match.api as CustomProviderApi
+          : targetApi;
+
+      const contextWindow =
+        raw.contextWindow ??
+        regEntry?.contextWindow ??
+        baseItem?.contextWindow ??
+        DEFAULT_CONTEXT_WINDOW;
+      const rawMaxTokens =
+        raw.maxTokens ??
+        regEntry?.maxTokens ??
+        baseItem?.maxTokens ??
+        DEFAULT_MAX_TOKENS;
+      const maxTokens = Math.min(rawMaxTokens, contextWindow);
+
+      const modalities: ModelModality[] = raw.inputModalities?.length
+        ? [...raw.inputModalities]
+        : regEntry?.inputModalities?.length
+          ? [...regEntry.inputModalities]
+          : baseItem?.modalities?.length
+            ? [...baseItem.modalities]
+            : ["text"];
+
+      const reasoning = raw.reasoning ?? regEntry?.reasoning ?? baseItem?.reasoning ?? false;
+      let thinkingLevelMap: ThinkingLevelMapConfig | undefined;
+      let supportedThinkingLevels: ThinkingEffort[] = ["off"];
+      let thinkingLevels: ProviderModelItem["thinkingLevels"];
+
+      if (reasoning) {
+        const usePiThinking = Boolean(
+          baseItem &&
+          match?.api === resolvedApi &&
+          (baseItem.thinkingLevelMap || !regEntry?.reasoningEfforts?.length),
+        );
+        if (usePiThinking && baseItem) {
+          thinkingLevelMap = sanitizeThinkingLevelMapForApi(baseItem.thinkingLevelMap, resolvedApi);
+          const allowed = allowedThinkingWireValuesForApi(resolvedApi);
+          supportedThinkingLevels = allowed
+            ? baseItem.supportedThinkingLevels.filter((level) => allowed.includes(level))
+            : [...baseItem.supportedThinkingLevels];
+          if (supportedThinkingLevels.length === 0) supportedThinkingLevels = ["medium", "high"];
+        } else if (regEntry) {
+          const derived = buildThinkingConfigFromRegistry(resolvedApi, regEntry);
+          thinkingLevelMap = derived.thinkingLevelMap;
+          supportedThinkingLevels = derived.supportedThinkingLevels;
+          thinkingLevels = derived.thinkingLevels;
+        } else {
+          const isGoogle = resolvedApi === "google-generative-ai" || resolvedApi === "google-vertex";
+          supportedThinkingLevels = isGoogle ? ["off", "low", "medium", "high"] : ["off", "low", "medium", "high", "xhigh"];
+        }
+      }
+
+      const nativeTools = resolveDefaultNativeTools({
+        modelId: raw.id,
+        api: resolvedApi,
+        officialSource,
+        presetId: presetMeta?.id,
+        registryEntry: regEntry,
+      });
+
+      return {
+        id: raw.id,
+        ...(outputModalities ? { outputModalities: [...outputModalities] } : {}),
+        name: raw.name || regEntry?.name || baseItem?.name || raw.id,
+        api: resolvedApi,
+        reasoning,
+        thinkingEnabled: reasoning,
+        vision: modalities.includes("image"),
+        modalities,
+        contextWindow,
+        maxTokens,
+        supportedThinkingLevels,
+        ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
+        ...(thinkingLevels ? { thinkingLevels } : {}),
+        ...(nativeTools ? { nativeTools } : {}),
+        metadataSource,
+      };
+    };
+  }
+
+  async resolveModelMetadata(req: ResolveModelMetadataRequest): Promise<ResolveModelMetadataResponse> {
+    const modelId = req.modelId.trim();
+    if (!modelId) throw new Error("请填写模型 ID");
     const providerId = req.providerId?.trim() || undefined;
     const customMeta = providerId ? this.#customProviderMeta.get(providerId) : undefined;
+    const presetId = req.preset?.trim().toLowerCase() || customMeta?.preset?.trim().toLowerCase();
+    const presetMeta = presetId ? PRESET_BY_ID.get(presetId) : undefined;
+    const baseUrl = req.baseUrl?.trim() || customMeta?.baseUrl || presetMeta?.baseUrl || "";
+    const officialSource = Boolean(
+      (providerId && this.#builtinIds.has(providerId)) ||
+      (presetMeta && (!baseUrl || (presetMeta.baseUrl && isSameOrigin(baseUrl, presetMeta.baseUrl)))),
+    );
+    if (req.refreshMetadata) {
+      await this.metadataRegistry.refresh();
+    }
+    const enrichModel = this.#buildModelEnricher({
+      presetMeta,
+      targetApi: req.api,
+      officialSource,
+    });
+    const model = enrichModel({ id: modelId });
+    const resolvedApi = (model.api && (CUSTOM_PROVIDER_APIS as readonly string[]).includes(model.api)
+      ? model.api
+      : req.api) as CustomProviderApi;
+    const allowedWire = allowedThinkingWireValuesForApi(resolvedApi);
+    const nativeSearchAllowed =
+      isOfficialNativeSearchDefaultEligible({ api: resolvedApi, officialSource, presetId: presetMeta?.id }) ||
+      Boolean(
+        officialSource &&
+        presetMeta?.id === "openrouter" &&
+        ["openai-completions", "openai-responses", "anthropic-messages"].includes(resolvedApi),
+      );
+    return {
+      model,
+      ...(allowedWire ? { allowedThinkingWireValues: [...allowedWire] } : {}),
+      nativeSearchAllowed,
+    };
+  }
+
+  async discoverModels(req: DiscoverModelsRequest): Promise<DiscoverModelsResponse> {
+    const startedAt = Date.now();
+    const providerId = req.providerId?.trim() || undefined;
+    const customMeta = providerId ? this.#customProviderMeta.get(providerId) : undefined;
+    const effectivePresetId = req.preset?.trim().toLowerCase() || customMeta?.preset?.trim().toLowerCase();
+    const presetMeta = effectivePresetId
+      ? PRESET_BY_ID.get(effectivePresetId)
+      : undefined;
     const existingProvider = providerId ? this.models.getProvider(providerId) : undefined;
     const existingBaseUrl =
       providerId === MOCO_GATEWAY_PROVIDER_ID
@@ -1254,75 +1475,28 @@ export class MocoProviderManager {
       }
     }
 
-    // Index built-in model catalogs to enrich discovered models with accurate capabilities
-    const presetBuiltinModels = presetMeta?.builtinId
-      ? this.models.getModels(presetMeta.builtinId)
-      : [];
-    const presetModelById = new Map<string, Model<Api>>(
-      presetBuiltinModels.map((m) => [m.id.toLowerCase(), m]),
+    const officialSource = Boolean(
+      presetMeta && presetMeta.baseUrl && isSameOrigin(baseUrl, presetMeta.baseUrl),
     );
-    const globalModelById = new Map<string, Model<Api>>();
-    for (const builtinId of this.#builtinIds) {
-      for (const m of this.models.getModels(builtinId)) {
-        const lower = m.id.toLowerCase();
-        if (!globalModelById.has(lower)) {
-          globalModelById.set(lower, m);
-        }
-        const slash = lower.indexOf("/");
-        if (slash > 0) {
-          const tail = lower.slice(slash + 1);
-          if (!globalModelById.has(tail)) {
-            globalModelById.set(tail, m);
-          }
-        }
-      }
-    }
-
-    const enrichModel = (raw: RawDiscoveredModel): ProviderModelItem => {
-      const lower = raw.id.toLowerCase();
-      const tail = lower.includes("/") ? lower.slice(lower.indexOf("/") + 1) : lower;
-      const match =
-        presetModelById.get(lower) ??
-        presetModelById.get(tail) ??
-        globalModelById.get(lower) ??
-        globalModelById.get(tail);
-      const baseItem = match ? toProviderModelItem(match, undefined, presetMeta?.id) : undefined;
-      const inferred = inferModelPurpose({ id: raw.id, ...(raw.purpose ? { purpose: raw.purpose } : {}), ...(raw.outputModalities ? { outputModalities: raw.outputModalities } : {}) });
-      const purpose = raw.purpose ?? baseItem?.purpose ?? (inferred !== "chat" ? inferred : undefined);
-      if (purpose && purpose !== "chat") {
-        return nonChatConfigToProviderModelItem({
-          id: raw.id,
-          purpose,
-          ...(raw.name ? { name: raw.name } : baseItem?.name ? { name: baseItem.name } : {}),
-          ...(raw.outputModalities ? { outputModalities: raw.outputModalities } : {}),
-          ...(raw.contextWindow ? { contextWindow: raw.contextWindow } : {}),
-          ...(raw.maxTokens ? { maxTokens: raw.maxTokens } : {}),
-        }, targetApi, presetMeta?.id);
-      }
-      const resolvedApi = presetMeta?.supportedApis && match?.api && (CUSTOM_PROVIDER_APIS as readonly string[]).includes(match.api)
-        ? match.api
-        : targetApi;
-      return {
-        id: raw.id,
-        ...(raw.outputModalities ?? baseItem?.outputModalities ? { outputModalities: [...(raw.outputModalities ?? baseItem?.outputModalities)!] } : {}),
-        name: raw.name || baseItem?.name || raw.id,
-        api: resolvedApi,
-        reasoning: baseItem?.reasoning ?? false,
-        vision: baseItem?.vision ?? false,
-        modalities: baseItem?.modalities ?? ["text"],
-        contextWindow: raw.contextWindow ?? baseItem?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
-        maxTokens: raw.maxTokens ?? baseItem?.maxTokens ?? DEFAULT_MAX_TOKENS,
-        supportedThinkingLevels: baseItem?.supportedThinkingLevels ?? ["off"],
-        ...(baseItem?.thinkingLevelMap ? { thinkingLevelMap: baseItem.thinkingLevelMap } : {}),
-      };
-    };
 
     try {
-      const rawItems = await fetchLiveProviderModels({
-        baseUrl,
-        api: targetApi,
-        apiKey: resolvedKey,
-        signal: AbortSignal.timeout(30_000),
+      // On-demand metadata registry refresh runs concurrently and never blocks or fails discovery.
+      const metadataRefresh = req.refreshMetadata
+        ? this.metadataRegistry.refresh().catch(() => undefined)
+        : Promise.resolve(undefined);
+      const [rawItems] = await Promise.all([
+        fetchLiveProviderModels({
+          baseUrl,
+          api: targetApi,
+          apiKey: resolvedKey,
+          signal: AbortSignal.timeout(30_000),
+        }),
+        metadataRefresh,
+      ]);
+      const enrichModel = this.#buildModelEnricher({
+        presetMeta,
+        targetApi,
+        officialSource,
       });
       return {
         ok: true,
@@ -1455,8 +1629,8 @@ export class MocoProviderManager {
       vertexLocation = meta.vertexLocation;
       configured = meta.models.find((m) => m.id === cleanModelId);
     }
-    if (!baseUrl || !api) return undefined;
-    const model: CustomModelConfig = configured ? cloneJson(configured) : { id: cleanModelId };
+    if (!baseUrl || !api || !configured) return undefined;
+    const model: CustomModelConfig = cloneJson(configured);
     const purpose = inferModelPurpose(model);
     const protocolAdapter = model.protocolAdapter ?? defaultProtocolAdapterForModel(purpose, cleanModelId, api, preset);
     const voices = model.voices?.length ? [...model.voices] : defaultVoicesForAdapter(protocolAdapter);

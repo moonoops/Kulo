@@ -19,7 +19,7 @@ import { modelConfigurationApi } from "./model-configuration-api";
 import { MessageMotion, StreamingMessage } from "../chat/message-motion";
 import "./settings-assistant-initial-state.css";
 import type { SettingsAssistantControls } from "./use-settings-assistant";
-import { IMAGE_ROUTING_PROMPT, type CapabilityView, type ImageAssistantRequest } from "./capability-views";
+import type { CapabilityView, ImageAssistantRequest } from "./capability-views";
 import { CapabilitySetupInputs } from "./capability-setup-inputs";
 import { MemoryServiceDialogue } from "./memory-service-dialogue";
 import { ConnectionSetupInputs } from "./connection-setup-inputs";
@@ -27,7 +27,6 @@ import type { ConnectionPrepare } from "./connections-module";
 import { ConnectionFollowup } from "./connection-followup";
 import { ConnectionIcon } from "./connection-icon";
 import { MocoThinkingIndicator } from "../chat/thinking-indicator";
-import { MediaMessage } from "../chat/media-message";
 import { SettingsAssistantHistory } from "./settings-assistant-history";
 import { createImageDraftConfig, imageConfigFromCapability, ImageCapabilityEditor } from "./image-capability-editor";
 import { ImageProviderPicker } from "./image-provider-picker";
@@ -110,8 +109,6 @@ export function SettingsAssistantPanel({
   const automaticImagePanel: ImagePanel | null = imageDraft && (!imageDiscovery || imageDraft.updatedAt >= imageDiscovery.createdAt) ? "draft" : imageDiscovery ? "discovery" : null;
   const imagePanel = imageSelection?.key === imageKey ? imageSelection.panel : automaticImagePanel;
   const imageDisabled = !connected || controls.switchingConversation || imagePreparing !== null || snapshot.live.busy || controls.sending || controls.unconfirmedSend;
-  const imageModels = capabilitiesWorkspace?.capabilities.filter((capability) => capability.kind === "image" && capability.enabled) ?? [];
-  const imageTestJob = capabilitiesWorkspace?.jobs.filter((job) => job.kind === "image" && job.source.setupClientId === controls.clientId).sort((left, right) => right.createdAt - left.createdAt)[0];
   const lastUser = [...snapshot.messages].reverse().find((item) => item.role === "user");
   const activeConnectionInput = connections?.inputs.find((input) => input.clientId === controls.clientId && input.status === "pending");
   const pendingConnectionInput = activeConnectionInput?.id;
@@ -170,8 +167,9 @@ export function SettingsAssistantPanel({
     const controller = new AbortController();
     void modelConfigurationApi.workspace(controls.clientId, controller.signal).then((workspace) => {
       if (!controller.signal.aborted) {
-        setModelHasDraft(Boolean(workspace.draft));
-        setModelDraftKey(workspace.draft ? `${workspace.draft.id}:${workspace.draft.revision}` : "");
+        const list = workspace.drafts ?? (workspace.draft ? [workspace.draft] : []);
+        setModelHasDraft(list.length > 0);
+        setModelDraftKey(list.map((item) => `${item.id}:${item.revision}`).join(","));
       }
     }).catch((cause: unknown) => {
       if (!controller.signal.aborted) setLocalInfo({ title: t("模型草稿未加载", "Model draft did not load"), text: redactSensitiveText(cause instanceof Error ? cause.message : String(cause)), error: true });
@@ -247,7 +245,7 @@ export function SettingsAssistantPanel({
         break;
       case "model":
         setDismissedModelDraft(null);
-        if (shortcut.action !== "connect" || !hasModel) setModelAction(shortcut.action);
+        if (shortcut.action === "diagnose" || !hasModel) setModelAction(shortcut.action);
         if (hasModel) await controls.send(shortcut.prompt);
         break;
       case "image":
@@ -354,7 +352,7 @@ export function SettingsAssistantPanel({
         )}
         <div className="flex min-w-0 flex-col gap-3" role="log" aria-label={t("设置对话消息", "Settings conversation messages")} aria-relevant="additions text">
           {[...remainingActions.values()].map(renderAction)}
-          {showModelCard && <ModelConfigurationCard clientId={controls.clientId} connected={connected}
+          {showModelCard && <ModelConfigurationCard clientId={controls.clientId} connected={connected} hasDefaultModel={hasModel}
             disabled={controls.switchingConversation || snapshot.live.busy || controls.sending || controls.unconfirmedSend}
             initialAction={modelAction ?? "calibrate"} refreshKey={`${snapshot.messages.length}:${snapshot.live.busy}:${modelRefresh}`}
             onChanged={() => { setModelRefresh((value) => value + 1); }} onClose={() => { setModelAction(null); setDismissedModelDraft(modelRecoveryKey); }} />}
@@ -421,25 +419,11 @@ export function SettingsAssistantPanel({
             <Alert.Content><Alert.Title>{t("图像配置未完成", "Image setup incomplete")}</Alert.Title><Alert.Description>{imageError.message}</Alert.Description></Alert.Content>
             <Button size="sm" variant="secondary" isDisabled={imageDisabled || !capabilitiesWorkspace} onPress={() => void prepareImage(imageError.action, imageError.capabilityId)}>{t("重试", "Retry")}</Button>
           </Alert>}
-          {imageView && capabilitiesWorkspace && !imagePreparing && <div ref={imageCardRef} role="group" aria-label={t("图像配置交互", "Image setup controls")} className="flex min-w-0 flex-col gap-3">
+          {imageView && capabilitiesWorkspace && !imagePreparing && imagePanel !== null && <div ref={imageCardRef} role="group" aria-label={t("图像配置交互", "Image setup controls")} className="flex min-w-0 flex-col gap-3">
             {imagePanel === "discovery" && imageDiscovery && <ImageProviderPicker key={controls.clientId} workspace={capabilitiesWorkspace} clientId={controls.clientId} connected={connected} disabled={imageDisabled} onChanged={onCapabilityInputsChanged ?? noop} onClose={closeImagePanel} />}
             {imagePanel === "draft" && imageDraft && <ImageCapabilityEditor key={controls.clientId} workspace={capabilitiesWorkspace} clientId={controls.clientId} connected={connected} disabled={imageDisabled} onChanged={onCapabilityInputsChanged ?? noop} onClose={closeImagePanel} />}
             {imagePanel === "routing" && <ImageRoutingEditor key={controls.clientId} workspace={capabilitiesWorkspace} clientId={controls.clientId} connected={connected} disabled={imageDisabled} onChanged={onCapabilityInputsChanged ?? noop} onClose={closeImagePanel} />}
-            {imageModels.length > 1 && imagePanel === null && <Card variant="secondary" className="gap-2 rounded-2xl p-3" aria-label={t("图像模型调用规则", "Image model routing")}>
-              <Card.Content className="text-sm">{capabilitiesWorkspace.imageRouting?.mode === "default" ? t("优先使用默认图像模型", "Prefer the default image model") : t("按任务自动选择图像模型", "Choose an image model for each task")}</Card.Content>
-              <Card.Footer className="flex-wrap justify-end gap-2">
-                <Button size="sm" variant="ghost" isDisabled={imageDisabled || !loaded || !hasModel} onPress={() => { controls.clearTarget?.(); void controls.send(IMAGE_ROUTING_PROMPT, null); }}>{t("让 Moco 调整", "Ask Moco to adjust")}</Button>
-                <Button size="sm" variant="secondary" isDisabled={imageDisabled} onPress={() => void prepareImage("routing")}>{t("修改规则", "Edit rules")}</Button>
-              </Card.Footer>
-            </Card>}
           </div>}
-          {imageView && imageTestJob && <Card variant="secondary" className="min-w-0 gap-3 rounded-2xl p-3" aria-label={t("图像测试结果", "Image test result")}>
-            <Card.Content className="flex min-w-0 flex-col gap-3">
-              <p className="text-sm" role="status">{imageTestJob.status === "completed" ? t("生成完成", "Generation completed") : imageTestJob.status === "failed" ? t("生成失败", "Generation failed") : imageTestJob.status === "needs_reconciliation" ? t("提交结果待核实", "Submission requires verification") : imageTestJob.status === "needs_user" ? t("需要处理", "Needs attention") : imageTestJob.status === "stopped" ? t("已停止", "Stopped") : imageTestJob.status === "collecting" ? t("正在保存图片", "Saving images") : t("生成中", "Generating")}</p>
-              {imageTestJob.error && <p className="break-words text-xs text-danger" role="alert">{redactSensitiveText(imageTestJob.error)}</p>}
-              {imageTestJob.assets.map((asset) => <MediaMessage key={asset.id} asset={asset} onPreviewImage={setPreviewImage} />)}
-            </Card.Content>
-          </Card>}
           {module === "capabilities" && <CapabilitySetupInputs inputs={capabilityInputs} clientId={controls.clientId} target={controls.target} envs={envs} connected={connected} onChanged={onCapabilityInputsChanged ?? noop} onCompleted={(request) => void continueSetup(request)} />}
           {module === "capabilities" && setupCompletion && <Card variant="secondary" className="gap-2 rounded-2xl p-3" aria-label={t("继续能力配置", "Continue capability setup")}>
             <Card.Content className="text-sm">{setupCompletion.request.kind === "secret" ? t("密钥已保存", "API key saved") : t("Flow 标签页已连接", "Flow tab connected")}</Card.Content>

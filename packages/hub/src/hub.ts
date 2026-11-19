@@ -64,7 +64,7 @@ import { MocoSearch } from "./search.js";
 import { proxyFetch, retainEnvironmentProxy } from "./http-transport.js";
 import { withNativeToolsModels } from "./model-native-tools.js";
 import { LocalVoiceAsr } from "./voice-asr.js";
-import { MocoVoiceService, VoiceError, type VoiceAsrEngine } from "./voice-service.js";
+import { MocoVoiceService, VoiceError, type SyncedVoiceModelCandidate, type VoiceAsrEngine } from "./voice-service.js";
 import { MocoVoiceCalls, type MocoVoiceCallsOptions } from "./voice-calls.js";
 import { TicketBoardProjection } from "./ticket-board.js";
 import { VoiceTranscriptEntry } from "./voice-transcripts.js";
@@ -96,6 +96,9 @@ import { ContextCompactionDoc, createContextCompactionController, validateBillio
 import { inspectBillionContextPackage, loadBillionContextPackage, type LoadedBillionContextPackage } from "./extension-packages.js";
 import { stageProjectSkillSource } from "./skill-source-env.js";
 import {
+  DEFAULT_IMAGE_TEST_PROMPT,
+  defaultProtocolAdapterForModel,
+  inferModelPurpose,
   resolveRolePresetFromPool,
   EXTERNAL_AGENT_KINDS,
   getMessageParts,
@@ -106,6 +109,8 @@ import {
   type ChatAttachment,
   type ChatDisplayItem,
   type ChatReplyReference,
+  type CustomModelConfig,
+  type CustomProviderApi,
   type WebSource,
   type CapabilitiesWorkspaceSnapshot,
   type MediaJob,
@@ -1623,6 +1628,12 @@ export class MocoHub implements OrchestratorController {
         const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
         return Object.values(state?.tickets ?? {}).some((ticket) => isTicketUnfinished(ticket));
       },
+      resolveModelMetadata: (req) => this.resolveModelMetadata(req),
+      refreshModelMetadata: async (force) => {
+        if (!this.#providerManager) return { updated: false, fromCache: true, source: "bundled" };
+        return this.#providerManager.metadataRegistry.refresh({ force });
+      },
+      isOfficialNativeSearchAllowed: (providerId) => this.#providerManager?.isOfficialNativeSearchAllowed(providerId) ?? false,
       agent: () => this.#resolveOrchestratorAgent(),
       tools: (context, extensions) => this.#resolveExtensionsTools(
         extensions ?? [],
@@ -2342,12 +2353,17 @@ export class MocoHub implements OrchestratorController {
     }) : undefined;
     const appearanceCustomizationExt = createAppearanceCustomizationToolsExtension({ read: () => hubRef!.settingsAssistant.readAppearanceCustomization(),
       propose: (customization, commandId) => hubRef!.settingsAssistant.proposeAppearanceCustomization(customization, commandId) });
-    const modelConfigurationExt = createModelConfigurationToolsExtension({ service: {
-      workspace: (...args) => hubRef!.modelConfiguration.workspace(...args),
-      prepare: (...args) => hubRef!.modelConfiguration.prepare(...args),
-      discover: (...args) => hubRef!.modelConfiguration.discover(...args),
-      updateDraft: (...args) => hubRef!.modelConfiguration.updateDraft(...args),
-    }, context: () => hubRef!.settingsAssistant.configurationContext("models") });
+    const modelConfigurationExt = createModelConfigurationToolsExtension({
+      service: {
+        workspace: (...args) => hubRef!.modelConfiguration.workspace(...args),
+        prepare: (...args) => hubRef!.modelConfiguration.prepare(...args),
+        discover: (...args) => hubRef!.modelConfiguration.discover(...args),
+        updateDraft: (...args) => hubRef!.modelConfiguration.updateDraft(...args),
+      },
+      lookupMetadata: (input) => hubRef!.settingsAssistant.lookupModelMetadata(input),
+      calibrate: (rawUpdates, title, commandId) => hubRef!.settingsAssistant.calibrateModels(rawUpdates, title, commandId),
+      context: () => hubRef!.settingsAssistant.configurationContext("models"),
+    });
     const agentConfigurationExt = createAgentConfigurationToolsExtension({ service: {
       workspace: (...args) => hubRef!.agentConfiguration.workspace(...args),
       prepare: (...args) => hubRef!.agentConfiguration.prepare(...args),
@@ -2673,10 +2689,11 @@ export class MocoHub implements OrchestratorController {
     );
 
     closePartialStorage = () => harness.close(BACKGROUND_CONTEXT);
+    const hasGatewayCredential = Boolean(await credentialStore.read(MOCO_GATEWAY_PROVIDER_ID));
     const hydratedSettings = await harness.commit(async (tx) => {
       const stateDoc = await tx.doc(MocoStateDoc);
       const settingsDoc = await tx.doc(MocoSettingsDoc);
-      hydrateSettingsFromConfig(settingsDoc, config);
+      hydrateSettingsFromConfig(settingsDoc, config, { hasGatewayCredential });
       assertMemoryIdentitySeparation(settingsDoc.memory, config, envManager);
       ensureDefaultRootTopic(stateDoc, settingsDoc.presentation.agentName);
       return cloneJson(settingsDoc) as MocoDurableSettings;
@@ -2804,6 +2821,7 @@ export class MocoHub implements OrchestratorController {
     await hub.search.initialize();
     hub.#webSearchAvailable = (await hub.search.snapshot()).plans.some((plan) => plan.enabled && plan.status !== "needs_auth");
     await hub.voice.initialize({ prepareAsr: false });
+    await hub.#syncProviderVoiceModels();
     hub.#ttsEnabled = (await hub.voice.snapshot()).tts.enabled;
     bootSettings = hub.#liveSettings;
 
@@ -3133,7 +3151,7 @@ export class MocoHub implements OrchestratorController {
     const commandId = imageSetupIdentifier(input.commandId, "操作标识");
     const source = await this.mediaSource(Number(this.rootConversation.id));
     return this.mediaJobs.create({ operationId: `image-test:${createHash("sha256").update(JSON.stringify([clientId, commandId])).digest("hex")}`, capabilityId: id,
-      kind: "image", prompt: input.prompt?.trim() || "A simple red circle on a plain white background", count: 1,
+      kind: "image", prompt: input.prompt?.trim() || DEFAULT_IMAGE_TEST_PROMPT, count: 1,
       source: { ...source, setupClientId: clientId } });
   }
 
@@ -7988,6 +8006,7 @@ export class MocoHub implements OrchestratorController {
       throw new Error("Current Models instance does not manage provider credentials");
     }
     const item = await this.#providerManager.setApiKey(providerId, apiKey);
+    await this.#syncProviderVoiceModels();
     void this.#broadcastCapabilities().catch(() => {});
     void this.#broadcastVoice().catch(() => {});
     return item;
@@ -7998,6 +8017,7 @@ export class MocoHub implements OrchestratorController {
       throw new Error("Current Models instance does not manage provider credentials");
     }
     const item = await this.#providerManager.logout(providerId);
+    await this.#syncProviderVoiceModels();
     void this.#broadcastCapabilities().catch(() => {});
     void this.#broadcastVoice().catch(() => {});
     return item;
@@ -8017,6 +8037,15 @@ export class MocoHub implements OrchestratorController {
       throw new Error("Current Models instance does not manage providers");
     }
     return this.#providerManager.discoverModels(req);
+  }
+
+  async resolveModelMetadata(
+    req: import("@moco/protocol").ResolveModelMetadataRequest,
+  ): Promise<import("@moco/protocol").ResolveModelMetadataResponse> {
+    if (!this.#providerManager) {
+      throw new Error("Current Models instance does not manage providers");
+    }
+    return this.#providerManager.resolveModelMetadata(req);
   }
 
   async startProviderOAuth(providerId: string): Promise<OAuthSessionView> {
@@ -8422,6 +8451,7 @@ export class MocoHub implements OrchestratorController {
         this.#liveSettings.roles,
       );
       await this.#syncProviderImageCapabilities();
+      await this.#syncProviderVoiceModels();
       void this.#broadcastVoice().catch(() => {});
     }
 
@@ -8520,6 +8550,49 @@ export class MocoHub implements OrchestratorController {
       })),
     ];
     await this.capabilities.syncProviderImageModels(sources);
+  }
+
+  async #syncProviderVoiceModels(): Promise<void> {
+    if (!this.#providerManager) return;
+    const model = this.#liveSettings.model;
+    const sources: Array<{
+      id: string;
+      baseUrl: string;
+      api: CustomProviderApi;
+      preset?: string;
+      models: CustomModelConfig[];
+    }> = [
+      ...(model.gatewayDisabled !== true && model.baseUrl?.trim() && model.gatewayModels?.length
+        ? [{ id: MOCO_GATEWAY_PROVIDER_ID, baseUrl: model.baseUrl, api: model.apiMode, models: model.gatewayModels }]
+        : []),
+      ...(model.customProviders ?? []).map((cp) => ({
+        id: cp.id,
+        baseUrl: cp.baseUrl,
+        api: cp.api,
+        ...(cp.preset ? { preset: cp.preset } : {}),
+        models: cp.models,
+      })),
+    ];
+    const candidates: SyncedVoiceModelCandidate[] = [];
+    for (const source of sources) {
+      const apiKey = await this.#providerManager.resolveProbeApiKey(source.id, source.baseUrl);
+      const authenticated = Boolean(apiKey);
+      for (const m of source.models) {
+        const purpose = inferModelPurpose(m);
+        if (purpose !== "asr" && purpose !== "tts" && purpose !== "live") continue;
+        const protocolAdapter = m.protocolAdapter ?? defaultProtocolAdapterForModel(purpose, m.id, source.api, source.preset);
+        candidates.push({
+          purpose,
+          providerId: source.id,
+          modelId: m.id,
+          ...(protocolAdapter ? { protocolAdapter } : {}),
+          ...(source.preset ? { preset: source.preset } : {}),
+          ...(m.voices?.length ? { voices: m.voices } : {}),
+          authenticated,
+        });
+      }
+    }
+    await this.voice.syncProviderModels(candidates);
   }
 
   async #reconfigureOrchestratorConversations(context: Context): Promise<void> {

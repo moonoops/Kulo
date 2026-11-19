@@ -27,6 +27,7 @@ import { MocoIcon } from "../../moco-icon";
 import {
   buildProviderModelGroups,
   effortLabel,
+  selectedDefaultProvider,
 } from "./settings-helpers";
 import { AgentPresetFields } from "./agent-preset-fields";
 import { useProviderCatalog } from "./use-provider-catalog";
@@ -165,7 +166,7 @@ export function WorkersModule({
     modelOpt: string | undefined,
   ): ProviderModelItem | undefined => {
     const targetProv =
-      providerOpt?.trim() || modelBlock.value.defaultProvider || "moco-gateway";
+      providerOpt?.trim() || selectedDefaultProvider(modelBlock.value);
     const targetModel = modelOpt?.trim() || modelBlock.value.defaultModel;
     const grp = providerModelGroups.find((g) => g.providerId === targetProv);
     return grp?.models.find((m) => m.id === targetModel);

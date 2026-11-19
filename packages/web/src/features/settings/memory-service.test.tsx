@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultRolePresets, type MemoryServiceJob, type MemoryServiceSecretInput, type MemoryServiceSnapshot, type MocoSettingsView } from "@moco/protocol";
 import { mocoRest } from "../../moco-api";
-import { createMemoryServiceRequest, decideMemoryServiceJob, MemoryServiceForm, MemoryServiceJobCard, submitMemoryServiceSecret, type MemoryServiceDraft } from "./memory-service-dialogue";
+import { createMemoryServiceRequest, decideMemoryServiceJob, initialMemoryServiceDraft, MemoryServiceForm, MemoryServiceJobCard, submitMemoryServiceSecret, type MemoryServiceDraft } from "./memory-service-dialogue";
 import { acknowledgeMemoryEnabled, createMemoryConnectionRequest, memoryConnectionDirty, memoryConnectionEditor, MemoryConnectionForm, reconcileMemoryConnection, setSavedMemoryEnabled } from "./memory-service-panel";
 import { isMemoryDialogueOperation } from "./memory-service-events";
 
@@ -66,6 +66,32 @@ describe("memory service approval and private input", () => {
     expect(request).toEqual({ commandId: "command-1", clientId: "tab-a", expectedRevision: 3, operation: "deploy", model: { provider: "openai", model: "configured-model", baseUrl: "https://models.example/v1", connectionId: "api-existing" } });
     expect(Object.keys(request)).not.toContain("secret");
     expect(() => createMemoryServiceRequest({ ...draft, baseUrl: "https://user:password@models.example" }, "tab-a", 3)).toThrow("不能包含凭据");
+
+    // Pre-selects a compatible configured model connection and avoids display-vs-draft desync.
+    const configuredSettings: MocoSettingsView = {
+      ...settings,
+      blocks: {
+        ...settings.blocks,
+        model: {
+          ...settings.blocks.model,
+          value: {
+            ...settings.blocks.model.value,
+            gatewayDisabled: true,
+            defaultProvider: "api-demo",
+            defaultModel: "demo-chat",
+            customProviders: [{ id: "api-demo", name: "Demo", api: "openai-completions", baseUrl: "https://demo.example/v1", models: [{ id: "demo-chat" }] }],
+          },
+        },
+      },
+    };
+    const autoDraft = initialMemoryServiceDraft("deploy", snapshot, configuredSettings);
+    expect(autoDraft).toMatchObject({ connectionId: "api-demo", provider: "openai", model: "demo-chat", baseUrl: "https://demo.example/v1" });
+    const emptyModelForm = renderToStaticMarkup(
+      <MemoryServiceForm draft={{ ...autoDraft, model: "" }} snapshot={snapshot} settings={configuredSettings} busy={false} onChange={() => {}} onCancel={() => {}} onSubmit={() => {}} />,
+    );
+    const selectValues = [...emptyModelForm.matchAll(/<span\b[^>]*data-slot="select-value"[^>]*>([\s\S]*?)<\/span>/g)].map((m) => m[1]);
+    expect(selectValues).toContain("未选择");
+    expect(selectValues.join(" ")).not.toContain("demo-chat");
   });
 
   it("submits existing connection credentials directly from the left form without preparing a dialogue job", () => {

@@ -1052,6 +1052,7 @@ describe("Moco Phase 2 + GUI Integration Suite", () => {
       config: { authToken: HUB_TEST_ADMIN_TOKEN,
         stateDir,
         enableLocalEnv: false,
+        model: { gatewayDisabled: false },
       },
     });
     const server = await startMocoHubServer(hub, { port: 0 });
@@ -1599,6 +1600,7 @@ describe("Moco Phase 2 + GUI Integration Suite", () => {
       config: { authToken: HUB_TEST_ADMIN_TOKEN,
         stateDir,
         enableLocalEnv: false,
+        model: { gatewayDisabled: false },
       },
     });
     const server = await startMocoHubServer(hub, { port: 0 });

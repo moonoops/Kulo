@@ -28,6 +28,8 @@ import type {
   CustomProviderApi,
   DiscoverModelsRequest,
   DiscoverModelsResponse,
+  ResolveModelMetadataRequest,
+  ResolveModelMetadataResponse,
   EnvNodeDescriptor,
   HindsightProbeResult,
   HubToClientMessage,
@@ -491,6 +493,15 @@ export const mocoRest = {
     options?: { signal?: AbortSignal },
   ) =>
     apiRequest<DiscoverModelsResponse>("/api/providers/discover-models", {
+      method: "POST",
+      body: payload,
+      signal: options?.signal,
+    }),
+  resolveModelMetadata: (
+    payload: ResolveModelMetadataRequest,
+    options?: { signal?: AbortSignal },
+  ) =>
+    apiRequest<ResolveModelMetadataResponse>("/api/providers/resolve-model", {
       method: "POST",
       body: payload,
       signal: options?.signal,

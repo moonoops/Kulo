@@ -79,7 +79,7 @@ describe("media capability registry", () => {
     }, context);
     await f.capabilities.initialize();
     const restored = (await f.capabilities.snapshot()).capabilities[0]!;
-    expect(restored).toMatchObject({ connectionId: cap.connectionId, allowTaskGeneration: false, defaults: { format: "png", quality: "auto" } });
+    expect(restored).toMatchObject({ connectionId: cap.connectionId, allowTaskGeneration: true, defaults: { format: "png", quality: "auto" } });
     expect(restored.formats).toContain("gif");
     expect(await f.capabilities.apiKey(restored.connectionId)).toBe(dummyKey);
   });

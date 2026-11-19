@@ -39,7 +39,8 @@ describe("capability workspace", () => {
   it("shows saved capability state without a second configuration form", () => {
     const html = renderWorkspace();
     expect(html).toContain("产品图片");
-    expect(html).toContain("待验证");
+    expect(html).toContain("可用");
+    expect(html).not.toContain("待验证");
     expect(html).toContain("GIF");
     expect(html).toContain("默认");
     expect(html).toContain('aria-label="管理产品图片"');
@@ -58,7 +59,8 @@ describe("capability workspace", () => {
     const html = renderWorkspace({ ...snapshot, capabilities: [{ ...capability, enabled: false, status: "ready" }] }, { kind: "capability", id: capability.id });
     expect(html).toContain('aria-pressed="true"');
     expect(html).toContain("已停用");
-    expect(capabilityStatusLabel(capability)).toBe("待验证");
+    expect(capabilityStatusLabel(capability)).toBe("可用");
+    expect(capabilityStatusLabel({ ...capability, kind: "video", formats: ["mp4"] })).toBe("待验证");
     expect(skillStatusLabel(skill)).toBe("已启用");
     expect(skillStatusLabel({ ...skill, enabled: false })).toBe("已停用");
     expect(skillStatusLabel({ ...skill, diagnostics: ["缺少依赖"] })).toBe("需处理");

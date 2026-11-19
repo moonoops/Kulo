@@ -1,7 +1,7 @@
-import { useI18n, translate } from "../../moco-i18n";
+import { useI18n } from "../../moco-i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Chip, Skeleton, Table, Tabs } from "@heroui/react";
-import { redactSecrets, type CapabilitiesWorkspaceSnapshot, type CapabilityRecord, type CapabilityStatus, type EnvNodeDescriptor, type MocoSettingsView, type SettingsAssistantContext } from "@moco/protocol";
+import { redactSecrets, type CapabilitiesWorkspaceSnapshot, type EnvNodeDescriptor, type MocoSettingsView, type SettingsAssistantContext } from "@moco/protocol";
 import { SearchModule } from "./search-module";
 import { VoiceModule } from "./voice-module";
 import { ConfirmDialog } from "../../components/confirm-dialog";
@@ -10,23 +10,13 @@ import { SettingsSection } from "./settings-layout";
 import { useSettingsNavigation } from "./use-settings-navigation";
 import { SkillsModule } from "./skills-module";
 import { ImageCapabilitiesPanel } from "./image-capabilities-panel";
-import { CAPABILITY_VIEWS, CONNECT_FLOW_PROMPT, capabilityTargetView, type CapabilityView } from "./capability-views";
+import { CAPABILITY_VIEWS, CONNECT_FLOW_PROMPT, capabilityStatusColor, capabilityStatusLabel, capabilityTargetView, type CapabilityView } from "./capability-views";
 
+export { capabilityStatusLabel } from "./capability-views";
 export { skillStatusLabel } from "./skills-module";
 
 export type CapabilityTarget = NonNullable<SettingsAssistantContext["target"]>;
 export type CapabilityAssistantRequest = (target?: CapabilityTarget, prompt?: string) => void;
-
-
-export function capabilityStatusLabel(capability: CapabilityRecord): string {
-  const CAPABILITY_STATUS: Record<CapabilityStatus, string> = {
-    unverified: translate("待验证", "Unverified"), ready: translate("可用", "Ready"), needs_auth: translate("待连接", "Not connected"), offline: translate("设备离线", "Device offline"),
-    missing_dependency: translate("缺依赖", "Missing dependency"), disabled: translate("已停用", "Disabled"), error: translate("连接异常", "Connection error"),
-  };
-  if (!capability.enabled) return translate("已停用", "Disabled");
-  if (!capability.allowTaskGeneration && (capability.status === "ready" || capability.status === "unverified")) return translate("待授权", "Awaiting approval");
-  return CAPABILITY_STATUS[capability.status];
-}
 
 function WorkspaceEmptyState({ loaded, connected, error, empty }: { loaded: boolean; connected: boolean; error: string | null; empty: string }) {
   const { t } = useI18n();
@@ -80,7 +70,7 @@ function MediaCapabilitiesTable({ kind, snapshot, connected, disabled, error, en
               <Table.Cell className="moco-settings-table-cell moco-settings-table-meta">
                 {image ? <div className="flex flex-wrap gap-1">{capability.formats.map((format) => <Chip key={format} size="sm" variant="tertiary">{format.toUpperCase()}</Chip>)}</div> : <span className="text-sm">{device ?? "—"}</span>}
               </Table.Cell>
-              <Table.Cell className="moco-settings-table-cell moco-settings-table-meta"><Chip size="sm" variant="soft" color={capability.enabled && capability.allowTaskGeneration && capability.status === "ready" ? "success" : capability.status === "error" ? "danger" : "default"}>{capabilityStatusLabel(capability)}</Chip></Table.Cell>
+              <Table.Cell className="moco-settings-table-cell moco-settings-table-meta"><Chip size="sm" variant="soft" color={capabilityStatusColor(capability)}>{capabilityStatusLabel(capability)}</Chip></Table.Cell>
               <Table.Cell className="moco-settings-table-cell moco-settings-table-actions">
                 <div className="moco-settings-table-action-group"><Button size="sm" variant={selected ? "secondary" : "ghost"} aria-label={t(`管理${capability.name}`, `Manage ${capability.name}`)} aria-pressed={selected} isDisabled={!connected || disabled} onPress={() => onRequest({ kind: "capability", id: capability.id })}>{t("管理", "Manage")}</Button></div>
               </Table.Cell>

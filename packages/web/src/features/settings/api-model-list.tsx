@@ -533,7 +533,18 @@ function ModelParametersDialog({
                     <span className="text-sm font-semibold text-foreground">{t("模型参数", "Model parameters")}</span>
                     <Button size="sm" variant="ghost" isDisabled={disabled} onPress={() => {
                       const resetModalities = getModelModalities({}, knownModel);
-                      onUpdate(model.id, { contextWindow: knownModel?.contextWindow || DEFAULT_MODEL_CONTEXT_WINDOW, maxTokens: knownModel?.maxTokens || DEFAULT_MODEL_MAX_TOKENS, modalities: resetModalities, vision: resetModalities.includes("image") });
+                      const resetReasoning = knownModel?.reasoning ?? true;
+                      onUpdate(model.id, {
+                        contextWindow: knownModel?.contextWindow || DEFAULT_MODEL_CONTEXT_WINDOW,
+                        maxTokens: knownModel?.maxTokens || DEFAULT_MODEL_MAX_TOKENS,
+                        modalities: resetModalities,
+                        vision: resetModalities.includes("image"),
+                        reasoning: resetReasoning,
+                        thinkingEnabled: knownModel?.thinkingEnabled ?? resetReasoning,
+                        thinkingLevelMap: knownModel?.thinkingLevelMap,
+                        thinkingLevels: getModelThinkingLevels(knownModel ?? {}, api),
+                        nativeTools: officialSource && knownModel?.nativeTools ? { ...knownModel.nativeTools } : undefined,
+                      });
                     }}>{t("重置参数", "Reset parameters")}</Button>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">

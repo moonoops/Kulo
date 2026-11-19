@@ -7,15 +7,18 @@ import {
 import { arr, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import type { UserMessage } from "@earendil-works/pi-ai";
 import type {
-  BuiltinThinkingEffort, EnvNodeDescriptor, MocoSettingsView, ProviderCatalogItem, SettingsBlockName,
+  BuiltinThinkingEffort, CustomModelConfig, CustomProviderApi, EnvNodeDescriptor, ModelCalibrationProviderUpdate,
+  MocoSettingsView, ProviderCatalogItem, ResolveModelMetadataRequest, ResolveModelMetadataResponse, SettingsBlockName,
   SettingsAssistantAction, SettingsAssistantContext, SettingsAssistantDecision,
   SettingsAssistantModule, SettingsAssistantSnapshot, SettingsAssistantConversation,
   ConnectionDescribeRequest, ConnectionPrepareRequest,
   TicketCardView, ChatAttachment, AppearanceCustomization, TopicSummary,
 } from "@moco/protocol";
-import { DEFAULT_APPEARANCE_CUSTOMIZATION, redactSensitiveText, validateAppearanceCustomization } from "@moco/protocol";
+import { DEFAULT_APPEARANCE_CUSTOMIZATION, isConversationModel, redactSensitiveText, validateAppearanceCustomization } from "@moco/protocol";
 import type { MocoConnections } from "./connections.js";
-import { MocoSettingsDoc, applySettingsBlockUpdate, type MocoDurableSettings } from "./settings.js";
+import { validateConfigurationModel } from "./model-configuration.js";
+import { supportsNativeWebSearch } from "./model-native-tools.js";
+import { MocoSettingsDoc, applySettingsBlockUpdate, sanitizeCustomModelList, type MocoDurableSettings } from "./settings.js";
 import { MocoStateDoc, isOrchestratorConversation, type TopicTitleJob } from "./state.js";
 import { completedTopicTitle, createTopicTitleJob, parseTopicTitle, retryFailedTopicTitle, titleGenerationFailure } from "./topic-titles.js";
 import { SETTINGS_TITLE_INSTRUCTIONS, buildSettingsAssistantPrompt } from "./prompts.js";
@@ -196,6 +199,9 @@ interface AssistantHost {
   deviceController?: () => HubDeviceController | undefined;
   joinStaging?: DeviceJoinStaging;
   hasRunningLocalTasks?: () => Promise<boolean>;
+  resolveModelMetadata?: (req: ResolveModelMetadataRequest) => Promise<ResolveModelMetadataResponse>;
+  refreshModelMetadata?: (force?: boolean) => Promise<{ updated: boolean; fromCache: boolean; source: string; fetchedAt?: number; error?: string }>;
+  isOfficialNativeSearchAllowed?: (providerId: string) => boolean;
 }
 
 export class SettingsAssistant implements DeviceAssistantHost {
@@ -1283,7 +1289,8 @@ export class SettingsAssistant implements DeviceAssistantHost {
             if (providerId && !providers.some((entry) => entry.id === providerId)) throw new Error("供应商不存在。");
             return;
           }
-          const provider = providers.find((entry) => entry.id === (providerId || "moco-gateway"));
+          const effectiveProviderId = providerId || (!defaults.gatewayDisabled ? "moco-gateway" : "");
+          const provider = effectiveProviderId ? providers.find((entry) => entry.id === effectiveProviderId) : undefined;
           const model = provider?.models.find((entry) => entry.id === modelId);
           if (!provider || !model) throw new Error("请选择已有连接中的有效模型；新模型请先通过模型配置卡片添加并保存。");
           if (!provider.authenticated) throw new Error("请先在模型连接中完成认证。");
@@ -1389,6 +1396,467 @@ export class SettingsAssistant implements DeviceAssistantHost {
         state.actions.push(action);
         return clone(action.view);
       }, BACKGROUND_CONTEXT);
+      await this.#emit();
+      return view;
+    });
+  }
+
+  async lookupModelMetadata(input: {
+    providerId?: string;
+    preset?: string;
+    api?: CustomProviderApi;
+    modelIds?: string[];
+    forceRefresh?: boolean;
+  }): Promise<unknown> {
+    await this.#turn();
+    if (!this.#host.resolveModelMetadata) {
+      throw new Error("模型元数据目录当前不可用。");
+    }
+    const refresh = await this.#host.refreshModelMetadata?.(input.forceRefresh === true).catch((err) => ({
+      updated: false,
+      fromCache: true,
+      source: "bundled",
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    const settingsView = this.#host.settings().blocks.model;
+    await this.#host.harness.commit(async (tx) => {
+      const doc = await tx.doc(SettingsAssistantDoc);
+      doc.observedRevisions.model = settingsView.revision;
+    }, BACKGROUND_CONTEXT);
+
+    const modelBlock = settingsView.value;
+    const providersCatalog = await this.#host.providers();
+    const resolveForConnection = async (params: {
+      providerId: string;
+      name: string;
+      api: CustomProviderApi;
+      preset?: string;
+      baseUrl?: string;
+      configuredModels: CustomModelConfig[];
+      requestedIds?: string[];
+    }) => {
+      const targetIds = params.requestedIds?.length
+        ? params.requestedIds
+        : params.configuredModels.map((item) => item.id);
+      const configuredById = new Map(params.configuredModels.map((item) => [item.id, item]));
+      const entries = await Promise.all(
+        targetIds.slice(0, 64).map(async (modelId) => {
+          const resolved = await this.#host.resolveModelMetadata!({
+            modelId,
+            api: params.api,
+            providerId: params.providerId,
+            ...(params.preset ? { preset: params.preset } : {}),
+            ...(params.baseUrl ? { baseUrl: params.baseUrl } : {}),
+          });
+          const current = configuredById.get(modelId);
+          return {
+            id: modelId,
+            ...(current ? { current } : {}),
+            recommended: resolved.model,
+            ...(resolved.allowedThinkingWireValues ? { allowedThinkingWireValues: resolved.allowedThinkingWireValues } : {}),
+            nativeSearchAllowed: resolved.nativeSearchAllowed,
+          };
+        }),
+      );
+      return {
+        providerId: params.providerId,
+        name: this.#redact(params.name),
+        api: params.api,
+        ...(params.preset ? { preset: params.preset } : {}),
+        models: entries,
+      };
+    };
+
+    if (input.providerId) {
+      const pid = input.providerId.trim();
+      if (pid === "moco-gateway") {
+        const result = await resolveForConnection({
+          providerId: pid,
+          name: modelBlock.gatewayName?.trim() || "默认兼容网关",
+          api: modelBlock.apiMode,
+          baseUrl: modelBlock.baseUrl,
+          configuredModels: modelBlock.gatewayModels ?? [],
+          requestedIds: input.modelIds,
+        });
+        return { ...(refresh ? { registry: refresh } : {}), connections: [result] };
+      }
+      const custom = modelBlock.customProviders?.find((item) => item.id === pid);
+      if (custom) {
+        const result = await resolveForConnection({
+          providerId: custom.id,
+          name: custom.name,
+          api: custom.api,
+          preset: custom.preset,
+          baseUrl: custom.baseUrl,
+          configuredModels: custom.models,
+          requestedIds: input.modelIds,
+        });
+        return { ...(refresh ? { registry: refresh } : {}), connections: [result] };
+      }
+      const subModels = modelBlock.subscriptionModels?.[pid];
+      const subProvider = providersCatalog.find((item) => item.id === pid);
+      if (subModels || subProvider) {
+        const api = (subProvider?.models[0]?.api ?? input.api ?? "openai-responses") as CustomProviderApi;
+        const result = await resolveForConnection({
+          providerId: pid,
+          name: subProvider?.name ?? pid,
+          api,
+          preset: pid,
+          baseUrl: subProvider?.baseUrl,
+          configuredModels: subModels ?? [],
+          requestedIds: input.modelIds,
+        });
+        return { ...(refresh ? { registry: refresh } : {}), connections: [result] };
+      }
+      throw new Error(`未找到模型连接「${pid}」。`);
+    }
+
+    if (input.modelIds?.length) {
+      const api = input.api ?? "openai-responses";
+      const entries = await Promise.all(
+        input.modelIds.slice(0, 64).map(async (modelId) => {
+          const resolved = await this.#host.resolveModelMetadata!({
+            modelId,
+            api,
+            ...(input.preset ? { preset: input.preset } : {}),
+          });
+          return {
+            id: modelId,
+            recommended: resolved.model,
+            ...(resolved.allowedThinkingWireValues ? { allowedThinkingWireValues: resolved.allowedThinkingWireValues } : {}),
+            nativeSearchAllowed: resolved.nativeSearchAllowed,
+          };
+        }),
+      );
+      return { ...(refresh ? { registry: refresh } : {}), api, ...(input.preset ? { preset: input.preset } : {}), models: entries };
+    }
+
+    // No providerId & no modelIds: inspect ALL configured connections in a single round-trip.
+    const connections = [];
+    for (const custom of modelBlock.customProviders ?? []) {
+      connections.push(await resolveForConnection({
+        providerId: custom.id,
+        name: custom.name,
+        api: custom.api,
+        preset: custom.preset,
+        baseUrl: custom.baseUrl,
+        configuredModels: custom.models,
+      }));
+    }
+    if (!modelBlock.gatewayDisabled && (modelBlock.gatewayModels?.length ?? 0) > 0) {
+      connections.push(await resolveForConnection({
+        providerId: "moco-gateway",
+        name: modelBlock.gatewayName?.trim() || "默认兼容网关",
+        api: modelBlock.apiMode,
+        baseUrl: modelBlock.baseUrl,
+        configuredModels: modelBlock.gatewayModels ?? [],
+      }));
+    }
+    for (const [pid, models] of Object.entries(modelBlock.subscriptionModels ?? {})) {
+      if (!models.length) continue;
+      const subProvider = providersCatalog.find((item) => item.id === pid);
+      const api = (subProvider?.models[0]?.api ?? "openai-responses") as CustomProviderApi;
+      connections.push(await resolveForConnection({
+        providerId: pid,
+        name: subProvider?.name ?? pid,
+        api,
+        preset: pid,
+        baseUrl: subProvider?.baseUrl,
+        configuredModels: models,
+      }));
+    }
+    return { ...(refresh ? { registry: refresh } : {}), connections };
+  }
+
+  async calibrateModels(
+    rawUpdates: string,
+    title: string | undefined,
+    commandId: string,
+  ): Promise<SettingsAssistantAction> {
+    const existing = await this.#existingAction(commandId);
+    if (existing) return existing;
+    const context = await this.#turn();
+    this.#assertWritable("model", context.clientId);
+    if (typeof rawUpdates !== "string" || rawUpdates.length > 64_000) {
+      throw new Error("模型校准参数无效或过长。");
+    }
+    if (this.#redact(rawUpdates) !== rawUpdates) {
+      throw new Error("模型校准参数包含受保护内容，已拒绝写入；密钥请通过专用保密输入提供。");
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(rawUpdates); }
+    catch { throw new Error("模型校准参数必须为有效的 JSON 数组。"); }
+    if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 32) {
+      throw new Error("请提供至少 1 个（最多 32 个）需要校准的连接。");
+    }
+
+    const ALLOWED_PATCH_FIELDS = new Set([
+      "name", "purpose", "protocolAdapter", "voices", "imageProfile", "imageDefaults",
+      "customImageAdapter", "outputModalities", "contextWindow", "maxTokens", "reasoning",
+      "thinkingEnabled", "vision", "modalities", "thinkingLevelMap", "thinkingLevels", "nativeTools",
+    ]);
+
+    const updates: ModelCalibrationProviderUpdate[] = [];
+    const seenProviders = new Set<string>();
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        throw new Error("每个连接的校准项必须为对象。");
+      }
+      const rec = entry as Record<string, unknown>;
+      const providerId = typeof rec.providerId === "string" ? rec.providerId.trim() : "";
+      if (!providerId || seenProviders.has(providerId)) {
+        throw new Error("连接标识无效或存在重复连接。");
+      }
+      seenProviders.add(providerId);
+      if (!Array.isArray(rec.models) || rec.models.length === 0 || rec.models.length > 128) {
+        throw new Error(`连接「${providerId}」缺少有效的模型更新列表。`);
+      }
+      const seenModels = new Set<string>();
+      const models: ModelCalibrationProviderUpdate["models"] = [];
+      for (const m of rec.models) {
+        if (!m || typeof m !== "object" || Array.isArray(m)) {
+          throw new Error("每个模型的校准项必须为对象。");
+        }
+        const mRec = m as Record<string, unknown>;
+        const id = typeof mRec.id === "string" ? mRec.id.trim() : "";
+        if (!id || seenModels.has(id)) {
+          throw new Error(`连接「${providerId}」中存在无效或重复的模型 ID。`);
+        }
+        seenModels.add(id);
+        const patch = mRec.patch;
+        if (!patch || typeof patch !== "object" || Array.isArray(patch) || Object.keys(patch).length === 0) {
+          throw new Error(`模型「${id}」缺少有效的参数修改项。`);
+        }
+        const invalidKeys = Object.keys(patch).filter((key) => !ALLOWED_PATCH_FIELDS.has(key));
+        if (invalidKeys.length > 0) {
+          throw new Error(`模型校准仅允许修改已有模型的公开参数，不允许修改字段：${invalidKeys.join("、")}。连接地址、协议与密钥请使用模型配置卡片。`);
+        }
+        models.push({ id, patch: clone(patch as ModelCalibrationProviderUpdate["models"][number]["patch"]) });
+      }
+      updates.push({ providerId, models });
+    }
+
+    const formatK = (n: number | undefined) => n === undefined ? "默认" : n >= 1000 ? `${Math.round(n / 1000).toLocaleString("en-US")}K` : String(n);
+    const describeThinking = (m: CustomModelConfig) => {
+      if (m.reasoning === false || m.thinkingEnabled === false) return "关闭";
+      if (m.thinkingLevels?.length) return m.thinkingLevels.map((level) => level.value).join("/");
+      if (m.thinkingLevelMap) {
+        const active = Object.entries(m.thinkingLevelMap).filter(([, value]) => typeof value === "string").map(([key]) => key);
+        if (active.length) return active.join("/");
+      }
+      return m.reasoning ? "开启" : "默认";
+    };
+    const describeModelDiff = (providerName: string, beforeModel: CustomModelConfig, afterModel: CustomModelConfig): string | null => {
+      const parts: string[] = [];
+      if (beforeModel.contextWindow !== afterModel.contextWindow) {
+        parts.push(`上下文 ${formatK(beforeModel.contextWindow)} → ${formatK(afterModel.contextWindow)}`);
+      }
+      if (beforeModel.maxTokens !== afterModel.maxTokens) {
+        parts.push(`最大输出 ${formatK(beforeModel.maxTokens)} → ${formatK(afterModel.maxTokens)}`);
+      }
+      const beforeMods = (beforeModel.modalities ?? (beforeModel.vision ? ["text", "image"] : ["text"])).join("/");
+      const afterMods = (afterModel.modalities ?? (afterModel.vision ? ["text", "image"] : ["text"])).join("/");
+      if (beforeMods !== afterMods) {
+        parts.push(`模态 ${beforeMods} → ${afterMods}`);
+      }
+      const beforeThink = describeThinking(beforeModel);
+      const afterThink = describeThinking(afterModel);
+      if (beforeThink !== afterThink) {
+        parts.push(`思考档位 ${beforeThink} → ${afterThink}`);
+      }
+      const beforeSearch = beforeModel.nativeTools?.webSearch === true;
+      const afterSearch = afterModel.nativeTools?.webSearch === true;
+      if (beforeSearch !== afterSearch) {
+        parts.push(`原生搜索 ${beforeSearch ? "开启" : "关闭"} → ${afterSearch ? "开启" : "关闭"}`);
+      }
+      if (beforeModel.purpose !== afterModel.purpose) {
+        parts.push(`类型 ${beforeModel.purpose ?? "chat"} → ${afterModel.purpose ?? "chat"}`);
+      }
+      if (beforeModel.name !== afterModel.name && afterModel.name) {
+        parts.push(`名称 ${beforeModel.name ?? beforeModel.id} → ${afterModel.name}`);
+      }
+      if (parts.length === 0) {
+        if (same(beforeModel, afterModel)) return null;
+        parts.push("已更新模型参数");
+      }
+      return `${providerName} · ${afterModel.id}：${parts.join("；")}`;
+    };
+
+    const providersCatalog = await this.#host.providers();
+
+    return this.#serialize(async () => {
+      let applied: MocoDurableSettings | undefined;
+      const view = await this.#host.harness.commit(async (tx) => {
+        const state = await tx.doc(SettingsAssistantDoc);
+        const repeated = state.actions.find((a) => a.view.id === commandId);
+        if (repeated) return clone(repeated.view);
+        this.#assertWritable("model", context.clientId);
+        const doc = await tx.doc(MocoSettingsDoc);
+        const expectedRevision = state.observedRevisions.model;
+        if (expectedRevision === undefined) {
+          throw new Error("请先读取模型配置或查询模型目录后再执行校准。");
+        }
+        if (doc.revisions.model !== expectedRevision) {
+          throw new Error("模型设置已被其他操作修改，请重新读取后再校准。");
+        }
+
+        const next = clone(doc.model);
+        const touchedKeys = new Set<string>();
+        const changes: string[] = [];
+        const changedProviders = new Set<string>();
+        let changedModels = 0;
+
+        for (const update of updates) {
+          const { providerId, models } = update;
+          let targetList: CustomModelConfig[] | undefined;
+          let targetApi: CustomProviderApi;
+          let targetBaseUrl = "";
+          let targetLabel = providerId;
+          let targetKey: "customProviders" | "gatewayModels" | "subscriptionModels";
+          let officialSearchAllowed = false;
+
+          if (providerId === "moco-gateway") {
+            targetList = next.gatewayModels ?? [];
+            targetApi = next.apiMode;
+            targetBaseUrl = next.baseUrl;
+            targetLabel = next.gatewayName?.trim() || "默认兼容网关";
+            targetKey = "gatewayModels";
+            officialSearchAllowed = false;
+          } else {
+            const custom = next.customProviders?.find((entry) => entry.id === providerId);
+            if (custom) {
+              targetList = custom.models;
+              targetApi = custom.api;
+              targetBaseUrl = custom.baseUrl;
+              targetLabel = custom.name;
+              targetKey = "customProviders";
+              officialSearchAllowed =
+                Boolean(this.#host.isOfficialNativeSearchAllowed?.(providerId)) &&
+                supportsNativeWebSearch(custom.api, { baseUrl: custom.baseUrl, provider: custom.id });
+            } else if (next.subscriptionModels && Object.hasOwn(next.subscriptionModels, providerId)) {
+              const subProvider = providersCatalog.find((entry) => entry.id === providerId);
+              targetList = next.subscriptionModels[providerId]!;
+              targetApi = (subProvider?.models[0]?.api ?? "openai-responses") as CustomProviderApi;
+              targetBaseUrl = subProvider?.baseUrl ?? "";
+              targetLabel = subProvider?.name ?? providerId;
+              targetKey = "subscriptionModels";
+              officialSearchAllowed =
+                Boolean(this.#host.isOfficialNativeSearchAllowed?.(providerId)) &&
+                supportsNativeWebSearch(targetApi, { baseUrl: targetBaseUrl, provider: providerId });
+            } else {
+              throw new Error(`未找到可校准的连接「${providerId}」；新增连接请使用模型配置卡片。`);
+            }
+          }
+
+          for (const { id: modelId, patch } of models) {
+            const idx = targetList.findIndex((item) => item.id === modelId);
+            if (idx < 0) {
+              throw new Error(`连接「${targetLabel}」中不存在已添加的模型「${modelId}」；添加新模型请使用模型配置卡片。`);
+            }
+            const beforeModel = clone(targetList[idx]!);
+            const merged: CustomModelConfig = { ...beforeModel, ...patch, id: beforeModel.id };
+
+            // Keep vision aligned when modalities are updated without explicit vision flag.
+            if (patch.modalities !== undefined && patch.vision === undefined) {
+              merged.vision = patch.modalities.includes("image");
+            }
+            // Keep thinkingEnabled aligned when reasoning is toggled off without explicit thinkingEnabled.
+            if (patch.reasoning === false && patch.thinkingEnabled === undefined) {
+              merged.thinkingEnabled = false;
+              if (patch.thinkingLevels === undefined) delete merged.thinkingLevels;
+              if (patch.thinkingLevelMap === undefined) delete merged.thinkingLevelMap;
+            }
+            // If nativeTools.webSearch is explicitly enabled, enforce API and official-source guards.
+            if (patch.nativeTools?.webSearch === true) {
+              if (targetApi === "google-generative-ai" || targetApi === "google-vertex") {
+                throw new Error(`Google API 不支持将原生联网搜索与智能体函数工具同时使用，请保持「${modelId}」的联网搜索关闭。`);
+              }
+              if (!officialSearchAllowed) {
+                throw new Error(`连接「${targetLabel}」当前不支持开启「${modelId}」的原生联网搜索（仅支持原厂官方接口及 OpenRouter 官方接入）。`);
+              }
+            }
+            if (isConversationModel(merged) && typeof merged.contextWindow === "number" && typeof merged.maxTokens === "number" && merged.maxTokens > merged.contextWindow) {
+              throw new Error(`模型「${modelId}」的最大输出 (${merged.maxTokens}) 不能超过上下文窗口 (${merged.contextWindow})。`);
+            }
+
+            // Single-source validation identical to ModelConfiguration and Settings save.
+            validateConfigurationModel(merged, targetApi);
+            const [sanitized] = sanitizeCustomModelList([merged], targetApi);
+            if (!sanitized) {
+              throw new Error(`模型「${modelId}」的校准参数无效。`);
+            }
+
+            const diffLine = describeModelDiff(targetLabel, beforeModel, sanitized);
+            if (diffLine) {
+              targetList[idx] = sanitized;
+              touchedKeys.add(targetKey);
+              changedProviders.add(providerId);
+              changedModels += 1;
+              changes.push(diffLine);
+
+              // Keep active default thinking level valid if the calibrated model is the current default.
+              if (
+                (next.defaultProvider === providerId || (!next.defaultProvider && providerId === "moco-gateway")) &&
+                next.defaultModel === modelId &&
+                isConversationModel(sanitized)
+              ) {
+                const allowedEfforts = sanitized.reasoning === false || sanitized.thinkingEnabled === false
+                  ? ["off"]
+                  : sanitized.thinkingLevels?.map((level) => level.id);
+                if (allowedEfforts?.length && !allowedEfforts.includes(next.thinkingLevel)) {
+                  next.thinkingLevel = allowedEfforts.includes("medium") ? "medium" : allowedEfforts[0]!;
+                  touchedKeys.add("thinkingLevel");
+                }
+              }
+            }
+          }
+        }
+
+        if (changes.length === 0) {
+          return {
+            id: commandId,
+            kind: "settings" as const,
+            title: (title?.trim() || "模型配置无需调整").slice(0, 100),
+            changes: ["所选模型的当前参数已与目标配置一致，无需修改。"],
+            status: "applied" as const,
+            requiresConfirmation: false,
+            canUndo: false,
+          };
+        }
+
+        const before: Record<string, unknown> = {};
+        const after: Record<string, unknown> = {};
+        for (const key of touchedKeys) {
+          before[key] = field(doc.model, key) ?? null;
+        }
+        applySettingsBlockUpdate(doc, "model", expectedRevision, next);
+        state.observedRevisions.model = doc.revisions.model;
+        for (const key of touchedKeys) {
+          after[key] = field(doc.model, key) ?? null;
+        }
+
+        const defaultTitle = `已校准模型配置（${changedProviders.size} 个连接 · ${changedModels} 个模型）`;
+        const actionView: SettingsAssistantAction = {
+          id: commandId,
+          kind: "settings",
+          title: (title?.trim() || defaultTitle).slice(0, 100),
+          changes: changes.map((line) => this.#redact(line).slice(0, 300)),
+          status: "applied",
+          requiresConfirmation: false,
+          canUndo: true,
+        };
+        state.actions.push({
+          view: actionView,
+          block: "model",
+          before,
+          after,
+          revision: doc.revisions.model,
+        });
+        applied = clone(doc) as MocoDurableSettings;
+        return clone(actionView);
+      }, BACKGROUND_CONTEXT);
+
+      if (applied) await this.#host.applied(applied);
       await this.#emit();
       return view;
     });

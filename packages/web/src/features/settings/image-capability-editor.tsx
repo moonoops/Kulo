@@ -20,13 +20,27 @@ const customAdapterTemplate: CustomImageAdapter = {
   response: { imagesPath: "data", base64Path: "b64_json" },
 };
 
+const isOfficialOpenAi = (url: string | undefined): boolean => {
+  try { return Boolean(url) && new URL(url!).origin === "https://api.openai.com"; }
+  catch { return false; }
+};
+
 export function createImageDraftConfig(workspace: CapabilitiesWorkspaceSnapshot): ImageCapabilityConfiguration {
   const provider = workspace.imageSetup?.providers.find((item) => item.authType === "api_key" && item.authenticated && item.imageSupported && item.baseUrl);
   const adapter = provider?.api === "google-generative-ai" ? "gemini-image" : "openai-image";
   const preset = IMAGE_MODEL_PRESETS.find((item) => item.adapter === adapter && item.modelId === (adapter === "gemini-image" ? "gemini-nano-banana-2.1" : "gpt-image-2.6-flare"))!;
-  return { name: preset.name, adapter, baseUrl: provider?.baseUrl ?? preset.baseUrl, modelId: preset.modelId,
-    credentialProviderId: provider?.id ?? null, enabled: true, allowTaskGeneration: false, maxOutputs: 1,
-    imageProfile: clone(preset.profile), defaults: clone(preset.defaults) };
+  const usePreset = !provider || adapter === "gemini-image" || isOfficialOpenAi(provider.baseUrl);
+  return {
+    name: usePreset ? preset.name : "",
+    adapter,
+    baseUrl: provider?.baseUrl ?? preset.baseUrl,
+    modelId: usePreset ? preset.modelId : "",
+    credentialProviderId: provider?.id ?? null,
+    enabled: true,
+    allowTaskGeneration: true,
+    maxOutputs: 1,
+    ...(usePreset ? { imageProfile: clone(preset.profile), defaults: clone(preset.defaults) } : { defaults: {} }),
+  };
 }
 
 export function imageConfigFromCapability(workspace: CapabilitiesWorkspaceSnapshot, capability: CapabilityRecord): ImageCapabilityConfiguration {
@@ -114,20 +128,33 @@ export function ImageCapabilityFields({ config, providers, onChange, apiKey, onA
 }) {
   const { t } = useI18n();
   const [source, setSource] = useState<"existing" | "api" | "subscription">(config.credentialProviderId ? "existing" : "api");
+  const validityCallback = useRef(onValidityChange);
+  validityCallback.current = onValidityChange;
   const profile = config.imageProfile ?? getImageModelPreset(config.adapter, config.modelId)?.profile;
   const customModel = config.adapter === "custom-image" || !getImageModelPreset(config.adapter, config.modelId);
   const parameters = config.defaults ?? {};
   const updateParameters = (changes: Partial<ImageGenerationParameters>) => onChange({ ...config, defaults: mergeImageGenerationParameters(parameters, changes) });
   useEffect(() => { if (config.credentialProviderId) setSource("existing"); }, [config.credentialProviderId]);
+  useEffect(() => {
+    const sourceValid = source === "api" || (source === "existing" && Boolean(config.credentialProviderId));
+    validityCallback.current?.(sourceValid, "source");
+  }, [source, config.credentialProviderId]);
   const selectProvider = (id: string) => {
     const provider = providers.find((item) => item.id === id);
     if (!provider?.authenticated || !provider.baseUrl || !provider.imageSupported && config.adapter !== "custom-image") return;
     if (config.adapter === "custom-image") { onChange({ ...config, credentialProviderId: id, baseUrl: provider.baseUrl }); onApiKeyChange(""); return; }
     const adapter: MediaAdapterId = provider.api === "google-generative-ai" ? "gemini-image" : "openai-image";
-    const preset = getImageModelPreset(adapter, config.modelId) ?? IMAGE_MODEL_PRESETS.find((item) => item.adapter === adapter)!;
-    onChange({ ...config, adapter, credentialProviderId: id, baseUrl: provider.baseUrl, modelId: preset.modelId,
-      name: config.name === IMAGE_MODEL_PRESETS.find((item) => item.modelId === config.modelId)?.name ? preset.name : config.name,
-      imageProfile: clone(preset.profile), defaults: clone(preset.defaults), customAdapter: undefined });
+    const usePreset = adapter === "gemini-image" || isOfficialOpenAi(provider.baseUrl);
+    const preset = getImageModelPreset(adapter, config.modelId) ?? (usePreset ? IMAGE_MODEL_PRESETS.find((item) => item.adapter === adapter) : undefined);
+    if (preset) {
+      onChange({ ...config, adapter, credentialProviderId: id, baseUrl: provider.baseUrl, modelId: preset.modelId,
+        name: !config.name || config.name === IMAGE_MODEL_PRESETS.find((item) => item.modelId === config.modelId)?.name ? preset.name : config.name,
+        imageProfile: clone(preset.profile), defaults: clone(preset.defaults), customAdapter: undefined });
+    } else {
+      onChange({ ...config, adapter, credentialProviderId: id, baseUrl: provider.baseUrl, modelId: "",
+        name: IMAGE_MODEL_PRESETS.some((item) => item.name === config.name) ? "" : config.name,
+        imageProfile: undefined, defaults: {}, customAdapter: undefined });
+    }
     onApiKeyChange("");
   };
   const modelOptions = IMAGE_MODEL_PRESETS.some((item) => item.modelId === config.modelId) ? IMAGE_MODEL_PRESETS : IMAGE_MODEL_PRESETS.filter((item) => !config.modelId || `${item.modelId} ${item.name}`.toLowerCase().includes(config.modelId.toLowerCase()));
@@ -137,7 +164,6 @@ export function ImageCapabilityFields({ config, providers, onChange, apiKey, onA
       const next = value as typeof source; setSource(next); onApiKeyChange("");
       if (next === "api") onChange({ ...config, credentialProviderId: null });
       if (next === "existing") { const provider = providers.find((item) => (item.imageSupported || config.adapter === "custom-image") && item.authenticated && item.authType === "api_key"); if (provider) selectProvider(provider.id); }
-      onValidityChange?.(next !== "subscription", "source");
     }} isDisabled={disabled} className="flex flex-wrap gap-3">
       {[{ id: "existing", label: t("使用现有连接", "Use existing connection") }, { id: "api", label: t("新增 API 连接", "New API connection") }, { id: "subscription", label: t("订阅授权", "Subscription authorization") }].map((item) => <Radio key={item.id} value={item.id}><Radio.Content><Radio.Control><Radio.Indicator /></Radio.Control>{item.label}</Radio.Content></Radio>)}
     </RadioGroup>
@@ -207,7 +233,7 @@ export function ImageCapabilityFields({ config, providers, onChange, apiKey, onA
         <h3 className="moco-group-title">{t("使用规则", "Usage rules")}</h3>
         <ImageToggle label={t("启用模型", "Enable model")} value={config.enabled ?? true} onChange={(enabled) => onChange({ ...config, enabled })} disabled={disabled} />
         <ImageToggle label={t("设为默认图像模型", "Set as default image model")} value={config.isDefault ?? false} onChange={(isDefault) => onChange({ ...config, isDefault })} disabled={disabled} />
-        <ImageToggle label={t("允许 Moco 在任务中调用", "Allow Moco to use in tasks")} value={config.allowTaskGeneration ?? false} onChange={(allowTaskGeneration) => onChange({ ...config, allowTaskGeneration })} disabled={disabled} />
+        <ImageToggle label={t("允许 Moco 在任务中调用", "Allow Moco to use in tasks")} value={config.allowTaskGeneration ?? true} onChange={(allowTaskGeneration) => onChange({ ...config, allowTaskGeneration })} disabled={disabled} />
         <ImageNumber label={t("单次图片上限", "Maximum images per job")} value={config.maxOutputs ?? 1} maximum={8} onChange={(maxOutputs) => onChange({ ...config, maxOutputs: maxOutputs ?? 1 })} disabled={disabled} />
         <ImageText label={t("适用任务", "Preferred tasks")} value={config.routing?.useCases?.join("、") ?? ""} onChange={(value) => onChange({ ...config, routing: { ...config.routing, useCases: value.split(/[,，、\n]/).map((item) => item.trim()).filter(Boolean) } })} disabled={disabled} placeholder={t("产品图、文字排版、快速草稿", "Product images, typography, quick drafts")} />
         <ImageText label={t("调用偏好", "Model selection guidance")} value={config.routing?.instructions ?? ""} onChange={(instructions) => onChange({ ...config, routing: { ...config.routing, instructions } })} disabled={disabled} multiline />

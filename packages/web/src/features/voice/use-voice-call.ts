@@ -1,9 +1,11 @@
+/// <reference types="vite/client" />
 import { useCallback, useEffect, useRef, useState } from "react";
 import { translate as t } from "../../moco-i18n";
 import { redactSecrets, type VoiceCallEvent, type VoiceCallSession, type VoiceCallState } from "@moco/protocol";
 import { pauseOtherMedia } from "../chat/media-message";
 import { voiceApi, voiceSocketUrl } from "./voice-api";
 import { MicrophoneActivity, Pcm16Resampler, VoicePlayback, pcm16Base64 } from "./voice-audio";
+import voiceCaptureWorkletUrl from "./voice-capture.worklet.js?url&no-inline";
 import { isMicrophonePermissionFailure, microphonePermissionFailureMessage } from "../system-permissions/permission-recovery";
 import { noteMicrophoneAccess } from "../system-permissions/system-permissions";
 
@@ -29,10 +31,19 @@ export function mergeVoiceCaption(previous: VoiceCaption[], event: Extract<Voice
   return previous.map((item, at) => at === index ? { ...item, text: event.text, final: event.final } : item);
 }
 
-function callError(error: unknown): string {
+export const VOICE_CAPTURE_WORKLET_URL = voiceCaptureWorkletUrl;
+
+export function formatVoiceCallError(error: unknown): string {
   if (isMicrophonePermissionFailure(error)) return microphonePermissionFailureMessage();
   if (error instanceof DOMException && error.name === "NotFoundError") return t("未找到麦克风", "No microphone found");
-  return redactSecrets(error instanceof Error ? error.message : t("通话连接失败，请重试", "Call connection failed. Try again"));
+  const raw = error instanceof Error ? error.message : "";
+  if (/worklet module/i.test(raw)) return t("无法初始化语音采集模块，请刷新页面后重试", "Unable to initialize voice capture. Refresh and try again");
+  const cleaned = redactSecrets(raw.replace(/\bdata:[a-z0-9.+/-]+(?:;[^,\s)]+)*,[^\s)]+/gi, "[data-url]")).replace(/\s+/g, " ").trim();
+  return cleaned || t("通话连接失败，请重试", "Call connection failed. Try again");
+}
+
+function callError(error: unknown): string {
+  return formatVoiceCallError(error);
 }
 
 interface CallResources {
@@ -112,14 +123,21 @@ export function useVoiceCall(clientId: string, beforeStart: () => void) {
       if (currentOperation !== operation.current) { stream.getTracks().forEach((track) => track.stop()); return; }
       current.stream = stream;
       stream.getAudioTracks().forEach((track) => { track.enabled = !current.muted; });
+      try {
+        const workletUrl = new URL(voiceCaptureWorkletUrl, window.location.href);
+        if (workletUrl.origin !== window.location.origin) throw new Error("Cross-origin voice capture worklet");
+        await context.audioWorklet.addModule(workletUrl.href);
+      } catch (workletError) {
+        console.warn("Voice capture worklet failed to load", callError(workletError));
+        throw new Error(t("无法初始化语音采集模块，请刷新页面后重试", "Unable to initialize voice capture. Refresh and try again"));
+      }
+      if (currentOperation !== operation.current) return;
       const session = await voiceApi.createCall({ topicId: target.topicId, ...(target.projectId ? { projectId: target.projectId } : {}), clientId, commandId: `voice-${crypto.randomUUID()}` }, current.controller.signal);
       current.session = session;
       if (currentOperation !== operation.current) {
         void voiceApi.closeCall(session.id, clientId).catch((error: unknown) => { console.warn("Voice session cleanup failed", callError(error)); });
         return;
       }
-      await context.audioWorklet.addModule(new URL("./voice-capture.worklet.js", import.meta.url).href);
-      if (currentOperation !== operation.current) return;
       const socket = new WebSocket(voiceSocketUrl(session.wsPath, clientId));
       current.socket = socket;
       const capture = new AudioWorkletNode(context, "moco-voice-capture", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });

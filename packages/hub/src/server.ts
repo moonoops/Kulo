@@ -1843,6 +1843,40 @@ export async function startMocoHubServer(
             ...(typeof body.apiKey === "string" && body.apiKey.trim()
               ? { apiKey: body.apiKey.trim() }
               : {}),
+            ...(body.refreshMetadata === true ? { refreshMetadata: true } : {}),
+          });
+          sendJson(res, 200, result);
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/api/providers/resolve-model") {
+          const body = (await readJsonBody(req)) as Partial<import("@moco/protocol").ResolveModelMetadataRequest>;
+          const api = body.api;
+          const modelId = typeof body.modelId === "string" ? body.modelId.trim() : "";
+          if (!modelId) {
+            sendJson(res, 400, { error: "请填写模型 ID" });
+            return;
+          }
+          if (
+            typeof api !== "string" ||
+            !(CUSTOM_PROVIDER_APIS as readonly string[]).includes(api)
+          ) {
+            sendJson(res, 400, { error: "无效的 API 协议类型" });
+            return;
+          }
+          const result = await hub.resolveModelMetadata({
+            modelId,
+            api: api as CustomProviderApi,
+            ...(typeof body.providerId === "string" && body.providerId.trim()
+              ? { providerId: body.providerId.trim() }
+              : {}),
+            ...(typeof body.preset === "string" && body.preset.trim()
+              ? { preset: body.preset.trim() }
+              : {}),
+            ...(typeof body.baseUrl === "string" && body.baseUrl.trim()
+              ? { baseUrl: body.baseUrl.trim() }
+              : {}),
+            ...(body.refreshMetadata === true ? { refreshMetadata: true } : {}),
           });
           sendJson(res, 200, result);
           return;

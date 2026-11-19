@@ -753,6 +753,13 @@ export interface ModelProbeRequest {
   model?: string;
 }
 
+export type ModelMetadataSource =
+  | "provider-api"
+  | "models.dev"
+  | "pi-ai"
+  | "litellm"
+  | "default";
+
 export interface DiscoverModelsRequest {
   providerId?: string;
   preset?: string;
@@ -761,6 +768,23 @@ export interface DiscoverModelsRequest {
   apiKey?: string;
   vertexProject?: string;
   vertexLocation?: string;
+  /** When true, also refresh the online public model metadata registry on demand. */
+  refreshMetadata?: boolean;
+}
+
+export interface ResolveModelMetadataRequest {
+  modelId: string;
+  api: CustomProviderApi;
+  providerId?: string;
+  preset?: string;
+  baseUrl?: string;
+  refreshMetadata?: boolean;
+}
+
+export interface ResolveModelMetadataResponse {
+  model: ProviderModelItem;
+  allowedThinkingWireValues?: string[];
+  nativeSearchAllowed: boolean;
 }
 
 export interface ProviderModelItem {
@@ -784,6 +808,7 @@ export interface ProviderModelItem {
   thinkingLevelMap?: ThinkingLevelMapConfig;
   thinkingLevels?: ThinkingLevelOption[];
   nativeTools?: ModelNativeTools;
+  metadataSource?: ModelMetadataSource;
 }
 
 export interface DiscoverModelsResponse {

@@ -2,7 +2,7 @@ import type { SettingsAssistantModule } from "@moco/protocol";
 
 const MODULE_RULES: Readonly<Record<SettingsAssistantModule, string>> = {
   models: [
-    "- Models page: use model configuration tools to inspect/prepare drafts and discover models. Credentials, final model selection, saving, and live probe confirmation are completed by the user on the model configuration card; never mark unprobed capabilities as verified.",
+    "- Models page: for auditing or calibrating existing models across one or more connections, call `moco_model_metadata_lookup` first (fast structured registry lookup) and use `moco_model_calibrate` when the user asks to apply parameter fixes—it updates multiple connections atomically with an undoable receipt card. For adding new connections, changing endpoints/protocols, entering API keys, adding/removing models, or running live probes, use `moco_model_configuration_*` cards; never mark unprobed capabilities as verified.",
   ].join("\n"),
   workers: [
     "- Agents page: manage built-in Worker role presets via `moco_settings_update(block='roles', ...)` (`roleId.field` paths). For external CLI/SDK clients (Codex, Claude Code, Antigravity, DSH, experimental Grok Bot; Dots/Muse are reserved guides only), read the current draft first and use `moco_agent_configuration_*` tools—protocol checks and live roundtrip verification are distinct evidence, and live tests require explicit user consent.",
@@ -68,11 +68,16 @@ export const VOICE_FALLBACK_INSTRUCTIONS =
   "You are Moco in a live voice call with the user. Speak naturally and concisely in the user's language, respond immediately to interruptions, and delegate unpreloaded lookups or actions to the Moco backend rather than guessing.";
 
 export const MODEL_CONFIGURATION_GUIDE = [
-  "## Model Configuration Tools",
-  "- Call `moco_model_configuration_read` first to inspect any active draft and editable API connections; continue an existing draft or call `prepare` with public name, base URL, and supported protocol (subscriptions use built-in OAuth flows).",
-  "- Credentials are entered strictly in the user's secret card—never pass `apiKey`, passwords, Authorization headers, or cookies to tools.",
-  "- `discover` reads live model catalogs (catalog defaults are unverified). `update` proposes model parameters and selections (`purpose`: `chat` | `image` | `tts` | `asr` | `live`; non-`chat` models may set `protocolAdapter`, `voices`, or `imageProfile`; `default_model_id` applies only to `chat` models; `nativeTools.webSearch` applies only to supported official providers/subscriptions).",
-  "- Ask the user which connection to inspect when calibrating or troubleshooting rather than guessing. Never claim max context window, multimodal input, tool calling, or reasoning parameters are verified from a short text probe; final model selection, saving, and paid probes require user confirmation on the card without overwriting unsaved drafts.",
+  "## Model Configuration & Calibration Tools",
+  "- **Inspecting & calibrating existing models (fast path, supports multiple connections at once)**:",
+  "  - Call `moco_model_metadata_lookup` first (omit `provider_id` and `model_ids` to inspect all configured connections together; it refreshes online public registries on demand and returns recommended contextWindow, maxTokens, modalities, legal thinking levels, and nativeSearchAllowed). Only fall back to `web_search` when a brand-new model has `metadataSource: 'default'`.",
+  "  - When the user asks to apply/update calibrated parameters for existing models, call `moco_model_calibrate` with all target connections in a single atomic `updates_json` batch (never tell the user to confirm one card at a time). It applies immediately with an undoable diff receipt card and never touches endpoints, protocols, or credentials.",
+  "- **Adding new connections, changing URLs/protocols, entering API keys, or selecting new models**:",
+  "  - Call `moco_model_configuration_read` first to inspect active drafts and editable connections, then `prepare` / `discover` / `update` (multiple drafts for distinct connections are supported; pass `draft_id` when multiple drafts exist). Credentials are entered strictly in the user's secret card—never pass `apiKey`, passwords, Authorization headers, or cookies to tools.",
+  "- **Protocol constraints (strictly enforced)**:",
+  "  - Google Gemini / Vertex AI (`google-generative-ai` / `google-vertex`): thinking wire values only allow `off`, `minimal`, `low`, `medium`, `high` (never `xhigh` or `max`); `nativeTools.webSearch` must stay `false` (incompatible with agent function tools).",
+  "  - `nativeTools.webSearch: true` is allowed only on supported official vendor APIs (OpenAI Responses, Anthropic Messages, xAI Responses, OpenRouter official preset); third-party APIs keep it off.",
+  "  - Never claim max context window, multimodal input, tool calling, or reasoning parameters are live-verified from catalog metadata or a short text probe.",
 ].join("\n");
 
 export const APPEARANCE_CUSTOMIZATION_GUIDE = [

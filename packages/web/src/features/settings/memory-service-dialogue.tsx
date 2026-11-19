@@ -39,10 +39,47 @@ export interface MemoryServiceDraft {
   deleteData: boolean;
 }
 
-function initialDraft(operation: MemoryDialogueOperation, snapshot: MemoryServiceSnapshot): MemoryServiceDraft {
+export function initialMemoryServiceDraft(
+  operation: MemoryDialogueOperation,
+  snapshot: MemoryServiceSnapshot,
+  settings?: MocoSettingsView,
+): MemoryServiceDraft {
   const saved = snapshot.model;
+  if (saved) {
+    return {
+      operation,
+      provider: saved.provider,
+      model: saved.model,
+      baseUrl: saved.baseUrl ?? "",
+      connectionId: saved.connectionId ?? "",
+      deleteData: false,
+    };
+  }
+  if ((operation === "deploy" || operation === "configure") && settings) {
+    const connections = modelConnections(settings);
+    const preferredId = settings.blocks.model.value.defaultProvider;
+    const chosen =
+      connections.find((item) => item.id === preferredId && item.model) ??
+      connections.find((item) => Boolean(item.model)) ??
+      connections.find((item) => item.id === preferredId) ??
+      connections[0];
+    if (chosen) {
+      return {
+        operation,
+        provider: chosen.provider,
+        model: chosen.model || chosen.models[0] || "",
+        baseUrl: chosen.baseUrl,
+        connectionId: chosen.id,
+        deleteData: false,
+      };
+    }
+  }
   return {
-    operation, provider: saved?.provider ?? "openai", model: saved?.model ?? "", baseUrl: saved?.baseUrl ?? "", connectionId: saved?.connectionId ?? "",
+    operation,
+    provider: "openai",
+    model: "",
+    baseUrl: "",
+    connectionId: "",
     deleteData: false,
   };
 }
@@ -235,13 +272,13 @@ export function MemoryServiceForm({ draft, snapshot, settings, busy, error, onCh
         {modelForm && <>
           {connections.length > 0 && <Select variant="primary" className="moco-form-field" value={draft.connectionId || "__separate__"} onChange={(value) => {
             const connection = connections.find((item) => item.id === value);
-            onChange(connection ? { ...draft, connectionId: connection.id, provider: connection.provider, baseUrl: connection.baseUrl, model: connection.model || draft.model } : { ...draft, connectionId: "" });
+            onChange(connection ? { ...draft, connectionId: connection.id, provider: connection.provider, baseUrl: connection.baseUrl, model: connection.model || connection.models[0] || "" } : { ...draft, connectionId: "" });
           }} isDisabled={busy} fullWidth><Label>{t("模型凭据来源", "Model credentials")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger><Select.Popover><ListBox><ListBox.Item id="__separate__" textValue={t("单独配置", "Configure separately")}>{t("单独配置", "Configure separately")}<ListBox.ItemIndicator /></ListBox.Item>{connections.map((connection) => <ListBox.Item key={connection.id} id={connection.id} textValue={connection.label}>{connection.label}<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover></Select>}
           {!selectedConnection && <Select variant="primary" className="moco-form-field" value={draft.provider} onChange={(value) => { if (value) onChange({ ...draft, provider: String(value) as HindsightModelProvider, connectionId: "", baseUrl: "", model: "" }); }} isDisabled={busy} fullWidth>
             <Label>{t("模型供应商", "Model provider")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger><Select.Popover><ListBox>{modelProviders().map((provider) => <ListBox.Item key={provider.id} id={provider.id} textValue={provider.label}>{provider.label}<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover>
           </Select>}
           {selectableModels.length > 0
-            ? <Select variant="primary" className="moco-form-field" value={draft.model || selectableModels[0]} onChange={(value) => { if (value) onChange({ ...draft, model: String(value) }); }} isDisabled={busy} fullWidth>
+            ? <Select variant="primary" className="moco-form-field" placeholder={t("未选择", "Not selected")} value={draft.model && selectableModels.includes(draft.model) ? draft.model : null} onChange={(value) => { if (value) onChange({ ...draft, model: String(value) }); }} isDisabled={busy} fullWidth>
                 <Label>{t("记忆模型", "Memory model")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
                 <Select.Popover><ListBox>{selectableModels.map((modelId) => <ListBox.Item key={modelId} id={modelId} textValue={modelId}>{modelId}<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover>
               </Select>
@@ -271,7 +308,7 @@ export function MemoryServiceDialogue({ clientId, settings, connected, refreshKe
     setBusy(true); setError(undefined);
     try {
       const current = await load();
-      setDraft(initialDraft(operation, current));
+      setDraft(initialMemoryServiceDraft(operation, current, settings));
     } catch (cause) { if (alive.current) setError(redactSecrets(cause instanceof Error ? cause.message : t("无法读取记忆服务", "Unable to load memory service"))); }
     finally { if (alive.current) setBusy(false); }
   };

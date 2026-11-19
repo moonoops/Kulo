@@ -55,15 +55,42 @@ describe("model configuration workspace", () => {
     expect(draft.provider.id).toMatch(/^api-/); expect(draft.provider.id).not.toBe("anthropic");
     expect((await f.service.workspace("window-a")).presets?.some((item) => item.id === "google")).toBe(true);
   });
-  it("creates an isolated API identity and keeps windows and concurrent draft updates separate", async () => {
+  it("creates an isolated API identity, allows parallel drafts for distinct providers, and keeps windows and concurrent draft updates separate", async () => {
     const f = await fixture(); const draft = await f.fresh();
     expect(draft.provider.id).toMatch(/^api-/);
     expect((await f.service.workspace("window-b")).draft).toBeUndefined();
-    await expect(f.service.prepare({ clientId: "window-a" })).rejects.toMatchObject({ code: "model_draft_exists" });
-    const input = { clientId: "window-a", expectedRevision: draft.revision, provider: { ...draft.provider, name: "Updated" }, selectedModelIds: [] };
+    const existingDraft = await f.service.prepare({ clientId: "window-a", providerId: "api-existing" });
+    expect((await f.service.workspace("window-a")).drafts?.map((item) => item.id)).toEqual(expect.arrayContaining([draft.id, existingDraft.id]));
+    await expect(f.service.prepare({ clientId: "window-a", providerId: "api-existing" })).rejects.toMatchObject({ code: "model_draft_exists" });
+    const input = { clientId: "window-a", draftId: draft.id, expectedRevision: draft.revision, provider: { ...draft.provider, name: "Updated" }, selectedModelIds: [] };
     const results = await Promise.allSettled([f.service.updateDraft(input), f.service.updateDraft(input)]);
     expect(results.map((item) => item.status).sort()).toEqual(["fulfilled", "rejected"]);
     await expect(f.service.prepare({ clientId: "window-b", providerId: "openai" })).rejects.toMatchObject({ code: "model_provider_not_custom" });
+  });
+
+  it("rejects Google API invalid thinking levels and native web search immediately during draft update", async () => {
+    const f = await fixture();
+    const draft = await f.service.prepare({ clientId: "window-a", preset: "google-vertex" });
+    await expect(f.service.updateDraft({
+      clientId: draft.clientId,
+      draftId: draft.id,
+      expectedRevision: draft.revision,
+      provider: {
+        ...draft.provider,
+        models: [{ id: "gemini-4-carbon", contextWindow: 1_048_576, maxTokens: 65_536, thinkingLevels: [{ id: "xhigh", label: "xhigh", value: "xhigh" }] }],
+      },
+      selectedModelIds: ["gemini-4-carbon"],
+    })).rejects.toMatchObject({ code: "invalid_model_thinking" });
+    await expect(f.service.updateDraft({
+      clientId: draft.clientId,
+      draftId: draft.id,
+      expectedRevision: draft.revision,
+      provider: {
+        ...draft.provider,
+        models: [{ id: "gemini-4-carbon", contextWindow: 1_048_576, maxTokens: 65_536, nativeTools: { webSearch: true } }],
+      },
+      selectedModelIds: ["gemini-4-carbon"],
+    })).rejects.toMatchObject({ code: "invalid_model_native_tools" });
   });
 
   it("keeps draft credentials ephemeral, binds them to their origin, and never persists or returns them", async () => {
@@ -164,7 +191,7 @@ describe("model configuration workspace", () => {
     const originalCommit = f.harness.commit.bind(f.harness); let failed = false;
     const injected = vi.spyOn(f.harness, "commit").mockImplementation(async (...args) => {
       const doc = await f.harness.snapshot(ModelConfigurationDoc, BACKGROUND_CONTEXT);
-      if (!failed && Object.values(doc?.receipts ?? {}).some((receipt) => "providerId" in receipt.result) && doc?.drafts[draft.clientId]) { failed = true; throw new Error("injected cleanup storage failure"); }
+      if (!failed && Object.values(doc?.receipts ?? {}).some((receipt) => "providerId" in receipt.result) && doc?.drafts[draft.id]) { failed = true; throw new Error("injected cleanup storage failure"); }
       return originalCommit(...args);
     });
     try { await expect(f.service.save(input)).rejects.toThrow("injected cleanup storage failure"); }
@@ -185,7 +212,7 @@ describe("model configuration workspace", () => {
     const originalCommit = f.harness.commit.bind(f.harness); let failed = false;
     const injected = vi.spyOn(f.harness, "commit").mockImplementation(async (...args) => {
       const doc = await f.harness.snapshot(ModelConfigurationDoc, BACKGROUND_CONTEXT);
-      if (!failed && Object.values(doc?.receipts ?? {}).some((receipt) => "providerId" in receipt.result) && doc?.drafts[draft.clientId]) { failed = true; throw new Error("injected cleanup storage failure"); }
+      if (!failed && Object.values(doc?.receipts ?? {}).some((receipt) => "providerId" in receipt.result) && doc?.drafts[draft.id]) { failed = true; throw new Error("injected cleanup storage failure"); }
       return originalCommit(...args);
     });
     try { await expect(f.service.save(input)).rejects.toThrow("injected cleanup storage failure"); }
@@ -198,11 +225,30 @@ describe("model configuration workspace", () => {
     expect((await f.service.workspace(draft.clientId)).draft).toMatchObject({ id: draft.id, revision: newer.revision, provider: { name: "New unsaved edits" }, hasCredential: replaceCredential });
   });
 
-  it("rejects stale global settings and an unselected default before mutating", async () => {
-    const f = await fixture(); const draft = await f.selected();
-    await expect(f.service.updateDraft({ clientId: draft.clientId, expectedRevision: draft.revision, provider: draft.provider, selectedModelIds: ["chat"], defaultModelId: "other" })).rejects.toMatchObject({ code: "invalid_default_model" });
+  it("rejects stale target provider edits and an unselected default, while allowing independent drafts to save sequentially", async () => {
+    const f = await fixture();
+    const draftA = await f.selected();
+    let draftB = await f.service.prepare({ clientId: "window-a", providerId: "api-existing" });
+    draftB = await f.service.updateDraft({
+      clientId: draftB.clientId,
+      draftId: draftB.id,
+      expectedRevision: draftB.revision,
+      provider: { ...draftB.provider, models: [{ id: "chat", contextWindow: 128_000, maxTokens: 16_000, modalities: ["text", "image"] }] },
+      selectedModelIds: ["chat"],
+    });
+    await expect(f.service.updateDraft({ clientId: draftA.clientId, draftId: draftA.id, expectedRevision: draftA.revision, provider: draftA.provider, selectedModelIds: ["chat"], defaultModelId: "other" })).rejects.toMatchObject({ code: "invalid_default_model" });
+    // Saving draftA bumps global model revision, but draftB (targeting api-existing) can still save safely.
+    await f.service.save({ clientId: draftA.clientId, draftId: draftA.id, expectedRevision: draftA.revision, commandId: "save-a-first" });
+    const savedB = await f.service.save({ clientId: draftB.clientId, draftId: draftB.id, expectedRevision: draftB.revision, commandId: "save-b-second" });
+    expect(savedB.providerId).toBe("api-existing");
+
+    // Mutating the same target provider externally MUST still reject with model_settings_changed.
+    let staleDraft = await f.service.prepare({ clientId: "window-a", providerId: "api-existing" });
+    staleDraft = await f.service.updateDraft({ clientId: staleDraft.clientId, draftId: staleDraft.id, expectedRevision: staleDraft.revision, provider: staleDraft.provider, selectedModelIds: ["chat"] });
+    f.state.settings.blocks.model.value.customProviders = f.state.settings.blocks.model.value.customProviders!.map((p) =>
+      p.id === "api-existing" ? { ...p, name: "Edited elsewhere" } : p,
+    );
     f.state.settings.blocks.model.revision += 1;
-    await expect(f.service.save({ clientId: draft.clientId, expectedRevision: draft.revision, commandId: "stale-save" })).rejects.toMatchObject({ code: "model_settings_changed" });
-    expect(f.saveProvider).not.toHaveBeenCalled();
+    await expect(f.service.save({ clientId: staleDraft.clientId, draftId: staleDraft.id, expectedRevision: staleDraft.revision, commandId: "stale-save" })).rejects.toMatchObject({ code: "model_settings_changed" });
   });
 });

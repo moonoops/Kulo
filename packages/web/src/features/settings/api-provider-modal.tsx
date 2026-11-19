@@ -202,6 +202,7 @@ export function ApiProviderModal({
     vertexProject?: string;
     vertexLocation?: string;
     apiKey: string;
+    refreshMetadata?: boolean;
   }) => {
     const cleanUrl = params.baseUrl.trim();
     if (params.providerKind === "third-party" && !cleanUrl) {
@@ -233,6 +234,7 @@ export function ApiProviderModal({
         ...(!officialCatalog && params.api === "google-vertex" && params.vertexProject?.trim()
           ? { vertexProject: params.vertexProject.trim(), vertexLocation: params.vertexLocation?.trim() }
           : {}),
+        ...(params.refreshMetadata ? { refreshMetadata: true } : {}),
       };
       const res: { ok: boolean; models: ProviderModelItem[]; error?: string } = params.mode === "subscription" && params.editingProviderId
         ? { ok: true, models: await onDiscoverSubscription(params.editingProviderId, controller.signal) }
@@ -387,6 +389,7 @@ export function ApiProviderModal({
       vertexProject,
       vertexLocation,
       apiKey,
+      refreshMetadata: true,
     });
   };
 
@@ -401,12 +404,16 @@ export function ApiProviderModal({
       setManualModelId("");
       return;
     }
+    const existingCatalogItem = availableModels.find((item) => item.id === cleanId);
     const targetPurpose = isSubscription
       ? "chat"
       : addedPurposeFilter !== "all"
         ? addedPurposeFilter
         : inferModelPurpose({ id: cleanId });
-    const entry = buildManualModelConfig(cleanId, targetPurpose, api, activePresetId);
+    const entry = existingCatalogItem && (!isSubscription || isConversationModel(existingCatalogItem))
+      ? modelConfigFromCatalog(existingCatalogItem, api, { presetId: activePresetId, officialSource })
+      : buildManualModelConfig(cleanId, targetPurpose, api, activePresetId);
+    const initialSnapshot = JSON.stringify(entry);
     setAddedModels((prev) => [...prev, entry]);
     setSearchAdded("");
     if (addedPurposeFilter !== "all" && addedPurposeFilter !== targetPurpose) {
@@ -415,6 +422,31 @@ export function ApiProviderModal({
     setExpandedId(cleanId);
     setModelPane("added");
     setManualModelId("");
+    if (!existingCatalogItem && !isSubscription && active) {
+      const targetApi = api;
+      const targetPreset = activePresetId;
+      const targetOfficial = officialSource;
+      const targetProviderId = active.mode !== "create" ? active.editingProviderId : undefined;
+      const targetBaseUrl = baseUrl.trim();
+      void mocoRest.resolveModelMetadata({
+        modelId: cleanId,
+        api: targetApi,
+        ...(targetProviderId ? { providerId: targetProviderId } : {}),
+        ...(targetPreset ? { preset: targetPreset } : {}),
+        ...(targetBaseUrl ? { baseUrl: targetBaseUrl } : {}),
+      }).then((resolved) => {
+        if (!resolved?.model || resolved.model.metadataSource === "default") return;
+        const enriched = modelConfigFromCatalog(resolved.model, targetApi, {
+          presetId: targetPreset,
+          officialSource: targetOfficial,
+        });
+        setAddedModels((prev) =>
+          prev.map((item) => (item.id === cleanId && JSON.stringify(item) === initialSnapshot ? enriched : item)),
+        );
+      }).catch(() => {
+        // Metadata lookup is best-effort; keep manual defaults if offline or unavailable.
+      });
+    }
   };
 
   const updateAddedModel = (id: string, patch: Partial<CustomModelConfig>) => {

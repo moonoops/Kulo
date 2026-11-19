@@ -89,6 +89,7 @@ describe("configured model selection", () => {
   it("starts with no provider selection while preserving explicitly selected legacy gateways", () => {
     expect(selectedDefaultProvider({ ...model, defaultProvider: undefined, defaultModel: "" })).toBe("");
     expect(selectedDefaultProvider({ ...model, defaultProvider: "", defaultModel: "" })).toBe("");
+    expect(selectedDefaultProvider({ ...model, defaultProvider: undefined, gatewayDisabled: true })).toBe("");
     expect(selectedDefaultProvider({ ...model, defaultProvider: undefined })).toBe("moco-gateway");
   });
 
@@ -101,6 +102,7 @@ describe("configured model selection", () => {
     expect(html).toContain("未选择");
     expect(html).not.toContain('role="radio');
     expect(html).not.toContain("gpt-4o");
+    expect(html).not.toContain("中等");
   });
 
   it("preserves full connection and model names when compact controls have limited width", () => {

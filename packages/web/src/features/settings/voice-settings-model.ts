@@ -12,7 +12,7 @@ export type VoiceFormScope = "tts" | "call";
 export type VoiceToggleScope = "asr" | VoiceFormScope;
 
 export interface TtsDraft {
-  provider: VoiceTtsProvider;
+  provider?: VoiceTtsProvider;
   providerId?: string;
   modelId: string;
   voice: string;
@@ -20,7 +20,7 @@ export interface TtsDraft {
 }
 
 export interface CallDraft {
-  provider: VoiceLiveProvider;
+  provider?: VoiceLiveProvider;
   providerId?: string;
   modelId: string;
   voice: string;
@@ -52,14 +52,14 @@ export function liveProviderForAdapter(adapter?: ModelProtocolAdapter): VoiceLiv
 export function voiceSettingsDraft(snapshot: VoiceSnapshot): VoiceSettingsDraft {
   return {
     tts: {
-      provider: snapshot.tts.provider,
+      ...(snapshot.tts.provider ? { provider: snapshot.tts.provider } : {}),
       ...(snapshot.tts.providerId ? { providerId: snapshot.tts.providerId } : {}),
       modelId: snapshot.tts.modelId,
       voice: snapshot.tts.voice,
       speed: snapshot.tts.speed,
     },
     call: {
-      provider: snapshot.call.provider,
+      ...(snapshot.call.provider ? { provider: snapshot.call.provider } : {}),
       ...(snapshot.call.providerId ? { providerId: snapshot.call.providerId } : {}),
       modelId: snapshot.call.modelId,
       voice: snapshot.call.voice,
@@ -78,7 +78,7 @@ export function voiceSettingsInput(draft: VoiceSettingsDraft, snapshot: VoiceSna
       expectedRevision: snapshot.revision,
       tts: {
         enabled: snapshot.tts.enabled,
-        provider: draft.tts.provider,
+        ...(draft.tts.provider ? { provider: draft.tts.provider } : {}),
         ...providerIdPatch,
         modelId: draft.tts.modelId.trim(),
         voice: draft.tts.voice.trim(),
@@ -95,7 +95,7 @@ export function voiceSettingsInput(draft: VoiceSettingsDraft, snapshot: VoiceSna
     expectedRevision: snapshot.revision,
     call: {
       enabled: snapshot.call.enabled,
-      provider: draft.call.provider,
+      ...(draft.call.provider ? { provider: draft.call.provider } : {}),
       ...providerIdPatch,
       modelId: draft.call.modelId.trim(),
       voice: draft.call.voice.trim(),
@@ -121,7 +121,7 @@ export function voiceToggleInput(snapshot: VoiceSnapshot, scope: VoiceToggleScop
       expectedRevision: snapshot.revision,
       tts: {
         enabled,
-        provider: snapshot.tts.provider,
+        ...(snapshot.tts.provider ? { provider: snapshot.tts.provider } : {}),
         ...(snapshot.tts.providerId ? { providerId: snapshot.tts.providerId } : {}),
         modelId: snapshot.tts.modelId,
         voice: snapshot.tts.voice,
@@ -133,7 +133,7 @@ export function voiceToggleInput(snapshot: VoiceSnapshot, scope: VoiceToggleScop
     expectedRevision: snapshot.revision,
     call: {
       enabled,
-      provider: snapshot.call.provider,
+      ...(snapshot.call.provider ? { provider: snapshot.call.provider } : {}),
       ...(snapshot.call.providerId ? { providerId: snapshot.call.providerId } : {}),
       modelId: snapshot.call.modelId,
       voice: snapshot.call.voice,
@@ -240,28 +240,5 @@ export function selectCallModelOption(
     providerId: option.providerId,
     modelId: option.modelId,
     voice,
-  };
-}
-
-export function changeTtsProvider(draft: TtsDraft, provider: VoiceTtsProvider): TtsDraft {
-  if (provider === draft.provider) return draft;
-  const { providerId: _pid, ...rest } = draft;
-  return {
-    ...rest,
-    provider,
-    modelId: provider === "gemini" ? "gemini-3.8-flash-tts" : provider === "openai" ? "gpt-4o-mini-tts" : "speech-2.8-turbo",
-    voice: provider === "gemini" ? "Kore" : provider === "openai" ? "alloy" : "male-qn-qingse",
-    speed: "normal",
-  };
-}
-
-export function changeCallProvider(draft: CallDraft, provider: VoiceLiveProvider): CallDraft {
-  if (provider === draft.provider) return draft;
-  const { providerId: _pid, ...rest } = draft;
-  return {
-    ...rest,
-    provider,
-    modelId: provider === "openai" ? "gpt-live-1" : "gemini-3.8-live",
-    voice: provider === "openai" ? "marin" : "Aoede",
   };
 }

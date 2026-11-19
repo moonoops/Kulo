@@ -371,7 +371,7 @@ export class MocoCapabilities {
           id: capabilityId, name, connectionId, modelId, ...meta,
           enabled: raw.enabled ?? current?.enabled ?? true,
           isDefault: raw.isDefault ?? current?.isDefault ?? false,
-          allowTaskGeneration: raw.allowTaskGeneration ?? current?.allowTaskGeneration ?? false,
+          allowTaskGeneration: raw.allowTaskGeneration ?? current?.allowTaskGeneration ?? (meta.kind === "image"),
           maxOutputs: raw.maxOutputs ?? current?.maxOutputs ?? 1,
           imageProfile: profile, defaults, routing,
           revision: (current?.revision ?? 0) + 1,

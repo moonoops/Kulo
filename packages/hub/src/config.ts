@@ -283,6 +283,22 @@ export function resolveHubConfig(overrides: MocoHubConfigOverrides = {}): MocoHu
     overrides.model?.defaultModel?.trim() ??
     process.env.MOCO_MODEL?.trim() ?? "";
 
+  const hasExplicitGateway = Boolean(
+    overrides.model?.gatewayDisabled === false ||
+    overrides.model?.baseUrl?.trim() ||
+    overrides.model?.gatewayName?.trim() ||
+    overrides.model?.gatewayModels?.length ||
+    apiKey?.trim() ||
+    process.env.MOCO_BASE_URL?.trim() ||
+    process.env.OPENAI_BASE_URL?.trim() ||
+    defaultProvider === "moco-gateway" ||
+    (defaultModel && !defaultProvider),
+  );
+  const gatewayDisabled =
+    overrides.model?.gatewayDisabled !== undefined
+      ? Boolean(overrides.model.gatewayDisabled) && defaultProvider !== "moco-gateway"
+      : !hasExplicitGateway;
+
   const thinkingLevel =
     overrides.model?.thinkingLevel ??
     parseThinking(process.env.MOCO_THINKING_LEVEL?.trim(), "medium");
@@ -417,7 +433,7 @@ export function resolveHubConfig(overrides: MocoHubConfigOverrides = {}): MocoHu
       ...(overrides.model?.subscriptionModels !== undefined ? { subscriptionModels: overrides.model.subscriptionModels } : {}),
       ...(overrides.model?.gatewayName !== undefined ? { gatewayName: overrides.model.gatewayName } : {}),
       ...(overrides.model?.gatewayModels !== undefined ? { gatewayModels: overrides.model.gatewayModels } : {}),
-      ...(overrides.model?.gatewayDisabled !== undefined ? { gatewayDisabled: overrides.model.gatewayDisabled } : {}),
+      ...(gatewayDisabled ? { gatewayDisabled: true } : {}),
     },
     roles,
     memory,

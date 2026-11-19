@@ -9,7 +9,7 @@
 .moco-voice-call-topic-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .moco-voice-call-duration { flex: none; color: var(--muted); font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); font-variant-numeric: tabular-nums; }
 .moco-voice-call-status { max-width: 100%; margin: 0; color: var(--muted); font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); text-align: center; overflow-wrap: anywhere; }
-.moco-voice-call-error { max-width: 100%; margin: 0; color: var(--danger); font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); text-align: center; overflow-wrap: anywhere; }
+.moco-voice-call-error { @apply scrollbar; max-width: 100%; max-height: 5.5rem; margin: 0; overflow-y: auto; color: var(--danger); font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); text-align: center; overflow-wrap: anywhere; }
 .moco-voice-call-controls { display: flex; align-items: center; justify-content: center; gap: var(--moco-space-4); }
 .moco-voice-call-circle { flex: none; width: 44px; height: 44px; min-width: 44px; min-height: 44px; padding: 0; }
 .moco-voice-call-circle > svg { width: 22px; height: 22px; }

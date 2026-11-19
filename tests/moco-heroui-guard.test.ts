@@ -60,7 +60,7 @@ describe("HeroUI v3 Zero-Residue & Default Light/Dark Guard", () => {
       chatFontSize: 14,
     });
     expect(parseAppearance("light")).toEqual({ mode: "light", chatFontSize: 14 });
-    expect(parseAppearance("invalid-json{")).toEqual({ mode: "dark", chatFontSize: 14 });
+    expect(parseAppearance("invalid-json{")).toEqual({ mode: "system", chatFontSize: 14 });
 
     expect(resolveMode("system", true)).toBe("dark");
     expect(resolveMode("system", false)).toBe("light");
@@ -77,7 +77,7 @@ describe("HeroUI v3 Zero-Residue & Default Light/Dark Guard", () => {
   });
 
   it("uses the compact medium size for new and formerly default preferences", () => {
-    expect(parseAppearance(undefined)).toEqual({ mode: "dark", chatFontSize: 14 });
+    expect(parseAppearance(undefined)).toEqual({ mode: "system", chatFontSize: 14 });
     expect(parseAppearance(JSON.stringify({ mode: "light", chatFontSize: 15 }))).toEqual({ mode: "light", chatFontSize: 14 });
   });
 

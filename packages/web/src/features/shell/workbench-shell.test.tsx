@@ -1,10 +1,15 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WorkbenchShell, type WindowSizeClass } from "./workbench-shell";
+import { WorkbenchShell, type WindowSizeClass, type WorkbenchRailResizeConfig } from "./workbench-shell";
 
 afterEach(() => vi.unstubAllGlobals());
 
-function renderShell(sizeClass: WindowSizeClass, collapsed = false, rightCollapsed = collapsed) {
+function renderShell(
+  sizeClass: WindowSizeClass,
+  collapsed = false,
+  rightCollapsed = collapsed,
+  extra?: { settingsMode?: boolean; rightResize?: WorkbenchRailResizeConfig },
+) {
   return renderToStaticMarkup(
     <WorkbenchShell
       sizeClass={sizeClass}
@@ -20,6 +25,8 @@ function renderShell(sizeClass: WindowSizeClass, collapsed = false, rightCollaps
       leftContent={<p>话题列表</p>}
       centerContent={<p>对话内容</p>}
       rightContent={<p>任务列表</p>}
+      settingsMode={extra?.settingsMode}
+      rightResize={extra?.rightResize}
     />,
   );
 }
@@ -76,5 +83,56 @@ describe("shared window toolbar", () => {
     expect(html.includes('data-native-titlebar="true"')).toBe(native);
     expect(html.match(/<header\b/g)).toHaveLength(1);
     expect(html).not.toContain('class="moco-window-titlebar" aria-hidden');
+  });
+
+  it("renders an accessible vertical separator and applies clamped custom width when rightResize is active", () => {
+    const html = renderShell("expanded", false, false, {
+      settingsMode: true,
+      rightResize: { width: 640, onWidthChange: () => {}, label: "调整设置对话宽度" },
+    });
+    const separator = html.match(/<div\b[^>]*role="separator"[^>]*>/)?.[0];
+    expect(separator).toBeDefined();
+    expect(separator).toContain('aria-orientation="vertical"');
+    expect(separator).toContain('aria-label="调整设置对话宽度"');
+    expect(separator).toContain('aria-valuemin="320"');
+    expect(separator).toContain('aria-valuemax="792"');
+    expect(separator).toContain('aria-valuenow="640"');
+    expect(separator).toContain('tabindex="0"');
+    expect(separator).toContain('data-collapsed="false"');
+    const controlsId = separator?.match(/aria-controls="([^"]+)"/)?.[1];
+    expect(controlsId).toBeTruthy();
+    expect(html).toContain(`<aside id="${controlsId}"`);
+    expect(html).toContain("--moco-rail-custom-width:640px");
+
+    // Oversized saved width is clamped to viewport bounds without breaking layout
+    const clampedHtml = renderShell("expanded", false, false, {
+      settingsMode: true,
+      rightResize: { width: 900, onWidthChange: () => {} },
+    });
+    expect(clampedHtml).toContain("--moco-rail-custom-width:792px");
+    expect(clampedHtml).toContain('aria-valuenow="792"');
+  });
+
+  it("hides and isolates the separator when collapsed, non-expanded, or non-resizable", () => {
+    const collapsed = renderShell("expanded", false, true, {
+      settingsMode: true,
+      rightResize: { width: 520, onWidthChange: () => {} },
+    });
+    const separator = collapsed.match(/<div\b[^>]*role="separator"[^>]*>/)?.[0];
+    expect(separator).toContain('aria-hidden="true"');
+    expect(separator).toContain('inert=""');
+    expect(separator).toContain('tabindex="-1"');
+    expect(separator).toContain('data-collapsed="true"');
+
+    const medium = renderShell("medium", false, false, {
+      settingsMode: true,
+      rightResize: { width: 520, onWidthChange: () => {} },
+    });
+    expect(medium).not.toContain('role="separator"');
+    expect(medium).not.toContain("--moco-rail-custom-width");
+
+    const conversation = renderShell("expanded", false, false);
+    expect(conversation).not.toContain('role="separator"');
+    expect(conversation).not.toContain("--moco-rail-custom-width");
   });
 });

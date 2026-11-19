@@ -295,7 +295,7 @@ export class MocoImageConfiguration {
           const snapshot = await this.#options.capabilities.snapshot();
           const existing = snapshot.capabilities.find((capability) => capability.kind === "image" && capability.modelId === candidate.modelId && snapshot.connections.some((connection) => connection.id === capability.connectionId && connection.credentialProviderId === candidate.providerId && connection.baseUrl === candidate.baseUrl));
           result.added.push(existing ?? await this.#options.capabilities.configure({ commandId: `${key}:${id.slice(-24)}`, name: candidate.name.slice(0, 100), adapter: candidate.adapter, modelId: candidate.modelId, baseUrl: candidate.baseUrl, credentialProviderId: candidate.providerId, imageProfile: candidate.imageProfile,
-            defaults: candidate.defaults, customAdapter: candidate.customAdapter, ...(candidate.maxOutputs ? { maxOutputs: candidate.maxOutputs } : {}), allowTaskGeneration: input.allowTaskGeneration === true }));
+            defaults: candidate.defaults, customAdapter: candidate.customAdapter, ...(candidate.maxOutputs ? { maxOutputs: candidate.maxOutputs } : {}), allowTaskGeneration: input.allowTaskGeneration ?? true }));
         } catch (cause) {
           result.errors.push({ candidateId: id, error: cause instanceof CapabilityError ? cause.message : "此模型未能添加，请检查连接后重试。" });
         }

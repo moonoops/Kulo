@@ -58,7 +58,14 @@ export function ConversationModelSettings({ settings, onSettingsUpdated, showPro
           groups={groups} providerId={provider} modelId={block?.value.defaultModel ?? ""}
           thinkingLevel={block?.value.thinkingLevel ?? "medium"}
           isDisabled={!block || saving} isLoading={loading}
-          onProviderChange={(next) => void save({ defaultProvider: next, defaultModel: "" })}
+          onProviderChange={(next) => {
+            const firstModel = next ? groups.find((group) => group.providerId === next)?.models[0] : undefined;
+            void save(
+              firstModel && block
+                ? { defaultProvider: next, defaultModel: firstModel.id, thinkingLevel: clampModelEffort(block.value.thinkingLevel, firstModel) }
+                : { defaultProvider: next, defaultModel: "" },
+            );
+          }}
           onModelChange={(id) => {
             const model = groups.find((group) => group.providerId === provider)?.models.find((item) => item.id === id);
             if (model && block) void save({ defaultProvider: provider, defaultModel: id, thinkingLevel: clampModelEffort(block.value.thinkingLevel, model) });

@@ -244,19 +244,27 @@ describe("image configuration in the settings conversation", () => {
     expect(html).toContain('aria-label="图像配置"');
   });
 
-  it("shows only this window's latest test image inside the right conversation", () => {
+  it("does not pin stale test images or static routing cards below the right conversation", () => {
     const job = (id: string, setupClientId: string | undefined, createdAt: number): MediaJob => ({
       id, operationId: id, capabilityId: "image-capability", capabilityRevision: 1, connectionId: "image-connection", adapter: "openai-image",
-      modelId: "gpt-image-2.6-flare", kind: "image", prompt: "test", inputAssetIds: [], format: "png", count: 1,
+      modelId: "gpt-image-2.6-flare", kind: "image", prompt: "画一只正在吃甜筒的猫", inputAssetIds: [], format: "png", count: 1,
       source: { conversationId: 1, topicId: "settings-topic", setupClientId }, status: "completed", assets: [{ id: `${id}-asset`, kind: "image", mimeType: "image/png", name: `${id}.png`, size: 100, url: `/api/uploads/${id}-asset` }],
       createdAt, updatedAt: createdAt,
     });
-    const next = { ...workspace, jobs: [job("my-older-test", "tab-a", 10), job("my-current-test", "tab-a", 20), job("other-window-test", "tab-b", 30), job("ordinary-chat-image", undefined, 40)] };
-    const html = render(next);
-    expect(html).toContain('aria-label="图像测试结果"');
-    expect(html).toContain("my-current-test.png");
-    for (const hidden of ["my-older-test.png", "other-window-test.png", "ordinary-chat-image.png"]) expect(html).not.toContain(hidden);
-    expect(html.indexOf('aria-label="图像测试结果"')).toBeGreaterThan(html.indexOf('role="log"'));
-    expect(render(next, controls(), "video")).not.toContain('aria-label="图像测试结果"');
+    const next: CapabilitiesWorkspaceSnapshot = {
+      ...workspace,
+      imageSetup: { providers: [] },
+      capabilities: [
+        { id: "image-1", name: "Flare", connectionId: "image-connection", kind: "image", modelId: "gpt-image-2.6-flare", formats: ["png"], supportsEdit: true, enabled: true, isDefault: true, allowTaskGeneration: true, maxOutputs: 1, revision: 1, status: "ready", createdAt: 1, updatedAt: 1 },
+        { id: "image-2", name: "Sunburst", connectionId: "image-connection", kind: "image", modelId: "gpt-image-2.6-sunburst", formats: ["png"], supportsEdit: true, enabled: true, isDefault: false, allowTaskGeneration: true, maxOutputs: 1, revision: 1, status: "ready", createdAt: 2, updatedAt: 2 },
+      ],
+      jobs: [job("my-current-test", "tab-a", 20), job("other-window-test", "tab-b", 30)],
+    };
+    const html = render(next, controls(), "image", vi.fn(), { active: true, busy: true });
+    expect(html).toContain("保留此前的配置请求");
+    expect(html).toContain("思考中");
+    for (const pinned of ['aria-label="图像测试结果"', "my-current-test.png", "按任务自动选择图像模型", "优先使用默认图像模型"]) {
+      expect(html).not.toContain(pinned);
+    }
   });
 });

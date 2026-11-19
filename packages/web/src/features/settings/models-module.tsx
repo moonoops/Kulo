@@ -247,6 +247,18 @@ export function ModelsModule({
     });
   };
 
+  const defaultEffortForConfiguredModel = (
+    current: ThinkingEffort,
+    model: CustomModelConfig,
+  ): ThinkingEffort => {
+    if (model.reasoning === false || model.thinkingEnabled === false) return "off";
+    if (model.thinkingLevels?.length) {
+      if (model.thinkingLevels.some((level) => level.id === current)) return current;
+      return model.thinkingLevels.find((level) => level.value === "medium")?.id ?? model.thinkingLevels[0]!.id;
+    }
+    return current;
+  };
+
   const handleSaveProviderModal = async (draft: {
     providerKind: "preset" | "third-party";
     presetId: string;
@@ -270,9 +282,29 @@ export function ModelsModule({
     try {
       if (providerModal.mode === "subscription" && providerModal.editingProviderId) {
         const id = providerModal.editingProviderId;
+        let nextDefaultProvider = defaultProvider;
+        let nextDefaultModel = defaultModel;
+        let nextThinking: ThinkingEffort | undefined;
+        if (
+          defaultProvider === id &&
+          nextDefaultModel &&
+          !draft.models.some((model) => model.id === nextDefaultModel && isConversationModel(model))
+        ) {
+          nextDefaultModel = "";
+        }
+        if (!nextDefaultModel.trim()) {
+          const firstChat = draft.models.find((m) => isConversationModel(m));
+          if (firstChat) {
+            nextDefaultProvider = id;
+            nextDefaultModel = firstChat.id;
+            nextThinking = defaultEffortForConfiguredModel(thinkingLevel, firstChat);
+          }
+        }
         const saved = await persistModelBlock({
           subscriptionModels: { ...modelBlock.value.subscriptionModels, [id]: draft.models },
-          ...(defaultProvider === id && !draft.models.some((model) => model.id === defaultModel) ? { defaultModel: "" } : {}),
+          ...(nextDefaultProvider !== defaultProvider ? { defaultProvider: nextDefaultProvider } : {}),
+          ...(nextDefaultModel !== defaultModel ? { defaultModel: nextDefaultModel } : {}),
+          ...(nextThinking !== undefined ? { thinkingLevel: nextThinking } : {}),
         }, { onError: onModalError });
         if (saved) setProviderModal((prev) => (prev ? { ...prev, open: false } : null));
         return;
@@ -280,13 +312,23 @@ export function ModelsModule({
       if (providerModal.mode === "gateway") {
         const apiMode = draft.api;
         const nextModels = draft.models;
+        let nextDefaultProvider = defaultProvider;
         let nextDefaultModel = modelBlock.value.defaultModel;
+        let nextThinking: ThinkingEffort | undefined;
         if (
           defaultProvider === "moco-gateway" &&
           nextDefaultModel &&
           !nextModels.some((m) => m.id === nextDefaultModel && isConversationModel(m))
         ) {
           nextDefaultModel = "";
+        }
+        if (!nextDefaultModel.trim()) {
+          const firstChat = nextModels.find((m) => isConversationModel(m));
+          if (firstChat) {
+            nextDefaultProvider = "moco-gateway";
+            nextDefaultModel = firstChat.id;
+            nextThinking = defaultEffortForConfiguredModel(thinkingLevel, firstChat);
+          }
         }
         const saved = await persistModelBlock(
           {
@@ -297,7 +339,9 @@ export function ModelsModule({
             gatewayName: draft.name,
             gatewayModels: nextModels,
             gatewayDisabled: false,
+            defaultProvider: nextDefaultProvider,
             defaultModel: nextDefaultModel,
+            ...(nextThinking !== undefined ? { thinkingLevel: nextThinking } : {}),
             ...(draft.apiKey ? { apiKey: draft.apiKey } : {}),
           },
           { onError: onModalError },
@@ -333,19 +377,29 @@ export function ModelsModule({
         ? customProviders.map((cp) => (cp.id === targetId ? nextEntry : cp))
         : [...customProviders, nextEntry];
 
-      const nextDefaultProvider = modelBlock.value.defaultProvider;
+      let nextDefaultProvider = selectedDefaultProvider(modelBlock.value);
       let nextDefaultModel = modelBlock.value.defaultModel;
+      let nextThinking: ThinkingEffort | undefined;
       if (nextDefaultProvider === targetId && nextDefaultModel) {
         if (!draft.models.some((m) => m.id === nextDefaultModel && isConversationModel(m))) {
           nextDefaultModel = "";
+        }
+      }
+      if (!nextDefaultModel.trim()) {
+        const firstChat = draft.models.find((m) => isConversationModel(m));
+        if (firstChat) {
+          nextDefaultProvider = targetId;
+          nextDefaultModel = firstChat.id;
+          nextThinking = defaultEffortForConfiguredModel(thinkingLevel, firstChat);
         }
       }
 
       const saved = await persistModelBlock(
         {
           customProviders: nextCustomList,
-          ...(nextDefaultProvider ? { defaultProvider: nextDefaultProvider } : {}),
+          defaultProvider: nextDefaultProvider,
           defaultModel: nextDefaultModel,
+          ...(nextThinking !== undefined ? { thinkingLevel: nextThinking } : {}),
         },
         { onError: onModalError },
       );
@@ -484,6 +538,26 @@ export function ModelsModule({
     }
   };
 
+  const handleOAuthCompleted = async () => {
+    const providerId = oauthModal?.session?.providerId ?? oauthModal?.initialProviderId;
+    await loadProviders();
+    if (!providerId || modelBlock.value.defaultModel.trim()) return;
+    try {
+      const { providers: freshProviders } = await mocoRest.listProviders();
+      const freshGroups = buildProviderModelGroups(modelBlock.value, freshProviders);
+      const firstModel = freshGroups.find((group) => group.providerId === providerId)?.models[0];
+      if (firstModel) {
+        await persistModelBlock({
+          defaultProvider: providerId,
+          defaultModel: firstModel.id,
+          thinkingLevel: clampModelEffort(thinkingLevel, firstModel),
+        });
+      }
+    } catch {
+      // Best-effort auto-selection; providers catalog is already refreshed.
+    }
+  };
+
   const handleLogoutProvider = async (providerId: string) => {
     if (authBusyId) return;
     setAuthBusyId(providerId);
@@ -560,7 +634,14 @@ export function ModelsModule({
             layout="settings"
             isDisabled={savingModelBlock || savingProvider}
             isLoading={loadingProviders}
-            onProviderChange={(provider) => void persistModelBlock({ defaultProvider: provider, defaultModel: "" })}
+            onProviderChange={(provider) => {
+              const firstModel = provider ? getModelsForProvider(provider)[0] : undefined;
+              void persistModelBlock(
+                firstModel
+                  ? { defaultProvider: provider, defaultModel: firstModel.id, thinkingLevel: clampModelEffort(thinkingLevel, firstModel) }
+                  : { defaultProvider: provider, defaultModel: "" },
+              );
+            }}
             onModelChange={handleDefaultModelChange}
             onThinkingChange={handleThinkingChange}
           />
@@ -650,7 +731,7 @@ export function ModelsModule({
             prev ? { ...prev, session: null, error: undefined } : null,
           );
         }}
-        onCompleted={loadProviders}
+        onCompleted={() => void handleOAuthCompleted()}
         onClose={() => {
           setOauthModal(null);
         }}

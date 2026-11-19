@@ -200,10 +200,48 @@ describe("voice configuration", () => {
 
   it("invalidates cached narration for every synthesis setting and credential revision", () => {
     const before = voiceTtsFingerprint(snapshot);
-    for (const change of [{ provider: "gemini" as const }, { modelId: "different" }, { voice: "other" }, { speed: "fast" as const }]) {
+    for (const change of [{ providerId: "api-other" }, { provider: "gemini" as const }, { modelId: "different" }, { voice: "other" }, { speed: "fast" as const }]) {
       expect(voiceTtsFingerprint({ ...snapshot, tts: { ...snapshot.tts, ...change } })).not.toBe(before);
     }
     expect(voiceTtsFingerprint({ ...snapshot, revision: 5 })).not.toBe(before);
+  });
+
+  it("renders unselected placeholders and never fabricates phantom defaults when no TTS or Live model is configured", () => {
+    const emptySnapshot: VoiceSnapshot = {
+      revision: 0,
+      asr: { enabled: true, status: "ready" },
+      tts: { enabled: false, modelId: "", voice: "", speed: "normal", hasCredential: false },
+      call: { enabled: false, modelId: "", voice: "", hasCredential: false, status: "unverified" },
+    };
+    const html = renderToStaticMarkup(
+      <VoiceSettingsFields
+        snapshot={emptySnapshot}
+        draft={voiceSettingsDraft(emptySnapshot)}
+        ttsModels={[]}
+        liveModels={[]}
+        onChange={vi.fn()}
+        onToggle={vi.fn()}
+      />,
+    );
+    expect(html).toContain("未选择");
+    for (const phantom of ["speech-2.8-turbo", "male-qn-qingse", "gpt-live-1", "marin"]) {
+      expect(html).not.toContain(phantom);
+    }
+    // Even when liveModels exist in catalog, an empty draft must not visually fake-select the first option.
+    const withCatalog = renderToStaticMarkup(
+      <VoiceSettingsFields
+        snapshot={emptySnapshot}
+        draft={voiceSettingsDraft(emptySnapshot)}
+        ttsModels={sampleTtsModels}
+        liveModels={sampleLiveModels}
+        onChange={vi.fn()}
+        onToggle={vi.fn()}
+      />,
+    );
+    const selectValues = [...withCatalog.matchAll(/<span\b[^>]*data-slot="select-value"[^>]*>([\s\S]*?)<\/span>/g)].map((m) => m[1]);
+    expect(selectValues).toContain("未选择");
+    expect(selectValues.join(" ")).not.toContain("speech-2.8-turbo");
+    expect(selectValues.join(" ")).not.toContain("gemini-3.8-live");
   });
 });
 

@@ -28,9 +28,20 @@ describe("image configuration UI", () => {
     const next = createImageDraftConfig(workspace);
     expect(next).toMatchObject({ adapter: "gemini-image", baseUrl: "https://images.example.test/v1beta", credentialProviderId: "google-api", modelId: "gemini-nano-banana-2.1", maxOutputs: 1 });
     expect(next.defaults).toMatchObject({ count: 1, size: "1K" });
-    expect(next.allowTaskGeneration).toBe(false);
+    expect(next.allowTaskGeneration).toBe(true);
     expect(JSON.stringify(next)).not.toContain("apiKey");
     expect(workspace.capabilities).toEqual([]);
+
+    const proxyWorkspace: CapabilitiesWorkspaceSnapshot = {
+      ...workspace,
+      imageSetup: {
+        providers: [
+          { id: "api-proxy", name: "My Proxy", api: "openai-completions", baseUrl: "https://proxy.example/v1", authType: "api_key", authenticated: true, imageSupported: true },
+        ],
+      },
+    };
+    const proxyDraft = createImageDraftConfig(proxyWorkspace);
+    expect(proxyDraft).toMatchObject({ adapter: "openai-image", baseUrl: "https://proxy.example/v1", credentialProviderId: "api-proxy", modelId: "", name: "", allowTaskGeneration: true });
   });
 
   it("switches preset metadata together while retaining an explicitly reused endpoint", () => {
@@ -122,7 +133,7 @@ describe("image configuration UI", () => {
     const draftResponse = { id: "configured-candidate-draft", clientId: "client-a", revision: 1, config: draft, updatedAt: 2 };
     const update = vi.spyOn(mocoRest, "updateImageDraft").mockResolvedValue(draftResponse);
     await expect(prepareImageCandidateDraft(next, "client-a", candidate)).resolves.toBe(draftResponse);
-    expect(update).toHaveBeenCalledWith({ clientId: "client-a", config: expect.objectContaining({ adapter: "custom-image", modelId: candidate.modelId, credentialProviderId: candidate.providerId, baseUrl: candidate.baseUrl, defaults: candidate.defaults, customAdapter: candidate.customAdapter, allowTaskGeneration: false }) });
+    expect(update).toHaveBeenCalledWith({ clientId: "client-a", config: expect.objectContaining({ adapter: "custom-image", modelId: candidate.modelId, credentialProviderId: candidate.providerId, baseUrl: candidate.baseUrl, defaults: candidate.defaults, customAdapter: candidate.customAdapter, allowTaskGeneration: true }) });
     await expect(prepareImageCandidateDraft({ ...next, imageSetup: { ...next.imageSetup, draft: draftResponse } }, "client-a", candidate)).rejects.toThrow("保存或取消当前图像草稿");
     expect(update).toHaveBeenCalledTimes(1);
   });

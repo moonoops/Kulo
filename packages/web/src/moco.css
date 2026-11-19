@@ -85,7 +85,7 @@
 
 .moco-workbench {
   --moco-navigation-width: 248px;
-  --moco-rail-width: 280px;
+  --moco-rail-width: var(--moco-rail-custom-width, 280px);
   --moco-pane-gap: 10px;
   --moco-pane-inset: 10px;
   --moco-panel-duration: 240ms;
@@ -128,7 +128,7 @@
 }
 
 .moco-workbench[data-layout="settings"] {
-  --moco-rail-width: clamp(340px, 28vw, 400px);
+  --moco-rail-width: var(--moco-rail-custom-width, clamp(340px, 28vw, 400px));
 }
 
 .moco-workbench[data-native-titlebar="true"] .moco-window-titlebar {
@@ -178,6 +178,104 @@
   margin-inline-start: var(--moco-pane-gap);
 }
 
+.moco-workbench-resizer {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--moco-pane-gap);
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  transition: width var(--moco-panel-duration) var(--moco-panel-easing), visibility 0s;
+}
+
+/* Extend the grab target slightly into the right panel's inset without covering main's scrollbar. */
+.moco-workbench-resizer::before {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  inset-inline-end: -2px;
+  content: "";
+}
+
+.moco-workbench-resizer::after {
+  width: 2px;
+  height: 36px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--foreground) 18%, transparent);
+  transition: width 140ms ease, height 140ms ease, background-color 140ms ease, opacity 140ms ease;
+  content: "";
+}
+
+.moco-workbench-resizer:hover::after {
+  width: 3px;
+  height: 56px;
+  background: color-mix(in oklab, var(--foreground) 40%, transparent);
+}
+
+.moco-workbench-resizer:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+  border-radius: 5px;
+}
+
+.moco-workbench-resizer:focus-visible::after {
+  width: 3px;
+  height: 56px;
+  background: var(--focus);
+}
+
+.moco-workbench-resizer[data-resizing="true"]::after {
+  width: 3px;
+  height: 72px;
+  background: color-mix(in oklab, var(--foreground) 56%, transparent);
+}
+
+.moco-workbench-resizer[data-collapsed="true"] {
+  width: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition-delay: 0s, var(--moco-panel-duration);
+}
+
+.moco-workbench-resizer[data-collapsed="true"]::after {
+  opacity: 0;
+}
+
+.moco-workbench-resizer + .moco-workbench-rail {
+  margin-inline-start: 0;
+}
+
+.moco-workbench[data-resizing="true"] {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.moco-workbench[data-resizing="true"] .moco-window-rail-control,
+.moco-workbench[data-resizing="true"] .moco-workbench-rail,
+.moco-workbench[data-resizing="true"] .moco-workbench-panel-content,
+.moco-workbench[data-resizing="true"] .moco-workbench-resizer {
+  transition: none;
+}
+
+.moco-workbench[data-resizing="true"] iframe {
+  pointer-events: none;
+}
+
+:root[data-moco-transition] .moco-workbench-resizer::after {
+  opacity: 0;
+}
+
+@media (pointer: coarse) {
+  .moco-workbench-resizer::before {
+    inset-inline: -17px;
+  }
+}
+
 .moco-workbench-navigation[data-collapsed="true"],
 .moco-workbench-rail[data-collapsed="true"] {
   width: 0;
@@ -212,7 +310,9 @@
 .moco-window-rail-control,
 .moco-workbench-navigation,
 .moco-workbench-rail,
-.moco-workbench-panel-content {
+.moco-workbench-panel-content,
+.moco-workbench-resizer,
+.moco-workbench-resizer::after {
   @apply motion-reduce:transition-none;
 }
 
@@ -1055,6 +1155,8 @@
 }
 
 :root[data-reduce-motion="true"] .moco-settings-assistant-scroll { animation: none; }
+:root[data-reduce-motion="true"] .moco-workbench-resizer,
+:root[data-reduce-motion="true"] .moco-workbench-resizer::after { transition: none; }
 
 /* ================= Scroll Containers & Diff Review ================= */
 .mc-projection-scroll {

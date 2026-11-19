@@ -9,6 +9,9 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     sourcemap: false,
+    assetsInlineLimit(filePath) {
+      if (/\.worklet\.[cm]?js$/i.test(filePath)) return false;
+    },
   },
   server: {
     port: 5173,

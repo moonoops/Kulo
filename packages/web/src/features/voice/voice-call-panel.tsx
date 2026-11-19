@@ -6,7 +6,12 @@ import { VoiceIcon } from "./voice-icons";
 import { CallStatusIcon } from "./call-status-icon";
 import type { ActiveVoiceCall } from "./use-voice-call";
 import { requestSystemPermissionHelp } from "../system-permissions/system-permissions";
+import { isFailedVoiceCall } from "./voice-call-error-banner";
 import "./voice.css";
+
+export function hasSidebarVoiceCall(call: ActiveVoiceCall | null | undefined): call is ActiveVoiceCall {
+  return Boolean(call && !isFailedVoiceCall(call));
+}
 
 export function voiceCallStatus(call: Pick<ActiveVoiceCall, "state" | "muted">): string {
   if (call.state === "ended") return tr("通话已结束", "Call ended");

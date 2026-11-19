@@ -6,7 +6,7 @@ import { CatAvatar } from "../../components/cat-avatar";
 import { CatPicker } from "../../components/cat-picker";
 import { useCatPreferences } from "../../components/cat-preferences";
 import { useVoiceWorkspace } from "../voice/voice-context";
-import { VoiceCallPanel } from "../voice/voice-call-panel";
+import { hasSidebarVoiceCall, VoiceCallPanel } from "../voice/voice-call-panel";
 import type { AgentProfileActivity } from "./agent-profile-state";
 import { useAgentCompanion } from "./use-agent-companion";
 import type { AgentTerminalEntry } from "./agent-terminal-state";
@@ -58,20 +58,21 @@ export function AgentTerminal({ agentName, connected, entries, live, tickets = [
   const { t } = useI18n();
   const voice = useVoiceWorkspace();
   const call = voice?.call.call ?? null;
+  const sidebarCall = hasSidebarVoiceCall(call) ? call : null;
   const mainChatRef = useRef<HTMLButtonElement>(null);
-  const previousCall = useRef(Boolean(call));
+  const previousCall = useRef(Boolean(sidebarCall));
   useEffect(() => {
-    if (previousCall.current && !call) mainChatRef.current?.focus({ preventScroll: true });
-    previousCall.current = Boolean(call);
-  }, [Boolean(call)]);
+    if (previousCall.current && !sidebarCall && !call) mainChatRef.current?.focus({ preventScroll: true });
+    previousCall.current = Boolean(sidebarCall);
+  }, [Boolean(sidebarCall), Boolean(call)]);
   const { activity, attentionTarget } = useAgentCompanion({ scope: activityScope, connected, entries, live, tickets, voice });
   const callDisabled = !connected || Boolean(voice?.loading) || Boolean(voice?.recordingActive);
 
-  return <section className="moco-agent-profile" data-calling={Boolean(call)} aria-label={t(`${agentName} 主会话与通话`, `${agentName} main chat and call`)}>
+  return <section className="moco-agent-profile" data-calling={Boolean(sidebarCall)} aria-label={t(`${agentName} 主会话与通话`, `${agentName} main chat and call`)}>
     <AgentProfileCard buttonRef={mainChatRef} agentName={agentName} connected={connected} activity={activity} attentionTarget={attentionTarget}
       selected={mainChatSelected} onOpenChat={onAgentClick} />
-    {call && voice && <VoiceCallPanel call={call} agentName={agentName}
+    {sidebarCall && voice && <VoiceCallPanel call={sidebarCall} agentName={agentName}
       onHangup={() => { voice.call.hangup(); onCallClosed?.(); }} onToggleMute={voice.call.toggleMute}
-      retryDisabled={callDisabled} onRetry={() => { if (!callDisabled) void voice.call.start(call.target); }} onOpenChat={() => onOpenCallTopic(call.target.topicId)} />}
+      retryDisabled={callDisabled} onRetry={() => { if (!callDisabled) void voice.call.start(sidebarCall.target); }} onOpenChat={() => onOpenCallTopic(sidebarCall.target.topicId)} />}
   </section>;
 }

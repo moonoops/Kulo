@@ -14,7 +14,7 @@ type NumberDrafts = Partial<Record<NumberSetting, NumberDraft>>;
 type SaveFailure = { value: ExecutorSlotsConfig[ExecutorSetting]; message: string; conflict: boolean };
 
 const numberRanges: Record<NumberSetting, { min: number; max: number }> = {
-  maxConcurrentWorkers: { min: 1, max: 12 },
+  maxConcurrentWorkers: { min: 1, max: 16 },
   maxSubagentsPerTicket: { min: 1, max: 8 },
   watchdogMinutes: { min: 0, max: 60 },
   autoArchiveDays: { min: 1, max: 3650 },

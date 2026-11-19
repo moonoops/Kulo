@@ -110,7 +110,17 @@ function sanitizeModalities(
 
 const GOOGLE_VALID_WIRE_THINKING = new Set(["minimal", "low", "medium", "high"]);
 
-function sanitizeThinkingLevels(raw: unknown, api?: CustomProviderApi): ThinkingLevelOption[] | undefined {
+export function allowedThinkingWireValuesForApi(api?: CustomProviderApi): readonly string[] | undefined {
+  if (api === "google-generative-ai" || api === "google-vertex") {
+    return ["off", "minimal", "low", "medium", "high"];
+  }
+  if (api === "anthropic-messages" || api === "bedrock-converse-stream") {
+    return [...VALID_THINKING_KEYS];
+  }
+  return undefined;
+}
+
+export function sanitizeThinkingLevels(raw: unknown, api?: CustomProviderApi): ThinkingLevelOption[] | undefined {
   if (raw === undefined) return undefined;
   if (!Array.isArray(raw) || raw.length === 0) {
     throw new SettingsUpdateError(400, "思考强度至少需要一个档位。");
@@ -133,11 +143,11 @@ function sanitizeThinkingLevels(raw: unknown, api?: CustomProviderApi): Thinking
     }
     if ((api === "google-generative-ai" || api === "google-vertex") &&
       wire !== "off" && !GOOGLE_VALID_WIRE_THINKING.has(wire)) {
-      throw new SettingsUpdateError(400, `Google API 不支持思考强度映射值「${wire}」。`);
+      throw new SettingsUpdateError(400, `Google API 不支持思考强度映射值「${wire}」，仅支持 off、minimal、low、medium、high。`);
     }
     if ((api === "anthropic-messages" || api === "bedrock-converse-stream") &&
       !VALID_THINKING_KEYS.includes(wire as BuiltinThinkingEffort)) {
-      throw new SettingsUpdateError(400, `此 API 不支持思考强度映射值「${wire}」，请使用标准思考强度。`);
+      throw new SettingsUpdateError(400, `此 API 不支持思考强度映射值「${wire}」，请使用标准思考强度（${VALID_THINKING_KEYS.join("、")}）。`);
     }
     ids.add(id);
     labels.add(label);
@@ -145,7 +155,7 @@ function sanitizeThinkingLevels(raw: unknown, api?: CustomProviderApi): Thinking
   });
 }
 
-function sanitizeThinkingLevelMap(
+export function sanitizeThinkingLevelMap(
   raw: unknown,
   api?: CustomProviderApi,
 ): ThinkingLevelMapConfig | undefined {
@@ -174,7 +184,7 @@ function sanitizeThinkingLevelMap(
   return hasAny ? out : undefined;
 }
 
-function sanitizeCustomModelList(
+export function sanitizeCustomModelList(
   rawModels: unknown,
   api?: CustomProviderApi,
 ): CustomModelConfig[] {
@@ -380,7 +390,8 @@ function configuredModel(
   provider: string | undefined,
   modelId: string,
 ): CustomModelConfig | undefined {
-  const providerId = provider || config.defaultProvider || "moco-gateway";
+  const providerId = provider || config.defaultProvider || (!config.gatewayDisabled ? "moco-gateway" : undefined);
+  if (!providerId || (providerId === "moco-gateway" && config.gatewayDisabled)) return undefined;
   const subscriptionModels = config.subscriptionModels && Object.hasOwn(config.subscriptionModels, providerId)
     ? config.subscriptionModels[providerId] : undefined;
   return providerId === "moco-gateway"
@@ -405,6 +416,74 @@ function assertConversationModelSelection(config: ModelGatewayConfig, provider: 
   if (purpose !== "chat") {
     throw new SettingsUpdateError(400, `模型「${modelId}」是语音或实时通话模型，不能设为默认对话或智能体模型。`);
   }
+}
+
+function cleanupRemovedRoleModels(
+  roles: Record<string, RolePreset>,
+  prevModel: ModelGatewayConfig,
+  nextModel: ModelGatewayConfig,
+): boolean {
+  let changed = false;
+  const prevCustomById = new Map((prevModel.customProviders ?? []).map((p) => [p.id, p]));
+  const nextCustomById = new Map((nextModel.customProviders ?? []).map((p) => [p.id, p]));
+  const prevGatewayModels = new Set((prevModel.gatewayModels ?? []).map((m) => m.id));
+  const nextGatewayChatModels = new Set(
+    (nextModel.gatewayModels ?? []).filter((m) => isConversationModel(m)).map((m) => m.id),
+  );
+
+  for (const role of Object.values(roles)) {
+    if (role.external) continue;
+    const explicitProvider = role.provider?.trim();
+    const modelId = role.modelId?.trim();
+    if (!explicitProvider && !modelId) continue;
+
+    let shouldClear = false;
+    if (explicitProvider === "moco-gateway") {
+      if (nextModel.gatewayDisabled) {
+        shouldClear = true;
+      } else if (modelId && prevGatewayModels.has(modelId) && !nextGatewayChatModels.has(modelId)) {
+        shouldClear = true;
+      }
+    } else if (explicitProvider && prevCustomById.has(explicitProvider)) {
+      const prevCustom = prevCustomById.get(explicitProvider)!;
+      const nextCustom = nextCustomById.get(explicitProvider);
+      if (!nextCustom) {
+        shouldClear = true;
+      } else if (
+        modelId &&
+        prevCustom.models.some((m) => m.id === modelId) &&
+        !nextCustom.models.some((m) => m.id === modelId && isConversationModel(m))
+      ) {
+        shouldClear = true;
+      }
+    } else if (
+      explicitProvider &&
+      modelId &&
+      prevModel.subscriptionModels &&
+      Object.hasOwn(prevModel.subscriptionModels, explicitProvider) &&
+      prevModel.subscriptionModels[explicitProvider]!.some((m) => m.id === modelId)
+    ) {
+      const nextSub = nextModel.subscriptionModels && Object.hasOwn(nextModel.subscriptionModels, explicitProvider)
+        ? nextModel.subscriptionModels[explicitProvider]
+        : undefined;
+      if (nextSub && !nextSub.some((m) => m.id === modelId && isConversationModel(m))) {
+        shouldClear = true;
+      }
+    } else if (!explicitProvider && modelId) {
+      const prevImplicitProvider = prevModel.defaultProvider?.trim() || (!prevModel.gatewayDisabled ? "moco-gateway" : "");
+      if (prevImplicitProvider === "moco-gateway" && nextModel.gatewayDisabled) {
+        shouldClear = true;
+      }
+    }
+
+    if (shouldClear) {
+      delete role.provider;
+      delete role.modelId;
+      role.thinkingLevel = "auto";
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 function normalizeRoleThinkingSelections(roles: Record<string, RolePreset>, config: ModelGatewayConfig): boolean {
@@ -612,6 +691,7 @@ export type MocoDurableSettings = {
   rolesMigratedV2?: boolean;
   rolesMigratedV3?: boolean;
   rolesMigratedV4?: boolean;
+  gatewayMigratedV2?: boolean;
   globalRevision: number;
   revisions: Record<SettingsBlockName, number>;
   presentation: PresentationConfig;
@@ -639,6 +719,7 @@ export const MocoSettingsDoc = defineDoc<MocoDurableSettings & JsonObject>({
       rolesMigratedV2: true,
       rolesMigratedV3: true,
       rolesMigratedV4: true,
+      gatewayMigratedV2: true,
       globalRevision: 1,
       revisions: {
         presentation: 1,
@@ -670,6 +751,7 @@ export const MocoSettingsDoc = defineDoc<MocoDurableSettings & JsonObject>({
         contextWindow: DEFAULT_CONTEXT_WINDOW,
         compaction: { ...DEFAULT_COMPACTION_CONFIG },
         customProviders: [],
+        gatewayDisabled: true,
       },
       identity: {
         directory: "",
@@ -795,12 +877,14 @@ function bindMemoryFallbackOrigins(memory: HindsightMemoryConfig, runtime: Hinds
 export function hydrateSettingsFromConfig(
   doc: MocoDurableSettings,
   config: MocoHubConfig,
+  options?: { hasGatewayCredential?: boolean },
 ): void {
   if (!doc.initialized) {
     doc.initialized = true;
     doc.rolesMigratedV2 = true;
     doc.rolesMigratedV3 = true;
     doc.rolesMigratedV4 = true;
+    doc.gatewayMigratedV2 = true;
     doc.presentation = cleanJson(config.presentation);
     doc.executor = {
       maxConcurrentWorkers: config.maxConcurrentWorkers,
@@ -951,6 +1035,28 @@ export function hydrateSettingsFromConfig(
     new URL(doc.model.baseUrl).origin === new URL(config.model.baseUrl).origin
   ) {
     doc.model.apiKey = config.model.apiKey;
+  }
+  if (!doc.gatewayMigratedV2) {
+    const gatewayUnused =
+      !doc.model.gatewayDisabled &&
+      !doc.model.apiKey &&
+      !options?.hasGatewayCredential &&
+      !config.model.apiKey &&
+      !(doc.model.gatewayModels && doc.model.gatewayModels.length > 0) &&
+      !doc.model.gatewayName &&
+      normalizeProviderBaseUrl(doc.model.baseUrl, doc.model.apiMode) === "https://api.openai.com/v1" &&
+      doc.model.apiMode === "openai-completions" &&
+      doc.model.defaultProvider !== "moco-gateway" &&
+      !(doc.model.defaultModel.trim() && !doc.model.defaultProvider) &&
+      !Object.values(doc.roles ?? {}).some(
+        (role) =>
+          !role.external &&
+          (role.provider === "moco-gateway" || (!role.provider && Boolean(role.modelId?.trim()))),
+      );
+    if (gatewayUnused) {
+      doc.model.gatewayDisabled = true;
+    }
+    doc.gatewayMigratedV2 = true;
   }
   doc.memory = normalizeMemoryConfig(doc.memory);
   if (memoryOrigins(doc.memory) === memoryOrigins(config.memory)) {
@@ -1305,27 +1411,58 @@ export function applySettingsBlockUpdate(
           `不支持的协议类型 "${String(val.apiMode ?? "").trim()}"。`,
         );
       }
-      const baseUrl = normalizeProviderBaseUrl(
-        String(val.baseUrl ?? prevModel.baseUrl),
-        apiMode,
-      );
-      try {
-        const parsed = new URL(baseUrl);
-        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-          throw new Error("Invalid protocol");
-        }
-      } catch {
-        throw new SettingsUpdateError(400, "默认兼容网关的接口地址格式无效。");
+      const customProviders =
+        val.customProviders !== undefined
+          ? sanitizeCustomProviders(val.customProviders)
+          : prevModel.customProviders ?? [];
+      const subscriptionModels = val.subscriptionModels !== undefined
+        ? sanitizeSubscriptionModels(val.subscriptionModels)
+        : prevModel.subscriptionModels;
+      const prevCustomIds = new Set((prevModel.customProviders ?? []).map((p) => p.id));
+      const nextCustomIds = new Set(customProviders.map((p) => p.id));
+
+      let defaultModel = String(val.defaultModel ?? prevModel.defaultModel).trim();
+      let defaultProvider =
+        typeof val.defaultProvider === "string"
+          ? val.defaultProvider.trim()
+          : prevModel.defaultProvider;
+      if (defaultProvider && prevCustomIds.has(defaultProvider) && !nextCustomIds.has(defaultProvider)) {
+        defaultProvider = "";
+        defaultModel = "";
       }
-      const defaultModel = String(val.defaultModel ?? prevModel.defaultModel).trim();
+      if (
+        val.gatewayDisabled === true &&
+        val.defaultProvider !== "moco-gateway" &&
+        (defaultProvider === "moco-gateway" || (!defaultProvider && Boolean(defaultModel)))
+      ) {
+        defaultProvider = "";
+        defaultModel = "";
+      }
+
+      const gatewayDisabled =
+        (val.gatewayDisabled !== undefined
+          ? Boolean(val.gatewayDisabled)
+          : Boolean(prevModel.gatewayDisabled)) &&
+        (defaultProvider || (defaultModel ? "moco-gateway" : undefined)) !== "moco-gateway";
+
+      const rawBaseUrl = val.baseUrl !== undefined
+        ? String(val.baseUrl)
+        : prevModel.baseUrl || "https://api.openai.com/v1";
+      const baseUrl = normalizeProviderBaseUrl(rawBaseUrl, apiMode);
+      if (!gatewayDisabled || val.baseUrl !== undefined) {
+        try {
+          const parsed = new URL(baseUrl);
+          if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+            throw new Error("Invalid protocol");
+          }
+        } catch {
+          throw new SettingsUpdateError(400, "默认兼容网关的接口地址格式无效。");
+        }
+      }
       const vertex = sanitizeVertexConfig({
         vertexProject: val.vertexProject !== undefined ? val.vertexProject : prevModel.vertexProject,
         vertexLocation: val.vertexLocation !== undefined ? val.vertexLocation : prevModel.vertexLocation,
       }, apiMode, baseUrl);
-      const defaultProvider =
-        typeof val.defaultProvider === "string"
-          ? val.defaultProvider.trim()
-          : prevModel.defaultProvider;
       const thinkingLevel = parseThinking(
         typeof val.thinkingLevel === "string" ? val.thinkingLevel : undefined,
         prevModel.thinkingLevel,
@@ -1340,13 +1477,6 @@ export function applySettingsBlockUpdate(
         val.compaction ?? prevModel.compaction,
         prevModel.compaction ?? DEFAULT_COMPACTION_CONFIG,
       );
-      const customProviders =
-        val.customProviders !== undefined
-          ? sanitizeCustomProviders(val.customProviders)
-          : prevModel.customProviders ?? [];
-      const subscriptionModels = val.subscriptionModels !== undefined
-        ? sanitizeSubscriptionModels(val.subscriptionModels)
-        : prevModel.subscriptionModels;
       const gatewayName =
         val.gatewayName !== undefined
           ? typeof val.gatewayName === "string" && val.gatewayName.trim()
@@ -1357,17 +1487,19 @@ export function applySettingsBlockUpdate(
         val.gatewayModels !== undefined
           ? sanitizeCustomModelList(val.gatewayModels, apiMode)
           : prevModel.gatewayModels;
-      const gatewayDisabled =
-        (val.gatewayDisabled !== undefined
-          ? Boolean(val.gatewayDisabled)
-          : Boolean(prevModel.gatewayDisabled)) &&
-        (defaultProvider || (defaultModel ? "moco-gateway" : undefined)) !== "moco-gateway";
       const clearApiKey = val.clearApiKey === true;
+      const sameOrigin = (() => {
+        try {
+          return new URL(baseUrl).origin === new URL(prevModel.baseUrl).origin;
+        } catch {
+          return false;
+        }
+      })();
       const nextApiKey = clearApiKey
         ? undefined
         : typeof val.apiKey === "string" && val.apiKey.trim()
           ? val.apiKey.trim()
-          : new URL(baseUrl).origin === new URL(prevModel.baseUrl).origin
+          : sameOrigin
             ? doc.model.apiKey
             : undefined;
 
@@ -1397,7 +1529,9 @@ export function applySettingsBlockUpdate(
         doc.model.thinkingLevel = selected?.thinkingLevels?.find((option) => option.value === "off")?.id ??
           selected?.thinkingLevels?.[0]?.id ?? "off";
       }
-      if (normalizeRoleThinkingSelections(doc.roles, doc.model)) doc.revisions.roles += 1;
+      const rolesCleaned = cleanupRemovedRoleModels(doc.roles, prevModel, doc.model);
+      const rolesThinkingNormalized = normalizeRoleThinkingSelections(doc.roles, doc.model);
+      if (rolesCleaned || rolesThinkingNormalized) doc.revisions.roles += 1;
       summary = `更新模型配置（${defaultProvider ? `${defaultProvider}/` : ""}${defaultModel || "未选择模型"}）`;
       break;
     }

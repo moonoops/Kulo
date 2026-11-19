@@ -559,6 +559,8 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     scope: "window",
   },
   ...[
+    "moco_model_metadata_lookup",
+    "moco_model_calibrate",
     "moco_model_configuration_read",
     "moco_model_configuration_prepare",
     "moco_model_configuration_discover",

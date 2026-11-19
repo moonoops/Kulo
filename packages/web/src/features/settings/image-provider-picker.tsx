@@ -26,7 +26,7 @@ export async function prepareImageCandidateDraft(workspace: CapabilitiesWorkspac
   return mocoRest.updateImageDraft({ clientId, config: {
     adapter: candidate.adapter, modelId: candidate.modelId, name: candidate.name, baseUrl: candidate.baseUrl,
     credentialProviderId: candidate.providerId, imageProfile: candidate.imageProfile, defaults: candidate.defaults,
-    customAdapter: candidate.customAdapter, enabled: true, maxOutputs: 1, allowTaskGeneration: false,
+    customAdapter: candidate.customAdapter, enabled: true, maxOutputs: 1, allowTaskGeneration: true,
   } });
 }
 
@@ -40,7 +40,7 @@ function OwnedImageProviderPicker({ workspace, clientId, connected, disabled = f
   const [discovery, setDiscovery] = useState(incoming?.clientId === clientId ? incoming : undefined);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
-  const [allowTaskGeneration, setAllowTaskGeneration] = useState(false);
+  const [allowTaskGeneration, setAllowTaskGeneration] = useState(true);
   const [busy, setBusy] = useState<"discover" | "import" | "configure">();
   const [error, setError] = useState<string>();
   const [importErrors, setImportErrors] = useState<string[]>([]);

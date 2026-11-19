@@ -100,7 +100,7 @@ describe("image setup management HTTP", () => {
     const saveRequest = { clientId: context.clientId, expectedRevision: created.body.revision, commandId: "save-once" };
     const saved = await f.call<ImageDraftSaveResult>("/api/capabilities/image/draft/save", "POST", saveRequest);
     expect(saved.status).toBe(200);
-    expect(saved.body.capability.allowTaskGeneration).toBe(false);
+    expect(saved.body.capability.allowTaskGeneration).toBe(true);
     expect(saved.body.input).toMatchObject({ clientId: context.clientId, kind: "secret" });
     expect((await f.call<ImageDraftSaveResult>("/api/capabilities/image/draft/save", "POST", saveRequest)).body).toEqual(saved.body);
     const current = (await f.workspace()).body;
@@ -184,5 +184,11 @@ describe("image setup management HTTP", () => {
     expect((await f.hub.getTopicView("root")).messages).toEqual(before);
     const source = await f.hub.mediaSource(Number(f.hub.rootConversation.id));
     await expect(f.hub.mediaJobs.create({ operationId: "ordinary-chat-still-denied", capabilityId: cap.id, kind: "image", prompt: "Another circle", source })).rejects.toMatchObject({ code: "media_task_generation_not_allowed" });
+
+    const defaultTest = await f.call<MediaJob>(`/api/capabilities/image/${cap.id}/test`, "POST", { clientId: context.clientId, commandId: "generate-test-default-prompt" });
+    expect(defaultTest.status).toBe(200);
+    expect(defaultTest.body.prompt).toBe("画一只正在吃甜筒的猫");
+    await vi.waitFor(async () => expect((await f.hub.mediaJobs.list()).find((job) => job.id === defaultTest.body.id)).toMatchObject({ status: "completed", prompt: "画一只正在吃甜筒的猫" }), { timeout: 10_000, interval: 25 });
+    expect(api.requests.filter((entry) => entry.body).at(-1)).toEqual(expect.objectContaining({ authorization: `Bearer ${secret}`, body: expect.objectContaining({ prompt: "画一只正在吃甜筒的猫", n: 1 }) }));
   });
 });

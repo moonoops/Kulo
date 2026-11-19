@@ -74,18 +74,18 @@ describe("capability workspace undo", () => {
     await authenticate(f.hub, cap.id);
     const connection = await f.hub.capabilities.connection(cap.connectionId);
     const action = await f.tool("preferences", "moco_capability_configure", { config: JSON.stringify({
-      id: cap.id, name: "修改后名称", adapter: "openai-image", modelId: cap.modelId, allowTaskGeneration: true, maxOutputs: 2,
+      id: cap.id, name: "修改后名称", adapter: "openai-image", modelId: cap.modelId, allowTaskGeneration: false, maxOutputs: 2,
     }) });
     expect(action).toMatchObject({ status: "applied", canUndo: true, requiresConfirmation: false });
     await expect(f.hub.settingsAssistant.decide(action.id, "undo", "foreign-client")).rejects.toThrow("另一台浏览器");
     await Promise.all([f.hub.settingsAssistant.decide(action.id, "undo", context.clientId), f.hub.settingsAssistant.decide(action.id, "undo", context.clientId)]);
     const restored = (await f.hub.capabilities.snapshot()).capabilities[0]!;
-    expect(restored).toMatchObject({ name: "原名称", allowTaskGeneration: false, maxOutputs: 1, enabled: true });
+    expect(restored).toMatchObject({ name: "原名称", allowTaskGeneration: true, maxOutputs: 1, enabled: true });
     expect(await f.hub.capabilities.connection(cap.connectionId)).toEqual(connection);
     expect(await f.hub.capabilities.apiKey(cap.connectionId)).toBe(dummyKey);
     const revision = (await f.hub.capabilities.snapshot()).revision;
     const replayed = await f.tool(action.id, "moco_capability_configure", { config: JSON.stringify({
-      id: cap.id, name: "修改后名称", adapter: "openai-image", modelId: cap.modelId, allowTaskGeneration: true, maxOutputs: 2,
+      id: cap.id, name: "修改后名称", adapter: "openai-image", modelId: cap.modelId, allowTaskGeneration: false, maxOutputs: 2,
     }) });
     expect(replayed).toMatchObject({ status: "undone", canUndo: false });
     expect((await f.hub.capabilities.snapshot()).revision).toBe(revision);

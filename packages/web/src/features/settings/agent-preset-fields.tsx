@@ -1,7 +1,7 @@
 import { useI18n } from "../../moco-i18n";
 import { ComboBox, Description, Fieldset, Header, Input, Label, ListBox, Select, Switch, TextArea, TextField } from "@heroui/react";
 import type { ExternalClientConnection, MocoSettingsView, RolePreset } from "@moco/protocol";
-import { ROLE_EFFORT_OPTIONS, clampModelEffort, effortLabel, modelEffortOptions, type ProviderModelGroup } from "./settings-helpers";
+import { ROLE_EFFORT_OPTIONS, clampModelEffort, effortLabel, modelEffortOptions, selectedDefaultProvider, type ProviderModelGroup } from "./settings-helpers";
 
 const DEFAULT_MODEL_KEY = "__default__";
 const EXTERNAL_DEFAULT_MODEL_KEY = "__client_default__";
@@ -31,7 +31,7 @@ export function AgentPresetFields({ value, onChange, groups = [], defaultModel, 
 }) {
   const { t } = useI18n();
   const isExternal = Boolean(externalClient || value.external || value.externalClientId);
-  const providerId = value.provider?.trim() || defaultModel?.defaultProvider || "moco-gateway";
+  const providerId = value.provider?.trim() || (defaultModel ? selectedDefaultProvider(defaultModel) : "");
   const modelId = value.modelId?.trim() || "";
   const selectedModelKey = modelId ? `${providerId}::${modelId}` : DEFAULT_MODEL_KEY;
   const inGroups = groups.some((group) => group.providerId === providerId && group.models.some((model) => model.id === modelId));
@@ -170,7 +170,7 @@ export function AgentPresetFields({ value, onChange, groups = [], defaultModel, 
             <Select.Popover>
               <ListBox>
                 <ListBox.Item id={DEFAULT_MODEL_KEY} textValue={t("默认模型", "Default model")}>{t("默认模型", "Default model")}<ListBox.ItemIndicator /></ListBox.Item>
-                {!inGroups && modelId && <ListBox.Item id={selectedModelKey} textValue={modelId}><span className="min-w-0 whitespace-normal break-all">{modelId}</span><ListBox.ItemIndicator /></ListBox.Item>}
+                {!inGroups && modelId && <ListBox.Item id={selectedModelKey} textValue={modelId}><span className="min-w-0 whitespace-normal break-all">{groups.length > 0 ? t(`${modelId}（未添加）`, `${modelId} (not added)`) : modelId}</span><ListBox.ItemIndicator /></ListBox.Item>}
                 {groups.map((group) => <ListBox.Section key={group.providerId}>
                   <Header>{group.label}</Header>
                   {group.models.map((item) => <ListBox.Item key={item.id} id={`${group.providerId}::${item.id}`} textValue={item.id}>

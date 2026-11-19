@@ -9,7 +9,9 @@ import { fetchVertexPublicModels } from "./vertex-public-catalog.js";
 export interface RawDiscoveredModel {
   id: string;
   purpose?: ModelPurpose;
+  inputModalities?: ModelModality[];
   outputModalities?: ModelModality[];
+  reasoning?: boolean;
   name?: string;
   contextWindow?: number;
   maxTokens?: number;
@@ -177,11 +179,24 @@ function responsePage(json: unknown, api: CustomProviderApi): { models: RawDisco
       ? item.top_provider as Record<string, unknown> : undefined;
     const architecture = item.architecture && typeof item.architecture === "object"
       ? item.architecture as Record<string, unknown> : undefined;
+    const declaredInput = item.input_modalities ?? item.inputModalities ?? architecture?.input_modalities;
+    const inputModalities = Array.isArray(declaredInput)
+      ? [...new Set(declaredInput.filter((value): value is ModelModality =>
+        typeof value === "string" && ["text", "image", "audio", "video", "pdf"].includes(value)))]
+      : undefined;
     const declaredOutput = item.output_modalities ?? item.outputModalities ?? architecture?.output_modalities;
     const outputModalities = Array.isArray(declaredOutput)
       ? [...new Set(declaredOutput.filter((value): value is ModelModality =>
         typeof value === "string" && ["text", "image", "audio", "video", "pdf"].includes(value)))]
       : undefined;
+    const supportedParams = Array.isArray(item.supported_parameters)
+      ? item.supported_parameters.filter((value): value is string => typeof value === "string")
+      : undefined;
+    const reasoning = typeof item.reasoning === "boolean"
+      ? item.reasoning
+      : supportedParams
+        ? supportedParams.includes("reasoning") || supportedParams.includes("include_reasoning")
+        : undefined;
     const imageMethod = Array.isArray(item.supportedGenerationMethods) && item.supportedGenerationMethods.some((method) => method === "generateImages" || method === "generateImage");
     const liveMethod = Array.isArray(item.supportedGenerationMethods) && item.supportedGenerationMethods.includes("bidiGenerateContent");
     const explicitPurpose = typeof item.purpose === "string" && (MODEL_PURPOSES as readonly string[]).includes(item.purpose) ? item.purpose as ModelPurpose : undefined;
@@ -198,7 +213,9 @@ function responsePage(json: unknown, api: CustomProviderApi): { models: RawDisco
     return [{
       id,
       ...(purpose ? { purpose } : {}),
+      ...(inputModalities?.length ? { inputModalities } : {}),
       ...(outputModalities?.length ? { outputModalities } : {}),
+      ...(reasoning !== undefined ? { reasoning } : {}),
       ...(name ? { name } : {}),
       ...(typeof cw === "number" && Number.isFinite(cw) && cw > 0 ? { contextWindow: Math.round(cw) } : {}),
       ...(typeof mt === "number" && Number.isFinite(mt) && mt > 0 ? { maxTokens: Math.round(mt) } : {}),

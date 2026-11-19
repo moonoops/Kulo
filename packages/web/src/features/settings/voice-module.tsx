@@ -21,8 +21,6 @@ import {
 } from "./settings-helpers";
 import {
   acceptVoiceSettings,
-  changeCallProvider,
-  changeTtsProvider,
   createVoiceSettingsEditor,
   discardVoiceSettingsScope,
   selectCallModelOption,
@@ -42,8 +40,6 @@ import { useSettingsPending } from "./settings-save-activity";
 import "../voice/voice.css";
 
 export {
-  changeCallProvider,
-  changeTtsProvider,
   selectCallModelOption,
   selectTtsModelOption,
   voiceAsrSourceInput,
@@ -58,12 +54,14 @@ const LOCAL_ASR_KEY = "__local__";
 function fallbackTtsVoices(draft: TtsDraft): string[] {
   if (draft.provider === "gemini") return defaultVoicesForAdapter("gemini-tts");
   if (draft.provider === "openai") return defaultVoicesForAdapter("openai-speech");
-  return defaultVoicesForAdapter("minimax-t2a");
+  if (draft.provider === "minimax-cn" || draft.provider === "minimax-global") return defaultVoicesForAdapter("minimax-t2a");
+  return [];
 }
 
 function fallbackCallVoices(draft: CallDraft): string[] {
   if (draft.provider === "openai") return defaultVoicesForAdapter("openai-realtime");
-  return defaultVoicesForAdapter("gemini-live");
+  if (draft.provider === "gemini" || draft.provider === "vertex") return defaultVoicesForAdapter("gemini-live");
+  return [];
 }
 
 function VoiceSelect({
@@ -72,18 +70,21 @@ function VoiceSelect({
   choices,
   onChange,
   disabled,
+  placeholder,
 }: {
   label: string;
-  value: string;
+  value: string | null;
   choices: Record<string, string>;
   onChange: (value: string) => void;
   disabled?: boolean;
+  placeholder?: string;
 }) {
   return (
     <Select
       variant="secondary"
       className="moco-form-field"
       value={value}
+      placeholder={placeholder}
       fullWidth
       isDisabled={disabled}
       onChange={(next) => {
@@ -196,33 +197,54 @@ export function VoiceSettingsFields({
     fast: t("快", "Fast"),
   };
 
-  const selectedTtsKey = draft.tts.providerId ? `${draft.tts.providerId}::${draft.tts.modelId}` : LEGACY_KEY;
-  const matchedTtsOption = ttsModels.find((opt) => opt.selectionKey === selectedTtsKey);
+  const selectedTtsKey = draft.tts.providerId && draft.tts.modelId
+    ? `${draft.tts.providerId}::${draft.tts.modelId}`
+    : draft.tts.modelId
+      ? LEGACY_KEY
+      : null;
+  const matchedTtsOption = selectedTtsKey ? ttsModels.find((opt) => opt.selectionKey === selectedTtsKey) : undefined;
   const ttsChoices: Record<string, string> = {};
   for (const opt of ttsModels) ttsChoices[opt.selectionKey] = opt.label;
-  if (!matchedTtsOption && draft.tts.modelId) {
-    const legacyKey = draft.tts.providerId ? selectedTtsKey : LEGACY_KEY;
+  if (!matchedTtsOption && draft.tts.modelId && (draft.tts.providerId || snapshot.tts.hasCredential)) {
+    const legacyKey = draft.tts.providerId ? `${draft.tts.providerId}::${draft.tts.modelId}` : LEGACY_KEY;
     ttsChoices[legacyKey] = draft.tts.providerId ? `${draft.tts.modelId} · ${draft.tts.providerId}` : draft.tts.modelId;
   }
-  const activeTtsKey = Object.hasOwn(ttsChoices, selectedTtsKey) ? selectedTtsKey : (Object.keys(ttsChoices)[0] ?? "");
-  const ttsVoiceList = matchedTtsOption?.voices.length ? matchedTtsOption.voices : fallbackTtsVoices(draft.tts);
+  const activeTtsKey = selectedTtsKey && Object.hasOwn(ttsChoices, selectedTtsKey) ? selectedTtsKey : null;
+  const hasSelectedTtsModel = activeTtsKey !== null;
+  const ttsVoiceList = matchedTtsOption?.voices.length
+    ? matchedTtsOption.voices
+    : hasSelectedTtsModel
+      ? fallbackTtsVoices(draft.tts)
+      : [];
   const ttsVoiceChoices = Object.fromEntries(
-    [...new Set([...ttsVoiceList, draft.tts.voice])].filter(Boolean).map((v) => [v, v]),
+    [...new Set([...ttsVoiceList, ...(hasSelectedTtsModel ? [draft.tts.voice] : [])])].filter(Boolean).map((v) => [v, v]),
   );
+  const activeTtsVoice = hasSelectedTtsModel && draft.tts.voice && Object.hasOwn(ttsVoiceChoices, draft.tts.voice) ? draft.tts.voice : null;
 
-  const selectedCallKey = draft.call.providerId ? `${draft.call.providerId}::${draft.call.modelId}` : LEGACY_KEY;
-  const matchedCallOption = liveModels.find((opt) => opt.selectionKey === selectedCallKey);
+  const selectedCallKey = draft.call.providerId && draft.call.modelId
+    ? `${draft.call.providerId}::${draft.call.modelId}`
+    : draft.call.modelId
+      ? LEGACY_KEY
+      : null;
+  const matchedCallOption = selectedCallKey ? liveModels.find((opt) => opt.selectionKey === selectedCallKey) : undefined;
   const callChoices: Record<string, string> = {};
   for (const opt of liveModels) callChoices[opt.selectionKey] = opt.label;
-  if (!matchedCallOption && draft.call.modelId) {
-    const legacyKey = draft.call.providerId ? selectedCallKey : LEGACY_KEY;
+  if (!matchedCallOption && draft.call.modelId && (draft.call.providerId || snapshot.call.hasCredential)) {
+    const legacyKey = draft.call.providerId ? `${draft.call.providerId}::${draft.call.modelId}` : LEGACY_KEY;
     callChoices[legacyKey] = draft.call.providerId ? `${draft.call.modelId} · ${draft.call.providerId}` : draft.call.modelId;
   }
-  const activeCallKey = Object.hasOwn(callChoices, selectedCallKey) ? selectedCallKey : (Object.keys(callChoices)[0] ?? "");
-  const callVoiceList = matchedCallOption?.voices.length ? matchedCallOption.voices : fallbackCallVoices(draft.call);
+  const activeCallKey = selectedCallKey && Object.hasOwn(callChoices, selectedCallKey) ? selectedCallKey : null;
+  const hasSelectedCallModel = activeCallKey !== null;
+  const callVoiceList = matchedCallOption?.voices.length
+    ? matchedCallOption.voices
+    : hasSelectedCallModel
+      ? fallbackCallVoices(draft.call)
+      : [];
   const callVoiceChoices = Object.fromEntries(
-    [...new Set([...callVoiceList, draft.call.voice])].filter(Boolean).map((v) => [v, v]),
+    [...new Set([...callVoiceList, ...(hasSelectedCallModel ? [draft.call.voice] : [])])].filter(Boolean).map((v) => [v, v]),
   );
+  const activeCallVoice = hasSelectedCallModel && draft.call.voice && Object.hasOwn(callVoiceChoices, draft.call.voice) ? draft.call.voice : null;
+  const unselectedPlaceholder = t("未选择", "Not selected");
 
   return (
     <>
@@ -241,7 +263,7 @@ export function VoiceSettingsFields({
               label={t("启用语音合成", "Enable speech synthesis")}
               enabled={snapshot.tts.enabled}
               onChange={(enabled) => onToggle("tts", enabled)}
-              disabled={togglesDisabled}
+              disabled={togglesDisabled || (!snapshot.tts.enabled && !snapshot.tts.modelId)}
               busy={busy}
               pending={switching === "tts"}
             />
@@ -262,6 +284,7 @@ export function VoiceSettingsFields({
               label={t("TTS 模型", "TTS model")}
               value={activeTtsKey}
               choices={ttsChoices}
+              placeholder={unselectedPlaceholder}
               disabled={disabled || Object.keys(ttsChoices).length === 0}
               onChange={(key) => {
                 const chosen = ttsModels.find((opt) => opt.selectionKey === key);
@@ -271,9 +294,10 @@ export function VoiceSettingsFields({
             <div className="moco-form-grid">
               <VoiceSelect
                 label={t("合成音色", "Voice")}
-                value={draft.tts.voice}
+                value={activeTtsVoice}
                 choices={ttsVoiceChoices}
-                disabled={disabled}
+                placeholder={unselectedPlaceholder}
+                disabled={disabled || !hasSelectedTtsModel || Object.keys(ttsVoiceChoices).length === 0}
                 onChange={(voice) => onChange({ ...draft, tts: { ...draft.tts, voice } })}
               />
               <VoiceSelect
@@ -304,7 +328,7 @@ export function VoiceSettingsFields({
               label={t("启用通话", "Enable calls")}
               enabled={snapshot.call.enabled}
               onChange={(enabled) => onToggle("call", enabled)}
-              disabled={togglesDisabled}
+              disabled={togglesDisabled || (!snapshot.call.enabled && !snapshot.call.modelId)}
               busy={busy}
               pending={switching === "call"}
             />
@@ -325,6 +349,7 @@ export function VoiceSettingsFields({
               label={t("Live 模型", "Live model")}
               value={activeCallKey}
               choices={callChoices}
+              placeholder={unselectedPlaceholder}
               disabled={disabled || Object.keys(callChoices).length === 0}
               onChange={(key) => {
                 const chosen = liveModels.find((opt) => opt.selectionKey === key);
@@ -333,9 +358,10 @@ export function VoiceSettingsFields({
             />
             <VoiceSelect
               label={t("通话音色", "Call voice")}
-              value={draft.call.voice}
+              value={activeCallVoice}
               choices={callVoiceChoices}
-              disabled={disabled}
+              placeholder={unselectedPlaceholder}
+              disabled={disabled || !hasSelectedCallModel || Object.keys(callVoiceChoices).length === 0}
               onChange={(voice) => onChange({ ...draft, call: { ...draft.call, voice } })}
             />
           </div>

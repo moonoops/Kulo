@@ -23,7 +23,7 @@ export const CHAT_FONT_SIZE_OPTIONS = [
 ] as const;
 
 const STORAGE_KEY = "moco:appearance";
-const DEFAULT_APPEARANCE: MocoAppearance = { mode: "dark", chatFontSize: CHAT_FONT_SIZE.default };
+const DEFAULT_APPEARANCE: MocoAppearance = { mode: "system", chatFontSize: CHAT_FONT_SIZE.default };
 
 function parseChatFontSize(value: unknown): number {
   if (typeof value !== "number" || !Number.isInteger(value) ||
@@ -57,7 +57,7 @@ export function parseAppearance(raw: unknown): MocoAppearance {
     mode:
       item.mode === "light" || item.mode === "dark" || item.mode === "system"
         ? item.mode
-        : "dark",
+        : "system",
     chatFontSize: parseChatFontSize(item.chatFontSize),
   };
   if (item.customization !== undefined && item.customization !== null) result.customization = validateAppearanceCustomization(item.customization);

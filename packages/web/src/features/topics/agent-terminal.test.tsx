@@ -46,7 +46,7 @@ describe("agent profile card", () => {
   it.each([true, false])("prevents restarting an ended call while recording=%s", (recordingActive) => {
     const context = {
       recordingActive, loading: false, snapshot: null,
-      call: { call: { target: { topicId: "root", title: "与 Moco 对话" }, state: "ended", muted: false, minimized: false, captionsEnabled: false, captions: [], error: "连接已断开" },
+      call: { call: { target: { topicId: "root", title: "与 Moco 对话" }, state: "ended", muted: false, minimized: false, captionsEnabled: false, captions: [] },
         start: vi.fn(), hangup: vi.fn(), minimize: vi.fn(), expand: vi.fn(), toggleMute: vi.fn(), toggleCaptions: vi.fn() },
     } as unknown as voiceContext.VoiceWorkspace;
     vi.spyOn(voiceContext, "useVoiceWorkspace").mockReturnValue(context);
@@ -55,6 +55,20 @@ describe("agent profile card", () => {
     expect(retry).toBeDefined();
     expect(retry!.includes('disabled=""')).toBe(recordingActive);
     expect(html).toContain('aria-label="关闭通话"');
+  });
+
+  it("keeps failed call errors out of the narrow sidebar while reflecting companion error state", () => {
+    const context = {
+      recordingActive: false, loading: false, snapshot: null,
+      call: { call: { target: { topicId: "root", title: "与 Moco 对话" }, state: "ended", muted: false, minimized: false, captionsEnabled: false, captions: [], error: "连接已断开" },
+        start: vi.fn(), hangup: vi.fn(), minimize: vi.fn(), expand: vi.fn(), toggleMute: vi.fn(), toggleCaptions: vi.fn() },
+    } as unknown as voiceContext.VoiceWorkspace;
+    vi.spyOn(voiceContext, "useVoiceWorkspace").mockReturnValue(context);
+    const html = renderToStaticMarkup(<AgentTerminal agentName="Moco" connected entries={[]} onAgentClick={vi.fn()} onOpenCallTopic={vi.fn()} />);
+    expect(html).toContain('data-calling="false"');
+    expect(html).toContain('data-state="error"');
+    expect(html).not.toContain("moco-voice-call");
+    expect(html).not.toContain("连接已断开");
   });
 
   it("keeps the main chat entry separate from an ordinary topic's active call", () => {

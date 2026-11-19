@@ -22,6 +22,7 @@ import { ConfirmDialog } from "../../components/confirm-dialog";
 import { AgentTerminal } from "./agent-terminal";
 import type { AgentTerminalEntry } from "./agent-terminal-state";
 import { useVoiceWorkspace } from "../voice/voice-context";
+import { hasSidebarVoiceCall } from "../voice/voice-call-panel";
 import { MocoApiError, mocoRest } from "../../moco-api";
 import { MocoIcon } from "../../moco-icon";
 import { SETTINGS_MODULES, type SettingsModuleId } from "../../moco-settings";
@@ -228,7 +229,7 @@ export function TopicsSidebar({
 
   return (
     <div ref={sidebarRef} className="moco-sidebar flex h-full min-h-0 flex-col gap-2">
-      {(!settingsMode || voice?.call.call) && (
+      {(!settingsMode || hasSidebarVoiceCall(voice?.call.call)) && (
         <div className="shrink-0">
           <AgentTerminal
             agentName={agentName}

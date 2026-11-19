@@ -33,6 +33,7 @@ export interface ModelConfigurationDraft {
 
 export interface ModelConfigurationWorkspace {
   draft?: ModelConfigurationDraft;
+  drafts?: ModelConfigurationDraft[];
   presets?: Array<{ id: string; name: string; api: CustomProviderApi; baseUrl: string }>;
   providers: Array<Pick<ProviderCatalogItem, "id" | "name" | "authenticated" | "builtin" | "isGateway" | "authType" | "api" | "baseUrl">>;
 }
@@ -48,6 +49,7 @@ export interface ModelConfigurationPrepareRequest {
 
 export interface ModelConfigurationUpdateRequest {
   clientId: string;
+  draftId?: string;
   expectedRevision: number;
   provider: CustomProviderConfig;
   selectedModelIds: string[];
@@ -62,15 +64,27 @@ export interface ModelConfigurationSaveResult {
   verifications: ModelConfigurationVerification[];
 }
 
+export type ModelCalibrationFieldPatch = Partial<Omit<CustomModelConfig, "id">>;
+
+export interface ModelCalibrationModelUpdate {
+  id: string;
+  patch: ModelCalibrationFieldPatch;
+}
+
+export interface ModelCalibrationProviderUpdate {
+  providerId: string;
+  models: ModelCalibrationModelUpdate[];
+}
+
 export interface ModelConfigurationApi {
   workspace(clientId: string, signal?: AbortSignal): Promise<ModelConfigurationWorkspace>;
   prepare(input: ModelConfigurationPrepareRequest): Promise<ModelConfigurationDraft>;
   update(input: ModelConfigurationUpdateRequest): Promise<ModelConfigurationDraft>;
-  credential(input: { clientId: string; expectedRevision: number; apiKey: string }): Promise<ModelConfigurationDraft>;
-  discover(input: { clientId: string; expectedRevision: number }): Promise<ModelConfigurationDraft>;
-  test(input: { clientId: string; expectedRevision: number; modelId: string; commandId: string }, signal?: AbortSignal): Promise<{ draft: ModelConfigurationDraft; verification: ModelConfigurationVerification }>;
-  save(input: { clientId: string; expectedRevision: number; commandId: string }): Promise<ModelConfigurationSaveResult>;
-  discard(input: { clientId: string; expectedRevision: number }): Promise<void>;
+  credential(input: { clientId: string; draftId?: string; expectedRevision: number; apiKey: string }): Promise<ModelConfigurationDraft>;
+  discover(input: { clientId: string; draftId?: string; expectedRevision: number }): Promise<ModelConfigurationDraft>;
+  test(input: { clientId: string; draftId?: string; expectedRevision: number; modelId: string; commandId: string }, signal?: AbortSignal): Promise<{ draft: ModelConfigurationDraft; verification: ModelConfigurationVerification }>;
+  save(input: { clientId: string; draftId?: string; expectedRevision: number; commandId: string }): Promise<ModelConfigurationSaveResult>;
+  discard(input: { clientId: string; draftId?: string; expectedRevision: number }): Promise<void>;
 }
 
 export type ModelConfigurationProbe = (request: import("./domain.js").ModelProbeRequest, signal?: AbortSignal) => Promise<ModelProbeResult>;

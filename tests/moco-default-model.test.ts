@@ -2,10 +2,12 @@ import { openTestHub } from "./helpers/secure-hub.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveHubConfig } from "../packages/hub/src/config";
 import { MocoHub } from "../packages/hub/src/hub";
+import { MocoSettingsDoc } from "../packages/hub/src/settings";
 import { MocoStateDoc } from "../packages/hub/src/state";
 
 const directories: string[] = [];
@@ -135,5 +137,117 @@ describe("default model selection", () => {
     hubs.push(second);
     expect(second.getSettingsView().blocks.model.value.defaultModel).toBe("configured-model");
     expect(second.getSettingsView().blocks.model.value.gatewayModels).toHaveLength(1);
+  });
+
+  it("disables moco-gateway by default on fresh install unless explicitly configured via env or overrides", async () => {
+    expect(resolveHubConfig().model.gatewayDisabled).toBe(true);
+    vi.stubEnv("MOCO_API_KEY", "sk-env-gateway-key");
+    expect(resolveHubConfig().model.gatewayDisabled).toBeUndefined();
+    vi.stubEnv("MOCO_API_KEY", "");
+
+    const hub = await openTestHub({
+      config: { stateDir: tempState(), enableLocalEnv: false, watchdogMinutes: 0, memory: { enabled: false } },
+    });
+    hubs.push(hub);
+    expect(hub.getSettingsView().blocks.model.value.gatewayDisabled).toBe(true);
+    const catalog = await hub.listProviders();
+    expect(catalog.some((p) => p.id === "moco-gateway")).toBe(false);
+  });
+
+  it("cascades cleanup to worker roles and voice bindings when removing a provider or model", async () => {
+    const hub = await openTestHub({
+      config: { stateDir: tempState(), enableLocalEnv: false, watchdogMinutes: 0, memory: { enabled: false } },
+    });
+    hubs.push(hub);
+    const initial = hub.getSettingsView();
+    const added = await hub.updateSettingsBlock("model", initial.blocks.model.revision, {
+      ...initial.blocks.model.value,
+      defaultProvider: "api-demo",
+      defaultModel: "demo-chat",
+      customProviders: [{
+        id: "api-demo",
+        name: "Demo",
+        api: "openai-completions",
+        baseUrl: "https://demo.example/v1",
+        models: [
+          { id: "demo-chat", purpose: "chat" },
+          { id: "demo-tts", purpose: "tts", protocolAdapter: "openai-speech", voices: ["alloy"] },
+          { id: "demo-live", purpose: "live", protocolAdapter: "openai-realtime", voices: ["marin"] },
+        ],
+      }],
+    });
+    // Voice TTS & Live auto-bind to real configured models while staying disabled.
+    const voiceAfterAdd = await hub.voice.snapshot();
+    expect(voiceAfterAdd.tts).toMatchObject({ enabled: false, providerId: "api-demo", modelId: "demo-tts", voice: "alloy" });
+    expect(voiceAfterAdd.call).toMatchObject({ enabled: false, providerId: "api-demo", modelId: "demo-live", voice: "marin" });
+
+    // Bind a worker role to api-demo/demo-chat.
+    const rolesRev = added.settings.blocks.roles.revision;
+    const roleMap = { ...added.settings.blocks.roles.value };
+    const firstRoleId = Object.keys(roleMap)[0]!;
+    roleMap[firstRoleId] = { ...roleMap[firstRoleId]!, provider: "api-demo", modelId: "demo-chat", thinkingLevel: "high" };
+    await hub.updateSettingsBlock("roles", rolesRev, roleMap);
+
+    // Delete the custom provider and verify role, default model, and voice bindings clean up cleanly.
+    const afterRemove = await hub.updateSettingsBlock("model", added.settings.blocks.model.revision, {
+      ...added.settings.blocks.model.value,
+      customProviders: [],
+    });
+    expect(afterRemove.settings.blocks.model.value.defaultProvider).toBe("");
+    expect(afterRemove.settings.blocks.model.value.defaultModel).toBe("");
+    const cleanedRole = afterRemove.settings.blocks.roles.value[firstRoleId]!;
+    expect(cleanedRole.provider).toBeUndefined();
+    expect(cleanedRole.modelId).toBeUndefined();
+    expect(cleanedRole.thinkingLevel).toBe("auto");
+
+    const voiceAfterRemove = await hub.voice.snapshot();
+    expect(voiceAfterRemove.tts).toMatchObject({ enabled: false, modelId: "", voice: "" });
+    expect(voiceAfterRemove.tts.providerId).toBeUndefined();
+    expect(voiceAfterRemove.call).toMatchObject({ enabled: false, modelId: "", voice: "" });
+    expect(voiceAfterRemove.call.providerId).toBeUndefined();
+  });
+
+  it("migrates legacy untouched empty moco-gateway to disabled on reopen while preserving configured gateways", async () => {
+    const emptyDir = tempState();
+    const first = await openTestHub({
+      config: { stateDir: emptyDir, enableLocalEnv: false, watchdogMinutes: 0, memory: { enabled: false } },
+    });
+    await first.harness.commit(async (tx) => {
+      const doc = await tx.doc(MocoSettingsDoc);
+      delete doc.gatewayMigratedV2;
+      delete doc.model.gatewayDisabled;
+    }, BACKGROUND_CONTEXT);
+    await first.close();
+
+    const reopenedEmpty = await openTestHub({
+      config: { stateDir: emptyDir, enableLocalEnv: false, watchdogMinutes: 0, memory: { enabled: false } },
+    });
+    hubs.push(reopenedEmpty);
+    expect(reopenedEmpty.getSettingsView().blocks.model.value.gatewayDisabled).toBe(true);
+    expect((await reopenedEmpty.listProviders()).some((p) => p.id === "moco-gateway")).toBe(false);
+
+    // A legacy DB where the user DID configure gatewayModels keeps moco-gateway enabled.
+    const usedDir = tempState();
+    const usedFirst = await openTestHub({
+      config: {
+        stateDir: usedDir,
+        enableLocalEnv: false,
+        watchdogMinutes: 0,
+        memory: { enabled: false },
+        model: { gatewayDisabled: false, gatewayModels: [{ id: "legacy-chat" }] },
+      },
+    });
+    await usedFirst.harness.commit(async (tx) => {
+      const doc = await tx.doc(MocoSettingsDoc);
+      delete doc.gatewayMigratedV2;
+    }, BACKGROUND_CONTEXT);
+    await usedFirst.close();
+
+    const reopenedUsed = await openTestHub({
+      config: { stateDir: usedDir, enableLocalEnv: false, watchdogMinutes: 0, memory: { enabled: false } },
+    });
+    hubs.push(reopenedUsed);
+    expect(reopenedUsed.getSettingsView().blocks.model.value.gatewayDisabled).toBeUndefined();
+    expect((await reopenedUsed.listProviders()).some((p) => p.id === "moco-gateway")).toBe(true);
   });
 });

@@ -1,6 +1,8 @@
 import type { CustomProviderApi } from "./domain.js";
 import type { CapabilityConfigurationInput, CapabilityRecord, CustomImageAdapter, ImageGenerationParameters, ImageModelProfile, MediaAdapterId, SetupInputRequest } from "./capabilities.js";
 
+export const DEFAULT_IMAGE_TEST_PROMPT = "画一只正在吃甜筒的猫";
+
 export type ImageCapabilityConfiguration = Omit<CapabilityConfigurationInput, "commandId">;
 
 export interface ImageCapabilityDraft {
