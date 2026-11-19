@@ -1,13 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, session, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, Notification, session, shell, systemPreferences } from "electron";
 import { RecoveryManager, readReleaseIdentity } from "@moco/recovery";
 import { buildRuntimeEnvironment } from "./runtime-config.js";
 import { startNodeService, type NodeService } from "./child-service.js";
 import { DESKTOP_APP_NAME, desktopContentSecurityPolicy, desktopWindowChrome, externalHttpUrl, localHttpOrigin, parseDevelopmentMode, resolveDesktopDataDirectory, shouldAuthorizeDesktopRequest, type DevelopmentMode } from "./desktop-config.js";
 import { createDesktopMenuTemplate, createMainWindowCloseController, shouldRevealWindowForCommand, type DesktopAppCommand } from "./desktop-menu.js";
 import { createDesktopFileActions, isTrustedFileActionSender, type DesktopFileConnection } from "./file-actions.js";
+import { createDesktopNotifications } from "./notifications.js";
 import { configureDesktopSystemPermissionHandlers, createDesktopSystemPermissions } from "./system-permissions.js";
 import { DesktopStartupReady } from "./startup-ready.js";
 import { configureDesktopUiFailureHandler } from "./ui-failure.js";
@@ -61,6 +62,28 @@ const systemPermissions = createDesktopSystemPermissions({
   openExternal: (url) => shell.openExternal(url),
 });
 
+const activeNotifications = new Set<Notification>();
+const desktopNotifications = createDesktopNotifications({
+  isSupported: () => Notification.isSupported(),
+  isWindowFocused: () => Boolean(window && !window.isDestroyed() && window.isVisible() && window.isFocused()),
+  showNotification: (payload, onClick) => {
+    const notification = new Notification({
+      title: payload.title,
+      ...(payload.body ? { body: payload.body } : {}),
+    });
+    activeNotifications.add(notification);
+    notification.on("click", () => {
+      activeNotifications.delete(notification);
+      onClick();
+    });
+    notification.on("close", () => {
+      activeNotifications.delete(notification);
+    });
+    notification.show();
+  },
+  onFocusWindow: () => focusWindow(),
+});
+
 function configureFileActions(): void {
   const authorize = (event: Parameters<typeof isTrustedFileActionSender>[0]) => {
     if (!isTrustedFileActionSender(event, window, rendererOrigin)) throw new Error("无法从此页面打开文件。");
@@ -76,6 +99,10 @@ function configureFileActions(): void {
   ipcMain.handle("moco:ui-ready", (event) => {
     authorize(event);
     uiReady.acknowledge(event.sender.id, event.senderFrame!.origin);
+  });
+  ipcMain.handle("moco:notify", (event, payload: unknown) => {
+    authorize(event);
+    desktopNotifications.notify(payload);
   });
 }
 

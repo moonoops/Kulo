@@ -46,6 +46,8 @@ if (process.isMainFrame) {
     },
     openFile: (assetId: string, target: "default" | "browser"): Promise<void> => fileAction("moco:open-file", assetId, target),
     saveFile: (assetId: string): Promise<"saved" | "canceled"> => fileAction("moco:save-file", assetId),
+    notify: (payload: { title: string; body?: string; topicId?: string }): Promise<void> =>
+      ipcRenderer.invoke("moco:notify", payload),
     systemPermissions: {
       status: (): Promise<DesktopMicrophonePermissions> => permissionAction("moco:system-permissions-status"),
       requestMicrophone: (): Promise<DesktopMicrophonePermissions> => permissionAction("moco:system-permissions-request-microphone"),

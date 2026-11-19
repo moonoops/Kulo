@@ -7,6 +7,7 @@ import type { AppShortcutCommand } from "../shortcuts/shortcuts";
 export interface DesktopFileBridge {
   ready?(): Promise<void>;
   onCommand?(listener: (command: AppShortcutCommand) => void): () => void;
+  notify?(payload: { title: string; body?: string; topicId?: string }): Promise<void>;
   systemPermissions?: DesktopSystemPermissionBridge;
   openFile(assetId: string, target: "default" | "browser"): Promise<void>;
   saveFile(assetId: string): Promise<"saved" | "canceled">;

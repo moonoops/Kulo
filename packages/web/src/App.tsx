@@ -24,6 +24,7 @@ import {
   type ChatReplyReference,
   type ConversationMessageWindow,
   type SettingsAssistantContext,
+  type TicketCardView,
 } from "@moco/protocol";
 import { ConfirmDialog } from "./components/confirm-dialog";
 import { MocoTurnErrorCard } from "./features/chat/turn-error-card";
@@ -78,6 +79,7 @@ import { legacyInvitationCode, redactChatInvitation } from "./features/chat/devi
 import { consumeReplyDraft, restoreReplyDraft, type ReplyDrafts } from "./features/chat/reply-reference";
 import { ConversationOutline } from "./features/chat/conversation-outline";
 import { ConversationScene } from "./features/chat/conversation-scene";
+import { collectTicketNotifications } from "./features/tasks/task-notifications";
 import { ConversationFilesButton, ConversationSearchDialog, type ConversationDestination } from "./features/chat/conversation-library";
 import { messageQuote } from "./features/chat/message-actions";
 import {
@@ -681,7 +683,27 @@ function AppShell() {
     if (topics.length && !topics.some((topic) => topic.id === activeTopicId && !topic.deletedAt)) selectTopic("root");
   }, [activeTopicId, topics, selectTopic, topicDrafts]);
   const currentModelId = settings?.blocks.model.value.defaultModel;
+  const hasConfiguredModel = Boolean(currentModelId?.trim());
   const lastMessageId = messages[messages.length - 1]?.id ?? 0;
+  const previousTicketStatusesRef = useRef<Map<string, TicketCardView["status"]>>(new Map());
+  useEffect(() => {
+    const prev = previousTicketStatusesRef.current;
+    const notifyDesktop = typeof window === "undefined" ? undefined : window.mocoDesktop?.notify;
+    if (notifyDesktop && prev.size > 0 && (document.hidden || !document.hasFocus())) {
+      for (const note of collectTicketNotifications(prev, tickets)) {
+        void notifyDesktop({
+          title: note.title,
+          body: note.body,
+          ...(note.topicId ? { topicId: note.topicId } : {}),
+        }).catch((error: unknown) => {
+          console.warn("[MocoNotify] Desktop notification failed", error);
+        });
+      }
+    }
+    const next = new Map<string, TicketCardView["status"]>();
+    for (const ticket of tickets) next.set(ticket.id, ticket.status);
+    previousTicketStatusesRef.current = next;
+  }, [tickets]);
 
   const activeRunFailure = useMemo(() => {
     if (live.busy || !live.runFailure) return null;
@@ -1812,6 +1834,7 @@ function AppShell() {
                 onTranscribeVoice={transcribeVoice}
                 voiceCallTarget={projectedVoiceCallTarget}
                 onOpenCall={openCallPanel}
+                onConfigure={settings && !hasConfiguredModel ? openModelSettings : undefined}
                 onConfigureVoice={openVoiceSettings}
                 onPreviewImage={setLightboxImage}
                 onSubmit={() => submitMessage()}
@@ -1943,6 +1966,7 @@ function AppShell() {
               voiceCallTarget={voiceCallTarget}
               onResolveVoiceCallTarget={resolveVoiceCallTarget}
               onOpenCall={openCallPanel}
+              onConfigure={settings && !hasConfiguredModel ? openModelSettings : undefined}
               onConfigureVoice={openVoiceSettings}
               onPreviewImage={setLightboxImage}
               onSubmit={() => submitMessage()}
