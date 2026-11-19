@@ -156,7 +156,8 @@ node packages/cli/dist/bin.js open
 
 ### 2. macOS 桌面应用（macOS 14+）
 
-为当前机器架构构建并安装独立桌面开发版（`Moco Dev`）：
+- **直接安装（Apple Silicon）**：前往 [GitHub Releases](https://github.com/moonoops/moco/releases/latest) 下载 **`Moco-v0.1.0-macOS-arm64.dmg`**，双击挂载后将 **`Moco Dev.app`** 拖入 **`Applications`** 即可。当前版本采用本地 ad-hoc 签名，如首次打开遇到 macOS 安全提示，执行一次 `xattr -cr "/Applications/Moco Dev.app"` 后重新打开即可。
+- **从源码构建安装**：为当前机器架构构建并安装独立桌面版：
 
 ```sh
 pnpm desktop:install --launch
