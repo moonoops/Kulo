@@ -1,7 +1,7 @@
 import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
 import type { JsonObject, ToolExecutionResult } from "@earendil-works/pi-durable";
-import { MocoUploadStore, UploadError, VISION_IMAGE_MIMES } from "./uploads.js";
+import { KuloUploadStore, UploadError, VISION_IMAGE_MIMES } from "./uploads.js";
 
 export interface AssetInspectionInput {
   assetId: string;
@@ -25,7 +25,7 @@ function isTextMime(mimeType: string): boolean {
 }
 
 /** The caller must authorize this asset before inspection; no execution-node path is accepted here. */
-export function inspectAssetContent(input: AssetInspectionInput, uploads: MocoUploadStore): ToolExecutionResult {
+export function inspectAssetContent(input: AssetInspectionInput, uploads: KuloUploadStore): ToolExecutionResult {
   if (typeof input.assetId !== "string" || !input.assetId) throw new UploadError("请提供受管资源 ID。", 400);
   const offset = input.offset ?? 0;
   const limit = input.limit ?? DEFAULT_PAGE_LENGTH;

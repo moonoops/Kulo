@@ -1,9 +1,9 @@
 import { withoutAbortSignal, type Context } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { getOrThrow, type ExecutionEnv, type FileInfo } from "@earendil-works/pi-durable/env";
-import { isHtmlArtifact, type ChatAttachment } from "@moco/protocol";
+import { isHtmlArtifact, type ChatAttachment } from "@kulo/protocol";
 import { UiCardError, type UiAssetPublicationInput } from "./ui-cards.js";
-import { MAX_UPLOAD_BYTES, MAX_VIDEO_UPLOAD_BYTES, normalizeUploadMimeType, type MocoUploadStore } from "./uploads.js";
+import { MAX_UPLOAD_BYTES, MAX_VIDEO_UPLOAD_BYTES, normalizeUploadMimeType, type KuloUploadStore } from "./uploads.js";
 import { bundleHtmlArtifact } from "./html-bundle.js";
 
 export interface ExecutionAssetOptions {
@@ -125,7 +125,7 @@ export async function publishExecutionAsset(
   input: UiAssetPublicationInput,
   api: Pick<ToolExecutionApi, "env" | "conversationId" | "callId">,
   context: Context,
-  uploads: MocoUploadStore,
+  uploads: KuloUploadStore,
   options: ExecutionAssetOptions,
 ): Promise<ChatAttachment> {
   const opened = await openExecutionAsset(input.path, api.env, context, options);

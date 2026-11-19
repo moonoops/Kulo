@@ -1,11 +1,11 @@
 import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { arr, int, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
-import type { CapabilitySnapshot, MediaJob, MediaJobRequest, MediaJobSource } from "@moco/protocol";
-import { MediaJobError, type MocoMediaJobs } from "./media-jobs.js";
+import type { CapabilitySnapshot, MediaJob, MediaJobRequest, MediaJobSource } from "@kulo/protocol";
+import { MediaJobError, type KuloMediaJobs } from "./media-jobs.js";
 import { resolveDeferredAddTools } from "./tool-surface.js";
 
 export interface MediaToolsOptions {
-  get: () => MocoMediaJobs;
+  get: () => KuloMediaJobs;
   capabilities: () => Promise<CapabilitySnapshot>;
   scope: (api: ToolExecutionApi) => MediaJobSource | Promise<MediaJobSource>;
   authorize?: (request: MediaJobRequest, api: ToolExecutionApi) => void | Promise<void>;
@@ -60,36 +60,36 @@ export function createMediaToolsExtension(options: MediaToolsOptions) {
     await options.authorize?.(request, api);
     const job = await options.get().create(request);
     return result({ job, ...(source.ticketId && !["completed", "failed", "stopped"].includes(job.status)
-      ? { nextStep: "If waiting for completion, the parent Worker must suspend via moco_wait(reason='external', job_id=...) rather than polling or resubmitting; subagents should return job_id to their parent Worker." } : {}) });
+      ? { nextStep: "If waiting for completion, the parent Worker must suspend via kulo_wait(reason='external', job_id=...) rather than polling or resubmitting; subagents should return job_id to their parent Worker." } : {}) });
   };
   return defineExtension({
-    name: "moco-media",
+    name: "kulo-media",
     tools: [
-      defineTool({ name: "moco_media_capabilities", description: "Read enabled image/video capability IDs, models, formats, `imageProfile` parameter options, and routing rules (without credentials). Direct unconfigured capabilities to Capabilities & Skills. 关键词：生图能力 视频生成配置 查看画图模型参数", parameters: obj({}), deferred: true, replay: "safe", execute: async (_args, api, context) => {
+      defineTool({ name: "kulo_media_capabilities", description: "Read enabled image/video capability IDs, models, formats, `imageProfile` parameter options, and routing rules (without credentials). Direct unconfigured capabilities to Capabilities & Skills. 关键词：生图能力 视频生成配置 查看画图模型参数", parameters: obj({}), deferred: true, replay: "safe", execute: async (_args, api, context) => {
         await options.scope(api);
         const addTools = await resolveDeferredAddTools(api, context, [
-          "moco_generate_image",
-          "moco_generate_video",
-          "moco_media_job",
+          "kulo_generate_image",
+          "kulo_generate_video",
+          "kulo_media_job",
         ]);
         return { ...result(await catalog()), ...(addTools.length ? { control: { addTools } } : {}) };
       } }),
-      defineTool({ name: "moco_generate_image", description: "Create or resume a durable image generation/edit job. Claim completion only after a job completes and returns real assets; check existing `job_id` via `moco_media_job` before retrying. 关键词：生成图片 画图 生图 AI绘画 海报 插画 修图", parameters: obj(parameters), deferred: true, replay: "safe", execute: async (args, api, context) => {
+      defineTool({ name: "kulo_generate_image", description: "Create or resume a durable image generation/edit job. Claim completion only after a job completes and returns real assets; check existing `job_id` via `kulo_media_job` before retrying. 关键词：生成图片 画图 生图 AI绘画 海报 插画 修图", parameters: obj(parameters), deferred: true, replay: "safe", execute: async (args, api, context) => {
         const res = await generate("image", args, api);
-        const addTools = await resolveDeferredAddTools(api, context, ["moco_media_job", "moco_media_export"]);
+        const addTools = await resolveDeferredAddTools(api, context, ["kulo_media_job", "kulo_media_export"]);
         return { ...res, ...(addTools.length ? { control: { addTools } } : {}) };
       } }),
-      defineTool({ name: "moco_generate_video", description: "Create or resume a durable video job via the configured Flow Chrome subscription connection (never silently switches to paid APIs). Claim completion only after real assets are returned. 关键词：生成视频 AI视频 制作短片 动画视频", parameters: obj({
+      defineTool({ name: "kulo_generate_video", description: "Create or resume a durable video job via the configured Flow Chrome subscription connection (never silently switches to paid APIs). Claim completion only after real assets are returned. 关键词：生成视频 AI视频 制作短片 动画视频", parameters: obj({
         operation_id: parameters.operation_id, capability_id: parameters.capability_id, prompt: parameters.prompt,
         reference_asset_ids: parameters.reference_asset_ids, format: opt(oneOf(["mp4"])),
         duration_seconds: parameters.duration_seconds, count: parameters.count,
       }), deferred: true, replay: "safe", execute: async (args, api, context) => {
         const res = await generate("video", args, api);
-        const addTools = await resolveDeferredAddTools(api, context, ["moco_media_job", "moco_media_export"]);
+        const addTools = await resolveDeferredAddTools(api, context, ["kulo_media_job", "kulo_media_export"]);
         return { ...res, ...(addTools.length ? { control: { addTools } } : {}) };
       } }),
       defineTool({
-        name: "moco_media_job", description: "List, inspect, resume, or stop media jobs in the current conversation/ticket (`resume` retrieves/verifies the original job without re-billing). 关键词：查询生图进度 视频任务状态 恢复停止媒体作业",
+        name: "kulo_media_job", description: "List, inspect, resume, or stop media jobs in the current conversation/ticket (`resume` retrieves/verifies the original job without re-billing). 关键词：查询生图进度 视频任务状态 恢复停止媒体作业",
         parameters: obj({ action: oneOf(["list", "get", "resume", "stop"]), job_id: opt(str()) }), deferred: true, replay: "safe",
         execute: async (args, api) => {
           const source = await options.scope(api);

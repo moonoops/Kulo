@@ -1,4 +1,4 @@
-export const MOCO_VERSION = "0.1.1";
+export const KULO_VERSION = "0.1.2";
 
 export type TicketStatus =
   | "queued"
@@ -54,7 +54,7 @@ export interface RolePreset {
   enabled?: boolean;
   /** When true, project workspace files are protected read-only while ticket scratchDir stays writable. */
   readOnly?: boolean;
-  /** When true, this Worker may spawn internal subagents / teammates via moco_subagent. */
+  /** When true, this Worker may spawn internal subagents / teammates via kulo_subagent. */
   allowSubagents?: boolean;
   provider?: string;
   modelId?: string;
@@ -170,7 +170,7 @@ export interface TicketRecord {
   envId: string;
   /** Authoritative binding category for `envId`; undefined on legacy tickets defaults to locked. */
   envBinding?: TicketEnvBinding;
-  /** Set once the Worker uses device-local GUI/browser tools (`moco_browser` / `moco_desktop`). */
+  /** Set once the Worker uses device-local GUI/browser tools (`kulo_browser` / `kulo_desktop`). */
   deviceStateTouched?: boolean;
   /** Authenticated message sender metadata when dispatched from a paired device. */
   senderSource?: { deviceId: string; name: string };
@@ -515,7 +515,7 @@ export interface MemoryBanksConfig {
 }
 
 export interface HindsightMemoryConfig {
-  accessMode?: "moco" | "scoped" | "private-only";
+  accessMode?: "kulo" | "scoped" | "private-only";
   enabled: boolean;
   endpoint: string;
   endpoints: string[];
@@ -560,7 +560,7 @@ export interface HindsightProbeResult {
 }
 
 // ============================================================================
-// Moco Runtime Settings & Revision CAS
+// Kulo Runtime Settings & Revision CAS
 // ============================================================================
 
 export interface PresentationConfig {
@@ -952,7 +952,7 @@ export interface SettingsHistoryItem {
   savedAt: number;
 }
 
-export interface MocoSettingsView {
+export interface KuloSettingsView {
   globalRevision: number;
   externalClients?: Record<string, import("./external-agents.js").ExternalClientConnection>;
   blocks: {

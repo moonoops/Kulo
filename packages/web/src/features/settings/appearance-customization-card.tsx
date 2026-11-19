@@ -3,11 +3,11 @@ import { Alert, Button, Card } from "@heroui/react";
 import {
   appearanceCustomizationVariables, appearanceFontStack, validateAppearanceCustomization, validateAppearanceFontFamily,
   type AppearanceCustomization, type AppearanceFontRole,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import {
   getAppearanceCustomization, previewAppearanceCustomization, saveAppearanceCustomizationProposal,
-} from "../../moco-appearance";
-import { useI18n } from "../../moco-i18n";
+} from "../../kulo-appearance";
+import { useI18n } from "../../kulo-i18n";
 
 export interface AppearanceCustomizationCardProps {
   proposal: AppearanceCustomization;
@@ -34,9 +34,9 @@ export function detectAppearanceFont(family: string, doc: Document = document): 
   if (!context) return "unknown";
   for (const fallback of ["monospace", "serif", "sans-serif"]) {
     context.font = `14px ${fallback}`;
-    const baseline = context.measureText("Moco 中文阅读 AaBb 0123456789").width;
+    const baseline = context.measureText("Kulo 中文阅读 AaBb 0123456789").width;
     context.font = `14px ${name}, ${fallback}`;
-    if (Math.abs(context.measureText("Moco 中文阅读 AaBb 0123456789").width - baseline) > .1) return "available";
+    if (Math.abs(context.measureText("Kulo 中文阅读 AaBb 0123456789").width - baseline) > .1) return "available";
   }
   return "fallback";
 }
@@ -112,7 +112,7 @@ function ValidAppearanceCustomizationCard({ proposal, expectedCurrent, disabled 
     : fonts[role] === "available" ? t("可用", "Available")
     : fonts[role] === "fallback" ? t("未检测到，使用后备字体", "Not detected; using fallback") : t("尚未确认可用性", "Availability unconfirmed");
 
-  return <Card variant="secondary" className="moco-appearance-customization-card" aria-label={proposal.name}>
+  return <Card variant="secondary" className="kulo-appearance-customization-card" aria-label={proposal.name}>
     <Card.Header className="gap-2">
       <Card.Title className="text-sm font-medium">{proposal.name}</Card.Title>
       <div className="flex flex-wrap gap-2" aria-label={t("预览明暗模式", "Preview color mode")}>
@@ -121,12 +121,12 @@ function ValidAppearanceCustomizationCard({ proposal, expectedCurrent, disabled 
       </div>
     </Card.Header>
     <Card.Content className="flex min-w-0 flex-col gap-3">
-      <div className={`moco-appearance-customization-preview text-sm ${mode}`} data-theme={mode} style={appearanceCustomizationVariables(proposal, mode) as CSSProperties} aria-label={t("外观预览", "Appearance preview")}>
-        <span className="font-medium">Moco</span>
-        <div className="moco-appearance-customization-preview__chat">{t("今天想一起做点什么？", "What shall we work on today?")}<br />中文阅读 · English text · 0123456789</div>
-        <pre className="moco-appearance-customization-preview__code text-xs">const idea = "Hello, Moco";</pre>
-        <div className="moco-appearance-customization-preview__input">{t("描述你的想法，提出你的问题···", "Describe your ideas, ask your questions…")}</div>
-        <span className="moco-appearance-customization-preview__accent">{t("发送", "Send")}</span>
+      <div className={`kulo-appearance-customization-preview text-sm ${mode}`} data-theme={mode} style={appearanceCustomizationVariables(proposal, mode) as CSSProperties} aria-label={t("外观预览", "Appearance preview")}>
+        <span className="font-medium">Kulo</span>
+        <div className="kulo-appearance-customization-preview__chat">{t("今天想一起做点什么？", "What shall we work on today?")}<br />中文阅读 · English text · 0123456789</div>
+        <pre className="kulo-appearance-customization-preview__code text-xs">const idea = "Hello, Kulo";</pre>
+        <div className="kulo-appearance-customization-preview__input">{t("描述你的想法，提出你的问题···", "Describe your ideas, ask your questions…")}</div>
+        <span className="kulo-appearance-customization-preview__accent">{t("发送", "Send")}</span>
       </div>
       <dl className="flex min-w-0 flex-col gap-2 text-xs">
         {(["ui", "chat", "code"] as const).map((role) => <div key={role} className="flex min-w-0 flex-wrap justify-between gap-2">
@@ -138,7 +138,7 @@ function ValidAppearanceCustomizationCard({ proposal, expectedCurrent, disabled 
       {completed && <p className="text-xs" role="status">{t("已应用", "Applied")}</p>}
       {historical && <p className="text-xs text-muted">{t("历史方案", "Historical proposal")}</p>}
     </Card.Content>
-    {!historical && <Card.Footer className="moco-appearance-customization-actions">
+    {!historical && <Card.Footer className="kulo-appearance-customization-actions">
       {completed ? onUndo && <Button size="sm" variant="ghost" isDisabled={blocked} onPress={() => void undo()}>{t("恢复原方案", "Restore previous")}</Button> : <>
         {onCancel && <Button size="sm" variant="tertiary" isDisabled={blocked || savedLocally} onPress={() => void cancel()}>{t("取消", "Cancel")}</Button>}
         <Button size="sm" variant="secondary" isDisabled={blocked || savedLocally} onPress={() => setPreviewing((value) => !value)}>{previewing ? t("退出预览", "Exit preview") : t("全局预览", "Preview in app")}</Button>

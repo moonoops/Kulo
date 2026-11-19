@@ -26,7 +26,7 @@ using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
 
-namespace MocoSandbox {
+namespace KuloSandbox {
   public sealed class Policy {
     public int version { get; set; }
     public string workspaceDir { get; set; }
@@ -119,7 +119,7 @@ namespace MocoSandbox {
         Marshal.StructureToPtr(new CONDITION { key = Package, value = new VALUE { type = 13, pointer = sid } }, conditions, false);
         for (int index = 0; index < extra.Length; index++) Marshal.StructureToPtr(extra[index], IntPtr.Add(conditions, size * (index + 1)), false);
         FILTER filter = new FILTER {
-          key = Guid.NewGuid(), display = new DISPLAY { name = "Moco isolated Worker", description = "Per-AppContainer network policy" },
+          key = Guid.NewGuid(), display = new DISPLAY { name = "Kulo isolated Worker", description = "Per-AppContainer network policy" },
           flags = permit ? 8U : 0U, layer = layer, sublayer = sublayer, weight = new VALUE { type = 1, u8 = priority },
           count = (uint)(extra.Length + 1), conditions = conditions, action = new ACTION { type = permit ? 0x1002U : 0x1001U }
         };
@@ -131,12 +131,12 @@ namespace MocoSandbox {
       try {
         if (IntPtr.Size != 8) throw new PlatformNotSupportedException("Native Windows isolation requires a 64-bit controller.");
         if (Marshal.SizeOf(typeof(FILTER)) != 200 || Marshal.SizeOf(typeof(CONDITION)) != 40) throw new InvalidOperationException("Unsupported WFP ABI layout.");
-        SESSION session = new SESSION { key = Guid.NewGuid(), flags = 1, timeout = 5000, display = new DISPLAY { name = "Moco Worker network" } };
+        SESSION session = new SESSION { key = Guid.NewGuid(), flags = 1, timeout = 5000, display = new DISPLAY { name = "Kulo Worker network" } };
         Check(FwpmEngineOpen0(null, 10, IntPtr.Zero, ref session, out engine), "Open Windows Filtering Platform");
         Check(FwpmTransactionBegin0(engine, 0), "Begin isolated network transaction");
         bool committed = false;
         try {
-          sublayer = Guid.NewGuid(); SUBLAYER sub = new SUBLAYER { key = sublayer, display = new DISPLAY { name = "Moco per-Worker isolation" }, weight = UInt16.MaxValue - 1 };
+          sublayer = Guid.NewGuid(); SUBLAYER sub = new SUBLAYER { key = sublayer, display = new DISPLAY { name = "Kulo per-Worker isolation" }, weight = UInt16.MaxValue - 1 };
           Check(FwpmSubLayerAdd0(engine, ref sub, IntPtr.Zero), "Create isolated network sublayer");
           for (int family = 0; family < 2; family++) {
             IPAddress loopback = family == 0 ? IPAddress.Loopback : IPAddress.IPv6Loopback;
@@ -202,7 +202,7 @@ namespace MocoSandbox {
     const uint JOB_OBJECT_TERMINATE = 0x8;
     const int ERROR_FILE_NOT_FOUND = 2;
     static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
-    static readonly Mutex AclMutex = new Mutex(false, "Global\\Moco.Worker.DirectoryPermissions");
+    static readonly Mutex AclMutex = new Mutex(false, "Global\\Kulo.Worker.DirectoryPermissions");
 
     [StructLayout(LayoutKind.Sequential)] struct SECURITY_CAPABILITIES {
       public IntPtr AppContainerSid, Capabilities;
@@ -378,7 +378,7 @@ namespace MocoSandbox {
       foreach (string file in Directory.GetFiles(directory, "*.json")) {
         Lease lease = Json.Deserialize<Lease>(File.ReadAllText(file));
         Guid identifier;
-        if (lease == null || lease.Profile == null || !lease.Profile.StartsWith("Moco.Worker.", StringComparison.Ordinal) || !Guid.TryParseExact(lease.Profile.Substring(12), "N", out identifier) || lease.Paths == null || lease.JobName != "Local\\" + lease.Profile) throw new InvalidOperationException("Invalid sandbox cleanup record.");
+        if (lease == null || lease.Profile == null || !lease.Profile.StartsWith("Kulo.Worker.", StringComparison.Ordinal) || !Guid.TryParseExact(lease.Profile.Substring(12), "N", out identifier) || lease.Paths == null || lease.JobName != "Local\\" + lease.Profile) throw new InvalidOperationException("Invalid sandbox cleanup record.");
         bool ownerAlive = false;
         try { Process owner = Process.GetProcessById(lease.OwnerPid); ownerAlive = !owner.HasExited && owner.StartTime.ToUniversalTime().Ticks == lease.OwnerStarted; }
         catch (ArgumentException) { }
@@ -463,14 +463,14 @@ namespace MocoSandbox {
       // No persistent firewall change or broad loopback exemption: test the actual dynamic WFP path.
       IntPtr memory = IntPtr.Zero;
       try {
-        int derived = DeriveAppContainerSidFromAppContainerName("Moco.Setup." + Guid.NewGuid().ToString("N"), out memory);
+        int derived = DeriveAppContainerSidFromAppContainerName("Kulo.Setup." + Guid.NewGuid().ToString("N"), out memory);
         if (derived < 0) Marshal.ThrowExceptionForHR(derived);
         using (NetworkLease lease = new NetworkLease(memory, new NetworkPolicy { backend = "wfp", localConnectPorts = new int[0], localListenPorts = new int[0] })) { }
       } finally { if (memory != IntPtr.Zero) FreeSid(memory); }
     }
 
     public static void Cleanup() {
-      string journals = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Moco", "SandboxLeases");
+      string journals = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kulo", "SandboxLeases");
       Directory.CreateDirectory(journals); ReapLeases(journals);
     }
 
@@ -485,10 +485,10 @@ namespace MocoSandbox {
       if (!String.IsNullOrEmpty(policy.scratchDir)) RejectReparseAncestors(policy.scratchDir);
       if (!Directory.Exists(policy.workspaceDir) || !Directory.Exists(policy.temporaryDir) || !File.Exists(policy.executable)) throw new InvalidOperationException("Sandbox resources must exist before launch.");
       if (String.Equals(policy.workspaceDir, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("The entire user profile cannot be a Worker project.");
-      string journals = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Moco", "SandboxLeases");
+      string journals = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kulo", "SandboxLeases");
       List<string> privatePaths = new List<string>(policy.protectedPaths ?? new string[0]);
       string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-      foreach (string name in new string[] { ".ssh", ".aws", ".azure", ".gnupg", ".kube", ".moco", ".codex", ".config\\gcloud" }) privatePaths.Add(Path.Combine(userProfile, name));
+      foreach (string name in new string[] { ".ssh", ".aws", ".azure", ".gnupg", ".kube", ".kulo", ".codex", ".config\\gcloud" }) privatePaths.Add(Path.Combine(userProfile, name));
       privatePaths.Add(Normalize(policy.controlDirectory));
       // Every Worker protects the journal's authorized ancestors before it can execute, including
       // when another controller later creates a lease beneath an already-authorized LocalAppData.
@@ -505,7 +505,7 @@ namespace MocoSandbox {
       }
 
       Directory.CreateDirectory(journals); ReapLeases(journals);
-      string profile = "Moco.Worker." + Guid.NewGuid().ToString("N");
+      string profile = "Kulo.Worker." + Guid.NewGuid().ToString("N");
       string journal = Path.Combine(journals, profile.Substring(12) + ".json");
       IntPtr sidPointer = IntPtr.Zero, jobHandle = IntPtr.Zero, list = IntPtr.Zero, environment = IntPtr.Zero;
       IntPtr capabilitiesMemory = IntPtr.Zero, lpacMemory = IntPtr.Zero, handlesMemory = IntPtr.Zero;
@@ -517,7 +517,7 @@ namespace MocoSandbox {
       bool processAssigned = false, attributeListInitialized = false;
       int result = 1;
       try {
-        int created = CreateAppContainerProfile(profile, "Moco Worker", "Isolated Moco task", IntPtr.Zero, 0, out sidPointer);
+        int created = CreateAppContainerProfile(profile, "Kulo Worker", "Isolated Kulo task", IntPtr.Zero, 0, out sidPointer);
         if (created < 0) Marshal.ThrowExceptionForHR(created);
         SecurityIdentifier sid = new SecurityIdentifier(sidPointer);
         Process owner = Process.GetCurrentProcess();
@@ -628,12 +628,12 @@ namespace MocoSandbox {
 }
 '@
 
-if ($cleanup) { [MocoSandbox.Launcher]::Cleanup(); exit 0 }
+if ($cleanup) { [KuloSandbox.Launcher]::Cleanup(); exit 0 }
 if ($setup) {
-  [MocoSandbox.Launcher]::Setup()
+  [KuloSandbox.Launcher]::Setup()
   [Console]::Out.WriteLine('Windows AppContainer controller prerequisites are ready. Each Worker still validates its own WFP and LPAC launch.')
   exit 0
 }
 $policy | Add-Member -NotePropertyName controlDirectory -NotePropertyValue $PSScriptRoot
 $json = $policy | ConvertTo-Json -Depth 8 -Compress
-exit [MocoSandbox.Launcher]::Run($json, $childArguments)
+exit [KuloSandbox.Launcher]::Run($json, $childArguments)

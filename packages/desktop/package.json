@@ -1,7 +1,7 @@
 {
-  "name": "@moco/desktop",
-  "productName": "Moco Dev",
-  "version": "0.1.1",
+  "name": "@kulo/desktop",
+  "productName": "Kulo Dev",
+  "version": "0.1.2",
   "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
@@ -9,17 +9,17 @@
   "engines": {
     "node": ">=22.20.0"
   },
-  "files": ["dist", "web", "assets/moco-icon.png"],
+  "files": ["dist", "web", "assets/kulo-icon.png"],
   "scripts": {
     "icons": "swift scripts/generate-icons.swift",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@moco/hub": "workspace:*",
-    "@moco/env": "workspace:*",
-    "@moco/protocol": "workspace:*",
-    "@moco/recovery": "workspace:*"
+    "@kulo/hub": "workspace:*",
+    "@kulo/env": "workspace:*",
+    "@kulo/protocol": "workspace:*",
+    "@kulo/recovery": "workspace:*"
   },
   "devDependencies": {
     "@electron/packager": "20.3.0",

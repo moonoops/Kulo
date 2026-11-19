@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-durable";
-import { EXTERNAL_AGENT_KINDS, externalClientConnectionId, redactSensitiveText, type AgentConfigurationDraft, type AgentConfigurationWorkspace, type AgentDispatchPolicy, type EnvNodeDescriptor, type ExternalAgentCatalogItem, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentRequest, type ExternalAgentResponse, type MocoSettingsView, type RolePreset } from "@moco/protocol";
+import { EXTERNAL_AGENT_KINDS, externalClientConnectionId, redactSensitiveText, type AgentConfigurationDraft, type AgentConfigurationWorkspace, type AgentDispatchPolicy, type EnvNodeDescriptor, type ExternalAgentCatalogItem, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentRequest, type ExternalAgentResponse, type KuloSettingsView, type RolePreset } from "@kulo/protocol";
 import { assertAgentDefaultScopes, normalizeAgentDispatchPolicy } from "./agent-routing.js";
 
 export interface AgentConfigurationCommit {
@@ -18,9 +18,9 @@ export interface AgentConfigurationCommit {
   role: RolePreset;
   models?: ExternalAgentModelInfo[];
 }
-export interface AgentConfigurationSaveResult { agentId: string; enabled: boolean; settings: MocoSettingsView }
+export interface AgentConfigurationSaveResult { agentId: string; enabled: boolean; settings: KuloSettingsView }
 export interface AgentConfigurationRemovalCommit { fingerprint: string; clientId: string; agentId: string; expectedRevision: number }
-type ReceiptResult = AgentConfigurationSaveResult | { agentId: string; removed: true; settings: MocoSettingsView } | AgentConfigurationDraft;
+type ReceiptResult = AgentConfigurationSaveResult | { agentId: string; removed: true; settings: KuloSettingsView } | AgentConfigurationDraft;
 interface ConfigurationState {
   drafts: Record<string, AgentConfigurationDraft>;
   commits: Record<string, AgentConfigurationCommit>;
@@ -28,7 +28,7 @@ interface ConfigurationState {
   receipts: Record<string, { fingerprint: string; state: "pending" | "complete" | "uncertain"; result?: ReceiptResult }>;
 }
 export const AgentConfigurationDoc = defineDoc<ConfigurationState & JsonObject>({
-  kind: "moco.agent-configuration", version: 1, scope: "session",
+  kind: "kulo.agent-configuration", version: 1, scope: "session",
   initial: () => ({ drafts: {}, commits: {}, removals: {}, receipts: {} }) as ConfigurationState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
@@ -38,12 +38,12 @@ export class AgentConfigurationError extends Error {
 }
 export interface AgentConfigurationOptions {
   harness: Harness;
-  settings: () => MocoSettingsView;
+  settings: () => KuloSettingsView;
   envs: () => EnvNodeDescriptor[];
   projects?: () => Promise<NonNullable<AgentConfigurationWorkspace["projects"]>>;
   request: (envId: string, request: ExternalAgentRequest) => Promise<ExternalAgentResponse>;
-  saveRole: (input: { role: RolePreset; models?: ExternalAgentModelInfo[]; expectedRevision: number; commandId: string; operationKey: string; fingerprint: string; commit: AgentConfigurationCommit }) => Promise<MocoSettingsView>;
-  removeRole?: (input: { agentId: string; expectedRevision: number; commandId: string; operationKey: string; fingerprint: string; commit: AgentConfigurationRemovalCommit }) => Promise<MocoSettingsView>;
+  saveRole: (input: { role: RolePreset; models?: ExternalAgentModelInfo[]; expectedRevision: number; commandId: string; operationKey: string; fingerprint: string; commit: AgentConfigurationCommit }) => Promise<KuloSettingsView>;
+  removeRole?: (input: { agentId: string; expectedRevision: number; commandId: string; operationKey: string; fingerprint: string; commit: AgentConfigurationRemovalCommit }) => Promise<KuloSettingsView>;
   verifyRoundtrip?: (draft: AgentConfigurationDraft, nonce: string) => Promise<{ sessionId?: string; version?: string }>;
   assertContext?: (clientId: string) => Promise<unknown>;
   redact?: (text: string) => string;
@@ -94,7 +94,7 @@ function assertAvailable(clientKind: ExternalAgentKind, experimental?: boolean):
   if (item.status === "experimental" && !experimental) fail(409, "agent_experimental_opt_in", "Grok Bot 使用实验性客户端桥接，请先说明限制并由用户明确选择试用。");
 }
 
-export class MocoAgentConfiguration {
+export class KuloAgentConfiguration {
   readonly #options: AgentConfigurationOptions;
   #queue: Promise<unknown> = Promise.resolve();
   constructor(options: AgentConfigurationOptions) { this.#options = options; }
@@ -261,7 +261,7 @@ export class MocoAgentConfiguration {
       if (current.binding.kind === "grok-bot") fail(409, "agent_roundtrip_unsupported", "Grok Bot 当前仅支持实验性协议检测，尚未提供稳定的真实收发校验，配置保存后保持停用。");
       if (!current.detection?.installed || !current.verification) fail(409, "agent_protocol_not_verified", "请先检测客户端并检查协议连接。");
       if (!this.#options.verifyRoundtrip) fail(409, "agent_roundtrip_unavailable", "当前执行设备尚不支持受控收发测试。");
-      const nonce = `MOCO_AGENT_VERIFY_${hash([current.id, current.revision, input.commandId]).slice(0, 24)}`;
+      const nonce = `KULO_AGENT_VERIFY_${hash([current.id, current.revision, input.commandId]).slice(0, 24)}`;
       await this.#remember(key, fingerprint, "pending");
       let evidence: { sessionId?: string; version?: string };
       try { evidence = await this.#options.verifyRoundtrip(clone(current), nonce); await this.#guard(clientId, guard); }
@@ -304,7 +304,7 @@ export class MocoAgentConfiguration {
     const clientId = identifier(input.clientId); const agentId = identifier(input.agentId); identifier(input.commandId);
     return this.#serial(async () => {
       await this.#guard(clientId, guard); const key = `remove:${hash([clientId, input.commandId])}`; const fingerprint = hash(input);
-      const previous = await this.#receipt<{ agentId: string; removed: true; settings: MocoSettingsView }>(key, fingerprint); if (previous) return previous;
+      const previous = await this.#receipt<{ agentId: string; removed: true; settings: KuloSettingsView }>(key, fingerprint); if (previous) return previous;
       const committed = (await this.#state())?.removals?.[key];
       if (committed && committed.fingerprint !== fingerprint) fail(409, "agent_configuration_command_conflict", "此操作标识已用于另一项智能体变更。");
       const roles = this.#options.settings().blocks.roles;

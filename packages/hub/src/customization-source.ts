@@ -6,9 +6,9 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { gzipSync, gunzipSync } from "node:zlib";
-import { buildWorkerSandboxProfile, createMacSandboxCleanupCommand, defaultProtectedPaths } from "@moco/env";
-import { redactSecrets } from "@moco/protocol";
-import { recoverCustomizationExecutions } from "@moco/recovery";
+import { buildWorkerSandboxProfile, createMacSandboxCleanupCommand, defaultProtectedPaths } from "@kulo/env";
+import { redactSecrets } from "@kulo/protocol";
+import { recoverCustomizationExecutions } from "@kulo/recovery";
 
 export class CustomizationError extends Error {
   constructor(readonly code: string, message: string, readonly status = 409) {
@@ -54,22 +54,22 @@ export interface CustomizationRunner {
 
 const WEB_TEST_FILES = [
   "packages/web",
-  "tests/moco-heroui-guard.test.ts",
-  "tests/moco-typography.test.ts",
-  "tests/moco-form-layout.test.ts",
-  "tests/moco-input-appearance.test.ts",
-  "tests/moco-tab-layout.test.ts",
-  "tests/moco-control-appearance.test.ts",
-  "tests/moco-popover-layout.test.ts",
-  "tests/moco-focus-appearance.test.ts",
-  "tests/moco-navigation-motion.test.ts",
+  "tests/kulo-heroui-guard.test.ts",
+  "tests/kulo-typography.test.ts",
+  "tests/kulo-form-layout.test.ts",
+  "tests/kulo-input-appearance.test.ts",
+  "tests/kulo-tab-layout.test.ts",
+  "tests/kulo-control-appearance.test.ts",
+  "tests/kulo-popover-layout.test.ts",
+  "tests/kulo-focus-appearance.test.ts",
+  "tests/kulo-navigation-motion.test.ts",
 ] as const;
 
-const EXCLUDED = new Set([".git", ".agents", "node_modules", "dist", "output", ".moco-state", ".moco", ".pnpm-store", ".playwright-cli", ".playwright-mcp", ".codex", ".claude", ".gemini",
+const EXCLUDED = new Set([".git", ".agents", "node_modules", "dist", "output", ".kulo-state", ".kulo", ".pnpm-store", ".playwright-cli", ".playwright-mcp", ".codex", ".claude", ".gemini",
   ".venv", "venv", "__pycache__", ".cache", ".pytest_cache", ".mypy_cache", ".ruff_cache", "coverage", ".next", ".turbo"]);
 const MAX_SOURCE_BYTES = 256 * 1024 * 1024;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
-const generatedNativePath = (relative: string) => /^packages\/hub\/native\/moco-connector-[^/]+(?:\/|$)/.test(relative);
+const generatedNativePath = (relative: string) => /^packages\/hub\/native\/kulo-connector-[^/]+(?:\/|$)/.test(relative);
 
 export function customizationIdentifier(value: string): string {
   if (typeof value !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/.test(value)) {
@@ -332,9 +332,9 @@ export function assertCustomizationDataCompatibility(relative: string, before: s
     if (next.get(kind) !== version) throw new CustomizationError("customization_data_migration_unsupported",
       "此修改涉及现有数据格式迁移，当前定制流程尚不支持安全应用：" + relative);
   }
-  if (/\bMOCO_STATE_VERSION\b/.test(before) && /\bMOCO_STATE_VERSION\b/.test(after ?? "") &&
-      [...before.matchAll(/\bMOCO_STATE_VERSION\s*=\s*\d+/g)].map((m) => m[0]).join() !==
-      [...(after ?? "").matchAll(/\bMOCO_STATE_VERSION\s*=\s*\d+/g)].map((m) => m[0]).join()) {
+  if (/\bKULO_STATE_VERSION\b/.test(before) && /\bKULO_STATE_VERSION\b/.test(after ?? "") &&
+      [...before.matchAll(/\bKULO_STATE_VERSION\s*=\s*\d+/g)].map((m) => m[0]).join() !==
+      [...(after ?? "").matchAll(/\bKULO_STATE_VERSION\s*=\s*\d+/g)].map((m) => m[0]).join()) {
     throw new CustomizationError("customization_data_migration_unsupported", "当前定制流程不支持修改状态存储格式。");
   }
 }
@@ -458,7 +458,7 @@ function findExecutable(name: string): string {
 
 function packagedPnpmEntry(trustedRoot: string): string | undefined {
   const root = fs.realpathSync(trustedRoot);
-  const hubEntry = fs.realpathSync(createRequire(path.join(root, "package.json")).resolve("@moco/hub"));
+  const hubEntry = fs.realpathSync(createRequire(path.join(root, "package.json")).resolve("@kulo/hub"));
   if (!customizationContained(root, hubEntry)) throw new CustomizationError("customization_toolchain_unavailable", "安装包内的构建工具依赖不完整。");
   const require = createRequire(hubEntry);
   let metadata: string;
@@ -529,7 +529,7 @@ export function createLocalCustomizationRunner(options: {
     env.PATH = path.join(root, ".toolchain") + path.delimiter + path.dirname(node) + path.delimiter + path.dirname(executable) + path.delimiter + (env.PATH ?? "");
     const controlsRoot = await customizationPrivateDirectory(path.join(options.dataDir, "customizations", "executions"));
     const control = await customizationPrivateDirectory(path.join(controlsRoot, randomUUID()));
-    const identity = { marker: "moco.customization." + randomBytes(24).toString("hex"), negative: "moco.unowned." + randomBytes(24).toString("hex") };
+    const identity = { marker: "kulo.customization." + randomBytes(24).toString("hex"), negative: "kulo.unowned." + randomBytes(24).toString("hex") };
     const cleanupCommand = createMacSandboxCleanupCommand(control, identity.marker, identity.negative);
     await fsp.writeFile(path.join(control, "owner.json"), JSON.stringify({ ownerPid: process.pid, workRoot: root, cleanupCommand, state: "running" }), { mode: 0o600 });
     const runtimePaths = [...new Set([path.dirname(node), path.dirname(executable), options.trustedRoot, payloadRoot, ...toolchainPaths,
@@ -576,7 +576,7 @@ export function createLocalCustomizationRunner(options: {
       const toolchain = pnpmToolchain(pnpm);
       const trustedRoot = fs.realpathSync(options.trustedRoot);
       let helper: string;
-      try { helper = fs.realpathSync(path.join(path.dirname(createRequire(path.join(trustedRoot, "package.json")).resolve("@moco/hub")), "customization-payload.js")); }
+      try { helper = fs.realpathSync(path.join(path.dirname(createRequire(path.join(trustedRoot, "package.json")).resolve("@kulo/hub")), "customization-payload.js")); }
       catch { throw new CustomizationError("customization_packager_unavailable", "受信界面打包程序尚未准备。"); }
       if (!customizationContained(trustedRoot, helper) || !fs.lstatSync(helper).isFile()) throw new CustomizationError("customization_packager_unavailable", "界面打包程序不属于稳定安装包。");
       const bin = controlDirectory(workRoot, ".toolchain");
@@ -584,8 +584,8 @@ export function createLocalCustomizationRunner(options: {
       writeControlFile(path.join(bin, "pnpm"), "#!/bin/sh\nexec " + quote(node) + " " + quote(toolchain.entry) + " \"$@\"\n", 0o700);
       await run(request, request.sourceRoot, node, [toolchain.entry, "install", "--frozen-lockfile", "--ignore-scripts", "--store-dir", path.join(request.workRoot, ".store")], "install", undefined, toolchain.readOnlyPaths);
       await run(request, request.sourceRoot, node, [toolchain.entry, "typecheck"], "offline", undefined, toolchain.readOnlyPaths);
-      await run(request, request.sourceRoot, node, [toolchain.entry, "--filter", "@moco/protocol", "build"], "offline", undefined, toolchain.readOnlyPaths);
-      await run(request, request.sourceRoot, node, [toolchain.entry, "--filter", "@moco/web", "build"], "offline", undefined, toolchain.readOnlyPaths);
+      await run(request, request.sourceRoot, node, [toolchain.entry, "--filter", "@kulo/protocol", "build"], "offline", undefined, toolchain.readOnlyPaths);
+      await run(request, request.sourceRoot, node, [toolchain.entry, "--filter", "@kulo/web", "build"], "offline", undefined, toolchain.readOnlyPaths);
       await run(request, request.sourceRoot, node, [toolchain.entry, "test", ...WEB_TEST_FILES, "--maxWorkers=4"], "offline", undefined, toolchain.readOnlyPaths);
       const script = "const m=await import(" + JSON.stringify(pathToFileURL(helper).href) + ");await m.prepareWebCustomizationPayload(" +
         JSON.stringify(request.outputRoot) + "," + JSON.stringify({ workRoot, sourceRoot: request.sourceRoot, basePayloadRoot, baseReleaseId: request.baseReleaseId }) + ");";
@@ -597,7 +597,7 @@ export function createLocalCustomizationRunner(options: {
       const trustedRoot = fs.realpathSync(options.trustedRoot);
       let executableProbe: string;
       try {
-        const expected = options.probePath ?? path.join(path.dirname(createRequire(path.join(trustedRoot, "package.json")).resolve("@moco/hub")), "customization-probe.js");
+        const expected = options.probePath ?? path.join(path.dirname(createRequire(path.join(trustedRoot, "package.json")).resolve("@kulo/hub")), "customization-probe.js");
         executableProbe = fs.realpathSync(expected);
       } catch { throw new CustomizationError("customization_probe_unavailable", "受信运行验证程序尚未构建。"); }
       if (!customizationContained(trustedRoot, executableProbe) || !fs.statSync(executableProbe).isFile() || executableProbe.endsWith(".ts")) {

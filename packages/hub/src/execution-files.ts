@@ -91,7 +91,7 @@ export async function writeExecutionFile(input: {
     if (!input.overwrite) throw new ExecutionFileError(409, "execution_file_exists", "目标文件已存在；请使用新文件名或明确允许覆盖。");
   }
   const parent = getOrThrow(await env.joinPath([target, ".."], context));
-  const temporary = getOrThrow(await env.joinPath([parent, `.moco-transfer-${randomUUID()}.partial`], context));
+  const temporary = getOrThrow(await env.joinPath([parent, `.kulo-transfer-${randomUUID()}.partial`], context));
   await checkedExecutionPath(env, input.root, temporary, context, { assertActive });
   const preexistingTemporary = await executionFileInfo(env, temporary, context);
   if (preexistingTemporary) throw new ExecutionFileError(409, "execution_transfer_conflict", "暂存文件冲突，请重试。");

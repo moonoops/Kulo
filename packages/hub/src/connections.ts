@@ -7,7 +7,7 @@ import {
   type ConnectionAccessRequest, type ConnectionApplicationId, type ConnectionApplicationView, type ConnectionCategory, type ConnectionCredentialField, type ConnectionDescribeRequest, type ConnectionFields, type ConnectionKind, type ConnectionPrepareRequest,
   type ConnectionRecordView, type ConnectionSaveRequest, type ConnectionSecrets, type ConnectionSetupInput,
   type ConnectionUseOperation, type ConnectionUseResult, type ConnectionWorkspaceSnapshot,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import { LocalConnectionVault } from "./connection-vault.js";
 import { LocalConnectionExecutor, type ConnectionExecutionBackend, type ConnectionHostScan } from "./connection-execution.js";
 import { CONNECTION_APPLICATIONS, getConnectionApplication, LocalConnectionApplications, type ConnectionApplicationBackend } from "./connection-applications.js";
@@ -170,7 +170,7 @@ function informationRequest(text: string): { name: string; value: string } | und
 }
 
 /** Public records contain descriptions and opaque references; only the vault contains authentication material. */
-export class MocoConnections {
+export class KuloConnections {
   readonly #file: string;
   readonly #vault: ConnectionVault;
   readonly #executor: ConnectionExecutionBackend;

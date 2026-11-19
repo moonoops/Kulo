@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
-import type { ExternalAgentBinding, ExternalAgentCapabilities, ExternalAgentDetection } from "@moco/protocol";
+import type { ExternalAgentBinding, ExternalAgentCapabilities, ExternalAgentDetection } from "@kulo/protocol";
 import type { ExternalDriver, ExternalDriverContext } from "./external-agent-drivers.js";
 
 const capabilities: ExternalAgentCapabilities = {
@@ -167,7 +167,7 @@ function prepareExpression(key: string, id: string, waitMs: number): string {
   return `(async () => {
     ${findStores}
     const key = ${JSON.stringify(key)}, id = ${JSON.stringify(id)};
-    const registryKey = '__mocoGrokExperimentalRunsV1';
+    const registryKey = '__kuloGrokExperimentalRunsV1';
     const registry = window[registryKey] || (window[registryKey] = new Map());
     if (!(registry instanceof Map) || registry.has(id)) return {ok:false, code:'already-observing'};
     const row = () => found.roster.snapshots.get().agentsById.get(id);
@@ -260,7 +260,7 @@ function cleanupExpression(key: string): string {
     const state = window[${JSON.stringify(key)}];
     if (state) {
       if (typeof state.release === 'function') state.release();
-      const registry = window.__mocoGrokExperimentalRunsV1;
+      const registry = window.__kuloGrokExperimentalRunsV1;
       if (registry instanceof Map && registry.get(state.id) === ${JSON.stringify(key)}) registry.delete(state.id);
       delete window[${JSON.stringify(key)}];
     }
@@ -289,7 +289,7 @@ export async function connectGrok(ctx: ExternalDriverContext): Promise<ExternalD
   if (!ctx.prompt.trim() || ctx.prompt.length > 65536) throw new Error("Grok Bot experiment prompt is empty or exceeds the size limit");
   if (!Number.isFinite(ctx.timeoutMs) || ctx.timeoutMs <= 0) throw new Error("Invalid Grok Bot experiment timeout");
   const cdp = await GrokCdp.open(await target(origin));
-  const key = `__mocoGrokRun_${randomUUID().replaceAll("-", "")}`;
+  const key = `__kuloGrokRun_${randomUUID().replaceAll("-", "")}`;
   const prompt = ctx.prompt.trim(), deadline = Date.now() + ctx.timeoutMs;
   let closed = false, submitted = false, finished = false;
   let wake: (() => void) | undefined;
@@ -307,7 +307,7 @@ export async function connectGrok(ctx: ExternalDriverContext): Promise<ExternalD
     close();
   };
   const driver: ExternalDriver = {
-    cancel: async () => { throw new Error("Grok Bot cancellation is unsupported without a proven Moco-owned native session; stop the selected run in Grok Bot"); },
+    cancel: async () => { throw new Error("Grok Bot cancellation is unsupported without a proven Kulo-owned native session; stop the selected run in Grok Bot"); },
     close,
   };
   try {

@@ -7,7 +7,7 @@ import { DESKTOP_APP_NAME, resolveDesktopDataDirectory } from "./desktop-config.
 let dataDir: string | undefined;
 app.setName(DESKTOP_APP_NAME);
 void app.whenReady().then(() => {
-  app.dock?.setIcon(fileURLToPath(new URL("../assets/moco-icon.png", import.meta.url)));
+  app.dock?.setIcon(fileURLToPath(new URL("../assets/kulo-icon.png", import.meta.url)));
 });
 try {
   dataDir = resolveDesktopDataDirectory(process.argv, path.join(app.getPath("appData"), DESKTOP_APP_NAME));
@@ -20,16 +20,16 @@ try {
   await import("./shell.js");
 } catch (error) {
   if (!dataDir) {
-    dialog.showErrorBox(DESKTOP_APP_NAME, "Moco 数据目录参数无效。");
+    dialog.showErrorBox(DESKTOP_APP_NAME, "Kulo 数据目录参数无效。");
     app.exit(1);
   }
   await app.whenReady();
-  let instructions = dataDir ? `Moco 数据目录：${dataDir}` : "Moco 数据目录参数无效，请检查启动参数。";
-  const launcher = app.isPackaged ? path.join(process.resourcesPath, "runtime/moco-rescue") : undefined;
+  let instructions = dataDir ? `Kulo 数据目录：${dataDir}` : "Kulo 数据目录参数无效，请检查启动参数。";
+  const launcher = app.isPackaged ? path.join(process.resourcesPath, "runtime/kulo-rescue") : undefined;
   let diagnostic = error instanceof Error ? error.name : "Error";
   if (dataDir) {
     try {
-      const { RecoveryManager, redactDiagnosticText } = await import("@moco/recovery");
+      const { RecoveryManager, redactDiagnosticText } = await import("@kulo/recovery");
       instructions = await new RecoveryManager(dataDir).repairInstructions();
       diagnostic = redactDiagnosticText(error instanceof Error ? error.stack ?? error.message : String(error)).slice(0, 16_384);
     } catch {
@@ -42,12 +42,12 @@ try {
         at: Date.now(), phase: "desktop-import", error: diagnostic,
       }), { mode: 0o600 });
     } catch {
-      console.error("Moco 启动诊断未能保存，请使用独立救援入口检查。");
+      console.error("Kulo 启动诊断未能保存，请使用独立救援入口检查。");
     }
   }
   if (launcher) instructions += `\n独立救援入口：${launcher}`;
   const result = await dialog.showMessageBox({
-    type: "error", title: DESKTOP_APP_NAME, message: "Moco 暂时无法启动。",
+    type: "error", title: DESKTOP_APP_NAME, message: "Kulo 暂时无法启动。",
     buttons: ["复制修复信息", "退出"], defaultId: 0, cancelId: 1,
   });
   if (result.response === 0) clipboard.writeText(instructions);

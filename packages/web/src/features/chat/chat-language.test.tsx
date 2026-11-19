@@ -1,18 +1,18 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ChatDisplayItem, UiCardSnapshot } from "@moco/protocol";
-import { setLanguage } from "../../moco-i18n";
-import { MocoMarkdown } from "../../moco-markdown";
+import type { ChatDisplayItem, UiCardSnapshot } from "@kulo/protocol";
+import { setLanguage } from "../../kulo-i18n";
+import { KuloMarkdown } from "../../kulo-markdown";
 import { GeneratedCard } from "../genui/generated-card";
 import { MessageActions, messageQuote } from "./message-actions";
-import { MocoThinkingIndicator } from "./thinking-indicator";
+import { KuloThinkingIndicator } from "./thinking-indicator";
 
 afterEach(() => setLanguage("zh-CN"));
 
 describe("chat interface language", () => {
   it("switches action labels while preserving message text and quoted content", () => {
     const item: ChatDisplayItem = { id: 1, role: "user", text: "请保留这段原文" };
-    const render = () => renderToStaticMarkup(<MessageActions item={item} onReply={() => {}}><MocoMarkdown text={item.text} /></MessageActions>);
+    const render = () => renderToStaticMarkup(<MessageActions item={item} onReply={() => {}}><KuloMarkdown text={item.text} /></MessageActions>);
     expect(render()).toContain('aria-label="复制消息"');
 
     setLanguage("en");
@@ -46,8 +46,8 @@ describe("chat interface language", () => {
 
   it("localizes default accessible state names", () => {
     setLanguage("en");
-    expect(renderToStaticMarkup(<MocoThinkingIndicator />)).toContain('aria-label="Thinking"');
+    expect(renderToStaticMarkup(<KuloThinkingIndicator />)).toContain('aria-label="Thinking"');
     setLanguage("zh-CN");
-    expect(renderToStaticMarkup(<MocoThinkingIndicator />)).toContain('aria-label="思考中"');
+    expect(renderToStaticMarkup(<KuloThinkingIndicator />)).toContain('aria-label="思考中"');
   });
 });

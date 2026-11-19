@@ -1,4 +1,4 @@
-import { useI18n } from "../../moco-i18n";
+import { useI18n } from "../../kulo-i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
@@ -12,15 +12,15 @@ import {
   type CustomModelConfig,
   type CustomProviderApi,
   type CustomProviderConfig,
-  type MocoSettingsView,
+  type KuloSettingsView,
   type OAuthSessionView,
   type ProviderModelItem,
   type ThinkingEffort,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
-import { mocoRest, providerCatalog } from "../../moco-api";
+import { kuloRest, providerCatalog } from "../../kulo-api";
 import { useProviderCatalog } from "./use-provider-catalog";
-import { MocoIcon } from "../../moco-icon";
+import { KuloIcon } from "../../kulo-icon";
 import {
   ApiProviderModal,
   type ApiProviderModalState,
@@ -53,8 +53,8 @@ export function ModelsModule({
   entryIntent,
   onIntentHandled,
 }: {
-  settings: MocoSettingsView;
-  onSettingsUpdated: (next: MocoSettingsView) => void;
+  settings: KuloSettingsView;
+  onSettingsUpdated: (next: KuloSettingsView) => void;
   onDirtyChange?: (dirty: boolean) => void;
   entryIntent?: SettingsAssistantEntryIntent | null;
   onIntentHandled?: (id: string) => void;
@@ -142,7 +142,7 @@ export function ModelsModule({
         ...(modelBlock.value.gatewayDisabled ? { gatewayDisabled: true } : {}),
         ...patch,
       };
-      const res = await mocoRest.saveSettingsBlock("model", modelBlock.revision, payload);
+      const res = await kuloRest.saveSettingsBlock("model", modelBlock.revision, payload);
       onSettingsUpdated(res.settings);
       return res.settings;
     } catch (err) {
@@ -210,13 +210,13 @@ export function ModelsModule({
   };
 
   const openEditGatewayModal = () => {
-    const cat = providerCatalogById.get("moco-gateway");
+    const cat = providerCatalogById.get("kulo-gateway");
     setProviderModalError(undefined);
     setProviderModal({
       open: true,
       openSeq: ++providerModalSeqRef.current,
       mode: "gateway",
-      editingProviderId: "moco-gateway",
+      editingProviderId: "kulo-gateway",
       providerKind: "third-party",
       presetId: MAINSTREAM_PRESETS[0]!.id,
       name: modelBlock.value.gatewayName?.trim() || t("默认兼容网关", "Default compatible gateway"),
@@ -316,7 +316,7 @@ export function ModelsModule({
         let nextDefaultModel = modelBlock.value.defaultModel;
         let nextThinking: ThinkingEffort | undefined;
         if (
-          defaultProvider === "moco-gateway" &&
+          defaultProvider === "kulo-gateway" &&
           nextDefaultModel &&
           !nextModels.some((m) => m.id === nextDefaultModel && isConversationModel(m))
         ) {
@@ -325,7 +325,7 @@ export function ModelsModule({
         if (!nextDefaultModel.trim()) {
           const firstChat = nextModels.find((m) => isConversationModel(m));
           if (firstChat) {
-            nextDefaultProvider = "moco-gateway";
+            nextDefaultProvider = "kulo-gateway";
             nextDefaultModel = firstChat.id;
             nextThinking = defaultEffortForConfiguredModel(thinkingLevel, firstChat);
           }
@@ -414,7 +414,7 @@ export function ModelsModule({
 
       if (draft.apiKey) {
         try {
-          await mocoRest.setProviderApiKey(targetId, draft.apiKey);
+          await kuloRest.setProviderApiKey(targetId, draft.apiKey);
         } catch (err) {
           setProviderModalError(
             err instanceof Error
@@ -449,7 +449,7 @@ export function ModelsModule({
     }
     const saved = await persistModelBlock(patch);
     if (saved) {
-      void mocoRest.logoutProvider(cpId).catch(() => {});
+      void kuloRest.logoutProvider(cpId).catch(() => {});
     }
   };
 
@@ -458,13 +458,13 @@ export function ModelsModule({
       gatewayDisabled: true,
       clearApiKey: true,
     };
-    if (defaultProvider === "moco-gateway") {
+    if (defaultProvider === "kulo-gateway") {
       patch.defaultProvider = "";
       patch.defaultModel = "";
     }
     const saved = await persistModelBlock(patch);
     if (saved) {
-      void mocoRest.logoutProvider("moco-gateway").catch(() => {});
+      void kuloRest.logoutProvider("kulo-gateway").catch(() => {});
     }
   };
 
@@ -498,7 +498,7 @@ export function ModelsModule({
       prev ? { ...prev, starting: true, error: undefined } : prev,
     );
     try {
-      const res = await mocoRest.startProviderOAuth(providerId);
+      const res = await kuloRest.startProviderOAuth(providerId);
       setOauthModal((prev) =>
         prev
           ? { ...prev, starting: false, session: res.session, error: undefined }
@@ -530,7 +530,7 @@ export function ModelsModule({
       ...provider, modelCatalogSource: "configured", models: provider.models.filter((model) => configured.has(model.id)),
     });
     try {
-      const res = await mocoRest.refreshProviderModels(providerId, { signal });
+      const res = await kuloRest.refreshProviderModels(providerId, { signal });
       return res.provider.models;
     } catch (err) {
       void loadProviders();
@@ -543,7 +543,7 @@ export function ModelsModule({
     await loadProviders();
     if (!providerId || modelBlock.value.defaultModel.trim()) return;
     try {
-      const { providers: freshProviders } = await mocoRest.listProviders();
+      const { providers: freshProviders } = await kuloRest.listProviders();
       const freshGroups = buildProviderModelGroups(modelBlock.value, freshProviders);
       const firstModel = freshGroups.find((group) => group.providerId === providerId)?.models[0];
       if (firstModel) {
@@ -563,7 +563,7 @@ export function ModelsModule({
     setAuthBusyId(providerId);
     setError(undefined);
     try {
-      await mocoRest.logoutProvider(providerId);
+      await kuloRest.logoutProvider(providerId);
       if (defaultProvider === providerId) {
         await persistModelBlock({ defaultProvider: "", defaultModel: "" });
       }
@@ -592,9 +592,9 @@ export function ModelsModule({
 
   const apiConnections: ProviderConnectionItem[] = [
     ...(!modelBlock.value.gatewayDisabled ? [{
-      id: "moco-gateway", name: gatewayDisplayName, protocol: shortApiLabel(modelBlock.value.apiMode),
-      modelCount: countConfiguredModelsForProvider(modelBlock.value, "moco-gateway", providers),
-      authenticated: modelBlock.hasApiKey ? true : providerCatalogById.get("moco-gateway")?.authenticated ?? null,
+      id: "kulo-gateway", name: gatewayDisplayName, protocol: shortApiLabel(modelBlock.value.apiMode),
+      modelCount: countConfiguredModelsForProvider(modelBlock.value, "kulo-gateway", providers),
+      authenticated: modelBlock.hasApiKey ? true : providerCatalogById.get("kulo-gateway")?.authenticated ?? null,
       action: "编辑" as const, disabled: savingModelBlock || savingProvider,
       onEdit: openEditGatewayModal, onDelete: () => setDeleteConfirm({ kind: "gateway", label: gatewayDisplayName }),
     }] : []),
@@ -617,10 +617,10 @@ export function ModelsModule({
   }));
 
   return (
-    <div className="moco-settings-stack">
-      <section className="moco-settings-section" aria-labelledby="default-model-heading">
-        <div className="moco-settings-section-head">
-          <h2 id="default-model-heading" className="moco-section-title">{t("默认模型", "Default model")}</h2>
+    <div className="kulo-settings-stack">
+      <section className="kulo-settings-section" aria-labelledby="default-model-heading">
+        <div className="kulo-settings-section-head">
+          <h2 id="default-model-heading" className="kulo-section-title">{t("默认模型", "Default model")}</h2>
           {savingModelBlock && <Spinner size="sm" aria-label={t("保存中", "Saving")} />}
         </div>
 
@@ -648,15 +648,15 @@ export function ModelsModule({
         </SettingsList>
       </section>
 
-      <section className="moco-settings-section" aria-labelledby="model-connections-heading">
-        <div className="moco-settings-section-head">
+      <section className="kulo-settings-section" aria-labelledby="model-connections-heading">
+        <div className="kulo-settings-section-head">
           <div className="flex items-center gap-3">
-            <h2 id="model-connections-heading" className="moco-section-title">{t("模型连接", "Model connections")}</h2>
+            <h2 id="model-connections-heading" className="kulo-section-title">{t("模型连接", "Model connections")}</h2>
             {loadingProviders && <Spinner size="sm" aria-label={t("加载模型连接", "Loading model connections")} />}
           </div>
           <Dropdown>
             <Button size="sm" variant="secondary" isDisabled={loadingProviders || savingModelBlock || savingProvider || Boolean(authBusyId)}>
-              <MocoIcon name="add" size={16} />
+              <KuloIcon name="add" size={16} />
               
               {t("添加连接", "Add connection")}
             </Button>
@@ -675,16 +675,16 @@ export function ModelsModule({
           </Dropdown>
         </div>
 
-        <div className="moco-settings-stack">
-          <section className="moco-settings-group" aria-labelledby="api-connections-heading">
-            <h3 id="api-connections-heading" className="moco-group-title">API</h3>
+        <div className="kulo-settings-stack">
+          <section className="kulo-settings-group" aria-labelledby="api-connections-heading">
+            <h3 id="api-connections-heading" className="kulo-group-title">API</h3>
             <ProviderConnectionTable label={t("API 接入", "API connections")} emptyLabel={t("暂无 API 接入", "No API connections")} items={apiConnections} loading={loadingProviders} />
           </section>
 
-          <section className="moco-settings-group" aria-labelledby="subscription-connections-heading">
-            <h3 id="subscription-connections-heading" className="moco-group-title">{t("订阅", "Subscription")}</h3>
+          <section className="kulo-settings-group" aria-labelledby="subscription-connections-heading">
+            <h3 id="subscription-connections-heading" className="kulo-group-title">{t("订阅", "Subscription")}</h3>
             {subscriptionConnections.length === 0 ? (
-              <p className="moco-settings-empty" role={loadingProviders ? "status" : undefined}>{loadingProviders ? t("加载订阅连接…", "Loading subscriptions…") : t("暂无订阅接入", "No subscriptions")}</p>
+              <p className="kulo-settings-empty" role={loadingProviders ? "status" : undefined}>{loadingProviders ? t("加载订阅连接…", "Loading subscriptions…") : t("暂无订阅接入", "No subscriptions")}</p>
             ) : (
               <ProviderConnectionTable label={t("订阅接入", "Subscriptions")} emptyLabel={t("暂无订阅接入", "No subscriptions")} items={subscriptionConnections} loading={loadingProviders} />
             )}

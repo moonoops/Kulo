@@ -2,16 +2,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash, createHmac, randomBytes } from "node:crypto";
-import type { DevicePeerConfig } from "@moco/protocol";
+import type { DevicePeerConfig } from "@kulo/protocol";
 import { collectDeviceSystemInfo } from "./device-info.js";
 import { LocalInstanceOwner } from "./local-instance.js";
 
 export function getPeerConfigPath(): string {
-  return path.resolve(process.env.MOCO_PEER_CONFIG?.trim() || path.join(os.homedir(), ".moco", "connection.json"));
+  return path.resolve(process.env.KULO_PEER_CONFIG?.trim() || path.join(os.homedir(), ".kulo", "connection.json"));
 }
 
 export function localPeerProof(config: DevicePeerConfig, challenge: string): string {
-  return createHmac("sha256", config.clientToken).update(JSON.stringify(["moco-local-peer-v1", config.deviceId, config.hubUrl, challenge])).digest("hex");
+  return createHmac("sha256", config.clientToken).update(JSON.stringify(["kulo-local-peer-v1", config.deviceId, config.hubUrl, challenge])).digest("hex");
 }
 
 export function localPeerProxyToken(config: DevicePeerConfig): string {

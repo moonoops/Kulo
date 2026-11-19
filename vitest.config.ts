@@ -7,11 +7,11 @@ const rootDir = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   resolve: {
     alias: {
-      "@moco/protocol": path.join(rootDir, "packages/protocol/src/index.ts"),
-      "@moco/recovery": path.join(rootDir, "packages/recovery/src/index.ts"),
-      "@moco/env": path.join(rootDir, "packages/env/src/index.ts"),
-      "@moco/hub": path.join(rootDir, "packages/hub/src/index.ts"),
-      "@moco/cli": path.join(rootDir, "packages/cli/src/index.ts"),
+      "@kulo/protocol": path.join(rootDir, "packages/protocol/src/index.ts"),
+      "@kulo/recovery": path.join(rootDir, "packages/recovery/src/index.ts"),
+      "@kulo/env": path.join(rootDir, "packages/env/src/index.ts"),
+      "@kulo/hub": path.join(rootDir, "packages/hub/src/index.ts"),
+      "@kulo/cli": path.join(rootDir, "packages/cli/src/index.ts"),
     },
   },
   test: {

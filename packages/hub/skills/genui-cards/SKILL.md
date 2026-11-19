@@ -1,11 +1,11 @@
 ---
 name: genui-cards
-description: Component specification and layout rules for moco_ui_show / moco_ui_update interactive and structured HeroUI v3 cards. Read before composing multi-element, table-selection, chart, or tabbed card specs.
+description: Component specification and layout rules for kulo_ui_show / kulo_ui_update interactive and structured HeroUI v3 cards. Read before composing multi-element, table-selection, chart, or tabbed card specs.
 metadata:
-  moco-audiences: chat, settings
+  kulo-audiences: chat, settings
 ---
 
-# Generative UI Cards (`moco_ui_show` / `moco_ui_update`)
+# Generative UI Cards (`kulo_ui_show` / `kulo_ui_update`)
 
 Publish durable, schema-validated HeroUI v3 cards in the active conversation. Each card should serve a single decision, parameter group, or compact visual comparison—never wrap ordinary prose answers in a large console or nested cards.
 
@@ -44,4 +44,4 @@ Publish durable, schema-validated HeroUI v3 cards in the active conversation. Ea
   - `Checkbox(field, label)`
 - **Actions**:
   - `Button(actionId, label?, variant?: "primary" | "secondary" | "danger")` — `actionId` must match an entry `id` in top-level `actions: [{ id, label, kind: "submit" | "cancel", fields? }]`.
-  - Submitting a card sends structured user input back to the conversation (`submitted` does not mean external work is finished). Submitted or cancelled cards cannot be updated via `moco_ui_update`.
+  - Submitting a card sends structured user input back to the conversation (`submitted` does not mean external work is finished). Submitted or cancelled cards cannot be updated via `kulo_ui_update`.

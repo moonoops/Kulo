@@ -1,4 +1,4 @@
-import type { SettingsAssistantModule } from "@moco/protocol";
+import type { SettingsAssistantModule } from "@kulo/protocol";
 
 export interface SettingsAssistantPageScope {
   active: boolean;

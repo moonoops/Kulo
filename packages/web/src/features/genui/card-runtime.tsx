@@ -1,6 +1,6 @@
-import { translate as tr, useI18n } from "../../moco-i18n";
+import { translate as tr, useI18n } from "../../kulo-i18n";
 import { createContext, useContext, type ReactNode } from "react";
-import type { UiCardSnapshot, UiValue, UiValues } from "@moco/protocol";
+import type { UiCardSnapshot, UiValue, UiValues } from "@kulo/protocol";
 
 export interface CardMediaProps { assetId: string; alt?: string }
 export interface CardCodeProps { code: string; language?: string; fileName?: string }

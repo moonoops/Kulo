@@ -1,4 +1,4 @@
-import { translate as t, useI18n } from "../../moco-i18n";
+import { translate as t, useI18n } from "../../kulo-i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
@@ -9,8 +9,8 @@ import {
   Tabs,
   TextField,
 } from "@heroui/react";
-import type { MocoSettingsView } from "@moco/protocol";
-import { MocoApiError, mocoRest } from "../../moco-api";
+import type { KuloSettingsView } from "@kulo/protocol";
+import { KuloApiError, kuloRest } from "../../kulo-api";
 import { IdentityDocumentEditor } from "../../identity-document-editor";
 import { SettingsList } from "./settings-layout";
 import { useSettingsPending } from "./settings-save-activity";
@@ -32,8 +32,8 @@ export function IdentityModule({
   recentWorkSource,
   connected = true,
 }: {
-  settings: MocoSettingsView;
-  onSettingsUpdated: (next: MocoSettingsView) => void;
+  settings: KuloSettingsView;
+  onSettingsUpdated: (next: KuloSettingsView) => void;
   onDirtyChange?: (dirty: boolean) => void;
   entryIntent?: SettingsAssistantEntryIntent | null;
   onIntentHandled?: (id: string) => void;
@@ -103,7 +103,7 @@ export function IdentityModule({
     }
   }, [presBlock.revision, presBlock.value, presBaseRev, presDirty]);
 
-  const acceptPresentation = (next: MocoSettingsView, replaceName: boolean) => {
+  const acceptPresentation = (next: KuloSettingsView, replaceName: boolean) => {
     const block = next.blocks.presentation;
     presentationRef.current = { revision: block.revision, value: block.value, agentName: replaceName ? block.value.agentName : presentationRef.current.agentName };
     setPresBaseRev(block.revision);
@@ -117,7 +117,7 @@ export function IdentityModule({
     busyRef.current = true;
     setBusy(true);
     try {
-      const latest = await mocoRest.getSettings();
+      const latest = await kuloRest.getSettings();
       acceptPresentation(latest, true);
       setPresConflict(false);
       setPresError(undefined);
@@ -144,7 +144,7 @@ export function IdentityModule({
     try {
       let base = draft;
       if (conflict) {
-        const latest = await mocoRest.getSettings();
+        const latest = await kuloRest.getSettings();
         acceptPresentation(latest, false);
         base = presentationRef.current;
       }
@@ -155,7 +155,7 @@ export function IdentityModule({
         setPresError(undefined);
         return;
       }
-      const res = await mocoRest.saveSettingsBlock(
+      const res = await kuloRest.saveSettingsBlock(
         "presentation",
         base.revision,
         { ...base.value, agentName: name },
@@ -164,7 +164,7 @@ export function IdentityModule({
       setPresConflict(false);
       setPresError(undefined);
     } catch (err) {
-      if (err instanceof MocoApiError && err.status === 409) {
+      if (err instanceof KuloApiError && err.status === 409) {
         setPresConflict(true);
         setPresError(t("显示名称已被其他会话更新，本地修改已保留。", "The display name changed in another window. Your draft is preserved."));
       } else {
@@ -181,7 +181,7 @@ export function IdentityModule({
       <Tabs
         selectedKey={view}
         onSelectionChange={(key) => setView(String(key) as IdentityView)}
-        className="moco-settings-form moco-identity-tabs gap-7"
+        className="kulo-settings-form kulo-identity-tabs gap-7"
       >
         <Tabs.ListContainer className="w-fit max-w-full min-w-0 shrink-0" inert={tabBusy || undefined} aria-busy={tabBusy || undefined}>
           <Tabs.List aria-label={t("记忆视图", "Memory views")} className="w-max">
@@ -206,16 +206,16 @@ export function IdentityModule({
           shouldForceMount
           className="min-h-0 flex-1 data-[inert=true]:hidden"
         >
-          <div className="moco-settings-form gap-6">
-          <div className="moco-form-stack">
+          <div className="kulo-settings-form gap-6">
+          <div className="kulo-form-stack">
             <SettingsList label={t("显示名称", "Display name")}>
               <TextField
                 isRequired maxLength={80} value={agentName}
                 onChange={(value) => { presentationRef.current.agentName = value; setAgentName(value); }}
                 isReadOnly={busy} isInvalid={Boolean(presError && !presConflict)}
-                className="moco-settings-row" fullWidth
+                className="kulo-settings-row" fullWidth
               >
-                <Label className="moco-field-label">{t("显示名称", "Display name")}{busy && <Spinner size="sm" aria-label={t("正在保存", "Saving")} />}</Label>
+                <Label className="kulo-field-label">{t("显示名称", "Display name")}{busy && <Spinner size="sm" aria-label={t("正在保存", "Saving")} />}</Label>
                 <Input variant="secondary" onBlur={() => void savePres()} onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); void savePres(); }
                 }} />
@@ -238,8 +238,8 @@ export function IdentityModule({
           <IdentityDocumentEditor
             directoryRevision={identityBlock.directoryRevision}
             file="identity-agreement.md"
-            readFile={mocoRest.readIdentityAgreement}
-            loadPreset={mocoRest.readIdentityPreset}
+            readFile={kuloRest.readIdentityAgreement}
+            loadPreset={kuloRest.readIdentityPreset}
             identityProposal={personality.snapshot?.identityProposal}
             onDismissProposal={personality.dismissProposal}
             onSaved={() => void personality.refresh()}
@@ -254,7 +254,7 @@ export function IdentityModule({
           shouldForceMount
           className="min-h-0 flex-1 data-[inert=true]:hidden"
         >
-          <div className="moco-settings-form gap-7">
+          <div className="kulo-settings-form gap-7">
           <RelationshipUpdateControls controls={personality} />
           <IdentityDocumentEditor
             directoryRevision={identityBlock.directoryRevision}

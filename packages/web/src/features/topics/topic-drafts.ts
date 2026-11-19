@@ -1,4 +1,4 @@
-import type { TopicSummary } from "@moco/protocol";
+import type { TopicSummary } from "@kulo/protocol";
 
 export interface TopicDraftSnapshot {
   topics: readonly TopicSummary[];

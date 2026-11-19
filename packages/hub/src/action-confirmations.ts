@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-durable";
-import type { UiCardInput, UiCardSnapshot } from "@moco/protocol";
-import type { MocoUiCards } from "./ui-cards.js";
+import type { UiCardInput, UiCardSnapshot } from "@kulo/protocol";
+import type { KuloUiCards } from "./ui-cards.js";
 
 export type ActionConfirmationKind =
   | "customization_validate"
@@ -57,7 +57,7 @@ export interface ActionConfirmationsState {
 }
 
 export const ActionConfirmationsDoc = defineDoc<ActionConfirmationsState & JsonObject>({
-  kind: "moco.action-confirmations",
+  kind: "kulo.action-confirmations",
   version: 1,
   scope: "session",
   initial: () => ({ byCardId: {}, byScopeFingerprint: {} }) as ActionConfirmationsState & JsonObject,
@@ -287,11 +287,11 @@ export function buildStagedApplyConfirmCard(input: {
   };
 }
 
-export class MocoActionConfirmations {
+export class KuloActionConfirmations {
   readonly #harness: Harness;
-  readonly #uiCards: MocoUiCards;
+  readonly #uiCards: KuloUiCards;
 
-  constructor(options: { harness: Harness; uiCards: MocoUiCards }) {
+  constructor(options: { harness: Harness; uiCards: KuloUiCards }) {
     this.#harness = options.harness;
     this.#uiCards = options.uiCards;
   }

@@ -5,7 +5,7 @@ import type {
   VoiceSnapshot,
   VoiceSpeed,
   VoiceTtsProvider,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import type { ConfiguredPurposeModelOption } from "./settings-helpers";
 
 export type VoiceFormScope = "tts" | "call";

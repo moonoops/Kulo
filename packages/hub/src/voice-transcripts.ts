@@ -7,4 +7,4 @@ export interface VoiceTranscriptData {
   createdAt: number;
 }
 
-export const VoiceTranscriptEntry = defineEntry<VoiceTranscriptData & JsonObject>("moco.voice.transcript");
+export const VoiceTranscriptEntry = defineEntry<VoiceTranscriptData & JsonObject>("kulo.voice.transcript");

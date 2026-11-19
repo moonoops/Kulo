@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ChatAttachment, ChatDisplayItem } from "@moco/protocol";
+import type { ChatAttachment, ChatDisplayItem } from "@kulo/protocol";
 import { ConnectedMessageContent } from "./connected-message-content";
 import { DispatchMessageGroup } from "./dispatch-message-group";
 import { dispatchGroupActionItem, groupDispatchReplies, matchingLiveDispatchGroupKey, type DispatchReplyGroup } from "./dispatch-groups";
@@ -153,10 +153,10 @@ describe("dispatch group footer", () => {
     expect(html.match(/aria-label="复制消息"/g)).toHaveLength(1);
     expect(html.match(/aria-label="回复消息"/g)).toHaveLength(1);
     expect(html.indexOf("任务 2")).toBeLessThan(html.indexOf("任务 3"));
-    expect(html.indexOf("任务 3")).toBeLessThan(html.indexOf("moco-message-footer"));
+    expect(html.indexOf("任务 3")).toBeLessThan(html.indexOf("kulo-message-footer"));
     if (withReply) {
       expect(html.indexOf("任务 3")).toBeLessThan(html.indexOf("已安排开发者执行"));
-      expect(html.indexOf("已安排开发者执行")).toBeLessThan(html.indexOf("moco-message-footer"));
+      expect(html.indexOf("已安排开发者执行")).toBeLessThan(html.indexOf("kulo-message-footer"));
       expect(html).toContain(">01:13</time>");
     } else expect(html).toContain(">01:12</time>");
   });
@@ -164,7 +164,7 @@ describe("dispatch group footer", () => {
   it("lets a content-only rich message omit its own actions and timestamp", () => {
     const html = renderToStaticMarkup(<ConnectedMessageContent item={reply(3)} onReply={() => {}} contentOnly />);
     expect(html).toContain("已安排开发者执行");
-    expect(html).not.toContain("moco-message-footer");
+    expect(html).not.toContain("kulo-message-footer");
     expect(html).not.toContain("<time");
     expect(html).not.toContain('aria-label="复制消息"');
   });
@@ -175,7 +175,7 @@ describe("dispatch group footer", () => {
       renderMessage={(item) => <article key={item.id}>{item.text}</article>}
       trailingContent={<p>正在流式确认</p>} />);
     expect(html.indexOf("任务 2")).toBeLessThan(html.indexOf("正在流式确认"));
-    expect(html).not.toContain("moco-message-footer");
+    expect(html).not.toContain("kulo-message-footer");
     expect(html).not.toContain("<time");
   });
 });

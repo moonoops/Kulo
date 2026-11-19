@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { validateAppearanceCustomization } from "@moco/protocol";
+import { validateAppearanceCustomization } from "@kulo/protocol";
 import { AppearanceCustomizationCard, detectAppearanceFont } from "./appearance-customization-card";
 
 describe("appearance review card", () => {

@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import type { ChatDisplayItem, ChatReplyReference } from "@moco/protocol";
-import { MocoComposer } from "../../moco-composer";
+import type { ChatDisplayItem, ChatReplyReference } from "@kulo/protocol";
+import { KuloComposer } from "../../kulo-composer";
 import { MessageContent } from "./message-content";
 import { messageQuote } from "./message-actions";
 import { consumeReplyDraft, messageReply, replyPreview, restoreReplyDraft } from "./reply-reference";
@@ -23,7 +23,7 @@ describe("reply references", () => {
 
   it("renders a short reference separately from the editable response and sent body", () => {
     const longReply = { ...reply, text: "原消息正文\n".repeat(100) };
-    const html = renderToStaticMarkup(<MocoComposer draftText="只填写我的回复" onDraftTextChange={vi.fn()} attachments={[]}
+    const html = renderToStaticMarkup(<KuloComposer draftText="只填写我的回复" onDraftTextChange={vi.fn()} attachments={[]}
       onEnqueueFiles={vi.fn()} onRemoveAttachment={vi.fn()} onSubmit={vi.fn()} connected placeholder="输入消息"
       replyTo={longReply} onCancelReply={vi.fn()} />);
     expect(html).toContain('aria-label="回复引用"');

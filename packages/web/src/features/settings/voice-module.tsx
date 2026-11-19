@@ -1,19 +1,19 @@
-import { useI18n, translate } from "../../moco-i18n";
+import { useI18n, translate } from "../../kulo-i18n";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Alert, Button, Chip, Label, ListBox, Select, Spinner, Switch } from "@heroui/react";
 import {
   defaultVoicesForAdapter,
   redactSensitiveText,
-  type MocoSettingsView,
+  type KuloSettingsView,
   type VoiceSnapshot,
   type VoiceSpeed,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import { SettingsSaveBar, SettingsSection } from "./settings-layout";
 import { useVoiceWorkspace } from "../voice/voice-context";
 import { voiceApi } from "../voice/voice-api";
 import { VoiceIcon } from "../voice/voice-icons";
 import { pauseOtherMedia } from "../chat/media-message";
-import { MocoApiError } from "../../moco-api";
+import { KuloApiError } from "../../kulo-api";
 import { useProviderCatalog } from "./use-provider-catalog";
 import {
   buildConfiguredModelsForPurpose,
@@ -82,7 +82,7 @@ function VoiceSelect({
   return (
     <Select
       variant="secondary"
-      className="moco-form-field"
+      className="kulo-form-field"
       value={value}
       placeholder={placeholder}
       fullWidth
@@ -252,7 +252,7 @@ export function VoiceSettingsFields({
         title={t("语音合成", "Speech synthesis")}
         status={ttsStatus}
         action={
-          <div className="moco-voice-settings-header-actions">
+          <div className="kulo-voice-settings-header-actions">
             {ttsModels.length === 0 && onOpenModels && (
               <Button size="sm" variant="ghost" isDisabled={disabled} onPress={onOpenModels}>
                 {t("添加 TTS 模型", "Add TTS model")}
@@ -272,14 +272,14 @@ export function VoiceSettingsFields({
       >
         {ttsFeedback}
         <form
-          className="moco-form-stack"
+          className="kulo-form-stack"
           aria-label={t("语音合成配置", "Speech synthesis configuration")}
           onSubmit={(event) => {
             event.preventDefault();
             onSubmit?.("tts");
           }}
         >
-          <div className="moco-form-grid" inert={busy || undefined}>
+          <div className="kulo-form-grid" inert={busy || undefined}>
             <VoiceSelect
               label={t("TTS 模型", "TTS model")}
               value={activeTtsKey}
@@ -291,7 +291,7 @@ export function VoiceSettingsFields({
                 if (chosen) onChange({ ...draft, tts: selectTtsModelOption(draft.tts, chosen) });
               }}
             />
-            <div className="moco-form-grid">
+            <div className="kulo-form-grid">
               <VoiceSelect
                 label={t("合成音色", "Voice")}
                 value={activeTtsVoice}
@@ -317,7 +317,7 @@ export function VoiceSettingsFields({
         title={t("通话", "Calls")}
         status={callStatus}
         action={
-          <div className="moco-voice-settings-header-actions">
+          <div className="kulo-voice-settings-header-actions">
             {liveModels.length === 0 && onOpenModels && (
               <Button size="sm" variant="ghost" isDisabled={disabled} onPress={onOpenModels}>
                 {t("添加 Live 模型", "Add Live model")}
@@ -337,14 +337,14 @@ export function VoiceSettingsFields({
       >
         {callFeedback}
         <form
-          className="moco-form-stack"
+          className="kulo-form-stack"
           aria-label={t("通话配置", "Call configuration")}
           onSubmit={(event) => {
             event.preventDefault();
             onSubmit?.("call");
           }}
         >
-          <div className="moco-form-grid" inert={busy || undefined}>
+          <div className="kulo-form-grid" inert={busy || undefined}>
             <VoiceSelect
               label={t("Live 模型", "Live model")}
               value={activeCallKey}
@@ -380,7 +380,7 @@ function VoiceSettingsEditor({
   onOpenModels,
 }: {
   snapshot: VoiceSnapshot;
-  settings?: MocoSettingsView | null;
+  settings?: KuloSettingsView | null;
   disabled: boolean;
   onDirtyChange?: (dirty: boolean) => void;
   onOpenModels?: () => void;
@@ -472,7 +472,7 @@ function VoiceSettingsEditor({
   const failure = async (scope: VoiceToggleScope, cause: unknown, retryEnabled?: boolean) => {
     if (!mounted.current) return;
     setErrors((previous) => ({ ...previous, [scope]: { message: report(cause), retryEnabled } }));
-    if (cause instanceof MocoApiError && cause.code === "voice_revision_conflict") {
+    if (cause instanceof KuloApiError && cause.code === "voice_revision_conflict") {
       if (scope !== "asr" && voiceFormDirty(editorRef.current.draft, editorRef.current.base, scope)) {
         updateEditor((current) => ({ ...current, conflicts: { ...current.conflicts, [scope]: true } }));
       }
@@ -560,7 +560,7 @@ function VoiceSettingsEditor({
       const current = { controller: new AbortController(), audio: undefined as HTMLAudioElement | undefined, url: undefined as string | undefined };
       preview.current = current;
       const blob = await voiceApi.synthesize(
-        t("你好，我是 Moco。我们可以开始聊了。", "Hello, I'm Moco. Let's have a chat."),
+        t("你好，我是 Kulo。我们可以开始聊了。", "Hello, I'm Kulo. Let's have a chat."),
         workspace.clientId,
         current.controller.signal,
         true,
@@ -661,7 +661,7 @@ function VoiceSettingsEditor({
           : t("待验证", "Unverified");
 
   return (
-    <div className="moco-voice-settings" aria-busy={Boolean(busy) || undefined}>
+    <div className="kulo-voice-settings" aria-busy={Boolean(busy) || undefined}>
       <SettingsSection
         title={t("语音转文本", "Speech to text")}
         status={
@@ -676,7 +676,7 @@ function VoiceSettingsEditor({
           </>
         }
         action={
-          <div className="moco-voice-settings-header-actions">
+          <div className="kulo-voice-settings-header-actions">
             {!isCloudAsr && saved.asr.enabled && (saved.asr.status === "unprepared" || saved.asr.status === "error") && (
               <Button
                 size="sm"
@@ -704,7 +704,7 @@ function VoiceSettingsEditor({
         }
       >
         {(asrModels.length > 0 || isCloudAsr) && (
-          <div className="moco-form-grid" inert={Boolean(busy) || undefined}>
+          <div className="kulo-form-grid" inert={Boolean(busy) || undefined}>
             <VoiceSelect
               label={t("识别模型", "Recognition model")}
               value={savedAsrKey}
@@ -819,7 +819,7 @@ export function VoiceModule({
   onOpenModels,
 }: {
   connected: boolean;
-  settings?: MocoSettingsView | null;
+  settings?: KuloSettingsView | null;
   disabled?: boolean;
   onDirtyChange?: (dirty: boolean) => void;
   onOpenModels?: () => void;

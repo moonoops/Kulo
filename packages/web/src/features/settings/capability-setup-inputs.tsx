@@ -1,8 +1,8 @@
-import { useI18n, translate } from "../../moco-i18n";
+import { useI18n, translate } from "../../kulo-i18n";
 import { useEffect, useState } from "react";
 import { Button, Card, Input, Label, TextField } from "@heroui/react";
-import { redactSecrets, type EnvNodeDescriptor, type SettingsAssistantContext, type SetupInputRequest } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
+import { redactSecrets, type EnvNodeDescriptor, type SettingsAssistantContext, type SetupInputRequest } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
 
 export function safeSetupInputError(error: unknown, secret = ""): string {
   let message = error instanceof Error ? error.message : translate("提交失败，请重试。", "Submission failed. Please retry.");
@@ -20,10 +20,10 @@ export function visibleSetupInputs(inputs: SetupInputRequest[], clientId: string
 export async function submitSetupInput(request: SetupInputRequest, clientId: string, value: string, cancel = false): Promise<void> {
   if (request.clientId !== clientId) throw new Error(translate("请在发起配置的窗口继续。", "Continue in the window where setup was started."));
   if (request.status !== "pending" || request.expiresAt <= Date.now()) throw new Error(translate("请求已过期，请重新发起。", "This request has expired. Please start again."));
-  if (cancel) { await mocoRest.submitCapabilityInput(request.id, { clientId, cancel: true }); return; }
-  if (request.kind === "browser") { await mocoRest.completeCapabilityBrowserInput(request.id, clientId); return; }
+  if (cancel) { await kuloRest.submitCapabilityInput(request.id, { clientId, cancel: true }); return; }
+  if (request.kind === "browser") { await kuloRest.completeCapabilityBrowserInput(request.id, clientId); return; }
   if (!value.trim()) throw new Error(translate("请输入密钥。", "Enter a key."));
-  await mocoRest.submitCapabilityInput(request.id, { clientId, secret: value });
+  await kuloRest.submitCapabilityInput(request.id, { clientId, secret: value });
 }
 
 function SetupInput({ request, clientId, connected, envs, onChanged, onCompleted }: {
@@ -59,8 +59,8 @@ function SetupInput({ request, clientId, connected, envs, onChanged, onCompleted
   const deviceName = envs.find((env) => env.id === request.envId)?.name ?? request.envId;
   return <Card variant="secondary" className="gap-3 rounded-2xl p-3" aria-label={request.label}>
     <Card.Header><Card.Title className="text-sm">{request.label}</Card.Title></Card.Header>
-    <Card.Content className="moco-form-stack">
-      {request.kind === "secret" ? <TextField variant="primary" type="password" value={secret} onChange={setSecret} isDisabled={!connected || busy || expired} className="moco-context-field min-w-0">
+    <Card.Content className="kulo-form-stack">
+      {request.kind === "secret" ? <TextField variant="primary" type="password" value={secret} onChange={setSecret} isDisabled={!connected || busy || expired} className="kulo-context-field min-w-0">
         <Label className="sr-only">{request.label}</Label>
         <Input autoComplete="new-password" spellCheck={false} placeholder={t("输入 API Key", "Enter an API key")} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); }

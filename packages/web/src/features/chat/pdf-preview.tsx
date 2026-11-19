@@ -1,11 +1,11 @@
 /// <reference types="vite/client" />
 import { Button, Spinner } from "@heroui/react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ChatAttachment } from "@moco/protocol";
+import type { ChatAttachment } from "@kulo/protocol";
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask, TextLayer } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?worker&url";
-import { translate as tr, useI18n } from "../../moco-i18n";
-import { MocoIcon } from "../../moco-icon";
+import { translate as tr, useI18n } from "../../kulo-i18n";
+import { KuloIcon } from "../../kulo-icon";
 import { readFileAsset } from "./file-actions";
 import { PdfBinaryDataFactory } from "./pdf-preview-assets";
 import { resetPdfPageScroll } from "./pdf-reading-position";
@@ -47,16 +47,16 @@ export default function PdfPreview({ asset }: { asset: ChatAttachment }) {
     });
     return () => { controller.abort(); if (task) dispose(task); };
   }, [asset.id, attempt]);
-  if (error) return <div className="moco-artifact-feedback" role="alert"><span>{error}</span><Button size="sm" variant="secondary" onPress={() => setAttempt((value) => value + 1)}>{tr("重试", "Retry")}</Button></div>;
-  if (!document) return <div className="moco-artifact-feedback" role="status"><Spinner size="sm" /><span>{tr("正在加载 PDF", "Loading PDF")}</span></div>;
-  return <div className="moco-pdf-preview">
-    <div className="moco-pdf-toolbar" aria-label={tr("PDF 阅读工具", "PDF reading controls")}>
-      <div className="moco-pdf-controls">
-        <Button size="sm" variant="ghost" isIconOnly aria-label={tr("上一页", "Previous page")} isDisabled={page <= 1} onPress={() => setPage((current) => current - 1)}><MocoIcon name="arrow-left" size={16} /></Button>
-        <span className="moco-pdf-page-label" aria-live="polite">{tr(`第 ${page} 页 / 共 ${document.numPages} 页`, `Page ${page} / ${document.numPages}`)}</span>
-        <Button size="sm" variant="ghost" isIconOnly aria-label={tr("下一页", "Next page")} isDisabled={page >= document.numPages} onPress={() => setPage((current) => current + 1)}><MocoIcon name="chevron-right" size={16} /></Button>
+  if (error) return <div className="kulo-artifact-feedback" role="alert"><span>{error}</span><Button size="sm" variant="secondary" onPress={() => setAttempt((value) => value + 1)}>{tr("重试", "Retry")}</Button></div>;
+  if (!document) return <div className="kulo-artifact-feedback" role="status"><Spinner size="sm" /><span>{tr("正在加载 PDF", "Loading PDF")}</span></div>;
+  return <div className="kulo-pdf-preview">
+    <div className="kulo-pdf-toolbar" aria-label={tr("PDF 阅读工具", "PDF reading controls")}>
+      <div className="kulo-pdf-controls">
+        <Button size="sm" variant="ghost" isIconOnly aria-label={tr("上一页", "Previous page")} isDisabled={page <= 1} onPress={() => setPage((current) => current - 1)}><KuloIcon name="arrow-left" size={16} /></Button>
+        <span className="kulo-pdf-page-label" aria-live="polite">{tr(`第 ${page} 页 / 共 ${document.numPages} 页`, `Page ${page} / ${document.numPages}`)}</span>
+        <Button size="sm" variant="ghost" isIconOnly aria-label={tr("下一页", "Next page")} isDisabled={page >= document.numPages} onPress={() => setPage((current) => current + 1)}><KuloIcon name="chevron-right" size={16} /></Button>
       </div>
-      <div className="moco-pdf-controls">
+      <div className="kulo-pdf-controls">
         <Button size="sm" variant="ghost" isDisabled={zoom <= 0.5} aria-label={tr("缩小 PDF", "Zoom PDF out")} onPress={() => setZoom((current) => Math.max(0.5, current - 0.25))}>−</Button>
         <Button size="sm" variant="ghost" aria-label={tr("PDF 适合宽度", "Fit PDF to width")} onPress={() => setZoom(1)}>{zoom === 1 ? tr("适合宽度", "Fit width") : `${Math.round(zoom * 100)}%`}</Button>
         <Button size="sm" variant="ghost" isDisabled={zoom >= 2.5} aria-label={tr("放大 PDF", "Zoom PDF in")} onPress={() => setZoom((current) => Math.min(2.5, current + 0.25))}>+</Button>
@@ -117,12 +117,12 @@ function PdfPage({ document, number, zoom }: { document: PDFDocumentProxy; numbe
     })().catch((reason: unknown) => { if (alive) { setBusy(false); setError(reason instanceof Error ? reason.message : tr("PDF 页面无法显示", "Unable to render PDF page")); } });
     return () => { alive = false; render?.cancel(); layer?.cancel(); page?.cleanup(); };
   }, [document, number, width, zoom, attempt]);
-  return <div ref={holder} className="moco-pdf-page-scroll scrollbar" role="region" aria-label={tr(`PDF 第 ${number} 页`, `PDF page ${number}`)} tabIndex={0}>
-    {error && <div className="moco-artifact-feedback" role="alert"><span>{error}</span><Button size="sm" variant="secondary" onPress={() => setAttempt((value) => value + 1)}>{tr("重试", "Retry")}</Button></div>}
-    <div className="moco-pdf-page" aria-busy={busy}>
+  return <div ref={holder} className="kulo-pdf-page-scroll scrollbar" role="region" aria-label={tr(`PDF 第 ${number} 页`, `PDF page ${number}`)} tabIndex={0}>
+    {error && <div className="kulo-artifact-feedback" role="alert"><span>{error}</span><Button size="sm" variant="secondary" onPress={() => setAttempt((value) => value + 1)}>{tr("重试", "Retry")}</Button></div>}
+    <div className="kulo-pdf-page" aria-busy={busy}>
       <canvas ref={canvas} aria-label={tr(`PDF 第 ${number} 页`, `PDF page ${number}`)} />
-      <div ref={text} className="moco-pdf-text-layer" />
-      {busy && <div className="moco-pdf-rendering" role="status"><Spinner size="sm" /><span className="sr-only">{tr("正在绘制 PDF 页面", "Rendering PDF page")}</span></div>}
+      <div ref={text} className="kulo-pdf-text-layer" />
+      {busy && <div className="kulo-pdf-rendering" role="status"><Spinner size="sm" /><span className="sr-only">{tr("正在绘制 PDF 页面", "Rendering PDF page")}</span></div>}
     </div>
   </div>;
 }

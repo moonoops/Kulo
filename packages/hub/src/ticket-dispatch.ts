@@ -1,15 +1,15 @@
 import { configure, type AgentChange, type Tx } from "@earendil-works/pi-durable";
-import type { TicketRecord } from "@moco/protocol";
+import type { TicketRecord } from "@kulo/protocol";
 import type { createWorkerTicketTask } from "./scheduler.js";
-import type { MocoDurableState } from "./state.js";
-import type { MocoUploadStore } from "./uploads.js";
+import type { KuloDurableState } from "./state.js";
+import type { KuloUploadStore } from "./uploads.js";
 
 export type TicketDispatchDraft = Omit<TicketRecord, "workerConversationId" | "activeTaskId">;
 
 /** The Worker, its configuration and the task that can run it become visible in the same commit. */
 export async function createDispatchedTicket(
   tx: Tx,
-  state: MocoDurableState,
+  state: KuloDurableState,
   draft: TicketDispatchDraft,
   task: ReturnType<typeof createWorkerTicketTask>,
   agent?: AgentChange,
@@ -27,7 +27,7 @@ export async function createDispatchedTicket(
   return ticket;
 }
 
-export function bindDispatchedAttachments(uploads: MocoUploadStore, ticket: Readonly<TicketRecord>): void {
+export function bindDispatchedAttachments(uploads: KuloUploadStore, ticket: Readonly<TicketRecord>): void {
   // A replay can supply different attachment IDs. Only the original, authorized inputs are committed on the ticket.
   if (!ticket.inputAttachmentIds?.length) return;
   uploads.bindAttachments(ticket.inputAttachmentIds, `conversation:${ticket.workerConversationId}`);

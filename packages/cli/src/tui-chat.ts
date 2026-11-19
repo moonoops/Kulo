@@ -7,7 +7,7 @@ import type {
   HubToClientMessage,
   SlotSummary,
   TicketCardView,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 
 export interface TuiChatOptions {
   wsUrl: string;
@@ -32,7 +32,7 @@ export async function runTuiChatClient(options: TuiChatOptions): Promise<void> {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: "\x1b[36mmoco>\x1b[0m ",
+    prompt: "\x1b[36mkulo>\x1b[0m ",
   });
 
   const printLineAbovePrompt = (line: string) => {
@@ -54,7 +54,7 @@ export async function runTuiChatClient(options: TuiChatOptions): Promise<void> {
           printLineAbovePrompt(`\x1b[90m  ↳ 调用工具: ${names}\x1b[0m`);
         }
         if (msg.text) {
-          printLineAbovePrompt(`\x1b[32mMoco:\x1b[0m ${msg.text}`);
+          printLineAbovePrompt(`\x1b[32mKulo:\x1b[0m ${msg.text}`);
         }
       } else if (msg.role === "relay") {
         printLineAbovePrompt(`\x1b[33m⚡ 后台回执: ${msg.text}\x1b[0m`);
@@ -94,7 +94,7 @@ export async function runTuiChatClient(options: TuiChatOptions): Promise<void> {
   };
 
   process.stdout.write(
-    "\n\x1b[1m已连接 Moco 准全双工终端\x1b[0m（输入内容直接对话；命令: /tickets, /envs, /steer <ID> <内容>, /stop <ID>, /quit）\n\n",
+    "\n\x1b[1m已连接 Kulo 准全双工终端\x1b[0m（输入内容直接对话；命令: /tickets, /envs, /steer <ID> <内容>, /stop <ID>, /quit）\n\n",
   );
   rl.prompt();
 
@@ -119,7 +119,7 @@ export async function runTuiChatClient(options: TuiChatOptions): Promise<void> {
         );
       }
       if (latestTickets.length === 0) {
-        console.log("当前 Moco's table 暂无工单。\n");
+        console.log("当前 Kulo's table 暂无工单。\n");
       } else {
         for (const t of latestTickets) {
           const note =
@@ -137,7 +137,7 @@ export async function runTuiChatClient(options: TuiChatOptions): Promise<void> {
     }
 
     if (line === "/envs") {
-      console.log("\n已注册 moco-env 执行节点:");
+      console.log("\n已注册 kulo-env 执行节点:");
       for (const e of latestEnvs) {
         console.log(
           `  • ${e.id} (${e.online ? "online" : "offline"}) — ${e.name} [${e.platform}/${e.arch}] root=${e.rootDir}`,

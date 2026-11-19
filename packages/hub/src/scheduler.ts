@@ -5,9 +5,9 @@ import {
   defineTask,
   type JsonObject,
 } from "@earendil-works/pi-durable";
-import type { EnvManager } from "@moco/env";
+import type { EnvManager } from "@kulo/env";
 import type { Context } from "@earendil-works/chord/context";
-import { describeMocoError, type ExternalAgentPendingReport, type ExternalAgentUncertainReason, type StagedWorkspaceDiffSummary, type TicketRecord, type TicketWait, type WorkerReportRecord } from "@moco/protocol";
+import { describeKuloError, type ExternalAgentPendingReport, type ExternalAgentUncertainReason, type StagedWorkspaceDiffSummary, type TicketRecord, type TicketWait, type WorkerReportRecord } from "@kulo/protocol";
 import { spillOversizedReport } from "./report-overflow.js";
 import {
   formatExternalAgentHandoffPrompt,
@@ -16,10 +16,10 @@ import {
   formatWorkerInitialPrompt,
   formatWorkerRelayMessage,
 } from "./prompts.js";
-import { MocoStateDoc, WorkerRelayEntry, getActiveStagedCwd, hasActiveSubagents, hasPendingWorkspaceApply, releaseSlot, transitionTicketStatus, tryClaimSlot, type MocoDurableState } from "./state.js";
+import { KuloStateDoc, WorkerRelayEntry, getActiveStagedCwd, hasActiveSubagents, hasPendingWorkspaceApply, releaseSlot, transitionTicketStatus, tryClaimSlot, type KuloDurableState } from "./state.js";
 import { SettingsAssistantDoc, isActiveSettingsConversation, parseSettingsTopicConversationId } from "./settings-doc.js";
 import { injectEventToolsInTx } from "./tool-surface.js";
-import type { MocoUploadStore } from "./uploads.js";
+import type { KuloUploadStore } from "./uploads.js";
 import { nativeSearchEvidence, sanitizeSearchSources, selectCitedSources } from "./search-sources.js";
 import { beginTicketRecovery, resolveSupersededTickets, type createFailureRecoveryTask } from "./task-recovery.js";
 import { submitAutomaticChatInput } from "./chat-control.js";
@@ -47,7 +47,7 @@ export type WorkerTicketTaskState =
 export interface WorkerTicketTaskDependencies {
   recoveryTask?: ReturnType<typeof createFailureRecoveryTask>;
   envManager: EnvManager;
-  uploads: MocoUploadStore;
+  uploads: KuloUploadStore;
   getMaxConcurrentWorkers: () => number;
   onTicketsChanged?: () => void;
   onTicketRunning?: (
@@ -56,7 +56,7 @@ export interface WorkerTicketTaskDependencies {
     runEpoch: number,
   ) => void;
   onTicketSettled?: (ticketId: string) => void;
-  isTicketRunnable?: (ticket: Readonly<TicketRecord>, state: Readonly<MocoDurableState>) => boolean;
+  isTicketRunnable?: (ticket: Readonly<TicketRecord>, state: Readonly<KuloDurableState>) => boolean;
   onTicketWaiting?: (ticketId: string, reason: TicketWait["reason"]) => void;
   resumeWaitingTicket?: (ticketId: string, context: Context) => Promise<unknown>;
   prepareTicketRelease?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<{ cleanupPending: boolean }>;
@@ -83,7 +83,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
       return phone?.online && phone.executionKind === "native-device" && phone.android?.enabled && !phone.android.paused;
     });
   return defineTask<WorkerTicketTaskInput, WorkerTicketTaskState, null>({
-    name: "moco.worker_ticket",
+    name: "kulo.worker_ticket",
     version: 1,
     initial: () => ({ phase: "acquire_slot" }),
     phases: {
@@ -94,7 +94,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           | undefined;
         let waitingReason: TicketWait["reason"] | undefined;
         await runtime.commit(async (tx) => {
-          const state = await tx.doc(MocoStateDoc);
+          const state = await tx.doc(KuloStateDoc);
           const ticket = state.tickets[task.input.ticketId];
           if (
             !ticket ||
@@ -196,7 +196,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
       },
 
       run_worker: async (task, runtime, context) => {
-        const snapshot = await runtime.snapshot(MocoStateDoc, context);
+        const snapshot = await runtime.snapshot(KuloStateDoc, context);
         const ticket = snapshot?.tickets[task.input.ticketId];
         if (
           !ticket ||
@@ -206,7 +206,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
         ) {
           let currentRun = false;
           await runtime.commit(async (tx) => {
-            const state = await tx.doc(MocoStateDoc);
+            const state = await tx.doc(KuloStateDoc);
             if (state.tickets[task.input.ticketId]?.runEpoch === task.input.runEpoch) {
               releaseSlot(state, task.input.ticketId);
               currentRun = true;
@@ -223,7 +223,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
         const agentBlock = deps.ticketAgentBlock?.(ticket);
         if (agentBlock) {
           await runtime.commit(async (tx) => {
-            const current = (await tx.doc(MocoStateDoc)).tickets[ticket.id];
+            const current = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
             if (!current || current.runEpoch !== task.input.runEpoch) return { status: "terminal", outcome: { status: "aborted" } };
             current.latestReport = { state: "blocked", summary: agentBlock, question: "请恢复指定 Agent 的可用状态，或明确选择其他 Agent。", at: runtime.now() };
             return { status: "running", checkpoint: { phase: "deliver_report" } };
@@ -244,7 +244,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
 
         if (ticket.externalExecution) {
           const external = ticket.externalExecution;
-          const runId = `moco:external:${ticket.id}:${task.input.runEpoch}`;
+          const runId = `kulo:external:${ticket.id}:${task.input.runEpoch}`;
           const attachmentIds = [...new Set([
             ...(task.input.attachmentIds ?? []),
             ...(task.input.runEpoch === 1 ? (ticket.inputAttachmentIds ?? []) : []),
@@ -270,14 +270,14 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             followUp: task.input.promptOverride ?? ticket.resumePrompt,
           });
           await runtime.commit(async (tx) => {
-            const current = (await tx.doc(MocoStateDoc)).tickets[ticket.id];
+            const current = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
             if (!current || current.runEpoch !== task.input.runEpoch || current.status === "stopped" || current.status === "closed") return { status: "terminal", outcome: { status: "aborted" } };
             current.externalExecution!.runId = runId;
             current.externalExecution!.notifiedPermissions = [];
             current.externalExecution!.lastActivityAt = runtime.now();
             return { status: "running", checkpoint: { phase: "external_wait" } };
           }, context);
-          const current = (await runtime.snapshot(MocoStateDoc, context))?.tickets[ticket.id];
+          const current = (await runtime.snapshot(KuloStateDoc, context))?.tickets[ticket.id];
           if (!current || current.runEpoch !== task.input.runEpoch || current.status !== "running") return;
           try {
             const response = await deps.envManager.requestExternalAgent(ticket.envId, { operation: "run", binding: external.binding,
@@ -292,7 +292,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
               projectId: ticket.projectId, directoryId: ticket.directoryId, grantRevision: ticket.grantRevision, timeoutMs: 30 * 60_000 });
             if (response.type !== "run" || response.run.id !== runId || response.run.taskId !== ticket.id || response.run.runEpoch !== task.input.runEpoch || response.run.kind !== external.binding.kind) throw new Error("客户端未返回匹配的任务执行标识。");
             await runtime.commit(async (tx) => {
-              const live = (await tx.doc(MocoStateDoc)).tickets[ticket.id];
+              const live = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
               if (live?.runEpoch === task.input.runEpoch) {
                 live.externalExecution!.runId = response.run.id;
                 live.externalExecution!.sessionId = response.run.sessionId;
@@ -306,7 +306,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           } catch (error) {
             // An acknowledgement can be lost after native admission. Inspect the deterministic run before another input.
             await runtime.commit(async (tx) => {
-              const live = (await tx.doc(MocoStateDoc)).tickets[ticket.id];
+              const live = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
               if (live?.runEpoch === task.input.runEpoch) live.latestReport = { state: "progress", summary: deps.redact?.(error instanceof Error ? error.message : String(error)) ?? "客户端接收状态待核对。", at: runtime.now() };
               return { status: "sleeping", until: runtime.now() + 1000, checkpoint: { phase: "external_wait" } };
             }, context);
@@ -322,7 +322,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
               const prepared = await deps.prepareBuiltInStagedWorkspace(ticket, context);
               activeStagedCwd = prepared.stagedCwd;
               await runtime.commit(async (tx) => {
-                const current = (await tx.doc(MocoStateDoc)).tickets[ticket.id];
+                const current = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
                 if (!current || current.runEpoch !== task.input.runEpoch || current.status !== "running") return undefined;
                 current.workspaceStaging = {
                   mode: "staged",
@@ -369,7 +369,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           const errorCode = typeof err === "object" && err !== null && "code" in err ? String((err as { code?: unknown }).code) : undefined;
           if (errorCode === "staged_workspace_oversized") {
             await runtime.commit(async (tx) => {
-              const current = (await tx.doc(MocoStateDoc)).tickets[task.input.ticketId];
+              const current = (await tx.doc(KuloStateDoc)).tickets[task.input.ticketId];
               if (current?.runEpoch === task.input.runEpoch && current.status !== "stopped" && current.status !== "closed") {
                 current.latestReport = {
                   state: "blocked",
@@ -384,7 +384,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           }
           if (!deps.envManager.getEnvDescriptor(ticket.envId)?.online) {
             await runtime.commit(async (tx) => {
-              const state = await tx.doc(MocoStateDoc);
+              const state = await tx.doc(KuloStateDoc);
               const current = state.tickets[task.input.ticketId];
               if (current?.runEpoch === task.input.runEpoch && current.status !== "stopped" && current.status !== "closed") {
                 current.waiting = { reason: "env", since: runtime.now(), detail: message };
@@ -406,7 +406,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           return;
         }
 
-        const preparedState = await runtime.snapshot(MocoStateDoc, context);
+        const preparedState = await runtime.snapshot(KuloStateDoc, context);
         const preparedTicket = preparedState?.tickets[ticket.id];
         if (!preparedTicket || preparedTicket.runEpoch !== task.input.runEpoch || preparedTicket.status !== "running") {
           await runtime.commit(async () => ({ status: "terminal", outcome: { status: "aborted" } }), context);
@@ -442,7 +442,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           rawPrompt,
           attachmentIds,
         ).content;
-        const requestId = `moco:worker-run:${ticket.id}:${task.input.runEpoch}`;
+        const requestId = `kulo:worker-run:${ticket.id}:${task.input.runEpoch}`;
 
         const submission = await workerConv.submit(
           {
@@ -455,7 +455,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
 
         if (pendingPrompt !== undefined || pendingAttachmentIds.length > 0) {
           await runtime.commit(async (tx) => {
-            const state = await tx.doc(MocoStateDoc);
+            const state = await tx.doc(KuloStateDoc);
             const current = state.tickets[ticket.id];
             if (!current || current.runEpoch !== task.input.runEpoch) return undefined;
             const currentAttachments = current.resumeAttachmentIds ?? [];
@@ -477,7 +477,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
         let unansweredDetail: string | undefined;
 
         if (settled.status === "done" && settled.type === "input") {
-          // Extract assistant text in case the model finished without calling `moco_report`
+          // Extract assistant text in case the model finished without calling `kulo_report`
           const history = await runtime.context(
             ticket.workerConversationId as never,
             context,
@@ -520,7 +520,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
       },
 
       external_wait: async (task, runtime, context) => {
-        const ticket = (await runtime.snapshot(MocoStateDoc, context))?.tickets[task.input.ticketId];
+        const ticket = (await runtime.snapshot(KuloStateDoc, context))?.tickets[task.input.ticketId];
         if (!ticket || ticket.runEpoch !== task.input.runEpoch || ["stopped", "closed"].includes(ticket.status)) {
           await runtime.commit(async () => ({ status: "terminal", outcome: { status: "aborted" } }), context); return;
         }
@@ -547,7 +547,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
               if (refreshed.type === "run" && refreshed.run.id === execution.runId && refreshed.run.taskId === activeTicket.id && refreshed.run.runEpoch === task.input.runEpoch && refreshed.run.kind === execution.binding.kind) {
                 run = refreshed.run;
               }
-              const latestSnap = (await runtime.snapshot(MocoStateDoc, context))?.tickets[task.input.ticketId];
+              const latestSnap = (await runtime.snapshot(KuloStateDoc, context))?.tickets[task.input.ticketId];
               if (latestSnap) activeTicket = latestSnap;
             }
           }
@@ -572,7 +572,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                 })
               : undefined;
           await runtime.commit(async (tx) => {
-            const live = (await tx.doc(MocoStateDoc)).tickets[ticket.id];
+            const live = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
             if (!live || live.runEpoch !== task.input.runEpoch) return { status: "terminal", outcome: { status: "aborted" } };
             live.externalExecution!.sessionId = run.sessionId;
             live.externalExecution!.lastSequence = Math.max(0, run.nextSequence - 1);
@@ -592,8 +592,8 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             if (origin) for (const permission of run.permissions) {
               const notified = live.externalExecution!.notifiedPermissions ?? [];
               if (notified.includes(permission.id)) continue;
-              await injectEventToolsInTx(tx, origin.id, ["moco_inspect", "moco_external_permission"]);
-              await submitAutomaticChatInput(tx, origin, { type: "input", whenBusy: "followUp", requestId: `moco:external-permission:${ticket.id}:${task.input.runEpoch}:${permission.id}`,
+              await injectEventToolsInTx(tx, origin.id, ["kulo_inspect", "kulo_external_permission"]);
+              await submitAutomaticChatInput(tx, origin, { type: "input", whenBusy: "followUp", requestId: `kulo:external-permission:${ticket.id}:${task.input.runEpoch}:${permission.id}`,
                 content: formatExternalPermissionMessage({
                   ticketId: ticket.id,
                   title: ticket.title,
@@ -679,7 +679,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           const message = deps.redact?.(error instanceof Error ? error.message : String(error)) ?? "外部执行状态待核对。";
           const failures = (task.state.checkpoint.failures ?? 0) + 1;
           await runtime.commit(async (tx) => {
-            const live = (await tx.doc(MocoStateDoc)).tickets[ticket.id];
+            const live = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
             if (!live || live.runEpoch !== task.input.runEpoch) return { status: "terminal", outcome: { status: "aborted" } };
             const hasExplicitReady = live.externalExecution?.explicitReadyReport?.runEpoch === task.input.runEpoch;
             if (failures < 6 && !/not found|归属不匹配|状态无效/i.test(message)) {
@@ -702,7 +702,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
       },
 
       deliver_report: async (task, runtime, context) => {
-        const snapshot = await runtime.snapshot(MocoStateDoc, context);
+        const snapshot = await runtime.snapshot(KuloStateDoc, context);
         const pending = snapshot?.tickets[task.input.ticketId];
         if (!pending || pending.runEpoch !== task.input.runEpoch) {
           await runtime.commit(async () => ({ status: "terminal", outcome: { status: "aborted" } }), context);
@@ -710,7 +710,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
         }
         if (hasActiveSubagents(snapshot!, pending.id)) {
           await runtime.commit(async (tx) => {
-            const state = await tx.doc(MocoStateDoc);
+            const state = await tx.doc(KuloStateDoc);
             const current = state.tickets[pending.id];
             if (current?.runEpoch === task.input.runEpoch && current.waiting) transitionTicketStatus(current, "pausing", runtime.now());
             return { status: "sleeping", until: runtime.now() + 300, checkpoint: task.state.checkpoint };
@@ -770,7 +770,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           | undefined;
 
         await runtime.commit(async (tx) => {
-          const state = await tx.doc(MocoStateDoc);
+          const state = await tx.doc(KuloStateDoc);
           const ticket = state.tickets[task.input.ticketId];
           if (!ticket || ticket.runEpoch !== task.input.runEpoch) {
             return { status: "terminal", outcome: { status: "completed", result: null } };
@@ -823,7 +823,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           ) {
             finalReport = latest;
           } else if (task.state.checkpoint.unansweredReason) {
-            const desc = describeMocoError({
+            const desc = describeKuloError({
               reason: task.state.checkpoint.unansweredReason,
               detail: task.state.checkpoint.unansweredDetail,
             });
@@ -946,7 +946,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           await deps.retainExternalMemory(pending, relayPayload.report, context).catch(() => {});
         }
 
-        // Relay terminal/blocked outcome back to Moco root conversation BEFORE marking task terminal!
+        // Relay terminal/blocked outcome back to Kulo root conversation BEFORE marking task terminal!
         if (relayPayload) {
           const targetConvId = (relayPayload.originConvId ?? ROOT_CONVERSATION_ID) as never;
           const targetConv =
@@ -970,20 +970,20 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
 
             const eventTools: string[] = [];
             if (stagedDiff) {
-              eventTools.push("moco_inspect_staged_diff", "moco_apply_staged_changes");
+              eventTools.push("kulo_inspect_staged_diff", "kulo_apply_staged_changes");
             }
             if (report.attachments?.length) {
-              eventTools.push("moco_inspect_asset", "moco_publish_asset");
+              eventTools.push("kulo_inspect_asset", "kulo_publish_asset");
             } else if (report.overflowAsset) {
-              eventTools.push("moco_inspect_asset");
+              eventTools.push("kulo_inspect_asset");
             }
             if (report.state === "failed" || report.state === "blocked") {
-              eventTools.push("moco_inspect");
+              eventTools.push("kulo_inspect");
             }
 
             let notifyInlineWaiter = false;
             await runtime.commit(async (tx) => {
-              const state = await tx.doc(MocoStateDoc);
+              const state = await tx.doc(KuloStateDoc);
               const currentTicket = state.tickets[ticketId];
               if (currentTicket?.deliveryClaim === "claimed_inline") {
                 return undefined;
@@ -1004,7 +1004,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                 notifyInlineWaiter = true;
                 if (canClaimInline) {
                   if (stagedDiff) {
-                    await injectEventToolsInTx(tx, targetConv.id, ["moco_inspect_staged_diff", "moco_apply_staged_changes"]);
+                    await injectEventToolsInTx(tx, targetConv.id, ["kulo_inspect_staged_diff", "kulo_apply_staged_changes"]);
                   }
                   currentTicket.deliveryClaim = "claimed_inline";
                   currentTicket.inlineResult = {
@@ -1026,7 +1026,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                 type: "input",
                 content: relayText,
                 whenBusy: "followUp",
-                requestId: `moco:relay:${ticketId}:${task.input.runEpoch}`,
+                requestId: `kulo:relay:${ticketId}:${task.input.runEpoch}`,
                 entry: {
                   kind: WorkerRelayEntry.kind,
                   data: {
@@ -1054,7 +1054,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
         let repeated = false;
         let continueExternal = false;
         await runtime.commit(async tx => {
-          const state = await tx.doc(MocoStateDoc);
+          const state = await tx.doc(KuloStateDoc);
           const settingsDoc = await tx.doc(SettingsAssistantDoc);
           const ticket = state.tickets[task.input.ticketId];
           const origin = ticket && state.topics?.[ticket.originTopicId ?? "root"];
@@ -1095,7 +1095,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
       },
 
       wait_until: async (task, runtime, context) => {
-        const state = await runtime.snapshot(MocoStateDoc, context);
+        const state = await runtime.snapshot(KuloStateDoc, context);
         const ticket = state?.tickets[task.input.ticketId];
         if (!ticket || ticket.runEpoch !== task.input.runEpoch ||
             ticket.status !== "waiting" || ticket.waiting?.reason !== "time") {
@@ -1121,7 +1121,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
     abort: async (task, runtime, context) => {
       let settledCurrentRun = false;
       await runtime.commit(async (tx) => {
-        const state = await tx.doc(MocoStateDoc);
+        const state = await tx.doc(KuloStateDoc);
         const ticket = state.tickets[task.input.ticketId];
         if (ticket?.runEpoch === task.input.runEpoch) {
           releaseSlot(state, task.input.ticketId);

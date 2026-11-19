@@ -1,10 +1,10 @@
-import { translate as t, useI18n } from "../../moco-i18n";
+import { translate as t, useI18n } from "../../kulo-i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Chip, Dropdown, Input, Label, Modal, Popover, Skeleton, Switch, TextField, toast } from "@heroui/react";
-import type { DeviceInterconnectionView, EnvNodeDescriptor, InterconnectedDevice } from "@moco/protocol";
+import type { DeviceInterconnectionView, EnvNodeDescriptor, InterconnectedDevice } from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
-import { MocoApiError } from "../../moco-api";
-import { MocoIcon } from "../../moco-icon";
+import { KuloApiError } from "../../kulo-api";
+import { KuloIcon } from "../../kulo-icon";
 import { AddDeviceModal } from "./add-device-modal";
 import { JoinDeviceModal } from "./join-device-modal";
 import { deviceApi } from "./device-api";
@@ -28,8 +28,8 @@ function deviceMemory(device: InterconnectedDevice): string {
 
 function DeviceStatus({ status }: { status: InterconnectedDevice["status"] }) {
   useI18n();
-  return <Chip className="moco-device-status" size="sm" variant="soft" color={status === "online" ? "success" : status === "pending" ? "warning" : "default"}>
-    <span className="moco-device-status-dot" aria-hidden="true" /><Chip.Label>{statusLabels()[status]}</Chip.Label>
+  return <Chip className="kulo-device-status" size="sm" variant="soft" color={status === "online" ? "success" : status === "pending" ? "warning" : "default"}>
+    <span className="kulo-device-status-dot" aria-hidden="true" /><Chip.Label>{statusLabels()[status]}</Chip.Label>
   </Chip>;
 }
 
@@ -45,24 +45,24 @@ function DeviceAddresses({ device }: { device: InterconnectedDevice }) {
     }
   };
   if (!addresses.all.length) return null;
-  return <div className="moco-device-network">
-    <div className="moco-device-address-preview" aria-label={t("常用 IP 地址", "Common IP addresses")}>
-      {addresses.preview.map((address) => <code className="moco-device-ip" key={address}>{address}</code>)}
+  return <div className="kulo-device-network">
+    <div className="kulo-device-address-preview" aria-label={t("常用 IP 地址", "Common IP addresses")}>
+      {addresses.preview.map((address) => <code className="kulo-device-ip" key={address}>{address}</code>)}
     </div>
     <Popover>
-      <Button size="sm" variant="ghost" className="moco-device-address-trigger" aria-label={t(`查看${device.name}的全部 ${addresses.all.length} 个 IP 地址`, `View all ${addresses.all.length} IP addresses for ${device.name}`)}>
-        {addresses.all.length > 2 ? t(`全部 ${addresses.all.length} 个`, `All ${addresses.all.length}`) : t("查看地址", "View addresses")}<MocoIcon name="chevron-down" size={14} />
+      <Button size="sm" variant="ghost" className="kulo-device-address-trigger" aria-label={t(`查看${device.name}的全部 ${addresses.all.length} 个 IP 地址`, `View all ${addresses.all.length} IP addresses for ${device.name}`)}>
+        {addresses.all.length > 2 ? t(`全部 ${addresses.all.length} 个`, `All ${addresses.all.length}`) : t("查看地址", "View addresses")}<KuloIcon name="chevron-down" size={14} />
       </Button>
-      <Popover.Content placement="bottom end" className="moco-device-address-popover">
-        <Popover.Dialog className="moco-device-address-dialog">
-          <div className="moco-device-address-heading"><Popover.Heading>{t("IP 地址", "IP addresses")}</Popover.Heading><span className="text-xs text-muted">{t(`${addresses.all.length} 个`, `${addresses.all.length} addresses`)}</span></div>
-          <div className="moco-device-address-scroll">
+      <Popover.Content placement="bottom end" className="kulo-device-address-popover">
+        <Popover.Dialog className="kulo-device-address-dialog">
+          <div className="kulo-device-address-heading"><Popover.Heading>{t("IP 地址", "IP addresses")}</Popover.Heading><span className="text-xs text-muted">{t(`${addresses.all.length} 个`, `${addresses.all.length} addresses`)}</span></div>
+          <div className="kulo-device-address-scroll">
             {[{ label: "IPv4", ips: addresses.ipv4 }, { label: "IPv6", ips: addresses.ipv6 }, { label: t("其他", "Other"), ips: addresses.other }].map(({ label, ips }) => {
-              return ips.length > 0 && <section key={label} className="moco-device-address-group" aria-label={label}>
+              return ips.length > 0 && <section key={label} className="kulo-device-address-group" aria-label={label}>
                 <h4 className="text-xs font-medium text-muted">{label}</h4>
-                {ips.map((address) => <div className="moco-device-address-item" key={address}>
+                {ips.map((address) => <div className="kulo-device-address-item" key={address}>
                   <code>{address}</code>
-                  <Button size="sm" variant="ghost" isIconOnly aria-label={t(`复制 ${address}`, `Copy ${address}`)} onPress={() => void copy(address)}><MocoIcon name="copy" size={15} /></Button>
+                  <Button size="sm" variant="ghost" isIconOnly aria-label={t(`复制 ${address}`, `Copy ${address}`)} onPress={() => void copy(address)}><KuloIcon name="copy" size={15} /></Button>
                 </div>)}
               </section>;
             })}
@@ -84,16 +84,16 @@ function DeviceCard({ device, view, disabled, onRename, onRemove }: {
   const isHub = device.kind === "local";
   const isCurrent = device.id === view.currentDeviceId;
   const role = t(`${isHub ? "主机" : "设备"}${isCurrent ? " · 本机" : ""}`, `${isHub ? "Host" : "Device"}${isCurrent ? " · This device" : ""}`);
-  return <Card className="moco-device-card" variant="default" role="listitem" aria-label={device.name}>
-    <Card.Header className="moco-device-card-header">
-      <div className="moco-device-card-role"><span>{role}</span><DeviceStatus status={device.status} /></div>
-      <div className="moco-device-card-identity">
-        <div className="moco-device-icon"><MocoIcon name="devices" size={22} /></div>
-        <Card.Title className="moco-device-card-name" title={device.name}>{device.name}</Card.Title>
-        <div className="moco-device-actions">
-          <Button size="sm" isIconOnly variant="ghost" isDisabled={disabled} aria-label={t(`修改${device.name}的${isHub ? "主机" : "设备"}名称`, `Rename ${isHub ? "host" : "device"} ${device.name}`)} onPress={onRename}><MocoIcon name="edit" size={16} /></Button>
+  return <Card className="kulo-device-card" variant="default" role="listitem" aria-label={device.name}>
+    <Card.Header className="kulo-device-card-header">
+      <div className="kulo-device-card-role"><span>{role}</span><DeviceStatus status={device.status} /></div>
+      <div className="kulo-device-card-identity">
+        <div className="kulo-device-icon"><KuloIcon name="devices" size={22} /></div>
+        <Card.Title className="kulo-device-card-name" title={device.name}>{device.name}</Card.Title>
+        <div className="kulo-device-actions">
+          <Button size="sm" isIconOnly variant="ghost" isDisabled={disabled} aria-label={t(`修改${device.name}的${isHub ? "主机" : "设备"}名称`, `Rename ${isHub ? "host" : "device"} ${device.name}`)} onPress={onRename}><KuloIcon name="edit" size={16} /></Button>
           {!isHub && <Dropdown>
-            <Button size="sm" isIconOnly variant="ghost" isDisabled={disabled} aria-label={t(`${device.name}操作`, `Actions for ${device.name}`)}><MocoIcon name="more" size={18} /></Button>
+            <Button size="sm" isIconOnly variant="ghost" isDisabled={disabled} aria-label={t(`${device.name}操作`, `Actions for ${device.name}`)}><KuloIcon name="more" size={18} /></Button>
             <Dropdown.Popover placement="bottom end">
               <Dropdown.Menu aria-label={t(`${device.name}操作`, `Actions for ${device.name}`)} onAction={(key) => key === "rename" ? onRename() : onRemove()}>
                 <Dropdown.Item id="rename" textValue={t("重命名", "Rename")}><Label>{t("重命名", "Rename")}</Label></Dropdown.Item>
@@ -105,14 +105,14 @@ function DeviceCard({ device, view, disabled, onRename, onRemove }: {
       </div>
     </Card.Header>
     <Card.Content>
-      {device.info ? <dl className="moco-device-specs">
+      {device.info ? <dl className="kulo-device-specs">
         <div><dt>{t("系统", "System")}</dt><dd>{deviceSystem(device)}</dd></div>
         {device.info.cpu && <div><dt>{t("处理器", "Processor")}</dt><dd>{device.info.cpu}</dd></div>}
         {deviceMemory(device) && <div><dt>{t("内存", "Memory")}</dt><dd>{deviceMemory(device)}</dd></div>}
       </dl> : <p className="text-sm text-muted">{t("等待设备信息", "Waiting for device information")}</p>}
       {device.error && <p role="alert" className="break-words text-xs text-danger">{device.error}</p>}
     </Card.Content>
-    {!!device.info?.ips.length && <Card.Footer className="moco-device-card-network"><DeviceAddresses device={device} /></Card.Footer>}
+    {!!device.info?.ips.length && <Card.Footer className="kulo-device-card-network"><DeviceAddresses device={device} /></Card.Footer>}
   </Card>;
 }
 
@@ -181,7 +181,7 @@ export function MachinesModule({
       setConfirm(undefined);
       return true;
     } catch (err) {
-      if (!enabled && !force && err instanceof MocoApiError && err.code === "remote_tasks_running") {
+      if (!enabled && !force && err instanceof KuloApiError && err.code === "remote_tasks_running") {
         setConfirm({ kind: "disable" });
       } else if (force) {
         setConfirmError(err instanceof Error ? err.message : t("关闭设备互联失败", "Failed to turn off device connections"));
@@ -239,7 +239,7 @@ export function MachinesModule({
       await refresh();
       toast.success(t("设备已移除", "Device removed"));
     } catch (err) {
-      if (!confirm.force && err instanceof MocoApiError && err.code === "remote_tasks_running") {
+      if (!confirm.force && err instanceof KuloApiError && err.code === "remote_tasks_running") {
         setConfirm({ ...confirm, force: true });
       } else setConfirmError(err instanceof Error ? err.message : t("移除设备失败", "Failed to remove device"));
     } finally {
@@ -274,7 +274,7 @@ export function MachinesModule({
     onRemove={() => { setConfirm({ kind: "remove", device }); setConfirmError(undefined); }} />;
 
   return (
-    <div className="moco-settings-form moco-device-root">
+    <div className="kulo-settings-form kulo-device-root">
       {error && (
         <Alert status="danger">
           <Alert.Indicator />
@@ -283,7 +283,7 @@ export function MachinesModule({
         </Alert>
       )}
       {!view ? (
-        !loadingError && <div className="moco-device-loading" role="status" aria-label={t("正在读取设备", "Loading devices")}>
+        !loadingError && <div className="kulo-device-loading" role="status" aria-label={t("正在读取设备", "Loading devices")}>
           <Skeleton className="h-10 w-full rounded-xl" />
           <Skeleton className="h-52 w-full rounded-2xl" />
         </div>
@@ -295,7 +295,7 @@ export function MachinesModule({
               <Alert.Content><Alert.Title>{view.hubError}</Alert.Title></Alert.Content>
             </Alert>
           )}
-          <div className="moco-device-toggle">
+          <div className="kulo-device-toggle">
             <div className="flex min-w-0 flex-col gap-1.5">
               <span className="text-sm font-semibold">{view.role === "joined" ? t("设备互联", "Device connections") : t("启用设备互联", "Enable device connections")}</span>
               <span className="break-words text-xs text-muted" aria-live="polite">{mode}</span>
@@ -318,18 +318,18 @@ export function MachinesModule({
             </div>
           </div>
           <SettingsSection title={t("主机", "Host")}>
-            <div className="moco-device-grid moco-device-host" role="list" aria-label={t("主机列表", "Hosts")}>
+            <div className="kulo-device-grid kulo-device-host" role="list" aria-label={t("主机列表", "Hosts")}>
               {hostDevices.map(renderDevice)}
             </div>
           </SettingsSection>
           {view.enabled && <SettingsSection title={t("设备", "Device")}>
-            <div className="moco-device-grid" role="list" aria-label={t("设备列表", "Devices")}>
+            <div className="kulo-device-grid" role="list" aria-label={t("设备列表", "Devices")}>
               {remoteDevices.map(renderDevice)}
-              {!view.hubError && <Card className="moco-device-add-card" variant="transparent" role="listitem" aria-label={t("添加设备", "Add device")}>
-                <Card.Content className="moco-device-add-content">
-                  <div className="moco-device-empty-icon"><MocoIcon name="devices" size={26} /></div>
+              {!view.hubError && <Card className="kulo-device-add-card" variant="transparent" role="listitem" aria-label={t("添加设备", "Add device")}>
+                <Card.Content className="kulo-device-add-content">
+                  <div className="kulo-device-empty-icon"><KuloIcon name="devices" size={26} /></div>
                   {remoteDevices.length === 0 && <p className="text-sm text-muted">{t("尚未添加设备", "No devices added")}</p>}
-                  <Button size="sm" variant="primary" isDisabled={busy} onPress={() => setAddOpen(true)}><MocoIcon name="add" size={17} />{t("添加设备", "Add device")}</Button>
+                  <Button size="sm" variant="primary" isDisabled={busy} onPress={() => setAddOpen(true)}><KuloIcon name="add" size={17} />{t("添加设备", "Add device")}</Button>
                 </Card.Content>
               </Card>}
             </div>
@@ -344,8 +344,8 @@ export function MachinesModule({
             <Modal.Dialog aria-label={t(`重命名${renameKind}`, `Rename ${renameKind}`)}>
               <Modal.Header><Modal.Heading>{t("重命名", "Rename ")}{renameKind}</Modal.Heading><Modal.CloseTrigger aria-label={t(`关闭重命名${renameKind}`, `Close rename ${renameKind}`)} isDisabled={busy} /></Modal.Header>
               <Modal.Body>
-                <form id="moco-device-rename" onSubmit={(event) => { event.preventDefault(); void renameDevice(); }} className="moco-form-stack">
-                  <TextField className="moco-form-field" variant="secondary" value={name} onChange={setName} isDisabled={busy} isRequired maxLength={100} fullWidth>
+                <form id="kulo-device-rename" onSubmit={(event) => { event.preventDefault(); void renameDevice(); }} className="kulo-form-stack">
+                  <TextField className="kulo-form-field" variant="secondary" value={name} onChange={setName} isDisabled={busy} isRequired maxLength={100} fullWidth>
                     <Label>{t(`${renameKind}名称`, `${renameKind} name`)}</Label><Input autoFocus />
                   </TextField>
                   {renameError && <Alert status="danger"><Alert.Content><Alert.Title>{renameError}</Alert.Title></Alert.Content></Alert>}
@@ -353,7 +353,7 @@ export function MachinesModule({
               </Modal.Body>
               <Modal.Footer>
                 <Button variant="tertiary" isDisabled={busy} onPress={() => setRename(undefined)}>{t("取消", "Cancel")}</Button>
-                <Button type="submit" form="moco-device-rename" isPending={busy} isDisabled={!name.trim() || busy}>{t("保存", "Save")}</Button>
+                <Button type="submit" form="kulo-device-rename" isPending={busy} isDisabled={!name.trim() || busy}>{t("保存", "Save")}</Button>
               </Modal.Footer>
             </Modal.Dialog>
           </Modal.Container>

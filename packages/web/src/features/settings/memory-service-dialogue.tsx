@@ -1,4 +1,4 @@
-import { translate as t, useI18n } from "../../moco-i18n";
+import { translate as t, useI18n } from "../../kulo-i18n";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Alert, Button, Card, Checkbox, Chip, Input, Label, ListBox, Select, Spinner, TextField } from "@heroui/react";
 import {
@@ -11,10 +11,10 @@ import {
   type MemoryServicePrepareRequest,
   type MemoryServiceSecretInput,
   type MemoryServiceSnapshot,
-  type MocoSettingsView,
-} from "@moco/protocol";
+  type KuloSettingsView,
+} from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
-import { mocoRest } from "../../moco-api";
+import { kuloRest } from "../../kulo-api";
 import { safeSetupInputError } from "./capability-setup-inputs";
 import { isMemoryDialogueOperation, MEMORY_SERVICE_INTENT_EVENT, publishMemoryService, requestMemoryConnectionFocus, takeMemoryServiceIntent, type MemoryDialogueOperation } from "./memory-service-events";
 
@@ -42,7 +42,7 @@ export interface MemoryServiceDraft {
 export function initialMemoryServiceDraft(
   operation: MemoryDialogueOperation,
   snapshot: MemoryServiceSnapshot,
-  settings?: MocoSettingsView,
+  settings?: KuloSettingsView,
 ): MemoryServiceDraft {
   const saved = snapshot.model;
   if (saved) {
@@ -110,14 +110,14 @@ export async function decideMemoryServiceJob(job: MemoryServiceJob, clientId: st
   if (job.clientId !== clientId) throw new Error(t("请在发起操作的窗口继续。", "Continue in the window where you started this operation."));
   if (decision === "confirm" && job.status !== "awaiting-confirmation" && job.status !== "failed") throw new Error(t("该操作尚未就绪，或已经处理。", "This operation is not ready or has already been handled."));
   if (decision === "reject" && !["awaiting-input", "awaiting-confirmation"].includes(job.status)) throw new Error(t("该操作已经处理。", "This operation has already been handled."));
-  return mocoRest.decideMemoryService(job.id, { clientId, decision });
+  return kuloRest.decideMemoryService(job.id, { clientId, decision });
 }
 
 export async function submitMemoryServiceSecret(input: MemoryServiceSecretInput, clientId: string, secret: string): Promise<MemoryServiceSnapshot> {
   if (input.clientId !== clientId) throw new Error(t("请在发起配置的窗口填写凭据。", "Enter credentials in the window where you started setup."));
   if (input.status !== "pending" || input.expiresAt <= Date.now()) throw new Error(t("凭据输入已失效，请重新发起配置。", "Credential input expired. Start setup again."));
   if (!secret.trim()) throw new Error(t("请输入密钥。", "Enter an API key."));
-  return mocoRest.submitMemoryServiceInput(input.id, { clientId, secret });
+  return kuloRest.submitMemoryServiceInput(input.id, { clientId, secret });
 }
 
 function MemorySecretField({ input, clientId, connected, onChanged }: { input: MemoryServiceSecretInput; clientId: string; connected: boolean; onChanged: (snapshot: MemoryServiceSnapshot) => void }) {
@@ -141,8 +141,8 @@ function MemorySecretField({ input, clientId, connected, onChanged }: { input: M
     catch (cause) { setError(safeSetupInputError(cause, secret)); }
     finally { setSecret(""); setBusy(false); }
   };
-  return <form className="moco-form-stack" onSubmit={(event) => void submit(event)}>
-    <TextField variant="primary" className="moco-form-field" type="password" name={input.field} value={secret} onChange={setSecret} isRequired isDisabled={!connected || busy || expired} fullWidth>
+  return <form className="kulo-form-stack" onSubmit={(event) => void submit(event)}>
+    <TextField variant="primary" className="kulo-form-field" type="password" name={input.field} value={secret} onChange={setSecret} isRequired isDisabled={!connected || busy || expired} fullWidth>
       <Label>{input.label}</Label>
       <Input autoComplete="new-password" spellCheck={false} placeholder={t("输入密钥", "Enter API key")} onKeyDown={(event) => {
         if (event.key === "Enter" && event.nativeEvent.isComposing) event.preventDefault();
@@ -205,16 +205,16 @@ export function MemoryServiceJobCard({ job, inputs, clientId, connected, onChang
   </Card>;
 }
 
-function modelConnections(settings: MocoSettingsView) {
+function modelConnections(settings: KuloSettingsView) {
   const model = settings.blocks.model;
   const connections: Array<{ id: string; label: string; provider: HindsightModelProvider; baseUrl: string; model: string; models: string[] }> = [];
   if (!model.value.gatewayDisabled && (model.hasApiKey || (model.value.gatewayModels?.length ?? 0) > 0)) {
     const chatIds = [...new Set((model.value.gatewayModels ?? []).filter(isConversationModel).map((m) => m.id.trim()).filter(Boolean))];
-    if (model.value.defaultProvider === "moco-gateway" && model.value.defaultModel.trim() && !chatIds.includes(model.value.defaultModel.trim())) {
+    if (model.value.defaultProvider === "kulo-gateway" && model.value.defaultModel.trim() && !chatIds.includes(model.value.defaultModel.trim())) {
       chatIds.unshift(model.value.defaultModel.trim());
     }
     connections.push({
-      id: "moco-gateway",
+      id: "kulo-gateway",
       label: model.value.gatewayName?.trim() || t("默认 API 连接", "Default API connection"),
       provider: "openai",
       baseUrl: model.value.baseUrl,
@@ -251,7 +251,7 @@ function modelConnections(settings: MocoSettingsView) {
 export function MemoryServiceForm({ draft, snapshot, settings, busy, error, onChange, onCancel, onSubmit }: {
   draft: MemoryServiceDraft;
   snapshot: MemoryServiceSnapshot;
-  settings: MocoSettingsView;
+  settings: KuloSettingsView;
   busy: boolean;
   error?: string;
   onChange: (draft: MemoryServiceDraft) => void;
@@ -268,22 +268,22 @@ export function MemoryServiceForm({ draft, snapshot, settings, busy, error, onCh
   return <Card variant="secondary" className="min-w-0 gap-3 rounded-2xl p-3" aria-label={operationLabels()[draft.operation]}>
     <Card.Header><Card.Title className="text-sm">{operationLabels()[draft.operation]}</Card.Title><Card.Description className="text-xs">{t("部署设备：", "Deployment device: ")}{snapshot.deviceName}</Card.Description></Card.Header>
     <Card.Content>
-      <form id="memory-service-form" className="moco-form-stack" onSubmit={(event) => { event.preventDefault(); onSubmit(); }}>
+      <form id="memory-service-form" className="kulo-form-stack" onSubmit={(event) => { event.preventDefault(); onSubmit(); }}>
         {modelForm && <>
-          {connections.length > 0 && <Select variant="primary" className="moco-form-field" value={draft.connectionId || "__separate__"} onChange={(value) => {
+          {connections.length > 0 && <Select variant="primary" className="kulo-form-field" value={draft.connectionId || "__separate__"} onChange={(value) => {
             const connection = connections.find((item) => item.id === value);
             onChange(connection ? { ...draft, connectionId: connection.id, provider: connection.provider, baseUrl: connection.baseUrl, model: connection.model || connection.models[0] || "" } : { ...draft, connectionId: "" });
           }} isDisabled={busy} fullWidth><Label>{t("模型凭据来源", "Model credentials")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger><Select.Popover><ListBox><ListBox.Item id="__separate__" textValue={t("单独配置", "Configure separately")}>{t("单独配置", "Configure separately")}<ListBox.ItemIndicator /></ListBox.Item>{connections.map((connection) => <ListBox.Item key={connection.id} id={connection.id} textValue={connection.label}>{connection.label}<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover></Select>}
-          {!selectedConnection && <Select variant="primary" className="moco-form-field" value={draft.provider} onChange={(value) => { if (value) onChange({ ...draft, provider: String(value) as HindsightModelProvider, connectionId: "", baseUrl: "", model: "" }); }} isDisabled={busy} fullWidth>
+          {!selectedConnection && <Select variant="primary" className="kulo-form-field" value={draft.provider} onChange={(value) => { if (value) onChange({ ...draft, provider: String(value) as HindsightModelProvider, connectionId: "", baseUrl: "", model: "" }); }} isDisabled={busy} fullWidth>
             <Label>{t("模型供应商", "Model provider")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger><Select.Popover><ListBox>{modelProviders().map((provider) => <ListBox.Item key={provider.id} id={provider.id} textValue={provider.label}>{provider.label}<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover>
           </Select>}
           {selectableModels.length > 0
-            ? <Select variant="primary" className="moco-form-field" placeholder={t("未选择", "Not selected")} value={draft.model && selectableModels.includes(draft.model) ? draft.model : null} onChange={(value) => { if (value) onChange({ ...draft, model: String(value) }); }} isDisabled={busy} fullWidth>
+            ? <Select variant="primary" className="kulo-form-field" placeholder={t("未选择", "Not selected")} value={draft.model && selectableModels.includes(draft.model) ? draft.model : null} onChange={(value) => { if (value) onChange({ ...draft, model: String(value) }); }} isDisabled={busy} fullWidth>
                 <Label>{t("记忆模型", "Memory model")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
                 <Select.Popover><ListBox>{selectableModels.map((modelId) => <ListBox.Item key={modelId} id={modelId} textValue={modelId}>{modelId}<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover>
               </Select>
-            : <TextField variant="primary" className="moco-form-field" value={draft.model} onChange={(model) => onChange({ ...draft, model })} isRequired isDisabled={busy} fullWidth><Label>{t("记忆模型", "Memory model")}</Label><Input spellCheck={false} /></TextField>}
-          {!selectedConnection && <TextField variant="primary" className="moco-form-field" value={draft.baseUrl} onChange={(baseUrl) => onChange({ ...draft, baseUrl, connectionId: "" })} isDisabled={busy} fullWidth><Label>{t("模型地址（可选）", "Model URL (optional)")}</Label><Input type="url" spellCheck={false} placeholder={draft.provider === "ollama" ? "http://127.0.0.1:11434" : t("使用供应商默认地址", "Use the provider's default URL")} /></TextField>}
+            : <TextField variant="primary" className="kulo-form-field" value={draft.model} onChange={(model) => onChange({ ...draft, model })} isRequired isDisabled={busy} fullWidth><Label>{t("记忆模型", "Memory model")}</Label><Input spellCheck={false} /></TextField>}
+          {!selectedConnection && <TextField variant="primary" className="kulo-form-field" value={draft.baseUrl} onChange={(baseUrl) => onChange({ ...draft, baseUrl, connectionId: "" })} isDisabled={busy} fullWidth><Label>{t("模型地址（可选）", "Model URL (optional)")}</Label><Input type="url" spellCheck={false} placeholder={draft.provider === "ollama" ? "http://127.0.0.1:11434" : t("使用供应商默认地址", "Use the provider's default URL")} /></TextField>}
         </>}
         {draft.operation === "uninstall" && <Checkbox isSelected={draft.deleteData} onChange={(deleteData) => onChange({ ...draft, deleteData })} isDisabled={busy}><Checkbox.Content><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>{t("同时删除记忆数据", "Also delete memory data")}</Checkbox.Content></Checkbox>}
         {error && <Alert status="danger" className="rounded-xl p-2"><Alert.Content className="break-words text-xs">{error}</Alert.Content></Alert>}
@@ -293,7 +293,7 @@ export function MemoryServiceForm({ draft, snapshot, settings, busy, error, onCh
   </Card>;
 }
 
-export function MemoryServiceDialogue({ clientId, settings, connected, refreshKey }: { clientId: string; settings: MocoSettingsView; connected: boolean; refreshKey: string }) {
+export function MemoryServiceDialogue({ clientId, settings, connected, refreshKey }: { clientId: string; settings: KuloSettingsView; connected: boolean; refreshKey: string }) {
   useI18n();
   const [snapshot, setSnapshot] = useState<MemoryServiceSnapshot | null>(null);
   const [draft, setDraft] = useState<MemoryServiceDraft | null>(null);
@@ -301,7 +301,7 @@ export function MemoryServiceDialogue({ clientId, settings, connected, refreshKe
   const [error, setError] = useState<string>();
   const alive = useRef(true);
   const changed = useCallback((next: MemoryServiceSnapshot) => { if (alive.current) { setSnapshot(next); setError(undefined); publishMemoryService(next); } }, []);
-  const load = useCallback(async () => { const next = await mocoRest.getMemoryService(clientId); changed(next); return next; }, [clientId, changed]);
+  const load = useCallback(async () => { const next = await kuloRest.getMemoryService(clientId); changed(next); return next; }, [clientId, changed]);
   const begin = async (operation: MemoryServiceOperation) => {
     if (!isMemoryDialogueOperation(operation)) { requestMemoryConnectionFocus(); return; }
     if (busy || !connected) return;
@@ -337,7 +337,7 @@ export function MemoryServiceDialogue({ clientId, settings, connected, refreshKe
   const prepare = async () => {
     if (!draft || !snapshot || busy || !connected) return;
     setBusy(true); setError(undefined);
-    try { changed(await mocoRest.prepareMemoryService(createMemoryServiceRequest(draft, clientId, snapshot.revision))); setDraft(null); }
+    try { changed(await kuloRest.prepareMemoryService(createMemoryServiceRequest(draft, clientId, snapshot.revision))); setDraft(null); }
     catch (cause) { if (alive.current) setError(redactSecrets(cause instanceof Error ? cause.message : t("准备操作失败", "Failed to prepare operation"))); }
     finally { if (alive.current) setBusy(false); }
   };

@@ -1,6 +1,6 @@
 import http from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { EXTERNAL_AGENT_MCP_TOOL_NAMES, redactSensitiveText, type ExternalAgentMcpToolName } from "@moco/protocol";
+import { EXTERNAL_AGENT_MCP_TOOL_NAMES, redactSensitiveText, type ExternalAgentMcpToolName } from "@kulo/protocol";
 
 export interface ExternalAgentMcpScope {
   runId: string;
@@ -36,14 +36,14 @@ const object = (properties: Record<string, unknown>, required: string[] = []) =>
 
 export const EXTERNAL_AGENT_MCP_TOOLS = [
   {
-    name: "moco_task_context",
-    description: "Read the current authorized Moco task, workspace mode, and scratch paths. Only this task's brief is available; main-agent private memory and unrelated conversations are not exposed.",
+    name: "kulo_task_context",
+    description: "Read the current authorized Kulo task, workspace mode, and scratch paths. Only this task's brief is available; main-agent private memory and unrelated conversations are not exposed.",
     inputSchema: object({}),
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   {
-    name: "moco_task_report",
-    description: "Report progress, a blocking question ('blocked'), or privately staged results ('ready' / 'failed') and optional artifact files to the Moco main agent. Ready means awaiting the main agent's review, not approved or published.",
+    name: "kulo_task_report",
+    description: "Report progress, a blocking question ('blocked'), or privately staged results ('ready' / 'failed') and optional artifact files to the Kulo main agent. Ready means awaiting the main agent's review, not approved or published.",
     inputSchema: object({
       state: { type: "string", enum: ["progress", "blocked", "ready", "failed"] },
       summary: text("Observed result or progress", 4000),
@@ -64,26 +64,26 @@ export const EXTERNAL_AGENT_MCP_TOOLS = [
     annotations: { readOnlyHint: false, openWorldHint: false },
   },
   {
-    name: "moco_agents",
+    name: "kulo_agents",
     description: "List agents eligible for collaboration within this task's authorized device, project, and read-only scope.",
     inputSchema: object({}),
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   {
-    name: "moco_request_collaboration",
+    name: "kulo_request_collaboration",
     description: "Ask Hub to dispatch a bounded child task to another configured agent. Supply an explicit brief. Reuse request_id on retry; do not copy the whole parent conversation.",
-    inputSchema: object({ request_id: text("Stable identifier for this child request; reuse after uncertain delivery", 120), agent_id: text("Eligible agent ID from moco_agents", 120), goal: text("Complete task objective and necessary context", 16000), acceptance: text("Verification criteria", 4000) }, ["request_id", "agent_id", "goal"]),
+    inputSchema: object({ request_id: text("Stable identifier for this child request; reuse after uncertain delivery", 120), agent_id: text("Eligible agent ID from kulo_agents", 120), goal: text("Complete task objective and necessary context", 16000), acceptance: text("Verification criteria", 4000) }, ["request_id", "agent_id", "goal"]),
     annotations: { readOnlyHint: false, openWorldHint: false },
   },
   {
-    name: "moco_child_task",
+    name: "kulo_child_task",
     description: "Read the state and result of a child task created by this task. Other tasks cannot be read.",
-    inputSchema: object({ task_id: text("Child task ID returned by moco_request_collaboration", 120) }, ["task_id"]),
+    inputSchema: object({ task_id: text("Child task ID returned by kulo_request_collaboration", 120) }, ["task_id"]),
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   {
-    name: "moco_memory_recall",
-    description: "Recall relevant project facts and past work observations from Moco's Hindsight shared memory bank. Private main-agent memory is never accessible.",
+    name: "kulo_memory_recall",
+    description: "Recall relevant project facts and past work observations from Kulo's Hindsight shared memory bank. Private main-agent memory is never accessible.",
     inputSchema: object({
       query: text("Natural language recall query", 3000),
       budget: { type: "string", enum: ["low", "mid", "high"], description: "Optional recall budget" },
@@ -92,19 +92,19 @@ export const EXTERNAL_AGENT_MCP_TOOLS = [
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   {
-    name: "moco_memory_search_pages",
+    name: "kulo_memory_search_pages",
     description: "Search curated Hindsight shared Knowledge Pages (architecture, conventions, past project decisions).",
     inputSchema: object({ query: text("Topic or question to search across shared knowledge pages", 2000) }, ["query"]),
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   {
-    name: "moco_memory_read_page",
+    name: "kulo_memory_read_page",
     description: "Read the markdown content of a Hindsight shared Knowledge Page by its page_id.",
     inputSchema: object({ page_id: text("Shared knowledge page ID", 240) }, ["page_id"]),
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   {
-    name: "moco_memory_ingest",
+    name: "kulo_memory_ingest",
     description: "Retain newly verified project facts or an evidence-backed 'Correction: <topic>' into Hindsight shared memory. Never include secrets or re-ingest recalled text.",
     inputSchema: object({
       title: text("Document title (or 'Correction: <topic>')", 240),
@@ -113,7 +113,7 @@ export const EXTERNAL_AGENT_MCP_TOOLS = [
     annotations: { readOnlyHint: false, openWorldHint: false },
   },
   {
-    name: "moco_memory_reflect",
+    name: "kulo_memory_reflect",
     description: "Synthesize historical design rationale and root causes across this project's Hindsight shared memory bank.",
     inputSchema: object({
       query: text("Deep reasoning question over shared project memory", 2000),
@@ -122,14 +122,14 @@ export const EXTERNAL_AGENT_MCP_TOOLS = [
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   {
-    name: "moco_connections",
-    description: "List Moco connections authorized for this task and their supported actions/parameters without exposing raw credential values.",
+    name: "kulo_connections",
+    description: "List Kulo connections authorized for this task and their supported actions/parameters without exposing raw credential values.",
     inputSchema: object({}),
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   {
-    name: "moco_connection_use",
-    description: "Execute an operation through a Moco connection authorized for this task (SSH, HTTP, app action, or authorized information read). Credentials remain sealed inside Hub.",
+    name: "kulo_connection_use",
+    description: "Execute an operation through a Kulo connection authorized for this task (SSH, HTTP, app action, or authorized information read). Credentials remain sealed inside Hub.",
     inputSchema: object({
       connection_id: text("Authorized connection ID", 256),
       operation: { type: "string", enum: ["ssh", "http", "app", "information"] },
@@ -150,10 +150,10 @@ export const EXTERNAL_AGENT_MCP_DEFINED_TOOL_NAMES: readonly ExternalAgentMcpToo
 const _verifyAllProtocolMcpToolsDefined: ReadonlyArray<ExternalAgentMcpToolName> = EXTERNAL_AGENT_MCP_TOOL_NAMES;
 void _verifyAllProtocolMcpToolsDefined;
 
-const CORE_TOOL_NAMES = new Set(["moco_task_context", "moco_task_report"]);
-const COLLAB_TOOL_NAMES = new Set(["moco_agents", "moco_request_collaboration", "moco_child_task"]);
-const MEMORY_TOOL_NAMES = new Set(["moco_memory_recall", "moco_memory_search_pages", "moco_memory_read_page", "moco_memory_ingest", "moco_memory_reflect"]);
-const CONNECTION_TOOL_NAMES = new Set(["moco_connections", "moco_connection_use"]);
+const CORE_TOOL_NAMES = new Set(["kulo_task_context", "kulo_task_report"]);
+const COLLAB_TOOL_NAMES = new Set(["kulo_agents", "kulo_request_collaboration", "kulo_child_task"]);
+const MEMORY_TOOL_NAMES = new Set(["kulo_memory_recall", "kulo_memory_search_pages", "kulo_memory_read_page", "kulo_memory_ingest", "kulo_memory_reflect"]);
+const CONNECTION_TOOL_NAMES = new Set(["kulo_connections", "kulo_connection_use"]);
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -253,7 +253,7 @@ export async function startExternalAgentMcp(options: ExternalAgentMcpOptions): P
     const error = (code: number, description: string) => send(response, 200, { jsonrpc: "2.0", id, error: { code, message: description } });
     if (message.method === "initialize") {
       const requestedVersion = record(message.params) ? message.params.protocolVersion : undefined;
-      result({ protocolVersion: requestedVersion === "2025-06-18" ? "2025-06-18" : "2025-03-26", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "moco-task", version: "1.0.0" }, instructions: "Report task context and verified results to Moco. Use these optional Hub tools to request other Moco agents when needed." }); return;
+      result({ protocolVersion: requestedVersion === "2025-06-18" ? "2025-06-18" : "2025-03-26", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "kulo-task", version: "1.0.0" }, instructions: "Report task context and verified results to Kulo. Use these optional Hub tools to request other Kulo agents when needed." }); return;
     }
     if (message.method === "ping") { result({}); return; }
     if (message.method === "tools/list") { result({ tools }); return; }
@@ -282,7 +282,7 @@ export async function startExternalAgentMcp(options: ExternalAgentMcpOptions): P
   port = address.port;
   let closing: Promise<void> | undefined;
   return {
-    server: { name: "moco-task", url: `http://127.0.0.1:${port}/mcp`, headers: [{ name: "Authorization", value: bearer.toString() }] },
+    server: { name: "kulo-task", url: `http://127.0.0.1:${port}/mcp`, headers: [{ name: "Authorization", value: bearer.toString() }] },
     port,
     close() {
       if (closing) return closing;

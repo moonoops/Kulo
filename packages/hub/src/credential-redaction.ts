@@ -7,9 +7,9 @@ import {
   CompactionTask, defineExtension, GenerationTask, hook, ToolTask,
   AssistantEntry, UserEntry, type DocumentId, type JsonObject, type Storage, type StorageWrite,
 } from "@earendil-works/pi-durable";
-import { inspectSensitiveText, mayContainDeviceInvitation, redactDeviceInvitationText } from "@moco/protocol";
+import { inspectSensitiveText, mayContainDeviceInvitation, redactDeviceInvitationText } from "@kulo/protocol";
 import { invalidateDeviceInvitationSearchIndex } from "./conversation-history.js";
-import { MocoUserEntry } from "./ui-cards.js";
+import { KuloUserEntry } from "./ui-cards.js";
 import { nativeAssistantOpaqueFields, nativeWireOpaqueFields, type NativeOpaqueField } from "./model-native-replay.js";
 
 const SECRET_FIELD = /^(?:password|passwd|passphrase|secret|token|api[_-]?key|(?:router|worker|sharedRead)ApiKey|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|authorization|proxy-authorization|cookie|set-cookie|密码|口令|密钥|私钥)$/i;
@@ -20,8 +20,8 @@ const STRUCTURAL_FIELDS = new Set([
 ]);
 const REDACTED = "[已隐藏]";
 const SETTINGS_SECRET_FIELD = /^(?:apiKey|routerApiKey|workerApiKey|sharedReadApiKey)$/;
-const SEALED_PREFIX = "moco-secret:";
-const PAYLOAD_FIELDS = new Set(["payload", "data", "structuredOutput", "details", "mocoNativeContent"]);
+const SEALED_PREFIX = "kulo-secret:";
+const PAYLOAD_FIELDS = new Set(["payload", "data", "structuredOutput", "details", "kuloNativeContent"]);
 const DYNAMIC_KEY_FIELDS = new Set(["payload", "structuredOutput", "details"]);
 
 export interface CredentialSealingOptions {
@@ -125,7 +125,7 @@ export function redactCredentialData<T>(value: T, redact: (text: string) => stri
   const visit = (input: unknown, field?: string, referenceMap = false, payload = false, dynamicKeys = false, currentPath: Array<string | number> = []): unknown => {
     if (typeof input === "string") {
       if (opaqueFields.get(JSON.stringify(currentPath)) === input) return input;
-      if (options.preserveSealedReferences && field && SETTINGS_SECRET_FIELD.test(field) && /^moco-secret:durable-secret:[a-f0-9-]{36}$/.test(input)) return input;
+      if (options.preserveSealedReferences && field && SETTINGS_SECRET_FIELD.test(field) && /^kulo-secret:durable-secret:[a-f0-9-]{36}$/.test(input)) return input;
       // Memory setup indexes secret fields by opaque store handles; those handles are not credential values.
       if (referenceMap && /^(?:memory-service|media|connection|durable-secret):[a-zA-Z0-9._:-]+$/.test(input)) return redact(input);
       if (field && SECRET_FIELD.test(field)) return input ? REDACTED : input;
@@ -205,7 +205,7 @@ export function wrapRedactedStorage(storage: Storage, redact: (text: string) => 
         const stored = await storage.document(id, "current", context);
         if (!stored) throw new Error("Conversation document is unavailable");
         kinds.set(id, stored.record.kind);
-        const value = sealer && stored.record.kind === "moco.settings" ? await sealer.unseal(stored.value) : stored.value;
+        const value = sealer && stored.record.kind === "kulo.settings" ? await sealer.unseal(stored.value) : stored.value;
         values.set(id, value);
         return value;
       };
@@ -216,7 +216,7 @@ export function wrapRedactedStorage(storage: Storage, redact: (text: string) => 
           if (write.type === "document.copy") {
             const rawSource = write.source.at === "current" ? getRaw(write.source.id) : undefined;
             const source = rawSource ? undefined : await storage.document(write.source.id, write.source.at, context);
-            const value = values.get(write.source.id) ?? rawSource?.value ?? (source && (sealer && source.record.kind === "moco.settings" ? await sealer.unseal(source.value) : source.value));
+            const value = values.get(write.source.id) ?? rawSource?.value ?? (source && (sealer && source.record.kind === "kulo.settings" ? await sealer.unseal(source.value) : source.value));
             if (!value) throw new Error("Conversation document copy is unavailable");
             values.set(write.record.id, value);
             kinds.set(write.record.id, write.record.kind);
@@ -247,7 +247,7 @@ export function wrapRedactedStorage(storage: Storage, redact: (text: string) => 
                 ? { ...write, content: { kind: "base", version: write.content.version, value: sanitized } }
                 : write);
             } else {
-              const sealed = sealer && kind === "moco.settings" ? await sealer.seal(value) : value;
+              const sealed = sealer && kind === "kulo.settings" ? await sealer.seal(value) : value;
               if (JSON.stringify(redactCredentialData(sealed, redact, { preserveSealedReferences: Boolean(sealer) })) !== JSON.stringify(sealed)) throw documentLeak();
               values.set(id, value);
               safeBatch.push(sealed === value ? write : { ...write, content: { kind: "base", version: write.content.version, value: sealed } });
@@ -276,7 +276,7 @@ export function wrapRedactedStorage(storage: Storage, redact: (text: string) => 
       if (property === "document") return async (...args: Parameters<Storage["document"]>) => {
         if (args[1] === "current") rawDocuments.delete(args[0]);
         const stored = await storage.document(...args);
-        if (sealer && stored?.record.kind === "moco.settings") return { ...stored, value: await sealer.unseal(stored.value) };
+        if (sealer && stored?.record.kind === "kulo.settings") return { ...stored, value: await sealer.unseal(stored.value) };
         return redactCredentialData(stored, redact, { nativeContent: "records", isKnownSecret: options.isKnownSecret });
       };
       if (property === "close") return async (...args: Parameters<Storage["close"]>) => {
@@ -293,7 +293,7 @@ export function wrapRedactedStorage(storage: Storage, redact: (text: string) => 
 
 export function createCredentialRedactionExtension(redact: (text: string) => string, options: Pick<CredentialSealingOptions, "isKnownSecret"> = {}) {
   return defineExtension({
-    name: "moco-credential-redaction",
+    name: "kulo-credential-redaction",
     hooks: [
       hook(GenerationTask, {
         beforeRequest: (request) => ({ messages: redactCredentialData(request.messages, redact, { nativeContent: "messages", isKnownSecret: options.isKnownSecret }) }),
@@ -343,7 +343,7 @@ async function prepareRevisionCleanup(database: DatabaseSync, redact: (text: str
   if (database.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'documents'").get()) {
     for (const row of database.prepare("SELECT id, record FROM documents").all() as Array<{ id: number; record: string }>) {
       const kind = (JSON.parse(row.record) as { kind?: string }).kind;
-      if (sealer && kind === "moco.settings") settingsIds.add(row.id);
+      if (sealer && kind === "kulo.settings") settingsIds.add(row.id);
       if (kind === "pi.live") liveIds.add(row.id);
     }
     if (sealer) {
@@ -447,9 +447,9 @@ async function scrubDatabase(filename: string, redact: (text: string) => string,
 function historicalUserText(value: unknown): { conversationId: number; text: string } | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const entry = value as Record<string, unknown>;
-  if (entry.kind !== UserEntry.kind && entry.kind !== MocoUserEntry.kind) return undefined;
+  if (entry.kind !== UserEntry.kind && entry.kind !== KuloUserEntry.kind) return undefined;
   if (!Number.isSafeInteger(entry.conversationId) || Number(entry.conversationId) < 1) throw new Error("Invalid historical user conversation");
-  if (entry.kind === MocoUserEntry.kind) {
+  if (entry.kind === KuloUserEntry.kind) {
     const data = entry.data as { text?: unknown } | undefined;
     if (typeof data?.text === "string") return { conversationId: Number(entry.conversationId), text: data.text };
   }
@@ -538,16 +538,16 @@ function historicalInvitePatterns(inviteTokens: Set<string>): RegExp[] {
   return patterns;
 }
 
-/** Run before opening Durable; remove recognized secrets from stored records and Moco-owned migration backups. */
+/** Run before opening Durable; remove recognized secrets from stored records and Kulo-owned migration backups. */
 export async function scrubStoredConversationSecrets(
   stateDir: string, redact: (text: string) => string, options: CredentialSealingOptions = {},
 ): Promise<{ databases: number; rows: number }> {
-  const files = [path.join(stateDir, "moco.sqlite")];
+  const files = [path.join(stateDir, "kulo.sqlite")];
   const backups = path.join(stateDir, "backups");
   if (fs.existsSync(backups)) {
     if (!fs.lstatSync(backups).isDirectory()) throw new Error("Conversation backup directory is invalid");
     for (const entry of fs.readdirSync(backups)) {
-      if (/^moco-[a-zA-Z0-9_.-]+\.sqlite$/.test(entry) || /^moco-before-state-v2\.sqlite\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(entry)) {
+      if (/^kulo-[a-zA-Z0-9_.-]+\.sqlite$/.test(entry) || /^kulo-before-state-v2\.sqlite\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(entry)) {
         files.push(path.join(backups, entry));
       }
     }
@@ -590,6 +590,6 @@ export async function scrubStoredConversationSecrets(
     return { databases, rows };
   } catch {
     // SQLite/JSON diagnostics may embed stored text; the caller receives only a safe readiness failure.
-    throw Object.assign(new Error("未能安全清理对话中的凭据，请确认没有其他 Moco 进程占用本地记录。"), { code: "credential_history_unavailable" });
+    throw Object.assign(new Error("未能安全清理对话中的凭据，请确认没有其他 Kulo 进程占用本地记录。"), { code: "credential_history_unavailable" });
   }
 }

@@ -7,11 +7,11 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 
-const CHALLENGE = "x-moco-instance-challenge";
-const REQUEST = "x-moco-instance-request";
-const STATUS = "x-moco-instance-status";
-const INSTANCE = "x-moco-instance-proof";
-const CREDENTIAL = "x-moco-credential-proof";
+const CHALLENGE = "x-kulo-instance-challenge";
+const REQUEST = "x-kulo-instance-request";
+const STATUS = "x-kulo-instance-status";
+const INSTANCE = "x-kulo-instance-proof";
+const CREDENTIAL = "x-kulo-credential-proof";
 
 export interface LocalInstanceFiles { directory: string; name: string; identity?: string }
 export interface LocalInstanceStatus { pid: number; role?: "hub" | "joined"; hubUrl?: string; ready?: boolean; error?: string }
@@ -32,7 +32,7 @@ function endpointPath(files: LocalInstanceFiles): string { return path.join(file
 function lockDirectory(files: LocalInstanceFiles): DatabaseSync | undefined {
   const filename = lockPath(files);
   const stat = fs.lstatSync(filename, { throwIfNoEntry: false });
-  if (stat && !stat.isFile()) throw new Error("Moco 数据目录中的运行锁文件无效。");
+  if (stat && !stat.isFile()) throw new Error("Kulo 数据目录中的运行锁文件无效。");
   const database = new DatabaseSync(filename);
   try {
     // This database is dedicated to ownership. SQLite and the OS release its writer on process exit.
@@ -76,7 +76,7 @@ export class LocalInstanceOwner {
   }
 
   publish(address: AddressInfo): () => void {
-    if (this.#closed) throw new Error("Moco 已关闭。");
+    if (this.#closed) throw new Error("Kulo 已关闭。");
     this.#listeners.add(address);
     try { this.#publishCurrent(); }
     catch (error) { this.#listeners.delete(address); throw error; }
@@ -123,7 +123,7 @@ export class LocalInstanceOwner {
 }
 
 function readEndpoint(files: LocalInstanceFiles): Endpoint | undefined {
-  const invalid = () => new Error("无法核对本机 Moco 的运行地址。");
+  const invalid = () => new Error("无法核对本机 Kulo 的运行地址。");
   const filename = endpointPath(files);
   let fd: number;
   try { fd = fs.openSync(filename, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | fs.constants.O_NONBLOCK); }
@@ -167,7 +167,7 @@ async function probe(endpoint: Endpoint, files: LocalInstanceFiles, route: strin
   if (!headers || typeof details !== "string" || headers[INSTANCE] !== proof(endpoint.key, ["instance", ...identity, details])) return;
   if (headers[CREDENTIAL] !== proof(endpoint.key, ["credential", ...identity, null])) {
     if (!token || headers[CREDENTIAL] !== proof(endpoint.key, ["credential", ...identity, token])) {
-      throw new Error("这份 Moco 已在运行，当前命令的管理密钥与运行实例不匹配。请从原启动环境打开。");
+      throw new Error("这份 Kulo 已在运行，当前命令的管理密钥与运行实例不匹配。请从原启动环境打开。");
     }
     url.searchParams.set("token", token);
   }
@@ -189,14 +189,14 @@ export async function discoverLocalInstance(files: LocalInstanceFiles, route: st
     const remaining = deadline - Date.now();
     if (remaining > 0) await delay(Math.min(150, remaining));
   } while (Date.now() < deadline);
-  throw new Error("这份 Moco 数据已在运行，但现有界面暂未就绪。");
+  throw new Error("这份 Kulo 数据已在运行，但现有界面暂未就绪。");
 }
 
 /** This lease outlives both listeners when the application changes between Hub and joined device. */
-export function claimMocoRuntime(directory: string): LocalInstanceOwner {
-  return LocalInstanceOwner.acquire({ directory, name: "moco-runtime" }, "这份 Moco 数据已在运行。使用 open 可以打开已有的 Moco。");
+export function claimKuloRuntime(directory: string): LocalInstanceOwner {
+  return LocalInstanceOwner.acquire({ directory, name: "kulo-runtime" }, "这份 Kulo 数据已在运行。使用 open 可以打开已有的 Kulo。");
 }
 
-export function discoverMocoRuntime(directory: string, token?: string) {
-  return discoverLocalInstance({ directory, name: "moco-runtime" }, "/_moco/instance", token);
+export function discoverKuloRuntime(directory: string, token?: string) {
+  return discoverLocalInstance({ directory, name: "kulo-runtime" }, "/_kulo/instance", token);
 }

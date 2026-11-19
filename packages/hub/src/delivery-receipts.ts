@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { defineDocFamily, type JsonObject, type Tx } from "@earendil-works/pi-durable";
-import type { ChatReplyReference, ClientToHubMessage } from "@moco/protocol";
+import type { ChatReplyReference, ClientToHubMessage } from "@kulo/protocol";
 
 export type ReliableClientMessage = Extract<ClientToHubMessage, {
   type: "chat.send" | "chat.abort" | "chat.retry" | "ticket.steer" | "ticket.retry" | "ticket.stop" | "ticket.close" | "schedule.stop" | "schedule.delete";
@@ -36,7 +36,7 @@ export type DeliveryReceipt = JsonObject & {
 
 // A separate document per request keeps durable deduplication independent of the bounded UI command cache.
 export const DeliveryReceiptDoc = defineDocFamily<DeliveryReceipt, JsonObject>({
-  kind: "moco.delivery.receipt",
+  kind: "kulo.delivery.receipt",
   version: 1,
   scope: "session",
   family: true,
@@ -77,7 +77,7 @@ export function clientDeliveryIntent(message: ReliableClientMessage, principalId
 }
 
 export function deliveryReceiptKey(id: string): string {
-  return createHash("sha256").update(JSON.stringify(["moco.delivery", 2, id])).digest("hex");
+  return createHash("sha256").update(JSON.stringify(["kulo.delivery", 2, id])).digest("hex");
 }
 
 export function sameDeliveryValue(first: unknown, second: unknown): boolean {

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { parseStandaloneDeviceInvitation, redactDeviceInvitationText, SENSITIVE_TEXT_REDACTION, type DeviceInterconnectionView } from "@moco/protocol";
-import { MocoApiError } from "../../moco-api";
-import { translate as t } from "../../moco-i18n";
+import { parseStandaloneDeviceInvitation, redactDeviceInvitationText, SENSITIVE_TEXT_REDACTION, type DeviceInterconnectionView } from "@kulo/protocol";
+import { KuloApiError } from "../../kulo-api";
+import { translate as t } from "../../kulo-i18n";
 import { deviceApi, newDeviceTransitionId } from "../settings/device-api";
 
 type Invitation = NonNullable<ReturnType<typeof parseStandaloneDeviceInvitation>>;
@@ -38,7 +38,7 @@ export function previewChatDeviceJoin(invitation: Invitation, view?: DeviceInter
   const label = targetLabel(invitation);
   // Use addresses reported by the current authenticated local view. The invitation's hubId is sender-supplied.
   if (view?.currentDeviceKnown && view.hubUrls.some((url) => url.replace(/\/$/u, "") === invitation.hubUrl)) {
-    if (view.role === "hub") return { kind: "self", text: t("这是本机的邀请，请在另一台 Moco 发送。", "This invitation is from this device. Send it in the other Moco.") } as const;
+    if (view.role === "hub") return { kind: "self", text: t("这是本机的邀请，请在另一台 Kulo 发送。", "This invitation is from this device. Send it in the other Kulo.") } as const;
     const name = targetLabel({ ...invitation, hubName: view.hubName });
     if (view.hubError) return { kind: "reconnect", text: t(`重新连接 ${name}`, `Reconnect to ${name}`) } as const;
     return { kind: "same", text: t(`已连接到 ${name}`, `Already connected to ${name}`) } as const;
@@ -50,27 +50,27 @@ export function previewChatDeviceJoin(invitation: Invitation, view?: DeviceInter
   return { kind: "join", text: t(`将本机接入 ${label}`, `Join this device to ${label}`) } as const;
 }
 
-const localClientRequired = () => t("请在要接入的电脑上打开本机 Moco 并发送这条邀请。", "Open the local Moco on the computer you want to join and send this invitation there.");
+const localClientRequired = () => t("请在要接入的电脑上打开本机 Kulo 并发送这条邀请。", "Open the local Kulo on the computer you want to join and send this invitation there.");
 
 export function deviceJoinFeedback(error: unknown, inviteToken?: string): Pick<JoinAttempt, "phase" | "message" | "unconfirmed"> {
   const hide = (message: string) => {
     const redacted = redactDeviceInvitationText(message);
     return inviteToken ? redacted.replaceAll(inviteToken, SENSITIVE_TEXT_REDACTION) : redacted;
   };
-  if (error instanceof MocoApiError) {
+  if (error instanceof KuloApiError) {
     switch (error.code) {
       case "local_tasks_running":
         return { phase: "conflict", message: hide(error.message) };
       case "device_invitation_invalid":
-        return { phase: "blocked", message: t("邀请已失效，请在主 Moco 重新复制。", "This invitation is invalid or expired. Copy a new one from the host Moco.") };
+        return { phase: "blocked", message: t("邀请已失效，请在主 Kulo 重新复制。", "This invitation is invalid or expired. Copy a new one from the host Kulo.") };
       case "device_host_unreachable":
-        return { phase: "retry", message: t("连不上目标主机，请确认主 Moco 在线后重试。", "The host is unreachable. Check that the host Moco is online and retry.") };
+        return { phase: "retry", message: t("连不上目标主机，请确认主 Kulo 在线后重试。", "The host is unreachable. Check that the host Kulo is online and retry.") };
       case "role_transition_unconfirmed":
         return { phase: "retry", message: hide(error.message), unconfirmed: true };
     }
   }
   return { phase: "retry", message: error instanceof TypeError
-    ? t("暂时无法连接本机 Moco，请重试。", "The local Moco is unreachable. Try again.")
+    ? t("暂时无法连接本机 Kulo，请重试。", "The local Kulo is unreachable. Try again.")
     : error instanceof Error ? hide(error.message) : t("接入失败，请重试。", "Could not join the host. Try again.") };
 }
 

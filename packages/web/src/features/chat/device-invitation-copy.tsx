@@ -1,9 +1,9 @@
 import { Button, Input } from "@heroui/react";
-import type { DeviceInterconnectionView } from "@moco/protocol";
+import type { DeviceInterconnectionView } from "@kulo/protocol";
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { apiRequest } from "../../moco-api";
-import { useI18n } from "../../moco-i18n";
-import { MocoIcon } from "../../moco-icon";
+import { apiRequest } from "../../kulo-api";
+import { useI18n } from "../../kulo-i18n";
+import { KuloIcon } from "../../kulo-icon";
 import { deviceApi } from "../settings/device-api";
 import { deviceInvitationCopies, type IssuedInvitation } from "./device-invitation-copies";
 
@@ -54,14 +54,14 @@ export function DeviceInvitationCopy({ hubId, hubName, connected, deliveryScope,
       if (retry) setAttempt((current) => current + 1);
       else issue();
     }}>
-      <MocoIcon name="copy" size={16} />
+      <KuloIcon name="copy" size={16} />
       {retry ? t("重试", "Retry") : view && !view.enabled ? t("开启互联并复制", "Enable connections and copy") : t("复制接入指令", "Copy connection instruction")}
     </Button>
     {error && <span role="alert" className="text-sm">{error}</span>}
     <span role="status" className={copied || manual ? "text-sm text-muted" : "sr-only"}>{copied
-      ? t("已复制，粘贴到另一台 Moco 的主会话即可。", "Copied. Paste it into the other Moco’s main chat.")
+      ? t("已复制，粘贴到另一台 Kulo 的主会话即可。", "Copied. Paste it into the other Kulo’s main chat.")
       : manual ? t("浏览器未允许自动复制，请选中下方指令复制。", "Select and copy the instruction below. The browser blocked automatic copying.") : ""}</span>
-    {manual && <Input variant="secondary" fullWidth className="moco-context-field" readOnly autoFocus autoComplete="off"
+    {manual && <Input variant="secondary" fullWidth className="kulo-context-field" readOnly autoFocus autoComplete="off"
       aria-label={t("接入指令", "Connection instruction")} value={manual.instruction} onFocus={(event) => event.currentTarget.select()} />}
   </div>;
 }

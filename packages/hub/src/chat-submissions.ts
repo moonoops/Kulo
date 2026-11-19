@@ -7,7 +7,7 @@ export interface ChatMessageSource {
 }
 
 export function chatRoutingData(entry: EntryRecord | undefined) {
-  const raw = entry?.kind === "moco.user" || entry?.kind === "moco.voice.delegation" ? entry.data : undefined;
+  const raw = entry?.kind === "kulo.user" || entry?.kind === "kulo.voice.delegation" ? entry.data : undefined;
   const data = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : undefined;
   const source = data?.source as unknown as Partial<ChatMessageSource> | undefined;
   return {
@@ -44,11 +44,11 @@ export function queuedChatEntries(view: ConversationView): {
   const entries = (inbox?.items ?? []).flatMap((item) => {
     if (item.mode === "write") return [];
     const kind = item.entry?.kind;
-    if (kind !== "moco.user") return [];
+    if (kind !== "kulo.user") return [];
     const raw = item.entry?.data;
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
     const data = raw as Record<string, unknown>;
-    if (data.mocoContentVersion !== 1 || typeof data.text !== "string" || !Array.isArray(data.attachments)) return [];
+    if (data.kuloContentVersion !== 1 || typeof data.text !== "string" || !Array.isArray(data.attachments)) return [];
     const receipt = chatReceiptData(data);
     const id = -Number(item.id);
     deliveries.set(id, { submissionId: Number(item.id), delivery: live?.run ? "queued" : "paused" });

@@ -1,5 +1,5 @@
 import { useState, type Key, type ReactNode } from "react";
-import { useI18n } from "../../moco-i18n";
+import { useI18n } from "../../kulo-i18n";
 import {
   Alert, Button, Chip, Input, Label, ListBox, Modal, NumberField,
   SearchField, Select, Spinner, Switch, Tabs, TextField,
@@ -17,8 +17,8 @@ import {
   type ModelPurpose,
   type ProviderModelItem,
   type ThinkingLevelOption,
-} from "@moco/protocol";
-import { MocoIcon } from "../../moco-icon";
+} from "@kulo/protocol";
+import { KuloIcon } from "../../kulo-icon";
 import { MODALITIES, getModelModalities, getModelThinkingLevels } from "./settings-helpers";
 
 export const DEFAULT_MODEL_CONTEXT_WINDOW = 256_000;
@@ -160,18 +160,18 @@ export function ModelNativeToolsFields({ model, api, disabled, officialSource = 
   const selected = model.nativeTools?.webSearch === true;
   const incompatibleTools = api === "google-generative-ai" || api === "google-vertex";
   return <section aria-label={model.id + t(" 原生工具", " Native tools")} className="flex flex-col gap-3">
-    <h3 className="moco-group-title">{t("原生工具", "Native tools")}</h3>
+    <h3 className="kulo-group-title">{t("原生工具", "Native tools")}</h3>
     <Switch className="w-full" aria-label={model.id + t(" 联网搜索", " Web search")} isSelected={selected} isDisabled={disabled || !available && !selected} onChange={(webSearch) => {
       if (available || !webSearch) onUpdate(model.id, { nativeTools: { ...model.nativeTools, webSearch } });
     }}>
-      <Switch.Content className="moco-form-toggle">
+      <Switch.Content className="kulo-form-toggle">
         <Label className="text-sm font-medium">{t("联网搜索", "Web search")}</Label>
         <Switch.Control><Switch.Thumb /></Switch.Control>
       </Switch.Content>
     </Switch>
     {!available && <Alert status={selected ? "warning" : "default"}><Alert.Content>{
       officialSource === false
-        ? t("第三方接口默认使用 Moco 搜索工具，不开启模型内置搜索。", "Third-party APIs use Moco search tools by default instead of built-in model search.")
+        ? t("第三方接口默认使用 Kulo 搜索工具，不开启模型内置搜索。", "Third-party APIs use Kulo search tools by default instead of built-in model search.")
         : incompatibleTools
           ? t("当前接口不支持联网搜索与智能体工具同时使用。", "This API cannot use web search and agent tools together.")
           : t("当前接口暂不支持原生联网搜索。", "This API does not support native web search.")
@@ -218,9 +218,9 @@ function ModelListPanel({ title, count, action, search, filter, children, footer
   children: ReactNode; footer?: ReactNode; compact: boolean;
 }) {
   return (
-    <section aria-label={title} className="moco-model-pane" data-compact={compact}>
+    <section aria-label={title} className="kulo-model-pane" data-compact={compact}>
       <header className="flex min-h-14 items-center justify-between gap-3 px-4 py-3">
-        <h3 className="moco-group-title flex items-center gap-2">
+        <h3 className="kulo-group-title flex items-center gap-2">
           {title}
           {count !== undefined && <Chip size="sm" variant="soft">{count}</Chip>}
         </h3>
@@ -230,8 +230,8 @@ function ModelListPanel({ title, count, action, search, filter, children, footer
         {search}
         {filter}
       </div>
-      <div className="moco-model-pane-body">{children}</div>
-      {footer && <footer className="moco-model-pane-footer p-3">{footer}</footer>}
+      <div className="kulo-model-pane-body">{children}</div>
+      {footer && <footer className="kulo-model-pane-footer p-3">{footer}</footer>}
     </section>
   );
 }
@@ -259,23 +259,23 @@ export function AvailableModelsPane({ compact, models, total, selectedKeys, load
       compact={compact}
       footer={retainCatalog ? errorAlert : undefined}
       action={<Button size="sm" variant="secondary" isPending={loading} isDisabled={disabled || loading} onPress={onDiscover}>
-        <MocoIcon name="refresh" size={16} />{loading ? t("获取中", "Loading") : officialCatalog ? t("刷新目录", "Refresh catalog") : t("获取列表", "Get models")}
+        <KuloIcon name="refresh" size={16} />{loading ? t("获取中", "Loading") : officialCatalog ? t("刷新目录", "Refresh catalog") : t("获取列表", "Get models")}
       </Button>}
-      search={<SearchField className="moco-context-field" variant="primary" aria-label={officialCatalog ? t("搜索官方模型目录", "Search official model catalog") : t("搜索可用模型", "Search available models")} isDisabled={disabled} value={search} onChange={onSearch} fullWidth>
+      search={<SearchField className="kulo-context-field" variant="primary" aria-label={officialCatalog ? t("搜索官方模型目录", "Search official model catalog") : t("搜索可用模型", "Search available models")} isDisabled={disabled} value={search} onChange={onSearch} fullWidth>
         <SearchField.Group><SearchField.SearchIcon /><SearchField.Input placeholder={t("搜索模型…", "Search models…")} /><SearchField.ClearButton /></SearchField.Group>
       </SearchField>}
       filter={purposeFilter && onPurposeFilterChange
         ? <ModelPurposeFilterTabs label={t("按类型筛选可用模型", "Filter available models by type")} value={purposeFilter} onChange={onPurposeFilterChange} />
         : undefined}
     >
-      <div className="moco-table-header moco-model-column-head grid grid-cols-[minmax(0,1fr)_40px]">
+      <div className="kulo-table-header kulo-model-column-head grid grid-cols-[minmax(0,1fr)_40px]">
         <span>{t("模型", "Model")}</span><span className="text-right">{t("添加", "Add")}</span>
       </div>
-      <div className="moco-model-pane-scroll" aria-busy={loading}>
+      <div className="kulo-model-pane-scroll" aria-busy={loading}>
         {!retainCatalog && errorAlert && <div className="m-3">{errorAlert}</div>}
-        {loading && !hasFetched ? <div className="moco-model-empty"><Spinner size="sm" aria-label={loadingLabel} /><span>{loadingLabel}…</span></div>
-          : !hasFetched && total === 0 ? !error && <div className="moco-model-empty">{t("尚未获取模型列表", "Model list not loaded")}</div>
-          : models.length === 0 ? !error && <div className="moco-model-empty">{total === 0 ? officialCatalog ? t("官方目录未返回模型", "The official catalog returned no models") : t("远端未返回可用模型", "The provider returned no available models") : t("没有匹配的模型", "No matching models")}</div>
+        {loading && !hasFetched ? <div className="kulo-model-empty"><Spinner size="sm" aria-label={loadingLabel} /><span>{loadingLabel}…</span></div>
+          : !hasFetched && total === 0 ? !error && <div className="kulo-model-empty">{t("尚未获取模型列表", "Model list not loaded")}</div>
+          : models.length === 0 ? !error && <div className="kulo-model-empty">{total === 0 ? officialCatalog ? t("官方目录未返回模型", "The official catalog returned no models") : t("远端未返回可用模型", "The provider returned no available models") : t("没有匹配的模型", "No matching models")}</div>
           : <ListBox
               aria-label={officialCatalog ? t("官方模型目录列表", "Official model catalog") : t("可用模型列表", "Available models")}
               disabledKeys={disabled ? models.map((model) => model.id) : []}
@@ -476,11 +476,11 @@ function ModelParametersDialog({
               <Modal.Heading className="min-w-0 flex-1 break-all font-mono font-semibold">{model.id}</Modal.Heading>
               <Modal.CloseTrigger aria-label={t("关闭模型参数", "Close model parameters")} className="static" isDisabled={disabled} />
             </Modal.Header>
-            <Modal.Body className="moco-form-stack">
+            <Modal.Body className="kulo-form-stack">
               {allowPurposeChange && (
-                <div className={purpose !== "chat" && allowProtocolSelect ? "moco-form-grid" : "contents"}>
+                <div className={purpose !== "chat" && allowProtocolSelect ? "kulo-form-grid" : "contents"}>
                   <Select
-                    className="moco-form-field"
+                    className="kulo-form-field"
                     variant="secondary"
                     value={purpose}
                     isDisabled={disabled}
@@ -503,7 +503,7 @@ function ModelParametersDialog({
 
                   {purpose !== "chat" && allowProtocolSelect && effectiveAdapter && (
                     <Select
-                      className="moco-form-field"
+                      className="kulo-form-field"
                       variant="secondary"
                       value={effectiveAdapter}
                       isDisabled={disabled}
@@ -551,14 +551,14 @@ function ModelParametersDialog({
                     <span className="mr-2 text-sm text-muted">{t("输入类型", "Input types")}</span>
                     {MODALITIES.map((modality) => <Button key={modality.value} size="sm" variant={modalities.includes(modality.value) ? "secondary" : "ghost"} aria-pressed={modalities.includes(modality.value)} isDisabled={disabled} onPress={() => toggleModality(model, modality.value)}>{t(modality.label, { text: "Text", image: "Image", audio: "Audio", video: "Video", pdf: "PDF" }[modality.value])}</Button>)}
                   </div>
-                  <div className="moco-form-grid">
-                    <NumberField className="moco-form-field" variant="secondary" aria-label={model.id + t(" 上下文窗口", " Context window")} value={ctxK} minValue={4} maxValue={10000} step={1} isDisabled={disabled} onChange={(value) => {
+                  <div className="kulo-form-grid">
+                    <NumberField className="kulo-form-field" variant="secondary" aria-label={model.id + t(" 上下文窗口", " Context window")} value={ctxK} minValue={4} maxValue={10000} step={1} isDisabled={disabled} onChange={(value) => {
                       if (Number.isFinite(value)) onUpdate(model.id, { contextWindow: Math.round(value * 1000) });
                     }} fullWidth>
                       <Label className="text-sm text-muted">{t("上下文窗口 (K)", "Context window (K)")}</Label>
                       <NumberField.Group><NumberField.DecrementButton /><NumberField.Input className="min-w-0 px-2 text-sm tabular-nums" /><NumberField.IncrementButton /></NumberField.Group>
                     </NumberField>
-                    <NumberField className="moco-form-field" variant="secondary" aria-label={model.id + t(" 最大输出", " Max output")} value={maxK} minValue={1} maxValue={1000} step={1} isDisabled={disabled} onChange={(value) => {
+                    <NumberField className="kulo-form-field" variant="secondary" aria-label={model.id + t(" 最大输出", " Max output")} value={maxK} minValue={1} maxValue={1000} step={1} isDisabled={disabled} onChange={(value) => {
                       if (Number.isFinite(value)) onUpdate(model.id, { maxTokens: Math.round(value * 1000) });
                     }} fullWidth>
                       <Label className="text-sm text-muted">{t("最大输出 (K)", "Max output (K)")}</Label>
@@ -567,20 +567,20 @@ function ModelParametersDialog({
                   </div>
                   <ModelNativeToolsFields model={model} api={knownModel?.api ?? api} disabled={disabled} officialSource={officialSource} presetId={presetId} onUpdate={onUpdate} />
                   <Switch className="w-full" aria-label={model.id + t(" 思考强度", " Thinking effort")} isSelected={model.thinkingEnabled ?? model.reasoning ?? true} isDisabled={disabled} onChange={(selected) => onUpdate(model.id, { ...(selected ? { reasoning: true } : {}), thinkingEnabled: selected, thinkingLevels: levels })}>
-                    <Switch.Content className="moco-form-toggle">
+                    <Switch.Content className="kulo-form-toggle">
                       <Label className="text-sm font-medium">{t("思考强度", "Thinking effort")}</Label>
                       <Switch.Control><Switch.Thumb /></Switch.Control>
                     </Switch.Content>
                   </Switch>
                   {(model.thinkingEnabled ?? model.reasoning ?? true) && <div className="flex flex-col gap-2">
-                    <div className="moco-thinking-level-row px-1 text-xs font-medium text-muted" aria-hidden="true"><span>{t("显示名称", "Display name")}</span><span>{t("映射值", "Mapped value")}</span><span /></div>
-                    {levels.map((level, index) => <div key={level.id} className="moco-thinking-level-row">
-                      <TextField className="moco-context-field" variant="secondary" aria-label={t("档位 ", "Level ") + (index + 1) + t(" 显示名称", " Display name")} value={level.label} onChange={(label) => updateLevel(model, level.id, { label })} isDisabled={disabled} maxLength={80} fullWidth><Input /></TextField>
-                      <TextField className="moco-context-field" variant="secondary" aria-label={t("档位 ", "Level ") + (index + 1) + t(" 映射值", " Mapped value")} value={level.value} onChange={(value) => updateLevel(model, level.id, { value })} isDisabled={disabled} maxLength={64} fullWidth><Input className="font-mono text-sm " /></TextField>
-                      <Button isIconOnly size="sm" variant="ghost" aria-label={t("删除档位 ", "Remove level ") + (index + 1)} isDisabled={disabled || levels.length <= 1} onPress={() => onUpdate(model.id, { thinkingLevels: levels.filter((item) => item.id !== level.id) })}><MocoIcon name="close" size={16} /></Button>
+                    <div className="kulo-thinking-level-row px-1 text-xs font-medium text-muted" aria-hidden="true"><span>{t("显示名称", "Display name")}</span><span>{t("映射值", "Mapped value")}</span><span /></div>
+                    {levels.map((level, index) => <div key={level.id} className="kulo-thinking-level-row">
+                      <TextField className="kulo-context-field" variant="secondary" aria-label={t("档位 ", "Level ") + (index + 1) + t(" 显示名称", " Display name")} value={level.label} onChange={(label) => updateLevel(model, level.id, { label })} isDisabled={disabled} maxLength={80} fullWidth><Input /></TextField>
+                      <TextField className="kulo-context-field" variant="secondary" aria-label={t("档位 ", "Level ") + (index + 1) + t(" 映射值", " Mapped value")} value={level.value} onChange={(value) => updateLevel(model, level.id, { value })} isDisabled={disabled} maxLength={64} fullWidth><Input className="font-mono text-sm " /></TextField>
+                      <Button isIconOnly size="sm" variant="ghost" aria-label={t("删除档位 ", "Remove level ") + (index + 1)} isDisabled={disabled || levels.length <= 1} onPress={() => onUpdate(model.id, { thinkingLevels: levels.filter((item) => item.id !== level.id) })}><KuloIcon name="close" size={16} /></Button>
                     </div>)}
                     <Button size="sm" variant="ghost" className="self-start" isDisabled={disabled} onPress={() => onUpdate(model.id, { thinkingLevels: [...levels, { id: "custom-" + crypto.randomUUID(), label: "", value: "" }] })}>
-                      <MocoIcon name="add" size={16} />{t("添加档位", "Add level")}
+                      <KuloIcon name="add" size={16} />{t("添加档位", "Add level")}
                     </Button>
                   </div>}
                 </>
@@ -624,7 +624,7 @@ function ModelParametersDialog({
                       });
                     }}
                   >
-                    <Switch.Content className="moco-form-toggle">
+                    <Switch.Content className="kulo-form-toggle">
                       <Label className="text-sm font-medium">{t("参考图编辑", "Reference image editing")}</Label>
                       <Switch.Control><Switch.Thumb /></Switch.Control>
                     </Switch.Content>
@@ -635,7 +635,7 @@ function ModelParametersDialog({
               {(purpose === "tts" || purpose === "live") && (
                 <section aria-label={model.id + t(" 音色", " Voices")} className="flex flex-col gap-3">
                   <div className="flex items-center justify-between gap-2">
-                    <h3 className="moco-group-title">{t("音色", "Voices")}</h3>
+                    <h3 className="kulo-group-title">{t("音色", "Voices")}</h3>
                     <Button
                       size="sm"
                       variant="ghost"
@@ -656,13 +656,13 @@ function ModelParametersDialog({
                         onPress={() => removeVoice(voice)}
                       >
                         <span className="font-mono text-xs">{voice}</span>
-                        <MocoIcon name="close" size={14} />
+                        <KuloIcon name="close" size={14} />
                       </Button>
                     ))}
                   </div>
-                  <div className="moco-field-action-row">
+                  <div className="kulo-field-action-row">
                     <TextField
-                      className="moco-context-field min-w-0 flex-1"
+                      className="kulo-context-field min-w-0 flex-1"
                       variant="secondary"
                       aria-label={t("添加自定义音色 ID", "Add custom voice ID")}
                       value={newVoice}
@@ -682,7 +682,7 @@ function ModelParametersDialog({
                       />
                     </TextField>
                     <Button size="sm" variant="secondary" isDisabled={disabled || !newVoice.trim()} onPress={addCustomVoice}>
-                      <MocoIcon name="add" size={16} />{t("添加", "Add")}
+                      <KuloIcon name="add" size={16} />{t("添加", "Add")}
                     </Button>
                   </div>
                 </section>
@@ -722,28 +722,28 @@ export function AddedModelsPane({ compact, models, total, allAddedModels, availa
     <>
     <ModelListPanel
       title={t("已添加模型", "Added models")} count={total} compact={compact}
-      search={<SearchField className="moco-context-field" variant="primary" aria-label={t("筛选已添加模型", "Filter added models")} isDisabled={disabled} value={search} onChange={onSearch} fullWidth>
+      search={<SearchField className="kulo-context-field" variant="primary" aria-label={t("筛选已添加模型", "Filter added models")} isDisabled={disabled} value={search} onChange={onSearch} fullWidth>
         <SearchField.Group><SearchField.SearchIcon /><SearchField.Input placeholder={t("筛选已添加…", "Filter added models…")} /><SearchField.ClearButton /></SearchField.Group>
       </SearchField>}
       filter={purposeFilter && onPurposeFilterChange
         ? <ModelPurposeFilterTabs label={t("按类型筛选已添加模型", "Filter added models by type")} value={purposeFilter} onChange={onPurposeFilterChange} />
         : undefined}
       footer={<div className="flex items-center gap-2">
-        <TextField variant="primary" aria-label={t("手动添加模型名称", "Add a model manually")} isDisabled={disabled} value={manualModelId} onChange={onManualModelIdChange} className="moco-context-field min-w-0 flex-1" fullWidth>
+        <TextField variant="primary" aria-label={t("手动添加模型名称", "Add a model manually")} isDisabled={disabled} value={manualModelId} onChange={onManualModelIdChange} className="kulo-context-field min-w-0 flex-1" fullWidth>
           <Input placeholder={t("输入模型 ID…", "Enter a model ID…")} onKeyDown={(event) => {
             if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); onAddManual(); }
           }} />
         </TextField>
         <Button size="sm" variant="secondary" isDisabled={disabled || !manualModelId.trim()} onPress={onAddManual}>
-          <MocoIcon name="add" size={16} />{t("添加", "Add")}
+          <KuloIcon name="add" size={16} />{t("添加", "Add")}
         </Button>
       </div>}
     >
-      <div className="moco-table-header moco-model-column-head moco-added-model-columns">
+      <div className="kulo-table-header kulo-model-column-head kulo-added-model-columns">
         <span aria-hidden="true" /><span>{t("模型", "Model")}</span><span className="text-right">{t("规格", "Spec")}</span><span className="sr-only">{t("移除", "Remove")}</span>
       </div>
-      <div className="moco-model-pane-scroll">
-        {models.length === 0 ? <div className="moco-model-empty">{total === 0 ? t("暂未添加模型", "No models added") : t("没有匹配的已添加模型", "No matching added models")}</div>
+      <div className="kulo-model-pane-scroll">
+        {models.length === 0 ? <div className="kulo-model-empty">{total === 0 ? t("暂未添加模型", "No models added") : t("没有匹配的已添加模型", "No matching added models")}</div>
           : <ul aria-label={t("已添加模型列表", "Added models")} className="m-0 list-none p-2">
             {models.map((model) => {
               const purpose = inferModelPurpose(model);
@@ -751,20 +751,20 @@ export function AddedModelsPane({ compact, models, total, allAddedModels, availa
                 <li key={model.id} className="flex min-h-12 items-center gap-2 rounded-xl px-2 transition-colors hover:bg-surface-tertiary motion-reduce:transition-none">
                   <Button
                     variant="ghost"
-                    className="moco-added-model-trigger px-0"
+                    className="kulo-added-model-trigger px-0"
                     aria-haspopup="dialog"
                     aria-expanded={expandedId === model.id}
                     isDisabled={disabled}
                     onPress={() => onExpandedChange(model.id)}
                   >
-                    <MocoIcon name="chevron-right" size={16} className="text-muted" />
+                    <KuloIcon name="chevron-right" size={16} className="text-muted" />
                     <span className="min-w-0 truncate font-mono text-sm font-medium text-foreground" title={model.id}>{model.id}</span>
                     {purpose === "chat"
                       ? <span className="text-right text-sm font-normal tabular-nums text-muted">{contextLabel(model)}</span>
                       : <span className="flex justify-end"><Chip size="sm" variant="soft">{purposeBadgeLabel(purpose)}</Chip></span>}
                   </Button>
                   <Button isIconOnly size="sm" variant="ghost" aria-label={t(`移除 ${model.id}`, `Remove ${model.id}`)} isDisabled={disabled} onPress={() => onRemove(model.id)}>
-                    <MocoIcon name="close" size={16} />
+                    <KuloIcon name="close" size={16} />
                   </Button>
                 </li>
               );

@@ -1,6 +1,6 @@
 import { useEffect, useRef, type Ref } from "react";
 import { Alert, Button } from "@heroui/react";
-import { translate as tr, useI18n } from "../../moco-i18n";
+import { translate as tr, useI18n } from "../../kulo-i18n";
 import { requestSystemPermissionHelp } from "../system-permissions/system-permissions";
 import type { ActiveVoiceCall } from "./use-voice-call";
 import { useVoiceWorkspace } from "./voice-context";

@@ -1,20 +1,20 @@
-import { translate as t, useI18n } from "../../moco-i18n";
+import { translate as t, useI18n } from "../../kulo-i18n";
 import { useEffect, useRef, useState } from "react";
 import { Button, Card, Spinner } from "@heroui/react";
-import { redactSensitiveText, type ConnectionRecordView } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
+import { redactSensitiveText, type ConnectionRecordView } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
 
 export type ConnectionFollowupState = { phase: "checking" } | { phase: "trust"; fingerprint: string } | { phase: "ready" } | { phase: "error"; error: string };
 
-export function connectionFollowupResult(result: Awaited<ReturnType<typeof mocoRest.testConnection>>): ConnectionFollowupState {
+export function connectionFollowupResult(result: Awaited<ReturnType<typeof kuloRest.testConnection>>): ConnectionFollowupState {
   if (result.requiresTrust) return result.fingerprint ? { phase: "trust", fingerprint: result.fingerprint } : { phase: "error", error: t("缺少服务器指纹，请重新连接。", "Server fingerprint missing. Reconnect.") };
   if (result.connection.status === "verified") return { phase: "ready" };
   return { phase: "error", error: redactSensitiveText(result.connection.error || t("连接尚不可用，请重试。", "The connection is not available yet. Try again.")) };
 }
 
 export async function checkConnectionFollowup(id: string, fingerprint?: string): Promise<ConnectionFollowupState> {
-  if (fingerprint) await mocoRest.trustConnection(id, fingerprint);
-  return connectionFollowupResult(await mocoRest.testConnection(id));
+  if (fingerprint) await kuloRest.trustConnection(id, fingerprint);
+  return connectionFollowupResult(await kuloRest.testConnection(id));
 }
 
 export function ConnectionFollowup({ connection, connected, available, onChanged, onClose }: {

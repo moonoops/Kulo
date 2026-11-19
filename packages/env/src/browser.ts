@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import type { BrowserRequest, BrowserResult } from "@moco/protocol";
+import type { BrowserRequest, BrowserResult } from "@kulo/protocol";
 import { MainChromeFlowDriver } from "./flow-main-driver.js";
 
 const MAX_CHUNK = 1024 * 1024;
@@ -323,7 +323,7 @@ export class FlowBrowserService {
       }
       for (const [assetId, upload] of Object.entries(job.uploads)) fs.rmSync(path.join(this.#directory(profileRef, jobId), assetId + inputExtension[upload.mimeType]), { force: true });
       return { ...this.#result(job), message: job.remoteMayBeRunning
-        ? job.submittedAt === undefined ? "已停止 Moco 后续处理，Flow 原请求仍待核对。" : "已停止 Moco 后续处理，Flow 网页生成可能仍在继续。"
+        ? job.submittedAt === undefined ? "已停止 Kulo 后续处理，Flow 原请求仍待核对。" : "已停止 Kulo 后续处理，Flow 网页生成可能仍在继续。"
         : "已停止。" };
     }
     if (request.action === "read") {

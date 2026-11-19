@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { useCallback, useEffect, useRef, useState } from "react";
-import { translate as t } from "../../moco-i18n";
-import { redactSecrets, type VoiceCallEvent, type VoiceCallSession, type VoiceCallState } from "@moco/protocol";
+import { translate as t } from "../../kulo-i18n";
+import { redactSecrets, type VoiceCallEvent, type VoiceCallSession, type VoiceCallState } from "@kulo/protocol";
 import { pauseOtherMedia } from "../chat/media-message";
 import { voiceApi, voiceSocketUrl } from "./voice-api";
 import { MicrophoneActivity, Pcm16Resampler, VoicePlayback, pcm16Base64 } from "./voice-audio";
@@ -140,7 +140,7 @@ export function useVoiceCall(clientId: string, beforeStart: () => void) {
       }
       const socket = new WebSocket(voiceSocketUrl(session.wsPath, clientId));
       current.socket = socket;
-      const capture = new AudioWorkletNode(context, "moco-voice-capture", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+      const capture = new AudioWorkletNode(context, "kulo-voice-capture", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
       const source = context.createMediaStreamSource(stream);
       current.capture = capture; current.source = source;
       const resampler = new Pcm16Resampler(context.sampleRate, session.inputSampleRate);

@@ -1,4 +1,4 @@
-import { getUiTableRowIds, type UiValue } from "@moco/protocol";
+import { getUiTableRowIds, type UiValue } from "@kulo/protocol";
 import type { DataColumn, DataRow } from "./table-csv";
 
 export type TableSort = { column: string | number; direction: "ascending" | "descending" };

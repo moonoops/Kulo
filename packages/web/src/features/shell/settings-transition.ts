@@ -5,7 +5,7 @@ let activeTransition: ViewTransition | null = null;
 export function interruptSettingsTransition(): void {
   activeTransition?.skipTransition();
   activeTransition = null;
-  delete document.documentElement.dataset.mocoTransition;
+  delete document.documentElement.dataset.kuloTransition;
 }
 
 export function transitionSettingsLayout(direction: "enter" | "exit", update: () => void): void {
@@ -20,7 +20,7 @@ export function transitionSettingsLayout(direction: "enter" | "exit", update: ()
     return;
   }
 
-  root.dataset.mocoTransition = direction;
+  root.dataset.kuloTransition = direction;
   const transition = document.startViewTransition(() => {
     // React must commit before the browser captures the destination conversation.
     flushSync(update);
@@ -30,7 +30,7 @@ export function transitionSettingsLayout(direction: "enter" | "exit", update: ()
   const finish = () => {
     if (activeTransition !== transition) return;
     activeTransition = null;
-    delete root.dataset.mocoTransition;
+    delete root.dataset.kuloTransition;
   };
   void transition.ready.catch((error: unknown) => {
     if (!(error instanceof DOMException && error.name === "AbortError")) {

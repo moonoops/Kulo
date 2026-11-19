@@ -1,4 +1,4 @@
-import { translate as tr, useI18n } from "../../moco-i18n";
+import { translate as tr, useI18n } from "../../kulo-i18n";
 import {
   Component, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore,
   type ErrorInfo, type ReactNode,
@@ -9,8 +9,8 @@ import { Button, Card, Chip, Disclosure, Form, Spinner } from "@heroui/react";
 import {
   UiCardSnapshotSchema, getUiSpecFields, validateUiActionValues,
   type UiActionInput, type UiActionReceipt, type UiCardSnapshot, type UiValue, type UiValues,
-} from "@moco/protocol";
-import { mocoUiRegistry } from "./catalog";
+} from "@kulo/protocol";
+import { kuloUiRegistry } from "./catalog";
 import {
   cardInitialValues, hasDraftConflict, isDefiniteActionRejection, readCardDraft,
   reconcileCardDraft, writeCardDraft, type CardDraft, type DraftStorage,
@@ -40,7 +40,7 @@ class CardRenderBoundary extends Component<{ children: ReactNode; revision: numb
     if (this.state.failed && previous.revision !== this.props.revision) this.setState({ failed: false });
   }
   render() {
-    return this.state.failed ? <p className="moco-genui-fallback" role="status">{this.props.fallbackText || tr("此卡片暂时无法显示", "This card is temporarily unavailable")}</p> : this.props.children;
+    return this.state.failed ? <p className="kulo-genui-fallback" role="status">{this.props.fallbackText || tr("此卡片暂时无法显示", "This card is temporarily unavailable")}</p> : this.props.children;
   }
 }
 
@@ -71,9 +71,9 @@ function ResultValues({ card }: { card: UiCardSnapshot }) {
   useI18n();
   const entries = cardValueSummary(card, card.committedState);
   if (!entries.length) return null;
-  return <dl className="moco-genui-result-values">{entries.map(({ name, label, display }) => {
-    return <div className="moco-genui-result-row" key={name}>
-      <dt className="moco-genui-result-key">{label}</dt><dd className="moco-genui-result-value">{display}</dd>
+  return <dl className="kulo-genui-result-values">{entries.map(({ name, label, display }) => {
+    return <div className="kulo-genui-result-row" key={name}>
+      <dt className="kulo-genui-result-key">{label}</dt><dd className="kulo-genui-result-value">{display}</dd>
     </div>;
   })}</dl>;
 }
@@ -238,30 +238,30 @@ function CardSession({ card, onAction, isConnected = true, animateEntry = false,
   const committedCard = currentCard;
   const status = statusLabel(currentCard, sending, uncertain);
   const renderedSpec = <CardRuntimeContext value={runtime}>
-    <JSONUIProvider registry={mocoUiRegistry} store={store}>
-      <CardRenderBoundary revision={card.revision} fallbackText={fallbackText}><Renderer spec={card.spec} registry={mocoUiRegistry} /></CardRenderBoundary>
+    <JSONUIProvider registry={kuloUiRegistry} store={store}>
+      <CardRenderBoundary revision={card.revision} fallbackText={fallbackText}><Renderer spec={card.spec} registry={kuloUiRegistry} /></CardRenderBoundary>
     </JSONUIProvider>
   </CardRuntimeContext>;
   const contentLabel = terminal ? draft.dirty ? tr("保留的输入", "Saved input") : tr("参数", "Parameters") : tr("卡片内容", "Card content");
   const content = <>
-    <Card.Header className="moco-genui-header">
-      <Card.Title className="moco-genui-title">{card.title}</Card.Title>
-      <Chip size="sm" variant="soft" color={currentCard.status === "failed" ? "danger" : "default"} className="moco-genui-status">
+    <Card.Header className="kulo-genui-header">
+      <Card.Title className="kulo-genui-title">{card.title}</Card.Title>
+      <Chip size="sm" variant="soft" color={currentCard.status === "failed" ? "danger" : "default"} className="kulo-genui-status">
         {sending && <Spinner size="sm" />}<Chip.Label>{status}</Chip.Label>
       </Chip>
-      {!previewOnly && <Disclosure.Heading className="moco-genui-toggle-heading">
+      {!previewOnly && <Disclosure.Heading className="kulo-genui-toggle-heading">
         <Button slot="trigger" variant="ghost" size="sm" isIconOnly data-card-toggle
           aria-label={tr(`${draft.expanded ? "收起" : "展开"}${contentLabel}：${card.title}`, `${draft.expanded ? "Collapse" : "Expand"} ${contentLabel}: ${card.title}`)}>
           <Disclosure.Indicator />
         </Button>
       </Disclosure.Heading>}
     </Card.Header>
-    <Card.Content className="moco-genui-content">
-      {terminal && <div className="moco-genui-result" aria-live="polite">
-        {committedCard.resultSummary && <p className="moco-genui-result-summary">{committedCard.resultSummary}</p>}
+    <Card.Content className="kulo-genui-content">
+      {terminal && <div className="kulo-genui-result" aria-live="polite">
+        {committedCard.resultSummary && <p className="kulo-genui-result-summary">{committedCard.resultSummary}</p>}
         <ResultValues card={committedCard} />
       </div>}
-      {previewOnly ? renderedSpec : <Disclosure.Content className="moco-genui-panel"><Disclosure.Body className="moco-genui-disclosure-body">
+      {previewOnly ? renderedSpec : <Disclosure.Content className="kulo-genui-panel"><Disclosure.Body className="kulo-genui-disclosure-body">
         <Form ref={contentRef} validationBehavior="aria" onSubmit={(event) => {
           event.preventDefault();
           const first = card.actions.find((action) => action.kind === "submit");
@@ -270,21 +270,21 @@ function CardSession({ card, onAction, isConnected = true, animateEntry = false,
           {renderedSpec}
         </Form>
       </Disclosure.Body></Disclosure.Content>}
-      {(error || card.error || conflict || uncertain || !isConnected || storageError || fieldErrors._form) && <div className="moco-genui-feedback">
-        {(error || card.error || fieldErrors._form) && <p role="alert" className="moco-genui-error">{error || card.error || fieldErrors._form}</p>}
-        {conflict && <div className="moco-genui-footer"><p role="status" className="moco-genui-note">{tr("卡片已更新，输入已保留", "Card updated. Your input has been kept.")}</p>
+      {(error || card.error || conflict || uncertain || !isConnected || storageError || fieldErrors._form) && <div className="kulo-genui-feedback">
+        {(error || card.error || fieldErrors._form) && <p role="alert" className="kulo-genui-error">{error || card.error || fieldErrors._form}</p>}
+        {conflict && <div className="kulo-genui-footer"><p role="status" className="kulo-genui-note">{tr("卡片已更新，输入已保留", "Card updated. Your input has been kept.")}</p>
           <Button size="sm" variant="secondary" onPress={adoptRevision} isDisabled={!!draft.pending}>{tr("采用新版", "Use latest version")}</Button>
         </div>}
-        {uncertain && <div className="moco-genui-footer"><p role="status" className="moco-genui-note">{tr("提交状态待核实", "Submission status unconfirmed")}</p>
+        {uncertain && <div className="kulo-genui-footer"><p role="status" className="kulo-genui-note">{tr("提交状态待核实", "Submission status unconfirmed")}</p>
           <Button size="sm" variant="secondary" isDisabled={!isConnected || sending} onPress={() => {
             if (pendingRef.current) void send(pendingRef.current);
           }}>{tr("核实状态", "Verify status")}</Button>
         </div>}
-        {!isConnected && <p role="status" className="moco-genui-note">{tr("离线 · 输入已保留", "Offline · Input kept")}</p>}
-        {storageError && <p role="status" className="moco-genui-note">{storageError}</p>}
+        {!isConnected && <p role="status" className="kulo-genui-note">{tr("离线 · 输入已保留", "Offline · Input kept")}</p>}
+        {storageError && <p role="status" className="kulo-genui-note">{storageError}</p>}
       </div>}
     </Card.Content>
-    {(!terminal && footerActions.length > 0 || terminal && onAdjust) && <Card.Footer className="moco-genui-footer">
+    {(!terminal && footerActions.length > 0 || terminal && onAdjust) && <Card.Footer className="kulo-genui-footer">
       {!terminal && footerActions.map((action) => <Button key={action.id} type="button"
         variant={action.id === firstSubmitId ? "primary" : "secondary"}
         isDisabled={runtime.actionDisabled} isPending={sending && draft.pending?.actionId === action.id}
@@ -292,8 +292,8 @@ function CardSession({ card, onAction, isConnected = true, animateEntry = false,
       {terminal && onAdjust && <Button variant="secondary" size="sm" onPress={() => onAdjust(currentCard, values)}>{tr("以此调整", "Adjust from this")}</Button>}
     </Card.Footer>}
   </>;
-  return <Card ref={cardElementRef} className="moco-genui-card" data-wide={wide || undefined} data-enter={entrance || undefined} aria-label={card.title}>
-    {previewOnly ? content : <Disclosure ref={disclosureRef} className="moco-genui-shell" isExpanded={draft.expanded}
+  return <Card ref={cardElementRef} className="kulo-genui-card" data-wide={wide || undefined} data-enter={entrance || undefined} aria-label={card.title}>
+    {previewOnly ? content : <Disclosure ref={disclosureRef} className="kulo-genui-shell" isExpanded={draft.expanded}
       onExpandedChange={(expanded) => {
         if (!expanded) restoreDisclosureFocus();
         applyDraft({ ...draftRef.current, expanded });
@@ -304,9 +304,9 @@ function CardSession({ card, onAction, isConnected = true, animateEntry = false,
 export function GeneratedCard(props: GeneratedCardProps) {
   useI18n();
   const parsed = useMemo(() => UiCardSnapshotSchema.safeParse(props.card), [props.card]);
-  if (!parsed.success) return <Card className="moco-genui-card">
+  if (!parsed.success) return <Card className="kulo-genui-card">
     <Card.Header><Card.Title>{typeof props.card?.title === "string" ? props.card.title : tr("交互卡片", "Interactive card")}</Card.Title></Card.Header>
-    <Card.Content><p className="moco-genui-fallback" role="status">{props.fallbackText || tr("此卡片暂不支持显示", "This card cannot be displayed yet")}</p></Card.Content>
+    <Card.Content><p className="kulo-genui-fallback" role="status">{props.fallbackText || tr("此卡片暂不支持显示", "This card cannot be displayed yet")}</p></Card.Content>
   </Card>;
   return <CardSession key={parsed.data.cardId} {...props} card={parsed.data} />;
 }

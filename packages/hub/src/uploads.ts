@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { ImageContent, TextContent, UserMessage } from "@earendil-works/pi-ai";
-import type { ChatAttachment } from "@moco/protocol";
+import type { ChatAttachment } from "@kulo/protocol";
 import { inspectMediaPrefix, probeMediaFile, type MediaMetadata, type UploadKind } from "./media-probe.js";
 
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
@@ -93,9 +93,9 @@ const TEXT_SNIPPET_MIMES = new Set([
   "image/svg+xml",
 ]);
 
-const ATTACHMENTS_MARKER_START = "<!--moco-attachments:";
+const ATTACHMENTS_MARKER_START = "<!--kulo-attachments:";
 const ATTACHMENTS_MARKER_END = "-->";
-const ATTACHMENT_CONTEXT_PREFIX = "<!--moco-attachment-context-->";
+const ATTACHMENT_CONTEXT_PREFIX = "<!--kulo-attachment-context-->";
 
 export interface StoredUploadRecord extends MediaMetadata {
   id: string;
@@ -210,7 +210,7 @@ function formatByteSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export class MocoUploadStore {
+export class KuloUploadStore {
   readonly dir: string;
   private readonly activeUploads = new Set<string>();
   private readonly pendingPublications = new Map<string, { ownerId?: string; result: Promise<ChatAttachment> }>();

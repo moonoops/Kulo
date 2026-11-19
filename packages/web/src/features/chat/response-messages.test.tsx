@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getMessageParts, type ChatAttachment, type ChatDisplayItem, type LiveStreamState } from "@moco/protocol";
+import { getMessageParts, type ChatAttachment, type ChatDisplayItem, type LiveStreamState } from "@kulo/protocol";
 import { mergeChatHistory, splitChatTimeline } from "./chat-submissions";
 import { ConnectedMessageContent } from "./connected-message-content";
 import { groupDispatchReplies } from "./dispatch-groups";
@@ -48,7 +48,7 @@ describe("assistant response messages", () => {
   it("retains process details and sources without assigning a hidden tool entry as the message identity", () => {
     const source = { id: "source", url: "https://example.com/page", title: "来源" };
     const tool: ChatDisplayItem = { id: 1, responseId: 1, role: "assistant", text: "", thinking: "检查产物", createdAt: createdAt - 1000,
-      toolCalls: [{ id: "call", name: "moco_publish_asset", argsSummary: "index.html" }], sources: [source], searchSuggestions: ["建议"] };
+      toolCalls: [{ id: "call", name: "kulo_publish_asset", argsSummary: "index.html" }], sources: [source], searchSuggestions: ["建议"] };
     const completed = { ...body(), thinking: "检查结束", toolCalls: [{ ...tool.toolCalls![0]!, result: { text: "已送达", isError: false } }], sources: [{ ...source, title: "已更新来源" }], searchSuggestions: ["建议", "更多建议"] };
     const merged = mergeResponseMessages([tool, file(), completed]);
     expect(merged).toHaveLength(1);
@@ -105,9 +105,9 @@ describe("live response attachment", () => {
     expect(target).toBe(2);
     const streaming = renderToStaticMarkup(<ConnectedMessageContent item={published[0]!} onReply={() => {}}
       trailingContent={<p>{live().streamingText}</p>} />);
-    expect(streaming.match(/class="moco-message-with-actions"/g)).toHaveLength(1);
+    expect(streaming.match(/class="kulo-message-with-actions"/g)).toHaveLength(1);
     expect(streaming.match(/文件已经发给你了/g)).toHaveLength(1);
-    expect(streaming).not.toContain("moco-message-footer");
+    expect(streaming).not.toContain("kulo-message-footer");
     const completed = mergeResponseMessages([file(), body()]);
     expect(completed[0]!.id).toBe(target);
     expect(getMessageParts(completed[0]!)[0]!.partId).toBe(getMessageParts(published[0]!)[0]!.partId);

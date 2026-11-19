@@ -1,9 +1,9 @@
 # Third-party notices
 
-Moco's original code is licensed under the GNU Affero General Public License,
+Kulo's original code is licensed under the GNU Affero General Public License,
 version 3 only (`AGPL-3.0-only`); see [LICENSE](LICENSE). Third-party code,
 documentation, runtimes, models, and services retain their own copyrights,
-licenses, and terms. Moco's license does not replace those terms or grant rights
+licenses, and terms. Kulo's license does not replace those terms or grant rights
 to third-party services, accounts, or trademarks.
 
 This file identifies the direct runtime dependencies, bundled upstream skill
@@ -65,13 +65,13 @@ applicable to the included TypeBox material.
 
 ## Bundled skill documentation
 
-Moco includes the following upstream skill documentation. Each skill directory
+Kulo includes the following upstream skill documentation. Each skill directory
 contains its license and a `PROVENANCE.json` recording the source revision and
-file hashes. The upstream documentation is retained unchanged; Moco's routing
+file hashes. The upstream documentation is retained unchanged; Kulo's routing
 instructions are in the parent `SKILL.md`. Upstream executable scripts and
 templates are not part of these copied skill documents.
 
-| Moco skill directory | Upstream and pinned revision | Retained license |
+| Kulo skill directory | Upstream and pinned revision | Retained license |
 | --- | --- | --- |
 | `browser-automation` | [agent-browser 0.43.0](https://github.com/vercel-labs/agent-browser/tree/1cc19526f3641c8543d55aa6700e7c55b37ac356/skill-data/core) | [Apache-2.0](packages/hub/skills/browser-automation/LICENSE) |
 | `desktop-automation` | [agent-desktop 1.3.1](https://github.com/vercel-labs/agent-desktop/tree/b0b7277bea09b770ef9d1fb45aad667bc432cd57/skills/agent-desktop) | [Apache-2.0](packages/hub/skills/desktop-automation/LICENSE) |
@@ -90,7 +90,7 @@ text, and preserve the notices present in the original material.
 
 ## Billion Context and acp-kernel
 
-Moco uses [acp-kernel](https://github.com/ranxianglei/acp-kernel), from the
+Kulo uses [acp-kernel](https://github.com/ranxianglei/acp-kernel), from the
 [Billion Context](https://github.com/ranxianglei/billion-context) project, for its
 optional Billion Context compression integration. The integration installs
 `acp-kernel` **0.0.101** separately and is disabled by default.
@@ -107,24 +107,24 @@ The complete notices are preserved in
 [acp-kernel-0.0.101-LICENSE](licenses/acp-kernel-0.0.101-LICENSE) and
 [billion-context-LICENSE](licenses/billion-context-LICENSE). The latter is the
 [upstream project license](https://github.com/ranxianglei/billion-context/blob/master/LICENSE)
-retrieved on 2026-11-17; Moco does not bundle a separate Billion Context application.
+retrieved on 2026-11-17; Kulo does not bundle a separate Billion Context application.
 
 ## Claude Agent SDK and external agents
 
 The Env package depends on `@anthropic-ai/claude-agent-sdk` **0.3.326**. Its
 [license notice](licenses/claude-agent-sdk-0.3.326-LICENSE.md) reserves Anthropic's
 rights and refers to [Anthropic's legal agreements](https://code.claude.com/docs/en/legal-and-compliance).
-It is not licensed by Moco under AGPL, MIT, or Apache-2.0. Its use and any
+It is not licensed by Kulo under AGPL, MIT, or Apache-2.0. Its use and any
 redistribution remain subject to the applicable Anthropic terms.
 
-External agent clients and services invoked through Moco, including separately
+External agent clients and services invoked through Kulo, including separately
 installed Codex or other command-line agents, retain their own licenses,
 authentication requirements, and service terms. Support for invoking a client
 does not mean that client or its hosted service is included in this repository.
 
 ## FFmpeg and speech components
 
-Moco uses `ffmpeg-static` **5.3.0** to locate an FFmpeg executable for audio
+Kulo uses `ffmpeg-static` **5.3.0** to locate an FFmpeg executable for audio
 decoding. The npm package declares `GPL-3.0-or-later` and supplies a GPLv3
 `LICENSE`. The platform-specific executable downloaded by that package is a
 separate FFmpeg build; the package documentation explicitly assigns it its own
@@ -132,7 +132,7 @@ applicable license. Preserve that build's `ffmpeg.LICENSE` and accompanying
 notices when redistributing it.
 
 FFmpeg's license depends on the code and optional libraries enabled in the
-particular build. Moco invokes the executable as a subprocess. The npm package's
+particular build. Kulo invokes the executable as a subprocess. The npm package's
 license field alone does not determine the license of a downloaded binary or the
 licensing status of a complete application distribution. Distributors must
 identify the exact FFmpeg build they ship and meet its applicable notice and
@@ -143,7 +143,7 @@ The local speech engine uses `sherpa-onnx-node` **2.0.1** (Apache-2.0). Its nati
 libraries retain their own notices. The optional speech-model download is
 `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17` from
 [sherpa-onnx's model releases](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models).
-Moco extracts the model archive's `LICENSE` and `README.md` alongside the model
+Kulo extracts the model archive's `LICENSE` and `README.md` alongside the model
 and tokenizer. Those model terms apply independently of the engine's license.
 
 ## Desktop runtimes and optional memory service
@@ -156,12 +156,12 @@ and tokenizer. Those model terms apply independently of the engine's license.
   and its complete license file as `NODE-LICENSE`. The Node.js version depends on
   the build runtime. Node.js and its included dependencies retain the terms in
   that file; see [Node.js](https://github.com/nodejs/node).
-- **Hindsight API**: Moco's optional local memory deployment pins
+- **Hindsight API**: Kulo's optional local memory deployment pins
   `hindsight-api-slim==1.2.1` (MIT) in
   [the integration manifest](integrations/hindsight/pyproject.toml). The deployment
   installs Hindsight and its Python dependencies separately; their license files
   remain applicable. An independently operated Hindsight service is not
-  relicensed by Moco. See [Hindsight](https://github.com/vectorize-io/hindsight).
+  relicensed by Kulo. See [Hindsight](https://github.com/vectorize-io/hindsight).
 
 The license snapshots in `licenses/` and the licenses alongside bundled skills
 supplement the original component notices. They do not replace notices for a

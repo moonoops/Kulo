@@ -5,13 +5,13 @@ import path from "node:path";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Socket } from "node:net";
 import WebSocket, { WebSocketServer } from "ws";
-import { parseDeviceJoinInput, type DeviceChatInvitation, type DeviceInterconnectionView, type DevicePeerConfig } from "@moco/protocol";
+import { parseDeviceJoinInput, type DeviceChatInvitation, type DeviceInterconnectionView, type DevicePeerConfig } from "@kulo/protocol";
 import { DeviceRoleTransitions, type PreparedDeviceRoleChange } from "./device-role-transitions.js";
 import { LocalInstanceOwner } from "./local-instance.js";
 import { claimDevicePeer } from "./peer-runtime-owner.js";
 import { authenticatedPeerHub, deviceHostUnreachable, getPeerConfigPath, invalidDeviceInvitation, localPeerProxyToken, readPeerConfig, validatePeerConfig } from "./peer-config.js";
 export { getPeerConfigPath, readPeerConfig, savePeerConfig, removePeerConfig, installDevicePeer, normalizePeerHubUrl } from "./peer-config.js";
-import { MocoEnvAgent } from "./agent.js";
+import { KuloEnvAgent } from "./agent.js";
 import { collectDeviceSystemInfo } from "./device-info.js";
 
 const STATIC_MIME_BY_EXT: Record<string, string> = {
@@ -267,10 +267,10 @@ async function listenDevicePeer(config: DevicePeerConfig, resolvedConfigPath: st
       response.writeHead(403).end("Forbidden");
       return;
     }
-    if (!target.pathname.startsWith("/api/") && !target.pathname.startsWith("/_moco/") && !target.pathname.startsWith("/ws/") && !target.pathname.startsWith("/connect/")) {
+    if (!target.pathname.startsWith("/api/") && !target.pathname.startsWith("/_kulo/") && !target.pathname.startsWith("/ws/") && !target.pathname.startsWith("/connect/")) {
       if (tryServeLocalWebAsset(options.webDistDir, target.pathname, request.method, response)) return;
     }
-    if (request.method === "GET" && target.pathname === "/_moco/peer-status") {
+    if (request.method === "GET" && target.pathname === "/_kulo/peer-status") {
       if (!isAuthorizedLocal(request, target)) {
         response.writeHead(401, { "content-type": "application/json", "cache-control": "no-store" });
         response.end(JSON.stringify({ error: "Unauthorized" }));
@@ -280,7 +280,7 @@ async function listenDevicePeer(config: DevicePeerConfig, resolvedConfigPath: st
       response.end(JSON.stringify({ deviceId: config.deviceId, hubUrl: config.hubUrl, ready: initiallyReady && agent.registered && !readinessError, error: readinessError, pid: process.pid }));
       return;
     }
-    if (request.method === "GET" && target.pathname === "/_moco/instance") {
+    if (request.method === "GET" && target.pathname === "/_kulo/instance") {
       const status = { role: "joined" as const, hubUrl: config.hubUrl, ready: initiallyReady && agent.registered && !readinessError, error: readinessError };
       const verified = !closed && (owner.proveLocalIdentity(request, response, localAuthToken, status) ||
         options.runtimeOwner?.proveLocalIdentity(request, response, localAuthToken, status));
@@ -310,7 +310,7 @@ async function listenDevicePeer(config: DevicePeerConfig, resolvedConfigPath: st
         return;
       }
       try {
-        const header = request.headers["x-moco-transition-id"];
+        const header = request.headers["x-kulo-transition-id"];
         const change = roleTransitions.leave(config, typeof header === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(header) ? header : undefined);
         startAfterResponse(response, change);
       } catch (error) {
@@ -325,7 +325,7 @@ async function listenDevicePeer(config: DevicePeerConfig, resolvedConfigPath: st
         if ([`http://127.0.0.1:${port}`, `http://localhost:${port}`].includes(input.hubUrl)) {
           throw Object.assign(new Error("无法将设备接入自己的本机入口。"), { status: 400 });
         }
-        const header = request.headers["x-moco-transition-id"];
+        const header = request.headers["x-kulo-transition-id"];
         const id = typeof header === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(header) ? header : undefined;
         const checkTasks = async () => {
           if (!force && agent.hasActiveExecution) throw Object.assign(new Error("本机正在执行任务，切换主机会中断执行。"), { code: "local_tasks_running" });
@@ -461,7 +461,7 @@ async function listenDevicePeer(config: DevicePeerConfig, resolvedConfigPath: st
     path.dirname(resolvedConfigPath),
     ...(options.protectedPaths ?? []).map((entry) => path.resolve(entry)),
   ]));
-  const agent = new MocoEnvAgent({
+  const agent = new KuloEnvAgent({
     hubUrl: envUrl.toString(),
     envId: config.deviceId,
     name: config.name,
@@ -478,7 +478,7 @@ async function listenDevicePeer(config: DevicePeerConfig, resolvedConfigPath: st
     });
   });
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("无法启动本机 Moco 访问入口。");
+  if (!address || typeof address === "string") throw new Error("无法启动本机 Kulo 访问入口。");
   port = address.port;
   try {
     server.once("close", owner.publish(address));
@@ -563,7 +563,7 @@ export async function runInstalledPeer(configPath = getPeerConfigPath()): Promis
 
 export function renderPeerInstaller(platform: "posix" | "powershell"): string {
   if (platform === "powershell") {
-    return `param([Parameter(Mandatory=$true)][string]$HubUrl, [Parameter(Mandatory=$true)][string]$InviteToken)\n$ErrorActionPreference = 'Stop'\n& node -e "if(process.versions.node.split('.').map(Number)[0]<22||(process.versions.node.startsWith('22.')&&Number(process.versions.node.split('.')[1])<19))process.exit(1)"\nif ($LASTEXITCODE -ne 0) { throw 'Moco requires Node.js 22.19 or newer.' }\n$Runtime = Join-Path $HOME '.moco/runtime'\nNew-Item -ItemType Directory -Force $Runtime | Out-Null\nInvoke-WebRequest -MaximumRedirection 0 -Uri ($HubUrl.TrimEnd('/') + '/connect/peer.mjs') -OutFile (Join-Path $Runtime 'peer.mjs.download')\nMove-Item -Force (Join-Path $Runtime 'peer.mjs.download') (Join-Path $Runtime 'peer.mjs')\n& npm install --prefix $Runtime --omit=dev --ignore-scripts --no-audit --no-fund 'undici@8.12.4' '@anthropic-ai/claude-agent-sdk@0.3.326' '@earendil-works/pi-env@1.5.2' 'ws@8.22.2' 'agent-browser@0.43.0' 'agent-desktop@1.3.1'\nif ($LASTEXITCODE -ne 0) { throw 'Moco runtime dependency installation failed.' }\n& node (Join-Path $Runtime 'peer.mjs') install --hub $HubUrl --invite $InviteToken\nif ($LASTEXITCODE -ne 0) { throw 'Moco device pairing failed.' }\n`;
+    return `param([Parameter(Mandatory=$true)][string]$HubUrl, [Parameter(Mandatory=$true)][string]$InviteToken)\n$ErrorActionPreference = 'Stop'\n& node -e "if(process.versions.node.split('.').map(Number)[0]<22||(process.versions.node.startsWith('22.')&&Number(process.versions.node.split('.')[1])<19))process.exit(1)"\nif ($LASTEXITCODE -ne 0) { throw 'Kulo requires Node.js 22.19 or newer.' }\n$Runtime = Join-Path $HOME '.kulo/runtime'\nNew-Item -ItemType Directory -Force $Runtime | Out-Null\nInvoke-WebRequest -MaximumRedirection 0 -Uri ($HubUrl.TrimEnd('/') + '/connect/peer.mjs') -OutFile (Join-Path $Runtime 'peer.mjs.download')\nMove-Item -Force (Join-Path $Runtime 'peer.mjs.download') (Join-Path $Runtime 'peer.mjs')\n& npm install --prefix $Runtime --omit=dev --ignore-scripts --no-audit --no-fund 'undici@8.12.4' '@anthropic-ai/claude-agent-sdk@0.3.326' '@earendil-works/pi-env@1.5.2' 'ws@8.22.2' 'agent-browser@0.43.0' 'agent-desktop@1.3.1'\nif ($LASTEXITCODE -ne 0) { throw 'Kulo runtime dependency installation failed.' }\n& node (Join-Path $Runtime 'peer.mjs') install --hub $HubUrl --invite $InviteToken\nif ($LASTEXITCODE -ne 0) { throw 'Kulo device pairing failed.' }\n`;
   }
-  return `#!/bin/sh\nset -eu\numask 077\nMOCO_PEER_HUB_URL=\${1:?Missing Hub URL}\nMOCO_PEER_INVITE=\${2:?Missing invitation}\ncommand -v node >/dev/null 2>&1 || { echo 'Moco requires Node.js 22.19 or newer.' >&2; exit 1; }\nnode -e "if(process.versions.node.split('.').map(Number)[0]<22||(process.versions.node.startsWith('22.')&&Number(process.versions.node.split('.')[1])<19))process.exit(1)" || { echo 'Moco requires Node.js 22.19 or newer.' >&2; exit 1; }\nMOCO_PEER_RUNTIME=\"\$HOME/.moco/runtime\"\nmkdir -p \"\$MOCO_PEER_RUNTIME\"\nchmod 700 \"\$HOME/.moco\" \"\$MOCO_PEER_RUNTIME\"\ncurl -fsS \"\$MOCO_PEER_HUB_URL/connect/peer.mjs\" -o \"\$MOCO_PEER_RUNTIME/peer.mjs.download\"\nmv \"\$MOCO_PEER_RUNTIME/peer.mjs.download\" \"\$MOCO_PEER_RUNTIME/peer.mjs\"\nnpm install --prefix \"\$MOCO_PEER_RUNTIME\" --omit=dev --ignore-scripts --no-audit --no-fund 'undici@8.12.4' '@anthropic-ai/claude-agent-sdk@0.3.326' '@earendil-works/pi-env@1.5.2' 'ws@8.22.2' 'agent-browser@0.43.0' 'agent-desktop@1.3.1'\nnode \"\$MOCO_PEER_RUNTIME/peer.mjs\" install --hub \"\$MOCO_PEER_HUB_URL\" --invite \"\$MOCO_PEER_INVITE\"\n`;
+  return `#!/bin/sh\nset -eu\numask 077\nKULO_PEER_HUB_URL=\${1:?Missing Hub URL}\nKULO_PEER_INVITE=\${2:?Missing invitation}\ncommand -v node >/dev/null 2>&1 || { echo 'Kulo requires Node.js 22.19 or newer.' >&2; exit 1; }\nnode -e "if(process.versions.node.split('.').map(Number)[0]<22||(process.versions.node.startsWith('22.')&&Number(process.versions.node.split('.')[1])<19))process.exit(1)" || { echo 'Kulo requires Node.js 22.19 or newer.' >&2; exit 1; }\nKULO_PEER_RUNTIME=\"\$HOME/.kulo/runtime\"\nmkdir -p \"\$KULO_PEER_RUNTIME\"\nchmod 700 \"\$HOME/.kulo\" \"\$KULO_PEER_RUNTIME\"\ncurl -fsS \"\$KULO_PEER_HUB_URL/connect/peer.mjs\" -o \"\$KULO_PEER_RUNTIME/peer.mjs.download\"\nmv \"\$KULO_PEER_RUNTIME/peer.mjs.download\" \"\$KULO_PEER_RUNTIME/peer.mjs\"\nnpm install --prefix \"\$KULO_PEER_RUNTIME\" --omit=dev --ignore-scripts --no-audit --no-fund 'undici@8.12.4' '@anthropic-ai/claude-agent-sdk@0.3.326' '@earendil-works/pi-env@1.5.2' 'ws@8.22.2' 'agent-browser@0.43.0' 'agent-desktop@1.3.1'\nnode \"\$KULO_PEER_RUNTIME/peer.mjs\" install --hub \"\$KULO_PEER_HUB_URL\" --invite \"\$KULO_PEER_INVITE\"\n`;
 }

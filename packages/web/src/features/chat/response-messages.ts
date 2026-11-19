@@ -1,4 +1,4 @@
-import { getMessageParts, type ChatDisplayItem, type LiveStreamState, type MessagePart } from "@moco/protocol";
+import { getMessageParts, type ChatDisplayItem, type LiveStreamState, type MessagePart } from "@kulo/protocol";
 
 function hasContent(item: ChatDisplayItem): boolean {
   return Boolean(item.text.trim() || item.parts?.length || item.attachments?.length);

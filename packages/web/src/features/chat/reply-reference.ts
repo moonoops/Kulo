@@ -1,4 +1,4 @@
-import { redactDeviceInvitationText, type ChatDisplayItem, type ChatReplyReference } from "@moco/protocol";
+import { redactDeviceInvitationText, type ChatDisplayItem, type ChatReplyReference } from "@kulo/protocol";
 
 export type ReplyDrafts = Partial<Record<string, ChatReplyReference>>;
 

@@ -1,7 +1,7 @@
-import { translate as t, useI18n } from "../../moco-i18n";
+import { translate as t, useI18n } from "../../kulo-i18n";
 import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Label, Modal, TextArea, TextField, toast } from "@heroui/react";
-import { MocoApiError } from "../../moco-api";
+import { KuloApiError } from "../../kulo-api";
 import { deviceApi } from "./device-api";
 
 export function JoinDeviceModal({
@@ -54,7 +54,7 @@ export function JoinDeviceModal({
       await onJoined();
     } catch (err) {
       if (controller.signal.aborted) return;
-      if (!force && err instanceof MocoApiError && err.code === "local_tasks_running") {
+      if (!force && err instanceof KuloApiError && err.code === "local_tasks_running") {
         setNeedsForce(true);
         setError(err.message);
       } else {
@@ -71,21 +71,21 @@ export function JoinDeviceModal({
       <Modal.Backdrop isDismissable={!busy} isKeyboardDismissDisabled={busy}>
         <Modal.Container placement="center" size="md" scroll="inside">
           <Modal.Dialog aria-label={t("接入现有主机", "Join host")}>
-            <Modal.Header className="moco-add-device-header">
+            <Modal.Header className="kulo-add-device-header">
               <Modal.Heading>{t("接入现有主机", "Join host")}</Modal.Heading>
-              <Modal.CloseTrigger aria-label={t("关闭接入现有主机", "Close join host")} className="moco-add-device-close" isDisabled={busy} />
+              <Modal.CloseTrigger aria-label={t("关闭接入现有主机", "Close join host")} className="kulo-add-device-close" isDisabled={busy} />
             </Modal.Header>
             <Modal.Body>
               <form
-                id="moco-device-join"
-                className="moco-form-stack"
+                id="kulo-device-join"
+                className="kulo-form-stack"
                 onSubmit={(event) => {
                   event.preventDefault();
                   void submit(needsForce);
                 }}
               >
                 <TextField
-                  className="moco-form-field"
+                  className="kulo-form-field"
                   variant="secondary"
                   fullWidth
                   isRequired
@@ -128,7 +128,7 @@ export function JoinDeviceModal({
               <Button variant="tertiary" isDisabled={busy} onPress={close}>{t("取消", "Cancel")}</Button>
               <Button
                 type="submit"
-                form="moco-device-join"
+                form="kulo-device-join"
                 variant={needsForce ? "danger" : "primary"}
                 isPending={busy}
                 isDisabled={!input.trim()}

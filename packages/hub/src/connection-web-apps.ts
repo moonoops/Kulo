@@ -3,7 +3,7 @@ import {
   type ConnectionApplicationDefinition,
   type ConnectionSecrets,
   type ConnectionUseOperation,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 
 export type WebConnectionApplicationId = "github" | "figma";
 type AppOperation = Extract<ConnectionUseOperation, { kind: "app" }>;
@@ -199,7 +199,7 @@ export class WebConnectionApplications {
     const url = new URL(path, origins[id]);
     if (url.origin !== origins[id] || url.protocol !== "https:") fail("应用 API 地址无效。");
     const headers = new Headers({ Accept: id === "github" ? "application/vnd.github+json" : "application/json" });
-    if (id === "github") { headers.set("Authorization", `Bearer ${token}`); headers.set("X-GitHub-Api-Version", "2026-03-10"); headers.set("User-Agent", "Moco"); }
+    if (id === "github") { headers.set("Authorization", `Bearer ${token}`); headers.set("X-GitHub-Api-Version", "2026-03-10"); headers.set("User-Agent", "Kulo"); }
     else headers.set("X-Figma-Token", token);
     if (body !== undefined) headers.set("Content-Type", "application/json");
     const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000);

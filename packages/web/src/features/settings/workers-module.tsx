@@ -1,4 +1,4 @@
-import { useI18n } from "../../moco-i18n";
+import { useI18n } from "../../kulo-i18n";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   Alert,
@@ -16,14 +16,14 @@ import {
   type EnvNodeDescriptor,
   type ExternalClientConnection,
   type ProjectView,
-  type MocoSettingsView,
+  type KuloSettingsView,
   type ProviderModelItem,
   type RolePreset,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { RoleAvatar } from "../../components/role-avatar";
-import { MocoApiError, mocoRest } from "../../moco-api";
-import { MocoIcon } from "../../moco-icon";
+import { KuloApiError, kuloRest } from "../../kulo-api";
+import { KuloIcon } from "../../kulo-icon";
 import {
   buildProviderModelGroups,
   effortLabel,
@@ -74,10 +74,10 @@ export function WorkersModule({
   onSettingsUpdated,
   onDirtyChange,
 }: {
-  settings: MocoSettingsView;
+  settings: KuloSettingsView;
   envs?: EnvNodeDescriptor[];
   projects?: Pick<ProjectView, "id" | "name">[];
-  onSettingsUpdated: (next: MocoSettingsView) => void;
+  onSettingsUpdated: (next: KuloSettingsView) => void;
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const { t } = useI18n();
@@ -195,7 +195,7 @@ export function WorkersModule({
     if (mutation.kind === "enabled") focusAfterToggle.current = mutation.id;
     try {
       const next = await commitRoleMutation(block, mutation, async (revision, value) =>
-        (await mocoRest.saveSettingsBlock("roles", revision, value)).settings);
+        (await kuloRest.saveSettingsBlock("roles", revision, value)).settings);
       if (next.blocks.roles.revision >= latestRolesBlock.current.revision) {
         const incoming = next.blocks.roles.value;
         latestRolesBlock.current = next.blocks.roles;
@@ -209,7 +209,7 @@ export function WorkersModule({
       }
       return { ok: true };
     } catch (err) {
-      const changed = err instanceof MocoApiError && err.status === 409;
+      const changed = err instanceof KuloApiError && err.status === 409;
       if (changed) setConflict(true);
       if (mutation.kind === "enabled" && !changed) setFailedToggle({ id: mutation.id, enabled: mutation.enabled });
       const message = changed ? t("智能体配置已被其他会话修改，本地草稿已保留。", "Agent settings changed in another session. Your draft has been kept.")
@@ -261,7 +261,7 @@ export function WorkersModule({
     setRefreshingClientId(clientId);
     setError(undefined);
     try {
-      const res = await mocoRest.refreshExternalClient(clientId);
+      const res = await kuloRest.refreshExternalClient(clientId);
       if (res.settings.blocks.roles.revision >= latestRolesBlock.current.revision) {
         const incoming = res.settings.blocks.roles.value;
         latestRolesBlock.current = res.settings.blocks.roles;
@@ -307,7 +307,7 @@ export function WorkersModule({
     setBusy(true);
     setError(undefined);
     try {
-      const res = await mocoRest.removeExternalClient(client.id, baseRevision);
+      const res = await kuloRest.removeExternalClient(client.id, baseRevision);
       if (res.settings.blocks.roles.revision >= latestRolesBlock.current.revision) {
         const incoming = res.settings.blocks.roles.value;
         latestRolesBlock.current = res.settings.blocks.roles;
@@ -323,8 +323,8 @@ export function WorkersModule({
       setRemoveClientTarget(null);
       toast.success(t("已移除外部客户端连接", "External client connection removed"));
     } catch (err) {
-      if (err instanceof MocoApiError && err.status === 409) {
-        const latest = await mocoRest.getSettings().catch(() => undefined);
+      if (err instanceof KuloApiError && err.status === 409) {
+        const latest = await kuloRest.getSettings().catch(() => undefined);
         if (latest && latest.blocks.roles.revision !== baseRevision) {
           setConflict(true);
         }
@@ -341,7 +341,7 @@ export function WorkersModule({
     savingRef.current = true;
     setBusy(true);
     try {
-      const latest = await mocoRest.getSettings();
+      const latest = await kuloRest.getSettings();
       latestRolesBlock.current = latest.blocks.roles;
       onSettingsUpdated(latest);
       setRoles(latest.blocks.roles.value);
@@ -382,7 +382,7 @@ export function WorkersModule({
     setFailedToggle(null);
     setError(undefined);
     try {
-      const res = await mocoRest.saveSettingsBlock("roles", baseRevision, roles);
+      const res = await kuloRest.saveSettingsBlock("roles", baseRevision, roles);
       if (res.settings.blocks.roles.revision >= latestRolesBlock.current.revision) {
         latestRolesBlock.current = res.settings.blocks.roles;
         setBaseRevision(res.settings.blocks.roles.revision);
@@ -393,7 +393,7 @@ export function WorkersModule({
       }
       toast.success(t("智能体配置已保存", "Agent settings saved"));
     } catch (err) {
-      if (err instanceof MocoApiError && err.status === 409) {
+      if (err instanceof KuloApiError && err.status === 409) {
         setConflict(true);
         setError(t("智能体配置已被其他会话修改，本地草稿已保留。", "Agent settings changed in another session. Your draft has been kept."));
       } else {
@@ -406,7 +406,7 @@ export function WorkersModule({
   };
 
   return (
-    <div className="moco-settings-form" aria-busy={busy}>
+    <div className="kulo-settings-form" aria-busy={busy}>
       <div inert={busy || undefined}>
       <SettingsSection
         title={t("智能体列表", "Agents")}
@@ -419,7 +419,7 @@ export function WorkersModule({
               isPending={activeMutation?.kind === "restore"}
               onPress={() => setResetRequested(true)}
             >
-              <MocoIcon name="refresh" size={15} />
+              <KuloIcon name="refresh" size={15} />
               
               {t("恢复默认", "Restore defaults")}
             </Button>
@@ -429,7 +429,7 @@ export function WorkersModule({
               isDisabled={creatingOpen}
               onPress={() => setCreatingOpen(true)}
             >
-              <MocoIcon name="add" size={16} />
+              <KuloIcon name="add" size={16} />
               
               {t("新建智能体", "New agent")}
             </Button>
@@ -475,7 +475,7 @@ export function WorkersModule({
                 onExpandedChange={(next) => setOpenRole(next ? id : null)}
                 className="flex min-w-0 flex-col"
               >
-                <div className="moco-settings-list-row" ref={(element) => {
+                <div className="kulo-settings-list-row" ref={(element) => {
                   if (element) toggleRowRefs.current.set(id, element);
                   else toggleRowRefs.current.delete(id);
                 }} aria-busy={activeMutation?.kind === "enabled" && activeMutation.id === id || undefined}>
@@ -486,7 +486,7 @@ export function WorkersModule({
                     >
                       <span className="min-w-0 flex-1">
                         <span className="flex flex-wrap items-center gap-1.5" title={role.whenToUse}>
-                          <strong className="moco-item-title">
+                          <strong className="kulo-item-title">
                             {displayLabel}
                           </strong>
                           {role.readOnly && (
@@ -496,7 +496,7 @@ export function WorkersModule({
                             <Chip size="sm" variant="soft">{t("子智能体", "Subagents")}</Chip>
                           )}
                         </span>
-                        <span className="moco-item-description mt-0.5 block truncate">
+                        <span className="kulo-item-description mt-0.5 block truncate">
                           {displayModel} · {effortLabel(role.thinkingLevel, roleModelMeta)}
                         </span>
                       </span>
@@ -521,7 +521,7 @@ export function WorkersModule({
                       variant="ghost"
                       aria-label={displayLabel + t("智能体操作", " agent actions")}
                     >
-                      <MocoIcon name="more-vert" size={18} />
+                      <KuloIcon name="more-vert" size={18} />
                     </Button>
                     <Dropdown.Popover placement="bottom end">
                       <Dropdown.Menu
@@ -544,7 +544,7 @@ export function WorkersModule({
                 </div>
 
                 <Disclosure.Content>
-                  <Disclosure.Body className="moco-list-editor">
+                  <Disclosure.Body className="kulo-list-editor">
                     <AgentPresetFields
                       value={role}
                       onChange={(next) => setRoles((previous) => ({ ...previous, [id]: next }))}
@@ -586,7 +586,7 @@ export function WorkersModule({
         conflict={conflict}
       />
 
-      <form className="moco-form-stack" aria-label={t("智能体配置", "Agent settings")} onSubmit={(event) => void saveAll(event)}>
+      <form className="kulo-form-stack" aria-label={t("智能体配置", "Agent settings")} onSubmit={(event) => void saveAll(event)}>
         {conflict && (
           <Alert status="warning" className="flex flex-wrap items-center justify-between gap-3 rounded-2xl p-3">
             <div className="flex items-center gap-2">

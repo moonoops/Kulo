@@ -1,5 +1,5 @@
-import type { ExecutorSlotsConfig, MocoSettingsView } from "@moco/protocol";
-import { MocoApiError } from "../../moco-api";
+import type { ExecutorSlotsConfig, KuloSettingsView } from "@kulo/protocol";
+import { KuloApiError } from "../../kulo-api";
 
 export type ExecutorSetting = keyof ExecutorSlotsConfig;
 
@@ -23,29 +23,29 @@ export class ExecutorSettingConflict extends Error {
 
 /** Each queued change merges into the saved block, never another field's unfinished input. */
 export class ExecutorSettingWriter {
-  #current: MocoSettingsView;
+  #current: KuloSettingsView;
   #tail: Promise<unknown> = Promise.resolve();
   #blocked = false;
 
-  constructor(settings: MocoSettingsView, private readonly save: (revision: number, value: ExecutorSlotsConfig) => Promise<{ settings: MocoSettingsView }>) {
+  constructor(settings: KuloSettingsView, private readonly save: (revision: number, value: ExecutorSlotsConfig) => Promise<{ settings: KuloSettingsView }>) {
     this.#current = settings;
   }
 
-  get snapshot(): MocoSettingsView { return this.#current; }
+  get snapshot(): KuloSettingsView { return this.#current; }
   get blocked(): boolean { return this.#blocked; }
 
-  accept(settings: MocoSettingsView): void {
+  accept(settings: KuloSettingsView): void {
     const revision = settings.blocks.executor.revision;
     const currentRevision = this.#current.blocks.executor.revision;
     if (revision > currentRevision || revision === currentRevision && settings.globalRevision > this.#current.globalRevision) this.#current = settings;
   }
 
-  reload(settings: MocoSettingsView): void {
+  reload(settings: KuloSettingsView): void {
     this.accept(settings);
     this.#blocked = false;
   }
 
-  commit<K extends ExecutorSetting>(key: K, value: ExecutorSlotsConfig[K], expected = executorSettingValue(this.#current.blocks.executor.value, key)): Promise<MocoSettingsView> {
+  commit<K extends ExecutorSetting>(key: K, value: ExecutorSlotsConfig[K], expected = executorSettingValue(this.#current.blocks.executor.value, key)): Promise<KuloSettingsView> {
     const run = async () => {
       if (this.#blocked) throw new ExecutorSettingConflict();
       const block = this.#current.blocks.executor;
@@ -64,7 +64,7 @@ export class ExecutorSettingWriter {
         }
         return this.#current;
       } catch (error) {
-        if (error instanceof MocoApiError && error.status === 409) this.#blocked = true;
+        if (error instanceof KuloApiError && error.status === 409) this.#blocked = true;
         throw error;
       }
     };

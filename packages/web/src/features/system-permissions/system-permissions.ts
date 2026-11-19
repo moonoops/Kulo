@@ -1,6 +1,6 @@
-import { isDesktopSystemPermissions, type DesktopSystemPermissions, type SystemPermissionKind, type SystemPermissionStatus } from "@moco/protocol";
-import { apiRequest } from "../../moco-api";
-import { translate as t } from "../../moco-i18n";
+import { isDesktopSystemPermissions, type DesktopSystemPermissions, type SystemPermissionKind, type SystemPermissionStatus } from "@kulo/protocol";
+import { apiRequest } from "../../kulo-api";
+import { translate as t } from "../../kulo-i18n";
 
 export interface SystemPermissionEntry {
   id: string;
@@ -21,11 +21,11 @@ export function noteMicrophoneAccess(allowed: boolean): void {
 }
 
 export function desktopSystemPermissionBridge(): DesktopSystemPermissionBridge | undefined {
-  return typeof window === "undefined" ? undefined : window.mocoDesktop?.systemPermissions;
+  return typeof window === "undefined" ? undefined : window.kuloDesktop?.systemPermissions;
 }
 
 export function requestSystemPermissionHelp(detail: Omit<SystemPermissionEntry, "id">): void {
-  window.dispatchEvent(new CustomEvent("moco:system-permission-help", { detail }));
+  window.dispatchEvent(new CustomEvent("kulo:system-permission-help", { detail }));
 }
 
 function microphoneFromSnapshot(snapshot: { permissions: SystemPermissionStatus[] }): SystemPermissionStatus {

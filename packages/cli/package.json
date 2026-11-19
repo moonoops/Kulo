@@ -1,18 +1,18 @@
 {
-  "name": "@moco/cli",
-  "version": "0.1.1",
+  "name": "@kulo/cli",
+  "version": "0.1.2",
   "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
   "bin": {
-    "moco": "./dist/bin.js"
+    "kulo": "./dist/bin.js"
   },
   "main": "./dist/index.js",
   "types": "./src/index.ts",
   "dependencies": {
-    "@moco/env": "workspace:*",
-    "@moco/hub": "workspace:*",
-    "@moco/protocol": "workspace:*",
+    "@kulo/env": "workspace:*",
+    "@kulo/hub": "workspace:*",
+    "@kulo/protocol": "workspace:*",
     "ws": "^8.18.2"
   },
   "scripts": {

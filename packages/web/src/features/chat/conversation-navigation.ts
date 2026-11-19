@@ -1,4 +1,4 @@
-import type { ChatDisplayItem } from "@moco/protocol";
+import type { ChatDisplayItem } from "@kulo/protocol";
 
 /** Durable publications from one response can share a single visible message. */
 export function visibleMessageId(source: readonly ChatDisplayItem[], rendered: readonly ChatDisplayItem[], messageId: number): number | undefined {

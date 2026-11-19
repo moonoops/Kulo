@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import WebSocket from "ws";
-import { COMPUTER_PREVIEW_MAX_DATA, isComputerPreviewTarget, isComputerPreviewUpdate, type ComputerPreviewTarget, type ComputerPreviewUpdate } from "@moco/protocol";
+import { COMPUTER_PREVIEW_MAX_DATA, isComputerPreviewTarget, isComputerPreviewUpdate, type ComputerPreviewTarget, type ComputerPreviewUpdate } from "@kulo/protocol";
 import type { AgentCliInvocation, AgentCliRunner } from "./agent-cli.js";
 
 interface PreviewEntry {

@@ -1,15 +1,15 @@
-import { translate as t, useI18n } from "../../moco-i18n";
+import { translate as t, useI18n } from "../../kulo-i18n";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Alert, Button, Chip, Input, Label, Spinner, Switch, TextField } from "@heroui/react";
-import { redactSecrets, type HindsightAccessMode, type HindsightProbeResult, type MemoryConnectionUpdateRequest, type MemoryServiceSnapshot, type MocoSettingsView } from "@moco/protocol";
-import { MocoApiError, mocoRest } from "../../moco-api";
+import { redactSecrets, type HindsightAccessMode, type HindsightProbeResult, type MemoryConnectionUpdateRequest, type MemoryServiceSnapshot, type KuloSettingsView } from "@kulo/protocol";
+import { KuloApiError, kuloRest } from "../../kulo-api";
 import { safeSetupInputError } from "./capability-setup-inputs";
 import { SettingsSaveBar, SettingsSection } from "./settings-layout";
 import { MemoryServerList } from "./memory-server-list";
 import { MEMORY_CONNECTION_FOCUS_EVENT, MEMORY_SERVICE_CHANGED_EVENT, publishMemoryService, requestMemoryService } from "./memory-service-events";
 import { useSettingsPending } from "./settings-save-activity";
 
-type MemoryBlock = MocoSettingsView["blocks"]["memory"];
+type MemoryBlock = KuloSettingsView["blocks"]["memory"];
 type MemoryConnectionAction = "probe" | "save" | "reload" | "enabled";
 export interface MemoryConnectionDraft {
   enabled: boolean;
@@ -33,7 +33,7 @@ export interface MemoryConnectionEditor {
 export function memoryConnectionEditor(block: MemoryBlock): MemoryConnectionEditor {
   const value = block.value;
   const draft: MemoryConnectionDraft = {
-    enabled: value.enabled, endpoint: value.endpoint, endpoints: [...value.endpoints], accessMode: value.accessMode ?? "moco",
+    enabled: value.enabled, endpoint: value.endpoint, endpoints: [...value.endpoints], accessMode: value.accessMode ?? "kulo",
     privateBank: value.banks.private, sharedBank: value.banks.shared,
     routerApiKey: "", workerApiKey: "", clearRouterApiKey: false, clearWorkerApiKey: false,
   };
@@ -56,7 +56,7 @@ export function acknowledgeMemoryEnabled(editor: MemoryConnectionEditor, block: 
 }
 export function setSavedMemoryEnabled(block: MemoryBlock, enabled: boolean): Promise<MemoryServiceSnapshot> {
   // This endpoint reads the saved connection on the server; connection drafts and keys never cross this boundary.
-  return mocoRest.setMemoryEnabled({ enabled, expectedRevision: block.revision });
+  return kuloRest.setMemoryEnabled({ enabled, expectedRevision: block.revision });
 }
 export function createMemoryConnectionRequest(draft: MemoryConnectionDraft, expectedRevision: number): MemoryConnectionUpdateRequest {
   return {
@@ -79,17 +79,17 @@ function ConnectionSecret({ label, value, saved, clear, disabled, onChange, onCl
   label: string; value: string; saved: boolean; clear: boolean; disabled: boolean; onChange: (value: string) => void; onClear: () => void;
 }) {
   useI18n();
-  return <div className="moco-field-action-row">
-    <TextField variant="secondary" type="password" value={value} onChange={onChange} isDisabled={disabled || clear} maxLength={8192} fullWidth className="moco-form-field flex-1">
+  return <div className="kulo-field-action-row">
+    <TextField variant="secondary" type="password" value={value} onChange={onChange} isDisabled={disabled || clear} maxLength={8192} fullWidth className="kulo-form-field flex-1">
       <Label className="text-sm font-medium">{label}</Label>
-      <Input className="moco-field-action-input" autoComplete="new-password" spellCheck={false} placeholder={clear ? t("保存后清除", "Cleared when saved") : saved ? t("已保存，留空保留", "Saved; leave blank to keep") : t("输入密钥", "Enter API key")} />
+      <Input className="kulo-field-action-input" autoComplete="new-password" spellCheck={false} placeholder={clear ? t("保存后清除", "Cleared when saved") : saved ? t("已保存，留空保留", "Saved; leave blank to keep") : t("输入密钥", "Enter API key")} />
     </TextField>
-    {(saved || clear) && <Button type="button" size="sm" variant="tertiary" className="moco-field-action-button" isDisabled={disabled} onPress={onClear}>{clear ? t("撤销清除", "Undo clear") : t("清除", "Clear")}</Button>}
+    {(saved || clear) && <Button type="button" size="sm" variant="tertiary" className="kulo-field-action-button" isDisabled={disabled} onPress={onClear}>{clear ? t("撤销清除", "Undo clear") : t("清除", "Clear")}</Button>}
   </div>;
 }
 
 export function MemoryConnectionForm({ settings, savedMemory = settings.blocks.memory, snapshot, editor, pending, loading = false, connected = true, error, enabledError, probe, onChange, onEnabledChange, onEnabledRetry, onSave, onProbe, onDiscard, onReload, onRetry }: {
-  settings: MocoSettingsView; snapshot: MemoryServiceSnapshot | null; editor: MemoryConnectionEditor;
+  settings: KuloSettingsView; snapshot: MemoryServiceSnapshot | null; editor: MemoryConnectionEditor;
   savedMemory?: MemoryBlock; pending?: MemoryConnectionAction; loading?: boolean; connected?: boolean; error?: string; enabledError?: string; probe?: HindsightProbeResult;
   onChange: (draft: MemoryConnectionDraft) => void; onSave: (event: FormEvent<HTMLFormElement>) => void;
   onEnabledChange: (enabled: boolean) => void; onEnabledRetry?: () => void;
@@ -113,33 +113,33 @@ export function MemoryConnectionForm({ settings, savedMemory = settings.blocks.m
     }
   }, [pending]);
   const change = <K extends keyof MemoryConnectionDraft>(key: K, value: MemoryConnectionDraft[K]) => onChange({ ...draft, [key]: value });
-  return <div className="moco-settings-form gap-7" aria-busy={busy || undefined}>
+  return <div className="kulo-settings-form gap-7" aria-busy={busy || undefined}>
     <div inert={busy || undefined}>
       <SettingsSection title={t("长期记忆", "Long-term memory")} status={<Chip size="sm" variant="soft" color={enabled ? "success" : "default"}>{enabled ? t("已启用", "Enabled") : t("未启用", "Disabled")}</Chip>} action={
         <div ref={enabledControlRef} className="flex items-center gap-2">{pending === "enabled" && <Spinner size="sm" aria-label={t("保存启用状态", "Saving enabled state")} />}<Switch aria-label={t("启用长期记忆", "Enable long-term memory")} isSelected={enabled} isDisabled={disabled} onChange={(next) => { restoreEnabledFocus.current = enabledControlRef.current?.contains(document.activeElement) ?? false; onEnabledChange(next); }}><Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content></Switch></div>
       }>{null}</SettingsSection>
     </div>
     {enabledError && <Alert status="danger" role="alert" className="rounded-2xl p-3"><Alert.Content className="flex-1 break-words text-sm">{enabledError}</Alert.Content>{onEnabledRetry && <Button type="button" size="sm" variant="secondary" isDisabled={busy || !connected} onPress={onEnabledRetry}>{t("重试", "Retry")}</Button>}</Alert>}
-    <form className="moco-settings-form gap-4" aria-label={t("长期记忆连接设置", "Long-term memory connection settings")} onSubmit={onSave}>
+    <form className="kulo-settings-form gap-4" aria-label={t("长期记忆连接设置", "Long-term memory connection settings")} onSubmit={onSave}>
     <div inert={busy || undefined}>
     <SettingsSection title={t("连接配置", "Connection settings")}>
-      <div className="moco-form-stack">
+      <div className="kulo-form-stack">
         <MemoryServerList addresses={[draft.endpoint, ...draft.endpoints]} disabled={disabled}
           onChange={([endpoint, ...endpoints]) => onChange({ ...draft, endpoint, endpoints })} />
-        <div className="moco-form-grid">
+        <div className="kulo-form-grid">
           <ConnectionSecret label={t("密钥", "API key")} value={draft.routerApiKey} saved={reusable && savedMemory.hasRouterApiKey} clear={draft.clearRouterApiKey} disabled={disabled} onChange={(value) => change("routerApiKey", value)} onClear={() => onChange({ ...draft, routerApiKey: "", clearRouterApiKey: !draft.clearRouterApiKey })} />
           <ConnectionSecret label={t("公开目录密钥", "Public directory API key")} value={draft.workerApiKey} saved={reusable && savedMemory.hasWorkerApiKey} clear={draft.clearWorkerApiKey} disabled={disabled} onChange={(value) => change("workerApiKey", value)} onClear={() => onChange({ ...draft, workerApiKey: "", clearWorkerApiKey: !draft.clearWorkerApiKey })} />
         </div>
-        <div className="moco-form-grid">
-          <TextField variant="secondary" className="moco-form-field" value={draft.privateBank} onChange={(value) => change("privateBank", value)} isRequired isDisabled={disabled} fullWidth><Label className="text-sm font-medium">{t("隐私记忆库名", "Private memory bank")}</Label><Input spellCheck={false} /></TextField>
-          <TextField variant="secondary" className="moco-form-field" value={draft.sharedBank} onChange={(value) => change("sharedBank", value)} isRequired isDisabled={disabled} fullWidth><Label className="text-sm font-medium">{t("共享记忆库名", "Shared memory bank")}</Label><Input spellCheck={false} /></TextField>
+        <div className="kulo-form-grid">
+          <TextField variant="secondary" className="kulo-form-field" value={draft.privateBank} onChange={(value) => change("privateBank", value)} isRequired isDisabled={disabled} fullWidth><Label className="text-sm font-medium">{t("隐私记忆库名", "Private memory bank")}</Label><Input spellCheck={false} /></TextField>
+          <TextField variant="secondary" className="kulo-form-field" value={draft.sharedBank} onChange={(value) => change("sharedBank", value)} isRequired isDisabled={disabled} fullWidth><Label className="text-sm font-medium">{t("共享记忆库名", "Shared memory bank")}</Label><Input spellCheck={false} /></TextField>
         </div>
       </div>
     </SettingsSection>
     </div>
     {editor.conflict && <Alert status="warning" role="alert" className="rounded-2xl p-3"><Alert.Content className="flex-1 text-sm">{t("连接配置已更新，当前草稿尚未保存。", "Connection settings changed. Your draft has not been saved.")}</Alert.Content><Button type="button" size="sm" variant="secondary" isDisabled={busy} onPress={onReload}>{t("加载最新配置", "Load latest settings")}</Button></Alert>}
     <div className="flex min-w-0 flex-col gap-3">
-      <div className="moco-settings-actions"><Button type="button" size="sm" variant="ghost" className="relative" aria-label={t("测试连接", "Test connection")} isDisabled={disabled || editor.conflict || busy && pending !== "probe"} isPending={pending === "probe"} onPress={onProbe}><span className={pending === "probe" ? "invisible" : undefined}>{t("测试连接", "Test connection")}</span>{pending === "probe" && <Spinner size="sm" color="current" className="absolute" aria-label={t("正在测试连接", "Testing connection")} />}</Button>{loading && <Spinner size="sm" aria-label={t("读取记忆服务", "Loading memory service")} />}</div>
+      <div className="kulo-settings-actions"><Button type="button" size="sm" variant="ghost" className="relative" aria-label={t("测试连接", "Test connection")} isDisabled={disabled || editor.conflict || busy && pending !== "probe"} isPending={pending === "probe"} onPress={onProbe}><span className={pending === "probe" ? "invisible" : undefined}>{t("测试连接", "Test connection")}</span>{pending === "probe" && <Spinner size="sm" color="current" className="absolute" aria-label={t("正在测试连接", "Testing connection")} />}</Button>{loading && <Spinner size="sm" aria-label={t("读取记忆服务", "Loading memory service")} />}</div>
       {error && <Alert status="danger" role="alert" className="rounded-2xl p-3"><Alert.Content className="flex-1 break-words text-sm">{error}</Alert.Content>{onRetry && <Button type="button" size="sm" variant="secondary" isDisabled={busy} onPress={onRetry}>{t("重试", "Retry")}</Button>}</Alert>}
       {!error && probe && <Alert status="success" role="status" className="rounded-2xl p-3"><Alert.Content className="text-sm">{probe.isolationVerified ? t("连接与权限隔离检查通过", "Connection and access isolation verified") : t("主脑私库连接正常", "Private memory bank connected")}</Alert.Content></Alert>}
     </div>
@@ -163,7 +163,7 @@ export function MemoryConnectionForm({ settings, savedMemory = settings.blocks.m
 }
 
 export function MemoryServicePanel({ settings, connected = true, onSettingsUpdated, onDirtyChange, onBusyChange }: {
-  settings: MocoSettingsView; connected?: boolean; onSettingsUpdated: (settings: MocoSettingsView) => void;
+  settings: KuloSettingsView; connected?: boolean; onSettingsUpdated: (settings: KuloSettingsView) => void;
   onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void;
 }) {
   useI18n();
@@ -196,7 +196,7 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
     if (!connected) return;
     let alive = true;
     setLoading(true);
-    void mocoRest.getMemoryService().then((next) => { if (alive) { setSnapshot((current) => current && current.revision > next.revision ? current : next); setLoadError(undefined); } }, (cause) => { if (alive) setLoadError(redactSecrets(cause instanceof Error ? cause.message : t("读取服务失败", "Failed to load service"))); }).finally(() => { if (alive) setLoading(false); });
+    void kuloRest.getMemoryService().then((next) => { if (alive) { setSnapshot((current) => current && current.revision > next.revision ? current : next); setLoadError(undefined); } }, (cause) => { if (alive) setLoadError(redactSecrets(cause instanceof Error ? cause.message : t("读取服务失败", "Failed to load service"))); }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [connected, settings.blocks.memory.revision, refresh]);
   useEffect(() => {
@@ -206,9 +206,9 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
     window.addEventListener(MEMORY_CONNECTION_FOCUS_EVENT, focus);
     return () => { window.removeEventListener(MEMORY_SERVICE_CHANGED_EVENT, changed); window.removeEventListener(MEMORY_CONNECTION_FOCUS_EVENT, focus); };
   }, []);
-  const reset = (next?: MocoSettingsView) => { if (next) { rememberMemory(next.blocks.memory); setEnabledError(undefined); setEnabledRetry(undefined); } setEditor(memoryConnectionEditor(next?.blocks.memory ?? savedMemoryRef.current)); setError(undefined); setProbe(undefined); };
+  const reset = (next?: KuloSettingsView) => { if (next) { rememberMemory(next.blocks.memory); setEnabledError(undefined); setEnabledRetry(undefined); } setEditor(memoryConnectionEditor(next?.blocks.memory ?? savedMemoryRef.current)); setError(undefined); setProbe(undefined); };
   const syncEnabled = async () => {
-    const latest = await mocoRest.getSettings();
+    const latest = await kuloRest.getSettings();
     rememberMemory(latest.blocks.memory);
     setEditor((current) => reconcileMemoryConnection(current, latest.blocks.memory));
     onSettingsUpdated(latest);
@@ -235,7 +235,7 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
     } catch (cause) {
       const message = redactSecrets(cause instanceof Error ? cause.message : t("更新启用状态失败", "Failed to update enabled state"));
       setEnabledError(committed ? t(`启用状态已更新，读取最新配置失败：${message}`, `Enabled state updated; failed to load settings: ${message}`) : message);
-      setEnabledRetry(committed || cause instanceof MocoApiError && cause.code === "memory_revision_conflict" ? "sync" : { enabled, revision: saved.revision });
+      setEnabledRetry(committed || cause instanceof KuloApiError && cause.code === "memory_revision_conflict" ? "sync" : { enabled, revision: saved.revision });
     } finally { pendingRef.current = false; setPending(undefined); }
   };
   const retryEnabled = async () => {
@@ -252,7 +252,7 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
     if (pendingRef.current || !connected) return;
     pendingRef.current = true;
     setPending("reload");
-    try { const latest = await mocoRest.getSettings(); reset(latest); onSettingsUpdated(latest); setRefresh((value) => value + 1); }
+    try { const latest = await kuloRest.getSettings(); reset(latest); onSettingsUpdated(latest); setRefresh((value) => value + 1); }
     catch (cause) { setError(redactSecrets(cause instanceof Error ? cause.message : t("读取配置失败", "Failed to load settings"))); }
     finally { pendingRef.current = false; setPending(undefined); }
   };
@@ -263,7 +263,7 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
     const draft = { ...editor.draft, enabled: savedMemoryRef.current.value.enabled };
     try {
       const request = createMemoryConnectionRequest(draft, editor.revision);
-      const result = probeOnly ? await mocoRest.probeMemoryConnection(request) : await mocoRest.saveMemoryConnection(request);
+      const result = probeOnly ? await kuloRest.probeMemoryConnection(request) : await kuloRest.saveMemoryConnection(request);
       setSnapshot(result.service);
       setLoadError(undefined);
       setError(undefined);

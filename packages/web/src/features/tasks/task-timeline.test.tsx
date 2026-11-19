@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { ChatDisplayItem } from "@moco/protocol";
+import type { ChatDisplayItem } from "@kulo/protocol";
 import { TaskTimeline } from "./task-timeline";
 import { taskTimeline, toolActionSummary } from "./task-timeline-model";
 import { taskPreviewDocument } from "./task-deliverables";
@@ -41,7 +41,7 @@ describe("compact task timeline", () => {
     expect(html).toContain("wc -c index.html");
     expect(html).toContain("读取失败");
     expect(html).not.toContain("mc-user-message");
-    expect(html).not.toContain("moco-message-footer");
+    expect(html).not.toContain("kulo-message-footer");
     expect(html).not.toContain("已返回");
     expect(html).toContain("data-error=\"true\"");
   });

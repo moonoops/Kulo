@@ -26,10 +26,10 @@ async function isRunning(bundle) {
 
 async function stopInstalledApp(bundle, dataDir) {
   if (!await isRunning(bundle)) return;
-  await run(path.join(bundle, `Contents/MacOS/${APP_NAME}`), ["--moco-quit", "--moco-data-dir=" + dataDir], { timeout: 20_000 });
+  await run(path.join(bundle, `Contents/MacOS/${APP_NAME}`), ["--kulo-quit", "--kulo-data-dir=" + dataDir], { timeout: 20_000 });
   const deadline = Date.now() + 20_000;
   while (await isRunning(bundle)) {
-    if (Date.now() >= deadline) throw new Error("Moco Dev 仍在保存任务，请退出应用后重新安装。");
+    if (Date.now() >= deadline) throw new Error("Kulo Dev 仍在保存任务，请退出应用后重新安装。");
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 }
@@ -43,7 +43,7 @@ export async function installMacApp(options = {}) {
   await verifyMacApp(source);
   const sourceRoot = path.join(source, "Contents/Resources/app");
   const sourceRequire = createRequire(path.join(sourceRoot, "package.json"));
-  const recoveryApi = await import(pathToFileURL(sourceRequire.resolve("@moco/recovery")).href);
+  const recoveryApi = await import(pathToFileURL(sourceRequire.resolve("@kulo/recovery")).href);
   const manager = new recoveryApi.RecoveryManager(dataDir);
   let oldIdentity;
   const previous = await exists(destination);
@@ -55,7 +55,7 @@ export async function installMacApp(options = {}) {
     if (stdout.trim() !== APP_ID) throw new Error(`${destination} 已存在其他应用，未执行覆盖。`);
     await stopInstalledApp(destination, dataDir);
     const oldRoot = path.join(destination, "Contents/Resources/app");
-    if (await exists(path.join(oldRoot, "moco-release.identity.json"))) oldIdentity = recoveryApi.readReleaseIdentity(oldRoot);
+    if (await exists(path.join(oldRoot, "kulo-release.identity.json"))) oldIdentity = recoveryApi.readReleaseIdentity(oldRoot);
   }
   const staged = path.join(path.dirname(destination), `.${APP_NAME}.install-${randomUUID()}.app`);
   const backup = path.join(path.dirname(destination), `.${APP_NAME}.backup-${Date.now()}.app`);
@@ -81,7 +81,7 @@ export async function installMacApp(options = {}) {
     if (installed) await fs.rm(destination, { recursive: true, force: true });
     if (movedPrevious) await fs.rename(backup, destination);
     if (relocated) await manager.relocateRelease(oldIdentity.id, path.join(destination, "Contents/Resources/app"));
-    await fs.rm(backup + ".moco-backup.json", { force: true });
+    await fs.rm(backup + ".kulo-backup.json", { force: true });
     throw error;
   } finally {
     await fs.rm(staged, { recursive: true, force: true });
@@ -95,13 +95,13 @@ export async function installMacApp(options = {}) {
   }
   console.log(`已安装：${destination}`);
   if (movedPrevious) console.log(`旧版本备份：${backup}`);
-  if (options.launch) await run("/usr/bin/open", ["-a", destination, "--args", "--moco-data-dir=" + dataDir]);
+  if (options.launch) await run("/usr/bin/open", ["-a", destination, "--args", "--kulo-data-dir=" + dataDir]);
   return destination;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   installMacApp({ launch: process.argv.includes("--launch") }).catch((error) => {
-    console.error(error instanceof Error ? error.message : "Moco Dev 安装失败。");
+    console.error(error instanceof Error ? error.message : "Kulo Dev 安装失败。");
     process.exitCode = 1;
   });
 }

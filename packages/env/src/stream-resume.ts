@@ -1,7 +1,7 @@
 import {
   DEVICE_UNACKED_MAX_BYTES,
   STREAM_UNACKED_MAX_BYTES,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 
 const ACK_FRAME_THRESHOLD = 16;
 const ACK_BYTE_THRESHOLD = 64 * 1024;

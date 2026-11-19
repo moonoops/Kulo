@@ -198,7 +198,7 @@ function buildRawDetail(input: FriendlyErrorInput): string | undefined {
 /**
  * Translate raw Hub / pi-durable / upstream gateway errors into friendly Chinese diagnostics.
  */
-export function describeMocoError(input: FriendlyErrorInput): FriendlyErrorDescriptor {
+export function describeKuloError(input: FriendlyErrorInput): FriendlyErrorDescriptor {
   const reason = input.reason?.trim();
   const detail = input.detail?.trim();
   const rawMessage = input.rawMessage?.trim();

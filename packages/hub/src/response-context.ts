@@ -31,7 +31,7 @@ export function resolveResponseContext(entries: readonly EntryRecord[]): { respo
       const toolCalls = message.content.filter((part) => part.type === "toolCall");
       for (const call of toolCalls) {
         calls.set(call.id, currentResponseId);
-        if (call.name === "moco_publish_asset") {
+        if (call.name === "kulo_publish_asset") {
           const sourceCallId = `asset:${hash([Number(entry.conversationId), call.id])}`;
           legacyAssets.set(`asset_${hash([Number(entry.conversationId), sourceCallId]).slice(0, 32)}`, currentResponseId);
         }

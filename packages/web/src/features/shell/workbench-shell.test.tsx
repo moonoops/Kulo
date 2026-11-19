@@ -82,7 +82,7 @@ describe("shared window toolbar", () => {
     const html = renderShell("expanded");
     expect(html.includes('data-native-titlebar="true"')).toBe(native);
     expect(html.match(/<header\b/g)).toHaveLength(1);
-    expect(html).not.toContain('class="moco-window-titlebar" aria-hidden');
+    expect(html).not.toContain('class="kulo-window-titlebar" aria-hidden');
   });
 
   it("renders an accessible vertical separator and applies clamped custom width when rightResize is active", () => {
@@ -102,14 +102,14 @@ describe("shared window toolbar", () => {
     const controlsId = separator?.match(/aria-controls="([^"]+)"/)?.[1];
     expect(controlsId).toBeTruthy();
     expect(html).toContain(`<aside id="${controlsId}"`);
-    expect(html).toContain("--moco-rail-custom-width:640px");
+    expect(html).toContain("--kulo-rail-custom-width:640px");
 
     // Oversized saved width is clamped to viewport bounds without breaking layout
     const clampedHtml = renderShell("expanded", false, false, {
       settingsMode: true,
       rightResize: { width: 900, onWidthChange: () => {} },
     });
-    expect(clampedHtml).toContain("--moco-rail-custom-width:792px");
+    expect(clampedHtml).toContain("--kulo-rail-custom-width:792px");
     expect(clampedHtml).toContain('aria-valuenow="792"');
   });
 
@@ -129,10 +129,10 @@ describe("shared window toolbar", () => {
       rightResize: { width: 520, onWidthChange: () => {} },
     });
     expect(medium).not.toContain('role="separator"');
-    expect(medium).not.toContain("--moco-rail-custom-width");
+    expect(medium).not.toContain("--kulo-rail-custom-width");
 
     const conversation = renderShell("expanded", false, false);
     expect(conversation).not.toContain('role="separator"');
-    expect(conversation).not.toContain("--moco-rail-custom-width");
+    expect(conversation).not.toContain("--kulo-rail-custom-width");
   });
 });

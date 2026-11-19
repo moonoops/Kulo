@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
-declare const MOCO_WINDOWS_SANDBOX_SOURCE: string | undefined;
+declare const KULO_WINDOWS_SANDBOX_SOURCE: string | undefined;
 
 export interface WindowsSandboxOptions {
   workspaceDir: string;
@@ -98,8 +98,8 @@ function nativePowerShell(): string {
 }
 
 function privateControlDirectory(): string {
-  if (process.platform !== "win32") return fs.mkdtempSync(path.join(os.tmpdir(), "moco-windows-control-"));
-  const directory = localWindowsPath(path.join(os.tmpdir(), `moco-windows-control-${randomUUID()}`));
+  if (process.platform !== "win32") return fs.mkdtempSync(path.join(os.tmpdir(), "kulo-windows-control-"));
+  const directory = localWindowsPath(path.join(os.tmpdir(), `kulo-windows-control-${randomUUID()}`));
   const encodedPath = Buffer.from(directory, "utf8").toString("base64");
   // Windows ignores mkdir's POSIX mode. Create with a protected DACL atomically, before writing code;
   // a previous Worker may already have Modify access to the surrounding temporary directory.
@@ -107,7 +107,7 @@ function privateControlDirectory(): string {
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
-public static class MocoPrivateControlDirectory {
+public static class KuloPrivateControlDirectory {
   [StructLayout(LayoutKind.Sequential)] public struct Attributes { public int Length; public IntPtr Descriptor; public int Inherit; }
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool CreateDirectory(string path, ref Attributes attributes);
 }
@@ -119,11 +119,11 @@ $bytes=$security.GetSecurityDescriptorBinaryForm()
 $memory=[Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
 try {
   [Runtime.InteropServices.Marshal]::Copy($bytes,0,$memory,$bytes.Length)
-  $attributes=New-Object MocoPrivateControlDirectory+Attributes
+  $attributes=New-Object KuloPrivateControlDirectory+Attributes
   $attributes.Length=[Runtime.InteropServices.Marshal]::SizeOf($attributes)
   $attributes.Descriptor=$memory
   $directory=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPath}'))
-  if(-not [MocoPrivateControlDirectory]::CreateDirectory($directory,[ref]$attributes)) { throw (New-Object ComponentModel.Win32Exception([Runtime.InteropServices.Marshal]::GetLastWin32Error())) }
+  if(-not [KuloPrivateControlDirectory]::CreateDirectory($directory,[ref]$attributes)) { throw (New-Object ComponentModel.Win32Exception([Runtime.InteropServices.Marshal]::GetLastWin32Error())) }
 } finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($memory) }
 `;
   const result = spawnSync(nativePowerShell(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(source, "utf16le").toString("base64")], {
@@ -134,8 +134,8 @@ try {
 }
 
 function launcherCommand(policyArgument: string): readonly string[] {
-  const source = typeof MOCO_WINDOWS_SANDBOX_SOURCE === "string"
-    ? MOCO_WINDOWS_SANDBOX_SOURCE
+  const source = typeof KULO_WINDOWS_SANDBOX_SOURCE === "string"
+    ? KULO_WINDOWS_SANDBOX_SOURCE
     : fs.readFileSync(fileURLToPath(new URL("../native/windows-sandbox.ps1", import.meta.url)), "utf8");
   const directory = privateControlDirectory();
   const script = path.join(directory, "windows-sandbox.ps1");

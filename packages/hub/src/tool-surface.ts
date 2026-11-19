@@ -10,7 +10,7 @@ import {
   ANDROID_TOOL_CATALOG,
   type EnvNodeDescriptor,
   type SettingsAssistantModule,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 
 export type ToolSurfaceAudience =
   | "chat"
@@ -147,14 +147,14 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
 
   // 3. Orchestrator Dispatch & Ticket Control
   {
-    name: "moco_dispatch",
+    name: "kulo_dispatch",
     audiences: ALL_ORCHESTRATOR,
     tier: "resident",
     tierFor: (s) => (s.audience === "settings" ? "deferred" : "resident"),
     scope: "global",
   },
   {
-    name: "moco_status",
+    name: "kulo_status",
     audiences: ALL_ORCHESTRATOR,
     tier: "resident",
     tierFor: (s) =>
@@ -166,14 +166,14 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     scope: "global",
   },
   {
-    name: "moco_steer",
+    name: "kulo_steer",
     audiences: ALL_ORCHESTRATOR,
     tier: "resident",
     tierFor: (s) => (s.audience === "settings" ? "deferred" : "resident"),
     scope: "global",
   },
   {
-    name: "moco_stop",
+    name: "kulo_stop",
     audiences: ALL_ORCHESTRATOR,
     tier: "resident",
     tierFor: (s) =>
@@ -185,37 +185,37 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     scope: "global",
   },
   {
-    name: "moco_inspect",
+    name: "kulo_inspect",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     scope: "global",
   },
   {
-    name: "moco_close",
+    name: "kulo_close",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     scope: "global",
   },
   {
-    name: "moco_external_permission",
+    name: "kulo_external_permission",
     audiences: ALL_ORCHESTRATOR,
     tier: "event",
     scope: "global",
   },
   {
-    name: "moco_inspect_staged_diff",
+    name: "kulo_inspect_staged_diff",
     audiences: ALL_ORCHESTRATOR,
     tier: "event",
     scope: "global",
   },
   {
-    name: "moco_apply_staged_changes",
+    name: "kulo_apply_staged_changes",
     audiences: ALL_ORCHESTRATOR,
     tier: "event",
     scope: "global",
   },
   {
-    name: "moco_identity_read",
+    name: "kulo_identity_read",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     tierFor: (s) =>
@@ -223,7 +223,7 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     scope: "global",
   },
   {
-    name: "moco_identity_propose",
+    name: "kulo_identity_propose",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     tierFor: (s) =>
@@ -231,7 +231,7 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     scope: "global",
   },
   {
-    name: "moco_relationship_update",
+    name: "kulo_relationship_update",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     tierFor: (s) =>
@@ -239,13 +239,13 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     scope: "global",
   },
   {
-    name: "moco_expression",
+    name: "kulo_expression",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     scope: "global",
   },
   {
-    name: "moco_device_invite",
+    name: "kulo_device_invite",
     audiences: ["chat"],
     tier: "deferred",
     scope: "global",
@@ -254,32 +254,32 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
 
   // 4. Worker Lifecycle & Computer Use
   {
-    name: "moco_report",
+    name: "kulo_report",
     audiences: ["computer-worker", "android-worker"],
     tier: "resident",
     scope: "global",
   },
   {
-    name: "moco_wait",
+    name: "kulo_wait",
     audiences: ["computer-worker", "android-worker"],
     tier: "resident",
     scope: "global",
   },
   {
-    name: "moco_subagent",
+    name: "kulo_subagent",
     audiences: ["computer-worker", "android-worker"],
     tier: "resident",
     scope: "global",
     requires: (s) => Boolean(s.allowSubagents),
   },
   {
-    name: "moco_browser",
+    name: "kulo_browser",
     audiences: ["chat", ...ALL_COMPUTER_WORKERS],
     tier: "deferred",
     scope: "global",
   },
   {
-    name: "moco_desktop",
+    name: "kulo_desktop",
     audiences: ALL_COMPUTER_WORKERS,
     tier: "deferred",
     scope: "global",
@@ -287,19 +287,19 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
 
   // 5. UI Cards & Artifact Publication
   {
-    name: "moco_ui_show",
+    name: "kulo_ui_show",
     audiences: ALL_ORCHESTRATOR,
     tier: "resident",
     scope: "global",
   },
   {
-    name: "moco_ui_update",
+    name: "kulo_ui_update",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     scope: "global",
   },
   {
-    name: "moco_publish_asset",
+    name: "kulo_publish_asset",
     audiences: CHAT_SETTINGS_COMPUTER,
     tier: "event",
     tierFor: (s) =>
@@ -307,7 +307,7 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     scope: "global",
   },
   {
-    name: "moco_inspect_asset",
+    name: "kulo_inspect_asset",
     audiences: ALL_ORCHESTRATOR,
     tier: "event",
     scope: "global",
@@ -315,13 +315,13 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
 
   // 6. Skills
   {
-    name: "moco_skill_read",
+    name: "kulo_skill_read",
     audiences: CHAT_SETTINGS_COMPUTER,
     tier: "resident",
     scope: "global",
   },
   {
-    name: "moco_skill_materialize",
+    name: "kulo_skill_materialize",
     audiences: ALL_COMPUTER_WORKERS,
     tier: "deferred",
     scope: "global",
@@ -329,16 +329,16 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
 
   // 7. Projects & Conversations
   ...[
-    "moco_projects",
-    "moco_project_conversations",
-    "moco_project_create",
-    "moco_project_update",
-    "moco_project_delete",
-    "moco_project_restore",
-    "moco_conversation_rename",
-    "moco_conversation_move",
-    "moco_conversation_restore",
-    "moco_project_history",
+    "kulo_projects",
+    "kulo_project_conversations",
+    "kulo_project_create",
+    "kulo_project_update",
+    "kulo_project_delete",
+    "kulo_project_restore",
+    "kulo_conversation_rename",
+    "kulo_conversation_move",
+    "kulo_conversation_restore",
+    "kulo_project_history",
   ].map(
     (name): ToolSurfaceEntry => ({
       name,
@@ -350,13 +350,13 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
 
   // 8. Persisted History
   {
-    name: "moco_history_search",
+    name: "kulo_history_search",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     scope: "global",
   },
   {
-    name: "moco_history_read",
+    name: "kulo_history_read",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     scope: "global",
@@ -364,7 +364,7 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
 
   // 9. Connections
   {
-    name: "moco_connections",
+    name: "kulo_connections",
     audiences: CHAT_SETTINGS_COMPUTER,
     tier: "deferred",
     tierFor: (s) =>
@@ -372,31 +372,31 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     scope: "global",
   },
   {
-    name: "moco_connection_use",
+    name: "kulo_connection_use",
     audiences: CHAT_SETTINGS_COMPUTER,
     tier: "deferred",
     scope: "global",
   },
   {
-    name: "moco_connection_request",
+    name: "kulo_connection_request",
     audiences: ALL_COMPUTER_WORKERS,
     tier: "deferred",
     scope: "global",
   },
   {
-    name: "moco_connection_decide",
+    name: "kulo_connection_decide",
     audiences: ALL_ORCHESTRATOR,
     tier: "event",
     scope: "global",
   },
   {
-    name: "moco_connection_grant",
+    name: "kulo_connection_grant",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     scope: "global",
   },
   {
-    name: "moco_connection_describe",
+    name: "kulo_connection_describe",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     tierFor: (s) =>
@@ -406,10 +406,10 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
 
   // 10. Media, Speech & Workspace Export
   ...[
-    "moco_media_capabilities",
-    "moco_generate_image",
-    "moco_generate_video",
-    "moco_media_job",
+    "kulo_media_capabilities",
+    "kulo_generate_image",
+    "kulo_generate_video",
+    "kulo_media_job",
   ].map(
     (name): ToolSurfaceEntry => ({
       name,
@@ -419,14 +419,14 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     }),
   ),
   {
-    name: "moco_synthesize_speech",
+    name: "kulo_synthesize_speech",
     audiences: CHAT_SETTINGS_COMPUTER,
     tier: "deferred",
     scope: "global",
     requires: (s) => s.ttsEnabled && !s.readOnly,
   },
   {
-    name: "moco_media_export",
+    name: "kulo_media_export",
     audiences: ALL_COMPUTER_WORKERS,
     tier: "deferred",
     scope: "global",
@@ -492,14 +492,14 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
 
   // 12. Managed Desktop Customization & Official Update
   {
-    name: "moco_customization",
+    name: "kulo_customization",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     scope: "global",
     requires: (s) => s.customizationEnabled,
   },
   {
-    name: "moco_official_update",
+    name: "kulo_official_update",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     scope: "global",
@@ -508,14 +508,14 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
 
   // 13. Global Settings Tools (discoverable in main chat; preloaded in Settings)
   {
-    name: "moco_settings_read",
+    name: "kulo_settings_read",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     tierFor: (s) => (s.audience === "settings" ? "resident" : "deferred"),
     scope: "global",
   },
   {
-    name: "moco_settings_update",
+    name: "kulo_settings_update",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     tierFor: (s) =>
@@ -528,14 +528,14 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     scope: "global",
   },
   {
-    name: "moco_settings_navigate",
+    name: "kulo_settings_navigate",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     tierFor: (s) => (s.audience === "settings" ? "resident" : "deferred"),
     scope: "global",
   },
   {
-    name: "moco_settings_appearance",
+    name: "kulo_settings_appearance",
     audiences: ALL_ORCHESTRATOR,
     tier: "deferred",
     tierFor: (s) =>
@@ -545,26 +545,26 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
 
   // 14. Window-Scoped Settings Tools (`scope: "window"`, strictly forbidden outside `settings`)
   {
-    name: "moco_connection_prepare",
+    name: "kulo_connection_prepare",
     audiences: ["settings"],
     tier: "deferred",
     tierFor: (s) => (s.settingsModule === "connections" ? "resident" : "deferred"),
     scope: "window",
   },
   {
-    name: "moco_settings_remove_connection",
+    name: "kulo_settings_remove_connection",
     audiences: ["settings"],
     tier: "deferred",
     tierFor: (s) => (s.settingsModule === "models" ? "resident" : "deferred"),
     scope: "window",
   },
   ...[
-    "moco_model_metadata_lookup",
-    "moco_model_calibrate",
-    "moco_model_configuration_read",
-    "moco_model_configuration_prepare",
-    "moco_model_configuration_discover",
-    "moco_model_configuration_update",
+    "kulo_model_metadata_lookup",
+    "kulo_model_calibrate",
+    "kulo_model_configuration_read",
+    "kulo_model_configuration_prepare",
+    "kulo_model_configuration_discover",
+    "kulo_model_configuration_update",
   ].map(
     (name): ToolSurfaceEntry => ({
       name,
@@ -575,16 +575,16 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     }),
   ),
   ...[
-    "moco_agent_configuration_read",
-    "moco_agent_configuration_prepare",
-    "moco_agent_configuration_update",
-    "moco_agent_configuration_detect",
-    "moco_agent_configuration_probe",
-    "moco_agent_configuration_authenticate",
-    "moco_agent_configuration_verify",
-    "moco_agent_configuration_save",
-    "moco_agent_configuration_remove",
-    "moco_agent_configuration_cancel",
+    "kulo_agent_configuration_read",
+    "kulo_agent_configuration_prepare",
+    "kulo_agent_configuration_update",
+    "kulo_agent_configuration_detect",
+    "kulo_agent_configuration_probe",
+    "kulo_agent_configuration_authenticate",
+    "kulo_agent_configuration_verify",
+    "kulo_agent_configuration_save",
+    "kulo_agent_configuration_remove",
+    "kulo_agent_configuration_cancel",
   ].map(
     (name): ToolSurfaceEntry => ({
       name,
@@ -595,28 +595,28 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     }),
   ),
   ...[
-    "moco_capabilities_read",
-    "moco_capability_configure",
-    "moco_image_models_discover",
-    "moco_image_models_import",
-    "moco_image_draft",
-    "moco_image_routing",
-    "moco_capability_manage",
-    "moco_capability_input",
-    "moco_skill_manage",
-    "moco_extension_manage",
+    "kulo_capabilities_read",
+    "kulo_capability_configure",
+    "kulo_image_models_discover",
+    "kulo_image_models_import",
+    "kulo_image_draft",
+    "kulo_image_routing",
+    "kulo_capability_manage",
+    "kulo_capability_input",
+    "kulo_skill_manage",
+    "kulo_extension_manage",
   ].map(
     (name): ToolSurfaceEntry => ({
       name,
       audiences: ["settings"],
-      tier: name === "moco_capabilities_read" || name === "moco_capability_configure" || name === "moco_image_draft" ? "resident" : "deferred",
+      tier: name === "kulo_capabilities_read" || name === "kulo_capability_configure" || name === "kulo_image_draft" ? "resident" : "deferred",
       scope: "window",
       windowGuard: (s) => s.settingsModule === "capabilities",
     }),
   ),
   ...[
-    "moco_memory_service_read",
-    "moco_memory_service_prepare",
+    "kulo_memory_service_read",
+    "kulo_memory_service_prepare",
   ].map(
     (name): ToolSurfaceEntry => ({
       name,
@@ -627,17 +627,17 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     }),
   ),
   {
-    name: "moco_appearance_propose",
+    name: "kulo_appearance_propose",
     audiences: ["settings"],
     tier: "resident",
     scope: "window",
     windowGuard: (s) => s.settingsModule === "appearance",
   },
   ...[
-    "moco_devices_manage",
-    "moco_devices_ssh_scan",
-    "moco_devices_join",
-    "moco_devices_leave",
+    "kulo_devices_manage",
+    "kulo_devices_ssh_scan",
+    "kulo_devices_join",
+    "kulo_devices_leave",
   ].map(
     (name): ToolSurfaceEntry => ({
       name,
@@ -750,10 +750,10 @@ export function resolveSurfaceTools(
 const SETTINGS_DEFERRED_KEYWORDS: Readonly<Record<string, string>> = {
   web_fetch: "抓取网页 读取链接 URL",
   web_search: "联网搜索 网页查询",
-  moco_dispatch: "派单 后台工单 执行任务",
-  moco_status: "查看工单状态 当前时间 定时队列",
-  moco_steer: "催办工单 补充指令 回复问题",
-  moco_stop: "停止工单 终止任务",
+  kulo_dispatch: "派单 后台工单 执行任务",
+  kulo_status: "查看工单状态 当前时间 定时队列",
+  kulo_steer: "催办工单 补充指令 回复问题",
+  kulo_stop: "停止工单 终止任务",
   hindsight_retain: "保存记忆 写入长期记忆",
   hindsight_recall: "回忆 检索长期记忆",
 };
@@ -764,7 +764,7 @@ const SETTINGS_DEFERRED_KEYWORDS: Readonly<Record<string, string>> = {
  */
 export function createSettingsTierExtension() {
   return defineExtension({
-    name: "moco-settings-tier",
+    name: "kulo-settings-tier",
     wraps: [
       { tool: "read", wrap: (tool: ToolRegistration): ToolRegistration => ({ ...tool, deferred: true }) },
       ...Object.entries(SETTINGS_DEFERRED_KEYWORDS).map(([name, kw]) => ({
@@ -775,7 +775,7 @@ export function createSettingsTierExtension() {
           description: tool.description.includes(kw) ? tool.description : `${tool.description} (${kw})`,
         }),
       })),
-      ...["moco_settings_read", "moco_settings_navigate"].map((name) => ({
+      ...["kulo_settings_read", "kulo_settings_navigate"].map((name) => ({
         tool: name,
         wrap: (tool: ToolRegistration): ToolRegistration => {
           const { deferred: _deferred, ...resident } = tool;
@@ -792,7 +792,7 @@ export function createSettingsTierExtension() {
  */
 export function createComputerMixedAndroidTierExtension() {
   return defineExtension({
-    name: "moco-computer-mixed-android-tier",
+    name: "kulo-computer-mixed-android-tier",
     wraps: ANDROID_INITIAL_TOOLS.map((name) => ({
       tool: name,
       wrap: (tool: ToolRegistration): ToolRegistration => ({ ...tool, deferred: true }),
@@ -805,7 +805,7 @@ export function createComputerMixedAndroidTierExtension() {
  */
 export function resolveSettingsPreloadedTools(state: ToolSurfaceRuntimeState): string[] {
   if (state.audience !== "settings") return [];
-  const alwaysResident = new Set(["moco_settings_read", "moco_settings_navigate"]);
+  const alwaysResident = new Set(["kulo_settings_read", "kulo_settings_navigate"]);
   const preloaded: string[] = [];
   for (const entry of TOOL_SURFACE_ENTRIES) {
     if (alwaysResident.has(entry.name)) continue;
@@ -815,7 +815,7 @@ export function resolveSettingsPreloadedTools(state: ToolSurfaceRuntimeState): s
     }
     if (
       state.settingsModule === "schedules" &&
-      (entry.name === "moco_status" || entry.name === "moco_stop")
+      (entry.name === "kulo_status" || entry.name === "kulo_stop")
     ) {
       if (!preloaded.includes(entry.name)) preloaded.push(entry.name);
     }

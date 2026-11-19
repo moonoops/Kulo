@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MessageActions, messageQuote } from "./message-actions";
 import { ConnectedMessageContent } from "./connected-message-content";
-import type { ChatAttachment, ChatDisplayItem } from "@moco/protocol";
+import type { ChatAttachment, ChatDisplayItem } from "@kulo/protocol";
 
 const asset: ChatAttachment = { id: "photo", name: "参考图.png", mimeType: "image/png", size: 64, kind: "image", url: "/api/uploads/photo" };
 const voiceState = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
@@ -20,7 +20,7 @@ describe("message footer action sizing", () => {
   function expectCaptionActions(buttons: string[], count: number) {
     expect(buttons).toHaveLength(count);
     for (const button of buttons) {
-      expect(button.match(/\bclass="([^"]*)"/)?.[1]?.split(/\s+/)).toContain("moco-message-action");
+      expect(button.match(/\bclass="([^"]*)"/)?.[1]?.split(/\s+/)).toContain("kulo-message-action");
     }
   }
 
@@ -40,7 +40,7 @@ describe("message footer action sizing", () => {
     };
     const html = renderToStaticMarkup(<MessageActions item={item} onReply={() => {}}><p>{item.text}</p></MessageActions>);
     expectCaptionActions(actionButtons(html), 3);
-    expect(html).toContain("moco-message-action-icon");
+    expect(html).toContain("kulo-message-action-icon");
   });
 });
 

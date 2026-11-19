@@ -4,7 +4,7 @@ import { createPublicKey, createHash, randomUUID, verify } from "node:crypto";
 import { constants, createWriteStream } from "node:fs";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { verifyRelease, validateReleaseManifest, type RecoveryReleaseManifest } from "@moco/recovery";
+import { verifyRelease, validateReleaseManifest, type RecoveryReleaseManifest } from "@kulo/recovery";
 import {
   CustomizationError, customizationCommand, customizationIdentifier, customizationSourceFile,
   type CustomizationFileChange,
@@ -55,7 +55,7 @@ export async function readSignedCustomizationUpdate(options: {
   const directory = path.join(await fs.realpath(options.inboxRoot), options.packageName);
   const directoryStat = await fs.lstat(directory);
   if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) throw new CustomizationError("update_package_invalid", "更新包不是受管目录。");
-  const descriptor = path.join(directory, "moco-update.json"), stat = await fs.lstat(descriptor);
+  const descriptor = path.join(directory, "kulo-update.json"), stat = await fs.lstat(descriptor);
   if (!stat.isFile() || stat.isSymbolicLink()) throw new CustomizationError("update_package_invalid", "更新签名清单无效。");
   if (stat.size > MAX_UPDATE_DESCRIPTOR_BYTES) throw new CustomizationError("update_manifest_limit", "更新清单过大。");
   const envelope = signedEnvelope(JSON.parse(await fs.readFile(descriptor, "utf8")), options.trustedKeys);
@@ -105,7 +105,7 @@ export async function fetchSignedCustomizationUpdate(options: {
   const temporary = path.join(options.inboxRoot, ".download-" + randomUUID()), payload = path.join(temporary, "payload");
   await fs.mkdir(temporary, { mode: 0o700 });
   try {
-    await fs.writeFile(path.join(temporary, ".moco-owned-download.json"), JSON.stringify({ formatVersion: 1,
+    await fs.writeFile(path.join(temporary, ".kulo-owned-download.json"), JSON.stringify({ formatVersion: 1,
       ownerId: options.ownerId ?? "standalone", ownerPid: process.pid, createdAt: Date.now() }), { mode: 0o600, flag: "wx" });
     await fs.mkdir(payload, { mode: 0o700 });
     const files = envelope.manifest.files.filter((file) => file.kind === "file");
@@ -136,7 +136,7 @@ export async function fetchSignedCustomizationUpdate(options: {
       await fs.symlink(file.target!, target);
     }
     await verifyRelease(payload, envelope.manifest, { full: true });
-    await fs.writeFile(path.join(temporary, "moco-update.json"), JSON.stringify(envelope), { mode: 0o600, flag: "wx" });
+    await fs.writeFile(path.join(temporary, "kulo-update.json"), JSON.stringify(envelope), { mode: 0o600, flag: "wx" });
     await fs.rename(temporary, destination);
     return packageName;
   } finally { await fs.rm(temporary, { recursive: true, force: true }); }
@@ -158,7 +158,7 @@ export async function cleanupManagedCustomizationUpdates(options: { inboxRoot: s
     let descriptor: Awaited<ReturnType<typeof fs.open>> | undefined;
     let raw: unknown;
     try {
-      descriptor = await fs.open(path.join(root, ".moco-owned-download.json"), constants.O_RDONLY | constants.O_NOFOLLOW);
+      descriptor = await fs.open(path.join(root, ".kulo-owned-download.json"), constants.O_RDONLY | constants.O_NOFOLLOW);
       const stat = await descriptor.stat();
       if (!stat.isFile() || stat.size > 2000 || typeof process.getuid === "function" && stat.uid !== process.getuid()) continue;
       raw = JSON.parse(await descriptor.readFile("utf8"));

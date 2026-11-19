@@ -2,8 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { isIP } from "node:net";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { collectDeviceSystemInfo, type EnvManager } from "@moco/env";
-import { filterDeviceIps, formatDeviceInstallerInstructions, isDeviceSystemInfo, type DeviceInterconnectionView, type DeviceInvitation, type DevicePeerConfig, type DeviceSystemInfo, type EnvNodeDescriptor, type MobileConnectionMetadata, type MobileInvitation, type MobilePairingProfile, type MobilePublicProfile } from "@moco/protocol";
+import { collectDeviceSystemInfo, type EnvManager } from "@kulo/env";
+import { filterDeviceIps, formatDeviceInstallerInstructions, isDeviceSystemInfo, type DeviceInterconnectionView, type DeviceInvitation, type DevicePeerConfig, type DeviceSystemInfo, type EnvNodeDescriptor, type MobileConnectionMetadata, type MobileInvitation, type MobilePairingProfile, type MobilePublicProfile } from "@kulo/protocol";
 import type { DeviceSshRecord } from "./device-ssh.js";
 import type { ChatMessageSource } from "./chat-submissions.js";
 import { encodeMobileInvitation, isStoredMobileIdentity, isStoredMobileInvitation, MOBILE_INVITATION_TTL_MS, MOBILE_PAIRING_RECOVERY_TTL_MS, mobileSecretHash, MobilePairingValidationError, parseMobileInvitationInput, parseMobileMetadata, parseMobilePairingRequest, sameMobileHash, type StoredMobileInvitation } from "./mobile-pairing.js";
@@ -214,7 +214,7 @@ export class DeviceInterconnectionManager {
     const id = randomUUID(), deviceId = `device-${randomBytes(8).toString("hex")}`, token = secret();
     const expiresAt = Date.now() + 10 * 60_000;
     const name = deviceName(input.name, "新设备");
-    const rootDir = input.rootDir === undefined || input.rootDir === "" ? "~/Moco" : input.rootDir;
+    const rootDir = input.rootDir === undefined || input.rootDir === "" ? "~/Kulo" : input.rootDir;
     if (typeof rootDir !== "string" || rootDir.length > 4096 || /[\x00-\x1f]/.test(rootDir)) throw new DeviceConnectionError("工作目录无效。");
     this.#state.devices.push({ id: deviceId, name, kind: input.kind ?? "reverse-ws", rootDir, envToken: secret(), clientToken: secret() });
     this.#invites.set(id, { deviceId, tokenHash: digest(token), hubUrl, expiresAt });
@@ -271,7 +271,7 @@ export class DeviceInterconnectionManager {
     const id = randomUUID(), deviceId = `device-${randomBytes(8).toString("hex")}`, token = secret();
     const expiresAt = Date.now() + MOBILE_INVITATION_TTL_MS;
     const qrValue = mobileInput(() => encodeMobileInvitation({
-      kind: "moco.mobile.invite", version: 1, hubId: this.hubId, hubName: metadata.hubName,
+      kind: "kulo.mobile.invite", version: 1, hubId: this.hubId, hubName: metadata.hubName,
       invitationId: id, invitationToken: token, deviceId, expiresAt,
       spkiSHA256: metadata.spkiSHA256, candidates: metadata.candidates,
     }));

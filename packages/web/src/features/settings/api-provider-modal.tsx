@@ -1,4 +1,4 @@
-import { useI18n } from "../../moco-i18n";
+import { useI18n } from "../../kulo-i18n";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Alert,
@@ -16,15 +16,15 @@ import type {
   CustomProviderApi,
   DiscoverModelsRequest,
   ProviderModelItem,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import {
   inferModelPurpose,
   isConversationModel,
   isOfficialVertexBaseUrl,
   normalizeVertexConfig,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
-import { mocoRest } from "../../moco-api";
+import { kuloRest } from "../../kulo-api";
 import {
   CUSTOM_API_OPTIONS,
   MAINSTREAM_PRESETS,
@@ -238,7 +238,7 @@ export function ApiProviderModal({
       };
       const res: { ok: boolean; models: ProviderModelItem[]; error?: string } = params.mode === "subscription" && params.editingProviderId
         ? { ok: true, models: await onDiscoverSubscription(params.editingProviderId, controller.signal) }
-        : await mocoRest.discoverProviderModels(req, { signal: controller.signal });
+        : await kuloRest.discoverProviderModels(req, { signal: controller.signal });
       if (seq !== discoverSeqRef.current) return;
       setHasFetchedOnce(true);
       if (res.ok) {
@@ -428,7 +428,7 @@ export function ApiProviderModal({
       const targetOfficial = officialSource;
       const targetProviderId = active.mode !== "create" ? active.editingProviderId : undefined;
       const targetBaseUrl = baseUrl.trim();
-      void mocoRest.resolveModelMetadata({
+      void kuloRest.resolveModelMetadata({
         modelId: cleanId,
         api: targetApi,
         ...(targetProviderId ? { providerId: targetProviderId } : {}),
@@ -725,11 +725,11 @@ export function ApiProviderModal({
                 )}
               </Modal.Header>
 
-              <Modal.Body className="moco-form-stack">
+              <Modal.Body className="kulo-form-stack">
                 <div inert={saving} className="contents">
-                {!isSubscription && <div className="moco-form-grid">
+                {!isSubscription && <div className="kulo-form-grid">
                   {providerKind === "preset" && !isGateway ? (
-                    <Select className="moco-form-field"
+                    <Select className="kulo-form-field"
                       variant="secondary"
                       value={presetId}
                       onChange={(val) => val && handlePresetChange(String(val))}
@@ -752,13 +752,13 @@ export function ApiProviderModal({
                       </Select.Popover>
                     </Select>
                   ) : (
-                    <TextField className="moco-form-field" variant="secondary" value={name} onChange={setName} fullWidth>
+                    <TextField className="kulo-form-field" variant="secondary" value={name} onChange={setName} fullWidth>
                       <Label className="text-sm font-medium text-muted">{t("名称", "Name")}</Label>
                       <Input />
                     </TextField>
                   )}
 
-                  <TextField className="moco-form-field"
+                  <TextField className="kulo-form-field"
                     variant="secondary"
                     isRequired={isVertex && !retainsSavedKey}
                     type="password"
@@ -772,8 +772,8 @@ export function ApiProviderModal({
                 </div>}
 
                 {(providerKind === "third-party" || isGateway) && (
-                  <div className="moco-form-grid">
-                    <Select className="moco-form-field"
+                  <div className="kulo-form-grid">
+                    <Select className="kulo-form-field"
                       variant="secondary"
                       value={api}
                       onChange={(val) =>
@@ -802,7 +802,7 @@ export function ApiProviderModal({
                       </Select.Popover>
                     </Select>
 
-                    <TextField className="moco-form-field"
+                    <TextField className="kulo-form-field"
                       variant="secondary"
                       type="url"
                       value={baseUrl}
@@ -816,8 +816,8 @@ export function ApiProviderModal({
                 )}
 
                 {isVertex && (
-                  <div className="moco-form-grid">
-                    <TextField className="moco-form-field"
+                  <div className="kulo-form-grid">
+                    <TextField className="kulo-form-field"
                       variant="secondary"
                       value={vertexProject}
                       onChange={(value) => {
@@ -831,7 +831,7 @@ export function ApiProviderModal({
                       <Label className="text-sm font-medium text-muted">{t("项目 ID / 项目编号", "Project ID / number")}</Label>
                       <Input ref={vertexProjectRef} autoComplete="off" spellCheck={false} placeholder="my-project-123456" />
                     </TextField>
-                    <TextField className="moco-form-field"
+                    <TextField className="kulo-form-field"
                       variant="secondary"
                       value={vertexLocation}
                       onChange={(value) => {
@@ -872,7 +872,7 @@ export function ApiProviderModal({
                     <Tabs.Panel id="added" className="pt-3">{addedPane}</Tabs.Panel>
                   </Tabs>
                 ) : (
-                  <div className="moco-api-model-grid">{availablePane}{addedPane}</div>
+                  <div className="kulo-api-model-grid">{availablePane}{addedPane}</div>
                 )}
 
                 </div>

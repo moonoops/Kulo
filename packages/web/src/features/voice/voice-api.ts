@@ -1,6 +1,6 @@
-import type { MediaTranscript, VoiceCallSession, VoiceSettingsInput, VoiceSnapshot } from "@moco/protocol";
-import { translate as t } from "../../moco-i18n";
-import { apiRequest, ensureMediaSession, getAuthTokenFromUrl, MocoApiError } from "../../moco-api";
+import type { MediaTranscript, VoiceCallSession, VoiceSettingsInput, VoiceSnapshot } from "@kulo/protocol";
+import { translate as t } from "../../kulo-i18n";
+import { apiRequest, ensureMediaSession, getAuthTokenFromUrl, KuloApiError } from "../../kulo-api";
 
 export interface VoiceCallTarget { topicId: string; projectId?: string; title: string }
 
@@ -35,7 +35,7 @@ export const voiceApi = {
     });
     if (!response.ok) {
       const error = await response.json().catch(() => null) as { error?: string; code?: string } | null;
-      throw new MocoApiError(response.status, error?.error ?? t(`语音合成失败 (HTTP ${response.status})`, `Speech synthesis failed (HTTP ${response.status})`), error?.code);
+      throw new KuloApiError(response.status, error?.error ?? t(`语音合成失败 (HTTP ${response.status})`, `Speech synthesis failed (HTTP ${response.status})`), error?.code);
     }
     const blob = await response.blob();
     if (!blob.size || !blob.type.startsWith("audio/")) throw new Error(t("合成服务没有返回可播放的语音", "The synthesis service returned no playable audio"));

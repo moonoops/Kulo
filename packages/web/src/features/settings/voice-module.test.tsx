@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { VoiceSnapshot } from "@moco/protocol";
+import type { VoiceSnapshot } from "@kulo/protocol";
 import {
   selectCallModelOption,
   selectTtsModelOption,
@@ -12,7 +12,7 @@ import {
 } from "./voice-module";
 import { voiceTtsFingerprint } from "../voice/voice-context";
 import * as voiceContext from "../voice/voice-context";
-import { MocoComposer } from "../../moco-composer";
+import { KuloComposer } from "../../kulo-composer";
 import { VoiceMessage } from "../chat/voice-message";
 import type { ConfiguredPurposeModelOption } from "./settings-helpers";
 
@@ -78,7 +78,7 @@ describe("voice configuration", () => {
     const next = { ...snapshot, asr: { ...snapshot.asr, status: "unprepared" as const } };
     vi.spyOn(voiceContext, "useVoiceWorkspace").mockReturnValue({ snapshot: next, clientId: "voice-settings", call: { active: false } } as unknown as voiceContext.VoiceWorkspace);
     const html = renderToStaticMarkup(<VoiceModule connected />);
-    const statuses = [...html.matchAll(/<div class="moco-settings-section-title-group">([\s\S]*?)<\/div>/g)].map((match) => match[1]);
+    const statuses = [...html.matchAll(/<div class="kulo-settings-section-title-group">([\s\S]*?)<\/div>/g)].map((match) => match[1]);
     expect(statuses).toHaveLength(3);
     for (const status of statuses) {
       expect(status).toContain("<h2");
@@ -88,7 +88,7 @@ describe("voice configuration", () => {
     expect(statuses.join("")).toContain("已配置");
     expect(statuses.join("")).toContain("待验证");
     expect(statuses.join("")).not.toContain("通话可用");
-    const actions = [...html.matchAll(/<div class="moco-voice-settings-header-actions">([\s\S]*?)<\/div>/g)].map((match) => match[1]);
+    const actions = [...html.matchAll(/<div class="kulo-voice-settings-header-actions">([\s\S]*?)<\/div>/g)].map((match) => match[1]);
     expect(actions).toHaveLength(3);
     expect(actions.join("")).toContain("准备本地模型");
     expect(actions.join("")).toContain("试听音色");
@@ -121,8 +121,8 @@ describe("voice configuration", () => {
         onToggle={vi.fn()}
       />,
     );
-    expect(html).toContain('class="moco-form-grid"');
-    expect(html.match(/class="[^"]*\bmoco-form-field\b/g)).toHaveLength(5);
+    expect(html).toContain('class="kulo-form-grid"');
+    expect(html.match(/class="[^"]*\bkulo-form-field\b/g)).toHaveLength(5);
     expect(html).not.toContain('type="password"');
     expect(html).not.toContain("TTS API Key");
     expect(html).not.toContain("通话 API Key");
@@ -167,7 +167,7 @@ describe("voice configuration", () => {
   it("locks voice fields during local operations without changing their enabled appearance", () => {
     const html = renderToStaticMarkup(<VoiceSettingsFields snapshot={snapshot} draft={voiceSettingsDraft(snapshot)} ttsModels={sampleTtsModels} liveModels={sampleLiveModels} onChange={vi.fn()} onToggle={vi.fn()} busy />);
     expect(html).toContain('inert=""');
-    const actions = [...html.matchAll(/<div class="moco-voice-settings-header-actions">([\s\S]*?)<\/div>/g)].map((match) => match[1]);
+    const actions = [...html.matchAll(/<div class="kulo-voice-settings-header-actions">([\s\S]*?)<\/div>/g)].map((match) => match[1]);
     expect(actions).toHaveLength(2);
     for (const action of actions) {
       expect(action).toContain('aria-readonly="true"');
@@ -246,7 +246,7 @@ describe("voice configuration", () => {
 });
 
 describe("chat voice controls", () => {
-  const renderComposer = () => renderToStaticMarkup(<MocoComposer draftText="" onDraftTextChange={vi.fn()} attachments={[]} onEnqueueFiles={vi.fn()} onRemoveAttachment={vi.fn()} onSubmit={vi.fn()} onTranscribeVoice={vi.fn()} connected placeholder="输入消息" conversationKey="root" />);
+  const renderComposer = () => renderToStaticMarkup(<KuloComposer draftText="" onDraftTextChange={vi.fn()} attachments={[]} onEnqueueFiles={vi.fn()} onRemoveAttachment={vi.fn()} onSubmit={vi.fn()} onTranscribeVoice={vi.fn()} connected placeholder="输入消息" conversationKey="root" />);
   const workspace = (active = false) => ({ snapshot, connected: true, clientId: "voice-test", recordingActive: false, setRecordingActive: vi.fn(), call: { active, start: vi.fn(), expand: vi.fn() } }) as unknown as voiceContext.VoiceWorkspace;
 
   it("keeps calling in the profile card and disables recording during a call", () => {

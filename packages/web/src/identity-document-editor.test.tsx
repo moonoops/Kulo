@@ -1,13 +1,13 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { IdentityRead } from "@moco/protocol";
+import type { IdentityRead } from "@kulo/protocol";
 import { createIdentitySaveReview, ReviewDiffView } from "./identity-document-editor";
 
 describe("identity document review", () => {
   it("shows the active factory preset as deletions on the first identity agreement save", () => {
     const preset: IdentityRead = {
       file: "identity-agreement.md",
-      content: "# 身份约定\nMoco 出厂身份与准则\n",
+      content: "# 身份约定\nKulo 出厂身份与准则\n",
       exists: false,
       configured: true,
       version: { directoryRevision: 1, sha256: null },
@@ -15,7 +15,7 @@ describe("identity document review", () => {
     };
     const review = createIdentitySaveReview(preset, "# 身份约定\n自定义身份\n");
     const before = renderToStaticMarkup(<ReviewDiffView value={review.before} other={review.after} />);
-    expect(before).toContain("<del>Moco 出厂身份与准则");
+    expect(before).toContain("<del>Kulo 出厂身份与准则");
     expect(review.expected).toEqual(preset.version);
   });
 

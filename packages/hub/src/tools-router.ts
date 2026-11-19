@@ -25,13 +25,13 @@ import {
   type TicketCardView,
   type TicketClosureKind,
   type WorkerInspectResult,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import { isMainOrchestratorApi } from "./settings-doc.js";
 import { resolveDeferredAddTools } from "./tool-surface.js";
 import { createHindsightTools } from "./tools-memory.js";
 import { createWebSearchTool } from "./tools-search.js";
 import { createWebFetchTool } from "./tools-worker.js";
-import type { MocoSearch } from "./search.js";
+import type { KuloSearch } from "./search.js";
 import { createConnectionTools, type ConnectionToolController } from "./tools-connections.js";
 
 export interface DispatchTicketParams {
@@ -51,7 +51,7 @@ export interface DispatchTicketParams {
   taskKind?: AgentTaskKind;
   thinkingLevel?: ThinkingEffort;
   envId?: string;
-  targetScope?: import("@moco/protocol").DispatchTargetScope;
+  targetScope?: import("@kulo/protocol").DispatchTargetScope;
   executionDomain?: "computer" | "android";
   androidDeviceIds?: string[];
   workspaceDir?: string;
@@ -74,11 +74,11 @@ export interface DispatchTicketParams {
 export interface DispatchTicketModelOutcome {
   ticket: TicketCardView;
   inlineDelivery?: {
-    state: import("@moco/protocol").WorkerReportState;
+    state: import("@kulo/protocol").WorkerReportState;
     summary: string;
     deliverable?: string | null;
-    sources?: import("@moco/protocol").WebSource[];
-    stagedDiff?: import("@moco/protocol").StagedWorkspaceDiffSummary;
+    sources?: import("@kulo/protocol").WebSource[];
+    stagedDiff?: import("@kulo/protocol").StagedWorkspaceDiffSummary;
   };
   blockedByPendingMerge?: {
     ticketId: string;
@@ -162,11 +162,11 @@ export function createOrchestratorToolsExtension(
   controller: OrchestratorController,
   sections: ReturnType<typeof import("./prompts.js").createOrchestratorSections>,
   getMemoryConfig: () => HindsightMemoryConfig,
-  getSearch?: () => MocoSearch,
+  getSearch?: () => KuloSearch,
 ) {
   const deviceInviteTool = defineTool({
-    name: "moco_device_invite",
-    description: "Show a copy-invitation button when the user explicitly wants another computer running Moco to join this Hub (do not trigger on quoted invite strings inside user questions). Clicking creates the invitation for the user to paste into the other Moco's chat. 关键词：邀请设备 配对码 接入电脑 手机互联",
+    name: "kulo_device_invite",
+    description: "Show a copy-invitation button when the user explicitly wants another computer running Kulo to join this Hub (do not trigger on quoted invite strings inside user questions). Clicking creates the invitation for the user to paste into the other Kulo's chat. 关键词：邀请设备 配对码 接入电脑 手机互联",
     parameters: obj({}),
     deferred: true,
     replay: "safe",
@@ -181,7 +181,7 @@ export function createOrchestratorToolsExtension(
     },
   });
   const dispatchTool = defineTool({
-    name: "moco_dispatch",
+    name: "kulo_dispatch",
     description:
       "Dispatch authorized work as a durable Worker Ticket. Project/bound tasks lock to their configured Env; set target_scope='hub_local' for location-independent compute/research/attachment work or target_scope='sender_device' for sender-machine files/ports/GUI. Set execution_domain='android' for phone-only work or list android_device_ids for mixed tasks. Reuse command_id on retry.",
     parameters: obj({
@@ -205,7 +205,7 @@ export function createOrchestratorToolsExtension(
       thinking_level: opt(oneOf(["off", "minimal", "low", "medium", "high", "xhigh", "max"], { description: "Thinking effort override." })),
       env_id: opt(str({ description: "Explicit user-named or bound target device ID; omit to resolve from project_id or target_scope." })),
       execution_domain: opt(oneOf(["computer", "android"], { description: "'android' for phone-only Worker; 'computer' for filesystem/project work." })),
-      source_request_id: opt(str({ description: "requestId from [MOCO_MESSAGE_SOURCE] when disambiguating multi-device turns." })),
+      source_request_id: opt(str({ description: "requestId from [KULO_MESSAGE_SOURCE] when disambiguating multi-device turns." })),
       android_device_ids: opt(arr(str(), { maxItems: 8, description: "Authorized Android device IDs." })),
       project_id: opt(str({ description: "Target project ID." })),
       connection_ids: opt(arr(str({ description: "Saved connection IDs to grant (never secret values)." }))),
@@ -260,7 +260,7 @@ export function createOrchestratorToolsExtension(
               blocked_by_pending_merge: {
                 ticket_id: outcome.blockedByPendingMerge.ticketId,
                 title: outcome.blockedByPendingMerge.title,
-                hint: "An earlier ticket on this project still has unmerged staged changes holding the project write lock. Inspect and apply it via moco_inspect_staged_diff / moco_apply_staged_changes, steer it in place, or close/discard it via moco_close before this queued write ticket can run.",
+                hint: "An earlier ticket on this project still has unmerged staged changes holding the project write lock. Inspect and apply it via kulo_inspect_staged_diff / kulo_apply_staged_changes, steer it in place, or close/discard it via kulo_close before this queued write ticket can run.",
               },
             }
           : {}),
@@ -276,7 +276,7 @@ export function createOrchestratorToolsExtension(
   });
 
   const steerTool = defineTool({
-    name: "moco_steer",
+    name: "kulo_steer",
     description:
       "Send a follow-up instruction or answer a blocked question to an existing background Ticket. If running, injects seamlessly at the Worker's next step boundary (Auto-Steer); if blocked or settled (and not human-stopped), wakes and resumes the Worker.",
     parameters: obj({
@@ -305,7 +305,7 @@ export function createOrchestratorToolsExtension(
   });
 
   const stopTool = defineTool({
-    name: "moco_stop",
+    name: "kulo_stop",
     description:
       "Immediately stop a Ticket upon explicit human request. Human-stopped tickets never auto-resume.",
     parameters: obj({
@@ -324,7 +324,7 @@ export function createOrchestratorToolsExtension(
   });
 
   const closeTool = defineTool({
-    name: "moco_close",
+    name: "kulo_close",
     description:
       "Administratively close an obsolete or superseded settled non-running Ticket (never close a waiting ticket prematurely while replacement or external dependency is still pending). 关键词：关闭工单 清理已完成工单 归档废弃任务",
     deferred: true,
@@ -356,9 +356,9 @@ export function createOrchestratorToolsExtension(
   });
 
   const statusTool = defineTool({
-    name: "moco_status",
+    name: "kulo_status",
     description:
-      "Inspect current time and Hub timezone, Moco's table tickets, slot usage, and connected execution nodes. Read before translating relative scheduling requests such as tomorrow morning into execute_at.",
+      "Inspect current time and Hub timezone, Kulo's table tickets, slot usage, and connected execution nodes. Read before translating relative scheduling requests such as tomorrow morning into execute_at.",
     replay: "safe",
     parameters: obj({}),
     execute: async (_args, api, context) => {
@@ -370,9 +370,9 @@ export function createOrchestratorToolsExtension(
   });
 
   const inspectTool = defineTool({
-    name: "moco_inspect",
+    name: "kulo_inspect",
     description:
-      "Read-only lightweight inspection of a Worker ticket's live generation stream, active tool calls, run failures, and latest 10 transcript entries. Use upon [MOCO_WORKER_WATCHDOG] or when the user asks what a running Worker is doing. 关键词：查看工单详情 运行进度 子任务日志 检查工单",
+      "Read-only lightweight inspection of a Worker ticket's live generation stream, active tool calls, run failures, and latest 10 transcript entries. Use upon [KULO_WORKER_WATCHDOG] or when the user asks what a running Worker is doing. 关键词：查看工单详情 运行进度 子任务日志 检查工单",
     deferred: true,
     replay: "safe",
     parameters: obj({
@@ -387,13 +387,13 @@ export function createOrchestratorToolsExtension(
   });
 
   const externalPermissionTool = defineTool({
-    name: "moco_external_permission",
-    description: "Relay the user's decision for an actual native client permission request. First use moco_inspect and preserve its run_epoch and exact permission/choice IDs. The client owns its permission policy; present its original choices without changing them or deciding on the user's behalf. 关键词：外部智能体权限审批 授权决定 允许拒绝",
+    name: "kulo_external_permission",
+    description: "Relay the user's decision for an actual native client permission request. First use kulo_inspect and preserve its run_epoch and exact permission/choice IDs. The client owns its permission policy; present its original choices without changing them or deciding on the user's behalf. 关键词：外部智能体权限审批 授权决定 允许拒绝",
     deferred: true,
     parameters: obj({ ticket_id: str(), run_epoch: num(), permission_id: str(), choice_id: str() }),
     execute: async (args, api, context) => {
       if (!(await isMainOrchestratorApi(api, context)).allowed || (!controller.confirmExternalAgentPermission && !controller.respondExternalAgentPermission)) {
-        return { isError: true, output: [{ type: "text" as const, text: "Only the Moco Orchestrator may relay native Agent permission decisions." }] };
+        return { isError: true, output: [{ type: "text" as const, text: "Only the Kulo Orchestrator may relay native Agent permission decisions." }] };
       }
       const result = controller.confirmExternalAgentPermission
         ? await controller.confirmExternalAgentPermission(
@@ -410,7 +410,7 @@ export function createOrchestratorToolsExtension(
   });
 
   const inspectStagedDiffTool = defineTool({
-    name: "moco_inspect_staged_diff",
+    name: "kulo_inspect_staged_diff",
     description:
       "Inspect the isolated staged workspace diff produced by a Worker or external Agent Ticket before merging back into the real project directory. Omit file_path for the overall summary and preview, or specify file_path for a file's full unified diff. 关键词：查看暂存改动 代码差异 diff 审查补丁",
     deferred: true,
@@ -421,7 +421,7 @@ export function createOrchestratorToolsExtension(
     }),
     execute: async (args, api, context) => {
       if (!(await isMainOrchestratorApi(api, context)).allowed || !controller.inspectStagedDiff) {
-        return { isError: true, output: [{ type: "text" as const, text: "Only the Moco Orchestrator may inspect staged workspace diffs." }] };
+        return { isError: true, output: [{ type: "text" as const, text: "Only the Kulo Orchestrator may inspect staged workspace diffs." }] };
       }
       const detail = await controller.inspectStagedDiff(args.ticket_id, args.file_path, context);
       return { output: [{ type: "text" as const, text: JSON.stringify(detail, null, 2) }] };
@@ -429,7 +429,7 @@ export function createOrchestratorToolsExtension(
   });
 
   const applyStagedChangesTool = defineTool({
-    name: "moco_apply_staged_changes",
+    name: "kulo_apply_staged_changes",
     description:
       "Merge reviewed Worker or external Agent staged workspace changes back into the authorized project directory and clean up the isolated staged clone. If conflictFiles or [HIGH-SENSITIVITY PATHS] are reported, ask the user first before merging (and set allow_conflicts=true only on explicit user confirmation). 关键词：合并暂存改动 应用代码补丁 落地工作区修改",
     deferred: true,
@@ -441,7 +441,7 @@ export function createOrchestratorToolsExtension(
     }),
     execute: async (args, api, context) => {
       if (!(await isMainOrchestratorApi(api, context)).allowed || (!controller.applyStagedChangesFromTool && !controller.applyStagedChanges)) {
-        return { isError: true, output: [{ type: "text" as const, text: "Only the Moco Orchestrator may apply staged workspace changes." }] };
+        return { isError: true, output: [{ type: "text" as const, text: "Only the Kulo Orchestrator may apply staged workspace changes." }] };
       }
       const applyInput: ApplyStagedChangesParams = {
         commandId: args.command_id,
@@ -458,9 +458,9 @@ export function createOrchestratorToolsExtension(
   });
 
   const identityReadTool = defineTool({
-    name: "moco_identity_read",
+    name: "kulo_identity_read",
     description:
-      "Read Moco's Identity Agreement ('identity-agreement.md') or Working Relationship ('relationship.md') (Orchestrator only). Identity changes require `moco_identity_propose` and user confirmation; explicit user relationship edits use `moco_relationship_update`. 关键词：读取身份协议 协作关系 身份文档 人设",
+      "Read Kulo's Identity Agreement ('identity-agreement.md') or Working Relationship ('relationship.md') (Orchestrator only). Identity changes require `kulo_identity_propose` and user confirmation; explicit user relationship edits use `kulo_relationship_update`. 关键词：读取身份协议 协作关系 身份文档 人设",
     deferred: true,
     replay: "safe",
     parameters: obj({
@@ -474,13 +474,13 @@ export function createOrchestratorToolsExtension(
       if (!(await isMainOrchestratorApi(api, context)).allowed) {
         return {
           isError: true,
-          output: [{ type: "text", text: "Forbidden: identity and relationship files are accessible only to the Moco Orchestrator." }],
+          output: [{ type: "text", text: "Forbidden: identity and relationship files are accessible only to the Kulo Orchestrator." }],
         };
       }
       const data = await controller.readIdentityFiles(args.file as IdentityFile | undefined);
       const addTools = await resolveDeferredAddTools(api, context, [
-        "moco_identity_propose",
-        "moco_relationship_update",
+        "kulo_identity_propose",
+        "kulo_relationship_update",
       ]);
       return {
         output: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -490,24 +490,24 @@ export function createOrchestratorToolsExtension(
   });
 
   const identityProposalTool = defineTool({
-    name: "moco_identity_propose",
+    name: "kulo_identity_propose",
     description: "Propose a complete revised Identity Agreement as a reviewable diff without overwriting the active file; ask the user to review and confirm in Identity & Memory. 关键词：修改身份协议 人设提案 自我介绍 语气性格",
     deferred: true,
     parameters: obj({ content: str(), summary: str() }),
     execute: async (args, api, context) => {
-      if (!(await isMainOrchestratorApi(api, context)).allowed) return { isError: true, output: [{ type: "text" as const, text: "Forbidden: only the Moco Orchestrator may propose identity changes." }] };
+      if (!(await isMainOrchestratorApi(api, context)).allowed) return { isError: true, output: [{ type: "text" as const, text: "Forbidden: only the Kulo Orchestrator may propose identity changes." }] };
       const proposal = await controller.proposeIdentity(args.content, args.summary);
       return { output: [{ type: "text" as const, text: JSON.stringify({ proposal, requiresUserConfirmation: true }) }] };
     },
   });
 
   const relationshipUpdateTool = defineTool({
-    name: "moco_relationship_update",
+    name: "kulo_relationship_update",
     description: "Save relationship.md when the user explicitly asks to remember or correct their preferences or background. First read relationship.md for its current version. Autonomous maintenance uses the configured schedule. Cannot change identity or principles. 关键词：更新协作关系 记住偏好 相处习惯 称呼背景",
     deferred: true,
     parameters: obj({ content: str(), summary: str(), expected_directory_revision: num(), expected_sha256: str({ description: "SHA-256 from the last read, or 'missing' when sha256 is null." }) }),
     execute: async (args, api, context) => {
-      if (!(await isMainOrchestratorApi(api, context)).allowed) return { isError: true, output: [{ type: "text" as const, text: "Forbidden: only the Moco Orchestrator may edit working relationship." }] };
+      if (!(await isMainOrchestratorApi(api, context)).allowed) return { isError: true, output: [{ type: "text" as const, text: "Forbidden: only the Kulo Orchestrator may edit working relationship." }] };
       const saved = await controller.updateRelationship({ content: args.content, summary: args.summary,
         expected: { directoryRevision: args.expected_directory_revision, sha256: args.expected_sha256 === "missing" ? null : args.expected_sha256 } });
       return { output: [{ type: "text" as const, text: JSON.stringify(saved) }] };
@@ -515,9 +515,9 @@ export function createOrchestratorToolsExtension(
   });
 
   const expressionTool = defineTool({
-    name: "moco_expression",
+    name: "kulo_expression",
     description:
-      "Update Moco's live LED matrix avatar expression in the sidebar ('idle' | 'thinking' | 'working' | 'happy' | 'waiting' | 'error' | 'auto') with an optional short mood cue (<= 24 chars). 关键词：头像表情 猫咪表情 情绪心情 状态提示",
+      "Update Kulo's live LED matrix avatar expression in the sidebar ('idle' | 'thinking' | 'working' | 'happy' | 'waiting' | 'error' | 'auto') with an optional short mood cue (<= 24 chars). 关键词：头像表情 猫咪表情 情绪心情 状态提示",
     deferred: true,
     parameters: obj({
       face: oneOf(["idle", "thinking", "working", "happy", "waiting", "error", "auto"]),
@@ -527,7 +527,7 @@ export function createOrchestratorToolsExtension(
       if (!(await isMainOrchestratorApi(api, context)).allowed) {
         return {
           isError: true,
-          output: [{ type: "text", text: "Forbidden: Only Moco Orchestrator may update avatar expression." }],
+          output: [{ type: "text", text: "Forbidden: Only Kulo Orchestrator may update avatar expression." }],
         };
       }
       const next = await controller.setAgentExpression(
@@ -547,7 +547,7 @@ export function createOrchestratorToolsExtension(
   });
 
   return defineExtension({
-    name: "moco-orchestrator",
+    name: "kulo-orchestrator",
     sections,
     tools: [
       ...(controller.showDeviceInvitation ? [deviceInviteTool] : []),

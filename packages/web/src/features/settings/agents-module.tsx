@@ -1,16 +1,16 @@
-import { useI18n } from "../../moco-i18n";
+import { useI18n } from "../../kulo-i18n";
 import { useEffect, useState } from "react";
 import { Tabs } from "@heroui/react";
-import type { EnvNodeDescriptor, MocoSettingsView, ProjectView, SlotSummary } from "@moco/protocol";
+import type { EnvNodeDescriptor, KuloSettingsView, ProjectView, SlotSummary } from "@kulo/protocol";
 import { ConcurrencyModule } from "./concurrency-module";
 import { WorkersModule } from "./workers-module";
 
 export function AgentsModule({ settings, slots, envs, projects, onSettingsUpdated, onDirtyChange }: {
-  settings: MocoSettingsView;
+  settings: KuloSettingsView;
   slots?: SlotSummary;
   envs?: EnvNodeDescriptor[];
   projects?: Pick<ProjectView, "id" | "name">[];
-  onSettingsUpdated: (settings: MocoSettingsView) => void;
+  onSettingsUpdated: (settings: KuloSettingsView) => void;
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const { t } = useI18n();

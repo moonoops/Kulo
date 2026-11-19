@@ -55,16 +55,16 @@ function loopbackOrigin(value: string): string {
 }
 
 export function loadDesktopRuntimeOptions(env: NodeJS.ProcessEnv): DesktopRuntimeOptions {
-  const shellVersion = env.MOCO_DESKTOP_SHELL_VERSION;
+  const shellVersion = env.KULO_DESKTOP_SHELL_VERSION;
   if (shellVersion !== undefined && !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$/.test(shellVersion)) throw new Error("桌面运行版本无效。");
   return {
-    dataDir: absoluteDirectory(env.MOCO_DESKTOP_DATA_DIR, "开发版数据目录"),
-    webDir: absoluteDirectory(env.MOCO_DESKTOP_WEB_DIR, "界面资源目录"),
-    ...(env.MOCO_DESKTOP_VITE_URL ? { viteUrl: loopbackOrigin(env.MOCO_DESKTOP_VITE_URL) } : {}),
-    ...(env.MOCO_DESKTOP_APP_ROOT ? { appRoot: absoluteDirectory(env.MOCO_DESKTOP_APP_ROOT, "运行资源目录") } : {}),
+    dataDir: absoluteDirectory(env.KULO_DESKTOP_DATA_DIR, "开发版数据目录"),
+    webDir: absoluteDirectory(env.KULO_DESKTOP_WEB_DIR, "界面资源目录"),
+    ...(env.KULO_DESKTOP_VITE_URL ? { viteUrl: loopbackOrigin(env.KULO_DESKTOP_VITE_URL) } : {}),
+    ...(env.KULO_DESKTOP_APP_ROOT ? { appRoot: absoluteDirectory(env.KULO_DESKTOP_APP_ROOT, "运行资源目录") } : {}),
     ...(shellVersion ? { shellVersion } : {}),
-    ...(env.MOCO_DESKTOP_SOURCE_ROOT ? { sourceRoot: absoluteDirectory(env.MOCO_DESKTOP_SOURCE_ROOT, "源码目录") } : {}),
-    ...(env.MOCO_DESKTOP_TRUSTED_ROOT ? { trustedRoot: absoluteDirectory(env.MOCO_DESKTOP_TRUSTED_ROOT, "受信资源目录") } : {}),
+    ...(env.KULO_DESKTOP_SOURCE_ROOT ? { sourceRoot: absoluteDirectory(env.KULO_DESKTOP_SOURCE_ROOT, "源码目录") } : {}),
+    ...(env.KULO_DESKTOP_TRUSTED_ROOT ? { trustedRoot: absoluteDirectory(env.KULO_DESKTOP_TRUSTED_ROOT, "受信资源目录") } : {}),
   };
 }
 
@@ -77,28 +77,28 @@ export function buildRuntimeEnvironment(
   const webDir = absoluteDirectory(options.webDir, "界面资源目录");
   const env: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(source)) {
-    if (value === undefined || /^MOCO_/i.test(name) ||
+    if (value === undefined || /^KULO_/i.test(name) ||
         /^(?:AWS|GOOGLE|GCLOUD|AZURE|ANTHROPIC|OPENAI|OPENROUTER|PI)_/i.test(name) ||
         /(?:^|_)(?:API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS?|ACCESS_KEY|PRIVATE_KEY)(?:_|$)/i.test(name) ||
         /^(?:NODE_OPTIONS|NODE_PATH|NODE_CHANNEL_FD|NODE_CHANNEL_SERIALIZATION_MODE|ELECTRON_RUN_AS_NODE)$/i.test(name)) continue;
     env[name] = value;
   }
   Object.assign(env, {
-    MOCO_DESKTOP_DATA_DIR: paths.dataDir,
-    MOCO_DESKTOP_WEB_DIR: webDir,
-    MOCO_STATE_DIR: paths.stateDir,
-    MOCO_IDENTITY_DIR: paths.identityDir,
-    MOCO_PEER_CONFIG: paths.peerConfigPath,
-    MOCO_HUB_HOST: "127.0.0.1",
+    KULO_DESKTOP_DATA_DIR: paths.dataDir,
+    KULO_DESKTOP_WEB_DIR: webDir,
+    KULO_STATE_DIR: paths.stateDir,
+    KULO_IDENTITY_DIR: paths.identityDir,
+    KULO_PEER_CONFIG: paths.peerConfigPath,
+    KULO_HUB_HOST: "127.0.0.1",
   });
-  if (options.viteUrl) env.MOCO_DESKTOP_VITE_URL = loopbackOrigin(options.viteUrl);
-  if (options.appRoot) env.MOCO_DESKTOP_APP_ROOT = absoluteDirectory(options.appRoot, "运行资源目录");
+  if (options.viteUrl) env.KULO_DESKTOP_VITE_URL = loopbackOrigin(options.viteUrl);
+  if (options.appRoot) env.KULO_DESKTOP_APP_ROOT = absoluteDirectory(options.appRoot, "运行资源目录");
   if (options.shellVersion) {
     if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$/.test(options.shellVersion)) throw new Error("桌面运行版本无效。");
-    env.MOCO_DESKTOP_SHELL_VERSION = options.shellVersion;
+    env.KULO_DESKTOP_SHELL_VERSION = options.shellVersion;
   }
-  if (options.sourceRoot) env.MOCO_DESKTOP_SOURCE_ROOT = absoluteDirectory(options.sourceRoot, "源码目录");
-  if (options.trustedRoot) env.MOCO_DESKTOP_TRUSTED_ROOT = absoluteDirectory(options.trustedRoot, "受信资源目录");
+  if (options.sourceRoot) env.KULO_DESKTOP_SOURCE_ROOT = absoluteDirectory(options.sourceRoot, "源码目录");
+  if (options.trustedRoot) env.KULO_DESKTOP_TRUSTED_ROOT = absoluteDirectory(options.trustedRoot, "受信资源目录");
   return env;
 }
 

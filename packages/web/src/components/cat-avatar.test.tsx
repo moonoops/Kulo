@@ -32,7 +32,7 @@ describe("cat avatar rendering", () => {
       expect(new Set(frameStyles.map(({ backgroundPosition }) => backgroundPosition)).size).toBe(4);
       const crops = ["idle", "working", "success"].map((state) => {
         const html = renderToStaticMarkup(<CatAvatar appearance={appearance.id} state={state as "idle" | "working" | "success"} animated={false} />);
-        const style = html.match(/class="moco-cat-avatar-sprite" style="([^"]+)"/)![1]!;
+        const style = html.match(/class="kulo-cat-avatar-sprite" style="([^"]+)"/)![1]!;
         return style.split(";").filter((declaration) => /^(?:width|height|left|top):/.test(declaration));
       });
       expect(crops[1]).toEqual(crops[0]);
@@ -44,7 +44,7 @@ describe("cat avatar rendering", () => {
       expect(crops[0]).toContain(`top:${-y / size * 100}%`);
     }
     const html = renderToStaticMarkup(<CatAvatar animated={false} />);
-    expect(html).not.toMatch(/moco-cat-avatar" style=/);
+    expect(html).not.toMatch(/kulo-cat-avatar" style=/);
     // The default portrait's torso ends at native y=298; the viewport ends one pixel inside it.
     const [, top, size] = getCatAppearanceCrop("sunglasses");
     expect(top + size).toBe(297);

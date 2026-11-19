@@ -1,6 +1,6 @@
-import { translate as t } from "../../moco-i18n";
-import type { ChatDisplayItem, LiveStreamState, TicketCardView } from "@moco/protocol";
-import { describeLocalizedMocoError } from "../../moco-error";
+import { translate as t } from "../../kulo-i18n";
+import type { ChatDisplayItem, LiveStreamState, TicketCardView } from "@kulo/protocol";
+import { describeLocalizedKuloError } from "../../kulo-error";
 import { taskStatusLabel, taskSummary } from "../tasks/task-model";
 
 export interface AgentTerminalEntry {
@@ -138,7 +138,7 @@ export function updateAgentTerminal(previous: AgentTerminalState | null, update:
       if (live.runFailure) {
         const signature = JSON.stringify(live.runFailure);
         if (signature !== state.failure) {
-          const error = describeLocalizedMocoError(live.runFailure);
+          const error = describeLocalizedKuloError(live.runFailure);
           stage("settled", error.isUserAbort ? t("已停止", "Stopped") : t(`执行失败 · ${compact(error.title)}`, `Execution failed · ${compact(error.title)}`), error.isUserAbort ? "info" : "error", { outcome: error.isUserAbort ? "stopped" : "failed" });
           state.failure = signature;
         }

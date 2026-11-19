@@ -6,7 +6,7 @@ import {
   type StagedWorkspaceApplyResult,
   type StagedWorkspaceDiffDetail,
   type StagedWorkspacePrepareResult,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import { canonicalExecutionPath } from "./isolation.js";
 import type { ProjectDirectoryRegistry } from "./project-directories.js";
 import {

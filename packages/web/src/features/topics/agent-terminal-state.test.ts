@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChatDisplayItem, LiveStreamState, TicketCardView } from "@moco/protocol";
+import type { ChatDisplayItem, LiveStreamState, TicketCardView } from "@kulo/protocol";
 import { updateAgentTerminal, type AgentTerminalState } from "./agent-terminal-state";
 
 const live = (patch: Partial<LiveStreamState> = {}): LiveStreamState => ({ busy: false, activeTools: [], queuedCount: 0, ...patch });

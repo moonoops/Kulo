@@ -17,7 +17,7 @@ export interface NativeContentEnvelope {
   blocks: ObjectValue[];
 }
 
-export type NativeContentMessage = AssistantMessage & { mocoNativeContent?: NativeContentEnvelope };
+export type NativeContentMessage = AssistantMessage & { kuloNativeContent?: NativeContentEnvelope };
 export interface NativeOpaqueField { owner: Record<string, unknown>; field: string; path: Array<string | number> }
 interface ReplayAnchor { end: string; envelope: NativeContentEnvelope; visible: unknown[] }
 const activeReplayAnchors = new Map<string, ReplayAnchor>();
@@ -114,7 +114,7 @@ export function nativeAssistantOpaqueFields(value: unknown): NativeOpaqueField[]
     }
     return fields;
   }
-  if ((message.api === "anthropic-messages" || message.api === "bedrock-converse-stream") && message.mocoNativeContent === undefined) {
+  if ((message.api === "anthropic-messages" || message.api === "bedrock-converse-stream") && message.kuloNativeContent === undefined) {
     const fields: NativeOpaqueField[] = [];
     for (const [index, item] of message.content.entries()) {
       const block = object(item);
@@ -125,7 +125,7 @@ export function nativeAssistantOpaqueFields(value: unknown): NativeOpaqueField[]
     return fields;
   }
   if (message.api !== "anthropic-messages") return [];
-  const envelope = nativeContentEnvelope(message.mocoNativeContent);
+  const envelope = nativeContentEnvelope(message.kuloNativeContent);
   if (!envelope || envelope.provider !== message.provider || envelope.api !== message.api || envelope.model !== message.model ||
     envelope.responseId !== message.responseId || envelope.contentHash !== nativeContentHash(message.content as AssistantMessage["content"])) return [];
   assertNativeBlocksMatch(envelope.blocks, message as unknown as AssistantMessage, { compat: { allowEmptySignature: true } } as Model<Api>);
@@ -135,7 +135,7 @@ export function nativeAssistantOpaqueFields(value: unknown): NativeOpaqueField[]
     if (owner && typeof owner[field] === "string" && owner[field]) fields.push({ owner, field, path: [...path, field] });
   };
   for (const [index, block] of envelope.blocks.entries()) {
-    const blockPath = ["mocoNativeContent", "blocks", index];
+    const blockPath = ["kuloNativeContent", "blocks", index];
     if (block.type === "thinking") { add(block, "signature", blockPath); if (typeof block.signature === "string") signatures.add(block.signature); }
     if (block.type === "redacted_thinking") { add(block, "data", blockPath); if (typeof block.data === "string") signatures.add(block.data); }
     if (block.type === "web_search_tool_result" && Array.isArray(block.content)) for (const [resultIndex, item] of block.content.entries()) {
@@ -211,10 +211,10 @@ export interface NativeReplay {
 export function prepareNativeReplay(context: Context, model: Model<Api>): NativeReplay {
   if (model.api !== "anthropic-messages") return { context, restore: (payload) => payload, active: false, release: () => {} };
   const anchors = new Map<string, ReplayAnchor>();
-  const markerPrefix = `moco-native-replay:${randomUUID()}:`;
+  const markerPrefix = `kulo-native-replay:${randomUUID()}:`;
   const messages = context.messages.map((message) => {
     if (message.role !== "assistant" || message.provider !== model.provider || message.api !== model.api || message.model !== model.id) return message;
-    const stored = (message as NativeContentMessage).mocoNativeContent;
+    const stored = (message as NativeContentMessage).kuloNativeContent;
     if (stored === undefined) return message;
     const envelope = nativeContentEnvelope(stored);
     if (!envelope || envelope.provider !== message.provider || envelope.api !== message.api || envelope.model !== message.model ||

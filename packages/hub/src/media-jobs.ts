@@ -6,11 +6,11 @@ import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-dur
 import type {
   BrowserRequest, BrowserResult, CapabilityRecord, ChatAttachment, MediaConnectionView, MediaJob,
   MediaJobRequest, MediaJobSource, MediaKind, MediaOutputFormat, ImageGenerationParameters,
-} from "@moco/protocol";
-import { getImageModelProfile, mergeImageGenerationParameters, normalizeImageGenerationParameters } from "@moco/protocol";
+} from "@kulo/protocol";
+import { getImageModelProfile, mergeImageGenerationParameters, normalizeImageGenerationParameters } from "@kulo/protocol";
 import {
   MAX_MESSAGE_UPLOAD_BYTES, MAX_UPLOAD_BYTES, MAX_VIDEO_UPLOAD_BYTES,
-  MocoUploadStore,
+  KuloUploadStore,
 } from "./uploads.js";
 import {
   decodeMediaBase64, downloadImageOutput, generateImage, MediaAdapterError, MEDIA_OUTPUT_MIMES,
@@ -27,7 +27,7 @@ export interface MediaCapabilities {
 export interface MediaJobsOptions {
   harness: Harness;
   capabilities: MediaCapabilities;
-  uploads: MocoUploadStore;
+  uploads: KuloUploadStore;
   browser: (envId: string, request: BrowserRequest) => Promise<BrowserResult>;
   validateSource?: (source: MediaJobSource, job?: MediaJob) => void | Promise<void>;
   validateInput?: (assetId: string, source: MediaJobSource) => void | Promise<void>;
@@ -48,8 +48,8 @@ interface StoredMediaJob extends MediaJob {
   originalRunEpoch?: number;
 }
 export interface MediaJobsState { jobs: Record<string, StoredMediaJob>; operations: Record<string, string> }
-export const MocoMediaJobsDoc = defineDoc<MediaJobsState & JsonObject>({
-  kind: "moco.media-jobs", version: 1, scope: "session",
+export const KuloMediaJobsDoc = defineDoc<MediaJobsState & JsonObject>({
+  kind: "kulo.media-jobs", version: 1, scope: "session",
   initial: () => ({ jobs: {}, operations: {} }) as MediaJobsState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
@@ -97,7 +97,7 @@ function sameConnection(a: MediaConnectionView, b: MediaConnectionView): boolean
 function flowModelLabel(value: string): string { return value.toLowerCase().replace(/[\s-]+/g, ""); }
 const flowDefaultModels = new Set(["auto", "default", "flow", "flowauto", "flowdefault", "默认", "网页默认", "flow默认", "flow网页默认"]);
 
-export class MocoMediaJobs {
+export class KuloMediaJobs {
   readonly #options: MediaJobsOptions;
   readonly #work = new Map<string, Promise<void>>();
   readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -114,14 +114,14 @@ export class MocoMediaJobs {
     return result;
   }
   async #stored(id: string): Promise<StoredMediaJob> {
-    const doc = await this.#options.harness.snapshot(MocoMediaJobsDoc, context);
+    const doc = await this.#options.harness.snapshot(KuloMediaJobsDoc, context);
     const value = own(doc?.jobs, id);
     if (!value) throw new MediaJobError(404, "media_job_not_found", "媒体作业不存在。");
     return clone(value);
   }
   async #change(id: string, update: (value: StoredMediaJob) => void): Promise<StoredMediaJob> {
     const result = await this.#options.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoMediaJobsDoc);
+      const state = await tx.doc(KuloMediaJobsDoc);
       const job = own(state.jobs, id);
       if (!job) throw new MediaJobError(404, "media_job_not_found", "媒体作业不存在。");
       const previousStatus = job.status;
@@ -137,7 +137,7 @@ export class MocoMediaJobs {
     if (this.#started && !this.#closed) return;
     this.#closed = false;
     this.#started = true;
-    const state = await this.#options.harness.snapshot(MocoMediaJobsDoc, context);
+    const state = await this.#options.harness.snapshot(KuloMediaJobsDoc, context);
     for (const record of Object.values(state?.jobs ?? {})) {
       if (record.status === "submitting") {
         await this.#change(record.id, (job) => {
@@ -166,7 +166,7 @@ export class MocoMediaJobs {
     return clone((await this.#stored(id)).connection);
   }
   async list(source?: { conversationId?: number; ticketId?: string }): Promise<MediaJob[]> {
-    const doc = await this.#options.harness.snapshot(MocoMediaJobsDoc, context);
+    const doc = await this.#options.harness.snapshot(KuloMediaJobsDoc, context);
     return Object.values(doc?.jobs ?? {})
       .filter((job) => !source || (source.conversationId === undefined || job.source.conversationId === source.conversationId)
         && (source.ticketId === undefined || job.source.ticketId === source.ticketId))
@@ -176,7 +176,7 @@ export class MocoMediaJobs {
     const request = clone(input);
     this.#validateRequest(request);
     return this.#serial(async () => {
-      const state = await this.#options.harness.snapshot(MocoMediaJobsDoc, context);
+      const state = await this.#options.harness.snapshot(KuloMediaJobsDoc, context);
       const key = operationKey(request);
       const hash = fingerprint(request);
       const previousId = own(state?.operations, key);
@@ -224,7 +224,7 @@ export class MocoMediaJobs {
       };
       validateImageParameters(record);
       await this.#options.harness.commit(async (tx) => {
-        const doc = await tx.doc(MocoMediaJobsDoc);
+        const doc = await tx.doc(KuloMediaJobsDoc);
         doc.jobs[record.id] = record;
         doc.operations[key] = record.id;
       }, context);
@@ -314,7 +314,7 @@ export class MocoMediaJobs {
     await this.#change(id, (value) => {
       if (value.status === "completed" || value.status === "stopped") return;
       value.status = "stopped";
-      value.error = value.submitted ? "已停止 Moco 后续处理；外部已提交的生成可能仍在进行。" : "已停止，未继续提交。";
+      value.error = value.submitted ? "已停止 Kulo 后续处理；外部已提交的生成可能仍在进行。" : "已停止，未继续提交。";
       delete value.nextPollAt;
     });
     const timer = this.#timers.get(id);

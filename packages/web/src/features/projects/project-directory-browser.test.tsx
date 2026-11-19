@@ -1,13 +1,13 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { ProjectDirectoryListing } from "@moco/protocol";
+import type { ProjectDirectoryListing } from "@kulo/protocol";
 import { ProjectDirectoryBrowser } from "./create-project-dialog";
 
 const listing: ProjectDirectoryListing = {
   deviceId: "remote", path: "/projects", parentPath: "/",
   entries: [
     { name: ".git", path: "/projects/.git" },
-    { name: "Moco", path: "/projects/Moco" },
+    { name: "Kulo", path: "/projects/Kulo" },
     { name: ".Trash", path: "/projects/.Trash" },
     { name: "release.v2", path: "/projects/release.v2" },
   ],
@@ -18,7 +18,7 @@ describe("project directory browsing", () => {
     const html = renderToStaticMarkup(<ProjectDirectoryBrowser listing={listing} browsing={false} creating={false} onBrowse={() => {}} />);
     expect(html).not.toContain(".git");
     expect(html).not.toContain(".Trash");
-    expect(html).toContain('aria-label="Moco"');
+    expect(html).toContain('aria-label="Kulo"');
     expect(html).toContain('aria-label="release.v2"');
     expect(html).toContain('aria-label="上一级目录"');
   });

@@ -1,4 +1,4 @@
-import { useI18n } from "../../moco-i18n";
+import { useI18n } from "../../kulo-i18n";
 import { useEffect, useRef, useState } from "react";
 import {
   Alert,
@@ -12,9 +12,9 @@ import {
   Spinner,
   TextField,
 } from "@heroui/react";
-import type { OAuthSessionView } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
-import { MocoIcon } from "../../moco-icon";
+import type { OAuthSessionView } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
+import { KuloIcon } from "../../kulo-icon";
 import {
   SUBSCRIPTION_PROVIDERS,
   normalizeClientOAuthOptionLabel,
@@ -83,7 +83,7 @@ export function OAuthSubscriptionModal({
     let cancelled = false;
     const timer = window.setInterval(async () => {
       try {
-        const res = await mocoRest.getProviderOAuth(sessionId);
+        const res = await kuloRest.getProviderOAuth(sessionId);
         if (!cancelled) onUpdate(res.session);
       } catch {
         // Ignore transient poll errors while waiting
@@ -100,7 +100,7 @@ export function OAuthSubscriptionModal({
     setSubmitting(true);
     setModalError(undefined);
     try {
-      const res = await mocoRest.respondProviderOAuth(
+      const res = await kuloRest.respondProviderOAuth(
         session.sessionId,
         session.prompt?.id,
         value,
@@ -118,7 +118,7 @@ export function OAuthSubscriptionModal({
     if (starting) return;
     if (session?.status === "pending") {
       try {
-        await mocoRest.cancelProviderOAuth(session.sessionId);
+        await kuloRest.cancelProviderOAuth(session.sessionId);
       } catch {
         // Ignore cancel failure if already closed
       }
@@ -175,10 +175,10 @@ export function OAuthSubscriptionModal({
               />
             </Modal.Header>
 
-            <Modal.Body className="moco-form-stack">
+            <Modal.Body className="kulo-form-stack">
               {!session ? (
                 <>
-                  <Select className="moco-form-field"
+                  <Select className="kulo-form-field"
                     variant="secondary"
                     value={selectedId}
                     isDisabled={starting}
@@ -254,7 +254,7 @@ export function OAuthSubscriptionModal({
                           href={session.authUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex h-(--moco-control-height) items-center justify-center rounded-xl bg-accent px-4 text-sm font-medium text-accent-foreground no-underline transition-opacity hover:opacity-90"
+                          className="inline-flex h-(--kulo-control-height) items-center justify-center rounded-xl bg-accent px-4 text-sm font-medium text-accent-foreground no-underline transition-opacity hover:opacity-90"
                         >
                           
                           {t("打开授权页面", "Open sign-in page")}
@@ -279,7 +279,7 @@ export function OAuthSubscriptionModal({
                           {session.deviceCode.userCode}
                         </Chip>
                         <Button size="sm" variant="ghost" onPress={() => void copyDeviceCode()}>
-                          <MocoIcon name={copiedCode ? "check" : "copy"} size={14} />
+                          <KuloIcon name={copiedCode ? "check" : "copy"} size={14} />
                           {copiedCode ? t("已复制", "Copied") : t("复制", "Copy")}
                         </Button>
                       </div>
@@ -329,7 +329,7 @@ export function OAuthSubscriptionModal({
                         </div>
                       ) : (
                         <form
-                          className="moco-field-action-row"
+                          className="kulo-field-action-row"
                           onSubmit={(e) => {
                             e.preventDefault();
                             void submitPrompt(promptInput);
@@ -344,11 +344,11 @@ export function OAuthSubscriptionModal({
                             type={session.prompt.type === "secret" ? "password" : "text"}
                             value={promptInput}
                             onChange={setPromptInput}
-                            className="moco-context-field min-w-0 flex-1"
+                            className="kulo-context-field min-w-0 flex-1"
                             fullWidth
                           >
                             <Input
-                              className="moco-field-action-input"
+                              className="kulo-field-action-input"
                               placeholder={session.prompt.placeholder || ""}
                               autoFocus
                             />
@@ -357,7 +357,7 @@ export function OAuthSubscriptionModal({
                             type="submit"
                             size="sm"
                             variant="primary"
-                            className="moco-field-action-button"
+                            className="kulo-field-action-button"
                             isPending={submitting}
                             isDisabled={submitting || !promptInput.trim()}
                           >

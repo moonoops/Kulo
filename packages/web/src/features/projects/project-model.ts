@@ -1,5 +1,5 @@
-import { translate as t } from "../../moco-i18n";
-import type { EnvNodeDescriptor, ProjectView, TicketCardView, TopicSummary } from "@moco/protocol";
+import { translate as t } from "../../kulo-i18n";
+import type { EnvNodeDescriptor, ProjectView, TicketCardView, TopicSummary } from "@kulo/protocol";
 
 export const ALL_PROJECT_DEVICES = "*";
 export type UpdateProjectCollection<T> = (next: T[] | ((previous: T[]) => T[])) => void;

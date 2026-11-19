@@ -37,7 +37,7 @@ export function isComposingKeyboardEvent(event: Pick<ShortcutKeyLike, "isComposi
 }
 
 /**
- * Resolves a DOM keydown event into a Moco shortcut action.
+ * Resolves a DOM keydown event into a Kulo shortcut action.
  * When `desktopManaged` is true (Electron desktop with native menu accelerators),
  * menu-owned shortcuts are skipped here so they never fire twice; Escape remains
  * renderer-owned for layered in-app dismissal.

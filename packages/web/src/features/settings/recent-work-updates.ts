@@ -1,4 +1,4 @@
-import type { ProjectView, TicketCardView, TopicSummary } from "@moco/protocol";
+import type { ProjectView, TicketCardView, TopicSummary } from "@kulo/protocol";
 
 export interface RecentWorkSource {
   tickets: readonly TicketCardView[];

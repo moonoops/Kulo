@@ -2,13 +2,13 @@ import { randomUUID } from "node:crypto";
 import WebSocket, { type ClientOptions, type RawData } from "ws";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { resolveHttpProxyUrlForTarget } from "@earendil-works/pi-ai/utils/node-http-proxy";
-import type { VoiceCallEvent, VoiceCallState, VoiceLiveProvider } from "@moco/protocol";
+import type { VoiceCallEvent, VoiceCallState, VoiceLiveProvider } from "@kulo/protocol";
 import { VOICE_FALLBACK_INSTRUCTIONS } from "./prompts.js";
 
 const MAX_AUDIO_BYTES = 128 * 1024;
 const MAX_BUFFERED_BYTES = 1024 * 1024;
 const MAX_CONTEXT_BYTES = 32 * 1024;
-const DELEGATE_TOOL = "delegate_to_moco";
+const DELEGATE_TOOL = "delegate_to_kulo";
 
 export class VoiceLiveError extends Error {
   constructor(readonly code: string, message: string, readonly httpStatus?: number) {
@@ -108,9 +108,9 @@ function instructions(input: VoiceLiveOpenInput): string {
   const base = input.instructions?.trim() ?? VOICE_FALLBACK_INSTRUCTIONS;
   if (Buffer.byteLength(base) > 48 * 1024) throw new VoiceLiveError("voice_live_invalid_context", "通话指令过长。");
   const policy = input.provider === "openai"
-    ? "Delegation policy:\nBackend tools:\n- Moco: retrieve personal or project memories and earlier conversations, search, use configured models and tools, create reports or files, and manage existing tasks.\nGenerate <|SpawnThinking|> when:\n- The user requests any backend capability, careful reasoning, or a correction to a running task.\nDo not generate <|SpawnThinking|> when:\n- A short conversational reply or a clarification is sufficient.\nGenerate <|SpawnThinking|> before answering anything that depends on backend work."
-    : `Use ${DELEGATE_TOOL} to retrieve personal or project memories and earlier conversations, or for searches, reports, files, configured models, tools, and corrections to existing tasks. Continue conversing while Moco works.`;
-  return `${base}\n\n${policy}\nKeep spoken replies brief. Stop speaking when interrupted. Interruptions and hanging up do not cancel backend tasks. Report an action as complete only after Moco returns a verified result.`;
+    ? "Delegation policy:\nBackend tools:\n- Kulo: retrieve personal or project memories and earlier conversations, search, use configured models and tools, create reports or files, and manage existing tasks.\nGenerate <|SpawnThinking|> when:\n- The user requests any backend capability, careful reasoning, or a correction to a running task.\nDo not generate <|SpawnThinking|> when:\n- A short conversational reply or a clarification is sufficient.\nGenerate <|SpawnThinking|> before answering anything that depends on backend work."
+    : `Use ${DELEGATE_TOOL} to retrieve personal or project memories and earlier conversations, or for searches, reports, files, configured models, tools, and corrections to existing tasks. Continue conversing while Kulo works.`;
+  return `${base}\n\n${policy}\nKeep spoken replies brief. Stop speaking when interrupted. Interruptions and hanging up do not cancel backend tasks. Report an action as complete only after Kulo returns a verified result.`;
 }
 
 class LiveConnection implements VoiceLiveConnection {
@@ -282,8 +282,8 @@ class LiveConnection implements VoiceLiveConnection {
       contextWindowCompression: { slidingWindow: {} },
       tools: [{ functionDeclarations: [{
         name: DELEGATE_TOOL,
-        description: "Ask Moco to search, use tools or another configured model, produce reports/files, or update an existing task. State the full current request and corrections.",
-        parameters: { type: "OBJECT", properties: { request: { type: "STRING", description: "The user's complete task or correction for Moco." } }, required: ["request"] },
+        description: "Ask Kulo to search, use tools or another configured model, produce reports/files, or update an existing task. State the full current request and corrections.",
+        parameters: { type: "OBJECT", properties: { request: { type: "STRING", description: "The user's complete task or correction for Kulo." } }, required: ["request"] },
         ...(supportsAsyncFunction(modelId) ? { behavior: "NON_BLOCKING" } : {}),
       }] }],
     } };
@@ -352,7 +352,7 @@ class LiveConnection implements VoiceLiveConnection {
     if (this.#tasks.size >= 128) { this.#fail(new VoiceLiveError("voice_live_task_limit", "本次通话的任务数量已达上限，请重新连接。")); return; }
     this.#tasks.set(id, { upstreamId, responded: false, cancelled: false }); this.#setState("working");
     void Promise.resolve().then(() => this.#input.onDelegate({ id, text: request })).catch(() => {
-      if (!this.#closing && !this.#ended) this.sendTaskResult(id, "Moco 未能完成这次请求，请查看聊天中的任务状态。", true);
+      if (!this.#closing && !this.#ended) this.sendTaskResult(id, "Kulo 未能完成这次请求，请查看聊天中的任务状态。", true);
     });
   }
   #openaiMessage(message: Json): void {
@@ -423,7 +423,7 @@ class LiveConnection implements VoiceLiveConnection {
     }
     if (object(message.toolCallCancellation) && Array.isArray(message.toolCallCancellation.ids)) for (const id of message.toolCallCancellation.ids) {
       const task = typeof id === "string" ? this.#tasks.get(id) : undefined;
-      // Upstream turn cancellation must not cancel a durable Moco task that was already accepted.
+      // Upstream turn cancellation must not cancel a durable Kulo task that was already accepted.
       if (task) task.cancelled = true;
     }
     if (object(message.goAway) && !this.#closing) {
@@ -450,7 +450,7 @@ class LiveConnection implements VoiceLiveConnection {
         ...(supportsAsyncFunction(this.#config.modelId) ? { scheduling: final ? "WHEN_IDLE" : "SILENT" } : {}),
         ...(this.#config.provider === "gemini" && supportsAsyncFunction(this.#config.modelId) ? { willContinue: !final } : {}),
       }] } }); task.responded = true;
-    } else this.#sendApplication({ clientContent: { turns: [{ role: "user", parts: [{ text: `[Moco task ${id}; ${final ? "completed" : "progress"}]\n${result}` }] }], turnComplete: final } });
+    } else this.#sendApplication({ clientContent: { turns: [{ role: "user", parts: [{ text: `[Kulo task ${id}; ${final ? "completed" : "progress"}]\n${result}` }] }], turnComplete: final } });
   }
   sendContext(text: string): void {
     this.sendNotification(text, false);
@@ -459,7 +459,7 @@ class LiveConnection implements VoiceLiveConnection {
     const value = contextText(text);
     if (this.#closing || this.#ended) return;
     if (this.#config.provider === "openai") this.#appendOpenAI(speak ? "session.commentary.append" : "session.thinking.append", null, value);
-    else this.#sendApplication({ clientContent: { turns: [{ role: "user", parts: [{ text: `[Moco task update${speak ? "" : "; context only, do not announce"}]\n${value}` }] }], turnComplete: speak } });
+    else this.#sendApplication({ clientContent: { turns: [{ role: "user", parts: [{ text: `[Kulo task update${speak ? "" : "; context only, do not announce"}]\n${value}` }] }], turnComplete: speak } });
   }
   #fail(error: VoiceLiveError): void {
     if (this.#ended) return;

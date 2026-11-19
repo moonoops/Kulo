@@ -1,4 +1,4 @@
-import { translate as t } from "../../moco-i18n";
+import { translate as t } from "../../kulo-i18n";
 
 export async function copyDeviceTextWhenReady(value: Promise<string>, signal?: AbortSignal): Promise<void> {
   if (typeof ClipboardItem === "function" && typeof navigator.clipboard?.write === "function") {

@@ -3,8 +3,8 @@ import type {
   WorkerExecutionPhase,
   WorkerInspectResult,
   WorkerReportRecord,
-} from "@moco/protocol";
-import type { MocoUploadStore } from "./uploads.js";
+} from "@kulo/protocol";
+import type { KuloUploadStore } from "./uploads.js";
 
 export const REPORT_DELIVERABLE_OVERFLOW_CHARS = 8_000;
 export const REPORT_DELIVERABLE_PREVIEW_CHARS = 2_000;
@@ -48,7 +48,7 @@ export function clampReportBounds(report: WorkerReportRecord): WorkerReportRecor
 }
 
 export function spillOversizedReport(options: {
-  uploads?: MocoUploadStore;
+  uploads?: KuloUploadStore;
   ticketId: string;
   runEpoch: number;
   version: number | string;
@@ -108,7 +108,7 @@ export function spillOversizedReport(options: {
   return {
     ...bounded,
     deliverable:
-      `${previewHead}\n\n[Deliverable truncated to ${previewHead.length} of ${fullDeliverable.length} chars; full text stored in internal overflowAsset "${saved.id}" (${saved.name}). Inspect via moco_inspect_asset(asset_id="${saved.id}", offset=..., limit=...).]${preservedSourcesBlock}`,
+      `${previewHead}\n\n[Deliverable truncated to ${previewHead.length} of ${fullDeliverable.length} chars; full text stored in internal overflowAsset "${saved.id}" (${saved.name}). Inspect via kulo_inspect_asset(asset_id="${saved.id}", offset=..., limit=...).]${preservedSourcesBlock}`,
     overflowAsset,
   };
 }

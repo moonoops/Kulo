@@ -1,4 +1,4 @@
-import type { ChatDisplayItem, TicketRecord } from "@moco/protocol";
+import type { ChatDisplayItem, TicketRecord } from "@kulo/protocol";
 import type { PendingSubmissionBackup } from "./chat-submissions";
 import type { ReliableOutboxRecord } from "./reliable-outbox";
 

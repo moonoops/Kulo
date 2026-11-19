@@ -1,6 +1,6 @@
-import { useI18n } from "../../moco-i18n";
+import { useI18n } from "../../kulo-i18n";
 import { ComboBox, Input, Label, ListBox, Select } from "@heroui/react";
-import type { ThinkingEffort } from "@moco/protocol";
+import type { ThinkingEffort } from "@kulo/protocol";
 import { modelEffortOptions, type ProviderModelGroup } from "./settings-helpers";
 
 const UNSELECTED = "__unselected__";
@@ -28,10 +28,10 @@ export function ModelSelectionFields({
   const model = models.find((item) => item.id === modelId);
   const efforts = modelEffortOptions(model);
   const prefix = defaults ? t("默认", "Default ") : "";
-  const unavailableProvider = providerId === "moco-gateway" ? t("兼容网关", "Compatible gateway") : providerId;
-  const fieldClass = layout === "settings" ? "moco-settings-row" : layout === "compact" ? "moco-compact-row" : "moco-form-field";
-  const effortFieldClass = layout === "settings" ? "moco-settings-row moco-settings-row--choice"
-    : layout === "compact" ? "moco-compact-row moco-compact-row--choice" : "moco-form-field";
+  const unavailableProvider = providerId === "kulo-gateway" ? t("兼容网关", "Compatible gateway") : providerId;
+  const fieldClass = layout === "settings" ? "kulo-settings-row" : layout === "compact" ? "kulo-compact-row" : "kulo-form-field";
+  const effortFieldClass = layout === "settings" ? "kulo-settings-row kulo-settings-row--choice"
+    : layout === "compact" ? "kulo-compact-row kulo-compact-row--choice" : "kulo-form-field";
 
   return <>
     <Select

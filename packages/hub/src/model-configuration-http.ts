@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { ModelConfigurationPrepareRequest, ModelConfigurationUpdateRequest } from "@moco/protocol";
-import { ModelConfigurationError, type MocoModelConfiguration } from "./model-configuration.js";
+import type { ModelConfigurationPrepareRequest, ModelConfigurationUpdateRequest } from "@kulo/protocol";
+import { ModelConfigurationError, type KuloModelConfiguration } from "./model-configuration.js";
 
 type ReadBody = (request: IncomingMessage) => Promise<Record<string, unknown>>;
 type Send = (response: ServerResponse, status: number, value: unknown) => void;
@@ -9,7 +9,7 @@ function allowed(body: Record<string, unknown>, fields: string[]): void {
 }
 
 /** The owning server authenticates management requests before dispatching here. */
-export async function handleModelConfigurationHttp(service: MocoModelConfiguration, req: IncomingMessage, res: ServerResponse, url: URL, read: ReadBody, send: Send): Promise<boolean> {
+export async function handleModelConfigurationHttp(service: KuloModelConfiguration, req: IncomingMessage, res: ServerResponse, url: URL, read: ReadBody, send: Send): Promise<boolean> {
   const prefix = "/api/settings/model-configuration";
   if (url.pathname !== prefix && !url.pathname.startsWith(`${prefix}/`)) return false;
   res.setHeader("cache-control", "no-store");
@@ -27,7 +27,7 @@ export async function handleModelConfigurationHttp(service: MocoModelConfigurati
     }
     if (path === "/credential" && req.method === "POST") {
       allowed(body, ["clientId", "draftId", "expectedRevision", "apiKey"]);
-      send(res, 200, await service.supplyCredential(body as unknown as Parameters<MocoModelConfiguration["supplyCredential"]>[0])); return true;
+      send(res, 200, await service.supplyCredential(body as unknown as Parameters<KuloModelConfiguration["supplyCredential"]>[0])); return true;
     }
     if (path === "/discover" && req.method === "POST") {
       allowed(body, ["clientId", "draftId", "expectedRevision"]);
@@ -38,13 +38,13 @@ export async function handleModelConfigurationHttp(service: MocoModelConfigurati
       const controller = new AbortController();
       const closed = () => { if (!res.writableEnded) controller.abort(); };
       res.once("close", closed);
-      try { send(res, 200, await service.test(body as unknown as Parameters<MocoModelConfiguration["test"]>[0], controller.signal)); }
+      try { send(res, 200, await service.test(body as unknown as Parameters<KuloModelConfiguration["test"]>[0], controller.signal)); }
       finally { res.removeListener("close", closed); }
       return true;
     }
     if (path === "/save" && req.method === "POST") {
       allowed(body, ["clientId", "draftId", "expectedRevision", "commandId"]);
-      send(res, 200, await service.save(body as unknown as Parameters<MocoModelConfiguration["save"]>[0])); return true;
+      send(res, 200, await service.save(body as unknown as Parameters<KuloModelConfiguration["save"]>[0])); return true;
     }
     if (path === "/draft" && req.method === "DELETE") {
       allowed(body, ["clientId", "draftId", "expectedRevision"]);

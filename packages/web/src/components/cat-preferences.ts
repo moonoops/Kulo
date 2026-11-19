@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { isCatAppearance, type CatAppearance } from "./cat-catalog";
 
-export const CAT_PREFERENCES_STORAGE_KEY = "moco:cat-companion";
+export const CAT_PREFERENCES_STORAGE_KEY = "kulo:cat-companion";
 
 export interface CatPreferences {
   appearance: CatAppearance;

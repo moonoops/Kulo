@@ -54,7 +54,7 @@ import type {
   RolePreset,
   ThinkingEffort,
   ThinkingLevelMapConfig,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import {
   buildVertexModelBaseUrl,
   CUSTOM_PROVIDER_APIS,
@@ -66,12 +66,12 @@ import {
   isImageGenerationModel,
   isOfficialVertexBaseUrl,
   normalizeVertexConfig,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import {
   DEFAULT_CONTEXT_WINDOW,
   DEFAULT_MAX_TOKENS,
   normalizeProviderBaseUrl,
-  type MocoModelConfig,
+  type KuloModelConfig,
 } from "./config.js";
 import { fetchLiveProviderModels, supportsApiModelDiscovery, type RawDiscoveredModel } from "./provider-discovery.js";
 import { subscriptionModelTemplate, validateSubscriptionModelTemplates } from "./subscription-models.js";
@@ -81,10 +81,10 @@ import {
   normalizeModelIdCandidates,
   resolveDefaultNativeTools,
 } from "./model-metadata-parser.js";
-import { MocoModelMetadataRegistry, type ModelMetadataRegistryOptions } from "./model-metadata-registry.js";
+import { KuloModelMetadataRegistry, type ModelMetadataRegistryOptions } from "./model-metadata-registry.js";
 import { allowedThinkingWireValuesForApi } from "./settings.js";
 import {
-  MOCO_GATEWAY_PROVIDER_ID,
+  KULO_GATEWAY_PROVIDER_ID,
   openAIResponsesCompat,
   sanitizeThinkingLevelMapForApi,
 } from "./models.js";
@@ -162,7 +162,7 @@ function ensureLazyBuiltinsRegistered(): void {
 }
 
 const FEATURED_PROVIDER_ORDER = [
-  MOCO_GATEWAY_PROVIDER_ID,
+  KULO_GATEWAY_PROVIDER_ID,
   "openai",
   "openai-codex",
   "anthropic",
@@ -480,7 +480,7 @@ function isSameOrigin(a: string, b: string): boolean {
   return oa !== null && oa === ob;
 }
 
-export const API_KEY_ORIGIN_ENV = "MOCO_API_KEY_ORIGIN";
+export const API_KEY_ORIGIN_ENV = "KULO_API_KEY_ORIGIN";
 
 function apiKeyForOrigin(credential: Credential | undefined, baseUrl: string): string | undefined {
   if (credential?.type !== "api_key") return undefined;
@@ -776,11 +776,11 @@ export function serializeProviderCatalogItem(
   };
 }
 
-export class MocoProviderManager {
+export class KuloProviderManager {
   readonly stateDir: string;
   readonly credentials: CredentialStore;
   readonly modelsStore: FileModelsStore;
-  readonly metadataRegistry: MocoModelMetadataRegistry;
+  readonly metadataRegistry: KuloModelMetadataRegistry;
   readonly models: MutableModels;
   readonly #builtins: readonly Provider[];
   readonly #nativeBuiltinProviders = new Map<string, Provider<Api>>();
@@ -791,17 +791,17 @@ export class MocoProviderManager {
   readonly #oauthSessions = new Map<string, InternalOAuthSession>();
   readonly #liveBuiltinModelIds = new Map<string, ReadonlySet<string>>();
   readonly #modelRefreshRevisions = new Map<string, number>();
-  #latestModelConfig: MocoModelConfig | null = null;
+  #latestModelConfig: KuloModelConfig | null = null;
   #latestRoles: Record<string, RolePreset> = {};
   #offlineRestored = false;
   #gatewayEnvironmentBaseUrl: string | null = null;
 
-  constructor(options: { stateDir: string; credentials?: CredentialStore; metadataRegistry?: MocoModelMetadataRegistry; metadataRegistryOptions?: ModelMetadataRegistryOptions }) {
+  constructor(options: { stateDir: string; credentials?: CredentialStore; metadataRegistry?: KuloModelMetadataRegistry; metadataRegistryOptions?: ModelMetadataRegistryOptions }) {
     ensureLazyBuiltinsRegistered();
     this.stateDir = options.stateDir;
     this.credentials = options.credentials ?? new FileCredentialStore(path.join(this.stateDir, "credentials.json"));
     this.modelsStore = new FileModelsStore(path.join(this.stateDir, "models-cache.json"));
-    this.metadataRegistry = options.metadataRegistry ?? new MocoModelMetadataRegistry({
+    this.metadataRegistry = options.metadataRegistry ?? new KuloModelMetadataRegistry({
       stateDir: this.stateDir,
       ...options.metadataRegistryOptions,
     });
@@ -853,12 +853,12 @@ export class MocoProviderManager {
     }
   }
 
-  async bindLegacyApiKeyOrigins(modelConfig: MocoModelConfig): Promise<void> {
+  async bindLegacyApiKeyOrigins(modelConfig: KuloModelConfig): Promise<void> {
     // Startup migration must use restored settings, before accepting address edits.
     const endpoints: [string, string][] = [
-      [MOCO_GATEWAY_PROVIDER_ID, modelConfig.baseUrl],
+      [KULO_GATEWAY_PROVIDER_ID, modelConfig.baseUrl],
       ...modelConfig.customProviders
-        .filter((cp) => !this.#builtinIds.has(cp.id) && cp.id !== MOCO_GATEWAY_PROVIDER_ID)
+        .filter((cp) => !this.#builtinIds.has(cp.id) && cp.id !== KULO_GATEWAY_PROVIDER_ID)
         .map((cp): [string, string] => [cp.id, cp.baseUrl]),
     ];
     for (const [providerId, baseUrl] of endpoints) {
@@ -884,14 +884,14 @@ export class MocoProviderManager {
       return { key: live.apiKey, source: "网关配置密钥" };
     }
     if (this.#gatewayEnvironmentBaseUrl && isSameOrigin(this.#gatewayEnvironmentBaseUrl, baseUrl)) {
-      const key = process.env.MOCO_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim();
+      const key = process.env.KULO_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim();
       if (key) return { key, source: "环境变量" };
     }
     return undefined;
   }
 
   syncProviders(
-    modelConfig: MocoModelConfig,
+    modelConfig: KuloModelConfig,
     roles: Record<string, RolePreset>,
   ): void {
     validateSubscriptionModelTemplates(modelConfig.subscriptionModels);
@@ -902,16 +902,16 @@ export class MocoProviderManager {
     const getModelConfig = () => this.#latestModelConfig ?? modelConfig;
     const getRoles = () => this.#latestRoles;
     const contextWindow = modelConfig.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
-    const defaultProvider = modelConfig.defaultProvider?.trim() || (!modelConfig.gatewayDisabled ? MOCO_GATEWAY_PROVIDER_ID : "");
+    const defaultProvider = modelConfig.defaultProvider?.trim() || (!modelConfig.gatewayDisabled ? KULO_GATEWAY_PROVIDER_ID : "");
     const gatewayModelBaseUrl = modelConfig.apiMode === "google-vertex"
       ? buildVertexModelBaseUrl(modelConfig.baseUrl, modelConfig) : modelConfig.baseUrl;
     this.#syncSubscriptionModels(modelConfig.subscriptionModels);
 
-    // 1. Register/update Moco's OpenAI-compatible gateway unless explicitly disabled
+    // 1. Register/update Kulo's OpenAI-compatible gateway unless explicitly disabled
     const gatewayDisabled =
-      Boolean(modelConfig.gatewayDisabled) && defaultProvider !== MOCO_GATEWAY_PROVIDER_ID;
+      Boolean(modelConfig.gatewayDisabled) && defaultProvider !== KULO_GATEWAY_PROVIDER_ID;
     if (gatewayDisabled) {
-      this.models.deleteProvider(MOCO_GATEWAY_PROVIDER_ID);
+      this.models.deleteProvider(KULO_GATEWAY_PROVIDER_ID);
     } else {
       const gatewayCustomMap = new Map<string, CustomModelConfig>(
         (modelConfig.gatewayModels ?? []).map((gm) => [gm.id, gm]),
@@ -919,13 +919,13 @@ export class MocoProviderManager {
       const gatewayIds = new Set<string>(
         (modelConfig.gatewayModels ?? []).map((gm) => gm.id),
       );
-      if (defaultProvider === MOCO_GATEWAY_PROVIDER_ID && modelConfig.defaultModel.trim()) {
+      if (defaultProvider === KULO_GATEWAY_PROVIDER_ID && modelConfig.defaultModel.trim()) {
         gatewayIds.add(modelConfig.defaultModel.trim());
       }
       for (const r of Object.values(roles)) {
         if (r.external) continue;
         const rp = r.provider?.trim();
-        if ((!rp || rp === MOCO_GATEWAY_PROVIDER_ID) && r.modelId?.trim()) {
+        if ((!rp || rp === KULO_GATEWAY_PROVIDER_ID) && r.modelId?.trim()) {
           gatewayIds.add(r.modelId.trim());
         }
       }
@@ -936,13 +936,13 @@ export class MocoProviderManager {
           : undefined;
 
       const gatewayProvider = createProvider({
-        id: MOCO_GATEWAY_PROVIDER_ID,
+        id: KULO_GATEWAY_PROVIDER_ID,
         name: modelConfig.gatewayName?.trim() || "默认兼容网关",
         baseUrl: modelConfig.baseUrl,
         ...(gatewayHeaders ? { headers: gatewayHeaders } : {}),
         auth: {
           apiKey: {
-            name: "MOCO_API_KEY",
+            name: "KULO_API_KEY",
             resolve: async ({ credential }) => {
               const resolved = this.#gatewayApiKey(credential, modelConfig.baseUrl);
               if (!resolved) return undefined;
@@ -957,7 +957,7 @@ export class MocoProviderManager {
         },
         models: Array.from(gatewayIds).filter((id) => isConversationModel(gatewayCustomMap.get(id) ?? { id })).map((id) =>
           createCustomModelEntry(
-            MOCO_GATEWAY_PROVIDER_ID,
+            KULO_GATEWAY_PROVIDER_ID,
             gatewayModelBaseUrl,
             modelConfig.apiMode,
             gatewayCustomMap.get(id) ?? { id },
@@ -970,7 +970,7 @@ export class MocoProviderManager {
           const key = live.apiMode === "google-vertex" && isOfficialVertexBaseUrl(live.baseUrl)
             ? undefined : apiKeyForOrigin(ctx.credential, live.baseUrl);
           const discovered = await fetchLiveProviderModels({ baseUrl: live.baseUrl, api: live.apiMode, apiKey: key, signal: ctx.signal });
-          this.#recordModelRefresh(MOCO_GATEWAY_PROVIDER_ID);
+          this.#recordModelRefresh(KULO_GATEWAY_PROVIDER_ID);
           const ids = discovered.map((model) => model.id);
           const allIds = new Set<string>([...gatewayIds, ...ids]);
           const liveCustomMap = new Map<string, CustomModelConfig>(
@@ -979,7 +979,7 @@ export class MocoProviderManager {
           const discoveredById = new Map(discovered.map((model) => [model.id, model]));
           return Array.from(allIds).filter((id) => isConversationModel({ ...liveCustomMap.get(id), ...discoveredById.get(id), id })).map((id) =>
             createCustomModelEntry(
-              MOCO_GATEWAY_PROVIDER_ID,
+              KULO_GATEWAY_PROVIDER_ID,
               modelBaseUrl,
               live.apiMode,
               liveCustomMap.get(id) ?? { id },
@@ -1000,7 +1000,7 @@ export class MocoProviderManager {
       if (
         !nextCustomIds.has(prevId) &&
         !this.#builtinIds.has(prevId) &&
-        prevId !== MOCO_GATEWAY_PROVIDER_ID
+        prevId !== KULO_GATEWAY_PROVIDER_ID
       ) {
         this.models.deleteProvider(prevId);
       }
@@ -1009,7 +1009,7 @@ export class MocoProviderManager {
 
     // 3. Register/update custom compatible providers
     for (const cp of modelConfig.customProviders ?? []) {
-      if (this.#builtinIds.has(cp.id) || cp.id === MOCO_GATEWAY_PROVIDER_ID) {
+      if (this.#builtinIds.has(cp.id) || cp.id === KULO_GATEWAY_PROVIDER_ID) {
         continue;
       }
       const normalizedBaseUrl = normalizeProviderBaseUrl(cp.baseUrl, cp.api);
@@ -1153,7 +1153,7 @@ export class MocoProviderManager {
     const customMeta = this.#customProviderMeta.get(p.id);
     const customModels =
       customMeta?.models ??
-      (p.id === MOCO_GATEWAY_PROVIDER_ID
+      (p.id === KULO_GATEWAY_PROVIDER_ID
         ? this.#latestModelConfig?.gatewayModels
         : this.#subscriptionModelsFor(p.id));
 
@@ -1163,12 +1163,12 @@ export class MocoProviderManager {
     const builtin = this.#builtinIds.has(p.id);
     const configuredIds = this.#configuredModelIds(p.id);
     const liveIds = this.#liveBuiltinModelIds.get(p.id);
-    const api = customMeta?.api ?? (p.id === MOCO_GATEWAY_PROVIDER_ID ? this.#latestModelConfig?.apiMode : undefined);
+    const api = customMeta?.api ?? (p.id === KULO_GATEWAY_PROVIDER_ID ? this.#latestModelConfig?.apiMode : undefined);
 
     const result = serializeProviderCatalogItem(p, this.models, {
       builtin,
       preset: customMeta?.preset,
-      isGateway: p.id === MOCO_GATEWAY_PROVIDER_ID,
+      isGateway: p.id === KULO_GATEWAY_PROVIDER_ID,
       api,
       customModels,
       authenticated,
@@ -1186,9 +1186,9 @@ export class MocoProviderManager {
 
   #configuredModelIds(providerId: string): ReadonlySet<string> {
     const config = this.#latestModelConfig;
-    const ids = new Set<string>((providerId === MOCO_GATEWAY_PROVIDER_ID ? config?.gatewayModels
+    const ids = new Set<string>((providerId === KULO_GATEWAY_PROVIDER_ID ? config?.gatewayModels
       : this.#customProviderMeta.get(providerId)?.models ?? this.#subscriptionModelsFor(providerId))?.map((model) => model.id) ?? []);
-    const fallbackProvider = config?.gatewayDisabled ? "" : MOCO_GATEWAY_PROVIDER_ID;
+    const fallbackProvider = config?.gatewayDisabled ? "" : KULO_GATEWAY_PROVIDER_ID;
     if ((config?.defaultProvider?.trim() || fallbackProvider) === providerId && config?.defaultModel.trim()) {
       ids.add(config.defaultModel.trim());
     }
@@ -1417,7 +1417,7 @@ export class MocoProviderManager {
       : undefined;
     const existingProvider = providerId ? this.models.getProvider(providerId) : undefined;
     const existingBaseUrl =
-      providerId === MOCO_GATEWAY_PROVIDER_ID
+      providerId === KULO_GATEWAY_PROVIDER_ID
         ? this.#latestModelConfig?.baseUrl
         : customMeta?.baseUrl ?? existingProvider?.baseUrl;
 
@@ -1436,7 +1436,7 @@ export class MocoProviderManager {
     const baseUrl = normalizeProviderBaseUrl(rawBaseInput, targetApi);
     const publicVertexCatalog = targetApi === "google-vertex" && isOfficialVertexBaseUrl(baseUrl);
     if (targetApi === "google-vertex" && !publicVertexCatalog) {
-      const savedVertex = providerId === MOCO_GATEWAY_PROVIDER_ID ? this.#latestModelConfig : customMeta;
+      const savedVertex = providerId === KULO_GATEWAY_PROVIDER_ID ? this.#latestModelConfig : customMeta;
       normalizeVertexConfig({
         vertexProject: req.vertexProject !== undefined ? req.vertexProject : savedVertex?.vertexProject,
         vertexLocation: req.vertexLocation !== undefined ? req.vertexLocation : savedVertex?.vertexLocation,
@@ -1465,7 +1465,7 @@ export class MocoProviderManager {
         (existingBaseUrl ? isSameOrigin(baseUrl, existingBaseUrl) : false);
       if (safeToReuseStored) {
         const stored = await this.credentials.read(providerId);
-        if (providerId === MOCO_GATEWAY_PROVIDER_ID) {
+        if (providerId === KULO_GATEWAY_PROVIDER_ID) {
           resolvedKey = this.#gatewayApiKey(stored, baseUrl)?.key;
         } else if (customMeta) {
           resolvedKey = apiKeyForOrigin(stored, baseUrl);
@@ -1519,8 +1519,8 @@ export class MocoProviderManager {
     const items = await Promise.all(providers.map((p) => this.#inspectProviderItem(p)));
 
     items.sort((a, b) => {
-      if (a.id === MOCO_GATEWAY_PROVIDER_ID) return -1;
-      if (b.id === MOCO_GATEWAY_PROVIDER_ID) return 1;
+      if (a.id === KULO_GATEWAY_PROVIDER_ID) return -1;
+      if (b.id === KULO_GATEWAY_PROVIDER_ID) return 1;
       // Custom user providers appear right after default gateway
       const aCustom = !a.builtin;
       const bCustom = !b.builtin;
@@ -1557,7 +1557,7 @@ export class MocoProviderManager {
       throw new Error("API Key 不能为空");
     }
 
-    const origin = providerId === MOCO_GATEWAY_PROVIDER_ID || this.#customProviderMeta.has(providerId)
+    const origin = providerId === KULO_GATEWAY_PROVIDER_ID || this.#customProviderMeta.has(providerId)
       ? getOriginSafe(provider.baseUrl ?? "")
       : null;
     await this.credentials.modify(providerId, async (current) => {
@@ -1611,7 +1611,7 @@ export class MocoProviderManager {
     let vertexProject: string | undefined;
     let vertexLocation: string | undefined;
     let configured: CustomModelConfig | undefined;
-    if (providerId === MOCO_GATEWAY_PROVIDER_ID) {
+    if (providerId === KULO_GATEWAY_PROVIDER_ID) {
       const live = this.#latestModelConfig;
       if (!live || live.gatewayDisabled) return undefined;
       baseUrl = live.baseUrl;
@@ -1661,7 +1661,7 @@ export class MocoProviderManager {
     const provider = this.models.getProvider(providerId);
     if (!provider?.auth.apiKey || !provider.baseUrl || !isSameOrigin(provider.baseUrl, baseUrl)) return undefined;
     const credential = await this.credentials.read(providerId);
-    if (providerId === MOCO_GATEWAY_PROVIDER_ID) return this.#gatewayApiKey(credential, baseUrl)?.key;
+    if (providerId === KULO_GATEWAY_PROVIDER_ID) return this.#gatewayApiKey(credential, baseUrl)?.key;
     if (credential?.type !== "api_key") return undefined;
     return this.#customProviderMeta.has(providerId) ? apiKeyForOrigin(credential, baseUrl) : credential.key;
   }
@@ -1680,7 +1680,7 @@ export class MocoProviderManager {
       throw new Error(`Provider '${providerId}' not found`);
     }
     const api = this.#customProviderMeta.get(providerId)?.api
-      ?? (providerId === MOCO_GATEWAY_PROVIDER_ID ? this.#latestModelConfig?.apiMode : undefined);
+      ?? (providerId === KULO_GATEWAY_PROVIDER_ID ? this.#latestModelConfig?.apiMode : undefined);
     if (api === "google-vertex" && isOfficialVertexBaseUrl(provider.baseUrl ?? "")) {
       // The SDK's refresh path requires a model-call credential; public documentation does not.
       const catalog = await this.discoverModels({ providerId, api });
@@ -1707,7 +1707,7 @@ export class MocoProviderManager {
 
   async startOAuthLogin(
     providerId: string,
-    agentName = "Moco",
+    agentName = "Kulo",
   ): Promise<OAuthSessionView> {
     const provider = this.models.getProvider(providerId);
     if (!provider) {

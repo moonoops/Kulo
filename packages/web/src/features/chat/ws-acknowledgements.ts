@@ -1,4 +1,4 @@
-import type { ClientToHubMessage } from "@moco/protocol";
+import type { ClientToHubMessage } from "@kulo/protocol";
 
 export interface PendingWsAcknowledgement<Result> {
   action: ClientToHubMessage["type"];

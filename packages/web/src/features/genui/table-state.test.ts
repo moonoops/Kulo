@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { UI_COMPONENT_SCHEMAS, UiActionDefinitionSchema, getUiSpecFields, getUiTableRowIds, validateUiActionValues, validateUiCardInput, validateUiValues, type UiCardInput } from "@moco/protocol";
+import { UI_COMPONENT_SCHEMAS, UiActionDefinitionSchema, getUiSpecFields, getUiTableRowIds, validateUiActionValues, validateUiCardInput, validateUiValues, type UiCardInput } from "@kulo/protocol";
 import { keyedTableRows, selectedTableIds, tableSelectionValue, tableView } from "./table-state";
 
 function tableCard(mode: "single" | "multiple" = "single", rowKey?: string): UiCardInput {

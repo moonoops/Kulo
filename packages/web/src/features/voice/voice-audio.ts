@@ -1,4 +1,4 @@
-import { translate as t } from "../../moco-i18n";
+import { translate as t } from "../../kulo-i18n";
 
 /** Keep the fractional source position across render quanta, including 44.1 kHz microphones. */
 export class Pcm16Resampler {

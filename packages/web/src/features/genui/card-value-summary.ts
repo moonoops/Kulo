@@ -1,6 +1,6 @@
-import { getUiSpecFields, getUiTableRowIds, UI_COMPONENT_SCHEMAS, type UiCardSnapshot, type UiValues } from "@moco/protocol";
+import { getUiSpecFields, getUiTableRowIds, UI_COMPONENT_SCHEMAS, type UiCardSnapshot, type UiValues } from "@kulo/protocol";
 import { displayCardValue } from "./card-runtime";
-import { translate as tr } from "../../moco-i18n";
+import { translate as tr } from "../../kulo-i18n";
 
 export function cardValueSummary(card: UiCardSnapshot, values: UiValues): Array<{ name: string; label: string; display: string }> {
   const fields = getUiSpecFields(card.spec);

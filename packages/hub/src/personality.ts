@@ -5,8 +5,8 @@ import type {
   IdentityRead, IdentitySaved, IdentityVersion, IdentityProposal, PersonalitySettings,
   PersonalitySnapshot, RelationshipRollbackRequest, RelationshipUpdateSettings,
   RelationshipUpdateStatus, RelationshipWriteRequest,
-} from "@moco/protocol";
-import { IDENTITY_AGREEMENT_FILE, IdentityFilesError, MocoIdentityFiles } from "./identity-files.js";
+} from "@kulo/protocol";
+import { IDENTITY_AGREEMENT_FILE, IdentityFilesError, KuloIdentityFiles } from "./identity-files.js";
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const DAY_MS = 86_400_000;
@@ -37,7 +37,7 @@ export interface PersonalityState {
   pendingUpdate: PendingRelationshipUpdate | null;
 }
 export const PersonalityDoc = defineDoc<PersonalityState & JsonObject>({
-  kind: "moco.personality", version: 1, scope: "session",
+  kind: "kulo.personality", version: 1, scope: "session",
   initial: () => ({
     revision: 1, settings: defaultPersonalitySettings(), relationshipStatus: emptyStatus(),
     sourceCursor: 0, identityProposal: null, pendingUpdate: null,
@@ -76,9 +76,9 @@ export function nextRelationshipRun(after: number, schedule: RelationshipUpdateS
   return after + schedule.intervalDays * DAY_MS;
 }
 
-export interface MocoPersonalityOptions {
+export interface KuloPersonalityOptions {
   harness: Harness;
-  identityFiles: MocoIdentityFiles;
+  identityFiles: KuloIdentityFiles;
   now?: () => number;
   canReviewRelationship?: () => Promise<boolean>;
   collectRelationshipInput: (since: number) => Promise<{ cursor: number; content: string }>;
@@ -87,14 +87,14 @@ export interface MocoPersonalityOptions {
   onError?: (error: unknown) => void;
 }
 
-export class MocoPersonality {
-  readonly #options: MocoPersonalityOptions;
+export class KuloPersonality {
+  readonly #options: KuloPersonalityOptions;
   readonly #abort = new AbortController();
   #timer: ReturnType<typeof setInterval> | undefined;
   #active: Promise<PersonalitySnapshot> | undefined;
   #mutations: Promise<unknown> = Promise.resolve();
   #closed = false;
-  constructor(options: MocoPersonalityOptions) { this.#options = options; }
+  constructor(options: KuloPersonalityOptions) { this.#options = options; }
   #now() { return this.#options.now?.() ?? Date.now(); }
   async #state(): Promise<PersonalityState> {
     const state = await this.#options.harness.snapshot(PersonalityDoc, BACKGROUND_CONTEXT);
@@ -156,7 +156,7 @@ export class MocoPersonality {
     await this.#options.harness.commit(async (tx) => { await tx.doc(PersonalityDoc); }, BACKGROUND_CONTEXT);
     const tick = () => { void this.checkRelationship().catch((error) => {
       if (this.#options.onError) this.#options.onError(error);
-      else console.error("Moco 协作关系更新未完成。", error);
+      else console.error("Kulo 协作关系更新未完成。", error);
     }); };
     this.#timer = setInterval(tick, 30_000);
     this.#timer.unref();

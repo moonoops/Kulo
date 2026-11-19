@@ -5,8 +5,8 @@ import { createHash } from "node:crypto";
 import type { RecoveryFileEntry, RecoveryManifestOptions, RecoveryReleaseIdentity, RecoveryReleaseManifest } from "./types.js";
 import { atomicJson, fail, inside, readJson, redact } from "./files.js";
 
-export const RELEASE_MANIFEST_FILE = "moco-release.json";
-export const RELEASE_IDENTITY_FILE = "moco-release.identity.json";
+export const RELEASE_MANIFEST_FILE = "kulo-release.json";
+export const RELEASE_IDENTITY_FILE = "kulo-release.identity.json";
 const HASH = /^[a-f0-9]{64}$/;
 const ID = /^release_[a-f0-9]{24}$/;
 const NAME = /^[A-Za-z0-9._:+/-]{1,160}$/;

@@ -1,4 +1,4 @@
-.moco-conversation-scene {
+.kulo-conversation-scene {
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -7,8 +7,8 @@
   position: relative;
 }
 
-.moco-conversation-transcript,
-.moco-conversation-history {
+.kulo-conversation-transcript,
+.kulo-conversation-history {
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -16,22 +16,22 @@
   min-height: 0;
 }
 
-.moco-conversation-history[hidden] { display: none; }
-.moco-conversation-loading {
+.kulo-conversation-history[hidden] { display: none; }
+.kulo-conversation-loading {
   display: flex;
   flex-direction: column;
   gap: 16px;
   width: 100%;
-  max-width: var(--moco-conversation-width);
+  max-width: var(--kulo-conversation-width);
   margin-inline: auto;
   padding: 24px 16px;
 }
 
-.moco-conversation-scene[data-intro] > .moco-conversation-composer {
-  transform: translateY(var(--moco-intro-offset, 0px));
+.kulo-conversation-scene[data-intro] > .kulo-conversation-composer {
+  transform: translateY(var(--kulo-intro-offset, 0px));
 }
 
-.moco-conversation-welcome {
+.kulo-conversation-welcome {
   position: absolute;
   inset-inline: 16px;
   bottom: calc(100% + 16px);
@@ -39,26 +39,26 @@
   pointer-events: none;
 }
 
-.moco-conversation-welcome > .moco-page-title { margin: 0; }
+.kulo-conversation-welcome > .kulo-page-title { margin: 0; }
 
-.moco-conversation-recommendations {
+.kulo-conversation-recommendations {
   position: absolute;
   inset-inline: 16px;
   top: calc(100% + 4px);
 }
 
-.moco-recommended-tasks { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--moco-control-gap); }
-.moco-conversation-welcome[data-exiting],
-.moco-conversation-recommendations[data-exiting] { animation: moco-conversation-welcome-out 140ms ease-out both; }
+.kulo-recommended-tasks { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--kulo-control-gap); }
+.kulo-conversation-welcome[data-exiting],
+.kulo-conversation-recommendations[data-exiting] { animation: kulo-conversation-welcome-out 140ms ease-out both; }
 
-@keyframes moco-conversation-welcome-out {
+@keyframes kulo-conversation-welcome-out {
   from { opacity: 1; }
   to { opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .moco-conversation-welcome[data-exiting], .moco-conversation-recommendations[data-exiting] { animation: none; opacity: 0; }
+  .kulo-conversation-welcome[data-exiting], .kulo-conversation-recommendations[data-exiting] { animation: none; opacity: 0; }
 }
 
-:root[data-reduce-motion="true"] .moco-conversation-welcome[data-exiting],
-:root[data-reduce-motion="true"] .moco-conversation-recommendations[data-exiting] { animation: none; opacity: 0; }
+:root[data-reduce-motion="true"] .kulo-conversation-welcome[data-exiting],
+:root[data-reduce-motion="true"] .kulo-conversation-recommendations[data-exiting] { animation: none; opacity: 0; }

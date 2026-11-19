@@ -1,8 +1,8 @@
 import { isValidElement, type ComponentProps, type ReactElement, type ReactNode } from "react";
 import { Button, Input, Tabs, TextField } from "@heroui/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { defaultRolePresets, type MocoSettingsView, type PersonalitySnapshot } from "@moco/protocol";
-import { MocoApiError, mocoRest } from "../../moco-api";
+import { defaultRolePresets, type KuloSettingsView, type PersonalitySnapshot } from "@kulo/protocol";
+import { KuloApiError, kuloRest } from "../../kulo-api";
 import { IdentityModule } from "./identity-module";
 import { usePersonalityControls } from "./personality-controls";
 
@@ -29,8 +29,8 @@ vi.mock("react", async (importOriginal) => {
     useEffect: () => {},
   };
 });
-vi.mock("../../moco-i18n", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../moco-i18n")>();
+vi.mock("../../kulo-i18n", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../kulo-i18n")>();
   return { ...actual, useI18n: () => ({ t: (zh: string) => zh }), translate: (zh: string) => zh };
 });
 vi.mock("./settings-save-activity", () => ({ useSettingsPending: (pending: boolean) => { hooks.pending = pending; } }));
@@ -49,7 +49,7 @@ function personality(revision = 1, enabled = true, intervalDays = 1, recentWorkE
 }
 
 async function loadPersonality(value = personality()) {
-  vi.spyOn(mocoRest, "getPersonality").mockResolvedValue(value);
+  vi.spyOn(kuloRest, "getPersonality").mockResolvedValue(value);
   await renderHook().refresh();
   return renderHook();
 }
@@ -72,7 +72,7 @@ describe("independent personality preferences", () => {
     let controls = await loadPersonality();
     controls.setSchedule({ enabled: true, intervalDays: 8 });
     controls = renderHook();
-    const save = vi.spyOn(mocoRest, "savePersonalitySettings")
+    const save = vi.spyOn(kuloRest, "savePersonalitySettings")
       .mockResolvedValueOnce(personality(2, true, 1, false))
       .mockResolvedValueOnce(personality(3, true, 8, false));
     await controls.setRecentEnabled(false);
@@ -88,7 +88,7 @@ describe("independent personality preferences", () => {
   it("blocks concurrent writes and changes a switch only after its write succeeds", async () => {
     let controls = await loadPersonality();
     const pending = deferred<PersonalitySnapshot>();
-    const save = vi.spyOn(mocoRest, "savePersonalitySettings").mockReturnValue(pending.promise);
+    const save = vi.spyOn(kuloRest, "savePersonalitySettings").mockReturnValue(pending.promise);
     const request = controls.setRecentEnabled(false);
     controls = renderHook();
     expect(controls.saving).toBe(true);
@@ -107,7 +107,7 @@ describe("independent personality preferences", () => {
     let controls = await loadPersonality();
     controls.setSchedule({ enabled: true, intervalDays: 9 });
     controls = renderHook();
-    const save = vi.spyOn(mocoRest, "savePersonalitySettings")
+    const save = vi.spyOn(kuloRest, "savePersonalitySettings")
       .mockRejectedValueOnce(new Error("Offline"))
       .mockResolvedValueOnce(personality(2, false, 1));
     expect(await controls.setRelationshipEnabled(false)).toBe(false);
@@ -126,7 +126,7 @@ describe("independent personality preferences", () => {
 
   it("retains invalid interval input for correction without sending it", async () => {
     let controls = await loadPersonality();
-    const save = vi.spyOn(mocoRest, "savePersonalitySettings");
+    const save = vi.spyOn(kuloRest, "savePersonalitySettings");
     controls.setSchedule({ enabled: true, intervalDays: NaN });
     controls = renderHook();
     expect(await controls.saveSchedule()).toBe(false);
@@ -141,9 +141,9 @@ describe("independent personality preferences", () => {
     let controls = await loadPersonality();
     controls.setSchedule({ enabled: true, intervalDays: 9 });
     controls = renderHook();
-    vi.mocked(mocoRest.getPersonality).mockResolvedValue(personality(4, true, 3, false));
-    const save = vi.spyOn(mocoRest, "savePersonalitySettings")
-      .mockRejectedValueOnce(new MocoApiError(409, "Changed elsewhere"))
+    vi.mocked(kuloRest.getPersonality).mockResolvedValue(personality(4, true, 3, false));
+    const save = vi.spyOn(kuloRest, "savePersonalitySettings")
+      .mockRejectedValueOnce(new KuloApiError(409, "Changed elsewhere"))
       .mockResolvedValueOnce(personality(5, true, 12, false));
     await controls.saveSchedule();
     controls = renderHook();
@@ -162,7 +162,7 @@ describe("independent personality preferences", () => {
 
   it("restores the saved recent-work state after failure and exposes an explicit retry", async () => {
     let controls = await loadPersonality();
-    vi.spyOn(mocoRest, "savePersonalitySettings")
+    vi.spyOn(kuloRest, "savePersonalitySettings")
       .mockRejectedValueOnce(new Error("Offline"))
       .mockResolvedValueOnce(personality(2, true, 1, false));
     await controls.setRecentEnabled(false);
@@ -176,7 +176,7 @@ describe("independent personality preferences", () => {
   });
 });
 
-function settings(revision = 1, agentName = "Moco", workbenchName = "Saved workspace"): MocoSettingsView {
+function settings(revision = 1, agentName = "Kulo", workbenchName = "Saved workspace"): KuloSettingsView {
   return {
     globalRevision: revision,
     blocks: {
@@ -219,11 +219,11 @@ function renderIdentity(value = settings(), onSettingsUpdated = vi.fn()) {
 describe("display-name preference", () => {
   it("saves on blur and Enter, blocks duplicate commits, and keeps other tabs available", async () => {
     let updated = settings();
-    const onUpdated = vi.fn((next: MocoSettingsView) => { updated = next; });
+    const onUpdated = vi.fn((next: KuloSettingsView) => { updated = next; });
     let page = renderIdentity(updated, onUpdated);
-    const pending = deferred<{ settings: MocoSettingsView; summary: string }>();
-    const save = vi.spyOn(mocoRest, "saveSettingsBlock").mockReturnValue(pending.promise);
-    page.field.props.onChange?.("Moco New");
+    const pending = deferred<{ settings: KuloSettingsView; summary: string }>();
+    const save = vi.spyOn(kuloRest, "saveSettingsBlock").mockReturnValue(pending.promise);
+    page.field.props.onChange?.("Kulo New");
     page = renderIdentity(updated, onUpdated);
     expect(save).not.toHaveBeenCalled();
     page.input.props.onBlur?.({} as never);
@@ -235,22 +235,22 @@ describe("display-name preference", () => {
     page.input.props.onKeyDown?.({ key: "Enter", nativeEvent: { isComposing: false }, preventDefault } as never);
     expect(preventDefault).toHaveBeenCalledOnce();
     expect(save).toHaveBeenCalledOnce();
-    expect(save).toHaveBeenCalledWith("presentation", 1, { agentName: "Moco New", workbenchName: "Saved workspace" });
-    pending.resolve({ settings: settings(2, "Moco New"), summary: "saved" });
+    expect(save).toHaveBeenCalledWith("presentation", 1, { agentName: "Kulo New", workbenchName: "Saved workspace" });
+    pending.resolve({ settings: settings(2, "Kulo New"), summary: "saved" });
     await vi.waitFor(() => expect(onUpdated).toHaveBeenCalledOnce());
     page = renderIdentity(updated, onUpdated);
     expect(hooks.pending).toBe(false);
-    expect(page.field.props.value).toBe("Moco New");
+    expect(page.field.props.value).toBe("Kulo New");
     page.input.props.onBlur?.({} as never);
     expect(save).toHaveBeenCalledOnce();
   });
 
   it("ignores IME Enter, preserves a failed name, and retries only that preference", async () => {
     let updated = settings();
-    const onUpdated = vi.fn((next: MocoSettingsView) => { updated = next; });
+    const onUpdated = vi.fn((next: KuloSettingsView) => { updated = next; });
     let page = renderIdentity(updated, onUpdated);
-    const save = vi.spyOn(mocoRest, "saveSettingsBlock")
-      .mockRejectedValueOnce(new MocoApiError(409, "Changed elsewhere"))
+    const save = vi.spyOn(kuloRest, "saveSettingsBlock")
+      .mockRejectedValueOnce(new KuloApiError(409, "Changed elsewhere"))
       .mockResolvedValueOnce({ settings: settings(5, "新名称", "Latest workspace"), summary: "saved" });
     page.field.props.onChange?.("新名称");
     page = renderIdentity(updated, onUpdated);
@@ -260,7 +260,7 @@ describe("display-name preference", () => {
     await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
     page = renderIdentity(updated, onUpdated);
     expect(page.field.props.value).toBe("新名称");
-    vi.spyOn(mocoRest, "getSettings").mockResolvedValue(settings(4, "Other name", "Latest workspace"));
+    vi.spyOn(kuloRest, "getSettings").mockResolvedValue(settings(4, "Other name", "Latest workspace"));
     page.retry().props.onPress?.({} as never);
     await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(2));
     expect(save.mock.calls[1]).toEqual(["presentation", 4, { agentName: "新名称", workbenchName: "Latest workspace" }]);

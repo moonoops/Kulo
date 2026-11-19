@@ -35,7 +35,7 @@ export function startNodeService<T>(options: {
     startupTimer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new Error("Moco 后台服务启动超时。"));
+      reject(new Error("Kulo 后台服务启动超时。"));
       child.kill("SIGTERM");
     }, options.startupTimeoutMs ?? 90_000);
     const finish = () => { settled = true; clearTimeout(startupTimer); };
@@ -44,22 +44,22 @@ export function startNodeService<T>(options: {
       if (message && typeof message === "object" && (message as { type?: unknown }).type === "error") {
         finish();
         const detail = (message as { message?: unknown }).message;
-        reject(new Error(typeof detail === "string" ? detail : "Moco 后台服务启动失败。"));
+        reject(new Error(typeof detail === "string" ? detail : "Kulo 后台服务启动失败。"));
         return;
       }
       try {
         const value = options.validateReady(message);
         if (value !== undefined) { readySucceeded = true; finish(); resolve(value); }
       } catch {
-        finish(); reject(new Error("Moco 后台服务返回了无效的启动消息。"));
+        finish(); reject(new Error("Kulo 后台服务返回了无效的启动消息。"));
         child.kill("SIGTERM");
       }
     });
     child.once("error", () => {
-      if (!settled) { finish(); reject(new Error("无法启动 Moco 后台进程。")); }
+      if (!settled) { finish(); reject(new Error("无法启动 Kulo 后台进程。")); }
     });
     child.once("exit", () => {
-      if (!settled) { finish(); reject(new Error("Moco 后台服务在启动完成前退出。")); }
+      if (!settled) { finish(); reject(new Error("Kulo 后台服务在启动完成前退出。")); }
     });
   });
   child.stdout?.on("data", (chunk: Buffer) => options.onOutput?.(chunk.toString()));
@@ -80,7 +80,7 @@ export function startNodeService<T>(options: {
     ready,
     close: () => closing ??= (async () => {
       clearTimeout(startupTimer);
-      if (!settled) { settled = true; rejectReady(new Error("Moco 后台服务启动已取消。")); }
+      if (!settled) { settled = true; rejectReady(new Error("Kulo 后台服务启动已取消。")); }
       if (child.exitCode !== null || child.signalCode !== null) return;
       if (child.connected) child.send({ type: "shutdown" }, () => {});
       else child.kill("SIGTERM");
@@ -88,9 +88,9 @@ export function startNodeService<T>(options: {
       child.kill("SIGTERM");
       if (!await waitForExit(3_000)) {
         child.kill("SIGKILL");
-        if (!await waitForExit(3_000)) throw new Error("Moco 后台进程未能退出。");
+        if (!await waitForExit(3_000)) throw new Error("Kulo 后台进程未能退出。");
       }
-      if (readySucceeded) throw new Error("Moco 后台未能安全关闭，本次切换已暂停。");
+      if (readySucceeded) throw new Error("Kulo 后台未能安全关闭，本次切换已暂停。");
     })(),
   };
 }

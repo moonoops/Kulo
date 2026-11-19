@@ -1,20 +1,20 @@
-import { translate as tr, useI18n } from "../../moco-i18n";
+import { translate as tr, useI18n } from "../../kulo-i18n";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { pauseOtherMedia } from "./media-message";
-import { MocoIcon } from "../../moco-icon";
+import { KuloIcon } from "../../kulo-icon";
 import { isMicrophonePermissionFailure, microphonePermissionFailureMessage } from "../system-permissions/permission-recovery";
 import { noteMicrophoneAccess } from "../system-permissions/system-permissions";
 
 export function MicrophoneGlyph() {
-  return <MocoIcon name="microphone" size={20} />;
+  return <KuloIcon name="microphone" size={20} />;
 }
 
 export function RecordingStopGlyph() {
-  return <MocoIcon name="stop" size={20} />;
+  return <KuloIcon name="stop" size={20} />;
 }
 
 export function RecordingWaveform({ levels }: { levels: readonly number[] }) {
-  return <svg className="moco-composer-waveform" viewBox="0 0 480 32" preserveAspectRatio="none" aria-hidden="true">
+  return <svg className="kulo-composer-waveform" viewBox="0 0 480 32" preserveAspectRatio="none" aria-hidden="true">
     {Array.from({ length: 80 }, (_, index) => {
       const height = 2 + (levels[index - (80 - levels.length)] ?? 0) * 26;
       return <line key={index} x1={index * 6 + 3} x2={index * 6 + 3} y1={16 - height / 2} y2={16 + height / 2} />;

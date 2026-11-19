@@ -1,4 +1,4 @@
-import type { TopicSummary } from "@moco/protocol";
+import type { TopicSummary } from "@kulo/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { TopicDraftStore } from "./topic-drafts";
 

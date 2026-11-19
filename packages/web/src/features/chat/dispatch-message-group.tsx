@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { ChatReplyReference, ChatDisplayItem } from "@moco/protocol";
+import type { ChatReplyReference, ChatDisplayItem } from "@kulo/protocol";
 import { MessageActions } from "./message-actions";
 import { dispatchGroupActionItem, type DispatchReplyGroup } from "./dispatch-groups";
 
@@ -11,7 +11,7 @@ export function DispatchMessageGroup<T extends ChatDisplayItem>({ group, renderM
   trailingContent?: ReactNode;
 }) {
   return <MessageActions item={dispatchGroupActionItem(group)} onReply={onReply} showFooter={!trailingContent}>
-    <div className="moco-dispatch-message-content">
+    <div className="kulo-dispatch-message-content">
       {group.dispatches.map((item) => renderMessage(item, onNavigateReply))}
       {group.replies.map((item) => renderMessage(item, onNavigateReply))}
       {trailingContent}

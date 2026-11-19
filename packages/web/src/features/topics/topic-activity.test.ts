@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { TicketCardView, TopicSummary } from "@moco/protocol";
+import type { TicketCardView, TopicSummary } from "@kulo/protocol";
 import { parseSeenTopicActivities, reconcileTopicActivity, topicNotifications, type SeenTopicActivities } from "./topic-activity";
 
-const topics: TopicSummary[] = [{ id: "root", conversationId: 1, title: "Moco", createdAt: 1, updatedAt: 1 },
+const topics: TopicSummary[] = [{ id: "root", conversationId: 1, title: "Kulo", createdAt: 1, updatedAt: 1 },
   { id: "project-topic", projectId: "project", conversationId: 2, title: "项目讨论", createdAt: 1, updatedAt: 1 }];
 const task: TicketCardView = { id: "task", title: "任务", role: "developer", roleLabel: "开发", status: "running", envId: "local", workspaceDir: "/tmp", originTopicId: "project-topic", createdAt: 1, updatedAt: 1 };
 const activity = (id: number, busy = false) => ({ busy, queuedCount: 0, lastAssistantMessageId: id });

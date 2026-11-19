@@ -3,15 +3,15 @@ import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { pipeline } from "node:stream/promises";
 import { URL } from "node:url";
-import { HTML_ARTIFACT_BROWSER_CSP, HTML_ARTIFACT_CSP, htmlArtifactBrowserDocument, htmlArtifactDocument, isHtmlArtifact } from "@moco/protocol";
+import { HTML_ARTIFACT_BROWSER_CSP, HTML_ARTIFACT_CSP, htmlArtifactBrowserDocument, htmlArtifactDocument, isHtmlArtifact } from "@kulo/protocol";
 import {
   MAX_UPLOAD_BYTES, MAX_VIDEO_UPLOAD_BYTES, MEDIA_UPLOAD_LIMITS,
-  MocoUploadStore, UploadError, VISION_IMAGE_MIMES,
+  KuloUploadStore, UploadError, VISION_IMAGE_MIMES,
   type LoadedUpload, type UploadPresentationInput,
 } from "./uploads.js";
 
 export interface MediaHttpOptions {
-  uploads: MocoUploadStore;
+  uploads: KuloUploadStore;
   authenticate: (req: IncomingMessage, url: URL) => string | undefined;
   isPrincipalActive?: (principalId: string) => boolean;
   canReadScope?: (principalId: string, scopeId: string) => boolean | Promise<boolean>;
@@ -26,7 +26,7 @@ export interface MediaHttpHandler {
 }
 
 interface MediaSession { principalId: string; expiresAt: number }
-const COOKIE_NAME = "moco_media";
+const COOKIE_NAME = "kulo_media";
 
 function json(res: ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });

@@ -6,7 +6,7 @@ import { RecoveryError, redact } from "./files.js";
 import { recoverCustomizationExecutions } from "./customization-executions.js";
 import { bundledCustomizationCleanup } from "./cleanup-runtime.js";
 
-const HELP = "moco-rescue <inspect|versions|rollback|export|gc|safe-mode|cleanup> --data-dir <absolute-directory> [--json]\n";
+const HELP = "kulo-rescue <inspect|versions|rollback|export|gc|safe-mode|cleanup> --data-dir <absolute-directory> [--json]\n";
 
 export async function runRecoveryCli(args: readonly string[]): Promise<{ exitCode: number; output: string }> {
   try {
@@ -31,8 +31,8 @@ export async function runRecoveryCli(args: readonly string[]): Promise<{ exitCod
     const command = positional[0] ?? "inspect";
     if (!["inspect", "versions", "rollback", "export", "gc", "safe-mode", "cleanup", "help"].includes(command) || positional.length > 1) throw new RecoveryError("invalid_arguments", "恢复命令无效。");
     if (command === "help") return { exitCode: 0, output: HELP };
-    const dataDir = flags.get("--data-dir") ?? process.env.MOCO_DESKTOP_DATA_DIR;
-    if (!dataDir) throw new RecoveryError("missing_data_directory", "请指定此 Moco 实例的数据目录。");
+    const dataDir = flags.get("--data-dir") ?? process.env.KULO_DESKTOP_DATA_DIR;
+    if (!dataDir) throw new RecoveryError("missing_data_directory", "请指定此 Kulo 实例的数据目录。");
     let manager = new RecoveryManager(dataDir);
     const initial = await manager.inspect();
     const baseline = initial.baseline?.manifest ?? initial.current?.manifest;

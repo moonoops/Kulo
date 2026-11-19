@@ -8,18 +8,18 @@ import { arr, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import type { UserMessage } from "@earendil-works/pi-ai";
 import type {
   BuiltinThinkingEffort, CustomModelConfig, CustomProviderApi, EnvNodeDescriptor, ModelCalibrationProviderUpdate,
-  MocoSettingsView, ProviderCatalogItem, ResolveModelMetadataRequest, ResolveModelMetadataResponse, SettingsBlockName,
+  KuloSettingsView, ProviderCatalogItem, ResolveModelMetadataRequest, ResolveModelMetadataResponse, SettingsBlockName,
   SettingsAssistantAction, SettingsAssistantContext, SettingsAssistantDecision,
   SettingsAssistantModule, SettingsAssistantSnapshot, SettingsAssistantConversation,
   ConnectionDescribeRequest, ConnectionPrepareRequest,
   TicketCardView, ChatAttachment, AppearanceCustomization, TopicSummary,
-} from "@moco/protocol";
-import { DEFAULT_APPEARANCE_CUSTOMIZATION, isConversationModel, redactSensitiveText, validateAppearanceCustomization } from "@moco/protocol";
-import type { MocoConnections } from "./connections.js";
+} from "@kulo/protocol";
+import { DEFAULT_APPEARANCE_CUSTOMIZATION, isConversationModel, redactSensitiveText, validateAppearanceCustomization } from "@kulo/protocol";
+import type { KuloConnections } from "./connections.js";
 import { validateConfigurationModel } from "./model-configuration.js";
 import { supportsNativeWebSearch } from "./model-native-tools.js";
-import { MocoSettingsDoc, applySettingsBlockUpdate, sanitizeCustomModelList, type MocoDurableSettings } from "./settings.js";
-import { MocoStateDoc, isOrchestratorConversation, type TopicTitleJob } from "./state.js";
+import { KuloSettingsDoc, applySettingsBlockUpdate, sanitizeCustomModelList, type KuloDurableSettings } from "./settings.js";
+import { KuloStateDoc, isOrchestratorConversation, type TopicTitleJob } from "./state.js";
 import { completedTopicTitle, createTopicTitleJob, parseTopicTitle, retryFailedTopicTitle, titleGenerationFailure } from "./topic-titles.js";
 import { SETTINGS_TITLE_INSTRUCTIONS, buildSettingsAssistantPrompt } from "./prompts.js";
 import {
@@ -42,7 +42,7 @@ import {
 } from "./settings-doc.js";
 import type { DeviceAssistantHost, DeviceJoinStaging, HubDeviceController } from "./tools-devices.js";
 import { resolveDeferredAddTools } from "./tool-surface.js";
-import type { PreparedDeviceRoleChange } from "@moco/env";
+import type { PreparedDeviceRoleChange } from "@kulo/env";
 
 export {
   SettingsAssistantDoc,
@@ -170,12 +170,12 @@ interface AssistantHost {
   tools?: (context?: SettingsAssistantContext, extensions?: readonly ReturnType<typeof defineExtension>[]) => readonly ToolRegistration[] | null;
   preloadedToolNames?: (context?: SettingsAssistantContext) => readonly string[];
   settingsTierExtension?: ReturnType<typeof defineExtension>;
-  settings: () => MocoSettingsView;
+  settings: () => KuloSettingsView;
   providers: () => Promise<ProviderCatalogItem[]>;
   envs: () => EnvNodeDescriptor[];
   display: (view: ConversationView, conversationId?: number) => Pick<SettingsAssistantSnapshot, "messages" | "live">;
   hydrateConversation?: (conversationId: number) => Promise<void>;
-  applied: (settings: MocoDurableSettings) => Promise<void>;
+  applied: (settings: KuloDurableSettings) => Promise<void>;
   removeProviderAuth: (providerId: string) => Promise<void>;
   emit: (snapshot: SettingsAssistantSnapshot) => void;
   cwd?: string;
@@ -191,7 +191,7 @@ interface AssistantHost {
   processText?: (content: string, requestId?: string) => Promise<{ text: string }>;
   prepareInput: (content: string, attachments: ChatAttachment[], principalId: string) => { content: UserMessage["content"]; attachments: ChatAttachment[] };
   bindAttachments: (attachments: ChatAttachment[], conversationId: number, principalId: string) => void;
-  connections?: MocoConnections;
+  connections?: KuloConnections;
   workspaceRead?: (clientId: string) => Promise<unknown>;
   extensionsRead?: (clientId?: string) => Promise<unknown>;
   scheduledTasks?: () => Promise<TicketCardView[]>;
@@ -284,9 +284,9 @@ export class SettingsAssistant implements DeviceAssistantHost {
       if (this.#closed || lifetime.context.abortSignal?.aborted) return;
       const failure = titleGenerationFailure(error);
       await this.#finishTitle(id, "failed", undefined, failure);
-      console.warn("[MocoSettingsTitle]", id, failure.code, failure.message);
+      console.warn("[KuloSettingsTitle]", id, failure.code, failure.message);
     }).catch((error: unknown) => {
-      if (!this.#closed) console.error("[MocoSettingsTitle] Could not persist generation outcome", id, error instanceof Error ? error.name : "error");
+      if (!this.#closed) console.error("[KuloSettingsTitle] Could not persist generation outcome", id, error instanceof Error ? error.name : "error");
     }).finally(() => { this.#titleWork.delete(id); this.#titleCancels.delete(id); });
     this.#titleWork.set(id, work);
   }
@@ -298,7 +298,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
       const conversation = await this.#host.harness.conversation(id as ConversationId, context);
       if (conversation) await conversation.abort(context, { background: true });
     })().catch((error: unknown) => {
-      if (!this.#closed && !context.abortSignal?.aborted) console.error("[MocoSettingsTitle] Could not stop deleted title", id, error instanceof Error ? error.name : "error");
+      if (!this.#closed && !context.abortSignal?.aborted) console.error("[KuloSettingsTitle] Could not stop deleted title", id, error instanceof Error ? error.name : "error");
     }).finally(() => this.#titleStops.delete(id));
     this.#titleStops.set(id, stopped);
   }
@@ -314,7 +314,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
     do {
       const page = await conversation.entries({ order: "ascending" }, 200, cursor, context);
       for (const entry of page.items) {
-        if (!foundUser && entry.kind === "moco.user" && entry.data && typeof entry.data === "object" && !Array.isArray(entry.data) && Array.isArray(entry.data.attachments)) {
+        if (!foundUser && entry.kind === "kulo.user" && entry.data && typeof entry.data === "object" && !Array.isArray(entry.data) && Array.isArray(entry.data.attachments)) {
           attachmentNames = entry.data.attachments.flatMap((item) => item && typeof item === "object" && !Array.isArray(item) && typeof item.name === "string" ? [item.name] : []);
         }
         if (UserEntry.is(entry)) {
@@ -386,7 +386,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
       }, context);
       if (!claimed) return;
     }
-    const submission = await conversation.submit({ type: "input", whenBusy: "reject", requestId: `moco:settings-title:${id}`,
+    const submission = await conversation.submit({ type: "input", whenBusy: "reject", requestId: `kulo:settings-title:${id}`,
       content: JSON.stringify({ user: this.#titleText(job.userText, 4000), attachments: job.attachmentNames.map((name) => this.#titleText(name, 240)), assistant: this.#titleText(job.assistantText ?? "", 4000) }) }, context);
     const settled = await submission.wait(context);
     const page = await conversation.entries({}, 8, undefined, context);
@@ -611,7 +611,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
       await this.#configureConversation(conversation, context, false, BACKGROUND_CONTEXT);
       await this.#host.harness.commit(async (tx) => {
         const state = await tx.doc(SettingsAssistantDoc);
-        const settings = await tx.doc(MocoSettingsDoc);
+        const settings = await tx.doc(KuloSettingsDoc);
         await conversation.submit(tx, { type: "input", content: prepared.content, whenBusy: "reject", ...(requestId ? { requestId } : {}) });
         state.turnContext = clone(context);
         state.observedRevisions = clone(settings.revisions);
@@ -810,17 +810,17 @@ export class SettingsAssistant implements DeviceAssistantHost {
     const nextAgent = this.#agent(settingsCtx);
     const availableByName = new Map((nextAgent.tools ?? []).map((t) => [t.name, t]));
     const modulePool = new Set([
-      "moco_settings_update",
-      "moco_settings_remove_connection",
-      "moco_identity_read",
-      "moco_identity_propose",
-      "moco_relationship_update",
-      "moco_settings_appearance",
-      "moco_connections",
-      "moco_connection_describe",
-      "moco_connection_prepare",
-      "moco_status",
-      "moco_stop",
+      "kulo_settings_update",
+      "kulo_settings_remove_connection",
+      "kulo_identity_read",
+      "kulo_identity_propose",
+      "kulo_relationship_update",
+      "kulo_settings_appearance",
+      "kulo_connections",
+      "kulo_connection_describe",
+      "kulo_connection_prepare",
+      "kulo_status",
+      "kulo_stop",
       "web_fetch",
     ]);
     const agentSnap = await this.#host.harness.snapshot(AgentDoc, conv.id, context);
@@ -873,7 +873,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
     };
   }
 
-  async readDevices(): Promise<import("@moco/protocol").DeviceInterconnectionView | { unavailable: true }> {
+  async readDevices(): Promise<import("@kulo/protocol").DeviceInterconnectionView | { unavailable: true }> {
     const context = await this.#turn();
     const controller = this.#host.deviceController?.();
     if (!controller) return { unavailable: true };
@@ -1136,7 +1136,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
     if (callerConversationId === undefined) return false;
     const settingsDoc = await this.#host.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
     if (isActiveSettingsConversation(callerConversationId, settingsDoc)) return false;
-    const state = await this.#host.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.#host.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     if (!isOrchestratorConversation(callerConversationId as ConversationId, state)) {
       throw new Error("只有主模型或设置会话可以访问全局设置。");
     }
@@ -1221,7 +1221,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
         ? { tasks: await this.#host.scheduledTasks(), note: "Scheduled tasks are created from main chat conversations and can be inspected, stopped, or removed on the Scheduled Tasks page." }
         : { unavailable: true };
       case "archives": {
-        const state = await this.#host.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const state = await this.#host.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         return { conversations: Object.values(state?.topics ?? {}).filter((topic) => topic.archived && !topic.deletedAt && !topic.master && topic.id !== "root") };
       }
       default: throw new Error("未知的设置页面。");
@@ -1289,7 +1289,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
             if (providerId && !providers.some((entry) => entry.id === providerId)) throw new Error("供应商不存在。");
             return;
           }
-          const effectiveProviderId = providerId || (!defaults.gatewayDisabled ? "moco-gateway" : "");
+          const effectiveProviderId = providerId || (!defaults.gatewayDisabled ? "kulo-gateway" : "");
           const provider = effectiveProviderId ? providers.find((entry) => entry.id === effectiveProviderId) : undefined;
           const model = provider?.models.find((entry) => entry.id === modelId);
           if (!provider || !model) throw new Error("请选择已有连接中的有效模型；新模型请先通过模型配置卡片添加并保存。");
@@ -1310,7 +1310,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
           }
         }
       }
-      let applied: MocoDurableSettings | undefined;
+      let applied: KuloDurableSettings | undefined;
       const view = await this.#host.harness.commit(async (tx) => {
         const state = await tx.doc(SettingsAssistantDoc);
         if (fromMainChat) {
@@ -1320,7 +1320,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
           if (existing) return clone(existing.view);
           this.#assertWritable(block, context!.clientId);
         }
-        const doc = await tx.doc(MocoSettingsDoc);
+        const doc = await tx.doc(KuloSettingsDoc);
         if (block === "roles" && doc.revisions.model !== modelSettings.revision) throw new Error("模型配置已发生变化，请重新读取设置后重试。");
         const before = Object.fromEntries(Object.keys(changes).map((key) => [key, field(doc[block], key) ?? null]));
         const next = clone(doc[block]) as unknown as Record<string, unknown>;
@@ -1357,7 +1357,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
         } else {
           state.actions.push({ view: actionView, block, before, after, revision: doc.revisions[block] });
         }
-        applied = clone(doc) as MocoDurableSettings;
+        applied = clone(doc) as KuloDurableSettings;
         return clone(actionView);
       }, BACKGROUND_CONTEXT);
       if (applied) await this.#host.applied(applied);
@@ -1377,7 +1377,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
         const existing = state.actions.find((a) => a.view.id === commandId);
         if (existing) return clone(existing.view);
         this.#assertWritable("model", context.clientId);
-        const doc = await tx.doc(MocoSettingsDoc);
+        const doc = await tx.doc(KuloSettingsDoc);
         const provider = doc.model.customProviders?.find((entry) => entry.id === providerId);
         if (!provider) throw new Error("只能移除已添加的自定义连接；订阅与凭证请在原设置页管理。");
         const before: Record<string, unknown> = { customProviders: clone(doc.model.customProviders) };
@@ -1469,7 +1469,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
 
     if (input.providerId) {
       const pid = input.providerId.trim();
-      if (pid === "moco-gateway") {
+      if (pid === "kulo-gateway") {
         const result = await resolveForConnection({
           providerId: pid,
           name: modelBlock.gatewayName?.trim() || "默认兼容网关",
@@ -1545,7 +1545,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
     }
     if (!modelBlock.gatewayDisabled && (modelBlock.gatewayModels?.length ?? 0) > 0) {
       connections.push(await resolveForConnection({
-        providerId: "moco-gateway",
+        providerId: "kulo-gateway",
         name: modelBlock.gatewayName?.trim() || "默认兼容网关",
         api: modelBlock.apiMode,
         baseUrl: modelBlock.baseUrl,
@@ -1685,13 +1685,13 @@ export class SettingsAssistant implements DeviceAssistantHost {
     const providersCatalog = await this.#host.providers();
 
     return this.#serialize(async () => {
-      let applied: MocoDurableSettings | undefined;
+      let applied: KuloDurableSettings | undefined;
       const view = await this.#host.harness.commit(async (tx) => {
         const state = await tx.doc(SettingsAssistantDoc);
         const repeated = state.actions.find((a) => a.view.id === commandId);
         if (repeated) return clone(repeated.view);
         this.#assertWritable("model", context.clientId);
-        const doc = await tx.doc(MocoSettingsDoc);
+        const doc = await tx.doc(KuloSettingsDoc);
         const expectedRevision = state.observedRevisions.model;
         if (expectedRevision === undefined) {
           throw new Error("请先读取模型配置或查询模型目录后再执行校准。");
@@ -1715,7 +1715,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
           let targetKey: "customProviders" | "gatewayModels" | "subscriptionModels";
           let officialSearchAllowed = false;
 
-          if (providerId === "moco-gateway") {
+          if (providerId === "kulo-gateway") {
             targetList = next.gatewayModels ?? [];
             targetApi = next.apiMode;
             targetBaseUrl = next.baseUrl;
@@ -1796,7 +1796,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
 
               // Keep active default thinking level valid if the calibrated model is the current default.
               if (
-                (next.defaultProvider === providerId || (!next.defaultProvider && providerId === "moco-gateway")) &&
+                (next.defaultProvider === providerId || (!next.defaultProvider && providerId === "kulo-gateway")) &&
                 next.defaultModel === modelId &&
                 isConversationModel(sanitized)
               ) {
@@ -1852,7 +1852,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
           after,
           revision: doc.revisions.model,
         });
-        applied = clone(doc) as MocoDurableSettings;
+        applied = clone(doc) as KuloDurableSettings;
         return clone(actionView);
       }, BACKGROUND_CONTEXT);
 
@@ -2052,7 +2052,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
         await this.#emit();
         return;
       }
-      let applied: MocoDurableSettings | undefined;
+      let applied: KuloDurableSettings | undefined;
       let cleanupProviderId: string | undefined;
       await this.#host.harness.commit(async (tx) => {
         const state = await tx.doc(SettingsAssistantDoc);
@@ -2085,7 +2085,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
         const confirm = decision === "confirm" && view.status === "pending" && view.requiresConfirmation;
         if (!undo && !confirm) return;
         this.#assertWritable(action.block!, clientId);
-        const doc = await tx.doc(MocoSettingsDoc);
+        const doc = await tx.doc(KuloSettingsDoc);
         const block = action.block!;
         if (confirm && doc.revisions[block] !== action.revision) throw new Error("设置已发生变化，请重新发起操作。");
         const expected = undo ? action.after! : action.before!;
@@ -2102,7 +2102,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
           action.cleanupPending = true;
           cleanupProviderId = action.removedProviderId;
         }
-        applied = clone(doc) as MocoDurableSettings;
+        applied = clone(doc) as KuloDurableSettings;
       }, BACKGROUND_CONTEXT);
       if (applied) await this.#host.applied(applied);
       if (cleanupProviderId) {
@@ -2135,10 +2135,10 @@ export function createGlobalSettingsToolsExtension(get: () => SettingsAssistant)
     ...(addTools.length ? { control: { addTools } } : {}),
   });
   return defineExtension({
-    name: "moco-global-settings",
+    name: "kulo-global-settings",
     tools: [
       defineTool({
-        name: "moco_settings_read",
+        name: "kulo_settings_read",
         description: "Read current or specified settings section (`current`, `models`, `workers`, `identity`, `machines`, `appearance`, `capabilities`, `extensions`, `connections`, `permissions`, `schedules`, `archives`) without secrets. 关键词：读取设置 查看配置 模型并发设备外观权限定时归档扩展",
         parameters: obj({ section: opt(oneOf(["current", ...MODULES, "extensions"] as const)) }),
         deferred: true,
@@ -2147,10 +2147,10 @@ export function createGlobalSettingsToolsExtension(get: () => SettingsAssistant)
           const value = await get().read(args.section, Number(api.conversationId));
           const section = args.section ?? "current";
           const followUps: string[] = [];
-          if (["current", "models", "workers", "identity"].includes(section)) followUps.push("moco_settings_update");
-          if (section === "appearance") followUps.push("moco_settings_appearance");
-          if (section === "extensions") followUps.push("moco_extension_manage");
-          if (section === "capabilities") followUps.push("moco_capability_manage", "moco_skill_manage");
+          if (["current", "models", "workers", "identity"].includes(section)) followUps.push("kulo_settings_update");
+          if (section === "appearance") followUps.push("kulo_settings_appearance");
+          if (section === "extensions") followUps.push("kulo_extension_manage");
+          if (section === "capabilities") followUps.push("kulo_capability_manage", "kulo_skill_manage");
           const addTools = followUps.length
             ? await resolveDeferredAddTools(api, context, followUps)
             : [];
@@ -2158,21 +2158,21 @@ export function createGlobalSettingsToolsExtension(get: () => SettingsAssistant)
         },
       }),
       defineTool({
-        name: "moco_settings_update",
+        name: "kulo_settings_update",
         description: "Apply allowlisted settings changes immediately (`block` in `model`/`executor`/`presentation`/`roles`; `changes` JSON object using `roleId.field` for `roles`; read settings first; excludes credentials, URLs, Identity files, and Hindsight connection toggles). 关键词：修改设置 调整并发子智能体上限 切换默认模型 改名 角色配置 自动归档",
         parameters: obj({ block: oneOf(["model", "executor", "presentation", "roles"]), changes: str(), title: str() }),
         deferred: true,
         execute: async (args, api) => result(await get().update(args.block, args.changes, args.title, api.callId, Number(api.conversationId))),
       }),
       defineTool({
-        name: "moco_settings_appearance",
+        name: "kulo_settings_appearance",
         description: "Switch display mode (`system`/`light`/`dark`) on the connected browser immediately. 关键词：切换外观 深色模式 浅色模式 夜间主题 暗黑明暗跟随系统",
         parameters: obj({ mode: oneOf(["system", "light", "dark"]) }),
         deferred: true,
         execute: async (args, api) => result(await get().clientAction("appearance", { appearance: args.mode }, api.callId, Number(api.conversationId))),
       }),
       defineTool({
-        name: "moco_settings_navigate",
+        name: "kulo_settings_navigate",
         description: "Navigate to a target settings page or open its add-connection, subscription sign-in, Identity editor, device join, or memory setup flow (secrets are entered only in dedicated UI forms). 关键词：打开设置页面 跳转配置 添加API密钥 登录订阅 配置记忆 接入设备",
         parameters: obj({ module: oneOf(MODULES), intent: opt(oneOf(INTENTS)) }),
         deferred: true,
@@ -2185,14 +2185,14 @@ export function createGlobalSettingsToolsExtension(get: () => SettingsAssistant)
 export function createSettingsAssistantExtension(get: () => SettingsAssistant) {
   const result = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }] });
   return defineExtension({
-    name: "moco-settings-assistant",
-    sections: [section("moco_settings", async () => buildSettingsAssistantPrompt(await get().promptTurn()), { tag: false })],
+    name: "kulo-settings-assistant",
+    sections: [section("kulo_settings", async () => buildSettingsAssistantPrompt(await get().promptTurn()), { tag: false })],
     tools: [
-      defineTool({ name: "moco_connection_prepare", description: "Open a secret/authorization form in the right-hand Settings chat for preset apps (`category='app'`, `app_id`), website/server logins (`category='credential'`), or user notes (`category='information'`). Accepts public metadata and field labels only—never secret values. 关键词：准备连接表单 录入密码密钥 新增SSH服务器账号", parameters: obj({ kind: opt(oneOf(["ssh", "account", "api-key", "custom", "app"])), category: opt(oneOf(["app", "credential", "information"])), app_id: opt(oneOf(["messages", "mail", "github", "figma"])), connection_id: opt(str()), name: opt(str()), host: opt(str()), port: opt(num()), username: opt(str()), url: opt(str()), auth_type: opt(oneOf(["bearer", "basic", "header"])), header_name: opt(str()), type_label: opt(str()), instructions: opt(str()), credential_fields: opt(arr(obj({ key: str(), label: str() }))) }), deferred: true, replay: "safe", execute: async (args, api) => {
+      defineTool({ name: "kulo_connection_prepare", description: "Open a secret/authorization form in the right-hand Settings chat for preset apps (`category='app'`, `app_id`), website/server logins (`category='credential'`), or user notes (`category='information'`). Accepts public metadata and field labels only—never secret values. 关键词：准备连接表单 录入密码密钥 新增SSH服务器账号", parameters: obj({ kind: opt(oneOf(["ssh", "account", "api-key", "custom", "app"])), category: opt(oneOf(["app", "credential", "information"])), app_id: opt(oneOf(["messages", "mail", "github", "figma"])), connection_id: opt(str()), name: opt(str()), host: opt(str()), port: opt(num()), username: opt(str()), url: opt(str()), auth_type: opt(oneOf(["bearer", "basic", "header"])), header_name: opt(str()), type_label: opt(str()), instructions: opt(str()), credential_fields: opt(arr(obj({ key: str(), label: str() }))) }), deferred: true, replay: "safe", execute: async (args, api) => {
         publicConnectionArguments(args, ["kind", "category", "app_id", "connection_id", "name", "host", "port", "username", "url", "auth_type", "header_name", "type_label", "instructions", "credential_fields"]);
         return result(await get().prepareConnection({ kind: args.kind, category: args.category, appId: args.app_id, connectionId: args.connection_id, name: args.name, host: args.host, port: args.port, username: args.username, url: args.url, authType: args.auth_type, headerName: args.header_name, typeLabel: args.type_label, instructions: args.instructions, credentialFields: args.credential_fields }, api.callId));
       } }),
-      defineTool({ name: "moco_settings_remove_connection", description: "Propose removing a custom model connection via a user confirmation card (not applied until confirmed). 关键词：移除模型连接 删除自定义供应商连接", parameters: obj({ provider_id: str() }), deferred: true, execute: async (args, api) => result(await get().removeConnection(args.provider_id, api.callId)) }),
+      defineTool({ name: "kulo_settings_remove_connection", description: "Propose removing a custom model connection via a user confirmation card (not applied until confirmed). 关键词：移除模型连接 删除自定义供应商连接", parameters: obj({ provider_id: str() }), deferred: true, execute: async (args, api) => result(await get().removeConnection(args.provider_id, api.callId)) }),
     ],
   });
 }

@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { APP_ID, APP_NAME } from "./package.mjs";
 
 const run = promisify(execFile);
-const suffix = ".moco-backup.json";
+const suffix = ".kulo-backup.json";
 
 export async function recordInstallerBackup(bundle) {
   const stat = await fs.lstat(bundle);

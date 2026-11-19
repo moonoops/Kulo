@@ -1,8 +1,8 @@
 import { defineTask } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
-import type { TicketRecord, TicketRecoveryRecord } from "@moco/protocol";
-import { redactSecrets } from "@moco/protocol";
-import { MocoStateDoc, releaseProjectWrite, transitionTicketStatus, type MocoDurableState } from "./state.js";
+import type { TicketRecord, TicketRecoveryRecord } from "@kulo/protocol";
+import { redactSecrets } from "@kulo/protocol";
+import { KuloStateDoc, releaseProjectWrite, transitionTicketStatus, type KuloDurableState } from "./state.js";
 import type { WorkerRecoveryEntryData } from "./state.js";
 
 export const RECOVERY_WINDOW_MS = 10 * 60_000;
@@ -20,7 +20,7 @@ export function sameRecoveryScope(a: Pick<TicketRecord, "originTopicId" | "proje
 }
 
 /** Only a verified ready replacement can retire the failed attempts in its lineage. */
-export function resolveSupersededTickets(state: MocoDurableState, completed: TicketRecord, now: number): void {
+export function resolveSupersededTickets(state: KuloDurableState, completed: TicketRecord, now: number): void {
   if (completed.status !== "ready") return;
   const visited = new Set([completed.id]);
   const pending = [...(completed.supersedes ?? [])];
@@ -53,7 +53,7 @@ export function resolveSupersededTickets(state: MocoDurableState, completed: Tic
 
 type ReplacementLookup = (ticketId: string) => TicketRecord[];
 
-export function recoveryLeaf(state: Readonly<MocoDurableState>, root: TicketRecord, lookup?: ReplacementLookup): TicketRecord {
+export function recoveryLeaf(state: Readonly<KuloDurableState>, root: TicketRecord, lookup?: ReplacementLookup): TicketRecord {
   let current = root;
   const visited = new Set([root.id]);
   for (;;) {
@@ -77,14 +77,14 @@ export function recoveryWaitSummary(ticket: TicketRecord): string {
   return `替代方案仍在${label}${detail ? `：${detail}` : ""}，目标尚未完成。`;
 }
 
-export function isSilentRecoveryFailure(state: Readonly<MocoDurableState>, ticket: TicketRecord, lookup?: ReplacementLookup): boolean {
+export function isSilentRecoveryFailure(state: Readonly<KuloDurableState>, ticket: TicketRecord, lookup?: ReplacementLookup): boolean {
   if (ticket.status !== "failed" || !ticket.recovery) return false;
   if (ticket.recovery.state === "recovering") return true;
   const target = recoveryLeaf(state, ticket, lookup);
   return target.status === "blocked" || target.status === "waiting" && target.waiting?.reason === "user";
 }
 
-export function assertRecoveryGuard(state: Readonly<MocoDurableState>, guard: WorkerRecoveryEntryData | undefined): void {
+export function assertRecoveryGuard(state: Readonly<KuloDurableState>, guard: WorkerRecoveryEntryData | undefined): void {
   if (!guard) return;
   const root = state.tickets[guard.rootTicketId];
   const ticket = state.tickets[guard.ticketId];
@@ -101,13 +101,13 @@ export function createFailureRecoveryTask(deps: {
   onChanged?: (context: Context) => Promise<void>;
 }) {
   return defineTask<{ ticketId: string; startedAt: number }, { phase: "review" }, null>({
-    name: "moco.failure_recovery", version: 1, initial: () => ({ phase: "review" }),
+    name: "kulo.failure_recovery", version: 1, initial: () => ({ phase: "review" }),
     abort: async (_task, runtime, context) => {
       await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
     },
     phases: {
       review: async (task, runtime, context) => {
-        const snapshot = await runtime.snapshot(MocoStateDoc, context);
+        const snapshot = await runtime.snapshot(KuloStateDoc, context);
         const ticket = snapshot?.tickets[task.input.ticketId];
         if (!ticket?.recovery || ticket.recovery.startedAt !== task.input.startedAt ||
             ticket.status === "closed" || ticket.status === "stopped" || ticket.status === "ready") {
@@ -119,10 +119,10 @@ export function createFailureRecoveryTask(deps: {
           nextAt = await deps.review(task.input.ticketId, task.input.startedAt, context);
         } catch (error) {
           const message = redactSecrets(error instanceof Error ? error.message : String(error));
-          console.error("[MocoTaskRecovery]", message);
+          console.error("[KuloTaskRecovery]", message);
           nextAt = runtime.now() + RECOVERY_REVIEW_INTERVAL_MS;
           await runtime.commit(async tx => {
-            const state = await tx.doc(MocoStateDoc);
+            const state = await tx.doc(KuloStateDoc);
             const current = state.tickets[task.input.ticketId];
             if (current?.recovery?.startedAt !== task.input.startedAt || ["closed", "stopped", "ready"].includes(current.status)) { nextAt = null; return; }
             current.recovery.lastError = message.slice(0, 1000);

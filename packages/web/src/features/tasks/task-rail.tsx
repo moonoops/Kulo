@@ -1,9 +1,9 @@
-import { useI18n } from "../../moco-i18n";
+import { useI18n } from "../../kulo-i18n";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Button, Card, Spinner } from "@heroui/react";
-import type { TicketCardView } from "@moco/protocol";
+import type { TicketCardView } from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
-import { MocoIcon } from "../../moco-icon";
+import { KuloIcon } from "../../kulo-icon";
 import { ContentPresence, useReducedContentMotion } from "../chat/use-content-motion";
 import {
   reconcileTaskRows, taskCompletedAt, taskIsRecovering, taskNeedsAttention, taskStatusLabel, taskSummary, taskTimeLabel,
@@ -19,14 +19,14 @@ function RailStatus({ ticket }: { ticket: TicketCardView }) {
   const label = ticket.status === "blocked" || ticket.status === "waiting" && ticket.waiting?.reason === "user" ? t("待确认", "Needs confirmation") : taskStatusLabel(ticket);
   const tone = ticket.cleanupPending || ticket.pendingWorkspaceApply ? "ask" : taskIsRecovering(ticket) ? "run" : ticket.status === "failed" ? "fail" : attention ? "ask" : ticket.status === "ready" ? ticket.externalAgentKind ? "wait" : "done" :
     ticket.status === "running" || ticket.status === "pausing" ? "run" : "wait";
-  return <span className="moco-task-status" data-tone={tone}>
-    {tone === "run" ? <span className="moco-task-run-dot" aria-hidden="true" /> :
-      <MocoIcon name={tone === "fail" ? "error" : tone === "ask" ? "help" : tone === "done" ? "check" : "schedule"} size={13} />}
+  return <span className="kulo-task-status" data-tone={tone}>
+    {tone === "run" ? <span className="kulo-task-run-dot" aria-hidden="true" /> :
+      <KuloIcon name={tone === "fail" ? "error" : tone === "ask" ? "help" : tone === "done" ? "check" : "schedule"} size={13} />}
     <span>{label}</span>
   </span>;
 }
 
-export function MocoTaskRail({
+export function KuloTaskRail({
   tickets, projectedTicketId, onProject, onRetry, onIgnore, completedTaskDisplayHours = 3, connected = true, canQueueActions = connected, loaded = true, snapshotVersion = 0,
 }: {
   tickets: TicketCardView[];
@@ -166,19 +166,19 @@ export function MocoTaskRail({
       const rows = Array.from(listRef.current?.children ?? []) as HTMLElement[];
       const remaining = rows.filter(row => !row.querySelector('[inert]'));
       const row = removing ? remaining[Math.min(Math.max(0, index), remaining.length - 1)] : rows.find(row => row.dataset.ticketId === ticketId);
-      const target = row?.querySelector<HTMLButtonElement>(".moco-task-card-button") ?? scrollRef.current;
+      const target = row?.querySelector<HTMLButtonElement>(".kulo-task-card-button") ?? scrollRef.current;
       target?.focus({ preventScroll: true });
     });
   };
 
-  return <div className="moco-task-rail" ref={scrollRef} tabIndex={-1} onScroll={captureAnchor} data-reduced={reduced || undefined}>
-    <div className="moco-task-list" ref={listRef}>
+  return <div className="kulo-task-rail" ref={scrollRef} tabIndex={-1} onScroll={captureAnchor} data-reduced={reduced || undefined}>
+    <div className="kulo-task-list" ref={listRef}>
       {rows.map(row => {
         const ticket = row.ticket;
         const completed = taskCompletedAt(ticket);
         const age = ticket.status === "ready" && !ticket.pendingWorkspaceApply && completed !== undefined && completedTaskDisplayHours !== null ?
           Math.min(1, Math.max(0, (now - completed) / (completedTaskDisplayHours * 3_600_000))) : 0;
-        return <div className="moco-task-row" data-ticket-id={ticket.id} key={ticket.id}
+        return <div className="kulo-task-row" data-ticket-id={ticket.id} key={ticket.id}
           onPointerEnter={event => { if (event.pointerType !== "touch") setHoveredId(ticket.id); }}
           onPointerLeave={() => setHoveredId(current => current === ticket.id ? undefined : current)}
           onFocusCapture={() => setFocusedId(ticket.id)}
@@ -187,29 +187,29 @@ export function MocoTaskRail({
             capturePositions();
             setRows(current => current.filter(item => item.ticket.id !== ticket.id || item.present));
           }}>
-            <div className="moco-task-space">
-              <Card variant="secondary" className={"moco-task-card" + (row.enter ? " moco-task-enter" : "")}
+            <div className="kulo-task-space">
+              <Card variant="secondary" className={"kulo-task-card" + (row.enter ? " kulo-task-enter" : "")}
                 data-state={taskIsRecovering(ticket) ? "recovering" : ticket.status} data-attention={taskNeedsAttention(ticket) || undefined} data-selected={projectedTicketId === ticket.id || undefined}
                 style={{ "--task-age": age } as CSSProperties}>
-                <Card.Content className="moco-task-card-content">
-                  <Button type="button" variant="ghost" fullWidth className="moco-task-card-button"
+                <Card.Content className="kulo-task-card-content">
+                  <Button type="button" variant="ghost" fullWidth className="kulo-task-card-button"
                     aria-label={ticket.title + t("，查看任务详情", ", view task details")} aria-current={projectedTicketId === ticket.id ? "true" : undefined}
                     onPress={() => onProject(ticket.id, ticket.title)}>
-                    <span className="moco-task-card-top">
-                      <strong className="moco-task-title" title={ticket.title}>{ticket.title}</strong>
+                    <span className="kulo-task-card-top">
+                      <strong className="kulo-task-title" title={ticket.title}>{ticket.title}</strong>
                       <RailStatus ticket={ticket} />
                     </span>
-                    <span className="moco-task-summary" title={taskSummary(ticket)}>{taskSummary(ticket)}</span>
-                    <span className="moco-task-card-foot">
-                      <span className="moco-task-agent" title={ticket.roleLabel}>{ticket.roleLabel}</span>
-                      <span className="moco-task-time">{taskTimeLabel(ticket, now)}</span>
+                    <span className="kulo-task-summary" title={taskSummary(ticket)}>{taskSummary(ticket)}</span>
+                    <span className="kulo-task-card-foot">
+                      <span className="kulo-task-agent" title={ticket.roleLabel}>{ticket.roleLabel}</span>
+                      <span className="kulo-task-time">{taskTimeLabel(ticket, now)}</span>
                     </span>
                   </Button>
-                  {ticket.status === "failed" && onRetry && onIgnore && <div className="moco-task-card-actions">
+                  {ticket.status === "failed" && onRetry && onIgnore && <div className="kulo-task-card-actions">
                     <TaskFailureActions ticket={ticket} connected={connected} canQueueActions={canQueueActions}
                       onRetry={id => runAction(id, onRetry, false)} onIgnore={id => runAction(id, onIgnore, true)} />
                   </div>}
-                  {ticket.status === "ready" && ticket.pendingWorkspaceApply && onIgnore && <div className="moco-task-card-actions">
+                  {ticket.status === "ready" && ticket.pendingWorkspaceApply && onIgnore && <div className="kulo-task-card-actions">
                     <Button
                       size="sm"
                       variant="tertiary"
@@ -247,7 +247,7 @@ export function MocoTaskRail({
         });
       }}
     />
-    {!loaded && rows.length === 0 && <div className="moco-task-empty" role="status"><Spinner size="sm" aria-label={t("加载任务", "Loading tasks")} /></div>}
-    {loaded && rows.length === 0 && <div className="moco-task-empty"><MocoIcon name="check" size={20} /><span>{t("暂无后台任务", "No background tasks")}</span></div>}
+    {!loaded && rows.length === 0 && <div className="kulo-task-empty" role="status"><Spinner size="sm" aria-label={t("加载任务", "Loading tasks")} /></div>}
+    {loaded && rows.length === 0 && <div className="kulo-task-empty"><KuloIcon name="check" size={20} /><span>{t("暂无后台任务", "No background tasks")}</span></div>}
   </div>;
 }

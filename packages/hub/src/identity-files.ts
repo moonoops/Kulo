@@ -1,6 +1,6 @@
 /**
- * Moco Identity & Relationship Document Storage & Context Reader (`identity-agreement.md`, `relationship.md`).
- * Strictly private to the Root Moco Orchestrator; background Workers never read or receive these documents.
+ * Kulo Identity & Relationship Document Storage & Context Reader (`identity-agreement.md`, `relationship.md`).
+ * Strictly private to the Root Kulo Orchestrator; background Workers never read or receive these documents.
  */
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync, type Stats } from "node:fs";
 import * as fs from "node:fs/promises";
@@ -18,13 +18,13 @@ import {
   type IdentitySaved,
   type IdentityVersion,
   type IdentityWriteRequest,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 
 export { IDENTITY_FILES };
 
 export const IDENTITY_AGREEMENT_FILE = "identity-agreement.md" as const;
 
-export const MOCO_IDENTITY_TEMPLATES: Readonly<Record<IdentityFile, string>> = {
+export const KULO_IDENTITY_TEMPLATES: Readonly<Record<IdentityFile, string>> = {
   "identity-agreement.md": `# Identity Agreement
 
 Role: The user's persistent personal assistant—owning goals from intake through verification and accountable for the final outcome delivered to the user.
@@ -76,7 +76,7 @@ export interface IdentityBackupRetention {
   protectedBackupIds?: () => readonly string[];
 }
 
-export interface MocoIdentityFilesOptions {
+export interface KuloIdentityFilesOptions {
   retention?: IdentityBackupRetention;
 }
 
@@ -253,10 +253,10 @@ function enforceSizeLimit(bytes: Buffer): void {
   }
 }
 
-export class MocoIdentityFiles {
+export class KuloIdentityFiles {
   constructor(
     private readonly getDirectoryState: () => IdentityDirectoryState,
-    private readonly options: MocoIdentityFilesOptions = {},
+    private readonly options: KuloIdentityFilesOptions = {},
   ) {
     const policy = options.retention;
     if (policy?.maxBackups !== undefined && (!Number.isSafeInteger(policy.maxBackups) || policy.maxBackups < 2) ||
@@ -674,7 +674,7 @@ export class MocoIdentityFiles {
     return this.safe(async () => {
       const state = this.state();
       if (!state.directory) {
-        const content = MOCO_IDENTITY_TEMPLATES[file];
+        const content = KULO_IDENTITY_TEMPLATES[file];
         this.assertState(state);
         return {
           file,
@@ -692,7 +692,7 @@ export class MocoIdentityFiles {
           const lastBackup = await this.lastBackup(root, file);
           const content = current.exists
             ? decodeUtf8(current.bytes)
-            : MOCO_IDENTITY_TEMPLATES[file];
+            : KULO_IDENTITY_TEMPLATES[file];
           await this.assertRoot(root);
           return {
             file,
@@ -909,7 +909,7 @@ export class MocoIdentityFiles {
 }
 
 /**
- * Synchronous, fail-closed identity & relationship context reader strictly for the Root Moco Orchestrator.
+ * Synchronous, fail-closed identity & relationship context reader strictly for the Root Kulo Orchestrator.
  * Unavailable or uninitialized files never inject templates.
  */
 export function readIdentityContext(directory: string): Array<{ file: IdentityFile; text: string }> {

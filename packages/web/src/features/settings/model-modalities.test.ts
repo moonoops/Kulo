@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ProviderModelItem } from "@moco/protocol";
+import type { ProviderModelItem } from "@kulo/protocol";
 import { getModelModalities, toProviderModelItem } from "./settings-helpers";
 
 const catalog: ProviderModelItem = {

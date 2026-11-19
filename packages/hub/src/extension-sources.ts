@@ -59,7 +59,7 @@ async function readJson(url: string, options: { signal?: AbortSignal; fetch?: ty
   const target = new URL(url);
   if (target.protocol !== "https:" || !["api.github.com", "registry.npmjs.org"].includes(target.hostname) || target.port || target.username || target.password || target.search || target.hash) return invalidSource();
   const timeout = AbortSignal.timeout(20_000), signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-  const init: RequestInit = { method: "GET", signal, redirect: "error", credentials: "omit", headers: { Accept: "application/json", "User-Agent": "Moco-Agent/0.3" } };
+  const init: RequestInit = { method: "GET", signal, redirect: "error", credentials: "omit", headers: { Accept: "application/json", "User-Agent": "Kulo-Agent/0.3" } };
   // These fixed public service APIs can use the configured proxy without open-web DNS pinning.
   const response = options.fetch ? await options.fetch(target, init) : await serviceApiFetch(target, init, { timeoutMs: 20_000, maxResponseBytes: 256_000 });
   if (response.status === 404 && optional && !response.redirected) { await response.body?.cancel(); return undefined; }
@@ -84,7 +84,7 @@ export async function analyzeExtensionSource(raw: string, options: { signal?: Ab
   const builtin = source.kind === "github" ? BUILTIN_REPOSITORIES.has(`${source.owner}/${source.name}`.toLowerCase()) : BUILTIN_PACKAGES.has(source.name);
   if (builtin) return { sourceUrl: source.url, name: "Billion Context 上下文压缩", route: "builtin", compatibility: "ready", installable: true,
     extensionId: "billion-context", version: options.builtinVersion,
-    reasons: ["使用已验证的 Moco 内核适配包，保留 Pi Durable 会话和压缩提交机制。", "安装后保持关闭，可在“其他”中启用。"] };
+    reasons: ["使用已验证的 Kulo 内核适配包，保留 Pi Durable 会话和压缩提交机制。", "安装后保持关闭，可在“其他”中启用。"] };
   let manifest: Record<string, unknown> | undefined, metadata: Record<string, unknown> | undefined;
   try {
     if (source.kind === "npm") {
@@ -115,5 +115,5 @@ export async function analyzeExtensionSource(raw: string, options: { signal?: Ab
     route, compatibility: "needs_adapter", installable: false,
     ...(boundedText(manifest?.version, 80) ? { version: boundedText(manifest?.version, 80) } : {}),
     ...(description ? { description } : {}), ...(license ? { license } : {}),
-    reasons: [reasons[route], ...(metadata?.archived === true ? ["上游仓库已归档，需要先评估维护来源。"] : []), "当前未登记已验证的 Moco 适配包，不执行仓库脚本或安装。"] };
+    reasons: [reasons[route], ...(metadata?.archived === true ? ["上游仓库已归档，需要先评估维护来源。"] : []), "当前未登记已验证的 Kulo 适配包，不执行仓库脚本或安装。"] };
 }

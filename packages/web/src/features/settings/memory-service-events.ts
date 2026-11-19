@@ -1,8 +1,8 @@
-import type { MemoryServiceOperation, MemoryServiceSnapshot } from "@moco/protocol";
+import type { MemoryServiceOperation, MemoryServiceSnapshot } from "@kulo/protocol";
 
-export const MEMORY_SERVICE_INTENT_EVENT = "moco:memory-service-intent";
-export const MEMORY_SERVICE_CHANGED_EVENT = "moco:memory-service-changed";
-export const MEMORY_CONNECTION_FOCUS_EVENT = "moco:memory-connection-focus";
+export const MEMORY_SERVICE_INTENT_EVENT = "kulo:memory-service-intent";
+export const MEMORY_SERVICE_CHANGED_EVENT = "kulo:memory-service-changed";
+export const MEMORY_CONNECTION_FOCUS_EVENT = "kulo:memory-connection-focus";
 export type MemoryDialogueOperation = Extract<MemoryServiceOperation, "deploy" | "configure" | "uninstall">;
 export const isMemoryDialogueOperation = (operation: MemoryServiceOperation): operation is MemoryDialogueOperation => ["deploy", "configure", "uninstall"].includes(operation);
 let pendingIntent: MemoryServiceOperation | null = null;

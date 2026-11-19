@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { SkillAudience, SkillRecord } from "@moco/protocol";
+import type { SkillAudience, SkillRecord } from "@kulo/protocol";
 import type { SkillRuntimeContext } from "./skill-runtime.js";
 
 export interface SkillPreset {

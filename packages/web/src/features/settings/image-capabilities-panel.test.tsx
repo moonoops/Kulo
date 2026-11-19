@@ -2,8 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { ComponentProps, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Button } from "@heroui/react";
-import { DEFAULT_IMAGE_TEST_PROMPT, IMAGE_MODEL_PRESETS, type CapabilitiesWorkspaceSnapshot, type MediaJob } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
+import { DEFAULT_IMAGE_TEST_PROMPT, IMAGE_MODEL_PRESETS, type CapabilitiesWorkspaceSnapshot, type MediaJob } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
 import { ImageCapabilitiesPanel, ImageTestModal } from "./image-capabilities-panel";
 import { ADD_IMAGE_PROMPT, IMAGE_ROUTING_PROMPT } from "./capability-views";
 
@@ -41,7 +41,7 @@ beforeEach(() => { buttonPresses.clear(); vi.restoreAllMocks(); });
 describe("left image workspace handoff", () => {
   it("hands the original add action to the right conversation without creating a draft itself", () => {
     const onRequest = vi.fn();
-    const updateDraft = vi.spyOn(mocoRest, "updateImageDraft");
+    const updateDraft = vi.spyOn(kuloRest, "updateImageDraft");
     renderToStaticMarkup(<ImageCapabilitiesPanel workspace={workspace} clientId="client-one" connected loading={false} error={null} onRequest={onRequest} onRefresh={vi.fn()} />);
     expect(buttonPresses.get("添加图像模型")).toBeTypeOf("function");
     buttonPresses.get("添加图像模型")!();
@@ -51,7 +51,7 @@ describe("left image workspace handoff", () => {
 
   it("provides one selected manage action that hands the stable target to the right", () => {
     const onRequest = vi.fn();
-    const updateDraft = vi.spyOn(mocoRest, "updateImageDraft");
+    const updateDraft = vi.spyOn(kuloRest, "updateImageDraft");
     const html = renderToStaticMarkup(<ImageCapabilitiesPanel workspace={workspace} clientId="client-one" target={{ kind: "capability", id: "image-one" }} connected loading={false} error={null} onRequest={onRequest} onRefresh={vi.fn()} />);
     expect(buttonPresses.has("编辑产品图")).toBe(false);
     expect(html).toMatch(/<button\b(?=[^>]*aria-label="管理产品图")(?=[^>]*aria-pressed="true")/);

@@ -1,4 +1,4 @@
-class MocoVoiceCapture extends AudioWorkletProcessor {
+class KuloVoiceCapture extends AudioWorkletProcessor {
   constructor() {
     super();
     this.frame = new Float32Array(1024);
@@ -20,4 +20,4 @@ class MocoVoiceCapture extends AudioWorkletProcessor {
     return true;
   }
 }
-registerProcessor("moco-voice-capture", MocoVoiceCapture);
+registerProcessor("kulo-voice-capture", KuloVoiceCapture);

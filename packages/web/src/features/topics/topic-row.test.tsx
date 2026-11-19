@@ -15,8 +15,8 @@ describe.each(["topic", "project"] as const)("%s conversation status", (layout) 
     expect(html).toContain('aria-label="检查设备连接操作"');
     expect(html).toContain('aria-label="正在处理，有新进度"');
     expect(html).toContain('aria-describedby=');
-    expect(html).toContain("moco-thinking-indicator--compact");
-    expect(html).toContain("moco-topic-unread");
+    expect(html).toContain("kulo-thinking-indicator--compact");
+    expect(html).toContain("kulo-topic-unread");
     expect(html).not.toContain('aria-disabled="true"');
   });
 
@@ -27,9 +27,9 @@ describe.each(["topic", "project"] as const)("%s conversation status", (layout) 
     expect(select).toBeDefined();
     expect(select).toContain('aria-current="page"');
     expect(select).toContain('aria-label="正在处理，有新进度，2 项待处理"');
-    expect(select).toContain("moco-thinking-indicator--compact");
+    expect(select).toContain("kulo-thinking-indicator--compact");
     expect(select).toContain('data-notice="attention"');
-    expect(select).not.toContain("moco-topic-unread");
+    expect(select).not.toContain("kulo-topic-unread");
     expect(select).not.toContain('aria-label="检查设备连接操作"');
     expect(menu).toBeDefined();
     expect(menu).not.toContain('tabindex="-1"');
@@ -40,17 +40,17 @@ describe.each(["topic", "project"] as const)("%s conversation status", (layout) 
   it("distinguishes a queued reply from running and keeps required decisions visible", () => {
     const html = render(layout, { running: false, queued: true, unread: false }, 2);
     expect(html).toContain('aria-label="排队中，2 项待处理"');
-    expect(html).not.toContain("moco-thinking-indicator");
-    expect(html).not.toContain("moco-topic-unread");
+    expect(html).not.toContain("kulo-thinking-indicator");
+    expect(html).not.toContain("kulo-topic-unread");
   });
 
   it("does not show progress indicators for an idle conversation", () => {
     const html = render(layout, { running: false, queued: false, unread: false });
     expect(html).not.toContain('role="img"');
-    expect(html).not.toContain("moco-thinking-indicator");
-    expect(html).not.toContain("moco-topic-unread");
+    expect(html).not.toContain("kulo-thinking-indicator");
+    expect(html).not.toContain("kulo-topic-unread");
     expect(html).not.toContain("<time");
-    expect(html.match(/class="moco-topic-state-slot"/g)).toHaveLength(2);
+    expect(html.match(/class="kulo-topic-state-slot"/g)).toHaveLength(2);
     expect(html).toContain('data-state-slot="execution"');
     expect(html).toContain('data-state-slot="notice"');
   });
@@ -59,18 +59,18 @@ describe.each(["topic", "project"] as const)("%s conversation status", (layout) 
     const html = render(layout, { running: true, queued: true, unread: true }, 2, false, 1);
     expect(html).toContain('aria-label="正在处理，1 项执行失败，有新进度，2 项待处理"');
     expect(html).toContain('data-notice="failed"');
-    expect(html).toContain("moco-topic-failure");
-    expect(html).toContain("moco-thinking-indicator--compact");
-    expect(html).not.toContain("moco-topic-unread");
-    expect(html).not.toContain("moco-topic-attention");
-    expect(html.match(/class="moco-topic-state-slot"/g)).toHaveLength(2);
+    expect(html).toContain("kulo-topic-failure");
+    expect(html).toContain("kulo-thinking-indicator--compact");
+    expect(html).not.toContain("kulo-topic-unread");
+    expect(html).not.toContain("kulo-topic-attention");
+    expect(html.match(/class="kulo-topic-state-slot"/g)).toHaveLength(2);
   });
 
   it("caps only the visible attention count while preserving the exact number in the description", () => {
     const html = render(layout, { running: false, queued: false, unread: true }, 14);
     expect(html).toContain('aria-label="有新进度，14 项待处理"');
-    expect(html).toContain('class="moco-topic-attention">9+</span>');
-    expect(html).not.toContain("moco-topic-unread");
+    expect(html).toContain('class="kulo-topic-attention">9+</span>');
+    expect(html).not.toContain("kulo-topic-unread");
     expect(html).not.toContain("chip--");
   });
 
@@ -78,7 +78,7 @@ describe.each(["topic", "project"] as const)("%s conversation status", (layout) 
     const html = render(layout, undefined, 0, true);
     const row = html.match(/^<div\b[^>]*>/)?.[0];
     expect(row).toContain('data-selected="true"');
-    expect(row).toContain('class="moco-navigation-row moco-topic-row"');
+    expect(row).toContain('class="kulo-navigation-row kulo-topic-row"');
     expect(html).toContain('aria-current="page"');
     expect(html).toContain('aria-label="检查设备连接"');
     expect(html).toContain('aria-label="检查设备连接操作"');

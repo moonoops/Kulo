@@ -1,5 +1,5 @@
 /**
- * Durable Runtime Settings Document (`MocoSettingsDoc`) with per-block Revision CAS,
+ * Durable Runtime Settings Document (`KuloSettingsDoc`) with per-block Revision CAS,
  * Secret-Free Public Projection, and Snapshot Rollback History.
  */
 import path from "node:path";
@@ -34,7 +34,7 @@ import {
   type ExternalAgentModelInfo,
   type ExternalClientConnection,
   type HindsightMemoryConfig,
-  type MocoSettingsView,
+  type KuloSettingsView,
   type ModelGatewayConfig,
   type ModelModality,
   type ModelProtocolAdapter,
@@ -48,7 +48,7 @@ import {
   type BuiltinThinkingEffort,
   type ThinkingLevelOption,
   type ThinkingLevelMapConfig,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import {
   coerceCustomProviderApi,
   DEFAULT_COMPACTION_CONFIG,
@@ -57,7 +57,7 @@ import {
   normalizeCustomProviderApi,
   normalizeProviderBaseUrl,
   parseThinking,
-  type MocoHubConfig,
+  type KuloHubConfig,
 } from "./config.js";
 import { resolveHindsightToken, resolveHindsightSharedReadToken } from "./hindsight.js";
 import { subscriptionModelTemplate } from "./subscription-models.js";
@@ -390,11 +390,11 @@ function configuredModel(
   provider: string | undefined,
   modelId: string,
 ): CustomModelConfig | undefined {
-  const providerId = provider || config.defaultProvider || (!config.gatewayDisabled ? "moco-gateway" : undefined);
-  if (!providerId || (providerId === "moco-gateway" && config.gatewayDisabled)) return undefined;
+  const providerId = provider || config.defaultProvider || (!config.gatewayDisabled ? "kulo-gateway" : undefined);
+  if (!providerId || (providerId === "kulo-gateway" && config.gatewayDisabled)) return undefined;
   const subscriptionModels = config.subscriptionModels && Object.hasOwn(config.subscriptionModels, providerId)
     ? config.subscriptionModels[providerId] : undefined;
-  return providerId === "moco-gateway"
+  return providerId === "kulo-gateway"
     ? config.gatewayModels?.find((model) => model.id === modelId)
     : subscriptionModels?.find((model) => model.id === modelId) ??
       config.customProviders?.find((entry) => entry.id === providerId)?.models.find((model) => model.id === modelId);
@@ -438,7 +438,7 @@ function cleanupRemovedRoleModels(
     if (!explicitProvider && !modelId) continue;
 
     let shouldClear = false;
-    if (explicitProvider === "moco-gateway") {
+    if (explicitProvider === "kulo-gateway") {
       if (nextModel.gatewayDisabled) {
         shouldClear = true;
       } else if (modelId && prevGatewayModels.has(modelId) && !nextGatewayChatModels.has(modelId)) {
@@ -470,8 +470,8 @@ function cleanupRemovedRoleModels(
         shouldClear = true;
       }
     } else if (!explicitProvider && modelId) {
-      const prevImplicitProvider = prevModel.defaultProvider?.trim() || (!prevModel.gatewayDisabled ? "moco-gateway" : "");
-      if (prevImplicitProvider === "moco-gateway" && nextModel.gatewayDisabled) {
+      const prevImplicitProvider = prevModel.defaultProvider?.trim() || (!prevModel.gatewayDisabled ? "kulo-gateway" : "");
+      if (prevImplicitProvider === "kulo-gateway" && nextModel.gatewayDisabled) {
         shouldClear = true;
       }
     }
@@ -524,10 +524,10 @@ function sanitizeCustomProviders(raw: unknown): CustomProviderConfig[] {
     const obj = item as Record<string, unknown>;
     const id = String(obj.id ?? "").trim();
     const name = String(obj.name ?? "").trim() || id;
-    if (!/^[a-z0-9][a-z0-9_-]{0,47}$/.test(id) || id === "moco-gateway") {
+    if (!/^[a-z0-9][a-z0-9_-]{0,47}$/.test(id) || id === "kulo-gateway") {
       throw new SettingsUpdateError(
         400,
-        `自定义提供商 ID "${id}" 格式非法（仅限小写字母、数字、-、_，且不可为 moco-gateway）。`,
+        `自定义提供商 ID "${id}" 格式非法（仅限小写字母、数字、-、_，且不可为 kulo-gateway）。`,
       );
     }
     if (seenIds.has(id)) {
@@ -644,7 +644,7 @@ function normalizeModelConfig(raw: unknown): ModelGatewayConfig {
     : undefined;
   const subscriptionModels = sanitizeSubscriptionModels(obj.subscriptionModels);
   const gatewayDisabled =
-    Boolean(obj.gatewayDisabled) && defaultProvider !== "moco-gateway";
+    Boolean(obj.gatewayDisabled) && defaultProvider !== "kulo-gateway";
 
   return {
     baseUrl: String(obj.baseUrl ?? "https://api.openai.com/v1"),
@@ -681,12 +681,12 @@ export interface SettingsSnapshotRecord extends SettingsHistoryItem {
 
 const SETTINGS_HISTORY_LIMIT = 40;
 
-function rememberSettingsSnapshot(doc: MocoDurableSettings, snapshot: SettingsSnapshotRecord): void {
+function rememberSettingsSnapshot(doc: KuloDurableSettings, snapshot: SettingsSnapshotRecord): void {
   doc.snapshots.push(snapshot);
   if (doc.snapshots.length > SETTINGS_HISTORY_LIMIT) doc.snapshots = doc.snapshots.slice(-SETTINGS_HISTORY_LIMIT);
 }
 
-export type MocoDurableSettings = {
+export type KuloDurableSettings = {
   initialized: boolean;
   rolesMigratedV2?: boolean;
   rolesMigratedV3?: boolean;
@@ -709,8 +709,8 @@ export type MocoDurableSettings = {
   snapshots: SettingsSnapshotRecord[];
 };
 
-export const MocoSettingsDoc = defineDoc<MocoDurableSettings & JsonObject>({
-  kind: "moco.settings",
+export const KuloSettingsDoc = defineDoc<KuloDurableSettings & JsonObject>({
+  kind: "kulo.settings",
   version: 1,
   scope: "session",
   initial: () =>
@@ -730,8 +730,8 @@ export const MocoSettingsDoc = defineDoc<MocoDurableSettings & JsonObject>({
         memory: 1,
       },
       presentation: {
-        agentName: "Moco",
-        workbenchName: "Moco's table",
+        agentName: "Kulo",
+        workbenchName: "Kulo's table",
       },
       executor: {
         maxConcurrentWorkers: 3,
@@ -762,18 +762,18 @@ export const MocoSettingsDoc = defineDoc<MocoDurableSettings & JsonObject>({
         endpoint: "http://127.0.0.1:8888",
         endpoints: [],
         caCertPem: "",
-        routerApiKeyEnv: "MOCO_HINDSIGHT_ROUTER_API_KEY",
-        workerApiKeyEnv: "MOCO_HINDSIGHT_WORKER_API_KEY",
+        routerApiKeyEnv: "KULO_HINDSIGHT_ROUTER_API_KEY",
+        workerApiKeyEnv: "KULO_HINDSIGHT_WORKER_API_KEY",
         authFile: "",
         autoAttachTopLevelRouters: true,
         banks: {
-          private: "moco-core",
-          shared: "moco-shared",
+          private: "kulo-core",
+          shared: "kulo-shared",
         },
       },
       expression: null,
       snapshots: [],
-    }) as MocoDurableSettings & JsonObject,
+    }) as KuloDurableSettings & JsonObject,
   checkpointWhen: (_v, _ops, info) => info.deltasSinceBase >= 16,
 });
 
@@ -796,7 +796,7 @@ export function bindingFromExternalClient(client: ExternalClientConnection): Ext
 }
 
 export function syncExternalClientsInSettings(
-  doc: MocoDurableSettings,
+  doc: KuloDurableSettings,
   clientModels?: Record<string, ExternalAgentModelInfo[]>,
   removeClientIds?: readonly string[],
 ): void {
@@ -833,7 +833,7 @@ export function normalizeMemoryConfig(value: HindsightMemoryConfig): HindsightMe
   const legacy = value as HindsightMemoryConfig & { apiKey?: string; apiKeyEnv?: string };
   const routerKey = value.routerApiKey ?? legacy.apiKey;
   return {
-    accessMode: value.accessMode === "scoped" || value.accessMode === "private-only" ? value.accessMode : "moco",
+    accessMode: value.accessMode === "scoped" || value.accessMode === "private-only" ? value.accessMode : "kulo",
     enabled: Boolean(value.enabled),
     endpoint: value.endpoint || "http://127.0.0.1:8888",
     endpoints: Array.isArray(value.endpoints) ? [...value.endpoints] : [],
@@ -841,15 +841,15 @@ export function normalizeMemoryConfig(value: HindsightMemoryConfig): HindsightMe
     ...(routerKey ? { routerApiKey: routerKey } : {}),
     ...(value.workerApiKey ? { workerApiKey: value.workerApiKey } : {}),
     ...(value.sharedReadApiKey ? { sharedReadApiKey: value.sharedReadApiKey } : {}),
-    sharedReadApiKeyEnv: value.sharedReadApiKeyEnv ?? "MOCO_HINDSIGHT_SHARED_READ_API_KEY",
+    sharedReadApiKeyEnv: value.sharedReadApiKeyEnv ?? "KULO_HINDSIGHT_SHARED_READ_API_KEY",
     ...(value.sharedReadApiKeyDisabled ? { sharedReadApiKeyDisabled: true } : {}),
-    routerApiKeyEnv: value.routerApiKeyEnv ?? legacy.apiKeyEnv ?? "MOCO_HINDSIGHT_ROUTER_API_KEY",
-    workerApiKeyEnv: value.workerApiKeyEnv ?? "MOCO_HINDSIGHT_WORKER_API_KEY",
+    routerApiKeyEnv: value.routerApiKeyEnv ?? legacy.apiKeyEnv ?? "KULO_HINDSIGHT_ROUTER_API_KEY",
+    workerApiKeyEnv: value.workerApiKeyEnv ?? "KULO_HINDSIGHT_WORKER_API_KEY",
     ...(value.routerApiKeyDisabled ? { routerApiKeyDisabled: true } : {}),
     ...(value.workerApiKeyDisabled ? { workerApiKeyDisabled: true } : {}),
     authFile: value.authFile ?? "",
     autoAttachTopLevelRouters: value.autoAttachTopLevelRouters !== false,
-    banks: { private: value.banks?.private ?? "moco-core", shared: value.banks?.shared ?? "moco-shared" },
+    banks: { private: value.banks?.private ?? "kulo-core", shared: value.banks?.shared ?? "kulo-shared" },
   };
 }
 
@@ -875,8 +875,8 @@ function bindMemoryFallbackOrigins(memory: HindsightMemoryConfig, runtime: Hinds
 }
 
 export function hydrateSettingsFromConfig(
-  doc: MocoDurableSettings,
-  config: MocoHubConfig,
+  doc: KuloDurableSettings,
+  config: KuloHubConfig,
   options?: { hasGatewayCredential?: boolean },
 ): void {
   if (!doc.initialized) {
@@ -1046,12 +1046,12 @@ export function hydrateSettingsFromConfig(
       !doc.model.gatewayName &&
       normalizeProviderBaseUrl(doc.model.baseUrl, doc.model.apiMode) === "https://api.openai.com/v1" &&
       doc.model.apiMode === "openai-completions" &&
-      doc.model.defaultProvider !== "moco-gateway" &&
+      doc.model.defaultProvider !== "kulo-gateway" &&
       !(doc.model.defaultModel.trim() && !doc.model.defaultProvider) &&
       !Object.values(doc.roles ?? {}).some(
         (role) =>
           !role.external &&
-          (role.provider === "moco-gateway" || (!role.provider && Boolean(role.modelId?.trim()))),
+          (role.provider === "kulo-gateway" || (!role.provider && Boolean(role.modelId?.trim()))),
       );
     if (gatewayUnused) {
       doc.model.gatewayDisabled = true;
@@ -1074,7 +1074,7 @@ export function hydrateSettingsFromConfig(
 }
 
 export function resolveEffectiveIdentityDir(
-  doc: Readonly<MocoDurableSettings>,
+  doc: Readonly<KuloDurableSettings>,
   defaultIdentityDir: string,
 ): string {
   const custom = doc.identity.directory?.trim();
@@ -1082,9 +1082,9 @@ export function resolveEffectiveIdentityDir(
 }
 
 export function toPublicSettingsView(
-  doc: Readonly<MocoDurableSettings>,
+  doc: Readonly<KuloDurableSettings>,
   defaultIdentityDir: string,
-): MocoSettingsView {
+): KuloSettingsView {
   const normalizedModel = normalizeModelConfig(doc.model);
   const normalizedExecutor = normalizeExecutorConfig(doc.executor);
   const { apiKey: modelKey, ...publicModel } = normalizedModel;
@@ -1114,7 +1114,7 @@ export function toPublicSettingsView(
         value: cleanJson(publicModel),
         hasApiKey: Boolean(
           modelKey ||
-            process.env.MOCO_API_KEY?.trim() ||
+            process.env.KULO_API_KEY?.trim() ||
             process.env.OPENAI_API_KEY?.trim(),
         ),
       },
@@ -1155,7 +1155,7 @@ export class SettingsUpdateError extends Error {
 }
 
 export function applySettingsBlockUpdate(
-  doc: MocoDurableSettings,
+  doc: KuloDurableSettings,
   block: SettingsBlockName,
   expectedRevision: number,
   rawValue: unknown,
@@ -1432,8 +1432,8 @@ export function applySettingsBlockUpdate(
       }
       if (
         val.gatewayDisabled === true &&
-        val.defaultProvider !== "moco-gateway" &&
-        (defaultProvider === "moco-gateway" || (!defaultProvider && Boolean(defaultModel)))
+        val.defaultProvider !== "kulo-gateway" &&
+        (defaultProvider === "kulo-gateway" || (!defaultProvider && Boolean(defaultModel)))
       ) {
         defaultProvider = "";
         defaultModel = "";
@@ -1443,7 +1443,7 @@ export function applySettingsBlockUpdate(
         (val.gatewayDisabled !== undefined
           ? Boolean(val.gatewayDisabled)
           : Boolean(prevModel.gatewayDisabled)) &&
-        (defaultProvider || (defaultModel ? "moco-gateway" : undefined)) !== "moco-gateway";
+        (defaultProvider || (defaultModel ? "kulo-gateway" : undefined)) !== "kulo-gateway";
 
       const rawBaseUrl = val.baseUrl !== undefined
         ? String(val.baseUrl)
@@ -1556,8 +1556,8 @@ export function applySettingsBlockUpdate(
         ? val.endpoints.map((e) => String(e).trim()).filter(Boolean).slice(0, 8)
         : [];
       const banksObj = (val.banks ?? {}) as Record<string, unknown>;
-      const priv = String(banksObj.private ?? "moco-core").trim();
-      const shared = String(banksObj.shared ?? "moco-shared").trim();
+      const priv = String(banksObj.private ?? "kulo-core").trim();
+      const shared = String(banksObj.shared ?? "kulo-shared").trim();
       if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(priv) ||
           !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(shared) ||
           priv.toLowerCase() === shared.toLowerCase()) {
@@ -1569,14 +1569,14 @@ export function applySettingsBlockUpdate(
       const previous = normalizeMemoryConfig(doc.memory);
       const changedOrigin = memoryOrigins(previous) !== memoryOrigins({ endpoint, endpoints });
       const next: HindsightMemoryConfig = {
-        accessMode: val.accessMode === "scoped" || val.accessMode === "private-only" ? val.accessMode : "moco",
+        accessMode: val.accessMode === "scoped" || val.accessMode === "private-only" ? val.accessMode : "kulo",
         enabled,
         endpoint,
         endpoints,
         caCertPem: typeof val.caCertPem === "string" ? val.caCertPem : "",
         routerApiKeyEnv: String(val.routerApiKeyEnv ?? previous.routerApiKeyEnv).trim(),
         workerApiKeyEnv: String(val.workerApiKeyEnv ?? previous.workerApiKeyEnv).trim(),
-        sharedReadApiKeyEnv: String(val.sharedReadApiKeyEnv ?? previous.sharedReadApiKeyEnv ?? "MOCO_HINDSIGHT_SHARED_READ_API_KEY").trim(),
+        sharedReadApiKeyEnv: String(val.sharedReadApiKeyEnv ?? previous.sharedReadApiKeyEnv ?? "KULO_HINDSIGHT_SHARED_READ_API_KEY").trim(),
         authFile: String(val.authFile ?? "").trim(),
         autoAttachTopLevelRouters: val.autoAttachTopLevelRouters !== false,
         banks: { private: priv, shared },
@@ -1633,7 +1633,7 @@ export function applySettingsBlockUpdate(
 }
 
 export function rollbackSettingsToSnapshot(
-  doc: MocoDurableSettings,
+  doc: KuloDurableSettings,
   targetSnapshotRevision: number,
   expectedGlobalRevision: number,
   runtimeMemory?: HindsightMemoryConfig,

@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, Card, Checkbox, Chip, Input, Label, ListBox, NumberField, Select, Table, Tabs, TextField } from "@heroui/react";
-import { isConversationModel, redactSensitiveText, type CustomModelConfig, type CustomProviderApi, type ModelConfigurationApi, type ModelConfigurationDraft, type ModelConfigurationSaveResult, type ModelConfigurationWorkspace, type ModelModality } from "@moco/protocol";
-import { useI18n } from "../../moco-i18n";
+import { isConversationModel, redactSensitiveText, type CustomModelConfig, type CustomProviderApi, type ModelConfigurationApi, type ModelConfigurationDraft, type ModelConfigurationSaveResult, type ModelConfigurationWorkspace, type ModelModality } from "@kulo/protocol";
+import { useI18n } from "../../kulo-i18n";
 import { CUSTOM_API_OPTIONS, getModelThinkingLevels, isOfficialPresetOrigin } from "./settings-helpers";
 import { modelConfigFromCatalog, nativeSearchAvailable } from "./api-model-list";
 import { modelConfigurationApi } from "./model-configuration-api";
-import { MocoApiError, mocoRest } from "../../moco-api";
+import { KuloApiError, kuloRest } from "../../kulo-api";
 
 export interface ModelConfigurationCardProps {
   api?: ModelConfigurationApi;
@@ -27,7 +27,7 @@ export function modelCredentialScope(draft: Pick<ModelConfigurationDraft, "id" |
 }
 export function canUseModelCredential(scope: string | undefined, draft: Pick<ModelConfigurationDraft, "id" | "provider">): boolean { return Boolean(scope && scope === modelCredentialScope(draft)); }
 type SaveEnvelope = Parameters<ModelConfigurationApi["save"]>[0];
-const receiptKey = (clientId: string) => `moco:model-configuration-save:${clientId}`;
+const receiptKey = (clientId: string) => `kulo:model-configuration-save:${clientId}`;
 export function readModelSaveEnvelope(clientId: string): SaveEnvelope | undefined {
   if (typeof sessionStorage === "undefined") return undefined;
   let raw: string | null;
@@ -193,7 +193,7 @@ function OwnedModelConfigurationCard({ api = modelConfigurationApi, clientId, co
     let result: ModelConfigurationSaveResult;
     try { result = await api.save(envelope); }
     catch (cause) {
-      if (cause instanceof MocoApiError && cause.status < 500 && cause.code !== "model_configuration_save_failed") { pendingSave.current = undefined; storeSaveEnvelope(clientId); if (mounted.current) setSaveUnconfirmed(false); }
+      if (cause instanceof KuloApiError && cause.status < 500 && cause.code !== "model_configuration_save_failed") { pendingSave.current = undefined; storeSaveEnvelope(clientId); if (mounted.current) setSaveUnconfirmed(false); }
       throw cause;
     }
     const finishedId = envelope.draftId;
@@ -234,7 +234,7 @@ function OwnedModelConfigurationCard({ api = modelConfigurationApi, clientId, co
       ...(!hasDefaultModel && !draft.defaultModelId && isConversationModel(initialModel) ? { defaultModelId: id } : {}),
     });
     setManualId("");
-    void mocoRest.resolveModelMetadata({
+    void kuloRest.resolveModelMetadata({
       modelId: id,
       api: targetApi,
       ...(draft.existingProvider ? { providerId: draft.provider.id } : {}),
@@ -277,33 +277,33 @@ function OwnedModelConfigurationCard({ api = modelConfigurationApi, clientId, co
         </Tabs>
       )}
       {saved && <div role="status" className="flex flex-col gap-2 text-sm"><span>{saved.modelIds.join("、")}</span>{saved.defaultModelId && <span>{t("默认模型：", "Default model: ")}{saved.defaultModelId}</span>}</div>}
-      {!draft && !saved && !saveUnconfirmed && initialAction !== "connect" && <div className="moco-form-stack">
-        <Select className="moco-form-field" variant="primary" value={selectedProvider || null} onChange={(key) => setSelectedProvider(String(key ?? ""))} isDisabled={blocked}>
+      {!draft && !saved && !saveUnconfirmed && initialAction !== "connect" && <div className="kulo-form-stack">
+        <Select className="kulo-form-field" variant="primary" value={selectedProvider || null} onChange={(key) => setSelectedProvider(String(key ?? ""))} isDisabled={blocked}>
           <Label>{t("选择 API 连接", "Choose an API connection")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
           <Select.Popover><ListBox>{workspace?.providers.filter((provider) => provider.authType !== "oauth").map((provider) => <ListBox.Item key={provider.id} id={provider.id} textValue={provider.name}>{provider.name}</ListBox.Item>)}</ListBox></Select.Popover>
         </Select>
         <Button variant="secondary" size="sm" isDisabled={blocked || !selectedProvider} isPending={busy === "prepare"} onPress={() => void prepare()}>{t("读取连接配置", "Read connection configuration")}</Button>
       </div>}
       {draft && <>
-        <div className="moco-form-stack">
-          {!draft.existingProvider && Boolean(workspace?.presets?.length) && <Select className="moco-form-field" variant="primary" value={draft.provider.preset ?? "custom"} onChange={(key) => {
+        <div className="kulo-form-stack">
+          {!draft.existingProvider && Boolean(workspace?.presets?.length) && <Select className="kulo-form-field" variant="primary" value={draft.provider.preset ?? "custom"} onChange={(key) => {
             const preset = workspace?.presets?.find((item) => item.id === key); clearCredential();
             setDraft({ ...draft, hasCredential: false, selectedModelIds: [], defaultModelId: undefined, candidates: [], verifications: [], provider: { ...draft.provider, preset: preset?.id, ...(preset ? { name: preset.name, api: preset.api, baseUrl: preset.baseUrl } : {}), models: [] } });
           }} isDisabled={blocked}><Label>{t("供应商", "Provider")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger><Select.Popover><ListBox><ListBox.Item id="custom" textValue={t("自定义接口", "Custom endpoint")}>{t("自定义接口", "Custom endpoint")}</ListBox.Item>{workspace?.presets?.map((preset) => <ListBox.Item key={preset.id} id={preset.id} textValue={preset.name}>{preset.name}</ListBox.Item>)}</ListBox></Select.Popover></Select>}
-          <TextField className="moco-form-field" variant="primary" value={draft.provider.name} onChange={(name) => setDraft({ ...draft, provider: { ...draft.provider, name } })} isDisabled={blocked}><Label>{t("供应商名称", "Provider name")}</Label><Input /></TextField>
-          <TextField className="moco-form-field" variant="primary" value={draft.provider.baseUrl} onChange={(baseUrl) => { setDraft({ ...draft, provider: { ...draft.provider, baseUrl } }); clearCredential(); }} isDisabled={blocked}><Label>{t("接口地址", "API URL")}</Label><Input type="url" autoComplete="off" spellCheck={false} placeholder="https://" /></TextField>
-          <Select className="moco-form-field" variant="primary" value={draft.provider.api} onChange={(key) => setDraft({ ...draft, provider: { ...draft.provider, api: String(key) as CustomProviderApi } })} isDisabled={blocked}>
+          <TextField className="kulo-form-field" variant="primary" value={draft.provider.name} onChange={(name) => setDraft({ ...draft, provider: { ...draft.provider, name } })} isDisabled={blocked}><Label>{t("供应商名称", "Provider name")}</Label><Input /></TextField>
+          <TextField className="kulo-form-field" variant="primary" value={draft.provider.baseUrl} onChange={(baseUrl) => { setDraft({ ...draft, provider: { ...draft.provider, baseUrl } }); clearCredential(); }} isDisabled={blocked}><Label>{t("接口地址", "API URL")}</Label><Input type="url" autoComplete="off" spellCheck={false} placeholder="https://" /></TextField>
+          <Select className="kulo-form-field" variant="primary" value={draft.provider.api} onChange={(key) => setDraft({ ...draft, provider: { ...draft.provider, api: String(key) as CustomProviderApi } })} isDisabled={blocked}>
             <Label>{t("接口协议", "API protocol")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger><Select.Popover><ListBox>{CUSTOM_API_OPTIONS.map((option) => <ListBox.Item key={option.value} id={option.value} textValue={option.label}>{option.label}</ListBox.Item>)}</ListBox></Select.Popover>
           </Select>
-          <TextField className="moco-form-field" variant="primary" type="password" value={apiKey} onChange={(value) => { credentialScope.current = modelCredentialScope(draft); credentialValue.current = value; setApiKey(value); }} isDisabled={blocked || !modelCredentialScope(draft)}><Label>API Key</Label><Input autoComplete="new-password" spellCheck={false} placeholder={draft.hasCredential ? t("已提供，留空保留", "Provided; leave blank to keep") : t("通过保密输入提供", "Enter securely")} /></TextField>
+          <TextField className="kulo-form-field" variant="primary" type="password" value={apiKey} onChange={(value) => { credentialScope.current = modelCredentialScope(draft); credentialValue.current = value; setApiKey(value); }} isDisabled={blocked || !modelCredentialScope(draft)}><Label>API Key</Label><Input autoComplete="new-password" spellCheck={false} placeholder={draft.hasCredential ? t("已提供，留空保留", "Provided; leave blank to keep") : t("通过保密输入提供", "Enter securely")} /></TextField>
           {draft.provider.api === "google-vertex" && <>
-            <TextField className="moco-form-field" variant="primary" value={draft.provider.vertexProject ?? ""} onChange={(vertexProject) => setDraft({ ...draft, provider: { ...draft.provider, vertexProject } })} isDisabled={blocked}><Label>Project ID</Label><Input spellCheck={false} /></TextField>
-            <TextField className="moco-form-field" variant="primary" value={draft.provider.vertexLocation ?? "global"} onChange={(vertexLocation) => setDraft({ ...draft, provider: { ...draft.provider, vertexLocation } })} isDisabled={blocked}><Label>{t("区域", "Region")}</Label><Input spellCheck={false} /></TextField>
+            <TextField className="kulo-form-field" variant="primary" value={draft.provider.vertexProject ?? ""} onChange={(vertexProject) => setDraft({ ...draft, provider: { ...draft.provider, vertexProject } })} isDisabled={blocked}><Label>Project ID</Label><Input spellCheck={false} /></TextField>
+            <TextField className="kulo-form-field" variant="primary" value={draft.provider.vertexLocation ?? "global"} onChange={(vertexLocation) => setDraft({ ...draft, provider: { ...draft.provider, vertexLocation } })} isDisabled={blocked}><Label>{t("区域", "Region")}</Label><Input spellCheck={false} /></TextField>
           </>}
           <Button size="sm" variant="secondary" isDisabled={blocked || !canRead || remoteChanged} isPending={busy === "discover"} onPress={() => void readModels()}>{t("读取模型并生成配置", "Read models and prepare configuration")}</Button>
         </div>
         {draft.provider.models.length > 0 && <>
-          <TextField className="moco-context-field" variant="primary" value={query} onChange={setQuery} isDisabled={blocked}><Label className="sr-only">{t("搜索模型", "Search models")}</Label><Input type="search" placeholder={t("搜索模型", "Search models")} /></TextField>
+          <TextField className="kulo-context-field" variant="primary" value={query} onChange={setQuery} isDisabled={blocked}><Label className="sr-only">{t("搜索模型", "Search models")}</Label><Input type="search" placeholder={t("搜索模型", "Search models")} /></TextField>
           <Table variant="secondary"><Table.ScrollContainer className="scrollbar"><Table.Content aria-label={t("选择并校准模型", "Select and calibrate models")} className="min-w-[760px]">
             <Table.Header><Table.Column>{t("添加", "Add")}</Table.Column><Table.Column isRowHeader>{t("模型", "Model")}</Table.Column><Table.Column>{t("上下文", "Context")}</Table.Column><Table.Column>{t("最大输出", "Max output")}</Table.Column><Table.Column>{t("能力与验证", "Capabilities and verification")}</Table.Column><Table.Column>{t("操作", "Actions")}</Table.Column></Table.Header>
             <Table.Body>{filtered.map((model) => {
@@ -316,9 +316,9 @@ function OwnedModelConfigurationCard({ api = modelConfigurationApi, clientId, co
               const searchOn = model.nativeTools?.webSearch === true;
               return <Table.Row key={model.id} id={model.id}>
                 <Table.Cell><Checkbox variant="primary" aria-label={t(`添加 ${model.id}`, `Add ${model.id}`)} isSelected={selectedIds.has(model.id)} isDisabled={blocked} onChange={(checked) => selectModel(model.id, checked)}><Checkbox.Content><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control></Checkbox.Content></Checkbox></Table.Cell>
-                <Table.Cell><span className="moco-item-title">{model.name ?? model.id}</span><span className="moco-item-description block">{model.id}</span><span className="text-xs text-muted">{candidate?.evidence === "catalog" ? t("目录参考 · 未验证", "Catalog reference · unverified") : candidate?.evidence === "configured" ? t("当前配置 · 未验证", "Current configuration · unverified") : t("自定参数 · 未验证", "Custom parameters · unverified")}</span></Table.Cell>
-                <Table.Cell><NumberField className="moco-context-field" variant="primary" aria-label={t(`${model.id} 上下文`, `${model.id} context`)} minValue={1} maxValue={10000000} value={model.contextWindow ?? NaN} isDisabled={blocked} onChange={(contextWindow) => updateModel(model.id, { contextWindow: Number.isFinite(contextWindow) ? contextWindow : undefined })}><NumberField.Group><NumberField.Input /></NumberField.Group></NumberField></Table.Cell>
-                <Table.Cell><NumberField className="moco-context-field" variant="primary" aria-label={t(`${model.id} 最大输出`, `${model.id} max output`)} minValue={1} maxValue={10000000} value={model.maxTokens ?? NaN} isDisabled={blocked} onChange={(maxTokens) => updateModel(model.id, { maxTokens: Number.isFinite(maxTokens) ? maxTokens : undefined })}><NumberField.Group><NumberField.Input /></NumberField.Group></NumberField></Table.Cell>
+                <Table.Cell><span className="kulo-item-title">{model.name ?? model.id}</span><span className="kulo-item-description block">{model.id}</span><span className="text-xs text-muted">{candidate?.evidence === "catalog" ? t("目录参考 · 未验证", "Catalog reference · unverified") : candidate?.evidence === "configured" ? t("当前配置 · 未验证", "Current configuration · unverified") : t("自定参数 · 未验证", "Custom parameters · unverified")}</span></Table.Cell>
+                <Table.Cell><NumberField className="kulo-context-field" variant="primary" aria-label={t(`${model.id} 上下文`, `${model.id} context`)} minValue={1} maxValue={10000000} value={model.contextWindow ?? NaN} isDisabled={blocked} onChange={(contextWindow) => updateModel(model.id, { contextWindow: Number.isFinite(contextWindow) ? contextWindow : undefined })}><NumberField.Group><NumberField.Input /></NumberField.Group></NumberField></Table.Cell>
+                <Table.Cell><NumberField className="kulo-context-field" variant="primary" aria-label={t(`${model.id} 最大输出`, `${model.id} max output`)} minValue={1} maxValue={10000000} value={model.maxTokens ?? NaN} isDisabled={blocked} onChange={(maxTokens) => updateModel(model.id, { maxTokens: Number.isFinite(maxTokens) ? maxTokens : undefined })}><NumberField.Group><NumberField.Input /></NumberField.Group></NumberField></Table.Cell>
                 <Table.Cell><div className="flex flex-col gap-2">
                   <div className="flex flex-wrap gap-1">{modalities.map((modality) => <Button key={modality} size="sm" variant={(model.modalities ?? ["text"]).includes(modality) ? "secondary" : "ghost"} aria-label={`${model.id} ${modality}`} aria-pressed={(model.modalities ?? ["text"]).includes(modality)} isDisabled={blocked} onPress={() => { const next = (model.modalities ?? ["text"]).includes(modality) ? (model.modalities ?? ["text"]).filter((item) => item !== modality) : [...(model.modalities ?? ["text"]), modality]; if (next.length) updateModel(model.id, { modalities: next, vision: next.includes("image") }); }}>{modality}</Button>)}</div>
                   {isChat && <div className="flex flex-wrap items-center gap-1">
@@ -336,11 +336,11 @@ function OwnedModelConfigurationCard({ api = modelConfigurationApi, clientId, co
               </Table.Row>;
             })}</Table.Body>
           </Table.Content></Table.ScrollContainer></Table>
-          <Select className="moco-form-field" variant="primary" value={draft.defaultModelId ?? -1} onChange={(key) => setDraft({ ...draft, defaultModelId: key === -1 ? undefined : String(key) })} isDisabled={blocked}>
+          <Select className="kulo-form-field" variant="primary" value={draft.defaultModelId ?? -1} onChange={(key) => setDraft({ ...draft, defaultModelId: key === -1 ? undefined : String(key) })} isDisabled={blocked}>
             <Label>{t("默认模型", "Default model")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger><Select.Popover><ListBox><ListBox.Item id={-1} textValue={t("保留当前默认模型", "Keep current default model")}>{t("保留当前默认模型", "Keep current default model")}</ListBox.Item>{draft.provider.models.filter((model) => selectedIds.has(model.id) && isConversationModel(model)).map((model) => <ListBox.Item key={model.id} id={model.id} textValue={model.name ?? model.id}>{model.name ?? model.id}</ListBox.Item>)}</ListBox></Select.Popover>
           </Select>
         </>}
-        <div className="moco-field-action-row"><TextField className="moco-form-field flex-1" variant="primary" value={manualId} onChange={setManualId} isDisabled={blocked}><Label>{t("补充模型 ID", "Add a model ID")}</Label><Input spellCheck={false} /></TextField><Button className="self-end" size="sm" variant="secondary" isDisabled={blocked || !manualId.trim() || draft.provider.models.some((model) => model.id === manualId.trim())} onPress={addManual}>{t("添加", "Add")}</Button></div>
+        <div className="kulo-field-action-row"><TextField className="kulo-form-field flex-1" variant="primary" value={manualId} onChange={setManualId} isDisabled={blocked}><Label>{t("补充模型 ID", "Add a model ID")}</Label><Input spellCheck={false} /></TextField><Button className="self-end" size="sm" variant="secondary" isDisabled={blocked || !manualId.trim() || draft.provider.models.some((model) => model.id === manualId.trim())} onPress={addManual}>{t("添加", "Add")}</Button></div>
       </>}
       {remoteChanged && <div role="alert" className="flex flex-col gap-2 text-xs text-warning"><span>{t("配置草稿已在其他操作中更新。", "This draft was updated by another action.")}</span><Button size="sm" variant="secondary" isDisabled={blocked} onPress={() => void run("reload", async () => { const next = await api.workspace(clientId); const list = workspaceDraftList(next); if (mounted.current) { setWorkspace(next); install(list.find((item) => item.id === activeIdRef.current) ?? list[0], list); } })}>{t("载入最新草稿", "Load latest draft")}</Button></div>}
       {error && <p role="alert" className="break-words text-xs text-danger">{error}</p>}

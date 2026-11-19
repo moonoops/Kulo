@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ConversationFilesButton, SearchExcerpt } from "./conversation-library";
 import { mergeLocatedMessages, searchExcerptParts, visibleMessageId } from "./conversation-navigation";
 import { mergeResponseMessages } from "./response-messages";
-import type { ChatDisplayItem } from "@moco/protocol";
+import type { ChatDisplayItem } from "@kulo/protocol";
 
 describe("conversation navigation", () => {
   it("renders conversation files trigger as an icon-only ghost toolbar control", () => {
@@ -11,7 +11,7 @@ describe("conversation navigation", () => {
     expect(html).toContain('aria-label="本次文件"');
     expect(html).toContain("button--ghost");
     expect(html).toContain("button--icon-only");
-    expect(html).toContain("moco-window-control");
+    expect(html).toContain("kulo-window-control");
     expect(html).not.toContain(">本次文件<");
   });
   it("locates a durable publication inside a coalesced assistant response", () => {
@@ -30,7 +30,7 @@ describe("conversation navigation", () => {
     expect(searchExcerptParts("A+B a+b", "a+b").filter((part) => part.match)).toHaveLength(2);
     const html = renderToStaticMarkup(<SearchExcerpt text="<script>Light</script>" query="LIGHT" />);
     expect(html).not.toContain("<script>");
-    expect(html).toContain('class="moco-conversation-search-match">Light</mark>');
+    expect(html).toContain('class="kulo-conversation-search-match">Light</mark>');
     expect(searchExcerptParts("text", "  ")).toEqual([{ text: "text", match: false }]);
   });
 });

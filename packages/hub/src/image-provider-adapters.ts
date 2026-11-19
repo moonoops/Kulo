@@ -2,7 +2,7 @@ import {
   getImageModelPreset, isImageGenerationModel, redactSensitiveText, validateCustomImageAdapter, validateImageModelProfile,
   type CustomImageAdapter, type ImageGenerationParameters, type ImageJsonValue, type ImageModelProfile,
   type ImageParameterDefinition, type MediaOutputFormat, type ProviderCatalogItem, type ProviderModelItem,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import { readWebResponseText, serviceApiFetch } from "./web-content.js";
 
 export interface ImageProviderAdapterModel {

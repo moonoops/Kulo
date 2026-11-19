@@ -7,14 +7,14 @@ import { spawn } from "node:child_process";
 import { ensureElectron } from "./ensure-electron.mjs";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
-if (process.platform !== "darwin") throw new Error("Moco 桌面开发目前先支持 macOS。");
+if (process.platform !== "darwin") throw new Error("Kulo 桌面开发目前先支持 macOS。");
 const electron = await ensureElectron();
 const mainEntry = path.join(root, "packages/desktop/dist/main.js");
-const statusFile = path.join(os.homedir(), "Library/Application Support/Moco Dev/desktop-status.json");
-const controlDir = fs.mkdtempSync(path.join(os.tmpdir(), "moco-desktop-dev-"));
+const statusFile = path.join(os.homedir(), "Library/Application Support/Kulo Dev/desktop-status.json");
+const controlDir = fs.mkdtempSync(path.join(os.tmpdir(), "kulo-desktop-dev-"));
 fs.chmodSync(controlDir, 0o700);
-const launchArguments = [mainEntry, `--moco-dev-root=${root}`, `--moco-dev-control=${controlDir}`];
-const launchEnvironment = { ...process.env, MOCO_DESKTOP_NODE_PATH: process.execPath };
+const launchArguments = [mainEntry, `--kulo-dev-root=${root}`, `--kulo-dev-control=${controlDir}`];
+const launchEnvironment = { ...process.env, KULO_DESKTOP_NODE_PATH: process.execPath };
 delete launchEnvironment.ELECTRON_RUN_AS_NODE;
 let child;
 let stopping = false;
@@ -51,7 +51,7 @@ function request(action) {
 async function waitForExit(pid) {
   const deadline = Date.now() + 25_000;
   while (running(pid)) {
-    if (Date.now() >= deadline) throw new Error("已有 Moco Dev 尚未安全退出，请查看开发版日志。");
+    if (Date.now() >= deadline) throw new Error("已有 Kulo Dev 尚未安全退出，请查看开发版日志。");
     await delay(100);
   }
 }
@@ -63,7 +63,7 @@ async function waitUntilReady(timeoutMs = 90_000) {
     if (child?.exitCode !== null || child?.signalCode !== null) throw new Error("桌面进程在启动完成前退出。");
     await delay(100);
   }
-  throw new Error("Moco 桌面开发启动超时，请查看开发版数据目录中的 desktop.log。");
+  throw new Error("Kulo 桌面开发启动超时，请查看开发版数据目录中的 desktop.log。");
 }
 async function launch() {
   fs.rmSync(path.join(controlDir, "ready.json"), { force: true });
@@ -88,7 +88,7 @@ async function rebuild() {
   desktopChanged = false;
   console.log("正在构建后台与桌面代码…");
   const success = await new Promise((resolve) => {
-    buildChild = spawn("pnpm", ["--filter", "@moco/desktop...", "build"], { cwd: root, stdio: "inherit" });
+    buildChild = spawn("pnpm", ["--filter", "@kulo/desktop...", "build"], { cwd: root, stdio: "inherit" });
     buildChild.once("error", (error) => { console.error(error.message); resolve(false); });
     buildChild.once("exit", (code) => resolve(code === 0));
   });
@@ -131,14 +131,14 @@ try {
   if (previous && running(previous.pid)) {
     // Ask the owning instance to save and close; do not signal a PID read from disk.
     await new Promise((resolve, reject) => {
-      const quit = spawn(electron, [mainEntry, "--moco-quit"], { cwd: path.join(root, "packages/desktop"), env: launchEnvironment, stdio: "inherit" });
+      const quit = spawn(electron, [mainEntry, "--kulo-quit"], { cwd: path.join(root, "packages/desktop"), env: launchEnvironment, stdio: "inherit" });
       quit.once("error", reject);
-      quit.once("exit", (code) => code === 0 ? resolve() : reject(new Error("无法退出已有 Moco Dev。")));
+      quit.once("exit", (code) => code === 0 ? resolve() : reject(new Error("无法退出已有 Kulo Dev。")));
     });
     await waitForExit(previous.pid);
   }
   await launch();
-  console.log("Moco Dev 已进入开发模式。前端热更新，后台与桌面代码自动构建重启。Ctrl+C 退出。");
+  console.log("Kulo Dev 已进入开发模式。前端热更新，后台与桌面代码自动构建重启。Ctrl+C 退出。");
   for (const name of ["protocol", "env", "hub", "desktop"]) {
     watchers.push(fs.watch(path.join(root, "packages", name, "src"), { recursive: true }, (_event, filename) => {
       if (!filename || !/\.(?:ts|tsx|json)$/.test(filename) || /\.(?:test|spec)\.[^.]+$/.test(filename)) return;

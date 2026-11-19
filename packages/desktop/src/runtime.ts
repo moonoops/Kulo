@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { MocoHub, MocoHubServer } from "@moco/hub";
-import type { DevicePeerConfig } from "@moco/protocol";
+import type { KuloHub, KuloHubServer } from "@kulo/hub";
+import type { DevicePeerConfig } from "@kulo/protocol";
 import {
   buildRuntimeEnvironment,
   loadDesktopRuntimeOptions,
@@ -28,12 +28,12 @@ export function createRuntimeShutdown(resources: RuntimeResources): () => Promis
       try { await resource.close(); }
       catch (error) { errors.push(error); }
     }
-    if (errors.length) throw new AggregateError(errors, "Moco 后台服务未能完整关闭。");
+    if (errors.length) throw new AggregateError(errors, "Kulo 后台服务未能完整关闭。");
   })();
 }
 
 export async function runDesktopRuntime(): Promise<void> {
-  if (!process.send) throw new Error("Moco 后台服务需要由桌面客户端启动。");
+  if (!process.send) throw new Error("Kulo 后台服务需要由桌面客户端启动。");
   const options = loadDesktopRuntimeOptions(process.env);
   const env = buildRuntimeEnvironment(process.env, options);
   for (const name of Object.keys(process.env)) if (!(name in env)) delete process.env[name];
@@ -45,14 +45,14 @@ export async function runDesktopRuntime(): Promise<void> {
   let activePort = readDesktopRuntimePort(paths);
   process.chdir(paths.dataDir);
 
-  let hub: MocoHub | undefined;
+  let hub: KuloHub | undefined;
   let activePeer: DevicePeerConfig | undefined;
   const resources: RuntimeResources = {};
   const close = createRuntimeShutdown(resources);
   let startupComplete!: () => void;
   const startup = new Promise<void>((resolve) => { startupComplete = resolve; });
-  let roles: import("@moco/env").DeviceRoleTransitions | undefined;
-  let runtimeOwner: import("@moco/env").LocalInstanceOwner | undefined;
+  let roles: import("@kulo/env").DeviceRoleTransitions | undefined;
+  let runtimeOwner: import("@kulo/env").LocalInstanceOwner | undefined;
   let stopping = false;
   let finishing: Promise<void> | undefined;
   let finalExitCode = 0;
@@ -111,14 +111,14 @@ export async function runDesktopRuntime(): Promise<void> {
       try { await resource.close(); }
       catch (error) { errors.push(error); }
     }
-    if (errors.length) throw new AggregateError(errors, "Moco 后台服务切换模式时未能关闭旧服务。");
+    if (errors.length) throw new AggregateError(errors, "Kulo 后台服务切换模式时未能关闭旧服务。");
   };
 
   try {
     // Imports that discover credentials or configuration run only after isolation is established.
-    const { claimMocoRuntime, DeviceRoleTransitions, readPeerConfig, startDevicePeer } = await import("@moco/env");
+    const { claimKuloRuntime, DeviceRoleTransitions, readPeerConfig, startDevicePeer } = await import("@kulo/env");
     if (stopping) return;
-    runtimeOwner = claimMocoRuntime(paths.stateDir);
+    runtimeOwner = claimKuloRuntime(paths.stateDir);
 
     const startPeerRuntime = async (peerConfig: DevicePeerConfig) => {
       await closeActiveResources();
@@ -142,8 +142,8 @@ export async function runDesktopRuntime(): Promise<void> {
     const startHubRuntime = async (): Promise<string> => {
       await closeActiveResources();
       activePeer = undefined;
-      const { MocoHub, startMocoHubServer } = await import("@moco/hub");
-      hub = await MocoHub.open({ config: {
+      const { KuloHub, startKuloHubServer } = await import("@kulo/hub");
+      hub = await KuloHub.open({ config: {
         stateDir: paths.stateDir,
         identityDir: paths.identityDir,
         localEnvRoot: paths.workspaceDir,
@@ -164,7 +164,7 @@ export async function runDesktopRuntime(): Promise<void> {
         path.dirname(paths.peerConfigPath),
         path.join(paths.dataDir, "chromium"),
       ]);
-      const server: MocoHubServer = await startMocoHubServer(hub, {
+      const server: KuloHubServer = await startKuloHubServer(hub, {
         runtimeOwner,
         port: activePort,
         webDistDir: options.webDir,
@@ -202,7 +202,7 @@ export async function runDesktopRuntime(): Promise<void> {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   void runDesktopRuntime().catch((error: unknown) => {
     // Before the private token exists, validation errors contain paths and field names only.
-    const message = error instanceof Error ? error.message : "Moco 后台服务启动失败。";
+    const message = error instanceof Error ? error.message : "Kulo 后台服务启动失败。";
     if (process.connected) process.send?.({ type: "error", message }, () => process.exit(1));
     else { console.error(message); process.exit(1); }
   });

@@ -10,9 +10,9 @@ import {
   type DeviceSshScan,
   type InterconnectedDevice,
   type SettingsAssistantAction,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import type { DeviceAssistantOperation } from "./settings-doc.js";
-import type { PreparedDeviceRoleChange } from "@moco/env";
+import type { PreparedDeviceRoleChange } from "@kulo/env";
 import { DEVICES_INTERCONNECTION_GUIDE } from "./prompts.js";
 
 const JOIN_STAGING_TTL_MS = 10 * 60_000;
@@ -134,19 +134,19 @@ export function createDeviceToolsExtension(host: () => DeviceAssistantHost) {
   const jsonResult = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }] });
 
   return defineExtension({
-    name: "moco-device-tools",
+    name: "kulo-device-tools",
     sections: [
-      section("moco_devices_guide", () => DEVICES_INTERCONNECTION_GUIDE, { tag: false }),
+      section("kulo_devices_guide", () => DEVICES_INTERCONNECTION_GUIDE, { tag: false }),
     ],
     tools: [
       defineTool({
-        name: "moco_devices_manage",
+        name: "kulo_devices_manage",
         description: "Manage host-side device interconnection: `enable`/`disable` interconnection, `rename` host or device, open Add Device dialog / create `invite`, or propose `remove` via user confirmation card.",
         parameters: obj({
           action: oneOf(["enable", "disable", "rename", "invite", "remove"]),
           device_id: opt(str({ description: "Target device ID for `rename` or `remove` (pass `'local'` to rename the Hub host)." })),
           name: opt(str({ description: "New device or host display name." })),
-          hub_url: opt(str({ description: "Reachable Hub URL from `moco_settings_read(section='machines')` `hubUrls` when creating an invitation." })),
+          hub_url: opt(str({ description: "Reachable Hub URL from `kulo_settings_read(section='machines')` `hubUrls` when creating an invitation." })),
         }),
         execute: async (args, api) => {
           if (args.action === "remove") {
@@ -209,14 +209,14 @@ export function createDeviceToolsExtension(host: () => DeviceAssistantHost) {
         },
       }),
       defineTool({
-        name: "moco_devices_ssh_scan",
+        name: "kulo_devices_ssh_scan",
         description: "Scan a remote host's SSH fingerprint and create a user confirmation card before pairing (requires key/agent SSH access; applied only after user confirms the fingerprint).",
         parameters: obj({
           host: str({ description: "SSH host address or `~/.ssh/config` alias." }),
           port: opt(num({ description: "SSH port (default 22)." })),
           user: opt(str({ description: "Optional SSH username." })),
           name: opt(str({ description: "Optional device display name." })),
-          root_dir: opt(str({ description: "Optional remote workspace directory (default `~/Moco`)." })),
+          root_dir: opt(str({ description: "Optional remote workspace directory (default `~/Kulo`)." })),
           hub_url: opt(str({ description: "Hub URL reachable from the remote machine (defaults to first LAN/Tailscale URL)." })),
         }),
         execute: async (args, api) => {
@@ -249,8 +249,8 @@ export function createDeviceToolsExtension(host: () => DeviceAssistantHost) {
         },
       }),
       defineTool({
-        name: "moco_devices_join",
-        description: "Join this Moco client as a peer to an existing Hub host: pass `join_ref` when staged from a pasted invitation to create a confirmation card, or omit `join_ref` to open the Join Existing Host dialog.",
+        name: "kulo_devices_join",
+        description: "Join this Kulo client as a peer to an existing Hub host: pass `join_ref` when staged from a pasted invitation to create a confirmation card, or omit `join_ref` to open the Join Existing Host dialog.",
         parameters: obj({
           join_ref: opt(str({ description: "Sealed staging reference (`join_...`) from a pasted invitation—never pass raw invite tokens." })),
         }),
@@ -276,7 +276,7 @@ export function createDeviceToolsExtension(host: () => DeviceAssistantHost) {
         },
       }),
       defineTool({
-        name: "moco_devices_leave",
+        name: "kulo_devices_leave",
         description: "When `role='joined'`, propose disconnecting from the remote Hub and restoring standalone local Hub mode via a user confirmation card.",
         parameters: obj({}),
         execute: async (_args, api) => {

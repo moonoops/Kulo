@@ -12,10 +12,10 @@ import {
   sshArguments,
   type SshTarget,
 } from "@earendil-works/pi-env";
-import type { DeviceSshRequest, DeviceSshScan } from "@moco/protocol";
+import type { DeviceSshRequest, DeviceSshScan } from "@kulo/protocol";
 
 const SCAN_LIFETIME_MS = 5 * 60_000;
-const TUNNEL_READY = "MOCO-TUNNEL-READY";
+const TUNNEL_READY = "KULO-TUNNEL-READY";
 
 export interface DeviceSshRecord {
   deviceId: string;
@@ -130,7 +130,7 @@ const path = require('node:path');
 const net = require('node:net');
 const [major, minor] = process.versions.node.split('.').map(Number);
 if (major < 22 || (major === 22 && minor < 19)) throw new Error('接入设备需要 Node.js 22.19 或更新版本。');
-const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'moco-join-'));
+const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kulo-join-'));
 fs.chmodSync(directory, 0o700);
 const server = net.createServer();
 server.once('error', error => { fs.rmSync(directory, {recursive:true, force:true}); throw error; });
@@ -195,7 +195,7 @@ export class DeviceSshConnector {
       port: request.port ?? 22,
       ...(request.user ? { user: request.user } : {}),
       knownHostsFile: path.join(this.#options.stateDir, "device-ssh-known-hosts"),
-      hostKeyAlias: `moco-${identity}`,
+      hostKeyAlias: `kulo-${identity}`,
     };
   }
 
@@ -225,7 +225,7 @@ export class DeviceSshConnector {
     this.#assertGeneration(generation);
     const { connection, remote } = await connectSsh({ ...scan.target, loginShell: true });
     this.#bootstraps.add(connection);
-    const env = new RemoteExecutionEnv({ connection, id: `moco:ssh-bootstrap:${scanId}`, cwd: remote.home });
+    const env = new RemoteExecutionEnv({ connection, id: `kulo:ssh-bootstrap:${scanId}`, cwd: remote.home });
     let directory: string | undefined;
     let deviceId: string | undefined;
     let inviteToken: string | undefined;

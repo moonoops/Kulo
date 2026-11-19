@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import { getAuthTokenFromUrl } from "../../moco-api";
+import { getAuthTokenFromUrl } from "../../kulo-api";
 import { ComputerPreviewClient, EMPTY_PREVIEW_STATE, type PreviewSocket } from "./preview-client";
 
 export function computerPreviewSocketUrl(topicId: string): string {

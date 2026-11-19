@@ -31,14 +31,14 @@ describe("cat appearance preferences", () => {
 
   it("persists appearance and motion together across reloads without changing theme or language", async () => {
     const { data, storage } = storageFixture();
-    data.set("moco:appearance", '{"mode":"light"}');
-    data.set("moco:language", "en");
+    data.set("kulo:appearance", '{"mode":"light"}');
+    data.set("kulo:language", "en");
     let api = await import("./cat-preferences");
     expect(api.saveCatPreferences({ appearance: "beanie" })).toBe(true);
     expect(api.saveCatPreferences({ animated: false })).toBe(true);
     expect(JSON.parse(data.get(api.CAT_PREFERENCES_STORAGE_KEY)!)).toEqual({ appearance: "beanie", animated: false });
-    expect(data.get("moco:appearance")).toBe('{"mode":"light"}');
-    expect(data.get("moco:language")).toBe("en");
+    expect(data.get("kulo:appearance")).toBe('{"mode":"light"}');
+    expect(data.get("kulo:language")).toBe("en");
     expect(storage.setItem.mock.calls.every(([key]) => key === api.CAT_PREFERENCES_STORAGE_KEY)).toBe(true);
     vi.resetModules();
     api = await import("./cat-preferences");
@@ -55,7 +55,7 @@ describe("cat appearance preferences", () => {
     const unsubscribe = api.subscribeCatPreferences(onChange);
     api.saveCatPreferences({ appearance: "raincoat" });
     expect(onChange).toHaveBeenCalledTimes(1);
-    dispatch("moco:language", "en");
+    dispatch("kulo:language", "en");
     expect(onChange).toHaveBeenCalledTimes(1);
     dispatch(api.CAT_PREFERENCES_STORAGE_KEY, '{"appearance":"beret","animated":false}');
     expect(api.getCatPreferences()).toEqual({ appearance: "beret", animated: false, error: null });

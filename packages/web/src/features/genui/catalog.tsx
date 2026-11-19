@@ -1,4 +1,4 @@
-import { translate as tr, useI18n } from "../../moco-i18n";
+import { translate as tr, useI18n } from "../../kulo-i18n";
 import { Children, useState } from "react";
 import { defineCatalog } from "@json-render/core";
 import { defineRegistry } from "@json-render/react";
@@ -8,11 +8,11 @@ import {
   Label, ListBox, NumberField, Radio, RadioGroup, Select, Slider, Switch, Tabs,
   TextArea, TextField,
 } from "@heroui/react";
-import { UI_COMPONENT_SCHEMAS } from "@moco/protocol";
+import { UI_COMPONENT_SCHEMAS } from "@kulo/protocol";
 import { DataChart, DataTable } from "./data-views";
 import { displayCardValue, useCardRuntime } from "./card-runtime";
 
-export const mocoUiCatalog = defineCatalog(schema, {
+export const kuloUiCatalog = defineCatalog(schema, {
   components: {
     Card: { props: UI_COMPONENT_SCHEMAS.Card, slots: ["default"], description: "Content group" },
     Stack: { props: UI_COMPONENT_SCHEMAS.Stack, slots: ["default"], description: "Vertical content" },
@@ -38,34 +38,34 @@ export const mocoUiCatalog = defineCatalog(schema, {
   actions: {},
 });
 
-export const { registry: mocoUiRegistry } = defineRegistry(mocoUiCatalog, {
+export const { registry: kuloUiRegistry } = defineRegistry(kuloUiCatalog, {
   components: {
     Card: ({ props, children }) => {
       const { card } = useCardRuntime();
       const title = props.title !== card.title ? props.title : undefined;
       if (!title && !props.description) return Children.count(children) > 1
-        ? <div className="moco-genui-stack">{children}</div> : <>{children}</>;
-      return <Card variant="transparent" className="moco-genui-section">
-        {(title || props.description) && <Card.Header className="moco-genui-section-header">
-          {title && <Card.Title className="moco-genui-section-title">{title}</Card.Title>}
-          {props.description && <Card.Description className="moco-genui-section-description">{props.description}</Card.Description>}
+        ? <div className="kulo-genui-stack">{children}</div> : <>{children}</>;
+      return <Card variant="transparent" className="kulo-genui-section">
+        {(title || props.description) && <Card.Header className="kulo-genui-section-header">
+          {title && <Card.Title className="kulo-genui-section-title">{title}</Card.Title>}
+          {props.description && <Card.Description className="kulo-genui-section-description">{props.description}</Card.Description>}
         </Card.Header>}
-        <Card.Content className="moco-genui-section-content">{children}</Card.Content>
+        <Card.Content className="kulo-genui-section-content">{children}</Card.Content>
       </Card>;
     },
-    Stack: ({ props, children }) => <div className="moco-genui-stack" data-gap={props.gap}>{children}</div>,
-    Grid: ({ props, children }) => <div className="moco-genui-grid" data-columns={props.columns}>{children}</div>,
+    Stack: ({ props, children }) => <div className="kulo-genui-stack" data-gap={props.gap}>{children}</div>,
+    Grid: ({ props, children }) => <div className="kulo-genui-grid" data-columns={props.columns}>{children}</div>,
     Text: ({ props }) => {
       const { values } = useCardRuntime();
-      return <p className="moco-genui-text" data-tone={props.tone} data-size={props.size}>
+      return <p className="kulo-genui-text" data-tone={props.tone} data-size={props.size}>
         {props.field ? displayCardValue(values[props.field]) : props.text}
       </p>;
     },
     Metric: ({ props }) => {
       const { values } = useCardRuntime();
-      return <div className="moco-genui-metric"><span className="moco-genui-label">{props.label}</span>
-        <span className="moco-genui-metric-value">{displayCardValue(props.field ? values[props.field] : props.value)}
-          {props.unit && <span className="moco-genui-metric-unit">{props.unit}</span>}
+      return <div className="kulo-genui-metric"><span className="kulo-genui-label">{props.label}</span>
+        <span className="kulo-genui-metric-value">{displayCardValue(props.field ? values[props.field] : props.value)}
+          {props.unit && <span className="kulo-genui-metric-unit">{props.unit}</span>}
         </span>
       </div>;
     },
@@ -83,31 +83,31 @@ export const { registry: mocoUiRegistry } = defineRegistry(mocoUiCatalog, {
       const runtime = useCardRuntime();
       const value = runtime.values[props.field];
       const error = runtime.errors[props.field];
-      if (props.multiple) return <CheckboxGroup className="moco-genui-choice" name={props.field}
+      if (props.multiple) return <CheckboxGroup className="kulo-genui-choice" name={props.field}
         value={Array.isArray(value) ? value : []} onChange={(next) => runtime.change(props.field, next)}
         isDisabled={runtime.locked} isRequired={props.required} isInvalid={!!error} validationBehavior="aria"
         aria-label={props.label || tr("选择方案", "Choose an option")}>
         {props.label && <Label>{props.label}</Label>}
-        {props.options.map((option) => <Checkbox key={option.value} value={option.value} className="moco-genui-option">
-          <Checkbox.Content className="moco-genui-option-content">
+        {props.options.map((option) => <Checkbox key={option.value} value={option.value} className="kulo-genui-option">
+          <Checkbox.Content className="kulo-genui-option-content">
             <Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>
-            <span className="moco-genui-option-text"><span className="moco-genui-option-label">{option.label}</span>
-              {option.description && <span className="moco-genui-option-description">{option.description}</span>}
+            <span className="kulo-genui-option-text"><span className="kulo-genui-option-label">{option.label}</span>
+              {option.description && <span className="kulo-genui-option-description">{option.description}</span>}
             </span>
           </Checkbox.Content>
         </Checkbox>)}
         <FieldError>{error}</FieldError>
       </CheckboxGroup>;
-      return <RadioGroup className="moco-genui-choice" name={props.field}
+      return <RadioGroup className="kulo-genui-choice" name={props.field}
         value={typeof value === "string" ? value : ""} onChange={(next) => runtime.change(props.field, next)}
         isDisabled={runtime.locked} isRequired={props.required} isInvalid={!!error} validationBehavior="aria"
         aria-label={props.label || tr("选择方案", "Choose an option")}>
         {props.label && <Label>{props.label}</Label>}
-        {props.options.map((option) => <Radio key={option.value} value={option.value} className="moco-genui-option">
-          <Radio.Content className="moco-genui-option-content">
+        {props.options.map((option) => <Radio key={option.value} value={option.value} className="kulo-genui-option">
+          <Radio.Content className="kulo-genui-option-content">
             <Radio.Control><Radio.Indicator /></Radio.Control>
-            <span className="moco-genui-option-text"><span className="moco-genui-option-label">{option.label}</span>
-              {option.description && <span className="moco-genui-option-description">{option.description}</span>}
+            <span className="kulo-genui-option-text"><span className="kulo-genui-option-label">{option.label}</span>
+              {option.description && <span className="kulo-genui-option-description">{option.description}</span>}
             </span>
           </Radio.Content>
         </Radio>)}
@@ -117,7 +117,7 @@ export const { registry: mocoUiRegistry } = defineRegistry(mocoUiCatalog, {
     TextField: ({ props }) => {
       const runtime = useCardRuntime();
       const value = runtime.values[props.field];
-      return <TextField variant="secondary" className="moco-genui-field" name={props.field} value={typeof value === "string" ? value : ""}
+      return <TextField variant="secondary" className="kulo-genui-field" name={props.field} value={typeof value === "string" ? value : ""}
         onChange={(next) => runtime.change(props.field, next)} isReadOnly={runtime.locked}
         isRequired={props.required} isInvalid={!!runtime.errors[props.field]} validationBehavior="aria">
         <Label>{props.label}</Label>
@@ -130,15 +130,15 @@ export const { registry: mocoUiRegistry } = defineRegistry(mocoUiCatalog, {
       useI18n();
       const runtime = useCardRuntime();
       const value = runtime.values[props.field];
-      return <NumberField variant="secondary" className="moco-genui-field" name={props.field} value={typeof value === "number" ? value : NaN}
+      return <NumberField variant="secondary" className="kulo-genui-field" name={props.field} value={typeof value === "number" ? value : NaN}
         onChange={(next) => runtime.change(props.field, Number.isFinite(next) ? next : null)}
         minValue={props.min} maxValue={props.max} step={props.step} isDisabled={runtime.locked}
         isRequired={props.required} isInvalid={!!runtime.errors[props.field]} validationBehavior="aria">
         <Label>{props.label}</Label>
         <NumberField.Group>
-          <NumberField.DecrementButton className="moco-genui-control" aria-label={tr(`减少${props.label}`, `Decrease ${props.label}`)} />
+          <NumberField.DecrementButton className="kulo-genui-control" aria-label={tr(`减少${props.label}`, `Decrease ${props.label}`)} />
           <NumberField.Input />
-          <NumberField.IncrementButton className="moco-genui-control" aria-label={tr(`增加${props.label}`, `Increase ${props.label}`)} />
+          <NumberField.IncrementButton className="kulo-genui-control" aria-label={tr(`增加${props.label}`, `Increase ${props.label}`)} />
         </NumberField.Group>
         <FieldError>{runtime.errors[props.field]}</FieldError>
       </NumberField>;
@@ -146,11 +146,11 @@ export const { registry: mocoUiRegistry } = defineRegistry(mocoUiCatalog, {
     Select: ({ props }) => {
       const runtime = useCardRuntime();
       const value = runtime.values[props.field];
-      return <Select variant="secondary" className="moco-genui-field" name={props.field} value={typeof value === "string" ? value : null}
+      return <Select variant="secondary" className="kulo-genui-field" name={props.field} value={typeof value === "string" ? value : null}
         onChange={(next) => runtime.change(props.field, typeof next === "string" || typeof next === "number" ? String(next) : null)}
         isDisabled={runtime.locked} isRequired={props.required} isInvalid={!!runtime.errors[props.field]} validationBehavior="aria">
         <Label>{props.label}</Label>
-        <Select.Trigger className="moco-genui-control"><Select.Value /><Select.Indicator /></Select.Trigger>
+        <Select.Trigger className="kulo-genui-control"><Select.Value /><Select.Indicator /></Select.Trigger>
         <Select.Popover><ListBox>{props.options.map((option) => <ListBox.Item key={option.value} id={option.value} textValue={option.label}>
           {option.label}<ListBox.ItemIndicator />
         </ListBox.Item>)}</ListBox></Select.Popover>
@@ -160,11 +160,11 @@ export const { registry: mocoUiRegistry } = defineRegistry(mocoUiCatalog, {
     Slider: ({ props }) => {
       const runtime = useCardRuntime();
       const value = runtime.values[props.field];
-      return <Slider className="moco-genui-field"
+      return <Slider className="kulo-genui-field"
         value={typeof value === "number" ? value : props.min ?? 0}
         onChange={(next) => runtime.change(props.field, Array.isArray(next) ? next[0] ?? 0 : next)}
         minValue={props.min ?? 0} maxValue={props.max ?? 100} step={props.step ?? 1} isDisabled={runtime.locked}>
-        <div className="moco-genui-slider-label"><Label>{props.label}</Label><Slider.Output />{props.unit && <span>{props.unit}</span>}</div>
+        <div className="kulo-genui-slider-label"><Label>{props.label}</Label><Slider.Output />{props.unit && <span>{props.unit}</span>}</div>
         <Slider.Track><Slider.Fill /><Slider.Thumb name={props.field} /></Slider.Track>
       </Slider>;
     },
@@ -172,37 +172,37 @@ export const { registry: mocoUiRegistry } = defineRegistry(mocoUiCatalog, {
       const runtime = useCardRuntime();
       return <Switch name={props.field} isSelected={runtime.values[props.field] === true}
         onChange={(value) => runtime.change(props.field, value)} isDisabled={runtime.locked}>
-        <Switch.Content className="moco-genui-toggle-content"><Switch.Control><Switch.Thumb /></Switch.Control>{props.label}</Switch.Content>
+        <Switch.Content className="kulo-genui-toggle-content"><Switch.Control><Switch.Thumb /></Switch.Control>{props.label}</Switch.Content>
       </Switch>;
     },
     Checkbox: ({ props }) => {
       const runtime = useCardRuntime();
       return <Checkbox name={props.field} isSelected={runtime.values[props.field] === true}
         onChange={(value) => runtime.change(props.field, value)} isDisabled={runtime.locked}>
-        <Checkbox.Content className="moco-genui-toggle-content"><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>{props.label}</Checkbox.Content>
+        <Checkbox.Content className="kulo-genui-toggle-content"><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>{props.label}</Checkbox.Content>
       </Checkbox>;
     },
     Button: ({ props }) => {
       const runtime = useCardRuntime();
       const action = runtime.card.actions.find((item) => item.id === props.actionId);
       if (!action) return null;
-      return <Button type="button" className="moco-genui-action" variant={props.variant ?? (action.kind === "cancel" ? "secondary" : "primary")}
+      return <Button type="button" className="kulo-genui-action" variant={props.variant ?? (action.kind === "cancel" ? "secondary" : "primary")}
         isDisabled={runtime.actionDisabled} isPending={runtime.pendingActionId === action.id}
         onPress={() => runtime.act(action.id)}>{props.label || action.label}</Button>;
     },
     Tabs: ({ props, children }) => {
       useI18n();
       const panels = Children.toArray(children);
-      return <Tabs className="moco-genui-tabs" variant="secondary" defaultSelectedKey={props.tabs[0]?.id}>
-        <Tabs.ListContainer className="w-fit max-w-full min-w-0 shrink-0"><Tabs.List aria-label={tr("内容分组", "Content groups")} className="w-max">{props.tabs.map((tab) => <Tabs.Tab key={tab.id} id={tab.id} className="moco-genui-control w-auto shrink-0 whitespace-nowrap">
+      return <Tabs className="kulo-genui-tabs" variant="secondary" defaultSelectedKey={props.tabs[0]?.id}>
+        <Tabs.ListContainer className="w-fit max-w-full min-w-0 shrink-0"><Tabs.List aria-label={tr("内容分组", "Content groups")} className="w-max">{props.tabs.map((tab) => <Tabs.Tab key={tab.id} id={tab.id} className="kulo-genui-control w-auto shrink-0 whitespace-nowrap">
           {tab.label}<Tabs.Indicator />
         </Tabs.Tab>)}</Tabs.List></Tabs.ListContainer>
         {props.tabs.map((tab, index) => <Tabs.Panel key={tab.id} id={tab.id}>{panels[index]}</Tabs.Panel>)}
       </Tabs>;
     },
     Disclosure: ({ props, children }) => <Disclosure defaultExpanded={props.defaultExpanded}>
-      <Disclosure.Heading><Button slot="trigger" variant="ghost" size="sm" className="moco-genui-disclosure-trigger">
-        <span className="moco-genui-disclosure-label">{props.title}</span><Disclosure.Indicator />
+      <Disclosure.Heading><Button slot="trigger" variant="ghost" size="sm" className="kulo-genui-disclosure-trigger">
+        <span className="kulo-genui-disclosure-label">{props.title}</span><Disclosure.Indicator />
       </Button></Disclosure.Heading>
       <Disclosure.Content><Disclosure.Body>{children}</Disclosure.Body></Disclosure.Content>
     </Disclosure>,
@@ -210,18 +210,18 @@ export const { registry: mocoUiRegistry } = defineRegistry(mocoUiCatalog, {
     Media: ({ props }) => {
       useI18n();
       const runtime = useCardRuntime();
-      return runtime.renderMedia?.(props) ?? <p className="moco-genui-fallback">{props.alt || tr("媒体暂不可用", "Media temporarily unavailable")}</p>;
+      return runtime.renderMedia?.(props) ?? <p className="kulo-genui-fallback">{props.alt || tr("媒体暂不可用", "Media temporarily unavailable")}</p>;
     },
     Code: ({ props }) => {
       useI18n();
       const runtime = useCardRuntime();
       const [opened, setOpened] = useState(false);
-      return <Disclosure className="moco-genui-code" onExpandedChange={(expanded) => { if (expanded) setOpened(true); }}>
-        <Disclosure.Heading><Button slot="trigger" variant="ghost" size="sm" className="moco-genui-disclosure-trigger">
-          <span className="moco-genui-disclosure-label">{props.fileName || tr("查看代码", "View code")}</span><Disclosure.Indicator />
+      return <Disclosure className="kulo-genui-code" onExpandedChange={(expanded) => { if (expanded) setOpened(true); }}>
+        <Disclosure.Heading><Button slot="trigger" variant="ghost" size="sm" className="kulo-genui-disclosure-trigger">
+          <span className="kulo-genui-disclosure-label">{props.fileName || tr("查看代码", "View code")}</span><Disclosure.Indicator />
         </Button></Disclosure.Heading>
-        <Disclosure.Content className="moco-genui-panel"><Disclosure.Body className="moco-genui-disclosure-body">
-          {opened && (runtime.renderCode?.(props) ?? <pre className="moco-genui-code-fallback"><code>{props.code}</code></pre>)}
+        <Disclosure.Content className="kulo-genui-panel"><Disclosure.Body className="kulo-genui-disclosure-body">
+          {opened && (runtime.renderCode?.(props) ?? <pre className="kulo-genui-code-fallback"><code>{props.code}</code></pre>)}
         </Disclosure.Body></Disclosure.Content>
       </Disclosure>;
     },

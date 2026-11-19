@@ -96,7 +96,7 @@ export class RecoveryManager {
     for (const directory of [this.#paths().manifests, this.#paths().transactions, this.#paths().diagnostics]) privateDirectory(directory);
     const readme = path.join(this.recoveryDir, "README.md");
     if (!fs.existsSync(readme)) fs.writeFileSync(readme,
-      "# Moco recovery\n\nRun moco-rescue inspect --data-dir <this application's data directory> --json first.\n" +
+      "# Kulo recovery\n\nRun kulo-rescue inspect --data-dir <this application's data directory> --json first.\n" +
       "The tool does not import Hub, Env or user customizations. Do not overwrite a live database.\n" +
       "Use versions to inspect compatible local payloads; rollback refuses active desktop or backend processes.\n" +
       "After interrupted source customization, cleanup uses only the bundled verified native component; receipt commands are never executed.\n" +
@@ -230,7 +230,7 @@ export class RecoveryManager {
   }
   #addIntent(intent: FileIntent): void { atomicJson(this.#paths().intents, [...this.#readFileIntents(), intent]); }
   #clearIntent(id: string): void { atomicJson(this.#paths().intents, this.#readFileIntents().filter((intent) => intent.id !== id)); }
-  #owner(directory: string): string { return path.join(directory, ".moco-owned.json"); }
+  #owner(directory: string): string { return path.join(directory, ".kulo-owned.json"); }
   #owned(directory: string, id: string, intentId?: string): boolean {
     if (!fs.existsSync(directory)) return false;
     const stat = fs.lstatSync(directory);
@@ -317,12 +317,12 @@ export class RecoveryManager {
   }
 
   #assertOffline(catalog: Catalog): void {
-    if (this.#sessionLive(catalog.session)) fail("runtime_active", "Moco 或后台进程仍在运行，不能离线修改当前版本。");
+    if (this.#sessionLive(catalog.session)) fail("runtime_active", "Kulo 或后台进程仍在运行，不能离线修改当前版本。");
     const statusFile = path.join(this.dataDir, "desktop-status.json");
     if (fs.existsSync(statusFile)) {
       const status = object(readJson(statusFile, 16384));
       if (typeof status.pid !== "number" || !Number.isSafeInteger(status.pid)) fail("invalid_runtime_status", "桌面运行状态无效，请先检查进程。");
-      if (this.#alive(status.pid)) fail("runtime_active", "Moco 桌面仍在运行，不能离线修改当前版本。");
+      if (this.#alive(status.pid)) fail("runtime_active", "Kulo 桌面仍在运行，不能离线修改当前版本。");
     }
   }
 
@@ -412,8 +412,8 @@ export class RecoveryManager {
         }
         await verifyRelease(payload, manifest);
         writeReleaseManifest(payload, manifest);
-        await fsp.chmod(path.join(payload, "moco-release.json"), 0o444);
-        await fsp.chmod(path.join(payload, "moco-release.identity.json"), 0o444);
+        await fsp.chmod(path.join(payload, "kulo-release.json"), 0o444);
+        await fsp.chmod(path.join(payload, "kulo-release.identity.json"), 0o444);
         atomicJson(this.#manifestPath(manifest.id), manifest);
         const identityHash = this.#saveIdentity(releaseIdentity(manifest));
         await fsp.rename(stage, final);
@@ -444,7 +444,7 @@ export class RecoveryManager {
   async prepareLaunch(): Promise<RecoveryLaunch> {
     return this.#mutate(async (catalog) => {
       if (!catalog.current) fail("not_initialized", "尚未登记基础版本。");
-      if (this.#sessionLive(catalog.session)) fail("runtime_active", "已有 Moco 或后台进程占用此实例。");
+      if (this.#sessionLive(catalog.session)) fail("runtime_active", "已有 Kulo 或后台进程占用此实例。");
       let recovered = false;
       if (catalog.session && !catalog.session.readyAt) {
         const interrupted = catalog.session.releaseId;
@@ -746,10 +746,10 @@ export class RecoveryManager {
   async repairInstructions(): Promise<string> {
     const state = await this.inspect();
     return [
-      "Moco 本地修复信息",
+      "Kulo 本地修复信息",
       "数据目录：" + this.dataDir,
       "当前版本：" + (state.current?.id ?? "尚未登记"),
-      "先使用独立 moco-rescue 的 inspect --json，只读诊断。",
+      "先使用独立 kulo-rescue 的 inspect --json，只读诊断。",
       "命令参数以数组传递：" + JSON.stringify(["inspect", "--data-dir", this.dataDir, "--json"]),
       "主程序或后台仍运行时不要覆盖文件和数据库。可用版本由 versions 列出；rollback 仅在离线且数据兼容时执行。",
       "源码定制中断后可使用 cleanup 清理受管残留；它只运行独立包内经校验的组件，不执行收据中的命令。",

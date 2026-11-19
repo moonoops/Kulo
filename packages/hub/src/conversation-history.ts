@@ -7,11 +7,11 @@ import {
   AssistantEntry, ROOT_CONVERSATION_ID, ToolResultEntry, UserEntry,
   type Conversation, type ConversationId, type EntryId, type EntryRecord, type Harness,
 } from "@earendil-works/pi-durable";
-import type { TopicSummary } from "@moco/protocol";
-import { MocoProjectsDoc } from "./projects.js";
-import { MocoStateDoc, isOrchestratorConversation } from "./state.js";
+import type { TopicSummary } from "@kulo/protocol";
+import { KuloProjectsDoc } from "./projects.js";
+import { KuloStateDoc, isOrchestratorConversation } from "./state.js";
 import { SettingsAssistantDoc, isActiveSettingsConversation, settingsTopicId } from "./settings-doc.js";
-import { ContentPublicationEntry, MocoUserEntry } from "./ui-cards.js";
+import { ContentPublicationEntry, KuloUserEntry } from "./ui-cards.js";
 import { VoiceTranscriptEntry } from "./voice-transcripts.js";
 
 const PAGE_SIZE = 200;
@@ -109,7 +109,7 @@ export function historyEntryText(entry: EntryRecord): SourceText | undefined {
   let text: string;
   let role: HistoryRole;
   let attachments: SourceText["attachments"];
-  if (MocoUserEntry.is(entry)) {
+  if (KuloUserEntry.is(entry)) {
     text = entry.data.text;
     attachments = entry.data.attachments.map(({ id, name }) => ({ id, name }));
     role = "user";
@@ -123,7 +123,7 @@ export function historyEntryText(entry: EntryRecord): SourceText | undefined {
   } else if (ToolResultEntry.is(entry)) {
     const message = entry.model?.[0];
     // Recalled evidence is already indexed at its original entry; indexing it again amplifies duplicates.
-    if (message?.role !== "toolResult" || ["moco_history_search", "moco_history_read"].includes(message.toolName)) return undefined;
+    if (message?.role !== "toolResult" || ["kulo_history_search", "kulo_history_read"].includes(message.toolName)) return undefined;
     text = modelText(entry);
     role = "tool_result";
   } else if (VoiceTranscriptEntry.is(entry)) {
@@ -133,7 +133,7 @@ export function historyEntryText(entry: EntryRecord): SourceText | undefined {
     const markdown = entry.data.parts.flatMap((part) => part.type === "markdown" ? [part.text] : []);
     text = markdown.length ? markdown.join("\n\n") : entry.data.fallbackText;
     role = "assistant";
-  } else if (entry.kind === "moco.worker_relay") {
+  } else if (entry.kind === "kulo.worker_relay") {
     text = modelText(entry);
     if (!text && entry.data && typeof entry.data === "object" && !Array.isArray(entry.data)) {
       text = [entry.data.summary, entry.data.deliverable, entry.data.question].filter((value): value is string => typeof value === "string" && !!value).join("\n\n");
@@ -153,7 +153,7 @@ function historyIndexFile(stateDir: string): string {
 
 function historyIndexVersion(database: DatabaseSync): number {
   const version = Number(database.prepare("PRAGMA user_version").get()?.user_version);
-  if (version > SCHEMA_VERSION) throw new HistoryError(409, "history_index_version", "历史索引来自较新版本的 Moco。");
+  if (version > SCHEMA_VERSION) throw new HistoryError(409, "history_index_version", "历史索引来自较新版本的 Kulo。");
   return version;
 }
 
@@ -171,7 +171,7 @@ export function invalidateDeviceInvitationSearchIndex(stateDir: string): void {
 }
 
 /** A derived index; Durable remains the authority for both text and visibility. */
-export class MocoConversationHistory {
+export class KuloConversationHistory {
   readonly #harness: Harness;
   readonly #db: DatabaseSync;
   #tail: Promise<unknown> = Promise.resolve();
@@ -230,7 +230,7 @@ export class MocoConversationHistory {
 
   async #scope(caller: number, requested: HistoryScope, context: Context): Promise<ScopeView> {
     number(caller, "主会话编号", 1);
-    const state = await this.#harness.snapshot(MocoStateDoc, context);
+    const state = await this.#harness.snapshot(KuloStateDoc, context);
     if (!isOrchestratorConversation(caller as ConversationId, state)) {
       const settings = await this.#harness.snapshot(SettingsAssistantDoc, context);
       if (!isActiveSettingsConversation(caller, settings)) {
@@ -251,7 +251,7 @@ export class MocoConversationHistory {
     const topicId = state?.conversationToTopic?.[String(caller)] ?? (caller === Number(ROOT_CONVERSATION_ID) ? "root" : undefined);
     const own = topicId && state?.topics && Object.hasOwn(state.topics, topicId) ? state.topics[topicId] : undefined;
     if (!own || own.deletedAt !== undefined || own.conversationId !== caller) throw new HistoryError(403, "history_forbidden", "当前会话不可用。");
-    const projects = await this.#harness.snapshot(MocoProjectsDoc, context);
+    const projects = await this.#harness.snapshot(KuloProjectsDoc, context);
     if (own.projectId) {
       const project = projects?.projects[own.projectId];
       if (!project || project.deletedAt !== undefined) throw new HistoryError(403, "history_forbidden", "当前会话所属项目不可用。");

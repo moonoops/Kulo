@@ -1,9 +1,9 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { Button, Modal, Switch } from "@heroui/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SearchPlanView, SearchSnapshot, SkillRecord, SkillSnapshot } from "@moco/protocol";
+import type { SearchPlanView, SearchSnapshot, SkillRecord, SkillSnapshot } from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
-import { mocoRest } from "../../moco-api";
+import { kuloRest } from "../../kulo-api";
 import { SearchModule, SearchPlanFields, searchPlanDraft, searchPlanDraftDirty } from "./search-module";
 import { SkillsModule, SkillSettingsFields, skillDraftDirty } from "./skills-module";
 
@@ -28,7 +28,7 @@ vi.mock("react", async (importOriginal) => {
   };
 });
 vi.mock("./settings-save-activity", () => ({ useSettingsPending: (pending: boolean) => { hooks.pending = pending; } }));
-vi.mock("../../moco-i18n", () => ({ useI18n: () => ({ t: (zh: string) => zh }), translate: (zh: string) => zh }));
+vi.mock("../../kulo-i18n", () => ({ useI18n: () => ({ t: (zh: string) => zh }), translate: (zh: string) => zh }));
 vi.mock("react-aria-components", async (importOriginal) => ({ ...await importOriginal<typeof import("react-aria-components")>(), useDragAndDrop: () => ({ dragAndDropHooks: {} }) }));
 
 const plan: SearchPlanView = { id: "first", name: "Search", adapter: "tavily", enabled: true, baseUrl: "https://mcp.tavily.com/mcp", hasCredential: true, revision: 3, status: "ready", createdAt: 1, updatedAt: 1 };
@@ -102,7 +102,7 @@ describe("manual settings editor drafts", () => {
     const fields = find(tree, (node) => node.type === SearchPlanFields);
     fields.props.onChange({ ...fields.props.draft, name: "Changed" });
     const pending = deferred<SearchSnapshot>();
-    const save = vi.spyOn(mocoRest, "saveSearchPlan").mockReturnValue(pending.promise);
+    const save = vi.spyOn(kuloRest, "saveSearchPlan").mockReturnValue(pending.promise);
     tree = renderSearch(); submit(tree);
     backdrop(tree).props.onOpenChange(false);
     expect(backdrop(renderSearch()).props.isOpen).toBe(true);
@@ -118,9 +118,9 @@ describe("manual settings editor drafts", () => {
     tree = renderSearch();
     const fields = find(tree, (node) => node.type === SearchPlanFields);
     fields.props.onChange({ ...fields.props.draft, name: "Unsaved", apiKey: "unsaved-key" });
-    const save = vi.spyOn(mocoRest, "saveSearchPlan").mockResolvedValue({ ...searchSnapshot, revision: 4 });
+    const save = vi.spyOn(kuloRest, "saveSearchPlan").mockResolvedValue({ ...searchSnapshot, revision: 4 });
     tree = renderSearch();
-    find(tree, (node) => node.type === Switch && node.props.className === "moco-search-plan-switch justify-self-center").props.onChange(false);
+    find(tree, (node) => node.type === Switch && node.props.className === "kulo-search-plan-switch justify-self-center").props.onChange(false);
     expect(save).toHaveBeenCalledWith({ id: plan.id, expectedRevision: plan.revision, name: plan.name, adapter: plan.adapter, baseUrl: plan.baseUrl, enabled: false });
     expect(find(renderSearch(), (node) => node.type === SearchPlanFields).props.draft.name).toBe("Unsaved");
     expect(hooks.pending).toBe(true);
@@ -131,7 +131,7 @@ describe("manual settings editor drafts", () => {
     let tree = renderSkills(); edit(tree, skill.name);
     tree = renderSkills();
     find(tree, (node) => node.type === SkillSettingsFields).props.onChange({ enabled: true, audiences: ["settings"] });
-    const save = vi.spyOn(mocoRest, "updateSkill").mockResolvedValue({ ...skillSnapshot, revision: 4 });
+    const save = vi.spyOn(kuloRest, "updateSkill").mockResolvedValue({ ...skillSnapshot, revision: 4 });
     tree = renderSkills();
     find(tree, (node) => node.type === Switch && node.props.size === "sm").props.onChange(false);
     expect(save).toHaveBeenCalledWith(skill.id, { enabled: false, expectedRevision: 3, commandId: expect.any(String) });
@@ -145,7 +145,7 @@ describe("manual settings editor drafts", () => {
     tree = renderSkills();
     const fields = find(tree, (node) => node.type === SkillSettingsFields);
     fields.props.onChange({ enabled: false, audiences: ["worker"] });
-    const save = vi.spyOn(mocoRest, "updateSkill").mockRejectedValueOnce(new Error("Offline"));
+    const save = vi.spyOn(kuloRest, "updateSkill").mockRejectedValueOnce(new Error("Offline"));
     submit(renderSkills());
     await vi.waitFor(() => expect(backdrop(renderSkills()).props.isDismissable).toBe(true));
     tree = renderSkills();

@@ -7,7 +7,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { cleanSupervisedExecution, processFingerprint, supervisedCommand } from "./worker-supervisor.js";
 import { defaultProtectedPaths } from "./isolation.js";
 import { ExternalAgentRpc, type ExternalAgentPipeFactory, type RpcValue } from "./external-agent-rpc.js";
-import { MOCO_VERSION, type ExternalAgentBinding, type ExternalAgentCapabilities, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalWorkspaceMode } from "@moco/protocol";
+import { KULO_VERSION, type ExternalAgentBinding, type ExternalAgentCapabilities, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalWorkspaceMode } from "@kulo/protocol";
 
 export interface ExternalDriverContext {
   binding: ExternalAgentBinding;
@@ -66,12 +66,12 @@ export function approvedAgentEnv(kind:ExternalAgentKind):Record<string,string>{
   return Object.fromEntries(keys.flatMap(key=>process.env[key]?[[key,process.env[key]!]]:[]));
 }
 export function nativeAgentEnvironment():NodeJS.ProcessEnv{
-  return Object.fromEntries(Object.entries(process.env).filter(([name])=>!/^MOCO_.*(?:TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL|PEER.*CONFIG)/i.test(name)));
+  return Object.fromEntries(Object.entries(process.env).filter(([name])=>!/^KULO_.*(?:TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL|PEER.*CONFIG)/i.test(name)));
 }
 export function managedNativeProcess(options:{executable:string;args:string[];cwd:string;env:NodeJS.ProcessEnv;controlRoot:string;projectId?:string}):{child:ChildProcessWithoutNullStreams;cleanup():Promise<boolean>}{
   fs.mkdirSync(options.controlRoot,{recursive:true,mode:0o700});
-  const control=fs.mkdtempSync(path.join(options.controlRoot,"moco-worker-control-"));
-  const temporaryDir=fs.mkdtempSync(path.join(os.tmpdir(),"moco-worker-native-"));
+  const control=fs.mkdtempSync(path.join(options.controlRoot,"kulo-worker-control-"));
+  const temporaryDir=fs.mkdtempSync(path.join(os.tmpdir(),"kulo-worker-native-"));
   fs.writeFileSync(path.join(control,"owner.json"),JSON.stringify({ownerPid:process.pid,ownerIdentity:processFingerprint(process.pid),workspaceDir:options.cwd,projectId:options.projectId,temporaryDir,cleanupModel:"process-group"}),{mode:0o600});
   const command=supervisedCommand([options.executable,...options.args],control);
   const child=spawn(command[0]!,command.slice(1),{cwd:options.cwd,env:options.env,stdio:"pipe",windowsHide:true});
@@ -130,8 +130,8 @@ function isWithinAcpDir(target: string, root: string): boolean {
 }
 function isProtectedAcpPath(canonicalTarget: string, includeGitControl: boolean): boolean {
   const normalized = canonicalTarget.replace(/\\/g, "/");
-  if (/(?:^|\/)(?:\.moco-state|\.secure)(?:\/|$)/.test(normalized)) return true;
-  if (/(?:^|\/)(?:connection\.json|devices\.json|runtime-token|moco\.sqlite(?:-wal|-shm)?)$/.test(normalized)) return true;
+  if (/(?:^|\/)(?:\.kulo-state|\.secure)(?:\/|$)/.test(normalized)) return true;
+  if (/(?:^|\/)(?:connection\.json|devices\.json|runtime-token|kulo\.sqlite(?:-wal|-shm)?)$/.test(normalized)) return true;
   if (includeGitControl && /(?:^|\/)\.git\/(?:hooks(?:\/|$)|config$)/.test(normalized)) return true;
   for (const entry of defaultProtectedPaths()) {
     if (isWithinAcpDir(canonicalTarget, entry)) return true;
@@ -147,7 +147,7 @@ function createAcpLocalClient(ctx:ExternalDriverContext){
       if(method==="fs/read_text_file"){
         if(typeof params.path!=="string"||!path.isAbsolute(params.path))throw new Error("ACP file path must be absolute");
         const target=canonicalAcpPath(params.path);
-        if(isProtectedAcpPath(target,false))throw new Error("ACP file read is denied for protected system or Moco paths");
+        if(isProtectedAcpPath(target,false))throw new Error("ACP file read is denied for protected system or Kulo paths");
         const content=await fs.promises.readFile(target,"utf8");
         if(params.line===undefined&&params.limit===undefined)return{content};
         if(params.line!==undefined&&(!Number.isSafeInteger(params.line)||Number(params.line)<1)||params.limit!==undefined&&(!Number.isSafeInteger(params.limit)||Number(params.limit)<0))throw new Error("Invalid ACP line range");
@@ -156,7 +156,7 @@ function createAcpLocalClient(ctx:ExternalDriverContext){
       if(method==="fs/write_text_file"){
         if(typeof params.path!=="string"||!path.isAbsolute(params.path)||typeof params.content!=="string")throw new Error("Invalid ACP file write");
         const target=canonicalAcpPath(params.path);
-        if(isProtectedAcpPath(target,true))throw new Error("ACP file write is denied for protected system, git control, or Moco paths");
+        if(isProtectedAcpPath(target,true))throw new Error("ACP file write is denied for protected system, git control, or Kulo paths");
         if(ctx.workspaceMode==="read_only"){
           const inNotes=Boolean(ctx.scratchNotesDir&&isWithinAcpDir(target,ctx.scratchNotesDir));
           if(!inNotes)throw new Error("Read-only external task cannot modify files outside its scratch notes directory");
@@ -227,8 +227,8 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
   const pipe=await ctx.pipe({executable:ctx.executable,args:ctx.binding.kind==="dsh"?["--profile","acp"]:["acp","--process-per-session"],cwd:ctx.cwd,env:{},isolated:false,readOnly:ctx.readOnly,runtimePaths:externalRuntimePaths(ctx.executable),onStdout:data=>rpc.accept(data),onStderr:data=>ctx.event("error",Buffer.from(data).toString("utf8"))});rpc.attach(pipe);
   const driver:ExternalDriver={cancel:async()=>{cancelRequested=true;if(sessionId)rpc.notify("session/cancel",{sessionId});},close:()=>{if(closed)return;closed=true;try{if(sessionId)rpc.notify("session/close",{sessionId});}catch{/* The protocol may already have ended. */}finally{rpc.close();}},cleanup:async()=>{const processes=await local.close();return (await(pipe.cleanup?.()??pipe.exited.then(()=>true,()=>false)))&&processes;}};
   try{
-    const init=await rpc.call("initialize",{protocolVersion:1,clientCapabilities:{fs:{readTextFile:true,writeTextFile:true},terminal:true},clientInfo:{name:"moco",version:MOCO_VERSION}});
-    const capabilities=obj(init.agentCapabilities);const mcpServers=obj(capabilities.mcpCapabilities).http?ctx.servers.map(server=>({type:"http",name:`moco-${randomUUID()}-${server.name}`,url:server.url,headers:server.headers??[]})):[];
+    const init=await rpc.call("initialize",{protocolVersion:1,clientCapabilities:{fs:{readTextFile:true,writeTextFile:true},terminal:true},clientInfo:{name:"kulo",version:KULO_VERSION}});
+    const capabilities=obj(init.agentCapabilities);const mcpServers=obj(capabilities.mcpCapabilities).http?ctx.servers.map(server=>({type:"http",name:`kulo-${randomUUID()}-${server.name}`,url:server.url,headers:server.headers??[]})):[];
     if(ctx.servers.length&&!mcpServers.length)ctx.event("state","This client does not advertise HTTP MCP; continuing with its native tools");
     let session:RpcValue;
     if(sessionId){if(!capabilities.loadSession&&!obj(capabilities.sessionCapabilities).resume)throw new Error("Installed agent does not support native session resume");session=await rpc.call(obj(capabilities.sessionCapabilities).resume?"session/resume":"session/load",{sessionId,cwd:ctx.cwd,mcpServers});}
@@ -275,7 +275,7 @@ export async function connectCodex(ctx:ExternalDriverContext,probe=false):Promis
   const pipe=await ctx.pipe({executable:ctx.executable,args:["app-server"],cwd:ctx.cwd,env:{},isolated:false,readOnly:ctx.readOnly,runtimePaths:externalRuntimePaths(ctx.executable),onStdout:data=>rpc.accept(data),onStderr:data=>ctx.event("error",Buffer.from(data).toString("utf8"))});rpc.attach(pipe);
   const driver:ExternalDriver={cancel:async()=>{if(!sessionId||!turnId)throw new Error("Codex turn is not yet available to cancel");await rpc.call("turn/interrupt",{threadId:sessionId,turnId});},close:()=>{closed=true;rpc.close();},cleanup:()=>pipe.cleanup?.()??pipe.exited.then(()=>true,()=>false)};
   try{
-    await rpc.call("initialize",{clientInfo:{name:"moco",version:MOCO_VERSION},capabilities:{experimentalApi:true}});rpc.notify("initialized",{});
+    await rpc.call("initialize",{clientInfo:{name:"kulo",version:KULO_VERSION},capabilities:{experimentalApi:true}});rpc.notify("initialized",{});
     const modelResult=await rpc.call("model/list",{});const catalog=(Array.isArray(modelResult.data)?modelResult.data:[]).map(obj);
     const models:ExternalAgentModelInfo[]=catalog.filter(value=>typeof value.id==="string").map(value=>{
       const efforts=(Array.isArray(value.supportedReasoningEfforts)?value.supportedReasoningEfforts:[]).map(item=>text(obj(item).reasoningEffort)).filter(Boolean);
@@ -285,7 +285,7 @@ export async function connectCodex(ctx:ExternalDriverContext,probe=false):Promis
     const authenticated=Boolean(approvedAgentEnv("codex").OPENAI_API_KEY||obj(account).account);
     if(ctx.modelId&&models.length&&!models.some(model=>model.id===ctx.modelId))throw new Error("Selected model is not advertised by Codex");
     if(!probe){
-      const mcp_servers=Object.fromEntries(ctx.servers.map(server=>[`moco-${randomUUID()}-${server.name}`,{enabled:true,url:server.url,http_headers:Object.fromEntries((server.headers??[]).map(item=>[item.name,item.value]))}]));
+      const mcp_servers=Object.fromEntries(ctx.servers.map(server=>[`kulo-${randomUUID()}-${server.name}`,{enabled:true,url:server.url,http_headers:Object.fromEntries((server.headers??[]).map(item=>[item.name,item.value]))}]));
       const thread=await rpc.call(sessionId?"thread/resume":"thread/start",{...(sessionId?{threadId:sessionId}:{}),cwd:ctx.cwd,...(ctx.modelId?{model:ctx.modelId}:{}),...(ctx.servers.length?{config:{mcp_servers}}:{})});
       if(ctx.thinkingLevel){
         const selected=catalog.find(value=>(value.model??value.id)===(ctx.modelId??thread.model))??(!ctx.modelId?catalog.find(value=>value.isDefault):undefined);

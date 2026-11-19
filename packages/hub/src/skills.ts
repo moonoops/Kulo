@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-durable";
-import type { SkillAudience, SkillRecord, SkillSnapshot } from "@moco/protocol";
+import type { SkillAudience, SkillRecord, SkillSnapshot } from "@kulo/protocol";
 import { installSkillSource, parseSkillSource, SkillSourceError, type SkillSourceSpec } from "./skill-sources.js";
 import { isSkillApplicable, loadSkillPresets, type SkillPreset } from "./skill-presets.js";
 import type { SkillRuntimeContext } from "./skill-runtime.js";
@@ -36,18 +36,18 @@ export class SkillError extends Error {
 interface SkillFile { size: number; hash: string; executable: boolean }
 interface SkillVersion { record: SkillRecord; files: Record<string, SkillFile>; manualOnly?: boolean; commit?: string }
 interface StoredSkill { record: SkillRecord; versions: Record<string, SkillVersion>; order: string[]; retired?: Record<string, SkillVersion>; removed?: boolean }
-export interface MocoSkillsState {
+export interface KuloSkillsState {
   revision: number;
   skills: Record<string, StoredSkill>;
   commands: Record<string, { fingerprint: string }>;
 }
-export const MocoSkillsDoc = defineDoc<MocoSkillsState & JsonObject>({
-  kind: "moco.skills", version: 1, scope: "session",
-  initial: () => ({ revision: 0, skills: {}, commands: {} }) as MocoSkillsState & JsonObject,
+export const KuloSkillsDoc = defineDoc<KuloSkillsState & JsonObject>({
+  kind: "kulo.skills", version: 1, scope: "session",
+  initial: () => ({ revision: 0, skills: {}, commands: {} }) as KuloSkillsState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
 
-export interface MocoSkillsOptions {
+export interface KuloSkillsOptions {
   harness: Harness;
   stateDir: string;
   onChanged?: () => void | Promise<void>;
@@ -109,8 +109,8 @@ function parseSkill(content: string, fallbackAudiences?: SkillAudience[]): Pick<
   if (typeof data.description !== "string" || !data.description.trim() || data.description.length > 1024) invalid("Skill 描述无效。");
   if (data.metadata !== undefined && (!data.metadata || typeof data.metadata !== "object" || Array.isArray(data.metadata) || Object.values(data.metadata).some((value) => typeof value !== "string"))) invalid("Skill metadata 需要使用字符串键值。");
   const metadata = (data.metadata ?? {}) as Record<string, string>;
-  const declaredAudiences = metadata["moco-audiences"]?.split(/[\s,]+/).filter(Boolean);
-  const dependencies = metadata["moco-dependencies"]?.split(/[\s,]+/).filter(Boolean) ?? [];
+  const declaredAudiences = metadata["kulo-audiences"]?.split(/[\s,]+/).filter(Boolean);
+  const dependencies = metadata["kulo-dependencies"]?.split(/[\s,]+/).filter(Boolean) ?? [];
   if (dependencies.length > 32 || dependencies.some((entry) => !/^[A-Za-z0-9._+-]{1,64}$/.test(entry))) invalid("Skill 依赖需要使用程序名称列表。");
   if (data["disable-model-invocation"] !== undefined && typeof data["disable-model-invocation"] !== "boolean") invalid("Skill 自动调用设置无效。");
   return {
@@ -188,12 +188,12 @@ function validateSkillDirectory(directory: string): void {
   skillMetadata(directory, scanSkillDirectory(directory));
 }
 
-export class MocoSkills {
-  readonly #options: MocoSkillsOptions;
+export class KuloSkills {
+  readonly #options: KuloSkillsOptions;
   readonly #root: string;
   readonly #presets = new Map<string, SkillPreset>();
   #rootIdentity: { dev: number; ino: number } | undefined;
-  constructor(options: MocoSkillsOptions) {
+  constructor(options: KuloSkillsOptions) {
     this.#options = options;
     this.#root = path.resolve(options.stateDir, "skills");
     const policy = options.retention;
@@ -224,7 +224,7 @@ export class MocoSkills {
     };
   }
 
-  #protectedVersions(state: MocoSkillsState): Set<string> {
+  #protectedVersions(state: KuloSkillsState): Set<string> {
     const protectedSet = new Set<string>();
     for (const [id, skill] of Object.entries(state.skills)) {
       protectedSet.add(`${id}:${skill.record.version}`);
@@ -285,7 +285,7 @@ export class MocoSkills {
   }
 
   async #collectHistory(reserve?: { id: string; bytes: number }): Promise<void> {
-    const initial = await this.#options.harness.snapshot(MocoSkillsDoc, BACKGROUND_CONTEXT);
+    const initial = await this.#options.harness.snapshot(KuloSkillsDoc, BACKGROUND_CONTEXT);
     if (!initial) return;
     const protectedSet = this.#protectedVersions(initial);
     const policy = this.#options.retention;
@@ -314,7 +314,7 @@ export class MocoSkills {
     }
     if (retiring.length) {
       await this.#options.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoSkillsDoc);
+        const state = await tx.doc(KuloSkillsDoc);
         if (state.revision !== initial.revision) throw new SkillError(409, "skill_revision_conflict", "Skill 目录已更新，请重新读取。");
         const currentProtection = this.#protectedVersions(state);
         for (const { id, version, value } of retiring) {
@@ -327,7 +327,7 @@ export class MocoSkills {
         }
       }, BACKGROUND_CONTEXT);
     }
-    const state = await this.#options.harness.snapshot(MocoSkillsDoc, BACKGROUND_CONTEXT);
+    const state = await this.#options.harness.snapshot(KuloSkillsDoc, BACKGROUND_CONTEXT);
     if (!state) return;
     const protectedNow = this.#protectedVersions(state);
     const removed: Array<{ id: string; version: string }> = [];
@@ -340,12 +340,12 @@ export class MocoSkills {
     }
     if (removed.length) {
       await this.#options.harness.commit(async (tx) => {
-        const latest = await tx.doc(MocoSkillsDoc);
+        const latest = await tx.doc(KuloSkillsDoc);
         for (const { id, version } of removed) delete latest.skills[id]?.retired?.[version];
       }, BACKGROUND_CONTEXT);
     }
     if (reserve) {
-      const latest = await this.#options.harness.snapshot(MocoSkillsDoc, BACKGROUND_CONTEXT);
+      const latest = await this.#options.harness.snapshot(KuloSkillsDoc, BACKGROUND_CONTEXT);
       const protectedLatest = latest ? this.#protectedVersions(latest) : new Set<string>();
       let total = reserve.bytes, ownBytes = reserve.bytes, versions = 0, ownVersions = 0, protectedOwnVersions = 0;
       for (const [id, skill] of Object.entries(latest?.skills ?? {})) {
@@ -367,7 +367,7 @@ export class MocoSkills {
 
   async #discardPrepared(prepared: PreparedSkill): Promise<void> {
     if (!prepared.created) return;
-    const state = await this.#options.harness.snapshot(MocoSkillsDoc, BACKGROUND_CONTEXT);
+    const state = await this.#options.harness.snapshot(KuloSkillsDoc, BACKGROUND_CONTEXT);
     const skill = state?.skills[prepared.record.id];
     if (skill?.versions[prepared.record.version] || skill?.retired?.[prepared.record.version] ||
       state && this.#protectedVersions(state).has(`${prepared.record.id}:${prepared.record.version}`)) return;
@@ -424,11 +424,11 @@ export class MocoSkills {
       let changed = false;
       for (const entry of bundled) {
         const name = entry.id;
-        const state = await this.#options.harness.snapshot(MocoSkillsDoc, BACKGROUND_CONTEXT);
+        const state = await this.#options.harness.snapshot(KuloSkillsDoc, BACKGROUND_CONTEXT);
         const prepared = await this.#prepare(parseSource(path.join(builtinRoot, entry.directory)), name, "builtin", entry.audiences, own(state?.skills, name));
         prepared.record.enabled = entry.enabled;
         await this.#options.harness.commit(async (tx) => {
-          const state = await tx.doc(MocoSkillsDoc);
+          const state = await tx.doc(KuloSkillsDoc);
           const previous = own(state.skills, name);
           const fixedAudiences = name === "capability-setup" ? entry.audiences : undefined;
           if (previous?.record.version === prepared.record.version && !previous.removed && (!fixedAudiences || previous.record.enabled && JSON.stringify(previous.record.audiences) === JSON.stringify(fixedAudiences))) return;
@@ -442,12 +442,12 @@ export class MocoSkills {
   }
 
   async snapshot(): Promise<SkillSnapshot> {
-    const state = await this.#options.harness.snapshot(MocoSkillsDoc, BACKGROUND_CONTEXT);
+    const state = await this.#options.harness.snapshot(KuloSkillsDoc, BACKGROUND_CONTEXT);
     return { revision: state?.revision ?? 0, skills: Object.values(state?.skills ?? {}).filter((entry) => !entry.removed).map((entry) => clone(entry.record)).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)) };
   }
   async runtimeRequirements(audience: SkillAudience, id?: string): Promise<{ targetDevice: boolean; reactWorkspace: boolean }> {
     if (!AUDIENCES.includes(audience)) invalid("Skill 使用范围无效。");
-    const state = await this.#options.harness.snapshot(MocoSkillsDoc, BACKGROUND_CONTEXT);
+    const state = await this.#options.harness.snapshot(KuloSkillsDoc, BACKGROUND_CONTEXT);
     const entries = id ? [own(state?.skills, id)] : Object.values(state?.skills ?? {});
     const conditions = entries.flatMap((entry) => {
       if (!entry || entry.removed || !entry.record.enabled || entry.record.source !== "builtin" || !entry.record.audiences.includes(audience)
@@ -460,13 +460,13 @@ export class MocoSkills {
   }
   async catalog(audience: SkillAudience, runtime?: SkillRuntimeContext): Promise<SkillRecord[]> {
     if (!AUDIENCES.includes(audience)) invalid("Skill 使用范围无效。");
-    const state = await this.#options.harness.snapshot(MocoSkillsDoc, BACKGROUND_CONTEXT);
+    const state = await this.#options.harness.snapshot(KuloSkillsDoc, BACKGROUND_CONTEXT);
     return Object.values(state?.skills ?? {}).filter((entry) => !entry.removed && entry.record.enabled && entry.record.audiences.includes(audience) && !entry.versions[entry.record.version]?.manualOnly && isSkillApplicable(entry.record, this.#presets, runtime))
       .map((entry) => clone(entry.record)).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   }
   async #version(id: string, audience: SkillAudience, version?: string, runtime?: SkillRuntimeContext): Promise<{ record: SkillRecord; value: SkillVersion }> {
     if (!AUDIENCES.includes(audience)) invalid("Skill 使用范围无效。");
-    const state = await this.#options.harness.snapshot(MocoSkillsDoc, BACKGROUND_CONTEXT);
+    const state = await this.#options.harness.snapshot(KuloSkillsDoc, BACKGROUND_CONTEXT);
     const stored = own(state?.skills, id);
     if (!stored || stored.removed) throw new SkillError(404, "skill_not_found", "Skill 不存在。");
     if (!stored.record.enabled || !stored.record.audiences.includes(audience)) throw new SkillError(403, "skill_scope_denied", "当前 Agent 不能读取这个 Skill。");
@@ -516,7 +516,7 @@ export class MocoSkills {
     catch { throw new SkillError(400, "skill_resource_binary", "该资源不是 UTF-8 文本。"); }
   }
 
-  #put(state: MocoSkillsState, prepared: PreparedSkill, previous?: StoredSkill): void {
+  #put(state: KuloSkillsState, prepared: PreparedSkill, previous?: StoredSkill): void {
     const record = {
       ...prepared.record,
       createdAt: previous?.record.createdAt ?? prepared.record.createdAt,
@@ -541,7 +541,7 @@ export class MocoSkills {
       const scope = input.audiences === undefined ? undefined : audiences(input.audiences);
       const source = input.source === undefined ? undefined : parseSource(input.source);
       const fingerprint = digest(JSON.stringify({ action: input.action, id: input.id, source: source?.locator, audiences: scope, expectedRevision: input.expectedRevision }));
-      const before = await this.#options.harness.snapshot(MocoSkillsDoc, BACKGROUND_CONTEXT);
+      const before = await this.#options.harness.snapshot(KuloSkillsDoc, BACKGROUND_CONTEXT);
       const done = own(before?.commands, commandId);
       if (done) {
         if (done.fingerprint !== fingerprint) throw new SkillError(409, "skill_command_conflict", "同一操作编号不能用于不同的 Skill 请求。");
@@ -567,7 +567,7 @@ export class MocoSkills {
         catch (error) { await this.#discardPrepared(prepared); throw error; }
       }
       try { await this.#options.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoSkillsDoc);
+        const state = await tx.doc(KuloSkillsDoc);
         const repeat = own(state.commands, commandId);
         if (repeat) {
           if (repeat.fingerprint !== fingerprint) throw new SkillError(409, "skill_command_conflict", "同一操作编号不能用于不同的 Skill 请求。");

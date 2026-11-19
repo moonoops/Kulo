@@ -6,7 +6,7 @@ import {
   type MobileConnectionMetadata,
   type MobileInvitationData,
   type MobilePairingRequest,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 
 export const MOBILE_INVITATION_TTL_MS = 10 * 60_000;
 export const MOBILE_PAIRING_RECOVERY_TTL_MS = 24 * 60 * 60_000;
@@ -56,7 +56,7 @@ function uuid(value: unknown, label: string): string {
 }
 
 export function mobileSecretHash(kind: "invitation" | "installation" | "attempt", value: string): string {
-  return createHash("sha256").update(`moco.mobile.${kind}\0`).update(value).digest("hex");
+  return createHash("sha256").update(`kulo.mobile.${kind}\0`).update(value).digest("hex");
 }
 
 export function sameMobileHash(actual: string, expected: string): boolean {
@@ -122,7 +122,7 @@ export function parseMobilePairingRequest(value: unknown): MobilePairingRequest 
 }
 
 export function encodeMobileInvitation(value: MobileInvitationData): string {
-  const qrValue = `moco://pair?data=${Buffer.from(JSON.stringify(value)).toString("base64url")}`;
+  const qrValue = `kulo://pair?data=${Buffer.from(JSON.stringify(value)).toString("base64url")}`;
   if (Buffer.byteLength(qrValue) > 2300) {
     throw new MobilePairingValidationError("连接入口过多，无法生成可扫描的手机邀请。", 400, "mobile_invitation_too_large");
   }

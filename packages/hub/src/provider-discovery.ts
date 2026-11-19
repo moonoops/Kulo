@@ -3,7 +3,7 @@ import { request as httpsRequest } from "node:https";
 import { brotliDecompressSync, gunzipSync, inflateSync } from "node:zlib";
 import { resolveHttpProxyUrlForTarget } from "@earendil-works/pi-ai/utils/node-http-proxy";
 import { HttpsProxyAgent } from "https-proxy-agent";
-import { inferModelPurpose, isImageGenerationModel, isOfficialVertexBaseUrl, MODEL_PURPOSES, redactSensitiveText, type CustomProviderApi, type ModelModality, type ModelPurpose } from "@moco/protocol";
+import { inferModelPurpose, isImageGenerationModel, isOfficialVertexBaseUrl, MODEL_PURPOSES, redactSensitiveText, type CustomProviderApi, type ModelModality, type ModelPurpose } from "@kulo/protocol";
 import { fetchVertexPublicModels } from "./vertex-public-catalog.js";
 
 export interface RawDiscoveredModel {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { UiActionInput, UiCardSnapshot } from "@moco/protocol";
+import type { UiActionInput, UiCardSnapshot } from "@kulo/protocol";
 import {
   cardInitialValues, createCardDraft, hasDraftConflict, isDefiniteActionRejection,
   readCardDraft, reconcileCardDraft, writeCardDraft, type DraftStorage,

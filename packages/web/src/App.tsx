@@ -1,4 +1,4 @@
-/** Moco SuperAgent shell with a single-column conversation (HeroUI v3). */
+/** Kulo SuperAgent shell with a single-column conversation (HeroUI v3). */
 import {
   useCallback,
   useEffect,
@@ -25,11 +25,11 @@ import {
   type ConversationMessageWindow,
   type SettingsAssistantContext,
   type TicketCardView,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import { ConfirmDialog } from "./components/confirm-dialog";
-import { MocoTurnErrorCard } from "./features/chat/turn-error-card";
+import { KuloTurnErrorCard } from "./features/chat/turn-error-card";
 import { ComputerPreview } from "./features/computer-preview/computer-preview";
-import { describeLocalizedMocoError } from "./moco-error";
+import { describeLocalizedKuloError } from "./kulo-error";
 import {
   WorkbenchShell,
   type WindowSizeClass,
@@ -54,27 +54,27 @@ import type { ConnectionPrepare } from "./features/settings/connections-module";
 import type { SettingsAssistantEntryIntent } from "./features/settings/settings-assistant-actions";
 import type { SystemPermissionEntry } from "./features/system-permissions/system-permissions";
 import {
-  MocoWsDisconnectedError,
-  mocoRest,
-  useMocoHubConnection,
+  KuloWsDisconnectedError,
+  kuloRest,
+  useKuloHubConnection,
   type TicketDetailSnapshot,
-} from "./moco-api";
-import { useMocoAppearance } from "./moco-appearance";
-import { useI18n, translate as t } from "./moco-i18n";
+} from "./kulo-api";
+import { useKuloAppearance } from "./kulo-appearance";
+import { useI18n, translate as t } from "./kulo-i18n";
 import { acceptSettingsSnapshot, settingsModuleTitle } from "./features/settings/settings-helpers";
 import {
   AttachmentLightbox,
   composerPlaceholder,
-  MocoComposer,
+  KuloComposer,
   useTopicAttachments,
   type PreviewableImage,
-} from "./moco-composer";
-import { MocoIcon } from "./moco-icon";
+} from "./kulo-composer";
+import { KuloIcon } from "./kulo-icon";
 import { ConnectedMessageContent } from "./features/chat/connected-message-content";
 import { DispatchMessageGroup } from "./features/chat/dispatch-message-group";
 import { groupDispatchReplies, matchingLiveDispatchGroupKey, type ConversationEntry } from "./features/chat/dispatch-groups";
 import { liveResponseMessageId, mergeResponseMessages } from "./features/chat/response-messages";
-import { MocoThinkingIndicator } from "./features/chat/thinking-indicator";
+import { KuloThinkingIndicator } from "./features/chat/thinking-indicator";
 import { chatDeliveryLabel, mergeChatSubmissions, splitChatTimeline, submissionKey, type ChatViewItem, type PendingSubmissionBackup, type SubmissionBackupInput } from "./features/chat/chat-submissions";
 import { blockerDraftKey, consumedOutboxReceipts, consumePersistedDraft, outboxSubmissions } from "./features/chat/outbox-submissions";
 import { newDeliveryId } from "./features/chat/reliable-intents";
@@ -106,17 +106,17 @@ import { VoiceCallErrorBanner } from "./features/voice/voice-call-error-banner";
 import { hasSidebarVoiceCall } from "./features/voice/voice-call-panel";
 import { VoiceIcon } from "./features/voice/voice-icons";
 import {
-  MocoSettingsBoard,
-  MocoSettingsRail,
+  KuloSettingsBoard,
+  KuloSettingsRail,
   SETTINGS_MODULES,
   type SettingsModuleId,
-} from "./moco-settings";
+} from "./kulo-settings";
 import {
-  MocoTaskProjection,
-  MocoTaskRail,
+  KuloTaskProjection,
+  KuloTaskRail,
   TaskDispatchCard,
   TaskStatus,
-} from "./moco-tasks";
+} from "./kulo-tasks";
 
 function subscribeWindowSize(cb: () => void) {
   window.addEventListener("resize", cb);
@@ -143,10 +143,10 @@ function AgentNavigationToggle({ expanded, onToggle }: { expanded: boolean; onTo
   useI18n();
   const voice = useVoiceWorkspace();
   const returnToCall = hasSidebarVoiceCall(voice?.call.call) && !expanded;
-  return <Button size="sm" isIconOnly variant="ghost" className="moco-window-control"
+  return <Button size="sm" isIconOnly variant="ghost" className="kulo-window-control"
     aria-label={returnToCall ? t("展开通话卡片", "Expand call") : expanded ? t("收起导航", "Collapse navigation") : t("展开导航", "Expand navigation")} aria-expanded={expanded}
     onPress={() => { if (returnToCall) voice?.call.expand(); onToggle(); }}>
-    {returnToCall ? <VoiceIcon name="phone" size={20} /> : <MocoIcon name="panel-left" size={20} />}
+    {returnToCall ? <VoiceIcon name="phone" size={20} /> : <KuloIcon name="panel-left" size={20} />}
   </Button>;
 }
 
@@ -159,7 +159,7 @@ export function App() {
 }
 
 function AppShell() {
-  useMocoAppearance();
+  useKuloAppearance();
   const { language } = useI18n();
   const triggerShortcutSave = useShortcutSaveTrigger();
   const {
@@ -214,7 +214,7 @@ function AppShell() {
     clearError,
     sendWs,
     sendWsWithAck,
-  } = useMocoHubConnection();
+  } = useKuloHubConnection();
   const [messageWindow, setMessageWindow] = useState<ConversationMessageWindow>();
   const [messageWindowLoading, setMessageWindowLoading] = useState(false);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
@@ -232,7 +232,7 @@ function AppShell() {
   const draftScopeRef = useRef(deliveryScope);
   draftScopeRef.current = deliveryScope;
   const topicDrafts = useMemo(() => new TopicDraftStore({
-    create: (projectId) => mocoRest.createTopic(undefined, projectId),
+    create: (projectId) => kuloRest.createTopic(undefined, projectId),
     onSaved: (_localId, topic, wasSelected) => {
       if (draftScopeRef.current !== deliveryScope) return;
       setTopics((current) => [topic, ...current.filter((item) => item.id !== topic.id)]);
@@ -287,15 +287,15 @@ function AppShell() {
   );
 
   const [collapsed, setCollapsed] = useState(() => ({
-    left: readPref("moco:left-collapsed", false),
-    right: readPref("moco:right-collapsed", false),
+    left: readPref("kulo:left-collapsed", false),
+    right: readPref("kulo:right-collapsed", false),
   }));
   const [sheet, setSheet] = useState<"left" | "right" | undefined>();
   const [searchFocusRequest] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
 
   const [settingsMode, setSettingsMode] = useState(false);
-  const [settingsRightCollapsed, setSettingsRightCollapsed] = useState(() => readPref("moco:settings-right-collapsed", false));
+  const [settingsRightCollapsed, setSettingsRightCollapsed] = useState(() => readPref("kulo:settings-right-collapsed", false));
   const [settingsRailWidth, setSettingsRailWidth] = useState<number | null>(() => readSettingsRailWidth());
   const [settingsModule, setSettingsModule] = useState<SettingsModuleId>("appearance");
   const [capabilityView, setCapabilityView] = useState<CapabilityView>("image");
@@ -315,9 +315,9 @@ function AppShell() {
       if (sizeClass !== "expanded") setSheet("right");
     };
     const showMemoryForm = () => { if (sizeClass !== "expanded") setSheet(undefined); };
-    window.addEventListener("moco:memory-service-intent", openMemoryDialogue);
-    window.addEventListener("moco:memory-connection-focus", showMemoryForm);
-    return () => { window.removeEventListener("moco:memory-service-intent", openMemoryDialogue); window.removeEventListener("moco:memory-connection-focus", showMemoryForm); };
+    window.addEventListener("kulo:memory-service-intent", openMemoryDialogue);
+    window.addEventListener("kulo:memory-connection-focus", showMemoryForm);
+    return () => { window.removeEventListener("kulo:memory-service-intent", openMemoryDialogue); window.removeEventListener("kulo:memory-connection-focus", showMemoryForm); };
   }, [sizeClass]);
   const [settingsDirty, setSettingsDirty] = useState(false);
   const acceptSavedSettings = useCallback((next: NonNullable<typeof settings>) => {
@@ -347,7 +347,7 @@ function AppShell() {
   });
 
   const [dismissedFailures, setDismissedFailures] = useState<string[]>(() =>
-    readPref("moco:dismissed-failures", []),
+    readPref("kulo:dismissed-failures", []),
   );
   const [retryingTurn, setRetryingTurn] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -432,7 +432,7 @@ function AppShell() {
     nearBottomRef.current = false;
     chatNavigatingRef.current = true;
     skipChatAnchorRef.current = true;
-    if (pendingMessageJump.assetId) window.dispatchEvent(new CustomEvent("moco:reveal-file", { detail: { assetId: pendingMessageJump.assetId } }));
+    if (pendingMessageJump.assetId) window.dispatchEvent(new CustomEvent("kulo:reveal-file", { detail: { assetId: pendingMessageJump.assetId } }));
     const frame = requestAnimationFrame(() => {
       scroll?.querySelectorAll("[data-message-located]").forEach((element) => element.removeAttribute("data-message-located"));
       if (navigationHighlightTimer.current) clearTimeout(navigationHighlightTimer.current);
@@ -453,7 +453,7 @@ function AppShell() {
     const current = messageWindow;
     setMessageWindowLoading(true);
     try {
-      const page = await mocoRest.getTopicHistory(current.topicId, current.beforeEntryId!);
+      const page = await kuloRest.getTopicHistory(current.topicId, current.beforeEntryId!);
       setMessageWindow((previous) => previous === current ? { ...current, ...page, messages: mergeLocatedMessages(page.messages, current.messages) } : previous);
     } finally { setMessageWindowLoading(false); }
   };
@@ -474,8 +474,8 @@ function AppShell() {
 
   useEffect(() => {
     try {
-      localStorage.setItem("moco:left-collapsed", JSON.stringify(collapsed.left));
-      localStorage.setItem("moco:right-collapsed", JSON.stringify(collapsed.right));
+      localStorage.setItem("kulo:left-collapsed", JSON.stringify(collapsed.left));
+      localStorage.setItem("kulo:right-collapsed", JSON.stringify(collapsed.right));
     } catch {
       // ignore
     }
@@ -483,7 +483,7 @@ function AppShell() {
 
   useEffect(() => {
     try {
-      localStorage.setItem("moco:settings-right-collapsed", JSON.stringify(settingsRightCollapsed));
+      localStorage.setItem("kulo:settings-right-collapsed", JSON.stringify(settingsRightCollapsed));
     } catch {
       // The preference still applies in this window if storage is unavailable.
     }
@@ -515,7 +515,7 @@ function AppShell() {
 
   // Keyboard shortcuts and Electron native menu commands share one guarded dispatcher.
   useEffect(() => {
-    const desktopOnCommand = typeof window === "undefined" ? undefined : window.mocoDesktop?.onCommand;
+    const desktopOnCommand = typeof window === "undefined" ? undefined : window.kuloDesktop?.onCommand;
     const desktopManaged = typeof desktopOnCommand === "function";
     const unsubscribe = desktopOnCommand?.((command) => {
       shortcutActionsRef.current.runCommand(command);
@@ -612,8 +612,8 @@ function AppShell() {
         setSheet(undefined);
       });
     };
-    window.addEventListener("moco:system-permission-help", openPermissions);
-    return () => window.removeEventListener("moco:system-permission-help", openPermissions);
+    window.addEventListener("kulo:system-permission-help", openPermissions);
+    return () => window.removeEventListener("kulo:system-permission-help", openPermissions);
   }, [runGuardedNavigation, settingsDirty]);
 
   const settingsAssistantControls = useSettingsAssistant({
@@ -650,7 +650,7 @@ function AppShell() {
     if (!connected) throw new Error(t("与中枢连接已断开。", "Disconnected from the hub."));
     setConnectionPreparing(true);
     try {
-      const input = await mocoRest.prepareConnection({ clientId: settingsAssistantControls.clientId, ...fields });
+      const input = await kuloRest.prepareConnection({ clientId: settingsAssistantControls.clientId, ...fields });
       setSettingsModule("connections");
       setSettingsTarget(input.connectionId ? { kind: "connection", id: input.connectionId } : undefined);
       setSettingsFocusRequest((value) => value + 1);
@@ -677,7 +677,7 @@ function AppShell() {
     setSettingsEntryIntent((current) => current?.id === id ? null : current);
   }, []);
 
-  const agentName = settings?.blocks.presentation.value.agentName ?? "Moco";
+  const agentName = settings?.blocks.presentation.value.agentName ?? "Kulo";
   const workbenchName = t("后台任务", "Background tasks");
   const activeTopic =
     localTopics.selected ??
@@ -699,7 +699,7 @@ function AppShell() {
   const previousTicketStatusesRef = useRef<Map<string, TicketCardView["status"]>>(new Map());
   useEffect(() => {
     const prev = previousTicketStatusesRef.current;
-    const notifyDesktop = typeof window === "undefined" ? undefined : window.mocoDesktop?.notify;
+    const notifyDesktop = typeof window === "undefined" ? undefined : window.kuloDesktop?.notify;
     if (notifyDesktop && prev.size > 0 && (document.hidden || !document.hasFocus())) {
       for (const note of collectTicketNotifications(prev, tickets)) {
         void notifyDesktop({
@@ -707,7 +707,7 @@ function AppShell() {
           body: note.body,
           ...(note.topicId ? { topicId: note.topicId } : {}),
         }).catch((error: unknown) => {
-          console.warn("[MocoNotify] Desktop notification failed", error);
+          console.warn("[KuloNotify] Desktop notification failed", error);
         });
       }
     }
@@ -718,7 +718,7 @@ function AppShell() {
 
   const activeRunFailure = useMemo(() => {
     if (live.busy || !live.runFailure) return null;
-    const desc = describeLocalizedMocoError({
+    const desc = describeLocalizedKuloError({
       reason: live.runFailure.reason,
       detail: live.runFailure.detail,
       modelId: currentModelId,
@@ -740,7 +740,7 @@ function AppShell() {
           if (cur.includes(targetKey)) return cur;
           const next = [...cur, targetKey].slice(-80);
           try {
-            localStorage.setItem("moco:dismissed-failures", JSON.stringify(next));
+            localStorage.setItem("kulo:dismissed-failures", JSON.stringify(next));
           } catch {
             // ignore
           }
@@ -765,7 +765,7 @@ function AppShell() {
     if (rawMsg) {
       return {
         source: "action" as const,
-        desc: describeLocalizedMocoError({
+        desc: describeLocalizedKuloError({
           rawMessage: rawMsg,
           modelId: currentModelId,
         }),
@@ -896,7 +896,7 @@ function AppShell() {
   ) => {
     try {
       const targetId = topicDrafts.isLocal(topicId) ? (await topicDrafts.ensure(topicId)).id : topicId;
-      const updated = await mocoRest.patchTopic(targetId, patch);
+      const updated = await kuloRest.patchTopic(targetId, patch);
       setTopics((cur) => cur.map((t) => (t.id === targetId ? updated : t)));
       if (patch.archived && topicId === activeTopicId) {
         selectTopic("root");
@@ -912,7 +912,7 @@ function AppShell() {
         topicDrafts.discard(topicId);
         return;
       }
-      await mocoRest.deleteTopic(topicId, stopTasks);
+      await kuloRest.deleteTopic(topicId, stopTasks);
       setTopics((current) => current.filter((topic) => topic.id !== topicId));
       if (topicId === activeTopicId) {
         selectTopic("root");
@@ -1096,7 +1096,7 @@ function AppShell() {
   };
 
   const transcribeVoice: TranscribeVoice = async (recording, options) => {
-    if (!connected) throw new MocoWsDisconnectedError(t("当前与中枢连接已断开，录音已保留", "Disconnected from the hub. Your recording is saved."));
+    if (!connected) throw new KuloWsDisconnectedError(t("当前与中枢连接已断开，录音已保留", "Disconnected from the hub. Your recording is saved."));
     const ticket = projectedTicketId
       ? ticketById.get(projectedTicketId) ?? (inspectedTicket?.ticket.id === projectedTicketId ? inspectedTicket.ticket : undefined)
       : undefined;
@@ -1191,7 +1191,7 @@ function AppShell() {
       messageNavigationRequest.current = controller;
       setLocatingMessage(true);
       const loaded = destination.topicId === activeTopicId && chatTimeline.transcript.some((item) => item.id === destination.messageId);
-      void (loaded ? Promise.resolve(undefined) : mocoRest.getTopicMessageWindow(destination.topicId, destination.messageId!, controller.signal)).then((result) => {
+      void (loaded ? Promise.resolve(undefined) : kuloRest.getTopicMessageWindow(destination.topicId, destination.messageId!, controller.signal)).then((result) => {
         if (controller.signal.aborted || navigationViewRef.current !== sourceView) return;
         setSettingsMode(false);
         setSettingsDirty(false);
@@ -1263,7 +1263,7 @@ function AppShell() {
     runCommand(command) {
       switch (command) {
         case "search-conversations": {
-          if (hasBlockingOverlay(document, { allowSelector: '[data-moco-overlay="conversation-search"]' })) return false;
+          if (hasBlockingOverlay(document, { allowSelector: '[data-kulo-overlay="conversation-search"]' })) return false;
           if (conversationSearchOpen && conversationSearchScope === "all") {
             setConversationSearchOpen(false);
           } else {
@@ -1273,7 +1273,7 @@ function AppShell() {
         }
         case "find-in-conversation": {
           if (settingsMode || projectedTicketId) return false;
-          if (hasBlockingOverlay(document, { allowSelector: '[data-moco-overlay="conversation-search"]' })) return false;
+          if (hasBlockingOverlay(document, { allowSelector: '[data-kulo-overlay="conversation-search"]' })) return false;
           openConversationSearch("current");
           return true;
         }
@@ -1289,12 +1289,12 @@ function AppShell() {
           return true;
         }
         case "toggle-left-panel": {
-          if (hasBlockingOverlay(document, { allowSelector: '[data-moco-overlay="workbench-drawer"]' })) return false;
+          if (hasBlockingOverlay(document, { allowSelector: '[data-kulo-overlay="workbench-drawer"]' })) return false;
           togglePanel("left");
           return true;
         }
         case "toggle-right-panel": {
-          if (hasBlockingOverlay(document, { allowSelector: '[data-moco-overlay="workbench-drawer"]' })) return false;
+          if (hasBlockingOverlay(document, { allowSelector: '[data-kulo-overlay="workbench-drawer"]' })) return false;
           togglePanel("right");
           return true;
         }
@@ -1351,7 +1351,7 @@ function AppShell() {
             ? document.activeElement
             : null;
         if (editableTarget) {
-          const container = document.querySelector<HTMLElement>("main.moco-workbench-main");
+          const container = document.querySelector<HTMLElement>("main.kulo-workbench-main");
           if (container && container !== editableTarget) {
             container.focus({ preventScroll: true });
           } else {
@@ -1431,7 +1431,7 @@ function AppShell() {
       const status = chatDeliveryLabel(item);
       const name = item.text.trim().slice(0, 24) || item.attachments?.[0]?.name || t("附件消息", "Attachment message");
       return (
-        <div key={messageMotionKey(item)} id={conversationTurnId(activeTopicId, item.id)} data-message-id={item.id} tabIndex={-1} data-request-id={item.requestId} data-delivery={state ?? item.delivery} className="moco-message-target flex flex-col items-end gap-1.5">
+        <div key={messageMotionKey(item)} id={conversationTurnId(activeTopicId, item.id)} data-message-id={item.id} tabIndex={-1} data-request-id={item.requestId} data-delivery={state ?? item.delivery} className="kulo-message-target flex flex-col items-end gap-1.5">
           <MessageMotion className="w-full" scopeKey={messageMotionKey(item)} animateEntry={animateMessageEntry(item)}>
             <ConnectedMessageContent item={item} connected={connected} conversationKey={activeTopicId} deliveryScope={deliveryScope} onPreviewImage={setLightboxImage} onReply={replyToMessage} onNavigateReply={navigateReply} />
           </MessageMotion>
@@ -1447,7 +1447,7 @@ function AppShell() {
 
     if (item.role === "dispatch" && item.dispatch) {
       return (
-        <div key={item.id} data-message-id={item.id} tabIndex={-1} className="moco-message-target"><MessageMotion animateEntry={animateMessageEntry(item)} scopeKey={item.id}><TaskDispatchCard
+        <div key={item.id} data-message-id={item.id} tabIndex={-1} className="kulo-message-target"><MessageMotion animateEntry={animateMessageEntry(item)} scopeKey={item.id}><TaskDispatchCard
           dispatch={item.dispatch}
           liveTicket={ticketById.get(item.dispatch.ticketId)}
           onProject={projectTask}
@@ -1476,7 +1476,7 @@ function AppShell() {
     if (!hasVisibleContent) return null;
 
     return (
-      <div key={responseScopes.messages.get(item.id) ?? messageMotionKey(item)} data-message-id={item.id} tabIndex={-1} className="moco-message-target"><MessageMotion as="article" scopeKey={responseScopes.messages.get(item.id) ?? messageMotionKey(item)} animateEntry={animateMessageEntry(item)} className="flex flex-col gap-2.5">
+      <div key={responseScopes.messages.get(item.id) ?? messageMotionKey(item)} data-message-id={item.id} tabIndex={-1} className="kulo-message-target"><MessageMotion as="article" scopeKey={responseScopes.messages.get(item.id) ?? messageMotionKey(item)} animateEntry={animateMessageEntry(item)} className="flex flex-col gap-2.5">
         {showProcess && item.thinking && (
           <Disclosure className="rounded-xl border border-border bg-surface-secondary px-3 py-2">
             <Disclosure.Heading>
@@ -1526,7 +1526,7 @@ function AppShell() {
         <StreamingMessage text={live.streamingText} onPreviewImage={setLightboxImage} />
       ) : (
         <div className="flex items-center gap-2.5 py-2 text-xs text-muted">
-          <MocoThinkingIndicator />
+          <KuloThinkingIndicator />
           {live.retrying && <span>{t(`模型响应异常，正在重试（第 ${live.retrying.attempt} 次）…`, `Model response failed. Retrying (attempt ${live.retrying.attempt})…`)}</span>}
         </div>
       )}
@@ -1538,21 +1538,21 @@ function AppShell() {
         trailingContent={entry.key === liveDispatchGroupKey ? liveResponseNode : undefined} /></MessageMotion>;
 
   const titlebarNode = (
-      <div className="moco-workbench-header">
+      <div className="kulo-workbench-header">
         {projectedTicketId && !settingsMode && (
           <Button size="sm"
             isIconOnly
             variant="ghost"
-            className="moco-window-control"
+            className="kulo-window-control"
             aria-label={t("返回对话", "Back to chat")}
             onPress={closeProjection}
           >
-            <MocoIcon name="arrow-left" size={20} />
+            <KuloIcon name="arrow-left" size={20} />
           </Button>
         )}
 
-        <div className={"min-w-0 flex-1" + (projectedTicketId && !settingsMode ? " moco-task-heading" : "")}>
-        <h1 className="moco-page-title">
+        <div className={"min-w-0 flex-1" + (projectedTicketId && !settingsMode ? " kulo-task-heading" : "")}>
+        <h1 className="kulo-page-title">
           {settingsMode
             ? settingsModuleTitle(settingsModule, language)
             : projectedTicketId
@@ -1566,14 +1566,14 @@ function AppShell() {
 
         {!settingsMode && !projectedTicketId && <>
           {locatingMessage && <Spinner size="sm" aria-label={t("正在定位消息", "Locating message")} />}
-          <Button size="sm" isIconOnly variant="ghost" className="moco-window-control" aria-label={t("搜索对话正文", "Search conversation messages")} onPress={() => openConversationSearch("all")}><MocoIcon name="search" size={18} /></Button>
+          <Button size="sm" isIconOnly variant="ghost" className="kulo-window-control" aria-label={t("搜索对话正文", "Search conversation messages")} onPress={() => openConversationSearch("all")}><KuloIcon name="search" size={18} /></Button>
           <ConversationFilesButton topicId={activeTopicId} scopeKey={deliveryScope} revision={`${persistedMessages.at(-1)?.id ?? 0}:${persistedMessages.length}`} isLocal={Boolean(localTopics.selected)} onNavigate={navigateConversation} />
         </>}
 
         {!settingsMode && !projectedTicketId && activeTopic && !activeTopic.master && (
           <Dropdown>
-            <Button size="sm" isIconOnly variant="ghost" className="moco-window-control" aria-label={t("话题操作", "Topic actions")}>
-              <MocoIcon name="more-vert" size={20} />
+            <Button size="sm" isIconOnly variant="ghost" className="kulo-window-control" aria-label={t("话题操作", "Topic actions")}>
+              <KuloIcon name="more-vert" size={20} />
             </Button>
             <Dropdown.Popover placement="bottom end">
               <Dropdown.Menu
@@ -1594,7 +1594,7 @@ function AppShell() {
                   id="pin"
                   textValue={activeTopic.pinned ? t("取消置顶", "Unpin") : t("置顶话题", "Pin topic")}
                 >
-                  <MocoIcon name="pin" size={16} />
+                  <KuloIcon name="pin" size={16} />
                   <Label>{activeTopic.pinned ? t("取消置顶", "Unpin") : t("置顶话题", "Pin topic")}</Label>
                 </Dropdown.Item>
                 {!activeTopic.master && (
@@ -1602,7 +1602,7 @@ function AppShell() {
                     id="archive"
                     textValue={activeTopic.archived ? t("恢复话题", "Restore topic") : t("归档话题", "Archive topic")}
                   >
-                    <MocoIcon
+                    <KuloIcon
                       name={activeTopic.archived ? "unarchive" : "archive"}
                       size={16}
                     />
@@ -1701,13 +1701,13 @@ function AppShell() {
       {!settingsMode && !topicDrafts.isLocal(activeTopicId) && <ComputerPreview key={activeTopicId} topicId={activeTopicId} connected={connected}
         onStop={async (ticketId) => { await sendWsWithAck({ type: "ticket.stop", ticketId, reason: "手动停止" }); }} />}
 
-      {!settingsMode && !projectedTicketId && viewingHistory && <div className="moco-history-location">
-        <span className="moco-history-location-label moco-item-description"><MocoIcon name="search" size={16} />{t("正在查看历史消息", "Viewing historical messages")}</span>
+      {!settingsMode && !projectedTicketId && viewingHistory && <div className="kulo-history-location">
+        <span className="kulo-history-location-label kulo-item-description"><KuloIcon name="search" size={16} />{t("正在查看历史消息", "Viewing historical messages")}</span>
         <Button size="sm" variant="secondary" onPress={scrollToLatest}>{t("回到最新消息", "Jump to latest")}</Button>
       </div>}
 
       {settingsMode ? (
-        <MocoSettingsBoard
+        <KuloSettingsBoard
           scheduledTaskActions={{
             canQueue: outboxReady,
             stop: async (ticketId) => { await sendWsWithAck({ type: "schedule.stop", ticketId }); },
@@ -1768,7 +1768,7 @@ function AppShell() {
       ) : projectedTicketId ? (
         projectedDetail ? (
           <>
-            <MocoTaskProjection
+            <KuloTaskProjection
               key={projectedTicketId}
               detail={projectedDetail}
               detailLoading={isProjectedDetailLoading && inspectError?.ticketId !== projectedTicketId}
@@ -1832,15 +1832,15 @@ function AppShell() {
                   isIconOnly
                   size="sm"
                   variant="ghost"
-                  className="moco-projection-close"
+                  className="kulo-projection-close"
                   aria-label={t("返回对话", "Back to chat")}
                   onPress={closeProjection}
                 >
-                  <MocoIcon name="close" size={12} />
+                  <KuloIcon name="close" size={12} />
                 </Button>
               </div>
               {pendingTaskSubmission && <div className="flex min-w-0 items-center gap-2 text-xs text-muted" role="status"><span>{pendingTaskSubmission.state === "sending" ? t("发送中", "Sending") : pendingTaskSubmission.state === "queued" ? t("待发送", "Queued") : t("待确认", "Awaiting confirmation")}</span><span className="truncate">{pendingTaskSubmission.rawUserText}</span></div>}
-              <MocoComposer
+              <KuloComposer
                 textareaRef={composerRef}
                 draftText={currentDraft}
                 replyTo={currentReply}
@@ -1913,7 +1913,7 @@ function AppShell() {
             requestAnimationFrame(() => composerRef.current?.focus());
           }}
           transcript={
-          <div className="moco-chat-stage" data-has-outline={conversationTurns.length > 1 || undefined}>
+          <div className="kulo-chat-stage" data-has-outline={conversationTurns.length > 1 || undefined}>
             <div
               ref={chatScrollRef}
               className="mc-chat-scroll flex-1 overflow-y-auto px-4 py-4"
@@ -1922,7 +1922,7 @@ function AppShell() {
               onWheel={() => { chatNavigatingRef.current = false; }}
               onTouchStart={() => { chatNavigatingRef.current = false; }}
             >
-              <div key={activeTopicId} className="moco-conversation-stream">
+              <div key={activeTopicId} className="kulo-conversation-stream">
                 {canLoadHistory && <Button variant="ghost" size="sm" className="self-center" isDisabled={historyLoading || messageWindowLoading} onPress={() => {
                   const node = chatScrollRef.current;
                   const previousHeight = node?.scrollHeight ?? 0;
@@ -1939,7 +1939,7 @@ function AppShell() {
                 ]}
 
                 {activeRunFailure && (
-                  <MocoTurnErrorCard
+                  <KuloTurnErrorCard
                     descriptor={activeRunFailure.desc}
                     modelId={currentModelId}
                     retrying={retryingTurn}
@@ -1962,14 +1962,14 @@ function AppShell() {
                 isIconOnly
                 variant="secondary"
                 size="sm"
-                className="moco-jump-to-latest absolute -top-9 right-6"
+                className="kulo-jump-to-latest absolute -top-9 right-6"
                 aria-label={t("回到最新消息", "Jump to latest")}
                 onPress={scrollToLatest}
               >
-                <MocoIcon name="chevron-down" size={18} />
+                <KuloIcon name="chevron-down" size={18} />
               </Button>
             )}
-            <MocoComposer
+            <KuloComposer
               textareaRef={composerRef}
               draftText={currentDraft}
               deviceJoin={deviceJoin}
@@ -2005,7 +2005,7 @@ function AppShell() {
 
   const rightNode =
     settingsMode ? (
-      <MocoSettingsRail
+      <KuloSettingsRail
         module={settingsModule}
         agentName={agentName}
         settings={settings}
@@ -2029,7 +2029,7 @@ function AppShell() {
         onConnectionsRefresh={() => void connectionsWorkspace.refresh()}
       />
     ) : (
-      <MocoTaskRail
+      <KuloTaskRail
         tickets={tickets}
         projectedTicketId={projectedTicketId}
         completedTaskDisplayHours={settings?.blocks.executor.value.completedTaskDisplayHours}
@@ -2060,14 +2060,14 @@ function AppShell() {
         }
         titlebarContent={titlebarNode}
         rightControl={
-          <Button size="sm" isIconOnly variant="ghost" className="moco-window-control"
+          <Button size="sm" isIconOnly variant="ghost" className="kulo-window-control"
             aria-label={settingsMode
               ? rightExpanded ? t("收起设置对话", "Collapse settings chat") : t("展开设置对话", "Expand settings chat")
               : rightExpanded ? t("收起任务栏", "Collapse task panel") : t("展开任务栏", "Expand task panel")}
             aria-expanded={rightExpanded}
             onPress={() => togglePanel("right")}
           >
-            <MocoIcon name="panel-right" size={20} />
+            <KuloIcon name="panel-right" size={20} />
           </Button>
         }
         leftContent={sidebarNode}

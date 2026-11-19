@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ModelConfigurationDraft } from "@moco/protocol";
+import type { ModelConfigurationDraft } from "@kulo/protocol";
 import { canUseModelCredential, modelCredentialScope } from "./model-configuration-card";
 
 const draft = (id: string, baseUrl: string) => ({ id, provider: { id: "api-test", name: "Test", api: "openai-completions", baseUrl, models: [] } } as Pick<ModelConfigurationDraft, "id" | "provider">);

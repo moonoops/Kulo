@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiRequest } from "../../moco-api";
+import { apiRequest } from "../../kulo-api";
 import { authorizeMicrophone, guideDesktopPermissions, noteMicrophoneAccess, readDesktopPermissions, readMicrophonePermission, requestSystemPermissionHelp } from "./system-permissions";
 
-vi.mock("../../moco-api", () => ({ apiRequest: vi.fn() }));
+vi.mock("../../kulo-api", () => ({ apiRequest: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); noteMicrophoneAccess(false); });
 
 function browser(state?: PermissionState) {
@@ -78,7 +78,7 @@ describe("system permission client", () => {
     const device = browser("prompt");
     const status = vi.fn().mockResolvedValue({ platform: "darwin", permissions: [{ kind: "microphone", state: "denied" }] });
     const requestMicrophone = vi.fn().mockResolvedValue({ platform: "darwin", permissions: [{ kind: "microphone", state: "denied" }] });
-    vi.stubGlobal("window", { mocoDesktop: { systemPermissions: { status, requestMicrophone } } });
+    vi.stubGlobal("window", { kuloDesktop: { systemPermissions: { status, requestMicrophone } } });
     expect((await readMicrophonePermission()).state).toBe("denied");
     expect(requestMicrophone).not.toHaveBeenCalled();
     expect((await authorizeMicrophone()).state).toBe("denied");
@@ -101,7 +101,7 @@ describe("system permission client", () => {
     vi.stubGlobal("window", { dispatchEvent });
     requestSystemPermissionHelp({ kind: "screen", envId: "remote" });
     const event = dispatchEvent.mock.calls[0]?.[0] as CustomEvent;
-    expect(event.type).toBe("moco:system-permission-help");
+    expect(event.type).toBe("kulo:system-permission-help");
     expect(event.detail).toEqual({ kind: "screen", envId: "remote" });
   });
 });

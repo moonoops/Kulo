@@ -1,8 +1,8 @@
 import { useRef, useState } from "react";
 import { Button, Popover, Table } from "@heroui/react";
-import type { SettingsAssistantConversation, SettingsAssistantSnapshot } from "@moco/protocol";
-import { translate as t, useI18n } from "../../moco-i18n";
-import { MocoIcon } from "../../moco-icon";
+import type { SettingsAssistantConversation, SettingsAssistantSnapshot } from "@kulo/protocol";
+import { translate as t, useI18n } from "../../kulo-i18n";
+import { KuloIcon } from "../../kulo-icon";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { settingsModuleTitle } from "./settings-helpers";
 
@@ -39,7 +39,7 @@ export function SettingsAssistantHistory({ snapshot, loaded, disabled, error, on
   };
   return <><Popover isOpen={open} onOpenChange={(next) => { if (!remove) setOpen(next); }}>
     <Button size="sm" variant="ghost" isIconOnly aria-label={t("设置对话历史", "Settings conversation history")} isDisabled={!loaded}>
-      <span title={t("历史会话", "Conversation history")}><MocoIcon name="history" size={18} /></span>
+      <span title={t("历史会话", "Conversation history")}><KuloIcon name="history" size={18} /></span>
     </Button>
     <Popover.Content placement="top end" className="w-96 max-w-[calc(100vw-2rem)]">
       <Popover.Dialog ref={dialogRef} aria-label={t("设置对话历史", "Settings conversation history")}>
@@ -67,7 +67,7 @@ export function SettingsAssistantHistory({ snapshot, loaded, disabled, error, on
                       <Button size="sm" variant="ghost" isIconOnly isDisabled={disabled} aria-label={t(`删除设置对话：${title}`, `Delete settings conversation: ${title}`)}
                         ref={(button) => { if (button) deleteButtons.current.set(conversation.topicId, button); else deleteButtons.current.delete(conversation.topicId); }}
                         onPress={() => setRemove(conversation)}>
-                        <span title={t("删除会话", "Delete conversation")}><MocoIcon name="delete" size={16} /></span>
+                        <span title={t("删除会话", "Delete conversation")}><KuloIcon name="delete" size={16} /></span>
                       </Button>
                     </Table.Cell>
                   </Table.Row>;

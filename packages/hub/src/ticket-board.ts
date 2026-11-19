@@ -2,14 +2,14 @@ import { isDeepStrictEqual } from "node:util";
 import type { Context } from "@earendil-works/chord/context";
 import type { Op } from "@earendil-works/chord/delta";
 import type { Harness } from "@earendil-works/pi-durable";
-import { compareTicketCards, type RolePreset, type SlotSummary, type TicketBoardDelta, type TicketCardView } from "@moco/protocol";
+import { compareTicketCards, type RolePreset, type SlotSummary, type TicketBoardDelta, type TicketCardView } from "@kulo/protocol";
 import { redactCredentialData } from "./credential-redaction.js";
-import { computeSlotSummary, hasPendingWorkspaceApply, MocoStateDoc, toTicketCardView, type MocoDurableState } from "./state.js";
+import { computeSlotSummary, hasPendingWorkspaceApply, KuloStateDoc, toTicketCardView, type KuloDurableState } from "./state.js";
 
 /** Derived from committed Durable changes. Full snapshots and deltas share the same revision. */
 export class TicketBoardProjection {
-  #state?: Readonly<MocoDurableState>;
-  #lastProjected?: Readonly<MocoDurableState>;
+  #state?: Readonly<KuloDurableState>;
+  #lastProjected?: Readonly<KuloDurableState>;
   #observation?: { detach(): void };
   #failure?: Error;
   #dirty?: Set<string>;
@@ -25,7 +25,7 @@ export class TicketBoardProjection {
   #wake?: NodeJS.Immediate;
 
   async open(harness: Harness, changed: () => void, context: Context): Promise<void> {
-    const observation = await harness.observeDoc(MocoStateDoc, {
+    const observation = await harness.observeDoc(KuloStateDoc, {
       advance: (call) => {
         if (call.kind !== "value") return;
         this.#state = call.value;

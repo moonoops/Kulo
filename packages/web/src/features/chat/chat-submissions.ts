@@ -1,6 +1,6 @@
-import type { ChatAttachment, ChatDisplayItem, ChatReplyReference } from "@moco/protocol";
-import { translate as t } from "../../moco-i18n";
-import type { DraftAttachment } from "../../moco-composer";
+import type { ChatAttachment, ChatDisplayItem, ChatReplyReference } from "@kulo/protocol";
+import { translate as t } from "../../kulo-i18n";
+import type { DraftAttachment } from "../../kulo-composer";
 
 export type SubmissionState = "queued" | "sending" | "accepted" | "unconfirmed_disconnect" | "failed";
 

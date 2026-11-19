@@ -1,5 +1,5 @@
 export {
-  MOCO_PHILOSOPHY_PROMPT,
+  KULO_PHILOSOPHY_PROMPT,
   buildPhilosophyPrompt,
   createOrchestratorSections,
   formatMediaRoutingSummary,

@@ -1,10 +1,10 @@
-import { translate as tr, useI18n } from "../../moco-i18n";
+import { translate as tr, useI18n } from "../../kulo-i18n";
 import { useState } from "react";
 import { Alert, Button, Chip, Disclosure } from "@heroui/react";
-import type { FriendlyErrorDescriptor } from "@moco/protocol";
-import { MocoIcon } from "../../moco-icon";
+import type { FriendlyErrorDescriptor } from "@kulo/protocol";
+import { KuloIcon } from "../../kulo-icon";
 
-export function MocoTurnErrorCard({
+export function KuloTurnErrorCard({
   descriptor,
   modelId,
   retrying,
@@ -62,7 +62,7 @@ export function MocoTurnErrorCard({
                 isDisabled={retrying}
                 onPress={onRetry}
               >
-                <MocoIcon name="refresh" size={16} />
+                <KuloIcon name="refresh" size={16} />
                 {retrying
                   ? tr("正在重试…", "Retrying…")
                   : descriptor.kind === "turn_limit"
@@ -89,7 +89,7 @@ export function MocoTurnErrorCard({
                 <Disclosure.Body className="mt-1 rounded-xl border border-border bg-surface p-2.5">
                   <div className="mb-1.5 flex justify-end">
                     <Button size="sm" variant="ghost" onPress={copyDetail}>
-                      <MocoIcon name={copied ? "check" : "copy"} size={14} />
+                      <KuloIcon name={copied ? "check" : "copy"} size={14} />
                       {copied ? tr("已复制", "Copied") : tr("复制", "Copy")}
                     </Button>
                   </div>
@@ -109,7 +109,7 @@ export function MocoTurnErrorCard({
           aria-label={tr("关闭错误提示", "Dismiss error")}
           onPress={onDismiss}
         >
-          <MocoIcon name="close" size={16} />
+          <KuloIcon name="close" size={16} />
         </Button>
       </div>
     </Alert>

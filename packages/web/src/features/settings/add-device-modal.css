@@ -1,59 +1,59 @@
-@reference "../../moco.css";
+@reference "../../kulo.css";
 
-.moco-add-device-dialog {
+.kulo-add-device-dialog {
   width: 100%;
   max-width: 560px;
 }
 
-.moco-add-device-header {
+.kulo-add-device-header {
   display: flex;
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
-  gap: var(--moco-form-gap);
+  gap: var(--kulo-form-gap);
 }
 
-.moco-add-device-close {
+.kulo-add-device-close {
   position: static;
   flex-shrink: 0;
 }
 
-.moco-add-device-body {
+.kulo-add-device-body {
   color: var(--foreground);
 }
 
-.moco-add-device-tabs {
+.kulo-add-device-tabs {
   width: 100%;
   min-width: 0;
   gap: 0;
 }
 
-.moco-add-device-panel {
+.kulo-add-device-panel {
   margin: 0;
-  padding: var(--moco-space-4) 0 0;
+  padding: var(--kulo-space-4) 0 0;
 }
 
-.moco-add-device-address-value {
+.kulo-add-device-address-value {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.moco-add-device-options-trigger {
+.kulo-add-device-options-trigger {
   display: inline-flex;
   align-items: center;
-  gap: var(--moco-control-gap);
-  min-height: var(--moco-control-height-compact);
+  gap: var(--kulo-control-gap);
+  min-height: var(--kulo-control-height-compact);
   color: var(--muted);
-  font-size: var(--moco-text-body);
-  line-height: var(--moco-leading-body);
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
 }
 
-.moco-add-device-option-fields {
-  padding-top: var(--moco-space-4);
+.kulo-add-device-option-fields {
+  padding-top: var(--kulo-space-4);
 }
 
-.moco-add-device-command-box {
+.kulo-add-device-command-box {
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -61,100 +61,100 @@
   background: var(--surface-secondary);
 }
 
-.moco-add-device-command-heading {
+.kulo-add-device-command-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--moco-space-3);
+  gap: var(--kulo-space-3);
   min-height: 44px;
-  padding: var(--moco-space-1) var(--moco-space-2) var(--moco-space-1) var(--moco-space-4);
+  padding: var(--kulo-space-1) var(--kulo-space-2) var(--kulo-space-1) var(--kulo-space-4);
   border-bottom: 1px solid var(--separator);
-  font-size: var(--moco-text-caption);
-  line-height: var(--moco-leading-caption);
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
   color: var(--muted);
 }
 
-.moco-add-device-command {
+.kulo-add-device-command {
   @apply scrollbar;
   max-height: 180px;
   margin: 0;
   overflow: auto;
-  padding: var(--moco-space-4);
+  padding: var(--kulo-space-4);
   color: var(--foreground);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: var(--moco-text-caption);
-  line-height: var(--moco-leading-caption);
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.moco-add-device-command:focus-visible {
+.kulo-add-device-command:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: -3px;
 }
 
-.moco-add-device-status {
+.kulo-add-device-status {
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: var(--moco-control-gap);
+  gap: var(--kulo-control-gap);
   color: var(--muted);
-  font-size: var(--moco-text-body);
-  line-height: var(--moco-leading-body);
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
 }
 
-.moco-add-device-status-label {
+.kulo-add-device-status-label {
   display: inline-flex;
   align-items: center;
-  gap: var(--moco-control-gap);
+  gap: var(--kulo-control-gap);
 }
 
-.moco-add-device-expiry {
-  font-size: var(--moco-text-caption);
-  line-height: var(--moco-leading-caption);
+.kulo-add-device-expiry {
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
 }
 
-.moco-add-device-fingerprints {
+.kulo-add-device-fingerprints {
   display: flex;
   flex-direction: column;
-  gap: var(--moco-space-3);
-  padding: var(--moco-space-4);
+  gap: var(--kulo-space-3);
+  padding: var(--kulo-space-4);
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--surface-secondary);
 }
 
-.moco-add-device-fingerprint-title {
+.kulo-add-device-fingerprint-title {
   display: flex;
   align-items: center;
-  gap: var(--moco-control-gap);
+  gap: var(--kulo-control-gap);
   color: var(--foreground);
-  font-size: var(--moco-text-body);
-  line-height: var(--moco-leading-body);
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
   font-weight: 500;
 }
 
-.moco-add-device-fingerprint {
+.kulo-add-device-fingerprint {
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: var(--moco-text-caption);
-  line-height: var(--moco-leading-caption);
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
   overflow-wrap: anywhere;
 }
 
-.moco-add-device-alert {
-  margin-top: var(--moco-space-4);
+.kulo-add-device-alert {
+  margin-top: var(--kulo-space-4);
   overflow-wrap: anywhere;
 }
 
-.moco-add-device-footer {
+.kulo-add-device-footer {
   flex-wrap: wrap;
-  padding-top: var(--moco-space-1);
+  padding-top: var(--kulo-space-1);
 }
 
 @media (max-width: 480px) {
-  .moco-add-device-dialog {
-    padding: var(--moco-space-4);
+  .kulo-add-device-dialog {
+    padding: var(--kulo-space-4);
   }
 }

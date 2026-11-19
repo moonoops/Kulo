@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import type { ChatAttachment, MessagePart } from "@moco/protocol";
-import { MocoMarkdown, markdownUrlTransform } from "../../moco-markdown";
+import type { ChatAttachment, MessagePart } from "@kulo/protocol";
+import { KuloMarkdown, markdownUrlTransform } from "../../kulo-markdown";
 import { AssetImageGallery, safeContentUrl } from "./asset-preview";
 import { CodeBlock } from "./code-block";
 import { MessageContent, groupMessageParts } from "./message-content";
@@ -27,19 +27,19 @@ describe("chat rich content", () => {
   });
 
   it("renders GFM tables, ordered lists, checklists and incomplete code fences", () => {
-    const html = renderToStaticMarkup(<MocoMarkdown text={'## 检查\n\n1. **重点**\n2. ~~取消~~\n\n- [x] 完成\n\n| 名称 | 状态 |\n| --- | --- |\n| 图片 | 就绪 |\n\n```tsx\nconst view = <span>你好</span>;'} />);
+    const html = renderToStaticMarkup(<KuloMarkdown text={'## 检查\n\n1. **重点**\n2. ~~取消~~\n\n- [x] 完成\n\n| 名称 | 状态 |\n| --- | --- |\n| 图片 | 就绪 |\n\n```tsx\nconst view = <span>你好</span>;'} />);
     expect(html).toContain("<h2>检查</h2>");
     expect(html).toContain("<ol>");
     expect(html).toContain("<strong>重点</strong>");
     expect(html).toContain("<del>取消</del>");
     expect(html).toContain('aria-label="已完成"');
-    expect(html).toContain('class="moco-chat-table"');
-    expect(html).toContain('class="moco-chat-code"');
+    expect(html).toContain('class="kulo-chat-table"');
+    expect(html).toContain('class="kulo-chat-code"');
     expect(html).toContain("&lt;span&gt;你好&lt;/span&gt;");
   });
 
   it("never runs raw HTML or executable links and retains useful text", () => {
-    const html = renderToStaticMarkup(<MocoMarkdown text={'<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n[危险链接](javascript:alert(1))\n\n![坏图](data:image/svg+xml;base64,AAAA)\n\n[官网](https://example.com)'} />);
+    const html = renderToStaticMarkup(<KuloMarkdown text={'<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n[危险链接](javascript:alert(1))\n\n![坏图](data:image/svg+xml;base64,AAAA)\n\n[官网](https://example.com)'} />);
     expect(html).not.toContain("<script");
     expect(html).not.toContain("onerror");
     expect(html).not.toContain('href="javascript:');
@@ -54,8 +54,8 @@ describe("chat rich content", () => {
       expect(safeContentUrl(url)).toBeUndefined();
       expect(markdownUrlTransform(url, "src")).toBe("");
     }
-    expect(safeContentUrl("blob:https://moco.example/draft")).toBeUndefined();
-    expect(safeContentUrl("blob:https://moco.example/draft", true)).toBe("blob:https://moco.example/draft");
+    expect(safeContentUrl("blob:https://kulo.example/draft")).toBeUndefined();
+    expect(safeContentUrl("blob:https://kulo.example/draft", true)).toBe("blob:https://kulo.example/draft");
     expect(markdownUrlTransform("mailto:hello@example.com", "href")).toBe("mailto:hello@example.com");
     expect(markdownUrlTransform("/api/uploads/image", "src")).toBe("/api/uploads/image");
   });
@@ -90,7 +90,7 @@ describe("chat rich content", () => {
 
   it("preserves legacy user bubbles and renders attachments exactly once", () => {
     const html = renderToStaticMarkup(<MessageContent item={{ id: 1, role: "user", text: "**原文**", attachments: [image] }} />);
-    expect(html).toContain("moco-chat-user-text");
+    expect(html).toContain("kulo-chat-user-text");
     expect(html).toContain("**原文**");
     expect(html).not.toContain("<strong>");
     expect(html.match(/<img /g)).toHaveLength(1);
@@ -105,18 +105,18 @@ describe("chat rich content", () => {
 
   it("keeps native media controls before enhancement and never autoplays", () => {
     const audioHtml = renderToStaticMarkup(<MediaMessage asset={audio} />);
-    expect(audioHtml).toContain("moco-chat-audio");
+    expect(audioHtml).toContain("kulo-chat-audio");
     expect(audioHtml).toContain('<audio src="/api/uploads/audio"');
     expect(audioHtml).toContain('controls=""');
     expect(audioHtml).not.toMatch(/autoPlay|autoplay/);
     const videoHtml = renderToStaticMarkup(<MediaMessage asset={{ ...audio, kind: "video", name: "演示.mp4", mimeType: "video/mp4", captions: [{ url: "/api/uploads/captions", label: "中文", language: "zh" }], transcript: { text: "演示内容" } }} />);
-    expect(videoHtml).toContain("moco-chat-video");
+    expect(videoHtml).toContain("kulo-chat-video");
     expect(videoHtml).toContain('kind="captions"');
     expect(videoHtml).toContain('label="中文"');
     expect(videoHtml).toContain("文字稿");
     expect(videoHtml).not.toMatch(/autoPlay|autoplay/);
     const portrait = renderToStaticMarkup(<MediaMessage asset={{ ...audio, kind: "video", width: 900, height: 1600 }} />);
-    expect(portrait).toContain("--moco-media-width:225px");
+    expect(portrait).toContain("--kulo-media-width:225px");
   });
 });
 

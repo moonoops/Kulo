@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { getUiSpecFields, type UiCardSnapshot, type UiSpec } from "@moco/protocol";
+import { getUiSpecFields, type UiCardSnapshot, type UiSpec } from "@kulo/protocol";
 import { GeneratedCard } from "./generated-card";
 
 function card(): UiCardSnapshot {
@@ -32,7 +32,7 @@ describe("GeneratedCard", () => {
     expect(html).toContain('role="radiogroup"');
     expect(html).toContain('aria-label="收起卡片内容：选择照明方案"');
     expect(html).not.toContain("参数与预览");
-    expect(html).not.toContain("moco-genui-section");
+    expect(html).not.toContain("kulo-genui-section");
     expect(html).not.toContain("此卡片暂时无法显示");
     expect(html).not.toContain('data-enter="true"');
   });
@@ -55,8 +55,8 @@ describe("GeneratedCard", () => {
     const html = renderToStaticMarkup(<GeneratedCard card={snapshot} onAction={onAction} />);
     expect(html).toContain("名称");
     expect(html).toContain("数量");
-    expect(html).toContain('class="moco-genui-stack"');
-    expect(html).not.toContain("moco-genui-section");
+    expect(html).toContain('class="kulo-genui-stack"');
+    expect(html).not.toContain("kulo-genui-section");
   });
 
   it("supplies missing action controls and does not duplicate explicit Button nodes", () => {
@@ -200,6 +200,6 @@ describe("GeneratedCard", () => {
     expect(html).toContain("scene.ts");
     expect(html).toContain('aria-expanded="false"');
     expect(html).not.toContain("const value = 1;");
-    expect(html).not.toContain("moco-chat-code-toolbar");
+    expect(html).not.toContain("kulo-chat-code-toolbar");
   });
 });

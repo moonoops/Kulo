@@ -1,4 +1,4 @@
-import { translate as tr, useI18n } from "../moco-i18n";
+import { translate as tr, useI18n } from "../kulo-i18n";
 import { useCallback, useRef, type ReactNode } from "react";
 import { AlertDialog, Button } from "@heroui/react";
 

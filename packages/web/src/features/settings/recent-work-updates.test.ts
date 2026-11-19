@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TicketCardView } from "@moco/protocol";
+import type { TicketCardView } from "@kulo/protocol";
 import { recentWorkUpdateKey, type RecentWorkSource } from "./recent-work-updates";
 
 function ticket(id: string): TicketCardView {

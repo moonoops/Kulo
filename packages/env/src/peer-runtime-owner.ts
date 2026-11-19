@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import type { DevicePeerConfig } from "@moco/protocol";
+import type { DevicePeerConfig } from "@kulo/protocol";
 import { discoverLocalInstance, LocalInstanceInUseError, LocalInstanceOwner, type LocalInstanceFiles } from "./local-instance.js";
 import { getPeerConfigPath, localPeerProof, localPeerProxyToken } from "./peer-config.js";
 
@@ -14,7 +14,7 @@ function peerFiles(config: DevicePeerConfig, configPath: string): LocalInstanceF
 export class DevicePeerInUseError extends LocalInstanceInUseError {}
 
 export function claimDevicePeer(config: DevicePeerConfig, configPath: string): LocalInstanceOwner {
-  try { return LocalInstanceOwner.acquire(peerFiles(config, configPath), "这台 Moco 设备客户端已在运行。"); }
+  try { return LocalInstanceOwner.acquire(peerFiles(config, configPath), "这台 Kulo 设备客户端已在运行。"); }
   catch (error) {
     if (error instanceof LocalInstanceInUseError) throw new DevicePeerInUseError(error.directory, error.message);
     throw error;
@@ -23,5 +23,5 @@ export function claimDevicePeer(config: DevicePeerConfig, configPath: string): L
 
 export function discoverDevicePeer(config: DevicePeerConfig, localToken?: string, configPath = getPeerConfigPath()) {
   const token = localToken?.trim() || localPeerProxyToken(config);
-  return discoverLocalInstance(peerFiles(config, configPath), "/_moco/instance", token);
+  return discoverLocalInstance(peerFiles(config, configPath), "/_kulo/instance", token);
 }

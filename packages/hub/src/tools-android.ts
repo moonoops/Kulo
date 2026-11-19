@@ -3,7 +3,7 @@ import { defineExtension, defineTool, type JsonObject, type ToolExecutionApi, ty
 import type { Context } from "@earendil-works/chord/context";
 import { compile, equal, unsafe, type Schema } from "@earendil-works/pi-schema";
 import { ANDROID_TOOL_CATALOG, androidOperationPolicy, isAndroidArgs, isAndroidRequest, isAndroidResult,
-  type AndroidAction, type AndroidRequest, type AndroidResult, type AndroidToolDefinition } from "@moco/protocol";
+  type AndroidAction, type AndroidRequest, type AndroidResult, type AndroidToolDefinition } from "@kulo/protocol";
 
 export interface AndroidToolScope {
   ticketId: string;
@@ -167,7 +167,7 @@ export function createAndroidTools(options: AndroidToolsOptions) {
           conversationId: scope.conversationId, runEpoch: scope.runEpoch,
           operationId: androidOperationId(scope, api, definition.action, deviceId),
           action: definition.action, args, deadline: api.now() + 120_000 };
-        const request = await api.memo("moco.android.intent", candidate as unknown as JsonObject, context) as unknown as AndroidRequest;
+        const request = await api.memo("kulo.android.intent", candidate as unknown as JsonObject, context) as unknown as AndroidRequest;
         if (!isAndroidRequest(request) || request.operationId !== candidate.operationId || request.hubId !== candidate.hubId ||
             request.deviceId !== deviceId || request.ticketId !== scope.ticketId || request.runEpoch !== scope.runEpoch ||
             request.conversationId !== scope.conversationId || request.action !== definition.action ||
@@ -194,5 +194,5 @@ export function createAndroidTools(options: AndroidToolsOptions) {
 }
 
 export function createAndroidToolsExtension(options: AndroidToolsOptions) {
-  return defineExtension({ name: "moco-android", tools: createAndroidTools(options) });
+  return defineExtension({ name: "kulo-android", tools: createAndroidTools(options) });
 }

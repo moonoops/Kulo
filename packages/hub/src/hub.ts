@@ -45,27 +45,27 @@ import {
   createCodingTools,
   createReadTool,
 } from "@earendil-works/pi-durable/tools";
-import { EnvManager, canonicalExecutionPath, isApplicationPrivatePath } from "@moco/env";
+import { EnvManager, canonicalExecutionPath, isApplicationPrivatePath } from "@kulo/env";
 import { lazyProjectEnvironment } from "./project-env.js";
 import { createAndroidToolsExtension, type AndroidToolScope } from "./tools-android.js";
-import { MocoAndroidNotifications } from "./android-notifications.js";
+import { KuloAndroidNotifications } from "./android-notifications.js";
 import { beginTicketRecovery, createFailureRecoveryTask, recoveryLeaf, sameRecoveryScope,
   recoveryWaitSummary, isSilentRecoveryFailure, resolveSupersededTickets, assertRecoveryGuard, MAX_RECOVERY_ATTEMPTS, RECOVERY_REVIEW_INTERVAL_MS } from "./task-recovery.js";
 import { prepareStateStorage } from "./state-storage.js";
 import { HubStateOwner } from "./state-owner.js";
-import { MocoConnections } from "./connections.js";
+import { KuloConnections } from "./connections.js";
 import { LocalConnectionVault } from "./connection-vault.js";
 import { SecureCredentialStore } from "./secure-provider-credentials.js";
 import { createCredentialRedactionExtension, redactCredentialData, scrubStoredConversationSecrets, wrapRedactedStorage } from "./credential-redaction.js";
 import type { ConnectionCaller, ConnectionToolController } from "./tools-connections.js";
-import { MocoSkills } from "./skills.js";
-import { MocoCapabilities, type SyncedProviderImageSource } from "./capabilities.js";
-import { MocoSearch } from "./search.js";
+import { KuloSkills } from "./skills.js";
+import { KuloCapabilities, type SyncedProviderImageSource } from "./capabilities.js";
+import { KuloSearch } from "./search.js";
 import { proxyFetch, retainEnvironmentProxy } from "./http-transport.js";
 import { withNativeToolsModels } from "./model-native-tools.js";
 import { LocalVoiceAsr } from "./voice-asr.js";
-import { MocoVoiceService, VoiceError, type SyncedVoiceModelCandidate, type VoiceAsrEngine } from "./voice-service.js";
-import { MocoVoiceCalls, type MocoVoiceCallsOptions } from "./voice-calls.js";
+import { KuloVoiceService, VoiceError, type SyncedVoiceModelCandidate, type VoiceAsrEngine } from "./voice-service.js";
+import { KuloVoiceCalls, type KuloVoiceCallsOptions } from "./voice-calls.js";
 import { TicketBoardProjection } from "./ticket-board.js";
 import { VoiceTranscriptEntry } from "./voice-transcripts.js";
 import { createVoiceContext } from "./voice-context.js";
@@ -73,7 +73,7 @@ import { createVoiceToolsExtension } from "./tools-voice.js";
 import { nativeSearchEvidence, sanitizeSearchSources, selectCitedSources } from "./search-sources.js";
 import { loadSearchEvidencePrefix, SearchEvidenceHistory } from "./search-history.js";
 import { resolveResponseContext } from "./response-context.js";
-import { MocoMediaJobs } from "./media-jobs.js";
+import { KuloMediaJobs } from "./media-jobs.js";
 import { createSkillToolsExtension } from "./tools-skills.js";
 import { detectReactWorkspace, SkillRuntimeError } from "./skill-runtime.js";
 import { FileError, getOrThrow } from "@earendil-works/pi-durable/env";
@@ -82,13 +82,13 @@ import { createMediaToolsExtension } from "./tools-media.js";
 import { createMediaExportExtension } from "./tools-media-export.js";
 import { createMemoryLifecycleExtension } from "./memory-lifecycle.js";
 import { HindsightLocalService } from "./hindsight-service.js";
-import { MocoMemoryService, createMemoryServiceExtension } from "./memory-service.js";
+import { KuloMemoryService, createMemoryServiceExtension } from "./memory-service.js";
 import { createMemorySetupExtension } from "./tools-memory-setup.js";
-import { MocoExtensions, createExtensionsExtension, type ExtensionPackageExecutor } from "./extensions.js";
+import { KuloExtensions, createExtensionsExtension, type ExtensionPackageExecutor } from "./extensions.js";
 import { createExtensionSetupExtension } from "./tools-extensions.js";
-import { MocoConversationHistory } from "./conversation-history.js";
+import { KuloConversationHistory } from "./conversation-history.js";
 import { ConversationQueries } from "./conversation-query.js";
-import type { ConversationSearchInput } from "@moco/protocol";
+import type { ConversationSearchInput } from "@kulo/protocol";
 import { topicActivity } from "./topic-activity.js";
 import { listTaskDeliverables, readTaskDeliverable, reportFileReferences, taskDeliverableError, TaskDeliverableError, type TaskDeliverableOptions } from "./task-deliverables.js";
 import { createHistoryToolsExtension } from "./tools-history.js";
@@ -133,7 +133,7 @@ import {
   type ModelProbeRequest,
   type ModelProbeResult,
   type ModelGatewayConfig,
-  type MocoSettingsView,
+  type KuloSettingsView,
   type RecentWorkSnapshot,
   type OAuthSessionView,
   type ProviderCatalogItem,
@@ -161,18 +161,18 @@ import {
   type ConnectionDescribeRequest,
   type ComputerPreviewSessionView,
   type ComputerPreviewUpdate,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import {
   DEFAULT_COMPACTION_CONFIG,
   DEFAULT_CONTEXT_WINDOW,
   resolveHubConfig,
-  type MocoHubConfig,
-  type MocoHubConfigOverrides,
-  type MocoModelConfig,
+  type KuloHubConfig,
+  type KuloHubConfigOverrides,
+  type KuloModelConfig,
 } from "./config.js";
-import { MocoIdentityFiles } from "./identity-files.js";
-import { MocoPersonality } from "./personality.js";
-import { MocoTopicTitles, createTopicTitleJob } from "./topic-titles.js";
+import { KuloIdentityFiles } from "./identity-files.js";
+import { KuloPersonality } from "./personality.js";
+import { KuloTopicTitles, createTopicTitleJob } from "./topic-titles.js";
 import { buildRecentWorkSnapshot } from "./recent-work.js";
 import {
   SettingsAssistant,
@@ -197,20 +197,20 @@ import {
   type ToolSurfaceRuntimeState,
 } from "./tool-surface.js";
 import { DeviceJoinStaging, createDeviceToolsExtension, type HubDeviceController } from "./tools-devices.js";
-import { MocoImageConfiguration, imageSetupIdentifier } from "./image-configuration.js";
-import { MocoModelConfiguration, ModelConfigurationDoc } from "./model-configuration.js";
+import { KuloImageConfiguration, imageSetupIdentifier } from "./image-configuration.js";
+import { KuloModelConfiguration, ModelConfigurationDoc } from "./model-configuration.js";
 import { createModelConfigurationToolsExtension } from "./tools-model-configuration.js";
-import { MocoAgentConfiguration, AgentConfigurationDoc } from "./agent-configuration.js";
+import { KuloAgentConfiguration, AgentConfigurationDoc } from "./agent-configuration.js";
 import { createAgentConfigurationToolsExtension } from "./tools-agent-configuration.js";
 import { createExternalAgentToolHandler, type ExternalAgentReportFile, type ExternalAgentToolScope } from "./external-agent-tools.js";
-import { externalClientConnectionId, type AgentAssignment, type AgentConfigurationDraft, type AgentDispatchIntent, type ExternalAgentRun, type ExternalWorkspaceMode, type StagedWorkspaceApplyResult, type StagedWorkspaceDiffDetail, type StagedWorkspaceDiffSummary } from "@moco/protocol";
+import { externalClientConnectionId, type AgentAssignment, type AgentConfigurationDraft, type AgentDispatchIntent, type ExternalAgentRun, type ExternalWorkspaceMode, type StagedWorkspaceApplyResult, type StagedWorkspaceDiffDetail, type StagedWorkspaceDiffSummary } from "@kulo/protocol";
 import { extractAgentDispatchIntent, namedDispatchDevices, resolveAgentDispatch, assertAgentDispatchAvailable } from "./agent-routing.js";
 import { createAppearanceCustomizationToolsExtension } from "./tools-appearance-customization.js";
 import { createCustomizationToolsExtension } from "./tools-customization.js";
 import { createDesktopCustomizationService } from "./customization-host.js";
-import type { CustomizationCaller, MocoCustomizationService } from "./customization.js";
+import type { CustomizationCaller, KuloCustomizationService } from "./customization.js";
 import {
-  MocoActionConfirmations,
+  KuloActionConfirmations,
   buildCustomizationConfirmCard,
   buildExternalPermissionCard,
   buildStagedApplyConfirmCard,
@@ -221,13 +221,13 @@ import {
 import { API_KEY_ORIGIN_ENV } from "./providers.js";
 import { executeHindsightTool, isSafeMemoryText, probeHindsightConnection, resolveHindsightToken, resolveHindsightSharedReadToken } from "./hindsight.js";
 import {
-  MOCO_GATEWAY_PROVIDER_ID,
-  MOCO_PROVIDER_ID,
+  KULO_GATEWAY_PROVIDER_ID,
+  KULO_PROVIDER_ID,
   resolveModelThinkingSelection,
   withThinkingLevelModels,
   probeOpenAICompatibleGateway,
 } from "./models.js";
-import { FileCredentialStore, MocoProviderManager, serializeProviderCatalogItem } from "./providers.js";
+import { FileCredentialStore, KuloProviderManager, serializeProviderCatalogItem } from "./providers.js";
 import {
   DEFAULT_COMPACTION_FOCUS_INSTRUCTIONS,
   RELATIONSHIP_REVIEW_INSTRUCTIONS,
@@ -241,7 +241,7 @@ import {
 import { createWorkerTicketTask } from "./scheduler.js";
 import { bindDispatchedAttachments, createDispatchedTicket, type TicketDispatchDraft } from "./ticket-dispatch.js";
 import {
-  MocoSettingsDoc,
+  KuloSettingsDoc,
   SettingsUpdateError,
   applySettingsBlockUpdate,
   bindingFromExternalClient,
@@ -250,12 +250,12 @@ import {
   rollbackSettingsToSnapshot,
   syncExternalClientsInSettings,
   toPublicSettingsView,
-  type MocoDurableSettings,
+  type KuloDurableSettings,
 } from "./settings.js";
 
 
 import {
-  MocoStateDoc,
+  KuloStateDoc,
   WorkerRelayEntry,
   WorkerWatchdogEntry,
   WorkerRecoveryEntry,
@@ -276,7 +276,7 @@ import {
   resolveTicketExecutionScope,
   toTicketCardView,
   transitionTicketStatus,
-  type MocoDurableState,
+  type KuloDurableState,
 } from "./state.js";
 import {
   createOrchestratorToolsExtension,
@@ -293,13 +293,13 @@ import {
   type SubagentTaskOutcome,
 } from "./tools-worker.js";
 import { createComputerUseExtension } from "./tools-computer-use.js";
-import { MocoUploadStore, parseUserEntryContent, sanitizeDiskFilename } from "./uploads.js";
+import { KuloUploadStore, parseUserEntryContent, sanitizeDiskFilename } from "./uploads.js";
 import { EXECUTION_FILE_CHUNK_BYTES, writeExecutionFile } from "./execution-files.js";
-import { ContentPublicationEntry, UiActionEntry, MocoUserEntry, MocoUiCards, UiCardError, type ContentPublicationData } from "./ui-cards.js";
+import { ContentPublicationEntry, UiActionEntry, KuloUserEntry, KuloUiCards, UiCardError, type ContentPublicationData } from "./ui-cards.js";
 import { createContentToolsExtension } from "./tools-content.js";
 import { createAssetPublisher } from "./asset-publication.js";
 import { publishExecutionAsset } from "./content-assets.js";
-import { MocoProjects, MocoProjectsDoc, ProjectError, assertProjectBinding } from "./projects.js";
+import { KuloProjects, KuloProjectsDoc, ProjectError, assertProjectBinding } from "./projects.js";
 import { createProjectToolsExtension, type ProjectController } from "./tools-projects.js";
 import {
   boundInspectResult,
@@ -326,7 +326,7 @@ type MessageSubmissionOptions = {
   deliveryIntent?: DeliveryIntent;
 };
 
-function assertMemoryIdentitySeparation(memory: HindsightMemoryConfig, config: MocoHubConfig, envManager?: EnvManager): void {
+function assertMemoryIdentitySeparation(memory: HindsightMemoryConfig, config: KuloHubConfig, envManager?: EnvManager): void {
   const reserved = new Set([config.authToken, ...Object.values(config.envTokens ?? {})].filter(Boolean));
   const router = resolveHindsightToken(memory, "router");
   const worker = resolveHindsightToken(memory, "worker");
@@ -345,7 +345,7 @@ function cloneJson<T>(val: T): T {
 function userDisplayEntry(text: string, attachments: ChatAttachment[], receipt?: {
   requestId?: string; createdAt: number; agentDispatchIntent?: AgentDispatchIntent; source?: ChatMessageSource; targetDeviceId?: string;
 }, replyTo?: ChatReplyReference) {
-  return { kind: MocoUserEntry.kind, data: { mocoContentVersion: 1, text, attachments: cloneJson(attachments),
+  return { kind: KuloUserEntry.kind, data: { kuloContentVersion: 1, text, attachments: cloneJson(attachments),
     ...(replyTo ? { replyTo: cloneJson(replyTo) } : {}), ...receipt } as unknown as JsonObject };
 }
 
@@ -365,10 +365,10 @@ function capturedAgentIntent(value: unknown): AgentDispatchIntent | undefined {
 }
 
 function agentIntentContext(intent: AgentDispatchIntent): string {
-  return `[MOCO_AGENT_ASSIGNMENT]\n${JSON.stringify(intent)}\nAuthoritative Agent assignment constraint parsed from this user message (takes precedence over default dispatch policies; validated by moco_dispatch). If a named Agent is unconfigured, disabled, unverified, offline, or conflicts with the bound project device, state the exact reason and wait for the user's decision—never substitute a built-in Worker or another Agent. Ask to disambiguate multiple matching candidates, and pass exact role IDs when dispatching to multiple named Agents.`;
+  return `[KULO_AGENT_ASSIGNMENT]\n${JSON.stringify(intent)}\nAuthoritative Agent assignment constraint parsed from this user message (takes precedence over default dispatch policies; validated by kulo_dispatch). If a named Agent is unconfigured, disabled, unverified, offline, or conflicts with the bound project device, state the exact reason and wait for the user's decision—never substitute a built-in Worker or another Agent. Ask to disambiguate multiple matching candidates, and pass exact role IDs when dispatching to multiple named Agents.`;
 }
 
-function withMocoCompactionFocus(models: Models): Models {
+function withKuloCompactionFocus(models: Models): Models {
   return new Proxy(models, {
     get(target, property, receiver) {
       if (property === "completeSimple") {
@@ -424,10 +424,10 @@ function replyContext(text: string, replyTo?: ChatReplyReference): string {
 }
 
 function legacyUserPayload(kind: string, data: unknown, content?: Parameters<typeof parseUserEntryContent>[0]): { text: string; attachments: ChatAttachment[]; replyTo?: ChatReplyReference } | undefined {
-  if (kind !== MocoUserEntry.kind && kind !== UserEntry.kind) return undefined;
+  if (kind !== KuloUserEntry.kind && kind !== UserEntry.kind) return undefined;
   if (data && typeof data === "object" && !Array.isArray(data)) {
     const record = data as Record<string, unknown>;
-    if (record.mocoContentVersion === 1 && typeof record.text === "string" && Array.isArray(record.attachments)) {
+    if (record.kuloContentVersion === 1 && typeof record.text === "string" && Array.isArray(record.attachments)) {
       return { text: record.text, attachments: record.attachments as ChatAttachment[], ...(record.replyTo ? { replyTo: record.replyTo as ChatReplyReference } : {}) };
     }
   }
@@ -472,20 +472,20 @@ function deriveAutoTopicTitle(
 }
 
 const DISPATCH_TOOL_LABELS: Readonly<Record<string, string>> = {
-  moco_dispatch: "派发任务",
-  moco_steer: "推进任务",
-  moco_stop: "停止任务",
-  moco_close: "收口任务",
+  kulo_dispatch: "派发任务",
+  kulo_steer: "推进任务",
+  kulo_stop: "停止任务",
+  kulo_close: "收口任务",
 };
 
 const SILENT_UI_TOOLS = new Set([
-  "moco_dispatch",
-  "moco_steer",
-  "moco_stop",
-  "moco_close",
-  "moco_status",
-  "moco_inspect",
-  "moco_expression",
+  "kulo_dispatch",
+  "kulo_steer",
+  "kulo_stop",
+  "kulo_close",
+  "kulo_status",
+  "kulo_inspect",
+  "kulo_expression",
 ]);
 
 function entryTimestamp(entry: EntryRecord): number | undefined {
@@ -498,7 +498,7 @@ function entryTimestamp(entry: EntryRecord): number | undefined {
   return undefined;
 }
 
-function normalizeModelConfig(m: ModelGatewayConfig): MocoModelConfig {
+function normalizeModelConfig(m: ModelGatewayConfig): KuloModelConfig {
   return {
     ...m,
     contextWindow: m.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
@@ -523,7 +523,7 @@ function summarizeEntryForInspect(entry: EntryRecord): WorkerInspectEntrySummary
   const id = Number(entry.id);
   const createdAt = entryTimestamp(entry);
 
-  if (UserEntry.is(entry) || MocoUserEntry.is(entry)) {
+  if (UserEntry.is(entry) || KuloUserEntry.is(entry)) {
     const raw = entry.model?.[0] as { content?: unknown } | undefined;
     const text =
       typeof raw?.content === "string"
@@ -632,7 +632,7 @@ export function extractDisplayMessages(entries: readonly EntryRecord[], options:
     if (WorkerRecoveryEntry.is(entry)) { recoveryTurn = true; continue; }
     if (isRecoveryInputBoundary(entry)) recoveryTurn = false;
     if (recoveryTurn && (AssistantEntry.is(entry) || ToolResultEntry.is(entry))) continue;
-    if (entry.kind === "moco.memory-context") continue;
+    if (entry.kind === "kulo.memory-context") continue;
     const createdAt = entryTimestamp(entry);
 
     if (VoiceTranscriptEntry.is(entry)) continue;
@@ -741,20 +741,20 @@ export function extractDisplayMessages(entries: readonly EntryRecord[], options:
       continue;
     }
 
-    if (UserEntry.is(entry) || MocoUserEntry.is(entry)) {
+    if (UserEntry.is(entry) || KuloUserEntry.is(entry)) {
       pendingSources = [];
       pendingSearchSuggestions = [];
       const msg = entry.model?.[0];
-      const data = (entry.data ?? {}) as unknown as { mocoContentVersion?: unknown; text?: unknown; attachments?: unknown; replyTo?: ChatReplyReference };
-      if (msg?.role === "user" || MocoUserEntry.is(entry) && data.mocoContentVersion === 1 && typeof data.text === "string" && Array.isArray(data.attachments)) {
-        const parsed = data.mocoContentVersion === 1 && typeof data.text === "string" && Array.isArray(data.attachments)
+      const data = (entry.data ?? {}) as unknown as { kuloContentVersion?: unknown; text?: unknown; attachments?: unknown; replyTo?: ChatReplyReference };
+      if (msg?.role === "user" || KuloUserEntry.is(entry) && data.kuloContentVersion === 1 && typeof data.text === "string" && Array.isArray(data.attachments)) {
+        const parsed = data.kuloContentVersion === 1 && typeof data.text === "string" && Array.isArray(data.attachments)
           ? { text: data.text, attachments: data.attachments as ChatAttachment[] }
           : parseUserEntryContent(msg?.role === "user" ? msg.content : "");
-        if (parsed.text.trimStart().startsWith("[MOCO_WORKER_WATCHDOG]")) {
+        if (parsed.text.trimStart().startsWith("[KULO_WORKER_WATCHDOG]")) {
           continue;
         }
         let displayText = parsed.text;
-        if (displayText.startsWith('{"type":"moco.ui.action"')) {
+        if (displayText.startsWith('{"type":"kulo.ui.action"')) {
           try {
             const action = JSON.parse(displayText) as { commandId: string; title: string; action: { label: string }; values: Record<string, unknown> };
             const card = uiCommands.get(action.commandId)?.card;
@@ -928,17 +928,17 @@ export function extractLiveState(view: ConversationView, responseEntries: readon
   };
 }
 
-export interface MocoHubInitOptions {
+export interface KuloHubInitOptions {
   voiceAsr?: VoiceAsrEngine;
-  voiceOpenLive?: MocoVoiceCallsOptions["openLive"];
-  config?: MocoHubConfigOverrides;
+  voiceOpenLive?: KuloVoiceCallsOptions["openLive"];
+  config?: KuloHubConfigOverrides;
   storage?: Storage;
   models?: Models;
   providerId?: string;
   watchdogCheckIntervalMs?: number;
   watchdogStallMsOverride?: number;
   orchestratorBrowserIdleMs?: number;
-  connectionManager?: MocoConnections;
+  connectionManager?: KuloConnections;
   connectionVault?: LocalConnectionVault;
   credentialStore?: CredentialStore;
   extensionPackages?: ExtensionPackageExecutor;
@@ -955,7 +955,7 @@ export interface HubEventListener {
   onTicketDelta?: (delta: TicketBoardDelta, snapshot: () => ReturnType<TicketBoardProjection["snapshot"]>) => void;
   onEnvs?: (envs: EnvNodeDescriptor[]) => void;
   onExpression?: (expression: AgentExpressionState | null) => void;
-  onSettings?: (settings: MocoSettingsView) => void;
+  onSettings?: (settings: KuloSettingsView) => void;
   onSettingsAssistant?: (snapshot: SettingsAssistantSnapshot) => void;
   onUiCard?: (card: UiCardSnapshot) => void;
 }
@@ -970,7 +970,7 @@ interface WatchedTopicCache {
 
 type TopicView = Pick<WatchedTopicCache, "topicId" | "messages" | "live"> & { historyBefore?: number };
 
-function requireTopic(state: Readonly<MocoDurableState> | undefined, topicId: string) {
+function requireTopic(state: Readonly<KuloDurableState> | undefined, topicId: string) {
   const topic = state?.topics && Object.hasOwn(state.topics, topicId) ? state.topics[topicId] : undefined;
   if (topic?.deletedAt) throw new ProjectError(404, "topic_deleted", "会话已删除。");
   if (!topic) throw new ProjectError(404, "topic_not_found", "会话不存在。");
@@ -978,12 +978,12 @@ function requireTopic(state: Readonly<MocoDurableState> | undefined, topicId: st
 }
 
 const MediaNoticesDoc = defineDoc<{ notices: Record<string, boolean> } & JsonObject>({
-  kind: "moco.media-notices", version: 1, scope: "session", initial: () => ({ notices: {} }) as { notices: Record<string, boolean> } & JsonObject,
+  kind: "kulo.media-notices", version: 1, scope: "session", initial: () => ({ notices: {} }) as { notices: Record<string, boolean> } & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
 
 const RelationshipReviewsDoc = defineDoc<{ conversationIds: number[] } & JsonObject>({
-  kind: "moco.relationship-reviews", version: 1, scope: "session",
+  kind: "kulo.relationship-reviews", version: 1, scope: "session",
   initial: () => ({ conversationIds: [] }),
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 16,
 });
@@ -996,7 +996,7 @@ interface RelationshipEvidenceProgress {
 const RelationshipEvidenceDoc = defineDoc<(RelationshipEvidenceProgress & {
   pending: RelationshipEvidenceProgress | null;
 }) & JsonObject>({
-  kind: "moco.relationship-evidence", version: 1, scope: "session",
+  kind: "kulo.relationship-evidence", version: 1, scope: "session",
   initial: () => ({ cursor: 0, entries: {}, reports: {}, pending: null }),
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 16,
 });
@@ -1010,35 +1010,35 @@ interface TrackedWorkerRuntime {
 }
 
 /**
- * MocoHub: Durable SuperAgent Engine combining Pi Durable (SQLite) + Pi Env + Identity Documents + Hindsight.
+ * KuloHub: Durable SuperAgent Engine combining Pi Durable (SQLite) + Pi Env + Identity Documents + Hindsight.
  */
-export class MocoHub implements OrchestratorController {
+export class KuloHub implements OrchestratorController {
   readonly #ticketBoard = new TicketBoardProjection();
-  readonly config: MocoHubConfig;
+  readonly config: KuloHubConfig;
   readonly envManager: EnvManager;
   readonly harness: Harness;
   readonly rootConversation: Conversation;
-  readonly identityFiles: MocoIdentityFiles;
-  readonly personality: MocoPersonality;
-  readonly uploads: MocoUploadStore;
+  readonly identityFiles: KuloIdentityFiles;
+  readonly personality: KuloPersonality;
+  readonly uploads: KuloUploadStore;
   readonly settingsAssistant: SettingsAssistant;
-  readonly uiCards: MocoUiCards;
-  readonly actionConfirmations: MocoActionConfirmations;
-  readonly projects: MocoProjects;
-  readonly skills: MocoSkills;
-  readonly capabilities: MocoCapabilities;
-  readonly imageConfiguration: MocoImageConfiguration;
-  readonly modelConfiguration: MocoModelConfiguration;
-  readonly agentConfiguration: MocoAgentConfiguration;
-  readonly search: MocoSearch;
-  readonly voice: MocoVoiceService;
-  readonly voiceCalls: MocoVoiceCalls;
+  readonly uiCards: KuloUiCards;
+  readonly actionConfirmations: KuloActionConfirmations;
+  readonly projects: KuloProjects;
+  readonly skills: KuloSkills;
+  readonly capabilities: KuloCapabilities;
+  readonly imageConfiguration: KuloImageConfiguration;
+  readonly modelConfiguration: KuloModelConfiguration;
+  readonly agentConfiguration: KuloAgentConfiguration;
+  readonly search: KuloSearch;
+  readonly voice: KuloVoiceService;
+  readonly voiceCalls: KuloVoiceCalls;
   readonly #voiceTranscriptions = new Map<string, Promise<ChatAttachment>>();
-  readonly mediaJobs: MocoMediaJobs;
-  readonly memoryService: MocoMemoryService;
-  readonly extensions: MocoExtensions;
-  readonly history: MocoConversationHistory;
-  readonly connectionManager: MocoConnections;
+  readonly mediaJobs: KuloMediaJobs;
+  readonly memoryService: KuloMemoryService;
+  readonly extensions: KuloExtensions;
+  readonly history: KuloConversationHistory;
+  readonly connectionManager: KuloConnections;
   readonly connections: ConnectionToolController;
 
   readonly #providerId: string;
@@ -1046,14 +1046,14 @@ export class MocoHub implements OrchestratorController {
   readonly #releaseProxy: () => Promise<void>;
   readonly #stateOwner: HubStateOwner;
   get localInstance(): Pick<HubStateOwner, "publish" | "proveLocalIdentity"> { return this.#stateOwner; }
-  readonly #providerManager: MocoProviderManager | null;
+  readonly #providerManager: KuloProviderManager | null;
   readonly #defaultIdentityDir: string;
   readonly #mainWorkspaceDir: string;
   readonly #workerTicketTask: ReturnType<typeof createWorkerTicketTask>;
   readonly #failureRecoveryTask: ReturnType<typeof createFailureRecoveryTask>;
   readonly #codingToolsExt: ReturnType<typeof createCodingTools>;
   readonly #androidExt: ReturnType<typeof createAndroidToolsExtension>;
-  readonly #androidNotifications: MocoAndroidNotifications;
+  readonly #androidNotifications: KuloAndroidNotifications;
   readonly #toolSearchExt: ReturnType<typeof createToolSearchExtension>;
   readonly #settingsTierExt: ReturnType<typeof createSettingsTierExtension>;
   readonly #computerMixedAndroidTierExt: ReturnType<typeof createComputerMixedAndroidTierExtension>;
@@ -1075,8 +1075,8 @@ export class MocoHub implements OrchestratorController {
   readonly #redactionExt: ReturnType<typeof createCredentialRedactionExtension>;
   readonly #historyExt: ReturnType<typeof createHistoryToolsExtension>;
   readonly #customizationExtensions: ReturnType<typeof createCustomizationToolsExtension>[];
-  #customizationService: Promise<MocoCustomizationService> | undefined;
-  #customizationInstance: MocoCustomizationService | undefined;
+  #customizationService: Promise<KuloCustomizationService> | undefined;
+  #customizationInstance: KuloCustomizationService | undefined;
   readonly #contextCompaction: ReturnType<typeof createContextCompactionController>;
   #contextPackage: LoadedBillionContextPackage | null = null;
   #contextPackageLoad: Promise<LoadedBillionContextPackage | null> | null = null;
@@ -1095,7 +1095,7 @@ export class MocoHub implements OrchestratorController {
   readonly #deliveryAdmissions = new Map<string, Promise<unknown>>();
   readonly #ticketAdmissions = new Map<string, Promise<unknown>>();
   readonly #inlineDispatchWaiters = new Map<string, Set<() => void>>();
-  readonly #topicTitles: MocoTopicTitles;
+  readonly #topicTitles: KuloTopicTitles;
   readonly #cardSnapshots = new Map<string, UiCardSnapshot>();
   readonly #searchHistories = new Map<number, SearchEvidenceHistory>();
   readonly #trackedWorkers = new Map<string, TrackedWorkerRuntime>();
@@ -1116,7 +1116,7 @@ export class MocoHub implements OrchestratorController {
   #cleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
   #cleanupRetryDelayMs = 500;
   #watchdogTickInFlight = false;
-  #liveSettings: MocoDurableSettings;
+  #liveSettings: KuloDurableSettings;
   #recovering = true;
   #closed = false;
   #closing?: Promise<void>;
@@ -1125,18 +1125,18 @@ export class MocoHub implements OrchestratorController {
   private constructor(params: {
     releaseProxy: () => Promise<void>;
     stateOwner: HubStateOwner;
-    config: MocoHubConfig;
+    config: KuloHubConfig;
     envManager: EnvManager;
     harness: Harness;
     rootConversation: Conversation;
-    identityFiles: MocoIdentityFiles;
-    uploads: MocoUploadStore;
+    identityFiles: KuloIdentityFiles;
+    uploads: KuloUploadStore;
     providerId: string;
     models: Models;
-    providerManager: MocoProviderManager | null;
+    providerManager: KuloProviderManager | null;
     defaultIdentityDir: string;
     mainWorkspaceDir: string;
-    liveSettings: MocoDurableSettings;
+    liveSettings: KuloDurableSettings;
     workerTicketTask: ReturnType<typeof createWorkerTicketTask>;
     failureRecoveryTask: ReturnType<typeof createFailureRecoveryTask>;
     codingToolsExt: ReturnType<typeof createCodingTools>;
@@ -1173,12 +1173,12 @@ export class MocoHub implements OrchestratorController {
     historyExt: ReturnType<typeof createHistoryToolsExtension>;
     contextCompaction: ReturnType<typeof createContextCompactionController>;
     extensionPackages?: ExtensionPackageExecutor;
-    connectionManager: MocoConnections;
+    connectionManager: KuloConnections;
     connections: ConnectionToolController;
     redactionExt: ReturnType<typeof createCredentialRedactionExtension>;
     credentialStore: CredentialStore;
     voiceAsr?: VoiceAsrEngine;
-    voiceOpenLive?: MocoVoiceCallsOptions["openLive"];
+    voiceOpenLive?: KuloVoiceCallsOptions["openLive"];
     watchdogCheckIntervalMs: number;
     watchdogStallMsOverride?: number;
     orchestratorBrowserIdleMs: number;
@@ -1193,13 +1193,13 @@ export class MocoHub implements OrchestratorController {
     this.#redactionExt = params.redactionExt;
     this.rootConversation = params.rootConversation;
     this.identityFiles = params.identityFiles;
-    this.personality = new MocoPersonality({
+    this.personality = new KuloPersonality({
       harness: params.harness,
       identityFiles: params.identityFiles,
       collectRelationshipInput: (since) => this.#collectRelationshipInput(since),
       canReviewRelationship: () => this.#canReviewRelationship(),
       reviewRelationship: (input) => this.#reviewRelationship(input),
-      onError: (error) => console.error("[MocoPersonality]", error),
+      onError: (error) => console.error("[KuloPersonality]", error),
     });
     this.uploads = params.uploads;
     this.#providerId = params.providerId;
@@ -1208,11 +1208,11 @@ export class MocoHub implements OrchestratorController {
     this.#defaultIdentityDir = params.defaultIdentityDir;
     this.#mainWorkspaceDir = params.mainWorkspaceDir;
     this.#liveSettings = params.liveSettings;
-    this.#androidNotifications = new MocoAndroidNotifications({ stateDir: this.config.stateDir, models: this.#models,
+    this.#androidNotifications = new KuloAndroidNotifications({ stateDir: this.config.stateDir, models: this.#models,
       agent: () => this.#resolveOrchestratorAgent(), hubId: () => this.#androidHubId,
       redact: text => this.connectionManager.redact(text) });
     this.envManager.setAndroidNotificationClassifier((request, signal) => this.#androidNotifications.classify(request, signal));
-    this.#topicTitles = new MocoTopicTitles({
+    this.#topicTitles = new KuloTopicTitles({
       harness: this.harness,
       agent: () => this.#resolveOrchestratorAgent(),
       publish: (topics) => this.#emitTopics(topics),
@@ -1244,14 +1244,14 @@ export class MocoHub implements OrchestratorController {
     this.#historyExt = params.historyExt;
     this.#customizationExtensions = params.customizationExt ? [params.customizationExt] : [];
     this.#contextCompaction = params.contextCompaction;
-    this.history = new MocoConversationHistory({ harness: this.harness, stateDir: this.config.stateDir });
-    this.extensions = new MocoExtensions({
+    this.history = new KuloConversationHistory({ harness: this.harness, stateDir: this.config.stateDir });
+    this.extensions = new KuloExtensions({
       harness: this.harness, stateDir: this.config.stateDir, operationTask: params.extensionsExt.operationTask,
       packages: params.extensionPackages,
       compaction: { enable: () => this.#enableContextExtension(), stop: () => this.#stopContextExtension() },
-      onChange: () => { void this.#broadcastCapabilities().catch((error: unknown) => console.error("[MocoExtensions]", this.connectionManager.redact(error instanceof Error ? error.message : String(error)))); },
+      onChange: () => { void this.#broadcastCapabilities().catch((error: unknown) => console.error("[KuloExtensions]", this.connectionManager.redact(error instanceof Error ? error.message : String(error)))); },
     });
-    this.memoryService = new MocoMemoryService({
+    this.memoryService = new KuloMemoryService({
       harness: this.harness, operationTask: params.memoryServiceExt.operationTask,
       local: new HindsightLocalService({ stateDir: this.config.stateDir }),
       credentials: params.credentialStore,
@@ -1263,14 +1263,14 @@ export class MocoHub implements OrchestratorController {
         return model.connectionId ? this.#providerManager?.resolveServiceApiKey(model.connectionId, model.model, model.baseUrl ?? defaults[model.provider]) : undefined;
       },
     });
-    this.skills = new MocoSkills({ harness: this.harness, stateDir: this.config.stateDir, onChanged: () => this.#broadcastCapabilities(),
+    this.skills = new KuloSkills({ harness: this.harness, stateDir: this.config.stateDir, onChanged: () => this.#broadcastCapabilities(),
       resolveLocalSource: (source) => stageProjectSkillSource({ stateDir: this.config.stateDir, projects: this.projects, envManager: this.envManager }, source) });
-    this.capabilities = new MocoCapabilities({ harness: this.harness, credentials: params.credentialStore,
+    this.capabilities = new KuloCapabilities({ harness: this.harness, credentials: params.credentialStore,
       resolveProviderApiKey: (providerId, baseUrl) => this.#providerManager?.resolveProbeApiKey(providerId, baseUrl) ?? Promise.resolve(undefined),
       envs: () => this.envManager.listEnvs(), browser: (id, request) => this.envManager.requestBrowser(id, request), onChanged: () => this.#broadcastCapabilities() });
-    this.imageConfiguration = new MocoImageConfiguration({ harness: this.harness, capabilities: this.capabilities,
+    this.imageConfiguration = new KuloImageConfiguration({ harness: this.harness, capabilities: this.capabilities,
       providers: () => this.listProviders(), discover: (request) => this.discoverProviderModels(request), onChanged: () => this.#broadcastCapabilities() });
-    this.modelConfiguration = new MocoModelConfiguration({ harness: this.harness,
+    this.modelConfiguration = new KuloModelConfiguration({ harness: this.harness,
       settings: () => this.getSettingsView(), providers: () => this.listProviders(),
       redact: (value) => this.connectionManager.redact(value), rememberSecrets: (values) => this.connectionManager.rememberSecrets(values),
       discover: (request) => this.discoverProviderModels(request), probe: (request, signal) => this.probeModel(request, signal),
@@ -1279,12 +1279,12 @@ export class MocoHub implements OrchestratorController {
         let wroteCredential = false;
         const origin = new URL(provider.baseUrl).origin;
         const nextDoc = await this.harness.commit(async (tx) => {
-          const doc = await tx.doc(MocoSettingsDoc);
+          const doc = await tx.doc(KuloSettingsDoc);
           const operations = await tx.doc(ModelConfigurationDoc);
           const committed = operations.commits?.[operationKey];
           if (committed) {
             if (committed.fingerprint !== fingerprint) throw new SettingsUpdateError(409, "此模型保存标识已用于另一份配置。");
-            return cloneJson(doc) as MocoDurableSettings;
+            return cloneJson(doc) as KuloDurableSettings;
           }
           const model = { ...cloneJson(doc.model), customProviders: [...(doc.model.customProviders ?? []).filter((item) => item.id !== provider.id), provider],
             ...(defaultModelId ? { defaultProvider: provider.id, defaultModel: defaultModelId } : {}) };
@@ -1297,7 +1297,7 @@ export class MocoHub implements OrchestratorController {
           });
           operations.commits ??= {};
           operations.commits[operationKey] = cloneJson(commit);
-          return cloneJson(doc) as MocoDurableSettings;
+          return cloneJson(doc) as KuloDurableSettings;
         }, BACKGROUND_CONTEXT).catch(async (cause: unknown) => {
           if (wroteCredential) await params.credentialStore.modify(provider.id, async (current) =>
             current?.type === "api_key" && current.key === apiKey && current.env?.[API_KEY_ORIGIN_ENV] === origin ? previousCredential : current);
@@ -1310,7 +1310,7 @@ export class MocoHub implements OrchestratorController {
       },
       onChanged: () => this.#broadcastCapabilities(),
     });
-    this.agentConfiguration = new MocoAgentConfiguration({ harness: this.harness,
+    this.agentConfiguration = new KuloAgentConfiguration({ harness: this.harness,
       settings: () => this.getSettingsView(), envs: () => this.envManager.listEnvs(),
       projects: async () => (await this.projects.list(BACKGROUND_CONTEXT)).map((project) => ({ id: project.id, name: project.name, envId: project.deviceId })),
       request: (envId, request) => this.envManager.requestExternalAgent(envId, request),
@@ -1318,12 +1318,12 @@ export class MocoHub implements OrchestratorController {
       verifyRoundtrip: (draft, nonce) => this.#verifyExternalAgent(draft, nonce),
       saveRole: async ({ role, models, expectedRevision, operationKey, fingerprint, commit }) => {
         const next = await this.harness.commit(async (tx) => {
-          const doc = await tx.doc(MocoSettingsDoc);
+          const doc = await tx.doc(KuloSettingsDoc);
           const operations = await tx.doc(AgentConfigurationDoc);
           const prior = operations.commits[operationKey];
           if (prior) {
             if (prior.fingerprint !== fingerprint) throw new SettingsUpdateError(409, "此保存标识已用于其他智能体配置。");
-            return cloneJson(doc) as MocoDurableSettings;
+            return cloneJson(doc) as KuloDurableSettings;
           }
           const cid = role.externalClientId;
           const priorRole = doc.roles[role.id];
@@ -1340,24 +1340,24 @@ export class MocoHub implements OrchestratorController {
             ...(!stillHasOldClient && oldClientId ? { removeClientIds: [oldClientId] } : {}),
           });
           operations.commits[operationKey] = cloneJson(commit);
-          return cloneJson(doc) as MocoDurableSettings;
+          return cloneJson(doc) as KuloDurableSettings;
         }, BACKGROUND_CONTEXT);
         await this.#applyLiveSettings(next, BACKGROUND_CONTEXT);
         const view = this.getSettingsView(); this.#emitSettings(view); return view;
       },
       removeRole: async ({ agentId, expectedRevision, operationKey, fingerprint, commit }) => {
         const next = await this.harness.commit(async (tx) => {
-          const doc = await tx.doc(MocoSettingsDoc);
+          const doc = await tx.doc(KuloSettingsDoc);
           const operations = await tx.doc(AgentConfigurationDoc);
           const previous = operations.removals[operationKey];
           if (previous) {
             if (previous.fingerprint !== fingerprint) throw new SettingsUpdateError(409, "此移除标识已用于另一项操作。");
-            return cloneJson(doc) as MocoDurableSettings;
+            return cloneJson(doc) as KuloDurableSettings;
           }
           const targetRole = doc.roles[agentId];
           if (!targetRole?.external) throw new SettingsUpdateError(400, "外部智能体不存在。");
           const oldClientId = targetRole.externalClientId?.trim() || externalClientConnectionId(targetRole.external);
-          const tasks = await tx.doc(MocoStateDoc);
+          const tasks = await tx.doc(KuloStateDoc);
           if (Object.values(tasks.tickets).some((ticket) => ticket.role === agentId && isTicketUnfinished(ticket))) throw new SettingsUpdateError(409, "请先停止或完成该智能体的未结束任务。");
           const roles = { ...cloneJson(doc.roles) }; delete roles[agentId];
           const stillHasClient = Object.values(roles).some((item) => item.external && (item.externalClientId?.trim() || externalClientConnectionId(item.external)) === oldClientId);
@@ -1366,7 +1366,7 @@ export class MocoHub implements OrchestratorController {
             ...(!stillHasClient ? { removeClientIds: [oldClientId] } : {}),
           });
           operations.removals[operationKey] = cloneJson(commit);
-          return cloneJson(doc) as MocoDurableSettings;
+          return cloneJson(doc) as KuloDurableSettings;
         }, BACKGROUND_CONTEXT);
         await this.#applyLiveSettings(next, BACKGROUND_CONTEXT);
         const view = this.getSettingsView(); this.#emitSettings(view); return view;
@@ -1374,14 +1374,14 @@ export class MocoHub implements OrchestratorController {
     });
     this.envManager.setExternalAgentToolHandler(createExternalAgentToolHandler({
       read: async (scope) => {
-        const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         const ticket = this.#externalAgentScope(scope, state);
         const role = this.#liveSettings.roles[ticket.role];
         return { ticket: cloneJson(ticket), role: role ? { ...cloneJson(role), allowSubagents: Boolean(role.allowSubagents && ticket.externalExecution?.allowSubagents) } : undefined,
           maxSubagents: this.#liveSettings.executor.maxSubagentsPerTicket, children: cloneJson(ticket.externalExecution!.children ?? {}) };
       },
       agents: async (scope) => {
-        const ticket = this.#externalAgentScope(scope, await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT));
+        const ticket = this.#externalAgentScope(scope, await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT));
         return Object.values(this.#liveSettings.roles).filter((role) => role.enabled !== false && role.id !== ticket.role).map((role) => ({
           id: role.id, label: role.label, whenToUse: role.whenToUse, readOnly: !role.external && Boolean(role.readOnly),
           ...(role.external ? { envId: role.external.envId } : {}),
@@ -1389,7 +1389,7 @@ export class MocoHub implements OrchestratorController {
         }));
       },
       report: async (scope, report, files) => {
-        const snap = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const snap = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         const snapTicket = this.#externalAgentScope(scope, snap);
         const nextVersion = (snapTicket.externalExecution!.explicitReportVersion ?? 0) + 1;
         const stagedAttachments = files?.length ? await this.#stageExternalReportFiles(scope, files) : undefined;
@@ -1407,7 +1407,7 @@ export class MocoHub implements OrchestratorController {
           ...(stagedAttachments?.length ? { attachments: stagedAttachments } : {}),
         };
         await this.harness.commit(async (tx) => {
-          const ticket = this.#externalAgentScope(scope, await tx.doc(MocoStateDoc));
+          const ticket = this.#externalAgentScope(scope, await tx.doc(KuloStateDoc));
           const committedVersion = Math.max(nextVersion, (ticket.externalExecution!.explicitReportVersion ?? 0) + 1);
           ticket.externalExecution!.explicitReportVersion = committedVersion;
           ticket.latestReport = cloneJson(finalizedReport);
@@ -1432,7 +1432,7 @@ export class MocoHub implements OrchestratorController {
         };
       },
       memory: async (scope, toolName, args) => {
-        const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         const ticket = this.#externalAgentScope(scope, state);
         if (!this.#liveSettings.memory.enabled || this.#liveSettings.memory.accessMode === "private-only") {
           throw new Error("Hindsight 共享记忆库当前未开启。");
@@ -1456,7 +1456,7 @@ export class MocoHub implements OrchestratorController {
         try { return JSON.parse(res.text); } catch { return { text: res.text }; }
       },
       connectionsList: async (scope) => {
-        const ticket = this.#externalAgentScope(scope, await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT));
+        const ticket = this.#externalAgentScope(scope, await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT));
         return this.#connectionList({
           kind: "worker",
           conversationId: ticket.workerConversationId,
@@ -1467,7 +1467,7 @@ export class MocoHub implements OrchestratorController {
         }, BACKGROUND_CONTEXT);
       },
       connectionUse: async (scope, input) => {
-        const ticket = this.#externalAgentScope(scope, await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT));
+        const ticket = this.#externalAgentScope(scope, await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT));
         return this.#connectionUse({
           kind: "worker",
           conversationId: ticket.workerConversationId,
@@ -1478,7 +1478,7 @@ export class MocoHub implements OrchestratorController {
         }, input, BACKGROUND_CONTEXT);
       },
       delegate: (scope, request) => this.#queueTicketOperation(scope.taskId, async () => {
-        const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         const parent = this.#externalAgentScope(scope, state);
         const role = this.#liveSettings.roles[parent.role];
         if (!parent.externalExecution!.allowSubagents || !role?.allowSubagents || role.enabled === false) throw new Error("该智能体未开启 Hub 协作。");
@@ -1498,7 +1498,7 @@ export class MocoHub implements OrchestratorController {
         return { ...child, requiresParentYield, ...(requiresParentYield ? { instruction: "协作任务正在等待可用执行名额或项目写入占用。请先结束当前轮并把协作安排交回主 Agent，释放后子任务会继续执行。" } : {}) };
       }),
       inspect: async (scope, childTaskId) => {
-        const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         const parent = this.#externalAgentScope(scope, state);
         const child = state?.tickets[childTaskId];
         if (!child || child.parentTicketId !== parent.id || !Object.values(parent.externalExecution!.children ?? {}).some((entry) => entry.taskId === child.id)) throw new Error("只能读取当前任务创建的协作任务。");
@@ -1506,19 +1506,19 @@ export class MocoHub implements OrchestratorController {
       },
       redact: (value) => this.connectionManager.redact(value),
     }));
-    this.search = new MocoSearch({ harness: this.harness, stateDir: this.config.stateDir,
+    this.search = new KuloSearch({ harness: this.harness, stateDir: this.config.stateDir,
       credentials: params.credentialStore,
       migrateNativePlan: (plan) => this.#migrateNativeSearchPlan(plan),
       onChanged: () => this.#broadcastCapabilities() });
-    this.voice = new MocoVoiceService({ harness: this.harness, credentials: params.credentialStore,
+    this.voice = new KuloVoiceService({ harness: this.harness, credentials: params.credentialStore,
       resolveModel: (providerId, modelId) => this.#providerManager?.resolveConfiguredModel(providerId, modelId) ?? Promise.resolve(undefined),
       asr: params.voiceAsr ?? new LocalVoiceAsr({ stateDir: this.config.stateDir,
-        onStatus: () => { void this.#broadcastVoice().catch((error: unknown) => console.error("[MocoVoice]", this.connectionManager.redact(error instanceof Error ? error.message : String(error)))); } }),
+        onStatus: () => { void this.#broadcastVoice().catch((error: unknown) => console.error("[KuloVoice]", this.connectionManager.redact(error instanceof Error ? error.message : String(error)))); } }),
       onChanged: () => this.#broadcastVoice() });
-    this.voiceCalls = new MocoVoiceCalls({ voice: this.voice, openLive: params.voiceOpenLive,
+    this.voiceCalls = new KuloVoiceCalls({ voice: this.voice, openLive: params.voiceOpenLive,
       context: async (topicId, principalId) => {
         const cache = await this.#voiceTopic(topicId);
-        const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         for (const ticket of Object.values(state?.tickets ?? {})) {
           if (ticket.originTopicId === topicId && ticket.latestReport?.summary &&
               !isSilentRecoveryFailure(state!, ticket)) this.voiceCalls.taskUpdated(topicId, ticket.id,
@@ -1532,23 +1532,23 @@ export class MocoHub implements OrchestratorController {
       transcript: (topicId, event, callId) => this.#recordVoiceTranscript(topicId, event, callId),
       delegate: async ({ topicId, principalId, callId, delegationId, text }) => {
         await this.#voiceTopic(topicId);
-        await this.sendUserMessage(`[Voice Call Request]\n${text}\nFulfill this spoken request in the active conversation context (delegate complex work via moco_dispatch, or update existing work via moco_steer). Publish full deliverables to this chat and reply with concise, verified facts and status suitable for spoken summary.`,
+        await this.sendUserMessage(`[Voice Call Request]\n${text}\nFulfill this spoken request in the active conversation context (delegate complex work via kulo_dispatch, or update existing work via kulo_steer). Publish full deliverables to this chat and reply with concise, verified facts and status suitable for spoken summary.`,
           { topicId, principalId, requestId: `voice:${callId}:${delegationId}`, voiceDelegation: true });
       } });
-    this.mediaJobs = new MocoMediaJobs({ harness: this.harness, capabilities: this.capabilities, uploads: this.uploads,
+    this.mediaJobs = new KuloMediaJobs({ harness: this.harness, capabilities: this.capabilities, uploads: this.uploads,
       browser: (id, request) => this.envManager.requestBrowser(id, request),
       validateSource: (source, job) => this.#validateMediaSource(source, job),
       validateInput: (id, source) => this.#validateMediaInput(id, source),
       onChanged: () => this.#broadcastCapabilities(), onCompleted: (job) => this.#mediaCompleted(job), onSettled: (job) => this.#mediaSettled(job) });
-    this.projects = new MocoProjects({
+    this.projects = new KuloProjects({
       harness: this.harness,
       envManager: this.envManager,
       stopTicket: (id, reason) => this.stopTicket(id, reason),
       onChanged: () => {
-        void this.#broadcastProjects().catch((error) => console.error("[MocoProjects]", error));
+        void this.#broadcastProjects().catch((error) => console.error("[KuloProjects]", error));
       },
     });
-    this.uiCards = new MocoUiCards({ harness: this.harness, validateAssetReferences: (spec) => {
+    this.uiCards = new KuloUiCards({ harness: this.harness, validateAssetReferences: (spec) => {
       for (const element of Object.values(spec.elements)) {
         if (element.type !== "Media") continue;
         const loaded = this.uploads.getUpload(String(element.props.assetId));
@@ -1564,7 +1564,7 @@ export class MocoHub implements OrchestratorController {
       }
       void this.settingsAssistant.refreshIfConversation(card.originConversationId);
     } });
-    this.actionConfirmations = new MocoActionConfirmations({ harness: this.harness, uiCards: this.uiCards });
+    this.actionConfirmations = new KuloActionConfirmations({ harness: this.harness, uiCards: this.uiCards });
     this.deviceJoinStaging = params.deviceJoinStaging;
     this.settingsAssistant = new SettingsAssistant({
       harness: this.harness,
@@ -1625,7 +1625,7 @@ export class MocoHub implements OrchestratorController {
       deviceController: () => this.#deviceController,
       joinStaging: this.deviceJoinStaging,
       hasRunningLocalTasks: async () => {
-        const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         return Object.values(state?.tickets ?? {}).some((ticket) => isTicketUnfinished(ticket));
       },
       resolveModelMetadata: (req) => this.resolveModelMetadata(req),
@@ -1684,21 +1684,21 @@ export class MocoHub implements OrchestratorController {
   }
 
   static async open(
-    init: MocoHubInitOptions = {},
+    init: KuloHubInitOptions = {},
     context: Context = BACKGROUND_CONTEXT,
-  ): Promise<MocoHub> {
+  ): Promise<KuloHub> {
     const releaseProxy = retainEnvironmentProxy();
     let stateOwner: HubStateOwner | undefined;
-    let hubRef: MocoHub | null = null;
+    let hubRef: KuloHub | null = null;
     let partialEnv: EnvManager | undefined;
-    let partialConnections: MocoConnections | undefined;
+    let partialConnections: KuloConnections | undefined;
     let closePartialStorage: (() => Promise<void>) | undefined;
     try {
     const config = resolveHubConfig(init.config);
     stateOwner = HubStateOwner.acquire(config.stateDir);
     if (!init.storage) await prepareStateStorage(config.stateDir);
     const connectionVault = init.connectionVault ?? init.connectionManager?.localVault ?? new LocalConnectionVault({ stateDir: config.stateDir });
-    const connectionManager = init.connectionManager ?? new MocoConnections({ stateDir: config.stateDir, vault: connectionVault });
+    const connectionManager = init.connectionManager ?? new KuloConnections({ stateDir: config.stateDir, vault: connectionVault });
     partialConnections = connectionManager;
     await connectionManager.initialize();
     const credentialStore = init.credentialStore ?? new SecureCredentialStore({ vault: connectionVault,
@@ -1730,9 +1730,9 @@ export class MocoHub implements OrchestratorController {
       path.join(runtimeRoot, "packages/env/native"),
       path.join(runtimeRoot, "packages/hub/scripts"),
       path.join(runtimeRoot, "packages/env/scripts"),
-      path.join(runtimeRoot, "packages/hub/dist/moco-native-applications"),
+      path.join(runtimeRoot, "packages/hub/dist/kulo-native-applications"),
     ];
-    const uploads = new MocoUploadStore(path.join(config.stateDir, "uploads"));
+    const uploads = new KuloUploadStore(path.join(config.stateDir, "uploads"));
     uploads.cleanupIncompleteUploads();
     uploads.cleanupDrafts();
 
@@ -1740,7 +1740,7 @@ export class MocoHub implements OrchestratorController {
     fs.mkdirSync(mainWorkspaceDir, { recursive: true });
     fs.mkdirSync(defaultIdentityDir, { recursive: true, mode: 0o700 });
 
-    let bootSettings: MocoDurableSettings | null = null;
+    let bootSettings: KuloDurableSettings | null = null;
 
     const envManager = new EnvManager({
       enableLocal: config.enableLocalEnv,
@@ -1775,18 +1775,18 @@ export class MocoHub implements OrchestratorController {
 
     const providerManager = init.models
       ? null
-      : new MocoProviderManager({ stateDir: config.stateDir, credentials: credentialStore });
+      : new KuloProviderManager({ stateDir: config.stateDir, credentials: credentialStore });
     if (providerManager) {
       await providerManager.restoreOfflineCache();
     }
     const providerId =
-      init.providerId ?? (init.models ? MOCO_PROVIDER_ID : MOCO_GATEWAY_PROVIDER_ID);
+      init.providerId ?? (init.models ? KULO_PROVIDER_ID : KULO_GATEWAY_PROVIDER_ID);
     const models: Models = withNativeToolsModels(withThinkingLevelModels(init.models ?? providerManager!.models), {
       fetch: proxyFetch,
       getNativeTools: (provider, id) => {
         if (providerManager && !providerManager.isOfficialNativeSearchAllowed(provider)) return undefined;
         const modelConfig = hubRef ? hubRef.#liveSettings.model : bootSettings?.model ?? config.model;
-        return (provider === MOCO_GATEWAY_PROVIDER_ID ? modelConfig.gatewayModels?.find((model) => model.id === id) :
+        return (provider === KULO_GATEWAY_PROVIDER_ID ? modelConfig.gatewayModels?.find((model) => model.id === id) :
           modelConfig.subscriptionModels?.[provider]?.find((model) => model.id === id) ??
           modelConfig.customProviders?.find((item) => item.id === provider)?.models.find((model) => model.id === id))?.nativeTools;
       },
@@ -1811,7 +1811,7 @@ export class MocoHub implements OrchestratorController {
 
     const rawStorage =
       init.storage ??
-      (await openNodeSqliteStorage(path.join(config.stateDir, "moco.sqlite")));
+      (await openNodeSqliteStorage(path.join(config.stateDir, "kulo.sqlite")));
     closePartialStorage = () => rawStorage.close(BACKGROUND_CONTEXT);
     const storage = wrapRedactedStorage(rawStorage, redact, sealing);
 
@@ -1819,7 +1819,7 @@ export class MocoHub implements OrchestratorController {
     const codingToolsExt = createCodingTools({ images });
     const routerReadTool = createReadTool({ images });
     const routerReadExt = defineExtension({
-      name: "moco-router-read",
+      name: "kulo-router-read",
       tools: [routerReadTool],
     });
 
@@ -1868,7 +1868,7 @@ export class MocoHub implements OrchestratorController {
       const defaultAuthFile = config.memory.authFile ? safeCanonical(path.resolve(config.memory.authFile)) : undefined;
       const dotEnvPath = safeCanonical(path.resolve(".env"));
       if (isInsideLocalOrPosix(canonicalCandidate, liveIdentityDir) || isInsideLocalOrPosix(canonicalCandidate, defaultIdentityCanonical)) {
-        return "主脑沙箱禁止直接读写私有身份目录；请使用 moco_identity_read、moco_identity_propose 或 moco_relationship_update。";
+        return "主脑沙箱禁止直接读写私有身份目录；请使用 kulo_identity_read、kulo_identity_propose 或 kulo_relationship_update。";
       }
       if (
         isInsideLocalOrPosix(canonicalCandidate, resolvedStateDir) &&
@@ -1878,7 +1878,7 @@ export class MocoHub implements OrchestratorController {
           isInsideLocalOrPosix(canonicalCandidate, resolvedMainWorkspace)
         )
       ) {
-        return "主脑沙箱禁止直接访问 Moco 状态库或凭据目录。";
+        return "主脑沙箱禁止直接访问 Kulo 状态库或凭据目录。";
       }
       if (
         canonicalCandidate === dotEnvPath ||
@@ -1896,7 +1896,7 @@ export class MocoHub implements OrchestratorController {
       wrap: (tool: ToolRegistration): ToolRegistration => ({
         ...tool,
         execute: async (args, api, context) => {
-          const state = await api.snapshot(MocoStateDoc, context);
+          const state = await api.snapshot(KuloStateDoc, context);
           const settingsDoc = await api.snapshot(SettingsAssistantDoc, context);
           const activeSettings = isActiveSettingsConversation(api.conversationId, settingsDoc);
           const isOrchestrator = isOrchestratorConversation(api.conversationId, state);
@@ -1921,7 +1921,7 @@ export class MocoHub implements OrchestratorController {
           if (topic?.deletedAt) {
             return blockResult("会话已删除。");
           }
-          let authorizedProject: Awaited<ReturnType<MocoProjects["get"]>> | undefined;
+          let authorizedProject: Awaited<ReturnType<KuloProjects["get"]>> | undefined;
           if (topic?.projectId) {
             try {
               authorizedProject = await hubRef!.projects.get(topic.projectId, context);
@@ -1946,7 +1946,7 @@ export class MocoHub implements OrchestratorController {
                 ticketsShareWriteScope(probe, { envId: p.deviceId, workspaceDir: p.workspaceDir, readOnly: false } as TicketRecord),
               );
               if (overlap) {
-                return `该路径属于已注册项目「${overlap.name}」（${overlap.id}），请在对应项目会话中操作或使用 moco_dispatch(project_id='${overlap.id}')。`;
+                return `该路径属于已注册项目「${overlap.name}」（${overlap.id}），请在对应项目会话中操作或使用 kulo_dispatch(project_id='${overlap.id}')。`;
               }
             }
             const writeProbe = {
@@ -1966,7 +1966,7 @@ export class MocoHub implements OrchestratorController {
                 ),
             );
             if (conflictingTicket) {
-              return `当前工作区正在由活跃工单 ${conflictingTicket.id}（${conflictingTicket.title}）写入中；请勿在主脑争抢同一目录写锁，改用 moco_steer('${conflictingTicket.id}') 或等待该工单完成。`;
+              return `当前工作区正在由活跃工单 ${conflictingTicket.id}（${conflictingTicket.title}）写入中；请勿在主脑争抢同一目录写锁，改用 kulo_steer('${conflictingTicket.id}') 或等待该工单完成。`;
             }
             return undefined;
           };
@@ -2001,7 +2001,7 @@ export class MocoHub implements OrchestratorController {
                 : isInsideLocalOrPosix(absolute, authorizedWorkspaceDir);
               if (!insideAuthorized) {
                 return blockResult(
-                  `主脑仅允许在当前工作区 '${authorizedWorkspaceDir}' 内直接修改文件；跨目录操作请使用 moco_dispatch。`,
+                  `主脑仅允许在当前工作区 '${authorizedWorkspaceDir}' 内直接修改文件；跨目录操作请使用 kulo_dispatch。`,
                 );
               }
               const conflictReason = await checkWriteLockAndProjectScope(absolute);
@@ -2024,7 +2024,7 @@ export class MocoHub implements OrchestratorController {
           for (const pattern of ORCHESTRATOR_NETWORK_SHELL_PATTERNS) {
             if (pattern.test(cmd)) {
               return blockResult(
-                "主脑沙箱处于离线模式，禁止直接运行联网或依赖安装命令；网页查询请用 web_search / web_fetch，需要联网执行的开发任务请用 moco_dispatch。",
+                "主脑沙箱处于离线模式，禁止直接运行联网或依赖安装命令；网页查询请用 web_search / web_fetch，需要联网执行的开发任务请用 kulo_dispatch。",
               );
             }
           }
@@ -2032,10 +2032,10 @@ export class MocoHub implements OrchestratorController {
           if (
             (liveIdentityDir && cmd.includes(liveIdentityDir)) ||
             (config.identityDir && cmd.includes(config.identityDir)) ||
-            cmd.includes(path.join(config.stateDir, "moco.sqlite")) ||
+            cmd.includes(path.join(config.stateDir, "kulo.sqlite")) ||
             cmd.includes(path.join(config.stateDir, "credentials.json"))
           ) {
-            return blockResult("主脑沙箱禁止通过 bash 访问私有身份目录或 Moco 状态凭据文件。");
+            return blockResult("主脑沙箱禁止通过 bash 访问私有身份目录或 Kulo 状态凭据文件。");
           }
           const conflictReason = await checkWriteLockAndProjectScope(authorizedWorkspaceDir);
           if (conflictReason) {
@@ -2055,7 +2055,7 @@ export class MocoHub implements OrchestratorController {
       }),
     });
     const orchestratorGuardExt = defineExtension({
-      name: "moco-orchestrator-guard",
+      name: "kulo-orchestrator-guard",
       wraps: [
         wrapOrchestratorCodingTool("read"),
         wrapOrchestratorCodingTool("write"),
@@ -2066,12 +2066,12 @@ export class MocoHub implements OrchestratorController {
 
     const notifyTicketsChanged = () => {
       if (hubRef) {
-        void hubRef.#broadcastTickets(BACKGROUND_CONTEXT).catch((error) => console.error("[MocoTickets]", error));
+        void hubRef.#broadcastTickets(BACKGROUND_CONTEXT).catch((error) => console.error("[KuloTickets]", error));
         hubRef.#queueWaitReconcile();
       }
     };
 
-    const identityFiles = new MocoIdentityFiles(getLiveIdentityState);
+    const identityFiles = new KuloIdentityFiles(getLiveIdentityState);
 
     const connections: ConnectionToolController = {
       list: (caller, ctx) => hubRef!.#connectionList(caller, ctx),
@@ -2083,7 +2083,7 @@ export class MocoHub implements OrchestratorController {
     };
     const computerUseExt = createComputerUseExtension({
       scope: async (api) => {
-        const state = await hubRef!.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const state = await hubRef!.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         if (isOrchestratorConversation(api.conversationId, state)) {
           const resolved = await hubRef!.#resolveOrchestratorTargetEnvId(
             Number(api.conversationId),
@@ -2103,7 +2103,7 @@ export class MocoHub implements OrchestratorController {
           }
           const assertActive = async () => {
             if (hubRef!.#closed) throw new Error("Hub 已关闭。");
-            const latestState = await hubRef!.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+            const latestState = await hubRef!.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
             const topic = latestState?.topics?.[resolved.topicId];
             if (!topic || topic.deletedAt) throw new Error("会话已删除。");
             const envDesc = envManager.getEnvDescriptor(resolved.envId);
@@ -2128,7 +2128,7 @@ export class MocoHub implements OrchestratorController {
           if (current.ticketId !== source.ticketId || current.envId !== source.envId || current.runEpoch !== source.runEpoch) {
             throw new Error("电脑操作的任务执行资格已失效。");
           }
-          const currentState = await hubRef!.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+          const currentState = await hubRef!.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
           const scope = resolveTicketExecutionScope(currentState, api.conversationId);
           if (scope?.subagent && scope.subagent.state !== "running") {
             throw new Error("子任务已停止，不能继续操作设备。");
@@ -2169,7 +2169,7 @@ export class MocoHub implements OrchestratorController {
           });
         }
         await hubRef!.harness.commit(async (tx) => {
-          const ticket = (await tx.doc(MocoStateDoc)).tickets[scope.ticketId];
+          const ticket = (await tx.doc(KuloStateDoc)).tickets[scope.ticketId];
           if (ticket && ticket.runEpoch === scope.runEpoch && !ticket.deviceStateTouched) {
             ticket.deviceStateTouched = true;
           }
@@ -2234,7 +2234,7 @@ export class MocoHub implements OrchestratorController {
       onTicketWaiting: (id, reason) => {
         if (hubRef && reason !== "user") hubRef.#notifyInlineWaiters(id);
         if (hubRef && reason === "env") hubRef.#queueEnvReconcile();
-        if (hubRef && reason === "connection") void hubRef.#relayConnectionRequest(id).catch((error) => console.error("[MocoConnectionRequest]", redact(error instanceof Error ? error.message : "连接申请转交失败")));
+        if (hubRef && reason === "connection") void hubRef.#relayConnectionRequest(id).catch((error) => console.error("[KuloConnectionRequest]", redact(error instanceof Error ? error.message : "连接申请转交失败")));
       },
       resumeWaitingTicket: async (id, ctx) => { if (hubRef) await hubRef.#resumeWaitingTicket(id, ctx); },
       prepareTicketRelease: (ticket) => hubRef!.#releaseTicketExecution(ticket, { park: Boolean(ticket.waiting) && isTicketUnfinished(ticket) }),
@@ -2253,7 +2253,7 @@ export class MocoHub implements OrchestratorController {
       onTicketsChanged: notifyTicketsChanged,
       onTicketRunning: (ticketId, workerConversationId, runEpoch) => {
         if (hubRef) void hubRef.#trackWorkerRunning(ticketId, workerConversationId, runEpoch).catch((error) => {
-          if (hubRef && !hubRef.#closed) console.error("[MocoWorkerTracking]", redact(error instanceof Error ? error.message : String(error)));
+          if (hubRef && !hubRef.#closed) console.error("[KuloWorkerTracking]", redact(error instanceof Error ? error.message : String(error)));
         });
       },
       onTicketSettled: (ticketId) => {
@@ -2267,7 +2267,7 @@ export class MocoHub implements OrchestratorController {
     });
 
     const schedulerExt = defineExtension({
-      name: "moco-scheduler",
+      name: "kulo-scheduler",
       tasks: [workerTicketTask, failureRecoveryTask],
     });
 
@@ -2314,7 +2314,7 @@ export class MocoHub implements OrchestratorController {
             }),
       getPersonalityContext: () => hubRef!.personality.context(),
     });
-    const tailKeys = new Set(["moco_envs", "moco_projects", "moco_recent_work"]);
+    const tailKeys = new Set(["kulo_envs", "kulo_projects", "kulo_recent_work"]);
     const headSections = allOrchestratorSections.filter((sec) => !tailKeys.has(sec.key));
     const tailSections = allOrchestratorSections.filter((sec) => tailKeys.has(sec.key));
 
@@ -2325,7 +2325,7 @@ export class MocoHub implements OrchestratorController {
       () => hubRef!.search,
     );
     const orchestratorTailExt = defineExtension({
-      name: "moco-orchestrator-tail",
+      name: "kulo-orchestrator-tail",
       sections: tailSections,
     });
     const projectController: ProjectController = {
@@ -2388,7 +2388,7 @@ export class MocoHub implements OrchestratorController {
     const contentExt = createContentToolsExtension({
       get: () => hubRef!.uiCards,
       scope: async (api) => {
-        const state = await api.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const state = await api.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         const conversationId = Number(api.conversationId);
         if (isOrchestratorConversation(api.conversationId, state)) {
           const topicId = state?.conversationToTopic?.[String(conversationId)] ?? "root";
@@ -2407,7 +2407,7 @@ export class MocoHub implements OrchestratorController {
 
     const skillExt = createSkillToolsExtension({ get: () => hubRef!.skills, audience: (api) => hubRef!.skillAudience(Number(api.conversationId)),
       runtimeContext: async (api, context, requirements) => {
-        const state = await harness.snapshot(MocoStateDoc, context);
+        const state = await harness.snapshot(KuloStateDoc, context);
         if (isOrchestratorConversation(api.conversationId, state)) {
           try {
             const resolved = await hubRef!.#resolveOrchestratorTargetEnvId(
@@ -2442,7 +2442,7 @@ export class MocoHub implements OrchestratorController {
       },
       executionScope: async (api) => {
         const source = await hubRef!.mediaSource(Number(api.conversationId));
-        const state = await harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const state = await harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         const ticket = source.ticketId ? state?.tickets[source.ticketId] : undefined;
         if (!ticket?.scratchDir) throw new Error("当前任务没有可用的临时目录。");
         return { scratchDir: ticket.scratchDir, assertActive: () => hubRef!.#validateMediaSource(source) };
@@ -2474,12 +2474,12 @@ export class MocoHub implements OrchestratorController {
           await hubRef!.settingsAssistant.refreshIfConversation(settingsConvId);
           return;
         }
-        const state = await harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const state = await harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         const topic = state?.topics?.[source.topicId];
         if (!topic || topic.deletedAt) throw new VoiceError(404, "voice_topic_not_found", "语音所属会话不可用。");
         uploads.bindAttachments([asset], `conversation:${topic.conversationId}`, `agent:${source.conversationId}`);
         await harness.commit(async (tx) => {
-          const current = await tx.doc(MocoStateDoc);
+          const current = await tx.doc(KuloStateDoc);
           const target = current.topics?.[source.topicId];
           if (!target || target.deletedAt || target.conversationId !== topic.conversationId) throw new VoiceError(409, "voice_speech_scope_changed", "语音所属会话已变更。");
           if (source.ticketId) {
@@ -2510,7 +2510,7 @@ export class MocoHub implements OrchestratorController {
         return hubRef!.#androidHubId;
       },
       scope: async (api) => {
-        const state = await hubRef!.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const state = await hubRef!.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         const execution = resolveTicketExecutionScope(state, api.conversationId);
         if (!execution || execution.ticket.status !== "running" || execution.subagent && execution.subagent.state !== "running") {
           throw new Error("手机操作需要有效的运行中任务。");
@@ -2519,7 +2519,7 @@ export class MocoHub implements OrchestratorController {
         const deviceIds = [...(ticket.androidDeviceIds ?? (ticket.executionDomain === "android" ? [ticket.envId] : []))];
         if (!deviceIds.length) throw new Error("此任务未获准操作手机。");
         const assertActive = async () => {
-          const current = await hubRef!.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+          const current = await hubRef!.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
           const active = resolveTicketExecutionScope(current, api.conversationId);
           if (!active || active.ticket.id !== ticket.id || active.ticket.runEpoch !== ticket.runEpoch || active.ticket.status !== "running" ||
               active.subagent && active.subagent.state !== "running" ||
@@ -2585,7 +2585,7 @@ export class MocoHub implements OrchestratorController {
     const harness = await Harness.open(
       storage,
       {
-        models: withMocoCompactionFocus(models),
+        models: withKuloCompactionFocus(models),
         registry,
         identity: { attribution: null },
         settings: () => {
@@ -2612,7 +2612,7 @@ export class MocoHub implements OrchestratorController {
         },
         env: async (target, ctx) => {
           const settingsAssistant = await target.read.snapshot(SettingsAssistantDoc, ctx);
-          const state = await target.read.snapshot(MocoStateDoc, ctx);
+          const state = await target.read.snapshot(KuloStateDoc, ctx);
           const activeSettings = isActiveSettingsConversation(target.conversationId, settingsAssistant);
           if (isOrchestratorConversation(target.conversationId, state) || activeSettings) {
             const topicId = activeSettings ? undefined : state?.conversationToTopic?.[String(target.conversationId)];
@@ -2620,7 +2620,7 @@ export class MocoHub implements OrchestratorController {
             if (topic?.deletedAt) throw new ProjectError(404, "topic_deleted", "会话已删除。");
             if (topic?.projectId) {
               const project = await hubRef!.projects.get(topic.projectId, ctx);
-              return lazyProjectEnvironment(`moco-project:${project.id}`, project.workspaceDir, async () => {
+              return lazyProjectEnvironment(`kulo-project:${project.id}`, project.workspaceDir, async () => {
                 const authorized = await hubRef!.projects.ensureAuthorized(project.id, ctx);
                 const envInfo = envManager.getEnvDescriptor(authorized.deviceId);
                 const implementation = authorized.platform === "win32" ? path.win32 : path.posix;
@@ -2644,7 +2644,7 @@ export class MocoHub implements OrchestratorController {
             const cwd = target.cwd ?? envInfo?.rootDir ?? mainWorkspaceDir;
             const execOptions = { sandboxed: true, offline: true, readOnly: activeSettings };
             if (defaultEnvId) return envManager.createExecutionEnv(defaultEnvId, cwd, execOptions);
-            return lazyProjectEnvironment(`moco-env:${candidateEnv.id}`, cwd, async () => {
+            return lazyProjectEnvironment(`kulo-env:${candidateEnv.id}`, cwd, async () => {
               const resolvedId = envManager.pickDefaultEnvId();
               const resolvedInfo = envManager.getEnvDescriptor(resolvedId);
               return envManager.createExecutionEnv(resolvedId, target.cwd ?? resolvedInfo?.rootDir ?? mainWorkspaceDir, execOptions);
@@ -2681,7 +2681,7 @@ export class MocoHub implements OrchestratorController {
             report.kind === "extension_error" ||
             report.kind === "host_error"
           ) {
-            console.error(`[MocoHub:${report.kind}]`, redact(report.error instanceof Error ? report.error.message : String(report.error)));
+            console.error(`[KuloHub:${report.kind}]`, redact(report.error instanceof Error ? report.error.message : String(report.error)));
           }
         },
       },
@@ -2689,14 +2689,14 @@ export class MocoHub implements OrchestratorController {
     );
 
     closePartialStorage = () => harness.close(BACKGROUND_CONTEXT);
-    const hasGatewayCredential = Boolean(await credentialStore.read(MOCO_GATEWAY_PROVIDER_ID));
+    const hasGatewayCredential = Boolean(await credentialStore.read(KULO_GATEWAY_PROVIDER_ID));
     const hydratedSettings = await harness.commit(async (tx) => {
-      const stateDoc = await tx.doc(MocoStateDoc);
-      const settingsDoc = await tx.doc(MocoSettingsDoc);
+      const stateDoc = await tx.doc(KuloStateDoc);
+      const settingsDoc = await tx.doc(KuloSettingsDoc);
       hydrateSettingsFromConfig(settingsDoc, config, { hasGatewayCredential });
       assertMemoryIdentitySeparation(settingsDoc.memory, config, envManager);
       ensureDefaultRootTopic(stateDoc, settingsDoc.presentation.agentName);
-      return cloneJson(settingsDoc) as MocoDurableSettings;
+      return cloneJson(settingsDoc) as KuloDurableSettings;
     }, context);
 
     bootSettings = hydratedSettings;
@@ -2745,7 +2745,7 @@ export class MocoHub implements OrchestratorController {
       context,
     );
 
-    const hub = new MocoHub({
+    const hub = new KuloHub({
       releaseProxy,
       stateOwner,
       config,
@@ -2813,7 +2813,7 @@ export class MocoHub implements OrchestratorController {
     await hub.#ticketBoard.open(harness, () => {
       if (hub.#closed) return;
       try { hub.#refreshTicketState(); }
-      catch (error) { console.error("[MocoTickets]", redact(error instanceof Error ? error.message : String(error))); }
+      catch (error) { console.error("[KuloTickets]", redact(error instanceof Error ? error.message : String(error))); }
     }, context);
     await hub.skills.initialize();
     await hub.capabilities.initialize();
@@ -2829,7 +2829,7 @@ export class MocoHub implements OrchestratorController {
 
     // Reattach only unfinished topic sources before Durable resumes them; idle histories stay unloaded.
     const [unfinished, topicState] = await Promise.all([
-      harness.inspect(context), harness.snapshot(MocoStateDoc, context),
+      harness.inspect(context), harness.snapshot(KuloStateDoc, context),
     ]);
     const activeConversations = new Set(unfinished.submissions.map((submission) => Number(submission.conversationId)));
     for (const topic of Object.values(topicState?.topics ?? {})) {
@@ -2840,7 +2840,7 @@ export class MocoHub implements OrchestratorController {
     await hub.#reconfigureOrchestratorConversations(context);
 
     await harness.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       for (const ticket of Object.values(state.tickets)) {
         if (ticket.deliveryClaim === "inline_waiting") {
           ticket.deliveryClaim = "escalated";
@@ -2876,7 +2876,7 @@ export class MocoHub implements OrchestratorController {
         hub.#topicTitles.observe(topicId, cache.messages, cache.live.busy || Boolean(cache.live.runFailure));
       } catch (error) {
         // A pending project binding may temporarily block its source view, not the Hub itself.
-        console.warn("[MocoTopicTitle] Source unavailable during recovery", topicId, error instanceof ProjectError ? error.code : error instanceof Error ? error.name : "error");
+        console.warn("[KuloTopicTitle] Source unavailable during recovery", topicId, error instanceof ProjectError ? error.code : error instanceof Error ? error.name : "error");
       }
     }
     await hub.settingsAssistant.start();
@@ -2892,7 +2892,7 @@ export class MocoHub implements OrchestratorController {
       for (const action of cleanup) {
         try { await action?.(); } catch (failure) { failures.push(failure); }
       }
-      if (failures.length > 1) throw new AggregateError(failures, "Moco 启动失败，关闭部分资源时也遇到了错误。", { cause: error });
+      if (failures.length > 1) throw new AggregateError(failures, "Kulo 启动失败，关闭部分资源时也遇到了错误。", { cause: error });
       throw error;
     }
   }
@@ -2906,7 +2906,7 @@ export class MocoHub implements OrchestratorController {
 
   async listComputerPreviews(topicId: string): Promise<ComputerPreviewSessionView[]> {
     if (this.#closed || !topicId || topicId.length > 256) return [];
-    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const topic = state?.topics?.[topicId];
     if (!topic || topic.deletedAt) return [];
     const sessions: ComputerPreviewSessionView[] = [];
@@ -2960,8 +2960,8 @@ export class MocoHub implements OrchestratorController {
   }
 
   async #assertConnectionCaller(caller: ConnectionCaller, context: Context) {
-    if (this.#closed) throw new Error("Moco 正在关闭，连接授权已停止。");
-    const state = await this.harness.snapshot(MocoStateDoc, context);
+    if (this.#closed) throw new Error("Kulo 正在关闭，连接授权已停止。");
+    const state = await this.harness.snapshot(KuloStateDoc, context);
     if (caller.kind === "orchestrator") {
       if (isOrchestratorConversation(caller.conversationId as ConversationId, state)) {
         const topicId = state?.conversationToTopic?.[String(caller.conversationId)];
@@ -3009,7 +3009,7 @@ export class MocoHub implements OrchestratorController {
     const pending = (await this.connectionManager.snapshot()).requests.filter((request) => request.connectionId === id && request.status === "pending");
     await this.connectionManager.remove(id);
     await this.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       for (const ticket of Object.values(state.tickets)) if (ticket.connectionIds?.includes(id)) {
         ticket.connectionIds = ticket.connectionIds.filter((value) => value !== id);
         if (ticket.connectionRevisions) delete ticket.connectionRevisions[id];
@@ -3049,7 +3049,7 @@ export class MocoHub implements OrchestratorController {
       requestId: `${caller.ticketId}:${caller.runEpoch}:${input.requestId}` });
     if (request.status !== "pending") return request;
     await this.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const ticket = state.tickets[caller.ticketId];
       if (!ticket || ticket.runEpoch !== caller.runEpoch || ticket.status !== "running") throw new Error("任务已停止。");
       if (ticket.waiting && ticket.waiting.waitToken !== request.id) throw new Error("任务已有待处理事项。");
@@ -3061,7 +3061,7 @@ export class MocoHub implements OrchestratorController {
   }
 
   async #relayConnectionRequest(ticketId: string): Promise<void> {
-    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const ticket = state?.tickets[ticketId];
     if (!ticket || ticket.status !== "waiting" || ticket.waiting?.reason !== "connection" || !ticket.waiting.waitToken) return;
     const request = await this.connectionManager.getRequest(ticket.waiting.waitToken);
@@ -3073,9 +3073,9 @@ export class MocoHub implements OrchestratorController {
     const origin = await this.harness.conversation((ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) as ConversationId, BACKGROUND_CONTEXT);
     if (!origin) return;
     await this.harness.commit(async (tx) => {
-      await injectEventToolsInTx(tx, origin.id, ["moco_connections", "moco_connection_decide", "moco_connection_grant"]);
+      await injectEventToolsInTx(tx, origin.id, ["kulo_connections", "kulo_connection_decide", "kulo_connection_grant"]);
       return submitAutomaticChatInput(tx, origin, { type: "input", content: this.connectionManager.redact(formatConnectionRequestMessage(JSON.stringify({ requestId: request.id, ticketId, connectionId: request.connectionId, reason: request.reason }))),
-        whenBusy: "followUp", requestId: `moco:connection-request:${request.id}` });
+        whenBusy: "followUp", requestId: `kulo:connection-request:${request.id}` });
     }, BACKGROUND_CONTEXT);
     await this.#broadcastTickets(BACKGROUND_CONTEXT);
   }
@@ -3083,11 +3083,11 @@ export class MocoHub implements OrchestratorController {
   async #resumeConnectionDecision(requestId: string, approved: boolean, context: Context) {
     const request = await this.connectionManager.getRequest(requestId);
     if (!request) throw new Error("连接权限申请不存在。");
-    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const state = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = state?.tickets[request.ticketId];
     if (!ticket || !isTicketUnfinished(ticket) || ticket.waiting?.reason !== "connection" || ticket.waiting.waitToken !== request.id) return;
     await this.harness.commit(async (tx) => {
-      const current = (await tx.doc(MocoStateDoc)).tickets[request.ticketId];
+      const current = (await tx.doc(KuloStateDoc)).tickets[request.ticketId];
       if (current && isTicketUnfinished(current) && current.waiting?.waitToken === request.id) {
         if (approved) {
           current.connectionIds = [...new Set([...(current.connectionIds ?? []), request.connectionId])];
@@ -3096,12 +3096,12 @@ export class MocoHub implements OrchestratorController {
           current.connectionRevisions = { ...(current.connectionRevisions ?? {}), [request.connectionId]: connection.revision };
         }
         if (current.workerConversationId) {
-          await injectEventToolsInTx(tx, current.workerConversationId, ["moco_connections", "moco_connection_use"]);
+          await injectEventToolsInTx(tx, current.workerConversationId, ["kulo_connections", "kulo_connection_use"]);
         }
       }
     }, context);
     return this.steerTicket({ ticketId: ticket.id, commandId: `connection-decision:${request.id}:${approved ? "approved" : "rejected"}`,
-      text: approved ? `Connection access approved for ${request.connectionId}. Continue via moco_connection_use; credentials remain handled by the execution layer.` :
+      text: approved ? `Connection access approved for ${request.connectionId}. Continue via kulo_connection_use; credentials remain handled by the execution layer.` :
         `Connection access denied for ${request.connectionId}. Continue within existing permissions or report what cannot be completed.` }, context);
   }
 
@@ -3128,7 +3128,7 @@ export class MocoHub implements OrchestratorController {
     await this.connectionManager.grant(ticket.id, ticket.runEpoch, input.connectionIds);
     const revisions = Object.fromEntries((await this.connectionManager.snapshot()).connections.filter((item) => input.connectionIds.includes(item.id)).map((item) => [item.id, item.revision]));
     await this.harness.commit(async (tx) => {
-      const current = (await tx.doc(MocoStateDoc)).tickets[ticket.id];
+      const current = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
       if (!current || !isTicketUnfinished(current)) throw new Error("任务已结束。");
       current.connectionIds = [...new Set([...(current.connectionIds ?? []), ...input.connectionIds])];
       current.connectionRevisions = { ...(current.connectionRevisions ?? {}), ...revisions };
@@ -3166,7 +3166,7 @@ export class MocoHub implements OrchestratorController {
   }
 
   async #mainConversationIds(includeDeleted = false): Promise<ConversationId[]> {
-    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     return [...new Set([Number(this.rootConversation.id), ...Object.values(state?.topics ?? {})
       .filter((topic) => includeDeleted || topic.deletedAt === undefined).map((topic) => topic.conversationId)])] as ConversationId[];
   }
@@ -3233,7 +3233,7 @@ export class MocoHub implements OrchestratorController {
   }
 
   async #voiceTopic(topicId: string) {
-    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const topic = state?.topics && Object.hasOwn(state.topics, topicId) ? state.topics[topicId] : undefined;
     if (!topic || topic.deletedAt) throw new VoiceError(404, "voice_topic_not_found", "通话所属会话不存在或已删除。");
     if (topic.projectId) await this.projects.ensureAuthorized(topic.projectId, BACKGROUND_CONTEXT);
@@ -3246,7 +3246,7 @@ export class MocoHub implements OrchestratorController {
     const text = event.role === "user" ? (await this.connectionManager.processText(event.text)).text : this.connectionManager.redact(event.text);
     await cache.conversation.submit({ type: "write", entry: { kind: VoiceTranscriptEntry.kind,
       data: { callId, role: event.role, text, createdAt: Date.now() },
-      model: [{ role: "user", content: `[MOCO_VOICE_CONTEXT: ${event.role === "user" ? "用户" : "Moco"}在通话中说]\n${text}`, timestamp: Date.now() }] },
+      model: [{ role: "user", content: `[KULO_VOICE_CONTEXT: ${event.role === "user" ? "用户" : "Kulo"}在通话中说]\n${text}`, timestamp: Date.now() }] },
       ...(event.id ? { requestId: `voice-transcript:${callId}:${event.role}:${event.id}` } : {}) }, BACKGROUND_CONTEXT);
     this.#refreshTopicContent(cache);
   }
@@ -3280,7 +3280,7 @@ export class MocoHub implements OrchestratorController {
   }
 
   async mediaSource(conversationId: number): Promise<MediaJobSource> {
-    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     if (isOrchestratorConversation(conversationId as ConversationId, state)) {
       const topicId = state?.conversationToTopic?.[String(conversationId)] ?? "root";
       const topic = state?.topics?.[topicId];
@@ -3298,13 +3298,13 @@ export class MocoHub implements OrchestratorController {
       runEpoch: scope.ticket.runEpoch, readOnly: scope.readOnly };
   }
 
-  async #resolveAndroidInput(scope: AndroidToolScope & { deviceId: string }, action: import("@moco/protocol").AndroidAction, args: Record<string, unknown>) {
+  async #resolveAndroidInput(scope: AndroidToolScope & { deviceId: string }, action: import("@kulo/protocol").AndroidAction, args: Record<string, unknown>) {
     if (action !== "audio_transcribe" || args.audioRef === undefined && args.filePath === undefined) return args;
     if (args.captureId !== undefined) throw new Error("文件转写和实时录音引用不能同时提供。");
     const ids = new Set<string>();
     const reference = (value: unknown) => {
       if (typeof value !== "string") throw new Error("音频附件引用无效。");
-      const id = value.startsWith("moco-asset:") ? value.slice("moco-asset:".length)
+      const id = value.startsWith("kulo-asset:") ? value.slice("kulo-asset:".length)
         : value.startsWith("/api/uploads/") ? value.slice("/api/uploads/".length) : value;
       if (!/^att_[a-z0-9_]{6,48}$/.test(id)) throw new Error("只能使用当前任务的Hub音频附件，不能访问文件路径或外部URL。");
       ids.add(id);
@@ -3332,14 +3332,14 @@ export class MocoHub implements OrchestratorController {
       bytes: record.size, size: record.size, kind: record.kind, sha256 } };
   }
 
-  async #resolveAndroidAssets(scope: AndroidToolScope & { deviceId: string; supportsImages: boolean }, result: import("@moco/protocol").AndroidResult) {
+  async #resolveAndroidAssets(scope: AndroidToolScope & { deviceId: string; supportsImages: boolean }, result: import("@kulo/protocol").AndroidResult) {
     const output: Array<import("@earendil-works/pi-ai").ImageContent> = [];
     if (!result.data || typeof result.data !== "object" || Array.isArray(result.data)) return output;
     const data = result.data as Record<string, unknown>;
     const assets = [...(data.attachment ? [data.attachment] : []), ...(Array.isArray(data.attachments) ? data.attachments : [])];
     if (assets.length > 8) throw new Error("手机返回的资源数量过多。");
     await scope.assertActive();
-    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const ticket = state?.tickets[scope.ticketId];
     if (!ticket || ticket.runEpoch !== scope.runEpoch) throw new Error("手机资源所属任务已失效。");
     for (const asset of assets) {
@@ -3492,7 +3492,7 @@ export class MocoHub implements OrchestratorController {
   }
 
   async #validateMediaInput(assetId: string, source: MediaJobSource): Promise<void> {
-    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const scopes = new Set([`conversation:${source.conversationId}`]);
     if (source.ticketId) {
       const ticket = state?.tickets[source.ticketId];
@@ -3508,7 +3508,7 @@ export class MocoHub implements OrchestratorController {
       imageSetupIdentifier(source.setupClientId, "窗口标识");
       if (source.conversationId !== Number(this.rootConversation.id) || source.topicId !== "root" || source.ticketId) throw new Error("图像测试来源无效。");
     }
-    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const settingsConvId = parseSettingsTopicConversationId(source.topicId);
     if (settingsConvId !== null) {
       const settings = await this.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
@@ -3544,13 +3544,13 @@ export class MocoHub implements OrchestratorController {
     const message = `媒体作业${needsUser ? "需要处理" : job.status === "stopped" ? "已停止跟踪" : "失败"}：${job.error ?? job.id}`;
     const noticeKey = `${job.id}:${job.status}:${job.updatedAt}`;
     let wakeTicket: string | undefined;
-    const snapshot = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const snapshot = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const settingsSnapshot = await this.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
     const settingsConvId = parseSettingsTopicConversationId(job.source.topicId);
     const recipientId = settingsConvId ?? snapshot?.topics?.[job.source.topicId]?.conversationId;
     const recipient = job.source.ticketId && recipientId !== undefined ? await this.harness.conversation(recipientId as ConversationId, BACKGROUND_CONTEXT) : undefined;
     await this.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const settingsDoc = await tx.doc(SettingsAssistantDoc);
       const notices = await tx.doc(MediaNoticesDoc);
       if (notices.notices[noticeKey]) return;
@@ -3564,8 +3564,8 @@ export class MocoHub implements OrchestratorController {
       if (!ticket) {
         await tx.appendEntry(ContentPublicationEntry, targetConvId as ConversationId, { data: { parts: [{ partId: `media-notice:${noticeKey}`, type: "markdown", text: message }], fallbackText: message, createdAt: Date.now() } as unknown as ContentPublicationData & JsonObject });
       } else if (needsUser && recipient?.id === targetConvId) {
-        await submitAutomaticChatInput(tx, recipient, { type: "input", whenBusy: "followUp", requestId: `moco:media-review:${noticeKey}`,
-          content: `[MOCO_WORKER_RELAY]\nBackground media job requires coordinator attention: ${message}\nVerify the actual issue first before deciding whether to inform the user; this notice grants no extra execution permissions.`,
+        await submitAutomaticChatInput(tx, recipient, { type: "input", whenBusy: "followUp", requestId: `kulo:media-review:${noticeKey}`,
+          content: `[KULO_WORKER_RELAY]\nBackground media job requires coordinator attention: ${message}\nVerify the actual issue first before deciding whether to inform the user; this notice grants no extra execution permissions.`,
           entry: { kind: WorkerRelayEntry.kind, data: { ticketId: ticket.id, title: ticket.title, role: ticket.role, state: "blocked", summary: message, deliverable: null, question: message } },
         });
       }
@@ -3577,7 +3577,7 @@ export class MocoHub implements OrchestratorController {
         } else {
           ticket.waiting.externalJobIds = ticket.waiting.externalJobIds.filter((id) => id !== job.id);
           ticket.wakePending = true;
-          ticket.resumePrompt = [ticket.resumePrompt, message, "Inspect the original job via moco_media_job rather than resubmitting a paid generation."].filter(Boolean).join("\n");
+          ticket.resumePrompt = [ticket.resumePrompt, message, "Inspect the original job via kulo_media_job rather than resubmitting a paid generation."].filter(Boolean).join("\n");
           wakeTicket = ticket.id;
         }
       }
@@ -3593,7 +3593,7 @@ export class MocoHub implements OrchestratorController {
 
   async #mediaCompleted(job: MediaJob): Promise<void> {
     if (job.source.setupClientId) { await this.mediaJobs.markDelivered(job.id); return; }
-    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const settingsDoc = await this.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
     const settingsConvId = parseSettingsTopicConversationId(job.source.topicId);
     const topic = state?.topics?.[job.source.topicId];
@@ -3621,17 +3621,17 @@ export class MocoHub implements OrchestratorController {
     if (settingsConvId !== null) await this.settingsAssistant.refreshIfConversation(settingsConvId);
     if (ticket) {
       await this.harness.commit(async (tx) => {
-        const current = (await tx.doc(MocoStateDoc)).tickets[ticket.id];
+        const current = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
         if (!current || ["stopped", "closed"].includes(current.status) ||
           !(current.waiting?.reason === "external" || current.waiting?.reason === "user") || !current.waiting.externalJobIds?.includes(job.id)) return;
         current.waiting.externalJobIds = current.waiting.externalJobIds.filter((id) => id !== job.id);
         current.wakePending = true;
         current.resumeAttachmentIds = [...new Set([...(current.resumeAttachmentIds ?? []), ...job.assets.map((asset) => asset.id)])];
-        current.resumePrompt = [current.resumePrompt, `Media job ${job.id} completed with asset(s): ${job.assets.map((asset) => asset.id).join(", ")}. Assets are staged privately (not yet published to the user)—reuse them and submit via moco_report for coordinator review (use moco_media_export to write into the project workspace; do not regenerate).`].filter(Boolean).join("\n");
+        current.resumePrompt = [current.resumePrompt, `Media job ${job.id} completed with asset(s): ${job.assets.map((asset) => asset.id).join(", ")}. Assets are staged privately (not yet published to the user)—reuse them and submit via kulo_report for coordinator review (use kulo_media_export to write into the project workspace; do not regenerate).`].filter(Boolean).join("\n");
         await injectEventToolsInTx(
           tx,
           current.workerConversationId,
-          current.readOnly ? ["moco_publish_asset"] : ["moco_media_export", "moco_publish_asset"],
+          current.readOnly ? ["kulo_publish_asset"] : ["kulo_media_export", "kulo_publish_asset"],
         );
       }, BACKGROUND_CONTEXT);
       if (!this.#recovering) { await this.#queueWaitReconcile(); await this.#resumeWaitingTicket(ticket.id, BACKGROUND_CONTEXT); }
@@ -3641,7 +3641,7 @@ export class MocoHub implements OrchestratorController {
 
   async #stageWorkerArtifact(asset: ChatAttachment, source: MediaJobSource, callId: string): Promise<void> {
     if (!source.ticketId) throw new UiCardError("content_scope_denied", "产物缺少 Worker 任务归属。", 403);
-    const snapshot = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const snapshot = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const settingsSnapshot = await this.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
     const ticket = snapshot?.tickets[source.ticketId];
     const settingsConvId = parseSettingsTopicConversationId(source.topicId);
@@ -3652,7 +3652,7 @@ export class MocoHub implements OrchestratorController {
     await this.uiCards.stageAsset({ path: `worker-asset:${asset.id}`, name: asset.name },
       { conversationId: ticket.workerConversationId, callId, ticketId: ticket.id, topicId: source.topicId }, async () => asset,
       async (tx, staged) => {
-        const state = await tx.doc(MocoStateDoc);
+        const state = await tx.doc(KuloStateDoc);
         const settingsDoc = await tx.doc(SettingsAssistantDoc);
         const current = state.tickets[ticket.id];
         const originValid = settingsConvId !== null
@@ -3665,11 +3665,11 @@ export class MocoHub implements OrchestratorController {
         const artifacts = state.workerArtifacts[current.id] ?? [];
         if (!artifacts.some((entry) => entry.id === staged.id)) state.workerArtifacts[current.id] = [...artifacts, staged];
         const originConvId = settingsConvId ?? state.topics?.[source.topicId]?.conversationId ?? Number(ROOT_CONVERSATION_ID);
-        await injectEventToolsInTx(tx, originConvId, ["moco_inspect_asset", "moco_publish_asset"]);
+        await injectEventToolsInTx(tx, originConvId, ["kulo_inspect_asset", "kulo_publish_asset"]);
       });
   }
 
-  getSettingsView(): MocoSettingsView {
+  getSettingsView(): KuloSettingsView {
     return toPublicSettingsView(this.#liveSettings, this.#defaultIdentityDir);
   }
 
@@ -3678,7 +3678,7 @@ export class MocoHub implements OrchestratorController {
     const [projects, topics] = await Promise.all([this.projects.list(), this.listTopics()]);
     for (const listener of this.#listeners) listener.onProjects?.(projects);
     this.#emitTopics(topics);
-    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     for (const [id, cache] of this.#topicCaches) {
       if (!state?.topics?.[id]?.deletedAt) continue;
       await this.#closeOrchestratorBrowserSession(id);
@@ -3691,7 +3691,7 @@ export class MocoHub implements OrchestratorController {
   #queueWaitReconcile(): Promise<void> {
     this.#waitTransition = this.#waitTransition.then(async () => {
       if (this.#closed) return;
-      let state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+      let state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
       // A result can arrive before the Worker commits its wait; recover that edge from durable job state.
       for (const ticket of Object.values(state?.tickets ?? {})) {
         if (!(ticket.waiting?.reason === "external" || ticket.waiting?.reason === "user") || !isTicketUnfinished(ticket)) continue;
@@ -3699,7 +3699,7 @@ export class MocoHub implements OrchestratorController {
           const job = await this.mediaJobs.get(id);
           if (!["completed", "failed", "stopped", "needs_user", "needs_reconciliation"].includes(job.status)) continue;
           await this.harness.commit(async (tx) => {
-            const current = (await tx.doc(MocoStateDoc)).tickets[ticket.id];
+            const current = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
             if (!current || !isTicketUnfinished(current) ||
               !(current.waiting?.reason === "external" || current.waiting?.reason === "user") || !current.waiting.externalJobIds?.includes(id)) return;
             if (["needs_user", "needs_reconciliation"].includes(job.status)) {
@@ -3715,7 +3715,7 @@ export class MocoHub implements OrchestratorController {
           }, BACKGROUND_CONTEXT);
         }
       }
-      state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+      state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
       for (const ticket of Object.values(state?.tickets ?? {})) {
         if (ticket.status !== "running" && ticket.status !== "pausing") continue;
         const waiting = ticket.waiting ?? (ticket.latestReport?.state === "blocked"
@@ -3723,21 +3723,21 @@ export class MocoHub implements OrchestratorController {
         if (waiting) await this.#parkTicket(ticket.id, waiting);
       }
       if (!this.#recovering) {
-        const after = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const after = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         for (const ticket of Object.values(after?.tickets ?? {})) if (ticket.status === "waiting" && ticket.wakePending) await this.#resumeWaitingTicket(ticket.id, BACKGROUND_CONTEXT);
       }
-      const connections = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+      const connections = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
       for (const ticket of Object.values(connections?.tickets ?? {})) {
         if (ticket.status === "waiting" && ticket.waiting?.reason === "connection") await this.#relayConnectionRequest(ticket.id);
       }
-    }).catch((error) => { console.error("[MocoWaitReconcile]", error); });
+    }).catch((error) => { console.error("[KuloWaitReconcile]", error); });
     return this.#waitTransition;
   }
 
   #queueEnvReconcile(): Promise<void> {
     this.#envTransition = this.#envTransition.then(async () => {
       if (this.#closed) return;
-      const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+      const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
       for (const ticket of Object.values(state?.tickets ?? {})) {
         if (!isTicketUnfinished(ticket)) continue;
         const online = this.#ticketDevicesOnline(ticket);
@@ -3749,13 +3749,13 @@ export class MocoHub implements OrchestratorController {
       for (const env of this.envManager.listEnvs()) {
         if (!env.online) continue;
         try { if (env.executionKind !== "native-device") await this.projects.reconcileDevice(env.id); }
-        catch (error) { console.error(`[MocoProjects:reconcile:${env.id}]`, error); }
-        const current = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        catch (error) { console.error(`[KuloProjects:reconcile:${env.id}]`, error); }
+        const current = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         for (const ticket of Object.values(current?.tickets ?? {})) {
           if ((ticket.envId !== env.id && !this.#androidTargets(ticket).includes(env.id)) || !ticket.cleanupPending || current?.slots.holders.includes(ticket.id)) continue;
           const cleanup = await this.#releaseTicketExecution(ticket, { park: Boolean(ticket.waiting) && isTicketUnfinished(ticket) });
           await this.harness.commit(async (tx) => {
-            const next = await tx.doc(MocoStateDoc);
+            const next = await tx.doc(KuloStateDoc);
             const t = next.tickets[ticket.id];
             if (!t || t.runEpoch !== ticket.runEpoch) return;
             t.cleanupPending = cleanup.cleanupPending;
@@ -3776,7 +3776,7 @@ export class MocoHub implements OrchestratorController {
             if (!cleanup.cleanupPending && !["running", "pausing"].includes(t.status)) releaseSlot(next, t.id);
           }, BACKGROUND_CONTEXT);
         }
-        const waiting = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const waiting = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         for (const ticket of Object.values(waiting?.tickets ?? {})) {
           if ((ticket.envId === env.id || this.#androidTargets(ticket).includes(env.id)) && this.#ticketDevicesOnline(ticket) && ticket.status === "waiting" && !ticket.cleanupPending &&
             (ticket.wakePending || ticket.waiting?.reason === "env" || (ticket.waiting?.reason === "time" && (ticket.waiting.until ?? 0) <= Date.now()))) {
@@ -3786,7 +3786,7 @@ export class MocoHub implements OrchestratorController {
       }
       await this.#broadcastProjects();
       await this.#broadcastTickets(BACKGROUND_CONTEXT);
-    }).catch((error) => { console.error("[MocoEnvReconcile]", error); });
+    }).catch((error) => { console.error("[KuloEnvReconcile]", error); });
     return this.#envTransition;
   }
 
@@ -3879,7 +3879,7 @@ export class MocoHub implements OrchestratorController {
           closed.value.run.quiescent !== true;
       }
       if (ticket.externalExecution) {
-        const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+        const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         externalCleanupPending ||= Object.values(state?.tickets ?? {}).some(child => child.parentTicketId === ticket.id &&
           (child.cleanupPending || ["stopped", "closed", "pausing"].includes(ticket.status) && isTicketUnfinished(child)));
       }
@@ -3924,7 +3924,7 @@ export class MocoHub implements OrchestratorController {
       if (worker!.status === "rejected") throw worker!.reason;
       return { cleanupPending: connection!.status === "rejected" || worker!.value.cleanupPending || computer.some((result) => result.status === "rejected") };
     } catch (error) {
-      console.error(`[MocoCleanup:${ticket.id}]`, error);
+      console.error(`[KuloCleanup:${ticket.id}]`, error);
       return { cleanupPending: true };
     }
   }
@@ -3936,19 +3936,19 @@ export class MocoHub implements OrchestratorController {
     this.#parkingTickets.set(ticketId, transition);
     void transition.finally(() => {
       if (this.#parkingTickets.get(ticketId) === transition) this.#parkingTickets.delete(ticketId);
-    }).catch((error) => console.error(`[MocoPause:${ticketId}]`, error));
+    }).catch((error) => console.error(`[KuloPause:${ticketId}]`, error));
     return transition;
   }
 
   async #parkTicketNow(ticketId: string, waiting: NonNullable<TicketRecord["waiting"]>): Promise<void> {
     const context = BACKGROUND_CONTEXT;
-    const snapshot = await this.harness.snapshot(MocoStateDoc, context);
+    const snapshot = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = snapshot?.tickets[ticketId];
     if (!ticket || !isTicketUnfinished(ticket) || ["waiting", "blocked"].includes(ticket.status)) return;
     const epoch = ticket.runEpoch + 1;
     const preservedWait = ticket.waiting && ticket.waiting.reason !== "project" ? ticket.waiting : waiting;
     const admitted = await this.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const t = state.tickets[ticketId];
       if (!t || t.runEpoch !== ticket.runEpoch || !isTicketUnfinished(t) || t.status === "waiting" || t.status === "blocked") return false;
       t.runEpoch = epoch;
@@ -3966,7 +3966,7 @@ export class MocoHub implements OrchestratorController {
     if (ticket.activeTaskId !== undefined) await this.harness.abortTask(ticket.activeTaskId as never, context);
     const cleanup = await this.#releaseTicketExecution(ticket, { park: true });
     await this.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const t = state.tickets[ticketId];
       if (!t || t.runEpoch !== epoch || t.status !== "pausing") return;
       for (const sub of Object.values(state.subagents ?? {})) {
@@ -3989,10 +3989,10 @@ export class MocoHub implements OrchestratorController {
     }, context);
     this.#parkingTickets.delete(ticketId);
     this.#untrackWorker(ticketId, ticket.runEpoch);
-    const parked = await this.harness.snapshot(MocoStateDoc, context);
+    const parked = await this.harness.snapshot(KuloStateDoc, context);
     if (parked?.tickets[ticketId]?.wakePending) await this.#resumeWaitingTicket(ticketId, context);
     if (preservedWait.reason === "user") {
-      const latest = await this.harness.snapshot(MocoStateDoc, context);
+      const latest = await this.harness.snapshot(KuloStateDoc, context);
       const settingsLatest = await this.harness.snapshot(SettingsAssistantDoc, context);
       const originTopic = latest?.topics?.[ticket.originTopicId ?? "root"];
       const originDeleted = isSettingsTopicDeleted(ticket.originTopicId, settingsLatest) || Boolean(originTopic?.deletedAt);
@@ -4001,8 +4001,8 @@ export class MocoHub implements OrchestratorController {
         const report = current.latestReport?.state === "blocked" ? current.latestReport : undefined;
         const question = report?.question ?? preservedWait.detail ?? "请确认下一步";
         const origin = await this.harness.conversation((ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) as ConversationId, context);
-        if (origin) await this.harness.commit((tx) => submitAutomaticChatInput(tx, origin, { type: "input", content: `[MOCO_WORKER_RELAY]\nTicket ${ticket.title} is waiting on user confirmation: ${question}\nRelay this single question concisely in the active conversation language without exposing internal IDs.`,
-          whenBusy: "followUp", requestId: `moco:wait-user:${ticketId}:${epoch}`,
+        if (origin) await this.harness.commit((tx) => submitAutomaticChatInput(tx, origin, { type: "input", content: `[KULO_WORKER_RELAY]\nTicket ${ticket.title} is waiting on user confirmation: ${question}\nRelay this single question concisely in the active conversation language without exposing internal IDs.`,
+          whenBusy: "followUp", requestId: `kulo:wait-user:${ticketId}:${epoch}`,
           entry: { kind: WorkerRelayEntry.kind, data: {
             ticketId, title: current.title, role: current.role, state: "blocked",
             summary: report?.summary ?? question, question, deliverable: report?.deliverable ?? null,
@@ -4016,7 +4016,7 @@ export class MocoHub implements OrchestratorController {
   }
 
   async #resumeWaitingTicket(ticketId: string, context: Context): Promise<void> {
-    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const state = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = state?.tickets[ticketId];
     if (!ticket || ticket.status !== "waiting" || ((ticket.waiting?.reason === "user" || ticket.waiting?.reason === "connection") && !ticket.wakePending) || ticket.cleanupPending) return;
     if (!ticket.wakePending && ticket.schedule?.nextRunAt != null && hasPendingWorkspaceApply(ticket)) return;
@@ -4024,7 +4024,7 @@ export class MocoHub implements OrchestratorController {
     if (!ticket.wakePending && ticket.waiting?.until !== undefined && ticket.waiting.until > Date.now()) return;
     if (!this.#ticketDevicesOnline(ticket)) {
       if (ticket.waiting?.reason === "time") await this.harness.commit(async (tx) => {
-        const next = await tx.doc(MocoStateDoc);
+        const next = await tx.doc(KuloStateDoc);
         const t = next.tickets[ticketId];
         if (t?.runEpoch === ticket.runEpoch && t.status === "waiting") {
           t.waiting = { reason: "env", since: Date.now(), detail: "定时已到，等待执行设备上线" };
@@ -4041,27 +4041,27 @@ export class MocoHub implements OrchestratorController {
         : "Wait condition satisfied. Incorporate any follow-up instructions, inspect workspace file changes and unconfirmed tool results first, and continue without repeating completed side effects." }, context);
     } catch (error) {
       await this.harness.commit(async (tx) => {
-        const next = await tx.doc(MocoStateDoc);
+        const next = await tx.doc(KuloStateDoc);
         const current = next.tickets[ticketId];
         if (current?.runEpoch === ticket.runEpoch && current.status === "waiting" && current.waiting) {
           current.waiting.detail = `恢复失败：${error instanceof Error ? error.message : String(error)}`;
           current.updatedAt = Date.now();
         }
       }, context);
-      if (!(error instanceof ProjectError)) console.error(`[MocoResume:${ticketId}]`, error);
+      if (!(error instanceof ProjectError)) console.error(`[KuloResume:${ticketId}]`, error);
     }
   }
 
-  async customizationService(): Promise<MocoCustomizationService> {
-    if (this.#closed) throw new Error("Moco 正在退出，暂时无法修改程序。");
+  async customizationService(): Promise<KuloCustomizationService> {
+    if (this.#closed) throw new Error("Kulo 正在退出，暂时无法修改程序。");
     const pending = this.#customizationService ??= createDesktopCustomizationService(this.config, (text) => this.connectionManager.redact(text));
-    let service: MocoCustomizationService;
+    let service: KuloCustomizationService;
     try { service = await pending; }
     catch (error) {
       if (this.#customizationService === pending) this.#customizationService = undefined;
       throw error;
     }
-    if (this.#closed) { await service.close(); throw new Error("Moco 正在退出，暂时无法修改程序。"); }
+    if (this.#closed) { await service.close(); throw new Error("Kulo 正在退出，暂时无法修改程序。"); }
     this.#customizationInstance = service;
     return service;
   }
@@ -4069,7 +4069,7 @@ export class MocoHub implements OrchestratorController {
   async #customizationCaller(conversationId: unknown): Promise<{ id: string; canModify: boolean }> {
     const id = Number(conversationId);
     if (!Number.isSafeInteger(id) || id < 0) throw new Error("无法确认当前定制请求的会话。");
-    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const topicId = state?.conversationToTopic?.[String(id)];
     const topic = topicId ? state?.topics?.[topicId] : undefined;
     const main = isOrchestratorConversation(id, state) && (!topic || !topic.deletedAt && !topic.archived);
@@ -4086,7 +4086,7 @@ export class MocoHub implements OrchestratorController {
   }
 
   async listTopics(context: Context = BACKGROUND_CONTEXT): Promise<TopicSummary[]> {
-    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const state = await this.harness.snapshot(KuloStateDoc, context);
     if (!state) return [];
     return listSortedTopics(state);
   }
@@ -4102,9 +4102,9 @@ export class MocoHub implements OrchestratorController {
 
   async #archiveInactiveTopics(context: Context): Promise<TopicSummary[]> {
     const { archived, allTopics } = await this.harness.commit(async (tx) => {
-      const settings = await tx.doc(MocoSettingsDoc);
+      const settings = await tx.doc(KuloSettingsDoc);
       if (this.#closed || settings.executor.autoArchiveEnabled === false) return { archived: [], allTopics: [] };
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const cutoff = Date.now() - (settings.executor.autoArchiveDays ?? 7) * 86_400_000;
       const archived: TopicSummary[] = [];
       const protectedTopics = new Set<string>();
@@ -4171,9 +4171,9 @@ export class MocoHub implements OrchestratorController {
     const now = Date.now();
 
     const { topic, allTopics } = await this.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       ensureDefaultRootTopic(state, this.#liveSettings.presentation.agentName);
-      if (project) assertProjectBinding(await tx.doc(MocoProjectsDoc), project.id, project.revision);
+      if (project) assertProjectBinding(await tx.doc(KuloProjectsDoc), project.id, project.revision);
       const record: TopicSummary = {
         id: topicId,
         conversationId: conv.id as number,
@@ -4201,7 +4201,7 @@ export class MocoHub implements OrchestratorController {
   ): Promise<TopicSummary> {
     const stagedToDiscard: TicketRecord[] = [];
     const { updated, allTopics } = await this.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       ensureDefaultRootTopic(state, this.#liveSettings.presentation.agentName);
       const t = state.topics?.[topicId];
       if (!t || t.deletedAt) throw new ProjectError(404, "topic_not_found", "会话不存在或已删除。");
@@ -4259,7 +4259,7 @@ export class MocoHub implements OrchestratorController {
     options: { stopTasks?: boolean } = {},
   ): Promise<{ deleted: string; topics: TopicSummary[] }> {
     if (topicId === "root") throw new ProjectError(400, "default_topic", "默认主对话不可删除。");
-    const snap = await this.harness.snapshot(MocoStateDoc, context);
+    const snap = await this.harness.snapshot(KuloStateDoc, context);
     const topic = snap?.topics?.[topicId];
     if (!topic || topic.deletedAt) throw new ProjectError(404, "topic_not_found", "会话不存在或已删除。");
     const active = Object.values(snap?.tickets ?? {}).filter((t) => t.originTopicId === topicId &&
@@ -4269,7 +4269,7 @@ export class MocoHub implements OrchestratorController {
     }
     // The tombstone and cancel intents commit together before any asynchronous cleanup.
     await this.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const target = state.topics?.[topicId];
       if (!target || target.master) throw new ProjectError(400, "default_topic", "默认主对话不可删除。");
       const unfinished = Object.values(state.tickets).filter((t) => t.originTopicId === topicId &&
@@ -4280,7 +4280,7 @@ export class MocoHub implements OrchestratorController {
       target.updatedAt = target.deletedAt;
       const titleJob = state.topicTitles?.[topicId];
       if (titleJob?.status === "pending" || titleJob?.status === "failed") titleJob.status = "cancelled";
-      const projects = await tx.doc(MocoProjectsDoc);
+      const projects = await tx.doc(KuloProjectsDoc);
       projects.cancellations ??= {};
       for (const ticket of unfinished) {
         transitionTicketStatus(ticket, "stopped", target.deletedAt);
@@ -4311,8 +4311,8 @@ export class MocoHub implements OrchestratorController {
   // Check the current scope, then publish from the live watch without yielding to newer messages.
   async publishCurrentTopicView(topicId: string, publish: (view: TopicView) => void, context: Context = BACKGROUND_CONTEXT): Promise<void> {
     const [state, projects] = await Promise.all([
-      this.harness.snapshot(MocoStateDoc, context),
-      this.harness.snapshot(MocoProjectsDoc, context),
+      this.harness.snapshot(KuloStateDoc, context),
+      this.harness.snapshot(KuloProjectsDoc, context),
     ]);
     if (this.#closed) throw new Error("Hub is closed");
     const topic = requireTopic(state, topicId);
@@ -4345,7 +4345,7 @@ export class MocoHub implements OrchestratorController {
       redactionRevision: () => this.connectionManager.redactionRevision,
       topics: async (context) => {
         const [state, projects] = await Promise.all([
-          this.harness.snapshot(MocoStateDoc, context), this.harness.snapshot(MocoProjectsDoc, context),
+          this.harness.snapshot(KuloStateDoc, context), this.harness.snapshot(KuloProjectsDoc, context),
         ]);
         if (!state) return [];
         return listSortedTopics(state).filter((topic) => {
@@ -4382,15 +4382,15 @@ export class MocoHub implements OrchestratorController {
     expectedRevision: number,
     value: unknown,
     context: Context = BACKGROUND_CONTEXT,
-  ): Promise<{ settings: MocoSettingsView; summary: string }> {
+  ): Promise<{ settings: KuloSettingsView; summary: string }> {
     const { nextDoc, summary } = await this.harness.commit(async (tx) => {
-      const doc = await tx.doc(MocoSettingsDoc);
+      const doc = await tx.doc(KuloSettingsDoc);
       const draft = value && typeof value === "object" ? value as Record<string, unknown> : {};
       const changedPrivatePath = block === "identity"
         ? String(draft.directory ?? "").trim() !== doc.identity.directory
         : block === "memory" && String(draft.authFile ?? "").trim() !== doc.memory.authFile;
       if (changedPrivatePath) {
-        const state = await tx.doc(MocoStateDoc);
+        const state = await tx.doc(KuloStateDoc);
         if (Object.values(state.tickets).some((ticket) => ticket.status === "running")) {
           throw new SettingsUpdateError(400, "请先停止正在运行的后台任务，再切换私有文件路径。");
         }
@@ -4411,7 +4411,7 @@ export class MocoHub implements OrchestratorController {
       const msg = applySettingsBlockUpdate(doc, block, expectedRevision, value);
       if (block === "memory") assertMemoryIdentitySeparation(doc.memory, this.config, this.envManager);
       return {
-        nextDoc: cloneJson(doc) as MocoDurableSettings,
+        nextDoc: cloneJson(doc) as KuloDurableSettings,
         summary: msg,
       };
     }, context);
@@ -4427,10 +4427,10 @@ export class MocoHub implements OrchestratorController {
   async refreshExternalClientModels(
     clientId: string,
     context: Context = BACKGROUND_CONTEXT,
-  ): Promise<{ settings: MocoSettingsView; client: import("@moco/protocol").ExternalClientConnection }> {
+  ): Promise<{ settings: KuloSettingsView; client: import("@kulo/protocol").ExternalClientConnection }> {
     const cleanId = typeof clientId === "string" ? clientId.trim() : "";
     if (!cleanId || cleanId.length > 200) throw new SettingsUpdateError(400, "外部客户端标识无效。");
-    const snapshot = await this.harness.snapshot(MocoSettingsDoc, context);
+    const snapshot = await this.harness.snapshot(KuloSettingsDoc, context);
     const existing = snapshot?.externalClients?.[cleanId];
     if (!existing) throw new SettingsUpdateError(400, "外部客户端尚未连接。");
     const env = this.envManager.getEnvDescriptor(existing.envId);
@@ -4446,11 +4446,11 @@ export class MocoHub implements OrchestratorController {
       throw new SettingsUpdateError(409, this.connectionManager.redact(response.detection.error || "未能读取客户端原生模型列表。"));
     }
     const { nextDoc, updated } = await this.harness.commit(async (tx) => {
-      const doc = await tx.doc(MocoSettingsDoc);
+      const doc = await tx.doc(KuloSettingsDoc);
       syncExternalClientsInSettings(doc);
       const current = doc.externalClients?.[cleanId];
       if (!current) throw new SettingsUpdateError(400, "外部客户端已移除。");
-      const refreshed: import("@moco/protocol").ExternalClientConnection = {
+      const refreshed: import("@kulo/protocol").ExternalClientConnection = {
         ...current,
         ...(response.detection.executable ? { executable: response.detection.executable } : {}),
         ...(response.detection.version ? { version: response.detection.version } : {}),
@@ -4469,7 +4469,7 @@ export class MocoHub implements OrchestratorController {
       }
       doc.globalRevision += 1;
       doc.revisions.roles += 1;
-      return { nextDoc: cloneJson(doc) as MocoDurableSettings, updated: cloneJson(refreshed) };
+      return { nextDoc: cloneJson(doc) as KuloDurableSettings, updated: cloneJson(refreshed) };
     }, context);
     await this.#applyLiveSettings(nextDoc, context);
     const view = this.getSettingsView();
@@ -4481,11 +4481,11 @@ export class MocoHub implements OrchestratorController {
     clientId: string,
     expectedRevision?: number,
     context: Context = BACKGROUND_CONTEXT,
-  ): Promise<{ settings: MocoSettingsView }> {
+  ): Promise<{ settings: KuloSettingsView }> {
     const cleanId = typeof clientId === "string" ? clientId.trim() : "";
     if (!cleanId || cleanId.length > 200) throw new SettingsUpdateError(400, "外部客户端标识无效。");
     const nextDoc = await this.harness.commit(async (tx) => {
-      const doc = await tx.doc(MocoSettingsDoc);
+      const doc = await tx.doc(KuloSettingsDoc);
       syncExternalClientsInSettings(doc);
       const boundRoleIds = Object.entries(doc.roles)
         .filter(([, role]) => role.external && (role.externalClientId?.trim() || externalClientConnectionId(role.external)) === cleanId)
@@ -4494,7 +4494,7 @@ export class MocoHub implements OrchestratorController {
         throw new SettingsUpdateError(400, "外部客户端尚未连接。");
       }
       if (boundRoleIds.length > 0) {
-        const tasks = await tx.doc(MocoStateDoc);
+        const tasks = await tx.doc(KuloStateDoc);
         if (Object.values(tasks.tickets).some((ticket) => boundRoleIds.includes(ticket.role) && isTicketUnfinished(ticket))) {
           throw new SettingsUpdateError(409, "请先停止或完成该客户端下智能体的未结束任务。");
         }
@@ -4505,7 +4505,7 @@ export class MocoHub implements OrchestratorController {
         externalAgents: true,
         removeClientIds: [cleanId],
       });
-      return cloneJson(doc) as MocoDurableSettings;
+      return cloneJson(doc) as KuloDurableSettings;
     }, context);
     await this.#applyLiveSettings(nextDoc, context);
     const view = this.getSettingsView();
@@ -4517,17 +4517,17 @@ export class MocoHub implements OrchestratorController {
     toRevision: number,
     expectedGlobalRevision: number,
     context: Context = BACKGROUND_CONTEXT,
-  ): Promise<{ settings: MocoSettingsView; summary: string }> {
+  ): Promise<{ settings: KuloSettingsView; summary: string }> {
     const { nextDoc, summary } = await this.harness.commit(async (tx) => {
-      const doc = await tx.doc(MocoSettingsDoc);
-      const state = await tx.doc(MocoStateDoc);
+      const doc = await tx.doc(KuloSettingsDoc);
+      const state = await tx.doc(KuloStateDoc);
       if (Object.values(state.tickets).some((ticket) => ticket.status === "running")) {
         throw new SettingsUpdateError(400, "请先停止正在运行的后台任务，再恢复历史设置。");
       }
       const msg = rollbackSettingsToSnapshot(doc, toRevision, expectedGlobalRevision, this.config.memory);
       assertMemoryIdentitySeparation(doc.memory, this.config, this.envManager);
       return {
-        nextDoc: cloneJson(doc) as MocoDurableSettings,
+        nextDoc: cloneJson(doc) as KuloDurableSettings,
         summary: msg,
       };
     }, context);
@@ -4552,7 +4552,7 @@ export class MocoHub implements OrchestratorController {
     const providerId = draft?.providerId?.trim();
     if (providerId) {
       const custom = saved.customProviders.find((provider) => provider.id === providerId);
-      const gateway = providerId === MOCO_GATEWAY_PROVIDER_ID;
+      const gateway = providerId === KULO_GATEWAY_PROVIDER_ID;
       if (!gateway && !custom) throw new SettingsUpdateError(400, "未找到要检测的 API 连接。");
       const connection = custom ?? { baseUrl: saved.baseUrl, api: saved.apiMode, vertexProject: saved.vertexProject, vertexLocation: saved.vertexLocation };
       const baseUrl = draft?.baseUrl?.trim() || connection.baseUrl;
@@ -4582,7 +4582,7 @@ export class MocoHub implements OrchestratorController {
     }
     const fromMs = start.getTime();
 
-    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const state = await this.harness.snapshot(KuloStateDoc, context);
     const convIds = new Set<number>([Number(ROOT_CONVERSATION_ID)]);
     for (const t of Object.values(state?.topics ?? {})) {
       convIds.add(t.conversationId);
@@ -4685,14 +4685,14 @@ export class MocoHub implements OrchestratorController {
     return this.personality.proposeIdentity(content, summary);
   }
 
-  async updateRelationship(request: import("@moco/protocol").RelationshipWriteRequest) {
+  async updateRelationship(request: import("@kulo/protocol").RelationshipWriteRequest) {
     return this.personality.saveRelationship(request);
   }
 
   async getRecentWork(topicId = "root", context: Context = BACKGROUND_CONTEXT): Promise<RecentWorkSnapshot> {
     const [state, projects, personality] = await Promise.all([
-      this.harness.snapshot(MocoStateDoc, context),
-      this.harness.snapshot(MocoProjectsDoc, context),
+      this.harness.snapshot(KuloStateDoc, context),
+      this.harness.snapshot(KuloProjectsDoc, context),
       this.personality.snapshot(),
     ]);
     const topic = state?.topics?.[topicId];
@@ -4713,7 +4713,7 @@ export class MocoHub implements OrchestratorController {
       if (doc.cursor !== since) throw new Error("协作关系的来源进度不一致，请重新检查。");
       return { cursor: doc.cursor, entries: { ...doc.entries }, reports: { ...doc.reports } };
     }, BACKGROUND_CONTEXT);
-    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const candidates: Array<{ at: number; text: string; conversationId?: string; entryId?: number; ticketId?: string; reportKey?: string }> = [];
     for (const topic of Object.values(state?.topics ?? {}).filter((item) => !item.deletedAt && !item.archived)) {
       const conversation = await this.harness.conversation(topic.conversationId as ConversationId, BACKGROUND_CONTEXT);
@@ -4724,7 +4724,7 @@ export class MocoHub implements OrchestratorController {
       do {
         const page = await conversation.entries({ minEntryId: ((progress.entries[conversationId] ?? 0) + 1) as EntryId, order: "ascending" }, 100, cursor, BACKGROUND_CONTEXT);
         for (const entry of page.items) {
-          const relevant = UserEntry.is(entry) || MocoUserEntry.is(entry) || AssistantEntry.is(entry) || WorkerRelayEntry.is(entry);
+          const relevant = UserEntry.is(entry) || KuloUserEntry.is(entry) || AssistantEntry.is(entry) || WorkerRelayEntry.is(entry);
           const evidence = VoiceTranscriptEntry.is(entry) ? [{ role: entry.data.role, text: entry.data.text }]
             : relevant ? extractDisplayMessages([entry]) : [];
           const messages = evidence.filter((item) =>
@@ -4769,7 +4769,7 @@ export class MocoHub implements OrchestratorController {
   async #canReviewRelationship(): Promise<boolean> {
     if (this.#closed || this.#recovering) return false;
     const [state, settingsAssistant] = await Promise.all([
-      this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT),
+      this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT),
       this.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT),
     ]);
     const conversationIds = new Set([
@@ -4792,8 +4792,8 @@ export class MocoHub implements OrchestratorController {
     if (!await this.#canReviewRelationship()) return { content: null, defer: true };
     if (!this.#liveSettings.model.defaultModel.trim()) throw new Error("请先配置主模型，再更新协作关系。");
     const [state, projects] = await Promise.all([
-      this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT),
-      this.harness.snapshot(MocoProjectsDoc, BACKGROUND_CONTEXT),
+      this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT),
+      this.harness.snapshot(KuloProjectsDoc, BACKGROUND_CONTEXT),
     ]);
     const currentActivity = {
       foregroundBusy: false,
@@ -4808,7 +4808,7 @@ export class MocoHub implements OrchestratorController {
       const reviews = await tx.doc(RelationshipReviewsDoc);
       reviews.conversationIds = [...reviews.conversationIds, Number(conversation.id)].slice(-128);
     }, BACKGROUND_CONTEXT);
-    const abort = () => { void conversation.abort(BACKGROUND_CONTEXT).catch((error) => console.error("[MocoRelationshipAbort]", error)); };
+    const abort = () => { void conversation.abort(BACKGROUND_CONTEXT).catch((error) => console.error("[KuloRelationshipAbort]", error)); };
     input.signal.addEventListener("abort", abort, { once: true });
     try {
       if (input.signal.aborted) throw new Error("协作关系更新已取消。");
@@ -4856,9 +4856,9 @@ export class MocoHub implements OrchestratorController {
           };
 
     const nextDoc = await this.harness.commit(async (tx) => {
-      const doc = await tx.doc(MocoSettingsDoc);
+      const doc = await tx.doc(KuloSettingsDoc);
       doc.expression = nextExpr;
-      return cloneJson(doc) as MocoDurableSettings;
+      return cloneJson(doc) as KuloDurableSettings;
     }, context);
 
     this.#liveSettings.expression = nextDoc.expression;
@@ -4877,7 +4877,7 @@ export class MocoHub implements OrchestratorController {
     if (!clean) return false;
     const cache = await this.#resolveWatchedTopic(topicId, context);
     if (await this.harness.commit((tx) => tx.submissionByRequest(cache.conversation.id, clean), context)) return true;
-    const snap = await this.harness.snapshot(MocoStateDoc, context);
+    const snap = await this.harness.snapshot(KuloStateDoc, context);
     return Boolean(snap?.processedCommands?.[`req:${cache.topicId}:${clean}`]);
   }
 
@@ -4905,7 +4905,7 @@ export class MocoHub implements OrchestratorController {
         return replay(receipt);
       }
       if (!receipt || receipt.phase === "empty") {
-        const state = await this.harness.snapshot(MocoStateDoc, context);
+        const state = await this.harness.snapshot(KuloStateDoc, context);
         if (state?.processedCommands?.[intent.id] || state?.commandIndex[intent.id]) legacyDeliveryConflict();
         for (const [key, command] of Object.entries(state?.processedCommands ?? {})) {
           if (command.action === "chat.send" && key === `req:${command.ticketId}:${intent.id}` &&
@@ -4922,7 +4922,7 @@ export class MocoHub implements OrchestratorController {
 
   async #receiptTicket(receipt: Readonly<DeliveryReceipt>, context: Context): Promise<TicketCardView> {
     const ticketId = String(receipt.ack.ticketId);
-    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const state = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = state?.tickets[ticketId];
     if (!ticket) throw new Error(`Stored delivery refers to a missing ticket '${ticketId}'`);
     return toTicketCardView(ticket, this.#liveSettings.roles);
@@ -4980,7 +4980,7 @@ export class MocoHub implements OrchestratorController {
     if (!clean) return false;
     const receipt = await this.harness.snapshot(DeliveryReceiptDoc, deliveryReceiptKey(clean), context);
     if (receipt && receipt.phase !== "empty") return true;
-    const snap = await this.harness.snapshot(MocoStateDoc, context);
+    const snap = await this.harness.snapshot(KuloStateDoc, context);
     return Boolean(snap?.processedCommands?.[clean] || snap?.commandIndex[clean]);
   }
 
@@ -4988,7 +4988,7 @@ export class MocoHub implements OrchestratorController {
     if (requested !== undefined && (typeof requested !== "string" || requested.length > 256 || /[\u0000-\u001f]/.test(requested))) {
       throw new ProjectError(400, "invalid_target_device", "目标设备标识无效。");
     }
-    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const state = await this.harness.snapshot(KuloStateDoc, context);
     const topic = state?.topics?.[topicId];
     if (!topic || topic.deletedAt) throw new ProjectError(404, "topic_deleted", "会话已删除。");
     const key = requestKey ? chatRequestTargetKey(conversationId, requestKey) : undefined;
@@ -5007,7 +5007,7 @@ export class MocoHub implements OrchestratorController {
       if (live?.run || inbox?.items.length) throw new ProjectError(409, "target_device_busy", "请等待当前回复结束，再切换目标设备。");
     }
     await this.harness.commit(async (tx) => {
-      const next = await tx.doc(MocoStateDoc);
+      const next = await tx.doc(KuloStateDoc);
       const current = next.topics?.[topicId];
       if (!current || current.deletedAt) throw new ProjectError(404, "topic_deleted", "会话已删除。");
       if (key) {
@@ -5111,7 +5111,7 @@ export class MocoHub implements OrchestratorController {
         assertLegacyChatPayload(stored, content, options.attachments ?? [], options.replyTo);
         if ((options.whenBusy ?? "steer") !== (queueMode ?? "steer")) legacyDeliveryConflict();
         if (options.targetDeviceId !== undefined) {
-          const state = await tx.doc(MocoStateDoc);
+          const state = await tx.doc(KuloStateDoc);
           const targetKey = chatRequestTargetKey(Number(cache.conversation.id), `req:${cache.topicId}:${cleanReqId}`);
           const target = state.chatRequestTargets?.[targetKey];
           if (target === undefined || target !== options.targetDeviceId.trim()) legacyDeliveryConflict();
@@ -5191,7 +5191,7 @@ export class MocoHub implements OrchestratorController {
         context.abortSignal?.throwIfAborted();
         if (error instanceof Error && error.name === "SessionFailed") throw error;
         // Keep the verified input for the sender's retry even if its upload is temporarily unavailable.
-        console.warn("[MocoChat] Attachment delivery pending", draft.topicId, this.connectionManager.redact(error instanceof Error ? error.message : String(error)));
+        console.warn("[KuloChat] Attachment delivery pending", draft.topicId, this.connectionManager.redact(error instanceof Error ? error.message : String(error)));
       }
     }
   }
@@ -5211,18 +5211,18 @@ export class MocoHub implements OrchestratorController {
       ...(draft.requestId ? { requestId: draft.requestId } : {}),
       targetDeviceId: draft.targetDeviceId,
     };
-    const sourceContext = draft.source || draft.targetDeviceId ? `[MOCO_MESSAGE_SOURCE]\n${JSON.stringify(messageContext)}` : "";
+    const sourceContext = draft.source || draft.targetDeviceId ? `[KULO_MESSAGE_SOURCE]\n${JSON.stringify(messageContext)}` : "";
     const modelContent = [replyContext(content, replyTo), sourceContext, agentDispatchIntent ? agentIntentContext(agentDispatchIntent) : ""].filter(Boolean).join("\n\n");
     const prepared = this.uploads.buildMultimodalContent(modelContent, draft.attachmentIds);
     const capturedIntent: AgentDispatchIntent = agentDispatchIntent ?? { version: 1, targets: [] };
-    const displayEntry = draft.voiceDelegation ? { kind: "moco.voice.delegation", data: { ...messageContext, agentDispatchIntent: cloneJson(capturedIntent) } as unknown as JsonObject } : userDisplayEntry(content, prepared.attachments, {
+    const displayEntry = draft.voiceDelegation ? { kind: "kulo.voice.delegation", data: { ...messageContext, agentDispatchIntent: cloneJson(capturedIntent) } as unknown as JsonObject } : userDisplayEntry(content, prepared.attachments, {
       ...messageContext, createdAt: draft.receivedAt,
       agentDispatchIntent: capturedIntent,
     }, replyTo);
 
     // Keep an immediate fallback while the first completed reply supplies context for a generated title.
     const { allTopics, pendingTitle, submissionId } = await this.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       assertChatDestination(state, draft);
       const live = await tx.doc(LiveDoc, cache.conversation.id);
       const inbox = await tx.doc(InboxDoc, cache.conversation.id);
@@ -5269,7 +5269,7 @@ export class MocoHub implements OrchestratorController {
     return submission;
   }
 
-  /** Abort only the foreground Moco turn in the target topic (background Workers continue undisturbed!). */
+  /** Abort only the foreground Kulo turn in the target topic (background Workers continue undisturbed!). */
   async abortForegroundTurn(
     topicId = "root",
     context: Context = BACKGROUND_CONTEXT,
@@ -5284,7 +5284,7 @@ export class MocoHub implements OrchestratorController {
     const cache = await this.#resolveWatchedTopic(topicId, context);
     const taskId = prior?.phase === "admitted" ? prior.continuation.taskId : await this.harness.commit(async (tx) => {
       if (intent && await tx.submissionByRequest(cache.conversation.id, intent.id)) legacyDeliveryConflict();
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const live = await tx.doc(LiveDoc, cache.conversation.id);
       state.pausedChats ??= {};
       state.pausedChats[String(cache.conversation.id)] ??= [];
@@ -5340,7 +5340,7 @@ export class MocoHub implements OrchestratorController {
   async #resumePausedChat(conversation: Conversation, context: Context): Promise<void> {
     for (;;) {
       const admitted = await this.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoStateDoc);
+        const state = await tx.doc(KuloStateDoc);
         const key = String(conversation.id);
         const deferred = state.pausedChats?.[key];
         if (!deferred) return false;
@@ -5355,7 +5355,7 @@ export class MocoHub implements OrchestratorController {
     }
   }
 
-  /** Dispatch a durable Worker Ticket onto Moco's table. */
+  /** Dispatch a durable Worker Ticket onto Kulo's table. */
   async dispatchTicket(
     params: DispatchTicketParams,
     context: Context = BACKGROUND_CONTEXT,
@@ -5365,7 +5365,7 @@ export class MocoHub implements OrchestratorController {
     const recoveryGuard = inputs[0] && WorkerRecoveryEntry.is(inputs[0]) ? inputs[0].data : undefined;
     const originConversationId = params.originConversationId ?? Number(ROOT_CONVERSATION_ID);
     const activeRoles = this.#liveSettings.roles;
-    const existingState = await this.harness.snapshot(MocoStateDoc, context);
+    const existingState = await this.harness.snapshot(KuloStateDoc, context);
     const modelDispatch = !params.parentTicketId && params.originToolTaskId !== undefined;
     const selectedInput = params.sourceRequestId ? inputs.find((input) => chatRoutingData(input).requestId === params.sourceRequestId) : inputs[0];
     if (params.sourceRequestId && (!modelDispatch || !selectedInput)) {
@@ -5375,7 +5375,7 @@ export class MocoHub implements OrchestratorController {
       ? await this.#agentDispatchSource(params.originConversationId, params.originToolTaskId, context, params.sourceRequestId ? selectedInput?.id : undefined)
       : { intent: undefined, entryId: undefined, inheritedAssignment: undefined, input: undefined, continuing: false };
     const sender = chatRoutingData(modelDispatch ? selectedInput ?? dispatchSource.input : undefined);
-    const checkAdmission = (state: Readonly<MocoDurableState> | undefined, paused: boolean) => {
+    const checkAdmission = (state: Readonly<KuloDurableState> | undefined, paused: boolean) => {
       const existingId = state && Object.hasOwn(state.commandIndex, params.commandId) ? state.commandIndex[params.commandId] : undefined;
       const prior = existingId ? state?.tickets[existingId] : undefined;
       if (!prior) {
@@ -5433,7 +5433,7 @@ export class MocoHub implements OrchestratorController {
     if (originTopic?.deletedAt) throw new ProjectError(404, "topic_deleted", "会话已删除。");
     if (sender.source && dispatchSource.continuing && Object.values(existingState?.tickets ?? {}).some((ticket) =>
       ticket.originTopicId === resolvedOriginTopicId && !ticket.parentTicketId && !["stopped", "closed"].includes(ticket.status))) {
-      throw new ProjectError(409, "continue_existing_ticket", "请使用 moco_steer 继续所指的原工单，沿用其执行设备和任务范围。");
+      throw new ProjectError(409, "continue_existing_ticket", "请使用 kulo_steer 继续所指的原工单，沿用其执行设备和任务范围。");
     }
     if (params.workspaceMode !== undefined && !["staged", "direct", "read_only"].includes(params.workspaceMode)) {
       throw new ProjectError(400, "invalid_workspace_mode", "工作区隔离模式无效。");
@@ -5609,7 +5609,7 @@ export class MocoHub implements OrchestratorController {
     }
     const targetDescriptor = this.envManager.getEnvDescriptor(targetEnvId);
     if (targetEnvId === sourceEnv && !targetDescriptor) {
-      throw new ProjectError(409, "source_env_unavailable", `发信设备「${sender.source?.name}」的执行环境尚未连接。请启动该设备的 Moco 执行环境，或指定其他设备。`);
+      throw new ProjectError(409, "source_env_unavailable", `发信设备「${sender.source?.name}」的执行环境尚未连接。请启动该设备的 Kulo 执行环境，或指定其他设备。`);
     }
     if (!externalBinding && executionDomain === "computer" && targetDescriptor?.online && !hasWorkerIsolation(targetDescriptor)) {
       throw new ProjectError(409, "worker_isolation_unavailable", `目标执行设备「${targetDescriptor.name}」未启用沙箱隔离能力，无法运行内置后台 Worker。`);
@@ -5697,17 +5697,17 @@ export class MocoHub implements OrchestratorController {
 
     const supersededStagedToDiscard: TicketRecord[] = [];
     const admitted = await originConv.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const currentSettings = await tx.doc(SettingsAssistantDoc);
       ensureDefaultRootTopic(state, this.#liveSettings.presentation.agentName);
-      if (project) assertProjectBinding(await tx.doc(MocoProjectsDoc), project.id, project.revision);
+      if (project) assertProjectBinding(await tx.doc(KuloProjectsDoc), project.id, project.revision);
       const isSettingsOrigin = !isOrchestratorConversation(originConversationId, state) && isActiveSettingsConversation(originConversationId, currentSettings);
       if (!isSettingsOrigin) {
         if (originIsSettings) throw new ProjectError(404, "topic_deleted", "会话已删除。");
         const currentTopic = state.topics?.[state.conversationToTopic?.[String(originConversationId)] ?? "root"];
         if (currentTopic?.deletedAt) throw new ProjectError(404, "topic_deleted", "会话已删除。");
       }
-      const settings = await tx.doc(MocoSettingsDoc);
+      const settings = await tx.doc(KuloSettingsDoc);
       const duplicate = checkAdmission(state, settings.executor.paused);
       if (duplicate) return cloneJson(duplicate);
       const currentRoles = settings.roles;
@@ -5899,7 +5899,7 @@ export class MocoHub implements OrchestratorController {
         maxTurns: 40,
       } : undefined);
       if (connectionIds.length > 0 && created.workerConversationId && executionDomain !== "android") {
-        await injectEventToolsInTx(tx, created.workerConversationId, ["moco_connections", "moco_connection_use"]);
+        await injectEventToolsInTx(tx, created.workerConversationId, ["kulo_connections", "kulo_connection_use"]);
       }
       return created;
     }, context);
@@ -5936,10 +5936,10 @@ export class MocoHub implements OrchestratorController {
         ? Math.max(0, Math.min(30_000, Math.trunc(params.inlineWaitMs)))
         : (this.config.inlineDispatchWaitMs ?? 0);
 
-    const initialState = await this.harness.snapshot(MocoStateDoc, context);
+    const initialState = await this.harness.snapshot(KuloStateDoc, context);
     const initialTicket = initialState?.tickets[card.id];
     const findPendingMergeBlocker = (
-      state: Readonly<MocoDurableState> | undefined,
+      state: Readonly<KuloDurableState> | undefined,
       current: Readonly<TicketRecord> | undefined,
     ): { ticketId: string; title: string } | undefined => {
       if (!state || !current || current.readOnly || current.executionDomain === "android" || current.status !== "queued") {
@@ -5995,7 +5995,7 @@ export class MocoHub implements OrchestratorController {
       }
       context.abortSignal?.addEventListener("abort", finish, { once: true });
       // Re-check snapshot after registering waiter so we cannot miss an immediate completion.
-      void this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT).then((snap) => {
+      void this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT).then((snap) => {
         const cur = snap?.tickets[card.id];
         if (!cur || cur.deliveryClaim !== "inline_waiting" || cur.status === "stopped" || cur.status === "closed" || cur.status === "failed") {
           finish();
@@ -6004,7 +6004,7 @@ export class MocoHub implements OrchestratorController {
     });
 
     const outcome = await this.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const current = state.tickets[card.id];
       if (!current) {
         return { ticket: card, escalatedNow: false };
@@ -6068,7 +6068,7 @@ export class MocoHub implements OrchestratorController {
       for (const entry of [...page.items].sort((a, b) => Number(b.id) - Number(a.id))) {
         if (!isRecoveryInputBoundary(entry)) continue;
         if (WorkerRelayEntry.is(entry) || WorkerRecoveryEntry.is(entry) || WorkerWatchdogEntry.is(entry)) {
-          const state = await this.harness.snapshot(MocoStateDoc, context);
+          const state = await this.harness.snapshot(KuloStateDoc, context);
           let ticket = state?.tickets[entry.data.ticketId];
           const ancestors = new Set<string>();
           while (ticket?.parentTicketId && !ancestors.has(ticket.id)) { ancestors.add(ticket.id); ticket = state?.tickets[ticket.parentTicketId] ?? ticket; if (ancestors.has(ticket.id)) break; }
@@ -6083,7 +6083,7 @@ export class MocoHub implements OrchestratorController {
           : extractAgentDispatchIntent(text, this.#liveSettings.roles, this.envManager.listEnvs());
         if (!intent && !continuing && /^(?:请|帮我)?\s*(?:继续(?:执行|处理|推进|完成|原任务|这个任务)?|接着(?:做|执行|处理)?|重试(?:一下|这个任务)?|再试(?:一次|一下)?|continue|retry)[\s,，。.!！]*$/i.test(text.trim())) { continuing = true; continue; }
         if (!intent && continuing) {
-          const state = await this.harness.snapshot(MocoStateDoc, context);
+          const state = await this.harness.snapshot(KuloStateDoc, context);
           const assignments = Object.values(state?.tickets ?? {}).filter((ticket) => ticket.originConversationId === conversationId && ticket.agentAssignment?.sourceEntryId === Number(entry.id)).flatMap((ticket) => ticket.agentAssignment ? [ticket.agentAssignment] : []);
           const byAgent = new Map(assignments.map((assignment) => [assignment.agentId, assignment]));
           if (byAgent.size > 1) throw new ProjectError(409, "agent_selection_required", "此前任务由多个 Agent 分工，请明确要继续哪一个任务或 Agent。");
@@ -6117,7 +6117,7 @@ export class MocoHub implements OrchestratorController {
     }
   }
 
-  #externalAgentScope(scope: ExternalAgentToolScope, state: Readonly<MocoDurableState> | undefined): TicketRecord {
+  #externalAgentScope(scope: ExternalAgentToolScope, state: Readonly<KuloDurableState> | undefined): TicketRecord {
     const ticket = state?.tickets[scope.taskId];
     if (!ticket || ticket.envId !== scope.envId || ticket.runEpoch !== scope.runEpoch || ticket.status !== "running" || ticket.waiting ||
         !ticket.externalExecution || ticket.externalExecution.runId !== scope.runId || ticket.externalExecution.binding.envId !== scope.envId) {
@@ -6130,14 +6130,14 @@ export class MocoHub implements OrchestratorController {
     sessionId: string,
     api: { conversationId: unknown; callId: string },
     caller: CustomizationCaller,
-    service: MocoCustomizationService,
+    service: KuloCustomizationService,
   ): Promise<Record<string, unknown> | undefined> {
     if (!caller.canModify) return undefined;
     const status = await service.status(caller);
     const session = status.session && status.session.id === sessionId ? status.session : undefined;
     if (!session || session.status === "pending" || !session.changedFiles?.length) return undefined;
     const conversationId = Number(api.conversationId);
-    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const topicId = state?.conversationToTopic?.[String(conversationId)];
     const fingerprint = customizationValidateFingerprint(session.id, session.revision, session.changedFiles);
     const existing = await this.actionConfirmations.lookup(conversationId, "customization_validate", fingerprint);
@@ -6185,7 +6185,7 @@ export class MocoHub implements OrchestratorController {
       await this.actionConfirmations.markExecuted(existing.cardId, context);
       return result;
     }
-    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const state = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = state?.tickets[ticketId];
     const execution = ticket?.externalExecution;
     if (!ticket || !execution?.runId || ticket.status !== "running" || ticket.waiting || ticket.runEpoch !== runEpoch) {
@@ -6234,7 +6234,7 @@ export class MocoHub implements OrchestratorController {
     source: { conversationId: number; callId: string },
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<StagedWorkspaceApplyResult | Record<string, unknown>> {
-    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const state = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = state?.tickets[params.ticketId];
     if (!ticket) return this.applyStagedChanges(params, context);
     const isExternalStaged = ticket.externalExecution?.workspaceMode === "staged";
@@ -6311,7 +6311,7 @@ export class MocoHub implements OrchestratorController {
 
   async respondExternalAgentPermission(ticketId: string, permissionId: string, choiceId: string, runEpoch: number, context: Context = BACKGROUND_CONTEXT): Promise<WorkerInspectResult> {
     await this.#queueTicketOperation(ticketId, async () => {
-      const state = await this.harness.snapshot(MocoStateDoc, context);
+      const state = await this.harness.snapshot(KuloStateDoc, context);
       const ticket = state?.tickets[ticketId];
       const execution = ticket?.externalExecution;
       if (!ticket || !execution?.runId || ticket.status !== "running" || ticket.waiting || ticket.runEpoch !== runEpoch) throw new Error("外部任务的执行资格已改变，请重新查看待授权操作。");
@@ -6320,7 +6320,7 @@ export class MocoHub implements OrchestratorController {
       const response = await this.envManager.requestExternalAgent(ticket.envId, { operation: "respond", runId: execution.runId, permissionId, choiceId });
       if (response.type !== "run" || response.run.id !== execution.runId || response.run.taskId !== ticketId || response.run.runEpoch !== runEpoch || response.run.kind !== execution.binding.kind) throw new Error("客户端返回了不匹配的授权回执。");
       await this.harness.commit(async (tx) => {
-        const current = this.#externalAgentScope({ envId: ticket.envId, taskId: ticketId, runEpoch, runId: execution.runId! }, await tx.doc(MocoStateDoc));
+        const current = this.#externalAgentScope({ envId: ticket.envId, taskId: ticketId, runEpoch, runId: execution.runId! }, await tx.doc(KuloStateDoc));
         current.externalExecution!.pendingPermissions = cloneJson(response.run.permissions);
       }, context);
     });
@@ -6329,7 +6329,7 @@ export class MocoHub implements OrchestratorController {
   }
 
   async inspectStagedDiff(ticketId: string, filePath?: string, context: Context = BACKGROUND_CONTEXT): Promise<StagedWorkspaceDiffDetail> {
-    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const state = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = state?.tickets[ticketId];
     if (!ticket) throw new ProjectError(404, "ticket_not_found", `任务 '${ticketId}' 不存在。`);
     const isExternalStaged = ticket.externalExecution?.workspaceMode === "staged";
@@ -6363,7 +6363,7 @@ export class MocoHub implements OrchestratorController {
     const cleanCmdId = params.commandId?.trim();
     if (!cleanCmdId) throw new ProjectError(400, "invalid_command_id", "合并操作需要有效的 command_id。");
     return this.#queueTicketOperation(params.ticketId, async () => {
-      const snapshot = await this.harness.snapshot(MocoStateDoc, context);
+      const snapshot = await this.harness.snapshot(KuloStateDoc, context);
       const ticket = snapshot?.tickets[params.ticketId];
       if (!ticket) throw new ProjectError(404, "ticket_not_found", `任务 '${params.ticketId}' 不存在。`);
       if (params.originConversationId !== undefined && (ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) !== params.originConversationId) {
@@ -6434,7 +6434,7 @@ export class MocoHub implements OrchestratorController {
         .slice(0, 32);
       let unlockedOrScheduled = false;
       await this.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoStateDoc);
+        const state = await tx.doc(KuloStateDoc);
         const current = state.tickets[ticket.id];
         if (!current) return;
         recordProcessedCommand(state, cleanCmdId, ticket.id, "apply_staged");
@@ -6538,7 +6538,7 @@ export class MocoHub implements OrchestratorController {
     const env = this.envManager.createExecutionEnv(ticket.envId, ticket.scratchDir);
     getOrThrow(await env.createDir(inputsDir, { recursive: true }, context));
     const assertActive = async () => {
-      const current = (await this.harness.snapshot(MocoStateDoc, context))?.tickets[ticket.id];
+      const current = (await this.harness.snapshot(KuloStateDoc, context))?.tickets[ticket.id];
       if (!current || ["stopped", "closed"].includes(current.status)) throw new Error("任务已结束，停止转存附件。");
     };
     const epochPrefix = ticket.runEpoch > 1 ? `e${ticket.runEpoch}-` : "";
@@ -6601,7 +6601,7 @@ export class MocoHub implements OrchestratorController {
     const ackIds: string[] = [];
     let anyCommitted = false;
     for (const pending of reports) {
-      const snap = await this.harness.snapshot(MocoStateDoc, context);
+      const snap = await this.harness.snapshot(KuloStateDoc, context);
       const current = snap?.tickets[ticket.id];
       if (!current || current.runEpoch !== ticket.runEpoch || !current.externalExecution) break;
       if (current.externalExecution.consumedPendingReportIds?.includes(pending.reportId)) {
@@ -6661,7 +6661,7 @@ export class MocoHub implements OrchestratorController {
       };
 
       await this.harness.commit(async (tx) => {
-        const live = (await tx.doc(MocoStateDoc)).tickets[ticket.id];
+        const live = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
         if (!live || live.runEpoch !== ticket.runEpoch || !live.externalExecution) return;
         const consumed = live.externalExecution.consumedPendingReportIds ?? [];
         if (consumed.includes(pending.reportId)) return;
@@ -6691,7 +6691,7 @@ export class MocoHub implements OrchestratorController {
   }
 
   async #stageExternalReportFiles(scope: ExternalAgentToolScope, files: ExternalAgentReportFile[]): Promise<ChatAttachment[]> {
-    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const ticket = this.#externalAgentScope(scope, state);
     const envDesc = this.envManager.getEnvDescriptor(ticket.envId);
     if (!envDesc?.online) throw new Error("执行设备离线，无法读取待审产物文件。");
@@ -6802,7 +6802,7 @@ export class MocoHub implements OrchestratorController {
       throw Object.assign(new Error("无权引用此附件。"), { code: "attachment_forbidden", status: 403 });
     }
     const cleanCmdId = params.commandId?.trim();
-    const snapshot = await this.harness.snapshot(MocoStateDoc, context);
+    const snapshot = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = snapshot?.tickets[params.ticketId];
     if (!ticket) throw new Error(`Ticket '${params.ticketId}' not found`);
     const assignmentSource = params.originConversationId === undefined
@@ -6834,7 +6834,7 @@ export class MocoHub implements OrchestratorController {
     }
     const workerConv = await this.harness.conversation(ticket.workerConversationId as ConversationId, context);
     if (!workerConv) throw new Error(`Worker conversation for '${params.ticketId}' not found`);
-    if (cleanCmdId && await this.harness.commit(tx => tx.submissionByRequest(workerConv.id, `moco:steer:${cleanCmdId}`), context)) legacyDeliveryConflict();
+    if (cleanCmdId && await this.harness.commit(tx => tx.submissionByRequest(workerConv.id, `kulo:steer:${cleanCmdId}`), context)) legacyDeliveryConflict();
     const attachmentIds = this.uploads.resolveAttachments(params.attachments).map((item) => item.record.id);
     const protectedMessage = await this.connectionManager.processText(params.text, {
       requestId: cleanCmdId ? `steer:${ticket.id}:${cleanCmdId}` : undefined, replyText: params.replyTo?.text,
@@ -6851,7 +6851,7 @@ export class MocoHub implements OrchestratorController {
     let injected = false;
     let interruptTarget: { envId: string; runId: string } | undefined;
     const card = await this.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const t = state.tickets[params.ticketId];
       if (!t || t.status === "stopped" || t.status === "closed") throw new ProjectError(409, "ticket_stopped", "任务已停止，不能恢复。");
       if (t.schedule) {
@@ -6877,7 +6877,7 @@ export class MocoHub implements OrchestratorController {
         t.autoRecoverySuppressed = undefined;
       }
       if (t.projectId) {
-        const project = assertProjectBinding(await tx.doc(MocoProjectsDoc), t.projectId);
+        const project = assertProjectBinding(await tx.doc(KuloProjectsDoc), t.projectId);
         if (project.grantRevision !== t.grantRevision || project.directoryId !== t.directoryId || project.deviceId !== t.envId) {
           throw new ProjectError(409, "project_binding_changed", "项目位置已改变，请创建新任务。");
         }
@@ -6886,7 +6886,7 @@ export class MocoHub implements OrchestratorController {
       await writeDeliveryReceipt(tx, intent, { ticketId: t.id });
       if (!t.externalExecution && t.status === "running" && !t.waiting && !this.#parkingTickets.has(t.id) && this.#ticketDevicesOnline(t)) {
         await workerConv.submit(tx, { type: "input", content: prepared.content, entry: userDisplayEntry(`【主控补充引导】\n${prompt}`, prepared.attachments, undefined, replyTo),
-          whenBusy: "steer", requestId: `moco:steer:${cleanCmdId ?? randomUUID()}` });
+          whenBusy: "steer", requestId: `kulo:steer:${cleanCmdId ?? randomUUID()}` });
         t.updatedAt = Date.now();
         injected = true;
         return toTicketCardView(t, this.#liveSettings.roles);
@@ -6969,7 +6969,7 @@ export class MocoHub implements OrchestratorController {
     if (controlInput && (WorkerWatchdogEntry.is(controlInput) || WorkerRelayEntry.is(controlInput))) {
       throw new ProjectError(409, "automatic_stop_denied", "后台巡检和回报不能代替用户停止任务。请纠偏，或让 Worker 汇报实际阻塞与所需权限。");
     }
-    const snapshot = await this.harness.snapshot(MocoStateDoc, context);
+    const snapshot = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = snapshot?.tickets[ticketId];
     if (!ticket) throw new Error(`Ticket '${ticketId}' not found`);
     const removeSchedule = (current: TicketRecord) => {
@@ -6981,7 +6981,7 @@ export class MocoHub implements OrchestratorController {
     };
     if (deleteSchedule && (ticket.status === "closed" || ticket.status === "ready" && ticket.schedule?.repeatEverySeconds === undefined)) {
       return this.harness.commit(async (tx) => {
-        const current = (await tx.doc(MocoStateDoc)).tickets[ticketId]!;
+        const current = (await tx.doc(KuloStateDoc)).tickets[ticketId]!;
         removeSchedule(current);
         await writeDeliveryReceipt(tx, intent, { ticketId });
         return toTicketCardView(current, this.#liveSettings.roles);
@@ -6996,7 +6996,7 @@ export class MocoHub implements OrchestratorController {
     }
     if (ticket.status === "stopped" && !ticket.cleanupPending) {
       await this.harness.commit(async (tx) => {
-        if (deleteSchedule) removeSchedule((await tx.doc(MocoStateDoc)).tickets[ticketId]!);
+        if (deleteSchedule) removeSchedule((await tx.doc(KuloStateDoc)).tickets[ticketId]!);
         await writeDeliveryReceipt(tx, intent, { ticketId });
       }, context);
       return toTicketCardView(ticket, this.#liveSettings.roles);
@@ -7006,13 +7006,13 @@ export class MocoHub implements OrchestratorController {
       epoch = Number(prior.continuation.epoch);
     } else if (ticket.status === "stopped") {
       epoch = await this.harness.commit(async (tx) => {
-        if (deleteSchedule) removeSchedule((await tx.doc(MocoStateDoc)).tickets[ticketId]!);
+        if (deleteSchedule) removeSchedule((await tx.doc(KuloStateDoc)).tickets[ticketId]!);
         await writeDeliveryReceipt(tx, intent, { ticketId }, "admitted", { epoch: ticket.runEpoch, previousEpoch: ticket.runEpoch - 1 });
         return ticket.runEpoch;
       }, context);
     } else {
       epoch = await this.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoStateDoc);
+        const state = await tx.doc(KuloStateDoc);
         const t = state.tickets[ticketId]!;
         recordProcessedCommand(state, commandId, ticketId, "stop");
         t.runEpoch += 1;
@@ -7035,7 +7035,7 @@ export class MocoHub implements OrchestratorController {
         t.wakePending = undefined;
         t.cleanupPending = true;
         t.updatedAt = Date.now();
-        const projects = await tx.doc(MocoProjectsDoc);
+        const projects = await tx.doc(KuloProjectsDoc);
         projects.cancellations ??= {};
         projects.cancellations[ticketId] = { ...(t.projectId ? { projectId: t.projectId } : {}), reason: t.stoppedReason, requestedAt: t.updatedAt };
         await writeDeliveryReceipt(tx, intent, { ticketId }, "admitted", { epoch: t.runEpoch,
@@ -7049,7 +7049,7 @@ export class MocoHub implements OrchestratorController {
       .filter(child => child.parentTicketId === ticketId && (isTicketUnfinished(child) || child.cleanupPending))
       .map(child => this.#queueTicketOperation(child.id, () => this.#stopTicket(child.id, reason ?? "父任务已停止", context, undefined, undefined))));
     const childCleanupPending = childStops.some(result => result.status === "rejected" || result.value.cleanupPending);
-    for (const result of childStops) if (result.status === "rejected") console.error(`[MocoChildCleanup:${ticketId}]`, result.reason);
+    for (const result of childStops) if (result.status === "rejected") console.error(`[KuloChildCleanup:${ticketId}]`, result.reason);
     for (const job of await this.mediaJobs.list({ ticketId })) {
       if (!["completed", "failed", "stopped"].includes(job.status)) await this.mediaJobs.stop(job.id);
     }
@@ -7060,10 +7060,10 @@ export class MocoHub implements OrchestratorController {
     }));
     const activeTaskId = prior?.phase === "admitted" ? prior.continuation.taskId : ticket.activeTaskId;
     if (typeof activeTaskId === "number") await this.harness.abortTask(activeTaskId as never, context);
-    const stoppedSnapshot = (await this.harness.snapshot(MocoStateDoc, context))?.tickets[ticketId] ?? ticket;
+    const stoppedSnapshot = (await this.harness.snapshot(KuloStateDoc, context))?.tickets[ticketId] ?? ticket;
     const cleanup = await this.#releaseTicketExecution(stoppedSnapshot);
     const card = await this.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const t = state.tickets[ticketId]!;
       if (t.runEpoch === epoch) {
         for (const sub of Object.values(state.subagents ?? {})) if (sub.ticketId === ticketId) sub.state = "stopped";
@@ -7080,7 +7080,7 @@ export class MocoHub implements OrchestratorController {
           }
         }
         releaseSlot(state, ticketId);
-        const projects = await tx.doc(MocoProjectsDoc);
+        const projects = await tx.doc(KuloProjectsDoc);
         delete projects.cancellations?.[ticketId];
       }
       await writeDeliveryReceipt(tx, intent, { ticketId });
@@ -7108,7 +7108,7 @@ export class MocoHub implements OrchestratorController {
     req: RunSubagentsRequest,
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<SubagentTaskOutcome[]> {
-    const snap = await this.harness.snapshot(MocoStateDoc, context);
+    const snap = await this.harness.snapshot(KuloStateDoc, context);
     const callerKey = String(req.callerConversationId);
     if (snap?.conversationToSubagent?.[callerKey]) {
       throw new Error("Forbidden: Subagents cannot spawn nested subagents (max depth = 1).");
@@ -7118,7 +7118,7 @@ export class MocoHub implements OrchestratorController {
     const ticket = ticketId ? snap?.tickets[ticketId] : undefined;
     if (!ticket) {
       throw new Error(
-        "moco_subagent can only be called inside an active Worker Ticket conversation.",
+        "kulo_subagent can only be called inside an active Worker Ticket conversation.",
       );
     }
     if (ticket.status !== "running") throw new ProjectError(409, "worker_not_running", "所属工单尚未取得执行资格。");
@@ -7199,7 +7199,7 @@ export class MocoHub implements OrchestratorController {
         }
 
         const updatedRecord = await this.harness.commit(async (tx) => {
-          const state = await tx.doc(MocoStateDoc);
+          const state = await tx.doc(KuloStateDoc);
           if (state.tickets[ticket.id]?.status !== "running" || state.tickets[ticket.id]?.runEpoch !== ticket.runEpoch) {
             throw new ProjectError(409, "worker_not_running", "所属工单尚未取得执行资格。");
           }
@@ -7250,7 +7250,7 @@ export class MocoHub implements OrchestratorController {
           `子智能体角色 '${subPreset.label} (${roleId})' 当前已被停用，请改选其他启用中的角色。`,
         );
       }
-      if (subPreset?.external) throw new Error("外部 Agent 通过 Hub 独立工单执行，请把协作需求交回主 Agent 使用 moco_dispatch。");
+      if (subPreset?.external) throw new Error("外部 Agent 通过 Hub 独立工单执行，请把协作需求交回主 Agent 使用 kulo_dispatch。");
 
       const seq = nextSeq++;
       const subagentId = `${ticket.id}:S-${String(seq).padStart(2, "0")}`;
@@ -7323,7 +7323,7 @@ export class MocoHub implements OrchestratorController {
       };
 
       await this.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoStateDoc);
+        const state = await tx.doc(KuloStateDoc);
         if (state.tickets[ticket.id]?.status !== "running" || state.tickets[ticket.id]?.runEpoch !== ticket.runEpoch) {
           throw new ProjectError(409, "worker_not_running", "所属工单尚未取得执行资格。");
         }
@@ -7380,7 +7380,7 @@ export class MocoHub implements OrchestratorController {
       if (this.#closed) return;
       for (const job of jobs) {
         void job.conv.abort(BACKGROUND_CONTEXT, { background: true }).catch((error) => {
-          console.error(`[MocoSubagent:abort:${job.record.id}]`, error);
+          console.error(`[KuloSubagent:abort:${job.record.id}]`, error);
         });
       }
     };
@@ -7394,7 +7394,7 @@ export class MocoHub implements OrchestratorController {
           );
           try {
             await this.harness.commit(async (tx) => {
-              const state = await tx.doc(MocoStateDoc);
+              const state = await tx.doc(KuloStateDoc);
               const parent = state.tickets[ticket.id];
               const subagent = state.subagents?.[job.record.id];
               if (!parent || parent.status !== "running" || parent.runEpoch !== ticket.runEpoch || !state.slots.holders.includes(ticket.id)) {
@@ -7406,7 +7406,7 @@ export class MocoHub implements OrchestratorController {
               {
                 type: "input",
                 content: job.promptText,
-                requestId: `moco:subagent:${job.record.id}:${job.runNumber}`,
+                requestId: `kulo:subagent:${job.record.id}:${job.runNumber}`,
               },
               context,
             );
@@ -7451,7 +7451,7 @@ export class MocoHub implements OrchestratorController {
             }
 
             await this.harness.commit(async (tx) => {
-              const state = await tx.doc(MocoStateDoc);
+              const state = await tx.doc(KuloStateDoc);
               const cur = state.subagents?.[job.record.id];
               if (cur && state.tickets[ticket.id]?.runEpoch === ticket.runEpoch) {
                 cur.state = status === "done" ? "ready" : "failed";
@@ -7477,7 +7477,7 @@ export class MocoHub implements OrchestratorController {
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             await this.harness.commit(async (tx) => {
-              const state = await tx.doc(MocoStateDoc);
+              const state = await tx.doc(KuloStateDoc);
               const subagent = state.subagents?.[job.record.id];
               if (subagent && state.tickets[ticket.id]?.runEpoch === ticket.runEpoch) { subagent.state = "failed"; subagent.lastSummary = msg.slice(0, 1000); }
             }, BACKGROUND_CONTEXT);
@@ -7526,7 +7526,7 @@ export class MocoHub implements OrchestratorController {
     let changed = false;
     let stagedToDiscard: TicketRecord | undefined;
     const card = await this.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const t = state.tickets[params.ticketId];
       if (!t) throw new Error(`Ticket '${params.ticketId}' not found`);
       if (cleanCmdId && state.processedCommands?.[cleanCmdId]) {
@@ -7610,7 +7610,7 @@ export class MocoHub implements OrchestratorController {
 
   async stopScheduledTask(ticketId: string, context: Context = BACKGROUND_CONTEXT, intent?: DeliveryIntent): Promise<TicketCardView> {
     return this.#withDelivery(intent, context, (receipt) => this.#queueTicketOperation(ticketId, async () => {
-      const state = await this.harness.snapshot(MocoStateDoc, context);
+      const state = await this.harness.snapshot(KuloStateDoc, context);
       const ticket = state?.tickets[ticketId];
       if (!ticket?.schedule || ticket.schedule.deletedAt !== undefined && receipt?.phase !== "admitted") throw new ProjectError(404, "schedule_not_found", "定时任务不存在。");
       if (ticket.status === "closed" || ticket.status === "stopped" && !ticket.cleanupPending) {
@@ -7623,7 +7623,7 @@ export class MocoHub implements OrchestratorController {
 
   async deleteScheduledTask(ticketId: string, context: Context = BACKGROUND_CONTEXT, intent?: DeliveryIntent): Promise<void> {
     return this.#withDelivery(intent, context, (receipt) => this.#queueTicketOperation(ticketId, async () => {
-      const state = await this.harness.snapshot(MocoStateDoc, context);
+      const state = await this.harness.snapshot(KuloStateDoc, context);
       const ticket = state?.tickets[ticketId];
       if (!ticket?.schedule) throw new ProjectError(404, "schedule_not_found", "定时任务不存在。");
       if (ticket.schedule.deletedAt !== undefined && receipt?.phase !== "admitted") {
@@ -7672,14 +7672,14 @@ export class MocoHub implements OrchestratorController {
   }
 
   async #taskDeliverableOptions(ticketId: string, context: Context): Promise<TaskDeliverableOptions> {
-    const snapshot = await this.harness.snapshot(MocoStateDoc, context);
+    const snapshot = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = snapshot?.tickets[ticketId];
     if (!ticket) throw new TaskDeliverableError(404, "ticket_not_found", "任务不存在。");
     if (ticket.executionDomain === "android") throw new TaskDeliverableError(409, "task_deliverable_unavailable", "手机任务没有可读取的工作区文件。");
     if (!this.envManager.getEnvDescriptor(ticket.envId)?.online) throw new TaskDeliverableError(503, "task_deliverable_device_offline", "任务设备离线，连接后可查看交付文件。");
     const assertAuthorized = async () => {
       if (context.abortSignal?.aborted) throw new TaskDeliverableError(499, "task_deliverable_aborted", "文件读取已取消。");
-      const state = await this.harness.snapshot(MocoStateDoc, context);
+      const state = await this.harness.snapshot(KuloStateDoc, context);
       const current = state?.tickets[ticketId];
       if (!current || current.workspaceDir !== ticket.workspaceDir || current.scratchDir !== ticket.scratchDir || current.envId !== ticket.envId || current.projectId !== ticket.projectId || current.grantRevision !== ticket.grantRevision) {
         throw new TaskDeliverableError(403, "task_deliverable_scope_changed", "任务文件授权已变化。");
@@ -7718,7 +7718,7 @@ export class MocoHub implements OrchestratorController {
   }
 
   async listTicketDeliverables(ticketId: string, context: Context = BACKGROUND_CONTEXT) {
-    const snapshot = await this.harness.snapshot(MocoStateDoc, context);
+    const snapshot = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = snapshot?.tickets[ticketId];
     if (!ticket) throw new TaskDeliverableError(404, "ticket_not_found", "任务不存在。");
     if (ticket.latestReport?.attachments?.length) {
@@ -7754,7 +7754,7 @@ export class MocoHub implements OrchestratorController {
     transcript: ChatDisplayItem[];
     live: LiveStreamState;
   }> {
-    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const state = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = state?.tickets[ticketId];
     if (!ticket) {
       throw new Error(`Ticket '${ticketId}' not found`);
@@ -7796,7 +7796,7 @@ export class MocoHub implements OrchestratorController {
   }
 
   /**
-   * Lightweight worker diagnostic snapshot used by `moco_inspect` (no `watch()`).
+   * Lightweight worker diagnostic snapshot used by `kulo_inspect` (no `watch()`).
    */
   async #externalAgentRunView(
     ticket: Readonly<TicketRecord>,
@@ -7822,7 +7822,7 @@ export class MocoHub implements OrchestratorController {
     ticketId: string,
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<WorkerInspectResult> {
-    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const state = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = state?.tickets[ticketId];
     if (!ticket) {
       throw new Error(`Ticket '${ticketId}' not found`);
@@ -8040,8 +8040,8 @@ export class MocoHub implements OrchestratorController {
   }
 
   async resolveModelMetadata(
-    req: import("@moco/protocol").ResolveModelMetadataRequest,
-  ): Promise<import("@moco/protocol").ResolveModelMetadataResponse> {
+    req: import("@kulo/protocol").ResolveModelMetadataRequest,
+  ): Promise<import("@kulo/protocol").ResolveModelMetadataResponse> {
     if (!this.#providerManager) {
       throw new Error("Current Models instance does not manage providers");
     }
@@ -8139,7 +8139,7 @@ export class MocoHub implements OrchestratorController {
     await finish(() => this.search.close());
     await finish(() => this.#releaseProxy());
     await finish(() => this.#stateOwner.close());
-    if (errors.length) throw new AggregateError(errors, "关闭 Moco 时部分资源未能正常退出。");
+    if (errors.length) throw new AggregateError(errors, "关闭 Kulo 时部分资源未能正常退出。");
   }
 
   #resolveOrchestratorAgent(): {
@@ -8164,7 +8164,7 @@ export class MocoHub implements OrchestratorController {
     topicId: string,
     context: Context,
   ): Promise<WatchedTopicCache> {
-    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const state = await this.harness.snapshot(KuloStateDoc, context);
     const topic = requireTopic(state, topicId);
     const existing = this.#topicCaches.get(topicId);
     if (existing) {
@@ -8238,7 +8238,7 @@ export class MocoHub implements OrchestratorController {
     const card = await this.uiCards.get(input.cardId);
     if (!card) throw new UiCardError("ui_card_not_found", "卡片不存在。", 404);
     if (!this.#liveSettings.model.defaultModel.trim()) throw new UiCardError("model_not_selected", "请先选择供应商和模型。", 400);
-    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     if (!isOrchestratorConversation(card.originConversationId, state)) {
       const settings = await this.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
       if (!isActiveSettingsConversation(card.originConversationId, settings)) {
@@ -8275,7 +8275,7 @@ export class MocoHub implements OrchestratorController {
         );
         await this.actionConfirmations.markExecuted(resolved.cardId);
       } catch (error) {
-        console.warn("[MocoConfirmation] External permission execution skipped", error instanceof Error ? error.message : String(error));
+        console.warn("[KuloConfirmation] External permission execution skipped", error instanceof Error ? error.message : String(error));
       }
       return;
     }
@@ -8290,13 +8290,13 @@ export class MocoHub implements OrchestratorController {
         });
         await this.actionConfirmations.markExecuted(resolved.cardId);
       } catch (error) {
-        console.warn("[MocoConfirmation] Staged apply execution skipped", error instanceof Error ? error.message : String(error));
+        console.warn("[KuloConfirmation] Staged apply execution skipped", error instanceof Error ? error.message : String(error));
       }
       return;
     }
     if (resolved.payload.kind === "customization_validate") {
       await this.harness.commit(async (tx) => {
-        await injectEventToolsInTx(tx, conversationId, ["moco_customization"]);
+        await injectEventToolsInTx(tx, conversationId, ["kulo_customization"]);
       }, BACKGROUND_CONTEXT);
     }
   }
@@ -8382,7 +8382,7 @@ export class MocoHub implements OrchestratorController {
     const update = (async () => {
       await previous;
       const topics = await this.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoStateDoc);
+        const state = await tx.doc(KuloStateDoc);
         const topic = state.topics?.[topicId];
         if (!topic || topic.deletedAt || topic.master || topic.id === "root") return undefined;
         topic.updatedAt = Math.max(topic.updatedAt, at);
@@ -8390,7 +8390,7 @@ export class MocoHub implements OrchestratorController {
       }, BACKGROUND_CONTEXT);
       if (topics) this.#emitTopics(topics);
     })().catch((error) => {
-      console.warn("[MocoTopicArchive] Could not record completed conversation activity", topicId, error);
+      console.warn("[KuloTopicArchive] Could not record completed conversation activity", topicId, error);
     }).finally(() => {
       if (this.#topicActivityUpdates.get(topicId) === update) this.#topicActivityUpdates.delete(topicId);
     });
@@ -8400,9 +8400,9 @@ export class MocoHub implements OrchestratorController {
   async #migrateNativeSearchPlan(plan: { providerId: string; modelId: string; enabled: boolean }): Promise<boolean> {
     let available = true;
     const next = await this.harness.commit(async (tx) => {
-      const doc = await tx.doc(MocoSettingsDoc);
-      const model = cloneJson(doc.model) as MocoDurableSettings["model"];
-      let list = plan.providerId === MOCO_GATEWAY_PROVIDER_ID ? model.gatewayModels :
+      const doc = await tx.doc(KuloSettingsDoc);
+      const model = cloneJson(doc.model) as KuloDurableSettings["model"];
+      let list = plan.providerId === KULO_GATEWAY_PROVIDER_ID ? model.gatewayModels :
         model.subscriptionModels?.[plan.providerId] ?? model.customProviders?.find((provider) => provider.id === plan.providerId)?.models;
       let selected = list?.find((item) => item.id === plan.modelId);
       if (selected?.nativeTools?.webSearch !== undefined) return undefined;
@@ -8413,21 +8413,21 @@ export class MocoHub implements OrchestratorController {
           contextWindow: registered.contextWindow, maxTokens: registered.maxTokens,
           ...(registered.thinkingLevelMap ? { thinkingLevelMap: { ...registered.thinkingLevelMap } } : {}) };
         if (!list) {
-          if (plan.providerId === MOCO_GATEWAY_PROVIDER_ID) list = model.gatewayModels ??= [];
+          if (plan.providerId === KULO_GATEWAY_PROVIDER_ID) list = model.gatewayModels ??= [];
           else { model.subscriptionModels ??= {}; list = model.subscriptionModels[plan.providerId] ??= []; }
         }
         list.push(selected);
       }
       selected.nativeTools = { ...selected.nativeTools, webSearch: plan.enabled };
       applySettingsBlockUpdate(doc, "model", doc.revisions.model, model);
-      return cloneJson(doc) as MocoDurableSettings;
+      return cloneJson(doc) as KuloDurableSettings;
     }, BACKGROUND_CONTEXT);
     if (next) await this.#applyLiveSettings(next, BACKGROUND_CONTEXT);
     return available;
   }
 
   async #applyLiveSettings(
-    nextDoc: MocoDurableSettings,
+    nextDoc: KuloDurableSettings,
     context: Context,
   ): Promise<void> {
     const oldIdentityDir = resolveEffectiveIdentityDir(this.#liveSettings, this.#defaultIdentityDir);
@@ -8469,7 +8469,7 @@ export class MocoHub implements OrchestratorController {
     if (!conv) return;
     const [view, state, settingsDoc, connSnap] = await Promise.all([
       conv.context(context),
-      this.harness.snapshot(MocoStateDoc, context),
+      this.harness.snapshot(KuloStateDoc, context),
       this.harness.snapshot(SettingsAssistantDoc, context),
       this.connectionManager.snapshot(),
     ]);
@@ -8507,8 +8507,8 @@ export class MocoHub implements OrchestratorController {
       for (const ticket of Object.values(state?.tickets ?? {})) {
         if ((ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) !== convNum) continue;
         if ((state?.workerArtifacts?.[ticket.id]?.length ?? 0) > 0) {
-          retained.add("moco_inspect_asset");
-          retained.add("moco_publish_asset");
+          retained.add("kulo_inspect_asset");
+          retained.add("kulo_publish_asset");
         }
         if (
           ticket.externalExecution?.stagedDiff ||
@@ -8516,12 +8516,12 @@ export class MocoHub implements OrchestratorController {
           ticket.workspaceStaging?.stagedDiff ||
           ticket.workspaceStaging?.stagedCwd
         ) {
-          retained.add("moco_inspect_staged_diff");
-          retained.add("moco_apply_staged_changes");
+          retained.add("kulo_inspect_staged_diff");
+          retained.add("kulo_apply_staged_changes");
         }
         if ((ticket.externalExecution?.pendingPermissions?.length ?? 0) > 0) {
-          retained.add("moco_inspect");
-          retained.add("moco_external_permission");
+          retained.add("kulo_inspect");
+          retained.add("kulo_external_permission");
         }
       }
       if (
@@ -8531,7 +8531,7 @@ export class MocoHub implements OrchestratorController {
             (state?.tickets[req.ticketId]?.originConversationId ?? Number(ROOT_CONVERSATION_ID)) === convNum,
         )
       ) {
-        retained.add("moco_connection_decide");
+        retained.add("kulo_connection_decide");
       }
     }
     await this.harness.commit((tx) => pruneIdleDeferredToolsInTx(tx, conversationId, retained), context);
@@ -8542,7 +8542,7 @@ export class MocoHub implements OrchestratorController {
     const model = this.#liveSettings.model;
     const sources: SyncedProviderImageSource[] = [
       ...(model.gatewayDisabled !== true && model.baseUrl?.trim() && model.gatewayModels?.length
-        ? [{ id: MOCO_GATEWAY_PROVIDER_ID, name: "Moco Gateway", baseUrl: model.baseUrl, api: model.apiMode, models: model.gatewayModels }]
+        ? [{ id: KULO_GATEWAY_PROVIDER_ID, name: "Kulo Gateway", baseUrl: model.baseUrl, api: model.apiMode, models: model.gatewayModels }]
         : []),
       ...(model.customProviders ?? []).map((cp) => ({
         id: cp.id, name: cp.name, baseUrl: cp.baseUrl, api: cp.api,
@@ -8563,7 +8563,7 @@ export class MocoHub implements OrchestratorController {
       models: CustomModelConfig[];
     }> = [
       ...(model.gatewayDisabled !== true && model.baseUrl?.trim() && model.gatewayModels?.length
-        ? [{ id: MOCO_GATEWAY_PROVIDER_ID, baseUrl: model.baseUrl, api: model.apiMode, models: model.gatewayModels }]
+        ? [{ id: KULO_GATEWAY_PROVIDER_ID, baseUrl: model.baseUrl, api: model.apiMode, models: model.gatewayModels }]
         : []),
       ...(model.customProviders ?? []).map((cp) => ({
         id: cp.id,
@@ -8597,7 +8597,7 @@ export class MocoHub implements OrchestratorController {
 
   async #reconfigureOrchestratorConversations(context: Context): Promise<void> {
     const orchestratorAgent = this.#resolveOrchestratorAgent();
-    const topicState = await this.harness.snapshot(MocoStateDoc, context);
+    const topicState = await this.harness.snapshot(KuloStateDoc, context);
     for (const cache of this.#topicWatchesList()) {
       const topic = topicState?.topics?.[cache.topicId];
       if (topic?.deletedAt) continue;
@@ -8697,7 +8697,7 @@ export class MocoHub implements OrchestratorController {
   }
 
   async #reconfigureWorkerConversations(context: Context): Promise<void> {
-    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const state = await this.harness.snapshot(KuloStateDoc, context);
     if (!state) return;
     for (const ticket of Object.values(state.tickets ?? {})) {
       if (ticket.externalExecution || ticket.status === "stopped" || ticket.status === "closed") continue;
@@ -8711,7 +8711,7 @@ export class MocoHub implements OrchestratorController {
     }
   }
 
-  #scheduleTicketCleanup(state: Readonly<MocoDurableState>): void {
+  #scheduleTicketCleanup(state: Readonly<KuloDurableState>): void {
     const pending = [...this.#ticketBoard.cleanupCandidates].some(id => !state.slots.holders.includes(id) &&
       this.envManager.getEnvDescriptor(state.tickets[id]!.envId)?.online);
     if (!pending) {
@@ -8831,7 +8831,7 @@ export class MocoHub implements OrchestratorController {
     toolTaskId: number | undefined,
     context: Context,
   ): Promise<{ topicId: string; envId: string; descriptor: EnvNodeDescriptor }> {
-    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const state = await this.harness.snapshot(KuloStateDoc, context);
     const topicId = state?.conversationToTopic?.[String(conversationId)] ?? "root";
     const topic = state?.topics?.[topicId];
     if (!topic || topic.deletedAt) throw new Error("会话已删除。");
@@ -8842,7 +8842,7 @@ export class MocoHub implements OrchestratorController {
       ? [...new Set(namedDispatchDevices(message.text, this.envManager.listEnvs()).flat())]
       : [];
     if (namedTargets.length > 1) {
-      throw new ProjectError(409, "target_device_conflict", "消息中提到多台设备，请用 moco_dispatch 明确指定执行设备。");
+      throw new ProjectError(409, "target_device_conflict", "消息中提到多台设备，请用 kulo_dispatch 明确指定执行设备。");
     }
     const explicitTarget = message.targetDeviceId || topic.targetDeviceId || namedTargets[0];
     if (message.targetDeviceId && namedTargets[0] && message.targetDeviceId !== namedTargets[0]) {
@@ -8853,14 +8853,14 @@ export class MocoHub implements OrchestratorController {
       !message.targetDeviceId &&
       !topic.targetDeviceId
     ) {
-      throw new ProjectError(409, "source_device_ambiguous", "本轮有来自不同设备的消息，请用 moco_dispatch 并填写对应的 source_request_id。");
+      throw new ProjectError(409, "source_device_ambiguous", "本轮有来自不同设备的消息，请用 kulo_dispatch 并填写对应的 source_request_id。");
     }
 
     let envId: string;
     if (topic.projectId) {
       const project = await this.projects.get(topic.projectId, context);
       if (explicitTarget && explicitTarget !== project.deviceId) {
-        throw new ProjectError(409, "target_device_conflict", "所选设备与当前项目绑定设备不同，请确认目标设备或使用 moco_dispatch。");
+        throw new ProjectError(409, "target_device_conflict", "所选设备与当前项目绑定设备不同，请确认目标设备或使用 kulo_dispatch。");
       }
       envId = project.deviceId;
     } else {
@@ -8879,7 +8879,7 @@ export class MocoHub implements OrchestratorController {
       throw new ProjectError(
         409,
         "browser_device_unavailable",
-        "目标电脑当前不在线或不支持桌面浏览器；请连接该电脑或用 moco_dispatch 指定其他在线电脑。",
+        "目标电脑当前不在线或不支持桌面浏览器；请连接该电脑或用 kulo_dispatch 指定其他在线电脑。",
       );
     }
     return { topicId, envId, descriptor };
@@ -8889,25 +8889,25 @@ export class MocoHub implements OrchestratorController {
     const inputs = await this.#currentControlInputs(conversationId, context, toolTaskId);
     const message = chatRoutingData(inputs[0]);
     const namedTargets = message.text ? [...new Set(namedDispatchDevices(message.text, this.envManager.listEnvs()).flat())] : [];
-    if (namedTargets.length > 1) throw new ProjectError(409, "target_device_conflict", "消息中提到多台设备，请用 moco_dispatch 指定文件所在的设备。");
+    if (namedTargets.length > 1) throw new ProjectError(409, "target_device_conflict", "消息中提到多台设备，请用 kulo_dispatch 指定文件所在的设备。");
     const explicitTarget = message.targetDeviceId || namedTargets[0];
     if (message.targetDeviceId && namedTargets[0] && message.targetDeviceId !== namedTargets[0]) {
       throw new ProjectError(409, "target_device_conflict", "消息中指定的设备与会话选定的设备不同，请确认文件所在设备。");
     }
-    if (environment?.startsWith("moco-project:")) {
+    if (environment?.startsWith("kulo-project:")) {
       if (explicitTarget) {
-        const project = await this.projects.get(environment.slice("moco-project:".length), context);
+        const project = await this.projects.get(environment.slice("kulo-project:".length), context);
         if (project.deviceId !== explicitTarget) throw new ProjectError(409, "target_device_conflict", "所选设备与项目所在设备不同，请确认要读取哪个设备上的文件。");
       }
       return;
     }
     if (inputs.some((input) => chatRoutingData(input).source?.deviceId !== message.source?.deviceId) && !message.targetDeviceId) {
-      throw new ProjectError(409, "source_device_ambiguous", "本轮有来自不同设备的消息，请用 moco_dispatch 并填写对应的 source_request_id。");
+      throw new ProjectError(409, "source_device_ambiguous", "本轮有来自不同设备的消息，请用 kulo_dispatch 并填写对应的 source_request_id。");
     }
     const sourceId = message.source?.deviceId;
     const target = explicitTarget || (sourceId === "local" && !this.envManager.getEnvDescriptor("local") ? undefined : sourceId);
     if (target && environment !== (target === "local" ? "node:local" : `pi-env:${target}`)) {
-      throw new ProjectError(409, "read_device_mismatch", "请用 moco_dispatch 在这条消息对应的设备上读取文件。");
+      throw new ProjectError(409, "read_device_mismatch", "请用 kulo_dispatch 在这条消息对应的设备上读取文件。");
     }
   }
 
@@ -8939,7 +8939,7 @@ export class MocoHub implements OrchestratorController {
 
   async #startLegacyFailureRecovery(context: Context): Promise<void> {
     await this.harness.commit(async tx => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const settingsDoc = await tx.doc(SettingsAssistantDoc);
       const now = Date.now();
       for (const ticket of Object.values(state.tickets)) if (ticket.status === "ready") resolveSupersededTickets(state, ticket, now);
@@ -8974,7 +8974,7 @@ export class MocoHub implements OrchestratorController {
   async #reviewTicketRecovery(ticketId: string, startedAt: number, context: Context): Promise<number | null> {
     if (this.#closed) return null;
     if (this.#recovering || this.#liveSettings.executor.paused) return Date.now() + 30_000;
-    const snapshot = await this.harness.snapshot(MocoStateDoc, context);
+    const snapshot = await this.harness.snapshot(KuloStateDoc, context);
     const settingsSnapshot = await this.harness.snapshot(SettingsAssistantDoc, context);
     const root = snapshot?.tickets[ticketId];
     if (!root?.recovery || root.recovery.startedAt !== startedAt ||
@@ -8984,7 +8984,7 @@ export class MocoHub implements OrchestratorController {
     const origin = (await this.harness.conversation((root.originConversationId ?? Number(ROOT_CONVERSATION_ID)) as ConversationId, context)) ?? this.rootConversation;
     let nextAt: number | null = Date.now() + 30_000;
     await origin.commit(async tx => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const current = state.tickets[ticketId];
       const recovery = current?.recovery;
       if (!current || !recovery || recovery.startedAt !== startedAt || ["closed", "stopped", "ready"].includes(current.status)) { nextAt = null; return; }
@@ -9012,7 +9012,7 @@ export class MocoHub implements OrchestratorController {
         const reportTicket = failed ? target : current;
         const summary = failed ? target.latestReport?.summary ?? "自动恢复未能完成任务。" : recoveryWaitSummary(target);
         await submitAutomaticChatInput(tx, origin, {
-          type: "input", whenBusy: "followUp", requestId: `moco:recovery-exhausted:${ticketId}:${startedAt}`,
+          type: "input", whenBusy: "followUp", requestId: `kulo:recovery-exhausted:${ticketId}:${startedAt}`,
           content: formatRecoveryExhaustedRelayMessage({
             title: reportTicket.title,
             summary,
@@ -9033,9 +9033,9 @@ export class MocoHub implements OrchestratorController {
         const guard: WorkerRecoveryEntryData = { ticketId: target.id, rootTicketId: ticketId,
           startedAt, attempt: recovery.attempts, runEpoch: target.runEpoch };
         const topicTargetDeviceId = state.topics?.[target.originTopicId ?? "root"]?.targetDeviceId;
-        await injectEventToolsInTx(tx, origin.id, ["moco_inspect"]);
+        await injectEventToolsInTx(tx, origin.id, ["kulo_inspect"]);
         await submitAutomaticChatInput(tx, origin, {
-          type: "input", whenBusy: "followUp", requestId: `moco:recovery:${ticketId}:${startedAt}:${recovery.attempts}`,
+          type: "input", whenBusy: "followUp", requestId: `kulo:recovery:${ticketId}:${startedAt}:${recovery.attempts}`,
           content: formatWorkerRecoveryMessage({
             ticketId: target.id,
             title: target.title,
@@ -9073,7 +9073,7 @@ export class MocoHub implements OrchestratorController {
     if (this.#topicAutoArchiveTimer || this.#closed) return;
     this.#topicAutoArchiveTimer = setInterval(() => {
       void this.archiveInactiveTopics().catch((error) => {
-        console.warn("[MocoTopicArchive] Automatic archive check failed", error);
+        console.warn("[KuloTopicArchive] Automatic archive check failed", error);
       });
     }, 60_000);
     this.#topicAutoArchiveTimer.unref?.();
@@ -9087,7 +9087,7 @@ export class MocoHub implements OrchestratorController {
         this.uploads.cleanupIncompleteUploads();
         this.uploads.cleanupDrafts();
       } catch (error) {
-        console.warn("[MocoUploads] Periodic upload cleanup failed", error);
+        console.warn("[KuloUploads] Periodic upload cleanup failed", error);
       }
     }, 60 * 60_000);
     this.#uploadCleanupTimer.unref?.();
@@ -9099,7 +9099,7 @@ export class MocoHub implements OrchestratorController {
     runEpoch: number,
   ): Promise<void> {
     if (this.#closed) return;
-    const ticket = (await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT))?.tickets[ticketId];
+    const ticket = (await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))?.tickets[ticketId];
     if (this.#closed || !ticket || ticket.runEpoch !== runEpoch || ticket.status !== "running") return;
     if (ticket.externalExecution) {
       this.#trackedWorkers.get(ticketId)?.detachObserver?.();
@@ -9174,7 +9174,7 @@ export class MocoHub implements OrchestratorController {
       const stallMs =
         this.#watchdogStallMsOverride ?? Math.max(1, watchdogMinutes) * 60_000;
       const longRunMs = Math.max(stallMs * 3, 15 * 60_000);
-      const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+      const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
       if (!state || this.#closed) return;
 
       const now = Date.now();
@@ -9248,12 +9248,12 @@ export class MocoHub implements OrchestratorController {
         });
 
         await this.harness.commit(async (tx) => {
-          await injectEventToolsInTx(tx, originConv.id, ["moco_inspect"]);
+          await injectEventToolsInTx(tx, originConv.id, ["kulo_inspect"]);
           await submitAutomaticChatInput(tx, originConv, {
             type: "input",
             content: watchdogPrompt,
             whenBusy: "followUp",
-            requestId: `moco:watchdog:${ticket.id}:${ticket.runEpoch}:${reason}:${now}`,
+            requestId: `kulo:watchdog:${ticket.id}:${ticket.runEpoch}:${reason}:${now}`,
             entry: {
               kind: WorkerWatchdogEntry.kind,
               data: {
@@ -9288,7 +9288,7 @@ export class MocoHub implements OrchestratorController {
     }
   }
 
-  #emitSettings(settings: MocoSettingsView): void {
+  #emitSettings(settings: KuloSettingsView): void {
     for (const listener of this.#listeners) {
       listener.onSettings?.(settings);
     }

@@ -1,4 +1,4 @@
-import type { SearchPlanView, WebPageResult, WebSearchInput, WebSource } from "@moco/protocol";
+import type { SearchPlanView, WebPageResult, WebSearchInput, WebSource } from "@kulo/protocol";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { normalizeWebSourceUrl, validatePublicWebUrl, webSourceId } from "./web-content.js";
 import { classifySearchMcpError, duckProxyForTarget, searchAdapterFailure, withSearchMcp, type SearchMcpOptions, type SearchMcpResult, type SearchMcpSession } from "./search-mcp.js";

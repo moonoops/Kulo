@@ -1,4 +1,4 @@
-import type { ClientToHubMessage } from "@moco/protocol";
+import type { ClientToHubMessage } from "@kulo/protocol";
 
 export function newDeliveryId(prefix: string): string {
   if (globalThis.crypto.randomUUID) return `${prefix}:${globalThis.crypto.randomUUID()}`;

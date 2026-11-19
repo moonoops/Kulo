@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Card, Checkbox, Chip, Input, Label, TextField } from "@heroui/react";
-import { redactSecrets, type CapabilitiesWorkspaceSnapshot, type ImageModelCandidate, type ImageModelDiscovery } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
-import { translate, useI18n } from "../../moco-i18n";
+import { redactSecrets, type CapabilitiesWorkspaceSnapshot, type ImageModelCandidate, type ImageModelDiscovery } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
+import { translate, useI18n } from "../../kulo-i18n";
 
 export interface ImageConfigurationCardProps {
   workspace: CapabilitiesWorkspaceSnapshot;
@@ -23,7 +23,7 @@ export function selectableImageCandidateIds(discovery: ImageModelDiscovery, sele
 
 export async function prepareImageCandidateDraft(workspace: CapabilitiesWorkspaceSnapshot, clientId: string, candidate: ImageModelCandidate) {
   if (workspace.imageSetup?.draft?.clientId === clientId) throw new Error(translate("请先保存或取消当前图像草稿。", "Save or cancel the current image draft first."));
-  return mocoRest.updateImageDraft({ clientId, config: {
+  return kuloRest.updateImageDraft({ clientId, config: {
     adapter: candidate.adapter, modelId: candidate.modelId, name: candidate.name, baseUrl: candidate.baseUrl,
     credentialProviderId: candidate.providerId, imageProfile: candidate.imageProfile, defaults: candidate.defaults,
     customAdapter: candidate.customAdapter, enabled: true, maxOutputs: 1, allowTaskGeneration: true,
@@ -58,7 +58,7 @@ function OwnedImageProviderPicker({ workspace, clientId, connected, disabled = f
     if (!connected || disabled || !clientId || pending.current) return;
     pending.current = true; setBusy("discover"); setError(undefined); setImportErrors([]); setAdded(undefined);
     try {
-      const next = await mocoRest.discoverImageModels(clientId);
+      const next = await kuloRest.discoverImageModels(clientId);
       if (mounted.current) { setDiscovery(next); setSelected(new Set()); onChanged(); }
     } catch (cause) { if (mounted.current) setError(imageActionError(cause)); }
     finally { pending.current = false; if (mounted.current) setBusy(undefined); }
@@ -82,7 +82,7 @@ function OwnedImageProviderPicker({ workspace, clientId, connected, disabled = f
     if (blocked || pending.current || !discovery || !selectedIds.length) return;
     pending.current = true; setBusy("import"); setError(undefined); setImportErrors([]);
     try {
-      const result = await mocoRest.importImageModels({ clientId, discoveryId: discovery.id, candidateIds: selectedIds, commandId: imageCommandId("import"), allowTaskGeneration });
+      const result = await kuloRest.importImageModels({ clientId, discoveryId: discovery.id, candidateIds: selectedIds, commandId: imageCommandId("import"), allowTaskGeneration });
       if (mounted.current) {
         const imported = new Set(result.added.map((capability) => `${capability.connectionId}:${capability.modelId}`));
         const failed = new Set(result.errors.map((item) => item.candidateId));
@@ -97,7 +97,7 @@ function OwnedImageProviderPicker({ workspace, clientId, connected, disabled = f
   return <Card variant="secondary" className="min-w-0 gap-3 rounded-2xl p-4" aria-label={t("从已有供应商添加图像模型", "Add image models from existing providers")}>
     <Card.Header><Card.Title className="text-sm">{t("选择图像模型", "Choose image models")}</Card.Title></Card.Header>
     <Card.Content className="flex min-w-0 flex-col gap-3">
-      <TextField className="moco-context-field" variant="primary" value={query} onChange={setQuery} isDisabled={busy === "import"}>
+      <TextField className="kulo-context-field" variant="primary" value={query} onChange={setQuery} isDisabled={busy === "import"}>
         <Label className="sr-only">{t("搜索图像模型", "Search image models")}</Label><Input type="search" placeholder={t("搜索模型或供应商", "Search models or providers")} />
       </TextField>
       {busy === "discover" && <p className="text-xs text-muted" role="status">{t("正在读取供应商模型…", "Reading provider models…")}</p>}
@@ -108,13 +108,13 @@ function OwnedImageProviderPicker({ workspace, clientId, connected, disabled = f
             const next = new Set(previous); if (checked) next.add(candidate.id); else next.delete(candidate.id); return next;
           })}>
             <Checkbox.Content className="items-start"><Checkbox.Control className="mt-1"><Checkbox.Indicator /></Checkbox.Control>
-              <span className="flex min-w-0 flex-col gap-1"><span className="flex flex-wrap items-center gap-2"><span className="moco-item-title break-words">{candidate.name}</span>{candidate.alreadyAdded ? <Chip size="sm" variant="tertiary">{t("已添加", "Added")}</Chip> : candidate.needsConfiguration && <Chip size="sm" variant="tertiary" className="shrink-0 whitespace-nowrap">{t("需配置接口", "Configure API")}</Chip>}</span><span className="moco-item-description break-words">{candidate.providerName} · {candidate.modelId}</span>{candidate.needsConfiguration && candidate.configurationReason && <span className="text-xs text-muted">{redactSecrets(candidate.configurationReason)}</span>}</span>
+              <span className="flex min-w-0 flex-col gap-1"><span className="flex flex-wrap items-center gap-2"><span className="kulo-item-title break-words">{candidate.name}</span>{candidate.alreadyAdded ? <Chip size="sm" variant="tertiary">{t("已添加", "Added")}</Chip> : candidate.needsConfiguration && <Chip size="sm" variant="tertiary" className="shrink-0 whitespace-nowrap">{t("需配置接口", "Configure API")}</Chip>}</span><span className="kulo-item-description break-words">{candidate.providerName} · {candidate.modelId}</span>{candidate.needsConfiguration && candidate.configurationReason && <span className="text-xs text-muted">{redactSecrets(candidate.configurationReason)}</span>}</span>
             </Checkbox.Content>
           </Checkbox>
           {candidate.needsConfiguration && !candidate.alreadyAdded && <Button variant="secondary" size="sm" aria-label={t(`配置${candidate.name}`, `Configure ${candidate.name}`)} isDisabled={blocked} onPress={() => void configure(candidate)}>{t("配置", "Configure")}</Button>}
         </div>)}
       </div>
-      <Checkbox variant="primary" isSelected={allowTaskGeneration} onChange={setAllowTaskGeneration} isDisabled={blocked}><Checkbox.Content><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>{t("允许 Moco 按需调用所选模型", "Allow Moco to use selected models as needed")}</Checkbox.Content></Checkbox>
+      <Checkbox variant="primary" isSelected={allowTaskGeneration} onChange={setAllowTaskGeneration} isDisabled={blocked}><Checkbox.Content><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>{t("允许 Kulo 按需调用所选模型", "Allow Kulo to use selected models as needed")}</Checkbox.Content></Checkbox>
       {discovery?.errors.map((failure) => <p key={failure.providerId} role="status" className="break-words text-xs text-warning">{failure.providerName}：{redactSecrets(failure.error)}</p>)}
       {error && <p role="alert" className="break-words text-xs text-danger">{error}</p>}
       {importErrors.map((message) => <p key={message} role="alert" className="break-words text-xs text-danger">{message}</p>)}

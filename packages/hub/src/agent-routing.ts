@@ -2,7 +2,7 @@ import {
   AGENT_TASK_KINDS, EXTERNAL_AGENT_KINDS, LEGACY_ROLE_ALIASES, redactSensitiveText,
   type AgentAssignment, type AgentDispatchIntent, type AgentDispatchPolicy, type AgentRoutingTarget, type AgentTaskKind,
   type EnvNodeDescriptor, type ExternalAgentKind, type RolePreset,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 
 type Roles = Readonly<Record<string, RolePreset>>;
 export class AgentRoutingError extends Error {
@@ -70,7 +70,7 @@ const PLATFORM_ALIASES: Readonly<Record<ExternalAgentKind, readonly string[]>> =
   dots: ["GPT Dots", "GPTDots", "Dots"],
   muse: ["Muse Agent", "Muse"],
 };
-const INTERNAL_ALIASES = ["内置 Worker", "内置Worker", "内置智能体", "Moco Worker", "built-in Worker", "builtin worker", "internal worker"];
+const INTERNAL_ALIASES = ["内置 Worker", "内置Worker", "内置智能体", "Kulo Worker", "built-in Worker", "builtin worker", "internal worker"];
 interface Alias { text: string; kind?: ExternalAgentKind; internal?: boolean; ids: string[]; }
 function aliases(roles: Roles): Alias[] {
   const names = new Map<string, Alias>();

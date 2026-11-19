@@ -1,6 +1,6 @@
-import type { DevicePeerConfig, DeviceRoleTransition } from "@moco/protocol";
+import type { DevicePeerConfig, DeviceRoleTransition } from "@kulo/protocol";
 import { randomBytes } from "node:crypto";
-import { discoverDevicePeer, DevicePeerInUseError, localPeerProxyToken, waitForPeerReady } from "@moco/env";
+import { discoverDevicePeer, DevicePeerInUseError, localPeerProxyToken, waitForPeerReady } from "@kulo/env";
 import type { TuiChatOptions } from "./tui-chat.js";
 
 export function cliFlag(args: readonly string[], flag: string): string | undefined {
@@ -79,7 +79,7 @@ export async function joinRunningHub(
     const source = await endpoint();
     const response = await fetch(new URL("/api/devices/join", source.url), {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
-      headers: { ...source.headers, "content-type": "application/json", "x-moco-transition-id": id },
+      headers: { ...source.headers, "content-type": "application/json", "x-kulo-transition-id": id },
       body: JSON.stringify({ input: input.hubUrl, token: input.inviteToken, rootDir: input.rootDir, force }),
     }).catch(() => undefined); // A listener swap may race its acknowledgement.
     if (response && response.status !== 202) {
@@ -106,7 +106,7 @@ export async function joinRunningHub(
           }
         }
       }
-      if (result?.status === 401 || result?.status === 403) throw new Error("本机主机的授权已改变，请重新打开 Moco。");
+      if (result?.status === 401 || result?.status === 403) throw new Error("本机主机的授权已改变，请重新打开 Kulo。");
       if (result?.status === 404 && Date.now() - started > 5_000) throw new Error("未找到此次接入，请在本机设备互联查看当前状态。");
       await new Promise<void>((resolve) => setTimeout(resolve, 300));
     }
@@ -140,7 +140,7 @@ export async function runJoinedDeviceCommand(
     if (!hubUrl || !inviteToken) throw new Error("请提供 --hub 主脑地址和 --invite 配对凭证。");
     const previous = dependencies.readConfig();
     if (previous && await dependencies.findRunning(previous, localPort(args))) {
-      throw new Error("本机 Moco 客户端仍在运行，请先退出客户端，再加入主脑。");
+      throw new Error("本机 Kulo 客户端仍在运行，请先退出客户端，再加入主脑。");
     }
     const rootDir = cliFlag(args, "--root");
     config = await dependencies.stage({ hubUrl, inviteToken, ...(rootDir ? { rootDir } : {}) });
@@ -181,7 +181,7 @@ export async function runJoinedDeviceCommand(
     }
   }
 
-  dependencies.log(`Moco 设备客户端：${config.name}`);
+  dependencies.log(`Kulo 设备客户端：${config.name}`);
   dependencies.log(`Web 控制台：${url}`);
   dependencies.log(`主脑：${config.hubUrl}`);
   if (owned?.ready) {
@@ -248,11 +248,11 @@ export async function findRunningDevicePeer(
   const url = `http://127.0.0.1:${port}`;
   let response: Response;
   try {
-    response = await fetch(`${url}/_moco/peer-status`, { signal: AbortSignal.timeout(1_000), redirect: "error" });
+    response = await fetch(`${url}/_kulo/peer-status`, { signal: AbortSignal.timeout(1_000), redirect: "error" });
   } catch (error) {
     const cause = error instanceof Error ? (error as Error & { cause?: { code?: string } }).cause : undefined;
     if (cause?.code === "ECONNREFUSED" || (error instanceof Error && error.name === "TimeoutError")) return null;
-    throw new Error("无法检查本机 Moco 客户端，请检查本机代理端口。");
+    throw new Error("无法检查本机 Kulo 客户端，请检查本机代理端口。");
   }
   if (!response.ok) return null;
   let status: { deviceId?: unknown; hubUrl?: unknown };
@@ -265,19 +265,19 @@ export async function findRunningDevicePeer(
   const started = await verifiedPeer();
   if (started) return started;
   // Older clients do not prove ownership of their port. Avoid opening or registering a second Env against them.
-  throw new Error("无法验证此旧版设备客户端的身份，请退出旧客户端后重新打开 Moco。");
+  throw new Error("无法验证此旧版设备客户端的身份，请退出旧客户端后重新打开 Kulo。");
 }
 
 /** A saved client credential belongs only to the saved Hub and is never reused for an explicit URL. */
 export function resolveChatConnection(
   args: readonly string[],
-  environment: { MOCO_AUTH_TOKEN?: string },
+  environment: { KULO_AUTH_TOKEN?: string },
   readConfig: () => DevicePeerConfig | null,
 ): Pick<TuiChatOptions, "wsUrl" | "authToken"> {
   const explicitUrl = cliFlag(args, "--url");
   const explicitToken = cliFlag(args, "--token");
   if (explicitUrl) {
-    return { wsUrl: explicitUrl, authToken: explicitToken ?? environment.MOCO_AUTH_TOKEN };
+    return { wsUrl: explicitUrl, authToken: explicitToken ?? environment.KULO_AUTH_TOKEN };
   }
   const config = readConfig();
   if (config) {
@@ -285,5 +285,5 @@ export function resolveChatConnection(
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     return { wsUrl: url.toString(), authToken: explicitToken ?? config.clientToken };
   }
-  return { wsUrl: "ws://127.0.0.1:7788/ws/client", authToken: explicitToken ?? environment.MOCO_AUTH_TOKEN };
+  return { wsUrl: "ws://127.0.0.1:7788/ws/client", authToken: explicitToken ?? environment.KULO_AUTH_TOKEN };
 }

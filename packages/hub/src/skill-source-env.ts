@@ -3,9 +3,9 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT, withoutAbortSignal } from "@earendil-works/chord/context";
 import { getOrThrow, type ExecutionEnv, type FileInfo } from "@earendil-works/pi-durable/env";
-import type { ProjectRecord } from "@moco/protocol";
-import type { EnvManager } from "@moco/env";
-import type { MocoProjects } from "./projects.js";
+import type { ProjectRecord } from "@kulo/protocol";
+import type { EnvManager } from "@kulo/env";
+import type { KuloProjects } from "./projects.js";
 
 const MAX_FILES = 512;
 const MAX_ENTRIES = 1024;
@@ -56,7 +56,7 @@ function unchanged(first: FileInfo, next: FileInfo): boolean {
 
 export interface StageProjectSkillOptions {
   stateDir: string;
-  projects: MocoProjects;
+  projects: KuloProjects;
   envManager: EnvManager;
 }
 

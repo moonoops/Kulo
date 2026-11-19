@@ -53,11 +53,11 @@ interface ContextCompactionState {
   active: { epoch: number; checkpointEntryId: number; blockCount: number; kernelVersion: string } | null;
 }
 export const ContextCompactionDoc = defineDoc<ContextCompactionState & JsonObject>({
-  kind: "moco.context-compaction", version: 1, scope: "conversation", history: "latest", fork: "initial",
+  kind: "kulo.context-compaction", version: 1, scope: "conversation", history: "latest", fork: "initial",
   initial: () => ({ enabled: false, epoch: 0, kernelVersion: null, lastError: null, jobs: {}, active: null }) as ContextCompactionState & JsonObject,
   checkpointWhen: () => true,
 });
-export const ContextBlocksEntry = defineEntry<JsonObject>("moco.context-blocks");
+export const ContextBlocksEntry = defineEntry<JsonObject>("kulo.context-blocks");
 
 export interface ContextCompactionOptions {
   getHarness: () => Harness;
@@ -166,7 +166,7 @@ function folded(kernel: BillionKernel, input: SummaryInput, summaries: string[],
     state = second.state;
   }
   const active = state.blocks.filter((block) => block.active);
-  const summary = `[MOCO_CONTEXT_CHECKPOINT ${input.epoch} ${input.sourceHash}]\n` + active.map((block) => `[历史块 ${input.epoch}:${block.blockId}]\n${block.summary}`).join("\n\n");
+  const summary = `[KULO_CONTEXT_CHECKPOINT ${input.epoch} ${input.sourceHash}]\n` + active.map((block) => `[历史块 ${input.epoch}:${block.blockId}]\n${block.summary}`).join("\n\n");
   return { summary, blocks: clean(state.blocks), sourceChunks: input.chunks.map((chunk) => ({ entryIds: chunk.entryIds, messageIds: chunk.messages.map((message) => message.id) })) };
 }
 
@@ -183,7 +183,7 @@ async function recordUsage(tx: Tx, conversationId: ConversationId, key: string, 
 
 export function createContextCompactionController(options: ContextCompactionOptions) {
   const summaryTask = defineTask<SummaryInput, SummaryCheckpoint, SummaryResult>({
-    name: "moco.context-summary", version: 1,
+    name: "kulo.context-summary", version: 1,
     initial: () => ({ phase: "summarize", summaries: [], levels: [], next: [], attempt: 1 }),
     phases: {
       retry: async (task, runtime, context) => {
@@ -343,7 +343,7 @@ export function createContextCompactionController(options: ContextCompactionOpti
         const doc = await tx.doc(ContextCompactionDoc, conversationId);
         const current = doc.jobs[key];
         if (!current || current.status !== "pending" || current.sourceHash !== job.sourceHash) return;
-        const marker = `[MOCO_CONTEXT_CHECKPOINT ${job.epoch} ${job.sourceHash}]`;
+        const marker = `[KULO_CONTEXT_CHECKPOINT ${job.epoch} ${job.sourceHash}]`;
         const placedText = placed?.model?.map((message) => textContent(message)).join("\n") ?? "";
         if (checkpointEntryId !== undefined && placed?.kind === "pi.compaction" && Number(placed.head) === current.firstKept && placedText.includes(marker)
           && child?.state.status === "terminal" && child.state.outcome.status === "completed") {
@@ -364,7 +364,7 @@ export function createContextCompactionController(options: ContextCompactionOpti
     }
   }
 
-  const extension = defineExtension({ name: "moco-context-compaction", tasks: [summaryTask], hooks: [
+  const extension = defineExtension({ name: "kulo-context-compaction", tasks: [summaryTask], hooks: [
     hook(CompactionTask, { beforeCompact }),
     hook(GenerationTask, { beforeRequest: async (_request, api, context) => { await reconcile(api.conversationId, context); return undefined; } }),
   ] });

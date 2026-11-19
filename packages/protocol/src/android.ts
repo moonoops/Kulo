@@ -2489,14 +2489,14 @@ export const ANDROID_TOOL_CATALOG: readonly AndroidToolDefinition[] = [
               }
             }
           },
-          "description": "当前任务有权访问的Moco音频附件；可传id/resourceId、Moco附件asset或其uri/url。Hub核对归属并规范化元数据，不能以自报URL、大小或校验值扩大访问范围。"
+          "description": "当前任务有权访问的Kulo音频附件；可传id/resourceId、Kulo附件asset或其uri/url。Hub核对归属并规范化元数据，不能以自报URL、大小或校验值扩大访问范围。"
         },
         "captureId": {
           "description": "实时转写时使用正在采集的会话标识，与文件输入二选一。",
           "type": "string"
         },
         "filePath": {
-          "description": "兼容附件资源引用，仅接受moco-asset:id或/api/uploads/id。不能传手机或主机文件路径；优先使用audioRef。",
+          "description": "兼容附件资源引用，仅接受kulo-asset:id或/api/uploads/id。不能传手机或主机文件路径；优先使用audioRef。",
           "type": "string"
         },
         "language": {
@@ -3957,7 +3957,7 @@ export const ANDROID_TOOL_CATALOG: readonly AndroidToolDefinition[] = [
   {
     "action": "notification_channels",
     "name": "android_notification_channels",
-    "description": "按需查询Moco系统通知是否可用及当前渠道状态。不推断用户已读，不为判断通知而持续轮询。此工具不会修改其他应用的通知渠道。",
+    "description": "按需查询Kulo系统通知是否可用及当前渠道状态。不推断用户已读，不为判断通知而持续轮询。此工具不会修改其他应用的通知渠道。",
     "parameters": {
       "type": "object",
       "properties": {

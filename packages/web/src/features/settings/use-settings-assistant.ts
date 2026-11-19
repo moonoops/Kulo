@@ -1,4 +1,4 @@
-import { translate as t, useI18n } from "../../moco-i18n";
+import { translate as t, useI18n } from "../../kulo-i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ChatDisplayItem,
@@ -10,11 +10,11 @@ import type {
   SettingsAssistantModule,
   SettingsAssistantSnapshot,
   SetupInputRequest,
-} from "@moco/protocol";
-import { redactSensitiveText } from "@moco/protocol";
-import { MocoWsDisconnectedError, type MocoWsAckResult } from "../../moco-api";
-import { getAppearanceCustomization, setAppearanceCustomization, useMocoAppearance } from "../../moco-appearance";
-import { useTopicAttachments, type DraftAttachment } from "../../moco-composer";
+} from "@kulo/protocol";
+import { redactSensitiveText } from "@kulo/protocol";
+import { KuloWsDisconnectedError, type KuloWsAckResult } from "../../kulo-api";
+import { getAppearanceCustomization, setAppearanceCustomization, useKuloAppearance } from "../../kulo-appearance";
+import { useTopicAttachments, type DraftAttachment } from "../../kulo-composer";
 import { canExecuteSettingsClientAction, resolveSettingsAppearanceUndo, type SettingsAssistantEntryIntent } from "./settings-assistant-actions";
 import { advanceSettingsAssistantPageScope } from "./settings-assistant-page-scope";
 import { deviceApi, waitForDeviceRole } from "./device-api";
@@ -26,24 +26,24 @@ const ATTACHMENT_DRAFT_KEY = "settings-assistant";
 
 export function readSettingsAssistantDraft(): string {
   try {
-    const raw = localStorage.getItem("moco:settings-assistant-draft") ?? "";
+    const raw = localStorage.getItem("kulo:settings-assistant-draft") ?? "";
     const safe = redactSensitiveText(raw);
-    localStorage.removeItem("moco:settings-assistant-draft");
+    localStorage.removeItem("kulo:settings-assistant-draft");
     return safe;
   }
   catch { return ""; }
 }
 
 export function clearSettingsAssistantDraftStorage(): void {
-  localStorage.removeItem("moco:settings-assistant-draft");
+  localStorage.removeItem("kulo:settings-assistant-draft");
 }
 
 function readClientId(): string {
   const fresh = `settings-${globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
   try {
-    const stored = sessionStorage.getItem("moco:settings-assistant-client");
+    const stored = sessionStorage.getItem("kulo:settings-assistant-client");
     if (stored) return stored;
-    sessionStorage.setItem("moco:settings-assistant-client", fresh);
+    sessionStorage.setItem("kulo:settings-assistant-client", fresh);
   } catch { /* The in-memory ID still isolates this tab when storage is unavailable. */ }
   return fresh;
 }
@@ -94,7 +94,7 @@ export function useSettingsAssistant({
   connected: boolean;
   snapshot: SettingsAssistantSnapshot;
   sendWs: (message: ClientToHubMessage) => boolean;
-  sendWsWithAck: (message: ClientToHubMessage, timeoutMs?: number) => Promise<MocoWsAckResult>;
+  sendWsWithAck: (message: ClientToHubMessage, timeoutMs?: number) => Promise<KuloWsAckResult>;
   setError: (error: string | null) => void;
   onNavigate: Navigate;
 }): SettingsAssistantControls {
@@ -106,7 +106,7 @@ export function useSettingsAssistant({
   attachmentsRef.current = attachments;
   const { enqueueFiles, removeAttachment, retryAttachment, cancelAttachment, restoreAttachments } = attachmentDraft;
   const [clientId] = useState(readClientId);
-  const { mode: appearance, setMode, customization: appearanceCustomization } = useMocoAppearance();
+  const { mode: appearance, setMode, customization: appearanceCustomization } = useKuloAppearance();
   const appearanceRef = useRef(appearance);
   appearanceRef.current = appearance;
   const [sending, setSending] = useState(false);
@@ -186,7 +186,7 @@ export function useSettingsAssistant({
       setSetupCompletion((current) => message.requestId === `settings-input-completed-${current?.request.id}` ? null : current);
       return true;
     } catch (error) {
-      const unknown = error instanceof MocoWsDisconnectedError;
+      const unknown = error instanceof KuloWsDisconnectedError;
       setUnconfirmedSend(unknown);
       if (!unknown) pendingSendRef.current = null;
       setError(unknown ? t("消息接收状态待确认，草稿已保留。", "Message receipt is unconfirmed. Your draft is preserved.") : error instanceof Error ? error.message : t("发送失败", "Failed to send"));
@@ -318,7 +318,7 @@ export function useSettingsAssistant({
         try {
           await sendWsWithAck({ type: "settings.assistant.action", actionId: action.id, decision, clientId, expectedTopicId: snapshot.topicId });
         } catch (ackError) {
-          if (action.clientOperation !== "join-device" || !(ackError instanceof MocoWsDisconnectedError)) throw ackError;
+          if (action.clientOperation !== "join-device" || !(ackError instanceof KuloWsDisconnectedError)) throw ackError;
         }
         if (action.clientOperation === "join-device") await waitForDeviceRole(action.id, "joined");
         else await deviceApi.leave();
@@ -327,12 +327,12 @@ export function useSettingsAssistant({
       await sendWsWithAck({ type: "settings.assistant.action", actionId: action.id, decision, clientId, expectedTopicId: snapshot.topicId });
       return true;
     } catch (error) {
-      if (customizationUndo && !(error instanceof MocoWsDisconnectedError) && JSON.stringify(getAppearanceCustomization()) === JSON.stringify(customizationUndo.after)) setAppearanceCustomization(customizationUndo.before ?? null);
-      if (appearanceUndo && !(error instanceof MocoWsDisconnectedError) && appearanceRef.current === appearanceUndo.after) {
+      if (customizationUndo && !(error instanceof KuloWsDisconnectedError) && JSON.stringify(getAppearanceCustomization()) === JSON.stringify(customizationUndo.after)) setAppearanceCustomization(customizationUndo.before ?? null);
+      if (appearanceUndo && !(error instanceof KuloWsDisconnectedError) && appearanceRef.current === appearanceUndo.after) {
         appearanceRef.current = appearanceUndo.before;
         setMode(appearanceUndo.before);
       }
-      setError(action.kind === "appearance" && decision === "undo" && error instanceof MocoWsDisconnectedError
+      setError(action.kind === "appearance" && decision === "undo" && error instanceof KuloWsDisconnectedError
         ? t("当前窗口已撤销外观修改，结果同步待确认，请重连后再次点击撤销。", "Appearance changes were undone in this window. Reconnect and click Undo again to confirm synchronization.")
         : error instanceof Error ? error.message : t("执行设置操作失败", "Failed to apply settings action"));
       return false;

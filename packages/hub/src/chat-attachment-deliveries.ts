@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
 import { defineDoc, type EntryRecord, type Harness, type JsonObject, type Tx } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
-import type { AgentDispatchIntent, ChatAttachment, ChatReplyReference } from "@moco/protocol";
+import type { AgentDispatchIntent, ChatAttachment, ChatReplyReference } from "@kulo/protocol";
 import { clientDeliveryIntent, DeliveryReceiptDoc, deliveryReceiptKey, writeDeliveryReceipt, type DeliveryReceiptIdentity } from "./delivery-receipts.js";
 import { ProjectError } from "./projects.js";
 import { isActiveSettingsConversation, SettingsAssistantDoc, type SettingsAssistantState } from "./settings-doc.js";
-import { MocoStateDoc, type MocoDurableState } from "./state.js";
+import { KuloStateDoc, type KuloDurableState } from "./state.js";
 import { injectEventToolsInTx } from "./tool-surface.js";
-import { MocoUserEntry } from "./ui-cards.js";
-import { UploadError, type MocoUploadStore } from "./uploads.js";
+import { KuloUserEntry } from "./ui-cards.js";
+import { UploadError, type KuloUploadStore } from "./uploads.js";
 import type { ChatMessageSource } from "./chat-submissions.js";
 
 export interface ChatDeliveryDraft {
@@ -31,7 +31,7 @@ export interface ChatDeliveryDraft {
 
 // Only admitted attachment messages live here. Binary content remains in the upload store.
 export const PendingChatAttachmentsDoc = defineDoc<{ messages: Record<string, ChatDeliveryDraft> } & JsonObject>({
-  kind: "moco.pending-chat-attachments",
+  kind: "kulo.pending-chat-attachments",
   version: 1,
   scope: "session",
   initial: () => ({ messages: {} }),
@@ -39,14 +39,14 @@ export const PendingChatAttachmentsDoc = defineDoc<{ messages: Record<string, Ch
 });
 
 export const ChatAttachmentGrantsDoc = defineDoc<{ byAsset: Record<string, string[]> } & JsonObject>({
-  kind: "moco.chat-attachment-grants",
+  kind: "kulo.chat-attachment-grants",
   version: 1,
   scope: "session",
   initial: () => ({ byAsset: {} }),
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 64,
 });
 
-export async function observeChatAttachmentGrants(harness: Harness, uploads: MocoUploadStore, context: Context): Promise<void> {
+export async function observeChatAttachmentGrants(harness: Harness, uploads: KuloUploadStore, context: Context): Promise<void> {
   await harness.commit(async tx => { await tx.doc(ChatAttachmentGrantsDoc); }, context);
   let advanced = false;
   const observation = await harness.observeDoc(ChatAttachmentGrantsDoc, {
@@ -61,7 +61,7 @@ export async function observeChatAttachmentGrants(harness: Harness, uploads: Moc
   if (!advanced) uploads.setCommittedChatScopes(observation.value.byAsset);
 }
 
-export function assertChatDestination(state: Readonly<MocoDurableState>, draft: Pick<ChatDeliveryDraft, "topicId" | "conversationId">): void {
+export function assertChatDestination(state: Readonly<KuloDurableState>, draft: Pick<ChatDeliveryDraft, "topicId" | "conversationId">): void {
   const topic = state.topics?.[draft.topicId];
   if (!topic || topic.deletedAt !== undefined || topic.conversationId !== draft.conversationId) {
     throw new ProjectError(404, "topic_deleted", "会话已删除。");
@@ -72,7 +72,7 @@ export function chatRequestTargetKey(conversationId: number, requestKey: string)
   return createHash("sha256").update(`${conversationId}:${requestKey}`).digest("hex");
 }
 
-function chatUploadScope(state?: Readonly<MocoDurableState>, settings?: Readonly<SettingsAssistantState>): (scope: string) => boolean {
+function chatUploadScope(state?: Readonly<KuloDurableState>, settings?: Readonly<SettingsAssistantState>): (scope: string) => boolean {
   return scope => {
     const match = /^conversation:(\d+)$/.exec(scope);
     if (!match) return false;
@@ -83,13 +83,13 @@ function chatUploadScope(state?: Readonly<MocoDurableState>, settings?: Readonly
 }
 
 export async function snapshotChatUploadScope(harness: Harness, context: Context) {
-  const [state, settings] = await Promise.all([harness.snapshot(MocoStateDoc, context), harness.snapshot(SettingsAssistantDoc, context)]);
+  const [state, settings] = await Promise.all([harness.snapshot(KuloStateDoc, context), harness.snapshot(SettingsAssistantDoc, context)]);
   return chatUploadScope(state, settings);
 }
 
-export async function bindChatAttachments(tx: Tx, uploads: MocoUploadStore, destination: Pick<ChatDeliveryDraft, "topicId" | "conversationId">,
+export async function bindChatAttachments(tx: Tx, uploads: KuloUploadStore, destination: Pick<ChatDeliveryDraft, "topicId" | "conversationId">,
   attachments: Array<string | Pick<ChatAttachment, "id">>, principalId: string, sourceScopes?: ChatDeliveryDraft["sourceScopes"]): Promise<void> {
-  const state = await tx.doc(MocoStateDoc);
+  const state = await tx.doc(KuloStateDoc);
   assertChatDestination(state, destination);
   const canRead = chatUploadScope(state, await tx.doc(SettingsAssistantDoc));
   // The sender must still be able to read a forwarded file from a source authorized at admission.
@@ -107,13 +107,13 @@ export async function bindChatAttachments(tx: Tx, uploads: MocoUploadStore, dest
     if (!scopes.includes(scope)) grants.byAsset[record.id] = [...scopes, scope];
   }
   if (eligible.length > 0) {
-    await injectEventToolsInTx(tx, destination.conversationId, ["moco_inspect_asset", "moco_publish_asset"]);
+    await injectEventToolsInTx(tx, destination.conversationId, ["kulo_inspect_asset", "kulo_publish_asset"]);
   }
 }
 
-export async function stageChatAttachments(harness: Harness, uploads: MocoUploadStore, key: string, draft: ChatDeliveryDraft, context: Context): Promise<ChatDeliveryDraft> {
+export async function stageChatAttachments(harness: Harness, uploads: KuloUploadStore, key: string, draft: ChatDeliveryDraft, context: Context): Promise<ChatDeliveryDraft> {
   return harness.commit(async tx => {
-    const state = await tx.doc(MocoStateDoc);
+    const state = await tx.doc(KuloStateDoc);
     assertChatDestination(state, draft);
     if ((state.topics?.[draft.topicId]?.targetDeviceId ?? "") !== draft.targetDeviceId) throw new ProjectError(409, "target_device_busy", "目标设备已变更，请重试发送。");
     const canRead = chatUploadScope(state, await tx.doc(SettingsAssistantDoc));
@@ -153,11 +153,11 @@ function originalChatSender(message: { topicId: string; requestId: string; conte
 
 // Older receipts contain only the fingerprint. Recover a private grant only when the
 // original submission, visible topic and exact sender/payload can all be verified.
-export async function repairHistoricalChatAttachments(harness: Harness, uploads: MocoUploadStore, entries: readonly EntryRecord[],
+export async function repairHistoricalChatAttachments(harness: Harness, uploads: KuloUploadStore, entries: readonly EntryRecord[],
   conversationId: number, context: Context): Promise<void> {
   const scope = `conversation:${conversationId}`;
   for (const entry of entries) {
-    if (!MocoUserEntry.is(entry) || Number(entry.conversationId) !== conversationId || entry.data?.mocoContentVersion !== 1) continue;
+    if (!KuloUserEntry.is(entry) || Number(entry.conversationId) !== conversationId || entry.data?.kuloContentVersion !== 1) continue;
     const { attachments, requestId, text, replyTo } = entry.data;
     if (typeof requestId !== "string" || !requestId || requestId.length > 256 || /[\u0000-\u001f]/.test(requestId) ||
         typeof text !== "string" || !Array.isArray(attachments) || !attachments.length || attachments.length > 16 ||
@@ -170,7 +170,7 @@ export async function repairHistoricalChatAttachments(harness: Harness, uploads:
         typeof receipt.ack.topicId !== "string") continue;
     const topicId = receipt.ack.topicId;
     await harness.commit(async tx => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const topic = state.topics?.[topicId];
       if (!topic || topic.deletedAt !== undefined || topic.conversationId !== conversationId) return;
       const native = await tx.submissionByRequest(entry.conversationId, requestId);

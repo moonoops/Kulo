@@ -1,16 +1,16 @@
-import { useI18n } from "../../moco-i18n";
+import { useI18n } from "../../kulo-i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Label, Popover, Separator, Spinner, Switch } from "@heroui/react";
-import type { MocoSettingsView } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
-import { MocoIcon } from "../../moco-icon";
+import type { KuloSettingsView } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
+import { KuloIcon } from "../../kulo-icon";
 import { ModelSelectionFields } from "../settings/model-selection-fields";
 import { useProviderCatalog } from "../settings/use-provider-catalog";
 import { buildProviderModelGroups, clampModelEffort, selectedDefaultProvider } from "../settings/settings-helpers";
 
 export function ConversationModelSettings({ settings, onSettingsUpdated, showProcess, onShowProcessChange }: {
-  settings: MocoSettingsView | null;
-  onSettingsUpdated: (settings: MocoSettingsView) => void;
+  settings: KuloSettingsView | null;
+  onSettingsUpdated: (settings: KuloSettingsView) => void;
   showProcess: boolean;
   onShowProcessChange: (show: boolean) => void;
 }) {
@@ -31,12 +31,12 @@ export function ConversationModelSettings({ settings, onSettingsUpdated, showPro
   const groups = useMemo(() => block ? buildProviderModelGroups(block.value, providers) : [], [block, providers, language]);
   const provider = block ? selectedDefaultProvider(block.value) : "";
 
-  const save = async (patch: Partial<MocoSettingsView["blocks"]["model"]["value"]>) => {
+  const save = async (patch: Partial<KuloSettingsView["blocks"]["model"]["value"]>) => {
     if (!block || saving) return;
     setSaving(true);
     setSaveError(undefined);
     try {
-      const result = await mocoRest.saveSettingsBlock("model", block.revision, { ...block.value, ...patch });
+      const result = await kuloRest.saveSettingsBlock("model", block.revision, { ...block.value, ...patch });
       onSettingsUpdated(result.settings);
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : t("切换模型设置失败", "Failed to change model settings"));
@@ -45,10 +45,10 @@ export function ConversationModelSettings({ settings, onSettingsUpdated, showPro
 
   return <Popover isOpen={open} onOpenChange={setOpen}>
     <Button isIconOnly variant="ghost" aria-label={t("模型选择", "Model selection")}>
-      <MocoIcon name="token" size={18} />
+      <KuloIcon name="token" size={18} />
     </Button>
     <Popover.Content placement="top start" className="w-[360px] max-w-[calc(100vw-24px)] motion-reduce:animate-none">
-      <Popover.Dialog ref={dialogRef} className="moco-compact-fields outline-none">
+      <Popover.Dialog ref={dialogRef} className="kulo-compact-fields outline-none">
         <div className="flex items-center justify-between gap-2">
           <Popover.Heading className="text-sm font-semibold text-foreground">{t("模型选择", "Model selection")}</Popover.Heading>
           {saving && <Spinner size="sm" aria-label={t("保存中", "Saving")} />}
@@ -79,7 +79,7 @@ export function ConversationModelSettings({ settings, onSettingsUpdated, showPro
         </Alert>}
         <Separator />
         <Switch className="w-full" isSelected={showProcess} onChange={onShowProcessChange}>
-          <Switch.Content className="moco-compact-row moco-compact-row--toggle">
+          <Switch.Content className="kulo-compact-row kulo-compact-row--toggle">
             <Label className="text-sm text-foreground">{t("显示执行过程", "Show execution process")}</Label>
             <Switch.Control><Switch.Thumb /></Switch.Control>
           </Switch.Content>

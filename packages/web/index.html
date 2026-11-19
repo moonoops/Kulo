@@ -4,13 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
-    <link rel="icon" type="image/png" sizes="512x512" href="/moco-icon.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/kulo-icon.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-    <title>Moco · SuperAgent Workbench</title>
+    <title>Kulo · SuperAgent Workbench</title>
     <script>
       (function () {
         try {
-          var raw = localStorage.getItem("moco:appearance");
+          var raw = localStorage.getItem("kulo:appearance");
           var mode = "system";
           if (raw) {
             if (raw === "light" || raw === "dark" || raw === "system") {
@@ -36,7 +36,7 @@
       })();
     </script>
   </head>
-  <body class="moco-ui bg-background text-foreground antialiased">
+  <body class="kulo-ui bg-background text-foreground antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

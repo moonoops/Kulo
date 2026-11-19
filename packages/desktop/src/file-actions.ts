@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { pipeline } from "node:stream/promises";
-import { HTML_ARTIFACT_BROWSER_CSP, htmlArtifactBrowserDocument, isHtmlArtifact } from "@moco/protocol";
+import { HTML_ARTIFACT_BROWSER_CSP, htmlArtifactBrowserDocument, isHtmlArtifact } from "@kulo/protocol";
 
 const ASSET_ID = /^att_[a-z0-9_]{6,48}$/;
 const DOCUMENT_EXTENSIONS = new Set([
@@ -83,7 +83,7 @@ async function saveBytes(file: string, bytes: Buffer): Promise<void> {
     throw error;
   });
   if (stat && (!stat.isFile() || stat.isSymbolicLink())) throw new Error("保存位置不是普通文件。");
-  const temporary = path.join(path.dirname(file), `.moco-save-${randomBytes(16).toString("hex")}`);
+  const temporary = path.join(path.dirname(file), `.kulo-save-${randomBytes(16).toString("hex")}`);
   try {
     await fs.writeFile(temporary, bytes, { flag: "wx", mode: 0o600 });
     await fs.rename(temporary, file);

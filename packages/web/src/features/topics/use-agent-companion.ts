@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { LiveStreamState, TicketCardView } from "@moco/protocol";
-import { translate as t } from "../../moco-i18n";
+import type { LiveStreamState, TicketCardView } from "@kulo/protocol";
+import { translate as t } from "../../kulo-i18n";
 import { CAT_SUCCESS_MS } from "../../components/cat-motion";
 import { useComposerAttention } from "../../components/use-composer-attention";
 import type { VoiceWorkspace } from "../voice/voice-context";

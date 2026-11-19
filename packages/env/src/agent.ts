@@ -37,14 +37,14 @@ import {
   type ComputerUseRequest,
   type ComputerPreviewTarget,
   type ComputerPreviewUpdate,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 
 function ownRuntimeProtectedPaths(): string[] {
   const envPackage = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const paths = [envPackage, path.join(envPackage, "node_modules"), path.resolve(envPackage, "../../node_modules")];
   for (const sibling of ["cli", "protocol"]) paths.push(path.resolve(envPackage, "..", sibling));
   try {
-    const protocolEntry = createRequire(import.meta.url).resolve("@moco/protocol");
+    const protocolEntry = createRequire(import.meta.url).resolve("@kulo/protocol");
     paths.push(path.resolve(path.dirname(protocolEntry), ".."));
   } catch (error) {
     // Installed peers bundle the protocol into their own protected runtime.
@@ -56,7 +56,7 @@ function ownRuntimeProtectedPaths(): string[] {
   return [...new Set(paths.filter((entry) => fs.existsSync(entry)))];
 }
 
-export interface MocoEnvAgentOptions {
+export interface KuloEnvAgentOptions {
   /** Hub WebSocket URL, e.g. `ws://127.0.0.1:7788/ws/env` or `wss://hub.example.com/ws/env` */
   hubUrl: string;
   /** Unique environment ID, e.g. `macbook`, `mac-mini`, `mostation` */
@@ -82,12 +82,12 @@ export interface MocoEnvAgentOptions {
 }
 
 /**
- * Outbound Execution Environment Agent (`moco env`).
- * Connects from any PC / Mac mini / Linux server to `moco-hub` and spawns
+ * Outbound Execution Environment Agent (`kulo env`).
+ * Connects from any PC / Mac mini / Linux server to `kulo-hub` and spawns
  * the official `@earendil-works/pi-env` native Rust daemon (`localDaemon()`) on demand.
  */
-export class MocoEnvAgent {
-  readonly #options: MocoEnvAgentOptions;
+export class KuloEnvAgent {
+  readonly #options: KuloEnvAgentOptions;
   readonly #rootDir: string;
   readonly #launchProtectedPaths: string[];
   #ws: WebSocket | null = null;
@@ -121,16 +121,16 @@ export class MocoEnvAgent {
 
   get hasActiveExecution(): boolean { return this.#daemons.size > 0 || this.#externalAgents.hasActiveRuns; }
 
-  constructor(options: MocoEnvAgentOptions) {
+  constructor(options: KuloEnvAgentOptions) {
     this.#options = options;
     this.#streamResumeGraceMs = options.streamResumeGraceMs ?? STREAM_RESUME_GRACE_MS;
     this.#rootDir = path.resolve(options.rootDir);
     this.#launchProtectedPaths = [
       path.resolve(".env"),
-      path.resolve(process.env.MOCO_PEER_CONFIG?.trim() || path.join(os.homedir(), ".moco", "connection.json")),
+      path.resolve(process.env.KULO_PEER_CONFIG?.trim() || path.join(os.homedir(), ".kulo", "connection.json")),
     ];
     fs.mkdirSync(this.#rootDir, { recursive: true });
-    this.#projectDirectories = new ProjectDirectoryRegistry({ deviceId: options.envId, filePath: options.projectGrantFile ?? path.join(this.#rootDir, ".moco-env", "project-grants.json"), scratchRoot: path.join(this.#rootDir, "scratch"), getProtectedPaths: () => [...this.#launchProtectedPaths, ...ownRuntimeProtectedPaths(), ...(this.#options.protectedPaths ?? [])] });
+    this.#projectDirectories = new ProjectDirectoryRegistry({ deviceId: options.envId, filePath: options.projectGrantFile ?? path.join(this.#rootDir, ".kulo-env", "project-grants.json"), scratchRoot: path.join(this.#rootDir, "scratch"), getProtectedPaths: () => [...this.#launchProtectedPaths, ...ownRuntimeProtectedPaths(), ...(this.#options.protectedPaths ?? [])] });
     this.#stagedWorkspaces = new StagedWorkspaceService({ projectRegistry: this.#projectDirectories });
     this.#browser = options.browserService ?? new FlowBrowserService({ rootDir: path.join(this.#projectDirectories.privateDirectory, "browser") });
     this.#launchProtectedPaths.push(this.#browser.rootDir);
@@ -455,7 +455,7 @@ export class MocoEnvAgent {
           readOnly: message.readOnly,
           controlRoot: path.join(this.#projectDirectories.privateDirectory, "executions"),
           protectedPaths: nativeProtectedPaths([
-            path.join(this.#rootDir, ".moco-state"),
+            path.join(this.#rootDir, ".kulo-state"),
             path.join(this.#rootDir, ".env"),
             this.#projectDirectories.privateDirectory,
             ...this.#launchProtectedPaths,

@@ -1,4 +1,4 @@
-export const SETTINGS_RAIL_WIDTH_STORAGE_KEY = "moco:settings-rail-width";
+export const SETTINGS_RAIL_WIDTH_STORAGE_KEY = "kulo:settings-rail-width";
 export const SETTINGS_RAIL_MIN_WIDTH = 320;
 export const SETTINGS_RAIL_MAX_WIDTH = 912;
 export const SETTINGS_MAIN_MIN_WIDTH = 360;

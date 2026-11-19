@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { MocoSettingsView, TopicSummary } from "@moco/protocol";
+import type { KuloSettingsView, TopicSummary } from "@kulo/protocol";
 import { ArchivedConversationsModule } from "./archived-conversations-module";
-import { MocoSettingsBoard } from "../../moco-settings";
+import { KuloSettingsBoard } from "../../kulo-settings";
 
 function topic(id: string, patch: Partial<TopicSummary> = {}): TopicSummary {
   return { id, conversationId: 2, title: id, archived: true, createdAt: 1, updatedAt: 2, ...patch };
@@ -22,7 +22,7 @@ describe("archived conversations settings", () => {
     for (const name of ["普通归档话题", "项目归档话题"]) {
       expect(buttons.find((button) => button.includes(`还原“${name}”`))).not.toContain('disabled=""');
     }
-    expect(html).toContain("moco-settings-table-scroll");
+    expect(html).toContain("kulo-settings-table-scroll");
     expect(html).not.toContain('aria-selected="true"');
   });
 
@@ -43,7 +43,7 @@ describe("archived conversations settings", () => {
   });
 
   it("receives ordinary and project history through the settings board", () => {
-    const html = renderToStaticMarkup(<MocoSettingsBoard module="archives" settings={{} as MocoSettingsView} envs={[]}
+    const html = renderToStaticMarkup(<KuloSettingsBoard module="archives" settings={{} as KuloSettingsView} envs={[]}
       topics={[topic("设置页归档", { projectId: "project-1" })]} projects={[{ id: "project-1", name: "设置页项目" }]}
       topicsLoaded onSettingsUpdated={() => {}} />);
     expect(html).toContain("设置页归档");
@@ -51,10 +51,10 @@ describe("archived conversations settings", () => {
   });
 
   it("surfaces snapshot load failures with a retry action instead of spinning forever", () => {
-    const html = renderToStaticMarkup(<MocoSettingsBoard module="archives" settings={{} as MocoSettingsView} envs={[]}
-      topics={[]} projects={[]} topicsLoaded={false} snapshotError="本地会话存储连接异常，请重启 Moco 后重试。"
+    const html = renderToStaticMarkup(<KuloSettingsBoard module="archives" settings={{} as KuloSettingsView} envs={[]}
+      topics={[]} projects={[]} topicsLoaded={false} snapshotError="本地会话存储连接异常，请重启 Kulo 后重试。"
       onSnapshotRefresh={() => {}} onSettingsUpdated={() => {}} />);
-    expect(html).toContain("本地会话存储连接异常，请重启 Moco 后重试。");
+    expect(html).toContain("本地会话存储连接异常，请重启 Kulo 后重试。");
     expect(html).toContain("重试");
     expect(html).not.toContain("加载中");
   });

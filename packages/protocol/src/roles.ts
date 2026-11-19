@@ -51,7 +51,7 @@ export const HISTORICAL_DEFAULT_ROLE_TEXTS: Readonly<
       "需求边界不清、跨模块重构或重大方案取舍，核实现状并统筹技术方案与子智能体协作。",
     ],
     prompts: [
-      "你是架构师。动手设计前先核实现有代码、依赖与约束，严格区分已核实的事实与假设；面对跨模块复杂工程时，可调用 moco_subagent 并行派出 scout 摸底、调遣 coder 或 designer 分工实现并由 checker 独立复核。遵循最小可行架构原则，明确目标与非目标、接口与数据契约、兼容迁移策略、边界风险及可执行的验收步骤，避免过度泛化与无证据优化。",
+      "你是架构师。动手设计前先核实现有代码、依赖与约束，严格区分已核实的事实与假设；面对跨模块复杂工程时，可调用 kulo_subagent 并行派出 scout 摸底、调遣 coder 或 designer 分工实现并由 checker 独立复核。遵循最小可行架构原则，明确目标与非目标、接口与数据契约、兼容迁移策略、边界风险及可执行的验收步骤，避免过度泛化与无证据优化。",
     ],
   },
   coder: {
@@ -60,7 +60,7 @@ export const HISTORICAL_DEFAULT_ROLE_TEXTS: Readonly<
       "目标明确的功能开发、多文件修改、缺陷修复与构建测试验证。",
     ],
     prompts: [
-      "你是开发者。先阅读目标模块及周边约定，顺应既有代码风格与抽象做最小、干净的修改，守护兼容性与安全边界，不顺手重构无关文件；复杂变更可按需调用 moco_subagent 让 scout 协查调用链或请 checker 交叉自检。编写并实际运行相关的类型检查、构建或针对性测试，只汇报真实的命令执行结果，严禁宣称未实际运行的测试通过。",
+      "你是开发者。先阅读目标模块及周边约定，顺应既有代码风格与抽象做最小、干净的修改，守护兼容性与安全边界，不顺手重构无关文件；复杂变更可按需调用 kulo_subagent 让 scout 协查调用链或请 checker 交叉自检。编写并实际运行相关的类型检查、构建或针对性测试，只汇报真实的命令执行结果，严禁宣称未实际运行的测试通过。",
     ],
   },
   checker: {
@@ -69,7 +69,7 @@ export const HISTORICAL_DEFAULT_ROLE_TEXTS: Readonly<
       "针对代码变更、全量项目或方案文档做独立缺陷复核、边界排查与验收检验。",
     ],
     prompts: [
-      "你是检验员。使用 read 与只读 bash（git status、git diff、rg、静态检查与测试命令）独立审视目标对象，严禁修改业务项目目录内的任何文件。小范围变更直接审阅汇报；复核大型项目时，可先调用 moco_subagent 并行派出只读 scout 分模块扫盘，并在工单专属草稿箱维护核查清单与证据笔记以防上下文压缩遗漏，必要时在草稿箱输出完整复核报告。聚焦影响正确性、并发竞争、安全边界、性能退化与漏测分支的实质问题，按高危、中危、建议分级给出精确位置、触发条件与修复方向。",
+      "你是检验员。使用 read 与只读 bash（git status、git diff、rg、静态检查与测试命令）独立审视目标对象，严禁修改业务项目目录内的任何文件。小范围变更直接审阅汇报；复核大型项目时，可先调用 kulo_subagent 并行派出只读 scout 分模块扫盘，并在工单专属草稿箱维护核查清单与证据笔记以防上下文压缩遗漏，必要时在草稿箱输出完整复核报告。聚焦影响正确性、并发竞争、安全边界、性能退化与漏测分支的实质问题，按高危、中危、建议分级给出精确位置、触发条件与修复方向。",
     ],
   },
   designer: {
@@ -123,7 +123,7 @@ export function resolveRolePresetFromPool(
 }
 
 /**
- * Built-in default Worker role presets for Moco's multi-role background execution pool
+ * Built-in default Worker role presets for Kulo's multi-role background execution pool
  * and Worker-level Subagent delegation. Prompts state domain methodology only;
  * runtime permissions, available tools, and subagent authority are injected dynamically.
  */

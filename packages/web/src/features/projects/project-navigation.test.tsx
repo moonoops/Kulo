@@ -2,15 +2,15 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { ComponentProps } from "react";
 import { Disclosure, Dropdown } from "@heroui/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ProjectView, TicketCardView, TopicSummary } from "@moco/protocol";
+import type { ProjectView, TicketCardView, TopicSummary } from "@kulo/protocol";
 import { ProjectsSidebar } from "./projects-sidebar";
 import { TopicRow } from "../topics/topic-row";
-import { MocoTaskProjection, TaskStatus } from "../../moco-tasks";
+import { KuloTaskProjection, TaskStatus } from "../../kulo-tasks";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 const project: ProjectView = {
-  id: "project-1", name: "Moco", deviceId: "remote", deviceName: "工作站", workspaceDir: "/projects/Moco", directoryId: "directory-1", revision: 1, grantRevision: 1,
+  id: "project-1", name: "Kulo", deviceId: "remote", deviceName: "工作站", workspaceDir: "/projects/Kulo", directoryId: "directory-1", revision: 1, grantRevision: 1,
   notes: "", createdAt: 1, updatedAt: 1, availability: "offline",
 };
 
@@ -38,12 +38,12 @@ describe("project navigation accessibility", () => {
     const html = sidebar([project], [projectTopic], { tickets: [ticket, { ...ticket, id: "cleanup", status: "stopped", cleanupPending: true }, { ...ticket, id: "other", originTopicId: "other" }] });
     expect(html).toContain('aria-label="1 项执行失败，1 项待处理"');
     expect(html).toContain('data-notice="failed"');
-    expect(html).toContain("moco-topic-failure");
-    expect(html).not.toContain("moco-topic-attention");
+    expect(html).toContain("kulo-topic-failure");
+    expect(html).not.toContain("kulo-topic-attention");
   });
   it("keeps unavailable projects and their history visible without claiming a local device", () => {
     const html = sidebar();
-    expect(html).toContain("Moco");
+    expect(html).toContain("Kulo");
     expect(html).toContain("工作站");
     expect(html).toContain("项目讨论");
     expect(html).toContain("离线");
@@ -67,7 +67,7 @@ describe("project navigation accessibility", () => {
     expect(html).toContain('data-selected="true"');
     expect(html).toContain('aria-current="true"');
     expect(html).not.toContain("autofocus");
-    expect(html).toContain('aria-label="在 Moco 新建会话"');
+    expect(html).toContain('aria-label="在 Kulo 新建会话"');
     expect(html).toContain('aria-label="项目讨论"');
     expect(html).toContain('aria-label="项目讨论操作"');
   });
@@ -139,7 +139,7 @@ describe("project navigation accessibility", () => {
   });
 
   it("offers task navigation to its origin conversation and target project", () => {
-    const html = renderToStaticMarkup(<MocoTaskProjection detail={{ ticket: {
+    const html = renderToStaticMarkup(<KuloTaskProjection detail={{ ticket: {
       id: "task-1", commandId: "command-1", title: "修复测试", goal: "修复测试", scope: project.workspaceDir,
       role: "developer", status: "waiting", envId: project.deviceId, workspaceDir: project.workspaceDir, projectId: project.id,
       workerConversationId: 3, runEpoch: 1, createdAt: 1, updatedAt: 1, waiting: { reason: "env", since: 1 },
@@ -147,7 +147,7 @@ describe("project navigation accessibility", () => {
       onAnswerBlocker={async () => {}} onStop={() => {}} onRetry={() => {}} onArchiveClose={() => {}} onDefer={() => {}}
       onOpenOrigin={() => {}} onOpenProject={() => {}} />);
     expect(html).toContain("原会话");
-    expect(html).toContain("Moco");
+    expect(html).toContain("Kulo");
     expect(html).toContain("等待设备");
     expect(html).not.toContain('aria-label="任务执行中"');
   });

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import type { ModelProtocolAdapter, VoiceSpeed, VoiceTtsProvider } from "@moco/protocol";
+import type { ModelProtocolAdapter, VoiceSpeed, VoiceTtsProvider } from "@kulo/protocol";
 import { serviceApiFetch } from "./web-content.js";
 
 export const VOICE_TTS_ORIGINS: Readonly<Record<VoiceTtsProvider, string>> = {

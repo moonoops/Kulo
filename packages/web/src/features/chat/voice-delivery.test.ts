@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ChatAttachment, ClientToHubMessage } from "@moco/protocol";
+import type { ChatAttachment, ClientToHubMessage } from "@kulo/protocol";
 import { createVoiceDelivery, type VoiceUploadOptions } from "./voice-delivery";
 import type { VoiceRecording } from "./voice-recorder";
 

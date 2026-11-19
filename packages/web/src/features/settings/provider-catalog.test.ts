@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { MocoSettingsView, ProviderCatalogItem } from "@moco/protocol";
+import type { KuloSettingsView, ProviderCatalogItem } from "@kulo/protocol";
 import { ProviderCatalogCache, providerCatalogSettingsKey } from "./provider-catalog";
 import { toProviderModelItem } from "./settings-helpers";
 
@@ -18,7 +18,7 @@ const settings = {
     } },
     roles: { revision: 1, value: {} },
   },
-} as MocoSettingsView;
+} as KuloSettingsView;
 
 function deferred<T>() {
   let resolve!: (result: T) => void;

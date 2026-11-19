@@ -1,8 +1,8 @@
 import type { Context } from "@earendil-works/chord/context";
 import { AssistantEntry, ToolResultEntry, UserEntry, type Conversation, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
-import { getMessageParts, messagePartFallback, type ChatDisplayItem, type TopicSummary } from "@moco/protocol";
+import { getMessageParts, messagePartFallback, type ChatDisplayItem, type TopicSummary } from "@kulo/protocol";
 import { isRecoveryInputBoundary, WorkerRecoveryEntry } from "./state.js";
-import { ContentPublicationEntry, MocoUserEntry } from "./ui-cards.js";
+import { ContentPublicationEntry, KuloUserEntry } from "./ui-cards.js";
 import { parseUserEntryContent } from "./uploads.js";
 
 export const CONVERSATION_QUERY_PAGE_SIZE = 200;
@@ -11,7 +11,7 @@ const BIT_MASK = FILTER_WORDS * 32 - 1;
 
 export type VisibleMessage = ChatDisplayItem & { role: "user" | "assistant" | "dispatch" };
 export function isVisibleMessage(item: ChatDisplayItem): item is VisibleMessage {
-  if (item.role === "user") return !item.text.startsWith("[MOCO_WORKER_RELAY]") && !item.text.startsWith("[MOCO_WORKER_WATCHDOG]");
+  if (item.role === "user") return !item.text.startsWith("[KULO_WORKER_RELAY]") && !item.text.startsWith("[KULO_WORKER_WATCHDOG]");
   if (item.role === "assistant") return Boolean(item.text || item.parts?.length || item.attachments?.length);
   return item.role === "dispatch";
 }
@@ -52,7 +52,7 @@ function pageFingerprint(messages: VisibleMessage[]): Uint32Array {
 
 function canReferenceFile(entry: EntryRecord): boolean {
   if (ContentPublicationEntry.is(entry)) return entry.data.parts.some((part) => "assetId" in part);
-  if (MocoUserEntry.is(entry) || UserEntry.is(entry)) {
+  if (KuloUserEntry.is(entry) || UserEntry.is(entry)) {
     const data = entry.data;
     if (data && typeof data === "object" && !Array.isArray(data) && Array.isArray(data.attachments) && data.attachments.length) return true;
     const message = entry.model?.[0];

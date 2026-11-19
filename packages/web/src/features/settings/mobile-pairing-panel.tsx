@@ -1,10 +1,10 @@
-import { getLanguage, translate as t, useI18n } from "../../moco-i18n";
+import { getLanguage, translate as t, useI18n } from "../../kulo-i18n";
 import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Spinner, toast } from "@heroui/react";
 import { QRCodeSVG } from "qrcode.react";
-import type { DeviceInterconnectionView, MobileInvitation } from "@moco/protocol";
-import { MocoApiError } from "../../moco-api";
-import { MocoIcon } from "../../moco-icon";
+import type { DeviceInterconnectionView, MobileInvitation } from "@kulo/protocol";
+import { KuloApiError } from "../../kulo-api";
+import { KuloIcon } from "../../kulo-icon";
 import { copyDeviceText } from "./device-clipboard";
 import { mobileDeviceApi, type MobileHostConnection } from "./device-api";
 import "./mobile-pairing-panel.css";
@@ -25,7 +25,7 @@ export class MobileInvitationSession {
   async #cancel(id: string): Promise<void> {
     try { await this.api.cancel(id); }
     catch (error) {
-      if (!(error instanceof MocoApiError && (error.status === 404 || error.status === 410))) {
+      if (!(error instanceof KuloApiError && (error.status === 404 || error.status === 410))) {
         throw new MobileInvitationCleanupError();
       }
     }
@@ -211,28 +211,28 @@ export function MobilePairingPanel({ view, onInvitation, onRefresh }: {
 
   if (!owner) return <Alert status="warning"><Alert.Indicator /><Alert.Content><Alert.Title>{t("请在主机上添加手机", "Add a phone from the host device")}</Alert.Title></Alert.Content></Alert>;
 
-  return <div className="moco-mobile-pairing">
+  return <div className="kulo-mobile-pairing">
     {(error || pollError) && <Alert status="danger"><Alert.Indicator /><Alert.Content><Alert.Title>{error ?? pollError}</Alert.Title></Alert.Content>
       <Button variant="tertiary" size="sm" isDisabled={busy} onPress={() => void generate()}>{t("重试", "Retry")}</Button>
     </Alert>}
-    {busy && <div className="moco-mobile-pairing-status" role="status"><Spinner size="sm" />{t("正在准备手机配对", "Preparing phone pairing")}</div>}
+    {busy && <div className="kulo-mobile-pairing-status" role="status"><Spinner size="sm" />{t("正在准备手机配对", "Preparing phone pairing")}</div>}
     {!busy && invitation && !expired && !paired && <>
-      <div className="moco-mobile-pairing-qr" role="img" aria-label={t("用 Moco 安卓 App 扫描配对二维码", "Scan the pairing code with the Moco Android app")}>
-        <QRCodeSVG value={invitation.qrValue} size={280} level="M" marginSize={4} title={t("Moco 手机配对二维码", "Moco phone pairing QR code")} />
+      <div className="kulo-mobile-pairing-qr" role="img" aria-label={t("用 Kulo 安卓 App 扫描配对二维码", "Scan the pairing code with the Kulo Android app")}>
+        <QRCodeSVG value={invitation.qrValue} size={280} level="M" marginSize={4} title={t("Kulo 手机配对二维码", "Kulo phone pairing QR code")} />
       </div>
-      <div className="moco-mobile-pairing-status" role="status"><Spinner size="sm" />{t("等待手机扫码", "Waiting for phone to scan")}<span>{t(`${new Date(invitation.expiresAt).toLocaleTimeString(getLanguage(), { hour: "2-digit", minute: "2-digit" })} 前有效`, `Valid until ${new Date(invitation.expiresAt).toLocaleTimeString(getLanguage(), { hour: "2-digit", minute: "2-digit" })}`)}</span></div>
+      <div className="kulo-mobile-pairing-status" role="status"><Spinner size="sm" />{t("等待手机扫码", "Waiting for phone to scan")}<span>{t(`${new Date(invitation.expiresAt).toLocaleTimeString(getLanguage(), { hour: "2-digit", minute: "2-digit" })} 前有效`, `Valid until ${new Date(invitation.expiresAt).toLocaleTimeString(getLanguage(), { hour: "2-digit", minute: "2-digit" })}`)}</span></div>
     </>}
-    {paired && <div className="moco-mobile-pairing-status" role="status"><Spinner size="sm" />{t("已配对，等待手机连接", "Paired; waiting for phone connection")}</div>}
+    {paired && <div className="kulo-mobile-pairing-status" role="status"><Spinner size="sm" />{t("已配对，等待手机连接", "Paired; waiting for phone connection")}</div>}
     {expired && <Alert status="warning"><Alert.Indicator /><Alert.Content><Alert.Title>{t("二维码已过期", "QR code expired")}</Alert.Title></Alert.Content></Alert>}
-    {connection && <div className="moco-mobile-pairing-network">
+    {connection && <div className="kulo-mobile-pairing-network">
       <span role="status">{tailscaleLabel(connection)}</span>
       {(connection.tailscale.loginAvailable || connection.tailscale.state === "NeedsLogin") &&
         <Button size="sm" variant="secondary" isPending={loginBusy} isDisabled={busy || loginBusy} onPress={() => void login()}>{t("登录 Tailscale", "Sign in to Tailscale")}</Button>}
       {!connection.candidates.length && <span className="text-sm text-muted">{t("尚无连接入口，请先完成主机远程配置。", "No connection endpoint is available. Complete remote setup on the host first.")}</span>}
     </div>}
-    {!busy && !paired && <div className="moco-mobile-pairing-actions">
-      <Button size="sm" variant={expired || !invitation ? "primary" : "tertiary"} onPress={() => void generate()}><MocoIcon name="refresh" size={14} />{expired || !invitation ? t("生成二维码", "Generate QR code") : t("刷新二维码", "Refresh QR code")}</Button>
-      {invitation && !expired && <Button size="sm" variant="secondary" onPress={() => void copy()}><MocoIcon name="copy" size={14} />{t("复制配对链接", "Copy pairing link")}</Button>}
+    {!busy && !paired && <div className="kulo-mobile-pairing-actions">
+      <Button size="sm" variant={expired || !invitation ? "primary" : "tertiary"} onPress={() => void generate()}><KuloIcon name="refresh" size={14} />{expired || !invitation ? t("生成二维码", "Generate QR code") : t("刷新二维码", "Refresh QR code")}</Button>
+      {invitation && !expired && <Button size="sm" variant="secondary" onPress={() => void copy()}><KuloIcon name="copy" size={14} />{t("复制配对链接", "Copy pairing link")}</Button>}
     </div>}
   </div>;
 }

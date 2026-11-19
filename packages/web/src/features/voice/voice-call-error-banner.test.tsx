@@ -5,7 +5,7 @@ import * as voiceContext from "./voice-context";
 import { VoiceCallErrorAlert, VoiceCallErrorBanner } from "./voice-call-error-banner";
 
 const baseCall: ActiveVoiceCall = {
-  target: { topicId: "root", title: "与 Moco 对话" },
+  target: { topicId: "root", title: "与 Kulo 对话" },
   state: "ended",
   muted: false,
   captionsEnabled: false,

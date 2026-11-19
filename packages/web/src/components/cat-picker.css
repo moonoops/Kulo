@@ -1,25 +1,25 @@
-@reference "../moco.css";
+@reference "../kulo.css";
 
-.moco-cat-picker-trigger { width: 64px; height: 64px; min-width: 0; flex: none; padding: 0; }
-.moco-cat-picker-popover { width: max-content; max-width: calc(100vw - 32px); }
-.moco-cat-picker-dialog { display: flex; min-width: 0; flex-direction: column; gap: var(--moco-form-gap); padding: var(--moco-space-4); }
-.moco-cat-picker-gallery {
+.kulo-cat-picker-trigger { width: 64px; height: 64px; min-width: 0; flex: none; padding: 0; }
+.kulo-cat-picker-popover { width: max-content; max-width: calc(100vw - 32px); }
+.kulo-cat-picker-dialog { display: flex; min-width: 0; flex-direction: column; gap: var(--kulo-form-gap); padding: var(--kulo-space-4); }
+.kulo-cat-picker-gallery {
   @apply scrollbar;
   display: grid;
   grid-template-columns: repeat(4, 68px);
-  gap: var(--moco-control-gap);
+  gap: var(--kulo-control-gap);
   max-height: min(448px, max(68px, calc(var(--available-height, 100dvh) - 34px)));
   overflow: auto;
 }
-.moco-cat-picker-choice {
+.kulo-cat-picker-choice {
   display: flex;
   width: 68px;
   min-width: 0;
   height: 68px;
   padding: 0;
 }
-.moco-cat-picker-thumbnail { width: 64px; height: 64px; flex: none; }
+.kulo-cat-picker-thumbnail { width: 64px; height: 64px; flex: none; }
 
 @media (max-width: 400px) {
-  .moco-cat-picker-gallery { grid-template-columns: repeat(3, 68px); }
+  .kulo-cat-picker-gallery { grid-template-columns: repeat(3, 68px); }
 }

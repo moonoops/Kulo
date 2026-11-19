@@ -1,4 +1,4 @@
-import type { DesktopSystemPermissions, SystemPermissionStatus } from "@moco/protocol";
+import type { DesktopSystemPermissions, SystemPermissionStatus } from "@kulo/protocol";
 import { readDesktopPermissions, readMicrophonePermission } from "./system-permissions";
 
 export interface PermissionStatusSnapshot {

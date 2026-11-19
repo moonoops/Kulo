@@ -1,11 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { IMAGE_MODEL_PRESETS, type CapabilitiesWorkspaceSnapshot, type ImageModelDiscovery } from "@moco/protocol";
+import { IMAGE_MODEL_PRESETS, type CapabilitiesWorkspaceSnapshot, type ImageModelDiscovery } from "@kulo/protocol";
 import { ImageCapabilityEditor, ImageCapabilityFields, SharedImageCapabilityEditor, applyImageModelPreset, createImageDraftConfig, imageConfigFromCapability, mergeImageGenerationParameters, reloadImageDraftConfiguration } from "./image-capability-editor";
 import { ImageProviderPicker, prepareImageCandidateDraft, selectableImageCandidateIds } from "./image-provider-picker";
 import { ImageRoutingEditor, moveImageRoutingRule } from "./image-routing-editor";
 import { ImageCapabilitiesPanel } from "./image-capabilities-panel";
-import { mocoRest } from "../../moco-api";
+import { kuloRest } from "../../kulo-api";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -131,7 +131,7 @@ describe("image configuration UI", () => {
     expect(html).toContain("需配置接口");
     expect(html).toContain('aria-label="配置待确认的图片模型"');
     const draftResponse = { id: "configured-candidate-draft", clientId: "client-a", revision: 1, config: draft, updatedAt: 2 };
-    const update = vi.spyOn(mocoRest, "updateImageDraft").mockResolvedValue(draftResponse);
+    const update = vi.spyOn(kuloRest, "updateImageDraft").mockResolvedValue(draftResponse);
     await expect(prepareImageCandidateDraft(next, "client-a", candidate)).resolves.toBe(draftResponse);
     expect(update).toHaveBeenCalledWith({ clientId: "client-a", config: expect.objectContaining({ adapter: "custom-image", modelId: candidate.modelId, credentialProviderId: candidate.providerId, baseUrl: candidate.baseUrl, defaults: candidate.defaults, customAdapter: candidate.customAdapter, allowTaskGeneration: true }) });
     await expect(prepareImageCandidateDraft({ ...next, imageSetup: { ...next.imageSetup, draft: draftResponse } }, "client-a", candidate)).rejects.toThrow("保存或取消当前图像草稿");
@@ -143,7 +143,7 @@ describe("image configuration UI", () => {
     expect(moveImageRoutingRule(rules, "two", -1).map((rule) => rule.id)).toEqual(["two", "one", "three"]);
     expect(moveImageRoutingRule(rules, "three", 1)).toBe(rules);
     const html = renderToStaticMarkup(<ImageRoutingEditor workspace={workspace} clientId="client-a" connected onChanged={vi.fn()} />);
-    expect(html).toContain("由 Moco 自动判断");
+    expect(html).toContain("由 Kulo 自动判断");
     expect(html).toContain("选择偏好");
     expect(html).toContain("添加规则");
   });
@@ -154,7 +154,7 @@ describe("image configuration UI", () => {
     const html = renderToStaticMarkup(<ImageCapabilitiesPanel workspace={current} clientId="client-a" connected loading={false} error={null} onRequest={vi.fn()} onRefresh={vi.fn()} />);
     expect(html).toContain("添加图像模型");
     expect(html).toContain('aria-label="图像模型列表"');
-    for (const text of ["让 Moco 配置", "从已有供应商添加", "调用规则", "继续配置草稿", "草稿已同步", "选择图像模型", "图像测试结果", "生成完成"]) expect(html).not.toContain(text);
+    for (const text of ["让 Kulo 配置", "从已有供应商添加", "调用规则", "继续配置草稿", "草稿已同步", "选择图像模型", "图像测试结果", "生成完成"]) expect(html).not.toContain(text);
     expect(html).not.toMatch(/<(input|textarea|form)\b/);
   });
 });

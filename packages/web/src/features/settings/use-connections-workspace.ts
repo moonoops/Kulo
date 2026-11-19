@@ -1,7 +1,7 @@
-import { translate as t, useI18n } from "../../moco-i18n";
+import { translate as t, useI18n } from "../../kulo-i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { redactSensitiveText, type ConnectionWorkspaceSnapshot } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
+import { redactSensitiveText, type ConnectionWorkspaceSnapshot } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
 
 export function useConnectionsWorkspace({ enabled, connected, clientId, assistantBusy }: {
   enabled: boolean;
@@ -26,7 +26,7 @@ export function useConnectionsWorkspace({ enabled, connected, clientId, assistan
     request.current = controller;
     setLoading(true);
     try {
-      const next = await mocoRest.getConnectionsWorkspace(active.current.clientId, controller.signal);
+      const next = await kuloRest.getConnectionsWorkspace(active.current.clientId, controller.signal);
       if (current !== generation.current || controller.signal.aborted) return;
       setSnapshot(next);
       setError(null);

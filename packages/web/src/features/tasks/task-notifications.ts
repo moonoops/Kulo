@@ -1,5 +1,5 @@
-import type { TicketCardView } from "@moco/protocol";
-import { translate as t } from "../../moco-i18n";
+import type { TicketCardView } from "@kulo/protocol";
+import { translate as t } from "../../kulo-i18n";
 
 export interface TicketNotificationEvent {
   ticketId: string;

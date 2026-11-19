@@ -43,9 +43,9 @@ export function CatAvatar({ state = "idle", appearance = "auto", animated = true
   if (!animated) {
     const selected = getCatAppearance(catAppearanceForState(appearance, state, Boolean(attentionTarget)));
     const pose = catMotion(state, 0, { reduced: true });
-    return <span className={`moco-cat-avatar ${className}`.trim()} data-state={state} data-appearance={selected.id}
+    return <span className={`kulo-cat-avatar ${className}`.trim()} data-state={state} data-appearance={selected.id}
       data-frame={pose.frame} data-animated="false" aria-hidden="true">
-      <span className="moco-cat-avatar-sprite" style={catFrameStyle(selected, pose.frame)} />
+      <span className="kulo-cat-avatar-sprite" style={catFrameStyle(selected, pose.frame)} />
     </span>;
   }
   return <AnimatedCatAvatar {...props} timeline={timeline} />;
@@ -127,7 +127,7 @@ function AnimatedCatAvatar({ state, appearance, attentionTarget, reactionKey, cl
     const failedImage = () => {
       if (disposed) return;
       element.dataset.assetState = "error";
-      console.error(`Moco cat animation could not be loaded: ${CAT_SHEET_URLS[selected.sheet]}`);
+      console.error(`Kulo cat animation could not be loaded: ${CAT_SHEET_URLS[selected.sheet]}`);
       loop.setActive(false);
     };
     image.addEventListener("load", loadedImage); image.addEventListener("error", failedImage);
@@ -143,8 +143,8 @@ function AnimatedCatAvatar({ state, appearance, attentionTarget, reactionKey, cl
     };
   }, [state, selected.id, selected.row, selected.sheet, reactionKey, reduced, timeline]);
 
-  return <span ref={elementRef} className={`moco-cat-avatar ${className}`.trim()} data-state={state}
+  return <span ref={elementRef} className={`kulo-cat-avatar ${className}`.trim()} data-state={state}
     data-appearance={selected.id} data-frame={initialFrame} data-animated="false" aria-hidden="true">
-    <span ref={spriteRef} className="moco-cat-avatar-sprite" style={catFrameStyle(selected, initialFrame)} />
+    <span ref={spriteRef} className="kulo-cat-avatar-sprite" style={catFrameStyle(selected, initialFrame)} />
   </span>;
 }

@@ -1,4 +1,4 @@
-import { externalClientConnectionId, type ExternalClientConnection, type RolePreset } from "@moco/protocol";
+import { externalClientConnectionId, type ExternalClientConnection, type RolePreset } from "@kulo/protocol";
 
 export function internalAgentPresets(roles: Record<string, RolePreset>): Record<string, RolePreset> {
   return Object.fromEntries(Object.entries(roles).filter(([, role]) => !role.external && !role.externalClientId));

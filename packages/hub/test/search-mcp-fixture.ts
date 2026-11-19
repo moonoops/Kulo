@@ -18,7 +18,7 @@ export async function startSearchMcpFixture(options: {
       const id = req.headers["mcp-session-id"] as string | undefined;
       let connection = id ? sessions.get(id) : undefined;
       if (!connection && req.method === "POST" && isInitializeRequest(body)) {
-        const server = new Server({ name: "moco-search-fixture", version: "1.0.0" }, { capabilities: { tools: {} } });
+        const server = new Server({ name: "kulo-search-fixture", version: "1.0.0" }, { capabilities: { tools: {} } });
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: randomUUID, enableJsonResponse: true, onsessioninitialized: (sessionId) => { sessions.set(sessionId, { transport, server }); connections++; } });
         transport.onclose = () => { if (transport.sessionId) sessions.delete(transport.sessionId); };
         server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: options.tools.map((tool) => ({ description: tool.name, ...tool, inputSchema: { type: "object" as const, ...tool.inputSchema } })) }));

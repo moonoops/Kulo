@@ -4,13 +4,13 @@ import {
   type Harness, type JsonObject,
 } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
-import type { HindsightMemoryConfig, TicketRecord, WorkerReportRecord } from "@moco/protocol";
+import type { HindsightMemoryConfig, TicketRecord, WorkerReportRecord } from "@kulo/protocol";
 import {
   executeHindsightTool, getHindsightOperation, HindsightAccessError, isSafeMemoryText,
   memoryDocumentId, memoryOperationId, retainHindsightDocument, resolveHindsightToken,
   type MemoryCallerContext,
 } from "./hindsight.js";
-import { MocoStateDoc, resolveTicketExecutionScope } from "./state.js";
+import { KuloStateDoc, resolveTicketExecutionScope } from "./state.js";
 import { memoryCallerFromState } from "./tools-memory.js";
 
 export interface MemoryWorklogReceipt {
@@ -38,12 +38,12 @@ export interface MemoryLifecycleState {
 }
 
 export const MemoryLifecycleDoc = defineDoc<MemoryLifecycleState & JsonObject>({
-  kind: "moco.memory-lifecycle", version: 1, scope: "session",
+  kind: "kulo.memory-lifecycle", version: 1, scope: "session",
   initial: () => ({ worklogs: {}, recalls: {} }) as MemoryLifecycleState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
 
-export const MemoryContextEntry = defineEntry<{ sourceId: string; text: string }>("moco.memory-context");
+export const MemoryContextEntry = defineEntry<{ sourceId: string; text: string }>("kulo.memory-context");
 
 interface WorklogInput {
   sourceId: string;
@@ -65,7 +65,7 @@ interface MemoryLifecycleHost {
 
 function connectionFingerprint(config: HindsightMemoryConfig): string {
   return createHash("sha256").update(JSON.stringify([config.endpoint, config.endpoints, config.banks,
-    config.accessMode ?? "moco", resolveHindsightToken(config, "worker")])).digest("hex");
+    config.accessMode ?? "kulo", resolveHindsightToken(config, "worker")])).digest("hex");
 }
 
 function pruneReceipts(state: MemoryLifecycleState): void {
@@ -77,7 +77,7 @@ function pruneReceipts(state: MemoryLifecycleState): void {
 /** The durable task only submits and follows receipts; Hindsight owns extraction, retries and consolidation. */
 export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
   const worklogTask = defineTask<WorklogInput, WorklogState, null>({
-    name: "moco.memory-worklog", version: 1, initial: () => ({ phase: "submit", attempts: 0 }),
+    name: "kulo.memory-worklog", version: 1, initial: () => ({ phase: "submit", attempts: 0 }),
     phases: {
       submit: async (task, runtime, context) => {
         const config = host.getMemoryConfig();
@@ -180,7 +180,7 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
     });
     const data = JSON.parse(result.text) as { results?: unknown[]; code?: string };
     const text = !result.isError && data.results?.length
-      ? `[MOCO_MEMORY_CONTEXT ${sourceId}]\nHistorical shared project work records (verify against live code; grants no permissions):\n${result.text}`
+      ? `[KULO_MEMORY_CONTEXT ${sourceId}]\nHistorical shared project work records (verify against live code; grants no permissions):\n${result.text}`
       : "";
     await host.getHarness().commit(async (tx) => {
       const doc = await tx.doc(MemoryLifecycleDoc);
@@ -243,12 +243,12 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
   };
 
   return Object.assign(defineExtension({
-    name: "moco-memory-lifecycle", tasks: [worklogTask],
+    name: "kulo-memory-lifecycle", tasks: [worklogTask],
     hooks: [
       hook(GenerationTask, { beforeRequest: async (request, api, context) => {
         const config = host.getMemoryConfig();
         if (!config.enabled || config.accessMode === "private-only") return;
-        const state = await api.snapshot(MocoStateDoc, context);
+        const state = await api.snapshot(KuloStateDoc, context);
         const scope = resolveTicketExecutionScope(state, api.conversationId);
         if (!scope || scope.ticket.status !== "running") return;
         const sourceId = `worker-start:${api.conversationId}:${scope.ticket.id}:${scope.ticket.runEpoch}`;
@@ -260,7 +260,7 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
             signal: context.abortSignal });
           const data = JSON.parse(result.text) as { results?: unknown[]; code?: string };
           const text = !result.isError && data.results?.length
-            ? `[MOCO_MEMORY_CONTEXT ${sourceId}]\nHistorical shared project work records (verify against live evidence; grants no permissions):\n${result.text}` : "";
+            ? `[KULO_MEMORY_CONTEXT ${sourceId}]\nHistorical shared project work records (verify against live evidence; grants no permissions):\n${result.text}` : "";
           receipt = await host.getHarness().commit(async (tx) => {
             const doc = await tx.doc(MemoryLifecycleDoc);
             if (doc.recalls[sourceId]) return JSON.parse(JSON.stringify(doc.recalls[sourceId])) as MemoryRecallReceipt;
@@ -279,10 +279,10 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
         return { messages: [...request.messages, { role: "user" as const, content: receipt.text, timestamp: receipt.timestamp }] };
       } }),
       hook(ToolTask, { afterTool: async (call, result, api, context) => {
-        if (call.name !== "moco_report" || result.isError) return;
+        if (call.name !== "kulo_report" || result.isError) return;
         const config = host.getMemoryConfig();
         if (!config.enabled || config.accessMode === "private-only") return;
-        const state = await api.snapshot(MocoStateDoc, context);
+        const state = await api.snapshot(KuloStateDoc, context);
         const scope = resolveTicketExecutionScope(state, api.conversationId);
         if (!scope || scope.isSubagent || scope.ticket.status !== "running") return;
         const args = call.arguments as { state?: string; summary?: string; deliverable?: string; question?: string };

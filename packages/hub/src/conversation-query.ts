@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { Conversation, EntryId, EntryRecord } from "@earendil-works/pi-durable";
-import { getMessageParts, type ChatAttachment, type ChatDisplayItem, type ConversationFile, type ConversationFilesPage, type ConversationMessageWindow, type ConversationSearchInput, type ConversationSearchMatch, type ConversationSearchPage, type TopicSummary } from "@moco/protocol";
+import { getMessageParts, type ChatAttachment, type ChatDisplayItem, type ConversationFile, type ConversationFilesPage, type ConversationMessageWindow, type ConversationSearchInput, type ConversationSearchMatch, type ConversationSearchPage, type TopicSummary } from "@kulo/protocol";
 import { isRecoveryInputBoundary } from "./state.js";
 import { CONVERSATION_QUERY_PAGE_SIZE, ConversationQueryIndex, foldQueryText, isVisibleMessage, messageText, queryFingerprint } from "./conversation-query-index.js";
 

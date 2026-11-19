@@ -24,7 +24,7 @@ describe("settings layout transitions", () => {
     const update = vi.fn();
     transitionSettingsLayout("enter", update);
     expect(update).toHaveBeenCalledOnce();
-    expect(root.dataset.mocoTransition).toBeUndefined();
+    expect(root.dataset.kuloTransition).toBeUndefined();
   });
 
   it.each(["system", "attribute", "narrow"])("skips motion for %s while still changing the view", (preference) => {
@@ -41,7 +41,7 @@ describe("settings layout transitions", () => {
   it("commits the destination during capture and releases the transition after finishing", async () => {
     const finished = deferred();
     const native = vi.fn((capture: () => void) => {
-      expect(root.dataset.mocoTransition).toBe("enter");
+      expect(root.dataset.kuloTransition).toBe("enter");
       capture();
       return { ready: Promise.resolve(), finished: finished.promise, skipTransition: vi.fn() };
     });
@@ -50,10 +50,10 @@ describe("settings layout transitions", () => {
     transitionSettingsLayout("enter", update);
     expect(update).toHaveBeenCalledOnce();
     expect(flush).toHaveBeenCalledWith(update);
-    expect(root.dataset.mocoTransition).toBe("enter");
+    expect(root.dataset.kuloTransition).toBe("enter");
     finished.resolve();
     await finished.promise;
-    expect(root.dataset.mocoTransition).toBeUndefined();
+    expect(root.dataset.kuloTransition).toBeUndefined();
   });
 
   it("interrupts a previous direction without letting its completion clear the next animation", async () => {
@@ -72,9 +72,9 @@ describe("settings layout transitions", () => {
     expect(skip).toHaveBeenCalledOnce();
     first.resolve();
     await first.promise;
-    expect(root.dataset.mocoTransition).toBe("exit");
+    expect(root.dataset.kuloTransition).toBe("exit");
     second.resolve();
     await second.promise;
-    expect(root.dataset.mocoTransition).toBeUndefined();
+    expect(root.dataset.kuloTransition).toBeUndefined();
   });
 });

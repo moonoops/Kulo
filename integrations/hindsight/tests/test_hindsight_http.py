@@ -1,4 +1,4 @@
-"""Real Hindsight routes and PostgreSQL; no Moco tool wrapper participates."""
+"""Real Hindsight routes and PostgreSQL; no Kulo tool wrapper participates."""
 
 from __future__ import annotations
 
@@ -14,10 +14,10 @@ import uuid
 import httpx
 import pytest
 
-from moco_hindsight.app import secure_app
-from moco_hindsight.extensions import MocoOperationValidator, MocoTenantExtension
-from moco_hindsight.policy import AccessPolicy
-from moco_hindsight.database import verify_password_authentication
+from kulo_hindsight.app import secure_app
+from kulo_hindsight.extensions import KuloOperationValidator, KuloTenantExtension
+from kulo_hindsight.policy import AccessPolicy
+from kulo_hindsight.database import verify_password_authentication
 
 
 def configure_offline_models(monkeypatch):
@@ -43,11 +43,11 @@ def configure_offline_models(monkeypatch):
 
 def test_production_factory_accepts_authenticated_embedded_database(monkeypatch):
     configure_offline_models(monkeypatch)
-    monkeypatch.setenv("MOCO_HINDSIGHT_ROUTER_API_KEY", "test-router-" + "r" * 32)
-    monkeypatch.setenv("MOCO_HINDSIGHT_WORKER_API_KEY", "test-worker-" + "w" * 32)
-    monkeypatch.setenv("HINDSIGHT_API_DATABASE_URL", "pg0://moco:independent-database-password-00000000@moco-test")
+    monkeypatch.setenv("KULO_HINDSIGHT_ROUTER_API_KEY", "test-router-" + "r" * 32)
+    monkeypatch.setenv("KULO_HINDSIGHT_WORKER_API_KEY", "test-worker-" + "w" * 32)
+    monkeypatch.setenv("HINDSIGHT_API_DATABASE_URL", "pg0://kulo:independent-database-password-00000000@kulo-test")
     from hindsight_api.config import clear_config_cache
-    from moco_hindsight.app import create_app
+    from kulo_hindsight.app import create_app
 
     clear_config_cache()
     try:
@@ -66,8 +66,8 @@ async def test_real_hindsight_routes_reject_every_private_route(monkeypatch):
     # route table also catches routes that do not call an operation validator.
     memory = MemoryEngine(
         db_url="postgresql://test:test-offline-database-password-00000000@127.0.0.1:1/test",
-        tenant_extension=MocoTenantExtension({}, policy=policy),
-        operation_validator=MocoOperationValidator({}, policy=policy),
+        tenant_extension=KuloTenantExtension({}, policy=policy),
+        operation_validator=KuloOperationValidator({}, policy=policy),
         skip_llm_verification=True,
         run_migrations=False,
     )
@@ -119,7 +119,7 @@ async def test_real_postgres_and_tcp_private_canary_shared_read_write(monkeypatc
             return [[1.0] + [0.0] * 7 for _ in texts]
 
     policy = AccessPolicy("test-router-" + "r" * 32, "test-worker-" + "w" * 32, management_key="test-manager-" + "m" * 32)
-    pg = Pg0(name="moco-auth-" + uuid.uuid4().hex, username="moco_auth_test", password=secrets.token_hex(24), data_dir=str(tmp_path / "postgres"))
+    pg = Pg0(name="kulo-auth-" + uuid.uuid4().hex, username="kulo_auth_test", password=secrets.token_hex(24), data_dir=str(tmp_path / "postgres"))
     info = await asyncio.to_thread(pg.start)
     memory = None
     server = None
@@ -130,8 +130,8 @@ async def test_real_postgres_and_tcp_private_canary_shared_read_write(monkeypatc
             db_url=info.uri,
             embeddings=OfflineEmbeddings(),
             cross_encoder=RRFPassthroughCrossEncoder(),
-            tenant_extension=MocoTenantExtension({}, policy=policy),
-            operation_validator=MocoOperationValidator({}, policy=policy),
+            tenant_extension=KuloTenantExtension({}, policy=policy),
+            operation_validator=KuloOperationValidator({}, policy=policy),
             skip_llm_verification=True,
         )
         await memory.initialize()
@@ -211,9 +211,9 @@ async def test_real_postgres_and_tcp_private_canary_shared_read_write(monkeypatc
             wrong_bank_page = await client.get(shared + "/knowledge-base/pages/" + private_page["id"], headers=worker)
             assert wrong_bank_page.status_code == 404 and private_canary not in wrong_bank_page.text
 
-            # Exercise the same asynchronous retain endpoint used by Moco,
+            # Exercise the same asynchronous retain endpoint used by Kulo,
             # without running the model-processing worker in this fixture.
-            shared_retain = await client.post(shared + "/memories", headers=worker, json={"async": True, "operation_id": str(uuid.uuid4()), "items": [{"content": "Moco 安装验证项目的名称是 Shared queued write control，由 Moco 负责验证，验证语言是简体中文。", "document_id": "queued-shared", "tags": ["application:moco", "verification:installation"], "observation_scopes": [["verification:installation"]]}]})
+            shared_retain = await client.post(shared + "/memories", headers=worker, json={"async": True, "operation_id": str(uuid.uuid4()), "items": [{"content": "Kulo 安装验证项目的名称是 Shared queued write control，由 Kulo 负责验证，验证语言是简体中文。", "document_id": "queued-shared", "tags": ["application:kulo", "verification:installation"], "observation_scopes": [["verification:installation"]]}]})
             assert shared_retain.status_code in {200, 202}, shared_retain.text
             shared_operation = shared_retain.json()["operation_id"]
             assert (await client.get(shared + "/operations/" + shared_operation, headers=worker)).status_code == 200
@@ -277,7 +277,7 @@ async def test_real_postgres_and_tcp_private_canary_shared_read_write(monkeypatc
             deleted = await client.delete(shared + "/documents/canary-document", headers=manager)
             assert deleted.status_code == 200, deleted.text
             assert (await client.get(shared + "/documents/canary-document", headers=worker)).status_code == 404
-            assert (await client.get("/v1/moco/access", headers=worker)).json() == policy.describe("worker")
+            assert (await client.get("/v1/kulo/access", headers=worker)).json() == policy.describe("worker")
             if sys.platform == "darwin":
                 repo = Path(__file__).resolve().parents[3]
                 local_tsx = repo / "node_modules" / ".bin" / ("tsx.cmd" if sys.platform == "win32" else "tsx")
@@ -346,11 +346,11 @@ async def test_official_worker_completes_retention_and_other_worker_recalls_it(m
             return [[1.0] + [0.0] * 7 for _ in texts]
 
     policy = AccessPolicy("test-router-" + "r" * 32, "test-worker-" + "w" * 32, management_key="test-manager-" + "m" * 32)
-    pg = Pg0(name="moco-pipeline-" + uuid.uuid4().hex, username="moco_pipeline", password=secrets.token_hex(24), data_dir=str(tmp_path / "postgres"))
+    pg = Pg0(name="kulo-pipeline-" + uuid.uuid4().hex, username="kulo_pipeline", password=secrets.token_hex(24), data_dir=str(tmp_path / "postgres"))
     info = await asyncio.to_thread(pg.start)
     memory = server = task = None
     try:
-        memory = MemoryEngine(db_url=info.uri, memory_llm_provider="mock", embeddings=OfflineEmbeddings(), cross_encoder=RRFPassthroughCrossEncoder(), tenant_extension=MocoTenantExtension({}, policy=policy), operation_validator=MocoOperationValidator({}, policy=policy), skip_llm_verification=True)
+        memory = MemoryEngine(db_url=info.uri, memory_llm_provider="mock", embeddings=OfflineEmbeddings(), cross_encoder=RRFPassthroughCrossEncoder(), tenant_extension=KuloTenantExtension({}, policy=policy), operation_validator=KuloOperationValidator({}, policy=policy), skip_llm_verification=True)
         await memory.initialize()
         app = secure_app(memory, policy=policy, initialize_memory=False)
         sock = socket.socket()
@@ -373,7 +373,7 @@ async def test_official_worker_completes_retention_and_other_worker_recalls_it(m
             assert setup.status_code == 200, setup.text
             marker = "WORKER-A-VERIFIED-" + uuid.uuid4().hex
             operation_id = str(uuid.uuid4())
-            body = {"async": True, "operation_id": operation_id, "items": [{"content": f"Worker A verified that the shared project uses the marker {marker}. This result was validated by its test suite.", "document_id": "task-a-worklog", "strategy": "worklog", "tags": ["application:moco", "verification:installation"], "observation_scopes": [["verification:installation"]]}]}
+            body = {"async": True, "operation_id": operation_id, "items": [{"content": f"Worker A verified that the shared project uses the marker {marker}. This result was validated by its test suite.", "document_id": "task-a-worklog", "strategy": "worklog", "tags": ["application:kulo", "verification:installation"], "observation_scopes": [["verification:installation"]]}]}
             retained = await client.post(prefix + "/memories", headers=worker, json=body)
             assert retained.status_code in (200, 202), retained.text
             replayed = await client.post(prefix + "/memories", headers=worker, json=body)

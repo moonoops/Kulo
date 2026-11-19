@@ -1,10 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { TicketCardView } from "@moco/protocol";
+import type { TicketCardView } from "@kulo/protocol";
 import { ScheduledTasksModule } from "./scheduled-tasks-module";
 import { SETTINGS_MODULES } from "./settings-helpers";
-import { MocoSettingsBoard } from "../../moco-settings";
-import type { MocoSettingsView } from "@moco/protocol";
+import { KuloSettingsBoard } from "../../kulo-settings";
+import type { KuloSettingsView } from "@kulo/protocol";
 
 const actions = { canQueue: true, stop: async () => {}, delete: async () => {} };
 
@@ -71,7 +71,7 @@ describe("scheduled task settings", () => {
   });
 
   it("passes the durable task actions through the settings board", () => {
-    const html = renderToStaticMarkup(<MocoSettingsBoard module="schedules" settings={{} as MocoSettingsView} envs={[]}
+    const html = renderToStaticMarkup(<KuloSettingsBoard module="schedules" settings={{} as KuloSettingsView} envs={[]}
       tickets={[task("设置页的巡检")]} ticketsLoaded connected={false} scheduledTaskActions={actions} onSettingsUpdated={() => {}} />);
     expect(html).toContain("设置页的巡检");
     for (const button of html.match(/<button\b[^>]*>/g) ?? []) expect(button).not.toContain('disabled=""');

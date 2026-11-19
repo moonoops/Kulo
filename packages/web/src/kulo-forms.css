@@ -1,0 +1,234 @@
+:root {
+  --kulo-settings-control-width: 320px;
+  --kulo-settings-number-width: 128px;
+  --kulo-compact-label-width: 80px;
+}
+
+.kulo-settings-list {
+  container: kulo-settings-fields / inline-size;
+}
+
+.kulo-settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--kulo-settings-control-width));
+  align-items: center;
+  column-gap: var(--kulo-form-gap);
+  row-gap: var(--kulo-field-gap);
+  width: 100%;
+  min-width: 0;
+  min-height: 60px;
+  padding: var(--kulo-list-padding-block) var(--kulo-list-padding-inline);
+}
+
+.kulo-settings-row > :is(.label, .kulo-field-label) {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  font-weight: 400;
+}
+
+.kulo-settings-row > :is(.input, .select__trigger, .combo-box__input-group, .number-field__group, .kulo-field-control) {
+  grid-column: 2;
+  grid-row: 1;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.kulo-settings-row > :is(.description, .field-error) {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.kulo-settings-row--number > :is(.number-field__group, .kulo-field-control) {
+  width: min(100%, var(--kulo-settings-number-width));
+  justify-self: end;
+}
+
+/* Discrete preferences retain the common column without filling it with a short value. */
+.kulo-settings-row--choice > .select__trigger {
+  width: fit-content;
+  max-width: 100%;
+  justify-self: end;
+}
+
+.kulo-settings-row--toggle {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.kulo-settings-row--toggle > .switch__control {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+}
+
+/* Immediate preferences keep labels beside controls independently of settings-page reflow. */
+.kulo-compact-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kulo-form-gap);
+  width: 100%;
+  min-width: 0;
+  container: kulo-compact-fields / inline-size;
+}
+
+.kulo-compact-row {
+  display: grid;
+  grid-template-columns: minmax(0, var(--kulo-compact-label-width)) minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--kulo-control-gap);
+  row-gap: var(--kulo-field-gap);
+  width: 100%;
+  min-width: 0;
+  min-height: var(--kulo-control-height);
+}
+
+.kulo-compact-row > :is(.label, .kulo-field-label) {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  font-weight: 400;
+}
+
+.kulo-compact-row > :is(.input, .select__trigger, .combo-box__input-group, .number-field__group, .kulo-field-control) {
+  grid-column: 2;
+  grid-row: 1;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.kulo-compact-row > :is(.description, .field-error) {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.kulo-compact-row--choice > .select__trigger {
+  width: fit-content;
+  max-width: 100%;
+  justify-self: end;
+}
+
+.kulo-compact-row--toggle {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.kulo-compact-row--toggle > .switch__control {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+}
+
+.kulo-field-label {
+  display: flex;
+  align-items: center;
+  gap: var(--kulo-control-gap);
+}
+
+.kulo-field-with-unit {
+  display: flex;
+  align-items: center;
+  gap: var(--kulo-control-gap);
+  min-width: 0;
+}
+
+.kulo-field-with-unit > .number-field__group {
+  flex: 1;
+  min-width: 0;
+}
+
+.kulo-form-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kulo-form-gap);
+  width: 100%;
+  min-width: 0;
+  container: kulo-form / inline-size;
+}
+
+.kulo-form-field,
+.kulo-context-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kulo-field-gap);
+  width: 100%;
+  min-width: 0;
+}
+
+.kulo-form-field > :is(.input, .textarea, .input-group, .select__trigger, .combo-box__input-group, .number-field__group, .search-field__group) {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.kulo-form-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--kulo-form-gap);
+  width: 100%;
+  min-width: 0;
+}
+
+.kulo-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  align-items: start;
+  gap: var(--kulo-form-gap);
+  min-width: 0;
+}
+
+.kulo-form-grid--port {
+  grid-template-columns: minmax(0, 1fr) 96px;
+}
+
+/* A field and its action stay together without changing the input's focus surface. */
+.kulo-field-action-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--kulo-control-gap);
+  min-width: 0;
+}
+
+.kulo-field-action-row > :is(.kulo-form-field, .kulo-context-field) {
+  flex: 1;
+  min-width: 0;
+}
+
+@container kulo-settings-fields (max-width: 640px) {
+  .kulo-settings-row:not(.kulo-settings-row--toggle) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .kulo-settings-row:not(.kulo-settings-row--toggle) > :is(.input, .select__trigger, .combo-box__input-group, .number-field__group, .kulo-field-control) {
+    grid-column: 1;
+    grid-row: 2;
+    width: 100%;
+  }
+
+  .kulo-settings-row > :is(.description, .field-error) {
+    grid-column: 1;
+  }
+}
+
+@container kulo-form (max-width: 400px) {
+  .kulo-form-grid--port {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container kulo-compact-fields (max-width: 240px) {
+  .kulo-compact-row:not(.kulo-compact-row--toggle) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .kulo-compact-row:not(.kulo-compact-row--toggle) > :is(.input, .select__trigger, .combo-box__input-group, .number-field__group, .kulo-field-control) {
+    grid-column: 1;
+    grid-row: 2;
+    width: 100%;
+  }
+
+  .kulo-compact-row > :is(.description, .field-error) {
+    grid-column: 1;
+  }
+}

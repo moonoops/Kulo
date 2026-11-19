@@ -1,5 +1,5 @@
-import { translate as t } from "../../moco-i18n";
-import type { TicketCardView, TicketRecord, TicketStatus } from "@moco/protocol";
+import { translate as t } from "../../kulo-i18n";
+import type { TicketCardView, TicketRecord, TicketStatus } from "@kulo/protocol";
 
 export type TaskTone = "ask" | "run" | "fail" | "done" | "wait";
 export type TaskTiming = Pick<TicketRecord, "status" | "createdAt" | "updatedAt" | "startedRunningAt" | "accumulatedRunningMs" | "completedAt" | "queuedAt" | "waiting">;

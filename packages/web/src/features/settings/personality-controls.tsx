@@ -1,8 +1,8 @@
-import { translate as t, useI18n } from "../../moco-i18n";
+import { translate as t, useI18n } from "../../kulo-i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Label, Spinner, Switch, TextArea } from "@heroui/react";
-import type { PersonalitySnapshot, RecentWorkSnapshot, RelationshipUpdateSettings } from "@moco/protocol";
-import { MocoApiError, mocoRest } from "../../moco-api";
+import type { PersonalitySnapshot, RecentWorkSnapshot, RelationshipUpdateSettings } from "@kulo/protocol";
+import { KuloApiError, kuloRest } from "../../kulo-api";
 import { SettingsList, SettingsNumberField, SettingsSection } from "./settings-layout";
 
 function initialSchedule(): RelationshipUpdateSettings {
@@ -70,7 +70,7 @@ export function usePersonalityControls(topicId?: string, recentActive = false, r
 
   const refresh = useCallback(async (force = false) => {
     try {
-      const next = await mocoRest.getPersonality();
+      const next = await kuloRest.getPersonality();
       if (!alive.current) return;
       acceptSnapshot(next, force);
       if (force || !failedRelationshipChange.current) setError(undefined);
@@ -97,7 +97,7 @@ export function usePersonalityControls(topicId?: string, recentActive = false, r
     setRecentError(undefined);
     const request = (async () => {
       try {
-        const next = await (force ? mocoRest.refreshRecentWork(scope.topicId, controller.signal) : mocoRest.getRecentWork(scope.topicId, controller.signal));
+        const next = await (force ? kuloRest.refreshRecentWork(scope.topicId, controller.signal) : kuloRest.getRecentWork(scope.topicId, controller.signal));
         if (timedOut) throw new Error(t("读取近期工作超时，请重试。", "Loading recent work timed out. Try again."));
         if (!controller.signal.aborted && alive.current && recentScope.current === scope && recentUpdateRef.current === update) setRecentResult({ scope, snapshot: next });
       } catch (err) {
@@ -173,7 +173,7 @@ export function usePersonalityControls(topicId?: string, recentActive = false, r
     else setError(undefined);
     try {
       // Only the committed snapshot supplies sibling fields; another control's input is never submitted here.
-      const next = await mocoRest.savePersonalitySettings({ expectedRevision: current.revision, ...settings,
+      const next = await kuloRest.savePersonalitySettings({ expectedRevision: current.revision, ...settings,
         ...(change.field === "recentWorkEnabled" ? { recentWorkEnabled: change.value }
           : { relationshipUpdate: { ...settings.relationshipUpdate, [change.field]: change.value } }),
       });
@@ -189,14 +189,14 @@ export function usePersonalityControls(topicId?: string, recentActive = false, r
       }
       return true;
     } catch (err) {
-      if (err instanceof MocoApiError && err.status === 409) await refresh();
+      if (err instanceof KuloApiError && err.status === 409) await refresh();
       const message = err instanceof Error ? err.message : t("保存失败", "Failed to save");
       if (change.field === "recentWorkEnabled") {
         setFailedRecentEnabled(change.value);
         setRecentSaveError(message);
       } else {
         failedRelationshipChange.current = change;
-        setConflict(err instanceof MocoApiError && err.status === 409);
+        setConflict(err instanceof KuloApiError && err.status === 409);
         setError(message);
       }
       return false;
@@ -209,7 +209,7 @@ export function usePersonalityControls(topicId?: string, recentActive = false, r
 
   const dismissProposal = async () => {
     if (!snapshot?.identityProposal) return;
-    await mocoRest.dismissIdentityProposal(snapshot.identityProposal.id);
+    await kuloRest.dismissIdentityProposal(snapshot.identityProposal.id);
     await refresh();
   };
 
@@ -246,11 +246,11 @@ export function RelationshipUpdateControls({ controls }: { controls: Personality
   const { snapshot, schedule, setSchedule, loading, saving, conflict, error } = controls;
   const status = snapshot?.relationshipStatus;
   return (
-    <div className="moco-form-stack">
+    <div className="kulo-form-stack">
       <SettingsList label={t("自动更新设置", "Auto-update settings")}>
         <Switch className="w-full" aria-label={t("自动更新协作关系", "Automatically update collaboration")} isSelected={snapshot?.settings.relationshipUpdate.enabled ?? false} isDisabled={loading || !snapshot} isReadOnly={saving} onChange={(enabled) => void controls.setRelationshipEnabled(enabled)}>
-          <Switch.Content className="moco-settings-row moco-settings-row--toggle">
-            <Label className="moco-field-label">{t("自动更新", "Auto-update")}{controls.savingField === "enabled" && <Spinner size="sm" aria-label={t("正在保存", "Saving")} />}</Label>
+          <Switch.Content className="kulo-settings-row kulo-settings-row--toggle">
+            <Label className="kulo-field-label">{t("自动更新", "Auto-update")}{controls.savingField === "enabled" && <Spinner size="sm" aria-label={t("正在保存", "Saving")} />}</Label>
             <Switch.Control><Switch.Thumb /></Switch.Control>
           </Switch.Content>
         </Switch>
@@ -275,7 +275,7 @@ export function RecentWorkPanel({ controls }: { controls: PersonalityControls })
   useI18n();
   const { snapshot, recent, recentLoading, recentError, loading, saving } = controls;
   return (
-    <div className="moco-settings-form gap-4">
+    <div className="kulo-settings-form gap-4">
       <SettingsSection title={t("近期工作", "Recent work")} status={controls.savingField === "recentWorkEnabled" ? <Spinner size="sm" aria-label={t("正在保存", "Saving")} /> : undefined} action={
         <Switch aria-label={t("启用近期工作", "Enable recent work")} isSelected={snapshot?.settings.recentWorkEnabled ?? true} isDisabled={loading || !snapshot} isReadOnly={saving} onChange={(enabled) => void controls.setRecentEnabled(enabled)}>
           <Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content>

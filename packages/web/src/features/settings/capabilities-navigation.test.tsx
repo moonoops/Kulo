@@ -29,7 +29,7 @@ vi.mock("react", async (original) => {
     useEffect: (effect: () => void, deps: readonly unknown[]) => memo(() => { hooks.effects.push(effect); }, deps),
   };
 });
-vi.mock("../../moco-i18n", () => ({ useI18n: () => ({ t: (zh: string) => zh }), translate: (zh: string) => zh }));
+vi.mock("../../kulo-i18n", () => ({ useI18n: () => ({ t: (zh: string) => zh }), translate: (zh: string) => zh }));
 vi.mock("./use-settings-navigation", () => ({ useSettingsNavigation: (dirty: boolean) => { navigation.dirty = dirty; return { ...navigation, needsConfirmation: navigation.confirmation }; } }));
 
 type Props = ComponentProps<typeof CapabilitiesModule>;

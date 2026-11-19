@@ -3,14 +3,14 @@ import { createHash } from "node:crypto";
 import { defineDoc, defineExtension, defineTool, type Harness, type JsonObject, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { bool, obj, opt, str } from "@earendil-works/pi-schema";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
-import type { MediaJobSource } from "@moco/protocol";
-import { MAX_VIDEO_UPLOAD_BYTES, type MocoUploadStore } from "./uploads.js";
+import type { MediaJobSource } from "@kulo/protocol";
+import { MAX_VIDEO_UPLOAD_BYTES, type KuloUploadStore } from "./uploads.js";
 import { checkedExecutionPath, executionFileHash, executionFileInfo, EXECUTION_FILE_CHUNK_BYTES, ExecutionFileError, writeExecutionFile } from "./execution-files.js";
 
 interface ExportReceipt { fingerprint: string; target: string; assetId: string; hash: string; size: number; completed: boolean }
 interface ExportState { operations: Record<string, ExportReceipt> }
-export const MocoMediaExportsDoc = defineDoc<ExportState & JsonObject>({
-  kind: "moco.media-exports", version: 1, scope: "session",
+export const KuloMediaExportsDoc = defineDoc<ExportState & JsonObject>({
+  kind: "kulo.media-exports", version: 1, scope: "session",
   initial: () => ({ operations: {} }) as ExportState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
@@ -19,7 +19,7 @@ export interface MediaExportOptions {
   scope: (api: ToolExecutionApi) => Promise<MediaJobSource>;
   validateInput: (assetId: string, source: MediaJobSource) => Promise<void>;
   assertActive: (source: MediaJobSource) => Promise<void>;
-  uploads: () => MocoUploadStore;
+  uploads: () => KuloUploadStore;
   harness: () => Harness;
 }
 export interface MediaExportInput { asset_id: string; path: string; overwrite?: boolean }
@@ -72,7 +72,7 @@ export function createMediaExporter(options: MediaExportOptions) {
       }
       const transfer = (async (): Promise<MediaExportResult> => {
         const receipt = await options.harness().commit(async (tx) => {
-          const state = await tx.doc(MocoMediaExportsDoc);
+          const state = await tx.doc(KuloMediaExportsDoc);
           const existing = Object.hasOwn(state.operations, key) ? state.operations[key] : undefined;
           if (existing) {
             if (existing.fingerprint !== fingerprint) throw new ExecutionFileError(409, "media_export_command_conflict", "同一工具调用不能转存不同的素材或路径。");
@@ -91,7 +91,7 @@ export function createMediaExporter(options: MediaExportOptions) {
         const written = await writeExecutionFile({ env, root: env.cwd, target, size: initial.size, hash: expectedHash, chunks: chunks(), overwrite: input.overwrite, assertActive, context });
         await assertActive();
         await options.harness().commit(async (tx) => {
-          const state = await tx.doc(MocoMediaExportsDoc);
+          const state = await tx.doc(KuloMediaExportsDoc);
           const current = state.operations[key];
           if (!current || current.fingerprint !== fingerprint) throw new ExecutionFileError(409, "media_export_command_conflict", "转存记录已变化。");
           current.completed = true;
@@ -108,9 +108,9 @@ export function createMediaExporter(options: MediaExportOptions) {
 export function createMediaExportExtension(options: MediaExportOptions) {
   const execute = createMediaExporter(options);
   return defineExtension({
-    name: "moco-media-export",
+    name: "kulo-media-export",
     tools: [defineTool({
-      name: "moco_media_export", description: "Export a managed asset authorized for this task into the bound project workspace on its execution node and return the node file path (does not overwrite existing files unless overwrite=true). 关键词：导出素材 转存附件 保存生成图片到工作目录",
+      name: "kulo_media_export", description: "Export a managed asset authorized for this task into the bound project workspace on its execution node and return the node file path (does not overwrite existing files unless overwrite=true). 关键词：导出素材 转存附件 保存生成图片到工作目录",
       parameters: obj({ asset_id: str(), path: str(), overwrite: opt(bool()) }), deferred: true, replay: "safe",
       execute: async (args, api, context) => {
         const value = await execute(args, api, context);

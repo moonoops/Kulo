@@ -1,9 +1,9 @@
-import { isHtmlArtifact, type ChatAttachment } from "@moco/protocol";
+import { isHtmlArtifact, type ChatAttachment } from "@kulo/protocol";
 import { Button, Card, Dropdown, Label, Modal, Spinner } from "@heroui/react";
 import { createPortal } from "react-dom";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { translate as tr, useI18n } from "../../moco-i18n";
-import { MocoIcon } from "../../moco-icon";
+import { translate as tr, useI18n } from "../../kulo-i18n";
+import { KuloIcon } from "../../kulo-icon";
 import { formatAssetSize } from "./asset-preview";
 import { CodeBlock } from "./code-block";
 import { desktopFileBridge, downloadFileAsset, openFileInDefaultApp, openHtmlInBrowser, prepareHtmlPreview, readFileAsset } from "./file-actions";
@@ -71,8 +71,8 @@ export function FileMessage({ asset, defaultExpanded = true }: { asset: ChatAtta
       previewTouched.current = true;
       setNearViewport(true); setExpanded(true);
     };
-    window.addEventListener("moco:reveal-file", reveal);
-    return () => window.removeEventListener("moco:reveal-file", reveal);
+    window.addEventListener("kulo:reveal-file", reveal);
+    return () => window.removeEventListener("kulo:reveal-file", reveal);
   }, [asset.id]);
   useEffect(() => {
     if (!shouldPrepare) return;
@@ -100,7 +100,7 @@ export function FileMessage({ asset, defaultExpanded = true }: { asset: ChatAtta
   }, [sourceOpen, asset.id, source, sourceAttempt]);
   useLayoutEffect(() => {
     if (mount) {
-      mount.className = "moco-artifact-live-preview scrollbar";
+      mount.className = "kulo-artifact-live-preview scrollbar";
       mount.dataset.kind = kind;
       mount.dataset.reading = reading ? "expanded" : "preview";
     }
@@ -129,17 +129,17 @@ export function FileMessage({ asset, defaultExpanded = true }: { asset: ChatAtta
   const openAction = (html || desktop) && <Button size="sm" variant="secondary" isDisabled={Boolean(pending)} isPending={pending === "open"} aria-label={desktop ? tr(`在默认应用打开：${asset.name}`, `Open in default app: ${asset.name}`) : tr(`在浏览器打开：${asset.name}`, `Open in browser: ${asset.name}`)} onPress={() => { void run("open"); }}>{desktop ? tr("默认应用打开", "Open in default app") : tr("浏览器打开", "Open in browser")}</Button>;
   const downloadAction = <Button size="sm" variant="secondary" isDisabled={Boolean(pending)} isPending={pending === "download"} aria-label={tr(`下载文件：${asset.name}`, `Download file: ${asset.name}`)} onPress={() => { void run("download"); }}>{tr("下载", "Download")}</Button>;
   const actions = <>{openAction}{downloadAction}</>;
-  const feedback = actionError && <p className="moco-artifact-error" role="alert">{actionError}</p>;
+  const feedback = actionError && <p className="kulo-artifact-error" role="alert">{actionError}</p>;
   return <>
-    <Card ref={root} variant="default" className="moco-chat-artifact" data-asset-id={asset.id} data-kind={kind ?? "file"}>
-      <Card.Header className="moco-artifact-header">
-        <MocoIcon name={html ? "code" : "document"} size={20} />
-        <div className="moco-artifact-detail"><span className="moco-item-title moco-chat-truncate" title={asset.name}>{asset.name}</span><span className="moco-item-description">{html ? "HTML" : asset.name.split(".").at(-1)?.toUpperCase()} · {formatAssetSize(asset.size)}</span></div>
-        <div className="moco-artifact-actions">
+    <Card ref={root} variant="default" className="kulo-chat-artifact" data-asset-id={asset.id} data-kind={kind ?? "file"}>
+      <Card.Header className="kulo-artifact-header">
+        <KuloIcon name={html ? "code" : "document"} size={20} />
+        <div className="kulo-artifact-detail"><span className="kulo-item-title kulo-chat-truncate" title={asset.name}>{asset.name}</span><span className="kulo-item-description">{html ? "HTML" : asset.name.split(".").at(-1)?.toUpperCase()} · {formatAssetSize(asset.size)}</span></div>
+        <div className="kulo-artifact-actions">
           {previewable && <Button ref={expandTrigger} size="sm" variant="ghost" aria-label={tr(`放大预览：${asset.name}`, `Expand preview: ${asset.name}`)} onPress={() => { previewTouched.current = true; setNearViewport(true); setExpanded(true); setLarge(true); }}>{tr("放大", "Expand")}</Button>}
           {openAction}
           {(!previewable || !desktop && !html) && downloadAction}
-          {previewable && <Dropdown><Button ref={sourceTrigger} size="sm" variant="ghost" isIconOnly aria-label={tr(`文件选项：${asset.name}`, `File options: ${asset.name}`)}><MocoIcon name="more" size={16} /></Button><Dropdown.Popover><Dropdown.Menu aria-label={tr("文件选项", "File options")} onAction={(key) => {
+          {previewable && <Dropdown><Button ref={sourceTrigger} size="sm" variant="ghost" isIconOnly aria-label={tr(`文件选项：${asset.name}`, `File options: ${asset.name}`)}><KuloIcon name="more" size={16} /></Button><Dropdown.Popover><Dropdown.Menu aria-label={tr("文件选项", "File options")} onAction={(key) => {
             if (key === "source") setSourceOpen(true);
             else if (key === "browser") { void run("browser"); }
             else if (key === "download") { void run("download"); }
@@ -148,23 +148,23 @@ export function FileMessage({ asset, defaultExpanded = true }: { asset: ChatAtta
         </div>
       </Card.Header>
       {!large && feedback}
-      {previewable && <div className="moco-artifact-inline-stage" ref={setInlineStage} hidden={!expanded || large} />}
-      {previewable && !large && <Card.Footer className="moco-artifact-collapsed">
-        {expanded ? <Button variant="ghost" size="sm" aria-expanded={reading} aria-label={reading ? tr(`收起阅读：${asset.name}`, `Collapse reading: ${asset.name}`) : tr(`展开阅读：${asset.name}`, `Expand reading: ${asset.name}`)} onPress={() => { previewTouched.current = true; setNearViewport(true); setReading((value) => !value); }}><MocoIcon name={reading ? "minimize" : "chevron-down"} size={16} />{reading ? tr("收起阅读", "Collapse reading") : tr("展开阅读", "Expand reading")}</Button> : <Button variant="ghost" size="sm" aria-label={tr(`展开预览：${asset.name}`, `Show preview: ${asset.name}`)} onPress={() => { previewTouched.current = true; setNearViewport(true); setExpanded(true); }}>{tr("展开预览", "Show preview")}</Button>}
+      {previewable && <div className="kulo-artifact-inline-stage" ref={setInlineStage} hidden={!expanded || large} />}
+      {previewable && !large && <Card.Footer className="kulo-artifact-collapsed">
+        {expanded ? <Button variant="ghost" size="sm" aria-expanded={reading} aria-label={reading ? tr(`收起阅读：${asset.name}`, `Collapse reading: ${asset.name}`) : tr(`展开阅读：${asset.name}`, `Expand reading: ${asset.name}`)} onPress={() => { previewTouched.current = true; setNearViewport(true); setReading((value) => !value); }}><KuloIcon name={reading ? "minimize" : "chevron-down"} size={16} />{reading ? tr("收起阅读", "Collapse reading") : tr("展开阅读", "Expand reading")}</Button> : <Button variant="ghost" size="sm" aria-label={tr(`展开预览：${asset.name}`, `Show preview: ${asset.name}`)} onPress={() => { previewTouched.current = true; setNearViewport(true); setExpanded(true); }}>{tr("展开预览", "Show preview")}</Button>}
       </Card.Footer>}
-      {!previewable && <p className="moco-artifact-unsupported moco-item-description">{tr("此文件暂不支持内嵌预览", "Inline preview is unavailable for this file")}</p>}
+      {!previewable && <p className="kulo-artifact-unsupported kulo-item-description">{tr("此文件暂不支持内嵌预览", "Inline preview is unavailable for this file")}</p>}
     </Card>
     {mount && previewable && createPortal(<>
-      {!hasOpened.current ? <div className="moco-artifact-feedback" role="status"><Spinner size="sm" /><span>{tr("正在加载预览", "Loading preview")}</span></div> : kind !== "html" ? <FilePreview asset={asset} kind={kind} /> : previewError ? <div className="moco-artifact-feedback" role="alert"><span>{previewError}</span><Button size="sm" variant="secondary" onPress={() => setAttempt((value) => value + 1)}>{tr("重试", "Retry")}</Button></div> : <>
-        {!loaded && <div className="moco-artifact-feedback" role="status"><Spinner size="sm" /><span>{tr("正在加载预览", "Loading preview")}</span></div>}
-        {previewUrl && <iframe key={attempt} className="moco-artifact-frame" title={tr(`预览：${asset.name}`, `Preview: ${asset.name}`)} sandbox="allow-scripts allow-forms" referrerPolicy="no-referrer" src={previewUrl} onLoad={() => setLoaded(true)} onError={() => setPreviewError(tr("预览加载失败", "Failed to load preview"))} />}
+      {!hasOpened.current ? <div className="kulo-artifact-feedback" role="status"><Spinner size="sm" /><span>{tr("正在加载预览", "Loading preview")}</span></div> : kind !== "html" ? <FilePreview asset={asset} kind={kind} /> : previewError ? <div className="kulo-artifact-feedback" role="alert"><span>{previewError}</span><Button size="sm" variant="secondary" onPress={() => setAttempt((value) => value + 1)}>{tr("重试", "Retry")}</Button></div> : <>
+        {!loaded && <div className="kulo-artifact-feedback" role="status"><Spinner size="sm" /><span>{tr("正在加载预览", "Loading preview")}</span></div>}
+        {previewUrl && <iframe key={attempt} className="kulo-artifact-frame" title={tr(`预览：${asset.name}`, `Preview: ${asset.name}`)} sandbox="allow-scripts allow-forms" referrerPolicy="no-referrer" src={previewUrl} onLoad={() => setLoaded(true)} onError={() => setPreviewError(tr("预览加载失败", "Failed to load preview"))} />}
       </>}
     </>, mount)}
     <Modal.Backdrop isOpen={large} onOpenChange={(open) => { if (!open) closeLarge(); }}>
-      <Modal.Container size="cover" scroll="inside"><Modal.Dialog className="moco-artifact-dialog"><Modal.Header><Modal.Heading>{asset.name}</Modal.Heading><Modal.CloseTrigger aria-label={tr("关闭文件预览", "Close file preview")} /></Modal.Header><Modal.Body className="moco-artifact-modal-body"><div className="moco-artifact-large-stage" ref={setLargeStage} /></Modal.Body><Modal.Footer className="moco-artifact-modal-footer">{feedback}<div className="moco-artifact-actions">{actions}</div></Modal.Footer></Modal.Dialog></Modal.Container>
+      <Modal.Container size="cover" scroll="inside"><Modal.Dialog className="kulo-artifact-dialog"><Modal.Header><Modal.Heading>{asset.name}</Modal.Heading><Modal.CloseTrigger aria-label={tr("关闭文件预览", "Close file preview")} /></Modal.Header><Modal.Body className="kulo-artifact-modal-body"><div className="kulo-artifact-large-stage" ref={setLargeStage} /></Modal.Body><Modal.Footer className="kulo-artifact-modal-footer">{feedback}<div className="kulo-artifact-actions">{actions}</div></Modal.Footer></Modal.Dialog></Modal.Container>
     </Modal.Backdrop>
     <Modal.Backdrop isOpen={sourceOpen} onOpenChange={(open) => { if (!open) { setSourceOpen(false); requestAnimationFrame(() => sourceTrigger.current?.focus({ preventScroll: true })); } }}>
-      <Modal.Container size="lg" scroll="inside"><Modal.Dialog><Modal.Header><Modal.Heading>{asset.name}</Modal.Heading><Modal.CloseTrigger aria-label={tr("关闭源码", "Close source")} /></Modal.Header><Modal.Body>{sourceError ? <div className="moco-artifact-feedback" role="alert"><span>{sourceError}</span><Button size="sm" variant="secondary" onPress={() => setSourceAttempt((value) => value + 1)}>{tr("重试", "Retry")}</Button></div> : source === undefined ? <div className="moco-artifact-feedback" role="status"><Spinner size="sm" /><span>{tr("正在读取源码", "Loading source")}</span></div> : <CodeBlock code={source} language="html" fileName={asset.name} />}</Modal.Body></Modal.Dialog></Modal.Container>
+      <Modal.Container size="lg" scroll="inside"><Modal.Dialog><Modal.Header><Modal.Heading>{asset.name}</Modal.Heading><Modal.CloseTrigger aria-label={tr("关闭源码", "Close source")} /></Modal.Header><Modal.Body>{sourceError ? <div className="kulo-artifact-feedback" role="alert"><span>{sourceError}</span><Button size="sm" variant="secondary" onPress={() => setSourceAttempt((value) => value + 1)}>{tr("重试", "Retry")}</Button></div> : source === undefined ? <div className="kulo-artifact-feedback" role="status"><Spinner size="sm" /><span>{tr("正在读取源码", "Loading source")}</span></div> : <CodeBlock code={source} language="html" fileName={asset.name} />}</Modal.Body></Modal.Dialog></Modal.Container>
     </Modal.Backdrop>
   </>;
 }

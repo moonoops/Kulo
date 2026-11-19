@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { defaultRolePresets, type MocoSettingsView } from "@moco/protocol";
+import { defaultRolePresets, type KuloSettingsView } from "@kulo/protocol";
 import { WorkersModule } from "./workers-module";
 import { ConcurrencyModule } from "./concurrency-module";
 import { IdentityModule } from "./identity-module";
@@ -8,10 +8,10 @@ import { WorkbenchShell } from "../shell/workbench-shell";
 import { SettingsSection } from "./settings-layout";
 import { AppearanceModule } from "./appearance-module";
 
-const settings: MocoSettingsView = {
+const settings: KuloSettingsView = {
   globalRevision: 1,
   blocks: {
-    presentation: { revision: 1, value: { agentName: "Moco", workbenchName: "Moco's table" } },
+    presentation: { revision: 1, value: { agentName: "Kulo", workbenchName: "Kulo's table" } },
     executor: { revision: 1, value: { maxConcurrentWorkers: 3, maxSubagentsPerTicket: 4, paused: false, watchdogMinutes: 5 } },
     roles: { revision: 1, value: defaultRolePresets() },
     model: { revision: 1, hasApiKey: false, value: { baseUrl: "http://127.0.0.1:9/v1", apiMode: "openai-completions", defaultModel: "test-model", thinkingLevel: "off", customProviders: [] } },
@@ -30,7 +30,7 @@ describe("settings controls and layout", () => {
     expect(html).toContain("中 · 14 px");
     expect(html).toContain("中文");
     expect(html).toContain('aria-label="外观偏好"');
-    expect(html.match(/class="[^"]*\bmoco-settings-row\b/g)).toHaveLength(4);
+    expect(html.match(/class="[^"]*\bkulo-settings-row\b/g)).toHaveLength(4);
     expect(html).toContain('aria-label="自动切换形象"');
     expect(html).toContain('aria-label="动态"');
     expect(html).not.toContain("grid-cols-4");
@@ -60,7 +60,7 @@ describe("settings controls and layout", () => {
   });
 
   it("groups external agents under labeled client sections with operable switches separate from internal role forms", () => {
-    const next: MocoSettingsView = { ...settings, blocks: { ...settings.blocks, roles: { revision: 2, value: {
+    const next: KuloSettingsView = { ...settings, blocks: { ...settings.blocks, roles: { revision: 2, value: {
       ...settings.blocks.roles.value,
       "external-codex": { id: "external-codex", label: "本机 Codex", whenToUse: "代码任务", prompt: "外部执行指令", enabled: true,
         external: { kind: "codex", envId: "local", verifiedAt: 123 } },
@@ -97,7 +97,7 @@ describe("settings controls and layout", () => {
     expect(html).toContain("已完成任务显示时长");
     expect(html.indexOf("已完成任务显示时长")).toBeGreaterThan(html.indexOf("超时检查"));
     expect(html).not.toContain("安全护栏");
-    expect(html).not.toContain("moco-settings-savebar");
+    expect(html).not.toContain("kulo-settings-savebar");
     expect(html).not.toContain('aria-invalid="true"');
   });
 
@@ -127,7 +127,7 @@ describe("settings controls and layout", () => {
     { hours: 6 as const, expectedLabel: "6 小时" },
     { hours: null, expectedLabel: "一直显示" },
   ])("keeps completed-task display selection $expectedLabel", ({ hours, expectedLabel }) => {
-    const next: MocoSettingsView = {
+    const next: KuloSettingsView = {
       ...settings,
       blocks: {
         ...settings.blocks,
@@ -150,7 +150,7 @@ describe("settings controls and layout", () => {
     } else {
       executor.watchdogMinutes = watchdogMinutes;
     }
-    const next: MocoSettingsView = {
+    const next: KuloSettingsView = {
       ...settings,
       blocks: {
         ...settings.blocks,
@@ -176,10 +176,10 @@ describe("settings controls and layout", () => {
     const preferences = renderToStaticMarkup(<WorkbenchShell {...props} settingsMode />);
     expect(conversation).toContain("auxiliary-content");
     expect(preferences).toContain("auxiliary-content");
-    expect(preferences).toContain("moco-workbench-settings-rail");
+    expect(preferences).toContain("kulo-workbench-settings-rail");
     const collapsed = renderToStaticMarkup(<WorkbenchShell {...props} settingsMode rightCollapsed />);
     expect(collapsed).toContain("auxiliary-content");
-    const collapsedRail = collapsed.match(/<aside\b[^>]*class="moco-workbench-rail moco-workbench-settings-rail"[^>]*>/)?.[0];
+    const collapsedRail = collapsed.match(/<aside\b[^>]*class="kulo-workbench-rail kulo-workbench-settings-rail"[^>]*>/)?.[0];
     expect(collapsedRail).toContain('aria-hidden="true"');
     expect(collapsedRail).toContain('inert=""');
     expect(collapsedRail).toContain('data-collapsed="true"');

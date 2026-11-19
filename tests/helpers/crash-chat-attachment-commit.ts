@@ -6,7 +6,7 @@ import { openTestHub } from "./secure-hub.js";
 
 const [stateDir, boundary, requestId, ...assetIds] = process.argv.slice(2);
 if (!stateDir || !requestId || !["before", "after"].includes(boundary ?? "") || assetIds.length !== 2) throw new Error("Invalid crash fixture");
-const storage = await openNodeSqliteStorage(path.join(stateDir, "moco.sqlite"));
+const storage = await openNodeSqliteStorage(path.join(stateDir, "kulo.sqlite"));
 const commit = storage.commit.bind(storage);
 storage.commit = async (batches, receive, context) => {
   if (batches.some(batch => batch.some(write => write.type === "submission" && write.value.requestId === requestId))) {

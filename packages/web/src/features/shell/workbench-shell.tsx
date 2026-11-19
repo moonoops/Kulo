@@ -1,4 +1,4 @@
-import { useI18n } from "../../moco-i18n";
+import { useI18n } from "../../kulo-i18n";
 import {
   useCallback,
   useEffect,
@@ -266,40 +266,40 @@ export function WorkbenchShell({
   };
 
   const workbenchStyle = displayedRightWidth !== null
-    ? ({ "--moco-rail-custom-width": `${displayedRightWidth}px` } as CSSProperties)
+    ? ({ "--kulo-rail-custom-width": `${displayedRightWidth}px` } as CSSProperties)
     : undefined;
 
   return (
     <div
       ref={workbenchRef}
       style={workbenchStyle}
-      className="moco-workbench"
+      className="kulo-workbench"
       data-layout={settingsMode ? "settings" : "conversation"}
       data-native-titlebar={nativeTitlebar || undefined}
       data-left-visible={leftVisible}
       data-right-visible={rightVisible}
       data-resizing={resizing || undefined}
     >
-      <header className="moco-window-titlebar" aria-label={t("窗口工具栏", "Window toolbar")}>
-        <div className="moco-window-navigation-control">{leftControl}</div>
+      <header className="kulo-window-titlebar" aria-label={t("窗口工具栏", "Window toolbar")}>
+        <div className="kulo-window-navigation-control">{leftControl}</div>
         {titlebarContent}
-        <div className="moco-window-rail-control">{rightControl}</div>
+        <div className="kulo-window-rail-control">{rightControl}</div>
       </header>
-      <div className="moco-workbench-panes">
+      <div className="kulo-workbench-panes">
         {showInlineLeft && (
           <aside
             aria-label={leftLabel}
             aria-hidden={leftCollapsed || undefined}
             inert={leftCollapsed}
             data-collapsed={leftCollapsed}
-            className="moco-workbench-navigation"
+            className="kulo-workbench-navigation"
           >
-            <div className="moco-workbench-panel-content">{leftContent}</div>
+            <div className="kulo-workbench-panel-content">{leftContent}</div>
           </aside>
         )}
 
-        <main className="moco-workbench-main" tabIndex={-1}>
-          <div className="moco-workbench-main-content">
+        <main className="kulo-workbench-main" tabIndex={-1}>
+          <div className="kulo-workbench-main-content">
             {centerContent}
           </div>
         </main>
@@ -318,7 +318,7 @@ export function WorkbenchShell({
             tabIndex={rightCollapsed ? -1 : 0}
             data-collapsed={rightCollapsed}
             data-resizing={resizing || undefined}
-            className="moco-workbench-resizer"
+            className="kulo-workbench-resizer"
             onPointerDown={handleResizePointerDown}
             onKeyDown={handleResizeKeyDown}
             onDoubleClick={handleResizeReset}
@@ -333,9 +333,9 @@ export function WorkbenchShell({
             aria-hidden={rightCollapsed || undefined}
             inert={rightCollapsed}
             data-collapsed={rightCollapsed}
-            className={settingsMode ? "moco-workbench-rail moco-workbench-settings-rail" : "moco-workbench-rail"}
+            className={settingsMode ? "kulo-workbench-rail kulo-workbench-settings-rail" : "kulo-workbench-rail"}
           >
-            <div className={"moco-workbench-panel-content" + (settingsMode ? " moco-workbench-settings-content" : "")}>{rightContent}</div>
+            <div className={"kulo-workbench-panel-content" + (settingsMode ? " kulo-workbench-settings-content" : "")}>{rightContent}</div>
           </aside>
         )}
       </div>
@@ -354,7 +354,7 @@ export function WorkbenchShell({
           }}
         >
           <Drawer.Content placement="left" className="max-w-[300px]">
-            <Drawer.Dialog data-moco-overlay="workbench-drawer" aria-label={leftLabel} className="flex h-full flex-col">
+            <Drawer.Dialog data-kulo-overlay="workbench-drawer" aria-label={leftLabel} className="flex h-full flex-col">
               <div className="mb-2 flex items-center justify-between">
                 <Drawer.Heading className="font-semibold text-muted">
                   {leftLabel}
@@ -383,7 +383,7 @@ export function WorkbenchShell({
           }}
         >
           <Drawer.Content placement="right" className={settingsMode ? "w-full max-w-[420px]" : "max-w-[332px]"}>
-            <Drawer.Dialog data-moco-overlay="workbench-drawer" aria-label={rightLabel} className="flex h-full flex-col">
+            <Drawer.Dialog data-kulo-overlay="workbench-drawer" aria-label={rightLabel} className="flex h-full flex-col">
               <div className="mb-2 flex shrink-0 items-center justify-end">
                 <Drawer.Heading className="sr-only">{rightLabel}</Drawer.Heading>
                 <Drawer.CloseTrigger className="static" aria-label={settingsMode ? t("关闭设置对话", "Close settings chat") : t("关闭任务栏", "Close task panel")} />

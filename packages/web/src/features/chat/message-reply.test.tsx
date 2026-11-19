@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ButtonProps } from "@heroui/react";
-import type { ChatDisplayItem, ChatReplyReference } from "@moco/protocol";
+import type { ChatDisplayItem, ChatReplyReference } from "@kulo/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MessageReply } from "./message-reply";
 import { MessageContent } from "./message-content";
@@ -11,7 +11,7 @@ const presses = vi.hoisted(() => [] as Array<NonNullable<ButtonProps["onPress"]>
 vi.mock("@heroui/react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@heroui/react")>();
   return { ...actual, Button: (props: ButtonProps) => {
-    if (props.onPress && String(props.className).includes("moco-message-reply-trigger")) presses.push(props.onPress);
+    if (props.onPress && String(props.className).includes("kulo-message-reply-trigger")) presses.push(props.onPress);
     return <actual.Button {...props} />;
   } };
 });
@@ -34,7 +34,7 @@ describe("reply navigation", () => {
     const navigate = vi.fn();
     const html = renderToStaticMarkup(<MessageContent item={item} onNavigateReply={navigate} />);
     expect(html).toMatch(/<button\b[^>]*type="button"[^>]*tabindex="0"/);
-    expect(html).toContain('aria-label="查看原消息：Moco，维护方式需要再确认。"');
+    expect(html).toContain('aria-label="查看原消息：Kulo，维护方式需要再确认。"');
     expect(html).not.toContain('tabindex="-1"');
     expect(presses).toHaveLength(1);
     presses[0]!({ pointerType: "keyboard" } as Parameters<typeof presses[number]>[0]);
@@ -45,8 +45,8 @@ describe("reply navigation", () => {
   it("preserves navigation when connected messages are rendered without a footer", () => {
     const navigate = vi.fn();
     const html = renderToStaticMarkup(<ConnectedMessageContent item={item} onNavigateReply={navigate} contentOnly />);
-    expect(html).toContain('aria-label="查看原消息：Moco，维护方式需要再确认。"');
-    expect(html).not.toContain("moco-message-footer");
+    expect(html).toContain('aria-label="查看原消息：Kulo，维护方式需要再确认。"');
+    expect(html).not.toContain("kulo-message-footer");
     presses[0]!({ pointerType: "keyboard" } as Parameters<typeof presses[number]>[0]);
     expect(navigate).toHaveBeenCalledExactlyOnceWith(12);
   });

@@ -8,7 +8,7 @@ import { Readability } from "@mozilla/readability";
 import { resolveHttpProxyUrlForTarget } from "@earendil-works/pi-ai/utils/node-http-proxy";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { parseHTML } from "linkedom";
-import type { WebPageResult, WebSource } from "@moco/protocol";
+import type { WebPageResult, WebSource } from "@kulo/protocol";
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_CONTENT_CHARS = 48_000;
@@ -166,7 +166,7 @@ export async function safeWebRequest(value: string, options: { signal?: AbortSig
   for (let redirects = 0; redirects <= 5; redirects++) {
     signal.throwIfAborted();
     const init: RequestInit = { signal, redirect: "manual", headers: {
-      "User-Agent": "Moco-Agent/0.3", Accept: "text/markdown, text/html, text/plain, application/json;q=0.8",
+      "User-Agent": "Kulo-Agent/0.3", Accept: "text/markdown, text/html, text/plain, application/json;q=0.8",
     } };
     // An injected transport is trusted by the owning caller and is used for deterministic fixtures.
     const response = options.fetch ? await options.fetch(url, init) : await pinnedRequest(url, init, signal);

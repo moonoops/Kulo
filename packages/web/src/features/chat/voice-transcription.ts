@@ -1,5 +1,5 @@
-import { mocoRest } from "../../moco-api";
-import { translate as t } from "../../moco-i18n";
+import { kuloRest } from "../../kulo-api";
+import { translate as t } from "../../kulo-i18n";
 import { voiceApi } from "../voice/voice-api";
 import type { VoiceRecording, VoiceTranscribeOptions } from "./voice-recorder";
 
@@ -9,7 +9,7 @@ export async function transcribeVoiceRecording(
   options: VoiceTranscribeOptions,
 ): Promise<string> {
   options.signal.throwIfAborted();
-  const asset = await mocoRest.uploadFile(recording.file, recording.file.name, {
+  const asset = await kuloRest.uploadFile(recording.file, recording.file.name, {
     signal: options.signal,
     onProgress: options.onProgress,
     idempotencyKey: recording.id,

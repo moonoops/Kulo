@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { redactDiagnosticText } from "@moco/recovery";
+import { redactDiagnosticText } from "@kulo/recovery";
 
 export const DESKTOP_LOG_FILE_BYTES = 4 * 1024 * 1024;
 const ENTRY_BYTES = 64 * 1024;

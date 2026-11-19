@@ -1,6 +1,6 @@
 import { interruptSettingsTransition } from "./settings-transition";
 
-const SURFACE = '[data-moco-navigation-key], .tabs__panel[role="tabpanel"]';
+const SURFACE = '[data-kulo-navigation-key], .tabs__panel[role="tabpanel"]';
 const INACTIVE = '[hidden], [inert], [data-inert="true"], [aria-hidden="true"], [data-exiting="true"]';
 const EASING = "cubic-bezier(.2,.7,.2,1)";
 
@@ -22,9 +22,9 @@ export function installNavigationMotion(root: HTMLElement = document.body): () =
 
   const reduced = () => media.matches || Boolean(root.closest('[data-reduce-motion="true"]'));
   const stateOf = (element: HTMLElement): SurfaceState => ({
-    key: element.dataset.mocoNavigationKey ?? element.id,
+    key: element.dataset.kuloNavigationKey ?? element.id,
     active: !element.closest(INACTIVE),
-    ready: element.dataset.mocoNavigationReady !== "false",
+    ready: element.dataset.kuloNavigationReady !== "false",
   });
   const tabPosition = (element: HTMLElement) => {
     if (!element.matches('.tabs__panel[role="tabpanel"]')) return undefined;
@@ -54,7 +54,7 @@ export function installNavigationMotion(root: HTMLElement = document.body): () =
   const stopReducedMotion = () => {
     if (!reduced()) return;
     cancelAll();
-    if (documentRoot.dataset.mocoTransition) interruptSettingsTransition();
+    if (documentRoot.dataset.kuloTransition) interruptSettingsTransition();
   };
 
   function flush() {
@@ -75,17 +75,17 @@ export function installNavigationMotion(root: HTMLElement = document.body): () =
 
     if (reduced()) { stopReducedMotion(); return; }
     // A second navigation must reveal its destination even while a settings snapshot is playing.
-    if (documentRoot.dataset.mocoTransition && entering.some(({ before }) => before)) interruptSettingsTransition();
-    if (documentRoot.dataset.mocoTransition) return;
+    if (documentRoot.dataset.kuloTransition && entering.some(({ before }) => before)) interruptSettingsTransition();
+    if (documentRoot.dataset.kuloTransition) return;
 
     for (const { element, position, direction } of entering) {
-      if (element.closest('[data-moco-navigation="none"], [data-entering], [data-exiting]')) continue;
+      if (element.closest('[data-kulo-navigation="none"], [data-entering], [data-exiting]')) continue;
       if (entering.some((other) => other.element !== element && other.element.contains(element))) continue;
       if ([...running.keys()].some((parent) => parent !== element && parent.contains(element))) continue;
       if (!element.getClientRects().length || typeof element.animate !== "function") continue;
       const previous = running.get(element);
       const current = previous ? getComputedStyle(element) : undefined;
-      const content = element.dataset.mocoNavigation === "content";
+      const content = element.dataset.kuloNavigation === "content";
       const horizontal = Boolean(position);
       const rtl = position && getComputedStyle(position.group).direction === "rtl";
       const offset = horizontal ? `${8 * direction * (rtl ? -1 : 1)}px 0px` : content ? "0px 4px" : "0px 0px";
@@ -95,7 +95,7 @@ export function installNavigationMotion(root: HTMLElement = document.body): () =
         duration: horizontal || content ? 160 : 140,
         easing: EASING,
       });
-      animation.id = "moco-navigation";
+      animation.id = "kulo-navigation";
       running.set(element, animation);
       const release = () => { if (running.get(element) === animation) running.delete(element); };
       void animation.finished.then(release, (error: unknown) => {
@@ -121,7 +121,7 @@ export function installNavigationMotion(root: HTMLElement = document.body): () =
     if (frame === undefined && (pending.size || running.size)) frame = requestAnimationFrame(flush);
   });
   observer.observe(root, { childList: true, subtree: true, attributes: true,
-    attributeFilter: ["data-moco-navigation-key", "data-moco-navigation-ready", "inert", "data-inert", "hidden", "aria-hidden"] });
+    attributeFilter: ["data-kulo-navigation-key", "data-kulo-navigation-ready", "inert", "data-inert", "hidden", "aria-hidden"] });
   const preferenceObserver = new MutationObserver(stopReducedMotion);
   preferenceObserver.observe(documentRoot, { subtree: true, attributes: true, attributeFilter: ["data-reduce-motion"] });
   const preferenceChanged = stopReducedMotion;

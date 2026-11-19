@@ -1,16 +1,16 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { defaultRolePresets, type MemoryServiceJob, type MemoryServiceSecretInput, type MemoryServiceSnapshot, type MocoSettingsView } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
+import { defaultRolePresets, type MemoryServiceJob, type MemoryServiceSecretInput, type MemoryServiceSnapshot, type KuloSettingsView } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
 import { createMemoryServiceRequest, decideMemoryServiceJob, initialMemoryServiceDraft, MemoryServiceForm, MemoryServiceJobCard, submitMemoryServiceSecret, type MemoryServiceDraft } from "./memory-service-dialogue";
 import { acknowledgeMemoryEnabled, createMemoryConnectionRequest, memoryConnectionDirty, memoryConnectionEditor, MemoryConnectionForm, reconcileMemoryConnection, setSavedMemoryEnabled } from "./memory-service-panel";
 import { isMemoryDialogueOperation } from "./memory-service-events";
 
-const connection = { enabled: false, endpoint: "http://127.0.0.1:8888", endpoints: [], caCertPem: "", routerApiKeyEnv: "", workerApiKeyEnv: "", authFile: "", autoAttachTopLevelRouters: false, banks: { private: "moco-core", shared: "moco-shared" } };
-const settings: MocoSettingsView = {
+const connection = { enabled: false, endpoint: "http://127.0.0.1:8888", endpoints: [], caCertPem: "", routerApiKeyEnv: "", workerApiKeyEnv: "", authFile: "", autoAttachTopLevelRouters: false, banks: { private: "kulo-core", shared: "kulo-shared" } };
+const settings: KuloSettingsView = {
   globalRevision: 1,
   blocks: {
-    presentation: { revision: 1, value: { agentName: "Moco", workbenchName: "工作台" } },
+    presentation: { revision: 1, value: { agentName: "Kulo", workbenchName: "工作台" } },
     executor: { revision: 1, value: { maxConcurrentWorkers: 3, maxSubagentsPerTicket: 4, paused: false, watchdogMinutes: 5 } },
     roles: { revision: 1, value: defaultRolePresets() },
     model: { revision: 1, hasApiKey: false, value: { baseUrl: "http://127.0.0.1:9/v1", apiMode: "openai-completions", defaultModel: "", thinkingLevel: "off", customProviders: [] } },
@@ -68,7 +68,7 @@ describe("memory service approval and private input", () => {
     expect(() => createMemoryServiceRequest({ ...draft, baseUrl: "https://user:password@models.example" }, "tab-a", 3)).toThrow("不能包含凭据");
 
     // Pre-selects a compatible configured model connection and avoids display-vs-draft desync.
-    const configuredSettings: MocoSettingsView = {
+    const configuredSettings: KuloSettingsView = {
       ...settings,
       blocks: {
         ...settings.blocks,
@@ -95,8 +95,8 @@ describe("memory service approval and private input", () => {
   });
 
   it("submits existing connection credentials directly from the left form without preparing a dialogue job", () => {
-    const save = vi.spyOn(mocoRest, "saveSettingsBlock");
-    const prepare = vi.spyOn(mocoRest, "prepareMemoryService");
+    const save = vi.spyOn(kuloRest, "saveSettingsBlock");
+    const prepare = vi.spyOn(kuloRest, "prepareMemoryService");
     const editor = memoryConnectionEditor(settings.blocks.memory);
     const request = createMemoryConnectionRequest({ ...editor.draft, enabled: true, accessMode: "private-only", endpoint: "https://memory.example", endpoints: ["https://backup.example", ""], routerApiKey: "synthetic-private-key", workerApiKey: "unused-worker-key" }, 3);
     expect(request.connection).toEqual({ endpoint: "https://memory.example", endpoints: ["https://backup.example"], accessMode: "private-only", banks: connection.banks });
@@ -114,14 +114,14 @@ describe("memory service approval and private input", () => {
     expect(request.routerApiKey).toBe("private-key");
     expect(request.workerApiKey).toBe("public-directory-key");
     expect(request.connection.endpoints).toEqual(["https://first.example", "https://second.example"]);
-    expect(request.connection.accessMode).toBe("moco");
+    expect(request.connection.accessMode).toBe("kulo");
     expect(request).not.toHaveProperty("sharedReadApiKey");
     expect(request).not.toHaveProperty("caCertPem");
     expect(settings.blocks.memory.value.endpoints).toEqual([]);
   });
 
   it("cannot confirm an unfinished or foreign job", async () => {
-    const decide = vi.spyOn(mocoRest, "decideMemoryService").mockResolvedValue(snapshot);
+    const decide = vi.spyOn(kuloRest, "decideMemoryService").mockResolvedValue(snapshot);
     await expect(decideMemoryServiceJob(job, "tab-b", "confirm")).rejects.toThrow("发起操作的窗口");
     for (const status of ["awaiting-input", "running", "succeeded", "rejected"] as const) await expect(decideMemoryServiceJob({ ...job, status }, "tab-a", "confirm")).rejects.toThrow("已经处理");
     expect(decide).not.toHaveBeenCalled();
@@ -130,16 +130,16 @@ describe("memory service approval and private input", () => {
   });
 
   it("retries the approved failed job using the same identity instead of preparing another install", async () => {
-    const decide = vi.spyOn(mocoRest, "decideMemoryService").mockResolvedValue(snapshot);
-    const prepare = vi.spyOn(mocoRest, "prepareMemoryService");
+    const decide = vi.spyOn(kuloRest, "decideMemoryService").mockResolvedValue(snapshot);
+    const prepare = vi.spyOn(kuloRest, "prepareMemoryService");
     await decideMemoryServiceJob({ ...job, status: "failed" }, "tab-a", "confirm");
     expect(decide).toHaveBeenCalledExactlyOnceWith(job.id, { clientId: "tab-a", decision: "confirm" });
     expect(prepare).not.toHaveBeenCalled();
   });
 
   it("sends a secret only to its dedicated input endpoint", async () => {
-    const submit = vi.spyOn(mocoRest, "submitMemoryServiceInput").mockResolvedValue(snapshot);
-    const prepare = vi.spyOn(mocoRest, "prepareMemoryService");
+    const submit = vi.spyOn(kuloRest, "submitMemoryServiceInput").mockResolvedValue(snapshot);
+    const prepare = vi.spyOn(kuloRest, "prepareMemoryService");
     await expect(submitMemoryServiceSecret(input, "tab-b", "test-private-value")).rejects.toThrow("发起配置的窗口");
     await expect(submitMemoryServiceSecret({ ...input, expiresAt: 0 }, "tab-a", "test-private-value")).rejects.toThrow("失效");
     expect(submit).not.toHaveBeenCalled();
@@ -149,7 +149,7 @@ describe("memory service approval and private input", () => {
   });
 
   it("renders a single explicit deployment confirmation and empty private input", () => {
-    const decide = vi.spyOn(mocoRest, "decideMemoryService");
+    const decide = vi.spyOn(kuloRest, "decideMemoryService");
     const html = renderToStaticMarkup(<MemoryServiceJobCard job={job} inputs={[]} clientId="tab-a" connected onChanged={() => {}} />);
     expect(html).toContain("确认部署");
     expect(html).toContain("主脑 Mac");
@@ -210,10 +210,10 @@ describe("memory service approval and private input", () => {
     const editor = memoryConnectionEditor(settings.blocks.memory);
     const editing = { ...editor, draft: { ...editor.draft, endpoint: "https://new-origin.example", endpoints: ["https://backup-draft.example"], privateBank: "new-private", sharedBank: "new-shared", routerApiKey: "unsaved-private-secret", workerApiKey: "unsaved-public-secret", clearRouterApiKey: true, clearWorkerApiKey: true } };
     const service = { ...snapshot, revision: 2, connection: { ...connection, enabled: true } };
-    const toggle = vi.spyOn(mocoRest, "setMemoryEnabled").mockResolvedValue(service);
-    const save = vi.spyOn(mocoRest, "saveMemoryConnection");
-    const probe = vi.spyOn(mocoRest, "probeMemoryConnection");
-    const saveBlock = vi.spyOn(mocoRest, "saveSettingsBlock");
+    const toggle = vi.spyOn(kuloRest, "setMemoryEnabled").mockResolvedValue(service);
+    const save = vi.spyOn(kuloRest, "saveMemoryConnection");
+    const probe = vi.spyOn(kuloRest, "probeMemoryConnection");
+    const saveBlock = vi.spyOn(kuloRest, "saveSettingsBlock");
     const result = await setSavedMemoryEnabled(settings.blocks.memory, true);
     expect(toggle).toHaveBeenCalledExactlyOnceWith({ enabled: true, expectedRevision: 1 });
     expect(save).not.toHaveBeenCalled();
@@ -231,7 +231,7 @@ describe("memory service approval and private input", () => {
   it("keeps the saved runtime state and connection draft after an enable failure, then permits an explicit retry", async () => {
     const editor = memoryConnectionEditor(settings.blocks.memory);
     const editing = { ...editor, draft: { ...editor.draft, endpoint: "https://draft.example", routerApiKey: "draft-private-key" } };
-    const toggle = vi.spyOn(mocoRest, "setMemoryEnabled").mockRejectedValueOnce(new Error("连接未通过检查，未启用长期记忆。")).mockResolvedValueOnce({ ...snapshot, revision: 2, connection: { ...connection, enabled: true } });
+    const toggle = vi.spyOn(kuloRest, "setMemoryEnabled").mockRejectedValueOnce(new Error("连接未通过检查，未启用长期记忆。")).mockResolvedValueOnce({ ...snapshot, revision: 2, connection: { ...connection, enabled: true } });
     await expect(setSavedMemoryEnabled(settings.blocks.memory, true)).rejects.toThrow("未启用长期记忆");
     const failed = connectionForm(settings, snapshot, editing, { enabledError: "连接未通过检查，未启用长期记忆。" });
     expect(failed.match(/<input\b[^>]*aria-label="启用长期记忆"[^>]*>/)?.[0]).not.toContain("checked");
@@ -252,7 +252,7 @@ describe("memory service approval and private input", () => {
     expect(acknowledgeMemoryEnabled(editing, changedConnection, 1)).toMatchObject({ revision: 1, conflict: true, draft: editing.draft });
   });
 
-  it.each(["moco", "scoped", "private-only"] as const)("keeps internal access policy and certificates out of the %s connection form", (accessMode) => {
+  it.each(["kulo", "scoped", "private-only"] as const)("keeps internal access policy and certificates out of the %s connection form", (accessMode) => {
     const stored = { ...settings, blocks: { ...settings.blocks, memory: { ...settings.blocks.memory, value: { ...connection, accessMode, caCertPem: "legacy-certificate" } } } };
     const editor = memoryConnectionEditor(stored.blocks.memory);
     const html = connectionForm(stored);

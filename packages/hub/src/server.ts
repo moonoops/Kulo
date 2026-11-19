@@ -5,10 +5,10 @@ import path from "node:path";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { URL, fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
-import { DeviceRoleTransitions, localListenerOrigin, renderPeerInstaller, type LocalInstanceOwner } from "@moco/env";
+import { DeviceRoleTransitions, localListenerOrigin, renderPeerInstaller, type LocalInstanceOwner } from "@kulo/env";
 import {
   CUSTOM_PROVIDER_APIS,
-  MOCO_VERSION,
+  KULO_VERSION,
   formatDeviceChatInvitation,
   normalizeVertexConfig,
   isDesktopSystemPermissions,
@@ -26,8 +26,8 @@ import {
   type ConnectionSaveRequest,
   type ConnectionPrepareRequest,
   type ExtensionOperationRequest,
-} from "@moco/protocol";
-import { IdentityFilesError, MOCO_IDENTITY_TEMPLATES } from "./identity-files.js";
+} from "@kulo/protocol";
+import { IdentityFilesError, KULO_IDENTITY_TEMPLATES } from "./identity-files.js";
 import { PersonalityError } from "./personality.js";
 import { MemoryServiceError } from "./memory-service.js";
 import { ExtensionError } from "./extensions.js";
@@ -37,7 +37,7 @@ import { VoiceCallsError } from "./voice-calls.js";
 import { SearchError } from "./search.js";
 import { ConversationQueryError, decodeConversationTopicId } from "./conversation-query.js";
 import { SkillError } from "./skills.js";
-import type { MocoHub } from "./hub.js";
+import type { KuloHub } from "./hub.js";
 import { topicActivity } from "./topic-activity.js";
 import { SettingsUpdateError } from "./settings.js";
 import { createMediaHttpHandler } from "./media-http.js";
@@ -54,7 +54,7 @@ import { TaskDeliverableError } from "./task-deliverables.js";
 import { MobileConnector, type MobileConnectorOptions, type MobileConnectorStatus } from "./mobile-connector.js";
 import { attachComputerPreviewSocket } from "./computer-preview-socket.js";
 
-export interface MocoHubServer {
+export interface KuloHubServer {
   readonly port: number;
   readonly host: string;
   readonly url: string;
@@ -182,7 +182,7 @@ const VALID_BLOCKS: readonly SettingsBlockName[] = [
   "memory",
 ];
 
-export interface MocoHubServerOptions {
+export interface KuloHubServerOptions {
   runtimeOwner?: LocalInstanceOwner;
   host?: string;
   port?: number;
@@ -194,10 +194,10 @@ export interface MocoHubServerOptions {
   roleTransitions?: DeviceRoleTransitions;
 }
 
-export async function startMocoHubServer(
-  hub: MocoHub,
-  options: MocoHubServerOptions = {},
-): Promise<MocoHubServer> {
+export async function startKuloHubServer(
+  hub: KuloHub,
+  options: KuloHubServerOptions = {},
+): Promise<KuloHubServer> {
   const roleTransitions = options.roleTransitions ?? new DeviceRoleTransitions({
     startPeer: options.onJoinPeer, configPath: options.peerConfigPath, rootDir: options.peerRootDir,
   });
@@ -205,7 +205,7 @@ export async function startMocoHubServer(
   const requestedPort = options.port ?? hub.config.port;
   const authToken = hub.config.authToken;
   if (!authToken || /[^\x21-\x7e]/.test(authToken) || authToken.length > 8192) {
-    throw new Error("启动 Hub 前必须配置有效的管理密钥 MOCO_AUTH_TOKEN。");
+    throw new Error("启动 Hub 前必须配置有效的管理密钥 KULO_AUTH_TOKEN。");
   }
   if (Object.values(hub.config.envTokens ?? {}).some((token) => token === authToken)) {
     throw new Error("Env 节点密钥不能与 Hub 管理密钥相同。");
@@ -260,7 +260,7 @@ export async function startMocoHubServer(
     }, options: options.mobileConnector });
   const isMobileConnector = (req: http.IncomingMessage): boolean => {
     const address = req.socket.remoteAddress;
-    const supplied = req.headers["x-moco-connector"];
+    const supplied = req.headers["x-kulo-connector"] ?? req.headers["x-moco-connector"];
     if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(address ?? "") || typeof supplied !== "string") return false;
     const actual = Buffer.from(supplied), expected = Buffer.from(mobileConnector.token);
     return actual.length === expected.length && timingSafeEqual(actual, expected);
@@ -415,7 +415,7 @@ export async function startMocoHubServer(
     if (!roleTransitions.canJoin) throw new DeviceConnectionError("当前运行模式不支持直接切换接入其他主机。", 409);
     const localView = devices.view(actualPort, `http://127.0.0.1:${actualPort}`);
     if (localView.hubUrls.includes(input.hubUrl) || input.hubUrl === `http://127.0.0.1:${actualPort}` || input.hubUrl === `http://localhost:${actualPort}`) {
-      throw new DeviceConnectionError("这条邀请来自本机。请在要接入的另一台 Moco 中发送。", 400, "device_self_join");
+      throw new DeviceConnectionError("这条邀请来自本机。请在要接入的另一台 Kulo 中发送。", 400, "device_self_join");
     }
     if (!force) await guardJoinTasks(false);
     return roleTransitions.join(input, () => guardJoinTasks(force), id, rootDir);
@@ -580,7 +580,7 @@ export async function startMocoHubServer(
 
     const formatHubErrorMessage = (err: unknown) => {
       if (err instanceof Error && err.name === "SessionFailed") {
-        return "本地会话存储连接异常，请重启 Moco 后重试。";
+        return "本地会话存储连接异常，请重启 Kulo 后重试。";
       }
       return hub.connectionManager.redact(err instanceof Error ? err.message : String(err));
     };
@@ -933,7 +933,7 @@ export async function startMocoHubServer(
     const pathname = parsedUrl.pathname;
 
     try {
-      if (req.method === "GET" && pathname === "/_moco/instance") {
+      if (req.method === "GET" && pathname === "/_kulo/instance") {
         const verified = !closing && options.runtimeOwner?.proveLocalIdentity(req, res, authToken, { role: "hub" });
         res.writeHead(verified ? 200 : 403, { "cache-control": "no-store" }).end();
         return;
@@ -942,7 +942,7 @@ export async function startMocoHubServer(
         if (!closing) hub.localInstance.proveLocalIdentity(req, res, authToken);
         sendJson(res, 200, {
           ok: true,
-          version: MOCO_VERSION,
+          version: KULO_VERSION,
         });
         return;
       }
@@ -1008,7 +1008,7 @@ export async function startMocoHubServer(
         if (systemPermissionsRoute) {
           res.setHeader("cache-control", "no-store");
           if (req.headers["sec-fetch-site"] === "cross-site" || req.headers.origin && req.headers.origin !== requestOrigin(req)) {
-            throw new DeviceConnectionError("请在 Moco 中检查和授权系统权限。", 403, "system_permissions_origin_required");
+            throw new DeviceConnectionError("请在 Kulo 中检查和授权系统权限。", 403, "system_permissions_origin_required");
           }
           const guide = Boolean(systemPermissionsRoute[2]);
           if (req.method !== (guide ? "POST" : "GET")) {
@@ -1060,7 +1060,7 @@ export async function startMocoHubServer(
           if (pathname === "/api/voice" && req.method === "GET") {
             const snapshot = await hub.voice.snapshot();
             sendJson(res, 200, snapshot);
-            if (snapshot.asr.enabled && snapshot.asr.status === "unprepared") void hub.voice.prepareAsr().catch((error: unknown) => console.warn("[MocoVoice]", hub.connectionManager.redact(error instanceof Error ? error.message : String(error))));
+            if (snapshot.asr.enabled && snapshot.asr.status === "unprepared") void hub.voice.prepareAsr().catch((error: unknown) => console.warn("[KuloVoice]", hub.connectionManager.redact(error instanceof Error ? error.message : String(error))));
             return;
           }
           if (pathname === "/api/voice" && req.method === "PUT") {
@@ -1206,7 +1206,7 @@ export async function startMocoHubServer(
         if (pathname === "/api/mobile/probe/media" && req.method === "GET") {
           requireMobileConnector(req);
           res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store" });
-          res.end("Moco mobile transport media probe.\n".repeat(2048));
+          res.end("Kulo mobile transport media probe.\n".repeat(2048));
           return;
         }
 
@@ -1220,7 +1220,7 @@ export async function startMocoHubServer(
             return;
           }
           if (req.method === "POST" && uiRoute[2]) {
-            const body = await readJsonBody(req, 128 * 1024) as import("@moco/protocol").UiActionInput;
+            const body = await readJsonBody(req, 128 * 1024) as import("@kulo/protocol").UiActionInput;
             if (!body || body.cardId !== cardId) throw new UiCardError("invalid_ui_action", "卡片操作格式无效。");
             sendJson(res, 200, await hub.submitUiAction(body));
             return;
@@ -1241,7 +1241,7 @@ export async function startMocoHubServer(
         }
         if (pathname === "/api/devices/chat-invitations" && req.method === "POST") {
           if (!hasLocalDeviceControl(req, parsedUrl)) {
-            throw new DeviceConnectionError("请在主机上的 Moco 复制接入指令。", 403);
+            throw new DeviceConnectionError("请在主机上的 Kulo 复制接入指令。", 403);
           }
           const body = await readJsonObject(req, 4 * 1024);
           if (typeof body.enable !== "boolean" || typeof body.hubId !== "string") throw new DeviceConnectionError("接入邀请请求无效。");
@@ -1273,7 +1273,7 @@ export async function startMocoHubServer(
           } catch (error) {
             throw new DeviceConnectionError(error instanceof Error ? error.message : "无效的设备接入命令。", 400);
           }
-          const id = req.headers["x-moco-transition-id"];
+          const id = req.headers["x-kulo-transition-id"];
           if (body.rootDir !== undefined && (typeof body.rootDir !== "string" || !body.rootDir.trim() || body.rootDir.length > 4096 || body.rootDir.includes("\0"))) throw new DeviceConnectionError("设备工作目录无效。", 400);
           const change = await prepareJoinPeer(parsed, body.force === true, typeof id === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(id) ? id : undefined, body.rootDir as string | undefined);
           res.shouldKeepAlive = false;
@@ -1481,7 +1481,7 @@ export async function startMocoHubServer(
         const projectRoute = /^\/api\/projects\/([^/]+)$/.exec(pathname);
         if (projectRoute && req.method === "PATCH") {
           const body = await readJsonObject(req);
-          if (body.deviceId !== undefined || body.workspaceDir !== undefined) throw new ProjectError(400, "project_binding_tool_required", "请通过 Moco 重新关联项目目录。");
+          if (body.deviceId !== undefined || body.workspaceDir !== undefined) throw new ProjectError(400, "project_binding_tool_required", "请通过 Kulo 重新关联项目目录。");
           if ((body.name !== undefined && typeof body.name !== "string") || (body.notes !== undefined && typeof body.notes !== "string") ||
             (body.expectedRevision !== undefined && (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 1))) {
             throw new ProjectError(400, "invalid_project", "项目修改参数无效。");
@@ -1697,7 +1697,7 @@ export async function startMocoHubServer(
           return;
         }
         if (req.method === "GET" && pathname === "/api/personality/identity/preset") {
-          sendJson(res, 200, { content: MOCO_IDENTITY_TEMPLATES["identity-agreement.md"] });
+          sendJson(res, 200, { content: KULO_IDENTITY_TEMPLATES["identity-agreement.md"] });
           return;
         }
         if (req.method === "POST" && pathname === "/api/personality/identity/dismiss") {
@@ -1708,11 +1708,11 @@ export async function startMocoHubServer(
           return;
         }
         if (req.method === "POST" && pathname === "/api/personality/relationship") {
-          sendJson(res, 200, await hub.personality.saveRelationship(await readJsonObject(req) as unknown as import("@moco/protocol").RelationshipWriteRequest));
+          sendJson(res, 200, await hub.personality.saveRelationship(await readJsonObject(req) as unknown as import("@kulo/protocol").RelationshipWriteRequest));
           return;
         }
         if (req.method === "POST" && pathname === "/api/personality/relationship/rollback") {
-          sendJson(res, 200, await hub.personality.rollbackRelationship(await readJsonObject(req) as unknown as import("@moco/protocol").RelationshipRollbackRequest));
+          sendJson(res, 200, await hub.personality.rollbackRelationship(await readJsonObject(req) as unknown as import("@kulo/protocol").RelationshipRollbackRequest));
           return;
         }
         if (req.method === "GET" && pathname === "/api/personality/recent-work") {
@@ -1761,17 +1761,17 @@ export async function startMocoHubServer(
         }
         if (pathname === "/api/memory/service/prepare" && req.method === "POST") {
           const body = await readJsonObject(req);
-          sendJson(res, 200, await hub.memoryService.prepare(body as unknown as import("@moco/protocol").MemoryServicePrepareRequest));
+          sendJson(res, 200, await hub.memoryService.prepare(body as unknown as import("@kulo/protocol").MemoryServicePrepareRequest));
           return;
         }
         if (pathname === "/api/memory/service/connection" && req.method === "POST") {
           const body = await readJsonObject(req);
-          sendJson(res, 200, await hub.memoryService.updateConnection(body as unknown as import("@moco/protocol").MemoryConnectionUpdateRequest));
+          sendJson(res, 200, await hub.memoryService.updateConnection(body as unknown as import("@kulo/protocol").MemoryConnectionUpdateRequest));
           return;
         }
         if (pathname === "/api/memory/service/connection/probe" && req.method === "POST") {
           const body = await readJsonObject(req);
-          sendJson(res, 200, await hub.memoryService.updateConnection(body as unknown as import("@moco/protocol").MemoryConnectionUpdateRequest, true));
+          sendJson(res, 200, await hub.memoryService.updateConnection(body as unknown as import("@kulo/protocol").MemoryConnectionUpdateRequest, true));
           return;
         }
         if (pathname === "/api/memory/service/enabled" && req.method === "POST") {
@@ -1850,7 +1850,7 @@ export async function startMocoHubServer(
         }
 
         if (req.method === "POST" && pathname === "/api/providers/resolve-model") {
-          const body = (await readJsonBody(req)) as Partial<import("@moco/protocol").ResolveModelMetadataRequest>;
+          const body = (await readJsonBody(req)) as Partial<import("@kulo/protocol").ResolveModelMetadataRequest>;
           const api = body.api;
           const modelId = typeof body.modelId === "string" ? body.modelId.trim() : "";
           if (!modelId) {
@@ -1967,7 +1967,7 @@ export async function startMocoHubServer(
             "referrer-policy": "no-referrer",
             "x-content-type-options": "nosniff",
           });
-          res.end("Moco Web UI 尚未构建，请先在仓库根目录运行 `pnpm build`。");
+          res.end("Kulo Web UI 尚未构建，请先在仓库根目录运行 `pnpm build`。");
           return;
         }
       }
@@ -2013,7 +2013,7 @@ export async function startMocoHubServer(
       const deviceCode = pathname === "/api/devices/join" && typeof code === "string" &&
         ["device_invitation_invalid", "device_host_unreachable", "local_tasks_running", "role_switch_busy"].includes(code) ? code : undefined;
       sendJson(res, status, {
-        error: sessionFailed ? "本地会话存储连接异常，请重启 Moco 后重试。" : hub.connectionManager.redact(err instanceof Error ? err.message : String(err)),
+        error: sessionFailed ? "本地会话存储连接异常，请重启 Kulo 后重试。" : hub.connectionManager.redact(err instanceof Error ? err.message : String(err)),
         ...(sessionFailed ? { code: "session_failed" } : deviceCode ? { code: deviceCode } : {}),
       });
     }
@@ -2129,7 +2129,7 @@ export async function startMocoHubServer(
 
   const addr = httpServer.address();
   if (!addr || typeof addr === "string") {
-    throw new Error("Failed to resolve MocoHubServer listening port");
+    throw new Error("Failed to resolve KuloHubServer listening port");
   }
   actualPort = addr.port;
   const advertised = new URL(localListenerOrigin({ address: host, port: actualPort }));

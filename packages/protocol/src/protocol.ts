@@ -5,7 +5,7 @@ import type {
   ChatReplyReference,
   EnvNodeDescriptor,
   LiveStreamState,
-  MocoSettingsView,
+  KuloSettingsView,
   SlotSummary,
   TicketCardView,
   TicketClosureKind,
@@ -133,7 +133,7 @@ export type HubToClientMessage =
       envs: EnvNodeDescriptor[];
       projects?: ProjectView[];
       expression?: AgentExpressionState | null;
-      settings?: MocoSettingsView;
+      settings?: KuloSettingsView;
     }
   | {
       type: "hub.topics";
@@ -170,7 +170,7 @@ export type HubToClientMessage =
     }
   | {
       type: "hub.settings";
-      settings: MocoSettingsView;
+      settings: KuloSettingsView;
     }
   | {
       type: "hub.ticket_detail";

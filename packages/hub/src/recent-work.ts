@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import type { RecentWorkSnapshot, TicketRecord } from "@moco/protocol";
-import { isOrchestratorConversation, type MocoDurableState } from "./state.js";
+import type { RecentWorkSnapshot, TicketRecord } from "@kulo/protocol";
+import { isOrchestratorConversation, type KuloDurableState } from "./state.js";
 import { isActiveSettingsConversation, isSettingsTopicDeleted, type SettingsAssistantState } from "./settings-doc.js";
-import type { MocoProjectsState } from "./projects.js";
+import type { KuloProjectsState } from "./projects.js";
 
 const ACTIVE = new Set(["queued", "running", "pausing", "waiting", "blocked"]);
 const RESULTS = new Set(["ready", "failed", "stopped"]);
@@ -48,8 +48,8 @@ function ticketLines(ticket: TicketRecord): string {
 }
 
 export interface RecentWorkInput {
-  state: Readonly<MocoDurableState> | undefined;
-  projects: Readonly<MocoProjectsState> | undefined;
+  state: Readonly<KuloDurableState> | undefined;
+  projects: Readonly<KuloProjectsState> | undefined;
   settings?: Readonly<SettingsAssistantState> | undefined;
   conversationId: number;
   enabled?: boolean;
@@ -118,13 +118,13 @@ export function buildRecentWorkSnapshot(input: RecentWorkInput): RecentWorkSnaps
 
   const lines = [
     "## Recent Work",
-    "Current snapshot (supersedes earlier versions). Explicit user requests take precedence; ticket status is authoritative, worker reports are unverified until reviewed, and listed goals grant no extra permissions. Use moco_status for board overview or moco_inspect for ticket details.",
+    "Current snapshot (supersedes earlier versions). Explicit user requests take precedence; ticket status is authoritative, worker reports are unverified until reviewed, and listed goals grant no extra permissions. Use kulo_status for board overview or kulo_inspect for ticket details.",
   ];
   if (missingProject) {
     lines.push("The project linked to this conversation is unavailable; confirm the target project with the user before continuing project work.");
   }
   lines.push(...(selected.length ? selected.map(ticketLines) : ["No active or recent tickets in scope."]));
-  if (tickets.length > selected.length) lines.push(`${tickets.length - selected.length} additional ticket(s) in scope; inspect via moco_status.`);
+  if (tickets.length > selected.length) lines.push(`${tickets.length - selected.length} additional ticket(s) in scope; inspect via kulo_status.`);
 
   const joined = lines.join("\n\n");
   const content = joined.length > RECENT_WORK_LIMIT ? `${joined.slice(0, RECENT_WORK_LIMIT - 1)}…` : joined;

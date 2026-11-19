@@ -83,7 +83,7 @@ def main() -> None:
         entry = save_lossless(atlas, OUTPUT / f"actions-{index}.webp")
         entry.update({"cellSize": cell, "columns": 4, "rows": 4, "frames": 16})
         sheets.append(entry)
-    with Image.open(ROOT / "packages/desktop/assets/moco-icon-source.png") as icon:
+    with Image.open(ROOT / "packages/desktop/assets/kulo-icon-source.png") as icon:
         paper = icon.convert("RGB").crop((0, 0, 192, 192))
     paper_entry = save_lossless(paper, OUTPUT / "paper.webp")
     manifest = {

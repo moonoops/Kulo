@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { CustomProviderApi } from "@moco/protocol";
+import type { CustomProviderApi } from "@kulo/protocol";
 import { proxyFetch } from "./http-transport.js";
 import {
   buildNormalizedCatalog,
@@ -119,7 +119,7 @@ function carryForwardWebSearchFlags(
  * Combines a release-bundled slim snapshot with a disk-persisted cache updated
  * anonymously on user-triggered discovery or calibration requests.
  */
-export class MocoModelMetadataRegistry {
+export class KuloModelMetadataRegistry {
   readonly #cachePath: string | undefined;
   readonly #fetcher: typeof fetch;
   readonly #modelsDevUrl: string;

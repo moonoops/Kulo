@@ -7,13 +7,13 @@ import type {
   CapabilitySnapshot, CapabilityStatus, CustomModelConfig, CustomProviderApi, EnvNodeDescriptor, MediaAdapterId,
   MediaConnectionView, MediaKind, MediaOutputFormat, SetupInputRequest, ImageModelProfile,
   ImageRoutingSettings, ImageRoutingConfigurationInput, MediaJobRequest, ImageCapabilityRouting,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import {
   defaultProtocolAdapterForModel, getImageModelPreset, getImageModelProfile, inferModelPurpose,
   mergeImageGenerationParameters, normalizeImageGenerationParameters, validateImageModelProfile, validateCustomImageAdapter,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 
-const ORIGIN_ENV = "MOCO_API_KEY_ORIGIN";
+const ORIGIN_ENV = "KULO_API_KEY_ORIGIN";
 const ADAPTERS: readonly MediaAdapterId[] = ["openai-image", "gemini-image", "custom-image", "flow-browser"];
 const INPUT_LIFETIME_MS = 15 * 60_000;
 const MAX_CAPABILITIES = 128;
@@ -31,7 +31,7 @@ interface CommandReceipt {
   capability?: CapabilityRecord;
   routing?: ImageRoutingSettings;
 }
-export interface MocoCapabilitiesState {
+export interface KuloCapabilitiesState {
   revision: number;
   capabilities: Record<string, CapabilityRecord>;
   connections: Record<string, StoredConnection>;
@@ -51,9 +51,9 @@ export interface SyncedProviderImageSource {
   models: readonly CustomModelConfig[];
 }
 
-export const MocoCapabilitiesDoc = defineDoc<MocoCapabilitiesState & JsonObject>({
-  kind: "moco.capabilities", version: 1, scope: "session",
-  initial: () => ({ revision: 0, capabilities: {}, connections: {}, commands: {}, inputs: {}, cleanup: {} }) as MocoCapabilitiesState & JsonObject,
+export const KuloCapabilitiesDoc = defineDoc<KuloCapabilitiesState & JsonObject>({
+  kind: "kulo.capabilities", version: 1, scope: "session",
+  initial: () => ({ revision: 0, capabilities: {}, connections: {}, commands: {}, inputs: {}, cleanup: {} }) as KuloCapabilitiesState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
 
@@ -63,7 +63,7 @@ export class CapabilityError extends Error {
   }
 }
 
-export interface MocoCapabilitiesOptions {
+export interface KuloCapabilitiesOptions {
   harness: Harness;
   credentials: CredentialStore;
   resolveProviderApiKey?: (providerId: string, baseUrl: string) => Promise<string | undefined>;
@@ -134,7 +134,7 @@ function normalizedUrl(value: unknown, adapter: MediaAdapterId): string {
 function modelCapabilities(adapter: MediaAdapterId, modelId: string, profile?: ImageModelProfile): { kind: MediaKind; formats: MediaOutputFormat[]; supportsEdit: boolean } {
   if (adapter === "flow-browser") return { kind: "video", formats: ["mp4"], supportsEdit: false };
   if (adapter === "openai-image" && /^dall-e-/i.test(modelId)) fail(400, "unsupported_media_model", "当前图片适配器使用 GPT Image 协议，尚未接入 DALL-E 协议。");
-  if (!profile) fail(400, "image_profile_required", "此模型尚无图像能力声明，请通过配置表单或右侧Moco补充接口与参数。");
+  if (!profile) fail(400, "image_profile_required", "此模型尚无图像能力声明，请通过配置表单或右侧Kulo补充接口与参数。");
   return { kind: "image", formats: [...profile.formats], supportsEdit: profile.supportsEdit };
 }
 const defaultRouting = (): ImageRoutingSettings => ({ mode: "auto", preference: "balanced", instructions: "", rules: [] });
@@ -147,10 +147,10 @@ function capabilityRouting(value: ImageCapabilityRouting | undefined): ImageCapa
     || value.instructions !== undefined && (typeof value.instructions !== "string" || value.instructions.length > 2000)) fail(400, "invalid_image_routing", "图像调用偏好无效。");
   return clone(value);
 }
-function requireCapability(state: Readonly<MocoCapabilitiesState> | undefined, id: string): CapabilityRecord {
+function requireCapability(state: Readonly<KuloCapabilitiesState> | undefined, id: string): CapabilityRecord {
   return own(state?.capabilities, id) ?? fail(404, "capability_not_found", "能力不存在或已移除。");
 }
-function requireConnection(state: Readonly<MocoCapabilitiesState> | undefined, id: string): StoredConnection {
+function requireConnection(state: Readonly<KuloCapabilitiesState> | undefined, id: string): StoredConnection {
   return own(state?.connections, id) ?? fail(404, "connection_not_found", "能力连接不存在或已移除。");
 }
 function assertRevision(capability: CapabilityRecord, expected: number): void {
@@ -182,14 +182,14 @@ async function metadataMatches(response: Response, adapter: MediaAdapterId, mode
   } finally { await reader.cancel(); reader.releaseLock(); }
 }
 
-export class MocoCapabilities {
-  readonly #options: MocoCapabilitiesOptions;
+export class KuloCapabilities {
+  readonly #options: KuloCapabilitiesOptions;
   #tail: Promise<unknown> = Promise.resolve();
-  constructor(options: MocoCapabilitiesOptions) { this.#options = options; }
+  constructor(options: KuloCapabilitiesOptions) { this.#options = options; }
   async initialize(): Promise<void> {
     await this.#serial(async () => {
       await this.#options.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoCapabilitiesDoc);
+        const state = await tx.doc(KuloCapabilitiesDoc);
         let changed = false;
         for (const cap of Object.values(state.capabilities)) {
           if (cap.kind !== "image" || cap.imageProfile) continue;
@@ -216,8 +216,8 @@ export class MocoCapabilities {
     return next;
   }
   async #changed(): Promise<void> { await this.#options.onChanged?.(); }
-  async #state(): Promise<Readonly<MocoCapabilitiesState> | undefined> {
-    return this.#options.harness.snapshot(MocoCapabilitiesDoc, BACKGROUND_CONTEXT);
+  async #state(): Promise<Readonly<KuloCapabilitiesState> | undefined> {
+    return this.#options.harness.snapshot(KuloCapabilitiesDoc, BACKGROUND_CONTEXT);
   }
   #device(connection: StoredConnection): EnvNodeDescriptor {
     const device = this.#options.envs().find((env) => env.id === connection.browserEnvId);
@@ -257,7 +257,7 @@ export class MocoCapabilities {
       imageRouting: clone(state?.imageRouting ?? defaultRouting()),
     };
   }
-  #defaults(state: MocoCapabilitiesState, kind: MediaKind, preferred?: string): void {
+  #defaults(state: KuloCapabilitiesState, kind: MediaKind, preferred?: string): void {
     const candidates = Object.values(state.capabilities).filter((cap) => cap.kind === kind && cap.enabled).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
     const selected = candidates.find((cap) => cap.id === preferred) ?? candidates.find((cap) => cap.isDefault) ?? candidates[0];
     for (const cap of Object.values(state.capabilities)) {
@@ -266,7 +266,7 @@ export class MocoCapabilities {
       if (cap.isDefault !== next) { cap.isDefault = next; cap.revision++; cap.updatedAt = this.#now(); }
     }
   }
-  #retireUnused(state: MocoCapabilitiesState): void {
+  #retireUnused(state: KuloCapabilitiesState): void {
     const referenced = new Set(Object.values(state.capabilities).map((cap) => cap.connectionId));
     for (const connection of Object.values(state.connections)) {
       if (referenced.has(connection.id)) continue;
@@ -279,7 +279,7 @@ export class MocoCapabilities {
     for (const credentialRef of pending) {
       try { await this.#options.credentials.delete(credentialRef); }
       catch { fail(500, "capability_cleanup_pending", "配置已保存，旧凭证清理尚未完成，请重试原操作。"); }
-      await this.#options.harness.commit(async (tx) => { delete (await tx.doc(MocoCapabilitiesDoc)).cleanup[credentialRef]; }, BACKGROUND_CONTEXT);
+      await this.#options.harness.commit(async (tx) => { delete (await tx.doc(KuloCapabilitiesDoc)).cleanup[credentialRef]; }, BACKGROUND_CONTEXT);
     }
   }
 
@@ -315,7 +315,7 @@ export class MocoCapabilities {
       if (adapter === "openai-image" && /^dall-e-/i.test(modelId)) fail(400, "unsupported_media_model", "当前图片适配器使用 GPT Image 协议，尚未接入 DALL-E 协议。");
       const profile = adapter === "flow-browser" ? undefined : imageValue(() => validateImageModelProfile(raw.imageProfile ??
         (oldConnection?.adapter === adapter && old?.modelId === modelId ? old.imageProfile : undefined) ??
-        getImageModelProfile(adapter, modelId) ?? fail(400, "image_profile_required", "此模型尚无图像能力声明，请通过配置表单或右侧Moco补充接口与参数。")));
+        getImageModelProfile(adapter, modelId) ?? fail(400, "image_profile_required", "此模型尚无图像能力声明，请通过配置表单或右侧Kulo补充接口与参数。")));
       const preset = getImageModelPreset(adapter, modelId);
       if (preset && profile && (profile.formats.some((format) => !preset.profile.formats.includes(format)) || profile.supportsEdit && !preset.profile.supportsEdit || profile.maxReferences > preset.profile.maxReferences
         || ["supportsTransparency", "supportsComplexity", "supportsCustomSize", "supportsGrounding"].some((key) => profile[key as keyof ImageModelProfile] === true && preset.profile[key as keyof ImageModelProfile] !== true)
@@ -352,7 +352,7 @@ export class MocoCapabilities {
       const meta = modelCapabilities(adapter, modelId, profile);
       const now = this.#now();
       const saved = await this.#options.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoCapabilitiesDoc);
+        const state = await tx.doc(KuloCapabilitiesDoc);
         const receipt = own(state.commands, commandId);
         if (receipt) {
           if (receipt.fingerprint !== signature || !receipt.capability) fail(409, "capability_command_conflict", "同一操作标识不能用于不同配置。");
@@ -403,7 +403,7 @@ export class MocoCapabilities {
     const expected = revision(expectedRevision);
     const signature = fingerprint({ action: "set-enabled", capabilityId, enabled, expected });
     const result = await this.#serial(() => this.#options.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoCapabilitiesDoc);
+      const state = await tx.doc(KuloCapabilitiesDoc);
       const prior = own(state.commands, command);
       if (prior) {
         if (prior.fingerprint !== signature || !prior.capability) fail(409, "capability_command_conflict", "同一操作标识不能用于不同操作。");
@@ -437,7 +437,7 @@ export class MocoCapabilities {
     const restored = { ...values, name: text(values.name, "能力名称", 100) };
     const signature = fingerprint({ action: "restore-preferences", ...input, values: restored });
     const result = await this.#serial(() => this.#options.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoCapabilitiesDoc);
+      const state = await tx.doc(KuloCapabilitiesDoc);
       const prior = own(state.commands, commandId);
       if (prior) {
         if (prior.fingerprint !== signature || !prior.capability) fail(409, "capability_command_conflict", "同一操作标识不能用于不同操作。");
@@ -470,7 +470,7 @@ export class MocoCapabilities {
       const expected = revision(expectedRevision);
       const signature = fingerprint({ action: "remove", capabilityId, expected });
       await this.#options.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoCapabilitiesDoc);
+        const state = await tx.doc(KuloCapabilitiesDoc);
         const prior = own(state.commands, command);
         if (prior) {
           if (prior.fingerprint !== signature) fail(409, "capability_command_conflict", "同一操作标识不能用于不同操作。");
@@ -510,7 +510,7 @@ export class MocoCapabilities {
       if (kind === "browser") this.#device(connection);
       const now = this.#now();
       return this.#options.harness.commit(async (tx) => {
-        const doc = await tx.doc(MocoCapabilitiesDoc);
+        const doc = await tx.doc(KuloCapabilitiesDoc);
         const current = requireCapability(doc, capabilityId);
         assertRevision(current, cap.revision);
         for (const existing of Object.values(doc.inputs)) {
@@ -556,7 +556,7 @@ export class MocoCapabilities {
       const connection = requireConnection(state, cap.connectionId);
       if (connection.id !== request.connectionId || connection.revision !== request.connectionRevision || connection.origin !== request.origin) fail(409, "capability_input_stale", "连接已修改，请重新发起保密输入。");
       if (values.cancel === true) {
-        await this.#options.harness.commit(async (tx) => { const doc = await tx.doc(MocoCapabilitiesDoc); doc.inputs[id]!.status = "cancelled"; doc.revision++; }, BACKGROUND_CONTEXT);
+        await this.#options.harness.commit(async (tx) => { const doc = await tx.doc(KuloCapabilitiesDoc); doc.inputs[id]!.status = "cancelled"; doc.revision++; }, BACKGROUND_CONTEXT);
         return;
       }
       if (values.cancel !== undefined && typeof values.cancel !== "boolean") fail(400, "invalid_capability_input", "配置输入无效。");
@@ -568,7 +568,7 @@ export class MocoCapabilities {
         catch { fail(500, "capability_credential_write_failed", "未能保存 API Key，请重新提交。"); }
         // Only the dedicated credential store receives the value; Durable keeps the input receipt.
         await this.#options.harness.commit(async (tx) => {
-          const doc = await tx.doc(MocoCapabilitiesDoc);
+          const doc = await tx.doc(KuloCapabilitiesDoc);
           const current = requireCapability(doc, cap.id);
           assertRevision(current, request.expectedRevision);
           const currentConnection = requireConnection(doc, request.connectionId);
@@ -583,7 +583,7 @@ export class MocoCapabilities {
         if (values.secret !== undefined) fail(400, "invalid_capability_input", "浏览器登录不需要提交凭证文本。");
         const checked = await this.#checkInternal(cap.id, true);
         if (checked.status !== "ready") fail(409, "browser_login_pending", "Flow 标签页尚未连接，请在目标设备的主 Chrome 中授权后继续。");
-        await this.#options.harness.commit(async (tx) => { const doc = await tx.doc(MocoCapabilitiesDoc); doc.inputs[id]!.status = "completed"; doc.revision++; }, BACKGROUND_CONTEXT);
+        await this.#options.harness.commit(async (tx) => { const doc = await tx.doc(KuloCapabilitiesDoc); doc.inputs[id]!.status = "completed"; doc.revision++; }, BACKGROUND_CONTEXT);
       }
     });
     await this.#changed();
@@ -630,7 +630,7 @@ export class MocoCapabilities {
       }
     }
     await this.#options.harness.commit(async (tx) => {
-      const doc = await tx.doc(MocoCapabilitiesDoc);
+      const doc = await tx.doc(KuloCapabilitiesDoc);
       const current = requireCapability(doc, cap.id);
       assertRevision(current, cap.revision);
       current.status = status;
@@ -661,7 +661,7 @@ export class MocoCapabilities {
       || typeof settings.instructions !== "string" || settings.instructions.length > 4000 || !Array.isArray(settings.rules) || settings.rules.length > 40) fail(400, "invalid_image_routing", "图像调用规则无效。");
     const signature = fingerprint({ action: "image-routing", ...input });
     const result = await this.#serial(() => this.#options.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoCapabilitiesDoc);
+      const state = await tx.doc(KuloCapabilitiesDoc);
       const receipt = own(state.commands, commandId);
       if (receipt) {
         if (receipt.fingerprint !== signature || !receipt.routing) fail(409, "capability_command_conflict", "同一操作标识不能用于不同配置。");
@@ -690,7 +690,7 @@ export class MocoCapabilities {
   }
   async markGenerated(id: string, expectedRevision: number): Promise<void> {
     await this.#serial(() => this.#options.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoCapabilitiesDoc);
+      const state = await tx.doc(KuloCapabilitiesDoc);
       const cap = own(state.capabilities, id);
       if (!cap || cap.revision !== expectedRevision) return;
       cap.lastGeneratedAt = this.#now();
@@ -844,7 +844,7 @@ export class MocoCapabilities {
       }
 
       await this.#options.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoCapabilitiesDoc);
+        const state = await tx.doc(KuloCapabilitiesDoc);
         const now = this.#now();
 
         for (const existing of Object.values(state.capabilities)) {

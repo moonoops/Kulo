@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { redactDiagnosticText } from "@moco/recovery";
+import { redactDiagnosticText } from "@kulo/recovery";
 
 /** Executed by the trusted sandbox runner, independently of candidate test scripts. */
 export async function probeCustomizationPayload(options: {
@@ -18,7 +18,7 @@ export async function probeCustomizationPayload(options: {
     env: { ...Object.fromEntries(["PATH", "HOME", "TMPDIR", "LANG", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
       "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS"]
       .filter((name) => process.env[name] !== undefined).map((name) => [name, process.env[name]])),
-      MOCO_DESKTOP_DATA_DIR: dataDir, MOCO_DESKTOP_WEB_DIR: path.join(payloadRoot, options.webDir) },
+      KULO_DESKTOP_DATA_DIR: dataDir, KULO_DESKTOP_WEB_DIR: path.join(payloadRoot, options.webDir) },
   });
   child.stderr?.resume();
   let settled = false;

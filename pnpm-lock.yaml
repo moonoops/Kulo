@@ -23,19 +23,19 @@ importers:
       '@earendil-works/pi-schema':
         specifier: 1.5.2
         version: 1.5.2
-      '@moco/cli':
+      '@kulo/cli':
         specifier: workspace:*
         version: link:packages/cli
-      '@moco/env':
+      '@kulo/env':
         specifier: workspace:*
         version: link:packages/env
-      '@moco/hub':
+      '@kulo/hub':
         specifier: workspace:*
         version: link:packages/hub
-      '@moco/protocol':
+      '@kulo/protocol':
         specifier: workspace:*
         version: link:packages/protocol
-      '@moco/recovery':
+      '@kulo/recovery':
         specifier: workspace:*
         version: link:packages/recovery
       '@types/node':
@@ -65,13 +65,13 @@ importers:
 
   packages/cli:
     dependencies:
-      '@moco/env':
+      '@kulo/env':
         specifier: workspace:*
         version: link:../env
-      '@moco/hub':
+      '@kulo/hub':
         specifier: workspace:*
         version: link:../hub
-      '@moco/protocol':
+      '@kulo/protocol':
         specifier: workspace:*
         version: link:../protocol
       ws:
@@ -80,16 +80,16 @@ importers:
 
   packages/desktop:
     dependencies:
-      '@moco/env':
+      '@kulo/env':
         specifier: workspace:*
         version: link:../env
-      '@moco/hub':
+      '@kulo/hub':
         specifier: workspace:*
         version: link:../hub
-      '@moco/protocol':
+      '@kulo/protocol':
         specifier: workspace:*
         version: link:../protocol
-      '@moco/recovery':
+      '@kulo/recovery':
         specifier: workspace:*
         version: link:../recovery
     devDependencies:
@@ -117,7 +117,7 @@ importers:
       '@earendil-works/pi-env':
         specifier: 1.5.2
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@modelcontextprotocol/sdk@1.32.2(zod@4.6.7))(@smithy/signature-v4@5.7.5)(esbuild@0.28.2)(undici@8.12.4)(ws@8.22.2)(zod@4.6.7)
-      '@moco/protocol':
+      '@kulo/protocol':
         specifier: workspace:*
         version: link:../protocol
       agent-browser:
@@ -153,13 +153,13 @@ importers:
       '@earendil-works/pi-schema':
         specifier: 1.5.2
         version: 1.5.2
-      '@moco/env':
+      '@kulo/env':
         specifier: workspace:*
         version: link:../env
-      '@moco/protocol':
+      '@kulo/protocol':
         specifier: workspace:*
         version: link:../protocol
-      '@moco/recovery':
+      '@kulo/recovery':
         specifier: workspace:*
         version: link:../recovery
       '@modelcontextprotocol/sdk':
@@ -213,7 +213,7 @@ importers:
 
   packages/recovery:
     devDependencies:
-      '@moco/protocol':
+      '@kulo/protocol':
         specifier: workspace:*
         version: link:../protocol
 
@@ -234,7 +234,7 @@ importers:
       '@json-render/react':
         specifier: 0.23.1
         version: 0.23.1(react@19.3.1)(zod@4.6.7)
-      '@moco/protocol':
+      '@kulo/protocol':
         specifier: workspace:*
         version: link:../protocol
       '@react-aria/ssr':

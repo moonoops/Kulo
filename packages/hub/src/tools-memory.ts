@@ -1,20 +1,20 @@
 /**
- * Pi-Durable Tool Bindings for Hindsight 1.2.1 Dual-Bank Memory (`moco-core` private / `moco-shared` shared).
+ * Pi-Durable Tool Bindings for Hindsight 1.2.1 Dual-Bank Memory (`kulo-core` private / `kulo-shared` shared).
  */
 import { ROOT_CONVERSATION_ID, defineTool } from "@earendil-works/pi-durable";
 import { arr, bool, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
-import type { HindsightMemoryConfig, MemoryBank } from "@moco/protocol";
+import type { HindsightMemoryConfig, MemoryBank } from "@kulo/protocol";
 import {
   executeHindsightTool,
   type MemoryCallerContext,
   type OfficialHindsightToolName,
 } from "./hindsight.js";
-import { MocoStateDoc, resolveTicketExecutionScope, type MocoDurableState } from "./state.js";
+import { KuloStateDoc, resolveTicketExecutionScope, type KuloDurableState } from "./state.js";
 import { SettingsAssistantDoc, isMainOrchestratorConversation, type SettingsAssistantState } from "./settings-doc.js";
 import { resolveDeferredAddTools } from "./tool-surface.js";
 
 export function memoryCallerFromState(
-  state: Readonly<MocoDurableState> | undefined,
+  state: Readonly<KuloDurableState> | undefined,
   conversationId: unknown,
   sourceId?: string,
   settingsDoc?: Readonly<SettingsAssistantState> | undefined,
@@ -52,7 +52,7 @@ export function createHindsightTools(options: {
     api: ToolExecApi,
     context: ToolExecCtx,
   ): Promise<MemoryCallerContext> => {
-    const state = await api.snapshot(MocoStateDoc, context);
+    const state = await api.snapshot(KuloStateDoc, context);
     const settings = await api.snapshot(SettingsAssistantDoc, context);
     return memoryCallerFromState(state, api.conversationId, api.callId, settings);
   };
@@ -98,7 +98,7 @@ export function createHindsightTools(options: {
   const bankParam = opt(
     oneOf(options.defaultBank === "shared" ? ["shared"] : ["private", "shared"], {
       description:
-        "Target Hindsight bank: 'private' (Moco's personal memory, Router only) or 'shared' (project-wide shared knowledge; Router read-only, Worker read/write).",
+        "Target Hindsight bank: 'private' (Kulo's personal memory, Router only) or 'shared' (project-wide shared knowledge; Router read-only, Worker read/write).",
     }),
   );
 
@@ -385,7 +385,7 @@ export function createHindsightTools(options: {
   const createMentalModelTool = defineTool({
     name: "hindsight_create_mental_model",
     description:
-      "Create a living Mental Model (`POST /mental-models`) in Moco's private bank (`moco-core`, Router only). 关键词：创建心智模型 新建长期认知综述",
+      "Create a living Mental Model (`POST /mental-models`) in Kulo's private bank (`kulo-core`, Router only). 关键词：创建心智模型 新建长期认知综述",
     deferred: true,
     outputLimits: { maxBytes: 6_000, maxLines: 100 },
     parameters: obj({
@@ -403,7 +403,7 @@ export function createHindsightTools(options: {
   const refreshMentalModelTool = defineTool({
     name: "hindsight_refresh_mental_model",
     description:
-      "Trigger a refresh (`POST /mental-models/{id}/refresh`) of a Mental Model in Moco's private bank (Router only). 关键词：刷新心智模型 重建认知综述",
+      "Trigger a refresh (`POST /mental-models/{id}/refresh`) of a Mental Model in Kulo's private bank (Router only). 关键词：刷新心智模型 重建认知综述",
     deferred: true,
     outputLimits: { maxBytes: 4_000, maxLines: 80 },
     parameters: obj({
@@ -417,7 +417,7 @@ export function createHindsightTools(options: {
   const invalidateMemoryTool = defineTool({
     name: "hindsight_invalidate_memory",
     description:
-      "Explicitly invalidate an obsolete or erroneous memory unit (`PATCH /memories/{memory_id}`, `state='invalidated'`) in Moco's private bank with a required `reason` (Router only). 关键词：作废旧记忆 标记记忆失效 删除错误记忆",
+      "Explicitly invalidate an obsolete or erroneous memory unit (`PATCH /memories/{memory_id}`, `state='invalidated'`) in Kulo's private bank with a required `reason` (Router only). 关键词：作废旧记忆 标记记忆失效 删除错误记忆",
     deferred: true,
     outputLimits: { maxBytes: 4_000, maxLines: 80 },
     parameters: obj({

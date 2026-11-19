@@ -93,7 +93,7 @@ export function buildLinuxSandboxArguments(options: WorkerSandboxOptions & { tem
   }
   const offline = Boolean(options.network?.offline);
   if (!offline) {
-    args.push("--bind", path.join(options.temporaryDir, "network"), "/run/moco-network");
+    args.push("--bind", path.join(options.temporaryDir, "network"), "/run/kulo-network");
   }
   args.push("--chdir", options.workspaceDir, "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin", "--setenv", "HOME", path.join(options.temporaryDir, "home"), "--setenv", "TMPDIR", path.join(options.temporaryDir, "tmp"), "--setenv", "LANG", "C.UTF-8", "--setenv", "PORT", String(options.port));
   if (!offline) {
@@ -129,7 +129,7 @@ async function linuxInside(): Promise<void> {
   const config = JSON.parse(configuration!) as { executable: string; port: number; offline?: boolean };
   if (!config.offline) {
     const proxy = net.createServer((client) => {
-      const upstream = net.createConnection("/run/moco-network/proxy.sock");
+      const upstream = net.createConnection("/run/kulo-network/proxy.sock");
       client.on("error", () => upstream.destroy()); upstream.on("error", () => client.destroy());
       client.pipe(upstream).pipe(client);
     });
@@ -140,7 +140,7 @@ async function linuxInside(): Promise<void> {
     });
     await Promise.all([
       new Promise<void>((resolve, reject) => { proxy.once("error", reject); proxy.listen(3128, "127.0.0.1", resolve); }),
-      new Promise<void>((resolve, reject) => { development.once("error", reject); development.listen("/run/moco-network/development.sock", resolve); }),
+      new Promise<void>((resolve, reject) => { development.once("error", reject); development.listen("/run/kulo-network/development.sock", resolve); }),
     ]);
   }
   const child = cp.spawn(config.executable, arguments_, { stdio: "inherit", env: process.env });

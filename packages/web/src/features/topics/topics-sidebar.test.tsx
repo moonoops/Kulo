@@ -1,6 +1,6 @@
 import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ProjectView, TicketCardView, TopicSummary } from "@moco/protocol";
+import type { ProjectView, TicketCardView, TopicSummary } from "@kulo/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { TopicsSidebar } from "./topics-sidebar";
 
@@ -8,7 +8,7 @@ const { createPresses } = vi.hoisted(() => ({ createPresses: [] as Array<() => v
 vi.mock("@heroui/react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@heroui/react")>();
   return { ...actual, Button: (props: ComponentProps<typeof actual.Button>) => {
-    if (typeof props.className === "string" && props.className.includes("moco-navigation-create")) createPresses.push(() => props.onPress?.({} as never));
+    if (typeof props.className === "string" && props.className.includes("kulo-navigation-create")) createPresses.push(() => props.onPress?.({} as never));
     return <actual.Button {...props} />;
   } };
 });
@@ -24,7 +24,7 @@ function topic(id: string, patch: Partial<TopicSummary> = {}): TopicSummary {
 
 function renderSidebar(topics: TopicSummary[], patch: Partial<ComponentProps<typeof TopicsSidebar>> = {}) {
   const props: ComponentProps<typeof TopicsSidebar> = {
-    agentName: "Moco", connected: false, terminalEntries: [],
+    agentName: "Kulo", connected: false, terminalEntries: [],
     onAgentClick: vi.fn(), settingsMode: false,
     settingsModule: "appearance", onSelectSettingsModule: vi.fn(),
     onEnterSettings: vi.fn(), onExitSettings: vi.fn(), topics, projects: [],
@@ -57,8 +57,8 @@ describe("flat topic navigation", () => {
     const html = renderList([topic("recent")], { tickets: [ticket, { ...ticket, id: "cleanup", status: "stopped", cleanupPending: true }, { ...ticket, id: "other", originTopicId: "other" }] });
     expect(html).toContain('aria-label="1 项执行失败，1 项待处理"');
     expect(html).toContain('data-notice="failed"');
-    expect(html).toContain("moco-topic-failure");
-    expect(html).not.toContain("moco-topic-attention");
+    expect(html).toContain("kulo-topic-failure");
+    expect(html).not.toContain("kulo-topic-attention");
   });
   it("shows pinned, recent and older conversations directly without collapsible groups", () => {
     const html = renderList([
@@ -95,9 +95,9 @@ describe("flat topic navigation", () => {
   });
 
   it("never mixes the persistent main chat into ordinary topics, including search", () => {
-    const topics = [topic("root", { title: "Moco", master: true, pinned: true }), topic("recent", { title: "Moco 界面优化" })];
+    const topics = [topic("root", { title: "Kulo", master: true, pinned: true }), topic("recent", { title: "Kulo 界面优化" })];
     expect(ids(renderList(topics))).toEqual(["recent"]);
-    expect(ids(renderList(topics, { searchQuery: "Moco" }))).toEqual(["recent"]);
+    expect(ids(renderList(topics, { searchQuery: "Kulo" }))).toEqual(["recent"]);
     expect(renderList([topics[0]!])).toContain("暂无话题");
   });
 
@@ -115,7 +115,7 @@ describe("flat topic navigation", () => {
     const footer = html.match(/<footer\b[^>]*>([\s\S]*?)<\/footer>/)?.[1];
     expect(footer).toBeDefined();
     const actions = Array.from(footer!.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g))
-      .filter((button) => button[1]!.includes("moco-navigation-create"));
+      .filter((button) => button[1]!.includes("kulo-navigation-create"));
     expect(actions).toHaveLength(1);
     expect(actions[0]![1]).toContain("button--ghost");
     expect(actions[0]![1]).not.toContain('disabled=""');
@@ -123,7 +123,7 @@ describe("flat topic navigation", () => {
     expect(footer).toContain('aria-label="搜索话题"');
     expect(footer).not.toContain("新建项目");
     expect(html).not.toContain("search-field__input");
-    expect(html.slice(0, html.indexOf("<footer"))).not.toContain("moco-navigation-create");
+    expect(html.slice(0, html.indexOf("<footer"))).not.toContain("kulo-navigation-create");
   });
 
   it("starts ordinary topics from the Topics tab and clears the topic filter", () => {
@@ -153,7 +153,7 @@ describe("flat topic navigation", () => {
       { connected: true, projectNavigation: { projectId: "missing", sequence: 1 } },
     ]) {
       const html = renderSidebar([], { ...patch, onCreateTopic });
-      const action = html.match(/<button\b[^>]*class="[^"]*moco-navigation-create[^>]*>/)?.[0];
+      const action = html.match(/<button\b[^>]*class="[^"]*kulo-navigation-create[^>]*>/)?.[0];
       expect(action).toContain('disabled=""');
       createPresses[0]!();
     }

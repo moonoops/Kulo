@@ -69,7 +69,7 @@ import {
   type ComputerUseResult,
   type ComputerPreviewTarget,
   type ComputerPreviewUpdate,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 
 const STDIO_RELAY_PATH = fileURLToPath(new URL("../bin/stdio-relay.mjs", import.meta.url));
 export const BRIDGE_EXTERNAL_AGENT_TOOL_ALLOWLIST: readonly ExternalAgentMcpToolName[] = EXTERNAL_AGENT_MCP_TOOL_NAMES;
@@ -192,8 +192,8 @@ export interface EnvManagerOptions {
 }
 
 /**
- * Manages both local and remote `Pi Env` execution environments for Moco Hub.
- * Remote `moco env` nodes connect outbound via WebSocket and speak the native
+ * Manages both local and remote `Pi Env` execution environments for Kulo Hub.
+ * Remote `kulo env` nodes connect outbound via WebSocket and speak the native
  * Rust `pi-env` framed binary protocol over multiplexed streams.
  */
 export class EnvManager {
@@ -284,7 +284,7 @@ export class EnvManager {
     // 2. Optionally initialize built-in local Pi Env daemon
     if (this.#options.enableLocal !== false) {
       const rootDir = path.resolve(this.#options.localRootDir ?? process.cwd());
-      this.#localProjects = new ProjectDirectoryRegistry({ deviceId: "local", filePath: this.#options.projectGrantFile ?? path.join(rootDir, ".moco-env", "project-grants.json"), scratchRoot: path.join(rootDir, "scratch"), getProtectedPaths: () => [...(this.#options.getProtectedPaths?.() ?? []), ...this.#additionalProtectedPaths] });
+      this.#localProjects = new ProjectDirectoryRegistry({ deviceId: "local", filePath: this.#options.projectGrantFile ?? path.join(rootDir, ".kulo-env", "project-grants.json"), scratchRoot: path.join(rootDir, "scratch"), getProtectedPaths: () => [...(this.#options.getProtectedPaths?.() ?? []), ...this.#additionalProtectedPaths] });
       this.#localStagedWorkspaces = new StagedWorkspaceService({ projectRegistry: this.#localProjects });
       this.#localBrowser = this.#options.browserService ?? new FlowBrowserService({ rootDir: path.join(this.#localProjects.privateDirectory, "browser") });
       this.#additionalProtectedPaths.add(this.#localBrowser.rootDir);
@@ -354,7 +354,7 @@ export class EnvManager {
     this.#notifyChange();
   }
 
-  /** Attach an incoming `/ws/env` WebSocket connection from a `MocoEnvAgent`. */
+  /** Attach an incoming `/ws/env` WebSocket connection from a `KuloEnvAgent`. */
   handleEnvWebSocket(ws: WebSocket): void {
     let boundEnvId: string | null = null;
     let boundLease: string | undefined;
@@ -660,7 +660,7 @@ export class EnvManager {
         if (executionKind === "pi-env" && pendingRevocations?.size) {
           void Promise.all([...pendingRevocations].map((projectId) => this.revokeProjectDirectory(envId, projectId)))
             .then(() => this.#notifyChange())
-            .catch((error: unknown) => console.error("[MocoEnv:revocation]", error instanceof Error ? error.message : "Project revocation failed"));
+            .catch((error: unknown) => console.error("[KuloEnv:revocation]", error instanceof Error ? error.message : "Project revocation failed"));
         }
         this.#notifyChange();
         return;
@@ -780,7 +780,7 @@ export class EnvManager {
         void this.#externalAgentToolHandler(invocation).then(result => {
           if (this.#wsPeers.get(envId)?.ws === ws && !this.#closed) this.#sendControl(ws, { type: "hub.external_agent_tool_result", requestId: msg.requestId, runId: msg.runId, taskId: msg.taskId, runEpoch: msg.runEpoch, result });
         }, (error: unknown) => {
-          if (this.#wsPeers.get(envId)?.ws === ws && !this.#closed) this.#sendControl(ws, { type: "hub.external_agent_tool_result", requestId: msg.requestId, runId: msg.runId, taskId: msg.taskId, runEpoch: msg.runEpoch, error: redactSensitiveText(error instanceof Error ? error.message : "Moco task tool failed").slice(0, 2000) });
+          if (this.#wsPeers.get(envId)?.ws === ws && !this.#closed) this.#sendControl(ws, { type: "hub.external_agent_tool_result", requestId: msg.requestId, runId: msg.runId, taskId: msg.taskId, runEpoch: msg.runEpoch, error: redactSensitiveText(error instanceof Error ? error.message : "Kulo task tool failed").slice(0, 2000) });
         }).finally(() => pending!.delete(msg.requestId));
       } else if (msg.type === "env.computer_result") {
         const pending = this.#computerRequests.get(msg.requestId);
@@ -1120,7 +1120,7 @@ export class EnvManager {
     }
     const peer = this.#wsPeers.get(envId);
     if (!peer?.descriptor.online || !peer.ws || peer.ws.readyState !== peer.ws.OPEN) throw new Error(`External agent device '${envId}' is offline`);
-    if (!peer.descriptor.capabilities.includes("external-agents")) throw new Error("The selected device must update its Moco Env before connecting external agents");
+    if (!peer.descriptor.capabilities.includes("external-agents")) throw new Error("The selected device must update its Kulo Env before connecting external agents");
     if (this.#externalAgentRequests.size >= 32) throw new Error("External agent control request limit reached");
     const ws = peer.ws;
     const requestId = randomBytes(16).toString("hex");
@@ -1526,7 +1526,7 @@ export class EnvManager {
     for (const peer of this.#wsPeers.values()) {
       if (peer.descriptor.executionKind !== "native-device") return peer.descriptor.id;
     }
-    throw new Error("No execution environment (moco-env) is currently registered with Hub");
+    throw new Error("No execution environment (kulo-env) is currently registered with Hub");
   }
 
   pickDefaultWorkerEnvId(): string {
@@ -1612,7 +1612,7 @@ export class EnvManager {
       }
       this.#workerConnections.set(cacheKey, entry);
     }
-    return new RemoteExecutionEnv({ connection: entry.connection, id: `moco-worker:${envId}:${cwd}`, cwd, shellPath: this.getEnvDescriptor(envId)?.platform === "win32" ? "powershell.exe" : "/bin/bash" });
+    return new RemoteExecutionEnv({ connection: entry.connection, id: `kulo-worker:${envId}:${cwd}`, cwd, shellPath: this.getEnvDescriptor(envId)?.platform === "win32" ? "powershell.exe" : "/bin/bash" });
   }
 
   invalidateWorkerEnvironments(): void {
@@ -1622,7 +1622,7 @@ export class EnvManager {
       if (entry.sandbox) {
         const cleanup = entry.sandbox.cleanup().then((pending) => { if (!pending && this.#workerConnections.get(key) === entry) this.#workerConnections.delete(key); return pending; });
         this.#cleanupTasks.add(cleanup);
-        void cleanup.finally(() => this.#cleanupTasks.delete(cleanup)).catch((error: unknown) => console.error("[MocoEnv:cleanup]", error instanceof Error ? error.message : "Worker cleanup failed"));
+        void cleanup.finally(() => this.#cleanupTasks.delete(cleanup)).catch((error: unknown) => console.error("[KuloEnv:cleanup]", error instanceof Error ? error.message : "Worker cleanup failed"));
       } else {
         this.#workerConnections.delete(key);
       }

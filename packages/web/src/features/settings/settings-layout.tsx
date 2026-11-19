@@ -1,10 +1,10 @@
 import { useId, useRef, useState, type ReactNode } from "react";
 import { Button, Card, FieldError, Label, NumberField, Spinner } from "@heroui/react";
-import { useI18n } from "../../moco-i18n";
+import { useI18n } from "../../kulo-i18n";
 import { useRegisterShortcutSave } from "../shortcuts/shortcuts";
 
 export function SettingsList({ label, children }: { label: string; children: ReactNode }) {
-  return <Card className="moco-settings-list" role="group" aria-label={label}>{children}</Card>;
+  return <Card className="kulo-settings-list" role="group" aria-label={label}>{children}</Card>;
 }
 
 export function SettingsSection({
@@ -22,10 +22,10 @@ export function SettingsSection({
 }) {
   const headingId = useId();
   return (
-    <section className={`moco-settings-section ${className}`} aria-labelledby={headingId}>
-      <div className="moco-settings-section-head">
-        <div className="moco-settings-section-title-group">
-          <h2 id={headingId} className="moco-section-title">{title}</h2>
+    <section className={`kulo-settings-section ${className}`} aria-labelledby={headingId}>
+      <div className="kulo-settings-section-head">
+        <div className="kulo-settings-section-title-group">
+          <h2 id={headingId} className="kulo-section-title">{title}</h2>
           {status}
         </div>
         {action}
@@ -74,16 +74,16 @@ export function SettingsNumberField({
     void request.finally(() => { if (pending.current === request) pending.current = null; });
   };
 
-  return <NumberField ref={field} variant="secondary" className="moco-settings-row moco-settings-row--number" fullWidth
+  return <NumberField ref={field} variant="secondary" className="kulo-settings-row kulo-settings-row--number" fullWidth
     aria-label={ariaLabel} aria-busy={isPending || undefined} value={value} minValue={minValue} maxValue={maxValue} step={step}
     isDisabled={isDisabled} isReadOnly={isPending} isInvalid={invalid} validationBehavior="aria"
     onChange={(next) => { latest.current = next; setAttempted(false); onChange(next); }}>
-    <div className="moco-field-label">
+    <div className="kulo-field-label">
       <Label className="text-sm font-normal text-foreground">{label}</Label>
       {labelAction}
       {isPending && <Spinner size="sm" aria-label={t("保存中", "Saving")} />}
     </div>
-    <div className="moco-field-control moco-field-with-unit">
+    <div className="kulo-field-control kulo-field-with-unit">
       <NumberField.Group className="min-w-0">
         <NumberField.Input inputMode="numeric" aria-describedby={unit ? unitId : undefined}
           onBlur={(event) => {
@@ -135,7 +135,7 @@ export function SettingsSaveBar({
   });
   if (!dirty) return null;
   return (
-    <div ref={regionRef} className="moco-settings-savebar" role="region" aria-label={scopeLabel ?? t("未保存的更改", "Unsaved changes")} inert={busy && !saving || undefined}>
+    <div ref={regionRef} className="kulo-settings-savebar" role="region" aria-label={scopeLabel ?? t("未保存的更改", "Unsaved changes")} inert={busy && !saving || undefined}>
       <span className="text-sm text-muted" aria-live="polite">{stateLabel ?? t("未保存", "Unsaved")}</span>
       <div className="flex items-center gap-2">
         <Button type="button" variant="tertiary" isDisabled={saving} onPress={onDiscard}>

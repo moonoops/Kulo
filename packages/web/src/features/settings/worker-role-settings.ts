@@ -1,5 +1,5 @@
-import { defaultRolePresets, type MocoSettingsView, type RolePreset } from "@moco/protocol";
-import { translate as t } from "../../moco-i18n";
+import { defaultRolePresets, type KuloSettingsView, type RolePreset } from "@kulo/protocol";
+import { translate as t } from "../../kulo-i18n";
 import { internalAgentPresets, withExternalAgentPresets } from "./external-agents-view";
 
 export type RoleMutation =
@@ -29,10 +29,10 @@ export function roleMutationValue(saved: Record<string, RolePreset>, mutation: R
 }
 
 export async function commitRoleMutation(
-  block: MocoSettingsView["blocks"]["roles"],
+  block: KuloSettingsView["blocks"]["roles"],
   mutation: RoleMutation,
-  save: (expectedRevision: number, value: Record<string, RolePreset>) => Promise<MocoSettingsView>,
-): Promise<MocoSettingsView> {
+  save: (expectedRevision: number, value: Record<string, RolePreset>) => Promise<KuloSettingsView>,
+): Promise<KuloSettingsView> {
   return save(block.revision, roleMutationValue(block.value, mutation));
 }
 

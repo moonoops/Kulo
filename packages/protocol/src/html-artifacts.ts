@@ -24,7 +24,7 @@ export function isHtmlArtifact(asset: Pick<ChatAttachment, "name" | "mimeType">)
 
 /** Applied only inside isolated artifact documents, never to the application DOM. */
 export function htmlArtifactDocument(html: string): string {
-  const head = `<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style data-moco-artifact>html{scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb,var(--muted,#a1a1aa)) transparent}::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{border-radius:3px;background:var(--scrollbar-thumb,var(--muted,#a1a1aa))}</style>`;
+  const head = `<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style data-kulo-artifact>html{scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb,var(--muted,#a1a1aa)) transparent}::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{border-radius:3px;background:var(--scrollbar-thumb,var(--muted,#a1a1aa))}</style>`;
   return `<!doctype html>${head}${html}`;
 }
 

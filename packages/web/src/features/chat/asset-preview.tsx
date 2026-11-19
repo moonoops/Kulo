@@ -1,9 +1,9 @@
-import { translate as tr, useI18n } from "../../moco-i18n";
+import { translate as tr, useI18n } from "../../kulo-i18n";
 import { Button, Link, Modal } from "@heroui/react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import type { ChatAttachment } from "@moco/protocol";
-import { resolveAssetUrl } from "../../moco-api";
-import { MocoIcon } from "../../moco-icon";
+import type { ChatAttachment } from "@kulo/protocol";
+import { resolveAssetUrl } from "../../kulo-api";
+import { KuloIcon } from "../../kulo-icon";
 import { constrainPreviewPan, constrainPreviewScale, fitPreviewScale, MAX_PREVIEW_SCALE, previewPanLimits, type PreviewPan, type PreviewSize } from "./asset-preview-model";
 import "./chat-content.css";
 
@@ -51,17 +51,17 @@ export function AssetImage({
   const [preview, setPreview] = useState<PreviewableImage | null>(null);
   const src = safeContentUrl(image.src, true);
   useEffect(() => { setFailed(false); setAttempt(0); }, [image.src]);
-  return <span className="moco-chat-image">
+  return <span className="kulo-chat-image">
     {src && !failed ? <Button
       aria-label={tr(`预览图片：${image.name}`, `Preview image: ${image.name}`)}
-      className="moco-chat-image-trigger"
+      className="kulo-chat-image-trigger"
       variant="ghost"
       onPress={() => onPreviewImage ? onPreviewImage(image) : setPreview(image)}
     >
       <img key={attempt} src={src} alt={image.name} width={image.width} height={image.height} loading="lazy" decoding="async" onError={() => setFailed(true)} />
-      {count !== undefined && count > 0 && <span className="moco-chat-image-count">+{count}</span>}
-    </Button> : <span className="moco-chat-image-error" role="status">
-      <MocoIcon name="image" size={24} />
+      {count !== undefined && count > 0 && <span className="kulo-chat-image-count">+{count}</span>}
+    </Button> : <span className="kulo-chat-image-error" role="status">
+      <KuloIcon name="image" size={24} />
       <span>{tr("图片无法显示", "Image unavailable")}</span>
       {src && <Button size="sm" variant="secondary" onPress={() => { setFailed(false); setAttempt((n) => n + 1); }}>{tr("重试", "Retry")}</Button>}
     </span>}
@@ -80,7 +80,7 @@ export function AssetImageGallery({ assets, onPreviewImage }: {
     width: asset.width, height: asset.height,
   }));
   if (images.length === 0) return null;
-  return <div className="moco-chat-image-gallery" data-count={Math.min(images.length, 4)}>
+  return <div className="kulo-chat-image-gallery" data-count={Math.min(images.length, 4)}>
     {images.slice(0, 4).map((image, index) => <AssetImage
       key={assets[index]!.id}
       image={{ ...image, gallery: images, index }}
@@ -187,21 +187,21 @@ export function AssetPreview({ image, onClose }: {
     if (event.key === "ArrowRight") { event.preventDefault(); move(1); }
   };
   return <Modal.Backdrop isOpen={image !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
-    <Modal.Container size="cover" placement="center" className="moco-chat-preview-container">
-      <div className="moco-chat-preview-events" onKeyDown={navigate}>
-        <Modal.Dialog className="moco-chat-preview-dialog" aria-label={tr("图片预览", "Image preview")}>
+    <Modal.Container size="cover" placement="center" className="kulo-chat-preview-container">
+      <div className="kulo-chat-preview-events" onKeyDown={navigate}>
+        <Modal.Dialog className="kulo-chat-preview-dialog" aria-label={tr("图片预览", "Image preview")}>
           <Modal.CloseTrigger aria-label={tr("关闭图片预览", "Close image preview")} />
-          <Modal.Header className="moco-chat-preview-header">
-            <Modal.Heading className="moco-chat-truncate">{current?.name ?? tr("图片", "Image")}</Modal.Heading>
-            <span className="moco-chat-meta">{[current?.width && current.height ? `${current.width} × ${current.height}` : "", formatAssetSize(current?.size), gallery.length > 1 ? `${index + 1} / ${gallery.length}` : ""].filter(Boolean).join(" · ")}</span>
+          <Modal.Header className="kulo-chat-preview-header">
+            <Modal.Heading className="kulo-chat-truncate">{current?.name ?? tr("图片", "Image")}</Modal.Heading>
+            <span className="kulo-chat-meta">{[current?.width && current.height ? `${current.width} × ${current.height}` : "", formatAssetSize(current?.size), gallery.length > 1 ? `${index + 1} / ${gallery.length}` : ""].filter(Boolean).join(" · ")}</span>
           </Modal.Header>
-          <Modal.Body className="moco-chat-preview-body">
-            <div ref={setStage} className="moco-chat-preview-stage" data-pannable={canPan || undefined} data-dragging={dragging || undefined}
+          <Modal.Body className="kulo-chat-preview-body">
+            <div ref={setStage} className="kulo-chat-preview-stage" data-pannable={canPan || undefined} data-dragging={dragging || undefined}
               tabIndex={0} role="region" aria-label={tr("图片画布", "Image canvas")} aria-keyshortcuts="+ - 0 ArrowLeft ArrowRight ArrowUp ArrowDown"
               onKeyDown={navigateStage} onPointerDown={beginPan} onPointerMove={updatePan}
               onPointerUp={finishDrag} onPointerCancel={finishDrag} onLostPointerCapture={finishDrag}>
               {src && !failed ? <>
-                <img key={`${src}:${attempt}`} className="moco-chat-preview-image" src={src} alt={current?.name ?? tr("图片", "Image")} draggable={false}
+                <img key={`${src}:${attempt}`} className="kulo-chat-preview-image" src={src} alt={current?.name ?? tr("图片", "Image")} draggable={false}
                   data-ready={ready || undefined} style={{ width: natural?.width, height: natural?.height, transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px)) scale(${effectiveScale})` }}
                   onLoad={(event) => { setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight }); setLoaded(true); }}
                   onError={() => { setFailed(true); setLoaded(false); }} />
@@ -209,19 +209,19 @@ export function AssetPreview({ image, onClose }: {
               </> : <span role="status">{tr("图片无法显示", "Image unavailable")}</span>}
             </div>
           </Modal.Body>
-          <Modal.Footer className="moco-chat-preview-footer">
-            {gallery.length > 1 && <div className="moco-chat-actions">
-              <Button size="sm" variant="secondary" aria-label={tr("上一张图片", "Previous image")} onPress={() => move(-1)}><MocoIcon name="arrow-left" size={16} /></Button>
-              <Button size="sm" variant="secondary" aria-label={tr("下一张图片", "Next image")} onPress={() => move(1)}><MocoIcon name="chevron-right" size={16} /></Button>
+          <Modal.Footer className="kulo-chat-preview-footer">
+            {gallery.length > 1 && <div className="kulo-chat-actions">
+              <Button size="sm" variant="secondary" aria-label={tr("上一张图片", "Previous image")} onPress={() => move(-1)}><KuloIcon name="arrow-left" size={16} /></Button>
+              <Button size="sm" variant="secondary" aria-label={tr("下一张图片", "Next image")} onPress={() => move(1)}><KuloIcon name="chevron-right" size={16} /></Button>
             </div>}
-            <div className="moco-chat-preview-tools" role="group" aria-label={tr("图片缩放", "Image zoom")}>
+            <div className="kulo-chat-preview-tools" role="group" aria-label={tr("图片缩放", "Image zoom")}>
               {src && failed && <Button size="sm" variant="secondary" onPress={() => { setFailed(false); setAttempt((value) => value + 1); }}>{tr("重试", "Retry")}</Button>}
               <Button ref={zoomOutRef} size="sm" variant="ghost" isIconOnly aria-label={tr("缩小图片", "Zoom out")} isDisabled={!ready || effectiveScale <= Math.min(fitScale, 0.1)} onPress={() => setZoom(effectiveScale / 1.25)}><span aria-hidden="true">−</span></Button>
-              <output className="moco-chat-preview-scale" aria-label={tr("图片缩放比例", "Image zoom level")}>{ready ? `${new Intl.NumberFormat(locale, { maximumFractionDigits: effectiveScale < 0.01 ? 2 : 0 }).format(effectiveScale * 100)}%` : "—"}</output>
-              <Button ref={zoomInRef} size="sm" variant="ghost" isIconOnly aria-label={tr("放大图片", "Zoom in")} isDisabled={!ready || effectiveScale >= MAX_PREVIEW_SCALE} onPress={() => setZoom(effectiveScale * 1.25)}><MocoIcon name="add" size={18} /></Button>
+              <output className="kulo-chat-preview-scale" aria-label={tr("图片缩放比例", "Image zoom level")}>{ready ? `${new Intl.NumberFormat(locale, { maximumFractionDigits: effectiveScale < 0.01 ? 2 : 0 }).format(effectiveScale * 100)}%` : "—"}</output>
+              <Button ref={zoomInRef} size="sm" variant="ghost" isIconOnly aria-label={tr("放大图片", "Zoom in")} isDisabled={!ready || effectiveScale >= MAX_PREVIEW_SCALE} onPress={() => setZoom(effectiveScale * 1.25)}><KuloIcon name="add" size={18} /></Button>
               <Button size="sm" variant="secondary" isDisabled={!ready} aria-pressed={scale === null} onPress={() => setZoom(null)}>{tr("适应窗口", "Fit to window")}</Button>
               <Button size="sm" variant="ghost" isDisabled={!ready} aria-pressed={scale === 1} onPress={() => setZoom(1)}>100%</Button>
-              {src && <Link href={src} download={current?.name} target="_blank" rel="noopener noreferrer" className="moco-chat-download-link">{tr("下载", "Download")}</Link>}
+              {src && <Link href={src} download={current?.name} target="_blank" rel="noopener noreferrer" className="kulo-chat-download-link">{tr("下载", "Download")}</Link>}
             </div>
           </Modal.Footer>
         </Modal.Dialog>

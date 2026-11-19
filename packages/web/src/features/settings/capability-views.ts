@@ -1,5 +1,5 @@
-import type { CapabilitiesWorkspaceSnapshot, CapabilityRecord, CapabilityStatus, SettingsAssistantContext } from "@moco/protocol";
-import { translate } from "../../moco-i18n";
+import type { CapabilitiesWorkspaceSnapshot, CapabilityRecord, CapabilityStatus, SettingsAssistantContext } from "@kulo/protocol";
+import { translate } from "../../kulo-i18n";
 
 export const CAPABILITY_VIEWS = [
   { id: "image", label: "图像", englishLabel: "Images" },

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, defineExtension, defineTask, ROOT_CONVERSATION_ID, type Harness, type JsonObject, type TaskId } from "@earendil-works/pi-durable";
-import { redactSecrets, type ExtensionJob, type ExtensionOperationRequest, type ExtensionRecord, type ExtensionWorkspaceSnapshot } from "@moco/protocol";
+import { redactSecrets, type ExtensionJob, type ExtensionOperationRequest, type ExtensionRecord, type ExtensionWorkspaceSnapshot } from "@kulo/protocol";
 import { analyzeExtensionSource, type ExtensionSourceAnalysis } from "./extension-sources.js";
 import { BILLION_CONTEXT_ADAPTER_VERSION, BILLION_CONTEXT_KERNEL_VERSION, BILLION_CONTEXT_PACKAGE_SOURCE, ExtensionPackageError,
   inspectBillionContextPackage, installBillionContextPackage, removeBillionContextPackage, type ExtensionPackageInfo } from "./extension-packages.js";
@@ -18,7 +18,7 @@ function initialRecord(): ExtensionRecord {
     availableVersion: BILLION_CONTEXT_KERNEL_VERSION, adapterVersion: BILLION_CONTEXT_ADAPTER_VERSION, enabled: false, status: "not_installed", revision: 1, updatedAt: 0 };
 }
 export const ExtensionsDoc = defineDoc<ExtensionsState & JsonObject>({
-  kind: "moco.extensions", version: 1, scope: "session",
+  kind: "kulo.extensions", version: 1, scope: "session",
   initial: () => ({ revision: 1, items: { [ID]: initialRecord() }, jobs: {} }) as unknown as ExtensionsState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
@@ -38,7 +38,7 @@ export interface ExtensionPackageExecutor {
   install(signal: AbortSignal): Promise<ExtensionPackageInfo>;
   remove(): Promise<void>;
 }
-export interface MocoExtensionsOptions {
+export interface KuloExtensionsOptions {
   harness: Harness;
   operationTask: ReturnType<typeof createExtensionsTask>;
   stateDir: string;
@@ -48,14 +48,14 @@ export interface MocoExtensionsOptions {
   now?: () => number;
 }
 
-export class MocoExtensions {
-  readonly #options: MocoExtensionsOptions;
+export class KuloExtensions {
+  readonly #options: KuloExtensionsOptions;
   readonly #packages: ExtensionPackageExecutor;
   readonly #controllers = new Map<string, AbortController>();
   readonly #executions = new Map<string, Promise<void>>();
   #queue: Promise<unknown> = Promise.resolve();
   #closed = false;
-  constructor(options: MocoExtensionsOptions) {
+  constructor(options: KuloExtensionsOptions) {
     this.#options = options;
     this.#packages = options.packages ?? { inspect: () => inspectBillionContextPackage(options.stateDir),
       install: (signal) => installBillionContextPackage({ stateDir: options.stateDir, signal }), remove: () => removeBillionContextPackage(options.stateDir) };
@@ -107,7 +107,7 @@ export class MocoExtensions {
   async request(raw: ExtensionOperationRequest): Promise<ExtensionWorkspaceSnapshot> {
     if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).some((key) => !["id", "operation", "expectedRevision", "commandId", "clientId"].includes(key))) fail(400, "invalid_extension_request", "扩展操作字段无效。");
     const id = identifier(raw.id, "扩展"), commandId = identifier(raw.commandId, "操作标识"), clientId = identifier(raw.clientId ?? "settings-page", "客户端");
-    if (id !== ID) fail(404, "extension_not_supported", "此项目尚未登记已验证的 Moco 适配包，请先分析来源。");
+    if (id !== ID) fail(404, "extension_not_supported", "此项目尚未登记已验证的 Kulo 适配包，请先分析来源。");
     if (!["install", "enable", "stop", "remove"].includes(raw.operation) || !Number.isSafeInteger(raw.expectedRevision) || raw.expectedRevision < 1) fail(400, "invalid_extension_request", "扩展操作或版本无效。");
     const fingerprint = createHash("sha256").update(JSON.stringify([id, raw.operation, raw.expectedRevision, clientId])).digest("hex");
     await this.#serial(async () => {
@@ -230,9 +230,9 @@ export class MocoExtensions {
   close(): void { this.#closed = true; }
 }
 
-function createExtensionsTask(get: () => MocoExtensions) {
+function createExtensionsTask(get: () => KuloExtensions) {
   return defineTask<{ jobId: string }, { phase: "run" }, null>({
-    name: "moco.extension-operation", version: 1, initial: () => ({ phase: "run" }),
+    name: "kulo.extension-operation", version: 1, initial: () => ({ phase: "run" }),
     phases: { run: async (task, runtime, ctx) => {
       try { await get().execute(task.input.jobId, runtime.signal); }
       catch (error) {
@@ -244,7 +244,7 @@ function createExtensionsTask(get: () => MocoExtensions) {
     abort: async (task, runtime, ctx) => { await get().cancel(task.input.jobId); await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), ctx); },
   });
 }
-export function createExtensionsExtension(get: () => MocoExtensions) {
+export function createExtensionsExtension(get: () => KuloExtensions) {
   const operationTask = createExtensionsTask(get);
-  return Object.assign(defineExtension({ name: "moco-extensions", tasks: [operationTask] }), { operationTask });
+  return Object.assign(defineExtension({ name: "kulo-extensions", tasks: [operationTask] }), { operationTask });
 }

@@ -9,9 +9,9 @@ const required: Record<Slot, string[]> = {
 };
 const sidebarFile = "packages/web/src/features/topics/topics-sidebar.tsx";
 const sidebarRequired: Record<Slot, string[]> = {
-  ListContainer: ["moco-navigation-tabs-container", "w-full", "max-w-full", "min-w-0", "shrink-0"],
-  List: ["moco-navigation-tabs", "w-full"],
-  Tab: ["moco-navigation-tab", "w-0", "min-w-0", "flex-1", "whitespace-nowrap", "gap-2"],
+  ListContainer: ["kulo-navigation-tabs-container", "w-full", "max-w-full", "min-w-0", "shrink-0"],
+  List: ["kulo-navigation-tabs", "w-full"],
+  Tab: ["kulo-navigation-tab", "w-0", "min-w-0", "flex-1", "whitespace-nowrap", "gap-2"],
 };
 
 function attribute(node: Opening, name: string): ts.JsxAttribute | undefined {
@@ -89,7 +89,7 @@ export function auditJsxTabLayout(source: string, fileName: string): { violation
       if (!ts.isJsxElement(parent) || parent.openingElement === node) continue;
       const tag = canonicalTag(parent.openingElement);
       if (tag.length !== 1 || tag[0] !== "Tabs") continue;
-      const marker = attribute(parent.openingElement, "data-moco-sidebar-tabs");
+      const marker = attribute(parent.openingElement, "data-kulo-sidebar-tabs");
       return Boolean(marker && !marker.initializer);
     }
     return false;

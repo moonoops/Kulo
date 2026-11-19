@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import type { TicketCardView, TopicActivity, TopicSummary } from "@moco/protocol";
+import type { TicketCardView, TopicActivity, TopicSummary } from "@kulo/protocol";
 import { parseSeenTopicActivities, reconcileTopicActivity } from "./topic-activity";
 
-const seenKey = "moco:topics:seen-activity";
+const seenKey = "kulo:topics:seen-activity";
 
 function conversationVisible(): boolean {
   return typeof document !== "undefined" && document.visibilityState === "visible" && document.hasFocus();

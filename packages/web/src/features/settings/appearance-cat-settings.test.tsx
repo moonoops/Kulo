@@ -34,10 +34,10 @@ function change(label: string, selected: boolean) {
   control!.onChange!(selected);
 }
 
-describe("Moco appearance settings", () => {
+describe("Kulo appearance settings", () => {
   it("exposes automatic appearance and motion as named settings switches", () => {
     const html = render();
-    expect(html).toContain('aria-label="Moco 形象偏好"');
+    expect(html).toContain('aria-label="Kulo 形象偏好"');
     expect(html).toContain('aria-label="自动切换形象"');
     expect(html).toContain('aria-label="动态"');
     expect(controls.get("自动切换形象")?.isSelected).toBe(true);
@@ -67,7 +67,7 @@ describe("Moco appearance settings", () => {
     const querySelector = vi.fn(() => ({ getAttribute: () => "programmer" }));
     vi.stubGlobal("document", { querySelector });
     change("自动切换形象", false);
-    expect(querySelector).toHaveBeenCalledWith(".moco-agent-profile-avatar[data-appearance]");
+    expect(querySelector).toHaveBeenCalledWith(".kulo-agent-profile-avatar[data-appearance]");
     expect(preferences.getCatPreferences()).toEqual({ appearance: "programmer", animated: false, error: null });
   });
 

@@ -1,4 +1,4 @@
-import { isComputerPreviewUpdate, type ComputerPreviewServerMessage, type ComputerPreviewSessionView, type ComputerPreviewUpdate } from "@moco/protocol";
+import { isComputerPreviewUpdate, type ComputerPreviewServerMessage, type ComputerPreviewSessionView, type ComputerPreviewUpdate } from "@kulo/protocol";
 import type { RawData, WebSocket } from "ws";
 
 export interface ComputerPreviewSource {

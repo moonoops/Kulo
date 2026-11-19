@@ -4,8 +4,8 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   acquireCustomizationOperationLock, createReleaseManifest, readReleaseManifest, verifyRelease, type RecoveryManager, type RecoveryReleaseRecord,
   type RecoveryReleaseManifest,
-} from "@moco/recovery";
-import { redactSecrets } from "@moco/protocol";
+} from "@kulo/recovery";
+import { redactSecrets } from "@kulo/protocol";
 import {
   CustomizationError, assertCustomizationDataCompatibility, cleanupLocalCustomizationExecutions, customizationChanges, customizationEditablePath, customizationIdentifier,
   customizationPrivateDirectory, customizationSourceFile, customizationSourceIdentity, prepareCustomizationSource,
@@ -14,7 +14,7 @@ import {
 import { cleanupManagedCustomizationUpdates, fetchSignedCustomizationUpdate, mergeCustomizationChanges, readSignedCustomizationUpdate } from "./customization-updates.js";
 
 export interface CustomizationCaller { id: string; canModify: boolean }
-export interface MocoCustomizationOptions {
+export interface KuloCustomizationOptions {
   dataDir: string;
   stateDir?: string;
   source?: CustomizationSource;
@@ -76,15 +76,15 @@ async function atomicJson(file: string, value: unknown): Promise<void> {
   } finally { await fs.rm(temporary, { force: true }); }
 }
 
-export class MocoCustomizationService {
-  readonly #options: MocoCustomizationOptions;
+export class KuloCustomizationService {
+  readonly #options: KuloCustomizationOptions;
   readonly #root: string;
   readonly #staging: string;
   readonly #now: () => number;
   #running?: { id: string; controller: AbortController; promise: Promise<unknown> };
   #closed = false;
 
-  constructor(options: MocoCustomizationOptions) {
+  constructor(options: KuloCustomizationOptions) {
     if (!path.isAbsolute(options.dataDir) || path.parse(options.dataDir).root === options.dataDir) throw new CustomizationError("customization_directory_invalid", "定制数据目录无效。");
     this.#options = options; this.#root = path.join(options.dataDir, "customizations");
     this.#staging = path.join(options.dataDir, "staging", "customization");
@@ -93,7 +93,7 @@ export class MocoCustomizationService {
   #authorize(caller: CustomizationCaller, modify = false): string {
     customizationIdentifier(caller.id);
     if (this.#closed) throw new CustomizationError("customization_closed", "定制服务已关闭。");
-    if (modify && !caller.canModify) throw new CustomizationError("customization_forbidden", "当前会话没有修改 Moco 的授权。", 403);
+    if (modify && !caller.canModify) throw new CustomizationError("customization_forbidden", "当前会话没有修改 Kulo 的授权。", 403);
     return caller.id;
   }
   #work(id: string) { return path.join(this.#staging, customizationIdentifier(id)); }
@@ -123,9 +123,9 @@ export class MocoCustomizationService {
     return release;
   }
   async #officialSource(root: string, manifest: RecoveryReleaseRecord["manifest"] | RecoveryReleaseManifest): Promise<CustomizationSource | undefined> {
-    const raw = await readJson(path.join(root, "moco-source.json"), 32 * 1024);
+    const raw = await readJson(path.join(root, "kulo-source.json"), 32 * 1024);
     if (raw === undefined) return undefined;
-    if (!object(raw) || raw.formatVersion !== 1 || raw.archiveFile !== "moco-source.json.gz" ||
+    if (!object(raw) || raw.formatVersion !== 1 || raw.archiveFile !== "kulo-source.json.gz" ||
         typeof raw.archiveHash !== "string" || !/^[a-f0-9]{64}$/.test(raw.archiveHash) ||
         typeof raw.treeHash !== "string" || !/^[a-f0-9]{64}$/.test(raw.treeHash) ||
         raw.version !== manifest.version || manifest.sourceTreeHash && raw.treeHash !== manifest.sourceTreeHash ||

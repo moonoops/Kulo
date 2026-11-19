@@ -7,9 +7,9 @@ import type {
   SettingsAssistantConversation,
   SettingsBlockName,
   SkillAudience,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import type { CapabilityPreferenceValues, RestoreCapabilityPreferencesInput } from "./capabilities.js";
-import { MocoStateDoc, isOrchestratorConversation, type MocoDurableState, type TopicTitleJob } from "./state.js";
+import { KuloStateDoc, isOrchestratorConversation, type KuloDurableState, type TopicTitleJob } from "./state.js";
 
 export type WorkspaceUndoOperation =
   | ({ kind: "capability-restore" } & RestoreCapabilityPreferencesInput)
@@ -85,7 +85,7 @@ export interface SettingsAssistantState {
 }
 
 export const SettingsAssistantDoc = defineDoc<SettingsAssistantState & JsonObject>({
-  kind: "moco.settings-assistant",
+  kind: "kulo.settings-assistant",
   version: 1,
   scope: "session",
   initial: () => ({
@@ -130,7 +130,7 @@ export function isSettingsTopicDeleted(
 
 export function isMainOrchestratorConversation(
   conversationId: unknown,
-  state: Readonly<MocoDurableState> | undefined,
+  state: Readonly<KuloDurableState> | undefined,
   settingsDoc?: Readonly<SettingsAssistantState> | undefined,
 ): boolean {
   return isOrchestratorConversation(conversationId, state) || isActiveSettingsConversation(conversationId, settingsDoc);
@@ -139,8 +139,8 @@ export function isMainOrchestratorConversation(
 export async function isMainOrchestratorApi(
   api: { conversationId: ConversationId | number; snapshot: Harness["snapshot"] },
   context: Context,
-): Promise<{ allowed: boolean; state: Readonly<MocoDurableState> | undefined; settings: Readonly<SettingsAssistantState> | undefined; isSettings: boolean }> {
-  const state = await api.snapshot(MocoStateDoc, context);
+): Promise<{ allowed: boolean; state: Readonly<KuloDurableState> | undefined; settings: Readonly<SettingsAssistantState> | undefined; isSettings: boolean }> {
+  const state = await api.snapshot(KuloStateDoc, context);
   if (isOrchestratorConversation(api.conversationId, state)) {
     return { allowed: true, state, settings: undefined, isSettings: false };
   }

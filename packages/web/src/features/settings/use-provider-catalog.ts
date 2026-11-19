@@ -1,8 +1,8 @@
 import { useEffect, useSyncExternalStore } from "react";
-import type { MocoSettingsView } from "@moco/protocol";
-import { providerCatalog } from "../../moco-api";
+import type { KuloSettingsView } from "@kulo/protocol";
+import { providerCatalog } from "../../kulo-api";
 
-export function useProviderCatalog(settings: MocoSettingsView | null) {
+export function useProviderCatalog(settings: KuloSettingsView | null) {
   const snapshot = useSyncExternalStore(providerCatalog.subscribe, providerCatalog.getSnapshot, providerCatalog.getSnapshot);
   useEffect(() => {
     if (settings) void providerCatalog.configure(settings);

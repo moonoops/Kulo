@@ -4,13 +4,13 @@ import os from "node:os";
 import { createHash } from "node:crypto";
 import type { BrowserWindowConstructorOptions } from "electron";
 
-export const DESKTOP_APP_NAME = "Moco Dev";
-export const DESKTOP_BUNDLE_ID = "io.moco.desktop.dev";
+export const DESKTOP_APP_NAME = "Kulo Dev";
+export const DESKTOP_BUNDLE_ID = "io.kulo.desktop.dev";
 
 export function resolveDesktopDataDirectory(args: readonly string[], defaultDirectory: string): string {
-  const values = args.filter((arg) => arg.startsWith("--moco-data-dir="));
-  if (args.includes("--moco-data-dir") || values.length > 1) throw new Error("数据目录参数无效。");
-  const value = values[0]?.slice("--moco-data-dir=".length) ?? defaultDirectory;
+  const values = args.filter((arg) => arg.startsWith("--kulo-data-dir="));
+  if (args.includes("--kulo-data-dir") || values.length > 1) throw new Error("数据目录参数无效。");
+  const value = values[0]?.slice("--kulo-data-dir=".length) ?? defaultDirectory;
   if (!value.trim() || !path.isAbsolute(value) || path.parse(value).root === path.resolve(value) || path.resolve(value) === os.homedir()) {
     throw new Error("数据目录必须是有效的绝对目录。");
   }
@@ -49,16 +49,16 @@ export interface DevelopmentMode {
 }
 
 export function parseDevelopmentMode(args: readonly string[]): DevelopmentMode | undefined {
-  const root = args.find((arg) => arg.startsWith("--moco-dev-root="))?.slice("--moco-dev-root=".length);
-  const controlDir = args.find((arg) => arg.startsWith("--moco-dev-control="))?.slice("--moco-dev-control=".length);
+  const root = args.find((arg) => arg.startsWith("--kulo-dev-root="))?.slice("--kulo-dev-root=".length);
+  const controlDir = args.find((arg) => arg.startsWith("--kulo-dev-control="))?.slice("--kulo-dev-control=".length);
   if (!root && !controlDir) return undefined;
   if (!root || !controlDir || !path.isAbsolute(root) || !path.isAbsolute(controlDir)) {
     throw new Error("开发模式需要有效的源码目录和控制目录。");
   }
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as { name?: unknown };
-  if (manifest.name !== "moco-monorepo" || !fs.existsSync(path.join(root, "packages/desktop/dist/runtime.js")) ||
+  if (manifest.name !== "kulo-monorepo" || !fs.existsSync(path.join(root, "packages/desktop/dist/runtime.js")) ||
       !fs.existsSync(path.join(root, "packages/desktop/scripts/dev-server.mjs"))) {
-    throw new Error("开发模式源码目录不是已构建的 Moco 项目。");
+    throw new Error("开发模式源码目录不是已构建的 Kulo 项目。");
   }
   const stat = fs.lstatSync(controlDir);
   if (!stat.isDirectory() || stat.isSymbolicLink() ||

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { defaultRolePresets, type MocoSettingsView, type RolePreset } from "@moco/protocol";
+import { defaultRolePresets, type KuloSettingsView, type RolePreset } from "@kulo/protocol";
 import { commitRoleMutation, rebaseRoleDrafts, roleMutationValue } from "./worker-role-settings";
 import { internalAgentPresets } from "./external-agents-view";
 
@@ -13,12 +13,12 @@ const writer: RolePreset = {
 const external: RolePreset = {
   id: "codex-mac", label: "Mac 开发者", whenToUse: "修复代码", prompt: "遵循项目规范。", enabled: true,
   external: { kind: "codex", envId: "mac", version: "1.0", verifiedAt: 123 },
-  dispatchPolicy: { defaultFor: ["coding"], projectIds: ["moco"] },
+  dispatchPolicy: { defaultFor: ["coding"], projectIds: ["kulo"] },
 };
 const saved = { analyst, writer, [external.id]: external };
 const settings = (revision: number, value: Record<string, RolePreset>) => ({
   globalRevision: revision, blocks: { roles: { revision, value } },
-} as MocoSettingsView);
+} as KuloSettingsView);
 
 describe("independent agent mutations", () => {
   it("saves only the selected enable flag while retaining every saved manual field and external agent", async () => {

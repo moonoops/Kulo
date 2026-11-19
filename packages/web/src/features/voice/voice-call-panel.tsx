@@ -1,7 +1,7 @@
-import { translate as tr, useI18n } from "../../moco-i18n";
+import { translate as tr, useI18n } from "../../kulo-i18n";
 import { useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { Button, Tooltip } from "@heroui/react";
-import { MocoIcon } from "../../moco-icon";
+import { KuloIcon } from "../../kulo-icon";
 import { VoiceIcon } from "./voice-icons";
 import { CallStatusIcon } from "./call-status-icon";
 import type { ActiveVoiceCall } from "./use-voice-call";
@@ -37,14 +37,14 @@ function CallButton({ label, onPress, children, variant = "secondary", pressed, 
   className?: string;
 }) {
   return <Tooltip delay={350}>
-    <Button ref={buttonRef} isIconOnly isDisabled={disabled} variant={variant} className={`moco-voice-call-circle ${className}`} aria-label={label} aria-pressed={pressed} onPress={onPress}>
+    <Button ref={buttonRef} isIconOnly isDisabled={disabled} variant={variant} className={`kulo-voice-call-circle ${className}`} aria-label={label} aria-pressed={pressed} onPress={onPress}>
       {children}
     </Button>
     <Tooltip.Content>{label}</Tooltip.Content>
   </Tooltip>;
 }
 
-export function VoiceCallPanel({ call, agentName = "Moco", onHangup, onToggleMute, onRetry, onOpenChat, retryDisabled = false }: {
+export function VoiceCallPanel({ call, agentName = "Kulo", onHangup, onToggleMute, onRetry, onOpenChat, retryDisabled = false }: {
   call: ActiveVoiceCall | null;
   agentName?: string;
   onHangup: () => void;
@@ -75,23 +75,23 @@ export function VoiceCallPanel({ call, agentName = "Moco", onHangup, onToggleMut
   const elapsed = elapsedLabel(call.startedAt === undefined ? 0 : now - call.startedAt);
   const muteLabel = call.muted ? tr("取消静音", "Unmute") : tr("静音麦克风", "Mute microphone");
   const status = ended || call.state === "connecting" || call.state === "reconnecting" ? voiceCallStatus(call) : null;
-  const topic = <><CallStatusIcon state={call.state} muted={call.muted} size={16} /><span className="moco-voice-call-topic-title" title={call.target.title}>{call.target.title}</span></>;
+  const topic = <><CallStatusIcon state={call.state} muted={call.muted} size={16} /><span className="kulo-voice-call-topic-title" title={call.target.title}>{call.target.title}</span></>;
 
-  return <section className="moco-voice-call" role="region" aria-label={tr(`与${agentName}的通话`, `Call with ${agentName}`)}>
-    <div className="moco-voice-call-heading">
+  return <section className="kulo-voice-call" role="region" aria-label={tr(`与${agentName}的通话`, `Call with ${agentName}`)}>
+    <div className="kulo-voice-call-heading">
       {onOpenChat
-        ? <Button variant="ghost" className="moco-voice-call-topic" aria-label={tr(`返回通话话题：${call.target.title}`, `Return to call topic: ${call.target.title}`)} onPress={onOpenChat}>{topic}</Button>
-        : <span className="moco-voice-call-topic" title={call.target.title}>{topic}</span>}
-      <span className="moco-voice-call-duration" role="timer" aria-label={tr("通话时长", "Call duration")} aria-live="off">{elapsed}</span>
+        ? <Button variant="ghost" className="kulo-voice-call-topic" aria-label={tr(`返回通话话题：${call.target.title}`, `Return to call topic: ${call.target.title}`)} onPress={onOpenChat}>{topic}</Button>
+        : <span className="kulo-voice-call-topic" title={call.target.title}>{topic}</span>}
+      <span className="kulo-voice-call-duration" role="timer" aria-label={tr("通话时长", "Call duration")} aria-live="off">{elapsed}</span>
     </div>
-    {status && <p className="moco-voice-call-status" role="status" aria-atomic="true">{status}</p>}
-    {call.error && <p className="moco-voice-call-error" role="alert">{call.error}</p>}
-    {ended ? <div className="moco-voice-call-controls" role="group" aria-label={tr("通话恢复", "Call recovery")}>
-      {call.permissionRequired && <CallButton label={tr("检查麦克风权限", "Check microphone permissions")} onPress={() => requestSystemPermissionHelp({ kind: "microphone" })}><MocoIcon name="key" /></CallButton>}
-      <CallButton label={tr("重新通话", "Call again")} variant="primary" disabled={retryDisabled} onPress={onRetry}><MocoIcon name="refresh" /></CallButton>
-      <CallButton buttonRef={closeButtonRef} label={tr("关闭通话", "Close call")} onPress={onHangup}><MocoIcon name="close" /></CallButton>
-    </div> : <div className="moco-voice-call-controls" role="group" aria-label={tr("通话控制", "Call controls")}>
-      <CallButton buttonRef={muteButtonRef} className="moco-voice-call-mute" label={muteLabel} pressed={call.muted} onPress={onToggleMute}><VoiceIcon name={call.muted ? "muted" : "microphone"} size={22} /></CallButton>
+    {status && <p className="kulo-voice-call-status" role="status" aria-atomic="true">{status}</p>}
+    {call.error && <p className="kulo-voice-call-error" role="alert">{call.error}</p>}
+    {ended ? <div className="kulo-voice-call-controls" role="group" aria-label={tr("通话恢复", "Call recovery")}>
+      {call.permissionRequired && <CallButton label={tr("检查麦克风权限", "Check microphone permissions")} onPress={() => requestSystemPermissionHelp({ kind: "microphone" })}><KuloIcon name="key" /></CallButton>}
+      <CallButton label={tr("重新通话", "Call again")} variant="primary" disabled={retryDisabled} onPress={onRetry}><KuloIcon name="refresh" /></CallButton>
+      <CallButton buttonRef={closeButtonRef} label={tr("关闭通话", "Close call")} onPress={onHangup}><KuloIcon name="close" /></CallButton>
+    </div> : <div className="kulo-voice-call-controls" role="group" aria-label={tr("通话控制", "Call controls")}>
+      <CallButton buttonRef={muteButtonRef} className="kulo-voice-call-mute" label={muteLabel} pressed={call.muted} onPress={onToggleMute}><VoiceIcon name={call.muted ? "muted" : "microphone"} size={22} /></CallButton>
       <CallButton label={tr("挂断通话", "Hang up")} variant="danger" onPress={onHangup}><VoiceIcon name="hangup" size={22} /></CallButton>
     </div>}
   </section>;

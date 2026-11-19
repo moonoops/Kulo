@@ -3,7 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import type { Models } from "@earendil-works/pi-ai";
 import { isAndroidNotificationDecision, isProtectedAndroidNotification,
-  type AndroidNotificationClassification, type AndroidNotificationClassificationResult, type AndroidNotificationDecision } from "@moco/protocol";
+  type AndroidNotificationClassification, type AndroidNotificationClassificationResult, type AndroidNotificationDecision } from "@kulo/protocol";
 import { NOTIFICATION_CLASSIFIER_INSTRUCTIONS } from "./prompts.js";
 
 const INSTRUCTIONS = NOTIFICATION_CLASSIFIER_INSTRUCTIONS;
@@ -37,7 +37,7 @@ export function parseAndroidNotificationDecision(raw: string, defaultRule: boole
 }
 
 /** Uses the Hub's existing Pi provider registry and credential flow; no tools or phone-side model credentials. */
-export class MocoAndroidNotifications {
+export class KuloAndroidNotifications {
   readonly #host: NotificationClassifierHost;
   readonly #file: string;
   readonly #cache = new Map<string, CachedDecision>();

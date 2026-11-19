@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { CapabilitiesWorkspaceSnapshot } from "@moco/protocol";
+import type { CapabilitiesWorkspaceSnapshot } from "@kulo/protocol";
 import { CapabilitiesWorkspaceLoader } from "./use-capabilities-workspace";
 
 function snapshot(revision: number): CapabilitiesWorkspaceSnapshot {

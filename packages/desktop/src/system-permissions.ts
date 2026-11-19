@@ -1,5 +1,5 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron";
-import type { SystemPermissionKind, SystemPermissionState } from "@moco/protocol";
+import type { SystemPermissionKind, SystemPermissionState } from "@kulo/protocol";
 import { isTrustedFileActionSender } from "./file-actions.js";
 
 export type DesktopPermissionKind = SystemPermissionKind;
@@ -67,17 +67,17 @@ export function configureDesktopSystemPermissionHandlers(options: {
   function authorize(event: IpcMainInvokeEvent): void {
     if (!isTrustedFileActionSender(event, options.owner(), options.rendererOrigin())) throw new Error("无法从此页面管理系统权限。");
   }
-  options.ipc.handle("moco:system-permissions-status", (event, ...args: unknown[]) => {
+  options.ipc.handle("kulo:system-permissions-status", (event, ...args: unknown[]) => {
     authorize(event);
     if (args.length) throw new Error("系统权限参数无效。");
     return options.permissions.status();
   });
-  options.ipc.handle("moco:system-permissions-request-microphone", (event, ...args: unknown[]) => {
+  options.ipc.handle("kulo:system-permissions-request-microphone", (event, ...args: unknown[]) => {
     authorize(event);
     if (args.length) throw new Error("系统权限参数无效。");
     return options.permissions.requestMicrophone();
   });
-  options.ipc.handle("moco:system-permissions-open-settings", (event, ...args: unknown[]) => {
+  options.ipc.handle("kulo:system-permissions-open-settings", (event, ...args: unknown[]) => {
     authorize(event);
     if (args.length !== 1) throw new Error("系统权限参数无效。");
     return options.permissions.openSettings(args[0]);

@@ -1,4 +1,4 @@
-import { inferModelPurpose } from "@moco/protocol";
+import { inferModelPurpose } from "@kulo/protocol";
 import { parseHTML, type HTMLElement } from "linkedom";
 import type { RawDiscoveredModel } from "./provider-discovery.js";
 
@@ -24,7 +24,7 @@ function modelId(value: string): string | undefined {
 }
 
 function belongsToModelDirectory(id: string): boolean {
-  // Dedicated embedding and omni experimental endpoints are outside Moco's 5-purpose model directory.
+  // Dedicated embedding and omni experimental endpoints are outside Kulo's 5-purpose model directory.
   return !/(?:^|-)(?:embedding|omni)(?:-|$)/.test(id);
 }
 

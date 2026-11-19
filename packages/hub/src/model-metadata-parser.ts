@@ -7,8 +7,8 @@ import type {
   ThinkingEffort,
   ThinkingLevelMapConfig,
   ThinkingLevelOption,
-} from "@moco/protocol";
-import { inferModelPurpose } from "@moco/protocol";
+} from "@kulo/protocol";
+import { inferModelPurpose } from "@kulo/protocol";
 
 export interface ModelMetadataEntry {
   name?: string;
@@ -339,7 +339,7 @@ function mergeEntry(primary: ModelMetadataEntry | undefined, secondary: ModelMet
   };
 }
 
-/** Parse raw `https://models.dev/api.json` payload into Moco's compact provider & canonical model index. */
+/** Parse raw `https://models.dev/api.json` payload into Kulo's compact provider & canonical model index. */
 export function parseModelsDevCatalog(raw: unknown): {
   providers: Record<string, Record<string, ModelMetadataEntry>>;
   models: Record<string, ModelMetadataEntry>;

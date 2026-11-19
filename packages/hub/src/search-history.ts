@@ -1,14 +1,14 @@
 import { AssistantEntry, ToolResultEntry, UserEntry, type Conversation, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
-import type { ChatDisplayItem } from "@moco/protocol";
+import type { ChatDisplayItem } from "@kulo/protocol";
 import { nativeSearchEvidence, sanitizeSearchSources } from "./search-sources.js";
 import { isRecoveryInputBoundary } from "./state.js";
 
-function boundary(entry: EntryRecord): boolean { return UserEntry.is(entry) || entry.kind === "moco.user"; }
+function boundary(entry: EntryRecord): boolean { return UserEntry.is(entry) || entry.kind === "kulo.user"; }
 
 function evidence(entry: EntryRecord): EntryRecord | undefined {
   if (isRecoveryInputBoundary(entry)) {
-    const data = entry.kind === "moco.worker_relay" && entry.data && typeof entry.data === "object" && !Array.isArray(entry.data)
+    const data = entry.kind === "kulo.worker_relay" && entry.data && typeof entry.data === "object" && !Array.isArray(entry.data)
       ? { sources: sanitizeSearchSources(entry.data.sources), ...(Array.isArray(entry.data.searchSuggestions) ? { searchSuggestions: entry.data.searchSuggestions.filter((value) => typeof value === "string" && value.length <= 24_000).slice(-4) } : {}) }
       : undefined;
     return { id: entry.id, conversationId: entry.conversationId, kind: entry.kind, model: [{ role: "user", content: "", timestamp: 0 }], ...(data ? { data } : {}) };
@@ -20,7 +20,7 @@ function evidence(entry: EntryRecord): EntryRecord | undefined {
     const content = message.content.flatMap((part) => part.type === "toolCall" ? [{ type: "toolCall" as const, id: part.id, name: part.name, arguments: {} }] : []);
     return { id: entry.id, conversationId: entry.conversationId, kind: entry.kind, model: [{ role: "assistant", content,
       api: message.api, provider: message.provider, model: message.model, usage: message.usage,
-      stopReason: message.stopReason, timestamp: 0, mocoSearchSources: native.sources, mocoSearchSuggestions: native.searchSuggestions } as typeof message] };
+      stopReason: message.stopReason, timestamp: 0, kuloSearchSources: native.sources, kuloSearchSuggestions: native.searchSuggestions } as typeof message] };
   }
   if (!ToolResultEntry.is(entry)) return undefined;
   const message = entry.model?.[0];

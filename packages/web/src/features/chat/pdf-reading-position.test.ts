@@ -11,7 +11,7 @@ describe("PDF reading position", () => {
     expect(page.scrollTop).toBe(0);
     expect(page.scrollLeft).toBe(0);
     expect(preview).toMatchObject({ scrollTop: 0, scrollLeft: 0 });
-    expect(closest).toHaveBeenCalledExactlyOnceWith(".moco-artifact-live-preview");
+    expect(closest).toHaveBeenCalledExactlyOnceWith(".kulo-artifact-live-preview");
     expect(conversation.scrollTop).toBe(1400);
   });
 

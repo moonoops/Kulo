@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { UiCardSnapshot } from "@moco/protocol";
+import type { UiCardSnapshot } from "@kulo/protocol";
 import { cardAdjustmentDraft, cardValueSummary } from "./card-value-summary";
 
 const card: UiCardSnapshot = {

@@ -1,14 +1,14 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, defineTool, section, type Harness } from "@earendil-works/pi-durable";
 import { obj, oneOf, opt, str } from "@earendil-works/pi-schema";
-import type { MemoryServicePrepareRequest, ProviderCatalogItem } from "@moco/protocol";
+import type { MemoryServicePrepareRequest, ProviderCatalogItem } from "@kulo/protocol";
 import { SettingsAssistantDoc, type SettingsAssistant } from "./settings-assistant.js";
-import type { MocoMemoryService } from "./memory-service.js";
+import type { KuloMemoryService } from "./memory-service.js";
 import { MEMORY_SETUP_GUIDE } from "./prompts.js";
 
 interface MemorySetupHost {
   harness: Harness;
-  memoryService: MocoMemoryService;
+  memoryService: KuloMemoryService;
   settingsAssistant: SettingsAssistant;
   listProviders(): Promise<ProviderCatalogItem[]>;
 }
@@ -16,11 +16,11 @@ const output = (value: unknown) => ({ output: [{ type: "text" as const, text: JS
 
 export function createMemorySetupExtension(get: () => MemorySetupHost) {
   return defineExtension({
-    name: "moco-memory-setup",
-    sections: [section("moco_memory_setup", () => MEMORY_SETUP_GUIDE, { tag: false })],
+    name: "kulo-memory-setup",
+    sections: [section("kulo_memory_setup", () => MEMORY_SETUP_GUIDE, { tag: false })],
     tools: [
       defineTool({
-        name: "moco_memory_service_read", description: "Read local Hindsight installation, connection, job, and secret-input status plus reusable API model connections (never returns secrets).",
+        name: "kulo_memory_service_read", description: "Read local Hindsight installation, connection, job, and secret-input status plus reusable API model connections (never returns secrets).",
         parameters: obj({}), replay: "safe", outputLimits: { maxBytes: 24_000, maxLines: 200 },
         execute: async () => {
           const client = await get().settingsAssistant.memoryContext();
@@ -34,7 +34,7 @@ export function createMemorySetupExtension(get: () => MemorySetupHost) {
         },
       }),
       defineTool({
-        name: "moco_memory_service_prepare", description: "Prepare a right-hand confirmation card for local Hindsight `deploy`, memory-model `configure`, or `uninstall` (`config` JSON allows `model` or `deleteData` only, no secrets; existing server connections use the left-hand Long-Term Memory form; `uninstall` keeps data by default).",
+        name: "kulo_memory_service_prepare", description: "Prepare a right-hand confirmation card for local Hindsight `deploy`, memory-model `configure`, or `uninstall` (`config` JSON allows `model` or `deleteData` only, no secrets; existing server connections use the left-hand Long-Term Memory form; `uninstall` keeps data by default).",
         parameters: obj({ operation: oneOf(["deploy", "configure", "uninstall"]), config: opt(str()) }), replay: "safe",
         execute: async ({ operation, config }, api) => {
           const client = await get().settingsAssistant.memoryContext();

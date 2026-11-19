@@ -1,13 +1,13 @@
-import type { HindsightProbeResult, MocoSettingsView, PublicMemoryConfig } from "./domain.js";
+import type { HindsightProbeResult, KuloSettingsView, PublicMemoryConfig } from "./domain.js";
 
-export type HindsightAccessMode = "moco" | "scoped" | "private-only";
+export type HindsightAccessMode = "kulo" | "scoped" | "private-only";
 export type HindsightModelProvider = "openai" | "anthropic" | "gemini" | "groq" | "ollama";
 
 export interface HindsightServiceModel {
   provider: HindsightModelProvider;
   model: string;
   baseUrl?: string;
-  /** Optional Moco API connection; OAuth credentials are not exported. */
+  /** Optional Kulo API connection; OAuth credentials are not exported. */
   connectionId?: string;
 }
 
@@ -36,7 +36,7 @@ export interface MemoryConnectionUpdateRequest {
 }
 
 export interface MemoryConnectionUpdateResult {
-  settings: MocoSettingsView;
+  settings: KuloSettingsView;
   service: MemoryServiceSnapshot;
   probe?: HindsightProbeResult;
 }

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { RawData, WebSocket } from "ws";
-import type { ChatDisplayItem, LiveStreamState, VoiceCallEvent, VoiceCallSession, VoiceLiveProvider } from "@moco/protocol";
+import type { ChatDisplayItem, LiveStreamState, VoiceCallEvent, VoiceCallSession, VoiceLiveProvider } from "@kulo/protocol";
 import { openVoiceLive, type VoiceLiveConnection } from "./voice-live-adapters.js";
 
 export class VoiceCallsError extends Error {
@@ -15,7 +15,7 @@ export interface VoiceCallConfiguration {
 }
 export interface VoiceCallScope { topicId: string; clientId: string; principalId: string; commandId: string }
 type Transcript = Extract<VoiceCallEvent, { type: "transcript" }>;
-export interface MocoVoiceCallsOptions {
+export interface KuloVoiceCallsOptions {
   voice: { liveConfig(): Promise<VoiceCallConfiguration> };
   context(topicId: string, principalId: string): Promise<{
     history: Array<{ role: "user" | "assistant"; text: string }>;
@@ -34,7 +34,7 @@ interface Call {
   id: string;
   scope: VoiceCallScope;
   configuration: string;
-  context: Awaited<ReturnType<MocoVoiceCallsOptions["context"]>>;
+  context: Awaited<ReturnType<KuloVoiceCallsOptions["context"]>>;
   session: VoiceCallSession;
   controller: AbortController;
   timer: ReturnType<typeof setTimeout>;
@@ -70,15 +70,15 @@ const voiceMessage = (item: ChatDisplayItem): boolean => Boolean((item as ChatDi
 const frameBuffer = (data: RawData): Buffer => Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data);
 
 /** The browser connection owns audio lifetime; delegated work remains owned by the Hub. */
-export class MocoVoiceCalls {
-  readonly #options: MocoVoiceCallsOptions;
+export class KuloVoiceCalls {
+  readonly #options: KuloVoiceCallsOptions;
   readonly #calls = new Map<string, Call>();
   readonly #commands = new Map<string, { id: string; topicId: string; at: number }>();
   readonly #topicMessages = new Map<string, ChatDisplayItem[]>();
   readonly #topicTasks = new Map<string, Map<string, string>>();
   #tail: Promise<unknown> = Promise.resolve();
   #closed = false;
-  constructor(options: MocoVoiceCallsOptions) { this.#options = options; }
+  constructor(options: KuloVoiceCallsOptions) { this.#options = options; }
   #now(): number { return this.#options.now?.() ?? Date.now(); }
 
   async create(input: VoiceCallScope): Promise<VoiceCallSession> {
@@ -207,7 +207,7 @@ export class MocoVoiceCalls {
       try {
         await this.#options.delegate({ topicId: call.scope.topicId, principalId: call.scope.principalId, callId: call.id,
           delegationId: request.id, text: request.text.trim() });
-        this.#taskResult(call, request.id, "请求已提交给当前 Moco 会话处理，进展和结果将单独更新。", true);
+        this.#taskResult(call, request.id, "请求已提交给当前 Kulo 会话处理，进展和结果将单独更新。", true);
       } catch {
         this.#taskResult(call, request.id, "任务提交状态尚未确认，请查看当前会话。", true);
       }

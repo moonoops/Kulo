@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ExecutorSlotsConfig, MocoSettingsView } from "@moco/protocol";
-import { MocoApiError } from "../../moco-api";
+import type { ExecutorSlotsConfig, KuloSettingsView } from "@kulo/protocol";
+import { KuloApiError } from "../../kulo-api";
 import { ExecutorSettingConflict, ExecutorSettingWriter, executorSettingValue } from "./executor-setting-writer";
 
 const initialValue: ExecutorSlotsConfig = { maxConcurrentWorkers: 3, maxSubagentsPerTicket: 4, paused: false,
   watchdogMinutes: 5, completedTaskDisplayHours: 3, autoArchiveEnabled: true, autoArchiveDays: 7 };
-const settings = (revision = 1, value: ExecutorSlotsConfig = initialValue) => ({ blocks: { executor: { revision, value } }, globalRevision: revision } as MocoSettingsView);
+const settings = (revision = 1, value: ExecutorSlotsConfig = initialValue) => ({ blocks: { executor: { revision, value } }, globalRevision: revision } as KuloSettingsView);
 
 describe("runtime single-setting persistence", () => {
   it("serializes rapid independent changes against the latest saved revision", async () => {
@@ -55,11 +55,11 @@ describe("runtime single-setting persistence", () => {
   });
 
   it("blocks queued writes after a 409 until the latest block is explicitly loaded", async () => {
-    const save = vi.fn().mockRejectedValueOnce(new MocoApiError(409, "changed")).mockImplementation(async (revision: number, value: ExecutorSlotsConfig) => ({ settings: settings(revision + 1, value) }));
+    const save = vi.fn().mockRejectedValueOnce(new KuloApiError(409, "changed")).mockImplementation(async (revision: number, value: ExecutorSlotsConfig) => ({ settings: settings(revision + 1, value) }));
     const writer = new ExecutorSettingWriter(settings(), save);
     const first = writer.commit("paused", true);
     const second = writer.commit("autoArchiveEnabled", false);
-    await expect(first).rejects.toBeInstanceOf(MocoApiError);
+    await expect(first).rejects.toBeInstanceOf(KuloApiError);
     await expect(second).rejects.toBeInstanceOf(ExecutorSettingConflict);
     expect(save).toHaveBeenCalledOnce();
     writer.reload(settings(3, { ...initialValue, watchdogMinutes: 10 }));
@@ -68,8 +68,8 @@ describe("runtime single-setting persistence", () => {
   });
 
   it("does not downgrade a newer external snapshot when an older request finishes", async () => {
-    let finish!: (result: { settings: MocoSettingsView }) => void;
-    const save = vi.fn(() => new Promise<{ settings: MocoSettingsView }>((resolve) => { finish = resolve; }));
+    let finish!: (result: { settings: KuloSettingsView }) => void;
+    const save = vi.fn(() => new Promise<{ settings: KuloSettingsView }>((resolve) => { finish = resolve; }));
     const writer = new ExecutorSettingWriter(settings(), save);
     const pending = writer.commit("paused", true);
     await Promise.resolve();
@@ -91,8 +91,8 @@ describe("runtime single-setting persistence", () => {
   });
 
   it("reports a newer external change to the submitted field instead of treating an older response as success", async () => {
-    let finish!: (result: { settings: MocoSettingsView }) => void;
-    const save = vi.fn(() => new Promise<{ settings: MocoSettingsView }>((resolve) => { finish = resolve; }));
+    let finish!: (result: { settings: KuloSettingsView }) => void;
+    const save = vi.fn(() => new Promise<{ settings: KuloSettingsView }>((resolve) => { finish = resolve; }));
     const writer = new ExecutorSettingWriter(settings(), save);
     const pending = writer.commit("maxConcurrentWorkers", 6, 3);
     await Promise.resolve();

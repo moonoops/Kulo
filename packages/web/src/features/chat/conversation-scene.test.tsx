@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ConversationScene, RecommendedTasks, shouldCenterConversation } from "./conversation-scene";
-import { composerPlaceholder } from "../../moco-composer";
+import { composerPlaceholder } from "../../kulo-composer";
 
 describe("conversation initial presentation", () => {
   it("waits for the selected conversation instead of flashing the intro over history", () => {

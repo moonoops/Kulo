@@ -1,14 +1,14 @@
-import { translate as t, useI18n } from "../../moco-i18n";
+import { translate as t, useI18n } from "../../kulo-i18n";
 import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Chip } from "@heroui/react";
-import { inspectSensitiveText, redactSecrets, redactSensitiveText, type CapabilitiesWorkspaceSnapshot, type ConnectionRecordView, type ConnectionWorkspaceSnapshot, type EnvNodeDescriptor, type MocoSettingsView, type SettingsAssistantAction, type SettingsAssistantSnapshot, type SetupInputRequest, type TicketCardView } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
-import { describeLocalizedMocoError } from "../../moco-error";
+import { inspectSensitiveText, redactSecrets, redactSensitiveText, type CapabilitiesWorkspaceSnapshot, type ConnectionRecordView, type ConnectionWorkspaceSnapshot, type EnvNodeDescriptor, type KuloSettingsView, type SettingsAssistantAction, type SettingsAssistantSnapshot, type SetupInputRequest, type TicketCardView } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
+import { describeLocalizedKuloError } from "../../kulo-error";
 import { ConfirmDialog } from "../../components/confirm-dialog";
-import { AttachmentLightbox, composerPlaceholder, MocoComposer, UserAttachmentList, type PreviewableImage } from "../../moco-composer";
-import { MocoMarkdown } from "../../moco-markdown";
-import { MocoIcon } from "../../moco-icon";
-import { TaskDispatchCard } from "../../moco-tasks";
+import { AttachmentLightbox, composerPlaceholder, KuloComposer, UserAttachmentList, type PreviewableImage } from "../../kulo-composer";
+import { KuloMarkdown } from "../../kulo-markdown";
+import { KuloIcon } from "../../kulo-icon";
+import { TaskDispatchCard } from "../../kulo-tasks";
 import { ConnectedMessageContent } from "../chat/connected-message-content";
 import { cardAdjustmentDraft } from "../genui/card-value-summary";
 import type { SettingsModuleId } from "./settings-helpers";
@@ -26,7 +26,7 @@ import { ConnectionSetupInputs } from "./connection-setup-inputs";
 import type { ConnectionPrepare } from "./connections-module";
 import { ConnectionFollowup } from "./connection-followup";
 import { ConnectionIcon } from "./connection-icon";
-import { MocoThinkingIndicator } from "../chat/thinking-indicator";
+import { KuloThinkingIndicator } from "../chat/thinking-indicator";
 import { SettingsAssistantHistory } from "./settings-assistant-history";
 import { createImageDraftConfig, imageConfigFromCapability, ImageCapabilityEditor } from "./image-capability-editor";
 import { ImageProviderPicker } from "./image-provider-picker";
@@ -45,7 +45,7 @@ export function SettingsAssistantPanel({
 }: {
   module: SettingsModuleId;
   agentName: string;
-  settings: MocoSettingsView | null;
+  settings: KuloSettingsView | null;
   envs: EnvNodeDescriptor[];
   tickets?: TicketCardView[];
   onProjectTicket?: (ticketId: string, title?: string) => void;
@@ -114,7 +114,7 @@ export function SettingsAssistantPanel({
   const pendingConnectionInput = activeConnectionInput?.id;
   const nativeConnectionInput = connections?.applications?.some((application) => application.id === activeConnectionInput?.appId && application.authentication === "macos") ? pendingConnectionInput : undefined;
   const runFailure = !snapshot.live.busy && snapshot.live.runFailure
-    ? describeLocalizedMocoError({
+    ? describeLocalizedKuloError({
       reason: snapshot.live.runFailure.reason,
       detail: snapshot.live.runFailure.detail,
       modelId: settings?.blocks.model.value.defaultModel,
@@ -208,7 +208,7 @@ export function SettingsAssistantPanel({
     setImagePreparing(action);
     try {
       if (action === "discover") {
-        const discovery = await mocoRest.discoverImageModels(controls.clientId);
+        const discovery = await kuloRest.discoverImageModels(controls.clientId);
         setImageSelection({ key: `${imageDraft?.id ?? ""}:${discovery.id}`, panel: "discovery" });
       } else {
         const capability = capabilityId ? capabilitiesWorkspace.capabilities.find((item) => item.id === capabilityId && item.kind === "image") : undefined;
@@ -217,7 +217,7 @@ export function SettingsAssistantPanel({
           setImageSelection({ key: imageKey, panel: "draft" });
           throw new Error(t("先保存或取消当前图像配置，再编辑其他模型。", "Save or cancel the current image configuration before editing another model."));
         }
-        const draft = imageDraft ?? await mocoRest.updateImageDraft({ clientId: controls.clientId, config: capability ? imageConfigFromCapability(capabilitiesWorkspace, capability) : createImageDraftConfig(capabilitiesWorkspace) });
+        const draft = imageDraft ?? await kuloRest.updateImageDraft({ clientId: controls.clientId, config: capability ? imageConfigFromCapability(capabilitiesWorkspace, capability) : createImageDraftConfig(capabilitiesWorkspace) });
         setImageSelection({ key: `${draft.id}:${imageDiscovery?.id ?? ""}`, panel: "draft" });
       }
       onCapabilityInputsChanged?.();
@@ -281,13 +281,13 @@ export function SettingsAssistantPanel({
   };
 
   const shortcutButtons = (compact: boolean) => (
-    <div className="moco-settings-assistant-suggestions" aria-label={imageView ? t("图像配置", "Image configuration") : t("可以交给 Moco 的任务", "Tasks for Moco")}>
+    <div className="kulo-settings-assistant-suggestions" aria-label={imageView ? t("图像配置", "Image configuration") : t("可以交给 Kulo 的任务", "Tasks for Kulo")}>
       {shortcuts.map((shortcut) => (
         <Button
           key={shortcut.id}
           variant="ghost"
           size="sm"
-          className="moco-settings-assistant-suggestion"
+          className="kulo-settings-assistant-suggestion"
           isPending={shortcut.kind === "image" && imagePreparing === shortcut.action}
           isDisabled={controls.switchingConversation || (shortcut.kind === "image" ? imageDisabled || !capabilitiesWorkspace : shortcut.kind === "connection" ? !connected || connectionPreparing : shortcut.kind === "agent" ? controls.sending || snapshot.live.busy || controls.unconfirmedSend : (shortcut.kind === "ask" || shortcut.kind === "model") && (!connected || controls.sending || snapshot.live.busy || controls.unconfirmedSend || shortcut.kind === "ask" && (!hasModel || !loaded)))}
           onPress={() => void handleShortcut(shortcut)}
@@ -339,14 +339,14 @@ export function SettingsAssistantPanel({
   );
 
   return (
-    <section className="moco-settings-assistant" aria-label={t("设置对话", "Settings conversation")} data-conversation-ready={loaded || undefined}>
-      <div ref={scrollRef} className="moco-settings-assistant-scroll" onScroll={() => {
+    <section className="kulo-settings-assistant" aria-label={t("设置对话", "Settings conversation")} data-conversation-ready={loaded || undefined}>
+      <div ref={scrollRef} className="kulo-settings-assistant-scroll" onScroll={() => {
         const el = scrollRef.current;
         if (el) nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
       }}>
         {!hasConversation && !showModelCard && !(imageView && imagePanel) && (
-          <div className="moco-settings-assistant-intro">
-            <p className="moco-section-title">{settingsAssistantGreeting()}</p>
+          <div className="kulo-settings-assistant-intro">
+            <p className="kulo-section-title">{settingsAssistantGreeting()}</p>
             {!hasModel && <p className="text-sm">{t("先连接一个模型，即可开始对话。", "Connect a model to start a conversation.")}</p>}
           </div>
         )}
@@ -388,7 +388,7 @@ export function SettingsAssistantPanel({
                   </article>
                 ) : message.text ? (
                   <article className={message.role === "system_note" ? "text-xs text-muted" : "min-w-0"}>
-                    <MocoMarkdown text={message.text} />
+                    <KuloMarkdown text={message.text} />
                   </article>
                 ) : null}
                 {actions.map(renderAction)}
@@ -396,10 +396,10 @@ export function SettingsAssistantPanel({
             )
           ))}
           {snapshot.live.busy && (snapshot.live.streamingText ? <StreamingMessage text={snapshot.live.streamingText} /> : (
-            <div className="flex items-center gap-2 py-1 text-xs text-muted"><MocoThinkingIndicator aria-label={t("设置助手思考中", "Settings assistant is thinking")} />{snapshot.live.retrying ? t("正在重试…", "Retrying…") : t("思考中…", "Thinking…")}</div>
+            <div className="flex items-center gap-2 py-1 text-xs text-muted"><KuloThinkingIndicator aria-label={t("设置助手思考中", "Settings assistant is thinking")} />{snapshot.live.retrying ? t("正在重试…", "Retrying…") : t("思考中…", "Thinking…")}</div>
           ))}
           {controls.localAppearance && <Card variant="secondary" className="flex-row items-center justify-between gap-2 rounded-2xl p-3"><Card.Content className="text-sm">{t("已切换为", "Switched to ")}{appearanceName(controls.localAppearance.appearance)}</Card.Content><Card.Footer><Button size="sm" variant="ghost" onPress={controls.undoLocalAppearance}>{t("撤销", "Undo")}</Button></Card.Footer></Card>}
-          {localInfo && (!localInfo.scope || localInfo.scope === module) && <Card variant="secondary" className="gap-2 rounded-2xl p-3" aria-label={localInfo.title}><Card.Content className={localInfo.error ? "text-sm text-danger" : "text-sm"}><MocoMarkdown text={localInfo.text} /></Card.Content></Card>}
+          {localInfo && (!localInfo.scope || localInfo.scope === module) && <Card variant="secondary" className="gap-2 rounded-2xl p-3" aria-label={localInfo.title}><Card.Content className={localInfo.error ? "text-sm text-danger" : "text-sm"}><KuloMarkdown text={localInfo.text} /></Card.Content></Card>}
           {module === "identity" && settings && <MemoryServiceDialogue clientId={controls.clientId} settings={settings} connected={connected} refreshKey={`${settings.blocks.memory.revision}:${snapshot.live.busy}:${snapshot.actions.length}:${snapshot.messages.length}`} />}
           {module === "connections" && connections && <ConnectionSetupInputs inputs={connections.inputs} connections={connections.connections} clientId={controls.clientId} connected={connected} available={connections.vault.available} onChanged={() => {
             onConnectionsRefresh?.();
@@ -433,7 +433,7 @@ export function SettingsAssistantPanel({
         </div>
       </div>
 
-      <div className="moco-settings-assistant-footer flex shrink-0 flex-col gap-3">
+      <div className="kulo-settings-assistant-footer flex shrink-0 flex-col gap-3">
         {(safeError || failure || !connected) && <Alert status={connected ? "danger" : "warning"} className="flex flex-col gap-2 rounded-2xl p-3">
           <Alert.Content className="flex flex-col gap-1 break-words text-xs">
             {safeError || !connected ? safeError || t("与中枢连接已断开，草稿已保留。", "Disconnected from the hub. Your draft is preserved.") : failure && <>
@@ -454,12 +454,12 @@ export function SettingsAssistantPanel({
             <Button size="sm" variant="ghost" isIconOnly aria-label={t("新建设置对话", "New settings conversation")}
               isDisabled={conversationChangeDisabled} isPending={controls.switchingConversation}
               onPress={() => void controls.createConversation().then((created) => { if (created) composerRef.current?.focus(); })}>
-              <span title={t("新建对话", "New conversation")}><MocoIcon name="chat-add" size={18} /></span>
+              <span title={t("新建对话", "New conversation")}><KuloIcon name="chat-add" size={18} /></span>
             </Button>
             <SettingsAssistantHistory snapshot={snapshot} loaded={loaded} disabled={conversationChangeDisabled} error={safeError} onSelect={controls.selectConversation} onDelete={controls.deleteConversation} />
           </div>
         </div>
-        <MocoComposer
+        <KuloComposer
           textareaRef={composerRef} draftText={controls.draft} onDraftTextChange={controls.setDraft}
           attachments={controls.attachments} onEnqueueFiles={controls.enqueueFiles} onRemoveAttachment={controls.removeAttachment}
           onRetryAttachment={controls.retryAttachment} onCancelAttachment={controls.cancelAttachment} onPreviewImage={setPreviewImage}

@@ -1,6 +1,6 @@
 {
-  "name": "@moco/recovery",
-  "version": "0.1.1",
+  "name": "@kulo/recovery",
+  "version": "0.1.2",
   "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
@@ -10,11 +10,11 @@
   "exports": {
     ".": { "types": "./src/index.ts", "default": "./dist/index.js" }
   },
-  "bin": { "moco-rescue": "./dist/bin.js" },
+  "bin": { "kulo-rescue": "./dist/bin.js" },
   "files": ["dist"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "devDependencies": { "@moco/protocol": "workspace:*" }
+  "devDependencies": { "@kulo/protocol": "workspace:*" }
 }

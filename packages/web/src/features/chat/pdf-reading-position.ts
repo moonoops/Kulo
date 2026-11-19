@@ -5,6 +5,6 @@ export function resetPdfPageScroll(page: PdfPageScroll | null, previousPage: num
   if (!page || previousPage === nextPage) return;
   page.scrollTop = 0;
   page.scrollLeft = 0;
-  const preview = page.closest<HTMLElement>(".moco-artifact-live-preview");
+  const preview = page.closest<HTMLElement>(".kulo-artifact-live-preview");
   if (preview) { preview.scrollTop = 0; preview.scrollLeft = 0; }
 }

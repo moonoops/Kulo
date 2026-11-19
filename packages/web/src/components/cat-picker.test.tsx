@@ -21,7 +21,7 @@ describe("image-only cat picker", () => {
     const html = renderToStaticMarkup(<CatPicker><CatAvatar animated={false} /></CatPicker>);
     const buttons = html.match(/<button\b[\s\S]*?<\/button>/g) ?? [];
     expect(buttons).toHaveLength(25);
-    expect(buttons[0]).toContain('aria-label="更换 Moco 形象"');
+    expect(buttons[0]).toContain('aria-label="更换 Kulo 形象"');
     expect(html.replace(/<[^>]+>/g, "")).toBe("");
     for (const appearance of CAT_APPEARANCES) {
       const choice = buttons.find((button) => button.includes(`aria-label="${appearance.labelZh}"`));

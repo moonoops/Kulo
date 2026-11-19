@@ -10,7 +10,7 @@ import { StdioClientTransport, DEFAULT_INHERITED_ENV_VARS } from "@modelcontextp
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { resolveHttpProxyUrlForTarget } from "@earendil-works/pi-ai/utils/node-http-proxy";
-import { MOCO_VERSION, type SearchFailure, type SearchPlanView } from "@moco/protocol";
+import { KULO_VERSION, type SearchFailure, type SearchPlanView } from "@kulo/protocol";
 import { proxyFetch } from "./http-transport.js";
 
 export interface SearchMcpOptions {
@@ -89,7 +89,7 @@ function packageBin(name: string): string {
 async function duckConfig(options: SearchMcpOptions): Promise<{ directory: string; temporary: boolean }> {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(options.plan.id) || ["__proto__", "constructor", "prototype"].includes(options.plan.id)) throw searchAdapterFailure("invalid_request");
   const temporary = !options.stateDir;
-  const directory = options.stateDir ? path.join(options.stateDir, "search-mcp", "duckduckgo", options.plan.id) : await fs.mkdtemp(path.join(os.tmpdir(), "moco-search-duck-"));
+  const directory = options.stateDir ? path.join(options.stateDir, "search-mcp", "duckduckgo", options.plan.id) : await fs.mkdtemp(path.join(os.tmpdir(), "kulo-search-duck-"));
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const config = {
     allowBrowserCookies: false, ssrf: { trustEnvProxy: false, allowRanges: [] },
@@ -135,7 +135,7 @@ export async function withSearchMcp<T>(options: SearchMcpOptions, run: (session:
   let bodyFailure: SearchAdapterError | undefined;
   const failBody = () => { bodyFailure = searchAdapterFailure("upstream"); transportAbort.abort(bodyFailure); return bodyFailure; };
   if ((options.plan.adapter === "tavily" || options.plan.adapter === "brave") && !options.apiKey) throw searchAdapterFailure("auth");
-  const client = new Client({ name: "moco-search", version: MOCO_VERSION }, { capabilities: {} });
+  const client = new Client({ name: "kulo-search", version: KULO_VERSION }, { capabilities: {} });
   let remote: StreamableHTTPClientTransport | undefined;
   let config: Awaited<ReturnType<typeof duckConfig>> | undefined;
   let closing = false;
@@ -210,7 +210,7 @@ export async function withSearchMcp<T>(options: SearchMcpOptions, run: (session:
     closing = true; cleanupSignal = AbortSignal.timeout(1500);
     if (remote?.sessionId) {
       try { await remote.terminateSession(); }
-      catch (error) { console.warn("[MocoSearchMCP] Session cleanup failed", options.plan.id, classifySearchMcpError(error).failure.kind); }
+      catch (error) { console.warn("[KuloSearchMCP] Session cleanup failed", options.plan.id, classifySearchMcpError(error).failure.kind); }
     }
     try { await client.close(); }
     finally { if (config?.temporary) await fs.rm(config.directory, { recursive: true, force: true }); }

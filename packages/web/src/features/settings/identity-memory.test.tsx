@@ -1,14 +1,14 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { defaultRolePresets, type MocoSettingsView } from "@moco/protocol";
+import { defaultRolePresets, type KuloSettingsView } from "@kulo/protocol";
 import { IdentityModule } from "./identity-module";
 import { RelationshipUpdateControls, type PersonalityControls } from "./personality-controls";
 
-function memorySettings(hasRouterApiKey: boolean, hasWorkerApiKey: boolean): MocoSettingsView {
+function memorySettings(hasRouterApiKey: boolean, hasWorkerApiKey: boolean): KuloSettingsView {
   return {
     globalRevision: 1,
     blocks: {
-      presentation: { revision: 1, value: { agentName: "Moco", workbenchName: "Moco's table" } },
+      presentation: { revision: 1, value: { agentName: "Kulo", workbenchName: "Kulo's table" } },
       executor: { revision: 1, value: { maxConcurrentWorkers: 3, maxSubagentsPerTicket: 4, paused: false, watchdogMinutes: 5 } },
       roles: { revision: 1, value: defaultRolePresets() },
       model: { revision: 1, hasApiKey: false, value: { baseUrl: "http://127.0.0.1:9/v1", apiMode: "openai-completions", defaultModel: "test-model", thinkingLevel: "off", customProviders: [] } },
@@ -22,8 +22,8 @@ function memorySettings(hasRouterApiKey: boolean, hasWorkerApiKey: boolean): Moc
           endpoint: "http://127.0.0.1:9",
           endpoints: [],
           caCertPem: "",
-          routerApiKeyEnv: "MOCO_HINDSIGHT_ROUTER_API_KEY",
-          workerApiKeyEnv: "MOCO_HINDSIGHT_WORKER_API_KEY",
+          routerApiKeyEnv: "KULO_HINDSIGHT_ROUTER_API_KEY",
+          workerApiKeyEnv: "KULO_HINDSIGHT_WORKER_API_KEY",
           authFile: "",
           autoAttachTopLevelRouters: false,
           banks: { private: "private", shared: "shared" },
@@ -38,8 +38,8 @@ describe("memory credential fields", () => {
   it("does not expose the retired workbench-name setting", () => {
     const html = renderToStaticMarkup(<IdentityModule settings={memorySettings(false, false)} onSettingsUpdated={() => {}} />);
     expect(html).not.toContain("工作台名称");
-    expect(html).not.toContain("Moco&#x27;s table");
-    expect(html).not.toContain("Moco's table");
+    expect(html).not.toContain("Kulo&#x27;s table");
+    expect(html).not.toContain("Kulo's table");
   });
 
   it("keeps persisted credentials out of the left connection form", () => {
@@ -82,7 +82,7 @@ describe("memory credential fields", () => {
     expect(interval).toBeUndefined();
     expect(html).not.toContain("更新间隔");
     expect(html).not.toContain('aria-label="未保存的更改"');
-    expect(html).toContain('value="Moco"');
+    expect(html).toContain('value="Kulo"');
     expect(html).not.toContain("执行时间");
     expect(html).not.toContain('type="time"');
     expect(html).not.toContain("未检查");

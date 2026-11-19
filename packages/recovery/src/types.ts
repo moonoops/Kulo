@@ -2,7 +2,7 @@ export type {
   RecoveryReleaseKind, RecoveryFileEntry, RecoveryReleaseManifest, RecoveryReleaseIdentity,
   RecoveryManifestOptions, RecoveryReleaseRecord, RecoveryLaunch,
   RecoverySession, RecoveryTransaction, RecoveryInspection,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 
 export interface RecoveryManagerOptions {
   shellVersion?: string;

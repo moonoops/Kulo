@@ -7,9 +7,9 @@ import {
 import type {
   CreateProjectInput, ProjectDirectoryGrant, ProjectDirectoryListing, ProjectRecord,
   ProjectView, TicketRecord, TopicSummary,
-} from "@moco/protocol";
-import { MocoStateDoc, hasPendingWorkspaceApply, transitionTicketStatus } from "./state.js";
-import { MocoUserEntry } from "./ui-cards.js";
+} from "@kulo/protocol";
+import { KuloStateDoc, hasPendingWorkspaceApply, transitionTicketStatus } from "./state.js";
+import { KuloUserEntry } from "./ui-cards.js";
 
 export class ProjectError extends Error {
   constructor(
@@ -31,7 +31,7 @@ export interface ProjectEnvManager {
 
 interface CreateOperation { projectId: string; input: CreateProjectInput }
 interface BindingOperation { operationId: string; deviceId: string; workspaceDir: string; revision: number; grantRevision: number }
-export interface MocoProjectsState {
+export interface KuloProjectsState {
   projects: Record<string, ProjectRecord>;
   commands: Record<string, CreateOperation>;
   bindings: Record<string, BindingOperation>;
@@ -41,9 +41,9 @@ export interface MocoProjectsState {
   cancellations: Record<string, { projectId?: string; reason: string; requestedAt: number }>;
 }
 
-export const MocoProjectsDoc = defineDoc<MocoProjectsState & JsonObject>({
-  kind: "moco.projects", version: 1, scope: "session",
-  initial: () => ({ projects: {}, commands: {}, bindings: {}, needsAuthorization: {}, cleanup: {}, errors: {}, cancellations: {} }) as MocoProjectsState & JsonObject,
+export const KuloProjectsDoc = defineDoc<KuloProjectsState & JsonObject>({
+  kind: "kulo.projects", version: 1, scope: "session",
+  initial: () => ({ projects: {}, commands: {}, bindings: {}, needsAuthorization: {}, cleanup: {}, errors: {}, cancellations: {} }) as KuloProjectsState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
 
@@ -59,7 +59,7 @@ export interface ProjectPatch {
   name?: string; notes?: string; workspaceDir?: string; deviceId?: string; expectedRevision?: number;
 }
 
-export interface MocoProjectsDependencies {
+export interface KuloProjectsDependencies {
   harness: Harness;
   envManager: ProjectEnvManager;
   stopTicket: (id: string, reason: string) => Promise<unknown>;
@@ -78,7 +78,7 @@ const clean = (value: string, name: string, max: number): string => {
 };
 
 export function assertProjectBinding(
-  state: Readonly<MocoProjectsState> | undefined, id: string, expectedRevision?: number,
+  state: Readonly<KuloProjectsState> | undefined, id: string, expectedRevision?: number,
 ): ProjectRecord {
   const project = own(state?.projects, id);
   if (!project || project.deletedAt !== undefined) throw new ProjectError(404, "project_not_found", "项目不存在或已删除。");
@@ -89,10 +89,10 @@ export function assertProjectBinding(
   return clone(project);
 }
 
-export class MocoProjects {
-  readonly #deps: MocoProjectsDependencies;
+export class KuloProjects {
+  readonly #deps: KuloProjectsDependencies;
   #tail: Promise<unknown> = Promise.resolve();
-  constructor(deps: MocoProjectsDependencies) { this.#deps = deps; }
+  constructor(deps: KuloProjectsDependencies) { this.#deps = deps; }
 
   async #serial<T>(run: () => Promise<T>): Promise<T> {
     const result = this.#tail.then(run, run);
@@ -102,7 +102,7 @@ export class MocoProjects {
 
   async #changed(): Promise<void> { await this.#deps.onChanged?.(); }
 
-  #view(project: ProjectRecord, state?: Readonly<MocoProjectsState>): ProjectView {
+  #view(project: ProjectRecord, state?: Readonly<KuloProjectsState>): ProjectView {
     const device = this.#deps.envManager.getEnvDescriptor(project.deviceId);
     const error = project.deletedAt !== undefined ? "项目已删除。"
       : state?.bindings[project.id] ? "项目目录正在重新关联。"
@@ -118,7 +118,7 @@ export class MocoProjects {
   }
 
   async list(context: Context = BACKGROUND_CONTEXT, includeDeleted = false): Promise<ProjectView[]> {
-    const state = await this.#deps.harness.snapshot(MocoProjectsDoc, context);
+    const state = await this.#deps.harness.snapshot(KuloProjectsDoc, context);
     return Object.values(state?.projects ?? {})
       .filter((project) => includeDeleted || project.deletedAt === undefined)
       .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
@@ -128,8 +128,8 @@ export class MocoProjects {
   async listTopics(projectId: string | null | undefined, context: Context = BACKGROUND_CONTEXT, includeDeleted = false): Promise<TopicSummary[]> {
     if (projectId) await this.get(projectId, context, includeDeleted);
     const [state, projects] = await Promise.all([
-      this.#deps.harness.snapshot(MocoStateDoc, context),
-      this.#deps.harness.snapshot(MocoProjectsDoc, context),
+      this.#deps.harness.snapshot(KuloStateDoc, context),
+      this.#deps.harness.snapshot(KuloProjectsDoc, context),
     ]);
     return Object.values(state?.topics ?? {}).filter((topic) => {
       if (projectId !== undefined && (topic.projectId ?? null) !== projectId) return false;
@@ -139,7 +139,7 @@ export class MocoProjects {
   }
 
   async get(id: string, context: Context = BACKGROUND_CONTEXT, includeDeleted = false): Promise<ProjectRecord> {
-    const state = await this.#deps.harness.snapshot(MocoProjectsDoc, context);
+    const state = await this.#deps.harness.snapshot(KuloProjectsDoc, context);
     if (!includeDeleted) return assertProjectBinding(state, id);
     const project = own(state?.projects, id);
     if (!project) throw new ProjectError(404, "project_not_found", "项目不存在。");
@@ -154,7 +154,7 @@ export class MocoProjects {
         ...(input.createDirectory ? { createDirectory: true } : {}),
       };
       const operation = await this.#deps.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoProjectsDoc);
+        const state = await tx.doc(KuloProjectsDoc);
         const previous = own(state.commands, request.commandId);
         if (previous) {
           if (JSON.stringify(previous.input) !== JSON.stringify(request)) {
@@ -167,9 +167,9 @@ export class MocoProjects {
         state.commands[request.commandId] = next;
         return clone(next);
       }, context);
-      const existing = (await this.#deps.harness.snapshot(MocoProjectsDoc, context))?.projects[operation.projectId];
+      const existing = (await this.#deps.harness.snapshot(KuloProjectsDoc, context))?.projects[operation.projectId];
       if (existing) {
-        if (existing.deletedAt !== undefined) throw new ProjectError(409, "project_deleted", "原项目已删除，请通过 Moco 恢复。");
+        if (existing.deletedAt !== undefined) throw new ProjectError(409, "project_deleted", "原项目已删除，请通过 Kulo 恢复。");
         return this.#view(existing);
       }
       const grant = await this.#deps.envManager.authorizeProjectDirectory(request.deviceId, {
@@ -178,7 +178,7 @@ export class MocoProjects {
       });
       try {
         const project = await this.#deps.harness.commit(async (tx) => {
-          const state = await tx.doc(MocoProjectsDoc);
+          const state = await tx.doc(KuloProjectsDoc);
           this.#assertUnique(state, operation.projectId, request.deviceId, grant.directoryId);
           const now = Date.now();
           const record: ProjectRecord = {
@@ -202,7 +202,7 @@ export class MocoProjects {
     });
   }
 
-  #assertUnique(state: Readonly<MocoProjectsState>, id: string, deviceId: string, directoryId: string): void {
+  #assertUnique(state: Readonly<KuloProjectsState>, id: string, deviceId: string, directoryId: string): void {
     const duplicate = Object.values(state.projects).find((project) =>
       project.id !== id && project.deletedAt === undefined && project.deviceId === deviceId && project.directoryId === directoryId);
     if (duplicate) throw new ProjectError(409, "project_directory_duplicate", "该目录已关联项目。", { projectId: duplicate.id });
@@ -212,7 +212,7 @@ export class MocoProjects {
     return this.#serial(async () => {
       const project = await this.get(id, context, true);
       if (project.deletedAt !== undefined) throw new ProjectError(404, "project_not_found", "项目不存在或已删除。");
-      const previousBinding = (await this.#deps.harness.snapshot(MocoProjectsDoc, context))?.bindings[id];
+      const previousBinding = (await this.#deps.harness.snapshot(KuloProjectsDoc, context))?.bindings[id];
       const name = patch.name === undefined ? project.name : clean(patch.name, "项目名称", 120);
       if (patch.notes !== undefined && (typeof patch.notes !== "string" || patch.notes.length > 32_000 || patch.notes.includes("\0"))) {
         throw new ProjectError(400, "invalid_project_notes", "项目说明过长或包含无效字符。");
@@ -228,10 +228,10 @@ export class MocoProjects {
       const operationId = `project:bind:${id}:${expected + 1}:${grantRevision}`;
       if (rebind) {
         await this.#deps.harness.commit(async (tx) => {
-          const state = await tx.doc(MocoProjectsDoc);
+          const state = await tx.doc(KuloProjectsDoc);
           const current = own(state.projects, id);
           if (!current || current.deletedAt !== undefined || current.revision !== expected) throw new ProjectError(409, "project_revision_conflict", "项目已更新，请刷新后重试。");
-          const runtime = await tx.doc(MocoStateDoc);
+          const runtime = await tx.doc(KuloStateDoc);
           this.#assertNoTickets(Object.values(runtime.tickets), (ticket) => ticket.projectId === id);
           state.bindings[id] = { operationId, deviceId, workspaceDir, revision: expected + 1, grantRevision };
         }, context);
@@ -247,13 +247,13 @@ export class MocoProjects {
       }
       let next: ProjectRecord;
       try { next = await this.#deps.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoProjectsDoc);
+        const state = await tx.doc(KuloProjectsDoc);
         const current = own(state.projects, id);
         if (!current || current.deletedAt !== undefined || current.revision !== expected) {
           throw new ProjectError(409, "project_revision_conflict", "项目已更新，请刷新后重试。");
         }
         if (grant) {
-          const runtime = await tx.doc(MocoStateDoc);
+          const runtime = await tx.doc(KuloStateDoc);
           this.#assertNoTickets(Object.values(runtime.tickets), (ticket) => ticket.projectId === id);
           this.#assertUnique(state, id, deviceId, grant.directoryId);
           if (current.deviceId !== deviceId) {
@@ -284,7 +284,7 @@ export class MocoProjects {
     try { await this.#revoke(deviceId, id, context); }
     finally {
       await this.#deps.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoProjectsDoc);
+        const state = await tx.doc(KuloProjectsDoc);
         const project = own(state.projects, id);
         if (project && project.deletedAt === undefined) {
           project.grantRevision = Math.max(project.grantRevision, grantRevision) + 1;
@@ -305,7 +305,7 @@ export class MocoProjects {
   async #revoke(deviceId: string, projectId: string, context: Context): Promise<boolean> {
     const key = `${deviceId}:${projectId}`;
     await this.#deps.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoProjectsDoc);
+      const state = await tx.doc(KuloProjectsDoc);
       state.cleanup[key] = { deviceId, projectId, since: Date.now() };
     }, context);
     if (!this.#deps.envManager.getEnvDescriptor(deviceId)?.online) return true;
@@ -316,9 +316,9 @@ export class MocoProjects {
       throw error;
     }
     if (!result.cleanupPending) await this.#deps.harness.commit(async (tx) => {
-      const state = await tx.doc(MocoProjectsDoc);
+      const state = await tx.doc(KuloProjectsDoc);
       delete state.cleanup[key];
-      const runtime = await tx.doc(MocoStateDoc);
+      const runtime = await tx.doc(KuloStateDoc);
       for (const ticket of Object.values(runtime.tickets)) {
         if (ticket.projectId === projectId && ticket.envId === deviceId && !UNFINISHED.has(ticket.status) && !state.cancellations?.[ticket.id]) ticket.cleanupPending = false;
       }
@@ -329,10 +329,10 @@ export class MocoProjects {
   async remove(id: string, options: { stopTasks?: boolean } = {}, context: Context = BACKGROUND_CONTEXT): Promise<RemoveProjectResult> {
     return this.#serial(async () => {
       const transition = await this.#deps.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoProjectsDoc);
+        const state = await tx.doc(KuloProjectsDoc);
         const project = own(state.projects, id);
         if (!project) throw new ProjectError(404, "project_not_found", "项目不存在。");
-        const runtime = await tx.doc(MocoStateDoc);
+        const runtime = await tx.doc(KuloStateDoc);
         const projectTopics = Object.values(runtime.topics ?? {}).filter((topic) => topic.projectId === id);
         const topicIds = new Set(projectTopics.map((topic) => topic.id));
         const conversationIds = new Set(projectTopics.map((topic) => topic.conversationId));
@@ -372,7 +372,7 @@ export class MocoProjects {
       await this.#cancelPending(context, id);
       let cleanupPending = false;
       for (const deviceId of transition.cleanupDevices) cleanupPending = await this.#revoke(deviceId, id, context) || cleanupPending;
-      const runtime = await this.#deps.harness.snapshot(MocoStateDoc, context);
+      const runtime = await this.#deps.harness.snapshot(KuloStateDoc, context);
       await this.#changed();
       return { deleted: id, projects: await this.list(context), topics: Object.values(runtime?.topics ?? {}).filter((topic) => topic.deletedAt === undefined).map(clone), cleanupPending };
     });
@@ -381,13 +381,13 @@ export class MocoProjects {
   async restore(id: string, context: Context = BACKGROUND_CONTEXT): Promise<ProjectView> {
     return this.#serial(async () => {
       const project = await this.#deps.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoProjectsDoc);
+        const state = await tx.doc(KuloProjectsDoc);
         const current = own(state.projects, id);
         if (!current) throw new ProjectError(404, "project_not_found", "项目不存在。");
         this.#assertUnique(state, id, current.deviceId, current.directoryId);
         if (current.deletedAt === undefined) return clone(current);
         const deletionId = current.deletionId;
-        const runtime = await tx.doc(MocoStateDoc);
+        const runtime = await tx.doc(KuloStateDoc);
         for (const topic of Object.values(runtime.topics ?? {})) {
           if (topic.projectId === id && topic.deletedAt !== undefined && topic.deletionId === deletionId) {
             delete topic.deletedAt; delete topic.deletionId; topic.updatedAt = Date.now();
@@ -399,7 +399,7 @@ export class MocoProjects {
         return clone(current);
       }, context);
       await this.#changed();
-      const state = await this.#deps.harness.snapshot(MocoProjectsDoc, context);
+      const state = await this.#deps.harness.snapshot(KuloProjectsDoc, context);
       return this.#view(project, state);
     });
   }
@@ -408,7 +408,7 @@ export class MocoProjects {
     return this.#serial(async () => {
       const project = await this.get(id, context);
       if (!this.#deps.envManager.getEnvDescriptor(project.deviceId)?.online) throw new ProjectError(409, "project_device_offline", "项目设备离线。");
-      const before = await this.#deps.harness.snapshot(MocoProjectsDoc, context);
+      const before = await this.#deps.harness.snapshot(KuloProjectsDoc, context);
       if (before?.cleanup[`${project.deviceId}:${id}`]) throw new ProjectError(409, "project_cleanup_pending", "项目旧执行仍待清理，请等待设备确认后重试。");
       let grant: ProjectDirectoryGrant;
       try {
@@ -418,14 +418,14 @@ export class MocoProjects {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await this.#deps.harness.commit(async (tx) => {
-          const state = await tx.doc(MocoProjectsDoc);
+          const state = await tx.doc(KuloProjectsDoc);
           state.needsAuthorization[id] = true;
           state.errors[id] = `项目目录不可用，请检查路径、权限或重新关联。${message}`;
         }, context);
         await this.#changed();
         const code = typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
         if (typeof code === "string" && ["project_directory_unavailable", "ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP", "ESTALE"].includes(code)) {
-          const unavailable = new ProjectError(409, "project_directory_unavailable", `项目目录不可用，请检查路径、权限或通过 Moco 重新关联。${message}`);
+          const unavailable = new ProjectError(409, "project_directory_unavailable", `项目目录不可用，请检查路径、权限或通过 Kulo 重新关联。${message}`);
           unavailable.cause = error;
           throw unavailable;
         }
@@ -434,14 +434,14 @@ export class MocoProjects {
       if (grant.directoryId !== project.directoryId) {
         await this.#revoke(project.deviceId, id, context);
         await this.#deps.harness.commit(async (tx) => {
-          const state = await tx.doc(MocoProjectsDoc);
+          const state = await tx.doc(KuloProjectsDoc);
           state.needsAuthorization[id] = true;
-          state.errors[id] = "项目目录身份已变化，请通过 Moco 重新关联。";
+          state.errors[id] = "项目目录身份已变化，请通过 Kulo 重新关联。";
         }, context);
-        throw new ProjectError(409, "project_directory_changed", "项目目录身份已变化，请通过 Moco 重新关联。");
+        throw new ProjectError(409, "project_directory_changed", "项目目录身份已变化，请通过 Kulo 重新关联。");
       }
       await this.#deps.harness.commit(async (tx) => {
-        const state = await tx.doc(MocoProjectsDoc);
+        const state = await tx.doc(KuloProjectsDoc);
         assertProjectBinding(state, id, project.revision);
         const current = state.projects[id]!;
         if (grant.scratchRoot) current.scratchRoot = grant.scratchRoot;
@@ -456,7 +456,7 @@ export class MocoProjects {
     await this.#serial(async () => {
       await this.#cancelPending(context);
       if (!this.#deps.envManager.getEnvDescriptor(deviceId)?.online) return;
-      const state = await this.#deps.harness.snapshot(MocoProjectsDoc, context);
+      const state = await this.#deps.harness.snapshot(KuloProjectsDoc, context);
       for (const cleanup of Object.values(state?.cleanup ?? {}).filter((item) => item.deviceId === deviceId)) {
         await this.#revoke(deviceId, cleanup.projectId, context);
       }
@@ -468,20 +468,20 @@ export class MocoProjects {
   }
 
   async #cancelPending(context: Context, projectId?: string): Promise<void> {
-    const snapshot = await this.#deps.harness.snapshot(MocoProjectsDoc, context);
+    const snapshot = await this.#deps.harness.snapshot(KuloProjectsDoc, context);
     for (const [ticketId, cancellation] of Object.entries(snapshot?.cancellations ?? {})) {
       if (projectId && cancellation.projectId !== projectId) continue;
       await this.#deps.stopTicket(ticketId, cancellation.reason);
-      await this.#deps.harness.commit(async (tx) => { const state = await tx.doc(MocoProjectsDoc); delete state.cancellations[ticketId]; }, context);
+      await this.#deps.harness.commit(async (tx) => { const state = await tx.doc(KuloProjectsDoc); delete state.cancellations[ticketId]; }, context);
     }
   }
 
   async moveTopic(topicId: string, projectId: string | null, context: Context = BACKGROUND_CONTEXT): Promise<TopicSummary> {
     return this.#serial(async () => {
       const topic = await this.#deps.harness.commit(async (tx) => {
-        const projects = await tx.doc(MocoProjectsDoc);
+        const projects = await tx.doc(KuloProjectsDoc);
         if (projectId !== null) assertProjectBinding(projects, projectId);
-        const state = await tx.doc(MocoStateDoc);
+        const state = await tx.doc(KuloStateDoc);
         const current = own(state.topics, topicId);
         if (!current || current.deletedAt !== undefined) throw new ProjectError(404, "topic_not_found", "会话不存在或已删除。");
         if (current.master) throw new ProjectError(409, "master_topic_immutable", "默认主会话不能移入项目。");
@@ -497,8 +497,8 @@ export class MocoProjects {
   async restoreTopic(topicId: string, context: Context = BACKGROUND_CONTEXT): Promise<TopicSummary> {
     return this.#serial(async () => {
       const topic = await this.#deps.harness.commit(async (tx) => {
-        const projects = await tx.doc(MocoProjectsDoc);
-        const state = await tx.doc(MocoStateDoc);
+        const projects = await tx.doc(KuloProjectsDoc);
+        const state = await tx.doc(KuloStateDoc);
         const current = own(state.topics, topicId);
         if (!current) throw new ProjectError(404, "topic_not_found", "会话不存在。");
         if (current.projectId) assertProjectBinding(projects, current.projectId);
@@ -512,7 +512,7 @@ export class MocoProjects {
   async searchHistory(projectId: string, query: string, context: Context = BACKGROUND_CONTEXT): Promise<ProjectHistoryMatch[]> {
     await this.get(projectId, context);
     const search = clean(query, "检索内容", 256).toLocaleLowerCase();
-    const state = await this.#deps.harness.snapshot(MocoStateDoc, context);
+    const state = await this.#deps.harness.snapshot(KuloStateDoc, context);
     const topics = Object.values(state?.topics ?? {}).filter((topic) => topic.projectId === projectId && topic.deletedAt === undefined)
       .sort((a, b) => b.updatedAt - a.updatedAt);
     const matches: ProjectHistoryMatch[] = [];
@@ -523,10 +523,10 @@ export class MocoProjects {
       for (;;) {
         context.abortSignal?.throwIfAborted();
         for (const entry of page.items) {
-          const isUser = UserEntry.is(entry) || MocoUserEntry.is(entry);
+          const isUser = UserEntry.is(entry) || KuloUserEntry.is(entry);
           if (!isUser && !AssistantEntry.is(entry)) continue;
           const model = entry.model?.[0] as { content?: unknown } | undefined;
-          const storedText = MocoUserEntry.is(entry) ? entry.data.text : undefined;
+          const storedText = KuloUserEntry.is(entry) ? entry.data.text : undefined;
           const text = typeof storedText === "string" ? storedText : typeof model?.content === "string" ? model.content : Array.isArray(model?.content)
             ? model.content.flatMap((block) => block && typeof block === "object" && "type" in block && block.type === "text" && "text" in block && typeof block.text === "string" ? [block.text] : []).join("\n") : "";
           const at = text.toLocaleLowerCase().indexOf(search);

@@ -1,35 +1,35 @@
-.moco-connections {
+.kulo-connections {
   container-type: inline-size;
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: var(--moco-space-6);
+  gap: var(--kulo-space-6);
 }
 
-.moco-connection-group {
+.kulo-connection-group {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: var(--moco-space-4);
+  gap: var(--kulo-space-4);
 }
 
-.moco-connection-name {
+.kulo-connection-name {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: var(--moco-control-gap);
+  gap: var(--kulo-control-gap);
 }
 
-.moco-connection-copy {
+.kulo-connection-copy {
   display: flex;
   min-width: 0;
   flex: 1;
   flex-direction: column;
   align-items: flex-start;
-  gap: var(--moco-space-1);
+  gap: var(--kulo-space-1);
 }
 
-.moco-connection-icon {
+.kulo-connection-icon {
   display: inline-flex;
   width: 2.75rem;
   height: 2.75rem;
@@ -42,7 +42,7 @@
   color: var(--foreground);
 }
 
-.moco-connection-icon--messages { background: #32bc52; color: white; }
-.moco-connection-icon--mail { background: #1888ef; color: white; }
-.moco-connection-icon--github { background: var(--foreground); color: var(--background); }
-.moco-connection-icon--figma { background: var(--surface-secondary); }
+.kulo-connection-icon--messages { background: #32bc52; color: white; }
+.kulo-connection-icon--mail { background: #1888ef; color: white; }
+.kulo-connection-icon--github { background: var(--foreground); color: var(--background); }
+.kulo-connection-icon--figma { background: var(--surface-secondary); }

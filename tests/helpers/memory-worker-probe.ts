@@ -14,10 +14,10 @@ const input = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
   workspaceDir: string;
 };
 const workspaceDir = path.resolve(input.workspaceDir);
-const canaryDir = fs.mkdtempSync(path.join(path.dirname(workspaceDir), "moco-private-canary-"));
+const canaryDir = fs.mkdtempSync(path.join(path.dirname(workspaceDir), "kulo-private-canary-"));
 const canaryFile = path.join(canaryDir, "private.txt");
 fs.writeFileSync(canaryFile, "private-filesystem-canary", { mode: 0o600 });
-process.env.MOCO_HINDSIGHT_ROUTER_API_KEY = "router-environment-canary-000000000000";
+process.env.KULO_HINDSIGHT_ROUTER_API_KEY = "router-environment-canary-000000000000";
 const manager = new EnvManager({ localRootDir: workspaceDir, getProtectedPaths: () => [canaryDir],
   workerNetwork: { localConnectPorts: [Number(new URL(input.baseUrl).port)] } });
 try {

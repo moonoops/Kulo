@@ -1,4 +1,4 @@
-export const HUB_TEST_ADMIN_TOKEN = "moco-test-admin-token";
+export const HUB_TEST_ADMIN_TOKEN = "kulo-test-admin-token";
 
 export function withHubTestAuth(url: string, token = HUB_TEST_ADMIN_TOKEN): string {
   const authenticated = new URL(url);

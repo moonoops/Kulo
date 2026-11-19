@@ -1,33 +1,33 @@
-@reference "../../moco.css";
+@reference "../../kulo.css";
 
-.moco-chat-artifact { container-type: inline-size; width: 100%; min-width: 0; gap: 0; padding: 0; border: 1px solid var(--border); border-radius: 12px; }
-.moco-artifact-header { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--moco-control-gap); min-width: 0; padding: var(--moco-list-padding-block) var(--moco-list-padding-inline); }
-.moco-artifact-header > svg { flex-shrink: 0; color: var(--muted); }
-.moco-artifact-detail { display: flex; flex: 1; flex-direction: column; min-width: 80px; }
-.moco-artifact-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--moco-control-gap); }
-.moco-artifact-inline-stage { min-width: 0; border-top: 1px solid var(--border); }
-.moco-artifact-live-preview { @apply scrollbar; position: relative; width: 100%; min-width: 0; max-height: min(68dvh, 680px); overflow: auto; }
-.moco-artifact-live-preview[data-kind="html"] { height: clamp(320px, 65dvh, 680px); }
-.moco-artifact-live-preview[data-reading="expanded"] { max-height: none; }
-.moco-artifact-live-preview[data-reading="expanded"][data-kind="html"] { height: max(680px, 85dvh); }
-.moco-artifact-frame { display: block; width: 100%; height: 100%; border: 0; color-scheme: light; background: Canvas; border-radius: 0 0 12px 12px; }
-.moco-artifact-feedback { display: flex; align-items: center; justify-content: center; gap: var(--moco-control-gap); min-height: 160px; padding: var(--moco-overlay-padding); font-size: var(--moco-text-body); line-height: var(--moco-leading-body); color: var(--muted); }
-.moco-artifact-live-preview[data-kind="html"] > .moco-artifact-feedback { position: absolute; inset: 0; background: var(--surface); }
-.moco-artifact-error { margin: 0; padding: var(--moco-space-2) var(--moco-list-padding-inline); color: var(--danger); font-size: var(--moco-text-body); line-height: var(--moco-leading-body); overflow-wrap: anywhere; }
-.moco-artifact-collapsed { justify-content: center; padding: var(--moco-space-2) var(--moco-list-padding-inline); border-top: 1px solid var(--border); }
-.moco-artifact-text { padding: var(--moco-list-padding-inline); }
-.moco-artifact-plain-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--moco-text-body); line-height: var(--moco-leading-body); }
-.moco-artifact-unsupported { margin: 0; padding: 0 var(--moco-list-padding-inline) var(--moco-list-padding-block); }
-.moco-artifact-dialog { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.moco-artifact-modal-body { display: flex; flex: 1; min-height: 0; }
-.moco-artifact-large-stage, .moco-artifact-large-stage > .moco-artifact-live-preview[data-kind] { width: 100%; height: 100%; min-height: 0; max-height: none; }
-.moco-artifact-large-stage .moco-artifact-frame { border: 1px solid var(--border); border-radius: 8px; }
-.moco-artifact-modal-footer { flex-wrap: wrap; }
-.moco-artifact-modal-footer > .moco-artifact-error { flex: 1; padding-inline: 0; }
+.kulo-chat-artifact { container-type: inline-size; width: 100%; min-width: 0; gap: 0; padding: 0; border: 1px solid var(--border); border-radius: 12px; }
+.kulo-artifact-header { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--kulo-control-gap); min-width: 0; padding: var(--kulo-list-padding-block) var(--kulo-list-padding-inline); }
+.kulo-artifact-header > svg { flex-shrink: 0; color: var(--muted); }
+.kulo-artifact-detail { display: flex; flex: 1; flex-direction: column; min-width: 80px; }
+.kulo-artifact-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--kulo-control-gap); }
+.kulo-artifact-inline-stage { min-width: 0; border-top: 1px solid var(--border); }
+.kulo-artifact-live-preview { @apply scrollbar; position: relative; width: 100%; min-width: 0; max-height: min(68dvh, 680px); overflow: auto; }
+.kulo-artifact-live-preview[data-kind="html"] { height: clamp(320px, 65dvh, 680px); }
+.kulo-artifact-live-preview[data-reading="expanded"] { max-height: none; }
+.kulo-artifact-live-preview[data-reading="expanded"][data-kind="html"] { height: max(680px, 85dvh); }
+.kulo-artifact-frame { display: block; width: 100%; height: 100%; border: 0; color-scheme: light; background: Canvas; border-radius: 0 0 12px 12px; }
+.kulo-artifact-feedback { display: flex; align-items: center; justify-content: center; gap: var(--kulo-control-gap); min-height: 160px; padding: var(--kulo-overlay-padding); font-size: var(--kulo-text-body); line-height: var(--kulo-leading-body); color: var(--muted); }
+.kulo-artifact-live-preview[data-kind="html"] > .kulo-artifact-feedback { position: absolute; inset: 0; background: var(--surface); }
+.kulo-artifact-error { margin: 0; padding: var(--kulo-space-2) var(--kulo-list-padding-inline); color: var(--danger); font-size: var(--kulo-text-body); line-height: var(--kulo-leading-body); overflow-wrap: anywhere; }
+.kulo-artifact-collapsed { justify-content: center; padding: var(--kulo-space-2) var(--kulo-list-padding-inline); border-top: 1px solid var(--border); }
+.kulo-artifact-text { padding: var(--kulo-list-padding-inline); }
+.kulo-artifact-plain-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--kulo-text-body); line-height: var(--kulo-leading-body); }
+.kulo-artifact-unsupported { margin: 0; padding: 0 var(--kulo-list-padding-inline) var(--kulo-list-padding-block); }
+.kulo-artifact-dialog { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.kulo-artifact-modal-body { display: flex; flex: 1; min-height: 0; }
+.kulo-artifact-large-stage, .kulo-artifact-large-stage > .kulo-artifact-live-preview[data-kind] { width: 100%; height: 100%; min-height: 0; max-height: none; }
+.kulo-artifact-large-stage .kulo-artifact-frame { border: 1px solid var(--border); border-radius: 8px; }
+.kulo-artifact-modal-footer { flex-wrap: wrap; }
+.kulo-artifact-modal-footer > .kulo-artifact-error { flex: 1; padding-inline: 0; }
 
 @container (max-width: 560px) {
-  .moco-artifact-header > .moco-artifact-actions { width: 100%; justify-content: flex-end; }
+  .kulo-artifact-header > .kulo-artifact-actions { width: 100%; justify-content: flex-end; }
 }
 @media (pointer: coarse) {
-  .moco-artifact-actions .button, .moco-artifact-collapsed .button, .moco-artifact-feedback .button { min-height: 44px; min-width: 44px; }
+  .kulo-artifact-actions .button, .kulo-artifact-collapsed .button, .kulo-artifact-feedback .button { min-height: 44px; min-width: 44px; }
 }

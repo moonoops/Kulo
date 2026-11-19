@@ -148,7 +148,7 @@ export function createMemoryOutboxStorage(): ReliableOutboxStorage {
 export interface IndexedDbOutboxStorageOptions { databaseName?: string; indexedDB?: IDBFactory }
 
 export function createIndexedDbOutboxStorage(options: IndexedDbOutboxStorageOptions = {}): ReliableOutboxStorage {
-  const name = options.databaseName ?? "moco-reliable-outbox-v1";
+  const name = options.databaseName ?? "kulo-reliable-outbox-v1";
   const listeners = new Set<(event: ReliableOutboxStorageEvent) => void>();
   const channel = typeof window !== "undefined" && typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(name) : undefined;
   let databaseFlight: Promise<IDBDatabase> | undefined;
@@ -193,7 +193,7 @@ export function createIndexedDbOutboxStorage(options: IndexedDbOutboxStorageOpti
         };
       };
       request.onerror = () => { rejected = true; reject(request.error ?? new Error("无法打开待发消息存储")); };
-      request.onblocked = () => { rejected = true; reject(new Error("待发消息存储正在升级，请关闭其他 Moco 页面后重试")); };
+      request.onblocked = () => { rejected = true; reject(new Error("待发消息存储正在升级，请关闭其他 Kulo 页面后重试")); };
       request.onsuccess = () => {
         const db = request.result;
         if (rejected) { db.close(); return; }

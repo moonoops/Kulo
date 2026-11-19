@@ -1,4 +1,4 @@
-import { COMPUTER_PREVIEW_MAX_DATA, isComputerPreviewUpdate, type ComputerPreviewFrame, type ComputerPreviewSessionView, type ComputerPreviewUpdate } from "@moco/protocol";
+import { COMPUTER_PREVIEW_MAX_DATA, isComputerPreviewUpdate, type ComputerPreviewFrame, type ComputerPreviewSessionView, type ComputerPreviewUpdate } from "@kulo/protocol";
 
 export interface PreviewSocket {
   readyState: number;

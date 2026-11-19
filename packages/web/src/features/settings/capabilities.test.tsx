@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CapabilitiesWorkspaceSnapshot, CapabilityRecord, EnvNodeDescriptor, SetupInputRequest, SkillRecord } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
+import type { CapabilitiesWorkspaceSnapshot, CapabilityRecord, EnvNodeDescriptor, SetupInputRequest, SkillRecord } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
 import { CapabilitiesModule, capabilityStatusLabel, skillStatusLabel } from "./capabilities-module";
 import { CapabilitySetupInputs, safeSetupInputError, submitSetupInput, visibleSetupInputs } from "./capability-setup-inputs";
 import { capabilityTargetView, type CapabilityView } from "./capability-views";
@@ -178,15 +178,15 @@ describe("dedicated capability inputs", () => {
   });
 
   it("rejects stale or foreign inputs before any submission", async () => {
-    const submit = vi.spyOn(mocoRest, "submitCapabilityInput").mockResolvedValue(undefined);
+    const submit = vi.spyOn(kuloRest, "submitCapabilityInput").mockResolvedValue(undefined);
     await expect(submitSetupInput(secretRequest, "tab-b", "sample-credential")).rejects.toThrow("发起配置的窗口");
     await expect(submitSetupInput({ ...secretRequest, expiresAt: 0 }, "tab-a", "sample-credential")).rejects.toThrow("过期");
     expect(submit).not.toHaveBeenCalled();
   });
 
   it("keeps browser handoff and cancellation separate from secret submission", async () => {
-    const complete = vi.spyOn(mocoRest, "completeCapabilityBrowserInput").mockResolvedValue(undefined);
-    const submit = vi.spyOn(mocoRest, "submitCapabilityInput").mockResolvedValue(undefined);
+    const complete = vi.spyOn(kuloRest, "completeCapabilityBrowserInput").mockResolvedValue(undefined);
+    const submit = vi.spyOn(kuloRest, "submitCapabilityInput").mockResolvedValue(undefined);
     const browser = { ...secretRequest, kind: "browser" as const, envId: device.id, label: "登录 Flow" };
     await submitSetupInput(browser, "tab-a", "");
     expect(complete).toHaveBeenCalledWith(browser.id, "tab-a");

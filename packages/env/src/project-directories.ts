@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import type { ProjectDirectoryGrant, ProjectDirectoryListing } from "@moco/protocol";
+import type { ProjectDirectoryGrant, ProjectDirectoryListing } from "@kulo/protocol";
 import { canonicalExecutionPath, defaultProtectedPaths, isApplicationPrivatePath } from "./isolation.js";
 
 interface StoredGrant extends ProjectDirectoryGrant {

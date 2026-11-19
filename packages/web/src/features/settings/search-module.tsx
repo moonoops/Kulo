@@ -1,12 +1,12 @@
-import { useI18n, translate } from "../../moco-i18n";
+import { useI18n, translate } from "../../kulo-i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Chip, Input, Label, ListBox, Modal, Select, Spinner, Switch, TextField } from "@heroui/react";
 import { DropIndicator, GridList, GridListItem, useDragAndDrop } from "react-aria-components";
-import { redactSecrets, type SearchAdapterId, type SearchFailure, type SearchPlanInput, type SearchPlanView, type SearchSnapshot } from "@moco/protocol";
+import { redactSecrets, type SearchAdapterId, type SearchFailure, type SearchPlanInput, type SearchPlanView, type SearchSnapshot } from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { useSettingsPending } from "./settings-save-activity";
-import { MocoApiError, mocoRest } from "../../moco-api";
-import { MocoIcon } from "../../moco-icon";
+import { KuloApiError, kuloRest } from "../../kulo-api";
+import { KuloIcon } from "../../kulo-icon";
 
 const ADAPTER_LABELS: Record<SearchAdapterId, string> = { exa: "Exa", tavily: "Tavily", brave: "Brave", duckduckgo: "DuckDuckGo" };
 const DEFAULT_URLS: Record<SearchAdapterId, string> = { exa: "https://mcp.exa.ai/mcp", tavily: "https://mcp.tavily.com/mcp", brave: "https://api.search.brave.com", duckduckgo: "https://duckduckgo.com" };
@@ -69,11 +69,11 @@ export function SearchPlanFields({ draft, onChange, disabled = false }: {
 }) {
   const { t } = useI18n();
   const keepsKey = draft.original?.adapter === draft.adapter && draft.original.hasCredential && sameOrigin(draft.original.baseUrl, draft.baseUrl);
-  return <div className="moco-form-stack">
-    <TextField className="moco-form-field" variant="secondary" value={draft.name} onChange={(name) => onChange({ ...draft, name })} isDisabled={disabled} isRequired fullWidth>
+  return <div className="kulo-form-stack">
+    <TextField className="kulo-form-field" variant="secondary" value={draft.name} onChange={(name) => onChange({ ...draft, name })} isDisabled={disabled} isRequired fullWidth>
       <Label>{t("方案名称", "Plan name")}</Label><Input autoFocus maxLength={100} />
     </TextField>
-    <Select className="moco-form-field" variant="secondary" value={draft.adapter} isDisabled={disabled} fullWidth onChange={(value) => {
+    <Select className="kulo-form-field" variant="secondary" value={draft.adapter} isDisabled={disabled} fullWidth onChange={(value) => {
       if (!value || !Object.hasOwn(ADAPTER_LABELS, String(value))) return;
       const adapter = String(value) as SearchAdapterId;
       onChange({ ...draft, adapter, name: !draft.name || draft.name === ADAPTER_LABELS[draft.adapter] ? ADAPTER_LABELS[adapter] : draft.name, baseUrl: DEFAULT_URLS[adapter], apiKey: "" });
@@ -81,20 +81,20 @@ export function SearchPlanFields({ draft, onChange, disabled = false }: {
       <Label>{t("搜索服务", "Search service")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
       <Select.Popover><ListBox>{Object.entries(ADAPTER_LABELS).map(([id, label]) => <ListBox.Item key={id} id={id} textValue={label}>{label}<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover>
     </Select>
-    {!fixedEndpoint(draft.adapter) && <TextField className="moco-form-field" variant="secondary" value={draft.baseUrl} onChange={(baseUrl) => onChange({ ...draft, baseUrl })} isDisabled={disabled} isRequired fullWidth>
+    {!fixedEndpoint(draft.adapter) && <TextField className="kulo-form-field" variant="secondary" value={draft.baseUrl} onChange={(baseUrl) => onChange({ ...draft, baseUrl })} isDisabled={disabled} isRequired fullWidth>
       <Label>{t("MCP 地址", "MCP URL")}</Label><Input type="url" autoComplete="off" spellCheck={false} />
     </TextField>}
-    {draft.adapter !== "duckduckgo" && <TextField className="moco-form-field" variant="secondary" value={draft.apiKey} onChange={(apiKey) => onChange({ ...draft, apiKey })} isDisabled={disabled} isRequired={requiresKey(draft.adapter) && !keepsKey} fullWidth>
+    {draft.adapter !== "duckduckgo" && <TextField className="kulo-form-field" variant="secondary" value={draft.apiKey} onChange={(apiKey) => onChange({ ...draft, apiKey })} isDisabled={disabled} isRequired={requiresKey(draft.adapter) && !keepsKey} fullWidth>
       <Label>{draft.adapter === "exa" ? t("API Key（可选）", "API key (optional)") : "API Key"}</Label><Input type="password" autoComplete="new-password" placeholder={keepsKey ? t("已保存，留空保留", "Saved; leave blank to keep") : draft.adapter === "exa" ? t("免费搜索可留空", "Leave blank for free search") : t("输入 API Key", "Enter an API key")} spellCheck={false} />
     </TextField>}
     <Switch className="w-full" isSelected={draft.enabled} onChange={(enabled) => onChange({ ...draft, enabled })} isDisabled={disabled}>
-      <Switch.Content className="moco-form-toggle"><Label>{t("启用", "Enable")}</Label><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content>
+      <Switch.Content className="kulo-form-toggle"><Label>{t("启用", "Enable")}</Label><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content>
     </Switch>
   </div>;
 }
 
 function DragHandleIcon() {
-  return <MocoIcon name="grip" size={16} />;
+  return <KuloIcon name="grip" size={16} />;
 }
 
 type PlanTestError = { planId: string; revision?: number; message: string };
@@ -133,7 +133,7 @@ export function SearchModule({ snapshot: incoming, connected, disabled = false, 
     const seq = ++requestSeq.current;
     setLoading(true);
     try {
-      const next = await mocoRest.getSearch();
+      const next = await kuloRest.getSearch();
       if (mounted.current && seq === requestSeq.current) { acceptSnapshot(next); setLoadError(undefined); }
     } catch (failure) {
       if (mounted.current && seq === requestSeq.current) setLoadError(redactSecrets(failure instanceof Error ? failure.message : translate("搜索配置加载失败。", "Failed to load search settings.")));
@@ -155,17 +155,17 @@ export function SearchModule({ snapshot: incoming, connected, disabled = false, 
     editorSaving.current = true;
     setBusy("save");
     try {
-      const next = await mocoRest.saveSearchPlan(searchPlanInput(draft));
+      const next = await kuloRest.saveSearchPlan(searchPlanInput(draft));
       if (mounted.current) { changed(next); setDraft(undefined); }
     } catch (failure) {
-      if (mounted.current) { setEditorError(report(failure)); setConflict(failure instanceof MocoApiError && failure.status === 409); }
+      if (mounted.current) { setEditorError(report(failure)); setConflict(failure instanceof KuloApiError && failure.status === 409); }
     } finally { editorSaving.current = false; if (mounted.current) setBusy(undefined); }
   };
   const reloadDraft = async () => {
     if (!draft?.original) return;
     setBusy("reload");
     try {
-      const next = await mocoRest.getSearch();
+      const next = await kuloRest.getSearch();
       const latest = next.plans.find((plan) => plan.id === draft.original!.id);
       if (mounted.current) {
         acceptSnapshot(next);
@@ -179,7 +179,7 @@ export function SearchModule({ snapshot: incoming, connected, disabled = false, 
     if (blocked) return;
     setBusy(`toggle:${plan.id}`);
     try {
-      const next = await mocoRest.saveSearchPlan({ id: plan.id, expectedRevision: plan.revision, name: plan.name, adapter: plan.adapter, baseUrl: plan.baseUrl, enabled });
+      const next = await kuloRest.saveSearchPlan({ id: plan.id, expectedRevision: plan.revision, name: plan.name, adapter: plan.adapter, baseUrl: plan.baseUrl, enabled });
       if (mounted.current) changed(next);
     } catch (failure) { if (mounted.current) { setActionError(report(failure)); void refresh(); } }
     finally { if (mounted.current) setBusy(undefined); }
@@ -190,11 +190,11 @@ export function SearchModule({ snapshot: incoming, connected, disabled = false, 
     if (!latest) return;
     setBusy(`test:${latest.id}`);
     try {
-      const next = await mocoRest.testSearchPlan(latest.id, latest.revision);
+      const next = await kuloRest.testSearchPlan(latest.id, latest.revision);
       if (mounted.current) { acceptSnapshot(next.snapshot); setTestError(undefined); onRefresh(); }
     } catch (failure) {
       if (mounted.current) {
-        setTestError({ planId: latest.id, ...(failure instanceof MocoApiError && failure.status === 409 ? {} : { revision: latest.revision }), message: report(failure) });
+        setTestError({ planId: latest.id, ...(failure instanceof KuloApiError && failure.status === 409 ? {} : { revision: latest.revision }), message: report(failure) });
         void refresh(); onRefresh();
       }
     } finally { if (mounted.current) setBusy(undefined); }
@@ -202,22 +202,22 @@ export function SearchModule({ snapshot: incoming, connected, disabled = false, 
   const deletePlan = async () => {
     if (!remove || blocked) return;
     setBusy("delete");
-    try { const next = await mocoRest.deleteSearchPlan(remove.id, remove.revision); if (mounted.current) { changed(next); setRemove(undefined); } }
+    try { const next = await kuloRest.deleteSearchPlan(remove.id, remove.revision); if (mounted.current) { changed(next); setRemove(undefined); } }
     catch (failure) { if (mounted.current) { setActionError(report(failure)); setRemove(undefined); void refresh(); } }
     finally { if (mounted.current) setBusy(undefined); }
   };
   const reorder = async (ids: string[]) => {
     if (!snapshot || blocked || ids.join("\0") === snapshot.plans.map((plan) => plan.id).join("\0")) return;
     setBusy("order");
-    try { const next = await mocoRest.reorderSearchPlans(ids, snapshot.revision); if (mounted.current) changed(next); }
+    try { const next = await kuloRest.reorderSearchPlans(ids, snapshot.revision); if (mounted.current) changed(next); }
     catch (failure) { if (mounted.current) { setActionError(report(failure)); void refresh(); } }
     finally { if (mounted.current) setBusy(undefined); }
   };
   const plans = snapshot?.plans ?? [];
   const { dragAndDropHooks } = useDragAndDrop<SearchPlanView>({
     isDisabled: blocked,
-    getItems: (keys) => [...keys].map((key) => ({ "application/x-moco-search-plan": String(key), "text/plain": plans.find((plan) => plan.id === key)?.name ?? String(key) })),
-    acceptedDragTypes: ["application/x-moco-search-plan"],
+    getItems: (keys) => [...keys].map((key) => ({ "application/x-kulo-search-plan": String(key), "text/plain": plans.find((plan) => plan.id === key)?.name ?? String(key) })),
+    acceptedDragTypes: ["application/x-kulo-search-plan"],
     getAllowedDropOperations: () => ["move"],
     onReorder: (event) => {
       if (event.target.dropPosition !== "before" && event.target.dropPosition !== "after") return;
@@ -227,9 +227,9 @@ export function SearchModule({ snapshot: incoming, connected, disabled = false, 
   });
   const rowItems = useMemo(() => plans.map((plan, index) => ({ ...plan, priority: index + 1 })), [plans]);
 
-  return <section className="moco-search-plans flex min-w-0 flex-col gap-4" aria-labelledby="search-plans-heading" aria-busy={Boolean(busy) || loading || undefined}>
-    <div className="moco-settings-section-head">
-      <h2 id="search-plans-heading" className="moco-section-title">{t("搜索方案", "Search plans")}</h2>
+  return <section className="kulo-search-plans flex min-w-0 flex-col gap-4" aria-labelledby="search-plans-heading" aria-busy={Boolean(busy) || loading || undefined}>
+    <div className="kulo-settings-section-head">
+      <h2 id="search-plans-heading" className="kulo-section-title">{t("搜索方案", "Search plans")}</h2>
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant="ghost" className="relative" aria-label={t("刷新搜索配置", "Refresh search settings")} isDisabled={!connected || Boolean(busy)} isPending={loading} onPress={() => void refresh()}><span className={loading ? "invisible" : undefined}>{t("刷新", "Refresh")}</span>{loading && <Spinner size="sm" color="current" className="absolute" aria-label={t("正在刷新搜索配置", "Refreshing search settings")} />}</Button>
         <Button size="sm" variant="secondary" isDisabled={blocked || !snapshot} onPress={() => openEditor()}>{t("添加搜索方案", "Add search plan")}</Button>
@@ -238,9 +238,9 @@ export function SearchModule({ snapshot: incoming, connected, disabled = false, 
     {loadError && <Alert status="danger"><Alert.Content><Alert.Title>{t("搜索配置加载失败", "Failed to load search settings")}</Alert.Title><Alert.Description>{loadError}</Alert.Description></Alert.Content><Button size="sm" variant="secondary" isDisabled={blocked || loading} onPress={() => void refresh()}>{t("重新加载", "Reload")}</Button></Alert>}
     {actionError && <Alert status="danger"><Alert.Content><Alert.Title>{t("操作未完成", "Action failed")}</Alert.Title><Alert.Description>{actionError}</Alert.Description></Alert.Content></Alert>}
     {loading && !snapshot && <div className="flex items-center gap-2 text-sm text-muted" role="status"><Spinner size="sm" />{t("加载搜索配置…", "Loading search settings…")}</div>}
-    {snapshot && <div className="moco-search-plan-scroll"><div className="moco-search-plan-list">
-      <div className="moco-search-plan-head moco-table-header" aria-hidden="true"><span /><span className="text-center">{t("优先级", "Priority")}</span><span>{t("方案名称", "Plan name")}</span><span>{t("搜索服务", "Search service")}</span><span>{t("状态", "Status")}</span><span className="text-center">{t("启用", "Enable")}</span><span className="text-center">{t("操作", "Actions")}</span></div>
-      <GridList aria-label={t("搜索调用优先级", "Search priority")} items={rowItems} selectionMode="none" dragAndDropHooks={dragAndDropHooks} dependencies={[busy, connected, disabled, testError]} className="flex min-w-0 flex-col outline-none" renderEmptyState={() => <div className="moco-table-empty-state">{t("尚未添加搜索方案", "No search plans added")}</div>}>
+    {snapshot && <div className="kulo-search-plan-scroll"><div className="kulo-search-plan-list">
+      <div className="kulo-search-plan-head kulo-table-header" aria-hidden="true"><span /><span className="text-center">{t("优先级", "Priority")}</span><span>{t("方案名称", "Plan name")}</span><span>{t("搜索服务", "Search service")}</span><span>{t("状态", "Status")}</span><span className="text-center">{t("启用", "Enable")}</span><span className="text-center">{t("操作", "Actions")}</span></div>
+      <GridList aria-label={t("搜索调用优先级", "Search priority")} items={rowItems} selectionMode="none" dragAndDropHooks={dragAndDropHooks} dependencies={[busy, connected, disabled, testError]} className="flex min-w-0 flex-col outline-none" renderEmptyState={() => <div className="kulo-table-empty-state">{t("尚未添加搜索方案", "No search plans added")}</div>}>
       {(plan) => {
         const localError = testError?.planId === plan.id && (testError.revision === undefined || testError.revision === plan.revision) ? testError.message : undefined;
         const failure = plan.failure?.message ?? plan.error;
@@ -249,19 +249,19 @@ export function SearchModule({ snapshot: incoming, connected, disabled = false, 
         const testing = busy === `test:${plan.id}`;
         const ready = plan.status === "ready" && plan.enabled && !failed;
         const status = !plan.enabled ? t("已停用", "Disabled") : localError ? t("测试失败", "Test failed") : plan.failure ? FAILURE_LABELS[plan.failure.kind] : STATUS_LABELS[plan.status];
-        return <GridListItem id={plan.id} textValue={plan.name} className="moco-search-plan-item min-w-0 outline-none focus-visible:ring-2 focus-visible:ring-focus">
-          <div className="moco-search-plan-row">
+        return <GridListItem id={plan.id} textValue={plan.name} className="kulo-search-plan-item min-w-0 outline-none focus-visible:ring-2 focus-visible:ring-focus">
+          <div className="kulo-search-plan-row">
             <Button slot="drag" variant="ghost" size="sm" isIconOnly isDisabled={blocked} aria-label={t(`调整${plan.name}的优先级`, `Reorder ${plan.name}`)} className="shrink-0 justify-self-center cursor-grab touch-none active:cursor-grabbing"><DragHandleIcon /></Button>
             <span className="text-center text-sm tabular-nums text-muted" aria-label={t(`优先级 ${plan.priority}`, `Priority ${plan.priority}`)}>{plan.priority}</span>
-            <div className="moco-search-plan-name min-w-0">
-              <span className="moco-item-title">{plan.name}</span>
+            <div className="kulo-search-plan-name min-w-0">
+              <span className="kulo-item-title">{plan.name}</span>
             </div>
-            <div className="moco-search-plan-service text-sm">{ADAPTER_LABELS[plan.adapter]}{(plan.adapter === "exa" && !plan.hasCredential || plan.adapter === "duckduckgo") && <span className="text-muted">  {t("· 免费", "· Free")}</span>}</div>
-            <div className="moco-search-plan-status">
+            <div className="kulo-search-plan-service text-sm">{ADAPTER_LABELS[plan.adapter]}{(plan.adapter === "exa" && !plan.hasCredential || plan.adapter === "duckduckgo") && <span className="text-muted">  {t("· 免费", "· Free")}</span>}</div>
+            <div className="kulo-search-plan-status">
               <Chip size="sm" variant="soft" color={failed ? "danger" : ready ? "success" : "default"}>{testing ? t("测试中", "Testing") : status}</Chip>
             </div>
-            <Switch className="moco-search-plan-switch justify-self-center" isSelected={plan.enabled} isDisabled={blocked} onChange={(enabled) => void toggle(plan, enabled)}><Switch.Content><Label className="sr-only">{t("启用", "Enable")}{plan.name}</Label><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content></Switch>
-            <div className="moco-search-plan-actions flex w-full items-center justify-center gap-1">
+            <Switch className="kulo-search-plan-switch justify-self-center" isSelected={plan.enabled} isDisabled={blocked} onChange={(enabled) => void toggle(plan, enabled)}><Switch.Content><Label className="sr-only">{t("启用", "Enable")}{plan.name}</Label><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content></Switch>
+            <div className="kulo-search-plan-actions flex w-full items-center justify-center gap-1">
               <Button size="sm" variant="ghost" className="relative" aria-label={`${testing ? t("正在测试", "Testing ") : failed || plan.status === "ready" ? t("重新测试", "Retest ") : t("测试", "Test ")}${plan.name}`} isDisabled={!connected || disabled || Boolean(busy && !testing)} isPending={testing} onPress={() => void test(plan)}>
                 <span className={testing ? "invisible" : undefined}>{t("测试", "Test ")}</span>{testing && <Spinner size="sm" color="current" className="absolute" aria-hidden="true" />}
               </Button>
@@ -269,7 +269,7 @@ export function SearchModule({ snapshot: incoming, connected, disabled = false, 
               <Button size="sm" variant="ghost" isDisabled={blocked} aria-label={t(`删除${plan.name}`, `Delete ${plan.name}`)} onPress={() => setRemove(plan)}>{t("删除", "Delete")}</Button>
             </div>
           </div>
-          {message && <div className="moco-search-plan-error mt-2 break-words text-xs text-danger" role={localError ? "alert" : undefined}>{redactSecrets(message)}</div>}
+          {message && <div className="kulo-search-plan-error mt-2 break-words text-xs text-danger" role={localError ? "alert" : undefined}>{redactSecrets(message)}</div>}
         </GridListItem>;
       }}
       </GridList>
@@ -280,7 +280,7 @@ export function SearchModule({ snapshot: incoming, connected, disabled = false, 
         <Modal.Container placement="center" size="sm" scroll="inside"><Modal.Dialog aria-label={draft?.original ? t("编辑搜索方案", "Edit search plan") : t("添加搜索方案", "Add search plan")}>
           <form onSubmit={(event) => { event.preventDefault(); void save(); }} className="contents">
             <Modal.Header><Modal.Heading>{draft?.original ? t("编辑搜索方案", "Edit search plan") : t("添加搜索方案", "Add search plan")}</Modal.Heading><Modal.CloseTrigger aria-label={t("关闭", "Close")} isDisabled={Boolean(busy)} /></Modal.Header>
-            <Modal.Body className="moco-form-stack">
+            <Modal.Body className="kulo-form-stack">
               {draft && <div className="flex min-w-0 flex-col gap-4" inert={Boolean(busy) || undefined}><SearchPlanFields draft={draft} onChange={setDraft} disabled={!connected || disabled} /></div>}
               {editorError && <Alert status="danger" role="alert"><Alert.Content>{editorError}</Alert.Content>{conflict && <Button size="sm" variant="secondary" isDisabled={Boolean(busy)} onPress={() => void reloadDraft()}>{t("载入最新配置", "Load latest settings")}</Button>}</Alert>}
             </Modal.Body>

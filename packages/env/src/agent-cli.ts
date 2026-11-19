@@ -23,7 +23,7 @@ const MAX_OUTPUT = 1024 * 1024;
 const require = createRequire(import.meta.url);
 
 function command(invocation: AgentCliInvocation): { executable: string; args: string[] } {
-  const variable = invocation.tool === "agent-browser" ? "MOCO_AGENT_BROWSER_PATH" : "MOCO_AGENT_DESKTOP_PATH";
+  const variable = invocation.tool === "agent-browser" ? "KULO_AGENT_BROWSER_PATH" : "KULO_AGENT_DESKTOP_PATH";
   const override = invocation.env?.[variable] ?? process.env[variable];
   let executable: string;
   if (override) {

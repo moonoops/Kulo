@@ -3,7 +3,7 @@ import path from "node:path";
 import net from "node:net";
 import { createHash, randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import type { ConnectionRecordView, ConnectionSecrets, ConnectionUseOperation, ConnectionUseResult } from "@moco/protocol";
+import type { ConnectionRecordView, ConnectionSecrets, ConnectionUseOperation, ConnectionUseResult } from "@kulo/protocol";
 import { LocalConnectionApplications, type ConnectionApplicationBackend } from "./connection-applications.js";
 
 const MAX_OUTPUT = 128_000;
@@ -18,7 +18,7 @@ function fail(message: string, code = "connection_execution_failed"): never {
   throw Object.assign(new Error(message), { code, status: 400 });
 }
 function alias(connection: ConnectionRecordView): string {
-  return `moco-connection-${createHash("sha256").update(`${connection.host}:${connection.port ?? 22}`).digest("hex").slice(0, 24)}`;
+  return `kulo-connection-${createHash("sha256").update(`${connection.host}:${connection.port ?? 22}`).digest("hex").slice(0, 24)}`;
 }
 function safeProcessEnv(): NodeJS.ProcessEnv {
   return { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", ...(process.platform === "win32" && process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) };
@@ -70,10 +70,10 @@ function capture(binary: string, args: string[], options: CaptureOptions): Promi
 
 const ASKPASS_SOURCE = `#!/usr/bin/env node
 const net = require('node:net');
-const socket = net.createConnection(process.env.MOCO_CONNECTION_ASKPASS_SOCKET);
+const socket = net.createConnection(process.env.KULO_CONNECTION_ASKPASS_SOCKET);
 let result = '';
 socket.setTimeout(5000, () => { socket.destroy(); process.exit(1); });
-socket.once('connect', () => socket.write(JSON.stringify({token:process.env.MOCO_CONNECTION_ASKPASS_TOKEN,prompt:process.argv[2] || ''}) + '\\n'));
+socket.once('connect', () => socket.write(JSON.stringify({token:process.env.KULO_CONNECTION_ASKPASS_TOKEN,prompt:process.argv[2] || ''}) + '\\n'));
 socket.on('data', chunk => { result += chunk; if (result.length > 131072) {socket.destroy();process.exit(1);} });
 socket.on('end', () => { process.stdout.write(result); });
 socket.on('error', () => process.exit(1));
@@ -149,7 +149,7 @@ export class LocalConnectionExecutor implements ConnectionExecutionBackend {
     if (!fs.existsSync(this.#knownHosts(connection)) || fs.lstatSync(this.#knownHosts(connection)).isSymbolicLink()) fail("请先在连接授权页确认服务器指纹。", "connection_host_untrusted");
     this.#prepare();
     // sockaddr_un paths are short on macOS; using stateDir here silently truncates long paths.
-    const control = fs.mkdtempSync(path.join(process.platform === "darwin" ? "/private/tmp" : "/tmp", "moco-connection-"));
+    const control = fs.mkdtempSync(path.join(process.platform === "darwin" ? "/private/tmp" : "/tmp", "kulo-connection-"));
     fs.chmodSync(control, 0o700);
     const socketPath = path.join(control, "a.sock");
     const scriptPath = path.join(control, "askpass.cjs");
@@ -179,8 +179,8 @@ export class LocalConnectionExecutor implements ConnectionExecutionBackend {
     let agent: ChildProcess | undefined;
     try {
       await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socketPath, () => { try { fs.chmodSync(socketPath, 0o600); server.removeListener("error", reject); resolve(); } catch { reject(new Error("无法创建安全认证通道。")); } }); });
-      const environment: NodeJS.ProcessEnv = { ...safeProcessEnv(), SSH_ASKPASS: executablePath, SSH_ASKPASS_REQUIRE: "force", DISPLAY: "moco:0",
-        MOCO_CONNECTION_ASKPASS_SOCKET: socketPath, MOCO_CONNECTION_ASKPASS_TOKEN: token };
+      const environment: NodeJS.ProcessEnv = { ...safeProcessEnv(), SSH_ASKPASS: executablePath, SSH_ASKPASS_REQUIRE: "force", DISPLAY: "kulo:0",
+        KULO_CONNECTION_ASKPASS_SOCKET: socketPath, KULO_CONNECTION_ASKPASS_TOKEN: token };
       let identityArgs = ["-o", "IdentityAgent=none", "-o", "PubkeyAuthentication=no"];
       if (secrets.privateKey) {
         const agentSocket = path.join(control, "agent.sock");

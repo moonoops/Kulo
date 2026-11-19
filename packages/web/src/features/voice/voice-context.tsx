@@ -1,6 +1,6 @@
-import { translate as tr, useI18n } from "../../moco-i18n";
+import { translate as tr, useI18n } from "../../kulo-i18n";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { redactSecrets, type VoiceSettingsInput, type VoiceSnapshot } from "@moco/protocol";
+import { redactSecrets, type VoiceSettingsInput, type VoiceSnapshot } from "@kulo/protocol";
 import { voiceApi } from "./voice-api";
 import { useVoiceCall } from "./use-voice-call";
 import { pauseOtherMedia } from "../chat/media-message";

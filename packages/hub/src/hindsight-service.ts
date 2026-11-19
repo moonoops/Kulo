@@ -5,11 +5,11 @@ import net from "node:net";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type { HindsightModelProvider } from "@moco/protocol";
+import type { HindsightModelProvider } from "@kulo/protocol";
 import { HINDSIGHT_RETAIN_MISSIONS } from "./prompts.js";
 
 export const MANAGED_HINDSIGHT_VERSION = "1.2.1";
-const OWNER = "moco-managed-hindsight-v1";
+const OWNER = "kulo-managed-hindsight-v1";
 const PROVIDERS = new Set(["openai", "anthropic", "gemini", "groq", "ollama"]);
 const MODEL_DEFAULT_URL: Record<HindsightModelProvider, string> = { openai: "https://api.openai.com", anthropic: "https://api.anthropic.com", gemini: "https://generativelanguage.googleapis.com", groq: "https://api.groq.com", ollama: "http://localhost:11434" };
 
@@ -163,14 +163,14 @@ export class HindsightLocalService {
   async #manifest(): Promise<Manifest | undefined> {
     if (!await this.#regular(this.root)) return undefined;
     if (!await this.#regular(this.#manifestPath)) {
-      if ((await fs.readdir(this.root)).length) throw new MissingManagedMetadataError("该目录不是可识别的 Moco Hindsight 安装，未作修改。");
+      if ((await fs.readdir(this.root)).length) throw new MissingManagedMetadataError("该目录不是可识别的 Kulo Hindsight 安装，未作修改。");
       return undefined;
     }
     const value = JSON.parse(await fs.readFile(this.#manifestPath, "utf8")) as Manifest;
     if (value.owner !== OWNER || value.root !== this.root || value.label !== this.#label() || !Number.isInteger(value.port) || value.port < 1024 || value.port > 65535 || value.version !== MANAGED_HINDSIGHT_VERSION) throw new HindsightServiceError("Hindsight 安装清单不匹配，未作修改。");
     return value;
   }
-  #label() { return `io.moco.hindsight.${createHash("sha256").update(this.root).digest("hex").slice(0, 12)}`; }
+  #label() { return `io.kulo.hindsight.${createHash("sha256").update(this.root).digest("hex").slice(0, 12)}`; }
   async #write(file: string, value: string) {
     await this.#regular(file);
     const temporary = `${file}.${randomUUID()}.tmp`;
@@ -216,7 +216,7 @@ export class HindsightLocalService {
     const file = this.#unitPath(manifest);
     if (!await this.#regular(file)) return false;
     const content = await fs.readFile(file, "utf8");
-    if (!content.includes(OWNER) || !content.includes(this.#platform === "darwin" ? xml(this.root) : this.root.replace(/%/g, "%%"))) throw new HindsightServiceError("系统服务不属于当前 Moco 安装，未作修改。");
+    if (!content.includes(OWNER) || !content.includes(this.#platform === "darwin" ? xml(this.root) : this.root.replace(/%/g, "%%"))) throw new HindsightServiceError("系统服务不属于当前 Kulo 安装，未作修改。");
     return true;
   }
   async #installUnit(manifest: Manifest) {
@@ -224,13 +224,13 @@ export class HindsightLocalService {
     const file = this.#unitPath(manifest);
     await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
     await this.#regular(path.dirname(file));
-    const args = [this.#python, "-m", "moco_hindsight.managed", "--config", this.#runtimePath];
+    const args = [this.#python, "-m", "kulo_hindsight.managed", "--config", this.#runtimePath];
     if (this.#platform === "darwin") {
-      const env = { ...this.#environment(), MOCO_MANAGED_SERVICE: OWNER };
+      const env = { ...this.#environment(), KULO_MANAGED_SERVICE: OWNER };
       await this.#write(file, `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${manifest.label}</string><key>Comment</key><string>${OWNER}</string><key>ProgramArguments</key><array>${args.map((a) => `<string>${xml(a)}</string>`).join("")}</array><key>WorkingDirectory</key><string>${xml(this.root)}</string><key>EnvironmentVariables</key><dict>${Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string").map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join("")}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer><key>StandardOutPath</key><string>${xml(path.join(this.root, "service.log"))}</string><key>StandardErrorPath</key><string>${xml(path.join(this.root, "service.log"))}</string></dict></plist>\n`);
     } else {
       const environment = Object.entries(this.#environment()).filter((entry): entry is [string, string] => typeof entry[1] === "string").map(([key, value]) => `Environment=${systemd(`${key}=${value}`)}`).join("\n");
-      await this.#write(file, `[Unit]\nDescription=Moco Hindsight (${OWNER})\n[Service]\nType=simple\nWorkingDirectory=${systemd(this.root)}\nExecStart=${args.map(systemd).join(" ")}\n${environment}\nRestart=on-failure\nRestartSec=15\nUMask=0077\n[Install]\nWantedBy=default.target\n`);
+      await this.#write(file, `[Unit]\nDescription=Kulo Hindsight (${OWNER})\n[Service]\nType=simple\nWorkingDirectory=${systemd(this.root)}\nExecStart=${args.map(systemd).join(" ")}\n${environment}\nRestart=on-failure\nRestartSec=15\nUMask=0077\n[Install]\nWantedBy=default.target\n`);
     }
   }
   async #start(manifest: Manifest) {
@@ -276,7 +276,7 @@ export class HindsightLocalService {
     const timeout = this.#options.readinessTimeoutMs ?? 600_000;
     while ((this.#options.now ?? Date.now)() - start < timeout) {
       try {
-        const response = await this.#request(manifest, runtime.env.MOCO_HINDSIGHT_ROUTER_API_KEY!, "/v1/moco/access", "GET", undefined, 3000);
+        const response = await this.#request(manifest, runtime.env.KULO_HINDSIGHT_ROUTER_API_KEY!, "/v1/kulo/access", "GET", undefined, 3000);
         if (response.ok) { const value = await response.json() as { policyVersion?: number }; if (value.policyVersion === 1) return; }
         else await response.body?.cancel();
       } catch { /* Model download and database initialization precede HTTP readiness. */ }
@@ -301,7 +301,7 @@ export class HindsightLocalService {
       let running = false;
       if (manifest && manifest.phase !== "absent" && await this.#regular(this.#runtimePath)) {
         const runtime = await this.#runtime();
-        try { const response = await this.#request(manifest, runtime.env.MOCO_HINDSIGHT_ROUTER_API_KEY!, "/v1/moco/access", "GET", undefined, 2000); running = response.ok && (await response.json() as { policyVersion?: number }).policyVersion === 1; if (!response.ok) await response.body?.cancel(); }
+        try { const response = await this.#request(manifest, runtime.env.KULO_HINDSIGHT_ROUTER_API_KEY!, "/v1/kulo/access", "GET", undefined, 2000); running = response.ok && (await response.json() as { policyVersion?: number }).policyVersion === 1; if (!response.ok) await response.body?.cancel(); }
         catch { running = false; }
       }
       return this.#removedDuring(epoch) ?? this.#status(manifest, running);
@@ -344,7 +344,7 @@ export class HindsightLocalService {
       const modelEnv = this.#modelEnv(model, command.apiKey);
       let manifest = await this.#manifest();
       if (manifest?.phase === "ready") {
-        if (manifest.commandId !== command.commandId) throw new HindsightServiceError("本机已由 Moco 部署 Hindsight，请使用配置服务。");
+        if (manifest.commandId !== command.commandId) throw new HindsightServiceError("本机已由 Kulo 部署 Hindsight，请使用配置服务。");
         return this.#connection(manifest, await this.#runtime());
       }
       await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
@@ -367,8 +367,8 @@ export class HindsightLocalService {
       for (const directory of directories) { const target = path.join(this.root, directory); await this.#regular(target); await fs.mkdir(target, { recursive: true, mode: 0o700 }); }
       const existingRuntime = await this.#regular(this.#runtimePath) ? await this.#runtime() : undefined;
       const env: Record<string, string> = { ...existingRuntime?.env,
-        ...modelEnv, MOCO_HINDSIGHT_ROUTER_API_KEY: existingRuntime?.env.MOCO_HINDSIGHT_ROUTER_API_KEY ?? randomBytes(32).toString("hex"), MOCO_HINDSIGHT_WORKER_API_KEY: existingRuntime?.env.MOCO_HINDSIGHT_WORKER_API_KEY ?? randomBytes(32).toString("hex"), MOCO_HINDSIGHT_MANAGEMENT_API_KEY: existingRuntime?.env.MOCO_HINDSIGHT_MANAGEMENT_API_KEY ?? randomBytes(32).toString("hex"),
-        MOCO_HINDSIGHT_PRIVATE_BANK: "moco-core", MOCO_HINDSIGHT_SHARED_BANK: "moco-shared", HINDSIGHT_API_DATABASE_URL: existingRuntime?.env.HINDSIGHT_API_DATABASE_URL ?? `pg0://moco:${randomBytes(32).toString("hex")}@${manifest.label.replace(/\./g, "-")}`,
+        ...modelEnv, KULO_HINDSIGHT_ROUTER_API_KEY: existingRuntime?.env.KULO_HINDSIGHT_ROUTER_API_KEY ?? randomBytes(32).toString("hex"), KULO_HINDSIGHT_WORKER_API_KEY: existingRuntime?.env.KULO_HINDSIGHT_WORKER_API_KEY ?? randomBytes(32).toString("hex"), KULO_HINDSIGHT_MANAGEMENT_API_KEY: existingRuntime?.env.KULO_HINDSIGHT_MANAGEMENT_API_KEY ?? randomBytes(32).toString("hex"),
+        KULO_HINDSIGHT_PRIVATE_BANK: "kulo-core", KULO_HINDSIGHT_SHARED_BANK: "kulo-shared", HINDSIGHT_API_DATABASE_URL: existingRuntime?.env.HINDSIGHT_API_DATABASE_URL ?? `pg0://kulo:${randomBytes(32).toString("hex")}@${manifest.label.replace(/\./g, "-")}`,
         HINDSIGHT_API_HOST: "127.0.0.1", HINDSIGHT_API_PORT: String(manifest.port), HINDSIGHT_API_WORKER_ID: manifest.label, HINDSIGHT_API_MCP_ENABLED: "false", HINDSIGHT_API_LLM_TRACE_ENABLED: "false", HINDSIGHT_API_EMBEDDINGS_PROVIDER: "onnx", HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_ID: "intfloat/multilingual-e5-small", HINDSIGHT_API_EMBEDDINGS_ONNX_DIMENSIONS: "384", HINDSIGHT_API_EMBEDDINGS_ONNX_THREADS: "2", HINDSIGHT_API_RERANKER_PROVIDER: "onnx", HINDSIGHT_API_RERANKER_ONNX_MODEL_ID: "hindsight-ai/hs-rerank-1", HINDSIGHT_API_RERANKER_ONNX_THREADS: "2", HINDSIGHT_API_LOG_LEVEL: "WARNING", HINDSIGHT_API_WORKER_MAX_SLOTS: "2", HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS: "1" };
       await this.#write(this.#runtimePath, JSON.stringify({ owner: OWNER, env } satisfies RuntimeFile));
       if (!await this.#regular(path.join(this.root, "service.log"))) await this.#write(path.join(this.root, "service.log"), "");
@@ -402,7 +402,7 @@ export class HindsightLocalService {
     return this.#exclusive(async () => {
       this.#checkCommand(command.commandId); this.#checkPlatform();
       let manifest = await this.#manifest();
-      if (!manifest) throw new HindsightServiceError("本机尚未由 Moco 部署 Hindsight。");
+      if (!manifest) throw new HindsightServiceError("本机尚未由 Kulo 部署 Hindsight。");
       if (manifest.phase === "absent") throw new HindsightServiceError("本机 Hindsight 已卸载，请先重新部署。");
       const backupPath = path.join(this.root, "configuration-backup.json");
       if (manifest.commandId === command.commandId && manifest.phase === "ready") {
@@ -444,28 +444,28 @@ export class HindsightLocalService {
   }
   async #verify(manifest: Manifest): Promise<LocalHindsightConnection> {
     const runtime = await this.#runtime();
-    const router = runtime.env.MOCO_HINDSIGHT_ROUTER_API_KEY!, worker = runtime.env.MOCO_HINDSIGHT_WORKER_API_KEY!, manager = runtime.env.MOCO_HINDSIGHT_MANAGEMENT_API_KEY!;
+    const router = runtime.env.KULO_HINDSIGHT_ROUTER_API_KEY!, worker = runtime.env.KULO_HINDSIGHT_WORKER_API_KEY!, manager = runtime.env.KULO_HINDSIGHT_MANAGEMENT_API_KEY!;
     await this.#ready(manifest, runtime);
-    for (const [token, bank, method] of [[worker, "moco-core", "GET"], [router, "moco-shared", "POST"]] as const) {
+    for (const [token, bank, method] of [[worker, "kulo-core", "GET"], [router, "kulo-shared", "POST"]] as const) {
       const response = await this.#request(manifest, token, `/v1/default/banks/${bank}/${method === "GET" ? "documents?limit=1" : "memories"}`, method, method === "POST" ? {} : undefined);
       await response.body?.cancel();
       if (response.status !== 403) throw new HindsightServiceError("Hindsight 未通过主脑与 Worker 权限隔离验证。");
     }
-    for (const bank of ["moco-core", "moco-shared"]) {
-      await this.#json(manifest, manager, `/v1/default/banks/${bank}/config`, "PATCH", { updates: { retain_extraction_mode: "concise", store_document_text: true, enable_observations: true, enable_auto_consolidation: true, retain_mission: bank === "moco-core" ? HINDSIGHT_RETAIN_MISSIONS.private : HINDSIGHT_RETAIN_MISSIONS.shared, retain_strategies: { document: { retain_extraction_mode: "concise" }, conversation: { retain_extraction_mode: "concise" }, worklog: { retain_extraction_mode: "concise" } } } });
+    for (const bank of ["kulo-core", "kulo-shared"]) {
+      await this.#json(manifest, manager, `/v1/default/banks/${bank}/config`, "PATCH", { updates: { retain_extraction_mode: "concise", store_document_text: true, enable_observations: true, enable_auto_consolidation: true, retain_mission: bank === "kulo-core" ? HINDSIGHT_RETAIN_MISSIONS.private : HINDSIGHT_RETAIN_MISSIONS.shared, retain_strategies: { document: { retain_extraction_mode: "concise" }, conversation: { retain_extraction_mode: "concise" }, worklog: { retain_extraction_mode: "concise" } } } });
     }
     manifest.verificationId ??= randomUUID();
     await this.#saveManifest(manifest);
-    const documentId = `moco-install-check-${manifest.verificationId}`;
+    const documentId = `kulo-install-check-${manifest.verificationId}`;
     const operationId = manifest.verificationId;
-    const marker = `Moco deployment verification ${documentId}`;
-    const bankPrefix = "/v1/default/banks/moco-shared";
+    const marker = `Kulo deployment verification ${documentId}`;
+    const bankPrefix = "/v1/default/banks/kulo-shared";
     let submittedOperation: string | undefined;
     let completed = false;
     let terminal = false;
     try {
       submittedOperation = operationId;
-      const accepted = await this.#json(manifest, worker, `${bankPrefix}/memories`, "POST", { async: true, operation_id: operationId, items: [{ content: `Moco 安装验证项目的名称为「${marker}」，该项目由 Moco 负责验证，验证语言是简体中文。`, document_id: documentId, tags: ["application:moco", "verification:installation"], observation_scopes: [["verification:installation"]] }] });
+      const accepted = await this.#json(manifest, worker, `${bankPrefix}/memories`, "POST", { async: true, operation_id: operationId, items: [{ content: `Kulo 安装验证项目的名称为「${marker}」，该项目由 Kulo 负责验证，验证语言是简体中文。`, document_id: documentId, tags: ["application:kulo", "verification:installation"], observation_scopes: [["verification:installation"]] }] });
       const op = typeof accepted.operation_id === "string" ? accepted.operation_id : operationId;
       submittedOperation = op;
       const start = (this.#options.now ?? Date.now)();
@@ -499,7 +499,7 @@ export class HindsightLocalService {
   async #connection(manifest: Manifest, runtime: RuntimeFile): Promise<LocalHindsightConnection> {
     const status = await this.inspect();
     if (!status.running) throw new HindsightServiceError("Hindsight 服务未运行，请重试检查。");
-    return { ...status, model: manifest.model, routerApiKey: runtime.env.MOCO_HINDSIGHT_ROUTER_API_KEY!, workerApiKey: runtime.env.MOCO_HINDSIGHT_WORKER_API_KEY!, banks: { private: "moco-core", shared: "moco-shared" } };
+    return { ...status, model: manifest.model, routerApiKey: runtime.env.KULO_HINDSIGHT_ROUTER_API_KEY!, workerApiKey: runtime.env.KULO_HINDSIGHT_WORKER_API_KEY!, banks: { private: "kulo-core", shared: "kulo-shared" } };
   }
   verify(): Promise<LocalHindsightConnection> { return this.#exclusive(async () => { const manifest = await this.#manifest(); if (!manifest) throw new HindsightServiceError("没有可验证的本机 Hindsight 安装。"); return this.#verify(manifest); }); }
   uninstall(command: { commandId: string; deleteData?: boolean; onProgress?: (phase: string) => void | Promise<void> }): Promise<LocalHindsightStatus> {
@@ -515,7 +515,7 @@ export class HindsightLocalService {
       const earlyInstall = manifest.serviceSetupStarted === false && ["installing", "failed"].includes(manifest.phase) && !await this.#unitOwned(manifest);
       await this.#stop(manifest);
       if (!earlyInstall) {
-        try { await fs.access(this.#python); await this.#command(this.#python, ["-m", "moco_hindsight.managed", "--config", this.#runtimePath, "--stop-database"]); }
+        try { await fs.access(this.#python); await this.#command(this.#python, ["-m", "kulo_hindsight.managed", "--config", this.#runtimePath, "--stop-database"]); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       }
       if (await this.#unitOwned(manifest)) await fs.unlink(this.#unitPath(manifest));
@@ -526,9 +526,9 @@ export class HindsightLocalService {
         // Retained databases stay recoverable, while model API keys are removed.
         const runtime = await this.#runtime();
         delete runtime.env.HINDSIGHT_API_LLM_API_KEY;
-        delete runtime.env.MOCO_HINDSIGHT_ROUTER_API_KEY;
-        delete runtime.env.MOCO_HINDSIGHT_WORKER_API_KEY;
-        delete runtime.env.MOCO_HINDSIGHT_MANAGEMENT_API_KEY;
+        delete runtime.env.KULO_HINDSIGHT_ROUTER_API_KEY;
+        delete runtime.env.KULO_HINDSIGHT_WORKER_API_KEY;
+        delete runtime.env.KULO_HINDSIGHT_MANAGEMENT_API_KEY;
         await this.#write(this.#runtimePath, JSON.stringify(runtime));
         for (const directory of ["venv", "source", "python", "cache", "home/.cache", "configuration-backup.json"]) await fs.rm(path.join(this.root, directory), { recursive: true, force: true });
         manifest.phase = "absent"; manifest.commandId = command.commandId; await this.#saveManifest(manifest);

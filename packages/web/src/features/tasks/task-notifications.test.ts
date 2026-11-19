@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TicketCardView } from "@moco/protocol";
+import type { TicketCardView } from "@kulo/protocol";
 import { collectTicketNotifications } from "./task-notifications";
 
 function ticket(id: string, status: TicketCardView["status"], title = `Task ${id}`): TicketCardView {

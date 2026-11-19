@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { WebSource } from "@moco/protocol";
+import type { WebSource } from "@kulo/protocol";
 import { MessageContent } from "./message-content";
 import { MessageSources, safeSourceUrl, searchSuggestionsDocument } from "./message-sources";
 
@@ -12,8 +12,8 @@ describe("chat search sources", () => {
     expect(html).toContain('aria-label="引用来源"');
     expect(html).toContain('target="_blank" rel="noopener noreferrer"');
     expect(html).toContain("docs.example.com");
-    expect(html.match(/moco-message-source-title/g)).toHaveLength(1);
-    expect(html.indexOf('aria-label="引用来源"')).toBeGreaterThan(html.indexOf("moco-chat-markdown"));
+    expect(html.match(/kulo-message-source-title/g)).toHaveLength(1);
+    expect(html.indexOf('aria-label="引用来源"')).toBeGreaterThan(html.indexOf("kulo-chat-markdown"));
     expect(html).not.toContain("不重复的旧文本");
   });
 
@@ -30,7 +30,7 @@ describe("chat search sources", () => {
   });
 
   it("isolates Google search suggestions in bounded sandboxed documents", () => {
-    const content = '<style>.suggestion{color:#333}</style><a class="suggestion" href="https://google.com/search?q=moco">Moco</a>';
+    const content = '<style>.suggestion{color:#333}</style><a class="suggestion" href="https://google.com/search?q=kulo">Kulo</a>';
     const html = renderToStaticMarkup(<MessageContent item={{ id: 3, role: "assistant", text: "搜索回答", sources: [source], searchSuggestions: [content, content] }} />);
     expect(html.match(/<iframe /g)).toHaveLength(1);
     expect(html).toContain('sandbox="allow-popups"');

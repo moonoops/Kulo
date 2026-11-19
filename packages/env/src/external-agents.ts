@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { EXTERNAL_AGENT_KINDS, redactSensitiveText, type ExternalAgentBinding, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentPendingReportFile, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentRun, type ExternalAgentUncertainReason, type ExternalWorkspaceMode, type ReadOnlyViolationSummary, type StagedWorkspaceDiffSummary, type WorkerExecutionPhase } from "@moco/protocol";
+import { EXTERNAL_AGENT_KINDS, redactSensitiveText, type ExternalAgentBinding, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentPendingReportFile, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentRun, type ExternalAgentUncertainReason, type ExternalWorkspaceMode, type ReadOnlyViolationSummary, type StagedWorkspaceDiffSummary, type WorkerExecutionPhase } from "@kulo/protocol";
 import { canonicalExecutionPath } from "./isolation.js";
 import { cleanupRecordedExecutions, hasOrphanedExecution } from "./worker-supervisor.js";
 import { ProjectDirectoryRegistry } from "./project-directories.js";
@@ -26,7 +26,7 @@ interface LiveRun {stored:StoredRun;deadline?:number;driver?:ExternalDriver;mcp?
 const WORKER_PHASES = new Set<WorkerExecutionPhase>(["starting", "investigating", "editing", "verifying", "responding", "waiting_permission"]);
 const UNCERTAIN_REASONS = new Set<ExternalAgentUncertainReason>(["timeout", "disconnect", "env_restart", "closed"]);
 const READ_ONLY_SNAPSHOT_MAX_FILES = 10_000;
-const READ_ONLY_IGNORED_DIRS = new Set([".git", ".moco-env", "node_modules", ".DS_Store", "dist", "coverage", "target", ".next", ".nuxt", ".turbo", ".parcel-cache", ".vite", ".pytest_cache", ".mypy_cache", ".ruff_cache", "__pycache__", ".venv"]);
+const READ_ONLY_IGNORED_DIRS = new Set([".git", ".kulo-env", "node_modules", ".DS_Store", "dist", "coverage", "target", ".next", ".nuxt", ".turbo", ".parcel-cache", ".vite", ".pytest_cache", ".mypy_cache", ".ruff_cache", "__pycache__", ".venv"]);
 const READ_ONLY_IGNORED_SUFFIXES = [".tsbuildinfo", ".pyc", ".pyo"];
 function object(value:unknown):value is Record<string,unknown>{return !!value&&typeof value==="object"&&!Array.isArray(value);}
 function id(value:unknown):value is string{return typeof value==="string"&&/^[a-zA-Z0-9:_.-]{1,200}$/.test(value)&&!["__proto__","constructor","prototype"].includes(value);}
@@ -382,7 +382,7 @@ export class ExternalAgentService {
     if([...this.#runs.values()].some(item=>item.run.taskId===request.taskId&&item.run.runEpoch===request.runEpoch))throw new Error("This task epoch already has an external execution receipt; inspect it before dispatching again");
     if([...this.#runs.values()].some(stored=>stored.run.quiescent!==true&&(within(cwd,stored.cwd)||within(stored.cwd,cwd))))throw new Error("Previous external execution cleanup is pending for this workspace");
     if([...this.#live.values()].some(item=>!terminal(item.stored.run.state)&&(within(cwd,item.stored.cwd)||within(item.stored.cwd,cwd))))throw new Error("Another external task owns write access to this workspace");
-    if(request.sessionId&&!startupError&&!this.#ownedSession(request,cwd,executable))throw new Error("Native session does not belong to this Moco task and workspace");
+    if(request.sessionId&&!startupError&&!this.#ownedSession(request,cwd,executable))throw new Error("Native session does not belong to this Kulo task and workspace");
     const prepared=startupError?{executionCwd:cwd}:this.#prepareExecutionWorkspace(request,cwd);
     const readOnlyBeforeSnapshot=!startupError&&request.readOnly&&prepared.executionCwd===cwd?captureDirectReadOnlySnapshot(cwd,prepared.scratchNotesDir):undefined;
     const stored:StoredRun={version:1,managedProcesses:request.binding.kind!=="grok-bot",fingerprint,cwd,executionCwd:prepared.executionCwd,workspaceMode:prepared.workspaceMode,scratchNotesDir:prepared.scratchNotesDir,executable,projectId:request.projectId,directoryId:request.directoryId,grantRevision:request.grantRevision,readOnly:request.readOnly,run:{id:request.requestId,taskId:request.taskId,runEpoch:request.runEpoch,kind:request.binding.kind,sessionId:startupError?undefined:request.sessionId,state:"starting",phase:"starting",text:"",events:[],permissions:[],nextSequence:1,quiescent:false,...(prepared.executionCwd!==cwd?{stagedCwd:prepared.executionCwd}:{}),...(prepared.scratchNotesDir?{scratchNotesDir:prepared.scratchNotesDir}:{})}};
@@ -411,7 +411,7 @@ export class ExternalAgentService {
           return await this.#handler!({...invocation,envId:this.#options.envId});
         }catch(error){
           const msg=error instanceof Error?error.message:String(error);
-          if(invocation.name==="moco_task_report"&&/Hub is offline|Hub disconnected|not sent|timed out/i.test(msg)){
+          if(invocation.name==="kulo_task_report"&&/Hub is offline|Hub disconnected|not sent|timed out/i.test(msg)){
             return this.#recordOfflineTaskReport(live,invocation.args);
           }
           throw error;
@@ -431,7 +431,7 @@ export class ExternalAgentService {
     const executionCwd=live.stored.executionCwd??live.stored.cwd;
     return{
     binding:request.binding,executable:live.stored.executable,cwd:executionCwd,workspaceMode:live.stored.workspaceMode,scratchNotesDir:live.stored.scratchNotesDir,controlRoot:path.join(this.#options.projectRegistry.privateDirectory,"external-executions"),projectId:request.projectId,readOnly:request.readOnly,
-    prompt:[request.prompt,request.readOnly&&!/Workspace Mode:\s*read_only/i.test(request.prompt)?"Read-only mode: inspect and analyze only; never modify files or perform write operations.":"",live.mcp?"Use the attached `moco-task` MCP tools to report progress/outcomes, request collaboration or decisions from Moco, or query/update shared project memory.":""].filter(Boolean).join("\n\n"),
+    prompt:[request.prompt,request.readOnly&&!/Workspace Mode:\s*read_only/i.test(request.prompt)?"Read-only mode: inspect and analyze only; never modify files or perform write operations.":"",live.mcp?"Use the attached `kulo-task` MCP tools to report progress/outcomes, request collaboration or decisions from Kulo, or query/update shared project memory.":""].filter(Boolean).join("\n\n"),
     modelId:request.modelId,thinkingLevel:request.thinkingLevel,sessionId:request.sessionId,timeoutMs:request.timeoutMs,servers:live.mcp?[live.mcp.server]:[],
     pipe:async spec=>{
       const factory=this.#options.pipeFactory??createExternalPipeFactory({controlRoot:path.join(this.#options.projectRegistry.privateDirectory,"external-executions"),projectId:request.projectId});

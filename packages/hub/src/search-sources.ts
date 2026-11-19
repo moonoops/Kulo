@@ -1,4 +1,4 @@
-import type { WebSource } from "@moco/protocol";
+import type { WebSource } from "@kulo/protocol";
 import { normalizeWebSourceUrl } from "./web-content.js";
 
 const SOURCE_LIMIT = 40;
@@ -31,11 +31,11 @@ export function sanitizeSearchSources(value: unknown): WebSource[] {
 
 export function nativeSearchEvidence(value: unknown): { sources: WebSource[]; searchSuggestions: string[] } {
   if (!value || typeof value !== "object") return { sources: [], searchSuggestions: [] };
-  const message = value as { role?: unknown; stopReason?: unknown; mocoSearchSources?: unknown; mocoSearchSuggestions?: unknown };
+  const message = value as { role?: unknown; stopReason?: unknown; kuloSearchSources?: unknown; kuloSearchSuggestions?: unknown };
   if (message.role !== "assistant" || ["error", "aborted", "length"].includes(String(message.stopReason))) return { sources: [], searchSuggestions: [] };
-  const sources = sanitizeSearchSources(message.mocoSearchSources);
-  const searchSuggestions = sources.length && Array.isArray(message.mocoSearchSuggestions)
-    ? message.mocoSearchSuggestions.filter((item): item is string => typeof item === "string" && item.length <= 24_000).slice(-4) : [];
+  const sources = sanitizeSearchSources(message.kuloSearchSources);
+  const searchSuggestions = sources.length && Array.isArray(message.kuloSearchSuggestions)
+    ? message.kuloSearchSuggestions.filter((item): item is string => typeof item === "string" && item.length <= 24_000).slice(-4) : [];
   return { sources, searchSuggestions };
 }
 

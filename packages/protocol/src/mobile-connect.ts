@@ -14,7 +14,7 @@ export interface MobileConnectionMetadata {
 }
 
 export interface MobileInvitationData {
-  kind: "moco.mobile.invite";
+  kind: "kulo.mobile.invite";
   version: 1;
   hubId: string;
   hubName: string;

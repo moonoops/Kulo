@@ -4,12 +4,12 @@ import { defineDoc, defineExtension, defineTask, ROOT_CONVERSATION_ID, type Harn
 import type { CredentialStore } from "@earendil-works/pi-ai";
 import type {
   HindsightMemoryConfig, HindsightProbeResult, HindsightServiceModel, MemoryServiceConnection, MemoryServiceJob,
-  MemoryServicePrepareRequest, MemoryServiceSecretField, MemoryServiceSecretInput, MemoryServiceSnapshot, MocoSettingsView,
+  MemoryServicePrepareRequest, MemoryServiceSecretField, MemoryServiceSecretInput, MemoryServiceSnapshot, KuloSettingsView,
   MemoryConnectionUpdateRequest, MemoryConnectionUpdateResult,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import { probeHindsightConnection, resolveHindsightToken, resolveHindsightSharedReadToken } from "./hindsight.js";
 import { HindsightServiceError } from "./hindsight-service.js";
-import { MocoSettingsDoc, SettingsUpdateError, applySettingsBlockUpdate, type MocoDurableSettings } from "./settings.js";
+import { KuloSettingsDoc, SettingsUpdateError, applySettingsBlockUpdate, type KuloDurableSettings } from "./settings.js";
 
 interface LocalStatus {
   installed: boolean; running: boolean; platform: string; deviceName: string; endpoint?: string;
@@ -35,7 +35,7 @@ interface StoredJob {
 }
 interface MemoryServiceState { jobs: Record<string, StoredJob>; inputs: Record<string, MemoryServiceSecretInput> }
 export const MemoryServiceDoc = defineDoc<MemoryServiceState & JsonObject>({
-  kind: "moco.memory-service", version: 1, scope: "session",
+  kind: "kulo.memory-service", version: 1, scope: "session",
   initial: () => ({ jobs: {}, inputs: {} }) as MemoryServiceState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
@@ -83,9 +83,9 @@ function connectionValue(raw: unknown): MemoryServiceConnection {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fail(400, "invalid_memory_connection", "请输入记忆服务连接。");
   const value = raw as Record<string, unknown>;
   if (Object.keys(value).some((key) => !["endpoint", "endpoints", "accessMode", "banks"].includes(key))) fail(400, "invalid_memory_connection", "连接中不能包含密钥。");
-  if (!["moco", "scoped", "private-only"].includes(String(value.accessMode))) fail(400, "invalid_memory_connection", "请选择接入方式。");
+  if (!["kulo", "scoped", "private-only"].includes(String(value.accessMode))) fail(400, "invalid_memory_connection", "请选择接入方式。");
   const banks = value.banks as Record<string, unknown> | undefined;
-  const privateBank = banks?.private ?? "moco-core", shared = banks?.shared ?? "moco-shared";
+  const privateBank = banks?.private ?? "kulo-core", shared = banks?.shared ?? "kulo-shared";
   if (typeof privateBank !== "string" || typeof shared !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(privateBank) || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(shared) || privateBank.toLowerCase() === shared.toLowerCase()) fail(400, "invalid_memory_connection", "私有库与共享库名称必须有效且不同。");
   if (value.endpoints !== undefined && (!Array.isArray(value.endpoints) || value.endpoints.length > 8)) fail(400, "invalid_memory_connection", "备用地址最多 8 个。");
   return { endpoint: endpoint(value.endpoint), accessMode: value.accessMode as MemoryServiceConnection["accessMode"],
@@ -106,7 +106,7 @@ function connectionUpdateValue(raw: MemoryConnectionUpdateRequest): MemoryConnec
   const connection = raw.connection;
   if (!connection || typeof connection !== "object" || Array.isArray(connection) || Object.keys(connection).some((key) => !["endpoint", "endpoints", "accessMode", "banks"].includes(key)) ||
     typeof connection.endpoint !== "string" || connection.endpoint.length > 2048 || /[\x00-\x1f\x7f]/.test(connection.endpoint) ||
-    typeof connection.accessMode !== "string" || !["moco", "scoped", "private-only"].includes(connection.accessMode) ||
+    typeof connection.accessMode !== "string" || !["kulo", "scoped", "private-only"].includes(connection.accessMode) ||
     connection.endpoints !== undefined && (!Array.isArray(connection.endpoints) || connection.endpoints.length > 8 || connection.endpoints.some((value) => typeof value !== "string" || value.length > 2048 || /[\x00-\x1f\x7f]/.test(value)))) fail(400, "invalid_memory_connection", "记忆连接字段格式无效。");
   const banks = connection.banks;
   if (!banks || typeof banks !== "object" || Array.isArray(banks) || Object.keys(banks).some((key) => !["private", "shared"].includes(key)) || typeof banks.private !== "string" || typeof banks.shared !== "string") fail(400, "invalid_memory_connection", "请填写私有库与共享库名称。");
@@ -119,16 +119,16 @@ export interface MemoryServiceOptions {
   operationTask: ReturnType<typeof createMemoryServiceTask>;
   local: LocalMemoryExecutor;
   credentials: CredentialStore;
-  settings: () => MocoSettingsView;
+  settings: () => KuloSettingsView;
   memory: () => HindsightMemoryConfig;
-  applied: (settings: MocoDurableSettings) => Promise<void>;
+  applied: (settings: KuloDurableSettings) => Promise<void>;
   validateMemory?: (memory: HindsightMemoryConfig) => void;
   resolveModelCredential?: (model: HindsightServiceModel) => Promise<string | undefined>;
   probe?: typeof probeHindsightConnection;
   now?: () => number;
 }
 
-export class MocoMemoryService {
+export class KuloMemoryService {
   readonly #options: MemoryServiceOptions;
   #queue: Promise<unknown> = Promise.resolve();
   constructor(options: MemoryServiceOptions) { this.#options = options; }
@@ -156,10 +156,10 @@ export class MocoMemoryService {
     const request = connectionUpdateValue(raw);
     try {
       return await this.#serial(async () => {
-        const [state, current] = await Promise.all([this.#options.harness.snapshot(MemoryServiceDoc, ctx), this.#options.harness.snapshot(MocoSettingsDoc, ctx)]);
+        const [state, current] = await Promise.all([this.#options.harness.snapshot(MemoryServiceDoc, ctx), this.#options.harness.snapshot(KuloSettingsDoc, ctx)]);
         if (Object.values(state?.jobs ?? {}).some((job) => job.view.status === "running")) fail(409, "memory_service_busy", "记忆服务正在处理配置，请稍后重试。");
         if (!current || current.revisions.memory !== request.expectedRevision) fail(409, "memory_revision_conflict", "记忆设置已更新，请刷新后重试。");
-        const copy = clone(current) as MocoDurableSettings;
+        const copy = clone(current) as KuloDurableSettings;
         // Leave saved keys on the owning Settings document, so its origin checks decide reuse.
         const { routerApiKey: _router, workerApiKey: _worker, sharedReadApiKey: _sharedRead, ...previous } = copy.memory;
         const payload = { ...previous, ...request.connection, endpoints: request.connection.endpoints ?? previous.endpoints,
@@ -170,7 +170,7 @@ export class MocoMemoryService {
           ...(request.clearRouterApiKey === undefined ? {} : { clearRouterApiKey: request.clearRouterApiKey }),
           ...(request.clearWorkerApiKey === undefined ? {} : { clearWorkerApiKey: request.clearWorkerApiKey }),
           ...(request.clearSharedReadApiKey === undefined ? {} : { clearSharedReadApiKey: request.clearSharedReadApiKey }),
-          ...(request.connection.accessMode === "private-only" ? { clearWorkerApiKey: true, clearSharedReadApiKey: true } : request.connection.accessMode === "moco" ? { clearSharedReadApiKey: true } : {}),
+          ...(request.connection.accessMode === "private-only" ? { clearWorkerApiKey: true, clearSharedReadApiKey: true } : request.connection.accessMode === "kulo" ? { clearSharedReadApiKey: true } : {}),
         };
         applySettingsBlockUpdate(copy, "memory", request.expectedRevision, payload);
         const candidate = copy.memory;
@@ -184,10 +184,10 @@ export class MocoMemoryService {
         }
         if (!probeOnly) {
           const saved = await this.#options.harness.commit(async (tx) => {
-            const settings = await tx.doc(MocoSettingsDoc);
+            const settings = await tx.doc(KuloSettingsDoc);
             applySettingsBlockUpdate(settings, "memory", request.expectedRevision, payload);
             this.#options.validateMemory?.(settings.memory);
-            return clone(settings) as MocoDurableSettings;
+            return clone(settings) as KuloDurableSettings;
           }, ctx);
           await this.#options.applied(saved);
         }
@@ -212,9 +212,9 @@ export class MocoMemoryService {
         if (!result.healthy) fail(409, "memory_probe_failed", "连接未通过检查，未启用长期记忆。");
       }
       const saved = await this.#options.harness.commit(async (tx) => {
-        const settings = await tx.doc(MocoSettingsDoc);
+        const settings = await tx.doc(KuloSettingsDoc);
         applySettingsBlockUpdate(settings, "memory", expectedRevision, candidate);
-        return clone(settings) as MocoDurableSettings;
+        return clone(settings) as KuloDurableSettings;
       }, ctx);
       await this.#options.applied(saved);
     });
@@ -238,7 +238,7 @@ export class MocoMemoryService {
       if (this.#options.settings().blocks.memory.revision !== raw.expectedRevision) fail(409, "memory_revision_conflict", "记忆设置已更新，请刷新后重试。");
       if (Object.values(state?.jobs ?? {}).some((job) => job.view.status === "running")) fail(409, "memory_service_busy", "记忆服务正在处理另一项操作。");
       const local = await this.#options.local.inspect();
-      if (["configure", "uninstall"].includes(raw.operation) && !local.installed) fail(409, "memory_not_managed", "未发现由 Moco 管理的本机安装。");
+      if (["configure", "uninstall"].includes(raw.operation) && !local.installed) fail(409, "memory_not_managed", "未发现由 Kulo 管理的本机安装。");
       const model = normalized.model ?? (raw.operation === "configure" ? publicModel(local.model) : undefined);
       if (["deploy", "configure"].includes(raw.operation) && !model) fail(400, "invalid_memory_model", "请先选择记忆处理模型。");
       if (raw.operation === "connect" && !normalized.connection) fail(400, "invalid_memory_connection", "请输入记忆服务连接。");
@@ -307,7 +307,7 @@ export class MocoMemoryService {
       if (request.field !== "modelApiKey" && secret.length < 32) fail(400, "invalid_memory_secret", "记忆密钥至少 32 位。");
       const origin = request.field === "modelApiKey" ? originForModel(job.view.model!) : new URL(job.view.connection!.endpoint).origin;
       const ref = `memory-service:${job.view.id}:${request.field}`;
-      await this.#options.credentials.modify(ref, async () => ({ type: "api_key", key: secret, env: { MOCO_MEMORY_ORIGIN: origin } }));
+      await this.#options.credentials.modify(ref, async () => ({ type: "api_key", key: secret, env: { KULO_MEMORY_ORIGIN: origin } }));
       await this.#options.harness.commit(async (tx) => {
         const state = await tx.doc(MemoryServiceDoc);
         state.jobs[request.jobId]!.credentialRefs[request.field] = ref;
@@ -335,7 +335,7 @@ export class MocoMemoryService {
           for (const input of Object.values(state.inputs)) if (input.jobId === id && input.status === "pending") input.status = "cancelled";
           return;
         }
-        const settings = await tx.doc(MocoSettingsDoc);
+        const settings = await tx.doc(KuloSettingsDoc);
         if (settings.revisions.memory !== job.expectedRevision) fail(409, "memory_revision_conflict", "记忆设置已更新，请重新准备配置。");
         if (Object.values(state.jobs).some((other) => other.view.id !== id && other.view.status === "running")) fail(409, "memory_service_busy", "记忆服务正在处理另一项操作。");
         job.view.status = "running"; job.view.stage = "准备执行"; job.view.updatedAt = this.#now();
@@ -353,7 +353,7 @@ export class MocoMemoryService {
     if (ref) {
       const credential = await this.#options.credentials.read(ref);
       const origin = field === "modelApiKey" ? originForModel(job.view.model!) : new URL(job.view.connection!.endpoint).origin;
-      if (credential?.type !== "api_key" || credential.env?.MOCO_MEMORY_ORIGIN !== origin) fail(409, "memory_credential_stale", "凭据与当前服务不匹配，请重新配置。");
+      if (credential?.type !== "api_key" || credential.env?.KULO_MEMORY_ORIGIN !== origin) fail(409, "memory_credential_stale", "凭据与当前服务不匹配，请重新配置。");
       return credential?.type === "api_key" ? credential.key : undefined;
     }
     if (field === "modelApiKey") return job.view.model?.connectionId ? this.#options.resolveModelCredential?.(job.view.model) : undefined;
@@ -370,14 +370,14 @@ export class MocoMemoryService {
     const saved = await this.#options.harness.commit(async (tx) => {
       const state = await tx.doc(MemoryServiceDoc), current = state.jobs[job.view.id]!;
       if (current.view.status === "succeeded") return undefined;
-      const settings = await tx.doc(MocoSettingsDoc);
+      const settings = await tx.doc(KuloSettingsDoc);
       if (config) applySettingsBlockUpdate(settings, "memory", current.expectedRevision, { ...config,
         ...(config.routerApiKeyDisabled ? { clearRouterApiKey: true } : {}),
         ...(config.workerApiKeyDisabled ? { clearWorkerApiKey: true } : {}),
         ...(config.sharedReadApiKeyDisabled ? { clearSharedReadApiKey: true } : {}) });
       current.view.status = "succeeded"; current.view.stage = "已完成"; current.view.updatedAt = this.#now();
       if (probe) current.view.probe = clone(probe);
-      return config ? clone(settings) as MocoDurableSettings : undefined;
+      return config ? clone(settings) as KuloDurableSettings : undefined;
     }, ctx);
     if (saved) await this.#options.applied(saved);
     await this.#cleanup(job);
@@ -390,7 +390,7 @@ export class MocoMemoryService {
     const job = await this.#stored(id);
     if (job.view.status !== "running") return;
     try {
-      const settings = await this.#options.harness.snapshot(MocoSettingsDoc, ctx);
+      const settings = await this.#options.harness.snapshot(KuloSettingsDoc, ctx);
       if (settings?.revisions.memory !== job.expectedRevision) fail(409, "memory_revision_conflict", "记忆设置已变化，未切换连接。");
       const onProgress = (stage: string) => this.#stage(id, stage);
       const probe = this.#options.probe ?? probeHindsightConnection;
@@ -408,14 +408,14 @@ export class MocoMemoryService {
       if (job.view.operation === "uninstall") {
         const local = job.uninstallEndpoint === undefined ? await this.#options.local.inspect() : undefined;
         const removal = await this.#options.harness.commit(async (tx) => {
-          const settings = await tx.doc(MocoSettingsDoc), current = (await tx.doc(MemoryServiceDoc)).jobs[id]!;
+          const settings = await tx.doc(KuloSettingsDoc), current = (await tx.doc(MemoryServiceDoc)).jobs[id]!;
           if (settings.revisions.memory !== current.expectedRevision) fail(409, "memory_revision_conflict", "记忆设置已变化，未切换连接。");
           if (current.uninstallEndpoint === undefined) current.uninstallEndpoint = local?.endpoint === settings.memory.endpoint ? settings.memory.endpoint : null;
           const affectsConnection = current.uninstallEndpoint === settings.memory.endpoint;
           const paused = affectsConnection && settings.memory.enabled;
           if (paused) applySettingsBlockUpdate(settings, "memory", current.expectedRevision, { ...settings.memory, enabled: false });
           current.expectedRevision = settings.revisions.memory;
-          return { affectsConnection, paused, settings: clone(settings) as MocoDurableSettings };
+          return { affectsConnection, paused, settings: clone(settings) as KuloDurableSettings };
         }, ctx);
         if (removal.paused) await this.#options.applied(removal.settings);
         await this.#options.local.uninstall({ commandId: id, deleteData: job.view.deleteData, onProgress });
@@ -435,7 +435,7 @@ export class MocoMemoryService {
       } else {
         const input = { commandId: id, model: job.view.model!, apiKey: await this.#secret(job, "modelApiKey"), onProgress };
         const local = job.view.operation === "deploy" ? await this.#options.local.deploy(input) : await this.#options.local.configure(input);
-        candidate = { enabled: true, endpoint: local.endpoint, endpoints: [], accessMode: "moco", banks: local.banks, caCertPem: "", routerApiKey: local.routerApiKey, workerApiKey: local.workerApiKey,
+        candidate = { enabled: true, endpoint: local.endpoint, endpoints: [], accessMode: "kulo", banks: local.banks, caCertPem: "", routerApiKey: local.routerApiKey, workerApiKey: local.workerApiKey,
           routerApiKeyEnv: "", workerApiKeyEnv: "", authFile: "", autoAttachTopLevelRouters: true, sharedReadApiKeyDisabled: true };
       }
       await this.#stage(id, "验证连接与权限");
@@ -454,15 +454,15 @@ export class MocoMemoryService {
   }
 }
 
-function createMemoryServiceTask(get: () => MocoMemoryService) { return defineTask<{ jobId: string }, { phase: "run" }, null>({
-  name: "moco.memory-service-operation", version: 1, initial: () => ({ phase: "run" }),
+function createMemoryServiceTask(get: () => KuloMemoryService) { return defineTask<{ jobId: string }, { phase: "run" }, null>({
+  name: "kulo.memory-service-operation", version: 1, initial: () => ({ phase: "run" }),
   phases: { run: async (task, runtime, context) => {
     await get().execute(task.input.jobId);
     await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
   } },
   abort: async (_task, runtime, context) => { await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context); },
 }); }
-export function createMemoryServiceExtension(get: () => MocoMemoryService) {
+export function createMemoryServiceExtension(get: () => KuloMemoryService) {
   const operationTask = createMemoryServiceTask(get);
-  return Object.assign(defineExtension({ name: "moco-memory-service", tasks: [operationTask] }), { operationTask });
+  return Object.assign(defineExtension({ name: "kulo-memory-service", tasks: [operationTask] }), { operationTask });
 }

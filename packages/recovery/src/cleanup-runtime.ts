@@ -13,7 +13,7 @@ const NAME = "macos-worker-cleanup";
 export function bundledCustomizationCleanup(): (scope: { marker: string; negative: string }) => Promise<void> {
   if (process.platform !== "darwin") fail("cleanup_runtime_unavailable", "当前安装尚未提供此平台的独立定制进程清理组件。");
   const directory = path.dirname(fileURLToPath(import.meta.url));
-  const metadataFile = path.join(directory, "moco-cleanup-runtime.json");
+  const metadataFile = path.join(directory, "kulo-cleanup-runtime.json");
   const executable = path.join(directory, NAME);
   if (!fs.existsSync(metadataFile) || !fs.existsSync(executable)) fail("cleanup_runtime_unavailable", "当前安装缺少独立定制进程清理组件，恢复记录已保留。");
   let input: unknown;

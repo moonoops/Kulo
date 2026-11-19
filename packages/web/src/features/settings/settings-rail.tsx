@@ -1,18 +1,18 @@
 import { Card } from "@heroui/react";
-import type { CapabilitiesWorkspaceSnapshot, ConnectionWorkspaceSnapshot, EnvNodeDescriptor, MocoSettingsView, SettingsAssistantSnapshot, SetupInputRequest, TicketCardView } from "@moco/protocol";
+import type { CapabilitiesWorkspaceSnapshot, ConnectionWorkspaceSnapshot, EnvNodeDescriptor, KuloSettingsView, SettingsAssistantSnapshot, SetupInputRequest, TicketCardView } from "@kulo/protocol";
 import type { SettingsModuleId } from "./settings-helpers";
 import { SettingsAssistantPanel } from "./settings-assistant-panel";
 import type { SettingsAssistantControls } from "./use-settings-assistant";
 import type { ConnectionPrepare } from "./connections-module";
 import type { CapabilityView, ImageAssistantRequest } from "./capability-views";
 
-export function MocoSettingsRail({
+export function KuloSettingsRail({
   module, agentName, settings, envs, tickets, onProjectTicket, assistant, assistantLoaded, assistantError, connected, assistantControls, capabilitiesWorkspace, capabilityInputs, capabilityView, onCapabilityInputsChanged, imageRequest, onImageRequestHandled,
   connections, connectionPreparing, onConnectionPrepare, onConnectionsRefresh,
 }: {
   module: SettingsModuleId;
   agentName: string;
-  settings: MocoSettingsView | null;
+  settings: KuloSettingsView | null;
   envs: EnvNodeDescriptor[];
   tickets?: TicketCardView[];
   onProjectTicket?: (ticketId: string, title?: string) => void;
@@ -33,7 +33,7 @@ export function MocoSettingsRail({
   onConnectionsRefresh?: () => void;
 }) {
   return (
-    <Card className="moco-settings-rail gap-0 rounded-3xl bg-surface p-0">
+    <Card className="kulo-settings-rail gap-0 rounded-3xl bg-surface p-0">
       <Card.Content className="flex min-h-0 flex-1 flex-col p-0">
         <SettingsAssistantPanel
           module={module}

@@ -3,8 +3,8 @@ import fs from "node:fs";
 import net from "node:net";
 import { createServer } from "vite";
 
-const root = process.env.MOCO_DESKTOP_DEV_ROOT;
-const hub = new URL(process.env.MOCO_DESKTOP_HUB_URL);
+const root = process.env.KULO_DESKTOP_DEV_ROOT;
+const hub = new URL(process.env.KULO_DESKTOP_HUB_URL);
 if (!root || !path.isAbsolute(root) || hub.protocol !== "http:" || hub.hostname !== "127.0.0.1" || !hub.port || hub.username || hub.password || hub.pathname !== "/" || hub.search || hub.hash || !process.send) {
   throw new Error("开发服务器需要桌面客户端提供本机 Hub 地址。");
 }
@@ -20,7 +20,7 @@ const proxy = () => ({
     instance.on("proxyReqWs", preserveOrigin);
   },
 });
-const portFile = path.join(process.env.MOCO_DESKTOP_DATA_DIR, "vite-port");
+const portFile = path.join(process.env.KULO_DESKTOP_DATA_DIR, "vite-port");
 let preferredPort = 0;
 try {
   const descriptor = fs.openSync(portFile, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);

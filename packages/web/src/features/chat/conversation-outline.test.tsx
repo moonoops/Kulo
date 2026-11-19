@@ -1,7 +1,7 @@
 import { createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { ChatDisplayItem } from "@moco/protocol";
+import type { ChatDisplayItem } from "@kulo/protocol";
 import { activeConversationTurn, buildConversationTurns, conversationTurnId } from "./conversation-outline-model";
 import { ConversationOutline } from "./conversation-outline";
 
@@ -10,13 +10,13 @@ describe("conversation turn outline", () => {
     const messages: ChatDisplayItem[] = [
       { id: 1, role: "assistant", text: "开场消息" },
       { id: 2, role: "user", text: "# 设计优化方案\n保持简洁" },
-      { id: 3, role: "user", text: "[MOCO_WORKER_RELAY] internal" },
+      { id: 3, role: "user", text: "[KULO_WORKER_RELAY] internal" },
       { id: 4, role: "relay", text: "internal" },
       { id: 5, role: "assistant", text: "", thinking: "内部思考" },
       { id: 6, role: "assistant", text: "建议使用 **分段导航**，支持[点击跳转](https://example.com)。" },
       { id: 7, role: "system_note", text: "已保存" },
       { id: 8, role: "user", text: "接下来添加动画" },
-      { id: 9, role: "user", text: "[MOCO_WORKER_WATCHDOG] internal" },
+      { id: 9, role: "user", text: "[KULO_WORKER_WATCHDOG] internal" },
     ];
     expect(buildConversationTurns(messages)).toEqual([
       { id: 2, label: "设计优化方案 保持简洁", preview: "建议使用 分段导航，支持点击跳转。" },
@@ -68,7 +68,7 @@ describe("conversation turn outline", () => {
     const html = render();
     expect(html).toContain('aria-label="对话分段"');
     expect(html).toContain('aria-label="第 1 段：第一问"');
-    expect(html).toContain('aria-controls="moco-chat-turn-topic%2Fa-2"');
+    expect(html).toContain('aria-controls="kulo-chat-turn-topic%2Fa-2"');
     expect(html.match(/aria-current="location"/g)).toHaveLength(1);
     expect(html).toContain('aria-hidden="true"');
     expect(html).toContain('inert=""');

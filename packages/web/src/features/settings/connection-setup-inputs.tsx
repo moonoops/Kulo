@@ -1,4 +1,4 @@
-import { translate as t, useI18n } from "../../moco-i18n";
+import { translate as t, useI18n } from "../../kulo-i18n";
 import { useEffect, useRef, useState } from "react";
 import { Button, Card, Disclosure, Input, Label, Link, ListBox, Select, TextArea, TextField } from "@heroui/react";
 import {
@@ -12,8 +12,8 @@ import {
   type ConnectionRecordView,
   type ConnectionSaveRequest,
   type ConnectionSetupInput,
-} from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
+} from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
 
 export const CONNECTION_KIND_LABEL: Record<ConnectionKind, string> = { ssh: "SSH 服务器", account: "账号", "api-key": "API Key", custom: "自定义凭据", app: "预置应用" };
 const CREDENTIAL_TEMPLATES = (["account", "ssh", "api-key", "custom"] as const).map((id) => ({ id, label: CONNECTION_KIND_LABEL[id] }));
@@ -191,10 +191,10 @@ export function ConnectionSetupForm({ input, existing, application, clientId, co
     if (input.clientId !== clientId || input.status !== "pending") { setError(t("请在发起配置的窗口继续。", "Continue in the window where you started setup.")); return; }
     setBusy(true); setError(null);
     try {
-      if (cancel) { await mocoRest.cancelConnectionInput(input.id, clientId); onCancelled?.(); }
+      if (cancel) { await kuloRest.cancelConnectionInput(input.id, clientId); onCancelled?.(); }
       else {
         if (!maySave) throw new Error(t("本地凭据库暂不可用。", "The local credential vault is unavailable."));
-        const saved = await mocoRest.submitConnectionInput(input.id, { ...connectionSaveRequest(draft, input), clientId });
+        const saved = await kuloRest.submitConnectionInput(input.id, { ...connectionSaveRequest(draft, input), clientId });
         onCompleted?.(saved.connection);
       }
       setFinished(true);
@@ -209,61 +209,61 @@ export function ConnectionSetupForm({ input, existing, application, clientId, co
   return <Card variant="secondary" className="min-w-0 gap-3 rounded-2xl p-3" aria-label={input.connectionId ? t("编辑连接授权", "Edit credentials & access") : t("添加连接授权", "Add credentials & access")}>
     <Card.Header><Card.Title ref={nativeHeadingRef} tabIndex={nativeApp ? -1 : undefined} className="rounded-sm text-sm outline-offset-4">{isApp ? t(`连接${application?.name ?? draft.name}`, `Connect ${application?.name ?? draft.name}`) : draft.category === "information" ? input.connectionId ? t("编辑信息", "Edit information") : t("记住其他信息", "Save other information") : input.connectionId ? t("编辑登录凭据", "Edit login credentials") : t("添加登录凭据", "Add login credentials")}</Card.Title></Card.Header>
     <form ref={formRef} autoComplete="off" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-      <Card.Content className="moco-form-stack">
+      <Card.Content className="kulo-form-stack">
         {isApp ? <>
           {application?.instructions.length ? <ol className="list-decimal space-y-2 pl-4 text-xs text-muted">{application.instructions.map((instruction, index) => <li key={index}>{instruction}</li>)}</ol> : !application && <p role="alert" className="text-xs text-danger">{t("应用信息不可用，请重新打开。", "App information is unavailable. Open it again.")}</p>}
           {application?.helpUrl && <Link className="self-start text-xs" href={application.helpUrl} target="_blank" rel="noopener noreferrer">{t("官方指南", "Official guide")}<Link.Icon /></Link>}
-          {application?.authentication === "token" && <TextField className="moco-form-field" variant="primary" type="password" value={draft.apiKey} onChange={(value) => change("apiKey", value)} isDisabled={disabled} fullWidth><Label>Token</Label><Input autoFocus autoComplete="new-password" spellCheck={false} placeholder={secretPlaceholder || t("粘贴 Token", "Paste token")} /></TextField>}
+          {application?.authentication === "token" && <TextField className="kulo-form-field" variant="primary" type="password" value={draft.apiKey} onChange={(value) => change("apiKey", value)} isDisabled={disabled} fullWidth><Label>Token</Label><Input autoFocus autoComplete="new-password" spellCheck={false} placeholder={secretPlaceholder || t("粘贴 Token", "Paste token")} /></TextField>}
         </> : <>
-        <TextField className="moco-form-field" variant="primary" value={draft.name} onChange={(value) => change("name", value)} isRequired isDisabled={disabled} fullWidth><Label>{t("连接名称", "Connection name")}</Label><Input autoFocus maxLength={120} autoComplete="off" /></TextField>
+        <TextField className="kulo-form-field" variant="primary" value={draft.name} onChange={(value) => change("name", value)} isRequired isDisabled={disabled} fullWidth><Label>{t("连接名称", "Connection name")}</Label><Input autoFocus maxLength={120} autoComplete="off" /></TextField>
         {!input.connectionId && draft.category !== "information" && <Disclosure><Disclosure.Heading><Button size="sm" slot="trigger" variant="ghost" className="w-full justify-between">{connectionKindLabel(draft.kind)}<Disclosure.Indicator /></Button></Disclosure.Heading><Disclosure.Content><Disclosure.Body className="pt-2">
-          <Select className="moco-form-field" variant="primary" value={draft.kind} onChange={(value) => { if (value) setDraft((current) => clearConnectionDraftSecrets({ ...current, kind: String(value) as ConnectionKind,
+          <Select className="kulo-form-field" variant="primary" value={draft.kind} onChange={(value) => { if (value) setDraft((current) => clearConnectionDraftSecrets({ ...current, kind: String(value) as ConnectionKind,
             typeLabel: value === "custom" && !current.typeLabel ? t("自定义凭据", "Custom credentials") : current.typeLabel,
             credentialFields: value === "custom" && !current.credentialFields.length ? [{ key: "credential", label: t("凭据", "Credentials"), value: "" }] : current.credentialFields,
           })); }} isDisabled={disabled} fullWidth><Label>{t("登录方式", "Sign-in method")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger><Select.Popover><ListBox>{CREDENTIAL_TEMPLATES.map(({ id }) => <ListBox.Item key={id} id={id} textValue={connectionKindLabel(id)}>{connectionKindLabel(id)}<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover></Select>
         </Disclosure.Body></Disclosure.Content></Disclosure>}
         {draft.kind === "custom" && <>
-          {input.connectionId && <Select className="moco-form-field" variant="primary" value={draft.category} onChange={(value) => { if (value === "credential" || value === "information") change("category", value); }} isDisabled={disabled} fullWidth><Label>{t("保存到", "Save to")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger><Select.Popover><ListBox><ListBox.Item id="credential" textValue={t("登录凭据", "Login credentials")}>{t("登录凭据", "Login credentials")}<ListBox.ItemIndicator /></ListBox.Item><ListBox.Item id="information" textValue={t("其他信息", "Other information")}>{t("其他信息", "Other information")}<ListBox.ItemIndicator /></ListBox.Item></ListBox></Select.Popover></Select>}
-          {draft.category !== "information" && <TextField className="moco-form-field" variant="primary" value={draft.typeLabel} onChange={(value) => change("typeLabel", value)} isRequired isDisabled={disabled} fullWidth><Label>{t("凭据类型", "Credential type")}</Label><Input maxLength={120} autoComplete="off" /></TextField>}
+          {input.connectionId && <Select className="kulo-form-field" variant="primary" value={draft.category} onChange={(value) => { if (value === "credential" || value === "information") change("category", value); }} isDisabled={disabled} fullWidth><Label>{t("保存到", "Save to")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger><Select.Popover><ListBox><ListBox.Item id="credential" textValue={t("登录凭据", "Login credentials")}>{t("登录凭据", "Login credentials")}<ListBox.ItemIndicator /></ListBox.Item><ListBox.Item id="information" textValue={t("其他信息", "Other information")}>{t("其他信息", "Other information")}<ListBox.ItemIndicator /></ListBox.Item></ListBox></Select.Popover></Select>}
+          {draft.category !== "information" && <TextField className="kulo-form-field" variant="primary" value={draft.typeLabel} onChange={(value) => change("typeLabel", value)} isRequired isDisabled={disabled} fullWidth><Label>{t("凭据类型", "Credential type")}</Label><Input maxLength={120} autoComplete="off" /></TextField>}
         </>}
-        <TextField className="moco-form-field" variant="primary" value={draft.instructions} onChange={(value) => change("instructions", value)} isDisabled={disabled} fullWidth><Label>{t("用途", "Purpose")}</Label><TextArea rows={2} className="scrollbar" maxLength={8000} autoComplete="off" /></TextField>
+        <TextField className="kulo-form-field" variant="primary" value={draft.instructions} onChange={(value) => change("instructions", value)} isDisabled={disabled} fullWidth><Label>{t("用途", "Purpose")}</Label><TextArea rows={2} className="scrollbar" maxLength={8000} autoComplete="off" /></TextField>
         {draft.kind === "custom" ? <>
-          {draft.credentialFields.map((field, index) => <div key={field.key} role="group" aria-label={field.label.trim() || t(`字段 ${index + 1}`, `Field ${index + 1}`)} className="moco-form-stack rounded-xl border border-border p-3">
-            <div className="moco-field-action-row">
-              <TextField variant="primary" className="moco-form-field min-w-0 flex-1" value={field.label} onChange={(value) => changeField(field.key, { label: value })} isRequired isDisabled={disabled} fullWidth><Label>{t(`字段 ${index + 1} 名称`, `Field ${index + 1} name`)}</Label><Input className="moco-field-action-input" data-credential-field-name={field.key} maxLength={120} autoComplete="off" /></TextField>
-              <Button size="sm" variant="ghost" className="moco-field-action-button" aria-label={t(`移除${field.label.trim() || `字段 ${index + 1}`}`, `Remove ${field.label.trim() || `field ${index + 1}`}`)} isDisabled={disabled} onPress={() => removeField(field.key)}>{t("移除", "Remove")}</Button>
+          {draft.credentialFields.map((field, index) => <div key={field.key} role="group" aria-label={field.label.trim() || t(`字段 ${index + 1}`, `Field ${index + 1}`)} className="kulo-form-stack rounded-xl border border-border p-3">
+            <div className="kulo-field-action-row">
+              <TextField variant="primary" className="kulo-form-field min-w-0 flex-1" value={field.label} onChange={(value) => changeField(field.key, { label: value })} isRequired isDisabled={disabled} fullWidth><Label>{t(`字段 ${index + 1} 名称`, `Field ${index + 1} name`)}</Label><Input className="kulo-field-action-input" data-credential-field-name={field.key} maxLength={120} autoComplete="off" /></TextField>
+              <Button size="sm" variant="ghost" className="kulo-field-action-button" aria-label={t(`移除${field.label.trim() || `字段 ${index + 1}`}`, `Remove ${field.label.trim() || `field ${index + 1}`}`)} isDisabled={disabled} onPress={() => removeField(field.key)}>{t("移除", "Remove")}</Button>
             </div>
-            <TextField className="moco-form-field" variant="primary" value={field.value} onChange={(value) => changeField(field.key, { value })} isDisabled={disabled} fullWidth>
+            <TextField className="kulo-form-field" variant="primary" value={field.value} onChange={(value) => changeField(field.key, { value })} isDisabled={disabled} fullWidth>
               <Label>{field.label.trim() || t(`字段 ${index + 1} 内容`, `Field ${index + 1} content`)}</Label>
               <TextArea rows={3} className="scrollbar font-mono [-webkit-text-security:disc]" autoComplete="off" spellCheck={false} placeholder={existing?.secretFields.includes(field.key) ? t("已保存，留空保留", "Saved; leave blank to keep") : draft.category === "information" ? t("填写内容", "Enter content") : t("填写凭据", "Enter credentials")} />
             </TextField>
           </div>)}
           <Button ref={addFieldRef} size="sm" variant="secondary" isDisabled={disabled || draft.credentialFields.length >= 32} onPress={addField}>{t("添加字段", "Add field")}</Button>
         </> : draft.kind === "ssh" ? <>
-          <TextField className="moco-form-field" variant="primary" value={draft.host} onChange={(value) => change("host", value)} isRequired isDisabled={disabled} fullWidth><Label>{t("服务器地址", "Server address")}</Label><Input autoComplete="off" spellCheck={false} placeholder={t("服务器 IP 或域名", "Server IP or domain")} /></TextField>
-          <div className="moco-form-grid moco-form-grid--port">
-            <TextField className="moco-form-field" variant="primary" value={draft.username} onChange={(value) => change("username", value)} isDisabled={disabled} fullWidth><Label>{t("用户名", "Username")}</Label><Input autoComplete="off" spellCheck={false} /></TextField>
-            <TextField className="moco-form-field" variant="primary" value={draft.port} onChange={(value) => change("port", value)} isRequired isDisabled={disabled} fullWidth><Label>{t("端口", "Port")}</Label><Input inputMode="numeric" autoComplete="off" /></TextField>
+          <TextField className="kulo-form-field" variant="primary" value={draft.host} onChange={(value) => change("host", value)} isRequired isDisabled={disabled} fullWidth><Label>{t("服务器地址", "Server address")}</Label><Input autoComplete="off" spellCheck={false} placeholder={t("服务器 IP 或域名", "Server IP or domain")} /></TextField>
+          <div className="kulo-form-grid kulo-form-grid--port">
+            <TextField className="kulo-form-field" variant="primary" value={draft.username} onChange={(value) => change("username", value)} isDisabled={disabled} fullWidth><Label>{t("用户名", "Username")}</Label><Input autoComplete="off" spellCheck={false} /></TextField>
+            <TextField className="kulo-form-field" variant="primary" value={draft.port} onChange={(value) => change("port", value)} isRequired isDisabled={disabled} fullWidth><Label>{t("端口", "Port")}</Label><Input inputMode="numeric" autoComplete="off" /></TextField>
           </div>
-          <Select className="moco-form-field" variant="primary" value={draft.sshAuth} onChange={(value) => { if (value) setDraft((current) => clearConnectionDraftSecrets({ ...current, sshAuth: String(value) as ConnectionDraft["sshAuth"] })); }} isDisabled={disabled} fullWidth>
+          <Select className="kulo-form-field" variant="primary" value={draft.sshAuth} onChange={(value) => { if (value) setDraft((current) => clearConnectionDraftSecrets({ ...current, sshAuth: String(value) as ConnectionDraft["sshAuth"] })); }} isDisabled={disabled} fullWidth>
             <Label>{t("认证方式", "Authentication")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
             <Select.Popover><ListBox><ListBox.Item id="password" textValue={t("密码", "Password")}>{t("密码", "Password")}<ListBox.ItemIndicator /></ListBox.Item><ListBox.Item id="private-key" textValue={t("SSH 私钥", "SSH private key")}>{t("SSH 私钥", "SSH private key")}<ListBox.ItemIndicator /></ListBox.Item></ListBox></Select.Popover>
           </Select>
           {draft.sshAuth === "private-key" && <>
-            <TextField className="moco-form-field" variant="primary" value={draft.privateKey} onChange={(value) => change("privateKey", value)} isDisabled={disabled} fullWidth><Label>{t("SSH 私钥", "SSH private key")}</Label><TextArea rows={4} className="scrollbar font-mono [-webkit-text-security:disc]" autoComplete="off" spellCheck={false} placeholder={secretPlaceholder || t("粘贴 SSH 私钥", "Paste SSH private key")} /></TextField>
-            <TextField className="moco-form-field" variant="primary" type="password" value={draft.passphrase} onChange={(value) => change("passphrase", value)} isDisabled={disabled} fullWidth><Label>{t("私钥口令", "Key passphrase")}</Label><Input autoComplete="new-password" spellCheck={false} placeholder={secretPlaceholder} /></TextField>
+            <TextField className="kulo-form-field" variant="primary" value={draft.privateKey} onChange={(value) => change("privateKey", value)} isDisabled={disabled} fullWidth><Label>{t("SSH 私钥", "SSH private key")}</Label><TextArea rows={4} className="scrollbar font-mono [-webkit-text-security:disc]" autoComplete="off" spellCheck={false} placeholder={secretPlaceholder || t("粘贴 SSH 私钥", "Paste SSH private key")} /></TextField>
+            <TextField className="kulo-form-field" variant="primary" type="password" value={draft.passphrase} onChange={(value) => change("passphrase", value)} isDisabled={disabled} fullWidth><Label>{t("私钥口令", "Key passphrase")}</Label><Input autoComplete="new-password" spellCheck={false} placeholder={secretPlaceholder} /></TextField>
           </>}
         </> : <>
-          <TextField className="moco-form-field" variant="primary" value={draft.url} onChange={(value) => change("url", value)} isDisabled={disabled} fullWidth><Label>{draft.kind === "account" ? t("网站地址", "Website URL") : t("API 地址", "API URL")}</Label><Input type="url" autoComplete="off" spellCheck={false} placeholder="https://" /></TextField>
-          {draft.kind === "api-key" && <Select className="moco-form-field" variant="primary" value={draft.authType} onChange={(value) => { if (value) setDraft((current) => clearConnectionDraftSecrets({ ...current, authType: String(value) as ConnectionAuthType })); }} isDisabled={disabled} fullWidth>
+          <TextField className="kulo-form-field" variant="primary" value={draft.url} onChange={(value) => change("url", value)} isDisabled={disabled} fullWidth><Label>{draft.kind === "account" ? t("网站地址", "Website URL") : t("API 地址", "API URL")}</Label><Input type="url" autoComplete="off" spellCheck={false} placeholder="https://" /></TextField>
+          {draft.kind === "api-key" && <Select className="kulo-form-field" variant="primary" value={draft.authType} onChange={(value) => { if (value) setDraft((current) => clearConnectionDraftSecrets({ ...current, authType: String(value) as ConnectionAuthType })); }} isDisabled={disabled} fullWidth>
             <Label>{t("认证方式", "Authentication")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
             <Select.Popover><ListBox><ListBox.Item id="bearer" textValue="Bearer Token">Bearer Token<ListBox.ItemIndicator /></ListBox.Item><ListBox.Item id="header" textValue={t("API Key 请求头", "API key header")}>{t("API Key 请求头", "API key header")}<ListBox.ItemIndicator /></ListBox.Item><ListBox.Item id="basic" textValue="HTTP Basic">HTTP Basic<ListBox.ItemIndicator /></ListBox.Item></ListBox></Select.Popover>
           </Select>}
-          {draft.kind === "api-key" && draft.authType === "header" && <TextField className="moco-form-field" variant="primary" value={draft.headerName} onChange={(value) => change("headerName", value)} isDisabled={disabled} fullWidth><Label>{t("请求头名称", "Header name")}</Label><Input autoComplete="off" spellCheck={false} /></TextField>}
-          {isPassword && <TextField className="moco-form-field" variant="primary" value={draft.username} onChange={(value) => change("username", value)} isDisabled={disabled} fullWidth><Label>{t("账号", "Account")}</Label><Input autoComplete="off" spellCheck={false} /></TextField>}
-          {!isPassword && <TextField className="moco-form-field" variant="primary" type="password" value={draft.apiKey} onChange={(value) => change("apiKey", value)} isDisabled={disabled} fullWidth><Label>API Key</Label><Input autoComplete="new-password" spellCheck={false} placeholder={secretPlaceholder} /></TextField>}
+          {draft.kind === "api-key" && draft.authType === "header" && <TextField className="kulo-form-field" variant="primary" value={draft.headerName} onChange={(value) => change("headerName", value)} isDisabled={disabled} fullWidth><Label>{t("请求头名称", "Header name")}</Label><Input autoComplete="off" spellCheck={false} /></TextField>}
+          {isPassword && <TextField className="kulo-form-field" variant="primary" value={draft.username} onChange={(value) => change("username", value)} isDisabled={disabled} fullWidth><Label>{t("账号", "Account")}</Label><Input autoComplete="off" spellCheck={false} /></TextField>}
+          {!isPassword && <TextField className="kulo-form-field" variant="primary" type="password" value={draft.apiKey} onChange={(value) => change("apiKey", value)} isDisabled={disabled} fullWidth><Label>API Key</Label><Input autoComplete="new-password" spellCheck={false} placeholder={secretPlaceholder} /></TextField>}
         </>}
-        {isPassword && <TextField className="moco-form-field" variant="primary" type="password" value={draft.password} onChange={(value) => change("password", value)} isDisabled={disabled} fullWidth><Label>{t("密码", "Password")}</Label><Input autoComplete="new-password" spellCheck={false} placeholder={secretPlaceholder} /></TextField>}
+        {isPassword && <TextField className="kulo-form-field" variant="primary" type="password" value={draft.password} onChange={(value) => change("password", value)} isDisabled={disabled} fullWidth><Label>{t("密码", "Password")}</Label><Input autoComplete="new-password" spellCheck={false} placeholder={secretPlaceholder} /></TextField>}
         </>}
         {error && <p role="alert" className="break-words text-xs text-danger">{error}</p>}
       </Card.Content>

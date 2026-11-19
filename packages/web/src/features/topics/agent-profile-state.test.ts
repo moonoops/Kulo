@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { LiveStreamState, TicketCardView } from "@moco/protocol";
+import type { LiveStreamState, TicketCardView } from "@kulo/protocol";
 import { agentProfileActivity, agentProfileCompletions } from "./agent-profile-state";
 
 const live = (patch: Partial<LiveStreamState> = {}): LiveStreamState => ({ busy: false, activeTools: [], queuedCount: 0, ...patch });

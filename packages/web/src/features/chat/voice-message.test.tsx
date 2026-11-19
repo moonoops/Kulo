@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ChatAttachment } from "@moco/protocol";
+import type { ChatAttachment } from "@kulo/protocol";
 import { MessageContent } from "./message-content";
 import { registerMedia } from "./media-message";
 import { VoiceMessage, voiceBubbleWidth, voiceDuration } from "./voice-message";
@@ -10,17 +10,17 @@ const voice: ChatAttachment = { id: "voice", name: "语音消息.m4a", kind: "au
 describe("voice message presentation", () => {
   it("uses compact bubbles only for a user's recorded voice", () => {
     const user = renderToStaticMarkup(<MessageContent item={{ id: 1, role: "user", text: "", attachments: [voice] }} />);
-    expect(user).toContain("moco-voice-message");
-    expect(user).not.toContain("moco-chat-audio");
-    expect(user).not.toContain("moco-chat-media-title");
+    expect(user).toContain("kulo-voice-message");
+    expect(user).not.toContain("kulo-chat-audio");
+    expect(user).not.toContain("kulo-chat-media-title");
     expect(user).not.toContain("播放速度");
     expect(user).not.toContain("音量");
     const ordinaryAudio = renderToStaticMarkup(<MessageContent item={{ id: 2, role: "user", text: "", attachments: [{ ...voice, presentation: undefined }] }} />);
-    expect(ordinaryAudio).toContain("moco-chat-audio");
-    expect(ordinaryAudio).not.toContain("moco-voice-message");
+    expect(ordinaryAudio).toContain("kulo-chat-audio");
+    expect(ordinaryAudio).not.toContain("kulo-voice-message");
     const assistant = renderToStaticMarkup(<MessageContent item={{ id: 3, role: "assistant", text: "", attachments: [voice] }} />);
-    expect(assistant).toContain("moco-chat-audio");
-    expect(assistant).not.toContain("moco-voice-message");
+    expect(assistant).toContain("kulo-chat-audio");
+    expect(assistant).not.toContain("kulo-voice-message");
   });
 
   it("marks timer duration as approximate until actual metadata is available", () => {
@@ -43,7 +43,7 @@ describe("voice message presentation", () => {
     expect(voiceBubbleWidth(1000)).toBe(260);
     expect(voiceBubbleWidth(Infinity)).toBe(120);
     const html = renderToStaticMarkup(<VoiceMessage asset={voice} />);
-    expect(html).toContain("moco-voice-bubble");
+    expect(html).toContain("kulo-voice-bubble");
     expect(html).toContain('<audio src="/api/uploads/voice"');
     expect(html).toContain('hidden=""');
     expect(html).not.toMatch(/autoPlay|autoplay/);

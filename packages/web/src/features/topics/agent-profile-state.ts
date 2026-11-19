@@ -1,7 +1,7 @@
-import { translate as t } from "../../moco-i18n";
-import type { LiveStreamState, TicketCardView } from "@moco/protocol";
+import { translate as t } from "../../kulo-i18n";
+import type { LiveStreamState, TicketCardView } from "@kulo/protocol";
 import type { CatState } from "../../components/cat-motion";
-import { describeLocalizedMocoError } from "../../moco-error";
+import { describeLocalizedKuloError } from "../../kulo-error";
 import { taskCompletedAt, taskIsRecovering, taskNeedsAttention, taskStatusLabel } from "../tasks/task-model";
 import type { AgentTerminalEntry } from "./agent-terminal-state";
 
@@ -51,7 +51,7 @@ export function agentProfileActivity({ connected, live, tickets, entries, replyA
     if (live.activeTools.length) return { state: "working", label: t("正在执行", "Executing"), detail: live.activeTools.at(-1)!.name };
     return live.streamingText && replyActive ? { state: "speaking", label: t("正在回复", "Replying") } : { state: "thinking", label: t("正在思考", "Thinking") };
   }
-  const failure = live?.runFailure && describeLocalizedMocoError(live.runFailure);
+  const failure = live?.runFailure && describeLocalizedKuloError(live.runFailure);
   if (failure && !failure.isUserAbort) return { state: "error", label: t("执行失败", "Execution failed"), detail: failure.title, tone: "danger" };
   const attention = tickets.find(taskNeedsAttention);
   if (attention) {

@@ -1,4 +1,4 @@
-import { translate as t } from "../../moco-i18n";
+import { translate as t } from "../../kulo-i18n";
 import type {
   DeviceInterconnectionView,
   DeviceInvitation,
@@ -7,8 +7,8 @@ import type {
   DeviceSshScan,
   InterconnectedDevice,
   MobileInvitation,
-} from "@moco/protocol";
-import { apiRequest, MocoApiError } from "../../moco-api";
+} from "@kulo/protocol";
+import { apiRequest, KuloApiError } from "../../kulo-api";
 
 const base = "/api/devices";
 
@@ -26,19 +26,19 @@ export async function waitForDeviceRole(id: string, targetRole: DeviceRoleTransi
       });
     } catch (error) {
       signal?.throwIfAborted();
-      if (error instanceof MocoApiError && (error.status === 401 || error.status === 403)) throw error;
-      if (error instanceof MocoApiError && error.status === 404 && (found || deadline - Date.now() < 115_000)) {
-        throw new MocoApiError(404, t("未找到这次切换记录，可以重试。", "The switch receipt was not found. Try again."), "role_transition_unconfirmed");
+      if (error instanceof KuloApiError && (error.status === 401 || error.status === 403)) throw error;
+      if (error instanceof KuloApiError && error.status === 404 && (found || deadline - Date.now() < 115_000)) {
+        throw new KuloApiError(404, t("未找到这次切换记录，可以重试。", "The switch receipt was not found. Try again."), "role_transition_unconfirmed");
       }
     }
     if (state?.id === id && state.targetRole === targetRole) {
       found = true;
       if (state.status === "ready") return;
-      if (state.status === "failed") throw new MocoApiError(409, state.error ?? t("切换失败，请重试。", "Switch failed. Please retry."), state.code);
+      if (state.status === "failed") throw new KuloApiError(409, state.error ?? t("切换失败，请重试。", "Switch failed. Please retry."), state.code);
     }
     await new Promise((resolve) => setTimeout(resolve, 400));
   }
-  throw new MocoApiError(504, t("尚未确认切换结果，可以重试。", "The switch has not been confirmed. Try again."), "role_transition_unconfirmed");
+  throw new KuloApiError(504, t("尚未确认切换结果，可以重试。", "The switch has not been confirmed. Try again."), "role_transition_unconfirmed");
 }
 
 export function newDeviceTransitionId(): string {

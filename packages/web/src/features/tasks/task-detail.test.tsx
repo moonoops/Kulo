@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ComponentProps } from "react";
 import { describe, expect, it } from "vitest";
-import type { TicketRecord } from "@moco/protocol";
-import { MocoTaskProjection, TaskStatus } from "../../moco-tasks";
+import type { TicketRecord } from "@kulo/protocol";
+import { KuloTaskProjection, TaskStatus } from "../../kulo-tasks";
 
 const ticket: TicketRecord = {
   id: "failed-task", commandId: "test-command", title: "识别用户语音消息", goal: "转写语音", scope: "音频文件",
@@ -10,7 +10,7 @@ const ticket: TicketRecord = {
   workerConversationId: 3, runEpoch: 1, createdAt: 1, updatedAt: 2,
   latestReport: { state: "failed", summary: "当前环境没有可用的音频转写工具。", deliverable: "当前环境没有可用的音频转写工具。", at: 2 },
 };
-const render = (changes: Partial<TicketRecord> = {}, options: Partial<ComponentProps<typeof MocoTaskProjection>> = {}) => renderToStaticMarkup(<MocoTaskProjection detail={{ ticket: { ...ticket, ...changes }, transcript: [], live: { busy: false, activeTools: [], queuedCount: 0 } }}
+const render = (changes: Partial<TicketRecord> = {}, options: Partial<ComponentProps<typeof KuloTaskProjection>> = {}) => renderToStaticMarkup(<KuloTaskProjection detail={{ ticket: { ...ticket, ...changes }, transcript: [], live: { busy: false, activeTools: [], queuedCount: 0 } }}
   roleLabel="临时工" onRetry={async () => {}} onArchiveClose={async () => {}} onStop={() => {}} onDefer={() => {}} onAnswerBlocker={async () => {}} {...options} />);
 
 function button(html: string, label: string) {
@@ -37,7 +37,7 @@ describe("task failure details", () => {
   it("keeps workspace and scratch paths out of the default result, retaining full inspectable reports", () => {
     const scratchDir = "/private/very-long/scratch/task";
     const html = render({ status: "ready", scratchDir, latestReport: { state: "ready", summary: `已在 ${ticket.workspaceDir} 保存页面`, deliverable: `草稿位于 ${scratchDir}/index.html`, at: 2 } });
-    const result = html.match(/<article class="moco-task-result-content">([\s\S]*?)<\/article>/)?.[1];
+    const result = html.match(/<article class="kulo-task-result-content">([\s\S]*?)<\/article>/)?.[1];
     expect(result).toContain("工作目录");
     expect(result).not.toContain(ticket.workspaceDir);
     expect(result).not.toContain(scratchDir);

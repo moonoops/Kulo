@@ -1,0 +1,183 @@
+/* Shared control appearance. Sizes and field layout belong to typography/forms. */
+@layer components {
+  .kulo-ui {
+    --kulo-control-radius: 10px;
+    --kulo-list-radius: 14px;
+    --kulo-control-edge: color-mix(in oklab, var(--foreground) 24%, var(--surface));
+    --kulo-control-edge-strong: color-mix(in oklab, var(--foreground) 36%, var(--surface));
+    --kulo-control-hover: color-mix(in oklab, var(--foreground) 6%, transparent);
+    --kulo-control-pressed: color-mix(in oklab, var(--foreground) 10%, transparent);
+    --kulo-list-background: color-mix(in oklab, var(--surface) 75%, var(--surface-secondary));
+    --kulo-list-edge: color-mix(in oklab, var(--foreground) 13%, var(--surface));
+    --kulo-list-shadow: var(--field-shadow);
+  }
+
+  .kulo-ui .button {
+    border-radius: var(--kulo-control-radius);
+  }
+
+  .kulo-ui :is(.button--primary, .button--secondary, .button--outline) {
+    --button-bg: transparent;
+    --button-bg-hover: var(--kulo-control-hover);
+    --button-bg-pressed: var(--kulo-control-pressed);
+    --button-fg: var(--foreground);
+    border: 1px solid var(--kulo-control-edge);
+  }
+
+  .kulo-ui .button--primary {
+    --button-bg: color-mix(in oklab, var(--foreground) 3%, transparent);
+    border-color: var(--kulo-control-edge-strong);
+  }
+
+  .kulo-ui :is(.button--tertiary, .button--ghost) {
+    --button-bg: transparent;
+    --button-bg-hover: var(--kulo-control-hover);
+    --button-bg-pressed: var(--kulo-control-pressed);
+    --button-fg: var(--foreground);
+  }
+
+  /* Domain controls keep their established shapes when ordinary buttons change. */
+  .kulo-ui :is(.kulo-composer-button, .kulo-voice-call-circle, .kulo-composer-attachment-action, .kulo-composer-retry-upload, .kulo-jump-to-latest, .kulo-projection-close) {
+    border-radius: 50%;
+  }
+
+  .kulo-ui .kulo-composer-configure {
+    border-radius: 999px;
+  }
+
+  .kulo-ui :is(.kulo-cat-picker-trigger, .kulo-cat-picker-choice) {
+    border-radius: 20%;
+  }
+
+  .kulo-ui .kulo-agent-profile-overview {
+    border-radius: var(--kulo-list-radius);
+  }
+
+  .kulo-ui :is(.kulo-composer-control, .kulo-voice-call-circle:not(.button--danger)) {
+    --button-bg: color-mix(in oklab, var(--foreground) 8%, var(--surface-tertiary));
+    --button-bg-hover: color-mix(in oklab, var(--foreground) 12%, var(--surface-tertiary));
+    --button-bg-pressed: color-mix(in oklab, var(--foreground) 16%, var(--surface-tertiary));
+    --button-fg: var(--foreground);
+    border: 1px solid color-mix(in oklab, var(--foreground) 10%, var(--border));
+    --tw-shadow: 0 1px 2px color-mix(in oklab, var(--foreground) 5%, transparent);
+    box-shadow: var(--tw-inset-shadow, 0 0 transparent), var(--tw-inset-ring-shadow, 0 0 transparent), var(--tw-ring-offset-shadow, 0 0 transparent), var(--tw-ring-shadow, 0 0 transparent), var(--tw-shadow);
+  }
+
+  .kulo-ui :is(.kulo-voice-bubble, .kulo-jump-to-latest, .kulo-composer-attachment-action, .kulo-composer-retry-upload) {
+    --button-bg: var(--default);
+    --button-bg-hover: var(--default-hover);
+    --button-bg-pressed: var(--default-hover);
+    border: 0;
+  }
+
+  .kulo-ui .kulo-jump-to-latest {
+    @apply shadow-md;
+  }
+
+  /* Use library variables so invalid, focus and autofill keep their own layers. */
+  .kulo-ui :is(.input, .textarea, .select__trigger, .input-group, .number-field__group, .search-field__group) {
+    --default: var(--surface-secondary);
+    --default-hover: color-mix(in oklab, var(--foreground) 5%, var(--surface-secondary));
+    --field-border: var(--kulo-control-edge);
+    --field-border-hover: var(--kulo-control-edge-strong);
+    --field-border-focus: var(--focus);
+    --border-width-field: 1px;
+    --radius-field: var(--kulo-control-radius);
+    border-radius: var(--kulo-control-radius);
+  }
+
+  /* The field owns the outside edge; steppers only separate from the value. */
+  .kulo-ui .number-field__increment-button {
+    border-width: 0;
+    border-inline-start-width: 1px;
+  }
+
+  .kulo-ui .number-field__decrement-button {
+    border-width: 0;
+    border-inline-end-width: 1px;
+  }
+
+  .kulo-ui .switch {
+    --switch-control-bg: var(--surface-tertiary);
+    --switch-control-bg-hover: color-mix(in oklab, var(--foreground) 8%, var(--surface-tertiary));
+    --switch-control-bg-pressed: var(--switch-control-bg-hover);
+    --switch-control-bg-checked: var(--foreground);
+    --switch-control-bg-checked-hover: color-mix(in oklab, var(--foreground) 88%, var(--surface));
+    /* The library's selected thumb also reads accent tokens, scoped to this control. */
+    --accent: var(--foreground);
+    --accent-foreground: var(--surface);
+  }
+
+  .kulo-ui .switch:not([data-selected="true"], [aria-checked="true"], [data-disabled="true"], [aria-disabled="true"]) .switch__thumb {
+    background-color: var(--foreground);
+  }
+
+  .kulo-ui :is(.radio, .checkbox) {
+    --accent: var(--foreground);
+    --accent-hover: color-mix(in oklab, var(--foreground) 88%, var(--surface));
+    --accent-foreground: var(--surface);
+  }
+
+  .kulo-ui :is(.kulo-list-surface, .kulo-settings-list, .table-root, .kulo-search-plan-list) {
+    border: 1px solid var(--kulo-list-edge);
+    border-radius: var(--kulo-list-radius);
+    background: var(--kulo-list-background);
+    box-shadow: var(--kulo-list-shadow);
+  }
+
+  .kulo-ui .table-root--primary {
+    padding: 0;
+  }
+
+  .kulo-ui .table-root--primary .table__content {
+    border-radius: 0;
+  }
+
+  .kulo-ui .table__cell {
+    background-color: transparent;
+  }
+
+  .kulo-ui :is(.kulo-list-surface, .kulo-settings-list) > :not(template) ~ :not(template) {
+    border-top: 1px solid var(--separator);
+  }
+
+  .kulo-ui .kulo-list-editor {
+    margin: 0 var(--kulo-list-padding-inline) var(--kulo-list-padding-block);
+    padding: var(--kulo-space-4);
+    background: var(--surface-secondary);
+    border-radius: var(--kulo-control-radius);
+  }
+
+  .kulo-ui :is(.select__popover, .combo-box__popover, .dropdown__popover, .popover) {
+    border: 1px solid var(--kulo-list-edge);
+    border-radius: var(--kulo-list-radius);
+  }
+
+  .kulo-ui :is(.menu-item, .list-box-item) {
+    border-radius: var(--kulo-control-radius);
+  }
+
+  /* Row- and card-owned hover surfaces stay continuous across composite triggers. */
+  .kulo-ui :is(.kulo-topic-select, .kulo-topic-actions, .kulo-project-action, .kulo-agent-profile-overview, .kulo-cat-picker-trigger) {
+    --button-bg: transparent;
+    --button-bg-hover: transparent;
+    --button-bg-pressed: transparent;
+    --button-fg: currentColor;
+    color: inherit;
+  }
+
+  .kulo-ui .kulo-navigation-surface {
+    --button-bg: var(--surface);
+  }
+
+  .kulo-ui :is(.kulo-topic-actions, .kulo-message-action) {
+    --button-fg: var(--muted);
+  }
+
+  .kulo-ui .kulo-voice-call-mute[aria-pressed="true"] {
+    --button-bg: var(--foreground);
+    --button-bg-hover: color-mix(in oklab, var(--foreground) 88%, var(--background));
+    --button-bg-pressed: var(--button-bg-hover);
+    --button-fg: var(--background);
+  }
+}

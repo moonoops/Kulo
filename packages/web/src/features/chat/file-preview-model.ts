@@ -1,4 +1,4 @@
-import { isHtmlArtifact, type ChatAttachment } from "@moco/protocol";
+import { isHtmlArtifact, type ChatAttachment } from "@kulo/protocol";
 
 export type FilePreviewKind = "html" | "pdf" | "markdown" | "text";
 const textExtensions = new Set(["txt", "text", "csv", "tsv", "json", "jsonl", "xml", "yaml", "yml", "toml", "ini", "log", "css", "js", "mjs", "cjs", "jsx", "ts", "tsx", "py", "sh", "sql", "rs", "go", "java", "kt", "swift", "c", "h", "cpp", "rb"]);

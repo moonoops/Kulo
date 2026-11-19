@@ -57,7 +57,7 @@ const GENERIC_CREDENTIAL_CONTEXT = /凭据|凭证|授权(?:信息|资料|码)|�
 const GENERIC_SAVE_COMMAND = new RegExp(`^(?:(?:请|帮我|替我|给我|麻烦你|请帮我|请替我|我想|我要|我需要|不要|别|无需|不必)[\\t ]*)?${SAVE_VERB_SOURCE}|^(?:(?:请|帮我|替我|给我)[\\t ]*)?把[^\\r\\n]{1,100}${SAVE_VERB_SOURCE}|^I\\s+(?:want|need)\\s+you\\s+to\\s+(?:save|store|remember)\\b|(?:^|[，,。;；\\s])(?:请|帮我|替我|给我|麻烦你|请帮我|不要|别)${SAVE_VERB_SOURCE}(?:一下|起来)?(?=[\\s:：，,]|$)|(?:请|帮我|替我|给我)(?:帮我)?${SAVE_VERB_SOURCE}(?:这些|这组|一下|它)?[。.!！\\s]*$`, "iu");
 const CREDENTIAL_DISCUSSION = /(?:凭据|凭证|密码|密钥|秘钥|令牌|口令|api\s*key|credentials?|password|secret|token)[\t ]*(?:的|如何|怎么|怎样|是怎么|是如何)?[\t ]*(?:安全|存储|保存|管理|使用|storage|saving|security|management)?[\t ]*(?:方案|策略|讨论|原理|机制|规则|说明|文档|建议|plan\b|strategy\b|discussion\b|guide\b|documentation\b)/iu;
 const GENERIC_FIELD = /(?:^|(?<=[\s,，;；、:：{\[]))(?:("(?:\\.|[^"\\\r\n]){1,160}")|('(?:\\.|[^'\\\r\n]){1,160}')|([\p{L}\p{N}_][\p{L}\p{N}_ .()（）-]{0,79}?))[\t ]*[:：=][\t ]*/gu;
-const DECLARATIVE_SAVE = /^(?:可以保存|可保存|能保存|支持保存|用于保存|资料已保存|已保存|保存回执|保存记录|Moco可记录)/iu;
+const DECLARATIVE_SAVE = /^(?:可以保存|可保存|能保存|支持保存|用于保存|资料已保存|已保存|保存回执|保存记录|Kulo可记录)/iu;
 const PUBLIC_CREDENTIAL_FIELD = /^(?:name|title|名称|连接名称|连接名|type|typelabel|credentialtype|凭据类型|凭证类型|授权类型|类型|username|user|account|login|用户名|账号|帐号|账户|帐户|登录名|host|hostname|server|服务器|服务器地址|主机|主机地址|port|端口|url|网址|网站|地址)$/iu;
 
 interface GenericCredentialField extends SecretSpan { label: string; value: string }

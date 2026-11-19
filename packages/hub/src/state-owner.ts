@@ -1,12 +1,12 @@
-import { discoverLocalInstance, LocalInstanceInUseError, LocalInstanceOwner } from "@moco/env";
+import { discoverLocalInstance, LocalInstanceInUseError, LocalInstanceOwner } from "@kulo/env";
 
 export class HubStateInUseError extends Error {
-  constructor(readonly stateDir: string) { super("这份 Moco 数据已在运行。使用 open 可以打开已有的 Moco。"); }
+  constructor(readonly stateDir: string) { super("这份 Kulo 数据已在运行。使用 open 可以打开已有的 Kulo。"); }
 }
 
 export const HubStateOwner = {
   acquire(directory: string): LocalInstanceOwner {
-    try { return LocalInstanceOwner.acquire({ directory, name: "hub" }, "Moco Hub 已在运行。"); }
+    try { return LocalInstanceOwner.acquire({ directory, name: "hub" }, "Kulo Hub 已在运行。"); }
     catch (error) {
       if (error instanceof LocalInstanceInUseError) throw new HubStateInUseError(error.directory);
       throw error;

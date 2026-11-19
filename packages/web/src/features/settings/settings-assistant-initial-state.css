@@ -1,32 +1,32 @@
-.moco-settings-assistant-intro {
+.kulo-settings-assistant-intro {
   display: flex;
   min-height: 200px;
   height: 55%;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--moco-control-gap);
-  padding: var(--moco-space-6);
+  gap: var(--kulo-control-gap);
+  padding: var(--kulo-space-6);
   text-align: center;
 }
 
-.moco-settings-assistant-suggestions {
+.kulo-settings-assistant-suggestions {
   display: flex;
   min-width: 0;
   flex-direction: column;
   align-items: flex-start;
-  gap: var(--moco-control-gap);
+  gap: var(--kulo-control-gap);
 }
 
-.moco-settings-assistant-suggestion {
+.kulo-settings-assistant-suggestion {
   justify-content: flex-start;
   height: auto;
-  min-height: var(--moco-control-height-compact);
+  min-height: var(--kulo-control-height-compact);
   max-width: 100%;
   white-space: normal;
   text-align: start;
 }
 
 @media (pointer: coarse) {
-  .moco-settings-assistant-suggestion { min-height: 44px; }
+  .kulo-settings-assistant-suggestion { min-height: 44px; }
 }

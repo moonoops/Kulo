@@ -1,5 +1,5 @@
-import { translate as tr } from "../../moco-i18n";
-import { getMessageParts, type ChatDisplayItem } from "@moco/protocol";
+import { translate as tr } from "../../kulo-i18n";
+import { getMessageParts, type ChatDisplayItem } from "@kulo/protocol";
 
 export interface ConversationTurn {
   id: number;
@@ -11,8 +11,8 @@ export const TURN_SCROLL_PADDING = 24;
 
 export function isConversationTurn(item: ChatDisplayItem): boolean {
   return item.role === "user" &&
-    !item.text.startsWith("[MOCO_WORKER_RELAY]") &&
-    !item.text.startsWith("[MOCO_WORKER_WATCHDOG]");
+    !item.text.startsWith("[KULO_WORKER_RELAY]") &&
+    !item.text.startsWith("[KULO_WORKER_WATCHDOG]");
 }
 
 function plainText(text: string): string {
@@ -65,7 +65,7 @@ export function buildConversationTurns(messages: ChatDisplayItem[]): Conversatio
 }
 
 export function conversationTurnId(topicId: string, messageId: number): string {
-  return `moco-chat-turn-${encodeURIComponent(topicId)}-${messageId}`;
+  return `kulo-chat-turn-${encodeURIComponent(topicId)}-${messageId}`;
 }
 
 export function activeConversationTurn(

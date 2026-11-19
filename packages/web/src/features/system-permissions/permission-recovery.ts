@@ -1,4 +1,4 @@
-import { translate as t } from "../../moco-i18n";
+import { translate as t } from "../../kulo-i18n";
 
 export function isMicrophonePermissionFailure(cause: unknown): boolean {
   return cause instanceof DOMException && (cause.name === "NotAllowedError" || cause.name === "SecurityError");

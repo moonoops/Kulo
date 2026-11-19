@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import { COMPUTER_USE_MAX_RESULT, isComputerUseRequest, isComputerUseResult, type ComputerUseRequest, type ComputerUseResult, type ComputerPreviewTarget, type ComputerPreviewUpdate, type DesktopSystemPermissions, type SystemPermissionState } from "@moco/protocol";
+import { COMPUTER_USE_MAX_RESULT, isComputerUseRequest, isComputerUseResult, type ComputerUseRequest, type ComputerUseResult, type ComputerPreviewTarget, type ComputerPreviewUpdate, type DesktopSystemPermissions, type SystemPermissionState } from "@kulo/protocol";
 import { AgentCliError, runAgentCli, type AgentCliInvocation, type AgentCliRunner } from "./agent-cli.js";
 import { ComputerPreviewService } from "./computer-preview.js";
 
@@ -14,9 +14,9 @@ export interface ComputerUseServiceOptions {
   desktopEnabled?: boolean;
 }
 
-export function computerUseConfiguration(value = process.env.MOCO_COMPUTER_USE): { browserEnabled: boolean; desktopEnabled: boolean } {
+export function computerUseConfiguration(value = process.env.KULO_COMPUTER_USE): { browserEnabled: boolean; desktopEnabled: boolean } {
   const tools = (value ?? "browser,desktop").split(",").map((item) => item.trim()).filter(Boolean);
-  if (tools.some((item) => item !== "browser" && item !== "desktop")) throw new Error("MOCO_COMPUTER_USE accepts browser,desktop only");
+  if (tools.some((item) => item !== "browser" && item !== "desktop")) throw new Error("KULO_COMPUTER_USE accepts browser,desktop only");
   return { browserEnabled: tools.includes("browser"), desktopEnabled: tools.includes("desktop") };
 }
 
@@ -33,7 +33,7 @@ const inheritedEnvironment = [
   "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "XAUTHORITY",
   "SystemRoot", "WINDIR", "windir", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "ProgramFiles", "ProgramFiles(x86)", "HOMEDRIVE", "HOMEPATH",
   "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
-  "MOCO_AGENT_BROWSER_PATH", "MOCO_AGENT_DESKTOP_PATH",
+  "KULO_AGENT_BROWSER_PATH", "KULO_AGENT_DESKTOP_PATH",
 ];
 
 function privateDirectory(directory: string): string {
@@ -149,7 +149,7 @@ export class ComputerUseService {
         return this.#error(request, "OPERATION_CANCELLED", "The computer-use session is no longer active");
       }
       if (!SUPPORTED.has(this.#platform)) return this.#error(request, "PLATFORM_NOT_SUPPORTED", "This Env has no native agent-browser or agent-desktop driver; Android requires a separate driver");
-      if (request.action !== "close" && !(request.tool === "browser" ? this.#browserEnabled : this.#desktopEnabled)) return this.#error(request, "CAPABILITY_DISABLED", `Enable ${request.tool} in MOCO_COMPUTER_USE on the target Env`);
+      if (request.action !== "close" && !(request.tool === "browser" ? this.#browserEnabled : this.#desktopEnabled)) return this.#error(request, "CAPABILITY_DISABLED", `Enable ${request.tool} in KULO_COMPUTER_USE on the target Env`);
       const combined = signal ? AbortSignal.any([this.#lifecycle.signal, signal]) : this.#lifecycle.signal;
       try {
         if (request.tool === "browser" && request.action !== "status") {
@@ -250,7 +250,7 @@ export class ComputerUseService {
       env.AGENT_BROWSER_STREAM_QUALITY = "40";
       env.AGENT_BROWSER_STREAM_MAX_WIDTH = "960";
       env.AGENT_BROWSER_STREAM_MAX_HEIGHT = "640";
-      const executable = process.env.MOCO_BROWSER_EXECUTABLE_PATH ?? process.env.AGENT_BROWSER_EXECUTABLE_PATH;
+      const executable = process.env.KULO_BROWSER_EXECUTABLE_PATH ?? process.env.AGENT_BROWSER_EXECUTABLE_PATH;
       if (executable) env.AGENT_BROWSER_EXECUTABLE_PATH = executable;
     } else env.AGENT_DESKTOP_HOME = privateDirectory(path.join(this.rootDir, "desktop"));
     return env;
@@ -403,7 +403,7 @@ export class ComputerUseService {
     }
     // Native app grants apply to the fixed application broker, including when a desktop driver is installed.
     if (this.#platform === "darwin" && new Set(["messages", "信息", "消息", "com.apple.mobilesms", "com.apple.ichat", "mail", "邮件", "com.apple.mail"]).has(request.app.trim().toLowerCase())) {
-      return this.#error(request, "APPLICATION_CONNECTION_REQUIRED", "Use the connected Messages or Mail application through moco_connection_use");
+      return this.#error(request, "APPLICATION_CONNECTION_REQUIRED", "Use the connected Messages or Mail application through kulo_connection_use");
     }
     if ("text" in request && Buffer.byteLength(request.text) > 10_000) return this.#error(request, "INVALID_INPUT", "Desktop text input exceeds 10,000 UTF-8 bytes");
     const session = this.#desktop.get(request.sessionId);

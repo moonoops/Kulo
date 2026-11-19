@@ -1,8 +1,8 @@
 import { useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Alert, Button, Checkbox, Chip, Label, ListBox, Modal, Select, Table } from "@heroui/react";
 import { TableStateContext, type Key } from "react-aria-components/Table";
-import type { DeviceInterconnectionView, EnvNodeDescriptor, SystemPermissionKind, SystemPermissionState, SystemPermissionStatus } from "@moco/protocol";
-import { useI18n } from "../../moco-i18n";
+import type { DeviceInterconnectionView, EnvNodeDescriptor, SystemPermissionKind, SystemPermissionState, SystemPermissionStatus } from "@kulo/protocol";
+import { useI18n } from "../../kulo-i18n";
 import { deviceApi } from "./device-api";
 import { SettingsList, SettingsSection } from "./settings-layout";
 import { authorizeMicrophone, desktopSystemPermissionBridge, guideDesktopPermissions, type SystemPermissionEntry } from "../system-permissions/system-permissions";
@@ -169,33 +169,33 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
   const complete = Boolean(guide?.selected.length && guide.selected.every((kind) => permission(kind)?.state === "granted"));
 
   return <section className="flex min-w-0 flex-col gap-6" aria-label={t("系统权限", "System permissions")}>
-    <SettingsSection title={t("权限状态", "Permission status")} action={<div className="moco-settings-actions">
+    <SettingsSection title={t("权限状态", "Permission status")} action={<div className="kulo-settings-actions">
       <Button ref={checkButton} variant="secondary" isPending={state.checking} onPress={() => void loader.refresh()}>{t("检查权限", "Check permissions")}</Button>
       <Button variant="primary" isDisabled={!KINDS.some(canRequest)} onPress={(event) => openGuide(undefined, event.target)}>{t("开始授权", "Set up permissions")}</Button>
     </div>}>
-      {envs.length > 0 && <SettingsList label={t("执行设备", "Execution device")}><Select variant="secondary" className="moco-settings-row" value={envId || null} onChange={(value) => { if (typeof value === "string") { userSelectedEnv.current = true; setEnvId(value); } }} isDisabled={Boolean(guide)}>
+      {envs.length > 0 && <SettingsList label={t("执行设备", "Execution device")}><Select variant="secondary" className="kulo-settings-row" value={envId || null} onChange={(value) => { if (typeof value === "string") { userSelectedEnv.current = true; setEnvId(value); } }} isDisabled={Boolean(guide)}>
         <Label>{t("桌面执行设备", "Desktop execution device")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
         <Select.Popover><ListBox>{envs.map((device) => { const itemLabel = formatDevice(device.id, rawDeviceName(device.id, device.name)); return <ListBox.Item key={device.id} id={device.id} textValue={itemLabel}>{itemLabel}{!device.online ? t(" · 离线", " · Offline") : ""}<ListBox.ItemIndicator /></ListBox.Item>; })}</ListBox></Select.Popover>
       </Select></SettingsList>}
       {state.microphoneError && <Alert status="danger" role="alert"><Alert.Content>{state.microphoneError}</Alert.Content></Alert>}
       {state.desktopError && <Alert status={desktopError ? "warning" : "danger"} role={desktopError ? "status" : "alert"}><Alert.Content>{state.desktopError}</Alert.Content></Alert>}
-      <Table variant="secondary" className="moco-settings-table">
-        <Table.ScrollContainer className="moco-settings-table-scroll">
-          <Table.Content aria-label={t("系统权限列表", "System permission list")} selectionMode="none" keyboardNavigationBehavior="tab" className="moco-settings-table-content">
+      <Table variant="secondary" className="kulo-settings-table">
+        <Table.ScrollContainer className="kulo-settings-table-scroll">
+          <Table.Content aria-label={t("系统权限列表", "System permission list")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content">
             <Table.Header>
-              <Table.Column id="permission" isRowHeader className="moco-settings-table-column">{t("权限", "Permission")}</Table.Column>
-              <Table.Column id="device" className="moco-settings-table-column">{t("设备", "Device")}</Table.Column>
-              <Table.Column id="status" className="moco-settings-table-column moco-settings-table-meta">{t("状态", "Status")}</Table.Column>
-              <Table.Column id="action" className="moco-settings-table-column moco-settings-table-actions">{t("操作", "Actions")}</Table.Column>
+              <Table.Column id="permission" isRowHeader className="kulo-settings-table-column">{t("权限", "Permission")}</Table.Column>
+              <Table.Column id="device" className="kulo-settings-table-column">{t("设备", "Device")}</Table.Column>
+              <Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-meta">{t("状态", "Status")}</Table.Column>
+              <Table.Column id="action" className="kulo-settings-table-column kulo-settings-table-actions">{t("操作", "Actions")}</Table.Column>
             </Table.Header>
             <Table.Body>{KINDS.map((kind) => {
               const current = permission(kind);
               const displayState = current?.state ?? (kind !== "microphone" && env && env.platform !== "darwin" ? "unsupported" : undefined);
               return <Table.Row key={kind} id={kind}>
-                <Table.Cell className="moco-settings-table-cell whitespace-nowrap"><span className="moco-item-title">{label(kind)}</span><div className="moco-item-description">{kind === "microphone" ? t("语音输入、通话", "Voice input and calls") : kind === "accessibility" ? t("读取和操作应用", "Read and control apps") : t("桌面窗口预览", "Desktop window previews")}</div></Table.Cell>
-                <Table.Cell className="moco-settings-table-cell break-words">{scope(kind)}</Table.Cell>
-                <Table.Cell className="moco-settings-table-cell moco-settings-table-meta">{statusChip(displayState)}{current?.detail && <div className="moco-item-description mt-2 max-w-56 whitespace-normal">{current.detail}</div>}</Table.Cell>
-                <Table.Cell focusMode="child" className="moco-settings-table-cell moco-settings-table-actions">{({ id }) => <PermissionAction cellId={id!} label={t(`设置${label(kind)}权限`, `Set up ${label(kind)} permission`)} disabled={!canRequest(kind) || (kind === "microphone" ? state.microphoneChecking : state.desktopChecking)} onPress={(trigger) => openGuide([kind], trigger)}>{current?.state === "granted" ? t("已授权", "Allowed") : current?.state === "denied" ? t("前往设置", "Open settings") : t("授权", "Allow")}</PermissionAction>}</Table.Cell>
+                <Table.Cell className="kulo-settings-table-cell whitespace-nowrap"><span className="kulo-item-title">{label(kind)}</span><div className="kulo-item-description">{kind === "microphone" ? t("语音输入、通话", "Voice input and calls") : kind === "accessibility" ? t("读取和操作应用", "Read and control apps") : t("桌面窗口预览", "Desktop window previews")}</div></Table.Cell>
+                <Table.Cell className="kulo-settings-table-cell break-words">{scope(kind)}</Table.Cell>
+                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta">{statusChip(displayState)}{current?.detail && <div className="kulo-item-description mt-2 max-w-56 whitespace-normal">{current.detail}</div>}</Table.Cell>
+                <Table.Cell focusMode="child" className="kulo-settings-table-cell kulo-settings-table-actions">{({ id }) => <PermissionAction cellId={id!} label={t(`设置${label(kind)}权限`, `Set up ${label(kind)} permission`)} disabled={!canRequest(kind) || (kind === "microphone" ? state.microphoneChecking : state.desktopChecking)} onPress={(trigger) => openGuide([kind], trigger)}>{current?.state === "granted" ? t("已授权", "Allowed") : current?.state === "denied" ? t("前往设置", "Open settings") : t("授权", "Allow")}</PermissionAction>}</Table.Cell>
               </Table.Row>;
             })}</Table.Body>
           </Table.Content>
@@ -210,7 +210,7 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
             {guide?.step === "choose" ? KINDS.map((kind) => <Checkbox key={kind} variant="secondary" isSelected={guide.selected.includes(kind)} isDisabled={!canRequest(kind)} onChange={(checked) => setGuide({ ...guide, selected: checked ? [...guide.selected, kind] : guide.selected.filter((item) => item !== kind) })}>
               <Checkbox.Content className="gap-2"><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control><span>{label(kind)}<span className="ml-2 text-xs text-muted">{scope(kind)}</span></span></Checkbox.Content>
             </Checkbox>) : <>
-              {guide?.step === "microphone" && <p className="text-sm text-muted">{micDeniedInBrowser ? t("在浏览器的网站设置中允许麦克风，然后返回检查。", "Allow the microphone in your browser's site settings, then return to check.") : state.microphone?.state === "denied" ? t("在系统设置中允许麦克风；如系统要求，重启 Moco 后再检查。", "Allow the microphone in System Settings. Restart Moco if requested, then check again.") : t("用于当前客户端的语音输入和通话。", "For voice input and calls on this client.")}</p>}
+              {guide?.step === "microphone" && <p className="text-sm text-muted">{micDeniedInBrowser ? t("在浏览器的网站设置中允许麦克风，然后返回检查。", "Allow the microphone in your browser's site settings, then return to check.") : state.microphone?.state === "denied" ? t("在系统设置中允许麦克风；如系统要求，重启 Kulo 后再检查。", "Allow the microphone in System Settings. Restart Kulo if requested, then check again.") : t("用于当前客户端的语音输入和通话。", "For voice input and calls on this client.")}</p>}
               {guide?.step === "desktop" && <p className="text-sm text-muted">{desktopGuideStarted ? t(`在「${envDisplayName ?? ""}」完成系统授权后，返回检查。`, `Complete authorization on “${envDisplayName ?? ""}”, then return to check.`) : t(`在「${envDisplayName ?? ""}」引导辅助功能与屏幕录制授权。`, `Set up Accessibility and Screen Recording on “${envDisplayName ?? ""}”.`)}</p>}
               {guide?.step === "summary" && <p className="text-sm" role="status">{complete ? t("所选权限已就绪", "Selected permissions are ready") : t("部分权限尚未授权", "Some permissions are still not allowed")}</p>}
               <div className="flex flex-col gap-3">{guideKinds.map((kind) => <div key={kind} className="flex items-center justify-between gap-4"><span className="text-sm">{label(kind)}</span>{statusChip(permission(kind)?.state)}</div>)}</div>

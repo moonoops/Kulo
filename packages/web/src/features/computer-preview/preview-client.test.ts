@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ComputerPreviewSessionView } from "@moco/protocol";
+import type { ComputerPreviewSessionView } from "@kulo/protocol";
 import { ComputerPreviewClient, type PreviewSocket } from "./preview-client";
 
 export const previewSessions: ComputerPreviewSessionView[] = [

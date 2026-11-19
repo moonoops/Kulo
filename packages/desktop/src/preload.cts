@@ -15,7 +15,7 @@ const APP_COMMANDS: Record<DesktopAppCommand, true> = {
   "save-active": true,
 };
 
-async function fileAction<T>(channel: "moco:open-file" | "moco:save-file", ...args: unknown[]): Promise<T> {
+async function fileAction<T>(channel: "kulo:open-file" | "kulo:save-file", ...args: unknown[]): Promise<T> {
   try { return await ipcRenderer.invoke(channel, ...args) as T; }
   catch (error) {
     const message = error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "") : "文件操作失败，请重试。";
@@ -23,7 +23,7 @@ async function fileAction<T>(channel: "moco:open-file" | "moco:save-file", ...ar
   }
 }
 
-async function permissionAction<T>(channel: "moco:system-permissions-status" | "moco:system-permissions-request-microphone" | "moco:system-permissions-open-settings", ...args: unknown[]): Promise<T> {
+async function permissionAction<T>(channel: "kulo:system-permissions-status" | "kulo:system-permissions-request-microphone" | "kulo:system-permissions-open-settings", ...args: unknown[]): Promise<T> {
   try { return await ipcRenderer.invoke(channel, ...args) as T; }
   catch (error) {
     const message = error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "") : "系统权限操作失败，请重试。";
@@ -32,8 +32,8 @@ async function permissionAction<T>(channel: "moco:system-permissions-status" | "
 }
 
 if (process.isMainFrame) {
-  contextBridge.exposeInMainWorld("mocoDesktop", {
-    ready: (): Promise<void> => ipcRenderer.invoke("moco:ui-ready"),
+  contextBridge.exposeInMainWorld("kuloDesktop", {
+    ready: (): Promise<void> => ipcRenderer.invoke("kulo:ui-ready"),
     onCommand: (listener: (command: DesktopAppCommand) => void): (() => void) => {
       if (typeof listener !== "function") return () => {};
       const wrapped = (_event: Electron.IpcRendererEvent, command: unknown) => {
@@ -41,17 +41,17 @@ if (process.isMainFrame) {
           listener(command as DesktopAppCommand);
         }
       };
-      ipcRenderer.on("moco:app-command", wrapped);
-      return () => { ipcRenderer.removeListener("moco:app-command", wrapped); };
+      ipcRenderer.on("kulo:app-command", wrapped);
+      return () => { ipcRenderer.removeListener("kulo:app-command", wrapped); };
     },
-    openFile: (assetId: string, target: "default" | "browser"): Promise<void> => fileAction("moco:open-file", assetId, target),
-    saveFile: (assetId: string): Promise<"saved" | "canceled"> => fileAction("moco:save-file", assetId),
+    openFile: (assetId: string, target: "default" | "browser"): Promise<void> => fileAction("kulo:open-file", assetId, target),
+    saveFile: (assetId: string): Promise<"saved" | "canceled"> => fileAction("kulo:save-file", assetId),
     notify: (payload: { title: string; body?: string; topicId?: string }): Promise<void> =>
-      ipcRenderer.invoke("moco:notify", payload),
+      ipcRenderer.invoke("kulo:notify", payload),
     systemPermissions: {
-      status: (): Promise<DesktopMicrophonePermissions> => permissionAction("moco:system-permissions-status"),
-      requestMicrophone: (): Promise<DesktopMicrophonePermissions> => permissionAction("moco:system-permissions-request-microphone"),
-      openSettings: (kind: DesktopPermissionKind): Promise<void> => permissionAction("moco:system-permissions-open-settings", kind),
+      status: (): Promise<DesktopMicrophonePermissions> => permissionAction("kulo:system-permissions-status"),
+      requestMicrophone: (): Promise<DesktopMicrophonePermissions> => permissionAction("kulo:system-permissions-request-microphone"),
+      openSettings: (kind: DesktopPermissionKind): Promise<void> => permissionAction("kulo:system-permissions-open-settings", kind),
     },
   });
 }

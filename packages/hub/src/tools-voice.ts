@@ -2,10 +2,10 @@ import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { defineDoc, defineExtension, defineTool, type JsonObject, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
-import type { ChatAttachment, MediaJobSource } from "@moco/protocol";
-import { VoiceError, type MocoVoiceService } from "./voice-service.js";
+import type { ChatAttachment, MediaJobSource } from "@kulo/protocol";
+import { VoiceError, type KuloVoiceService } from "./voice-service.js";
 import { MAX_VOICE_TTS_TEXT, VoiceTtsError } from "./voice-tts.js";
-import type { MocoUploadStore } from "./uploads.js";
+import type { KuloUploadStore } from "./uploads.js";
 
 interface SpeechReceipt {
   fingerprint: string;
@@ -14,15 +14,15 @@ interface SpeechReceipt {
   error?: { code: string; message: string };
 }
 interface SpeechGenerationState { operations: Record<string, SpeechReceipt> }
-export const MocoSpeechGenerationsDoc = defineDoc<SpeechGenerationState & JsonObject>({
-  kind: "moco.speech-generations", version: 1, scope: "session",
+export const KuloSpeechGenerationsDoc = defineDoc<SpeechGenerationState & JsonObject>({
+  kind: "kulo.speech-generations", version: 1, scope: "session",
   initial: () => ({ operations: {} }) as SpeechGenerationState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
 
 export interface VoiceToolsOptions {
-  service: () => MocoVoiceService;
-  uploads: () => MocoUploadStore;
+  service: () => KuloVoiceService;
+  uploads: () => KuloUploadStore;
   scope: (api: ToolExecutionApi) => Promise<MediaJobSource>;
   assertActive: (source: MediaJobSource) => Promise<void>;
   /** Must publish idempotently for asset.id, including recovery after publication but before the tool receipt commits. */
@@ -55,7 +55,7 @@ export function createVoiceToolsExtension(options: VoiceToolsOptions) {
       context.abortSignal?.throwIfAborted();
     };
     const reservation = await api.commit(async (tx) => {
-      const state = await tx.doc(MocoSpeechGenerationsDoc);
+      const state = await tx.doc(KuloSpeechGenerationsDoc);
       const previous = Object.hasOwn(state.operations, key) ? state.operations[key] : undefined;
       if (previous) { requireSame(previous, fingerprint); return { created: false, receipt: clone(previous) }; }
       const receipt: SpeechReceipt = { fingerprint, status: "submitting" };
@@ -77,7 +77,7 @@ export function createVoiceToolsExtension(options: VoiceToolsOptions) {
         if (asset.kind !== "audio") throw new VoiceError(502, "voice_speech_invalid_audio", "合成服务没有返回有效音频。");
         receipt = { fingerprint, status: "generated", asset };
         await api.commit(async (tx) => {
-          const state = await tx.doc(MocoSpeechGenerationsDoc);
+          const state = await tx.doc(KuloSpeechGenerationsDoc);
           const current = state.operations[key];
           if (!current) throw new VoiceError(409, "voice_speech_receipt_missing", "语音合成记录不可用。");
           requireSame(current, fingerprint);
@@ -86,7 +86,7 @@ export function createVoiceToolsExtension(options: VoiceToolsOptions) {
       } catch (cause) {
         const error = generationError(cause);
         await api.commit(async (tx) => {
-          const state = await tx.doc(MocoSpeechGenerationsDoc);
+          const state = await tx.doc(KuloSpeechGenerationsDoc);
           const current = state.operations[key];
           if (current?.fingerprint === fingerprint && current.status === "submitting") {
             current.status = "failed";
@@ -106,7 +106,7 @@ export function createVoiceToolsExtension(options: VoiceToolsOptions) {
     try {
       await options.publish(asset, source, api.callId);
       await api.commit(async (tx) => {
-        const state = await tx.doc(MocoSpeechGenerationsDoc);
+        const state = await tx.doc(KuloSpeechGenerationsDoc);
         const current = state.operations[key];
         if (!current) throw new VoiceError(409, "voice_speech_receipt_missing", "语音合成记录不可用。");
         requireSame(current, fingerprint);
@@ -119,9 +119,9 @@ export function createVoiceToolsExtension(options: VoiceToolsOptions) {
     return { status: source.ticketId ? "pending_review" : "published", assetId: asset.id, reused: !reservation.created };
   };
   return defineExtension({
-    name: "moco-voice",
+    name: "kulo-voice",
     tools: [defineTool({
-      name: "moco_synthesize_speech",
+      name: "kulo_synthesize_speech",
       description:
         "Synthesize verbatim spoken audio (`text`) using the configured TTS model and voice. Returns `published` when delivered by the coordinating assistant, or `pending_review` when staged privately by a Worker. Reuses in-flight/recovered calls without duplicate billing; if delivery is interrupted, report the status rather than issuing a duplicate call. 关键词：语音合成 文字转语音 朗读 配音 发语音消息 TTS",
       parameters: obj({ text: str({ description: "Exact plain text to read aloud." }) }), deferred: true, replay: "safe",

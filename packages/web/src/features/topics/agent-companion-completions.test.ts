@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { LiveStreamState, TicketCardView } from "@moco/protocol";
+import type { LiveStreamState, TicketCardView } from "@kulo/protocol";
 import { CompanionCompletionTracker, type CompanionCompletionSnapshot } from "./agent-companion-completions";
 import type { AgentTerminalEntry } from "./agent-terminal-state";
 

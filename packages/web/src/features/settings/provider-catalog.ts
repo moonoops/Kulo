@@ -1,4 +1,4 @@
-import type { CustomProviderApi, MocoSettingsView, ProviderCatalogItem } from "@moco/protocol";
+import type { CustomProviderApi, KuloSettingsView, ProviderCatalogItem } from "@kulo/protocol";
 
 export interface ProviderPresetSnapshotItem {
   id: string;
@@ -15,7 +15,7 @@ export interface ProviderCatalogSnapshot {
   error: Error | null;
 }
 
-export function providerCatalogSettingsKey(settings: MocoSettingsView): string {
+export function providerCatalogSettingsKey(settings: KuloSettingsView): string {
   const { thinkingLevel: _thinking, compaction: _compaction, ...model } = settings.blocks.model.value;
   const roleModels = Object.values(settings.blocks.roles.value)
     .map(({ provider, modelId }) => [provider ?? "", modelId ?? ""])
@@ -55,7 +55,7 @@ export class ProviderCatalogCache {
     this.#scope = scope;
   }
 
-  configure(settings: MocoSettingsView): Promise<void> {
+  configure(settings: KuloSettingsView): Promise<void> {
     const key = providerCatalogSettingsKey(settings);
     if (this.#settingsKey !== undefined && key !== this.#settingsKey) this.invalidate();
     this.#settingsKey = key;

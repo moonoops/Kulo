@@ -5,7 +5,7 @@ import {
   UiActionInputSchema, getUiSpecFields, messagePartFallback, validateUiActionValues, validateUiCardInput, validateUiValues,
   type ChatAttachment, type ChatReplyReference, type MessagePart, type UiActionDefinition, type UiActionInput, type UiActionReceipt,
   type UiCardInput, type UiCardSnapshot, type UiFieldDefinition, type UiSpec,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 
 export interface UiCardSource {
   conversationId: number;
@@ -21,9 +21,9 @@ export interface ContentPublicationData {
   createdAt?: number;
   source?: { conversationId: number; callId: string };
 }
-export const ContentPublicationEntry = defineEntry<ContentPublicationData & JsonObject>("moco.content_publication");
-export const UiActionEntry = defineEntry<JsonObject>("moco.ui_action");
-export const MocoUserEntry = defineEntry<{ mocoContentVersion: 1; text: string; attachments: ChatAttachment[]; replyTo?: ChatReplyReference; agentDispatchIntent?: import("@moco/protocol").AgentDispatchIntent } & JsonObject>("moco.user");
+export const ContentPublicationEntry = defineEntry<ContentPublicationData & JsonObject>("kulo.content_publication");
+export const UiActionEntry = defineEntry<JsonObject>("kulo.ui_action");
+export const KuloUserEntry = defineEntry<{ kuloContentVersion: 1; text: string; attachments: ChatAttachment[]; replyTo?: ChatReplyReference; agentDispatchIntent?: import("@kulo/protocol").AgentDispatchIntent } & JsonObject>("kulo.user");
 
 type Operation = { fingerprint: string; result: { kind: "card"; card: UiCardSnapshot } | { kind: "asset"; asset: ChatAttachment } | { kind: "device-invitation" } };
 type ActionOutcome = { ok: true; receipt: UiActionReceipt } | { ok: false; error: { code: string; message: string; status: number; card: UiCardSnapshot } };
@@ -36,7 +36,7 @@ export interface UiCardsState {
   publicationFailures?: Record<string, string>;
 }
 export const UiCardsDoc = defineDoc<UiCardsState & JsonObject>({
-  kind: "moco.ui-cards", version: 1, scope: "session",
+  kind: "kulo.ui-cards", version: 1, scope: "session",
   initial: () => ({ namespace: randomUUID(), cards: {}, operations: {}, receipts: {} }) as UiCardsState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
@@ -97,16 +97,16 @@ function normalize(input: UiCardInput, cardId: string): Pick<UiCardSnapshot, "ti
   return { title: input.title, spec, actions, committedState };
 }
 
-export interface MocoUiCardsOptions {
+export interface KuloUiCardsOptions {
   harness: Harness;
   onChange?: (card: UiCardSnapshot) => void | Promise<void>;
   validateAssetReferences?: (spec: UiSpec, source: UiCardSource) => void;
 }
 
-export class MocoUiCards {
-  readonly #host: MocoUiCardsOptions;
+export class KuloUiCards {
+  readonly #host: KuloUiCardsOptions;
   readonly #imports = new Map<string, { fingerprint: string; promise: Promise<ChatAttachment> }>();
-  constructor(host: MocoUiCardsOptions) { this.#host = host; }
+  constructor(host: KuloUiCardsOptions) { this.#host = host; }
 
   async snapshot(conversationId: number): Promise<UiCardSnapshot[]> {
     const doc = await this.#host.harness.snapshot(UiCardsDoc, BACKGROUND_CONTEXT);
@@ -224,12 +224,12 @@ export class MocoUiCards {
       const card: UiCardSnapshot = { ...clone(current!), revision: current!.revision + 1,
         status: action.kind === "cancel" ? "cancelled" : "submitted", committedState: action.kind === "cancel" ? clone(current!.committedState) : clone(values.data),
         resultSummary: action.kind === "cancel" ? "已取消" : "已提交给 Agent" };
-      const structured = { type: "moco.ui.action", schemaVersion: 1, cardId: card.cardId, revision: input.revision,
+      const structured = { type: "kulo.ui.action", schemaVersion: 1, cardId: card.cardId, revision: input.revision,
         title: card.title, action: { id: action.id, label: action.label, kind: action.kind }, values: values.data, commandId: input.commandId };
       // Admission must precede appendEntry; Pi makes the input, lock and receipt one durable commit.
       const text = JSON.stringify(structured);
       const submissionId = await conversation.submit(tx, { type: "input", content: text, whenBusy: "followUp",
-        entry: { kind: MocoUserEntry.kind, data: { mocoContentVersion: 1, text, attachments: [] } } });
+        entry: { kind: KuloUserEntry.kind, data: { kuloContentVersion: 1, text, attachments: [] } } });
       const receipt: UiActionReceipt = { commandId: input.commandId, cardId: card.cardId, revision: card.revision, status: card.status, card: clone(card) };
       doc.cards[input.cardId] = clone(card);
       doc.receipts[commandKey] = { fingerprint, outcome: { ok: true, receipt: clone(receipt) } };

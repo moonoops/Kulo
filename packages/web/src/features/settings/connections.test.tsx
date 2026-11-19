@@ -1,10 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ConnectionApplicationView, ConnectionRecordView, ConnectionSetupInput, ConnectionWorkspaceSnapshot } from "@moco/protocol";
+import type { ConnectionApplicationView, ConnectionRecordView, ConnectionSetupInput, ConnectionWorkspaceSnapshot } from "@kulo/protocol";
 import { ConnectionSetupForm, clearConnectionDraftSecrets, connectionSaveRequest, createConnectionDraft, safeConnectionInputError, visibleConnectionInputs } from "./connection-setup-inputs";
 import { ConnectionsModule, applicationStatusLabel, connectionAddress, connectionCategory, connectionStatusLabel } from "./connections-module";
 import { checkConnectionFollowup, connectionFollowupResult } from "./connection-followup";
-import { mocoRest } from "../../moco-api";
+import { kuloRest } from "../../kulo-api";
 import { getSettingsAssistantShortcuts } from "./settings-assistant-actions";
 import { clearSettingsAssistantDraftStorage, readSettingsAssistantDraft } from "./use-settings-assistant";
 
@@ -179,12 +179,12 @@ describe("connection management tabs", () => {
     expect(connectionStatusLabel({ ...connection, kind: "account", status: "saved" })).toBe("已保存");
     expect(html.match(/<table\b/g)).toHaveLength(3);
     for (const title of ["应用", "凭据", "其他"]) expect(html).toContain(`aria-label="${title}"`);
-    expect(html.match(/<h2 class="moco-section-title">/g)).toHaveLength(3);
+    expect(html.match(/<h2 class="kulo-section-title">/g)).toHaveLength(3);
     const credentialTable = html.match(/<table\b(?=[^>]*aria-label="凭据列表")[^]*?<\/table>/)?.[0];
     expect(credentialTable?.match(/role="rowheader"/g)).toHaveLength(2);
     expect(html.match(/role="columnheader"/g)).toHaveLength(9);
-    expect(html).toContain("moco-settings-table-action-group");
-    expect(html).not.toContain("moco-connection-identity");
+    expect(html).toContain("kulo-settings-table-action-group");
+    expect(html).not.toContain("kulo-connection-identity");
     expect(html).toContain('aria-label="编辑部署服务器"');
     expect(html).not.toContain('aria-multiselectable="true"');
   });
@@ -274,8 +274,8 @@ describe("preset application setup", () => {
   it("keeps app status and cancellation beside the local brand icon without duplicating records in credential groups", () => {
     const appRecord: ConnectionRecordView = { ...connection, id: "github-1", kind: "app", category: "app", appId: "github", name: "GitHub" };
     const html = renderToStaticMarkup(<ConnectionsModule snapshot={{ ...snapshot, connections: [appRecord], applications: [nativeApplication, { ...tokenApplication, status: "connected", connectionId: appRecord.id }] }} loading={false} error={null} connected onPrepare={async () => {}} onRefresh={() => {}} />);
-    expect(html).toContain("moco-connection-icon--messages");
-    expect(html).toContain("moco-connection-icon--github");
+    expect(html).toContain("kulo-connection-icon--messages");
+    expect(html).toContain("kulo-connection-icon--github");
     expect(html).toContain('aria-label="连接消息"');
     expect(html).toContain('aria-label="取消连接GitHub"');
     expect(html).not.toContain('aria-label="连接GitHub"');
@@ -321,8 +321,8 @@ describe("preset application setup", () => {
 describe("SSH connection followup", () => {
   it("requires an explicit fingerprint decision before starting the trusted authentication check", async () => {
     const fingerprint = "SHA256:synthetic-host-fingerprint";
-    const test = vi.spyOn(mocoRest, "testConnection").mockResolvedValueOnce({ connection, requiresTrust: true, fingerprint }).mockResolvedValueOnce({ connection: { ...connection, status: "verified" } });
-    const trust = vi.spyOn(mocoRest, "trustConnection").mockResolvedValue({ connection });
+    const test = vi.spyOn(kuloRest, "testConnection").mockResolvedValueOnce({ connection, requiresTrust: true, fingerprint }).mockResolvedValueOnce({ connection: { ...connection, status: "verified" } });
+    const trust = vi.spyOn(kuloRest, "trustConnection").mockResolvedValue({ connection });
     expect(await checkConnectionFollowup(connection.id)).toEqual({ phase: "trust", fingerprint });
     expect(trust).not.toHaveBeenCalled();
     expect(await checkConnectionFollowup(connection.id, fingerprint)).toEqual({ phase: "ready" });
@@ -334,8 +334,8 @@ describe("SSH connection followup", () => {
     expect(connectionFollowupResult({ connection })).toMatchObject({ phase: "error" });
     expect(connectionFollowupResult({ connection: { ...connection, status: "verified" }, requiresTrust: true })).toMatchObject({ phase: "error" });
     expect(connectionFollowupResult({ connection: { ...connection, status: "error", error: "密码=failed-password-sentinel" } })).toEqual({ phase: "error", error: "密码=[已隐藏]" });
-    const test = vi.spyOn(mocoRest, "testConnection");
-    vi.spyOn(mocoRest, "trustConnection").mockRejectedValue(new Error("服务器指纹已变更"));
+    const test = vi.spyOn(kuloRest, "testConnection");
+    vi.spyOn(kuloRest, "trustConnection").mockRejectedValue(new Error("服务器指纹已变更"));
     await expect(checkConnectionFollowup(connection.id, "SHA256:old")).rejects.toThrow("指纹已变更");
     expect(test).not.toHaveBeenCalled();
   });

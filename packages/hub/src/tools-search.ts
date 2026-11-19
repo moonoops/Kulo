@@ -1,7 +1,7 @@
 import { defineTool, type JsonObject } from "@earendil-works/pi-durable";
 import { arr, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
-import { redactSecrets, type WebSearchResult } from "@moco/protocol";
-import { SearchError, type MocoSearch } from "./search.js";
+import { redactSecrets, type WebSearchResult } from "@kulo/protocol";
+import { SearchError, type KuloSearch } from "./search.js";
 
 export function formatSearchResult(result: WebSearchResult): string {
   const sources = result.sources.map((source, index) => [
@@ -18,7 +18,7 @@ export function formatSearchResult(result: WebSearchResult): string {
   ].filter(Boolean).join("\n\n");
 }
 
-export function createWebSearchTool(getSearch?: () => MocoSearch) {
+export function createWebSearchTool(getSearch?: () => KuloSearch) {
   return defineTool({
     name: "web_search",
     description: "Search current public web information using the configured third-party search services in priority order. Read promising pages with web_fetch and cite supporting sources as [title](URL).",

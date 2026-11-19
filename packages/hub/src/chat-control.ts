@@ -1,9 +1,9 @@
 import type { ConversationHandle, InputSubmissionDraft, Tx } from "@earendil-works/pi-durable";
-import { MocoStateDoc, WorkerWatchdogEntry } from "./state.js";
+import { KuloStateDoc, WorkerWatchdogEntry } from "./state.js";
 
 /** A stopped chat keeps background results durable without restarting its user-input inbox. */
 export async function submitAutomaticChatInput(tx: Tx, conversation: ConversationHandle, draft: InputSubmissionDraft): Promise<undefined> {
-  const state = await tx.doc(MocoStateDoc);
+  const state = await tx.doc(KuloStateDoc);
   const deferred = state.pausedChats?.[String(conversation.id)];
   if (!deferred) {
     await conversation.submit(tx, draft);

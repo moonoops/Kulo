@@ -10,7 +10,7 @@ import {
 } from "./peer.js";
 import { activateStagedPeer, pairingFingerprint, stageDevicePeer } from "./peer-config.js";
 import { discoverDevicePeer } from "./peer-runtime-owner.js";
-import type { DevicePeerConfig } from "@moco/protocol";
+import type { DevicePeerConfig } from "@kulo/protocol";
 
 function flag(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -34,12 +34,12 @@ function openBrowser(url: string): void {
 }
 
 function installLauncher(entry: string, configPath: string): string {
-  const directory = process.platform === "win32" ? path.join(os.homedir(), ".moco", "bin") : path.join(os.homedir(), ".local", "bin");
+  const directory = process.platform === "win32" ? path.join(os.homedir(), ".kulo", "bin") : path.join(os.homedir(), ".local", "bin");
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const target = path.join(directory, process.platform === "win32" ? "moco.cmd" : "moco");
+  const target = path.join(directory, process.platform === "win32" ? "kulo.cmd" : "kulo");
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
   if (process.platform === "win32") {
-    if ([process.execPath, entry, configPath].some((value) => /["%\r\n]/.test(value))) throw new Error("Moco 安装路径包含不支持的字符。");
+    if ([process.execPath, entry, configPath].some((value) => /["%\r\n]/.test(value))) throw new Error("Kulo 安装路径包含不支持的字符。");
     fs.writeFileSync(target, `@echo off\r\n"${process.execPath}" "${entry}" open --config "${configPath}" %*\r\n`, { mode: 0o700 });
   } else {
     fs.writeFileSync(target, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(entry)} open --config ${quote(configPath)} "$@"\n`, { mode: 0o700 });
@@ -64,7 +64,7 @@ async function ensureRunning(config: DevicePeerConfig, configPath: string, optio
         detached: true,
         stdio: options.staged ? ["ignore", log, log, "ipc"] : ["ignore", log, log],
         windowsHide: true,
-        env: { ...process.env, MOCO_PEER_CONFIG: configPath },
+        env: { ...process.env, KULO_PEER_CONFIG: configPath },
       });
       started = child;
       await new Promise<void>((resolve, reject) => {
@@ -99,13 +99,13 @@ async function stopPeer(pid: number): Promise<void> {
     if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
     throw error;
   }
-  throw new Error("已有 Moco 尚未关闭，请关闭后重试。");
+  throw new Error("已有 Kulo 尚未关闭，请关闭后重试。");
 }
 
 async function main(): Promise<void> {
   const [command = "open", ...args] = process.argv.slice(2);
   const configPath = path.resolve(flag(args, "--config") ?? getPeerConfigPath());
-  process.env.MOCO_PEER_CONFIG = configPath;
+  process.env.KULO_PEER_CONFIG = configPath;
   if (command === "install") {
     const hubUrl = flag(args, "--hub");
     const inviteToken = flag(args, "--invite");
@@ -115,7 +115,7 @@ async function main(): Promise<void> {
     if (previous) {
       const pidFile = path.join(path.dirname(configPath), "peer.pid");
       if (!fs.existsSync(pidFile) || Number(fs.readFileSync(pidFile, "utf8")) !== previous.pid) {
-        throw new Error("该设备客户端由其他 Moco 入口管理，请先在原客户端断开连接。");
+        throw new Error("该设备客户端由其他 Kulo 入口管理，请先在原客户端断开连接。");
       }
     }
     const input = { hubUrl, inviteToken, configPath, rootDir: flag(args, "--root") };
@@ -135,7 +135,7 @@ async function main(): Promise<void> {
       if (previous && oldConfig) await ensureRunning(oldConfig, configPath, { allowOffline: true });
       throw error;
     }
-    console.log(`设备已加入主脑。\nMoco: ${launched.origin}\n启动命令: ${launcher}`);
+    console.log(`设备已加入主脑。\nKulo: ${launched.origin}\n启动命令: ${launcher}`);
     return;
   }
   const staged = command === "start" ? flag(args, "--staged") : undefined;
@@ -163,12 +163,12 @@ async function main(): Promise<void> {
       if (active?.deviceId !== config.deviceId || active.clientToken !== config.clientToken) void close().then(() => process.exit(1));
     };
     if (stagingParentExited) stopIfUncommitted();
-    console.log(`Moco: ${runtime.url}`);
+    console.log(`Kulo: ${runtime.url}`);
     return;
   }
   if (command !== "open") throw new Error(`未知的设备命令: ${command}`);
   const launched = await ensureRunning(config, configPath, { allowOffline: true });
-  console.log(`Moco: ${launched.origin}`);
+  console.log(`Kulo: ${launched.origin}`);
   openBrowser(launched.url);
 }
 

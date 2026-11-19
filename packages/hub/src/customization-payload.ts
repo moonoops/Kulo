@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
-import { createReleaseManifest, readReleaseManifest, RecoveryError, verifyRelease } from "@moco/recovery";
+import { createReleaseManifest, readReleaseManifest, RecoveryError, verifyRelease } from "@kulo/recovery";
 
 function fail(message: string): never { throw new RecoveryError("customization_payload_invalid", message); }
 function inside(root: string, candidate: string): boolean {
@@ -80,7 +80,7 @@ export async function prepareWebCustomizationPayload(outputRoot: string, options
       force: false, errorOnExist: true, mode: constants.COPYFILE_FICLONE });
     await verifyRelease(outputRoot, manifest, { full: true });
     await writableDirectories(outputRoot);
-    for (const filename of ["moco-release.json", "moco-release.identity.json", "moco-source.json", "moco-source.json.gz"]) {
+    for (const filename of ["kulo-release.json", "kulo-release.identity.json", "kulo-source.json", "kulo-source.json.gz"]) {
       await fs.rm(path.join(outputRoot, filename), { force: true });
     }
     const outputWeb = await directory(outputRoot, path.join(outputRoot, "web"));

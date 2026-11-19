@@ -3,7 +3,7 @@ import type {
   EnvNodeDescriptor,
   TicketEnvBinding,
   TicketRecord,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 
 const LOCAL_PATH_PATTERNS: readonly RegExp[] = [
   /(?:^|[\s"'`(])~[/\\]/,

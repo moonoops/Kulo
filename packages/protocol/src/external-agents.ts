@@ -2,18 +2,18 @@ export const EXTERNAL_AGENT_KINDS = ["codex", "claude-code", "antigravity", "dsh
 export type ExternalAgentKind = typeof EXTERNAL_AGENT_KINDS[number];
 
 export const EXTERNAL_AGENT_MCP_TOOL_NAMES = [
-  "moco_task_context",
-  "moco_task_report",
-  "moco_agents",
-  "moco_request_collaboration",
-  "moco_child_task",
-  "moco_memory_recall",
-  "moco_memory_search_pages",
-  "moco_memory_read_page",
-  "moco_memory_ingest",
-  "moco_memory_reflect",
-  "moco_connections",
-  "moco_connection_use",
+  "kulo_task_context",
+  "kulo_task_report",
+  "kulo_agents",
+  "kulo_request_collaboration",
+  "kulo_child_task",
+  "kulo_memory_recall",
+  "kulo_memory_search_pages",
+  "kulo_memory_read_page",
+  "kulo_memory_ingest",
+  "kulo_memory_reflect",
+  "kulo_connections",
+  "kulo_connection_use",
 ] as const;
 export type ExternalAgentMcpToolName = typeof EXTERNAL_AGENT_MCP_TOOL_NAMES[number];
 
@@ -183,7 +183,7 @@ export interface ExternalAgentRun {
   scratchNotesDir?: string;
   stagedDiff?: StagedWorkspaceDiffSummary;
   readOnlyViolation?: ReadOnlyViolationSummary;
-  /** Unacknowledged offline moco_task_report entries buffered locally on Env until Hub consumes & ACKs them. */
+  /** Unacknowledged offline kulo_task_report entries buffered locally on Env until Hub consumes & ACKs them. */
   pendingReports?: ExternalAgentPendingReport[];
   error?: string;
 }

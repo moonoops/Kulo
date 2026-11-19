@@ -4,7 +4,7 @@ export class DesktopStartupReady {
   wait(ownerId: number, origin: string, timeoutMs = 30_000): Promise<void> {
     this.cancel(new Error("启动已由新的请求替代。"));
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.cancel(new Error("Moco 界面启动超时。")), timeoutMs);
+      const timer = setTimeout(() => this.cancel(new Error("Kulo 界面启动超时。")), timeoutMs);
       this.#pending = { ownerId, origin, resolve, reject, timer };
     });
   }
@@ -18,7 +18,7 @@ export class DesktopStartupReady {
     return true;
   }
 
-  cancel(error = new Error("Moco 界面启动已取消。")): void {
+  cancel(error = new Error("Kulo 界面启动已取消。")): void {
     const pending = this.#pending;
     if (!pending) return;
     clearTimeout(pending.timer);

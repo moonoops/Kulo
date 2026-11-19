@@ -12,13 +12,13 @@ export const BILLION_CONTEXT_KERNEL_VERSION = "0.0.101";
 export const BILLION_CONTEXT_ADAPTER_VERSION = "0.1.0";
 export const BILLION_CONTEXT_PACKAGE_SOURCE = "https://github.com/ranxianglei/acp-kernel";
 const KERNEL_INTEGRITY = "sha512-zKqi1mW+oTcpSY79lKkQXdz9AXFrmRj7JL6Mfpuo6JXM0WqRebXHBkQUZz9VGGi1SsOOjK0D9NghZ1/mIakdAA==";
-const ADAPTER_NAME = "@moco/billion-context-adapter";
-const API = { name: "@moco/extensions", versions: ["v1"] } as const;
-const API_MODULE = "@moco/extensions/v1";
-const KERNEL_MODULE = "@moco/extensions/v1/kernel";
-const MANIFEST = "moco-extension-package.json";
+const ADAPTER_NAME = "@kulo/billion-context-adapter";
+const API = { name: "@kulo/extensions", versions: ["v1"] } as const;
+const API_MODULE = "@kulo/extensions/v1";
+const KERNEL_MODULE = "@kulo/extensions/v1/kernel";
+const MANIFEST = "kulo-extension-package.json";
 const PACKAGE_FOLDER = "billion-context";
-const STAGING_MARKER = ".moco-extension-staging.json";
+const STAGING_MARKER = ".kulo-extension-staging.json";
 const loaded = new Map<string, number>();
 
 export class ExtensionPackageError extends Error {
@@ -74,8 +74,8 @@ export async function inspectBillionContextPackage(stateDir: string): Promise<Ex
   const { root, directory } = locations(stateDir);
   if (!await regularDirectory(path.dirname(root)) || !await regularDirectory(root) || !await regularDirectory(directory)) return null;
   const marker = path.join(directory, MANIFEST);
-  const stat = await fs.lstat(marker).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") throw new ExtensionPackageError("extension_directory_unmanaged", "扩展目录不属于 Moco。"); throw error; });
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 8000) throw new ExtensionPackageError("extension_directory_unmanaged", "扩展目录不属于 Moco。");
+  const stat = await fs.lstat(marker).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") throw new ExtensionPackageError("extension_directory_unmanaged", "扩展目录不属于 Kulo。"); throw error; });
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 8000) throw new ExtensionPackageError("extension_directory_unmanaged", "扩展目录不属于 Kulo。");
   const value: unknown = JSON.parse(await fs.readFile(marker, "utf8"));
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ExtensionPackageError("extension_package_invalid", "扩展安装记录无效。");
   const record = value as Record<string, unknown>;
@@ -198,7 +198,7 @@ async function cleanupStaging(root: string): Promise<void> {
       if (!value || typeof value !== "object" || Array.isArray(value)) continue;
       record = value as Record<string, unknown>;
     } catch (error) { if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
-    if (record.kind !== "moco-extension-install" || record.version !== BILLION_CONTEXT_KERNEL_VERSION || !Number.isSafeInteger(record.ownerPid) || (record.ownerPid as number) <= 0 ||
+    if (record.kind !== "kulo-extension-install" || record.version !== BILLION_CONTEXT_KERNEL_VERSION || !Number.isSafeInteger(record.ownerPid) || (record.ownerPid as number) <= 0 ||
         record.installerPid !== null && (!Number.isSafeInteger(record.installerPid) || (record.installerPid as number) <= 0)) continue;
     if (processExists(record.ownerPid as number) || record.installerPid !== null && processExists(record.installerPid as number)) continue;
     await fs.rm(directory, { recursive: true });
@@ -268,7 +268,7 @@ export async function installBillionContextPackage(options: ExtensionPackageInst
   await cleanupStaging(root);
   const staging = await fs.mkdtemp(path.join(root, ".billion-context-"));
   const staged = path.join(staging, PACKAGE_FOLDER);
-  const owner = { kind: "moco-extension-install", version: BILLION_CONTEXT_KERNEL_VERSION, ownerPid: process.pid, installerPid: null as number | null };
+  const owner = { kind: "kulo-extension-install", version: BILLION_CONTEXT_KERNEL_VERSION, ownerPid: process.pid, installerPid: null as number | null };
   let cleanup = true;
   try {
     await fs.writeFile(path.join(staging, STAGING_MARKER), JSON.stringify(owner), { mode: 0o600 });

@@ -1,4 +1,4 @@
-import type { CustomModelConfig, CustomProviderApi, CustomProviderConfig, ModelProbeResult, MocoSettingsView, ProviderCatalogItem } from "./domain.js";
+import type { CustomModelConfig, CustomProviderApi, CustomProviderConfig, ModelProbeResult, KuloSettingsView, ProviderCatalogItem } from "./domain.js";
 
 export interface ModelConfigurationVerification {
   modelId: string;
@@ -60,7 +60,7 @@ export interface ModelConfigurationSaveResult {
   providerId: string;
   modelIds: string[];
   defaultModelId?: string;
-  settings: MocoSettingsView;
+  settings: KuloSettingsView;
   verifications: ModelConfigurationVerification[];
 }
 

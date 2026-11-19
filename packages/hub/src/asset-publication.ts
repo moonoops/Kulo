@@ -2,21 +2,21 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
-import type { EnvManager } from "@moco/env";
-import type { ChatAttachment, TicketRecord } from "@moco/protocol";
-import { MocoStateDoc, getActiveStagedCwd, getEffectiveWorkspaceDir, isOrchestratorConversation, resolveTicketExecutionScope, type MocoDurableState } from "./state.js";
+import type { EnvManager } from "@kulo/env";
+import type { ChatAttachment, TicketRecord } from "@kulo/protocol";
+import { KuloStateDoc, getActiveStagedCwd, getEffectiveWorkspaceDir, isOrchestratorConversation, resolveTicketExecutionScope, type KuloDurableState } from "./state.js";
 import { SettingsAssistantDoc, isActiveSettingsConversation, parseSettingsTopicConversationId, settingsTopicId, type SettingsAssistantState } from "./settings-doc.js";
-import { MocoProjectsDoc, assertProjectBinding, type MocoProjects } from "./projects.js";
-import type { MocoUploadStore } from "./uploads.js";
+import { KuloProjectsDoc, assertProjectBinding, type KuloProjects } from "./projects.js";
+import type { KuloUploadStore } from "./uploads.js";
 import { publishExecutionAsset } from "./content-assets.js";
-import { UiCardError, type MocoUiCards, type UiAssetPublicationInput, type UiCardSource } from "./ui-cards.js";
+import { UiCardError, type KuloUiCards, type UiAssetPublicationInput, type UiCardSource } from "./ui-cards.js";
 import { inspectAssetContent } from "./asset-inspection.js";
 
 interface AssetPublisherOptions {
-  cards: () => MocoUiCards;
-  projects: () => MocoProjects;
+  cards: () => KuloUiCards;
+  projects: () => KuloProjects;
   envManager: EnvManager;
-  uploads: MocoUploadStore;
+  uploads: KuloUploadStore;
   mainWorkspaceDir: string;
   protectedPaths: () => string[];
   redact: (text: string) => string;
@@ -32,7 +32,7 @@ function escapedText(value: string): string {
 }
 
 function callerSource(
-  state: MocoDurableState | undefined,
+  state: KuloDurableState | undefined,
   settings: Readonly<SettingsAssistantState> | undefined,
   api: ToolExecutionApi,
 ): { source: UiCardSource; ticket?: TicketRecord; originConversationId: number } {
@@ -65,13 +65,13 @@ function callerSource(
 }
 
 export function createAssetPublisher(options: AssetPublisherOptions) {
-  const stage = (state: MocoDurableState, ticket: TicketRecord | undefined, asset: ChatAttachment) => {
+  const stage = (state: KuloDurableState, ticket: TicketRecord | undefined, asset: ChatAttachment) => {
     if (!ticket) return;
     state.workerArtifacts ??= {};
     const artifacts = state.workerArtifacts[ticket.id] ?? [];
     if (!artifacts.some((entry) => entry.id === asset.id)) state.workerArtifacts[ticket.id] = [...artifacts, asset];
   };
-  const markPublished = (state: MocoDurableState, conversationId: number, assetId: string) => {
+  const markPublished = (state: KuloDurableState, conversationId: number, assetId: string) => {
     for (const [ticketId, artifacts] of Object.entries(state.workerArtifacts ?? {})) {
       const ticket = state.tickets[ticketId];
       if (ticket && (ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) === conversationId) state.workerArtifacts![ticketId] = artifacts.filter((asset) => asset.id !== assetId);
@@ -79,7 +79,7 @@ export function createAssetPublisher(options: AssetPublisherOptions) {
   };
   const implementationFor = (envId: string) => options.envManager.getEnvDescriptor(envId)?.platform === "win32" ? path.win32 : path.posix;
   const deliveryKey = (ticket: TicketRecord, input: UiAssetPublicationInput) => createHash("sha256").update(input.assetId ? `asset:${input.assetId}` : implementationFor(ticket.envId).resolve(getEffectiveWorkspaceDir(ticket), input.path)).digest("hex");
-  const clearFailure = (state: MocoDurableState, ticket: TicketRecord | undefined, input: UiAssetPublicationInput) => {
+  const clearFailure = (state: KuloDurableState, ticket: TicketRecord | undefined, input: UiAssetPublicationInput) => {
     if (!ticket) return;
     const prior = state.fileDeliveryFailures?.[ticket.id];
     if (prior?.runEpoch !== ticket.runEpoch) return;
@@ -96,7 +96,7 @@ export function createAssetPublisher(options: AssetPublisherOptions) {
     if (!ticket) return;
     const key = deliveryKey(ticket, input);
     await api.commit(async (tx) => {
-      const state = await tx.doc(MocoStateDoc);
+      const state = await tx.doc(KuloStateDoc);
       const current = state.tickets[ticket.id];
       if (!current || current.runEpoch !== ticket.runEpoch) return;
       const prior = state.fileDeliveryFailures?.[ticket.id];
@@ -108,7 +108,7 @@ export function createAssetPublisher(options: AssetPublisherOptions) {
   };
 
   const receivedAsset = (
-    state: MocoDurableState | undefined,
+    state: KuloDurableState | undefined,
     settings: Readonly<SettingsAssistantState> | undefined,
     api: ToolExecutionApi,
     input: UiAssetPublicationInput,
@@ -143,7 +143,7 @@ export function createAssetPublisher(options: AssetPublisherOptions) {
   };
 
   const resolve = async (input: UiAssetPublicationInput, api: ToolExecutionApi, context: Context) => {
-    const state = await api.snapshot(MocoStateDoc, context);
+    const state = await api.snapshot(KuloStateDoc, context);
     const settings = await api.snapshot(SettingsAssistantDoc, context);
     const caller = callerSource(state, settings, api);
     let ticket = caller.ticket;
@@ -188,15 +188,15 @@ export function createAssetPublisher(options: AssetPublisherOptions) {
     try {
       if (input.assetId) {
         if (input.path !== `asset:${input.assetId}`) throw new UiCardError("invalid_asset_publication", "path 和 asset_id 只能选择一个。", 400);
-        const initial = receivedAsset(await api.snapshot(MocoStateDoc, context), await api.snapshot(SettingsAssistantDoc, context), api, input);
+        const initial = receivedAsset(await api.snapshot(KuloStateDoc, context), await api.snapshot(SettingsAssistantDoc, context), api, input);
         if (!reviewOnly && !initial.ticket && initial.isInternalOverflow) {
-          throw new UiCardError("internal_overflow_asset_not_publishable", "该资产属于内部超长汇报溢出文本，仅供主 Agent 使用 moco_inspect_asset 分页审阅，不可直接发布给用户。", 403);
+          throw new UiCardError("internal_overflow_asset_not_publishable", "该资产属于内部超长汇报溢出文本，仅供主 Agent 使用 kulo_inspect_asset 分页审阅，不可直接发布给用户。", 403);
         }
         // Managed bytes were received already; forwarding them must not reopen the source device or project.
         const cards = options.cards();
         const store = initial.ticket || reviewOnly ? cards.stageAsset.bind(cards) : cards.publishAsset.bind(cards);
         return await store(input, initial.source, async () => initial.asset, async (tx, asset) => {
-          const state = await tx.doc(MocoStateDoc);
+          const state = await tx.doc(KuloStateDoc);
           const settings = await tx.doc(SettingsAssistantDoc);
           const current = receivedAsset(state, settings, api, input);
           if (current.source.conversationId !== initial.source.conversationId || current.ticket?.runEpoch !== initial.ticket?.runEpoch) throw new UiCardError("content_scope_denied", "附件发送期间任务归属或执行资格已变化。", 403);
@@ -233,13 +233,13 @@ export function createAssetPublisher(options: AssetPublisherOptions) {
         if (current.source.conversationId !== initial.source.conversationId || current.ticket?.runEpoch !== initial.ticket?.runEpoch) throw new UiCardError("content_scope_denied", "文件发送期间任务归属或执行资格已变化。", 403);
         return asset;
       }, async (tx, asset) => {
-        const state = await tx.doc(MocoStateDoc);
+        const state = await tx.doc(KuloStateDoc);
         const settings = await tx.doc(SettingsAssistantDoc);
         const current = callerSource(state, settings, api);
         const ticket = initial.ticket ? state.tickets[initial.ticket.id] : undefined;
         if (current.source.conversationId !== initial.source.conversationId || initial.ticket && (!ticket || ticket.runEpoch !== initial.ticket.runEpoch || ["stopped", "closed"].includes(ticket.status) || ticket.cleanupPending)) throw new UiCardError("content_scope_denied", "文件发送期间任务归属或执行资格已变化。", 403);
         if (initial.project) {
-          const project = assertProjectBinding(await tx.doc(MocoProjectsDoc), initial.project.id);
+          const project = assertProjectBinding(await tx.doc(KuloProjectsDoc), initial.project.id);
           if (project.grantRevision !== initial.project.grantRevision || project.directoryId !== initial.project.directoryId || project.workspaceDir !== initial.project.workspaceDir || project.deviceId !== initial.project.deviceId) throw new UiCardError("content_scope_denied", "文件发送期间项目授权已变化。", 403);
         }
         if (!reviewOnly || initial.worker) options.uploads.bindAttachments([asset], `conversation:${initial.source.conversationId}`, `agent:${Number(api.conversationId)}`);
@@ -258,7 +258,7 @@ export function createAssetPublisher(options: AssetPublisherOptions) {
       if (context.abortSignal?.aborted) throw error;
       const reason = options.redact(error instanceof Error ? error.message : "无法读取或发送文件。").replace(/\s+/g, " ").slice(0, 900);
       const name = options.redact(input.name || (input.assetId ? "图片或附件" : input.path.replace(/\\/g, "/").split("/").at(-1)) || "文件").replace(/\s+/g, " ").slice(0, 120);
-      const state = await api.snapshot(MocoStateDoc, context);
+      const state = await api.snapshot(KuloStateDoc, context);
       const settings = await api.snapshot(SettingsAssistantDoc, context);
       // Do not redirect a failed delivery into root when its original chat is gone.
       let source: UiCardSource | undefined;
@@ -276,7 +276,7 @@ export function createAssetPublisher(options: AssetPublisherOptions) {
     }
   };
   const inspectAsset = async (input: UiAssetPublicationInput & { offset?: number; limit?: number }, api: ToolExecutionApi, context: Context) => {
-    const state = await api.snapshot(MocoStateDoc, context);
+    const state = await api.snapshot(KuloStateDoc, context);
     const settings = await api.snapshot(SettingsAssistantDoc, context);
     if (!isOrchestratorConversation(api.conversationId, state) && !isActiveSettingsConversation(api.conversationId, settings)) {
       throw new UiCardError("asset_review_denied", "只有主 Agent 可以审核待交付产物。", 403);

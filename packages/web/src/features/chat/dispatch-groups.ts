@@ -1,4 +1,4 @@
-import { getMessageParts, type ChatDisplayItem, type LiveStreamState } from "@moco/protocol";
+import { getMessageParts, type ChatDisplayItem, type LiveStreamState } from "@kulo/protocol";
 
 export interface DispatchReplyGroup<T extends ChatDisplayItem = ChatDisplayItem> {
   type: "dispatch-group";

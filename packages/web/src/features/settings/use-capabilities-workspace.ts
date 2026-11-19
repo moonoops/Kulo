@@ -1,8 +1,8 @@
-import { translate as t, useI18n } from "../../moco-i18n";
+import { translate as t, useI18n } from "../../kulo-i18n";
 import { useEffect, useState, useSyncExternalStore } from "react";
-import type { CapabilitiesWorkspaceSnapshot } from "@moco/protocol";
-import { redactSecrets } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
+import type { CapabilitiesWorkspaceSnapshot } from "@kulo/protocol";
+import { redactSecrets } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
 
 interface CapabilitiesWorkspaceOptions {
   enabled: boolean;
@@ -28,7 +28,7 @@ export class CapabilitiesWorkspaceLoader {
   #generation = 0;
   #request: AbortController | null = null;
 
-  constructor(private readonly load = mocoRest.getCapabilitiesWorkspace) {}
+  constructor(private readonly load = kuloRest.getCapabilitiesWorkspace) {}
 
   getState = () => this.#state;
   subscribe = (listener: () => void) => {

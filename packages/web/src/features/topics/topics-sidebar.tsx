@@ -1,4 +1,4 @@
-import { useI18n } from "../../moco-i18n";
+import { useI18n } from "../../kulo-i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
@@ -12,20 +12,20 @@ import {
 import type {
   EnvNodeDescriptor,
   LiveStreamState,
-  MocoSettingsView,
+  KuloSettingsView,
   ProjectView,
   TicketCardView,
   TopicSummary,
   UsageStatsView,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { AgentTerminal } from "./agent-terminal";
 import type { AgentTerminalEntry } from "./agent-terminal-state";
 import { useVoiceWorkspace } from "../voice/voice-context";
 import { hasSidebarVoiceCall } from "../voice/voice-call-panel";
-import { MocoApiError, mocoRest } from "../../moco-api";
-import { MocoIcon } from "../../moco-icon";
-import { SETTINGS_MODULES, type SettingsModuleId } from "../../moco-settings";
+import { KuloApiError, kuloRest } from "../../kulo-api";
+import { KuloIcon } from "../../kulo-icon";
+import { SETTINGS_MODULES, type SettingsModuleId } from "../../kulo-settings";
 import { settingsModuleTitle } from "../settings/settings-helpers";
 import { ConversationModelSettings } from "./conversation-model-settings";
 import { TopicRow, type TopicRowActivity } from "./topic-row";
@@ -33,7 +33,7 @@ import { topicNotifications } from "./topic-activity";
 import { ProjectsSidebar } from "../projects/projects-sidebar";
 import { ordinaryTopics, unfinishedTicket, type ProjectNavigationRequest, type UpdateProjectCollection } from "../projects/project-model";
 
-const projectSearchKey = "moco:projects:search";
+const projectSearchKey = "kulo:projects:search";
 
 function savedProjectSearch(): string {
   try {
@@ -103,10 +103,10 @@ export function TopicsSidebar({
   tickets: TicketCardView[];
   topicActivity?: Record<string, TopicRowActivity>;
   envs: EnvNodeDescriptor[];
-  settings: MocoSettingsView | null;
+  settings: KuloSettingsView | null;
   showProcess: boolean;
   onShowProcessChange: (next: boolean) => void;
-  onSettingsUpdated: (settings: MocoSettingsView) => void;
+  onSettingsUpdated: (settings: KuloSettingsView) => void;
   onCreateTopic: (projectId?: string) => Promise<void>;
   onSelectTopic: (topicId: string) => void;
   onPatchTopic: (
@@ -165,7 +165,7 @@ export function TopicsSidebar({
   const loadUsage = (range: "today" | "7" | "30") => {
     setUsageLoading(true);
     setUsageError(null);
-    mocoRest
+    kuloRest
       .getUsage(range)
       .then((res) => {
         setUsageData(res);
@@ -201,7 +201,7 @@ export function TopicsSidebar({
       setDeleteTarget(null);
     } catch (error) {
       setDeleteError(error instanceof Error ? error.message : t("删除会话失败", "Failed to delete conversation"));
-      if (error instanceof MocoApiError && error.code === "topic_tasks_running") setDeleteNeedsStop(true);
+      if (error instanceof KuloApiError && error.code === "topic_tasks_running") setDeleteNeedsStop(true);
     } finally {
       setDeleting(false);
     }
@@ -228,7 +228,7 @@ export function TopicsSidebar({
 
 
   return (
-    <div ref={sidebarRef} className="moco-sidebar flex h-full min-h-0 flex-col gap-2">
+    <div ref={sidebarRef} className="kulo-sidebar flex h-full min-h-0 flex-col gap-2">
       {(!settingsMode || hasSidebarVoiceCall(voice?.call.call)) && (
         <div className="shrink-0">
           <AgentTerminal
@@ -255,7 +255,7 @@ export function TopicsSidebar({
             className="mb-3 justify-start gap-2 px-3 py-2 text-sm font-medium"
             onPress={onExitSettings}
           >
-            <MocoIcon name="arrow-left" size={18} />
+            <KuloIcon name="arrow-left" size={18} />
 
             {t("设置", "Settings")}
           </Button>
@@ -266,7 +266,7 @@ export function TopicsSidebar({
                 <button
                   key={item.id}
                   type="button"
-                  className={`moco-settings-navigation-item flex w-full cursor-pointer items-center gap-3 rounded-xl border-0 px-3 text-left text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus ${
+                  className={`kulo-settings-navigation-item flex w-full cursor-pointer items-center gap-3 rounded-xl border-0 px-3 text-left text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus ${
                     sel
                       ? "bg-default font-medium text-default-foreground"
                       : "bg-transparent text-foreground hover:bg-surface-secondary"
@@ -274,7 +274,7 @@ export function TopicsSidebar({
                   aria-current={sel ? "page" : undefined}
                   onClick={() => onSelectSettingsModule(item.id)}
                 >
-                  <MocoIcon name={item.icon} filled={sel} size={20} />
+                  <KuloIcon name={item.icon} filled={sel} size={20} />
                   <span>{settingsModuleTitle(item.id, language)}</span>
                 </button>
               );
@@ -284,32 +284,32 @@ export function TopicsSidebar({
       ) : (
         <>
           <Tabs
-            data-moco-sidebar-tabs
+            data-kulo-sidebar-tabs
             variant="secondary"
             selectedKey={sideTab}
             onSelectionChange={(key) => setSideTab(key as "topics" | "projects")}
             className="flex min-h-0 flex-1 flex-col gap-2"
           >
-            <Tabs.ListContainer className="moco-navigation-tabs-container w-full max-w-full min-w-0 shrink-0">
-              <Tabs.List aria-label={t("导航", "Navigation")} className="moco-navigation-tabs w-full">
-                <Tabs.Tab id="topics" className="moco-navigation-tab w-0 min-w-0 flex-1 whitespace-nowrap gap-2">
-                  <MocoIcon name="forum" size={16} />
+            <Tabs.ListContainer className="kulo-navigation-tabs-container w-full max-w-full min-w-0 shrink-0">
+              <Tabs.List aria-label={t("导航", "Navigation")} className="kulo-navigation-tabs w-full">
+                <Tabs.Tab id="topics" className="kulo-navigation-tab w-0 min-w-0 flex-1 whitespace-nowrap gap-2">
+                  <KuloIcon name="forum" size={16} />
 
                   {t("话题", "Topics")}
-                  <Tabs.Indicator className="moco-navigation-tab-indicator" />
+                  <Tabs.Indicator className="kulo-navigation-tab-indicator" />
                 </Tabs.Tab>
-                <Tabs.Tab id="projects" className="moco-navigation-tab w-0 min-w-0 flex-1 whitespace-nowrap gap-2">
-                  <MocoIcon name="folder" size={16} />
+                <Tabs.Tab id="projects" className="kulo-navigation-tab w-0 min-w-0 flex-1 whitespace-nowrap gap-2">
+                  <KuloIcon name="folder" size={16} />
 
                   {t("项目", "Projects")}
-                  <Tabs.Indicator className="moco-navigation-tab-indicator" />
+                  <Tabs.Indicator className="kulo-navigation-tab-indicator" />
                 </Tabs.Tab>
               </Tabs.List>
             </Tabs.ListContainer>
 
             <Tabs.Panel id="topics" className="mt-0 flex min-h-0 flex-1 flex-col gap-2 p-0">
               <nav
-                className="moco-navigation-list scrollbar flex min-h-0 flex-1 flex-col overflow-y-auto"
+                className="kulo-navigation-list scrollbar flex min-h-0 flex-1 flex-col overflow-y-auto"
                 aria-label={t("话题列表", "Topics")}
               >
                 {filteredTopics.map((topic) => {
@@ -345,23 +345,23 @@ export function TopicsSidebar({
             </Tabs.Panel>
           </Tabs>
 
-          <footer className="moco-navigation-footer flex shrink-0 flex-col gap-2 pt-2">
+          <footer className="kulo-navigation-footer flex shrink-0 flex-col gap-2 pt-2">
             <div className="flex min-w-0 items-center gap-2">
-              <Button size="sm" variant="ghost" className="moco-navigation-footer-action moco-navigation-create min-w-0 flex-1 justify-start gap-2 px-3"
+              <Button size="sm" variant="ghost" className="kulo-navigation-footer-action kulo-navigation-create min-w-0 flex-1 justify-start gap-2 px-3"
                 aria-label={sideTab === "projects" && selectedProject ? t(`在 ${selectedProject.name} 新建话题`, `New topic in ${selectedProject.name}`) : t("新建话题", "New topic")}
                 isDisabled={!connected || sideTab === "projects" && !selectedProject} onPress={createTopic}>
-                <MocoIcon name="add" size={16} />
+                <KuloIcon name="add" size={16} />
                 {t("新建话题", "New topic")}
               </Button>
-              {sideTab === "topics" && onSearchConversations ? <Button size="sm" isIconOnly variant="ghost" className="moco-navigation-search-trigger shrink-0" aria-label={t("搜索对话正文", "Search conversation messages")} onPress={onSearchConversations}><MocoIcon name="search" size={16} /></Button> : <Popover isOpen={searchOpen} onOpenChange={setSearchOpen}>
+              {sideTab === "topics" && onSearchConversations ? <Button size="sm" isIconOnly variant="ghost" className="kulo-navigation-search-trigger shrink-0" aria-label={t("搜索对话正文", "Search conversation messages")} onPress={onSearchConversations}><KuloIcon name="search" size={16} /></Button> : <Popover isOpen={searchOpen} onOpenChange={setSearchOpen}>
                 <Button size="sm" isIconOnly variant={(sideTab === "topics" ? searchQuery : projectQuery).trim() ? "secondary" : "ghost"}
-                  className="moco-navigation-search-trigger shrink-0"
+                  className="kulo-navigation-search-trigger shrink-0"
                   aria-label={sideTab === "topics" ? t("搜索话题", "Search topics") : t("搜索项目和会话", "Search projects and conversations")}>
-                  <MocoIcon name="search" size={16} />
+                  <KuloIcon name="search" size={16} />
                 </Button>
                 <Popover.Content placement="top end" className="w-72 max-w-[calc(100vw-2rem)]">
                   <Popover.Dialog aria-label={sideTab === "topics" ? t("搜索话题", "Search topics") : t("搜索项目和会话", "Search projects and conversations")}>
-                    <SearchField key={sideTab} variant="secondary" className="moco-navigation-search"
+                    <SearchField key={sideTab} variant="secondary" className="kulo-navigation-search"
                       aria-label={sideTab === "topics" ? t("搜索话题", "Search topics") : t("搜索项目和会话", "Search projects and conversations")}
                       value={sideTab === "topics" ? searchQuery : projectQuery} onChange={sideTab === "topics" ? onSearchQueryChange : setProjectQuery} fullWidth>
                       <SearchField.Group>
@@ -375,8 +375,8 @@ export function TopicsSidebar({
               </Popover>}
             </div>
             <div className="flex items-center justify-between gap-2">
-              <Button size="sm" variant="ghost" className="moco-navigation-footer-action min-w-0 justify-start gap-2 px-3" onPress={onEnterSettings}>
-                <MocoIcon name="settings" size={16} />
+              <Button size="sm" variant="ghost" className="kulo-navigation-footer-action min-w-0 justify-start gap-2 px-3" onPress={onEnterSettings}>
+                <KuloIcon name="settings" size={16} />
 
                 {t("设置", "Settings")}
               </Button>
@@ -392,7 +392,7 @@ export function TopicsSidebar({
                 {/* Usage Statistics Popover */}
                 <Popover isOpen={statsOpen} onOpenChange={setStatsOpen}>
                   <Button isIconOnly variant="ghost" aria-label={t("使用统计", "Usage")}>
-                    <MocoIcon name="chart" size={18} />
+                    <KuloIcon name="chart" size={18} />
                   </Button>
                   <Popover.Content placement="top start" className="w-[330px]">
                     <Popover.Dialog className="flex flex-col gap-3 outline-none">

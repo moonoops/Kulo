@@ -106,13 +106,13 @@ class MacConnectionKeyStore implements ConnectionVaultKeyStore {
       const directory = path.join(this.stateDir, ".secure");
       assertPrivateDirectory(directory);
       fs.chmodSync(directory, 0o700);
-      const source = fs.readFileSync(fileURLToPath(new URL("../native/moco-vault-keychain.c", import.meta.url)), "utf8");
+      const source = fs.readFileSync(fileURLToPath(new URL("../native/kulo-vault-keychain.c", import.meta.url)), "utf8");
       const digest = createHash("sha256").update(source).update(process.arch).digest("hex").slice(0, 20);
-      const helper = path.join(directory, `moco-vault-keychain-${digest}`);
+      const helper = path.join(directory, `kulo-vault-keychain-${digest}`);
       if (!fs.existsSync(helper)) {
         const temporary = `${helper}.${randomBytes(8).toString("hex")}.tmp`;
         try {
-          const bundled = fileURLToPath(new URL("./moco-vault-keychain", import.meta.url));
+          const bundled = fileURLToPath(new URL("./kulo-vault-keychain", import.meta.url));
           if (fs.existsSync(bundled)) {
             const stat = fs.lstatSync(bundled);
             if (!stat.isFile() || stat.isSymbolicLink()) throw new ConnectionVaultError("connection_vault_unavailable");
@@ -121,7 +121,7 @@ class MacConnectionKeyStore implements ConnectionVaultKeyStore {
           } else {
             const compiled = await privateProcess("/usr/bin/clang", ["-x", "c", "-O2", "-Wall", "-Wextra", "-Werror", "-Wno-deprecated-declarations", "-framework", "CoreFoundation", "-framework", "Security", "-o", temporary, "-"], source, 30_000);
             if (compiled.status !== 0) throw new ConnectionVaultError("connection_vault_unavailable");
-            const signed = await privateProcess("/usr/bin/codesign", ["--force", "--sign", "-", "--identifier", "io.moco.connection-vault-helper", temporary]);
+            const signed = await privateProcess("/usr/bin/codesign", ["--force", "--sign", "-", "--identifier", "io.kulo.connection-vault-helper", temporary]);
             if (signed.status !== 0) throw new ConnectionVaultError("connection_vault_unavailable");
           }
           fs.chmodSync(temporary, 0o500);
@@ -163,7 +163,7 @@ class LinuxConnectionKeyStore implements ConnectionVaultKeyStore {
 
   async getOrCreateKey(namespace: string, create = true): Promise<Buffer> {
     const executable = this.#executable();
-    const attributes = ["moco-service", "connection-vault", "moco-instance", namespace];
+    const attributes = ["kulo-service", "connection-vault", "kulo-instance", namespace];
     const result = await privateProcess(executable, ["lookup", ...attributes]);
     if (result.status === 0) {
       const encoded = result.output.toString("utf8").trim();
@@ -174,7 +174,7 @@ class LinuxConnectionKeyStore implements ConnectionVaultKeyStore {
     if (result.status !== 1) throw new ConnectionVaultError("connection_vault_unavailable");
     if (!create) throw new ConnectionVaultError("connection_vault_key_missing");
     const key = randomBytes(32);
-    const stored = await privateProcess(executable, ["store", "--label=Moco connection vault master key", ...attributes], key.toString("base64"));
+    const stored = await privateProcess(executable, ["store", "--label=Kulo connection vault master key", ...attributes], key.toString("base64"));
     if (stored.status !== 0) { key.fill(0); throw new ConnectionVaultError("connection_vault_unavailable"); }
     return key;
   }
@@ -190,7 +190,7 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Threading;
-public static class MocoVaultCredential {
+public static class KuloVaultCredential {
   [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
   private struct Credential {
     public uint Flags, Type;
@@ -208,11 +208,11 @@ public static class MocoVaultCredential {
   private static extern bool Write(ref Credential credential, uint flags);
   [DllImport("advapi32.dll")] private static extern void CredFree(IntPtr credential);
   public static byte[] Get(string name, bool create) {
-    using (var mutex = new Mutex(false, "Local\\Moco.ConnectionVault." + name)) {
+    using (var mutex = new Mutex(false, "Local\\Kulo.ConnectionVault." + name)) {
       if (!mutex.WaitOne(10000)) throw new Exception();
       try {
         IntPtr pointer;
-        if (Read("Moco.ConnectionVault." + name, 1, 0, out pointer)) {
+        if (Read("Kulo.ConnectionVault." + name, 1, 0, out pointer)) {
           try {
             var credential = (Credential)Marshal.PtrToStructure(pointer, typeof(Credential));
             if (credential.CredentialBlobSize != 32) throw new Exception();
@@ -224,7 +224,7 @@ public static class MocoVaultCredential {
         var buffer = Marshal.AllocHGlobal(32);
         try {
           Marshal.Copy(key, 0, buffer, 32);
-          var credential = new Credential { Type=1, TargetName="Moco.ConnectionVault." + name, Comment="Moco connection vault master key", CredentialBlobSize=32, CredentialBlob=buffer, Persist=2, UserName=Environment.UserName };
+          var credential = new Credential { Type=1, TargetName="Kulo.ConnectionVault." + name, Comment="Kulo connection vault master key", CredentialBlobSize=32, CredentialBlob=buffer, Persist=2, UserName=Environment.UserName };
           if (!Write(ref credential, 0)) { Array.Clear(key, 0, key.Length); throw new Exception(); }
         } finally { for (int i=0; i<32; i++) Marshal.WriteByte(buffer, i, 0); Marshal.FreeHGlobal(buffer); }
         return key;
@@ -235,7 +235,7 @@ public static class MocoVaultCredential {
 '@
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
   if ($request.namespace -notmatch '^[a-f0-9]{64}$') { exit 12 }
-  $key = [MocoVaultCredential]::Get([string]$request.namespace, [bool]$request.create)
+  $key = [KuloVaultCredential]::Get([string]$request.namespace, [bool]$request.create)
   [Console]::Out.Write([Convert]::ToBase64String($key))
   [Array]::Clear($key, 0, $key.Length)
   exit 0
@@ -345,7 +345,7 @@ export class LocalConnectionVault {
   constructor(options: { stateDir: string; keyStore?: ConnectionVaultKeyStore }) {
     this.#stateDir = path.resolve(options.stateDir);
     this.filePath = path.join(this.#stateDir, "connection-vault.json");
-    this.namespace = createHash("sha256").update("moco-connection-vault-v1\0").update(this.#stateDir).digest("hex");
+    this.namespace = createHash("sha256").update("kulo-connection-vault-v1\0").update(this.#stateDir).digest("hex");
     this.#store = options.keyStore ?? systemKeyStore(this.#stateDir);
   }
 
@@ -387,7 +387,7 @@ export class LocalConnectionVault {
     }
   }
 
-  #aad(ref: string): Buffer { return Buffer.from(`moco-connection-vault-v1\0${this.namespace}\0${ref}`, "utf8"); }
+  #aad(ref: string): Buffer { return Buffer.from(`kulo-connection-vault-v1\0${this.namespace}\0${ref}`, "utf8"); }
   #manifestData(document: Pick<VaultDocument, "version" | "namespace" | "entries">): Buffer {
     return Buffer.from(JSON.stringify([document.version, document.namespace, Object.keys(document.entries).sort().map((ref) => [ref, document.entries[ref]])]), "utf8");
   }

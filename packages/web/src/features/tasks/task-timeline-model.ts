@@ -1,4 +1,4 @@
-import type { ChatDisplayItem } from "@moco/protocol";
+import type { ChatDisplayItem } from "@kulo/protocol";
 
 export type TaskToolCall = NonNullable<ChatDisplayItem["toolCalls"]>[number];
 export interface TaskToolEvent { id: string; call: TaskToolCall; createdAt?: number }

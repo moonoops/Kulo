@@ -47,7 +47,7 @@ function decodeSourceValue(value: string): string {
   catch { return invalid("Skill 来源参数编码无效。"); }
 }
 
-/** Moco retains its existing locator format; parsing and discovery are performed by skills. */
+/** Kulo retains its existing locator format; parsing and discovery are performed by skills. */
 export function parseSkillSource(input: string): SkillSourceSpec {
   if (typeof input !== "string" || !input.trim() || input.length > 4096 || /[\x00-\x1f\x7f]/.test(input)) invalid("Skill 来源无效。");
   const value = input.trim();
@@ -222,7 +222,7 @@ function remoteEnvironment(work: string): NodeJS.ProcessEnv {
   for (const name of ["tmp", "home", "hooks", "templates", "xdg-config", "xdg-cache", "xdg-state"]) fs.mkdirSync(path.join(work, name), { mode: 0o700 });
   const config = path.join(work, "gitconfig"); fs.writeFileSync(config, "", { mode: 0o600, flag: "wx" });
   Object.assign(env, { HOME: path.join(work, "home"), USERPROFILE: path.join(work, "home"), TMPDIR: path.join(work, "tmp"), TMP: path.join(work, "tmp"), TEMP: path.join(work, "tmp"), XDG_CONFIG_HOME: path.join(work, "xdg-config"), XDG_CACHE_HOME: path.join(work, "xdg-cache"), XDG_STATE_HOME: path.join(work, "xdg-state"), GIT_CONFIG_GLOBAL: config, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", DISABLE_TELEMETRY: "1", DO_NOT_TRACK: "1" });
-  const settings = [["core.hooksPath", path.join(work, "hooks")], ["submodule.active", `moco-${randomBytes(20).toString("hex")}`], ["protocol.file.allow", "never"], ["protocol.ext.allow", "never"], ["init.templateDir", path.join(work, "templates")], ["core.fsmonitor", "false"]];
+  const settings = [["core.hooksPath", path.join(work, "hooks")], ["submodule.active", `kulo-${randomBytes(20).toString("hex")}`], ["protocol.file.allow", "never"], ["protocol.ext.allow", "never"], ["init.templateDir", path.join(work, "templates")], ["core.fsmonitor", "false"]];
   env.GIT_CONFIG_COUNT = String(settings.length);
   settings.forEach(([key, value], index) => { env[`GIT_CONFIG_KEY_${index}`] = key; env[`GIT_CONFIG_VALUE_${index}`] = value; });
   return env;
@@ -307,7 +307,7 @@ async function installRemote(spec: SkillSourceSpec, work: string, validate: (dir
   });
 }
 
-/** Prepare one skill through Vercel's public API; Moco remains the owner of the resulting snapshot. */
+/** Prepare one skill through Vercel's public API; Kulo remains the owner of the resulting snapshot. */
 export async function installSkillSource(spec: SkillSourceSpec, options: InstallSkillSourceOptions): Promise<StageResult & { dispose(): Promise<void> }> {
   options.signal?.throwIfAborted();
   if (!Number.isSafeInteger(options.timeoutMs ?? 60_000) || (options.timeoutMs ?? 60_000) < 1 || (options.timeoutMs ?? 60_000) > 300_000) invalid("Skill 来源超时设置无效。");

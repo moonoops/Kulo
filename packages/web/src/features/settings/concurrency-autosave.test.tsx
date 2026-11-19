@@ -1,8 +1,8 @@
 import { isValidElement, type ComponentProps, type ReactElement, type ReactNode } from "react";
 import { Button, Select, Switch } from "@heroui/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExecutorSlotsConfig, MocoSettingsView } from "@moco/protocol";
-import { MocoApiError, mocoRest } from "../../moco-api";
+import type { ExecutorSlotsConfig, KuloSettingsView } from "@kulo/protocol";
+import { KuloApiError, kuloRest } from "../../kulo-api";
 import { ConcurrencyModule } from "./concurrency-module";
 import { SettingsNumberField } from "./settings-layout";
 
@@ -34,15 +34,15 @@ vi.mock("react", async (importOriginal) => {
     },
   };
 });
-vi.mock("../../moco-i18n", () => ({ useI18n: () => ({ t: (zh: string) => zh }) }));
+vi.mock("../../kulo-i18n", () => ({ useI18n: () => ({ t: (zh: string) => zh }) }));
 vi.mock("./settings-save-activity", () => ({ useSettingsPending: (pending: boolean) => { hooks.pending = pending; } }));
 
 const initialValue: ExecutorSlotsConfig = {
   maxConcurrentWorkers: 3, maxSubagentsPerTicket: 4, paused: false, watchdogMinutes: 5,
   completedTaskDisplayHours: 3, autoArchiveEnabled: true, autoArchiveDays: 7,
 };
-function settings(revision = 1, value = initialValue): MocoSettingsView {
-  return { globalRevision: revision, blocks: { executor: { revision, value } } } as MocoSettingsView;
+function settings(revision = 1, value = initialValue): KuloSettingsView {
+  return { globalRevision: revision, blocks: { executor: { revision, value } } } as KuloSettingsView;
 }
 function findElements<P>(tree: ReactNode, type: unknown): ReactElement<P>[] {
   const results: ReactElement<P>[] = [];
@@ -59,7 +59,7 @@ function findElements<P>(tree: ReactNode, type: unknown): ReactElement<P>[] {
 }
 function page() {
   let current = settings();
-  const onUpdated = vi.fn((next: MocoSettingsView) => { current = next; });
+  const onUpdated = vi.fn((next: KuloSettingsView) => { current = next; });
   const onDirty = vi.fn();
   function render() {
     hooks.cursor = 0;
@@ -85,7 +85,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 function mockSaves() {
-  return vi.spyOn(mocoRest, "saveSettingsBlock").mockImplementation(async (_key, revision, value) => ({
+  return vi.spyOn(kuloRest, "saveSettingsBlock").mockImplementation(async (_key, revision, value) => ({
     settings: settings(revision + 1, value as ExecutorSlotsConfig), summary: "saved",
   }));
 }
@@ -126,8 +126,8 @@ describe("runtime preferences autosave", () => {
   });
 
   it("immediately saves a discrete choice and preserves its pending display", async () => {
-    const request = deferred<Awaited<ReturnType<typeof mocoRest.saveSettingsBlock>>>();
-    const save = vi.spyOn(mocoRest, "saveSettingsBlock").mockReturnValue(request.promise);
+    const request = deferred<Awaited<ReturnType<typeof kuloRest.saveSettingsBlock>>>();
+    const save = vi.spyOn(kuloRest, "saveSettingsBlock").mockReturnValue(request.promise);
     const view = page();
     view.render().select.props.onChange?.("6");
     const controls = view.render();
@@ -143,8 +143,8 @@ describe("runtime preferences autosave", () => {
   });
 
   it("queues rapid independent switches with the latest saved revision", async () => {
-    const first = deferred<Awaited<ReturnType<typeof mocoRest.saveSettingsBlock>>>();
-    const save = vi.spyOn(mocoRest, "saveSettingsBlock")
+    const first = deferred<Awaited<ReturnType<typeof kuloRest.saveSettingsBlock>>>();
+    const save = vi.spyOn(kuloRest, "saveSettingsBlock")
       .mockReturnValueOnce(first.promise)
       .mockImplementation(async (_key, revision, value) => ({ settings: settings(revision + 1, value as ExecutorSlotsConfig), summary: "saved" }));
     const view = page();
@@ -164,7 +164,7 @@ describe("runtime preferences autosave", () => {
   });
 
   it("retains a failed number, blocks duplicate completion events, and offers a retry", async () => {
-    const save = vi.spyOn(mocoRest, "saveSettingsBlock")
+    const save = vi.spyOn(kuloRest, "saveSettingsBlock")
       .mockRejectedValueOnce(new Error("Offline"))
       .mockImplementation(async (_key, revision, value) => ({ settings: settings(revision + 1, value as ExecutorSlotsConfig), summary: "saved" }));
     const view = page();
@@ -186,7 +186,7 @@ describe("runtime preferences autosave", () => {
   });
 
   it("rolls back a failed switch and cancels its interval draft only after a successful close", async () => {
-    const save = vi.spyOn(mocoRest, "saveSettingsBlock")
+    const save = vi.spyOn(kuloRest, "saveSettingsBlock")
       .mockRejectedValueOnce(new Error("Offline"))
       .mockImplementation(async (_key, revision, value) => ({ settings: settings(revision + 1, value as ExecutorSlotsConfig), summary: "saved" }));
     const view = page();
@@ -208,10 +208,10 @@ describe("runtime preferences autosave", () => {
   });
 
   it("requires loading and explicit retry after a 409, preserving numeric drafts", async () => {
-    const save = vi.spyOn(mocoRest, "saveSettingsBlock")
-      .mockRejectedValueOnce(new MocoApiError(409, "Changed elsewhere"))
+    const save = vi.spyOn(kuloRest, "saveSettingsBlock")
+      .mockRejectedValueOnce(new KuloApiError(409, "Changed elsewhere"))
       .mockImplementation(async (_key, revision, value) => ({ settings: settings(revision + 1, value as ExecutorSlotsConfig), summary: "saved" }));
-    const get = vi.spyOn(mocoRest, "getSettings").mockResolvedValue(settings(4, { ...initialValue, maxConcurrentWorkers: 8, autoArchiveDays: 30 }));
+    const get = vi.spyOn(kuloRest, "getSettings").mockResolvedValue(settings(4, { ...initialValue, maxConcurrentWorkers: 8, autoArchiveDays: 30 }));
     const view = page();
     let controls = view.render();
     controls.numbers[0]!.props.onChange(6);
@@ -236,8 +236,8 @@ describe("runtime preferences autosave", () => {
   });
 
   it("loads the latest settings on the first press when a conflicted Enter save is followed by blur", async () => {
-    const save = vi.spyOn(mocoRest, "saveSettingsBlock").mockRejectedValue(new MocoApiError(409, "Changed elsewhere"));
-    const get = vi.spyOn(mocoRest, "getSettings").mockResolvedValue(settings(4, { ...initialValue, maxConcurrentWorkers: 8 }));
+    const save = vi.spyOn(kuloRest, "saveSettingsBlock").mockRejectedValue(new KuloApiError(409, "Changed elsewhere"));
+    const get = vi.spyOn(kuloRest, "getSettings").mockResolvedValue(settings(4, { ...initialValue, maxConcurrentWorkers: 8 }));
     const view = page();
     view.render().numbers[0]!.props.onChange(6);
     let controls = view.render();

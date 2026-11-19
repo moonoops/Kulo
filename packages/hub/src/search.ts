@@ -6,11 +6,11 @@ import {
   redactSecrets, redactSensitiveText,
   type SearchAdapterId, type SearchPlanInput, type SearchPlanView, type SearchSnapshot,
   type SearchAttempt, type SearchFailure, type WebPageResult, type WebSearchInput, type WebSearchResult,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import { fetchSearchPageAdapter, runSearchAdapter } from "./search-adapters.js";
 import { fetchWebPage } from "./web-content.js";
 
-const ORIGIN_ENV = "MOCO_API_KEY_ORIGIN";
+const ORIGIN_ENV = "KULO_API_KEY_ORIGIN";
 const ADAPTERS: readonly SearchAdapterId[] = ["exa", "tavily", "brave", "duckduckgo"];
 const DEFAULT_URLS: Record<SearchAdapterId, string> = {
   exa: "https://mcp.exa.ai/mcp", tavily: "https://mcp.tavily.com/mcp",
@@ -27,7 +27,7 @@ interface StoredPlan extends Omit<SearchPlanView, "hasCredential" | "adapter"> {
   requestSequence?: number;
   credentialConfirmationRequired?: boolean;
 }
-export interface MocoSearchState {
+export interface KuloSearchState {
   revision: number;
   plans: Record<string, StoredPlan>;
   order: string[];
@@ -38,15 +38,15 @@ export interface MocoSearchState {
   nativeMigrations?: Record<string, boolean>;
   pendingNativeMigrations?: string[];
 }
-export const MocoSearchDoc = defineDoc<MocoSearchState & JsonObject>({
-  kind: "moco.search", version: 1, scope: "session",
-  initial: () => ({ revision: 0, healthRevision: 0, plans: {}, order: [], cleanup: {}, legacyImported: false, presetVersion: 0, nativeMigrations: {}, pendingNativeMigrations: [] }) as MocoSearchState & JsonObject,
+export const KuloSearchDoc = defineDoc<KuloSearchState & JsonObject>({
+  kind: "kulo.search", version: 1, scope: "session",
+  initial: () => ({ revision: 0, healthRevision: 0, plans: {}, order: [], cleanup: {}, legacyImported: false, presetVersion: 0, nativeMigrations: {}, pendingNativeMigrations: [] }) as KuloSearchState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
 export class SearchError extends Error {
   constructor(readonly status: number, readonly code: string, message: string, readonly failure?: SearchFailure, readonly attempts?: SearchAttempt[]) { super(message); this.name = "SearchError"; }
 }
-export interface MocoSearchOptions {
+export interface KuloSearchOptions {
   harness: Harness;
   credentials: CredentialStore;
   migrateNativePlan?: (plan: { providerId: string; modelId: string; enabled: boolean }) => Promise<void | boolean>;
@@ -75,7 +75,7 @@ function expected(value: unknown, allowZero = false): number {
   if (!Number.isSafeInteger(value) || Number(value) < (allowZero ? 0 : 1)) fail(400, "search_revision_required", "请先读取当前搜索方案版本。");
   return Number(value);
 }
-function requirePlan(state: Readonly<MocoSearchState> | undefined, id: string): StoredPlan {
+function requirePlan(state: Readonly<KuloSearchState> | undefined, id: string): StoredPlan {
   return own(state?.plans, id) ?? fail(404, "search_plan_not_found", "搜索方案不存在或已移除。");
 }
 function assertRevision(plan: StoredPlan, revision: number): void {
@@ -168,12 +168,12 @@ function abortable<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-export class MocoSearch {
-  readonly #options: MocoSearchOptions;
+export class KuloSearch {
+  readonly #options: KuloSearchOptions;
   #tail: Promise<unknown> = Promise.resolve();
-  constructor(options: MocoSearchOptions) { this.#options = options; }
+  constructor(options: KuloSearchOptions) { this.#options = options; }
   #now(): number { return this.#options.now?.() ?? Date.now(); }
-  #state(): Promise<Readonly<MocoSearchState> | undefined> { return this.#options.harness.snapshot(MocoSearchDoc, BACKGROUND_CONTEXT); }
+  #state(): Promise<Readonly<KuloSearchState> | undefined> { return this.#options.harness.snapshot(KuloSearchDoc, BACKGROUND_CONTEXT); }
   async #serial<T>(work: () => Promise<T>): Promise<T> {
     const next = this.#tail.then(work, work);
     this.#tail = next.then(() => undefined, () => undefined);
@@ -183,7 +183,7 @@ export class MocoSearch {
   async #cleanup(): Promise<void> {
     for (const id of Object.keys((await this.#state())?.cleanup ?? {})) {
       await this.#options.credentials.delete(id);
-      await this.#options.harness.commit(async (tx) => { delete (await tx.doc(MocoSearchDoc)).cleanup[id]; }, BACKGROUND_CONTEXT);
+      await this.#options.harness.commit(async (tx) => { delete (await tx.doc(KuloSearchDoc)).cleanup[id]; }, BACKGROUND_CONTEXT);
     }
   }
   async initialize(): Promise<void> {
@@ -202,7 +202,7 @@ export class MocoSearch {
           const ids = new Set(group.map((item) => item.id));
           const migrated = await this.#options.migrateNativePlan({ providerId: text(plan.providerId, "旧搜索服务商"), modelId: text(plan.modelId, "旧搜索模型", 300), enabled: group.some((item) => item.enabled) });
           await this.#options.harness.commit(async (tx) => {
-            const doc = await tx.doc(MocoSearchDoc);
+            const doc = await tx.doc(KuloSearchDoc);
             for (const item of group) assertRevision(requirePlan(doc, item.id), item.revision);
             if (migrated === false) {
               const pending = doc.pendingNativeMigrations ??= [];
@@ -229,7 +229,7 @@ export class MocoSearch {
               enabled: plan.enabled, baseUrl: DEFAULT_URLS[plan.adapter] });
           } else {
             await this.#options.harness.commit(async (tx) => {
-              const doc = await tx.doc(MocoSearchDoc);
+              const doc = await tx.doc(KuloSearchDoc);
               const current = requirePlan(doc, id); assertRevision(current, plan.revision);
               // Keep the saved key bound to its original origin until the user explicitly replaces it.
               if (officialTavily) current.baseUrl = DEFAULT_URLS.tavily;
@@ -244,7 +244,7 @@ export class MocoSearch {
         }
       }
       await this.#options.harness.commit(async (tx) => {
-        const doc = await tx.doc(MocoSearchDoc);
+        const doc = await tx.doc(KuloSearchDoc);
         if (doc.presetVersion !== 1) {
           if (!doc.order.some((id) => doc.plans[id]?.adapter === "exa") && doc.order.length < MAX_PLANS) {
             const id = `search-${randomUUID()}`;
@@ -257,9 +257,9 @@ export class MocoSearch {
         }
       }, BACKGROUND_CONTEXT);
       if (!before?.legacyImported) {
-        const legacyKey = process.env.MOCO_SEARCH_API_KEY?.trim();
+        const legacyKey = process.env.KULO_SEARCH_API_KEY?.trim();
         if (!before?.order.length && legacyKey?.startsWith("tvly-")) await this.#configure({ name: "Tavily", adapter: "tavily", apiKey: legacyKey });
-        await this.#options.harness.commit(async (tx) => { (await tx.doc(MocoSearchDoc)).legacyImported = true; }, BACKGROUND_CONTEXT);
+        await this.#options.harness.commit(async (tx) => { (await tx.doc(KuloSearchDoc)).legacyImported = true; }, BACKGROUND_CONTEXT);
       }
       await this.#cleanup();
     });
@@ -313,7 +313,7 @@ export class MocoSearch {
     const reusable = old?.adapter === adapter && old.credentialOrigin === origin && !quarantined;
     const credentialRef = key ? `search:${randomUUID()}` : quarantined || reusable ? old?.credentialRef : undefined;
     if (key && credentialRef) {
-      await this.#options.harness.commit(async (tx) => { (await tx.doc(MocoSearchDoc)).cleanup[credentialRef] = true; }, BACKGROUND_CONTEXT);
+      await this.#options.harness.commit(async (tx) => { (await tx.doc(KuloSearchDoc)).cleanup[credentialRef] = true; }, BACKGROUND_CONTEXT);
       try { await this.#options.credentials.modify(credentialRef, async () => ({ type: "api_key", key, env: { [ORIGIN_ENV]: origin! } })); }
       catch { fail(500, "search_credential_write_failed", "未能保存搜索 API Key，请重试。"); }
     }
@@ -324,7 +324,7 @@ export class MocoSearch {
       ...(credentialRef ? { credentialRef } : {}) };
     try {
       await this.#options.harness.commit(async (tx) => {
-        const doc = await tx.doc(MocoSearchDoc);
+        const doc = await tx.doc(KuloSearchDoc);
         if (old) assertRevision(requirePlan(doc, id), old.revision);
         else if (doc.order.length >= MAX_PLANS) fail(400, "search_plan_limit", "搜索方案数量已达到上限。");
         if (old?.credentialRef && old.credentialRef !== credentialRef) doc.cleanup[old.credentialRef] = true;
@@ -341,7 +341,7 @@ export class MocoSearch {
     const revision = expected(expectedRevision);
     await this.#serial(async () => {
       await this.#options.harness.commit(async (tx) => {
-        const doc = await tx.doc(MocoSearchDoc);
+        const doc = await tx.doc(KuloSearchDoc);
         const plan = requirePlan(doc, key); assertRevision(plan, revision);
         if (plan.credentialRef) doc.cleanup[plan.credentialRef] = true;
         delete doc.plans[key]; doc.order = doc.order.filter((item) => item !== key);
@@ -358,7 +358,7 @@ export class MocoSearch {
     const revision = expected(expectedRevision, true);
     await this.#serial(async () => {
       await this.#options.harness.commit(async (tx) => {
-        const doc = await tx.doc(MocoSearchDoc);
+        const doc = await tx.doc(KuloSearchDoc);
         if (doc.revision !== revision) fail(409, "search_revision_conflict", "搜索方案列表已更新，请刷新后重试。");
         if (order.length !== doc.order.length || new Set(order).size !== order.length || order.some((id) => !own(doc.plans, id))) fail(400, "invalid_search_order", "排序必须包含全部搜索方案，且不能重复。");
         doc.order = [...order]; doc.revision++;
@@ -372,7 +372,7 @@ export class MocoSearch {
     let sequence = 0;
     await this.#serial(async () => {
       await this.#options.harness.commit(async (tx) => {
-        const current = requirePlan(await tx.doc(MocoSearchDoc), plan.id);
+        const current = requirePlan(await tx.doc(KuloSearchDoc), plan.id);
         assertRevision(current, plan.revision);
         sequence = (current.requestSequence ?? 0) + 1; current.requestSequence = sequence;
       }, BACKGROUND_CONTEXT);
@@ -383,7 +383,7 @@ export class MocoSearch {
     let changed = false;
     await this.#serial(async () => {
       await this.#options.harness.commit(async (tx) => {
-        const doc = await tx.doc(MocoSearchDoc);
+        const doc = await tx.doc(KuloSearchDoc);
         const current = own(doc.plans, plan.id);
         // Only the latest started request may publish health, independently of configuration CAS.
         if (!current || current.revision !== plan.revision || current.requestSequence !== sequence) return;

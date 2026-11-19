@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import type { StagedWorkspaceApplyResult, StagedWorkspaceDiffDetail, StagedWorkspaceDiffSummary } from "@moco/protocol";
+import type { StagedWorkspaceApplyResult, StagedWorkspaceDiffDetail, StagedWorkspaceDiffSummary } from "@kulo/protocol";
 
 export interface ManifestEntry {
   sha256: string;
@@ -29,7 +29,7 @@ export function safeHostGitEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS
 }
 
 const MANIFEST_VERSION = 2;
-const HARD_IGNORED_NAMES = new Set([".git", ".moco-env", "node_modules", ".DS_Store"]);
+const HARD_IGNORED_NAMES = new Set([".git", ".kulo-env", "node_modules", ".DS_Store"]);
 const DEFAULT_BUILD_CACHE_DIRS = new Set([
   "dist",
   "coverage",
@@ -575,7 +575,7 @@ export function cloneStagedWorkspace(
     if (relRaw === ".." || relRaw.startsWith(`..${path.sep}`) || path.isAbsolute(relRaw)) return false;
     const relPosix = toPosixRelative(relRaw);
     const name = path.basename(resolvedSrc);
-    if (name === ".moco-env") return false;
+    if (name === ".kulo-env") return false;
     if (name === ".git" || relPosix.startsWith(".git/")) return true;
     if (name === "node_modules") return includeNodeModules;
     if (!includeNodeModules) {
@@ -995,7 +995,7 @@ export function applyStagedChanges(options: {
       if (!isWithinRoot(canonicalSourceRoot, path.resolve(parentReal, rawLink))) {
         throw new Error(`Refusing symbolic link escaping project workspace: ${rel}`);
       }
-      const tempLink = path.join(path.dirname(destFile), `.moco-apply-${randomUUID()}.tmp`);
+      const tempLink = path.join(path.dirname(destFile), `.kulo-apply-${randomUUID()}.tmp`);
       try {
         fs.symlinkSync(rawLink, tempLink);
         fs.renameSync(tempLink, destFile);
@@ -1012,7 +1012,7 @@ export function applyStagedChanges(options: {
     }
     const destFile = assertNoSymlinkEscape(options.sourceDir, rel);
     fs.mkdirSync(path.dirname(destFile), { recursive: true });
-    const tempFile = path.join(path.dirname(destFile), `.moco-apply-${randomUUID()}.tmp`);
+    const tempFile = path.join(path.dirname(destFile), `.kulo-apply-${randomUUID()}.tmp`);
     try {
       fs.copyFileSync(srcFile, tempFile);
       if (process.platform !== "win32") {

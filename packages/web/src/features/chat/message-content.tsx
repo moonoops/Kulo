@@ -1,9 +1,9 @@
-import { translate as tr, useI18n } from "../../moco-i18n";
+import { translate as tr, useI18n } from "../../kulo-i18n";
 import { Button } from "@heroui/react";
 import { Component, useEffect, useLayoutEffect, useMemo, useState, type ErrorInfo, type ReactNode } from "react";
-import { getMessageParts, messagePartFallback, type ChatAttachment, type ChatDisplayItem, type MessagePart } from "@moco/protocol";
-import { MocoMarkdown } from "../../moco-markdown";
-import { mocoRest } from "../../moco-api";
+import { getMessageParts, messagePartFallback, type ChatAttachment, type ChatDisplayItem, type MessagePart } from "@kulo/protocol";
+import { KuloMarkdown } from "../../kulo-markdown";
+import { kuloRest } from "../../kulo-api";
 import { AssetImageGallery, type PreviewableImage } from "./asset-preview";
 import { CodeBlock } from "./code-block";
 import { MediaMessage } from "./media-message";
@@ -46,7 +46,7 @@ class ContentBoundary extends Component<{ children: ReactNode; fallback: string 
   static getDerivedStateFromError() { return { failed: true }; }
   componentDidCatch(error: Error, info: ErrorInfo) { console.error("Chat content failed to render", error, info.componentStack); }
   render() {
-    return this.state.failed ? <div className="moco-chat-content-error"><p className="moco-chat-meta">{tr("内容暂时无法显示", "Content temporarily unavailable")}</p><pre className="moco-chat-fallback-text">{this.props.fallback}</pre><Button size="sm" variant="secondary" onPress={() => this.setState({ failed: false })}>{tr("重试", "Retry")}</Button></div> : this.props.children;
+    return this.state.failed ? <div className="kulo-chat-content-error"><p className="kulo-chat-meta">{tr("内容暂时无法显示", "Content temporarily unavailable")}</p><pre className="kulo-chat-fallback-text">{this.props.fallback}</pre><Button size="sm" variant="secondary" onPress={() => this.setState({ failed: false })}>{tr("重试", "Retry")}</Button></div> : this.props.children;
   }
 }
 
@@ -54,7 +54,7 @@ const assetRequests = new Map<string, Promise<ChatAttachment>>();
 function loadAsset(id: string): Promise<ChatAttachment> {
   const cached = assetRequests.get(id);
   if (cached) return cached;
-  const request = mocoRest.getAsset(id).then(({ attachment }) => attachment);
+  const request = kuloRest.getAsset(id).then(({ attachment }) => attachment);
   assetRequests.set(id, request);
   if (assetRequests.size > 128) assetRequests.delete(assetRequests.keys().next().value!);
   request.catch(() => assetRequests.delete(id));
@@ -85,8 +85,8 @@ function ResolvedAssets({ parts, conversationKey, onPreviewImage, role }: {
   const unavailable = parts.filter((part) => !part.asset && !resolved.has(part.assetId));
   return <>
     {parts[0]?.type === "image" ? <AssetImageGallery assets={assets} onPreviewImage={onPreviewImage} /> : assets.map((asset) => role === "user" && asset.kind === "audio" && asset.presentation === "voice" ? <VoiceMessage key={asset.id} asset={asset} conversationKey={conversationKey} /> : <MediaMessage key={asset.id} asset={asset} conversationKey={conversationKey} onPreviewImage={onPreviewImage} defaultExpanded />)}
-    {unavailable.map((part) => <div key={part.partId} className="moco-chat-unavailable-part" role="status"><span>{failures.has(part.assetId) ? tr("附件不可用", "Attachment unavailable") : tr("正在加载附件", "Loading attachment")}</span>{failures.has(part.assetId) && <Button size="sm" variant="secondary" onPress={() => setAttempt((value) => value + 1)}>{tr("重试", "Retry")}</Button>}</div>)}
-    {parts.some((part) => part.caption) && <p className="moco-chat-media-caption">{parts.map((part) => part.caption).filter(Boolean).join("\n")}</p>}
+    {unavailable.map((part) => <div key={part.partId} className="kulo-chat-unavailable-part" role="status"><span>{failures.has(part.assetId) ? tr("附件不可用", "Attachment unavailable") : tr("正在加载附件", "Loading attachment")}</span>{failures.has(part.assetId) && <Button size="sm" variant="secondary" onPress={() => setAttempt((value) => value + 1)}>{tr("重试", "Retry")}</Button>}</div>)}
+    {parts.some((part) => part.caption) && <p className="kulo-chat-media-caption">{parts.map((part) => part.caption).filter(Boolean).join("\n")}</p>}
   </>;
 }
 
@@ -110,16 +110,16 @@ export function MessageContent({ item, onPreviewImage, renderUiPart, renderDevic
   const render = (group: ContentGroup) => {
     const part = group.parts[0]!;
     switch (part.type) {
-      case "markdown": return item.role === "user" ? <div className="mc-user-message moco-chat-user-text">{part.text}</div> : <MocoMarkdown text={part.text} onPreviewImage={onPreviewImage} />;
+      case "markdown": return item.role === "user" ? <div className="mc-user-message kulo-chat-user-text">{part.text}</div> : <KuloMarkdown text={part.text} onPreviewImage={onPreviewImage} />;
       case "code": return <CodeBlock code={part.code} language={part.language} fileName={part.fileName} />;
-      case "ui": return renderUiPart ? renderUiPart(part) : <MocoMarkdown text={part.fallbackText} onPreviewImage={onPreviewImage} />;
+      case "ui": return renderUiPart ? renderUiPart(part) : <KuloMarkdown text={part.fallbackText} onPreviewImage={onPreviewImage} />;
       case "device-invitation": return item.role === "assistant" && renderDeviceInvitation
         ? renderDeviceInvitation(part)
         : <span>{messagePartFallback(part)}</span>;
       default: return <ResolvedAssets parts={group.parts as AssetPart[]} conversationKey={conversationKey} onPreviewImage={onPreviewImage} role={item.role} />;
     }
   };
-  return <div className="moco-chat-content" data-role={item.role}>
+  return <div className="kulo-chat-content" data-role={item.role}>
     {item.replyTo && <MessageReply reply={item.replyTo} onNavigateReply={onNavigateReply} />}
     {rows.map((row) => <ContentPresence key={row.group.id} present={row.present} animateEntry={row.animateEntry} onExited={() => setSnapshot((previous) => ({ ...previous, rows: previous.rows.filter((candidate) => candidate.group.id !== row.group.id || candidate.present) }))}>
       <ContentBoundary fallback={row.group.parts.map(messagePartFallback).join("\n\n")}>{render(row.group)}</ContentBoundary>

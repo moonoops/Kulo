@@ -1,5 +1,5 @@
-import type { CustomImageAdapter, ImageGenerationParameters, ImageJsonValue, MediaConnectionView, MediaJob } from "@moco/protocol";
-import { getImageModelProfile, normalizeImageGenerationParameters } from "@moco/protocol";
+import type { CustomImageAdapter, ImageGenerationParameters, ImageJsonValue, MediaConnectionView, MediaJob } from "@kulo/protocol";
+import { getImageModelProfile, normalizeImageGenerationParameters } from "@kulo/protocol";
 import { MAX_UPLOAD_BYTES } from "./uploads.js";
 
 export class MediaAdapterError extends Error {

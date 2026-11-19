@@ -1,8 +1,8 @@
-import { translate as tr, useI18n } from "../../moco-i18n";
+import { translate as tr, useI18n } from "../../kulo-i18n";
 import { Button, Link, Modal } from "@heroui/react";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { ThemedToken } from "shiki";
-import { MocoIcon } from "../../moco-icon";
+import { KuloIcon } from "../../kulo-icon";
 import { useContentResize } from "./use-content-motion";
 import "./chat-content.css";
 
@@ -42,8 +42,8 @@ export function codeFileName(language?: string, fileName?: string): string {
 function CodeText({ code, tokens }: { code: string; tokens: ThemedToken[][] | null }) {
   useI18n();
   if (!tokens) return <code>{code}</code>;
-  return <code>{tokens.map((line, lineIndex) => <span className="moco-chat-code-line" key={lineIndex}>
-    {line.map((token, index) => <span key={index} className="moco-chat-code-token" style={{
+  return <code>{tokens.map((line, lineIndex) => <span className="kulo-chat-code-line" key={lineIndex}>
+    {line.map((token, index) => <span key={index} className="kulo-chat-code-token" style={{
       "--code-token-light": token.color ?? token.htmlStyle?.color,
       "--code-token-dark": token.htmlStyle?.["--shiki-dark"] ?? token.color,
       fontStyle: token.fontStyle && (token.fontStyle & 1) ? "italic" : undefined,
@@ -104,27 +104,27 @@ export function CodeBlock({ code, language, fileName }: { code: string; language
   };
   const source = <CodeText code={code} tokens={tokens} />;
   const changeOpen = (open: boolean) => { setIsOpen(open); if (!open) setCopyState((state) => state === "failed" ? "idle" : state); };
-  return <section className="moco-chat-code" aria-label={fileName ? tr(`代码：${fileName}`, `Code: ${fileName}`) : tr(`${normalizedLanguage || "纯文本"}代码`, `${normalizedLanguage || "Plain text"} code`)}>
-    <div className="moco-chat-code-toolbar">
-      <span className="moco-chat-code-language moco-chat-truncate">{fileName ?? (normalizedLanguage || tr("纯文本", "Plain text"))}</span>
-      <div className="moco-chat-actions">
+  return <section className="kulo-chat-code" aria-label={fileName ? tr(`代码：${fileName}`, `Code: ${fileName}`) : tr(`${normalizedLanguage || "纯文本"}代码`, `${normalizedLanguage || "Plain text"} code`)}>
+    <div className="kulo-chat-code-toolbar">
+      <span className="kulo-chat-code-language kulo-chat-truncate">{fileName ?? (normalizedLanguage || tr("纯文本", "Plain text"))}</span>
+      <div className="kulo-chat-actions">
         <Button size="sm" variant="ghost" aria-label={wrap ? tr("关闭代码自动折行", "Disable code wrapping") : tr("开启代码自动折行", "Enable code wrapping")} aria-pressed={wrap} onPress={() => { prepareResize(); setWrap((value) => !value); }}>{tr("折行", "Wrap")}</Button>
         <Button size="sm" variant="ghost" onPress={() => setIsOpen(true)}>{tr("放大", "Expand")}</Button>
-        <Button size="sm" variant="ghost" onPress={() => { void copy(); }}><MocoIcon name={copyState === "copied" ? "check" : "copy"} size={14} />{copyState === "copied" ? tr("已复制", "Copied") : tr("复制", "Copy")}</Button>
-        {downloadUrl && <Link href={downloadUrl} download={codeFileName(normalizedLanguage, fileName)} className="moco-chat-download-link">{tr("下载", "Download")}</Link>}
+        <Button size="sm" variant="ghost" onPress={() => { void copy(); }}><KuloIcon name={copyState === "copied" ? "check" : "copy"} size={14} />{copyState === "copied" ? tr("已复制", "Copied") : tr("复制", "Copy")}</Button>
+        {downloadUrl && <Link href={downloadUrl} download={codeFileName(normalizedLanguage, fileName)} className="kulo-chat-download-link">{tr("下载", "Download")}</Link>}
       </div>
     </div>
-    <pre ref={pre} tabIndex={0} className="moco-chat-code-pre" data-wrap={wrap || undefined} data-collapsed={long && !expanded || undefined}>{source}</pre>
-    {(long || copyState === "failed" || highlightFailed) && <div className="moco-chat-code-footer">
+    <pre ref={pre} tabIndex={0} className="kulo-chat-code-pre" data-wrap={wrap || undefined} data-collapsed={long && !expanded || undefined}>{source}</pre>
+    {(long || copyState === "failed" || highlightFailed) && <div className="kulo-chat-code-footer">
       {long && <Button size="sm" variant="ghost" onPress={() => { prepareResize(); setExpanded((value) => !value); }} aria-expanded={expanded}>{expanded ? tr("收起", "Collapse") : tr(`展开 ${code.split("\n").length} 行`, `Show ${code.split("\n").length} lines`)}</Button>}
-      {copyState === "failed" && <span role="status" className="moco-chat-meta">{tr("复制失败，代码已选中，可手动复制", "Copy failed. The code is selected for manual copying.")}</span>}
+      {copyState === "failed" && <span role="status" className="kulo-chat-meta">{tr("复制失败，代码已选中，可手动复制", "Copy failed. The code is selected for manual copying.")}</span>}
       {highlightFailed && <Button size="sm" variant="ghost" onPress={() => setAttempt((value) => value + 1)}>{tr("重试高亮", "Retry highlighting")}</Button>}
     </div>}
-    <Modal.Backdrop isOpen={isOpen} onOpenChange={changeOpen}><Modal.Container size="lg" className="moco-chat-code-modal"><Modal.Dialog className="moco-chat-code-dialog" aria-label={tr("完整代码", "Full code")}>
+    <Modal.Backdrop isOpen={isOpen} onOpenChange={changeOpen}><Modal.Container size="lg" className="kulo-chat-code-modal"><Modal.Dialog className="kulo-chat-code-dialog" aria-label={tr("完整代码", "Full code")}>
         <Modal.CloseTrigger />
         <Modal.Header><Modal.Heading>{fileName ?? (normalizedLanguage || tr("代码", "Code"))}</Modal.Heading></Modal.Header>
-        <Modal.Body><pre ref={fullPre} tabIndex={0} className="moco-chat-code-pre moco-chat-code-pre-full" data-wrap={wrap || undefined}>{source}</pre></Modal.Body>
-        <Modal.Footer>{copyState === "failed" && <span role="status" className="moco-chat-meta">{tr("复制失败，代码已选中，可手动复制", "Copy failed. The code is selected for manual copying.")}</span>}<Button variant="secondary" size="sm" onPress={() => { void copy(); }}>{copyState === "copied" ? tr("已复制", "Copied") : tr("复制代码", "Copy code")}</Button><Button variant="primary" size="sm" onPress={() => changeOpen(false)}>{tr("完成", "Done")}</Button></Modal.Footer>
+        <Modal.Body><pre ref={fullPre} tabIndex={0} className="kulo-chat-code-pre kulo-chat-code-pre-full" data-wrap={wrap || undefined}>{source}</pre></Modal.Body>
+        <Modal.Footer>{copyState === "failed" && <span role="status" className="kulo-chat-meta">{tr("复制失败，代码已选中，可手动复制", "Copy failed. The code is selected for manual copying.")}</span>}<Button variant="secondary" size="sm" onPress={() => { void copy(); }}>{copyState === "copied" ? tr("已复制", "Copied") : tr("复制代码", "Copy code")}</Button><Button variant="primary" size="sm" onPress={() => changeOpen(false)}>{tr("完成", "Done")}</Button></Modal.Footer>
       </Modal.Dialog></Modal.Container></Modal.Backdrop>
   </section>;
 }

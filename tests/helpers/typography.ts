@@ -1,12 +1,12 @@
 import ts from "typescript";
 
 const roles = ["caption", "body", "heading", "title"] as const;
-const fontValues = new Set(roles.map((role) => `var(--moco-text-${role})`));
-const leadingValues = new Set(roles.map((role) => `var(--moco-leading-${role})`));
+const fontValues = new Set(roles.map((role) => `var(--kulo-text-${role})`));
+const leadingValues = new Set(roles.map((role) => `var(--kulo-leading-${role})`));
 const compact = (value: string) => value.replace(/\s+/g, "");
 const overlayHeadingNames = ["modal__heading", "alert-dialog__heading", "drawer__heading"];
-const customTableHeaderNames = ["moco-search-plan-head", "moco-model-column-head"];
-const tableHeaderNames = ["table__column", "moco-table-header", "moco-settings-table-column", ...customTableHeaderNames];
+const customTableHeaderNames = ["kulo-search-plan-head", "kulo-model-column-head"];
+const tableHeaderNames = ["table__column", "kulo-table-header", "kulo-settings-table-column", ...customTableHeaderNames];
 type TypographyRole = typeof roles[number];
 const componentRoles: Record<string, TypographyRole> = {
   Label: "body", "Alert.Title": "body", "Alert.Description": "caption",
@@ -15,8 +15,8 @@ const componentRoles: Record<string, TypographyRole> = {
 };
 const componentSlotRoles: Record<string, TypographyRole> = {
   label: "body", alert__title: "body", alert__description: "caption",
-  card__description: "caption", table__column: "body", table__cell: "body", "moco-table-header": "body", button: "body",
-  "moco-message-action": "caption",
+  card__description: "caption", table__column: "body", table__cell: "body", "kulo-table-header": "body", button: "body",
+  "kulo-message-action": "caption",
   ...Object.fromEntries(overlayHeadingNames.map((name) => [name, "heading" as const])),
 };
 
@@ -31,7 +31,7 @@ const headingTargets = (selector: string) => selectorTargets(selector, overlayHe
 
 function slotRoles(selector: string): Array<{ name: string; role: TypographyRole }> {
   const targets = selectorTargets(selector, [...Object.keys(componentSlotRoles), ...tableHeaderNames]);
-  return targets.filter((name) => name !== "button" || !targets.includes("moco-message-action"))
+  return targets.filter((name) => name !== "button" || !targets.includes("kulo-message-action"))
     .map((name) => ({ name, role: componentSlotRoles[name] ?? "body" }));
 }
 
@@ -131,7 +131,7 @@ function typographyRules(parsed: Declaration[]): Declaration[][] {
 }
 
 function role(value: string, kind: "text" | "leading"): string | undefined {
-  return new RegExp(`^var\\(--moco-${kind}-(caption|body|heading|title)\\)$`).exec(compact(value.replace(/\s*!important\s*$/, "")))?.[1];
+  return new RegExp(`^var\\(--kulo-${kind}-(caption|body|heading|title)\\)$`).exec(compact(value.replace(/\s*!important\s*$/, "")))?.[1];
 }
 
 function ruleRoles(rule: Declaration[]): { size?: string; leading?: string } {
@@ -140,7 +140,7 @@ function ruleRoles(rule: Declaration[]): { size?: string; leading?: string } {
     if (decl.property === "font-size") size = role(decl.value, "text");
     else if (decl.property === "line-height") leading = role(decl.value, "leading");
     else if (decl.property === "font") {
-      const shorthand = /var\(--moco-text-(caption|body|heading|title)\)\s*\/\s*var\(--moco-leading-(caption|body|heading|title)\)/.exec(decl.value);
+      const shorthand = /var\(--kulo-text-(caption|body|heading|title)\)\s*\/\s*var\(--kulo-leading-(caption|body|heading|title)\)/.exec(decl.value);
       size = shorthand?.[1];
       leading = shorthand?.[2];
     }
@@ -151,28 +151,28 @@ function ruleRoles(rule: Declaration[]): { size?: string; leading?: string } {
 function contentException(fileName: string, selector: string, property: string, value: string): boolean {
   const file = fileName.replaceAll("\\", "/");
   const v = compact(value);
-  if (/(?:^|\/)moco\.css$/.test(file) && [".moco-composer-input", ".mc-user-message"].includes(selector)) {
-    return property === "font-size" && ["var(--moco-chat-font-size)", "max(var(--moco-text-heading),var(--moco-chat-font-size))"].includes(v)
-      || property === "line-height" && v === "var(--moco-chat-line-height)";
+  if (/(?:^|\/)kulo\.css$/.test(file) && [".kulo-composer-input", ".mc-user-message"].includes(selector)) {
+    return property === "font-size" && ["var(--kulo-chat-font-size)", "max(var(--kulo-text-heading),var(--kulo-chat-font-size))"].includes(v)
+      || property === "line-height" && v === "var(--kulo-chat-line-height)";
   }
   // PDF.js must reproduce document glyph geometry; its surrounding controls keep the UI scale.
   if (/(?:^|\/)features\/chat\/pdf-preview\.css$/.test(file)) {
-    if (selector === ".moco-pdf-text-layer") return property === "line-height" && v === "1";
-    return [".moco-pdf-text-layer > :not(.markedContent)", ".moco-pdf-text-layer .markedContent span:not(.markedContent)"].includes(selector)
+    if (selector === ".kulo-pdf-text-layer") return property === "line-height" && v === "1";
+    return [".kulo-pdf-text-layer > :not(.markedContent)", ".kulo-pdf-text-layer .markedContent span:not(.markedContent)"].includes(selector)
       && property === "font-size" && v === "calc(var(--text-scale-factor)*var(--font-height))";
   }
   if (!/(?:^|\/)features\/chat\/chat-content\.css$/.test(file)) return false;
-  if ([".moco-chat-markdown", ".moco-chat-user-text"].includes(selector)) {
-    return property === "font-size" && v === "var(--moco-chat-font-size)" || property === "line-height" && v === "var(--moco-chat-line-height)";
+  if ([".kulo-chat-markdown", ".kulo-chat-user-text"].includes(selector)) {
+    return property === "font-size" && v === "var(--kulo-chat-font-size)" || property === "line-height" && v === "var(--kulo-chat-line-height)";
   }
-  const heading = /^\.moco-chat-markdown h([1-6])$/.exec(selector)?.[1];
+  const heading = /^\.kulo-chat-markdown h([1-6])$/.exec(selector)?.[1];
   if (heading) {
     const sizes: Record<string, string> = { 1: "1.55em", 2: "1.3em", 3: "1.12em", 4: "1em", 5: "1em", 6: "1em" };
     return property === "font-size" && v === sizes[heading] || property === "line-height" && v === "1.5";
   }
-  if (selector === ".moco-chat-inline-code") return property === "font" && /^\.88em\/1\.5\s+/.test(value);
-  if (selector === ".moco-chat-table") return property === "font-size" && /^max\((?:12px|var\(--moco-text-caption\)),calc\(var\(--moco-chat-font-size\)-1px\)\)$/.test(v);
-  if (selector === ".moco-chat-code-pre") return property === "font" && /^max\((?:12px|var\(--moco-text-caption\)),calc\(var\(--moco-chat-font-size\)-2px\)\)\/1\.65/.test(v);
+  if (selector === ".kulo-chat-inline-code") return property === "font" && /^\.88em\/1\.5\s+/.test(value);
+  if (selector === ".kulo-chat-table") return property === "font-size" && /^max\((?:12px|var\(--kulo-text-caption\)),calc\(var\(--kulo-chat-font-size\)-1px\)\)$/.test(v);
+  if (selector === ".kulo-chat-code-pre") return property === "font" && /^max\((?:12px|var\(--kulo-text-caption\)),calc\(var\(--kulo-chat-font-size\)-2px\)\)\/1\.65/.test(v);
   return false;
 }
 
@@ -183,7 +183,7 @@ const targetsDescendant = (token: string) => splitOutside(token, ":").slice(0, -
 function headingUtilityProblem(token: string): string | undefined {
   const bare = bareUtility(token);
   if (/^text-(?:xs|sm|2xl)(?:$|\/)|^text-\[inherit\]$/.test(bare)) return "overlay headings must keep text-lg or their inherited heading role";
-  if (bare.startsWith("leading-") && !/^leading-(?:\[var\(--moco-leading-heading\)\]|\(--moco-leading-heading\))$/.test(bare)) return "overlay headings must keep the heading line-height role";
+  if (bare.startsWith("leading-") && !/^leading-(?:\[var\(--kulo-leading-heading\)\]|\(--kulo-leading-heading\))$/.test(bare)) return "overlay headings must keep the heading line-height role";
   return undefined;
 }
 
@@ -195,11 +195,11 @@ function componentUtilityProblem(token: string, expected: TypographyRole): strin
   }
   const bare = bareUtility(token);
   const utilityRoles: Record<string, TypographyRole> = { "text-xs": "caption", "text-sm": "body", "text-lg": "heading", "text-2xl": "title",
-    "moco-page-title": "title", "moco-section-title": "heading", "moco-group-title": "body",
-    "moco-item-title": "body", "moco-item-description": "caption" };
+    "kulo-page-title": "title", "kulo-section-title": "heading", "kulo-group-title": "body",
+    "kulo-item-title": "body", "kulo-item-description": "caption" };
   const utilityRole = utilityRoles[bare];
   if ((utilityRole && utilityRole !== expected) || bare === "text-[inherit]") return `component must keep its ${expected} typography role`;
-  const leadingRole = /^leading-(?:\[var\(--moco-leading-(caption|body|heading|title)\)\]|\(--moco-leading-(caption|body|heading|title)\))$/.exec(bare);
+  const leadingRole = /^leading-(?:\[var\(--kulo-leading-(caption|body|heading|title)\)\]|\(--kulo-leading-(caption|body|heading|title)\))$/.exec(bare);
   if (bare === "leading-[inherit]" || leadingRole && (leadingRole[1] ?? leadingRole[2]) !== expected) return `component must keep its ${expected} line-height role`;
   return undefined;
 }
@@ -234,7 +234,7 @@ function utilityProblem(token: string): string | undefined {
     if (/^(?:var\(--[\w-]+\)|--[\w-]+)$/.test(value) && !/(?:font|text|leading|size)/.test(value)) return undefined;
     return "replace an arbitrary font size with text-xs/sm/lg/2xl or a shared semantic role";
   }
-  if (bare.startsWith("leading-") && !/^leading-(?:\[var\(--moco-leading-(?:caption|body|heading|title)\)\]|\(--moco-leading-(?:caption|body|heading|title)\)|\[inherit\])$/.test(bare)) {
+  if (bare.startsWith("leading-") && !/^leading-(?:\[var\(--kulo-leading-(?:caption|body|heading|title)\)\]|\(--kulo-leading-(?:caption|body|heading|title)\)|\[inherit\])$/.test(bare)) {
     return "use the shared line-height for the text role";
   }
   if (/^\[(?:font(?:-size)?|line-height):/.test(bare)) return "declare typography through the shared semantic roles";
@@ -243,15 +243,15 @@ function utilityProblem(token: string): string | undefined {
 
 /** Checks authored declarations, including nested media rules and font shorthands. */
 export function auditCssTypography(source: string, fileName: string): string[] {
-  const central = /(?:^|\/)moco-typography\.css$/.test(fileName.replaceAll("\\", "/"));
+  const central = /(?:^|\/)kulo-typography\.css$/.test(fileName.replaceAll("\\", "/"));
   const parsed = declarations(source);
   const problems = parsed.flatMap((decl) => {
     const value = compact(decl.value.replace(/\s*!important\s*$/, ""));
     let problem: string | undefined;
     const pdfGlyphScale = /(?:^|\/)features\/chat\/pdf-preview\.css$/.test(fileName.replaceAll("\\", "/"))
-      && decl.property === "--text-scale-factor" && decl.selectors.length === 1 && decl.selectors[0] === ".moco-pdf-text-layer"
+      && decl.property === "--text-scale-factor" && decl.selectors.length === 1 && decl.selectors[0] === ".kulo-pdf-text-layer"
       && value === "calc(var(--total-scale-factor)*var(--min-font-size))";
-    if (/^--(?:moco-(?:text|leading)-|text-)/.test(decl.property) && !central && !pdfGlyphScale) problem = "define typography tokens only in moco-typography.css";
+    if (/^--(?:kulo-(?:text|leading)-|text-)/.test(decl.property) && !central && !pdfGlyphScale) problem = "define typography tokens only in kulo-typography.css";
     if (decl.property === "@apply") {
       const targets = decl.selectors.flatMap(slotRoles);
       const header = decl.selectors.some((selector) => selectorTargets(selector, tableHeaderNames).length);
@@ -262,7 +262,7 @@ export function auditCssTypography(source: string, fileName: string): string[] {
     } else if (["font-size", "line-height", "font"].includes(decl.property)) {
       const inherited = value === "inherit";
       const shared = decl.property === "font-size" ? fontValues.has(value) : decl.property === "line-height" ? leadingValues.has(value)
-        : /^(?:(?:normal|italic|oblique|small-caps|400|500|600)\s+)*var\(--moco-text-(caption|body|heading|title)\)\s*\/\s*var\(--moco-leading-\1\)\s+\S/.test(decl.value);
+        : /^(?:(?:normal|italic|oblique|small-caps|400|500|600)\s+)*var\(--kulo-text-(caption|body|heading|title)\)\s*\/\s*var\(--kulo-leading-\1\)\s+\S/.test(decl.value);
       if (!inherited && !shared && !(decl.selectors.length && decl.selectors.every((selector) => contentException(fileName, selector, decl.property, decl.value)))) {
         problem = `${decl.property}: ${decl.value} must use the four shared typography roles`;
       }
@@ -297,7 +297,7 @@ export function auditOverlayHeadingTypography(source: string, fileName: string):
   for (const rule of typographyRules(declarations(source))) {
     const first = rule[0]!;
     const targets = new Set(first.selectors.flatMap((selector) => {
-      const scoped = /^\.moco-ui\s+(.+)$/.exec(selector.replace(/\s+/g, " ").trim())?.[1];
+      const scoped = /^\.kulo-ui\s+(.+)$/.exec(selector.replace(/\s+/g, " ").trim())?.[1];
       if (!scoped) return [];
       const group = /^:(?:is|where)\((.*)\)$/.exec(scoped)?.[1];
       return (group ? splitOutside(group, ",") : [scoped]).map((part) => part.trim().replace(/^\./, "")).filter((part) => headings.includes(part));
@@ -321,15 +321,15 @@ export function auditOverlayHeadingTypography(source: string, fileName: string):
 
 /** Custom grid headers share the same default role as library table columns. */
 export function auditTableHeaderTypography(source: string, fileName: string): string[] {
-  const required = ["table__column", "moco-table-header"];
+  const required = ["table__column", "kulo-table-header"];
   const parsed = declarations(source);
   return required.flatMap((name) => {
     const evidence = parsed.filter((decl) => !decl.conditional && decl.selectors.some((selector) => {
-      const scoped = /^\.moco-ui\s+(.+)$/.exec(selector.replace(/\s+/g, " ").trim())?.[1];
+      const scoped = /^\.kulo-ui\s+(.+)$/.exec(selector.replace(/\s+/g, " ").trim())?.[1];
       const group = scoped && /^:(?:is|where)\((.*)\)$/.exec(scoped)?.[1];
       return scoped && (group ? splitOutside(group, ",") : [scoped]).some((part) => part.trim() === `.${name}`);
     }));
-    return [["font-size", "var(--moco-text-body)"], ["line-height", "var(--moco-leading-body)"], ["font-weight", "600"]]
+    return [["font-size", "var(--kulo-text-body)"], ["line-height", "var(--kulo-leading-body)"], ["font-weight", "600"]]
       .flatMap(([property, expected]) => {
         const assigned = evidence.filter((decl) => decl.property === property);
         return assigned.length && assigned.every((decl) => compact(decl.value) === expected) ? []
@@ -345,15 +345,15 @@ export function auditHeroUiTypographySlots(source: string, fileName: string, ins
   const parsed = declarations(source);
   const problems: string[] = [];
   for (const name of new Set(parsed.flatMap((decl) => decl.selectors.flatMap(classes)))) {
-    if (!["moco-ui", "moco-composer-input", "moco-table-header", "mc-icon"].includes(name) && !installed.has(name)) problems.push(`${fileName} .${name} is not an installed HeroUI slot.`);
+    if (!["kulo-ui", "kulo-composer-input", "kulo-table-header", "mc-icon"].includes(name) && !installed.has(name)) problems.push(`${fileName} .${name} is not an installed HeroUI slot.`);
   }
   const required: Record<string, TypographyRole> = {
     ...componentSlotRoles, input: "body", "input-group__input": "body", "combo-box__value": "body",
     tabs__tab: "body", header: "body", fieldset__legend: "body",
   };
-  delete required["moco-message-action"];
+  delete required["kulo-message-action"];
   for (const [name, expected] of Object.entries(required)) {
-    const evidence = parsed.filter((decl) => !decl.conditional && decl.selectors.some((selector) => /\.moco-ui\s/.test(selector) && selectorTargets(selector, [name]).length));
+    const evidence = parsed.filter((decl) => !decl.conditional && decl.selectors.some((selector) => /\.kulo-ui\s/.test(selector) && selectorTargets(selector, [name]).length));
     for (const property of ["font-size", "line-height"] as const) {
       const matches = evidence.filter((decl) => decl.property === property);
       if (!matches.length || matches.some((decl) => role(decl.value, property === "font-size" ? "text" : "leading") !== expected)) {
@@ -367,16 +367,16 @@ export function auditHeroUiTypographySlots(source: string, fileName: string, ins
 /** Fixed contract; component-library aliases may reference these roles but add no sizes. */
 export function auditTypographyTokens(source: string, fileName: string): string[] {
   const expected: Record<string, readonly string[]> = {
-    "--moco-text-caption": ["12px", "0.75rem"], "--moco-leading-caption": ["18px"],
-    "--moco-text-body": ["14px", "0.875rem"], "--moco-leading-body": ["20px"],
-    "--moco-text-heading": ["18px", "1.125rem"], "--moco-leading-heading": ["26px"],
-    "--moco-text-title": ["24px", "1.5rem"], "--moco-leading-title": ["32px"],
+    "--kulo-text-caption": ["12px", "0.75rem"], "--kulo-leading-caption": ["18px"],
+    "--kulo-text-body": ["14px", "0.875rem"], "--kulo-leading-body": ["20px"],
+    "--kulo-text-heading": ["18px", "1.125rem"], "--kulo-leading-heading": ["26px"],
+    "--kulo-text-title": ["24px", "1.5rem"], "--kulo-leading-title": ["32px"],
   };
   for (const [size, role] of Object.entries({ xs: "caption", sm: "body", lg: "heading", "2xl": "title", base: "body", xl: "heading" })) {
-    expected[`--text-${size}`] = [`var(--moco-text-${role})`];
-    expected[`--text-${size}--line-height`] = [`var(--moco-leading-${role})`];
+    expected[`--text-${size}`] = [`var(--kulo-text-${role})`];
+    expected[`--text-${size}--line-height`] = [`var(--kulo-leading-${role})`];
   }
-  const tokens = declarations(source).filter((decl) => /^--(?:moco-(?:text|leading)-|text-)/.test(decl.property));
+  const tokens = declarations(source).filter((decl) => /^--(?:kulo-(?:text|leading)-|text-)/.test(decl.property));
   const problems: string[] = [];
   for (const [name, allowed] of Object.entries(expected)) {
     const matches = tokens.filter((decl) => decl.property === name);
@@ -472,7 +472,7 @@ export function auditJsxTypography(source: string, fileName: string): string[] {
       if (ts.isSpreadAssignment(prop)) style(prop.expression, header, next);
       else if (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop)) {
         const names = ts.isComputedPropertyName(prop.name) ? options(prop.name.expression) : [prop.name.getText(file).replace(/^['"]|['"]$/g, "")];
-        for (const name of names) if (/^(?:font(?:Size)?|lineHeight|font-size|line-height|--moco-(?:text|leading)-[\w-]+)$/.test(name)) report(prop, `inline ${name} bypasses the shared typography roles`);
+        for (const name of names) if (/^(?:font(?:Size)?|lineHeight|font-size|line-height|--kulo-(?:text|leading)-[\w-]+)$/.test(name)) report(prop, `inline ${name} bypasses the shared typography roles`);
         else if (header && ["fontWeight", "font-weight"].includes(name)) report(prop, "inline font-weight bypasses the shared table header role");
       }
     }
@@ -495,8 +495,8 @@ export function auditJsxTypography(source: string, fileName: string): string[] {
         for (const className of classes) {
           const tokens = new Set(className.split(/\s+/));
           const customHeader = [...tokens].some((name) => tableHeaderNames.includes(name));
-          if ([...tokens].some((name) => customTableHeaderNames.includes(name)) && !tokens.has("moco-table-header")) messages.add("custom table headers must use moco-table-header");
-          const expected = component === "Button" && tokens.has("moco-message-action") ? "caption" : customHeader ? "body" : componentRoles[component ?? ""];
+          if ([...tokens].some((name) => customTableHeaderNames.includes(name)) && !tokens.has("kulo-table-header")) messages.add("custom table headers must use kulo-table-header");
+          const expected = component === "Button" && tokens.has("kulo-message-action") ? "caption" : customHeader ? "body" : componentRoles[component ?? ""];
           for (const token of tokens) {
             const problem = utilityProblem(token) ?? (expected ? componentUtilityProblem(token, expected) : undefined)
               ?? (component === "Table.Column" || customHeader ? tableHeaderUtilityProblem(token) : undefined)

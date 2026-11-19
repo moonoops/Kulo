@@ -1,6 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import { isConversationModel, isImageGenerationModel, type CustomModelConfig } from "@moco/protocol";
+import { isConversationModel, isImageGenerationModel, type CustomModelConfig } from "@kulo/protocol";
 
 function prefixLength(a: string, b: string): number {
   let length = 0;

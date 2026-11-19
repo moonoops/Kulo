@@ -12,8 +12,8 @@ const run = promisify(execFile);
 const require = createRequire(import.meta.url);
 const desktopRoot = fileURLToPath(new URL("../", import.meta.url));
 const workspaceRoot = fileURLToPath(new URL("../../../", import.meta.url));
-export const APP_NAME = "Moco Dev";
-export const APP_ID = "io.moco.desktop.dev";
+export const APP_NAME = "Kulo Dev";
+export const APP_ID = "io.kulo.desktop.dev";
 
 export async function readUpdateTrustFile(filename) {
   if (!path.isAbsolute(filename)) throw new Error("更新信任文件必须使用绝对路径。");
@@ -55,11 +55,11 @@ export async function createBuildIdentity(sourceRoot = workspaceRoot) {
 
 export async function finalizePackagedRelease(appDirectory, runtimeDirectory, options) {
   const appRequire = createRequire(path.join(appDirectory, "package.json"));
-  const recovery = await import(pathToFileURL(appRequire.resolve("@moco/recovery")).href);
+  const recovery = await import(pathToFileURL(appRequire.resolve("@kulo/recovery")).href);
   const release = await recovery.createReleaseManifest(appDirectory, options);
   await recovery.writeReleaseManifest(appDirectory, release);
-  await fs.chmod(path.join(appDirectory, "moco-release.json"), 0o644);
-  await fs.chmod(path.join(appDirectory, "moco-release.identity.json"), 0o644);
+  await fs.chmod(path.join(appDirectory, "kulo-release.json"), 0o644);
+  await fs.chmod(path.join(appDirectory, "kulo-release.identity.json"), 0o644);
   const bundleFile = path.join(runtimeDirectory, "bundle.json");
   const bundle = JSON.parse(await fs.readFile(bundleFile, "utf8"));
   await fs.writeFile(bundleFile, JSON.stringify({ ...bundle, releaseId: release.id }, null, 2) + "\n");
@@ -68,15 +68,15 @@ export async function finalizePackagedRelease(appDirectory, runtimeDirectory, op
 
 export async function prepareRecoveryRuntime(appDirectory, runtimeDirectory) {
   const appRequire = createRequire(path.join(appDirectory, "package.json"));
-  const entry = await fs.realpath(appRequire.resolve("@moco/recovery"));
+  const entry = await fs.realpath(appRequire.resolve("@kulo/recovery"));
   const target = path.join(runtimeDirectory, "recovery");
   await fs.cp(path.dirname(entry), target, { recursive: true });
   await fs.writeFile(path.join(target, "package.json"), '{"private":true,"type":"module"}\n');
   await assertRegularFile(path.join(target, "bin.js"));
-  const launcher = path.join(runtimeDirectory, "moco-rescue");
-  await fs.writeFile(launcher, '#!/bin/sh\nmoco_runtime_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec "$moco_runtime_dir/node" "$moco_runtime_dir/recovery/bin.js" "$@"\n', { mode: 0o755 });
+  const launcher = path.join(runtimeDirectory, "kulo-rescue");
+  await fs.writeFile(launcher, '#!/bin/sh\nkulo_runtime_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec "$kulo_runtime_dir/node" "$kulo_runtime_dir/recovery/bin.js" "$@"\n', { mode: 0o755 });
   await fs.chmod(launcher, 0o755);
-  const envEntry = await fs.realpath(appRequire.resolve("@moco/env"));
+  const envEntry = await fs.realpath(appRequire.resolve("@kulo/env"));
   const cleanupSource = path.join(path.dirname(envEntry), "macos-worker-cleanup");
   const sourceStat = await fs.lstat(cleanupSource);
   if (!sourceStat.isFile() || sourceStat.isSymbolicLink() || sourceStat.size > 4 * 1024 * 1024 || !contained(await fs.realpath(appDirectory), cleanupSource)) {
@@ -86,13 +86,13 @@ export async function prepareRecoveryRuntime(appDirectory, runtimeDirectory) {
   await fs.copyFile(cleanupSource, cleanupFile, constants.COPYFILE_EXCL);
   await fs.chmod(cleanupFile, 0o500);
   const sha256 = createHash("sha256").update(await fs.readFile(cleanupFile)).digest("hex");
-  await fs.writeFile(path.join(target, "moco-cleanup-runtime.json"), JSON.stringify({
+  await fs.writeFile(path.join(target, "kulo-cleanup-runtime.json"), JSON.stringify({
     formatVersion: 1, file: "macos-worker-cleanup", sha256,
   }) + "\n", { flag: "wx", mode: 0o444 });
 }
 
 export async function verifyRecoveryCleanupRuntime(recoveryDirectory) {
-  const metadataFile = path.join(recoveryDirectory, "moco-cleanup-runtime.json");
+  const metadataFile = path.join(recoveryDirectory, "kulo-cleanup-runtime.json");
   const metadataStat = await fs.lstat(metadataFile);
   if (!metadataStat.isFile() || metadataStat.isSymbolicLink() || metadataStat.size > 4096) throw new Error("救援清理程序清单无效。");
   const metadata = JSON.parse(await fs.readFile(metadataFile, "utf8"));
@@ -159,7 +159,7 @@ export async function withPreservedWorkspaceState(directory, action) {
     if (current !== original) {
       if (original === null) await fs.rm(cache, { force: true });
       else {
-        const temporary = `${cache}.moco-${randomUUID()}.tmp`;
+        const temporary = `${cache}.kulo-${randomUUID()}.tmp`;
         try {
           await fs.writeFile(temporary, original, { flag: "wx" });
           await fs.rename(temporary, cache);
@@ -186,7 +186,7 @@ export async function assertClosedLinks(directory) {
 }
 
 export async function repairDeployedSelfLink(stage, sourceDesktopRoot = desktopRoot) {
-  const self = path.join(stage, "node_modules/.pnpm/node_modules/@moco/desktop");
+  const self = path.join(stage, "node_modules/.pnpm/node_modules/@kulo/desktop");
   let stat;
   try { stat = await fs.lstat(self); }
   catch (error) { if (error.code === "ENOENT") return; throw error; }
@@ -223,7 +223,7 @@ async function portableNode(runtime) {
   const source = await fs.realpath(process.execPath);
   const version = process.versions.node.split(".").map(Number);
   if (version[0] < 22 || version[0] === 22 && version[1] < 20) {
-    throw new Error("打包 Moco Dev 需要 Node.js ≥22.20.0。");
+    throw new Error("打包 Kulo Dev 需要 Node.js ≥22.20.0。");
   }
   const { stdout } = await run("/usr/bin/otool", ["-L", source]);
   const libraries = stdout.split("\n").slice(1).map((line) => line.trim().split(" (", 1)[0]).filter(Boolean);
@@ -273,10 +273,10 @@ export async function prepareMacAgentClis(envPackage) {
 export async function preserveConnectorBroker(payloadRoot, options) {
   const payload = await fs.realpath(payloadRoot);
   const sourceRoot = await fs.realpath(options.workspaceRoot);
-  const filename = "moco-connector-" + process.platform + "-" + process.arch + (process.platform === "win32" ? ".exe" : "");
+  const filename = "kulo-connector-" + process.platform + "-" + process.arch + (process.platform === "win32" ? ".exe" : "");
   async function deployedHub(root) {
     const require = createRequire(path.join(root, "package.json"));
-    const entry = await fs.realpath(require.resolve("@moco/hub"));
+    const entry = await fs.realpath(require.resolve("@kulo/hub"));
     const hub = path.dirname(path.dirname(entry));
     if (!contained(root, hub)) throw new Error("手机连接模块所属依赖指向制品外部。");
     return hub;
@@ -323,12 +323,12 @@ export async function prepareRuntimePayload(stage, options = {}) {
   }
   const sourceDesktopRoot = path.join(sourceRoot, "packages/desktop");
   const sourceManifest = JSON.parse(await fs.readFile(path.join(sourceRoot, "package.json"), "utf8"));
-  if (sourceManifest.name !== "moco-monorepo") throw new Error("候选源码不是 Moco 工作区。");
+  if (sourceManifest.name !== "kulo-monorepo") throw new Error("候选源码不是 Kulo 工作区。");
   if (process.platform !== "darwin") throw new Error("当前运行制品构建仅支持 macOS。");
   const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
   await withPreservedWorkspaceState(sourceRoot, async () => {
     try {
-      await run(pnpm, ["--filter", "@moco/desktop", "deploy", "--legacy", "--prod", stage], {
+      await run(pnpm, ["--filter", "@kulo/desktop", "deploy", "--legacy", "--prod", stage], {
         cwd: sourceRoot, maxBuffer: 4 * 1024 * 1024,
       });
     } catch (error) {
@@ -340,10 +340,10 @@ export async function prepareRuntimePayload(stage, options = {}) {
   const deployedRequire = createRequire(path.join(stage, "package.json"));
   const packages = {};
   for (const name of ["hub", "env", "recovery"]) {
-    packages[name] = path.dirname(path.dirname(await fs.realpath(deployedRequire.resolve(`@moco/${name}`))));
+    packages[name] = path.dirname(path.dirname(await fs.realpath(deployedRequire.resolve(`@kulo/${name}`))));
   }
   const hubRequire = createRequire(path.join(packages.hub, "package.json"));
-  packages.protocol = path.dirname(path.dirname(await fs.realpath(hubRequire.resolve("@moco/protocol"))));
+  packages.protocol = path.dirname(path.dirname(await fs.realpath(hubRequire.resolve("@kulo/protocol"))));
   const stageRoot = await fs.realpath(stage);
   if (Object.values(packages).some((directory) => !contained(stageRoot, directory))) {
     throw new Error("部署的工作区依赖指向安装包外部。");
@@ -372,18 +372,18 @@ export async function prepareRuntimePayload(stage, options = {}) {
     await fs.rm(path.join(stage, file), { force: true });
   }
   await assertRegularFile(path.join(stage, "dist/main.js"));
-  await assertRegularFile(path.join(stage, "assets/moco-icon.png"));
+  await assertRegularFile(path.join(stage, "assets/kulo-icon.png"));
   await assertRegularFile(path.join(stage, "dist/runtime.js"));
   await assertRegularFile(path.join(stage, "web/dist/index.html"));
   await assertRegularFile(path.join(packages.env, "dist/peer.mjs"));
   await assertRegularFile(path.resolve(packages.hub, "../env/dist/peer.mjs"));
   await assertRegularFile(path.join(packages.env, "dist/macos-worker-cleanup"));
   await assertRegularFile(path.join(packages.env, "bin/stdio-relay.mjs"));
-  await assertRegularFile(path.join(packages.hub, "native/moco-vault-keychain.c"));
-  await assertRegularFile(path.join(packages.hub, "dist/moco-native-applications"));
-  const keychainHelper = path.join(packages.hub, "dist/moco-vault-keychain");
-  await run("/usr/bin/clang", ["-x", "c", "-O2", "-mmacosx-version-min=13.0", "-Wall", "-Wextra", "-Werror", "-Wno-deprecated-declarations", "-framework", "CoreFoundation", "-framework", "Security", path.join(packages.hub, "native/moco-vault-keychain.c"), "-o", keychainHelper]);
-  await run("/usr/bin/codesign", ["--force", "--sign", "-", "--identifier", "io.moco.connection-vault-helper", keychainHelper]);
+  await assertRegularFile(path.join(packages.hub, "native/kulo-vault-keychain.c"));
+  await assertRegularFile(path.join(packages.hub, "dist/kulo-native-applications"));
+  const keychainHelper = path.join(packages.hub, "dist/kulo-vault-keychain");
+  await run("/usr/bin/clang", ["-x", "c", "-O2", "-mmacosx-version-min=13.0", "-Wall", "-Wextra", "-Werror", "-Wno-deprecated-declarations", "-framework", "CoreFoundation", "-framework", "Security", path.join(packages.hub, "native/kulo-vault-keychain.c"), "-o", keychainHelper]);
+  await run("/usr/bin/codesign", ["--force", "--sign", "-", "--identifier", "io.kulo.connection-vault-helper", keychainHelper]);
   await fs.chmod(keychainHelper, 0o500);
   await assertRegularFile(keychainHelper);
   await assertClosedLinks(stage);
@@ -397,17 +397,17 @@ export async function verifyMacApp(bundle) {
   if (identifier.trim() !== APP_ID) throw new Error("安装包应用标识不匹配。");
   await assertRegularFile(path.join(bundle, `Contents/MacOS/${APP_NAME}`));
   await assertRegularFile(path.join(app, "dist/main.js"));
-  await assertRegularFile(path.join(app, "assets/moco-icon.png"));
+  await assertRegularFile(path.join(app, "assets/kulo-icon.png"));
   await assertRegularFile(path.join(app, "dist/shell.js"));
   await assertRegularFile(path.join(app, "dist/runtime.js"));
   await assertRegularFile(path.join(app, "web/dist/index.html"));
   await assertRegularFile(path.join(resources, "runtime/recovery/bin.js"));
-  await assertRegularFile(path.join(resources, "runtime/moco-rescue"));
+  await assertRegularFile(path.join(resources, "runtime/kulo-rescue"));
   await assertClosedLinks(app);
   await run("/usr/bin/codesign", ["--verify", "--deep", "--strict", bundle]);
   await verifyRecoveryCleanupRuntime(path.join(resources, "runtime/recovery"));
   // Importing from the packaged location catches missing Node and native dependencies without opening user data.
-  await run(node, ["--input-type=module", "-e", "await import('@moco/hub'); await import('@moco/env'); const r = await import('@moco/recovery'); await r.verifyRelease(process.cwd(), await r.readReleaseManifest(process.cwd()), { full: true });"], {
+  await run(node, ["--input-type=module", "-e", "await import('@kulo/hub'); await import('@kulo/env'); const r = await import('@kulo/recovery'); await r.verifyRelease(process.cwd(), await r.readReleaseManifest(process.cwd()), { full: true });"], {
     cwd: app,
     env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: os.homedir(), TMPDIR: os.tmpdir() },
     maxBuffer: 1024 * 1024,
@@ -424,7 +424,7 @@ export async function packageMacApp(options = {}) {
   if (process.platform !== "darwin") throw new Error("当前桌面打包仅支持在 macOS 上生成本机开发版。");
   const { ensureElectron } = await import("./ensure-electron.mjs");
   await ensureElectron();
-  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "moco-desktop-package-"));
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "kulo-desktop-package-"));
   // Keep distributables outside the workspace package's dist; otherwise the next deploy includes the previous .app.
   const output = options.outputDir ?? path.join(workspaceRoot, "dist/desktop");
   if (!path.isAbsolute(output) || path.parse(output).root === output || contained(path.join(desktopRoot, "dist"), output)) throw new Error("桌面产物目录无效。");
@@ -432,7 +432,7 @@ export async function packageMacApp(options = {}) {
     const app = path.join(temporary, "app");
     await prepareRuntimePayload(app);
     if (options.updateTrustFile) {
-      await fs.writeFile(path.join(app, "moco-update-trust.json"), JSON.stringify(await readUpdateTrustFile(options.updateTrustFile)) + "\n", { mode: 0o644 });
+      await fs.writeFile(path.join(app, "kulo-update-trust.json"), JSON.stringify(await readUpdateTrustFile(options.updateTrustFile)) + "\n", { mode: 0o644 });
     }
     const runtime = path.join(temporary, "runtime");
     await portableNode(runtime);
@@ -442,9 +442,9 @@ export async function packageMacApp(options = {}) {
     const checksums = JSON.parse(await fs.readFile(path.join(path.dirname(electronManifest), "checksums.json"), "utf8"));
     const manifest = JSON.parse(await fs.readFile(path.join(desktopRoot, "package.json"), "utf8"));
     const sourceHelpers = await import(pathToFileURL(path.join(workspaceRoot, "packages/hub/dist/customization-source.js")).href);
-    const sourceArchive = await sourceHelpers.createCustomizationSourceArchive(workspaceRoot, path.join(app, "moco-source.json.gz"), { version: manifest.version });
-    await fs.writeFile(path.join(app, "moco-source.json"), JSON.stringify(sourceArchive) + "\n");
-    await fs.chmod(path.join(app, "moco-source.json.gz"), 0o644);
+    const sourceArchive = await sourceHelpers.createCustomizationSourceArchive(workspaceRoot, path.join(app, "kulo-source.json.gz"), { version: manifest.version });
+    await fs.writeFile(path.join(app, "kulo-source.json"), JSON.stringify(sourceArchive) + "\n");
+    await fs.chmod(path.join(app, "kulo-source.json.gz"), 0o644);
     const identity = {
       ...(sourceArchive.commit ? { sourceCommit: sourceArchive.commit } : {}),
       sourceTreeHash: sourceArchive.treeHash,
@@ -468,7 +468,7 @@ export async function packageMacApp(options = {}) {
       appBundleId: APP_ID,
       appVersion: manifest.version,
       appCategoryType: "public.app-category.productivity",
-      icon: path.join(desktopRoot, "assets/moco.icns"),
+      icon: path.join(desktopRoot, "assets/kulo.icns"),
       electronVersion,
       download: { checksums },
       platform: "darwin",
@@ -490,9 +490,9 @@ export async function packageMacApp(options = {}) {
       extendInfo: {
         CFBundleDisplayName: APP_NAME,
         LSMinimumSystemVersion: "14.0",
-        NSMicrophoneUsageDescription: "Moco 使用麦克风进行语音输入和通话。",
-        NSLocalNetworkUsageDescription: "Moco 按任务访问和诊断同一局域网内的设备与本地服务。",
-        NSAppleEventsUsageDescription: "Moco 在你连接消息和邮件后，按任务读取内容、发送消息或邮件。",
+        NSMicrophoneUsageDescription: "Kulo 使用麦克风进行语音输入和通话。",
+        NSLocalNetworkUsageDescription: "Kulo 按任务访问和诊断同一局域网内的设备与本地服务。",
+        NSAppleEventsUsageDescription: "Kulo 在你连接消息和邮件后，按任务读取内容、发送消息或邮件。",
       },
       extraResource: [runtime],
     });
@@ -512,7 +512,7 @@ export async function packageMacApp(options = {}) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   packageMacApp().catch((error) => {
-    console.error(error instanceof Error ? error.message : "Moco Dev 打包失败。");
+    console.error(error instanceof Error ? error.message : "Kulo Dev 打包失败。");
     process.exitCode = 1;
   });
 }

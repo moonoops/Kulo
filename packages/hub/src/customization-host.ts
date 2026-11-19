@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, createPublicKey } from "node:crypto";
-import { RecoveryManager, readReleaseManifest, type RecoveryReleaseManifest } from "@moco/recovery";
-import type { MocoHubConfig } from "./config.js";
-import { MocoCustomizationService } from "./customization.js";
+import { RecoveryManager, readReleaseManifest, type RecoveryReleaseManifest } from "@kulo/recovery";
+import type { KuloHubConfig } from "./config.js";
+import { KuloCustomizationService } from "./customization.js";
 import { createLocalCustomizationRunner, type CustomizationSource } from "./customization-source.js";
 import { proxyFetch } from "./http-transport.js";
 
@@ -32,7 +32,7 @@ function readHostFile(root: string, filename: string, manifest: RecoveryReleaseM
 }
 
 function readHostMetadata(root: string, manifest: RecoveryReleaseManifest): HostMetadata {
-  const input = readHostFile(root, "moco-update-trust.json", manifest);
+  const input = readHostFile(root, "kulo-update-trust.json", manifest);
   if (input === undefined) return { keys: {} };
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("更新信任配置格式无效。");
   const value = input as Record<string, unknown>;
@@ -64,12 +64,12 @@ function readHostMetadata(root: string, manifest: RecoveryReleaseManifest): Host
 }
 
 function readSourceArchive(root: string, manifest: RecoveryReleaseManifest): CustomizationSource | undefined {
-  const input = readHostFile(root, "moco-source.json", manifest);
+  const input = readHostFile(root, "kulo-source.json", manifest);
   if (input === undefined) return undefined;
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("源码归档元信息无效。");
   const value = input as Record<string, unknown>;
   const boundedInteger = (raw: unknown, maximum: number) => typeof raw === "number" && Number.isSafeInteger(raw) && raw > 0 && raw <= maximum;
-  if (value.formatVersion !== 1 || value.archiveFile !== "moco-source.json.gz" || typeof value.archiveHash !== "string" || !/^[a-f0-9]{64}$/.test(value.archiveHash) ||
+  if (value.formatVersion !== 1 || value.archiveFile !== "kulo-source.json.gz" || typeof value.archiveHash !== "string" || !/^[a-f0-9]{64}$/.test(value.archiveHash) ||
       typeof value.treeHash !== "string" || !/^[a-f0-9]{64}$/.test(value.treeHash) || value.version !== manifest.version ||
       value.commit !== undefined && (typeof value.commit !== "string" || !/^[a-f0-9]{40,64}$/.test(value.commit)) ||
       manifest.sourceCommit !== undefined && value.commit !== manifest.sourceCommit ||
@@ -83,7 +83,7 @@ function readSourceArchive(root: string, manifest: RecoveryReleaseManifest): Cus
 }
 
 /** Reads host-owned trust data only when a customization tool is actually used. */
-export async function createDesktopCustomizationService(config: MocoHubConfig, redact: (text: string) => string): Promise<MocoCustomizationService> {
+export async function createDesktopCustomizationService(config: KuloHubConfig, redact: (text: string) => string): Promise<KuloCustomizationService> {
   const host = config.customization;
   if (!host) throw new Error("当前实例没有受管桌面运行环境。");
   for (const value of [host.dataDir, host.appRoot, host.nodePath, host.trustedRoot ?? host.appRoot, ...(host.sourceRoot ? [host.sourceRoot] : [])]) {
@@ -107,7 +107,7 @@ export async function createDesktopCustomizationService(config: MocoHubConfig, r
       ? { ...metadata.source, version: manifest.version, commit: manifest.sourceCommit ?? metadata.source.commit, ...(manifest.sourceTreeHash ? { treeHash: manifest.sourceTreeHash } : {}) }
       : undefined);
   const source = selectedSource && repository ? { ...selectedSource, repositoryUrl: repository } : selectedSource;
-  return new MocoCustomizationService({
+  return new KuloCustomizationService({
     dataDir: host.dataDir,
     stateDir: config.stateDir,
     recovery,

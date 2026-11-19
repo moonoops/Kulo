@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CapabilitiesWorkspaceSnapshot, ExtensionRecord, ExtensionWorkspaceSnapshot } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
+import type { CapabilitiesWorkspaceSnapshot, ExtensionRecord, ExtensionWorkspaceSnapshot } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
 import { CapabilitiesModule } from "./capabilities-module";
 import { OtherExtensionsModule, extensionVersionLabel } from "./other-extensions-module";
 
@@ -103,7 +103,7 @@ describe("extension management requests", () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify(next), { headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetch);
     const body = { operation: "stop" as const, expectedRevision: 1, commandId: "stop-once" };
-    expect(await mocoRest.manageExtension("extension/id", body)).toEqual(next);
+    expect(await kuloRest.manageExtension("extension/id", body)).toEqual(next);
     expect(fetch).toHaveBeenCalledWith("/api/extensions/extension%2Fid/operations", expect.objectContaining({ method: "POST", body: JSON.stringify(body) }));
   });
 });

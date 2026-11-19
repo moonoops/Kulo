@@ -29,7 +29,7 @@ describe("settings save activity", () => {
 
   it("keeps numeric controls labeled, unit-associated and focusable during a save", () => {
     const html = renderToStaticMarkup(<SettingsNumberField label="Update interval" value={2} minValue={1} maxValue={365} unit="days" isPending onChange={() => {}} onCommit={() => {}} />);
-    expect(html).toContain('moco-settings-row--number');
+    expect(html).toContain('kulo-settings-row--number');
     expect(html).toContain('number-field--secondary');
     expect(html).toContain('aria-readonly="true"');
     expect(html).toContain('tabindex="0"');

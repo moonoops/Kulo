@@ -28,9 +28,9 @@ export async function buildPeer(options = {}) {
     external: ["undici", "@anthropic-ai/claude-agent-sdk", "@earendil-works/pi-env", "ws", "agent-browser", "agent-desktop"],
     outfile,
     define: {
-      MOCO_WINDOWS_SANDBOX_SOURCE: JSON.stringify(fs.readFileSync(new URL("../native/windows-sandbox.ps1", import.meta.url), "utf8")),
-      MOCO_MACOS_CLEANUP_SOURCE: JSON.stringify(macCleanupSource),
-      MOCO_MACOS_CLEANUP_BINARY: JSON.stringify(macCleanupBinary),
+      KULO_WINDOWS_SANDBOX_SOURCE: JSON.stringify(fs.readFileSync(new URL("../native/windows-sandbox.ps1", import.meta.url), "utf8")),
+      KULO_MACOS_CLEANUP_SOURCE: JSON.stringify(macCleanupSource),
+      KULO_MACOS_CLEANUP_BINARY: JSON.stringify(macCleanupBinary),
     },
   });
 }

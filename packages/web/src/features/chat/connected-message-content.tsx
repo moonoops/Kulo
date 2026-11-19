@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
-import type { ChatReplyReference, ChatDisplayItem, MessagePart, UiCardSnapshot, UiValues } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
-import { MocoMarkdown } from "../../moco-markdown";
+import type { ChatReplyReference, ChatDisplayItem, MessagePart, UiCardSnapshot, UiValues } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
+import { KuloMarkdown } from "../../kulo-markdown";
 import { GeneratedCard } from "../genui";
 import { CodeBlock } from "./code-block";
 import { MessageContent } from "./message-content";
@@ -23,14 +23,14 @@ function ConnectedCard({ part, connected, conversationKey, onAdjust, onPreviewIm
   useEffect(() => {
     if (part.card) return;
     let alive = true;
-    void mocoRest.getUiCard(part.cardId).then(({ card: latest }) => { if (alive) setCard(latest); }, () => { /* The persisted text remains available. */ });
+    void kuloRest.getUiCard(part.cardId).then(({ card: latest }) => { if (alive) setCard(latest); }, () => { /* The persisted text remains available. */ });
     return () => { alive = false; };
   }, [part.cardId, part.card]);
-  if (!card) return <MocoMarkdown text={part.fallbackText} onPreviewImage={onPreviewImage} />;
-  if (card.schemaVersion !== 1 || card.catalogVersion !== 1) return <MocoMarkdown text={part.fallbackText} onPreviewImage={onPreviewImage} />;
+  if (!card) return <KuloMarkdown text={part.fallbackText} onPreviewImage={onPreviewImage} />;
+  if (card.schemaVersion !== 1 || card.catalogVersion !== 1) return <KuloMarkdown text={part.fallbackText} onPreviewImage={onPreviewImage} />;
   return <GeneratedCard card={card} fallbackText={part.fallbackText} isConnected={connected} onAdjust={onAdjust}
     onAction={async (input) => {
-      const receipt = await mocoRest.submitUiAction(input);
+      const receipt = await kuloRest.submitUiAction(input);
       if (receipt.card) setCard(receipt.card);
       return receipt;
     }}

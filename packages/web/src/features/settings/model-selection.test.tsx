@@ -1,24 +1,24 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { MocoSettingsView, ProviderCatalogItem } from "@moco/protocol";
+import type { KuloSettingsView, ProviderCatalogItem } from "@kulo/protocol";
 import { ModelSelectionFields } from "./model-selection-fields";
 import { buildProviderModelGroups, clampModelEffort, selectedDefaultProvider, toProviderModelItem } from "./settings-helpers";
 
-const model: MocoSettingsView["blocks"]["model"]["value"] = {
+const model: KuloSettingsView["blocks"]["model"]["value"] = {
   baseUrl: "http://127.0.0.1:9/v1", apiMode: "openai-responses", defaultModel: "stale-model", thinkingLevel: "high",
   gatewayModels: [{ id: "gateway-added" }], defaultProvider: "api-demo",
   customProviders: [{ id: "api-demo", name: "Demo", api: "openai-responses", baseUrl: "http://127.0.0.1:9/v1",
     models: [{ id: "added", thinkingLevels: [{ id: "careful", label: "仔细思考", value: "high" }] }, { id: "added" }] }],
 };
-const catalog: ProviderCatalogItem[] = ["moco-gateway", "api-demo", "openai"].map((id) => ({
-  id, name: id, builtin: id !== "api-demo", isGateway: id === "moco-gateway", authenticated: true, authType: "api_key",
+const catalog: ProviderCatalogItem[] = ["kulo-gateway", "api-demo", "openai"].map((id) => ({
+  id, name: id, builtin: id !== "api-demo", isGateway: id === "kulo-gateway", authenticated: true, authType: "api_key",
   supportsApiKey: true, supportsOAuth: id === "openai",
   api: "openai-responses", models: [toProviderModelItem({ id: "catalog-only" }), toProviderModelItem({ id: "stale-model" })],
 }));
 
 describe("configured model selection", () => {
   it("excludes image generation outputs from every API and subscription group while preserving vision chat", () => {
-    const configured: MocoSettingsView["blocks"]["model"]["value"] = {
+    const configured: KuloSettingsView["blocks"]["model"]["value"] = {
       ...model,
       gatewayModels: [{ id: "gpt-image-2.6-flare" }, { id: "gateway-vision", modalities: ["text", "image"] }],
       customProviders: [{ ...model.customProviders![0]!, models: [{ id: "added" }, { id: "custom-render", purpose: "image" as const }] }],
@@ -27,14 +27,14 @@ describe("configured model selection", () => {
       models: [toProviderModelItem({ id: "gpt-image-2.5-sunburst" }), toProviderModelItem({ id: "metadata-render", outputModalities: ["image"] }), toProviderModelItem({ id: "subscription-vision", modalities: ["text", "image"] })] };
     const groups = buildProviderModelGroups(configured, [...catalog, subscription]);
     expect(groups.map((group) => [group.providerId, group.models.map((item) => item.id)])).toEqual([
-      ["moco-gateway", ["gateway-vision"]], ["api-demo", ["added"]], ["openai-codex", ["subscription-vision"]],
+      ["kulo-gateway", ["gateway-vision"]], ["api-demo", ["added"]], ["openai-codex", ["subscription-vision"]],
     ]);
     expect(groups[0]!.models[0]!.vision).toBe(true);
   });
   it("only exposes explicitly added API models, excluding the catalog, old default and duplicate IDs", () => {
     const groups = buildProviderModelGroups(model, catalog);
     expect(groups.map((group) => [group.providerId, group.models.map((item) => item.id)])).toEqual([
-      ["moco-gateway", ["gateway-added"]], ["api-demo", ["added"]],
+      ["kulo-gateway", ["gateway-added"]], ["api-demo", ["added"]],
     ]);
     expect(groups[1]?.models[0]?.thinkingLevels?.[0]?.label).toBe("仔细思考");
     expect(clampModelEffort("high", groups[1]!.models[0]!)).toBe("careful");
@@ -90,7 +90,7 @@ describe("configured model selection", () => {
     expect(selectedDefaultProvider({ ...model, defaultProvider: undefined, defaultModel: "" })).toBe("");
     expect(selectedDefaultProvider({ ...model, defaultProvider: "", defaultModel: "" })).toBe("");
     expect(selectedDefaultProvider({ ...model, defaultProvider: undefined, gatewayDisabled: true })).toBe("");
-    expect(selectedDefaultProvider({ ...model, defaultProvider: undefined })).toBe("moco-gateway");
+    expect(selectedDefaultProvider({ ...model, defaultProvider: undefined })).toBe("kulo-gateway");
   });
 
   it.each(["form", "settings", "compact"] as const)("preserves labelled, unselected controls in the %s layout", (layout) => {
@@ -118,7 +118,7 @@ describe("configured model selection", () => {
   });
 
   it("shows an existing unlisted model without adding it as a selectable option", () => {
-    const html = renderToStaticMarkup(<ModelSelectionFields groups={[]} providerId="moco-gateway" modelId="legacy-model" thinkingLevel="high"
+    const html = renderToStaticMarkup(<ModelSelectionFields groups={[]} providerId="kulo-gateway" modelId="legacy-model" thinkingLevel="high"
       onProviderChange={() => {}} onModelChange={() => {}} onThinkingChange={() => {}} />);
     expect(html).toContain("兼容网关");
     expect(html).toContain("legacy-model（未添加）");

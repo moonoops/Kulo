@@ -1,5 +1,5 @@
-import type { ModelConfigurationApi } from "@moco/protocol";
-import { apiRequest } from "../../moco-api";
+import type { ModelConfigurationApi } from "@kulo/protocol";
+import { apiRequest } from "../../kulo-api";
 
 const path = "/api/settings/model-configuration";
 export const modelConfigurationApi: ModelConfigurationApi = {

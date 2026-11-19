@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Label, ListBox, Popover, ProgressBar, Select, Switch } from "@heroui/react";
-import type { CompletedTaskDisplayHours, ExecutorSlotsConfig, MocoSettingsView, SlotSummary } from "@moco/protocol";
-import { MocoApiError, mocoRest } from "../../moco-api";
-import { useI18n } from "../../moco-i18n";
-import { MocoIcon } from "../../moco-icon";
+import type { CompletedTaskDisplayHours, ExecutorSlotsConfig, KuloSettingsView, SlotSummary } from "@kulo/protocol";
+import { KuloApiError, kuloRest } from "../../kulo-api";
+import { useI18n } from "../../kulo-i18n";
+import { KuloIcon } from "../../kulo-icon";
 import { ExecutorSettingConflict, ExecutorSettingWriter, executorSettingValue, type ExecutorSetting } from "./executor-setting-writer";
 import { SettingsList, SettingsNumberField, SettingsSection } from "./settings-layout";
 import { useSettingsPending } from "./settings-save-activity";
@@ -35,13 +35,13 @@ export function ConcurrencyModule({
   onSettingsUpdated,
   onDirtyChange,
 }: {
-  settings: MocoSettingsView;
+  settings: KuloSettingsView;
   slots?: SlotSummary;
-  onSettingsUpdated: (next: MocoSettingsView) => void;
+  onSettingsUpdated: (next: KuloSettingsView) => void;
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const { t } = useI18n();
-  const [writer] = useState(() => new ExecutorSettingWriter(settings, (revision, value) => mocoRest.saveSettingsBlock("executor", revision, value)));
+  const [writer] = useState(() => new ExecutorSettingWriter(settings, (revision, value) => kuloRest.saveSettingsBlock("executor", revision, value)));
   writer.accept(settings);
   const exec = writer.snapshot.blocks.executor;
   const [drafts, setDrafts] = useState<NumberDrafts>({});
@@ -143,7 +143,7 @@ export function ConcurrencyModule({
       if (key === "autoArchiveEnabled" && value === false) discardNumber("autoArchiveDays");
       onSettingsUpdated(latest);
     } catch (error) {
-      const conflict = error instanceof ExecutorSettingConflict || error instanceof MocoApiError && error.status === 409;
+      const conflict = error instanceof ExecutorSettingConflict || error instanceof KuloApiError && error.status === 409;
       setFailures((current) => ({
         ...current,
         [key]: {
@@ -183,7 +183,7 @@ export function ConcurrencyModule({
     setReloading(true);
     setReloadError(undefined);
     try {
-      writer.reload(await mocoRest.getSettings());
+      writer.reload(await kuloRest.getSettings());
       const latest = writer.snapshot;
       const next = { ...draftsRef.current };
       for (const key of Object.keys(next) as NumberSetting[]) {
@@ -237,7 +237,7 @@ export function ConcurrencyModule({
   const pct = max > 0 ? Math.min(100, Math.round((used / max) * 100)) : 0;
 
   return (
-    <div className="moco-settings-form" aria-busy={busy}>
+    <div className="kulo-settings-form" aria-busy={busy}>
       <SettingsSection
         title={t("运行状态", "Runtime status")}
         action={
@@ -263,7 +263,7 @@ export function ConcurrencyModule({
             isDisabled={writer.blocked}
             className="w-full"
           >
-            <Switch.Content className="moco-settings-row moco-settings-row--toggle">
+            <Switch.Content className="kulo-settings-row kulo-settings-row--toggle">
               <div className="flex min-w-0 items-center gap-2">
                 <Label className="text-sm font-normal text-foreground">{labels.paused}</Label>
                 {pending.paused && savingLabel}
@@ -280,7 +280,7 @@ export function ConcurrencyModule({
             labelAction={
               <Popover>
                 <Button type="button" slot={null} isIconOnly size="sm" variant="ghost" aria-label={t("超时检查说明", "About inactivity checks")}>
-                  <MocoIcon name="help" size={14} />
+                  <KuloIcon name="help" size={14} />
                 </Button>
                 <Popover.Content placement="top" className="max-w-[min(300px,calc(100vw-24px))] motion-reduce:animate-none">
                   <Popover.Dialog aria-label={t("超时检查说明", "About inactivity checks")} className="text-sm outline-none">
@@ -302,7 +302,7 @@ export function ConcurrencyModule({
               }
             }}
             isDisabled={Boolean(pending.completedTaskDisplayHours) || writer.blocked}
-            className="moco-settings-row moco-settings-row--choice"
+            className="kulo-settings-row kulo-settings-row--choice"
           >
             <Label className="text-sm text-foreground">
               {labels.completedTaskDisplayHours}
@@ -326,7 +326,7 @@ export function ConcurrencyModule({
             isDisabled={writer.blocked}
             className="w-full"
           >
-            <Switch.Content className="moco-settings-row moco-settings-row--toggle">
+            <Switch.Content className="kulo-settings-row kulo-settings-row--toggle">
               <div className="flex min-w-0 items-center gap-2">
                 <Label className="text-sm font-normal text-foreground">{labels.autoArchiveEnabled}</Label>
                 {pending.autoArchiveEnabled && savingLabel}

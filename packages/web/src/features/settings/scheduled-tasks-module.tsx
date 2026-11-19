@@ -1,8 +1,8 @@
 import { useRef, useState } from "react";
 import { Alert, Button, Chip, Spinner, Table } from "@heroui/react";
-import { redactSensitiveText, type TicketCardView } from "@moco/protocol";
+import { redactSensitiveText, type TicketCardView } from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
-import { translate as t, useI18n } from "../../moco-i18n";
+import { translate as t, useI18n } from "../../kulo-i18n";
 
 export interface ScheduledTaskActions {
   canQueue: boolean;
@@ -105,36 +105,36 @@ export function ScheduledTasksModule({ tickets, loaded, connected, loadError, on
     {!connected && <Alert status="warning"><Alert.Content>{t("与中枢连接已断开", "Disconnected from the hub")}</Alert.Content></Alert>}
     {!loaded && loadError && <Alert status="danger"><Alert.Indicator /><Alert.Content><Alert.Description>{redactSensitiveText(loadError)}</Alert.Description></Alert.Content>{onRefresh && <Button type="button" size="sm" variant="secondary" isDisabled={!connected || refreshing} isPending={refreshing} onPress={() => void retryLoad()}>{t("重试", "Retry")}</Button>}</Alert>}
     {!loaded && connected && !loadError && <div role="status" className="flex items-center gap-2 text-sm text-muted"><Spinner size="sm" />{t("加载中…", "Loading…")}</div>}
-    {loaded && <Table variant="secondary" className="moco-settings-table">
-      <Table.ScrollContainer className="moco-settings-table-scroll">
-        <Table.Content aria-label={t("定时任务列表", "Scheduled task list")} selectionMode="none" keyboardNavigationBehavior="tab" className="moco-settings-table-content">
+    {loaded && <Table variant="secondary" className="kulo-settings-table">
+      <Table.ScrollContainer className="kulo-settings-table-scroll">
+        <Table.Content aria-label={t("定时任务列表", "Scheduled task list")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content">
           <Table.Header>
-            <Table.Column id="task" isRowHeader className="moco-settings-table-column">{t("任务", "Task")}</Table.Column>
-            <Table.Column id="time" className="moco-settings-table-column moco-settings-table-meta">{t("执行时间", "Run time")}</Table.Column>
-            <Table.Column id="status" className="moco-settings-table-column moco-settings-table-meta">{t("状态", "Status")}</Table.Column>
-            <Table.Column id="actions" className="moco-settings-table-column moco-settings-table-actions">{t("操作", "Actions")}</Table.Column>
+            <Table.Column id="task" isRowHeader className="kulo-settings-table-column">{t("任务", "Task")}</Table.Column>
+            <Table.Column id="time" className="kulo-settings-table-column kulo-settings-table-meta">{t("执行时间", "Run time")}</Table.Column>
+            <Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-meta">{t("状态", "Status")}</Table.Column>
+            <Table.Column id="actions" className="kulo-settings-table-column kulo-settings-table-actions">{t("操作", "Actions")}</Table.Column>
           </Table.Header>
-          <Table.Body renderEmptyState={() => <div className="moco-table-empty-state">{t("暂无定时任务", "No scheduled tasks")}</div>}>
+          <Table.Body renderEmptyState={() => <div className="kulo-table-empty-state">{t("暂无定时任务", "No scheduled tasks")}</div>}>
             {tasks.map((task) => {
               const schedule = task.schedule!;
               const at = schedule.nextRunAt ?? (schedule.repeatEverySeconds === undefined ? schedule.executeAt : null);
               const canStop = !["ready", "stopped", "closed"].includes(task.status);
               return <Table.Row key={task.id} id={task.id} textValue={task.title}>
-                <Table.Cell className="moco-settings-table-cell">
+                <Table.Cell className="kulo-settings-table-cell">
                   <div className="flex min-w-0 flex-col items-start gap-1">
-                    <span className="moco-item-title break-words">{task.title}</span>
-                    {task.userSummary && <span className="moco-item-description whitespace-pre-wrap break-words">{task.userSummary}</span>}
+                    <span className="kulo-item-title break-words">{task.title}</span>
+                    {task.userSummary && <span className="kulo-item-description whitespace-pre-wrap break-words">{task.userSummary}</span>}
                   </div>
                 </Table.Cell>
-                <Table.Cell className="moco-settings-table-cell moco-settings-table-meta">
+                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta">
                   <div className="flex flex-col gap-1">
                     {at === null ? <span>—</span> : <time dateTime={new Date(at).toISOString()}>{timeFormat.format(at)}</time>}
-                    <span className="moco-item-description">{scheduledTaskFrequency(schedule.repeatEverySeconds)}</span>
+                    <span className="kulo-item-description">{scheduledTaskFrequency(schedule.repeatEverySeconds)}</span>
                   </div>
                 </Table.Cell>
-                <Table.Cell className="moco-settings-table-cell moco-settings-table-meta"><Chip size="sm" variant="soft" color={task.status === "failed" ? "danger" : task.status === "ready" ? "success" : task.status === "running" ? "accent" : "default"}>{scheduledTaskStatus(task)}</Chip></Table.Cell>
-                <Table.Cell className="moco-settings-table-cell moco-settings-table-actions">
-                  <div className="moco-settings-table-action-group">
+                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta"><Chip size="sm" variant="soft" color={task.status === "failed" ? "danger" : task.status === "ready" ? "success" : task.status === "running" ? "accent" : "default"}>{scheduledTaskStatus(task)}</Chip></Table.Cell>
+                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-actions">
+                  <div className="kulo-settings-table-action-group">
                     <Button size="sm" variant="ghost" aria-label={t(`停止「${task.title}」`, `Stop “${task.title}”`)} ref={(button) => { if (button) actionButtons.current.set(`stop:${task.id}`, button); else actionButtons.current.delete(`stop:${task.id}`); }} isDisabled={!actions?.canQueue || Boolean(pending[task.id]) || !canStop} isPending={pending[task.id] === "stop"} onPress={() => { setError(null); setConfirmation({ task, action: "stop" }); }}>{pending[task.id] === "stop" && <Spinner size="sm" color="current" />}{t("停止", "Stop")}</Button>
                     <Button size="sm" variant="ghost" aria-label={t(`删除「${task.title}」`, `Delete “${task.title}”`)} ref={(button) => { if (button) actionButtons.current.set(`delete:${task.id}`, button); else actionButtons.current.delete(`delete:${task.id}`); }} isDisabled={!actions?.canQueue || Boolean(pending[task.id])} isPending={pending[task.id] === "delete"} onPress={() => { setError(null); setConfirmation({ task, action: "delete" }); }}>{pending[task.id] === "delete" && <Spinner size="sm" color="current" />}{t("删除", "Delete")}</Button>
                   </div>

@@ -3,11 +3,11 @@ import vm from "node:vm";
 import { webcrypto } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
-const origin = "https://moco.test";
+const origin = "https://kulo.test";
 const rootUrl = `${origin}/`;
-const markerUrl = `${origin}/.moco-offline-ready`;
-const prefix = "moco-offline-shell-v1-";
-const source = fs.readFileSync(new URL("../public/moco-offline.js", import.meta.url), "utf8");
+const markerUrl = `${origin}/.kulo-offline-ready`;
+const prefix = "kulo-offline-shell-v1-";
+const source = fs.readFileSync(new URL("../public/kulo-offline.js", import.meta.url), "utf8");
 const shell = (version: number) => `<!doctype html><html><head><link rel="stylesheet" href="/assets/index-v${version}.css"></head><body><div id="root"></div><script type="module" src="/assets/index-v${version}.js"></script></body></html>`;
 const response = (text: string, contentType = "text/html", status = 200) => new Response(text, { status, headers: { "Content-Type": contentType, "Content-Security-Policy": "default-src 'self'" } });
 const keyOf = (request: string | Request) => typeof request === "string" ? new URL(request, rootUrl).href : request.url;

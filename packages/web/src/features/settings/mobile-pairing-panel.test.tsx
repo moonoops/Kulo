@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import type { MobileInvitation } from "@moco/protocol";
-import { MocoApiError } from "../../moco-api";
+import type { MobileInvitation } from "@kulo/protocol";
+import { KuloApiError } from "../../kulo-api";
 import { MobileInvitationCleanupError, MobileInvitationSession, validatedTailscaleLoginURL } from "./mobile-pairing-panel";
 
 const invitation = (id: string): MobileInvitation => ({
-  id, deviceId: `device-${id}`, expiresAt: 1_900_000_000_000, qrValue: `moco://pair?data=${id}`,
+  id, deviceId: `device-${id}`, expiresAt: 1_900_000_000_000, qrValue: `kulo://pair?data=${id}`,
 });
 
 function deferred<T>() {
@@ -57,7 +57,7 @@ describe("mobile invitation lifecycle", () => {
   it("treats an already expired invitation as successfully retired", async () => {
     const session = new MobileInvitationSession({
       create: async () => invitation("expired"),
-      cancel: async () => { throw new MocoApiError(410, "Expired"); },
+      cancel: async () => { throw new KuloApiError(410, "Expired"); },
     });
     await session.generate();
     await expect(session.dispose()).resolves.toBeUndefined();

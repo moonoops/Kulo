@@ -3,7 +3,7 @@ import type {
   BuiltinThinkingEffort,
   CustomProviderApi,
   DisplayThinkingEffort,
-  MocoSettingsView,
+  KuloSettingsView,
   ModelModality,
   ModelProtocolAdapter,
   ModelPurpose,
@@ -14,32 +14,32 @@ import type {
   ThinkingEffort,
   ThinkingLevelMapConfig,
   ThinkingLevelOption,
-} from "@moco/protocol";
-import type { MocoIconName } from "../../moco-icons";
+} from "@kulo/protocol";
+import type { KuloIconName } from "../../kulo-icons";
 import {
   defaultProtocolAdapterForModel,
   defaultVoicesForAdapter,
   inferModelPurpose,
   isConversationModel,
-} from "@moco/protocol";
-import { getLanguage, translate, type MocoLanguage } from "../../moco-i18n";
+} from "@kulo/protocol";
+import { getLanguage, translate, type KuloLanguage } from "../../kulo-i18n";
 
 /** A delayed HTTP acknowledgement must not replace a newer settings broadcast. */
-export function acceptSettingsSnapshot(current: MocoSettingsView | null, next: MocoSettingsView): MocoSettingsView {
+export function acceptSettingsSnapshot(current: KuloSettingsView | null, next: KuloSettingsView): KuloSettingsView {
   return !current || next.globalRevision >= current.globalRevision ? next : current;
 }
 
 export const SETTINGS_MODULES = [
-  { id: "appearance", icon: "palette" as MocoIconName, title: "外观" },
-  { id: "models", icon: "token" as MocoIconName, title: "模型" },
-  { id: "workers", icon: "team" as MocoIconName, title: "智能体" },
-  { id: "capabilities", icon: "tools" as MocoIconName, title: "工具技能" },
-  { id: "identity", icon: "memory" as MocoIconName, title: "记忆" },
-  { id: "connections", icon: "key" as MocoIconName, title: "授权凭据" },
-  { id: "permissions", icon: "shield" as MocoIconName, title: "系统权限" },
-  { id: "machines", icon: "devices" as MocoIconName, title: "设备互联" },
-  { id: "schedules", icon: "schedule" as MocoIconName, title: "定时任务" },
-  { id: "archives", icon: "archive" as MocoIconName, title: "已归档会话" },
+  { id: "appearance", icon: "palette" as KuloIconName, title: "外观" },
+  { id: "models", icon: "token" as KuloIconName, title: "模型" },
+  { id: "workers", icon: "team" as KuloIconName, title: "智能体" },
+  { id: "capabilities", icon: "tools" as KuloIconName, title: "工具技能" },
+  { id: "identity", icon: "memory" as KuloIconName, title: "记忆" },
+  { id: "connections", icon: "key" as KuloIconName, title: "授权凭据" },
+  { id: "permissions", icon: "shield" as KuloIconName, title: "系统权限" },
+  { id: "machines", icon: "devices" as KuloIconName, title: "设备互联" },
+  { id: "schedules", icon: "schedule" as KuloIconName, title: "定时任务" },
+  { id: "archives", icon: "archive" as KuloIconName, title: "已归档会话" },
 ] as const;
 
 export type SettingsModuleId = (typeof SETTINGS_MODULES)[number]["id"];
@@ -49,7 +49,7 @@ const SETTINGS_MODULE_TITLES: Record<SettingsModuleId, string> = {
   identity: "Memory", connections: "Credentials", permissions: "System permissions", machines: "Devices", schedules: "Scheduled tasks", archives: "Archived conversations",
 };
 
-export function settingsModuleTitle(id: SettingsModuleId, language: MocoLanguage = getLanguage()): string {
+export function settingsModuleTitle(id: SettingsModuleId, language: KuloLanguage = getLanguage()): string {
   return language === "en" ? SETTINGS_MODULE_TITLES[id] : SETTINGS_MODULES.find((module) => module.id === id)!.title;
 }
 
@@ -127,8 +127,8 @@ export function clampModelEffort(effort: ThinkingEffort, model: ProviderModelIte
   return options.find((option) => option.value === "medium")?.value ?? options[0]?.value ?? "off";
 }
 
-export function selectedDefaultProvider(model: MocoSettingsView["blocks"]["model"]["value"]): string {
-  return model.defaultProvider ?? (model.defaultModel && !model.gatewayDisabled ? "moco-gateway" : "");
+export function selectedDefaultProvider(model: KuloSettingsView["blocks"]["model"]["value"]): string {
+  return model.defaultProvider ?? (model.defaultModel && !model.gatewayDisabled ? "kulo-gateway" : "");
 }
 
 export const CUSTOM_API_OPTIONS: Array<{ value: CustomProviderApi; label: string }> = [
@@ -413,7 +413,7 @@ export function allocateCustomProviderId(
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");
   if (!slug) slug = "custom";
-  if (slug === "moco-gateway" || builtinIds.has(slug)) {
+  if (slug === "kulo-gateway" || builtinIds.has(slug)) {
     slug = `api-${slug}`;
   }
   if (!existingIds.has(slug) && !builtinIds.has(slug)) return slug;
@@ -499,7 +499,7 @@ export interface ConfiguredPurposeModelOption {
 }
 
 export function buildConfiguredModelsForPurpose(
-  modelValue: MocoSettingsView["blocks"]["model"]["value"],
+  modelValue: KuloSettingsView["blocks"]["model"]["value"],
   providers: ProviderCatalogItem[],
   purpose: Exclude<ModelPurpose, "chat">,
   hasGatewayKey = false,
@@ -542,9 +542,9 @@ export function buildConfiguredModelsForPurpose(
   };
 
   if (!modelValue.gatewayDisabled && modelValue.gatewayModels?.length) {
-    const cat = byId.get("moco-gateway");
+    const cat = byId.get("kulo-gateway");
     pushFromSource({
-      providerId: "moco-gateway",
+      providerId: "kulo-gateway",
       providerName: modelValue.gatewayName?.trim() || translate("兼容网关", "Compatible gateway"),
       api: modelValue.apiMode,
       baseUrl: modelValue.baseUrl,
@@ -570,11 +570,11 @@ export function buildConfiguredModelsForPurpose(
 }
 
 export function countConfiguredModelsForProvider(
-  modelValue: MocoSettingsView["blocks"]["model"]["value"],
+  modelValue: KuloSettingsView["blocks"]["model"]["value"],
   providerId: string,
   providers: ProviderCatalogItem[],
 ): number {
-  if (providerId === "moco-gateway") {
+  if (providerId === "kulo-gateway") {
     return new Set((modelValue.gatewayModels ?? []).map((m) => m.id).filter(Boolean)).size;
   }
   const custom = (modelValue.customProviders ?? []).find((cp) => cp.id === providerId);
@@ -585,7 +585,7 @@ export function countConfiguredModelsForProvider(
 }
 
 export function buildProviderModelGroups(
-  modelValue: MocoSettingsView["blocks"]["model"]["value"],
+  modelValue: KuloSettingsView["blocks"]["model"]["value"],
   providers: ProviderCatalogItem[],
 ): ProviderModelGroup[] {
   const byId = new Map(providers.map((p) => [p.id, p]));
@@ -618,11 +618,11 @@ export function buildProviderModelGroups(
   };
 
   if (!modelValue.gatewayDisabled) {
-    seenProviders.add("moco-gateway");
-    const models = collectModels("moco-gateway", modelValue.gatewayModels ?? []);
+    seenProviders.add("kulo-gateway");
+    const models = collectModels("kulo-gateway", modelValue.gatewayModels ?? []);
     if (modelValue.gatewayModels !== undefined) {
       groups.push({
-        providerId: "moco-gateway",
+        providerId: "kulo-gateway",
         label: modelValue.gatewayName?.trim() || translate("兼容网关", "Compatible gateway"),
         models,
       });

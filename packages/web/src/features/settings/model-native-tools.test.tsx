@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { CustomModelConfig, ProviderModelItem } from "@moco/protocol";
+import type { CustomModelConfig, ProviderModelItem } from "@kulo/protocol";
 import { ModelNativeToolsFields, modelConfigFromCatalog, nativeSearchAvailable } from "./api-model-list";
 import { toProviderModelItem } from "./settings-helpers";
 
@@ -62,7 +62,7 @@ describe("per-model native tools", () => {
       <ModelNativeToolsFields model={{ id: "gpt-5", nativeTools: { webSearch: false } }} api="openai-responses" officialSource={false} disabled={false} onUpdate={() => {}} />,
     );
     expect(control(thirdPartyHtml)).toContain("disabled");
-    expect(thirdPartyHtml).toContain("第三方接口默认使用 Moco 搜索工具");
+    expect(thirdPartyHtml).toContain("第三方接口默认使用 Kulo 搜索工具");
     expect(modelConfigFromCatalog(catalog, "openai-responses", { officialSource: false }).nativeTools).toBeUndefined();
   });
 });

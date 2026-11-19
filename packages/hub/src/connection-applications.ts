@@ -1,4 +1,4 @@
-import type { ConnectionApplicationDefinition, ConnectionApplicationId, ConnectionSecrets, ConnectionUseOperation, ConnectionUseResult } from "@moco/protocol";
+import type { ConnectionApplicationDefinition, ConnectionApplicationId, ConnectionSecrets, ConnectionUseOperation, ConnectionUseResult } from "@kulo/protocol";
 import { NativeConnectionApplications, NATIVE_CONNECTION_APPLICATIONS } from "./connection-native-apps.js";
 import { WebConnectionApplications, WEB_CONNECTION_APPLICATIONS } from "./connection-web-apps.js";
 

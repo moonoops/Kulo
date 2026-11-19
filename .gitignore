@@ -5,7 +5,7 @@ dist/
 .vite-temp/
 
 # Runtime state, databases & logs
-.moco-state/
+.kulo-state/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
@@ -28,8 +28,8 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
-# Companion mobile connector binary (built externally via Moco-mobile)
-packages/hub/native/moco-connector-*
+# Companion mobile connector binary (built externally via Kulo-mobile)
+packages/hub/native/kulo-connector-*
 
 # macOS metadata
 .DS_Store

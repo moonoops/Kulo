@@ -21,18 +21,18 @@ function run(command, args, input) {
 export async function buildNativeApplications({ outputPath } = {}) {
   if (process.platform !== "darwin") return;
   const native = fileURLToPath(new URL("../native/", import.meta.url));
-  const source = fs.readFileSync(path.join(native, "moco-native-applications.m"), "utf8");
-  const javascript = fs.readFileSync(path.join(native, "moco-native-applications.js"), "utf8");
-  const destination = outputPath ?? fileURLToPath(new URL("../dist/moco-native-applications", import.meta.url));
+  const source = fs.readFileSync(path.join(native, "kulo-native-applications.m"), "utf8");
+  const javascript = fs.readFileSync(path.join(native, "kulo-native-applications.js"), "utf8");
+  const destination = outputPath ?? fileURLToPath(new URL("../dist/kulo-native-applications", import.meta.url));
   fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
   const temporary = `${destination}.${randomBytes(8).toString("hex")}.tmp`;
-  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "moco-native-build-"));
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "kulo-native-build-"));
   try {
     const info = path.join(scratch, "Info.plist"), entitlements = path.join(scratch, "entitlements.plist");
-    fs.writeFileSync(info, '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>io.moco.native-applications</string><key>CFBundleName</key><string>Moco Applications</string><key>NSAppleEventsUsageDescription</key><string>Moco需要读取您授权的信息和邮件，并按任务发送消息或保存草稿。</string></dict></plist>', { mode: 0o600 });
+    fs.writeFileSync(info, '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>io.kulo.native-applications</string><key>CFBundleName</key><string>Kulo Applications</string><key>NSAppleEventsUsageDescription</key><string>Kulo需要读取您授权的信息和邮件，并按任务发送消息或保存草稿。</string></dict></plist>', { mode: 0o600 });
     fs.writeFileSync(entitlements, '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.automation.apple-events</key><true/></dict></plist>', { mode: 0o600 });
-    await run("/usr/bin/clang", ["-x", "objective-c", "-fobjc-arc", "-fblocks", "-O2", "-mmacosx-version-min=13.0", "-Wall", "-Wextra", "-Werror", "-Wno-deprecated-declarations", "-framework", "Foundation", "-framework", "AppKit", "-framework", "ApplicationServices", "-framework", "OSAKit", "-lsqlite3", "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", info, "-o", temporary, "-"], `#define MOCO_JXA_SOURCE ${JSON.stringify(javascript)}\n${source}`);
-    await run("/usr/bin/codesign", ["--force", "--sign", "-", "--identifier", "io.moco.native-applications", "--entitlements", entitlements, temporary]);
+    await run("/usr/bin/clang", ["-x", "objective-c", "-fobjc-arc", "-fblocks", "-O2", "-mmacosx-version-min=13.0", "-Wall", "-Wextra", "-Werror", "-Wno-deprecated-declarations", "-framework", "Foundation", "-framework", "AppKit", "-framework", "ApplicationServices", "-framework", "OSAKit", "-lsqlite3", "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", info, "-o", temporary, "-"], `#define KULO_JXA_SOURCE ${JSON.stringify(javascript)}\n${source}`);
+    await run("/usr/bin/codesign", ["--force", "--sign", "-", "--identifier", "io.kulo.native-applications", "--entitlements", entitlements, temporary]);
     fs.chmodSync(temporary, 0o500);
     fs.renameSync(temporary, destination);
   } finally {

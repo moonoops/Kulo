@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { SearchPlanView, SearchSnapshot } from "@moco/protocol";
+import type { SearchPlanView, SearchSnapshot } from "@kulo/protocol";
 import { SearchModule, SearchPlanFields, acceptSearchSnapshot, reorderedSearchIds, searchPlanDraft, searchPlanInput, type SearchPlanDraft } from "./search-module";
 
 const plan: SearchPlanView = { id: "first", name: "Tavily 工作", adapter: "tavily", enabled: true, baseUrl: "https://mcp.tavily.com/mcp", hasCredential: true, revision: 3, status: "ready", createdAt: 1, updatedAt: 1 };
@@ -43,7 +43,7 @@ describe("search health snapshots", () => {
 describe("third-party search settings", () => {
   it("keeps the search columns and add action available for an empty loaded list", () => {
     const html = renderToStaticMarkup(<SearchModule snapshot={{ revision: 1, plans: [] }} connected onRefresh={() => {}} />);
-    expect(html).toContain("moco-search-plan-head");
+    expect(html).toContain("kulo-search-plan-head");
     expect(html).toContain("搜索调用优先级");
     expect(html).toContain("尚未添加搜索方案");
     expect(html).toContain("添加搜索方案");
@@ -130,31 +130,31 @@ describe("third-party search settings", () => {
   it("separates the drag handle, numeric priority, plan name, service and row actions", () => {
     const custom = { ...plan, name: "日常搜索", adapter: "exa" as const, hasCredential: false, status: "unverified" as const };
     const html = renderToStaticMarkup(<SearchModule snapshot={{ revision: 5, plans: [custom] }} connected onRefresh={() => {}} />);
-    const header = html.match(/class="moco-search-plan-head[^\"]*"[^>]*>(.*?)<\/div>/)?.[1] ?? "";
+    const header = html.match(/class="kulo-search-plan-head[^\"]*"[^>]*>(.*?)<\/div>/)?.[1] ?? "";
     const headings = [...header.matchAll(/<span\b[^>]*>(.*?)<\/span>/g)].map((match) => match[1]);
     expect(headings).toEqual(["", "优先级", "方案名称", "搜索服务", "状态", "启用", "操作"]);
     expect(header).toContain('class="text-center">优先级');
     expect(html).toMatch(/aria-label="调整日常搜索的优先级"[\s\S]*?aria-label="优先级 1">1<\/span>/);
-    const name = html.match(/class="moco-search-plan-name[^>]*>(.*?)<\/div>/)?.[1] ?? "";
+    const name = html.match(/class="kulo-search-plan-name[^>]*>(.*?)<\/div>/)?.[1] ?? "";
     expect(name).toContain("日常搜索");
     expect(name).not.toContain("Exa");
-    const service = html.match(/class="moco-search-plan-service[^>]*>(.*?)<\/div>/)?.[1] ?? "";
+    const service = html.match(/class="kulo-search-plan-service[^>]*>(.*?)<\/div>/)?.[1] ?? "";
     expect(service).toContain("Exa");
     expect(service).toContain("免费");
-    const actions = html.match(/class="moco-search-plan-actions[^>]*>(.*?)<\/div>/)?.[1] ?? "";
+    const actions = html.match(/class="kulo-search-plan-actions[^>]*>(.*?)<\/div>/)?.[1] ?? "";
     expect([...actions.matchAll(/aria-label="([^"]+)"/g)].map((match) => match[1])).toEqual(["测试日常搜索", "编辑日常搜索", "删除日常搜索"]);
     expect(header).toContain('class="text-center">启用');
     expect(header).toContain('class="text-center">操作');
-    expect(html).toContain("moco-search-plan-actions flex w-full items-center justify-center");
+    expect(html).toContain("kulo-search-plan-actions flex w-full items-center justify-center");
   });
   it("shows status as information and keeps initial tests and retests in the actions column", () => {
     for (const status of ["unverified", "ready"] as const) {
       const html = renderToStaticMarkup(<SearchModule snapshot={{ revision: 5, plans: [{ ...plan, status }] }} connected onRefresh={() => {}} />);
-      const statusCell = html.match(/class="moco-search-plan-status"[^>]*>(.*?)<\/div>/)?.[1] ?? "";
+      const statusCell = html.match(/class="kulo-search-plan-status"[^>]*>(.*?)<\/div>/)?.[1] ?? "";
       expect(statusCell).not.toContain("<button");
       expect(statusCell).toContain("chip");
       expect(statusCell).toContain(status === "ready" ? "可用" : "未测试");
-      const actions = html.match(/class="moco-search-plan-actions[^>]*>(.*?)<\/div>/)?.[1] ?? "";
+      const actions = html.match(/class="kulo-search-plan-actions[^>]*>(.*?)<\/div>/)?.[1] ?? "";
       expect(actions).toContain(`aria-label="${status === "ready" ? "重新测试" : "测试"}${plan.name}"`);
       expect(actions).toContain(">测试</span>");
       expect(actions).not.toContain(">可用<");

@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MocoComposer } from "../../moco-composer";
+import { KuloComposer } from "../../kulo-composer";
 
 const voice = vi.hoisted(() => ({
   phase: "idle" as "idle" | "requesting" | "recording" | "transcribing" | "error",
@@ -18,7 +18,7 @@ vi.mock("./voice-recorder", async (importOriginal) => ({
 }));
 
 function render(text = "已有文字草稿", busy = false) {
-  return renderToStaticMarkup(<MocoComposer draftText={text} onDraftTextChange={vi.fn()} attachments={[]}
+  return renderToStaticMarkup(<KuloComposer draftText={text} onDraftTextChange={vi.fn()} attachments={[]}
     onEnqueueFiles={vi.fn()} onRemoveAttachment={vi.fn()} onSubmit={vi.fn()} onAbort={vi.fn()} busy={busy}
     onTranscribeVoice={vi.fn()} connected placeholder="输入消息" />);
 }
@@ -35,14 +35,14 @@ describe("voice input", () => {
     expect(button(html, "语音输入")).not.toMatch(/\sdisabled(?:=|\s|>)/);
     expect(html).toContain("已有文字草稿</textarea>");
     expect(button(html, "发送")).not.toMatch(/\sdisabled(?:=|\s|>)/);
-    expect(html).not.toContain("moco-composer-waveform");
+    expect(html).not.toContain("kulo-composer-waveform");
   });
 
   it("replaces the input row with the waveform, elapsed time, cancel and stop actions", () => {
     Object.assign(voice, { phase: "recording", duration: 13.6, levels: [0.1, 0.7, 0.3] });
     const html = render();
     expect(html).toContain('data-voice-active="true"');
-    expect(html).toContain('class="moco-composer-waveform"');
+    expect(html).toContain('class="kulo-composer-waveform"');
     expect(html).toContain('role="timer" aria-live="off">00:13');
     expect(button(html, "停止录音并转写")).not.toContain("disabled");
     expect(button(html, "取消录音")).not.toContain("disabled");

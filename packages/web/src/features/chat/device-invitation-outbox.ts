@@ -1,4 +1,4 @@
-import { parseStandaloneDeviceInvitation, redactDeviceInvitationText, SENSITIVE_TEXT_REDACTION, type ChatReplyReference } from "@moco/protocol";
+import { parseStandaloneDeviceInvitation, redactDeviceInvitationText, SENSITIVE_TEXT_REDACTION, type ChatReplyReference } from "@kulo/protocol";
 import type { ReliableEnvelope, ReliableOutboxMetadata, ReliableOutboxRecord } from "./reliable-outbox";
 
 export const legacyInvitationCode = "device_invitation_requires_paste";
@@ -45,7 +45,7 @@ export function migrateOutboxInvitation(record: ReliableOutboxRecord): ReliableO
   if (record.envelope === envelope && record.metadata === metadata && record.error === error) return record;
   if (record.state !== "accepted" && record.envelope.type === "chat.send" && !record.envelope.replyTo &&
     !record.envelope.attachments?.length && parseStandaloneDeviceInvitation(record.envelope.content)) {
-    return { ...record, envelope, metadata, state: "failed", nextAttemptAt: 0, errorCode: legacyInvitationCode, error: "请在主 Moco 重新复制并发送接入邀请。" };
+    return { ...record, envelope, metadata, state: "failed", nextAttemptAt: 0, errorCode: legacyInvitationCode, error: "请在主 Kulo 重新复制并发送接入邀请。" };
   }
   return { ...record, envelope, metadata, error };
 }

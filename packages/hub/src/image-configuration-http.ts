@@ -1,8 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { CapabilityConfigurationInput, ImageDraftUpdateRequest, ImageRoutingConfigurationInput } from "@moco/protocol";
+import type { CapabilityConfigurationInput, ImageDraftUpdateRequest, ImageRoutingConfigurationInput } from "@kulo/protocol";
 import { CapabilityError } from "./capabilities.js";
 import { imageSetupIdentifier } from "./image-configuration.js";
-import type { MocoHub } from "./hub.js";
+import type { KuloHub } from "./hub.js";
 
 type ReadBody = (request: IncomingMessage) => Promise<Record<string, unknown>>;
 type Send = (response: ServerResponse, status: number, value: unknown) => void;
@@ -16,7 +16,7 @@ function revision(value: unknown): number {
 }
 
 /** Called only after the management authenticator accepts the request. */
-export async function handleImageConfigurationHttp(hub: MocoHub, req: IncomingMessage, res: ServerResponse, url: URL, read: ReadBody, send: Send): Promise<boolean> {
+export async function handleImageConfigurationHttp(hub: KuloHub, req: IncomingMessage, res: ServerResponse, url: URL, read: ReadBody, send: Send): Promise<boolean> {
   const prefix = "/api/capabilities/image/";
   if (!url.pathname.startsWith(prefix)) return false;
   const path = url.pathname.slice(prefix.length);
@@ -44,7 +44,7 @@ export async function handleImageConfigurationHttp(hub: MocoHub, req: IncomingMe
   }
   if (path === "import" && req.method === "POST") {
     const body = await read(req); allowed(body, ["clientId", "discoveryId", "candidateIds", "commandId", "allowTaskGeneration"]);
-    send(res, 200, await hub.imageConfiguration.importModels(body as unknown as Parameters<MocoHub["imageConfiguration"]["importModels"]>[0]));
+    send(res, 200, await hub.imageConfiguration.importModels(body as unknown as Parameters<KuloHub["imageConfiguration"]["importModels"]>[0]));
     return true;
   }
   if (path === "routing" && req.method === "PUT") {

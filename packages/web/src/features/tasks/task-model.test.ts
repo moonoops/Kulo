@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TicketCardView } from "@moco/protocol";
+import type { TicketCardView } from "@kulo/protocol";
 import { reconcileTaskRows, taskHasExpired, taskIsRecovering, taskNeedsAttention, taskRunningMs, taskStatusLabel, taskSummary, taskTimeLabel, visibleTaskCards } from "./task-model";
 
 const hour = 3_600_000;

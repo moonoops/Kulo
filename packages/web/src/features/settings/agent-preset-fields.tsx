@@ -1,6 +1,6 @@
-import { useI18n } from "../../moco-i18n";
+import { useI18n } from "../../kulo-i18n";
 import { ComboBox, Description, Fieldset, Header, Input, Label, ListBox, Select, Switch, TextArea, TextField } from "@heroui/react";
-import type { ExternalClientConnection, MocoSettingsView, RolePreset } from "@moco/protocol";
+import type { ExternalClientConnection, KuloSettingsView, RolePreset } from "@kulo/protocol";
 import { ROLE_EFFORT_OPTIONS, clampModelEffort, effortLabel, modelEffortOptions, selectedDefaultProvider, type ProviderModelGroup } from "./settings-helpers";
 
 const DEFAULT_MODEL_KEY = "__default__";
@@ -24,7 +24,7 @@ export function AgentPresetFields({ value, onChange, groups = [], defaultModel, 
   value: RolePreset;
   onChange: (value: RolePreset) => void;
   groups?: ProviderModelGroup[];
-  defaultModel?: MocoSettingsView["blocks"]["model"]["value"];
+  defaultModel?: KuloSettingsView["blocks"]["model"]["value"];
   externalClient?: ExternalClientConnection;
   isDisabled?: boolean;
   isCreating?: boolean;
@@ -91,27 +91,27 @@ export function AgentPresetFields({ value, onChange, groups = [], defaultModel, 
     });
   };
 
-  return <div className="moco-form-stack">
+  return <div className="kulo-form-stack">
     <Fieldset className="gap-4" disabled={isDisabled}>
-      <Fieldset.Legend className="moco-group-title">{t("基本设置", "General")}</Fieldset.Legend>
-      <Fieldset.Group className="moco-form-stack space-y-0">
-        <TextField variant="primary" isRequired value={value.label} onChange={(label) => onChange({ ...value, label })} fullWidth className="moco-form-field">
+      <Fieldset.Legend className="kulo-group-title">{t("基本设置", "General")}</Fieldset.Legend>
+      <Fieldset.Group className="kulo-form-stack space-y-0">
+        <TextField variant="primary" isRequired value={value.label} onChange={(label) => onChange({ ...value, label })} fullWidth className="kulo-form-field">
           <Label className="text-sm text-foreground">{t("智能体名称", "Agent name")}</Label>
           <Input placeholder={isCreating ? (isExternal ? t("架构师", "Architect") : t("数据分析师", "Data analyst")) : undefined} />
         </TextField>
-        {isCreating && <TextField variant="primary" isRequired value={value.id} onChange={(id) => onChange({ ...value, id })} fullWidth className="moco-form-field">
+        {isCreating && <TextField variant="primary" isRequired value={value.id} onChange={(id) => onChange({ ...value, id })} fullWidth className="kulo-form-field">
           <Label className="text-sm text-foreground">{t("智能体标识", "Agent ID")}</Label>
           <Input placeholder={isExternal ? `${externalClient?.kind ?? "codex"}-architect` : "analyst"} maxLength={40} pattern={"[a-z][a-z0-9_\\-]{0,39}"} />
         </TextField>}
         {!isExternal && <div className="flex flex-col gap-1">
           <Switch isSelected={Boolean(value.readOnly)} onChange={(readOnly) => onChange({ ...value, readOnly })} className="w-full">
-            <Switch.Content className="moco-form-toggle">
+            <Switch.Content className="kulo-form-toggle">
               <Label className="text-sm font-normal text-foreground">{t("只读模式", "Read-only mode")}</Label>
               <Switch.Control><Switch.Thumb /></Switch.Control>
             </Switch.Content>
           </Switch>
           <Switch isSelected={Boolean(value.allowSubagents)} onChange={(allowSubagents) => onChange({ ...value, allowSubagents })} className="w-full">
-            <Switch.Content className="moco-form-toggle">
+            <Switch.Content className="kulo-form-toggle">
               <Label className="text-sm font-normal text-foreground">{t("允许子智能体", "Allow subagents")}</Label>
               <Switch.Control><Switch.Thumb /></Switch.Control>
             </Switch.Content>
@@ -121,12 +121,12 @@ export function AgentPresetFields({ value, onChange, groups = [], defaultModel, 
     </Fieldset>
 
     <Fieldset className="gap-4 border-t border-separator pt-4" disabled={isDisabled}>
-      <Fieldset.Legend className="moco-group-title">{t("模型与思考", "Model and thinking")}</Fieldset.Legend>
-      <Fieldset.Group className="moco-form-stack space-y-0">
+      <Fieldset.Legend className="kulo-group-title">{t("模型与思考", "Model and thinking")}</Fieldset.Legend>
+      <Fieldset.Group className="kulo-form-stack space-y-0">
         {isExternal ? (
           <ComboBox
             variant="primary"
-            className="moco-form-field"
+            className="kulo-form-field"
             fullWidth
             inputValue={value.modelId ?? ""}
             selectedKey={modelId ? (externalModels.some((item) => item.id === modelId) ? modelId : null) : EXTERNAL_DEFAULT_MODEL_KEY}
@@ -164,7 +164,7 @@ export function AgentPresetFields({ value, onChange, groups = [], defaultModel, 
             </ComboBox.Popover>
           </ComboBox>
         ) : (
-          <Select variant="primary" value={selectedModelKey} onChange={(key) => selectModel(String(key ?? DEFAULT_MODEL_KEY))} fullWidth className="moco-form-field">
+          <Select variant="primary" value={selectedModelKey} onChange={(key) => selectModel(String(key ?? DEFAULT_MODEL_KEY))} fullWidth className="kulo-form-field">
             <Label className="text-sm text-foreground">{t("智能体模型", "Agent model")}</Label>
             <Select.Trigger><Select.Value className="truncate" /><Select.Indicator /></Select.Trigger>
             <Select.Popover>
@@ -181,7 +181,7 @@ export function AgentPresetFields({ value, onChange, groups = [], defaultModel, 
             </Select.Popover>
           </Select>
         )}
-        <Select variant="primary" value={value.thinkingLevel ?? "auto"} onChange={(key) => { if (key !== null) onChange({ ...value, thinkingLevel: String(key) }); }} fullWidth className="moco-form-field">
+        <Select variant="primary" value={value.thinkingLevel ?? "auto"} onChange={(key) => { if (key !== null) onChange({ ...value, thinkingLevel: String(key) }); }} fullWidth className="kulo-form-field">
           <Label className="text-sm text-foreground">{t("默认思考强度", "Default thinking effort")}</Label>
           <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
           <Select.Popover>
@@ -194,14 +194,14 @@ export function AgentPresetFields({ value, onChange, groups = [], defaultModel, 
     </Fieldset>
 
     <Fieldset className="gap-4 border-t border-separator pt-4" disabled={isDisabled}>
-      <Fieldset.Legend className="moco-group-title">{t("任务与提示词", "Tasks and prompts")}</Fieldset.Legend>
-      <Fieldset.Group className="moco-form-stack space-y-0">
-        <TextField variant="primary" className="moco-form-field" isRequired value={value.whenToUse} onChange={(whenToUse) => onChange({ ...value, whenToUse })} fullWidth>
+      <Fieldset.Legend className="kulo-group-title">{t("任务与提示词", "Tasks and prompts")}</Fieldset.Legend>
+      <Fieldset.Group className="kulo-form-stack space-y-0">
+        <TextField variant="primary" className="kulo-form-field" isRequired value={value.whenToUse} onChange={(whenToUse) => onChange({ ...value, whenToUse })} fullWidth>
           <Label className="text-sm text-foreground">{isExternal ? t("委派时机", "When to delegate") : t("负责任务", "Responsibilities")}</Label>
           <TextArea rows={4} className="scrollbar h-28 min-h-28 resize-y text-sm" />
           <Description className="text-right text-xs tabular-nums">{Array.from(value.whenToUse).length}  {t("字", "characters")}</Description>
         </TextField>
-        <TextField variant="primary" className="moco-form-field" isRequired value={value.prompt} onChange={(prompt) => onChange({ ...value, prompt })} fullWidth>
+        <TextField variant="primary" className="kulo-form-field" isRequired value={value.prompt} onChange={(prompt) => onChange({ ...value, prompt })} fullWidth>
           <Label className="text-sm text-foreground">{isExternal ? t("交给该智能体的任务要求", "Task instructions for this agent") : t("智能体系统提示词", "Agent system prompt")}</Label>
           <TextArea rows={4} className="scrollbar h-28 min-h-28 resize-y text-sm" />
           <Description className="text-right text-xs tabular-nums">{Array.from(value.prompt).length}  {t("字", "characters")}</Description>

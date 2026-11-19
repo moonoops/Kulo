@@ -1,4 +1,4 @@
-import { translate as tr, useI18n } from "../../moco-i18n";
+import { translate as tr, useI18n } from "../../kulo-i18n";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { Button, Tooltip } from "@heroui/react";
 import { useFocusVisible } from "react-aria";
@@ -90,8 +90,8 @@ export function ConversationOutline({ turns, topicId, scrollRef, onNavigate }: {
 
   if (turns.length < 2) return null;
 
-  return <nav className="moco-chat-outline" aria-label={tr("对话分段", "Conversation sections")} data-visible={visible || undefined} aria-hidden={!visible} inert={!visible}>
-    <div ref={listRef} className="moco-chat-outline-list">
+  return <nav className="kulo-chat-outline" aria-label={tr("对话分段", "Conversation sections")} data-visible={visible || undefined} aria-hidden={!visible} inert={!visible}>
+    <div ref={listRef} className="kulo-chat-outline-list">
       {turns.map((turn, index) => {
         const distance = Math.min(Math.abs(index - emphasizedIndex), 4);
         return <Tooltip key={turn.id} delay={180} closeDelay={80} onOpenChange={(open) => setPreviewId((previous) => open ? turn.id : previous === turn.id ? undefined : previous)}>
@@ -101,7 +101,7 @@ export function ConversationOutline({ turns, topicId, scrollRef, onNavigate }: {
             isIconOnly
             variant="ghost"
             size="sm"
-            className="moco-chat-outline-step"
+            className="kulo-chat-outline-step"
             aria-label={tr(`第 ${index + 1} 段：${turn.label}`, `Section ${index + 1}: ${turn.label}`)}
             aria-current={turn.id === currentId ? "location" : undefined}
             aria-controls={conversationTurnId(topicId, turn.id)}
@@ -121,11 +121,11 @@ export function ConversationOutline({ turns, topicId, scrollRef, onNavigate }: {
               if (turn) buttons.current.get(turn.id)?.focus({ preventScroll: true });
             }}
           >
-            <span className="moco-chat-outline-tick" aria-hidden="true" />
+            <span className="kulo-chat-outline-tick" aria-hidden="true" />
           </Button>
-          <Tooltip.Content placement="left" offset={10} className="moco-chat-outline-preview">
-            <p className="moco-chat-outline-title">{turn.label}</p>
-            {turn.preview && <p className="moco-chat-outline-excerpt">{turn.preview}</p>}
+          <Tooltip.Content placement="left" offset={10} className="kulo-chat-outline-preview">
+            <p className="kulo-chat-outline-title">{turn.label}</p>
+            {turn.preview && <p className="kulo-chat-outline-excerpt">{turn.preview}</p>}
           </Tooltip.Content>
         </Tooltip>;
       })}

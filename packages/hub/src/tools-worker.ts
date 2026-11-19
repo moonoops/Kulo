@@ -18,10 +18,10 @@ import type {
   RolePreset,
   ThinkingEffort,
   WorkerReportState,
-} from "@moco/protocol";
-import { redactSecrets, type WebPageResult } from "@moco/protocol";
+} from "@kulo/protocol";
+import { redactSecrets, type WebPageResult } from "@kulo/protocol";
 import {
-  MocoStateDoc,
+  KuloStateDoc,
   getActiveStagedCwd,
   getEffectiveWorkspaceDir,
   isOrchestratorConversation,
@@ -30,13 +30,13 @@ import {
 import { isMainOrchestratorApi } from "./settings-doc.js";
 import { createHindsightTools } from "./tools-memory.js";
 import { createWebSearchTool } from "./tools-search.js";
-import type { MocoSearch } from "./search.js";
+import type { KuloSearch } from "./search.js";
 import { fetchWebPage, validatePublicWebUrl } from "./web-content.js";
 import { createWorkerSections } from "./prompts/worker.js";
 import { createComputerUseTools, type ComputerUseToolsOptions } from "./tools-computer-use.js";
 import { createConnectionTools, type ConnectionToolController } from "./tools-connections.js";
 import type { UiAssetPublicationInput } from "./ui-cards.js";
-import type { MocoUploadStore } from "./uploads.js";
+import type { KuloUploadStore } from "./uploads.js";
 import {
   REPORT_DELIVERABLE_PREVIEW_CHARS,
   SUBAGENT_INLINE_MAX_CHARS,
@@ -62,7 +62,7 @@ function pageToolResult(page: WebPageResult) {
   ].filter(Boolean).join("\n\n") }], details: { sources: page.sources } as unknown as JsonObject };
 }
 
-export function createWebFetchTool(getSearch?: () => MocoSearch) {
+export function createWebFetchTool(getSearch?: () => KuloSearch) {
   return defineTool({
     name: "web_fetch",
     description: "Read a public HTTP/HTTPS page as clean article text with source metadata. Cite supporting information as [title](URL).",
@@ -134,8 +134,8 @@ export interface RunSubagentsRequest {
 }
 
 export function createWorkerExtension(options: {
-  search?: () => MocoSearch;
-  uploads?: MocoUploadStore;
+  search?: () => KuloSearch;
+  uploads?: KuloUploadStore;
   connections?: ConnectionToolController;
   computerUse?: ComputerUseToolsOptions;
   onStateChanged?: () => void;
@@ -151,8 +151,8 @@ export function createWorkerExtension(options: {
     context: Context,
   ) => Promise<SubagentTaskOutcome[]>;
 }) {
-  const mocoReportTool = defineTool({
-    name: "moco_report",
+  const kuloReportTool = defineTool({
+    name: "kulo_report",
     description:
       "Report progress, a blocker, completion, or failure to the main Agent. Files are privately staged for the main Agent to inspect; only the main Agent may approve and publish them to the user. A ready report never means approved or sent.",
     parameters: obj({
@@ -195,12 +195,12 @@ export function createWorkerExtension(options: {
       }
 
       if (args.files?.length && reportState !== "ready") {
-        return { isError: true, output: [{ type: "text" as const, text: "最终产物清单只能随 ready 报告提交；中途可用 moco_publish_asset 暂存待主 Agent 审核。" }] };
+        return { isError: true, output: [{ type: "text" as const, text: "最终产物清单只能随 ready 报告提交；中途可用 kulo_publish_asset 暂存待主 Agent 审核。" }] };
       }
-      const snapshot = await api.snapshot(MocoStateDoc, context);
+      const snapshot = await api.snapshot(KuloStateDoc, context);
       const active = resolveTicketExecutionScope(snapshot, api.conversationId);
       if (!active || active.subagent || active.ticket.status !== "running") return {
-        isError: true, output: [{ type: "text" as const, text: "moco_report can only be called inside a top-level managed Worker Ticket conversation." }],
+        isError: true, output: [{ type: "text" as const, text: "kulo_report can only be called inside a top-level managed Worker Ticket conversation." }],
       };
       const attachments: ChatAttachment[] = [];
       const deliveryErrors: string[] = [];
@@ -216,7 +216,7 @@ export function createWorkerExtension(options: {
         }
       }
       if (reportState === "ready") {
-        const current = await api.snapshot(MocoStateDoc, context);
+        const current = await api.snapshot(KuloStateDoc, context);
         const pending = current?.fileDeliveryFailures?.[active.ticket.id];
         if (pending?.runEpoch === active.ticket.runEpoch) deliveryErrors.push(...Object.values(pending.errors).filter((error) => !deliveryErrors.includes(error)));
       }
@@ -243,7 +243,7 @@ export function createWorkerExtension(options: {
       });
 
       const updated = await api.commit(async (tx) => {
-        const state = await tx.doc(MocoStateDoc);
+        const state = await tx.doc(KuloStateDoc);
         const ticketId = state.conversationToTicket[String(api.conversationId)];
         if (!ticketId) return false;
         const ticket = state.tickets[ticketId];
@@ -268,7 +268,7 @@ export function createWorkerExtension(options: {
           output: [
             {
               type: "text",
-              text: "moco_report can only be called inside a top-level managed Worker Ticket conversation.",
+              text: "kulo_report can only be called inside a top-level managed Worker Ticket conversation.",
             },
           ],
         };
@@ -279,7 +279,7 @@ export function createWorkerExtension(options: {
           output: [
             {
               type: "text",
-              text: "Progress recorded silently on Moco's table. Continue working.",
+              text: "Progress recorded silently on Kulo's table. Continue working.",
             },
           ],
         };
@@ -290,7 +290,7 @@ export function createWorkerExtension(options: {
         output: [
           {
             type: "text",
-            text: deliveryErrors.length ? deliveryErrors.join("\n") : `Report (${reportState}) recorded. Artifacts are pending main-Agent review; nothing has been sent to the user. Handing control back to Moco.`,
+            text: deliveryErrors.length ? deliveryErrors.join("\n") : `Report (${reportState}) recorded. Artifacts are pending main-Agent review; nothing has been sent to the user. Handing control back to Kulo.`,
           },
         ],
         control: { terminate: true },
@@ -298,11 +298,11 @@ export function createWorkerExtension(options: {
     },
   });
 
-  const mocoSubagentTool = defineTool({
-    name: "moco_subagent",
+  const kuloSubagentTool = defineTool({
+    name: "kulo_subagent",
     replay: "safe",
     description:
-      "Delegate 1 or more parallel sub-tasks to internal Subagents / Teammates from Moco's Worker role pool (e.g. 'scout', 'coder', 'checker', 'designer', 'writer'), or send a stateful follow-up to an existing teammate via agent_id or name.",
+      "Delegate 1 or more parallel sub-tasks to internal Subagents / Teammates from Kulo's Worker role pool (e.g. 'scout', 'coder', 'checker', 'designer', 'writer'), or send a stateful follow-up to an existing teammate via agent_id or name.",
     parameters: obj({
       tasks: arr(
         obj({
@@ -382,7 +382,7 @@ export function createWorkerExtension(options: {
           context,
         );
 
-        const parentSnap = await api.snapshot(MocoStateDoc, context);
+        const parentSnap = await api.snapshot(KuloStateDoc, context);
         const parentScope = resolveTicketExecutionScope(parentSnap, api.conversationId);
         const scratchDir = parentScope?.ticket.scratchDir;
 
@@ -442,8 +442,8 @@ export function createWorkerExtension(options: {
     },
   });
 
-  const mocoWaitTool = defineTool({
-    name: "moco_wait",
+  const kuloWaitTool = defineTool({
+    name: "kulo_wait",
     replay: "safe",
     description: "Durably park the active ticket while waiting on `user`, `env`, `time` (`until` ISO 8601 with timezone or `delay_seconds`), or `external` (`job_id`); end your turn immediately after calling without polling (Worker slot releases once all subagents stop).",
     parameters: obj({ reason: oneOf(["user", "env", "time", "external"]), detail: str(), until: opt(str()), delay_seconds: opt(num()), job_id: opt(str()) }),
@@ -461,7 +461,7 @@ export function createWorkerExtension(options: {
         return { isError: true, output: [{ type: "text", text: "等待时间必须是带时区的有效 ISO 8601 时间。" }] };
       }
       const accepted = await api.commit(async (tx) => {
-        const state = await tx.doc(MocoStateDoc);
+        const state = await tx.doc(KuloStateDoc);
         const ticketId = state.conversationToTicket[String(api.conversationId)];
         const ticket = ticketId ? state.tickets[ticketId] : undefined;
         if (!ticket || ticket.status !== "running") return false;
@@ -484,12 +484,12 @@ export function createWorkerExtension(options: {
       if (api.conversationId === ROOT_CONVERSATION_ID) {
         return undefined;
       }
-      const hookState = await api.snapshot(MocoStateDoc, context);
+      const hookState = await api.snapshot(KuloStateDoc, context);
       if (isOrchestratorConversation(api.conversationId, hookState)) {
         return undefined;
       }
       const activeScope = resolveTicketExecutionScope(hookState, api.conversationId);
-      if ((!activeScope || activeScope.ticket.status !== "running") && call.name !== "moco_report") {
+      if ((!activeScope || activeScope.ticket.status !== "running") && call.name !== "kulo_report") {
         return { block: "Worker tools require an active ticket; unrestricted host fallback is disabled." };
       }
 
@@ -499,13 +499,13 @@ export function createWorkerExtension(options: {
         for (const pattern of DANGEROUS_SHELL_PATTERNS) {
           if (pattern.test(cmd)) {
             return {
-              block: `Blocked high-risk shell command by Moco safety guard: "${cmd.slice(0, 120)}". If strictly required, call moco_report(state='blocked') to request human approval.`,
+              block: `Blocked high-risk shell command by Kulo safety guard: "${cmd.slice(0, 120)}". If strictly required, call kulo_report(state='blocked') to request human approval.`,
             };
           }
         }
         if (identityDir && cmd.includes(identityDir)) {
           return {
-            block: "Blocked access to Moco's private identity directory from background Worker.",
+            block: "Blocked access to Kulo's private identity directory from background Worker.",
           };
         }
         const rawTimeout = (call.arguments as { timeout?: unknown }).timeout;
@@ -534,7 +534,7 @@ export function createWorkerExtension(options: {
 
           if (identityDir && isInsideDirectory(resolvedTarget, identityDir)) {
             return {
-              block: "Blocked access to Moco's private identity directory from background Worker.",
+              block: "Blocked access to Kulo's private identity directory from background Worker.",
             };
           }
 
@@ -556,7 +556,7 @@ export function createWorkerExtension(options: {
               return {
                 block: activeStagedCwd
                   ? `Path '${targetPath}' is outside this ticket's isolated staged workspace '${activeStagedCwd}'${ticket.scratchDir ? ` (and scratchpad '${ticket.scratchDir}')` : ""}. Edit only inside the staged workspace; never write directly to the live project directory.`
-                  : `Path '${targetPath}' is outside this ticket's authorized workspace '${effectiveWorkspaceDir}'${ticket.scratchDir ? ` (and scratchpad '${ticket.scratchDir}')` : ""}. Call moco_report(state='blocked') if broader scope is needed.`,
+                  : `Path '${targetPath}' is outside this ticket's authorized workspace '${effectiveWorkspaceDir}'${ticket.scratchDir ? ` (and scratchpad '${ticket.scratchDir}')` : ""}. Call kulo_report(state='blocked') if broader scope is needed.`,
               };
             }
           }
@@ -573,7 +573,7 @@ export function createWorkerExtension(options: {
   });
 
   const extension = defineExtension({
-    name: "moco-worker",
+    name: "kulo-worker",
     sections: createWorkerSections({
       getRoles: options.getRoles ?? (() => ({})),
       getMemoryEnabled: () => {
@@ -585,9 +585,9 @@ export function createWorkerExtension(options: {
       shellTimeoutSeconds: DEFAULT_WORKER_SHELL_TIMEOUT_SECONDS,
     }),
     tools: [
-      mocoReportTool,
-      mocoSubagentTool,
-      mocoWaitTool,
+      kuloReportTool,
+      kuloSubagentTool,
+      kuloWaitTool,
       createWebFetchTool(options.search),
       createWebSearchTool(options.search),
       ...workerHindsightTools,
@@ -598,8 +598,8 @@ export function createWorkerExtension(options: {
   });
 
   return Object.assign(extension, {
-    mocoReportTool,
-    mocoSubagentTool,
-    mocoWaitTool,
+    kuloReportTool,
+    kuloSubagentTool,
+    kuloWaitTool,
   });
 }

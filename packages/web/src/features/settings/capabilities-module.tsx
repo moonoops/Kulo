@@ -1,7 +1,7 @@
-import { useI18n } from "../../moco-i18n";
+import { useI18n } from "../../kulo-i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Chip, Skeleton, Table, Tabs } from "@heroui/react";
-import { redactSecrets, type CapabilitiesWorkspaceSnapshot, type EnvNodeDescriptor, type MocoSettingsView, type SettingsAssistantContext } from "@moco/protocol";
+import { redactSecrets, type CapabilitiesWorkspaceSnapshot, type EnvNodeDescriptor, type KuloSettingsView, type SettingsAssistantContext } from "@kulo/protocol";
 import { SearchModule } from "./search-module";
 import { VoiceModule } from "./voice-module";
 import { ConfirmDialog } from "../../components/confirm-dialog";
@@ -20,9 +20,9 @@ export type CapabilityAssistantRequest = (target?: CapabilityTarget, prompt?: st
 
 function WorkspaceEmptyState({ loaded, connected, error, empty }: { loaded: boolean; connected: boolean; error: string | null; empty: string }) {
   const { t } = useI18n();
-  if (loaded) return <div className="moco-table-empty-state">{empty}</div>;
-  if (error || !connected) return <div className="moco-table-empty-state">{error ? t("暂时无法读取", "Unable to load") : t("等待连接", "Waiting for connection")}</div>;
-  return <div className="moco-table-empty-state w-full gap-4" role="status" aria-label={t("加载中", "Loading")}>
+  if (loaded) return <div className="kulo-table-empty-state">{empty}</div>;
+  if (error || !connected) return <div className="kulo-table-empty-state">{error ? t("暂时无法读取", "Unable to load") : t("等待连接", "Waiting for connection")}</div>;
+  return <div className="kulo-table-empty-state w-full gap-4" role="status" aria-label={t("加载中", "Loading")}>
     <span className="sr-only">{t("加载中…", "Loading…")}</span>
     <Skeleton animationType="none" className="h-3 w-32" />
     <Skeleton animationType="none" className="h-3 w-16" />
@@ -41,14 +41,14 @@ function MediaCapabilitiesTable({ kind, snapshot, connected, disabled, error, en
 }) {
   const { t } = useI18n();
   const image = kind === "image";
-  return <Table variant="secondary" className="moco-settings-table moco-capabilities-table">
-    <Table.ScrollContainer className="moco-settings-table-scroll">
-      <Table.Content aria-label={image ? t("图像模型列表", "Image models") : t("视频连接列表", "Video connections")} selectionMode="none" keyboardNavigationBehavior="tab" className="moco-settings-table-content">
+  return <Table variant="secondary" className="kulo-settings-table kulo-capabilities-table">
+    <Table.ScrollContainer className="kulo-settings-table-scroll">
+      <Table.Content aria-label={image ? t("图像模型列表", "Image models") : t("视频连接列表", "Video connections")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content">
         <Table.Header>
-          <Table.Column id="name" isRowHeader className="moco-settings-table-column">{image ? t("模型", "Model") : t("连接", "Connection")}</Table.Column>
-          <Table.Column id="details" className="moco-settings-table-column moco-settings-table-meta">{image ? t("格式", "Formats") : t("设备", "Device")}</Table.Column>
-          <Table.Column id="status" className="moco-settings-table-column moco-settings-table-meta">{t("状态", "Status")}</Table.Column>
-          <Table.Column id="actions" className="moco-settings-table-column moco-settings-table-actions">{t("操作", "Actions")}</Table.Column>
+          <Table.Column id="name" isRowHeader className="kulo-settings-table-column">{image ? t("模型", "Model") : t("连接", "Connection")}</Table.Column>
+          <Table.Column id="details" className="kulo-settings-table-column kulo-settings-table-meta">{image ? t("格式", "Formats") : t("设备", "Device")}</Table.Column>
+          <Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-meta">{t("状态", "Status")}</Table.Column>
+          <Table.Column id="actions" className="kulo-settings-table-column kulo-settings-table-actions">{t("操作", "Actions")}</Table.Column>
         </Table.Header>
         <Table.Body renderEmptyState={() => <WorkspaceEmptyState loaded={Boolean(snapshot)} connected={connected} error={error} empty={image ? t("尚未添加图像模型", "No image models added") : t("尚未连接 Google Flow", "Google Flow is not connected")} />}>
           {(snapshot?.capabilities ?? []).filter((capability) => capability.kind === kind).map((capability) => {
@@ -57,22 +57,22 @@ function MediaCapabilitiesTable({ kind, snapshot, connected, disabled, error, en
             const device = flow ? envs.find((env) => env.id === connection.browserEnvId)?.name ?? connection.browserEnvId : undefined;
             const selected = target?.kind === "capability" && target.id === capability.id;
             return <Table.Row key={capability.id} id={capability.id} textValue={capability.name}>
-              <Table.Cell className="moco-settings-table-cell">
+              <Table.Cell className="kulo-settings-table-cell">
                 <div className="flex min-w-0 flex-col items-start gap-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="moco-item-title break-words">{capability.name}</span>
+                    <span className="kulo-item-title break-words">{capability.name}</span>
                     {capability.isDefault && <Chip size="sm" variant="soft" color="accent">{t("默认", "Default")}</Chip>}
                   </div>
-                  <span className="moco-item-description break-words">{flow ? t("Google Flow · 会员网页", "Google Flow · subscription website") : capability.modelId}</span>
+                  <span className="kulo-item-description break-words">{flow ? t("Google Flow · 会员网页", "Google Flow · subscription website") : capability.modelId}</span>
                   {capability.error && <p className="break-words text-xs text-danger">{redactSecrets(capability.error)}</p>}
                 </div>
               </Table.Cell>
-              <Table.Cell className="moco-settings-table-cell moco-settings-table-meta">
+              <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta">
                 {image ? <div className="flex flex-wrap gap-1">{capability.formats.map((format) => <Chip key={format} size="sm" variant="tertiary">{format.toUpperCase()}</Chip>)}</div> : <span className="text-sm">{device ?? "—"}</span>}
               </Table.Cell>
-              <Table.Cell className="moco-settings-table-cell moco-settings-table-meta"><Chip size="sm" variant="soft" color={capabilityStatusColor(capability)}>{capabilityStatusLabel(capability)}</Chip></Table.Cell>
-              <Table.Cell className="moco-settings-table-cell moco-settings-table-actions">
-                <div className="moco-settings-table-action-group"><Button size="sm" variant={selected ? "secondary" : "ghost"} aria-label={t(`管理${capability.name}`, `Manage ${capability.name}`)} aria-pressed={selected} isDisabled={!connected || disabled} onPress={() => onRequest({ kind: "capability", id: capability.id })}>{t("管理", "Manage")}</Button></div>
+              <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta"><Chip size="sm" variant="soft" color={capabilityStatusColor(capability)}>{capabilityStatusLabel(capability)}</Chip></Table.Cell>
+              <Table.Cell className="kulo-settings-table-cell kulo-settings-table-actions">
+                <div className="kulo-settings-table-action-group"><Button size="sm" variant={selected ? "secondary" : "ghost"} aria-label={t(`管理${capability.name}`, `Manage ${capability.name}`)} aria-pressed={selected} isDisabled={!connected || disabled} onPress={() => onRequest({ kind: "capability", id: capability.id })}>{t("管理", "Manage")}</Button></div>
               </Table.Cell>
             </Table.Row>;
           })}
@@ -84,7 +84,7 @@ function MediaCapabilitiesTable({ kind, snapshot, connected, disabled, error, en
 
 export function CapabilitiesModule({ snapshot, settings, loading, error, connected, clientId = "", requestsDisabled = false, envs, target, view: selectedView, onViewChange, voiceSettingsRequested = false, onRequest, onRefresh, onDirtyChange, onOpenModels }: {
   snapshot: CapabilitiesWorkspaceSnapshot | null;
-  settings?: MocoSettingsView | null;
+  settings?: KuloSettingsView | null;
   loading: boolean;
   error: string | null;
   connected: boolean;
@@ -147,7 +147,7 @@ export function CapabilitiesModule({ snapshot, settings, loading, error, connect
       </Tabs.Panel>
       <Tabs.Panel id="search"><SearchModule snapshot={snapshot?.search} connected={connected} disabled={requestsDisabled} onRefresh={onRefresh} onDirtyChange={setSearchDirty} /></Tabs.Panel>
       <Tabs.Panel id="skills"><SkillsModule snapshot={snapshot ? { revision: snapshot.skillRevision, skills: snapshot.skills } : null} connected={connected} disabled={requestsDisabled} onRequest={onRequest} onRefresh={onRefresh} onDirtyChange={setSkillsDirty} /></Tabs.Panel>
-      <Tabs.Panel id="colab"><SettingsSection title="Colab CLI"><div className="moco-table-empty-state rounded-2xl bg-surface-secondary">{t("暂未开放", "Not available yet")}</div></SettingsSection></Tabs.Panel>
+      <Tabs.Panel id="colab"><SettingsSection title="Colab CLI"><div className="kulo-table-empty-state rounded-2xl bg-surface-secondary">{t("暂未开放", "Not available yet")}</div></SettingsSection></Tabs.Panel>
       <Tabs.Panel id="other"><OtherExtensionsModule snapshot={snapshot?.extensions} connected={connected} disabled={requestsDisabled} target={target} onRequest={onRequest} onRefresh={onRefresh} /></Tabs.Panel>
     </Tabs>
     <ConfirmDialog open={viewNavigation.needsConfirmation} title={t("放弃未保存的修改？", "Discard unsaved changes?")} confirmLabel={t("放弃修改", "Discard changes")} cancelLabel={t("继续编辑", "Keep editing")} status="warning" onCancel={viewNavigation.cancel} onConfirm={() => { setVoiceDirty(false); setSearchDirty(false); setSkillsDirty(false); viewNavigation.discard(); }} />

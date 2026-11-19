@@ -1,9 +1,9 @@
-import { translate, useI18n } from "../../moco-i18n";
+import { translate, useI18n } from "../../kulo-i18n";
 import { Button, Modal, Spinner } from "@heroui/react";
 import { useEffect, useRef, useState } from "react";
-import type { TicketRecord } from "@moco/protocol";
-import { getAuthTokenFromUrl, mocoRest, type TicketDeliverable } from "../../moco-api";
-import { MocoIcon } from "../../moco-icon";
+import type { TicketRecord } from "@kulo/protocol";
+import { getAuthTokenFromUrl, kuloRest, type TicketDeliverable } from "../../kulo-api";
+import { KuloIcon } from "../../kulo-icon";
 import { formatAssetSize } from "../chat/asset-preview";
 
 export function taskPreviewDocument(html: string): string {
@@ -40,7 +40,7 @@ export function TaskDeliverables({ ticket, connected }: { ticket: TicketRecord; 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true); setError(""); setFiles([]); setMissing([]);
-    void mocoRest.getTicketDeliverables(ticket.id, controller.signal).then(result => {
+    void kuloRest.getTicketDeliverables(ticket.id, controller.signal).then(result => {
       if (!controller.signal.aborted) { setFiles(result.files); setMissing(result.missing ?? []); }
     }, (failure: unknown) => {
       if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : t("交付文件加载失败", "Failed to load delivered files"));
@@ -80,27 +80,27 @@ export function TaskDeliverables({ ticket, connected }: { ticket: TicketRecord; 
     requestAnimationFrame(() => previewTrigger.current?.focus({ preventScroll: true }));
   };
   return <>
-    {loading && <div className="moco-task-deliverable-feedback" role="status"><Spinner size="sm" /><span>{t("正在加载交付文件…", "Loading delivered files…")}</span></div>}
-    {files.length > 0 && <ul className="moco-task-deliverables" aria-label={t("交付文件", "Delivered files")}>
-      {files.map(file => <li key={file.id} className="moco-task-file">
-        <MocoIcon name="attach" size={20} />
-        <div className="moco-task-file-description"><strong className="moco-item-title">{file.name}</strong><span className="moco-item-description">{formatAssetSize(file.size)}</span></div>
-        <div className="moco-task-file-actions">
+    {loading && <div className="kulo-task-deliverable-feedback" role="status"><Spinner size="sm" /><span>{t("正在加载交付文件…", "Loading delivered files…")}</span></div>}
+    {files.length > 0 && <ul className="kulo-task-deliverables" aria-label={t("交付文件", "Delivered files")}>
+      {files.map(file => <li key={file.id} className="kulo-task-file">
+        <KuloIcon name="attach" size={20} />
+        <div className="kulo-task-file-description"><strong className="kulo-item-title">{file.name}</strong><span className="kulo-item-description">{formatAssetSize(file.size)}</span></div>
+        <div className="kulo-task-file-actions">
           {file.previewable && <Button variant="primary" size="sm" isDisabled={!connected} aria-label={t(`预览文件：${file.name}`, `Preview file: ${file.name}`)} onPress={(event) => { previewTrigger.current = event.target as HTMLButtonElement; setPreview(file); }}>{t("预览", "Preview")}</Button>}
           <Button variant="secondary" size="sm" isDisabled={!connected || Boolean(downloading)} isPending={downloading === file.id} aria-label={t(`下载文件：${file.name}`, `Download file: ${file.name}`)} onPress={() => { void download(file); }}>{t("下载", "Download")}</Button>
         </div>
       </li>)}
     </ul>}
-    {missing.length > 0 && <p className="moco-item-description" role="status">{t("文件不可用：", "File unavailable: ")}{missing.join(t("、", ", "))}</p>}
-    {error && <div className="moco-task-deliverable-feedback" role="alert"><span>{error}</span><Button size="sm" variant="ghost" isDisabled={!connected} onPress={() => setAttempt(value => value + 1)}>{t("重新加载", "Reload")}</Button></div>}
+    {missing.length > 0 && <p className="kulo-item-description" role="status">{t("文件不可用：", "File unavailable: ")}{missing.join(t("、", ", "))}</p>}
+    {error && <div className="kulo-task-deliverable-feedback" role="alert"><span>{error}</span><Button size="sm" variant="ghost" isDisabled={!connected} onPress={() => setAttempt(value => value + 1)}>{t("重新加载", "Reload")}</Button></div>}
     <Modal.Backdrop isOpen={Boolean(preview)} onOpenChange={open => { if (!open) closePreview(); }}>
       <Modal.Container size="cover" scroll="inside">
-        <Modal.Dialog className="moco-task-file-preview">
+        <Modal.Dialog className="kulo-task-file-preview">
           <Modal.Header><Modal.Heading>{preview?.name}</Modal.Heading><Modal.CloseTrigger aria-label={t("关闭文件预览", "Close file preview")} /></Modal.Header>
-          <Modal.Body className="moco-task-file-preview-body">
-            {previewError ? <div className="moco-task-deliverable-feedback" role="alert"><span>{previewError}</span><Button size="sm" variant="secondary" onPress={() => setPreview(current => current ? { ...current } : current)}>{t("重试", "Retry")}</Button></div>
-              : html === undefined ? <div className="moco-task-deliverable-feedback" role="status"><Spinner size="sm" /><span>{t("正在加载预览…", "Loading preview…")}</span></div>
-                : <iframe title={t(`预览：${preview?.name}`, `Preview: ${preview?.name}`)} sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={taskPreviewDocument(html)} className="moco-task-file-frame" />}
+          <Modal.Body className="kulo-task-file-preview-body">
+            {previewError ? <div className="kulo-task-deliverable-feedback" role="alert"><span>{previewError}</span><Button size="sm" variant="secondary" onPress={() => setPreview(current => current ? { ...current } : current)}>{t("重试", "Retry")}</Button></div>
+              : html === undefined ? <div className="kulo-task-deliverable-feedback" role="status"><Spinner size="sm" /><span>{t("正在加载预览…", "Loading preview…")}</span></div>
+                : <iframe title={t(`预览：${preview?.name}`, `Preview: ${preview?.name}`)} sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={taskPreviewDocument(html)} className="kulo-task-file-frame" />}
           </Modal.Body>
         </Modal.Dialog>
       </Modal.Container>

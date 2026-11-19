@@ -1,11 +1,11 @@
-.moco-mobile-pairing {
+.kulo-mobile-pairing {
   display: flex;
   flex-direction: column;
-  gap: var(--moco-space-4);
+  gap: var(--kulo-space-4);
   min-width: 0;
 }
 
-.moco-mobile-pairing-qr {
+.kulo-mobile-pairing-qr {
   display: flex;
   justify-content: center;
   align-self: center;
@@ -16,41 +16,41 @@
   background: white;
 }
 
-.moco-mobile-pairing-qr svg {
+.kulo-mobile-pairing-qr svg {
   display: block;
   width: 100%;
   height: auto;
 }
 
-.moco-mobile-pairing-status {
+.kulo-mobile-pairing-status {
   display: flex;
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
-  gap: var(--moco-space-2);
+  gap: var(--kulo-space-2);
   color: var(--muted);
-  font-size: var(--moco-text-caption);
-  line-height: var(--moco-leading-caption);
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
 }
 
-.moco-mobile-pairing-status > span:last-child {
+.kulo-mobile-pairing-status > span:last-child {
   white-space: nowrap;
 }
 
-.moco-mobile-pairing-network {
+.kulo-mobile-pairing-network {
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: var(--moco-space-2);
+  gap: var(--kulo-space-2);
   color: var(--muted);
-  font-size: var(--moco-text-caption);
-  line-height: var(--moco-leading-caption);
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
 }
 
-.moco-mobile-pairing-actions {
+.kulo-mobile-pairing-actions {
   display: flex;
   justify-content: center;
   flex-wrap: wrap;
-  gap: var(--moco-space-2);
+  gap: var(--kulo-space-2);
 }

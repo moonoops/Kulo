@@ -1,6 +1,6 @@
 import os from "node:os";
 import { execFileSync } from "node:child_process";
-import { normalizeDeviceIp } from "@moco/protocol";
+import { normalizeDeviceIp } from "@kulo/protocol";
 
 interface NetworkAddress {
   address: string;

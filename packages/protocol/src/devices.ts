@@ -69,7 +69,7 @@ export interface DeviceJoinMatch extends ParsedDeviceJoinInput {
 
 const INVITE_TOKEN_RE = /^[A-Za-z0-9_-]{24,200}$/;
 const HUB_ID_RE = /^[A-Za-z0-9_-]{1,100}$/;
-const CHAT_INVITE_PREFIX = "MOCO-JOIN/1 ";
+const CHAT_INVITE_PREFIX = "KULO-JOIN/1 ";
 
 function isSafeHubName(name: unknown, inviteToken: string): name is string {
   return typeof name === "string" && name.length > 0 && name.length <= 100 && name === name.trim() &&
@@ -99,7 +99,7 @@ export function formatDeviceChatInvitation(input: Required<DeviceChatInvitation>
     throw new Error("设备接入邀请无效。");
   }
   const hostname = new URL(hubUrl).hostname;
-  const name = isSafeHubName(input.hubName, input.inviteToken) ? input.hubName : hostname.length <= 100 ? hostname : "Moco";
+  const name = isSafeHubName(input.hubName, input.inviteToken) ? input.hubName : hostname.length <= 100 ? hostname : "Kulo";
   return `${CHAT_INVITE_PREFIX}${hubUrl} ${input.inviteToken} ${input.hubId} ${JSON.stringify(name)}`;
 }
 
@@ -110,7 +110,7 @@ export function formatDeviceInstallerInstructions(
   const command = `curl -fsSL ${quote(`${hubUrl}/connect/install.sh`)} | sh -s -- ${quote(hubUrl)} ${quote(inviteToken)}`;
   const ps = (text: string) => `'${text.replaceAll("'", "''")}'`;
   const windowsCommand = `& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing ${ps(`${hubUrl}/connect/install.ps1`)}).Content)) ${ps(hubUrl)} ${ps(inviteToken)}`;
-  const agentInstructions = `请将这台设备接入现有 Moco 主脑 ${hubUrl}。确保 Node.js 22.19 或更新版本和 npm 可用，按系统运行下面的接入命令，验证设备在线，并打开安装程序输出的本机 Moco 地址，确认能看到主脑的对话和任务。以后运行安装生成的 moco 命令，默认连接这个主脑。\n\nmacOS / Linux：\n${command}\n\nWindows PowerShell：\n${windowsCommand}\n\n配对命令在十分钟内有效且只能使用一次。`;
+  const agentInstructions = `请将这台设备接入现有 Kulo 主脑 ${hubUrl}。确保 Node.js 22.19 或更新版本和 npm 可用，按系统运行下面的接入命令，验证设备在线，并打开安装程序输出的本机 Kulo 地址，确认能看到主脑的对话和任务。以后运行安装生成的 kulo 命令，默认连接这个主脑。\n\nmacOS / Linux：\n${command}\n\nWindows PowerShell：\n${windowsCommand}\n\n配对命令在十分钟内有效且只能使用一次。`;
   return { command, windowsCommand, agentInstructions };
 }
 
@@ -135,7 +135,7 @@ function unquoteShellArg(raw: string): { value: string; innerOffset: number; inn
 // A copied credential still needs to be hidden if its invitation's address or version was edited.
 type InvitationTokenMatch = Omit<DeviceJoinMatch, "hubUrl"> & { hubUrl: string | null };
 
-const DEVICE_COMMAND_MARKER = /MOCO-JOIN\/|\/connect\/install\.|peer\.mjs/u;
+const DEVICE_COMMAND_MARKER = /KULO-JOIN\/|\/connect\/install\.|peer\.mjs/u;
 
 /** Cheap prefilter for stored JSON as well as decoded text, before traversing chat history records. */
 export function mayContainDeviceInvitation(text: string): boolean {
@@ -150,7 +150,7 @@ function scanDeviceInvitationTokens(text: string, includeBarePairs = false): Inv
   if (!scanCommands && !scanBarePairs) return [];
   const matches: InvitationTokenMatch[] = [];
   const seen = new Set<number>();
-  const chatPattern = /MOCO-JOIN\/\d+[ \t]+(\S+)[ \t]+([A-Za-z0-9_-]{24,200})(?![A-Za-z0-9_-])/gu;
+  const chatPattern = /KULO-JOIN\/\d+[ \t]+(\S+)[ \t]+([A-Za-z0-9_-]{24,200})(?![A-Za-z0-9_-])/gu;
   const barePairPattern = /^[\t ]*(https?:\/\/\S+)[\t ]+(['"]?[A-Za-z0-9_-]{24,200}['"]?)(?=[\t ]*\r?$)/gimu;
   const arg = `(?:'(?:''|'\\\\''|[^'\\r\\n])*'|"(?:[^"\\\\\\r\\n])*"|[^\\s'"\\r\\n]+)`;
   const patterns = scanCommands ? [
@@ -167,7 +167,7 @@ function scanDeviceInvitationTokens(text: string, includeBarePairs = false): Inv
       const rawToken = match[2]!;
       const tokenInfo = unquoteShellArg(rawToken);
       if (!INVITE_TOKEN_RE.test(tokenInfo.value)) continue;
-      const supported = pattern !== chatPattern || /^MOCO-JOIN\/1[ \t]/u.test(match[0]);
+      const supported = pattern !== chatPattern || /^KULO-JOIN\/1[ \t]/u.test(match[0]);
       const hubUrl = supported ? normalizeCandidateHubOrigin(unquoteShellArg(rawUrl).value) : null;
       if (pattern === barePairPattern && !hubUrl) continue;
       const tokenStart = match.index + match[0].length - rawToken.length + tokenInfo.innerOffset;
@@ -205,7 +205,7 @@ export function parseStandaloneDeviceInvitation(text: string): DeviceChatInvitat
     return { hubUrl, inviteToken, hubId, hubName };
   }
   if (!content.startsWith("curl -fsSL ") && !content.startsWith("& ([scriptblock]::Create(") &&
-    !content.startsWith("请将这台设备接入现有 Moco 主脑 ")) return undefined;
+    !content.startsWith("请将这台设备接入现有 Kulo 主脑 ")) return undefined;
   const first = extractDeviceJoinMatches(content)[0];
   if (!first) return undefined;
   const input = { hubUrl: first.hubUrl, inviteToken: first.inviteToken };
@@ -242,7 +242,7 @@ export function parseDeviceJoinInput(rawInput: string, explicitToken?: string): 
     if (!INVITE_TOKEN_RE.test(token)) throw new Error("配对凭证格式无效。");
     return { hubUrl, inviteToken: token };
   }
-  if (rawInput.trimStart().startsWith("MOCO-JOIN/")) {
+  if (rawInput.trimStart().startsWith("KULO-JOIN/")) {
     const parsed = parseStandaloneDeviceInvitation(rawInput.trim());
     if (!parsed) throw new Error("设备接入邀请无效。");
     return parsed;

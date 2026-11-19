@@ -1,13 +1,13 @@
-@reference "../../moco.css";
+@reference "../../kulo.css";
 
-.moco-conversation-library-body { display: flex; flex-direction: column; gap: var(--moco-form-gap); min-width: 0; }
-.moco-conversation-library-scope { display: flex; flex-wrap: wrap; align-items: center; gap: var(--moco-control-gap); }
-.moco-conversation-library-item { display: flex; flex: 1; flex-direction: column; gap: var(--moco-space-1); min-width: 0; }
-.moco-conversation-search-excerpt { white-space: pre-wrap; overflow-wrap: anywhere; }
-.moco-conversation-search-match { background: var(--surface-secondary); color: var(--foreground); font-weight: 600; }
-.moco-conversation-file-name { overflow-wrap: anywhere; }
-.moco-conversation-library-status { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--moco-control-gap); padding: var(--moco-list-padding-block) var(--moco-list-padding-inline); color: var(--muted); }
-.moco-message-target { min-width: 0; scroll-margin-block: var(--moco-overlay-padding); }
-.moco-message-target[data-message-located="true"] { outline: 1px solid var(--border); outline-offset: var(--moco-control-gap); }
-.moco-history-location { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--moco-control-gap); padding: var(--moco-space-2) var(--moco-list-padding-inline); }
-.moco-history-location-label { display: flex; align-items: center; gap: var(--moco-control-gap); }
+.kulo-conversation-library-body { display: flex; flex-direction: column; gap: var(--kulo-form-gap); min-width: 0; }
+.kulo-conversation-library-scope { display: flex; flex-wrap: wrap; align-items: center; gap: var(--kulo-control-gap); }
+.kulo-conversation-library-item { display: flex; flex: 1; flex-direction: column; gap: var(--kulo-space-1); min-width: 0; }
+.kulo-conversation-search-excerpt { white-space: pre-wrap; overflow-wrap: anywhere; }
+.kulo-conversation-search-match { background: var(--surface-secondary); color: var(--foreground); font-weight: 600; }
+.kulo-conversation-file-name { overflow-wrap: anywhere; }
+.kulo-conversation-library-status { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--kulo-control-gap); padding: var(--kulo-list-padding-block) var(--kulo-list-padding-inline); color: var(--muted); }
+.kulo-message-target { min-width: 0; scroll-margin-block: var(--kulo-overlay-padding); }
+.kulo-message-target[data-message-located="true"] { outline: 1px solid var(--border); outline-offset: var(--kulo-control-gap); }
+.kulo-history-location { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--kulo-control-gap); padding: var(--kulo-space-2) var(--kulo-list-padding-inline); }
+.kulo-history-location-label { display: flex; align-items: center; gap: var(--kulo-control-gap); }

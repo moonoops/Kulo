@@ -11,7 +11,7 @@ import {
   type TicketStatus,
   type TopicSummary,
   type WorkerReportState,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import { clampTicketCardReport } from "./report-overflow.js";
 
 export type ProcessedCommandEntry = {
@@ -31,7 +31,7 @@ export type TopicTitleJob = {
   failure?: { code: "thinking_configuration" | "provider_error" | "invalid_response" | "generation_error"; message: string };
 };
 
-export type MocoDurableState = {
+export type KuloDurableState = {
   nextTicketNumber: number;
   tickets: Record<string, TicketRecord>;
   commandIndex: Record<string, string>;
@@ -47,7 +47,7 @@ export type MocoDurableState = {
   conversationToTopic?: Record<string, string>;
   topicTitles?: Record<string, TopicTitleJob>;
   fileDeliveryFailures?: Record<string, { runEpoch: number; errors: Record<string, string> }>;
-  workerArtifacts?: Record<string, import("@moco/protocol").ChatAttachment[]>;
+  workerArtifacts?: Record<string, import("@kulo/protocol").ChatAttachment[]>;
   slots: {
     holders: string[];
     writeHolders?: string[];
@@ -55,10 +55,10 @@ export type MocoDurableState = {
 };
 
 const MAX_PROCESSED_COMMANDS = 256;
-export const MOCO_STATE_VERSION = 2;
+export const KULO_STATE_VERSION = 2;
 
 export function recordProcessedCommand(
-  state: MocoDurableState,
+  state: KuloDurableState,
   commandId: string | undefined,
   ticketId: string,
   action: string,
@@ -84,9 +84,9 @@ export function recordProcessedCommand(
   }
 }
 
-export const MocoStateDoc = defineDoc<MocoDurableState & JsonObject>({
-  kind: "moco.state",
-  version: MOCO_STATE_VERSION,
+export const KuloStateDoc = defineDoc<KuloDurableState & JsonObject>({
+  kind: "kulo.state",
+  version: KULO_STATE_VERSION,
   scope: "session",
   initial: () =>
     ({
@@ -102,10 +102,10 @@ export const MocoStateDoc = defineDoc<MocoDurableState & JsonObject>({
       slots: {
         holders: [],
       },
-    }) as MocoDurableState & JsonObject,
+    }) as KuloDurableState & JsonObject,
   migrate: (value, fromVersion) => {
-    if (fromVersion !== 1) throw new Error(`Unsupported Moco state migration from version ${fromVersion}`);
-    const state = structuredClone(value) as MocoDurableState & JsonObject;
+    if (fromVersion !== 1) throw new Error(`Unsupported Kulo state migration from version ${fromVersion}`);
+    const state = structuredClone(value) as KuloDurableState & JsonObject;
     ensureHolders(state);
     for (const ticket of Object.values(state.tickets)) {
       if (ticket.status !== "blocked") continue;
@@ -134,8 +134,8 @@ export const MocoStateDoc = defineDoc<MocoDurableState & JsonObject>({
 });
 
 export function ensureDefaultRootTopic(
-  state: MocoDurableState,
-  agentName = "Moco",
+  state: KuloDurableState,
+  agentName = "Kulo",
 ): TopicSummary {
   state.topics ??= {};
   state.conversationToTopic ??= {};
@@ -159,7 +159,7 @@ export function ensureDefaultRootTopic(
 
 export function isOrchestratorConversation(
   conversationId: unknown,
-  state: Readonly<MocoDurableState> | undefined,
+  state: Readonly<KuloDurableState> | undefined,
 ): boolean {
   if (conversationId === ROOT_CONVERSATION_ID) return true;
   const key = String(conversationId);
@@ -177,7 +177,7 @@ export interface TicketExecutionScope {
 }
 
 export function resolveTicketExecutionScope(
-  state: Readonly<MocoDurableState> | undefined,
+  state: Readonly<KuloDurableState> | undefined,
   conversationId: unknown,
 ): TicketExecutionScope | undefined {
   if (!state) return undefined;
@@ -219,11 +219,11 @@ export type WorkerRelayEntryData = {
   deliverable: string | null;
   pendingAssets?: string[];
   question: string | null;
-  sources?: import("@moco/protocol").WebSource[];
+  sources?: import("@kulo/protocol").WebSource[];
   searchSuggestions?: string[];
 };
 
-export const WorkerRelayEntry = defineEntry<WorkerRelayEntryData>("moco.worker_relay");
+export const WorkerRelayEntry = defineEntry<WorkerRelayEntryData>("kulo.worker_relay");
 
 export type WorkerWatchdogEntryData = {
   ticketId: string;
@@ -235,7 +235,7 @@ export type WorkerWatchdogEntryData = {
   runEpoch: number;
 };
 
-export const WorkerWatchdogEntry = defineEntry<WorkerWatchdogEntryData>("moco.worker_watchdog");
+export const WorkerWatchdogEntry = defineEntry<WorkerWatchdogEntryData>("kulo.worker_watchdog");
 
 export type WorkerRecoveryEntryData = {
   ticketId: string;
@@ -244,14 +244,14 @@ export type WorkerRecoveryEntryData = {
   attempt: number;
   runEpoch: number;
 };
-export const WorkerRecoveryEntry = defineEntry<WorkerRecoveryEntryData>("moco.worker_recovery");
+export const WorkerRecoveryEntry = defineEntry<WorkerRecoveryEntryData>("kulo.worker_recovery");
 
 export function isRecoveryInputBoundary(entry: EntryRecord): boolean {
   return WorkerRecoveryEntry.is(entry) || WorkerRelayEntry.is(entry) || WorkerWatchdogEntry.is(entry) ||
-    UserEntry.is(entry) || entry.kind === "moco.user" || entry.kind === "moco.voice.delegation";
+    UserEntry.is(entry) || entry.kind === "kulo.user" || entry.kind === "kulo.voice.delegation";
 }
 
-function ensureHolders(state: MocoDurableState): string[] {
+function ensureHolders(state: KuloDurableState): string[] {
   const rawSlots = state.slots as {
     holders?: string[];
     normalHolders?: string[];
@@ -339,7 +339,7 @@ export function transitionTicketStatus(ticket: TicketRecord, status: TicketStatu
   if (status !== previous) ticket.updatedAt = at;
 }
 
-export function hasActiveSubagents(state: Readonly<MocoDurableState>, ticketId: string): boolean {
+export function hasActiveSubagents(state: Readonly<KuloDurableState>, ticketId: string): boolean {
   return Object.values(state.subagents ?? {}).some((subagent) =>
     subagent.ticketId === ticketId && (
       subagent.state === "running" ||
@@ -374,7 +374,7 @@ export function ticketsShareWriteScope(a: Readonly<TicketRecord>, b: Readonly<Ti
   return contains(left.value, right.value) || contains(right.value, left.value);
 }
 
-function ensureWriteHolders(state: MocoDurableState): string[] {
+function ensureWriteHolders(state: KuloDurableState): string[] {
   const holders = ensureHolders(state);
   state.slots.writeHolders ??= [];
   for (const id of holders) {
@@ -395,7 +395,7 @@ function ensureWriteHolders(state: MocoDurableState): string[] {
   return state.slots.writeHolders;
 }
 
-function canClaimWrite(state: MocoDurableState, ticket: Readonly<TicketRecord>): boolean {
+function canClaimWrite(state: KuloDurableState, ticket: Readonly<TicketRecord>): boolean {
   if (ticket.readOnly) return true;
   return !ensureWriteHolders(state).some((id) =>
     id !== ticket.id && ticketsShareWriteScope(ticket, state.tickets[id]!),
@@ -413,7 +413,7 @@ function compareQueueOrder(a: Readonly<TicketRecord>, b: Readonly<TicketRecord>)
 }
 
 export function tryClaimSlot(
-  state: MocoDurableState,
+  state: KuloDurableState,
   ticketId: string,
   maxConcurrentWorkers: number,
   options: { isRunnable?: (ticket: Readonly<TicketRecord>) => boolean } = {},
@@ -459,7 +459,7 @@ export function tryClaimSlot(
 }
 
 export function releaseProjectWrite(
-  state: MocoDurableState,
+  state: KuloDurableState,
   ticketId: string,
   options: { force?: boolean } = {},
 ): boolean {
@@ -471,7 +471,7 @@ export function releaseProjectWrite(
 }
 
 export function releaseSlot(
-  state: MocoDurableState,
+  state: KuloDurableState,
   ticketId: string,
   options: { force?: boolean; releaseWrite?: boolean } = {},
 ): boolean {
@@ -484,7 +484,7 @@ export function releaseSlot(
 }
 
 export function computeSlotSummary(
-  state: Readonly<MocoDurableState>,
+  state: Readonly<KuloDurableState>,
   maxConcurrentWorkers: number,
   queuedCount = Object.values(state.tickets).reduce((count, ticket) => count + Number(ticket.status === "queued"), 0),
 ): SlotSummary {
@@ -555,7 +555,7 @@ export function toTicketCardView(
 }
 
 export function listSortedTicketCards(
-  state: Readonly<MocoDurableState>,
+  state: Readonly<KuloDurableState>,
   roles: Record<string, RolePreset>,
 ): TicketCardView[] {
   return Object.values(state.tickets)
@@ -563,7 +563,7 @@ export function listSortedTicketCards(
     .sort(compareTicketCards);
 }
 
-export function listSortedTopics(state: Readonly<MocoDurableState>): TopicSummary[] {
+export function listSortedTopics(state: Readonly<KuloDurableState>): TopicSummary[] {
   const map = state.topics ?? {};
   return Object.values(map)
     .filter((topic) => topic.deletedAt === undefined)

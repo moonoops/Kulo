@@ -61,7 +61,7 @@ export function createDesktopMenuTemplate(options: DesktopMenuOptions): MenuItem
         { type: "separator" },
         { label: "设置…", accelerator: "CmdOrCtrl+,", click: () => options.onCommand("open-settings") },
         { type: "separator" },
-        { label: "显示 Moco", click: options.onFocusWindow },
+        { label: "显示 Kulo", click: options.onFocusWindow },
         { label: "打开数据目录", click: options.onOpenDataDir },
         { label: "打开日志", click: options.onOpenLog },
         { type: "separator" },

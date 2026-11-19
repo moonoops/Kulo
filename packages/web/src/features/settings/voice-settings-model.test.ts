@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { VoiceSnapshot } from "@moco/protocol";
+import type { VoiceSnapshot } from "@kulo/protocol";
 import {
   acceptVoiceSettings,
   createVoiceSettingsEditor,

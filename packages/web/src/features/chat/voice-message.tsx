@@ -1,9 +1,9 @@
-import { translate as tr, useI18n } from "../../moco-i18n";
+import { translate as tr, useI18n } from "../../kulo-i18n";
 import { Button, Link, Popover, ProgressBar, Slider, Spinner } from "@heroui/react";
-import type { ChatAttachment } from "@moco/protocol";
+import type { ChatAttachment } from "@kulo/protocol";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type SyntheticEvent } from "react";
-import { resolveAssetUrl } from "../../moco-api";
-import { MocoIcon } from "../../moco-icon";
+import { resolveAssetUrl } from "../../kulo-api";
+import { KuloIcon } from "../../kulo-icon";
 import { safeContentUrl } from "./asset-preview";
 import { formatMediaTime, pauseOtherMedia, registerMedia } from "./media-message";
 import { useVoiceWorkspace } from "../voice/voice-context";
@@ -30,7 +30,7 @@ function durationLabel(seconds: number, approximate: boolean): string {
 }
 
 function SoundGlyph() {
-  return <MocoIcon name="speaker" size={22} />;
+  return <KuloIcon name="speaker" size={22} />;
 }
 
 export function VoiceMessage({ asset, conversationKey }: { asset: ChatAttachment; conversationKey?: string }) {
@@ -122,7 +122,7 @@ export function VoiceMessage({ asset, conversationKey }: { asset: ChatAttachment
   };
   const readableDuration = duration.seconds > 0 ? tr(`${duration.approximate ? "约" : ""}${Math.ceil(duration.seconds)}秒`, `${duration.approximate ? "About " : ""}${Math.ceil(duration.seconds)} seconds`) : tr("时长加载中", "Loading duration");
   const failure = !source ? tr("语音地址不可用", "Voice URL unavailable") : error;
-  return <div className="moco-voice-message" data-options-open={optionsOpen || undefined} style={{ "--voice-width": `${voiceBubbleWidth(duration.seconds)}px` } as CSSProperties}>
+  return <div className="kulo-voice-message" data-options-open={optionsOpen || undefined} style={{ "--voice-width": `${voiceBubbleWidth(duration.seconds)}px` } as CSSProperties}>
     <audio ref={mediaRef} src={source} preload="metadata" hidden aria-label={asset.name || tr("语音消息", "Voice message")}
       onLoadedMetadata={metadata} onDurationChange={metadata}
       onTimeUpdate={(event) => setTime(event.currentTarget.currentTime)}
@@ -132,37 +132,37 @@ export function VoiceMessage({ asset, conversationKey }: { asset: ChatAttachment
       onEnded={() => { setPlaying(false); setBuffering(false); }}
       onWaiting={() => setBuffering(true)} onCanPlay={() => setBuffering(false)}
       onError={() => { setPlaying(false); setBuffering(false); setError(tr("语音无法播放", "Unable to play voice message")); }} />
-    <div className="moco-voice-row">
-      <span className="moco-voice-options-anchor">
+    <div className="kulo-voice-row">
+      <span className="kulo-voice-options-anchor">
         <Popover isOpen={optionsOpen} onOpenChange={setOptionsOpen}>
-          <Button isIconOnly variant="ghost" size="sm" aria-label={tr("语音选项", "Voice options")} className="moco-voice-options-trigger"><MocoIcon name="more" size={18} /></Button>
-          <Popover.Content placement="bottom end" className="moco-voice-options">
+          <Button isIconOnly variant="ghost" size="sm" aria-label={tr("语音选项", "Voice options")} className="kulo-voice-options-trigger"><KuloIcon name="more" size={18} /></Button>
+          <Popover.Content placement="bottom end" className="kulo-voice-options">
             <Popover.Dialog aria-label={tr("语音选项", "Voice options")}>
-              <div className="moco-voice-position"><span>{formatMediaTime(time)}</span><span>{duration.approximate ? tr("约 ", "About ") : ""}{duration.seconds > 0 ? formatMediaTime(duration.seconds) : "--:--"}</span></div>
-              <Slider aria-label={tr("语音播放位置", "Voice playback position")} minValue={0} maxValue={duration.seconds > 0 ? duration.seconds : 1} step={0.1} value={Math.min(time, duration.seconds > 0 ? duration.seconds : 1)} onChange={seek} isDisabled={!loaded || !duration.seconds} className="moco-voice-seek">
+              <div className="kulo-voice-position"><span>{formatMediaTime(time)}</span><span>{duration.approximate ? tr("约 ", "About ") : ""}{duration.seconds > 0 ? formatMediaTime(duration.seconds) : "--:--"}</span></div>
+              <Slider aria-label={tr("语音播放位置", "Voice playback position")} minValue={0} maxValue={duration.seconds > 0 ? duration.seconds : 1} step={0.1} value={Math.min(time, duration.seconds > 0 ? duration.seconds : 1)} onChange={seek} isDisabled={!loaded || !duration.seconds} className="kulo-voice-seek">
                 <Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track>
               </Slider>
-              {source && <Link href={source} download={asset.name} target="_blank" rel="noopener noreferrer" className="moco-voice-download">{tr("下载语音", "Download voice message")}</Link>}
+              {source && <Link href={source} download={asset.name} target="_blank" rel="noopener noreferrer" className="kulo-voice-download">{tr("下载语音", "Download voice message")}</Link>}
               {(voice?.snapshot?.asr.enabled || transcriptText) && <Button size="sm" variant="ghost" isDisabled={transcribing || !transcriptText && !voice?.connected} onPress={() => { void showTranscript(); }}>{transcribing ? <Spinner size="sm" /> : null}{transcriptOpen ? tr("收起文字", "Hide transcript") : transcriptText ? tr("查看文字", "View transcript") : tr("转文字", "Transcribe")}</Button>}
             </Popover.Dialog>
           </Popover.Content>
         </Popover>
       </span>
-      <div className="moco-voice-surface">
-        <Button variant="secondary" className="moco-voice-bubble" aria-label={tr(`${playing ? "暂停" : "播放"}语音，${readableDuration}`, `${playing ? "Pause" : "Play"} voice message, ${readableDuration}`)} aria-pressed={playing} aria-busy={buffering || undefined} isDisabled={!source} onPress={toggle} onKeyDown={(event) => {
+      <div className="kulo-voice-surface">
+        <Button variant="secondary" className="kulo-voice-bubble" aria-label={tr(`${playing ? "暂停" : "播放"}语音，${readableDuration}`, `${playing ? "Pause" : "Play"} voice message, ${readableDuration}`)} aria-pressed={playing} aria-busy={buffering || undefined} isDisabled={!source} onPress={toggle} onKeyDown={(event) => {
           if (event.key === "ArrowLeft") { event.preventDefault(); seek(time - 5); }
           if (event.key === "ArrowRight") { event.preventDefault(); seek(time + 5); }
         }}>
-          <span className="moco-voice-duration">{label}</span>
-          <span className="moco-voice-sound">{playing ? <MocoIcon name="pause" size={20} /> : <SoundGlyph />}</span>
+          <span className="kulo-voice-duration">{label}</span>
+          <span className="kulo-voice-sound">{playing ? <KuloIcon name="pause" size={20} /> : <SoundGlyph />}</span>
         </Button>
-        {duration.seconds > 0 && (time > 0 || playing) && <ProgressBar aria-label={tr("语音播放进度", "Voice playback progress")} value={Math.min(100, Math.max(0, time / duration.seconds * 100))} size="sm" className="moco-voice-progress" valueLabel={tr(`${formatMediaTime(time)} / ${duration.approximate ? "约 " : ""}${formatMediaTime(duration.seconds)}`, `${formatMediaTime(time)} / ${duration.approximate ? "About " : ""}${formatMediaTime(duration.seconds)}`)}><ProgressBar.Track><ProgressBar.Fill /></ProgressBar.Track></ProgressBar>}
+        {duration.seconds > 0 && (time > 0 || playing) && <ProgressBar aria-label={tr("语音播放进度", "Voice playback progress")} value={Math.min(100, Math.max(0, time / duration.seconds * 100))} size="sm" className="kulo-voice-progress" valueLabel={tr(`${formatMediaTime(time)} / ${duration.approximate ? "约 " : ""}${formatMediaTime(duration.seconds)}`, `${formatMediaTime(time)} / ${duration.approximate ? "About " : ""}${formatMediaTime(duration.seconds)}`)}><ProgressBar.Track><ProgressBar.Fill /></ProgressBar.Track></ProgressBar>}
       </div>
     </div>
-    {transcribing && <span className="moco-voice-status" role="status">{tr("正在转文字", "Transcribing")}</span>}
-    {transcriptError && <div className="moco-voice-failure"><span role="alert">{transcriptError}</span><Button variant="ghost" size="sm" onPress={() => { void showTranscript(); }}>{tr("重试", "Retry")}</Button></div>}
-    {transcriptOpen && <div className="moco-voice-transcript-expanded"><p tabIndex={0} aria-label={tr("文字稿", "Transcript")}>{transcriptText}</p><div className="flex gap-1"><Button size="sm" variant="ghost" onPress={() => { void (async () => { try { await navigator.clipboard.writeText(transcriptText); setTranscriptCopied(true); } catch { setTranscriptError(tr("复制失败，请选择文字复制", "Copy failed. Select the text to copy it.")); } })(); }}>{transcriptCopied ? tr("已复制", "Copied") : tr("复制", "Copy")}</Button><Button size="sm" variant="ghost" onPress={() => setTranscriptOpen(false)}>{tr("收起", "Collapse")}</Button></div></div>}
-    {buffering && !failure && <span className="moco-voice-status" role="status">{tr("缓冲中", "Buffering")}</span>}
-    {failure && <div className="moco-voice-failure"><span role="status">{failure}</span>{source && <><Button variant="ghost" size="sm" onPress={retry}>{tr("重试", "Retry")}</Button><Link href={source} download={asset.name} target="_blank" rel="noopener noreferrer" className="moco-voice-download">{tr("下载", "Download")}</Link></>}</div>}
+    {transcribing && <span className="kulo-voice-status" role="status">{tr("正在转文字", "Transcribing")}</span>}
+    {transcriptError && <div className="kulo-voice-failure"><span role="alert">{transcriptError}</span><Button variant="ghost" size="sm" onPress={() => { void showTranscript(); }}>{tr("重试", "Retry")}</Button></div>}
+    {transcriptOpen && <div className="kulo-voice-transcript-expanded"><p tabIndex={0} aria-label={tr("文字稿", "Transcript")}>{transcriptText}</p><div className="flex gap-1"><Button size="sm" variant="ghost" onPress={() => { void (async () => { try { await navigator.clipboard.writeText(transcriptText); setTranscriptCopied(true); } catch { setTranscriptError(tr("复制失败，请选择文字复制", "Copy failed. Select the text to copy it.")); } })(); }}>{transcriptCopied ? tr("已复制", "Copied") : tr("复制", "Copy")}</Button><Button size="sm" variant="ghost" onPress={() => setTranscriptOpen(false)}>{tr("收起", "Collapse")}</Button></div></div>}
+    {buffering && !failure && <span className="kulo-voice-status" role="status">{tr("缓冲中", "Buffering")}</span>}
+    {failure && <div className="kulo-voice-failure"><span role="status">{failure}</span>{source && <><Button variant="ghost" size="sm" onPress={retry}>{tr("重试", "Retry")}</Button><Link href={source} download={asset.name} target="_blank" rel="noopener noreferrer" className="kulo-voice-download">{tr("下载", "Download")}</Link></>}</div>}
   </div>;
 }

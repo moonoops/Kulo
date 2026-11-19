@@ -7,8 +7,8 @@ import {
   type ImageCapabilityDraft, type ImageConfigurationWorkspace, type ImageDraftSaveResult,
   type ImageDraftUpdateRequest, type ImageModelCandidate, type ImageModelDiscovery,
   type ImageModelImportResult, type ImageProviderConnection, type ProviderCatalogItem,
-} from "@moco/protocol";
-import { CapabilityError, type MocoCapabilities } from "./capabilities.js";
+} from "@kulo/protocol";
+import { CapabilityError, type KuloCapabilities } from "./capabilities.js";
 import { discoverImageProviderAdapters } from "./image-provider-adapters.js";
 
 interface ImageConfigurationState {
@@ -19,14 +19,14 @@ interface ImageConfigurationState {
 }
 
 export const ImageConfigurationDoc = defineDoc<ImageConfigurationState & JsonObject>({
-  kind: "moco.image-configuration", version: 1, scope: "session",
+  kind: "kulo.image-configuration", version: 1, scope: "session",
   initial: () => ({ draftSequence: 0, drafts: {}, discoveries: {}, receipts: {} }) as ImageConfigurationState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
 
 interface ImageConfigurationOptions {
   harness: Harness;
-  capabilities: MocoCapabilities;
+  capabilities: KuloCapabilities;
   providers: () => Promise<ProviderCatalogItem[]>;
   discover: (request: DiscoverModelsRequest) => Promise<DiscoverModelsResponse>;
   onChanged: () => void | Promise<void>;
@@ -118,7 +118,7 @@ function providerConnection(raw: ProviderCatalogItem): ImageProviderConnection {
   };
 }
 
-export class MocoImageConfiguration {
+export class KuloImageConfiguration {
   #options: ImageConfigurationOptions;
   #queues = new Map<string, Promise<unknown>>();
 

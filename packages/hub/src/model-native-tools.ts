@@ -3,7 +3,7 @@ import {
   type ModelsApiStreamOptions, type ModelsSimpleStreamOptions, type StreamOptions,
 } from "@earendil-works/pi-ai";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
-import type { ModelNativeTools, WebSource } from "@moco/protocol";
+import type { ModelNativeTools, WebSource } from "@kulo/protocol";
 import { sanitizeSearchSources } from "./search-sources.js";
 import { normalizeWebSourceUrl, sanitizeSearchSuggestions, webSourceId } from "./web-content.js";
 import {
@@ -20,9 +20,9 @@ const GOOGLE_APIS = new Set(["google-generative-ai", "google-vertex"]);
 const RESPONSES_APIS = new Set(["openai-responses", "azure-openai-responses", "openai-codex-responses"]);
 
 export interface NativeSearchMessage extends AssistantMessage {
-  mocoSearchSources?: WebSource[];
-  mocoSearchSuggestions?: string[];
-  mocoNativeContent?: NativeContentEnvelope;
+  kuloSearchSources?: WebSource[];
+  kuloSearchSuggestions?: string[];
+  kuloNativeContent?: NativeContentEnvelope;
 }
 
 export interface NativeToolsModelsOptions {
@@ -325,12 +325,12 @@ function nativeStream(
         if (!["error", "aborted", "length", "pending", "deferred"].includes(complete.stopReason)) {
           const sources = capture.sources();
           if (sources.length) {
-            complete.mocoSearchSources = sources;
-            if (capture.suggestion) complete.mocoSearchSuggestions = [capture.suggestion];
+            complete.kuloSearchSources = sources;
+            if (capture.suggestion) complete.kuloSearchSuggestions = [capture.suggestion];
           }
           if (model.api === "anthropic-messages" && nativeBlocks.some((block) => block.type === "server_tool_use" || block.type === "web_search_tool_result" || array(block.citations).length > 0)) {
             assertNativeBlocksMatch(nativeBlocks, complete, model);
-            complete.mocoNativeContent = {
+            complete.kuloNativeContent = {
               version: 1, provider: model.provider, api: "anthropic-messages", model: model.id,
               ...(complete.responseId ? { responseId: complete.responseId } : {}),
               contentHash: nativeContentHash(complete.content), blocks: nativeBlocks,
@@ -365,7 +365,7 @@ export function withNativeToolsModels(models: Models, config: NativeToolsModelsO
           const compatible = supportsNativeWebSearch(model.api, model) &&
             (!GOOGLE_APIS.has(model.api) || !context.tools?.some((tool) => tool.name !== "web_search"));
           const webSearch = compatible && Boolean(config.getNativeTools(model.provider, model.id)?.webSearch);
-          const hasNativeHistory = model.api === "anthropic-messages" && context.messages.some((message) => message.role === "assistant" && message.provider === model.provider && message.api === model.api && message.model === model.id && (message as NativeSearchMessage).mocoNativeContent !== undefined);
+          const hasNativeHistory = model.api === "anthropic-messages" && context.messages.some((message) => message.role === "assistant" && message.provider === model.provider && message.api === model.api && message.model === model.id && (message as NativeSearchMessage).kuloNativeContent !== undefined);
           if (!webSearch && !hasNativeHistory) {
             const member = target[property as "stream"] as (...args: unknown[]) => unknown;
             return member.call(target, model, context, options);

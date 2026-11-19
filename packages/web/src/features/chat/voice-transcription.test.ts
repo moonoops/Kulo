@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatAttachment } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
+import type { ChatAttachment } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
 import { voiceApi } from "../voice/voice-api";
 import { transcribeVoiceRecording } from "./voice-transcription";
 import type { VoiceRecording } from "./voice-recorder";
 
-vi.mock("../../moco-api", () => ({ mocoRest: { uploadFile: vi.fn() } }));
+vi.mock("../../kulo-api", () => ({ kuloRest: { uploadFile: vi.fn() } }));
 vi.mock("../voice/voice-api", () => ({ voiceApi: { transcribe: vi.fn() } }));
 const recording: VoiceRecording = { id: "recording-one", file: new File(["audio"], "语音输入.webm", { type: "audio/webm" }), duration: 5 };
 const asset: ChatAttachment = { id: "audio-one", name: recording.file.name, kind: "audio", mimeType: "audio/webm", size: 5, url: "/api/uploads/audio-one" };
@@ -13,7 +13,7 @@ const target = { topicId: "topic-a", clientId: "client-one" };
 const options = () => ({ signal: new AbortController().signal, onProgress: vi.fn() });
 
 beforeEach(() => {
-  vi.mocked(mocoRest.uploadFile).mockReset().mockResolvedValue(asset);
+  vi.mocked(kuloRest.uploadFile).mockReset().mockResolvedValue(asset);
   vi.mocked(voiceApi.transcribe).mockReset().mockResolvedValue({ transcript: { text: "转写的内容", status: "ready" } });
 });
 
@@ -21,7 +21,7 @@ describe("voice draft transcription", () => {
   it("uploads audio and returns editable text without sending a chat message", async () => {
     const input = options();
     await expect(transcribeVoiceRecording(recording, target, input)).resolves.toBe("转写的内容");
-    expect(mocoRest.uploadFile).toHaveBeenCalledWith(recording.file, recording.file.name, {
+    expect(kuloRest.uploadFile).toHaveBeenCalledWith(recording.file, recording.file.name, {
       signal: input.signal, onProgress: input.onProgress, idempotencyKey: recording.id,
     });
     expect(voiceApi.transcribe).toHaveBeenCalledWith({ assetId: asset.id, ...target }, input.signal);
@@ -37,18 +37,18 @@ describe("voice draft transcription", () => {
     vi.mocked(voiceApi.transcribe).mockRejectedValueOnce(new Error("转写暂不可用"));
     await expect(transcribeVoiceRecording(recording, target, options())).rejects.toThrow("转写暂不可用");
     await expect(transcribeVoiceRecording(recording, target, options())).resolves.toBe("转写的内容");
-    expect(vi.mocked(mocoRest.uploadFile).mock.calls.map((call) => call[2]?.idempotencyKey)).toEqual([recording.id, recording.id]);
+    expect(vi.mocked(kuloRest.uploadFile).mock.calls.map((call) => call[2]?.idempotencyKey)).toEqual([recording.id, recording.id]);
   });
 
   it("does not start uploading a cancelled recording", async () => {
     const controller = new AbortController(); controller.abort();
     await expect(transcribeVoiceRecording(recording, target, { ...options(), signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
-    expect(mocoRest.uploadFile).not.toHaveBeenCalled();
+    expect(kuloRest.uploadFile).not.toHaveBeenCalled();
   });
 
   it("does not transcribe after cancellation during upload", async () => {
     const controller = new AbortController();
-    vi.mocked(mocoRest.uploadFile).mockImplementationOnce(async () => { controller.abort(); return asset; });
+    vi.mocked(kuloRest.uploadFile).mockImplementationOnce(async () => { controller.abort(); return asset; });
     await expect(transcribeVoiceRecording(recording, target, { ...options(), signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
     expect(voiceApi.transcribe).not.toHaveBeenCalled();
   });

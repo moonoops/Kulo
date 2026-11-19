@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Alert, Button, Popover } from "@heroui/react";
-import { useI18n } from "../moco-i18n";
+import { useI18n } from "../kulo-i18n";
 import { CatAvatar } from "./cat-avatar";
 import { CAT_APPEARANCES, type CatAppearanceId } from "./cat-catalog";
 import { saveCatPreferences, useCatPreferences } from "./cat-preferences";
@@ -15,26 +15,26 @@ export function CatPicker({ children }: { children: ReactNode }) {
   };
 
   return <Popover isOpen={open} onOpenChange={setOpen}>
-    <Button isIconOnly variant="ghost" className="moco-cat-picker-trigger" aria-label={t("更换 Moco 形象", "Change Moco appearance")}>
+    <Button isIconOnly variant="ghost" className="kulo-cat-picker-trigger" aria-label={t("更换 Kulo 形象", "Change Kulo appearance")}>
       {children}
     </Button>
-    <Popover.Content placement="bottom start" className="moco-cat-picker-popover">
-      <Popover.Dialog className="moco-cat-picker-dialog" aria-label={t("Moco 形象", "Moco appearance")}>
+    <Popover.Content placement="bottom start" className="kulo-cat-picker-popover">
+      <Popover.Dialog className="kulo-cat-picker-dialog" aria-label={t("Kulo 形象", "Kulo appearance")}>
         {preferences.error && <Alert status="danger">
           <Alert.Indicator />
           <Alert.Content><Alert.Description>{preferences.error === "read"
             ? t("无法读取形象偏好，请检查浏览器存储权限。", "Cannot read appearance preferences. Check browser storage permissions.")
             : t("无法保存形象偏好，请检查浏览器存储权限。", "Cannot save appearance preferences. Check browser storage permissions.")}</Alert.Description></Alert.Content>
         </Alert>}
-        <div className="moco-cat-picker-gallery scrollbar" role="group" aria-label={t("选择形象", "Choose appearance")}>
+        <div className="kulo-cat-picker-gallery scrollbar" role="group" aria-label={t("选择形象", "Choose appearance")}>
           {CAT_APPEARANCES.map((appearance) => {
             const label = t(appearance.labelZh, appearance.labelEn);
             const selected = preferences.appearance === appearance.id;
             return <Button key={appearance.id} size="sm" variant={selected ? "secondary" : "ghost"}
-              className="moco-cat-picker-choice" aria-label={label} aria-pressed={selected}
+              className="kulo-cat-picker-choice" aria-label={label} aria-pressed={selected}
               autoFocus={selected || preferences.appearance === "auto" && appearance.id === "sunglasses"}
               onPress={() => choose(appearance.id)}>
-              <CatAvatar appearance={appearance.id} animated={false} className="moco-cat-picker-thumbnail" />
+              <CatAvatar appearance={appearance.id} animated={false} className="kulo-cat-picker-thumbnail" />
             </Button>;
           })}
         </div>

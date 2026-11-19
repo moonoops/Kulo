@@ -1,5 +1,5 @@
-import type { ClientToHubMessage } from "@moco/protocol";
-import type { DraftAttachment } from "../../moco-composer";
+import type { ClientToHubMessage } from "@kulo/protocol";
+import type { DraftAttachment } from "../../kulo-composer";
 import { legacyInvitationCode, redactOutboxInvitation } from "./device-invitation-outbox";
 
 export type ReliableEnvelopeInput = Extract<ClientToHubMessage, { type:

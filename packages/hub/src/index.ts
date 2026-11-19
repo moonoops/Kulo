@@ -7,17 +7,17 @@ export {
   normalizeProviderBaseUrl,
   resolveHubConfig,
   resolveHubStateDir,
-  type MocoHubConfig,
-  type MocoHubConfigOverrides,
-  type MocoCustomizationConfig,
-  type MocoModelConfig,
+  type KuloHubConfig,
+  type KuloHubConfigOverrides,
+  type KuloCustomizationConfig,
+  type KuloModelConfig,
   type OpenAIApiMode,
 } from "./config.js";
 export {
   IDENTITY_FILES,
   IdentityFilesError,
-  MOCO_IDENTITY_TEMPLATES,
-  MocoIdentityFiles,
+  KULO_IDENTITY_TEMPLATES,
+  KuloIdentityFiles,
   readIdentityContext,
 } from "./identity-files.js";
 export {
@@ -28,8 +28,8 @@ export {
   probeHindsightConnection,
 } from "./hindsight.js";
 export {
-  MOCO_GATEWAY_PROVIDER_ID,
-  MOCO_PROVIDER_ID,
+  KULO_GATEWAY_PROVIDER_ID,
+  KULO_PROVIDER_ID,
   clampModelThinkingLevel,
   createOpenAICompatibleModels,
   probeOpenAICompatibleGateway,
@@ -38,51 +38,51 @@ export {
 export {
   FileCredentialStore,
   FileModelsStore,
-  MocoProviderManager,
+  KuloProviderManager,
   localizeOAuthError,
   localizeOAuthProgress,
   localizeOAuthPrompt,
 } from "./providers.js";
 export {
-  MocoSettingsDoc,
+  KuloSettingsDoc,
   SettingsUpdateError,
-  type MocoDurableSettings,
+  type KuloDurableSettings,
 } from "./settings.js";
 export {
-  MocoHub,
+  KuloHub,
   extractDisplayMessages,
   extractLiveState,
   type HubEventListener,
-  type MocoHubInitOptions,
+  type KuloHubInitOptions,
 } from "./hub.js";
-export { startMocoHubServer, type MocoHubServer, type MocoHubServerOptions } from "./server.js";
+export { startKuloHubServer, type KuloHubServer, type KuloHubServerOptions } from "./server.js";
 export { findRunningHub, HubStateInUseError } from "./state-owner.js";
 export { DeviceJoinStaging, type HubDeviceController } from "./tools-devices.js";
-export { MocoPersonality, PersonalityDoc, PersonalityError, defaultPersonalitySettings, nextRelationshipRun } from "./personality.js";
+export { KuloPersonality, PersonalityDoc, PersonalityError, defaultPersonalitySettings, nextRelationshipRun } from "./personality.js";
 export { buildRecentWorkSnapshot } from "./recent-work.js";
 export {
-  MocoStateDoc,
+  KuloStateDoc,
   WorkerRelayEntry,
   WorkerWatchdogEntry,
   getActiveStagedCwd,
   getEffectiveWorkspaceDir,
   hasPendingWorkspaceApply,
-  type MocoDurableState,
+  type KuloDurableState,
   type WorkerRelayEntryData,
   type WorkerWatchdogEntryData,
 } from "./state.js";
 export {
-  MocoUploadStore,
+  KuloUploadStore,
   UploadError,
   parseUserEntryContent,
   type LoadedUpload,
   type StoredUploadRecord,
 } from "./uploads.js";
-export { MocoConnections, type ConnectionVault, type ConnectionTextReceipt, type ConnectionTestResult } from "./connections.js";
+export { KuloConnections, type ConnectionVault, type ConnectionTextReceipt, type ConnectionTestResult } from "./connections.js";
 export { LocalConnectionVault, ConnectionVaultError, type ConnectionVaultKeyStore } from "./connection-vault.js";
 export { LocalConnectionExecutor, type ConnectionExecutionBackend } from "./connection-execution.js";
 export { SecureCredentialStore } from "./secure-provider-credentials.js";
-export { MocoAgentConfiguration, AgentConfigurationDoc, AgentConfigurationError, EXTERNAL_AGENT_CATALOG } from "./agent-configuration.js";
+export { KuloAgentConfiguration, AgentConfigurationDoc, AgentConfigurationError, EXTERNAL_AGENT_CATALOG } from "./agent-configuration.js";
 export { EXTERNAL_AGENT_TOOL_HANDLER_NAMES } from "./external-agent-tools.js";
 export {
   INSPECT_RESULT_MAX_UTF8_BYTES,

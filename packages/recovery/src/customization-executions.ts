@@ -56,8 +56,8 @@ export async function recoverCustomizationExecutions(options: {
       if (!Number.isSafeInteger(owner.ownerPid) || Number(owner.ownerPid) <= 0 || typeof owner.workRoot !== "string" ||
           !Array.isArray(owner.cleanupCommand) || owner.cleanupCommand.length !== 4 ||
           owner.cleanupCommand[0] !== path.join(directory, "macos-worker-cleanup") || owner.cleanupCommand[1] !== "--cleanup" ||
-          typeof owner.cleanupCommand[2] !== "string" || !/^moco\.customization\.[a-f0-9]{48}$/.test(owner.cleanupCommand[2]) ||
-          typeof owner.cleanupCommand[3] !== "string" || !/^moco\.unowned\.[a-f0-9]{48}$/.test(owner.cleanupCommand[3])) { invalid(); continue; }
+          typeof owner.cleanupCommand[2] !== "string" || !/^kulo\.customization\.[a-f0-9]{48}$/.test(owner.cleanupCommand[2]) ||
+          typeof owner.cleanupCommand[3] !== "string" || !/^kulo\.unowned\.[a-f0-9]{48}$/.test(owner.cleanupCommand[3])) { invalid(); continue; }
       const relative = path.relative(path.join(dataDir, "staging", "customization"), path.resolve(owner.workRoot));
       if (!/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/.test(relative) || owner.workRoot !== path.resolve(owner.workRoot)) { invalid(); continue; }
       let ownerAlive = true;

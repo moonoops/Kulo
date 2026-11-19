@@ -1,6 +1,6 @@
 import { createElement, useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
-import type { ChatDisplayItem, LiveStreamState } from "@moco/protocol";
-import { MocoMarkdown } from "../../moco-markdown";
+import type { ChatDisplayItem, LiveStreamState } from "@kulo/protocol";
+import { KuloMarkdown } from "../../kulo-markdown";
 import type { PreviewableImage } from "./asset-preview";
 import type { ChatViewItem } from "./chat-submissions";
 import type { ConversationEntry } from "./dispatch-groups";
@@ -81,7 +81,7 @@ export function MessageMotion({ animateEntry = false, scopeKey, className = "", 
     const animation = node.animate([{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "translateY(0)" }], { duration: 180, easing: "ease-out" });
     return () => animation.cancel();
   }, [scopeKey, animateEntry, reduced]);
-  return createElement(as, { ref, className: `moco-message-motion${className ? ` ${className}` : ""}` }, children);
+  return createElement(as, { ref, className: `kulo-message-motion${className ? ` ${className}` : ""}` }, children);
 }
 
 export function StreamingMessage({ text, onPreviewImage }: { text: string; onPreviewImage?: (image: PreviewableImage) => void }) {
@@ -94,7 +94,7 @@ export function StreamingMessage({ text, onPreviewImage }: { text: string; onPre
     if (!root) return;
     // Keep existing paragraphs and text nodes mounted as tokens arrive. Only new
     // Markdown blocks enter; updates never fade previously readable text again.
-    for (const node of root.querySelectorAll(".moco-chat-markdown > *, .moco-chat-markdown li")) {
+    for (const node of root.querySelectorAll(".kulo-chat-markdown > *, .kulo-chat-markdown li")) {
       if (seen.current.has(node)) continue;
       seen.current.add(node);
       if (!motionReduced(reduced) && typeof node.animate === "function") {
@@ -105,5 +105,5 @@ export function StreamingMessage({ text, onPreviewImage }: { text: string; onPre
     }
   }, [text, reduced]);
   useEffect(() => () => { for (const animation of running.current) animation.cancel(); running.current.clear(); }, []);
-  return <div ref={ref} className="moco-streaming-message"><MocoMarkdown text={text} onPreviewImage={onPreviewImage} /></div>;
+  return <div ref={ref} className="kulo-streaming-message"><KuloMarkdown text={text} onPreviewImage={onPreviewImage} /></div>;
 }

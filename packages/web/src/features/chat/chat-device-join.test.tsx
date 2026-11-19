@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { formatDeviceChatInvitation, formatDeviceInstallerInstructions, type DeviceInterconnectionView } from "@moco/protocol";
-import { MocoComposer } from "../../moco-composer";
-import { MocoApiError } from "../../moco-api";
+import { formatDeviceChatInvitation, formatDeviceInstallerInstructions, type DeviceInterconnectionView } from "@kulo/protocol";
+import { KuloComposer } from "../../kulo-composer";
+import { KuloApiError } from "../../kulo-api";
 import { deviceApi } from "../settings/device-api";
 import { deviceJoinFeedback, previewChatDeviceJoin, requiresNewSwitchPreview, type ComposerDeviceJoin } from "./use-chat-device-join";
 import { legacyInvitationCode, migrateOutboxInvitation } from "./device-invitation-outbox";
@@ -13,14 +13,14 @@ const invitation = { hubUrl: "https://studio.example.test", hubId: "studio", hub
 const input = formatDeviceChatInvitation(invitation);
 const legacy = formatDeviceInstallerInstructions(invitation).agentInstructions;
 const local: DeviceInterconnectionView = {
-  role: "joined", hubId: "home", hubName: "家里的 Moco", hubUrls: ["https://home.example.test"],
+  role: "joined", hubId: "home", hubName: "家里的 Kulo", hubUrls: ["https://home.example.test"],
   currentDeviceId: "laptop", canSwitchRole: true, currentDeviceKnown: true, enabled: true, devices: [],
 };
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 function composer(phase: ComposerDeviceJoin["phase"]) {
-  return renderToStaticMarkup(<MocoComposer draftText={legacy} onDraftTextChange={vi.fn()} attachments={[]} connected={false}
+  return renderToStaticMarkup(<KuloComposer draftText={legacy} onDraftTextChange={vi.fn()} attachments={[]} connected={false}
     canQueueMessages={false} busy onAbort={vi.fn()} onConfigure={vi.fn()} allowAttachments={false}
     onEnqueueFiles={vi.fn()} onRemoveAttachment={vi.fn()} onSubmit={vi.fn()}
     deviceJoin={{ preview: previewChatDeviceJoin(invitation, local).text, phase, submit: vi.fn(), confirmStop: vi.fn(), cancel: vi.fn(),
@@ -31,7 +31,7 @@ describe("a native invitation in the main composer", () => {
   it("shows both hosts before replacing a connection, including when the invitation claims the current hubId", () => {
     const preview = previewChatDeviceJoin({ ...invitation, hubId: local.hubId }, local);
     expect(preview).toMatchObject({ kind: "switch" });
-    expect(preview.text).toContain("从 家里的 Moco 切换到 工作室（studio.example.test）");
+    expect(preview.text).toContain("从 家里的 Kulo 切换到 工作室（studio.example.test）");
     expect(previewChatDeviceJoin(invitation, { ...local, role: "hub" }).kind).toBe("join");
     const same = previewChatDeviceJoin({ ...invitation, hubName: "不可信名称" }, { ...local, hubName: "已知工作室", hubUrls: [invitation.hubUrl] });
     expect(same.kind).toBe("same");
@@ -54,7 +54,7 @@ describe("a native invitation in the main composer", () => {
     const html = composer("preview");
     expect(html).toContain("工作室（studio.example.test）");
     expect(html).toContain('data-composer-action="join"');
-    expect(html.match(/<button[^>]*aria-label="接入主 Moco"[^>]*>/u)?.[0]).not.toContain("disabled");
+    expect(html.match(/<button[^>]*aria-label="接入主 Kulo"[^>]*>/u)?.[0]).not.toContain("disabled");
     expect(html).not.toContain(invitation.inviteToken);
     expect(html).not.toContain("curl -fsSL");
     expect(html).not.toContain("连接模型");
@@ -65,16 +65,16 @@ describe("a native invitation in the main composer", () => {
     const html = composer("conflict");
     expect(html).toContain("停止任务并接入");
     expect(html).toContain(">取消<");
-    expect(html.match(/<button[^>]*aria-label="接入主 Moco"[^>]*>/u)?.[0]).toContain("disabled");
+    expect(html.match(/<button[^>]*aria-label="接入主 Kulo"[^>]*>/u)?.[0]).toContain("disabled");
     expect(composer("joining")).toContain('aria-label="正在接入"');
   });
 
   it("distinguishes expired invitations, unreachable hosts, unconfirmed receipts and other errors", () => {
-    expect(deviceJoinFeedback(new MocoApiError(403, "expired", "device_invitation_invalid"))).toMatchObject({ phase: "blocked" });
-    expect(deviceJoinFeedback(new MocoApiError(503, "offline", "device_host_unreachable"))).toMatchObject({ phase: "retry" });
-    expect(deviceJoinFeedback(new MocoApiError(409, "unfinished", "local_tasks_running"))).toMatchObject({ phase: "conflict" });
-    expect(deviceJoinFeedback(new MocoApiError(404, "receipt", "role_transition_unconfirmed"))).toMatchObject({ phase: "retry", unconfirmed: true });
-    expect(deviceJoinFeedback(new MocoApiError(429, "配额已满"))).toMatchObject({ phase: "retry", message: "配额已满" });
+    expect(deviceJoinFeedback(new KuloApiError(403, "expired", "device_invitation_invalid"))).toMatchObject({ phase: "blocked" });
+    expect(deviceJoinFeedback(new KuloApiError(503, "offline", "device_host_unreachable"))).toMatchObject({ phase: "retry" });
+    expect(deviceJoinFeedback(new KuloApiError(409, "unfinished", "local_tasks_running"))).toMatchObject({ phase: "conflict" });
+    expect(deviceJoinFeedback(new KuloApiError(404, "receipt", "role_transition_unconfirmed"))).toMatchObject({ phase: "retry", unconfirmed: true });
+    expect(deviceJoinFeedback(new KuloApiError(429, "配额已满"))).toMatchObject({ phase: "retry", message: "配额已满" });
     expect(deviceJoinFeedback(new Error("接入失败 " + invitation.inviteToken), invitation.inviteToken).message).not.toContain(invitation.inviteToken);
   });
 
@@ -86,7 +86,7 @@ describe("a native invitation in the main composer", () => {
     vi.stubGlobal("fetch", fetch);
     await deviceApi.join(input, false, undefined, undefined, id);
     expect(fetch.mock.calls.map(([path]) => path)).toEqual(["/api/devices/join", `/api/devices/role-transition?id=${id}`]);
-    expect(fetch.mock.calls[0]?.[1]?.headers).toMatchObject({ "X-Moco-Transition-Id": id });
+    expect(fetch.mock.calls[0]?.[1]?.headers).toMatchObject({ "X-Kulo-Transition-Id": id });
     expect(fetch.mock.calls[0]?.[1]?.redirect).toBe("error");
     expect(fetch.mock.calls[1]?.[1]?.body).toBeUndefined();
   });

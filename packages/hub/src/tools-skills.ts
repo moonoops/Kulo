@@ -2,15 +2,15 @@ import { defineExtension, defineTool, section, type ToolExecutionApi } from "@ea
 import type { Context } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { obj, opt, str } from "@earendil-works/pi-schema";
-import type { SkillAudience } from "@moco/protocol";
-import type { MocoSkills } from "./skills.js";
+import type { SkillAudience } from "@kulo/protocol";
+import type { KuloSkills } from "./skills.js";
 import { SkillError } from "./skills.js";
 import { writeExecutionFile } from "./execution-files.js";
 import type { SkillRuntimeContext } from "./skill-runtime.js";
 import { resolveDeferredAddTools } from "./tool-surface.js";
 
 export interface SkillToolsOptions {
-  get: () => MocoSkills;
+  get: () => KuloSkills;
   audience: (api: Pick<ToolExecutionApi, "conversationId">) => SkillAudience | Promise<SkillAudience>;
   runtimeContext?: (api: Pick<ToolExecutionApi, "conversationId" | "env">, context: Context, requirements: { reactWorkspace: boolean }) => Promise<SkillRuntimeContext | undefined>;
   executionScope?: (api: ToolExecutionApi) => Promise<{ scratchDir: string; assertActive: () => Promise<void> }>;
@@ -54,7 +54,7 @@ export async function materializeSkill(options: SkillToolsOptions, args: { id: s
     const files = await options.get().resources(skill.id, "worker", skill.version, runtime);
     await scope.assertActive();
     getOrThrow(await env.createDir(scope.scratchDir, { recursive: true }, context));
-    const directory = getOrThrow(await env.joinPath([scope.scratchDir, "moco-skills", skill.id, skill.version], context));
+    const directory = getOrThrow(await env.joinPath([scope.scratchDir, "kulo-skills", skill.id, skill.version], context));
     const copied: Array<{ resource: string; path: string; hash: string; executable: boolean }> = [];
     for (const file of files) {
       const target = getOrThrow(await env.joinPath([directory, file.path], context));
@@ -76,7 +76,7 @@ export function createSkillToolsExtension(options: SkillToolsOptions) {
     const audience = await options.audience(api);
     const runtime = await skillRuntime(options, audience, args.id, api, context);
     const addTools = audience === "worker"
-      ? await resolveDeferredAddTools(api, context, ["moco_skill_materialize"])
+      ? await resolveDeferredAddTools(api, context, ["kulo_skill_materialize"])
       : [];
     try {
       const text = await options.get().read(args.id, args.resource ?? "SKILL.md", audience, args.version, runtime);
@@ -99,16 +99,16 @@ export function createSkillToolsExtension(options: SkillToolsOptions) {
       const seen = new Set(skills.map((item) => item.id));
       skills = [...skills, ...chatSkills.filter((item) => !seen.has(item.id))];
     }
-    return ["Available on-demand Skills (call `moco_skill_read` when relevant; Skills grant no extra permissions, and Workers needing bundled assets/scripts must stage them via `moco_skill_materialize` using the returned node path):",
+    return ["Available on-demand Skills (call `kulo_skill_read` when relevant; Skills grant no extra permissions, and Workers needing bundled assets/scripts must stage them via `kulo_skill_materialize` using the returned node path):",
       ...(runtime?.diagnostics ?? []),
       ...skills.map((skill) => JSON.stringify({ id: skill.id, name: skill.name, description: skill.description, version: skill.version }))].join("\n");
   };
   const extension = defineExtension({
-    name: "moco-skills",
-    sections: [section("moco_skills", (api, context) => renderSkills(api, context))],
+    name: "kulo-skills",
+    sections: [section("kulo_skills", (api, context) => renderSkills(api, context))],
     tools: [
-      defineTool({ name: "moco_skill_read", description: "Read a Skill's `SKILL.md` (default) or bundled reference resource within the current Agent's audience and device/project eligibility.", parameters: obj({ id: str(), resource: opt(str()), version: opt(str()) }), replay: "safe", execute: readSkill }),
-      defineTool({ name: "moco_skill_materialize", description: "Worker only: verify target-node dependencies and stage a pinned Skill's resources into the ticket scratch directory (does not install dependencies or execute scripts). 关键词：展开技能包 准备技能脚本 释放模板资源", parameters: obj({ id: str(), version: opt(str()) }), deferred: true, replay: "safe", execute: async (args, api, context) => ({ output: [{ type: "text" as const,
+      defineTool({ name: "kulo_skill_read", description: "Read a Skill's `SKILL.md` (default) or bundled reference resource within the current Agent's audience and device/project eligibility.", parameters: obj({ id: str(), resource: opt(str()), version: opt(str()) }), replay: "safe", execute: readSkill }),
+      defineTool({ name: "kulo_skill_materialize", description: "Worker only: verify target-node dependencies and stage a pinned Skill's resources into the ticket scratch directory (does not install dependencies or execute scripts). 关键词：展开技能包 准备技能脚本 释放模板资源", parameters: obj({ id: str(), version: opt(str()) }), deferred: true, replay: "safe", execute: async (args, api, context) => ({ output: [{ type: "text" as const,
         text: JSON.stringify(await materializeSkill(options, args, api, context)) }] }) }),
     ],
   });

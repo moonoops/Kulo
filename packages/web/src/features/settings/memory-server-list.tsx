@@ -1,4 +1,4 @@
-import { translate as t, useI18n } from "../../moco-i18n";
+import { translate as t, useI18n } from "../../kulo-i18n";
 import { Button, Input, Label, TextField } from "@heroui/react";
 
 export function MemoryServerList({
@@ -14,7 +14,7 @@ export function MemoryServerList({
 }) {
   useI18n();
   return (
-    <div className="moco-form-stack" role="group" aria-label={t("Hindsight 地址", "Hindsight URLs")}>
+    <div className="kulo-form-stack" role="group" aria-label={t("Hindsight 地址", "Hindsight URLs")}>
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm font-medium text-foreground">{t("Hindsight 地址", "Hindsight URLs")}</span>
         <Button type="button" variant="tertiary" size="sm" isDisabled={disabled || addresses.length >= 9}
@@ -22,15 +22,15 @@ export function MemoryServerList({
           {t("添加备用地址", "Add backup URL")}</Button>
       </div>
       {addresses.map((address, index) => (
-        <div key={index} className="moco-field-action-row">
+        <div key={index} className="kulo-field-action-row">
           <TextField isRequired type="url" value={address} isDisabled={disabled} fullWidth
-            className="moco-form-field flex-1"
+            className="kulo-form-field flex-1"
             onChange={(next) => onChange(addresses.map((value, position) => position === index ? next : value))}>
             <Label className="text-muted">{index === 0 ? t("主地址", "Primary URL") : t(`备用地址 ${index}`, `Backup URL ${index}`)}</Label>
-            <Input className="moco-field-action-input" variant="secondary" placeholder="http://127.0.0.1:8888" spellCheck={false} />
+            <Input className="kulo-field-action-input" variant="secondary" placeholder="http://127.0.0.1:8888" spellCheck={false} />
           </TextField>
           {index > 0 && <Button type="button" variant="tertiary" size="sm" aria-label={t(`删除备用地址 ${index}`, `Delete backup URL ${index}`)}
-              className="moco-field-action-button"
+              className="kulo-field-action-button"
               isDisabled={disabled}
               onPress={() => onChange(addresses.filter((_, position) => position !== index))}>
               {t("删除", "Delete")}</Button>}

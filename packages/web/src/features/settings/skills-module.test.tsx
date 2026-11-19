@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SkillRecord, SkillSnapshot } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
+import type { SkillRecord, SkillSnapshot } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
 import { acceptSkillSnapshot, SkillSettingsFields, SkillsModule, skillStatusLabel } from "./skills-module";
 
 const skill: SkillRecord = { id: "import-one", name: "report-workflow", description: "整理工作报告", source: "local", sourceUrl: "/fixture/report", version: "version-one", enabled: true, audiences: ["chat", "worker"], dependencies: [], diagnostics: [], createdAt: 1, updatedAt: 1 };
@@ -19,7 +19,7 @@ describe("direct skill settings", () => {
     expect(html).toContain('aria-label="编辑report-workflow"');
     expect(html).toContain('aria-label="删除report-workflow"');
     expect(html).not.toContain("管理");
-    expect(html).toContain("moco-settings-table-action-group");
+    expect(html).toContain("kulo-settings-table-action-group");
     for (const button of html.match(/<button\b(?=[^>]*aria-label="(?:编辑|删除)report-workflow")[^>]*>/g) ?? []) {
       expect(button).toContain("button--ghost");
       expect(button).not.toContain("disabled");
@@ -92,12 +92,12 @@ describe("skill REST requests", () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify(snapshot), { headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetch);
     const change = { enabled: false, audiences: ["worker" as const], expectedRevision: 5, commandId: "edit-once" };
-    expect(await mocoRest.updateSkill("import-one", change)).toEqual(snapshot);
+    expect(await kuloRest.updateSkill("import-one", change)).toEqual(snapshot);
     expect(fetch).toHaveBeenLastCalledWith("/api/skills/import-one", expect.objectContaining({ method: "PATCH", body: JSON.stringify(change) }));
     const remove = { expectedRevision: 5, commandId: "remove-once" };
-    expect(await mocoRest.deleteSkill("import-one", remove)).toEqual(snapshot);
+    expect(await kuloRest.deleteSkill("import-one", remove)).toEqual(snapshot);
     expect(fetch).toHaveBeenLastCalledWith("/api/skills/import-one", expect.objectContaining({ method: "DELETE", body: JSON.stringify(remove) }));
-    expect(await mocoRest.getSkills()).toEqual(snapshot);
+    expect(await kuloRest.getSkills()).toEqual(snapshot);
     expect(fetch).toHaveBeenLastCalledWith("/api/skills", expect.objectContaining({ method: "GET" }));
   });
 });

@@ -1,0 +1,352 @@
+:root {
+  --kulo-text-caption: 0.75rem;
+  --kulo-leading-caption: 18px;
+  --kulo-text-body: 0.875rem;
+  --kulo-leading-body: 20px;
+  --kulo-text-heading: 1.125rem;
+  --kulo-leading-heading: 26px;
+  --kulo-text-title: 1.5rem;
+  --kulo-leading-title: 32px;
+
+  --kulo-space-1: 4px;
+  --kulo-space-2: 8px;
+  --kulo-space-3: 12px;
+  --kulo-space-4: 16px;
+  --kulo-space-6: 24px;
+  --kulo-space-8: 32px;
+  --kulo-control-height: 36px;
+  --kulo-control-height-compact: 32px;
+  --kulo-control-icon-size: 16px;
+  --kulo-control-gap: var(--kulo-space-2);
+  --kulo-field-gap: var(--kulo-space-2);
+  --kulo-form-gap: var(--kulo-space-4);
+  --kulo-list-padding-block: var(--kulo-space-3);
+  --kulo-list-padding-inline: var(--kulo-space-4);
+}
+
+@theme {
+  --text-xs: var(--kulo-text-caption);
+  --text-xs--line-height: var(--kulo-leading-caption);
+  --text-sm: var(--kulo-text-body);
+  --text-sm--line-height: var(--kulo-leading-body);
+  --text-lg: var(--kulo-text-heading);
+  --text-lg--line-height: var(--kulo-leading-heading);
+  --text-2xl: var(--kulo-text-title);
+  --text-2xl--line-height: var(--kulo-leading-title);
+
+  /* HeroUI's internal aliases resolve to the same four application sizes. */
+  --text-base: var(--kulo-text-body);
+  --text-base--line-height: var(--kulo-leading-body);
+  --text-xl: var(--kulo-text-heading);
+  --text-xl--line-height: var(--kulo-leading-heading);
+}
+
+@layer components {
+  /* The body scope also contains React Aria Portals outside the workbench. */
+  .kulo-ui {
+    font-size: var(--kulo-text-body);
+    line-height: var(--kulo-leading-body);
+    font-weight: 400;
+  }
+
+  .kulo-ui :is(.button, .input, .textarea, .select__trigger, .select__value,
+    .combo-box__value, .number-field__input, .search-field__input,
+    .input-group__input, .label, .tabs__tab, .pagination__link, .pagination__ellipsis,
+    .menu-item, .list-box-item, .modal__body, .alert-dialog__body, .drawer__body,
+    .popover__dialog, .table__cell, .toast__title, .alert__title) {
+    font-size: var(--kulo-text-body);
+    line-height: var(--kulo-leading-body);
+  }
+
+  .kulo-ui :is(.modal__heading, .alert-dialog__heading, .drawer__heading) {
+    font-size: var(--kulo-text-heading);
+    line-height: var(--kulo-leading-heading);
+    font-weight: 600;
+  }
+
+  .kulo-ui :is(.popover__heading, .card__title, .accordion__heading,
+    .disclosure__heading, .header, .fieldset__legend) {
+    font-size: var(--kulo-text-body);
+    line-height: var(--kulo-leading-body);
+    font-weight: 600;
+    color: var(--foreground);
+  }
+
+  .kulo-ui :is(.table__column, .kulo-table-header) {
+    font-size: var(--kulo-text-body);
+    line-height: var(--kulo-leading-body);
+    font-weight: 600;
+    color: var(--foreground);
+  }
+
+  .kulo-ui :is(.description, .field-error, .error-message, .tooltip,
+    .chip, .toast__description, .alert__description,
+    .card__description, .pagination__summary) {
+    font-size: var(--kulo-text-caption);
+    line-height: var(--kulo-leading-caption);
+  }
+
+  .kulo-ui :is(.menu-item, .list-box-item) .label {
+    font-weight: 400;
+  }
+
+  .kulo-ui :is(.textfield, .select, .combo-box, .number-field, .search-field) {
+    gap: var(--kulo-field-gap);
+  }
+
+  .kulo-ui :is(.fieldset, .fieldset__field-group) {
+    gap: var(--kulo-form-gap);
+  }
+
+  .kulo-ui :is(.checkbox__content, .radio__content, .switch__content) {
+    gap: var(--kulo-control-gap);
+  }
+
+  /* Keep the thumb circular at each library size, including its travel distance. */
+  .kulo-ui .switch {
+    --kulo-switch-thumb-size: 1rem;
+  }
+
+  .kulo-ui .switch--sm {
+    --kulo-switch-thumb-size: 0.75rem;
+  }
+
+  .kulo-ui .switch--lg {
+    --kulo-switch-thumb-size: 1.25rem;
+  }
+
+  .kulo-ui .switch__control {
+    width: 2rem;
+    border-radius: 9999px;
+  }
+
+  .kulo-ui .switch--sm .switch__control {
+    width: 1.75rem;
+  }
+
+  .kulo-ui .switch--lg .switch__control {
+    width: 2.5rem;
+  }
+
+  .kulo-ui .switch__thumb {
+    --switch-thumb-offset: calc(100% - var(--kulo-switch-thumb-size) - var(--spacing));
+    width: var(--kulo-switch-thumb-size);
+    height: var(--kulo-switch-thumb-size);
+    flex-shrink: 0;
+    border-radius: 50%;
+  }
+
+  .kulo-ui .button {
+    height: var(--kulo-button-height, var(--kulo-control-height));
+    min-height: var(--kulo-button-height, var(--kulo-control-height));
+    gap: var(--kulo-control-gap);
+  }
+
+  .kulo-ui .button .mc-icon {
+    width: var(--kulo-control-icon-size);
+    height: var(--kulo-control-icon-size);
+    margin: 0;
+  }
+
+  .kulo-ui .button--sm {
+    --kulo-button-height: var(--kulo-control-height-compact);
+    padding-inline: var(--kulo-space-3);
+  }
+
+  .kulo-ui .button--lg {
+    --kulo-button-height: 44px;
+  }
+
+  .kulo-ui .button--icon-only {
+    width: var(--kulo-button-height, var(--kulo-control-height));
+    min-width: var(--kulo-button-height, var(--kulo-control-height));
+    padding: 0;
+  }
+
+  .kulo-ui .tabs__tab {
+    height: var(--kulo-control-height-compact);
+    min-height: var(--kulo-control-height-compact);
+  }
+
+  .kulo-ui :is(.tabs__list-container__scroll-prev, .tabs__list-container__scroll-next) {
+    width: 24px;
+    height: 24px;
+  }
+
+  .kulo-ui :is(.pagination__link, .pagination__ellipsis) {
+    min-width: var(--kulo-control-height-compact);
+    height: var(--kulo-control-height-compact);
+  }
+
+  .kulo-ui :is(.input, .select__trigger, .input-group, .number-field__group,
+    .search-field__group, .combo-box__input-group) {
+    min-height: var(--kulo-control-height);
+  }
+
+  .kulo-ui :is(.input, .select__trigger) {
+    padding-block: calc((var(--kulo-control-height) - 1lh) / 2 - var(--border-width-field, 0px));
+    padding-inline: var(--kulo-space-3);
+  }
+
+  .kulo-ui .input {
+    height: var(--kulo-control-height);
+  }
+
+  .kulo-ui :is(.number-field__group, .search-field__group) {
+    height: var(--kulo-control-height);
+  }
+
+  .kulo-ui :is(.number-field__input, .search-field__input) {
+    min-width: 0;
+    height: 100%;
+    padding-block: 0;
+  }
+
+  .kulo-ui :is(.number-field__increment-button, .number-field__decrement-button,
+    .combo-box__trigger) {
+    width: var(--kulo-control-height);
+    min-width: var(--kulo-control-height);
+  }
+
+  .kulo-ui .number-field__group:has(.number-field__decrement-button) {
+    grid-template-columns: var(--kulo-control-height) minmax(0, 1fr);
+  }
+
+  .kulo-ui .number-field__group:has(.number-field__increment-button) {
+    grid-template-columns: minmax(0, 1fr) var(--kulo-control-height);
+  }
+
+  .kulo-ui .number-field__group:has(.number-field__decrement-button):has(.number-field__increment-button) {
+    grid-template-columns: var(--kulo-control-height) minmax(0, 1fr) var(--kulo-control-height);
+  }
+
+  .kulo-ui .combo-box .input:has(+ .combo-box__trigger) {
+    padding-inline-end: calc(var(--kulo-control-height) + var(--kulo-space-1));
+  }
+
+  .kulo-ui .search-field__clear-button {
+    width: 24px;
+    min-width: 24px;
+    height: 24px;
+    min-height: 24px;
+  }
+
+  .kulo-ui .select__trigger {
+    height: auto;
+  }
+
+  .kulo-ui .select__trigger:has(.select__indicator) {
+    padding-inline-end: 28px;
+  }
+
+  .kulo-ui .textarea {
+    padding: var(--kulo-space-2) var(--kulo-space-3);
+  }
+
+  .kulo-ui :is(.dropdown__menu, .list-box) {
+    padding: var(--kulo-space-1);
+    gap: var(--kulo-space-1);
+  }
+
+  .kulo-ui :is(.menu-item, .list-box-item) {
+    min-height: var(--kulo-control-height);
+    gap: var(--kulo-control-gap);
+    padding-block: var(--kulo-space-2);
+    padding-inline: var(--kulo-space-3);
+  }
+
+  /* Leave room for the library's absolutely positioned selection indicators. */
+  .kulo-ui .menu-item:has(.menu-item__indicator:not(.menu-item__indicator--submenu)) {
+    padding-inline-start: 28px;
+  }
+
+  .kulo-ui .menu-item[data-has-submenu="true"]:has(.menu-item__indicator--submenu),
+  .kulo-ui .list-box-item:has(.list-box-item__indicator) {
+    padding-inline-end: 28px;
+  }
+
+  .kulo-ui .table__column {
+    padding: var(--kulo-space-2) var(--kulo-list-padding-inline);
+  }
+
+  .kulo-ui .table__cell {
+    padding: var(--kulo-list-padding-block) var(--kulo-list-padding-inline);
+  }
+
+  .kulo-ui :is(.modal__dialog, .alert-dialog__dialog, .drawer__dialog) {
+    padding: var(--kulo-space-6);
+  }
+
+  .kulo-ui :is(.modal__header, .alert-dialog__header, .drawer__header) {
+    gap: var(--kulo-space-2);
+  }
+
+  .kulo-ui .modal__header + .modal__body,
+  .kulo-ui .alert-dialog__header + .alert-dialog__body,
+  .kulo-ui .drawer__header + .drawer__body {
+    margin-top: var(--kulo-form-gap);
+  }
+
+  .kulo-ui :is(.modal__footer, .alert-dialog__footer, .drawer__footer) {
+    gap: var(--kulo-control-gap);
+  }
+
+  .kulo-ui .modal__header + .modal__footer,
+  .kulo-ui .modal__body + .modal__footer,
+  .kulo-ui .alert-dialog__header + .alert-dialog__footer,
+  .kulo-ui .alert-dialog__body + .alert-dialog__footer,
+  .kulo-ui .drawer__body + .drawer__footer {
+    margin-top: var(--kulo-space-6);
+  }
+
+  @media (max-width: 639px) {
+    .kulo-ui :is(.modal__dialog, .alert-dialog__dialog, .drawer__dialog) {
+      padding: var(--kulo-space-4);
+    }
+  }
+
+  @media (pointer: coarse) {
+    .kulo-ui {
+      --kulo-control-height: 44px;
+      --kulo-control-height-compact: 44px;
+    }
+
+    .kulo-ui .button {
+      min-height: 44px;
+    }
+
+    .kulo-ui .button--icon-only {
+      min-width: 44px;
+    }
+
+    .kulo-ui :is(.tabs__tab, .close-button, .search-field__clear-button,
+      .tabs__list-container__scroll-prev, .tabs__list-container__scroll-next,
+      .pagination__link, .combo-box__trigger, .number-field__increment-button,
+      .number-field__decrement-button) {
+      min-width: 44px;
+      min-height: 44px;
+    }
+
+    .kulo-ui :is(.close-button, .search-field__clear-button,
+      .tabs__list-container__scroll-prev, .tabs__list-container__scroll-next) {
+      width: 44px;
+      height: 44px;
+    }
+
+    .kulo-ui :is(.checkbox__content, .radio__content, .switch__content) {
+      min-height: 44px;
+    }
+  }
+
+}
+
+/* iOS must win over local text utilities; the composer owns its preference floor. */
+@supports (-webkit-touch-callout: none) {
+  @media (max-width: 639px) {
+    .kulo-ui :is(.input, .textarea, .select__trigger, .select__value, .number-field__input,
+      .search-field__input, .input-group__input):not(.kulo-composer-input) {
+      font-size: var(--kulo-text-heading);
+      line-height: var(--kulo-leading-heading);
+    }
+  }
+}

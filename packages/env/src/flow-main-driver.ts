@@ -1,4 +1,4 @@
-import type { BrowserResult } from "@moco/protocol";
+import type { BrowserResult } from "@kulo/protocol";
 import type { FlowBrowserDriver, FlowJobState, FlowSubmitInput } from "./browser.js";
 import { MainChromeFlowSession } from "./main-chrome.js";
 
@@ -34,7 +34,7 @@ const PROJECT_PATH = /^\/(?:fx\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?tools\/flow\/)?proj
 const EDITOR_SUFFIX = /\/edit\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/?$/i;
 const DEFAULT_MODELS = new Set(["", "auto", "flow", "default", "flowdefault", "flow网页默认"]);
 const normalizeModel = (value: string) => value.toLowerCase().replace(/[\s-]+/g, "");
-const marker = (id: string) => `[Moco job:${id}]`;
+const marker = (id: string) => `[Kulo job:${id}]`;
 const canonicalMedia = (value: string): string | undefined => {
   try {
     const url = new URL(value);
@@ -76,7 +76,7 @@ const READ_PAGE = String.raw`(input) => {
     const labelled = (node.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean).map((id) => text(document.getElementById(id))).join(' ');
     return (node.getAttribute('aria-label') || labelled || Array.from(node.labels || []).map(text).join(' ') || text(node)).trim();
   };
-  const markers = (value) => [...value.matchAll(/\[Moco job:([a-zA-Z0-9][a-zA-Z0-9_-]{0,127})\]/g)].map((match) => match[1]);
+  const markers = (value) => [...value.matchAll(/\[Kulo job:([a-zA-Z0-9][a-zA-Z0-9_-]{0,127})\]/g)].map((match) => match[1]);
   const uniqueOwner = (node) => { const ids = [...new Set(markers(text(node)))]; return ids.length === 1 ? ids[0] : undefined; };
   const owner = (node) => {
     const turn = node.closest('div.agent-row.message-row');
@@ -153,12 +153,12 @@ const DOM_ACTIONS = String.raw`
   };
   const owner = (node) => {
     const row = node.closest('div.agent-row.message-row'); const user = row?.previousElementSibling;
-    const owners = [...text(user).matchAll(/\[Moco job:([a-zA-Z0-9][a-zA-Z0-9_-]{0,127})\]/g)].map((entry) => entry[1]);
+    const owners = [...text(user).matchAll(/\[Kulo job:([a-zA-Z0-9][a-zA-Z0-9_-]{0,127})\]/g)].map((entry) => entry[1]);
     return row?.parentElement?.matches('div.messages-list') && user?.matches('div.message-row.user-row') && owners.length === 1 ? owners[0] : undefined;
   };
 `;
 
-const REJECT_ONCE = String.raw`async (input) => { /* moco-flow:reject */
+const REJECT_ONCE = String.raw`async (input) => { /* kulo-flow:reject */
   ${DOM_ACTIONS}
   const current = (${READ_PAGE})(null);
   const cards = current.confirmations.filter((card) => card.ownerJobId === input.jobId);
@@ -173,7 +173,7 @@ const REJECT_ONCE = String.raw`async (input) => { /* moco-flow:reject */
   return { rejected: await wait(() => checked(node) && !enabled(node)) };
 }`;
 
-const KEEP_CONFIRMATION = String.raw`async () => { /* moco-flow:settings */
+const KEEP_CONFIRMATION = String.raw`async () => { /* kulo-flow:settings */
   ${DOM_ACTIONS}
   const settings = role('button', '设置');
   if (settings.length !== 1 || !click(settings[0])) return false;
@@ -187,7 +187,7 @@ const KEEP_CONFIRMATION = String.raw`async () => { /* moco-flow:settings */
   return click(save[0]);
 }`;
 
-const SEND_REQUEST = String.raw`async (input) => { /* moco-flow:send */
+const SEND_REQUEST = String.raw`async (input) => { /* kulo-flow:send */
   ${DOM_ACTIONS}
   const current = (${READ_PAGE})(null);
   if (current.url !== input.url || current.promptCount !== 1 || !current.promptEnabled || current.promptValue.trim() || current.requestMarkers.includes(input.jobId) || current.confirmations.some((card) => !card.disabled)) return { sent: false };
@@ -208,12 +208,12 @@ const SEND_REQUEST = String.raw`async (input) => { /* moco-flow:send */
   return { sent: click(sends[0]) };
 }`;
 
-const WAIT_CONFIRMATION = String.raw`async (input) => { /* moco-flow:wait */
+const WAIT_CONFIRMATION = String.raw`async (input) => { /* kulo-flow:wait */
   ${DOM_ACTIONS}
   return wait(() => (${READ_PAGE})(null).confirmations.some((card) => card.ownerJobId === input.jobId), 30000);
 }`;
 
-const APPROVE_ONCE = String.raw`async (input) => { /* moco-flow:approve */
+const APPROVE_ONCE = String.raw`async (input) => { /* kulo-flow:approve */
   ${DOM_ACTIONS}
   const current = (${READ_PAGE})(null);
   const cards = current.confirmations.filter((card) => card.ownerJobId === input.jobId);
@@ -227,7 +227,7 @@ const APPROVE_ONCE = String.raw`async (input) => { /* moco-flow:approve */
   return { clicked: true, confirmed: await wait(() => checked(node) && !enabled(node)) };
 }`;
 
-const OPEN_OWNED_EDITOR = String.raw`async (input) => { /* moco-flow:editor */
+const OPEN_OWNED_EDITOR = String.raw`async (input) => { /* kulo-flow:editor */
   ${DOM_ACTIONS}
   const current = (${READ_PAGE})(null);
   const owned = current.media.filter((entry) => entry.ownerJobId === input.jobId && entry.url === input.mediaUrl);
@@ -249,7 +249,7 @@ const OPEN_OWNED_EDITOR = String.raw`async (input) => { /* moco-flow:editor */
   } while (Date.now() < until);
   return { opened: false };
 }`;
-const DOWNLOAD_ORIGINAL = String.raw`async () => { /* moco-flow:download */
+const DOWNLOAD_ORIGINAL = String.raw`async () => { /* kulo-flow:download */
   ${DOM_ACTIONS}
   const download = role('button', '下载媒体内容');
   if (download.length !== 1 || !click(download[0])) throw new Error('Flow original download control is unavailable');

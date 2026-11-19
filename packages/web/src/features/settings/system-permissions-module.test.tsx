@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { EnvNodeDescriptor } from "@moco/protocol";
+import type { EnvNodeDescriptor } from "@kulo/protocol";
 import { permissionCanBeRequested, SystemPermissionsModule } from "./system-permissions-module";
 import { SETTINGS_MODULES, settingsModuleTitle } from "./settings-helpers";
 
@@ -19,7 +19,7 @@ describe("system permission settings", () => {
     expect(html).toContain("屏幕录制");
     expect(html).toContain("当前客户端");
     expect(html).toContain("办公室 Mac");
-    expect(html).toContain("moco-settings-table-scroll");
+    expect(html).toContain("kulo-settings-table-scroll");
     expect(html).toContain('aria-label="系统权限列表"');
     expect(html).toContain("检查权限");
     expect(html).toContain("开始授权");

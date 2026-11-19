@@ -1,13 +1,13 @@
 /**
- * Official Hindsight Dual-Bank Memory Client & Access Guard for Moco.
+ * Official Hindsight Dual-Bank Memory Client & Access Guard for Kulo.
  *
  * Role & Bank Isolation Rules:
- * - Root Moco Orchestrator (`role: "router"`):
- *   - `private` bank (default `moco-core`): READ + WRITE
- *   - `shared` bank (default `moco-shared`): READ-ONLY (never writes `shared` to prevent private persona leakage)
+ * - Root Kulo Orchestrator (`role: "router"`):
+ *   - `private` bank (default `kulo-core`): READ + WRITE
+ *   - `shared` bank (default `kulo-shared`): READ-ONLY (never writes `shared` to prevent private persona leakage)
  * - Background Worker (`role: "worker"`):
  *   - `private` bank: STRICTLY FORBIDDEN (neither read nor write)
- *   - `shared` bank: READ + WRITE (stamped with `application:moco`, `ticket:<ticketId>`, `role:<workerRole>`)
+ *   - `shared` bank: READ + WRITE (stamped with `application:kulo`, `ticket:<ticketId>`, `role:<workerRole>`)
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -18,7 +18,7 @@ import type {
   HindsightMemoryConfig,
   HindsightProbeResult,
   MemoryBank,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 
 export const OFFICIAL_HINDSIGHT_TOOLS = [
   "hindsight_retain",
@@ -55,7 +55,7 @@ export interface MemoryCallerContext {
   /** Stable tool/event identity supplied by Pi, never by the model. */
   sourceId?: string;
   sourceTimestamp?: number;
-  /** Checks whether a ticketId exists on Moco's table (used when Router scopes recall to a ticket). */
+  /** Checks whether a ticketId exists on Kulo's table (used when Router scopes recall to a ticket). */
   isValidTicket?: (ticketId: string) => boolean;
 }
 
@@ -134,7 +134,7 @@ export function resolveHindsightToken(config: HindsightMemoryConfig, role: "rout
     try {
       const resolved = path.resolve(config.authFile.trim());
       const content = fs.readFileSync(resolved, "utf8");
-      const keyName = envName || (role === "router" ? "MOCO_HINDSIGHT_ROUTER_API_KEY" : "MOCO_HINDSIGHT_WORKER_API_KEY");
+      const keyName = envName || (role === "router" ? "KULO_HINDSIGHT_ROUTER_API_KEY" : "KULO_HINDSIGHT_WORKER_API_KEY");
       const matchLine = content
         .split(/\r?\n/)
         .map((l) => l.trim())
@@ -284,7 +284,7 @@ async function fetchMemoryResponse(params: {
       headers: {
         "Content-Type": "application/json",
         "Accept-Encoding": "identity",
-        "User-Agent": "moco-hindsight/0.3.0",
+        "User-Agent": "kulo-hindsight/0.3.0",
         Authorization: `Bearer ${params.token}`,
       },
       ...(params.body !== undefined ? { body: JSON.stringify(params.body) } : {}),
@@ -332,14 +332,14 @@ async function verifyIdentityPolicy(
     const allowed = await fetchMemoryResponse({ endpoint, token: memoryToken(config, "router"), pathSuffix: suffix, signal, timeoutMs: 5_000 });
     if (!allowed.ok && allowed.status !== 404) checkStatus(allowed);
     await allowed.body?.cancel();
-    const anonymous = await fetchMemoryResponse({ endpoint, token: "moco-invalid-memory-credential-00000000", pathSuffix: suffix, signal, timeoutMs: 5_000 });
+    const anonymous = await fetchMemoryResponse({ endpoint, token: "kulo-invalid-memory-credential-00000000", pathSuffix: suffix, signal, timeoutMs: 5_000 });
     await anonymous.body?.cancel();
     checkPolicyAvailability(anonymous);
     if (![401, 403].includes(anonymous.status)) throw makeError("ISOLATION_UNVERIFIED", "authorization", anonymous.status);
     return;
   }
   if (config.accessMode === "scoped") {
-    // Native scoped credentials must prove the same bank/operation boundary as the Moco extension.
+    // Native scoped credentials must prove the same bank/operation boundary as the Kulo extension.
     const checks = role === "worker"
       ? [{ token: memoryToken(config, "worker"), bank: config.banks.shared, status: "allowed" },
           { token: memoryToken(config, "worker"), bank: config.banks.private, status: "denied" }]
@@ -363,7 +363,7 @@ async function verifyIdentityPolicy(
     return;
   }
   const token = memoryToken(config, role);
-  const access = await fetchMemoryResponse({ endpoint, token, pathSuffix: "/v1/moco/access", signal, timeoutMs: 5_000 });
+  const access = await fetchMemoryResponse({ endpoint, token, pathSuffix: "/v1/kulo/access", signal, timeoutMs: 5_000 });
   if (!access.ok) {
     await access.body?.cancel();
     checkPolicyAvailability(access);
@@ -425,12 +425,12 @@ async function fetchHindsightJson(params: {
       const bank = params.pathSuffix.startsWith(`/v1/default/banks/${encodeURIComponent(params.config.banks.shared)}/`) ? "shared" : "private";
       const timeout = AbortSignal.timeout(params.timeoutMs ?? 15_000);
       const signal = params.signal ? AbortSignal.any([params.signal, timeout]) : timeout;
-      const client = createClient({ baseUrl: endpoint, headers: { Authorization: `Bearer ${memoryToken(params.config, params.role, bank)}`, "Accept-Encoding": "identity", "User-Agent": "moco-hindsight/0.4.0" },
+      const client = createClient({ baseUrl: endpoint, headers: { Authorization: `Bearer ${memoryToken(params.config, params.role, bank)}`, "Accept-Encoding": "identity", "User-Agent": "kulo-hindsight/0.4.0" },
         redirect: "error", signal, fetch: (input, init) => fetch(input, { ...init, redirect: "error" }) });
       const bankId = bank === "shared" ? params.config.banks.shared : params.config.banks.private;
       let result: { response?: Response; data?: unknown };
       try {
-        const url = new URL(params.pathSuffix, "http://moco.invalid");
+        const url = new URL(params.pathSuffix, "http://kulo.invalid");
         const pageTags = url.searchParams.getAll("tags");
         const pageQuery = pageTags.length ? { tags: pageTags, tags_match: "all_strict" as const } : {};
         if (params.method === "POST" && params.pathSuffix.endsWith("/memories/recall")) {
@@ -520,7 +520,7 @@ export function memoryProjectTag(caller: Pick<MemoryCallerContext, "projectId">)
 
 function buildProvenanceTags(caller: MemoryCallerContext): string[] {
   const tags = [
-    "application:moco",
+    "application:kulo",
     caller.role === "worker"
       ? "provenance:assistant-worklog"
       : "provenance:assistant-inference",
@@ -536,7 +536,7 @@ function buildProvenanceTags(caller: MemoryCallerContext): string[] {
 export function memoryDocumentId(caller: MemoryCallerContext, title: string): string {
   // Titles are display metadata; identity belongs to a real producer and source event.
   const scope = JSON.stringify([caller.role, caller.projectId ?? null, caller.ticketId ?? null, caller.conversationId, caller.runEpoch ?? null, caller.sourceId ?? null, title]);
-  return `moco-${createHash("sha256").update(scope).digest("hex")}`;
+  return `kulo-${createHash("sha256").update(scope).digest("hex")}`;
 }
 
 export function memoryOperationId(source: string): string {
@@ -583,11 +583,11 @@ export async function retainHindsightDocument(params: {
   const documentId = params.customDocumentId?.trim()
     ? `${memoryDocumentId(caller, params.customDocumentId.trim())}`
     : memoryDocumentId(caller, title);
-  const tags = [...new Set([...buildProvenanceTags(caller), `source:${params.source ?? "document"}`, "harness:moco", ...userExtraTags])];
+  const tags = [...new Set([...buildProvenanceTags(caller), `source:${params.source ?? "document"}`, "harness:kulo", ...userExtraTags])];
   const { data } = await fetchHindsightJson({ config, role: caller.role, method: "POST", pathSuffix: `/v1/default/banks/${encodeURIComponent(bankId)}/memories`, signal,
     body: { async: true, operation_id: operationId, items: [{ content, context: title, document_id: documentId, tags,
       observation_scopes: [[memoryProjectTag(caller)]], timestamp: new Date(timestamp).toISOString(),
-      metadata: { actor: caller.role === "worker" ? "worker" : "assistant", harness: "moco", title,
+      metadata: { actor: caller.role === "worker" ? "worker" : "assistant", harness: "kulo", title,
         projectId: caller.projectId ?? "", ticketId: caller.ticketId ?? "", conversationId: caller.conversationId, runEpoch: String(caller.runEpoch ?? ""), sourceId: caller.sourceId ?? "" } }] } });
   const response = data as { operation_id?: string; async?: boolean; success?: boolean };
   if (response?.operation_id !== operationId || response.async === false) {

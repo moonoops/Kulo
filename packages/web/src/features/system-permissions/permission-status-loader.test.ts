@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { DesktopSystemPermissions, SystemPermissionStatus } from "@moco/protocol";
+import type { DesktopSystemPermissions, SystemPermissionStatus } from "@kulo/protocol";
 import { PermissionStatusLoader } from "./permission-status-loader";
 
 const microphone: SystemPermissionStatus = { kind: "microphone", state: "granted" };

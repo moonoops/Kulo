@@ -5,9 +5,9 @@ import {
   type CapabilitiesWorkspaceSnapshot, type CapabilityRecord, type CustomImageAdapter, type ImageCapabilityConfiguration,
   type ImageCapabilityDraft, type ImageGenerationParameters, type ImageModelProfile, type ImageParameterDefinition,
   type ImageProviderConnection, type MediaAdapterId, type MediaOutputFormat,
-} from "@moco/protocol";
-import { MocoApiError, mocoRest } from "../../moco-api";
-import { useI18n } from "../../moco-i18n";
+} from "@kulo/protocol";
+import { KuloApiError, kuloRest } from "../../kulo-api";
+import { useI18n } from "../../kulo-i18n";
 import { CapabilitySetupInputs, safeSetupInputError } from "./capability-setup-inputs";
 import { ImageNumber, ImageSelect, ImageText, ImageToggle } from "./image-fields";
 import { imageActionError, imageCommandId, type ImageConfigurationCardProps } from "./image-provider-picker";
@@ -158,7 +158,7 @@ export function ImageCapabilityFields({ config, providers, onChange, apiKey, onA
     onApiKeyChange("");
   };
   const modelOptions = IMAGE_MODEL_PRESETS.some((item) => item.modelId === config.modelId) ? IMAGE_MODEL_PRESETS : IMAGE_MODEL_PRESETS.filter((item) => !config.modelId || `${item.modelId} ${item.name}`.toLowerCase().includes(config.modelId.toLowerCase()));
-  return <div className="moco-form-stack">
+  return <div className="kulo-form-stack">
     <RadioGroup aria-label={t("接入方式", "Connection method")} value={source} onChange={(value) => {
       if (!["existing", "api", "subscription"].includes(value)) return;
       const next = value as typeof source; setSource(next); onApiKeyChange("");
@@ -176,7 +176,7 @@ export function ImageCapabilityFields({ config, providers, onChange, apiKey, onA
           options={providers.filter((provider) => provider.authType === "api_key").map((provider) => ({ id: provider.id, label: provider.name, disabled: !provider.authenticated || !provider.imageSupported && config.adapter !== "custom-image" }))} />
         {!providers.some((provider) => (provider.imageSupported || config.adapter === "custom-image") && provider.authenticated && provider.authType === "api_key") && <p className="text-xs text-warning" role="status">{t("暂无可复用的 API 连接", "No reusable API connections")}</p>}
       </>}
-      <ComboBox className="moco-form-field" variant="primary" inputValue={config.modelId} selectedKey={IMAGE_MODEL_PRESETS.some((item) => item.modelId === config.modelId) ? config.modelId : null} allowsCustomValue menuTrigger="focus" defaultFilter={() => true} isDisabled={disabled} isRequired
+      <ComboBox className="kulo-form-field" variant="primary" inputValue={config.modelId} selectedKey={IMAGE_MODEL_PRESETS.some((item) => item.modelId === config.modelId) ? config.modelId : null} allowsCustomValue menuTrigger="focus" defaultFilter={() => true} isDisabled={disabled} isRequired
         onInputChange={(modelId) => { if (modelId !== config.modelId) onChange(applyImageModelPreset(config, modelId, source === "existing")); }}
         onSelectionChange={(modelId) => { if (modelId !== null && modelId !== config.modelId) onChange(applyImageModelPreset(config, String(modelId), source === "existing")); }}>
         <Label>{t("图像模型", "Image model")}</Label><ComboBox.InputGroup><Input placeholder={t("选择预设或输入模型 ID", "Choose a preset or enter a model ID")} spellCheck={false} /><ComboBox.Trigger aria-label={t("展开图像模型预设", "Open image model presets")} /></ComboBox.InputGroup>
@@ -194,17 +194,17 @@ export function ImageCapabilityFields({ config, providers, onChange, apiKey, onA
           defaults: getImageModelPreset(adapter as MediaAdapterId, config.modelId)?.defaults ?? {},
           customAdapter: adapter === "custom-image" ? config.customAdapter ?? clone(customAdapterTemplate) : undefined });
       }} options={[{ id: "openai-image", label: "OpenAI Images" }, { id: "gemini-image", label: "Gemini Images" }, { id: "custom-image", label: t("自定义接口", "Custom API") }]} />
-      {customModel && <div className="moco-form-stack">
-        <h3 className="moco-group-title">{t("模型能力", "Model capabilities")}</h3>
-        <CheckboxGroup className="moco-form-field" value={(profile ?? fallbackProfile).formats} isDisabled={disabled} onChange={(formats) => onChange({ ...config, imageProfile: { ...(profile ?? fallbackProfile), formats: formats as MediaOutputFormat[] }, defaults: {} })}>
+      {customModel && <div className="kulo-form-stack">
+        <h3 className="kulo-group-title">{t("模型能力", "Model capabilities")}</h3>
+        <CheckboxGroup className="kulo-form-field" value={(profile ?? fallbackProfile).formats} isDisabled={disabled} onChange={(formats) => onChange({ ...config, imageProfile: { ...(profile ?? fallbackProfile), formats: formats as MediaOutputFormat[] }, defaults: {} })}>
           <Label>{t("输出格式", "Output formats")}</Label><div className="flex flex-wrap gap-3">{outputFormats.map((format) => <Checkbox key={format} value={format} variant="primary"><Checkbox.Content><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>{format.toUpperCase()}</Checkbox.Content></Checkbox>)}</div>
         </CheckboxGroup>
         <ImageToggle label={t("支持图片编辑", "Supports image editing")} value={profile?.supportsEdit ?? false} disabled={disabled} onChange={(supportsEdit) => onChange({ ...config, imageProfile: { ...(profile ?? fallbackProfile), supportsEdit } })} />
         <ImageNumber label={t("参考图上限", "Reference image limit")} value={profile?.maxReferences ?? 0} minimum={0} maximum={16} disabled={disabled} onChange={(maxReferences) => onChange({ ...config, imageProfile: { ...(profile ?? fallbackProfile), maxReferences: maxReferences ?? 0 } })} />
       </div>}
-      {profile && profile.formats.length > 0 && <div className="moco-form-stack">
-        <h3 className="moco-group-title">{t("默认生成参数", "Default generation parameters")}</h3>
-        <div className="moco-form-grid">
+      {profile && profile.formats.length > 0 && <div className="kulo-form-stack">
+        <h3 className="kulo-group-title">{t("默认生成参数", "Default generation parameters")}</h3>
+        <div className="kulo-form-grid">
           <ImageSelect label={t("输出格式", "Output format")} value={parameters.format ?? profile.formats[0] ?? "png"} options={profile.formats.map((format) => ({ id: format, label: format.toUpperCase() }))} disabled={disabled} onChange={(format) => updateParameters({ format: format as MediaOutputFormat })} />
           <ImageNumber label={t("图片数量", "Image count")} value={parameters.count ?? 1} maximum={config.adapter === "gemini-image" || parameters.format === "svg" ? 1 : config.maxOutputs ?? 1} disabled={disabled} onChange={(count) => updateParameters({ count })} />
           {Boolean(profile.aspectRatios?.length) && <ImageSelect label={t("画面比例", "Aspect ratio")} value={parameters.aspectRatio ?? "__default"} options={[{ id: "__default", label: t("跟随任务", "Follow task") }, ...profile.aspectRatios!.map((ratio) => ({ id: ratio, label: ratio === "auto" ? t("自动", "Auto") : ratio }))]} disabled={disabled} onChange={(aspectRatio) => updateParameters({ aspectRatio: aspectRatio === "__default" ? undefined : aspectRatio })} />}
@@ -214,12 +214,12 @@ export function ImageCapabilityFields({ config, providers, onChange, apiKey, onA
         </div>
         <Disclosure>
           <Disclosure.Heading><Button slot="trigger" variant="ghost" className="justify-start" size="sm">{t("高级设置", "Advanced settings")}<Disclosure.Indicator /></Button></Disclosure.Heading>
-          <Disclosure.Content><Disclosure.Body className="moco-form-stack pt-3">
+          <Disclosure.Content><Disclosure.Body className="kulo-form-stack pt-3">
             {profile.supportsComplexity && <ImageSelect label={t("规划复杂度", "Planning complexity")} value={parameters.complexity ?? "__default"} options={[{ id: "__default", label: t("模型默认", "Model default") }, ...["low", "medium", "high"].map((id) => ({ id, label: id }))]} disabled={disabled} onChange={(complexity) => updateParameters({ complexity: complexity === "__default" ? undefined : complexity as ImageGenerationParameters["complexity"] })} />}
             {Boolean(profile.thinkingLevels?.length) && <ImageSelect label={t("思考强度", "Thinking level")} value={parameters.thinkingLevel ?? "__default"} options={[{ id: "__default", label: t("模型默认", "Model default") }, ...profile.thinkingLevels!.map((id) => ({ id, label: id }))]} disabled={disabled} onChange={(thinkingLevel) => updateParameters({ thinkingLevel: thinkingLevel === "__default" ? undefined : thinkingLevel })} />}
             {profile.supportsGrounding && <ImageToggle label={t("搜索增强", "Search grounding")} value={parameters.grounding ?? false} disabled={disabled} onChange={(grounding) => updateParameters({ grounding })} />}
             {(parameters.format === "jpeg" || parameters.format === "webp") && <ImageNumber label={t("压缩质量（%）", "Compression quality (%)")} value={parameters.outputCompression ?? 100} minimum={0} disabled={disabled} onChange={(outputCompression) => updateParameters({ outputCompression })} />}
-            {parameters.format === "gif" && <div className="moco-form-grid"><ImageNumber label={t("帧数", "Frames")} value={parameters.frameCount ?? 9} minimum={2} maximum={16} disabled={disabled} onChange={(frameCount) => updateParameters({ frameCount })} /><ImageNumber label={t("帧间隔（毫秒）", "Frame duration (ms)")} value={parameters.frameDurationMs ?? 200} minimum={20} maximum={655350} step={10} disabled={disabled} onChange={(frameDurationMs) => updateParameters({ frameDurationMs })} /></div>}
+            {parameters.format === "gif" && <div className="kulo-form-grid"><ImageNumber label={t("帧数", "Frames")} value={parameters.frameCount ?? 9} minimum={2} maximum={16} disabled={disabled} onChange={(frameCount) => updateParameters({ frameCount })} /><ImageNumber label={t("帧间隔（毫秒）", "Frame duration (ms)")} value={parameters.frameDurationMs ?? 200} minimum={20} maximum={655350} step={10} disabled={disabled} onChange={(frameDurationMs) => updateParameters({ frameDurationMs })} /></div>}
             {parameters.format === "svg" && <><ImageText label={t("矢量创作模型（可选）", "SVG author model (optional)")} value={parameters.svgModel ?? ""} disabled={disabled} onChange={(svgModel) => updateParameters({ svgModel: svgModel || undefined, ...(svgModel ? {} : { svgReasoning: undefined }) })} />{parameters.svgModel && <ImageSelect label={t("矢量思考强度", "SVG reasoning")} value={parameters.svgReasoning ?? "__default"} options={[{ id: "__default", label: t("模型默认", "Model default") }, ...["none", "minimal", "low", "medium", "high", "xhigh", "max"].map((id) => ({ id, label: id }))]} disabled={disabled} onChange={(svgReasoning) => updateParameters({ svgReasoning: svgReasoning === "__default" ? undefined : svgReasoning })} />}</>}
             {(profile.parameters ?? []).map((field) => <ImageCustomParameter key={field.key} field={field} value={parameters.custom?.[field.key] ?? field.default} disabled={disabled} onChange={(value) => {
               const custom = { ...parameters.custom }; if (value === undefined) delete custom[field.key]; else custom[field.key] = value; updateParameters({ custom });
@@ -229,11 +229,11 @@ export function ImageCapabilityFields({ config, providers, onChange, apiKey, onA
         </Disclosure>
       </div>}
       {config.adapter === "custom-image" && <ImageJsonField label={t("请求与响应映射（JSON）", "Request and response mapping (JSON)")} value={config.customAdapter ?? customAdapterTemplate} disabled={disabled} onValidityChange={(valid) => onValidityChange?.(valid, "adapter")} onChange={(customAdapter) => onChange({ ...config, customAdapter: validateCustomImageAdapter(customAdapter) })} />}
-      <div className="moco-form-stack">
-        <h3 className="moco-group-title">{t("使用规则", "Usage rules")}</h3>
+      <div className="kulo-form-stack">
+        <h3 className="kulo-group-title">{t("使用规则", "Usage rules")}</h3>
         <ImageToggle label={t("启用模型", "Enable model")} value={config.enabled ?? true} onChange={(enabled) => onChange({ ...config, enabled })} disabled={disabled} />
         <ImageToggle label={t("设为默认图像模型", "Set as default image model")} value={config.isDefault ?? false} onChange={(isDefault) => onChange({ ...config, isDefault })} disabled={disabled} />
-        <ImageToggle label={t("允许 Moco 在任务中调用", "Allow Moco to use in tasks")} value={config.allowTaskGeneration ?? true} onChange={(allowTaskGeneration) => onChange({ ...config, allowTaskGeneration })} disabled={disabled} />
+        <ImageToggle label={t("允许 Kulo 在任务中调用", "Allow Kulo to use in tasks")} value={config.allowTaskGeneration ?? true} onChange={(allowTaskGeneration) => onChange({ ...config, allowTaskGeneration })} disabled={disabled} />
         <ImageNumber label={t("单次图片上限", "Maximum images per job")} value={config.maxOutputs ?? 1} maximum={8} onChange={(maxOutputs) => onChange({ ...config, maxOutputs: maxOutputs ?? 1 })} disabled={disabled} />
         <ImageText label={t("适用任务", "Preferred tasks")} value={config.routing?.useCases?.join("、") ?? ""} onChange={(value) => onChange({ ...config, routing: { ...config.routing, useCases: value.split(/[,，、\n]/).map((item) => item.trim()).filter(Boolean) } })} disabled={disabled} placeholder={t("产品图、文字排版、快速草稿", "Product images, typography, quick drafts")} />
         <ImageText label={t("调用偏好", "Model selection guidance")} value={config.routing?.instructions ?? ""} onChange={(instructions) => onChange({ ...config, routing: { ...config.routing, instructions } })} disabled={disabled} multiline />
@@ -263,7 +263,7 @@ export function SharedImageCapabilityEditor({ workspace, clientId, connected, di
   const valid = invalidFields.size === 0;
   const [error, setError] = useState<string>();
   const [conflict, setConflict] = useState(false);
-  const [savedInput, setSavedInput] = useState<Awaited<ReturnType<typeof mocoRest.saveImageDraft>>["input"]>();
+  const [savedInput, setSavedInput] = useState<Awaited<ReturnType<typeof kuloRest.saveImageDraft>>["input"]>();
   const shared = useRef(initial);
   const current = useRef(config);
   const localVersion = useRef(0);
@@ -297,13 +297,13 @@ export function SharedImageCapabilityEditor({ workspace, clientId, connected, di
       try {
         while (persistedVersion.current < localVersion.current) {
           const sentVersion = localVersion.current;
-          const next = await mocoRest.updateImageDraft({ clientId, config: clone(current.current), expectedRevision: shared.current.revision });
+          const next = await kuloRest.updateImageDraft({ clientId, config: clone(current.current), expectedRevision: shared.current.revision });
           shared.current = next; persistedVersion.current = sentVersion;
         }
         if (mounted.current) { setDirty(false); onChanged(); }
         return shared.current;
       } catch (cause) {
-        if (mounted.current) { setError(imageActionError(cause)); if (cause instanceof MocoApiError && cause.status === 409) setConflict(true); }
+        if (mounted.current) { setError(imageActionError(cause)); if (cause instanceof KuloApiError && cause.status === 409) setConflict(true); }
         throw cause;
       } finally { inFlight.current = null; if (mounted.current) setSyncing(false); }
     })();
@@ -322,14 +322,14 @@ export function SharedImageCapabilityEditor({ workspace, clientId, connected, di
       if (current.current.adapter === "custom-image") validateCustomImageAdapter(current.current.customAdapter!);
       if (apiKey.trim() && current.current.credentialProviderId !== null) update({ ...current.current, credentialProviderId: null });
       const draft = await flush();
-      const result = await mocoRest.saveImageDraft({ clientId, expectedRevision: draft.revision, commandId: imageCommandId("save") });
+      const result = await kuloRest.saveImageDraft({ clientId, expectedRevision: draft.revision, commandId: imageCommandId("save") });
       if (mounted.current) setSavedInput(result.input);
-      if (result.input && apiKey.trim()) await mocoRest.submitCapabilityInput(result.input.id, { clientId, secret: apiKey });
+      if (result.input && apiKey.trim()) await kuloRest.submitCapabilityInput(result.input.id, { clientId, secret: apiKey });
       if (mounted.current) {
         setApiKey(""); setDirty(false); onChanged();
         if (!result.input || apiKey.trim()) { setSavedInput(undefined); onClose?.(); }
       }
-    } catch (cause) { if (mounted.current) { setError(safeSetupInputError(cause, apiKey)); if (cause instanceof MocoApiError && cause.status === 409) setConflict(true); } }
+    } catch (cause) { if (mounted.current) { setError(safeSetupInputError(cause, apiKey)); if (cause instanceof KuloApiError && cause.status === 409) setConflict(true); } }
     finally { if (mounted.current) setBusy(undefined); }
   };
   const cancel = async () => {
@@ -337,7 +337,7 @@ export function SharedImageCapabilityEditor({ workspace, clientId, connected, di
     setBusy("cancel");
     try {
       if (inFlight.current) await inFlight.current.catch(() => undefined);
-      if (hasSharedDraft) await mocoRest.deleteImageDraft(clientId, shared.current.revision);
+      if (hasSharedDraft) await kuloRest.deleteImageDraft(clientId, shared.current.revision);
       if (mounted.current) { setApiKey(""); setDirty(false); setConflict(false); onChanged(); onClose?.(); }
     } catch (cause) { if (mounted.current) setError(imageActionError(cause)); }
     finally { if (mounted.current) setBusy(undefined); }
@@ -347,7 +347,7 @@ export function SharedImageCapabilityEditor({ workspace, clientId, connected, di
     setBusy("reload");
     try {
       const nextConfig = reloadImageDraftConfiguration(workspace, incoming);
-      const next = savedModelChanged ? await mocoRest.updateImageDraft({ clientId, config: nextConfig, expectedRevision: incoming.revision }) : incoming;
+      const next = savedModelChanged ? await kuloRest.updateImageDraft({ clientId, config: nextConfig, expectedRevision: incoming.revision }) : incoming;
       shared.current = next; current.current = clone(next.config); setConfig(current.current); persistedVersion.current = ++localVersion.current;
       setDirty(false); setConflict(false); setError(undefined); setInvalidFields(new Set()); setApiKey(""); onChanged();
     } catch (cause) { if (mounted.current) setError(imageActionError(cause)); }

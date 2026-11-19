@@ -1,4 +1,4 @@
-.moco-cat-avatar {
+.kulo-cat-avatar {
   position: relative;
   display: inline-block;
   width: 48px;
@@ -12,17 +12,17 @@
   contain: layout paint;
 }
 
-.moco-cat-avatar-sprite {
+.kulo-cat-avatar-sprite {
   position: absolute;
   display: block;
   background-size: 400% 400%;
   background-repeat: no-repeat;
 }
 
-.moco-cat-avatar[data-asset-state="error"] {
-  background-image: url("/moco-icon.png");
+.kulo-cat-avatar[data-asset-state="error"] {
+  background-image: url("/kulo-icon.png");
 }
 
-.moco-cat-avatar[data-asset-state="error"] .moco-cat-avatar-sprite {
+.kulo-cat-avatar[data-asset-state="error"] .kulo-cat-avatar-sprite {
   visibility: hidden;
 }

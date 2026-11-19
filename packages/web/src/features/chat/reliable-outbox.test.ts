@@ -5,7 +5,7 @@ import {
 } from "./reliable-outbox";
 
 const instances: ReliableOutbox[] = [];
-const scope = "http://moco.test|hub-one|device-one";
+const scope = "http://kulo.test|hub-one|device-one";
 const message = (id: string, content = id): ReliableEnvelope => ({ type: "chat.send", topicId: "topic-one", content, requestId: id, whenBusy: "steer" });
 const disconnected = () => Object.assign(new Error("连接已中断"), { isDisconnect: true });
 const ack = (submissionId: number): ReliableOutboxAck => ({ submissionId, topicId: "topic-one", delivery: "accepted" });
@@ -283,7 +283,7 @@ describe("reliable outbox delivery", () => {
   it("preserves scope isolation and rejects removal of a pending operation", async () => {
     const storage = createMemoryOutboxStorage(); const old = controller(storage);
     await old.outbox.enqueue(message("same"));
-    const other = controller(storage, { scope: "http://moco.test|other-hub|device-one" });
+    const other = controller(storage, { scope: "http://kulo.test|other-hub|device-one" });
     await other.outbox.enqueue(message("same", "different hub")); other.outbox.setConnected(true); await flush();
     expect(old.outbox.getSnapshot()[0]?.state).toBe("queued");
     expect(other.outbox.getSnapshot()[0]?.state).toBe("accepted");

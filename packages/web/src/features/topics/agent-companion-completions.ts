@@ -1,4 +1,4 @@
-import type { LiveStreamState, TicketCardView, TicketStatus } from "@moco/protocol";
+import type { LiveStreamState, TicketCardView, TicketStatus } from "@kulo/protocol";
 import { agentProfileCompletions } from "./agent-profile-state";
 import type { AgentTerminalEntry } from "./agent-terminal-state";
 

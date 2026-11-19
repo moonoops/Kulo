@@ -1,5 +1,5 @@
-import { translate as tr, useI18n } from "../../moco-i18n";
-import type { WebSource } from "@moco/protocol";
+import { translate as tr, useI18n } from "../../kulo-i18n";
+import type { WebSource } from "@kulo/protocol";
 import "./message-sources.css";
 
 export function safeSourceUrl(value: unknown): string | undefined {
@@ -35,19 +35,19 @@ export function MessageSources({ sources, searchSuggestions }: { sources: readon
   if (!safe.length) return null;
   const suggestions = [...new Set(searchSuggestions?.filter((content) => typeof content === "string" && content.trim()).slice(0, 3))];
   return <>
-  <nav className="moco-message-sources" aria-label={tr("引用来源", "Cited sources")}>
-    <span className="moco-message-sources-label">{tr("来源", "Sources")}</span>
-    <ol className="moco-message-sources-list">
-      {safe.map((source) => <li key={source.url} className="moco-message-source">
-        <a className="moco-message-source-link" href={source.url} target="_blank" rel="noopener noreferrer" title={source.title}>
-          <span className="moco-message-source-title">{source.title}</span>
-          <span className="moco-message-source-domain">{new URL(source.url).hostname.replace(/^www\./, "")}</span>
+  <nav className="kulo-message-sources" aria-label={tr("引用来源", "Cited sources")}>
+    <span className="kulo-message-sources-label">{tr("来源", "Sources")}</span>
+    <ol className="kulo-message-sources-list">
+      {safe.map((source) => <li key={source.url} className="kulo-message-source">
+        <a className="kulo-message-source-link" href={source.url} target="_blank" rel="noopener noreferrer" title={source.title}>
+          <span className="kulo-message-source-title">{source.title}</span>
+          <span className="kulo-message-source-domain">{new URL(source.url).hostname.replace(/^www\./, "")}</span>
         </a>
       </li>)}
     </ol>
   </nav>
-  {suggestions.length > 0 && <div className="moco-message-search-suggestions" aria-label={tr("搜索建议", "Search suggestions")}>
-    {suggestions.map((content, index) => <iframe key={content} className="moco-message-search-suggestions-frame" title={tr(`搜索建议 ${index + 1}`, `Search suggestion ${index + 1}`)} sandbox="allow-popups" referrerPolicy="no-referrer" loading="lazy" srcDoc={searchSuggestionsDocument(content)} />)}
+  {suggestions.length > 0 && <div className="kulo-message-search-suggestions" aria-label={tr("搜索建议", "Search suggestions")}>
+    {suggestions.map((content, index) => <iframe key={content} className="kulo-message-search-suggestions-frame" title={tr(`搜索建议 ${index + 1}`, `Search suggestion ${index + 1}`)} sandbox="allow-popups" referrerPolicy="no-referrer" loading="lazy" srcDoc={searchSuggestionsDocument(content)} />)}
   </div>}
   </>;
 }

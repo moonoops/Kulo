@@ -1,7 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { Options, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { ExternalAgentModelInfo } from "@moco/protocol";
+import type { ExternalAgentModelInfo } from "@kulo/protocol";
 import { managedNativeProcess, nativeAgentEnvironment, type ExternalDriver, type ExternalDriverContext } from "./external-agent-drivers.js";
 
 export function claudeThinkingOptions(level?:string):Pick<Options,"effort"|"thinking">{
@@ -16,7 +16,7 @@ export function nativeClaudeOptions(ctx:ExternalDriverContext):Options{
     cwd:ctx.cwd,...(ctx.modelId?{model:ctx.modelId}:{}),...(ctx.sessionId?{resume:ctx.sessionId}:{}),
     settingSources:["user","project","local"],pathToClaudeCodeExecutable:ctx.executable,includePartialMessages:true,env:nativeAgentEnvironment(),
     systemPrompt:{type:"preset",preset:"claude_code"},...claudeThinkingOptions(ctx.thinkingLevel),
-    ...(ctx.servers.length?{mcpServers:Object.fromEntries(ctx.servers.map(server=>[`moco-${randomUUID()}-${server.name}`,{type:"http" as const,url:server.url,headers:Object.fromEntries((server.headers??[]).map(row=>[row.name,row.value]))}]))}:{}),
+    ...(ctx.servers.length?{mcpServers:Object.fromEntries(ctx.servers.map(server=>[`kulo-${randomUUID()}-${server.name}`,{type:"http" as const,url:server.url,headers:Object.fromEntries((server.headers??[]).map(row=>[row.name,row.value]))}]))}:{}),
     canUseTool:async(name,input,request)=>{
       const suggestions=request.suggestions??[];
       const choices=[{id:"allow",label:"Allow once"},...(suggestions.length?[{id:"allow-suggested",label:"Allow with client's suggested permissions"}]:[]),{id:"deny",label:"Reject"}];

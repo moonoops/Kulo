@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultModelThinkingLevels, getModelThinkingLevels, modelEffortOptions, toProviderModelItem, buildProviderModelGroups } from "./settings-helpers";
-import type { MocoSettingsView } from "@moco/protocol";
+import type { KuloSettingsView } from "@kulo/protocol";
 
 describe("configurable model thinking levels", () => {
   it("starts with five ordered defaults and preserves saved custom labels and wire values", () => {
@@ -29,7 +29,7 @@ describe("configurable model thinking levels", () => {
   it("keeps custom levels available to Worker model groups before the remote catalog loads", () => {
     const thinkingLevels = [{ id: "careful", label: "仔细思考", value: "high" }];
     const model = { baseUrl: "http://127.0.0.1:9/v1", apiMode: "openai-responses", defaultProvider: "api-demo", defaultModel: "model", thinkingLevel: "careful", gatewayDisabled: true,
-      customProviders: [{ id: "api-demo", name: "Demo", api: "openai-responses", baseUrl: "http://127.0.0.1:9/v1", models: [{ id: "model", thinkingLevels }] }] } satisfies MocoSettingsView["blocks"]["model"]["value"];
+      customProviders: [{ id: "api-demo", name: "Demo", api: "openai-responses", baseUrl: "http://127.0.0.1:9/v1", models: [{ id: "model", thinkingLevels }] }] } satisfies KuloSettingsView["blocks"]["model"]["value"];
     const item = buildProviderModelGroups(model, [])[0]!.models[0]!;
     expect(item.thinkingLevels).toEqual(thinkingLevels);
     expect(item.supportedThinkingLevels).toEqual(["careful"]);

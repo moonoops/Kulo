@@ -1,20 +1,20 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, defineTool, section, type Harness } from "@earendil-works/pi-durable";
 import { arr, bool, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
-import { IMAGE_MODEL_PRESETS, type CapabilityConfigurationInput, type CapabilityRecord, type CapabilitiesWorkspaceSnapshot, type EnvNodeDescriptor, type ImageCapabilityConfiguration, type ImageRoutingSettings, type ProjectView, type ProviderCatalogItem, type SkillAudience } from "@moco/protocol";
-import type { MocoCapabilities } from "./capabilities.js";
-import type { MocoImageConfiguration } from "./image-configuration.js";
-import type { MocoSkills } from "./skills.js";
-import type { MocoMediaJobs } from "./media-jobs.js";
+import { IMAGE_MODEL_PRESETS, type CapabilityConfigurationInput, type CapabilityRecord, type CapabilitiesWorkspaceSnapshot, type EnvNodeDescriptor, type ImageCapabilityConfiguration, type ImageRoutingSettings, type ProjectView, type ProviderCatalogItem, type SkillAudience } from "@kulo/protocol";
+import type { KuloCapabilities } from "./capabilities.js";
+import type { KuloImageConfiguration } from "./image-configuration.js";
+import type { KuloSkills } from "./skills.js";
+import type { KuloMediaJobs } from "./media-jobs.js";
 import { SettingsAssistantDoc, type SettingsAssistant, type WorkspaceUndoSupport } from "./settings-assistant.js";
 import { resolveDeferredAddTools } from "./tool-surface.js";
 
 interface SetupHost {
   harness: Harness;
-  capabilities: MocoCapabilities;
-  imageConfiguration: MocoImageConfiguration;
-  skills: MocoSkills;
-  mediaJobs: MocoMediaJobs;
+  capabilities: KuloCapabilities;
+  imageConfiguration: KuloImageConfiguration;
+  skills: KuloSkills;
+  mediaJobs: KuloMediaJobs;
   settingsAssistant: SettingsAssistant;
   projects: { list(): Promise<ProjectView[]> };
   envManager: { listEnvs(): EnvNodeDescriptor[] };
@@ -95,25 +95,25 @@ export function createCapabilitySetupExtension(get: () => SetupHost) {
       ] };
   };
   return defineExtension({
-    name: "moco-capability-setup",
-    sections: [section("moco_capability_setup", async () => {
+    name: "kulo-capability-setup",
+    sections: [section("kulo_capability_setup", async () => {
       await context();
       return get().skills.read("capability-setup", "SKILL.md", "settings");
     }, { tag: false })],
     tools: [
-      defineTool({ name: "moco_capabilities_read", description: "Read configured media capabilities, service connections, Skills, active browser/secret input requests, connected devices, projects, and reusable API-key `credentialProviders` (never returns secrets; call before modifying).", parameters: obj({}), replay: "safe", execute: async (_args, api, ctx) => {
+      defineTool({ name: "kulo_capabilities_read", description: "Read configured media capabilities, service connections, Skills, active browser/secret input requests, connected devices, projects, and reusable API-key `credentialProviders` (never returns secrets; call before modifying).", parameters: obj({}), replay: "safe", execute: async (_args, api, ctx) => {
         const value = await read();
         const addTools = await resolveDeferredAddTools(api, ctx, [
-          "moco_capability_manage",
-          "moco_capability_input",
-          "moco_skill_manage",
-          "moco_image_models_discover",
-          "moco_image_models_import",
-          "moco_image_routing",
+          "kulo_capability_manage",
+          "kulo_capability_input",
+          "kulo_skill_manage",
+          "kulo_image_models_discover",
+          "kulo_image_models_import",
+          "kulo_image_routing",
         ]);
         return { ...result(value), ...(addTools.length ? { control: { addTools } } : {}) };
       } }),
-      defineTool({ name: "moco_capability_configure", description: "Add or update an image/video capability (`config` JSON with `name`/`adapter`/`modelId` and optional `id`/`baseUrl`/`browserEnvId`/`profileRef`/`credentialProviderId`/`enabled`/`isDefault`/`allowTaskGeneration`/`maxOutputs`). Pass a same-origin API-key `credentialProviderId` to reuse a model key, `null` to request a dedicated secret input, or omit to keep current source—never include raw keys, cookies, or headers.", parameters: obj({ config: str() }), replay: "safe", execute: async ({ config }, api) => {
+      defineTool({ name: "kulo_capability_configure", description: "Add or update an image/video capability (`config` JSON with `name`/`adapter`/`modelId` and optional `id`/`baseUrl`/`browserEnvId`/`profileRef`/`credentialProviderId`/`enabled`/`isDefault`/`allowTaskGeneration`/`maxOutputs`). Pass a same-origin API-key `credentialProviderId` to reuse a model key, `null` to request a dedicated secret input, or omit to keep current source—never include raw keys, cookies, or headers.", parameters: obj({ config: str() }), replay: "safe", execute: async ({ config }, api) => {
         await context();
         if (config.length > 48_000) throw new Error("配置过长。");
         const value = JSON.parse(config) as Record<string, unknown>;
@@ -141,16 +141,16 @@ export function createCapabilitySetupExtension(get: () => SetupHost) {
         }, undefined, undo);
         return result(response);
       } }),
-      defineTool({ name: "moco_image_models_discover", description: "Discover candidate image models from reusable API connections (`provider_ids` optional) and render an interactive multi-select card in the right-hand panel (read-only, unbilled, isolated from chat models). 关键词：探测图像模型 发现画图模型列表", parameters: obj({ provider_ids: opt(arr(str())) }), deferred: true, replay: "safe", execute: async ({ provider_ids }, api, ctx) => {
+      defineTool({ name: "kulo_image_models_discover", description: "Discover candidate image models from reusable API connections (`provider_ids` optional) and render an interactive multi-select card in the right-hand panel (read-only, unbilled, isolated from chat models). 关键词：探测图像模型 发现画图模型列表", parameters: obj({ provider_ids: opt(arr(str())) }), deferred: true, replay: "safe", execute: async ({ provider_ids }, api, ctx) => {
         const client = await context();
-        const addTools = await resolveDeferredAddTools(api, ctx, ["moco_image_models_import"]);
+        const addTools = await resolveDeferredAddTools(api, ctx, ["kulo_image_models_import"]);
         return { ...result(await get().imageConfiguration.discover(client.clientId, provider_ids)), ...(addTools.length ? { control: { addTools } } : {}) };
       } }),
-      defineTool({ name: "moco_image_models_import", description: "Import user-selected candidate image models (`discovery_id` and `candidate_ids` from this window's discovery result) into the image capability catalog; set `allow_task_generation: true` only when explicitly permitted. 关键词：导入生图模型 添加选中图片模型", parameters: obj({ discovery_id: str(), candidate_ids: arr(str()), allow_task_generation: opt(bool()) }), deferred: true, replay: "safe", execute: async ({ discovery_id, candidate_ids, allow_task_generation }, api) => {
+      defineTool({ name: "kulo_image_models_import", description: "Import user-selected candidate image models (`discovery_id` and `candidate_ids` from this window's discovery result) into the image capability catalog; set `allow_task_generation: true` only when explicitly permitted. 关键词：导入生图模型 添加选中图片模型", parameters: obj({ discovery_id: str(), candidate_ids: arr(str()), allow_task_generation: opt(bool()) }), deferred: true, replay: "safe", execute: async ({ discovery_id, candidate_ids, allow_task_generation }, api) => {
         const client = await context();
         return result(await get().settingsAssistant.workspaceAction(api.callId, "添加图像模型", candidate_ids, () => get().imageConfiguration.importModels({ clientId: client.clientId, discoveryId: discovery_id, candidateIds: candidate_ids, commandId: api.callId, allowTaskGeneration: allow_task_generation })));
       } }),
-      defineTool({ name: "moco_image_draft", description: "Update, save, or discard the shared UI image configuration draft after reading the catalog (`update` accepts credential-free declarative JSON with `name`/`adapter`/`modelId` and optional `baseUrl`/`credentialProviderId`/`imageProfile`/`defaults`/`routing`/`customAdapter`; `save` commits on user request).", parameters: obj({ action: oneOf(["update", "save", "discard"]), config: opt(str()), expected_revision: opt(num()) }), replay: "safe", execute: async ({ action, config, expected_revision }, api) => {
+      defineTool({ name: "kulo_image_draft", description: "Update, save, or discard the shared UI image configuration draft after reading the catalog (`update` accepts credential-free declarative JSON with `name`/`adapter`/`modelId` and optional `baseUrl`/`credentialProviderId`/`imageProfile`/`defaults`/`routing`/`customAdapter`; `save` commits on user request).", parameters: obj({ action: oneOf(["update", "save", "discard"]), config: opt(str()), expected_revision: opt(num()) }), replay: "safe", execute: async ({ action, config, expected_revision }, api) => {
         const client = await context();
         const view = await observed();
         const expectedRevision = expected_revision ?? view.imageDraftRevision ?? 0;
@@ -163,13 +163,13 @@ export function createCapabilitySetupExtension(get: () => SetupHost) {
         if (action === "discard") { await get().imageConfiguration.discardDraft(client.clientId, expectedRevision); return result({ discarded: true }); }
         return result(await get().settingsAssistant.workspaceAction(api.callId, "保存图像配置", [], () => get().imageConfiguration.saveDraft({ clientId: client.clientId, expectedRevision, commandId: api.callId })));
       } }),
-      defineTool({ name: "moco_image_routing", description: "Configure multi-model automatic image routing rules after reading the catalog (`settings` JSON with `mode` `auto`|`default`, `preference` `balanced`|`speed`|`quality`|`cost`, `instructions`, and `rules`; explicit user model choices and format/reference/permission gates take precedence). 关键词：图像路由规则 多模型选型偏好", parameters: obj({ settings: str() }), deferred: true, replay: "safe", execute: async ({ settings }, api) => {
+      defineTool({ name: "kulo_image_routing", description: "Configure multi-model automatic image routing rules after reading the catalog (`settings` JSON with `mode` `auto`|`default`, `preference` `balanced`|`speed`|`quality`|`cost`, `instructions`, and `rules`; explicit user model choices and format/reference/permission gates take precedence). 关键词：图像路由规则 多模型选型偏好", parameters: obj({ settings: str() }), deferred: true, replay: "safe", execute: async ({ settings }, api) => {
         await context();
         if (settings.length > 16_000) throw new Error("图像调用规则过长。");
         const view = await observed();
         return result(await get().settingsAssistant.workspaceAction(api.callId, "修改图像调用规则", [], () => get().capabilities.configureRouting({ settings: JSON.parse(settings) as ImageRoutingSettings, expectedRevision: view.capabilityRevision, commandId: api.callId })));
       } }),
-      defineTool({ name: "moco_capability_manage", description: "Check connectivity (`check`, unbilled), `enable`, `disable`, or propose removing (`remove`, requires confirmation) a configured media capability. 关键词：启用停用删除生图能力 测试连接", parameters: obj({ id: str(), action: oneOf(["check", "enable", "disable", "remove"]) }), deferred: true, replay: "safe", execute: async ({ id, action }, api) => {
+      defineTool({ name: "kulo_capability_manage", description: "Check connectivity (`check`, unbilled), `enable`, `disable`, or propose removing (`remove`, requires confirmation) a configured media capability. 关键词：启用停用删除生图能力 测试连接", parameters: obj({ id: str(), action: oneOf(["check", "enable", "disable", "remove"]) }), deferred: true, replay: "safe", execute: async ({ id, action }, api) => {
         const client = await context();
         const view = await observed();
         const revision = view.capabilities[id];
@@ -181,11 +181,11 @@ export function createCapabilitySetupExtension(get: () => SetupHost) {
           return get().capabilities.setEnabled(id, action === "enable", expectedRevision, api.callId);
         }, action === "remove" ? { kind: "capability-remove", id, expectedRevision: revision, commandId: api.callId } : undefined, undo));
       } }),
-      defineTool({ name: "moco_capability_input", description: "Request an in-chat `secret` credential input or `browser` Flow sign-in for a capability (never accepts secret values; set `credentialProviderId: null` via `moco_capability_configure` first if detaching from a shared model key). 关键词：输入能力密钥 登录Flow浏览器", parameters: obj({ id: str(), kind: oneOf(["secret", "browser"]) }), deferred: true, replay: "safe", execute: async ({ id, kind }) => {
+      defineTool({ name: "kulo_capability_input", description: "Request an in-chat `secret` credential input or `browser` Flow sign-in for a capability (never accepts secret values; set `credentialProviderId: null` via `kulo_capability_configure` first if detaching from a shared model key). 关键词：输入能力密钥 登录Flow浏览器", parameters: obj({ id: str(), kind: oneOf(["secret", "browser"]) }), deferred: true, replay: "safe", execute: async ({ id, kind }) => {
         const client = await context();
         return result(await get().capabilities.requestInput(id, kind, client.clientId));
       } }),
-      defineTool({ name: "moco_skill_manage", description: "Manage Skills after reading the catalog: `import` local directory or HTTPS Git source (stages resources only, runs no install scripts), `enable`, `disable`, `update`, `rollback`, or propose `remove`. 关键词：导入管理技能 启用停用删除Skill", parameters: obj({ action: oneOf(["import", "enable", "disable", "update", "rollback", "remove"]), id: opt(str()), source: opt(str()), audiences: opt(arr(oneOf(["settings", "chat", "worker"]))) }), deferred: true, replay: "safe", execute: async (args, api) => {
+      defineTool({ name: "kulo_skill_manage", description: "Manage Skills after reading the catalog: `import` local directory or HTTPS Git source (stages resources only, runs no install scripts), `enable`, `disable`, `update`, `rollback`, or propose `remove`. 关键词：导入管理技能 启用停用删除Skill", parameters: obj({ action: oneOf(["import", "enable", "disable", "update", "rollback", "remove"]), id: opt(str()), source: opt(str()), audiences: opt(arr(oneOf(["settings", "chat", "worker"]))) }), deferred: true, replay: "safe", execute: async (args, api) => {
         await context();
         const view = await observed();
         const undo = (args.action === "enable" || args.action === "disable") && args.id && args.audiences === undefined ? await skillUndo(args.id, view.skillRevision, api.callId) : undefined;

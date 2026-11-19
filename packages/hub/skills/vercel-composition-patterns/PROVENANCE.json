@@ -65,7 +65,7 @@
       "bytes": 2886
     }
   },
-  "modifications": "Original upstream documentation is unchanged. Moco routing lives in the parent SKILL.md. Executable scripts and templates are omitted.",
+  "modifications": "Original upstream documentation is unchanged. Kulo routing lives in the parent SKILL.md. Executable scripts and templates are omitted.",
   "licenseFile": {
     "path": "LICENSE",
     "sha256": "157448c24cd739cd07f752406b7efca0a5c0250c329bdeed4c19878d15e6437b",

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ChatAttachment } from "@moco/protocol";
+import type { ChatAttachment } from "@kulo/protocol";
 import { downloadFileAsset, fileAssetUrl, openFileInDefaultApp, openHtmlInBrowser, prepareHtmlPreview, readFileAsset } from "./file-actions";
 
 const api = vi.hoisted(() => ({ ensureMediaSession: vi.fn(), getAuthTokenFromUrl: vi.fn(() => "qa-session") }));
-vi.mock("../../moco-api", () => api);
+vi.mock("../../kulo-api", () => api);
 const asset: ChatAttachment = { id: "att_pub_0123456789abcdef0123456789abcdef01234567", kind: "file", name: "方案.pptx", mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", size: 3, url: "https://untrusted.example/document" };
 
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); vi.useRealTimers(); });
@@ -37,7 +37,7 @@ describe("chat file actions", () => {
   it("uses the native save dialog and respects cancellation without a second browser download", async () => {
     const saveFile = vi.fn().mockResolvedValue("canceled");
     const request = vi.fn();
-    vi.stubGlobal("window", { mocoDesktop: { saveFile } });
+    vi.stubGlobal("window", { kuloDesktop: { saveFile } });
     vi.stubGlobal("fetch", request);
     await downloadFileAsset(asset);
     expect(saveFile).toHaveBeenCalledWith(asset.id);
@@ -87,7 +87,7 @@ describe("chat file actions", () => {
 
   it("opens desktop HTML by resource ID without exposing a URL or token", async () => {
     const openFile = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal("window", { mocoDesktop: { openFile } });
+    vi.stubGlobal("window", { kuloDesktop: { openFile } });
     await openHtmlInBrowser(asset.id);
     expect(openFile).toHaveBeenCalledWith(asset.id, "browser");
     expect(api.ensureMediaSession).not.toHaveBeenCalled();
@@ -95,7 +95,7 @@ describe("chat file actions", () => {
 
   it("opens every desktop file through the default application instead of the browser target", async () => {
     const openFile = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal("window", { mocoDesktop: { openFile } });
+    vi.stubGlobal("window", { kuloDesktop: { openFile } });
     await openFileInDefaultApp(asset.id);
     expect(openFile).toHaveBeenCalledWith(asset.id, "default");
     expect(api.ensureMediaSession).not.toHaveBeenCalled();

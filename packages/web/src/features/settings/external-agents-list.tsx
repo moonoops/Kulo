@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { Alert, Button, Chip, Disclosure, Dropdown, Label, Spinner, Switch } from "@heroui/react";
-import type { EnvNodeDescriptor, ExternalAgentKind, ExternalClientConnection, ProjectView, RolePreset } from "@moco/protocol";
+import type { EnvNodeDescriptor, ExternalAgentKind, ExternalClientConnection, ProjectView, RolePreset } from "@kulo/protocol";
 import { RoleAvatar } from "../../components/role-avatar";
-import { MocoIcon } from "../../moco-icon";
-import { useI18n } from "../../moco-i18n";
+import { KuloIcon } from "../../kulo-icon";
+import { useI18n } from "../../kulo-i18n";
 import { AgentPresetFields, externalEffortLabel } from "./agent-preset-fields";
 import { deriveExternalClients, roleExternalClientId } from "./external-agents-view";
 import { SettingsList, SettingsSection } from "./settings-layout";
@@ -202,7 +202,7 @@ export function ExternalAgentsList({
                   isPending={refreshingClientId === client.id}
                   onPress={() => onRefreshClient(client.id)}
                 >
-                  <MocoIcon name="refresh" size={15} />
+                  <KuloIcon name="refresh" size={15} />
                   {t("刷新模型", "Refresh models")}
                 </Button>
               )}
@@ -213,7 +213,7 @@ export function ExternalAgentsList({
                   isDisabled={busy || conflict || isCreatingHere}
                   onPress={() => startCreating(client)}
                 >
-                  <MocoIcon name="add" size={16} />
+                  <KuloIcon name="add" size={16} />
                   {t("新建智能体", "New agent")}
                 </Button>
               )}
@@ -225,7 +225,7 @@ export function ExternalAgentsList({
                     variant="ghost"
                     aria-label={sectionTitle + t("连接操作", " connection actions")}
                   >
-                    <MocoIcon name="more-vert" size={18} />
+                    <KuloIcon name="more-vert" size={18} />
                   </Button>
                   <Dropdown.Popover placement="bottom end">
                     <Dropdown.Menu
@@ -302,7 +302,7 @@ export function ExternalAgentsList({
                   >
                     <div
                       ref={(node) => onToggleRowRef?.(role.id, node)}
-                      className="moco-settings-list-row"
+                      className="kulo-settings-list-row"
                       aria-busy={activeToggleId === role.id || undefined}
                     >
                       <RoleAvatar roleId={role.id} label={role.label} size="sm" quiet />
@@ -310,10 +310,10 @@ export function ExternalAgentsList({
                         <Disclosure.Trigger className="flex w-full min-w-0 cursor-pointer items-center gap-3 rounded-xl py-1 text-left">
                           <span className="min-w-0 flex-1">
                             <span className="flex flex-wrap items-center gap-1.5" title={role.whenToUse}>
-                              <strong className="moco-item-title">{role.label}</strong>
+                              <strong className="kulo-item-title">{role.label}</strong>
                               {!savedEnabled && <Chip size="sm" variant="soft">{t("已停用", "Disabled")}</Chip>}
                             </span>
-                            <span className="moco-item-description mt-0.5 block truncate">
+                            <span className="kulo-item-description mt-0.5 block truncate">
                               {displayModel} · {displayEffort}
                             </span>
                           </span>
@@ -343,7 +343,7 @@ export function ExternalAgentsList({
                             variant="ghost"
                             aria-label={role.label + t("智能体操作", "Agent actions")}
                           >
-                            <MocoIcon name="more-vert" size={18} />
+                            <KuloIcon name="more-vert" size={18} />
                           </Button>
                           <Dropdown.Popover placement="bottom end">
                             <Dropdown.Menu
@@ -367,7 +367,7 @@ export function ExternalAgentsList({
                     </div>
 
                     <Disclosure.Content>
-                      <Disclosure.Body className="moco-list-editor">
+                      <Disclosure.Body className="kulo-list-editor">
                         <AgentPresetFields
                           value={role}
                           externalClient={client}
@@ -381,7 +381,7 @@ export function ExternalAgentsList({
               })}
             </SettingsList>
           ) : (
-            <div className="moco-list-surface px-4 py-3 text-sm text-muted">
+            <div className="kulo-list-surface px-4 py-3 text-sm text-muted">
               {t("暂无智能体，可点击右上角新建智能体。", "No agents yet. Select New agent above to add one.")}
             </div>
           )}

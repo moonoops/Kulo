@@ -8,11 +8,11 @@ import {
   redactSecrets, redactSensitiveText,
   type ModelProtocolAdapter, type VoiceAsrSource, type VoiceAsrStatus, type VoiceLiveProvider, type VoiceSettingsInput,
   type VoiceSnapshot, type VoiceTtsProvider,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import { transcribeCloudAudio } from "./voice-asr.js";
 import { synthesizeVoice, VOICE_TTS_ORIGINS, type VoiceSynthesisOutput } from "./voice-tts.js";
 
-const ORIGIN_ENV = "MOCO_API_KEY_ORIGIN";
+const ORIGIN_ENV = "KULO_API_KEY_ORIGIN";
 const CALL_ORIGINS: Readonly<Record<VoiceLiveProvider, string>> = {
   openai: "https://api.openai.com", gemini: "https://generativelanguage.googleapis.com", vertex: "https://aiplatform.googleapis.com",
 };
@@ -22,7 +22,7 @@ const DEFAULT_CALL: Omit<StoredCall, keyof StoredCredential> = { enabled: false,
 interface StoredCredential { credentialRef?: string; credentialOrigin?: string }
 type StoredTts = Omit<VoiceSnapshot["tts"], "hasCredential"> & StoredCredential;
 type StoredCall = Omit<VoiceSnapshot["call"], "hasCredential"> & StoredCredential;
-export interface MocoVoiceState {
+export interface KuloVoiceState {
   revision: number;
   defaultsMigratedV2?: boolean;
   asrEnabled: boolean;
@@ -33,9 +33,9 @@ export interface MocoVoiceState {
   call: StoredCall;
   cleanup: Record<string, boolean>;
 }
-export const MocoVoiceDoc = defineDoc<MocoVoiceState & JsonObject>({
-  kind: "moco.voice", version: 1, scope: "session",
-  initial: () => ({ revision: 0, defaultsMigratedV2: true, asrEnabled: true, tts: { ...DEFAULT_TTS }, call: { ...DEFAULT_CALL }, cleanup: {} }) as MocoVoiceState & JsonObject,
+export const KuloVoiceDoc = defineDoc<KuloVoiceState & JsonObject>({
+  kind: "kulo.voice", version: 1, scope: "session",
+  initial: () => ({ revision: 0, defaultsMigratedV2: true, asrEnabled: true, tts: { ...DEFAULT_TTS }, call: { ...DEFAULT_CALL }, cleanup: {} }) as KuloVoiceState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
 
@@ -64,7 +64,7 @@ export interface SyncedVoiceModelCandidate {
   authenticated?: boolean;
 }
 export interface VoiceLiveConfiguration { provider: VoiceLiveProvider; baseUrl?: string; modelId: string; voice: string; apiKey: string }
-export interface MocoVoiceOptions {
+export interface KuloVoiceOptions {
   harness: Harness;
   credentials: CredentialStore;
   asr: VoiceAsrEngine;
@@ -112,17 +112,17 @@ function liveProviderFromAdapter(adapter: ModelProtocolAdapter | undefined): Voi
   return "openai";
 }
 
-export class MocoVoiceService {
-  readonly #options: MocoVoiceOptions;
+export class KuloVoiceService {
+  readonly #options: KuloVoiceOptions;
   #tail: Promise<unknown> = Promise.resolve();
   #preparation?: Promise<void>;
   #asrError?: string;
   #probeId = 0;
   #closed = false;
-  constructor(options: MocoVoiceOptions) { this.#options = options; }
+  constructor(options: KuloVoiceOptions) { this.#options = options; }
   #now(): number { return this.#options.now?.() ?? Date.now(); }
-  async #state(): Promise<Readonly<MocoVoiceState>> {
-    return (await this.#options.harness.snapshot(MocoVoiceDoc, BACKGROUND_CONTEXT)) ?? { revision: 0, defaultsMigratedV2: true, asrEnabled: true, tts: { ...DEFAULT_TTS }, call: { ...DEFAULT_CALL }, cleanup: {} };
+  async #state(): Promise<Readonly<KuloVoiceState>> {
+    return (await this.#options.harness.snapshot(KuloVoiceDoc, BACKGROUND_CONTEXT)) ?? { revision: 0, defaultsMigratedV2: true, asrEnabled: true, tts: { ...DEFAULT_TTS }, call: { ...DEFAULT_CALL }, cleanup: {} };
   }
   async #serial<T>(work: () => Promise<T>): Promise<T> {
     const next = this.#tail.then(work, work);
@@ -133,16 +133,16 @@ export class MocoVoiceService {
   async #cleanup(): Promise<void> {
     for (const ref of Object.keys((await this.#state()).cleanup)) {
       await this.#options.credentials.delete(ref);
-      await this.#options.harness.commit(async (tx) => { delete (await tx.doc(MocoVoiceDoc)).cleanup[ref]; }, BACKGROUND_CONTEXT);
+      await this.#options.harness.commit(async (tx) => { delete (await tx.doc(KuloVoiceDoc)).cleanup[ref]; }, BACKGROUND_CONTEXT);
     }
   }
   async initialize(options: { prepareAsr?: boolean } = {}): Promise<void> {
     await this.#serial(async () => {
       await this.#cleanup();
-      const persisted = await this.#options.harness.snapshot(MocoVoiceDoc, BACKGROUND_CONTEXT);
+      const persisted = await this.#options.harness.snapshot(KuloVoiceDoc, BACKGROUND_CONTEXT);
       if (persisted && !persisted.defaultsMigratedV2) {
         await this.#options.harness.commit(async (tx) => {
-          const doc = await tx.doc(MocoVoiceDoc);
+          const doc = await tx.doc(KuloVoiceDoc);
           if (doc.defaultsMigratedV2) return;
           if (!doc.tts.providerId && !doc.tts.credentialRef && !doc.tts.enabled) {
             doc.tts = { ...DEFAULT_TTS, speed: doc.tts.speed ?? "normal" };
@@ -191,7 +191,7 @@ export class MocoVoiceService {
       }
 
       await this.#options.harness.commit(async (tx) => {
-        const doc = await tx.doc(MocoVoiceDoc);
+        const doc = await tx.doc(KuloVoiceDoc);
         let dirty = false;
 
         if (doc.asrSource === "provider" && !hasMatch(byPurpose.asr, doc.asrProviderId, doc.asrModelId)) {
@@ -435,7 +435,7 @@ export class MocoVoiceService {
       }
       if (writes.length) {
         await this.#options.harness.commit(async (tx) => {
-          const doc = await tx.doc(MocoVoiceDoc);
+          const doc = await tx.doc(KuloVoiceDoc);
           for (const write of writes) doc.cleanup[write.ref] = true;
         }, BACKGROUND_CONTEXT);
       }
@@ -445,7 +445,7 @@ export class MocoVoiceService {
           catch { fail(500, "voice_credential_write_failed", "未能保存语音 API Key，请重试。"); }
         }
         await this.#options.harness.commit(async (tx) => {
-          const doc = await tx.doc(MocoVoiceDoc);
+          const doc = await tx.doc(KuloVoiceDoc);
           if (doc.revision !== raw.expectedRevision) fail(409, "voice_revision_conflict", "语音设置已更新，请刷新后重试。");
           for (const [old, next] of [[doc.tts, tts], [doc.call, call]] as const) {
             if (old.credentialRef && old.credentialRef !== next.credentialRef) doc.cleanup[old.credentialRef] = true;
@@ -560,7 +560,7 @@ export class MocoVoiceService {
     let changed = false;
     await this.#serial(async () => {
       await this.#options.harness.commit(async (tx) => {
-        const doc = await tx.doc(MocoVoiceDoc);
+        const doc = await tx.doc(KuloVoiceDoc);
         if (id !== this.#probeId || callIdentity(doc.call) !== callIdentity(before)) return;
         doc.call.status = error ? "error" : "ready";
         doc.call.lastCheckedAt = this.#now();

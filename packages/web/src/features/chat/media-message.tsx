@@ -1,9 +1,9 @@
-import { translate as tr, useI18n } from "../../moco-i18n";
+import { translate as tr, useI18n } from "../../kulo-i18n";
 import { Button, Card, Disclosure, Link, ListBox, Select, Slider } from "@heroui/react";
-import type { ChatAttachment } from "@moco/protocol";
+import type { ChatAttachment } from "@kulo/protocol";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type SyntheticEvent } from "react";
-import { resolveAssetUrl } from "../../moco-api";
-import { MocoIcon } from "../../moco-icon";
+import { resolveAssetUrl } from "../../kulo-api";
+import { KuloIcon } from "../../kulo-icon";
 import { AssetImageGallery, formatAssetSize, safeContentUrl, type PreviewableImage } from "./asset-preview";
 import "./chat-content.css";
 import { FileMessage } from "./file-message";
@@ -64,7 +64,7 @@ export function formatMediaTime(seconds: number): string {
 }
 
 function PlayGlyph({ playing }: { playing: boolean }) {
-  return <MocoIcon name={playing ? "pause" : "play"} size={22} />;
+  return <KuloIcon name={playing ? "pause" : "play"} size={22} />;
 }
 
 export function MediaMessage({ asset, conversationKey, onPreviewImage, localPreview = false, defaultExpanded = true }: {
@@ -193,24 +193,24 @@ function PlayableMedia({ asset, conversationKey, localPreview }: { asset: ChatAt
     onError: () => { setPlaying(false); setBuffering(false); setErrorKind("media"); setError(tr("无法播放，可重试或下载原文件", "Unable to play. Retry or download the original file.")); },
   };
   const playback = <>
-    <div className="moco-chat-playback-row">
+    <div className="kulo-chat-playback-row">
       <Button variant="primary" isIconOnly aria-label={playing ? tr("暂停", "Pause") : tr("播放", "Play")} isDisabled={!source} onPress={() => { void toggle(); }}><PlayGlyph playing={playing} /></Button>
-      <div className="moco-chat-timeline">
-        <Slider aria-label={isVideo ? tr("视频播放位置", "Video playback position") : tr("音频播放位置", "Audio playback position")} minValue={0} maxValue={duration > 0 ? duration : 1} step={0.1} value={Math.min(time, duration > 0 ? duration : 1)} onChange={seek} isDisabled={!loaded || !duration} className="moco-chat-seek">
+      <div className="kulo-chat-timeline">
+        <Slider aria-label={isVideo ? tr("视频播放位置", "Video playback position") : tr("音频播放位置", "Audio playback position")} minValue={0} maxValue={duration > 0 ? duration : 1} step={0.1} value={Math.min(time, duration > 0 ? duration : 1)} onChange={seek} isDisabled={!loaded || !duration} className="kulo-chat-seek">
           <Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track>
         </Slider>
-        <div className="moco-chat-time-row"><span>{formatMediaTime(time)}</span><span role={buffering ? "status" : undefined}>{buffering ? tr("缓冲中", "Buffering") : duration > 0 ? formatMediaTime(duration) : "--:--"}</span></div>
+        <div className="kulo-chat-time-row"><span>{formatMediaTime(time)}</span><span role={buffering ? "status" : undefined}>{buffering ? tr("缓冲中", "Buffering") : duration > 0 ? formatMediaTime(duration) : "--:--"}</span></div>
       </div>
     </div>
-    <div className="moco-chat-media-options">
+    <div className="kulo-chat-media-options">
       <Select aria-label={tr("播放速度", "Playback speed")} value={rate} onChange={(value) => {
         if (value === null) return;
         const next = String(value); setRate(next); if (mediaRef.current) mediaRef.current.playbackRate = Number(next);
-      }} variant="primary" className="moco-chat-rate">
+      }} variant="primary" className="kulo-chat-rate">
         <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-        <Select.Popover><ListBox aria-label={tr("播放速度", "Playback speed")}>{[...new Set(["0.5", "0.75", "1", "1.25", "1.5", "2", rate])].sort((a, b) => Number(a) - Number(b)).map((value) => <ListBox.Item key={value} id={value} textValue={`${value}×`} className="moco-chat-rate-option">{value}×<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover>
+        <Select.Popover><ListBox aria-label={tr("播放速度", "Playback speed")}>{[...new Set(["0.5", "0.75", "1", "1.25", "1.5", "2", rate])].sort((a, b) => Number(a) - Number(b)).map((value) => <ListBox.Item key={value} id={value} textValue={`${value}×`} className="kulo-chat-rate-option">{value}×<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover>
       </Select>
-      <div className="moco-chat-volume">
+      <div className="kulo-chat-volume">
         <Button variant="ghost" size="sm" aria-label={volume === 0 ? tr("取消静音", "Unmute") : tr("静音", "Mute")} aria-pressed={volume === 0} onPress={() => {
           const media = mediaRef.current; if (!media) return;
           if (media.muted || media.volume === 0) { media.muted = false; media.volume = lastVolume.current; }
@@ -223,15 +223,15 @@ function PlayableMedia({ asset, conversationKey, localPreview }: { asset: ChatAt
           media.volume = next; media.muted = next === 0; syncVolume(media);
         }}><Slider.Track><Slider.Fill /><Slider.Thumb /></Slider.Track></Slider>
       </div>
-      {isVideo && <div className="moco-chat-actions moco-chat-video-actions">
+      {isVideo && <div className="kulo-chat-actions kulo-chat-video-actions">
         {captions.length > 0 && <Button variant="ghost" size="sm" aria-pressed={captionsOn} onPress={() => setCaptionsOn((value) => !value)}>{tr("字幕", "Captions")}</Button>}
         {pipAvailable && <Button variant="ghost" size="sm" isDisabled={!loaded} aria-pressed={inPip} onPress={() => { void pictureInPicture(); }}>{inPip ? tr("退出画中画", "Exit picture in picture") : tr("画中画", "Picture in picture")}</Button>}
         {fullscreenAvailable && <Button variant="ghost" size="sm" isDisabled={!loaded} onPress={() => { void fullscreen(); }}>{tr("全屏", "Full screen")}</Button>}
       </div>}
     </div>
   </>;
-  return <Card variant="secondary" className={`moco-chat-media ${isVideo ? "moco-chat-video" : "moco-chat-audio"}`} style={isVideo ? { "--moco-media-width": `${videoWidth}px` } as CSSProperties : undefined}>
-    {isVideo && <div className="moco-chat-video-stage" style={{ aspectRatio: String(ratio) }}>
+  return <Card variant="secondary" className={`kulo-chat-media ${isVideo ? "kulo-chat-video" : "kulo-chat-audio"}`} style={isVideo ? { "--kulo-media-width": `${videoWidth}px` } as CSSProperties : undefined}>
+    {isVideo && <div className="kulo-chat-video-stage" style={{ aspectRatio: String(ratio) }}>
       <video ref={mediaRef} src={source} poster={poster} preload="metadata" playsInline controls={!enhanced || nativeControls} aria-label={asset.name} tabIndex={0} {...events} onKeyDown={(event) => {
         if (!enhanced || nativeControls) return;
         if (event.key === " " || event.key === "k") { event.preventDefault(); void toggle(); }
@@ -241,22 +241,22 @@ function PlayableMedia({ asset, conversationKey, localPreview }: { asset: ChatAt
         {captions.map((caption) => <track key={caption.url} kind="captions" src={resolveAssetUrl(caption.url)} label={caption.label} srcLang={caption.language} />)}
       </video>
     </div>}
-    <Card.Header className="moco-chat-media-header">
-      <div className="moco-chat-media-heading"><span className="moco-chat-media-kind">{isVideo ? tr("视频", "Video") : tr("音频", "Audio")}</span><Card.Title className="moco-chat-media-title moco-chat-truncate">{asset.name}</Card.Title></div>
-      {source && <Link href={source} download={asset.name} target="_blank" rel="noopener noreferrer" className="moco-chat-download-link">{tr("下载", "Download")}</Link>}
+    <Card.Header className="kulo-chat-media-header">
+      <div className="kulo-chat-media-heading"><span className="kulo-chat-media-kind">{isVideo ? tr("视频", "Video") : tr("音频", "Audio")}</span><Card.Title className="kulo-chat-media-title kulo-chat-truncate">{asset.name}</Card.Title></div>
+      {source && <Link href={source} download={asset.name} target="_blank" rel="noopener noreferrer" className="kulo-chat-download-link">{tr("下载", "Download")}</Link>}
     </Card.Header>
-    <Card.Content className="moco-chat-media-content">
+    <Card.Content className="kulo-chat-media-content">
       {!isVideo && <audio ref={mediaRef} src={source} preload="metadata" controls={!enhanced} hidden={enhanced} aria-label={asset.name} {...events} />}
       {enhanced && playback}
-      {(!source || error) && <div className="moco-chat-media-error" role="status"><span>{source ? error : tr("媒体地址不可用", "Media URL unavailable")}</span>{source && errorKind === "media" && <Button variant="secondary" size="sm" onPress={retry}>{tr("重试", "Retry")}</Button>}</div>}
+      {(!source || error) && <div className="kulo-chat-media-error" role="status"><span>{source ? error : tr("媒体地址不可用", "Media URL unavailable")}</span>{source && errorKind === "media" && <Button variant="secondary" size="sm" onPress={retry}>{tr("重试", "Retry")}</Button>}</div>}
     </Card.Content>
-    {transcript && <Card.Footer className="moco-chat-transcript-footer">
-      {transcript.text ? <Disclosure className="moco-chat-transcript">
-        <Disclosure.Heading><Button slot="trigger" variant="ghost" size="sm" className="moco-chat-transcript-trigger"><span>{tr("文字稿", "Transcript")}</span><Disclosure.Indicator /></Button></Disclosure.Heading>
-        <Disclosure.Content><Disclosure.Body className="moco-chat-transcript-body">
-          {transcript.segments?.length ? transcript.segments.map((segment, index) => <div key={`${segment.start}-${index}`} className="moco-chat-transcript-cue"><Button variant="ghost" size="sm" isDisabled={!loaded} onPress={() => seek(segment.start)}>{formatMediaTime(segment.start)}</Button><span>{segment.text}</span></div>) : <p>{transcript.text}</p>}
+    {transcript && <Card.Footer className="kulo-chat-transcript-footer">
+      {transcript.text ? <Disclosure className="kulo-chat-transcript">
+        <Disclosure.Heading><Button slot="trigger" variant="ghost" size="sm" className="kulo-chat-transcript-trigger"><span>{tr("文字稿", "Transcript")}</span><Disclosure.Indicator /></Button></Disclosure.Heading>
+        <Disclosure.Content><Disclosure.Body className="kulo-chat-transcript-body">
+          {transcript.segments?.length ? transcript.segments.map((segment, index) => <div key={`${segment.start}-${index}`} className="kulo-chat-transcript-cue"><Button variant="ghost" size="sm" isDisabled={!loaded} onPress={() => seek(segment.start)}>{formatMediaTime(segment.start)}</Button><span>{segment.text}</span></div>) : <p>{transcript.text}</p>}
         </Disclosure.Body></Disclosure.Content>
-      </Disclosure> : <span className="moco-chat-meta" role="status">{transcript.status === "processing" ? tr("文字稿生成中", "Preparing transcript") : tr("文字稿不可用", "Transcript unavailable")}</span>}
+      </Disclosure> : <span className="kulo-chat-meta" role="status">{transcript.status === "processing" ? tr("文字稿生成中", "Preparing transcript") : tr("文字稿不可用", "Transcript unavailable")}</span>}
     </Card.Footer>}
   </Card>;
 }

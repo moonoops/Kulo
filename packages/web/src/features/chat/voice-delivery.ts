@@ -1,5 +1,5 @@
-import type { ChatAttachment, ClientToHubMessage } from "@moco/protocol";
-import { translate as t } from "../../moco-i18n";
+import type { ChatAttachment, ClientToHubMessage } from "@kulo/protocol";
+import { translate as t } from "../../kulo-i18n";
 import type { VoiceRecording } from "./voice-recorder";
 
 export interface VoiceDeliveryTarget {

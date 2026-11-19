@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-durable";
-import { CUSTOM_PROVIDER_APIS, isConversationModel, MODEL_PROTOCOL_ADAPTERS, MODEL_PURPOSES, redactSensitiveText, validateCustomImageAdapter, validateImageModelProfile, type CustomModelConfig, type CustomProviderApi, type CustomProviderConfig, type DiscoverModelsRequest, type DiscoverModelsResponse, type MocoSettingsView, type ProviderCatalogItem } from "@moco/protocol";
-import type { ModelConfigurationCandidate, ModelConfigurationDraft, ModelConfigurationPrepareRequest, ModelConfigurationProbe, ModelConfigurationSaveResult, ModelConfigurationUpdateRequest, ModelConfigurationVerification, ModelConfigurationWorkspace } from "@moco/protocol";
+import { CUSTOM_PROVIDER_APIS, isConversationModel, MODEL_PROTOCOL_ADAPTERS, MODEL_PURPOSES, redactSensitiveText, validateCustomImageAdapter, validateImageModelProfile, type CustomModelConfig, type CustomProviderApi, type CustomProviderConfig, type DiscoverModelsRequest, type DiscoverModelsResponse, type KuloSettingsView, type ProviderCatalogItem } from "@kulo/protocol";
+import type { ModelConfigurationCandidate, ModelConfigurationDraft, ModelConfigurationPrepareRequest, ModelConfigurationProbe, ModelConfigurationSaveResult, ModelConfigurationUpdateRequest, ModelConfigurationVerification, ModelConfigurationWorkspace } from "@kulo/protocol";
 import { normalizeProviderBaseUrl } from "./config.js";
 import { MAINSTREAM_PROVIDER_PRESETS } from "./providers.js";
 import { sanitizeThinkingLevelMap, sanitizeThinkingLevels, SettingsUpdateError } from "./settings.js";
@@ -36,7 +36,7 @@ interface ConfigurationState {
   receipts: Record<string, { fingerprint: string; result: ModelConfigurationSaveResult | { draft: ModelConfigurationDraft; verification: ModelConfigurationVerification }; cleanup?: ModelConfigurationCleanup }>;
 }
 export const ModelConfigurationDoc = defineDoc<ConfigurationState & JsonObject>({
-  kind: "moco.model-configuration", version: 1, scope: "session",
+  kind: "kulo.model-configuration", version: 1, scope: "session",
   initial: () => ({ drafts: {}, baselines: {}, commits: {}, receipts: {} }) as ConfigurationState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
@@ -47,11 +47,11 @@ export class ModelConfigurationError extends Error {
 
 export interface ModelConfigurationOptions {
   harness: Harness;
-  settings: () => MocoSettingsView;
+  settings: () => KuloSettingsView;
   providers: () => Promise<ProviderCatalogItem[]>;
   discover: (request: DiscoverModelsRequest) => Promise<DiscoverModelsResponse>;
   probe: ModelConfigurationProbe;
-  saveProvider: (input: { provider: CustomProviderConfig; expectedSettingsRevision: number; defaultModelId?: string; apiKey?: string; operationKey: string; fingerprint: string; commit: ModelConfigurationCommit }) => Promise<MocoSettingsView>;
+  saveProvider: (input: { provider: CustomProviderConfig; expectedSettingsRevision: number; defaultModelId?: string; apiKey?: string; operationKey: string; fingerprint: string; commit: ModelConfigurationCommit }) => Promise<KuloSettingsView>;
   redact?: (text: string) => string;
   rememberSecrets?: (values: readonly string[]) => void;
   onChanged?: () => void | Promise<void>;
@@ -171,7 +171,7 @@ function findDraftEntry(
   return entries[0];
 }
 
-export class MocoModelConfiguration {
+export class KuloModelConfiguration {
   #options: ModelConfigurationOptions;
   #queue: Promise<unknown> = Promise.resolve();
   /** Keyed by draftId so multiple drafts in one window keep their staged credentials isolated. */
@@ -411,7 +411,7 @@ export class MocoModelConfiguration {
       const effectiveDefaultModelId = remembered?.defaultModelId ?? current!.defaultModelId ?? autoDefaultModelId;
       const commit: ModelConfigurationCommit = remembered ?? { fingerprint, clientId, draftId: current!.id, draftRevision: current!.revision, provider, ...(effectiveDefaultModelId ? { defaultModelId: effectiveDefaultModelId } : {}), verifications: clone(current!.verifications) };
       const secret = !remembered && current ? this.#secret(current) : undefined;
-      let settings: MocoSettingsView;
+      let settings: KuloSettingsView;
       try { settings = await this.#options.saveProvider({ provider, expectedSettingsRevision: effectiveSettingsRevision, defaultModelId: commit.defaultModelId, operationKey: key, fingerprint, commit, ...(secret ? { apiKey: secret } : {}) }); }
       catch (cause) {
         const committed = (await this.#options.harness.snapshot(ModelConfigurationDoc, BACKGROUND_CONTEXT))?.commits?.[key];

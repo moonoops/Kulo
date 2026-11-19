@@ -76,7 +76,7 @@ export function ContentPresence({ present = true, animateEntry = false, animateE
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useContentMotion(ref, { present, animateEntry, animateExit, onExited });
-  return createElement("div", { ref, className: "moco-chat-content-presence", "data-exiting": !present || undefined, "aria-hidden": !present || undefined, inert: !present || undefined }, children);
+  return createElement("div", { ref, className: "kulo-chat-content-presence", "data-exiting": !present || undefined, "aria-hidden": !present || undefined, inert: !present || undefined }, children);
 }
 
 export function useContentResize(ref: RefObject<HTMLElement | null>, changeKey: string | boolean): () => void {

@@ -3,7 +3,7 @@ export { StreamResumeBuffer } from "./stream-resume.js";
 export { DeviceRoleTransitions, waitForPeerReady, type PreparedDeviceRoleChange } from "./device-role-transitions.js";
 export { activateStagedPeer, localPeerProof, localPeerProxyToken, stageDevicePeer } from "./peer-config.js";
 export { FlowBrowserService, flowBrowserExecutable, type FlowBrowserDriver, type FlowBrowserServiceOptions } from "./browser.js";
-export { MocoEnvAgent, type MocoEnvAgentOptions } from "./agent.js";
+export { KuloEnvAgent, type KuloEnvAgentOptions } from "./agent.js";
 export { ComputerUseService, computerUseConfiguration } from "./computer-use.js";
 export { buildWorkerSandboxProfile, canonicalExecutionPath, createWorkerSandbox, defaultProtectedPaths, discoverGitWriteDeniedPaths, isApplicationPrivatePath, type WorkerExecutionOptions, type WorkerNetworkPolicy } from "./isolation.js";
 export { buildLinuxSandboxArguments, isRestrictedLinuxProxyAddress } from "./isolation-linux.js";
@@ -17,5 +17,5 @@ export { ExternalAgentService, isExternalAgentRequest, isExternalAgentResponse, 
 export { SAFE_HOST_GIT_ARGS, STAGED_NON_COW_MAX_BYTES, STAGED_NON_COW_MAX_FILES, StagedWorkspaceConflictError, StagedWorkspaceOversizedError, applyStagedChanges, cloneStagedWorkspace, computeStagedDiff, preflightNonCowWorkspace, safeHostGitEnv, scanWorkspaceManifest, type CloneStagedWorkspaceOptions } from "./staged-workspace.js";
 export { StagedWorkspaceService, type StagedWorkspaceServiceOptions } from "./staged-workspace-service.js";
 export { EXTERNAL_AGENT_MCP_DEFINED_TOOL_NAMES, EXTERNAL_AGENT_MCP_TOOLS, type ExternalAgentMcpInvocation, type ExternalAgentMcpScope } from "./external-agent-mcp.js";
-export { LocalInstanceOwner, LocalInstanceInUseError, discoverLocalInstance, localListenerOrigin, claimMocoRuntime, discoverMocoRuntime } from "./local-instance.js";
+export { LocalInstanceOwner, LocalInstanceInUseError, discoverLocalInstance, localListenerOrigin, claimKuloRuntime, discoverKuloRuntime } from "./local-instance.js";
 export { discoverDevicePeer, DevicePeerInUseError } from "./peer-runtime-owner.js";

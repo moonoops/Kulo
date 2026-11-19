@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.1.2 (2026-11-19)
+
+项目全面更名为 **Kulo**，同步默认智能体名称为 **Kulo**，并带来模型元数据自动同步、多草稿模型校准、可调宽设置工作台与语音通话错误提示改进（`v0.1.2`）。
+
+### Rebranding to Kulo
+
+- **全仓更名为 Kulo**：Monorepo 包名（`@kulo/*`）、CLI 入口（`kulo` / `kulo-rescue`）、默认智能体名称（`Kulo`）、环境变量前缀（`KULO_*`）、数据库与状态路径（`kulo.sqlite` / `.kulo-state`）、Hindsight 记忆扩展（`kulo-hindsight-auth` / `kulo-core` / `kulo-shared`）、macOS 桌面应用标识（`Kulo Dev` / `io.kulo.desktop.dev`）及 GitHub 仓库（`moonoops/Kulo`）全面切换为 Kulo。
+
+### Model Registry & Calibration
+
+- **公开模型元数据注册表与校准（`@kulo/hub`、`@kulo/protocol`、`@kulo/web`）**
+  - 内置 `models.dev` 与 `litellm` 模型元数据快照并支持按需在线刷新（`/api/providers/resolve-model-metadata`），自动补全上下文窗口、输出上限、输入/输出模态与思考强度挡位。
+  - 支持多草稿并行模型配置及通过设置助手批量校准已保存模型参数。
+
+### Workbench & Voice Refinements
+
+- **可自由拖拽调节设置侧栏宽度（`@kulo/web`）**：设置工作台支持指针拖拽与键盘步进调整右侧栏宽度，并持久化用户偏好。
+- **语音通话异常提示优化（`@kulo/web`、`@kulo/hub`）**：新增原生 HeroUI 语音通话错误横幅（`VoiceCallErrorAlert`），支持一键重试、权限引导与更精准的 TTS / Live 供应商自动匹配。
+
 ## v0.1.1 (2026-11-19)
 
 安全地基加固、关键高危边界交互确认与日常体验打磨版本（`v0.1.1`）。

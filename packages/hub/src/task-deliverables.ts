@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { withoutAbortSignal, type Context } from "@earendil-works/chord/context";
 import { getOrThrow, type ExecutionEnv, type FileInfo } from "@earendil-works/pi-durable/env";
-import type { TicketRecord } from "@moco/protocol";
+import type { TicketRecord } from "@kulo/protocol";
 import { checkedExecutionPath, executionFileInfo, EXECUTION_FILE_CHUNK_BYTES, ExecutionFileError } from "./execution-files.js";
 import { normalizeUploadMimeType } from "./uploads.js";
 

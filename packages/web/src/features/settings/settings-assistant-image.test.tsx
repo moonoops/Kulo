@@ -1,8 +1,8 @@
 import { createElement, type ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { defaultRolePresets, type CapabilitiesWorkspaceSnapshot, type MediaJob, type MocoSettingsView } from "@moco/protocol";
-import { EMPTY_SETTINGS_ASSISTANT, mocoRest } from "../../moco-api";
+import { defaultRolePresets, type CapabilitiesWorkspaceSnapshot, type MediaJob, type KuloSettingsView } from "@kulo/protocol";
+import { EMPTY_SETTINGS_ASSISTANT, kuloRest } from "../../kulo-api";
 import { SettingsAssistantPanel } from "./settings-assistant-panel";
 import type { ImageAssistantRequest } from "./capability-views";
 import type { SettingsAssistantControls } from "./use-settings-assistant";
@@ -41,10 +41,10 @@ vi.mock("./image-capability-editor", () => ({
 }));
 vi.mock("./image-routing-editor", () => ({ ImageRoutingEditor: () => <div>共享调用规则</div> }));
 
-const settings: MocoSettingsView = {
+const settings: KuloSettingsView = {
   globalRevision: 1,
   blocks: {
-    presentation: { revision: 1, value: { agentName: "Moco", workbenchName: "工作台" } },
+    presentation: { revision: 1, value: { agentName: "Kulo", workbenchName: "工作台" } },
     executor: { revision: 1, value: { maxConcurrentWorkers: 3, maxSubagentsPerTicket: 4, paused: false, watchdogMinutes: 5 } },
     roles: { revision: 1, value: defaultRolePresets() },
     model: { revision: 1, hasApiKey: false, value: { baseUrl: "http://127.0.0.1:9/v1", apiMode: "openai-completions", defaultModel: "", thinkingLevel: "off", customProviders: [] } },
@@ -68,7 +68,7 @@ function controls(): SettingsAssistantControls {
   };
 }
 const render = (value = workspace, controller = controls(), capabilityView: "image" | "video" = "image", onChanged = vi.fn(), options: { connected?: boolean; busy?: boolean; active?: boolean; workspaceLoaded?: boolean; imageRequest?: ImageAssistantRequest; onImageRequestHandled?: (id: ImageAssistantRequest["id"]) => void } = {}) => renderToStaticMarkup(<SettingsAssistantPanel
-  module="capabilities" agentName="Moco" settings={settings} envs={[]}
+  module="capabilities" agentName="Kulo" settings={settings} envs={[]}
   snapshot={{ ...EMPTY_SETTINGS_ASSISTANT, live: { ...EMPTY_SETTINGS_ASSISTANT.live, busy: options.busy ?? false }, messages: options.active ? [{ id: 1, role: "user" as const, text: "保留此前的配置请求" }] : [] }}
   loaded connected={options.connected ?? true} error={null} controls={controller} capabilitiesWorkspace={options.workspaceLoaded === false ? null : value} capabilityView={capabilityView} onCapabilityInputsChanged={onChanged}
   imageRequest={options.imageRequest} onImageRequestHandled={options.onImageRequestHandled}
@@ -80,7 +80,7 @@ describe("image request consumption across settings layouts", () => {
   it("acknowledges before preparing and does not replay after the panel remounts", async () => {
     let pending: ImageAssistantRequest | undefined = { id: 12, action: "configure" };
     const calls: string[] = [];
-    const update = vi.spyOn(mocoRest, "updateImageDraft").mockImplementation(async ({ clientId, config }) => {
+    const update = vi.spyOn(kuloRest, "updateImageDraft").mockImplementation(async ({ clientId, config }) => {
       calls.push("prepare");
       return { id: "draft-from-left", clientId, config, revision: 1, updatedAt: 20 };
     });
@@ -104,7 +104,7 @@ describe("image request consumption across settings layouts", () => {
   it("preserves a pending request while disconnected, busy or awaiting the workspace", async () => {
     const request: ImageAssistantRequest = { id: 13, action: "discover" };
     const onHandled = vi.fn(); const onChanged = vi.fn();
-    const search = vi.spyOn(mocoRest, "discoverImageModels").mockResolvedValue(workspace.imageSetup!.discovery!);
+    const search = vi.spyOn(kuloRest, "discoverImageModels").mockResolvedValue(workspace.imageSetup!.discovery!);
     for (const state of [{ connected: false }, { busy: true }, { workspaceLoaded: false }]) {
       render(workspace, controls(), "image", onChanged, { ...state, imageRequest: request, onImageRequestHandled: onHandled });
       imageEffects.pop()!();
@@ -141,7 +141,7 @@ describe("image configuration in the settings conversation", () => {
   });
 
   it("opens discovery from the right entry without sending a model request or consuming the draft", async () => {
-    const search = vi.spyOn(mocoRest, "discoverImageModels").mockResolvedValue(workspace.imageSetup!.discovery!);
+    const search = vi.spyOn(kuloRest, "discoverImageModels").mockResolvedValue(workspace.imageSetup!.discovery!);
     const onChanged = vi.fn(); const controller = controls();
     render({ ...workspace, imageSetup: { providers: [] } }, controller, "image", onChanged);
     press.get("从已有供应商添加")!();
@@ -152,7 +152,7 @@ describe("image configuration in the settings conversation", () => {
   });
 
   it("opens the shared editor from the right entry using the configuration service", async () => {
-    const update = vi.spyOn(mocoRest, "updateImageDraft").mockResolvedValue({
+    const update = vi.spyOn(kuloRest, "updateImageDraft").mockResolvedValue({
       id: "draft-new", clientId: "tab-a", revision: 1, config: { name: "GPT Image", adapter: "openai-image", modelId: "gpt-image-2.6-flare" }, updatedAt: 20,
     });
     const onChanged = vi.fn(); const controller = controls();
@@ -164,7 +164,7 @@ describe("image configuration in the settings conversation", () => {
   });
 
   it("does not begin provider discovery during disconnected or unfinished operations", () => {
-    const search = vi.spyOn(mocoRest, "discoverImageModels");
+    const search = vi.spyOn(kuloRest, "discoverImageModels");
     for (const state of [
       { connected: false }, { busy: true },
       { controller: { ...controls(), sending: true } },
@@ -202,7 +202,7 @@ describe("image configuration in the settings conversation", () => {
     const next = { ...workspace, imageSetup: { providers: [], draft: {
       id: "draft-1", clientId: "tab-a", revision: 4, config: { name: "Banana", adapter: "gemini-image" as const, modelId: "gemini-nano-banana-2.1" }, updatedAt: 20,
     } } };
-    const update = vi.spyOn(mocoRest, "updateImageDraft"); const onChanged = vi.fn(); const controller = controls();
+    const update = vi.spyOn(kuloRest, "updateImageDraft"); const onChanged = vi.fn(); const controller = controls();
     const html = render(next, controller, "image", onChanged);
     expect(html).toContain('data-image-draft="draft-1"');
     expect(html).toContain("保留对话草稿</textarea>");
@@ -237,10 +237,10 @@ describe("image configuration in the settings conversation", () => {
   it("keeps a shared card inside the active conversation log while preserving previous messages", () => {
     const html = render(workspace, controls(), "image", vi.fn(), { active: true });
     expect(html).toContain("保留此前的配置请求");
-    expect(html).not.toContain("moco-settings-assistant-intro");
+    expect(html).not.toContain("kulo-settings-assistant-intro");
     const card = html.indexOf('data-image-discovery="discovery-1"');
     expect(card).toBeGreaterThan(html.indexOf('role="log"'));
-    expect(card).toBeLessThan(html.indexOf('class="moco-settings-assistant-footer'));
+    expect(card).toBeLessThan(html.indexOf('class="kulo-settings-assistant-footer'));
     expect(html).toContain('aria-label="图像配置"');
   });
 

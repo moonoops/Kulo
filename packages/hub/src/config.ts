@@ -14,7 +14,7 @@ import {
   type PresentationConfig,
   type RolePreset,
   type ThinkingEffort,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 
 export type { OpenAIApiMode };
 
@@ -54,7 +54,7 @@ export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
   backgroundTokens: 32_768,
 };
 
-export interface MocoModelConfig {
+export interface KuloModelConfig {
   baseUrl: string;
   apiKey?: string;
   apiMode: CustomProviderApi;
@@ -72,7 +72,7 @@ export interface MocoModelConfig {
   gatewayDisabled?: boolean;
 }
 
-export interface MocoCustomizationConfig {
+export interface KuloCustomizationConfig {
   dataDir: string;
   appRoot: string;
   trustedRoot?: string;
@@ -81,7 +81,7 @@ export interface MocoCustomizationConfig {
   sourceRoot?: string;
 }
 
-export interface MocoHubConfig {
+export interface KuloHubConfig {
   stateDir: string;
   identityDir: string;
   host: string;
@@ -94,21 +94,21 @@ export interface MocoHubConfig {
   localEnvRoot?: string;
   localEnvName?: string;
   /** Supplied by the trusted desktop host, never by a settings form. */
-  customization?: MocoCustomizationConfig;
+  customization?: KuloCustomizationConfig;
   maxConcurrentWorkers: number;
   maxSubagentsPerTicket: number;
   watchdogMinutes: number;
   /** Default A2-lite inline wait window in ms when a free slot is available (default 10000; 0 disables inline wait). */
   inlineDispatchWaitMs?: number;
   completedTaskDisplayHours?: CompletedTaskDisplayHours;
-  model: MocoModelConfig;
+  model: KuloModelConfig;
   roles: Record<string, RolePreset>;
   memory: HindsightMemoryConfig;
   presentation: PresentationConfig;
 }
 
-export type MocoHubConfigOverrides = Omit<Partial<MocoHubConfig>, "model"> & {
-  model?: Partial<MocoModelConfig>;
+export type KuloHubConfigOverrides = Omit<Partial<KuloHubConfig>, "model"> & {
+  model?: Partial<KuloModelConfig>;
   /** @deprecated Legacy alias mapped to maxConcurrentWorkers */
   normalSlots?: number;
 };
@@ -180,17 +180,17 @@ function parseEnvTokens(raw: string | undefined): Record<string, string> {
   try {
     value = JSON.parse(raw);
   } catch {
-    throw new Error("MOCO_ENV_TOKENS 必须是节点 ID 到独立密钥的 JSON 对象。");
+    throw new Error("KULO_ENV_TOKENS 必须是节点 ID 到独立密钥的 JSON 对象。");
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("MOCO_ENV_TOKENS 必须是节点 ID 到独立密钥的 JSON 对象。");
+    throw new Error("KULO_ENV_TOKENS 必须是节点 ID 到独立密钥的 JSON 对象。");
   }
   const result: Record<string, string> = {};
   const tokens = new Set<string>();
   for (const [id, token] of Object.entries(value)) {
     if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id) || id === "local" ||
         typeof token !== "string" || !token.trim() || /\s/.test(token)) {
-      throw new Error("MOCO_ENV_TOKENS 包含无效的节点身份或密钥。");
+      throw new Error("KULO_ENV_TOKENS 包含无效的节点身份或密钥。");
     }
     if (tokens.has(token)) throw new Error("每个执行节点必须使用不同的密钥。");
     tokens.add(token);
@@ -217,14 +217,14 @@ export function parseThinking(
 }
 
 export function resolveHubStateDir(override?: string): string {
-  return path.resolve(override ?? process.env.MOCO_STATE_DIR ?? path.join(process.cwd(), ".moco-state"));
+  return path.resolve(override ?? process.env.KULO_STATE_DIR ?? path.join(process.cwd(), ".kulo-state"));
 }
 
-export function resolveHubConfig(overrides: MocoHubConfigOverrides = {}): MocoHubConfig {
+export function resolveHubConfig(overrides: KuloHubConfigOverrides = {}): KuloHubConfig {
   loadDotEnv();
   const stateDir = resolveHubStateDir(overrides.stateDir);
 
-  const rawIdentityDir = overrides.identityDir ?? process.env.MOCO_IDENTITY_DIR?.trim();
+  const rawIdentityDir = overrides.identityDir ?? process.env.KULO_IDENTITY_DIR?.trim();
   const identityDir = rawIdentityDir
     ? path.resolve(rawIdentityDir)
     : path.join(stateDir, "identity");
@@ -234,24 +234,24 @@ export function resolveHubConfig(overrides: MocoHubConfigOverrides = {}): MocoHu
     if (r.enabled === undefined) r.enabled = true;
   }
 
-  const scoutModel = process.env.MOCO_SCOUT_MODEL?.trim();
+  const scoutModel = process.env.KULO_SCOUT_MODEL?.trim();
   if (scoutModel && roles.scout) roles.scout.modelId = scoutModel;
 
-  const archModel = process.env.MOCO_ARCHITECT_MODEL?.trim();
+  const archModel = process.env.KULO_ARCHITECT_MODEL?.trim();
   if (archModel && roles.architect) roles.architect.modelId = archModel;
 
   const coderModel =
-    process.env.MOCO_CODER_MODEL?.trim() || process.env.MOCO_ENGINEER_MODEL?.trim();
+    process.env.KULO_CODER_MODEL?.trim() || process.env.KULO_ENGINEER_MODEL?.trim();
   if (coderModel && roles.coder) roles.coder.modelId = coderModel;
 
   const checkerModel =
-    process.env.MOCO_CHECKER_MODEL?.trim() || process.env.MOCO_REVIEWER_MODEL?.trim();
+    process.env.KULO_CHECKER_MODEL?.trim() || process.env.KULO_REVIEWER_MODEL?.trim();
   if (checkerModel && roles.checker) roles.checker.modelId = checkerModel;
 
-  const designerModel = process.env.MOCO_DESIGNER_MODEL?.trim();
+  const designerModel = process.env.KULO_DESIGNER_MODEL?.trim();
   if (designerModel && roles.designer) roles.designer.modelId = designerModel;
 
-  const writerModel = process.env.MOCO_WRITER_MODEL?.trim();
+  const writerModel = process.env.KULO_WRITER_MODEL?.trim();
   if (writerModel && roles.writer) roles.writer.modelId = writerModel;
 
   if (overrides.roles) {
@@ -260,12 +260,12 @@ export function resolveHubConfig(overrides: MocoHubConfigOverrides = {}): MocoHu
     }
   }
 
-  const rawApiMode = overrides.model?.apiMode ?? process.env.MOCO_API_MODE?.trim();
+  const rawApiMode = overrides.model?.apiMode ?? process.env.KULO_API_MODE?.trim();
   const apiMode: CustomProviderApi = normalizeCustomProviderApi(rawApiMode);
 
   const baseUrl = normalizeProviderBaseUrl(
     overrides.model?.baseUrl ??
-      process.env.MOCO_BASE_URL ??
+      process.env.KULO_BASE_URL ??
       process.env.OPENAI_BASE_URL ??
       "https://api.openai.com/v1",
     apiMode,
@@ -273,15 +273,15 @@ export function resolveHubConfig(overrides: MocoHubConfigOverrides = {}): MocoHu
 
   const apiKey =
     overrides.model?.apiKey ??
-    (process.env.MOCO_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim() || undefined);
+    (process.env.KULO_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim() || undefined);
 
   const defaultProvider =
     overrides.model?.defaultProvider?.trim() ??
-    process.env.MOCO_DEFAULT_PROVIDER?.trim();
+    process.env.KULO_DEFAULT_PROVIDER?.trim();
 
   const defaultModel =
     overrides.model?.defaultModel?.trim() ??
-    process.env.MOCO_MODEL?.trim() ?? "";
+    process.env.KULO_MODEL?.trim() ?? "";
 
   const hasExplicitGateway = Boolean(
     overrides.model?.gatewayDisabled === false ||
@@ -289,23 +289,23 @@ export function resolveHubConfig(overrides: MocoHubConfigOverrides = {}): MocoHu
     overrides.model?.gatewayName?.trim() ||
     overrides.model?.gatewayModels?.length ||
     apiKey?.trim() ||
-    process.env.MOCO_BASE_URL?.trim() ||
+    process.env.KULO_BASE_URL?.trim() ||
     process.env.OPENAI_BASE_URL?.trim() ||
-    defaultProvider === "moco-gateway" ||
+    defaultProvider === "kulo-gateway" ||
     (defaultModel && !defaultProvider),
   );
   const gatewayDisabled =
     overrides.model?.gatewayDisabled !== undefined
-      ? Boolean(overrides.model.gatewayDisabled) && defaultProvider !== "moco-gateway"
+      ? Boolean(overrides.model.gatewayDisabled) && defaultProvider !== "kulo-gateway"
       : !hasExplicitGateway;
 
   const thinkingLevel =
     overrides.model?.thinkingLevel ??
-    parseThinking(process.env.MOCO_THINKING_LEVEL?.trim(), "medium");
+    parseThinking(process.env.KULO_THINKING_LEVEL?.trim(), "medium");
 
   const contextWindow =
     overrides.model?.contextWindow ??
-    parsePositiveInt(process.env.MOCO_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOW);
+    parsePositiveInt(process.env.KULO_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOW);
 
   const compaction: CompactionConfig = {
     enabled: overrides.model?.compaction?.enabled ?? DEFAULT_COMPACTION_CONFIG.enabled,
@@ -328,7 +328,7 @@ export function resolveHubConfig(overrides: MocoHubConfigOverrides = {}): MocoHu
   }));
   const vertex = apiMode === "google-vertex" ? normalizeVertexConfig(overrides.model ?? {}) : undefined;
 
-  const rawEndpoints = process.env.MOCO_HINDSIGHT_ENDPOINTS?.trim();
+  const rawEndpoints = process.env.KULO_HINDSIGHT_ENDPOINTS?.trim();
   const parsedEndpoints = rawEndpoints
     ? rawEndpoints
         .split(/[,\n]/)
@@ -337,22 +337,22 @@ export function resolveHubConfig(overrides: MocoHubConfigOverrides = {}): MocoHu
     : [];
 
   const memory: HindsightMemoryConfig = {
-    accessMode: overrides.memory?.accessMode ?? "moco",
+    accessMode: overrides.memory?.accessMode ?? "kulo",
     enabled:
       overrides.memory?.enabled ??
-      parseBoolean(process.env.MOCO_HINDSIGHT_ENABLED, false),
+      parseBoolean(process.env.KULO_HINDSIGHT_ENABLED, false),
     endpoint:
       overrides.memory?.endpoint ??
-      (process.env.MOCO_HINDSIGHT_URL?.trim() || "http://127.0.0.1:8888"),
+      (process.env.KULO_HINDSIGHT_URL?.trim() || "http://127.0.0.1:8888"),
     endpoints: overrides.memory?.endpoints ?? parsedEndpoints,
     caCertPem: overrides.memory?.caCertPem ?? "",
     routerApiKey: overrides.memory?.routerApiKey,
     workerApiKey: overrides.memory?.workerApiKey,
     sharedReadApiKey: overrides.memory?.sharedReadApiKey,
-    sharedReadApiKeyEnv: overrides.memory?.sharedReadApiKeyEnv ?? "MOCO_HINDSIGHT_SHARED_READ_API_KEY",
+    sharedReadApiKeyEnv: overrides.memory?.sharedReadApiKeyEnv ?? "KULO_HINDSIGHT_SHARED_READ_API_KEY",
     sharedReadApiKeyDisabled: overrides.memory?.sharedReadApiKeyDisabled,
-    routerApiKeyEnv: overrides.memory?.routerApiKeyEnv ?? "MOCO_HINDSIGHT_ROUTER_API_KEY",
-    workerApiKeyEnv: overrides.memory?.workerApiKeyEnv ?? "MOCO_HINDSIGHT_WORKER_API_KEY",
+    routerApiKeyEnv: overrides.memory?.routerApiKeyEnv ?? "KULO_HINDSIGHT_ROUTER_API_KEY",
+    workerApiKeyEnv: overrides.memory?.workerApiKeyEnv ?? "KULO_HINDSIGHT_WORKER_API_KEY",
     routerApiKeyDisabled: overrides.memory?.routerApiKeyDisabled,
     workerApiKeyDisabled: overrides.memory?.workerApiKeyDisabled,
     authFile: overrides.memory?.authFile ?? "",
@@ -360,16 +360,16 @@ export function resolveHubConfig(overrides: MocoHubConfigOverrides = {}): MocoHu
     banks: {
       private:
         overrides.memory?.banks?.private ??
-        (process.env.MOCO_HINDSIGHT_PRIVATE_BANK?.trim() || "moco-core"),
+        (process.env.KULO_HINDSIGHT_PRIVATE_BANK?.trim() || "kulo-core"),
       shared:
         overrides.memory?.banks?.shared ??
-        (process.env.MOCO_HINDSIGHT_SHARED_BANK?.trim() || "moco-shared"),
+        (process.env.KULO_HINDSIGHT_SHARED_BANK?.trim() || "kulo-shared"),
     },
   };
 
   const presentation: PresentationConfig = {
-    agentName: overrides.presentation?.agentName ?? "Moco",
-    workbenchName: overrides.presentation?.workbenchName ?? "Moco's table",
+    agentName: overrides.presentation?.agentName ?? "Kulo",
+    workbenchName: overrides.presentation?.workbenchName ?? "Kulo's table",
   };
   const completedTaskDisplayHours = overrides.completedTaskDisplayHours === undefined
     ? 3
@@ -381,12 +381,12 @@ export function resolveHubConfig(overrides: MocoHubConfigOverrides = {}): MocoHu
   return {
     stateDir,
     identityDir,
-    host: overrides.host ?? (process.env.MOCO_HUB_HOST?.trim() || "127.0.0.1"),
-    port: overrides.port ?? parsePositiveInt(process.env.MOCO_HUB_PORT, 7788),
+    host: overrides.host ?? (process.env.KULO_HUB_HOST?.trim() || "127.0.0.1"),
+    port: overrides.port ?? parsePositiveInt(process.env.KULO_HUB_PORT, 7788),
     authToken:
-      overrides.authToken ?? (process.env.MOCO_AUTH_TOKEN?.trim() || undefined),
-    envTokens: overrides.envTokens ?? parseEnvTokens(process.env.MOCO_ENV_TOKENS),
-    workerEnvIds: overrides.workerEnvIds ?? (process.env.MOCO_WORKER_ENV_IDS ?? "")
+      overrides.authToken ?? (process.env.KULO_AUTH_TOKEN?.trim() || undefined),
+    envTokens: overrides.envTokens ?? parseEnvTokens(process.env.KULO_ENV_TOKENS),
+    workerEnvIds: overrides.workerEnvIds ?? (process.env.KULO_WORKER_ENV_IDS ?? "")
       .split(",").map((id) => id.trim()).filter(Boolean),
     enableLocalEnv: overrides.enableLocalEnv ?? true,
     localEnvRoot: overrides.localEnvRoot,
@@ -396,7 +396,7 @@ export function resolveHubConfig(overrides: MocoHubConfigOverrides = {}): MocoHu
       overrides.maxConcurrentWorkers ??
       overrides.normalSlots ??
       parsePositiveInt(
-        process.env.MOCO_MAX_WORKERS ?? process.env.MOCO_NORMAL_SLOTS,
+        process.env.KULO_MAX_WORKERS ?? process.env.KULO_NORMAL_SLOTS,
         3,
       ),
     maxSubagentsPerTicket: Math.min(
@@ -404,18 +404,18 @@ export function resolveHubConfig(overrides: MocoHubConfigOverrides = {}): MocoHu
       Math.max(
         1,
         overrides.maxSubagentsPerTicket ??
-          parsePositiveInt(process.env.MOCO_MAX_SUBAGENTS_PER_TICKET, 4),
+          parsePositiveInt(process.env.KULO_MAX_SUBAGENTS_PER_TICKET, 4),
       ),
     ),
     watchdogMinutes:
       overrides.watchdogMinutes ??
-      parseNonNegativeInt(process.env.MOCO_WATCHDOG_MINUTES, 5),
+      parseNonNegativeInt(process.env.KULO_WATCHDOG_MINUTES, 5),
     inlineDispatchWaitMs: Math.min(
       15_000,
       Math.max(
         0,
         overrides.inlineDispatchWaitMs ??
-          parseNonNegativeInt(process.env.MOCO_INLINE_DISPATCH_WAIT_MS, 10_000),
+          parseNonNegativeInt(process.env.KULO_INLINE_DISPATCH_WAIT_MS, 10_000),
       ),
     ),
     completedTaskDisplayHours,

@@ -3,9 +3,9 @@ import AppKit
 let desktopRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
 let assets = desktopRoot.appendingPathComponent("assets")
 let webPublic = desktopRoot.deletingLastPathComponent().appendingPathComponent("web/public")
-let sourceURL = assets.appendingPathComponent("moco-icon-source.png")
+let sourceURL = assets.appendingPathComponent("kulo-icon-source.png")
 guard let source = NSImage(contentsOf: sourceURL) else {
-    fatalError("Cannot load Moco icon source: \(sourceURL.path)")
+    fatalError("Cannot load Kulo icon source: \(sourceURL.path)")
 }
 
 func render(size: Int, inset: CGFloat, radius: CGFloat, to file: URL) throws {
@@ -35,14 +35,14 @@ func render(size: Int, inset: CGFloat, radius: CGFloat, to file: URL) throws {
 
 let manager = FileManager.default
 try manager.createDirectory(at: webPublic, withIntermediateDirectories: true)
-try render(size: 512, inset: 0, radius: 0.14, to: webPublic.appendingPathComponent("moco-icon.png"))
+try render(size: 512, inset: 0, radius: 0.14, to: webPublic.appendingPathComponent("kulo-icon.png"))
 try render(size: 32, inset: 0, radius: 0.14, to: webPublic.appendingPathComponent("favicon-32.png"))
 // Home-screen launchers supply their own mask; retain the full paper background.
 try render(size: 180, inset: 0, radius: 0, to: webPublic.appendingPathComponent("apple-touch-icon.png"))
-try render(size: 1024, inset: 0.09375, radius: 0.22, to: assets.appendingPathComponent("moco-icon.png"))
+try render(size: 1024, inset: 0.09375, radius: 0.22, to: assets.appendingPathComponent("kulo-icon.png"))
 
-let temporary = manager.temporaryDirectory.appendingPathComponent("moco-icons-\(UUID().uuidString)")
-let iconset = temporary.appendingPathComponent("moco.iconset")
+let temporary = manager.temporaryDirectory.appendingPathComponent("kulo-icons-\(UUID().uuidString)")
+let iconset = temporary.appendingPathComponent("kulo.iconset")
 try manager.createDirectory(at: iconset, withIntermediateDirectories: true)
 defer { try? manager.removeItem(at: temporary) }
 for points in [16, 32, 128, 256, 512] {
@@ -54,8 +54,8 @@ for points in [16, 32, 128, 256, 512] {
 }
 let iconutil = Process()
 iconutil.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
-iconutil.arguments = ["--convert", "icns", "--output", assets.appendingPathComponent("moco.icns").path, iconset.path]
+iconutil.arguments = ["--convert", "icns", "--output", assets.appendingPathComponent("kulo.icns").path, iconset.path]
 try iconutil.run()
 iconutil.waitUntilExit()
 guard iconutil.terminationStatus == 0 else { fatalError("iconutil failed") }
-print("Generated Moco desktop and web icons.")
+print("Generated Kulo desktop and web icons.")

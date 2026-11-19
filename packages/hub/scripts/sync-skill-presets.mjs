@@ -20,7 +20,7 @@ for (const preset of manifest.presets) {
     || !/^[a-zA-Z0-9_-]+$/.test(preset.directory) || sourcePath.split("/").some((part) => !/^[a-zA-Z0-9_.-]+$/.test(part) || part === "." || part === "..")) {
     throw new Error(`Invalid pinned source for ${preset.id}`);
   }
-  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "moco-skill-preset-"));
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "kulo-skill-preset-"));
   let source;
   try {
     const url = `https://github.com/${repository}/tree/${ref}/${sourcePath}`;
@@ -75,7 +75,7 @@ for (const preset of manifest.presets) {
       installer: { package: "skills", version: skillsVersion, mode: "copy", telemetry: false },
       licenseFile: { path: "LICENSE", sha256: createHash("sha256").update(license).digest("hex"), bytes: license.length },
       files, ...(previous.additionalSources ? { additionalSources: previous.additionalSources } : {}),
-      modifications: "Original upstream documentation is unchanged. Moco routing lives in the parent SKILL.md. Executable scripts and templates are omitted.",
+      modifications: "Original upstream documentation is unchanged. Kulo routing lives in the parent SKILL.md. Executable scripts and templates are omitted.",
     }, null, 2) + "\n");
     console.log(`${preset.id}: ${Object.keys(files).length} documentation files, ${bytes} bytes, ${ref}`);
   } finally {

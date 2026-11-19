@@ -6,7 +6,7 @@ import { VoiceCallPanel, voiceCallStatus } from "./voice-call-panel";
 const active: ActiveVoiceCall = { target: { topicId: "topic-one", title: "项目讨论" }, state: "listening", startedAt: 1_000_000, muted: false, captionsEnabled: false, captions: [{ id: "user-one", role: "user", text: "先把今天的安排过一遍。", final: true }], minimized: false };
 const handlers = () => ({ onHangup: vi.fn(), onToggleMute: vi.fn(), onRetry: vi.fn(), onOpenChat: vi.fn() });
 const render = (patch: Partial<ActiveVoiceCall> = {}) => renderToStaticMarkup(<VoiceCallPanel call={{ ...active, ...patch }} {...handlers()} />);
-const controlsIn = (html: string) => html.match(/<div class="moco-voice-call-controls"[^>]*>([\s\S]*?)<\/div>/)?.[1];
+const controlsIn = (html: string) => html.match(/<div class="kulo-voice-call-controls"[^>]*>([\s\S]*?)<\/div>/)?.[1];
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(1_185_000); });
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
@@ -14,13 +14,13 @@ afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 describe("compact inline voice call panel", () => {
   it.each(["connecting", "listening", "speaking", "working", "reconnecting"] as const)("shows only the originating topic, timer, and controls during %s", (state) => {
     const html = render({ state, captionsEnabled: true });
-    expect(html).toContain('role="region" aria-label="与Moco的通话"');
+    expect(html).toContain('role="region" aria-label="与Kulo的通话"');
     expect(html).toContain('aria-label="返回通话话题：项目讨论"');
-    expect(html).toContain('class="moco-voice-call-topic-title" title="项目讨论">项目讨论');
-    expect(html).toContain('class="moco-voice-call-duration" role="timer" aria-label="通话时长" aria-live="off">03:05');
+    expect(html).toContain('class="kulo-voice-call-topic-title" title="项目讨论">项目讨论');
+    expect(html).toContain('class="kulo-voice-call-duration" role="timer" aria-label="通话时长" aria-live="off">03:05');
     expect(html.match(/role="timer"/g)).toHaveLength(1);
-    expect(html).not.toMatch(/role="dialog"|aria-modal|backdrop|moco-marmot-avatar|<h[1-6]\b/);
-    expect(html).not.toMatch(/正在聆听|正在回应|正在处理|字幕|先把今天的安排过一遍|收起通话|发消息|moco-voice-call-mini/);
+    expect(html).not.toMatch(/role="dialog"|aria-modal|backdrop|kulo-marmot-avatar|<h[1-6]\b/);
+    expect(html).not.toMatch(/正在聆听|正在回应|正在处理|字幕|先把今天的安排过一遍|收起通话|发消息|kulo-voice-call-mini/);
     if (state === "connecting" || state === "reconnecting") {
       expect(html).toContain(`role="status" aria-atomic="true">${state === "connecting" ? "正在连接" : "正在重连"}`);
     } else expect(html).not.toContain('role="status"');
@@ -35,7 +35,7 @@ describe("compact inline voice call panel", () => {
   it("uses named icon-only controls without hiding the originating topic title", () => {
     for (const patch of [{}, { minimized: true }, { state: "ended" as const }]) {
       const html = render(patch);
-      expect(html).toContain('class="moco-voice-call-topic-title" title="项目讨论">项目讨论');
+      expect(html).toContain('class="kulo-voice-call-topic-title" title="项目讨论">项目讨论');
       const buttons = [...controlsIn(html)!.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)];
       expect(buttons).toHaveLength(2);
       for (const [button, content] of buttons) {
@@ -51,14 +51,14 @@ describe("compact inline voice call panel", () => {
     expect(mute).toContain('aria-pressed="true"');
     expect(mute).toContain("button--secondary");
     expect(mute).not.toContain("button--primary");
-    expect(html).not.toMatch(/字幕|先把今天的安排过一遍|正在聆听|moco-voice-call-captions/);
+    expect(html).not.toMatch(/字幕|先把今天的安排过一遍|正在聆听|kulo-voice-call-captions/);
   });
 
   it("ignores the obsolete minimized view without restoring extra controls", () => {
     const html = render({ minimized: true, captionsEnabled: true });
-    expect(html).toContain('class="moco-voice-call"');
+    expect(html).toContain('class="kulo-voice-call"');
     expect(controlsIn(html)!.match(/<button\b/g)).toHaveLength(2);
-    expect(html).not.toMatch(/返回与Moco|收起通话|发消息|字幕|moco-voice-call-mini/);
+    expect(html).not.toMatch(/返回与Kulo|收起通话|发消息|字幕|kulo-voice-call-mini/);
   });
 
   it("keeps failure and retry or close inside the compact panel", () => {

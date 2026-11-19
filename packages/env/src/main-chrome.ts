@@ -69,7 +69,7 @@ class FlowTabSelectionError extends Error {
  * after explicit CLI attachment prevents passive checks from respawning a daemon
  * and re-requesting Chrome permission. Each request uses one socket and no retry. */
 export async function openMainChromeAgentBrowser(rootDir: string, signal?: AbortSignal, runner: AgentCliRunner = runAgentCli): Promise<MainChromeAgentBrowserConnection> {
-  const socketDirectory = fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "moco-flow-"));
+  const socketDirectory = fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "kulo-flow-"));
   fs.chmodSync(socketDirectory, 0o700);
   const session = "f" + randomBytes(6).toString("hex");
   const config = path.join(socketDirectory, "config.json");
@@ -161,7 +161,7 @@ export async function openMainChromeAgentBrowser(rootDir: string, signal?: Abort
   };
   try {
     const env: NodeJS.ProcessEnv = {};
-    for (const key of ["PATH", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "SystemRoot", "WINDIR", "TMP", "TEMP", "TMPDIR", "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "MOCO_AGENT_BROWSER_PATH", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"]) if (process.env[key] !== undefined) env[key] = process.env[key];
+    for (const key of ["PATH", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "SystemRoot", "WINDIR", "TMP", "TEMP", "TMPDIR", "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "KULO_AGENT_BROWSER_PATH", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"]) if (process.env[key] !== undefined) env[key] = process.env[key];
     env.AGENT_BROWSER_SOCKET_DIR = socketDirectory;
     env.AGENT_BROWSER_NO_VERSION_CHECK = "1";
     const base = ["--json", "--session", session, "--config", config];
@@ -260,7 +260,7 @@ export class MainChromeFlowSession {
     if (this.#closed) throw new Error("Main Chrome Flow session is closed");
     if (this.#opening || this.#state.status === "ready") return this.#snapshot();
     const generation = ++this.#generation;
-    this.#state = { status: "needs_connection", tabs: [], message: "请在 chrome://inspect/#remote-debugging 启用远程调试，并允许 Moco 连接。" };
+    this.#state = { status: "needs_connection", tabs: [], message: "请在 chrome://inspect/#remote-debugging 启用远程调试，并允许 Kulo 连接。" };
     const work = this.#serialize(async () => {
       const previous = this.#client; this.#client = undefined; this.#abort?.abort();
       if (previous) await this.#cleanup(previous);
@@ -380,7 +380,7 @@ export class MainChromeFlowSession {
     return this.#downloadBlob(tabId, source, destination);
   }
   async #downloadBlob(tabId: number, source: string, destination: string): Promise<FlowMediaDownloadResult> {
-    const slot = "__mocoMedia_" + randomBytes(16).toString("hex");
+    const slot = "__kuloMedia_" + randomBytes(16).toString("hex");
     const nonce = randomBytes(16).toString("hex");
     const temporary = destination + ".download-" + randomBytes(12).toString("hex");
     let descriptor: number | undefined;

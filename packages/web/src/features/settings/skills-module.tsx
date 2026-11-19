@@ -1,8 +1,8 @@
-import { useI18n, translate } from "../../moco-i18n";
+import { useI18n, translate } from "../../kulo-i18n";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, Button, Checkbox, CheckboxGroup, Chip, Label, Modal, Skeleton, Switch, Table } from "@heroui/react";
-import { redactSecrets, type SkillAudience, type SkillRecord, type SkillSnapshot } from "@moco/protocol";
-import { MocoApiError, mocoRest } from "../../moco-api";
+import { redactSecrets, type SkillAudience, type SkillRecord, type SkillSnapshot } from "@kulo/protocol";
+import { KuloApiError, kuloRest } from "../../kulo-api";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { useSettingsPending } from "./settings-save-activity";
 import { SettingsSection } from "./settings-layout";
@@ -36,11 +36,11 @@ export function SkillSettingsFields({ value, onChange, disabled = false }: {
   const AUDIENCES: Array<{ id: SkillAudience; label: string }> = [
     { id: "chat", label: t("主聊天", "Chat") }, { id: "worker", label: t("后台任务", "Background tasks") }, { id: "settings", label: t("设置助手", "Settings assistant") },
   ];
-  return <div className="moco-form-stack">
+  return <div className="kulo-form-stack">
     <Switch className="w-full" isSelected={value.enabled} isDisabled={disabled} onChange={(enabled) => onChange({ ...value, enabled })}>
-      <Switch.Content className="moco-form-toggle"><Label>{t("启用技能", "Enable skill")}</Label><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content>
+      <Switch.Content className="kulo-form-toggle"><Label>{t("启用技能", "Enable skill")}</Label><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content>
     </Switch>
-    <CheckboxGroup className="moco-form-field" value={value.audiences} onChange={(selected) => onChange({ ...value, audiences: selected as SkillAudience[] })} isDisabled={disabled} isRequired>
+    <CheckboxGroup className="kulo-form-field" value={value.audiences} onChange={(selected) => onChange({ ...value, audiences: selected as SkillAudience[] })} isDisabled={disabled} isRequired>
       <Label>{t("使用范围", "Available in")}</Label>
       <div className="flex flex-col gap-3">
         {AUDIENCES.map(({ id, label }) => <Checkbox key={id} value={id} variant="secondary"><Checkbox.Content><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>{label}</Checkbox.Content></Checkbox>)}
@@ -113,19 +113,19 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
     if (!draft || !draft.audiences.length) { setEditorError(t("请至少选择一个使用范围。", "Select at least one audience.")); return; }
     if (!begin("save")) return;
     try {
-      const next = await mocoRest.updateSkill(draft.record.id, { enabled: draft.enabled, audiences: draft.audiences, expectedRevision: draft.expectedRevision, commandId: commandId() });
+      const next = await kuloRest.updateSkill(draft.record.id, { enabled: draft.enabled, audiences: draft.audiences, expectedRevision: draft.expectedRevision, commandId: commandId() });
       if (mounted.current) {
         accept(next); setDraft(undefined); setEditorError(undefined); setConflict(false); setError(undefined);
         onRefresh(); focusButton(editButtons.current, draft.record.id);
       }
     } catch (cause) {
-      if (mounted.current) { setEditorError(report(cause)); setConflict(cause instanceof MocoApiError && cause.status === 409); }
+      if (mounted.current) { setEditorError(report(cause)); setConflict(cause instanceof KuloApiError && cause.status === 409); }
     } finally { finish(); }
   };
   const reloadDraft = async () => {
     if (!draft || !begin("reload")) return;
     try {
-      const next = await mocoRest.getSkills();
+      const next = await kuloRest.getSkills();
       const record = next.skills.find((skill) => skill.id === draft.record.id);
       if (mounted.current) {
         accept(next);
@@ -140,7 +140,7 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
     if (!snapshot || requiredSkill(skill) || !begin(`toggle:${skill.id}`)) return;
     setError(undefined);
     try {
-      const next = await mocoRest.updateSkill(skill.id, { enabled, expectedRevision: snapshot.revision, commandId: commandId() });
+      const next = await kuloRest.updateSkill(skill.id, { enabled, expectedRevision: snapshot.revision, commandId: commandId() });
       if (mounted.current) { accept(next); onRefresh(); }
     } catch (cause) { if (mounted.current) { setError(report(cause)); onRefresh(); } }
     finally {
@@ -158,7 +158,7 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
     const index = snapshot.skills.findIndex((skill) => skill.id === remove.record.id);
     setError(undefined);
     try {
-      const next = await mocoRest.deleteSkill(remove.record.id, { expectedRevision: remove.expectedRevision, commandId: commandId() });
+      const next = await kuloRest.deleteSkill(remove.record.id, { expectedRevision: remove.expectedRevision, commandId: commandId() });
       if (mounted.current) {
         accept(next); setRemove(undefined); onRefresh();
         const nextId = next.skills[Math.min(index, next.skills.length - 1)]?.id;
@@ -171,35 +171,35 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
 
   return <SettingsSection title={t("技能", "Skills")} action={<Button ref={importButton} variant="secondary" size="sm" isDisabled={blocked || !onRequest} onPress={() => onRequest?.(undefined, IMPORT_SKILL_PROMPT)}>{t("导入技能", "Import skill")}</Button>}>
     {error && <Alert status="danger" role="alert"><Alert.Content>{error}</Alert.Content><Button size="sm" variant="ghost" isDisabled={blocked} onPress={onRefresh}>{t("刷新", "Refresh")}</Button></Alert>}
-    <Table variant="secondary" className="moco-settings-table moco-capabilities-table" aria-busy={Boolean(busy) || undefined}>
-      <Table.ScrollContainer className="moco-settings-table-scroll">
-        <Table.Content aria-label={t("技能列表", "Skills")} selectionMode="none" keyboardNavigationBehavior="tab" className="moco-settings-table-content moco-skills-table-content">
+    <Table variant="secondary" className="kulo-settings-table kulo-capabilities-table" aria-busy={Boolean(busy) || undefined}>
+      <Table.ScrollContainer className="kulo-settings-table-scroll">
+        <Table.Content aria-label={t("技能列表", "Skills")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content kulo-skills-table-content">
           <Table.Header>
-            <Table.Column id="name" isRowHeader className="moco-settings-table-column">{t("技能", "Skills")}</Table.Column>
-            <Table.Column id="source" className="moco-settings-table-column moco-settings-table-meta">{t("来源", "Source")}</Table.Column>
-            <Table.Column id="status" className="moco-settings-table-column moco-settings-table-meta">{t("状态", "Status")}</Table.Column>
-            <Table.Column id="enabled" className="moco-settings-table-column moco-settings-table-toggle">{t("启用", "Enable")}</Table.Column>
-            <Table.Column id="actions" className="moco-settings-table-column moco-settings-table-actions">{t("操作", "Actions")}</Table.Column>
+            <Table.Column id="name" isRowHeader className="kulo-settings-table-column">{t("技能", "Skills")}</Table.Column>
+            <Table.Column id="source" className="kulo-settings-table-column kulo-settings-table-meta">{t("来源", "Source")}</Table.Column>
+            <Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-meta">{t("状态", "Status")}</Table.Column>
+            <Table.Column id="enabled" className="kulo-settings-table-column kulo-settings-table-toggle">{t("启用", "Enable")}</Table.Column>
+            <Table.Column id="actions" className="kulo-settings-table-column kulo-settings-table-actions">{t("操作", "Actions")}</Table.Column>
           </Table.Header>
-          <Table.Body renderEmptyState={() => snapshot ? <div className="moco-table-empty-state">{t("尚无技能", "No skills")}</div> : !connected ? <div className="moco-table-empty-state">{t("等待连接", "Waiting for connection")}</div> : <div className="moco-table-empty-state w-full gap-4" role="status" aria-label={t("加载技能", "Loading skills")}><Skeleton animationType="none" className="h-3 w-32" /><Skeleton animationType="none" className="h-3 w-16" /></div>}>
+          <Table.Body renderEmptyState={() => snapshot ? <div className="kulo-table-empty-state">{t("尚无技能", "No skills")}</div> : !connected ? <div className="kulo-table-empty-state">{t("等待连接", "Waiting for connection")}</div> : <div className="kulo-table-empty-state w-full gap-4" role="status" aria-label={t("加载技能", "Loading skills")}><Skeleton animationType="none" className="h-3 w-32" /><Skeleton animationType="none" className="h-3 w-16" /></div>}>
             {(snapshot?.skills ?? []).map((skill) => {
               const required = requiredSkill(skill);
               const protectedReason = required ? t("能力配置指引是系统必需技能。", "The capability setup guide is required by the system.") : t("内置技能随应用维护，不能删除。", "Built-in skills are maintained with the app and cannot be deleted.");
               return <Table.Row key={skill.id} id={skill.id} textValue={skill.name}>
-                <Table.Cell className="moco-settings-table-cell">
+                <Table.Cell className="kulo-settings-table-cell">
                   <div className="flex min-w-0 flex-col items-start gap-1">
-                    <span className="moco-item-title break-words">{skill.name}</span>
-                    <span className="moco-item-description break-words">{skill.description}</span>
+                    <span className="kulo-item-title break-words">{skill.name}</span>
+                    <span className="kulo-item-description break-words">{skill.description}</span>
                     {skill.diagnostics.length > 0 && <span className="break-words text-xs text-warning">{skill.diagnostics.map((message) => redactSecrets(message)).join(" · ")}</span>}
                   </div>
                 </Table.Cell>
-                <Table.Cell className="moco-settings-table-cell moco-settings-table-meta"><span title={skill.source === "builtin" ? protectedReason : undefined}>{required ? t("系统必需", "Required") : skill.source === "builtin" ? t("内置", "Built-in") : skill.source === "git" ? "Git" : t("本地导入", "Local import")}</span></Table.Cell>
-                <Table.Cell className="moco-settings-table-cell moco-settings-table-meta"><Chip size="sm" variant="soft" color={!skill.enabled ? "default" : skill.diagnostics.length ? "warning" : "success"}>{skillStatusLabel(skill)}</Chip></Table.Cell>
-                <Table.Cell className="moco-settings-table-cell moco-settings-table-toggle">
-                  <div className="moco-settings-table-toggle-group"><Switch ref={(node) => { if (node) switches.current.set(skill.id, node); else switches.current.delete(skill.id); }} size="sm" isSelected={skill.enabled} isDisabled={blocked || required} aria-description={required ? protectedReason : undefined} onChange={(enabled) => void toggle(skill, enabled)}><Switch.Content><Label className="sr-only">{t("启用", "Enable")}{skill.name}</Label><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content></Switch></div>
+                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta"><span title={skill.source === "builtin" ? protectedReason : undefined}>{required ? t("系统必需", "Required") : skill.source === "builtin" ? t("内置", "Built-in") : skill.source === "git" ? "Git" : t("本地导入", "Local import")}</span></Table.Cell>
+                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta"><Chip size="sm" variant="soft" color={!skill.enabled ? "default" : skill.diagnostics.length ? "warning" : "success"}>{skillStatusLabel(skill)}</Chip></Table.Cell>
+                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-toggle">
+                  <div className="kulo-settings-table-toggle-group"><Switch ref={(node) => { if (node) switches.current.set(skill.id, node); else switches.current.delete(skill.id); }} size="sm" isSelected={skill.enabled} isDisabled={blocked || required} aria-description={required ? protectedReason : undefined} onChange={(enabled) => void toggle(skill, enabled)}><Switch.Content><Label className="sr-only">{t("启用", "Enable")}{skill.name}</Label><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content></Switch></div>
                 </Table.Cell>
-                <Table.Cell className="moco-settings-table-cell moco-settings-table-actions">
-                  <div className="moco-settings-table-action-group">
+                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-actions">
+                  <div className="kulo-settings-table-action-group">
                     <Button ref={(node) => { if (node) editButtons.current.set(skill.id, node); else editButtons.current.delete(skill.id); }} size="sm" variant="ghost" aria-label={t(`编辑${skill.name}`, `Edit ${skill.name}`)} aria-description={required ? protectedReason : undefined} isDisabled={blocked || required} onPress={() => openEditor(skill)}>{t("编辑", "Edit")}</Button>
                     <Button ref={(node) => { if (node) deleteButtons.current.set(skill.id, node); else deleteButtons.current.delete(skill.id); }} size="sm" variant="ghost" aria-label={t(`删除${skill.name}`, `Delete ${skill.name}`)} aria-description={skill.source === "builtin" ? protectedReason : undefined} isDisabled={blocked || skill.source === "builtin"} onPress={() => { if (snapshot) setRemove({ record: skill, expectedRevision: snapshot.revision }); }}>{t("删除", "Delete")}</Button>
                   </div>

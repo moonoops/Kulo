@@ -10,7 +10,7 @@ import {
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import {
-  describeMocoError,
+  describeKuloError,
   inferModelPurpose,
   isConversationModel,
   isImageGenerationModel,
@@ -25,18 +25,18 @@ import {
   type RolePreset,
   type ThinkingEffort,
   type ThinkingLevelMapConfig,
-} from "@moco/protocol";
+} from "@kulo/protocol";
 import {
   DEFAULT_CONTEXT_WINDOW,
   DEFAULT_MAX_TOKENS,
   normalizeProviderBaseUrl,
-  type MocoModelConfig,
+  type KuloModelConfig,
   type OpenAIApiMode,
 } from "./config.js";
 import { proxyFetch } from "./http-transport.js";
 
-export const MOCO_PROVIDER_ID = "openai";
-export const MOCO_GATEWAY_PROVIDER_ID = "moco-gateway";
+export const KULO_PROVIDER_ID = "openai";
+export const KULO_GATEWAY_PROVIDER_ID = "kulo-gateway";
 
 const THINKING_MAP_KEYS: readonly BuiltinThinkingEffort[] = [
   "off",
@@ -97,7 +97,7 @@ export function clampModelThinkingLevel(
   return clampThinkingLevel(model, builtin);
 }
 
-const THINKING_MODEL_REF_PREFIX = "moco-thinking:";
+const THINKING_MODEL_REF_PREFIX = "kulo-thinking:";
 
 function thinkingModelRef(modelId: string, wire: string): string {
   return THINKING_MODEL_REF_PREFIX + Buffer.from(JSON.stringify([modelId, wire])).toString("base64url");
@@ -152,12 +152,12 @@ export function resolveModelThinkingSelection(
   provider: string,
   modelId: string,
   requested: ThinkingEffort,
-  config: Pick<MocoModelConfig, "gatewayModels" | "customProviders" | "subscriptionModels">,
+  config: Pick<KuloModelConfig, "gatewayModels" | "customProviders" | "subscriptionModels">,
 ): { model: { provider: string; modelId: string }; thinkingLevel: BuiltinThinkingEffort } {
   const model = models.getModel(provider, modelId);
   const subscriptionModels = config.subscriptionModels && Object.hasOwn(config.subscriptionModels, provider)
     ? config.subscriptionModels[provider] : undefined;
-  const custom = provider === MOCO_GATEWAY_PROVIDER_ID
+  const custom = provider === KULO_GATEWAY_PROVIDER_ID
     ? config.gatewayModels?.find((item) => item.id === modelId)
     : subscriptionModels?.find((item) => item.id === modelId) ??
       config.customProviders.find((item) => item.id === provider)?.models.find((item) => item.id === modelId);
@@ -199,7 +199,7 @@ export function createOpenAIModelEntry(
   modelId: string,
   baseUrl: string,
   apiMode: OpenAIApiMode,
-  providerId: string = MOCO_PROVIDER_ID,
+  providerId: string = KULO_PROVIDER_ID,
   contextWindow = DEFAULT_CONTEXT_WINDOW,
   customModel?: CustomModelConfig,
 ): Model<"openai-completions"> | Model<"openai-responses"> {
@@ -259,7 +259,7 @@ export type MutableModels = ReturnType<typeof createModels>;
 
 export function syncOpenAICompatibleModels(
   models: MutableModels,
-  getConfig: () => MocoModelConfig,
+  getConfig: () => KuloModelConfig,
   getRoles: () => Record<string, RolePreset>,
 ): void {
   const config = getConfig();
@@ -284,21 +284,21 @@ export function syncOpenAICompatibleModels(
   const openAIApiMode: OpenAIApiMode =
     config.apiMode === "openai-responses" ? "openai-responses" : "openai-completions";
   const catalog = Array.from(modelIds).filter((id) => isConversationModel({ id })).map((id) =>
-    createOpenAIModelEntry(id, config.baseUrl, openAIApiMode, MOCO_PROVIDER_ID, contextWindow),
+    createOpenAIModelEntry(id, config.baseUrl, openAIApiMode, KULO_PROVIDER_ID, contextWindow),
   );
 
   const provider = createProvider({
-    id: MOCO_PROVIDER_ID,
-    name: "Moco OpenAI-Compatible Provider",
+    id: KULO_PROVIDER_ID,
+    name: "Kulo OpenAI-Compatible Provider",
     baseUrl: config.baseUrl,
     auth: {
       apiKey: {
-        name: "MOCO_API_KEY",
+        name: "KULO_API_KEY",
         resolve: async () => {
           const live = getConfig();
           const key =
             live.apiKey ??
-            process.env.MOCO_API_KEY?.trim() ??
+            process.env.KULO_API_KEY?.trim() ??
             process.env.OPENAI_API_KEY?.trim();
           return { auth: key ? { apiKey: key } : {} };
         },
@@ -318,7 +318,7 @@ export function syncOpenAICompatibleModels(
  * Create a `pi-ai` Models registry backed by an OpenAI-compatible endpoint (such as NewAPI).
  */
 export function createOpenAICompatibleModels(
-  config: MocoModelConfig,
+  config: KuloModelConfig,
   roles: Record<string, RolePreset>,
 ): Models {
   const models = createModels();
@@ -344,7 +344,7 @@ function combineProbeSignal(timeoutMs: number, external?: AbortSignal): AbortSig
  * and run a minimal completion check without leaking saved credentials to new hosts.
  */
 export async function probeOpenAICompatibleGateway(
-  saved: MocoModelConfig,
+  saved: KuloModelConfig,
   draft: ModelProbeRequest = {},
   signal?: AbortSignal,
   savedCustom?: {
@@ -417,7 +417,7 @@ export async function probeOpenAICompatibleGateway(
   const resolvedKey =
     explicitKey ||
     (sameEndpoint
-      ? savedCustom ? savedCustom.apiKey : saved.apiKey ?? process.env.MOCO_API_KEY?.trim() ?? process.env.OPENAI_API_KEY?.trim()
+      ? savedCustom ? savedCustom.apiKey : saved.apiKey ?? process.env.KULO_API_KEY?.trim() ?? process.env.OPENAI_API_KEY?.trim()
       : undefined);
 
   const authHeaders: Record<string, string> = {};
@@ -587,7 +587,7 @@ export async function probeOpenAICompatibleGateway(
       };
     }
 
-    const desc = describeMocoError({
+    const desc = describeKuloError({
       reason: "model_error",
       detail: `${res.status}${bodyText ? `: ${bodyText}` : ""}`,
       modelId: model,
@@ -606,7 +606,7 @@ export async function probeOpenAICompatibleGateway(
   } catch (err) {
     const latencyMs = Math.max(0, Date.now() - start);
     const errMsg = redactSensitiveText(err instanceof Error ? err.message : String(err), resolvedKey ? [resolvedKey] : []);
-    const desc = describeMocoError({
+    const desc = describeKuloError({
       reason: "model_error",
       detail: errMsg,
       modelId: model,

@@ -1,5 +1,5 @@
 import os from "node:os";
-import type { DeviceSystemInfo } from "@moco/protocol";
+import type { DeviceSystemInfo } from "@kulo/protocol";
 import { collectDeviceIps } from "./device-network.js";
 
 export function collectDeviceSystemInfo(): DeviceSystemInfo {

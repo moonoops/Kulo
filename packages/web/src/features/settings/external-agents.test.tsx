@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { defaultRolePresets, type EnvNodeDescriptor, type ExternalClientConnection, type RolePreset } from "@moco/protocol";
+import { defaultRolePresets, type EnvNodeDescriptor, type ExternalClientConnection, type RolePreset } from "@kulo/protocol";
 import { ExternalAgentsList } from "./external-agents-list";
 import { deriveExternalClients, internalAgentPresets, withExternalAgentPresets } from "./external-agents-view";
 import { advanceSettingsAssistantPageScope } from "./settings-assistant-page-scope";

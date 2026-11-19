@@ -1,6 +1,6 @@
-import type { ChatAttachment } from "@moco/protocol";
-import { ensureMediaSession, getAuthTokenFromUrl } from "../../moco-api";
-import { translate as tr } from "../../moco-i18n";
+import type { ChatAttachment } from "@kulo/protocol";
+import { ensureMediaSession, getAuthTokenFromUrl } from "../../kulo-api";
+import { translate as tr } from "../../kulo-i18n";
 import type { DesktopSystemPermissionBridge } from "../system-permissions/system-permissions";
 import type { AppShortcutCommand } from "../shortcuts/shortcuts";
 
@@ -14,11 +14,11 @@ export interface DesktopFileBridge {
 }
 
 declare global {
-  interface Window { mocoDesktop?: DesktopFileBridge }
+  interface Window { kuloDesktop?: DesktopFileBridge }
 }
 
 export function desktopFileBridge(): DesktopFileBridge | undefined {
-  return typeof window === "undefined" ? undefined : window.mocoDesktop;
+  return typeof window === "undefined" ? undefined : window.kuloDesktop;
 }
 
 export function fileAssetUrl(assetId: string): string {

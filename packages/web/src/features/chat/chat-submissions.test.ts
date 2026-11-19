@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChatDisplayItem } from "@moco/protocol";
+import type { ChatDisplayItem } from "@kulo/protocol";
 import { acknowledgeSubmission, chatDeliveryLabel, mergeChatHistory, mergeChatSubmissions, reconcileSubmissions, removeSubmission, splitChatTimeline, submissionKey, trackSubmission, updateSubmission, upsertSubmission, type SubmissionBackupInput } from "./chat-submissions";
 
 function input(requestId: string, topicId = "topic-a"): SubmissionBackupInput {

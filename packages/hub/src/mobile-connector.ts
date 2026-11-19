@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createInterface } from "node:readline";
-import type { MobileConnectionCandidate } from "@moco/protocol";
+import type { MobileConnectionCandidate } from "@kulo/protocol";
 import { DeviceConnectionError } from "./devices.js";
 
 export interface MobileConnectorStatus {
@@ -131,10 +131,10 @@ export class MobileConnector {
   }
 
   async #start(): Promise<MobileConnectorStatus> {
-    const executable = this.#options.binaryPath ?? process.env.MOCO_CONNECTOR_PATH?.trim() ??
-      fileURLToPath(new URL(`../native/moco-connector-${process.platform}-${process.arch}${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
+    const executable = this.#options.binaryPath ?? process.env.KULO_CONNECTOR_PATH?.trim() ??
+      fileURLToPath(new URL(`../native/kulo-connector-${process.platform}-${process.arch}${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
     if (!fs.existsSync(executable)) {
-      throw new DeviceConnectionError("手机连接器尚未构建，请运行 Moco-mobile 的阶段 2 构建。", 503, "connector_not_built");
+      throw new DeviceConnectionError("手机连接器尚未构建，请运行 Kulo-mobile 的阶段 2 构建。", 503, "connector_not_built");
     }
     const upstream = await this.#upstream();
     const systemTailscaleOrigins = this.#options.systemTailscaleOrigins ?? (await discoverSystemTailscale()).origins;

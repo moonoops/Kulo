@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, Notification, session, shell, systemPreferences } from "electron";
-import { RecoveryManager, readReleaseIdentity } from "@moco/recovery";
+import { RecoveryManager, readReleaseIdentity } from "@kulo/recovery";
 import { buildRuntimeEnvironment } from "./runtime-config.js";
 import { startNodeService, type NodeService } from "./child-service.js";
 import { DESKTOP_APP_NAME, desktopContentSecurityPolicy, desktopWindowChrome, externalHttpUrl, localHttpOrigin, parseDevelopmentMode, resolveDesktopDataDirectory, shouldAuthorizeDesktopRequest, type DevelopmentMode } from "./desktop-config.js";
@@ -88,19 +88,19 @@ function configureFileActions(): void {
   const authorize = (event: Parameters<typeof isTrustedFileActionSender>[0]) => {
     if (!isTrustedFileActionSender(event, window, rendererOrigin)) throw new Error("无法从此页面打开文件。");
   };
-  ipcMain.handle("moco:open-file", async (event, assetId: unknown, target: unknown) => {
+  ipcMain.handle("kulo:open-file", async (event, assetId: unknown, target: unknown) => {
     authorize(event);
     await fileActions.openFile(assetId, target);
   });
-  ipcMain.handle("moco:save-file", async (event, assetId: unknown) => {
+  ipcMain.handle("kulo:save-file", async (event, assetId: unknown) => {
     authorize(event);
     return fileActions.saveFile(assetId);
   });
-  ipcMain.handle("moco:ui-ready", (event) => {
+  ipcMain.handle("kulo:ui-ready", (event) => {
     authorize(event);
     uiReady.acknowledge(event.sender.id, event.senderFrame!.origin);
   });
-  ipcMain.handle("moco:notify", (event, payload: unknown) => {
+  ipcMain.handle("kulo:notify", (event, payload: unknown) => {
     authorize(event);
     desktopNotifications.notify(payload);
   });
@@ -132,7 +132,7 @@ function dispatchWindowCommand(command: DesktopAppCommand): void {
     focusWindow();
   }
   if (!trustedRenderer(window.webContents.mainFrame?.origin)) return;
-  window.webContents.send("moco:app-command", command);
+  window.webContents.send("kulo:app-command", command);
 }
 
 async function openExternal(value: string): Promise<void> {
@@ -149,7 +149,7 @@ function trustedRenderer(origin: string | undefined): boolean {
 }
 
 function configureSession(): void {
-  const browserSession = session.fromPartition("persist:moco-dev");
+  const browserSession = session.fromPartition("persist:kulo-dev");
   browserSession.webRequest.onHeadersReceived((details, callback) => {
     const responseHeaders = { ...details.responseHeaders };
     if (contentSecurityPolicy && details.webContentsId === window?.webContents.id && trustedRenderer(details.url) && details.resourceType === "mainFrame") {
@@ -192,7 +192,7 @@ function createWindow(): BrowserWindow {
     show: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#111111" : "#ffffff",
     webPreferences: {
-      partition: "persist:moco-dev",
+      partition: "persist:kulo-dev",
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
       preload: fileURLToPath(new URL("./preload.cjs", import.meta.url)),
     },
@@ -259,10 +259,10 @@ function updateMenu(): void {
 }
 
 async function copyRepairInstructions(): Promise<void> {
-  let instructions = `Moco 数据目录：${dataDir}`;
+  let instructions = `Kulo 数据目录：${dataDir}`;
   try { instructions = await (recovery ?? new RecoveryManager(dataDir)).repairInstructions(); }
   catch { instructions += "\n恢复索引无法读取，请使用独立入口检查。"; }
-  const launcher = app.isPackaged ? path.join(process.resourcesPath, "runtime/moco-rescue") : undefined;
+  const launcher = app.isPackaged ? path.join(process.resourcesPath, "runtime/kulo-rescue") : undefined;
   clipboard.writeText(`${instructions}${launcher ? `\n独立救援入口：${launcher}` : ""}`);
 }
 
@@ -313,8 +313,8 @@ async function startServices(mode: DevelopmentMode | undefined): Promise<void> {
   await stopServices();
   if (quitting) return;
   const appDir = app.getAppPath();
-  const nodePath = app.isPackaged ? path.join(process.resourcesPath, "runtime/node") : process.env.MOCO_DESKTOP_NODE_PATH;
-  if (!nodePath || !path.isAbsolute(nodePath)) throw new Error("未找到 Moco 自带的 Node 运行环境。");
+  const nodePath = app.isPackaged ? path.join(process.resourcesPath, "runtime/node") : process.env.KULO_DESKTOP_NODE_PATH;
+  if (!nodePath || !path.isAbsolute(nodePath)) throw new Error("未找到 Kulo 自带的 Node 运行环境。");
   fs.accessSync(nodePath, fs.constants.X_OK);
   if (app.isPackaged && !mode && !recovery) {
     const manifest = readReleaseIdentity(appDir);
@@ -356,7 +356,7 @@ async function startServices(mode: DevelopmentMode | undefined): Promise<void> {
   if (mode) {
     const server = startNodeService<string>({
       nodePath, entry: path.join(mode.root, "packages/desktop/scripts/dev-server.mjs"), cwd: dataDir,
-      env: { ...env, MOCO_DESKTOP_DEV_ROOT: mode.root, MOCO_DESKTOP_HUB_URL: ready.url },
+      env: { ...env, KULO_DESKTOP_DEV_ROOT: mode.root, KULO_DESKTOP_HUB_URL: ready.url },
       validateReady: (message) => {
         if (!message || typeof message !== "object" || (message as { type?: unknown }).type !== "ready") return;
         return localHttpOrigin((message as { url?: unknown }).url);
@@ -380,7 +380,7 @@ async function startServices(mode: DevelopmentMode | undefined): Promise<void> {
   if (service.child.exitCode !== null || service.child.signalCode !== null) throw new Error("后台服务在界面就绪前退出。");
   if (launchAttempt && recovery) await recovery.markReady(launchAttempt.attemptId);
   if (startupFailure) throw startupFailure;
-  created.setTitle(mode ? "Moco Dev · 开发模式" : DESKTOP_APP_NAME);
+  created.setTitle(mode ? "Kulo Dev · 开发模式" : DESKTOP_APP_NAME);
   focusWindow();
   updateMenu();
   const status = { pid: process.pid, mode: mode ? "development" : "installed", hubOrigin: ready.url, rendererOrigin: uiOrigin,
@@ -388,7 +388,7 @@ async function startServices(mode: DevelopmentMode | undefined): Promise<void> {
   writePrivateJson(path.join(dataDir, "desktop-status.json"), status);
   if (mode) writePrivateJson(path.join(mode.controlDir, "ready.json"), status);
   booting = false;
-  log(`Moco Dev 已启动（${status.mode}）。`);
+  log(`Kulo Dev 已启动（${status.mode}）。`);
 }
 
 async function recover(message: string): Promise<void> {
@@ -405,7 +405,7 @@ async function recover(message: string): Promise<void> {
 async function showRecoveryDialog(): Promise<void> {
   if (recoveryDialog || quitting) return;
   recoveryDialog = true;
-  const result = await dialog.showMessageBox({ type: "error", title: DESKTOP_APP_NAME, message: "Moco 暂时无法启动。",
+  const result = await dialog.showMessageBox({ type: "error", title: DESKTOP_APP_NAME, message: "Kulo 暂时无法启动。",
     buttons: ["重试修复", "复制修复信息", "退出"], defaultId: 0, cancelId: 2 });
   recoveryDialog = false;
   if (result.response === 0) requestStart(development);
@@ -439,7 +439,7 @@ function requestStart(mode: DevelopmentMode | undefined, failure?: { attemptId: 
     catch (error) {
       booting = false;
       await stopServices().catch((cause: unknown) => log(cause instanceof Error ? cause.message : "后台关闭失败。"));
-      const message = error instanceof Error ? error.message : "Moco 启动失败。";
+      const message = error instanceof Error ? error.message : "Kulo 启动失败。";
       log(message);
       if (!quitting) await showRecoveryDialog();
     } finally {
@@ -451,12 +451,12 @@ function requestStart(mode: DevelopmentMode | undefined, failure?: { attemptId: 
 const lock = app.requestSingleInstanceLock();
 if (!lock) {
   app.quit();
-} else if (process.argv.includes("--moco-quit")) {
+} else if (process.argv.includes("--kulo-quit")) {
   app.quit();
 } else {
   writePrivateJson(path.join(dataDir, "desktop-status.json"), { pid: process.pid, mode: "starting" });
   app.on("second-instance", (_event, args) => {
-    if (args.includes("--moco-quit")) { app.quit(); return; }
+    if (args.includes("--kulo-quit")) { app.quit(); return; }
     try {
       const mode = parseDevelopmentMode(args);
       if (mode) requestStart(mode);
@@ -482,7 +482,7 @@ if (!lock) {
     configureSession();
     configureFileActions();
     configureDesktopSystemPermissionHandlers({ ipc: ipcMain, permissions: systemPermissions, owner: () => window, rendererOrigin: () => rendererOrigin });
-    app.setAboutPanelOptions({ applicationName: DESKTOP_APP_NAME, applicationVersion: app.getVersion(), copyright: "Moco" });
+    app.setAboutPanelOptions({ applicationName: DESKTOP_APP_NAME, applicationVersion: app.getVersion(), copyright: "Kulo" });
     updateMenu();
     requestStart(parseDevelopmentMode(process.argv));
   }).catch((error: unknown) => {

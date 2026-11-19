@@ -236,7 +236,7 @@ function recordedExecutions(controlRoot: string): Array<{ directory: string; sco
   if (!fs.existsSync(controlRoot)) return [];
   const records: Array<{ directory: string; scope: RecordedExecution }> = [];
   for (const entry of fs.readdirSync(controlRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !entry.name.startsWith("moco-worker-control-")) continue;
+    if (!entry.isDirectory() || !entry.name.startsWith("kulo-worker-control-")) continue;
     const directory = path.join(controlRoot, entry.name);
     const owner = path.join(directory, "owner.json");
     if (!fs.existsSync(owner)) continue;
@@ -275,7 +275,7 @@ export async function cleanupRecordedExecutions(controlRoot: string, select?: { 
     }
     if (await cleanSupervisedExecution(directory)) { pending = true; continue; }
     // Receipts may only name the temporary workspace created by createWorkerSandbox.
-    if (path.basename(scope.temporaryDir).startsWith("moco-worker-") && !scope.workspaceDir.startsWith(`${scope.temporaryDir}${path.sep}`) && scope.workspaceDir !== scope.temporaryDir) {
+    if (path.basename(scope.temporaryDir).startsWith("kulo-worker-") && !scope.workspaceDir.startsWith(`${scope.temporaryDir}${path.sep}`) && scope.workspaceDir !== scope.temporaryDir) {
       fs.rmSync(scope.temporaryDir, { recursive: true, force: true });
     }
     fs.rmSync(directory, { recursive: true, force: true });

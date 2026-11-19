@@ -1,13 +1,13 @@
-import type { MocoDurableState, MocoHub } from "@moco/hub";
+import type { KuloDurableState, KuloHub } from "@kulo/hub";
 
-export function traceTicketTransitions(hub: MocoHub, ticketId: string) {
+export function traceTicketTransitions(hub: KuloHub, ticketId: string) {
   const events: unknown[] = [];
   let workerConversationId: number | undefined;
   const observation = hub.harness.observeCommits({
     advance(publication) {
       for (const change of publication.changes) {
-        if (change.type === "document" && change.kind === "change" && change.record.kind === "moco.state") {
-          const state = change.value as unknown as MocoDurableState;
+        if (change.type === "document" && change.kind === "change" && change.record.kind === "kulo.state") {
+          const state = change.value as unknown as KuloDurableState;
           const ticket = state.tickets[ticketId];
           if (!ticket) continue;
           workerConversationId = ticket.workerConversationId;

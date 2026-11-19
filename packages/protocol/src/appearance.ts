@@ -131,6 +131,6 @@ export function validateAppearanceCustomization(input: unknown, base: Appearance
 export function appearanceCustomizationVariables(customization: AppearanceCustomization, mode: "light" | "dark"): Record<string, string> {
   const variables: Record<string, string> = {};
   if (!customization.useDefaultColors) for (const key of COLORS) variables[APPEARANCE_COLOR_TOKENS[key]] = customization.palettes[mode][key];
-  for (const role of FONT_ROLES) variables[`--moco-${role}-font`] = appearanceFontStack(customization.fonts[role], role);
+  for (const role of FONT_ROLES) variables[`--kulo-${role}-font`] = appearanceFontStack(customization.fonts[role], role);
   return variables;
 }

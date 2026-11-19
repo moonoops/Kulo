@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { ProviderModelItem } from "@moco/protocol";
+import type { ProviderModelItem } from "@kulo/protocol";
 import { AddedModelsPane, AvailableModelsPane, buildManualModelConfig } from "./api-model-list";
 import { toProviderModelItem } from "./settings-helpers";
 
@@ -43,7 +43,7 @@ describe("available model refresh", () => {
   it("keeps the last fetched models visible when a refresh fails", () => {
     const html = render({ error: "目录读取失败" });
     expect(html).toContain("目录读取失败");
-    expect(html).toContain("moco-model-pane-footer");
+    expect(html).toContain("kulo-model-pane-footer");
     expect(html).toContain('role="alert"');
     expect(html.indexOf('role="alert"')).toBeGreaterThan(html.indexOf('aria-label="可用模型列表"'));
     expect(html).toContain('aria-label="可用模型列表"');

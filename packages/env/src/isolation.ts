@@ -357,7 +357,7 @@ export function buildWorkerSandboxProfile(options: {
       '(allow network-outbound (remote ip "localhost:*"))',
     ] : []),
     '(deny network-outbound (remote unix-socket (regex #"^/private/tmp/com[.]apple[.]launchd[.][^/]+/Listeners$")))',
-    '(deny mach-lookup (global-name-regex #"^moco[.](worker|customization|unowned)[.]"))',
+    '(deny mach-lookup (global-name-regex #"^kulo[.](worker|customization|unowned)[.]"))',
     ...(options.sandboxIdentity ? [
       `(allow mach-lookup (global-name ${quoted(options.sandboxIdentity.marker)}))`,
       `(deny mach-lookup (global-name ${quoted(options.sandboxIdentity.negative)}))`,
@@ -393,10 +393,10 @@ export function createWorkerSandbox(options: WorkerSandboxOptions): WorkerSandbo
   buildWorkerSandboxProfile({ writablePaths: [...projectWritable, ...(scratchDir ? [scratchDir] : [])], readOnlyPaths: projectReadOnly, executable, protectedPaths, writeDeniedPaths, workspaceRoot: options.workspaceRoot, managedScratchRoot: options.managedScratchRoot, network: options.network });
   fs.mkdirSync(workspaceDir, { recursive: true });
   if (scratchDir) fs.mkdirSync(scratchDir, { recursive: true });
-  const temporaryDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "moco-worker-")));
+  const temporaryDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kulo-worker-")));
   const controlRoot = options.controlRoot ?? os.tmpdir();
   fs.mkdirSync(controlRoot, { recursive: true, mode: 0o700 });
-  const controlDir = fs.realpathSync(fs.mkdtempSync(path.join(controlRoot, "moco-worker-control-")));
+  const controlDir = fs.realpathSync(fs.mkdtempSync(path.join(controlRoot, "kulo-worker-control-")));
   fs.chmodSync(controlDir, 0o700);
   fs.writeFileSync(path.join(controlDir, "owner.json"), JSON.stringify({ ownerPid: process.pid, ownerIdentity: processFingerprint(process.pid), workspaceDir, scratchDir, projectId: options.projectId, temporaryDir, cleanupModel: process.platform === "darwin" ? "macos-seatbelt" : "os-container" }), { mode: 0o600 });
   const homeDir = path.join(temporaryDir, "home");
@@ -406,7 +406,7 @@ export function createWorkerSandbox(options: WorkerSandboxOptions): WorkerSandbo
   const port = allocateWorkerPort();
   let innerCommand: readonly string[] | undefined;
   try {
-    const sandboxIdentity = process.platform === "darwin" ? { marker: `moco.worker.${randomBytes(24).toString("hex")}`, negative: `moco.unowned.${randomBytes(24).toString("hex")}` } : undefined;
+    const sandboxIdentity = process.platform === "darwin" ? { marker: `kulo.worker.${randomBytes(24).toString("hex")}`, negative: `kulo.unowned.${randomBytes(24).toString("hex")}` } : undefined;
     const sandboxCleanup = sandboxIdentity ? createMacSandboxCleanupCommand(controlDir, sandboxIdentity.marker, sandboxIdentity.negative) : undefined;
     const network: WorkerNetworkPolicy = {
       localConnectPorts: [...(options.network?.localConnectPorts ?? []), port],
@@ -454,7 +454,7 @@ export function createWorkerSandbox(options: WorkerSandboxOptions): WorkerSandbo
       port,
       command: supervisedCommand(innerCommand, controlDir, sandboxCleanup),
       cleanup,
-      close: () => { void cleanup().catch((error: unknown) => console.error("[MocoEnv:cleanup]", error instanceof Error ? error.message : "Worker cleanup failed")); },
+      close: () => { void cleanup().catch((error: unknown) => console.error("[KuloEnv:cleanup]", error instanceof Error ? error.message : "Worker cleanup failed")); },
     };
   } catch (error) {
     allocatedPorts.delete(port);

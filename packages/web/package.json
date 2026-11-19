@@ -1,6 +1,6 @@
 {
-  "name": "@moco/web",
-  "version": "0.1.1",
+  "name": "@kulo/web",
+  "version": "0.1.2",
   "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
@@ -15,7 +15,7 @@
     "@internationalized/date": "3.12.4",
     "@json-render/core": "0.23.1",
     "@json-render/react": "0.23.1",
-    "@moco/protocol": "workspace:*",
+    "@kulo/protocol": "workspace:*",
     "@react-aria/ssr": "3.10.1",
     "@react-aria/utils": "3.34.1",
     "pdfjs-dist": "6.5.438",

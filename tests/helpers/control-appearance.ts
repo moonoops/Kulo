@@ -45,7 +45,7 @@ function appearanceUtility(token: string): boolean {
   const name = utility(token);
   return /^(?:bg-|rounded(?:-|$)|border(?:-|$)|shadow(?:-|$)|inset-shadow(?:-|$)|ring(?:-|$)|outline-(?:none|0)$)/.test(name)
     || /^text-(?:foreground|muted|accent|default|danger|success|warning|white|black|inherit|transparent|current|(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d+)(?:\/|$)/.test(name)
-    || /^\[(?:--(?:(?:button|field|switch|moco-control)[\w-]*|(?:default|accent)(?:-[\w-]+)?|foreground|background|radius-field|border-width-field)|background(?:-color|-image)?|color|border[\w-]*|box-shadow)\s*:/.test(name);
+    || /^\[(?:--(?:(?:button|field|switch|kulo-control)[\w-]*|(?:default|accent)(?:-[\w-]+)?|foreground|background|radius-field|border-width-field)|background(?:-color|-image)?|color|border[\w-]*|box-shadow)\s*:/.test(name);
 }
 
 function literalStrings(node: ts.Node | undefined, file: ts.SourceFile, seen = new Set<ts.Node>()): string[] {
@@ -61,7 +61,7 @@ function literalStrings(node: ts.Node | undefined, file: ts.SourceFile, seen = n
   return [];
 }
 
-const inlineAppearance = /^(?:background(?:Color|Image)?|color|border(?:Top|Right|Bottom|Left)?(?:Color|Width|Style|Radius)?|border(?:Top|Bottom)(?:Left|Right)Radius|boxShadow|--(?:(?:button|field|switch|moco-control)[\w-]*|(?:default|accent)(?:-[\w-]+)?|foreground|background|radius-field|border-width-field))$/;
+const inlineAppearance = /^(?:background(?:Color|Image)?|color|border(?:Top|Right|Bottom|Left)?(?:Color|Width|Style|Radius)?|border(?:Top|Bottom)(?:Left|Right)Radius|boxShadow|--(?:(?:button|field|switch|kulo-control)[\w-]*|(?:default|accent)(?:-[\w-]+)?|foreground|background|radius-field|border-width-field))$/;
 
 export function auditJsxControlAppearance(source: string, fileName: string): { violations: string[]; controlClasses: Set<string> } {
   const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -90,7 +90,7 @@ export function auditJsxControlAppearance(source: string, fileName: string): { v
         const tokens = literalStrings(attribute(node, "className")?.initializer, file).flatMap((value) => value.split(/\s+/)).filter(Boolean);
         for (const token of tokens) if (/^[a-zA-Z_][\w-]*$/.test(token)) controlClasses.add(token);
         const domainEditor = fileName.replaceAll("\\", "/") === "packages/web/src/identity-document-editor.tsx"
-          && root === "TextArea" && !member && tokens.includes("moco-identity-textarea");
+          && root === "TextArea" && !member && tokens.includes("kulo-identity-textarea");
         const forced = tokens.filter((token) => appearanceUtility(token)
           && !(domainEditor && ["bg-transparent", "border-0", "shadow-none"].includes(token)));
         if (forced.length) report(node, `must use the shared control appearance; found ${[...new Set(forced)].join(", ")}.`);
@@ -117,15 +117,15 @@ export function auditJsxControlAppearance(source: string, fileName: string): { v
   return { violations, controlClasses };
 }
 
-const visualDeclaration = /^(?:background(?:-color|-image)?|color|border(?:-(?:top|right|bottom|left))?(?:-(?:color|width|style|radius))?|border-(?:top|bottom)-(?:left|right)-radius|box-shadow|--(?:(?:button|field|switch|moco-control)[\w-]*|(?:default|accent)(?:-[\w-]+)?|foreground|background|radius-field|border-width-field))$/;
+const visualDeclaration = /^(?:background(?:-color|-image)?|color|border(?:-(?:top|right|bottom|left))?(?:-(?:color|width|style|radius))?|border-(?:top|bottom)-(?:left|right)-radius|box-shadow|--(?:(?:button|field|switch|kulo-control)[\w-]*|(?:default|accent)(?:-[\w-]+)?|foreground|background|radius-field|border-width-field))$/;
 
 const domainSurfaces: Record<string, { file: string; properties: ReadonlySet<string> }> = {
-  "moco-composer-input": { file: "features/chat/composer-media.css", properties: new Set(["border", "border-radius", "background", "box-shadow"]) },
-  "moco-composer-thumbnail": { file: "features/chat/composer-media.css", properties: new Set(["border-radius"]) },
-  "moco-chat-image-trigger": { file: "features/chat/chat-content.css", properties: new Set(["border", "border-radius", "background", "box-shadow"]) },
-  "moco-voice-bubble": { file: "features/chat/voice-message.css", properties: new Set(["border-radius"]) },
-  "moco-task-card-button": { file: "features/tasks/task-rail.css", properties: new Set(["border-radius", "background"]) },
-  "moco-chat-outline-step": { file: "features/chat/conversation-outline.css", properties: new Set(["border-radius", "background"]) },
+  "kulo-composer-input": { file: "features/chat/composer-media.css", properties: new Set(["border", "border-radius", "background", "box-shadow"]) },
+  "kulo-composer-thumbnail": { file: "features/chat/composer-media.css", properties: new Set(["border-radius"]) },
+  "kulo-chat-image-trigger": { file: "features/chat/chat-content.css", properties: new Set(["border", "border-radius", "background", "box-shadow"]) },
+  "kulo-voice-bubble": { file: "features/chat/voice-message.css", properties: new Set(["border-radius"]) },
+  "kulo-task-card-button": { file: "features/tasks/task-rail.css", properties: new Set(["border-radius", "background"]) },
+  "kulo-chat-outline-step": { file: "features/chat/conversation-outline.css", properties: new Set(["border-radius", "background"]) },
 };
 
 function selectorParts(selector: string): string[] {
@@ -176,7 +176,7 @@ export function auditCssControlAppearance(source: string, fileName: string, cont
     const forced = [...body.matchAll(/(?:^|;)\s*([\w-]+)\s*:\s*([^;{}]+)/g)]
       .filter((match) => visualDeclaration.test(match[1]!) && !domainProperty(match[1]!)).map((match) => match[1]!);
     for (const apply of body.matchAll(/@apply\s+([^;]+);/g)) forced.push(...apply[1]!.split(/\s+/).filter(appearanceUtility));
-    if (forced.length) violations.push(`${fileName}:${clean.slice(0, rule.index).split("\n").length} ${selector} must leave ${[...new Set(forced)].join(", ")} to moco-controls.css.`);
+    if (forced.length) violations.push(`${fileName}:${clean.slice(0, rule.index).split("\n").length} ${selector} must leave ${[...new Set(forced)].join(", ")} to kulo-controls.css.`);
   }
   return violations;
 }
@@ -187,10 +187,10 @@ export function auditControlContractSafety(source: string): string[] {
   const violations: string[] = [];
   for (const rule of clean.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const selector = rule[1]!.trim();
-    for (const part of selectorParts(selector)) if (!/^\.moco-ui(?=[\s.:#[>+~]|$)/.test(part)) violations.push(`Unscoped control contract: ${part}`);
+    for (const part of selectorParts(selector)) if (!/^\.kulo-ui(?=[\s.:#[>+~]|$)/.test(part)) violations.push(`Unscoped control contract: ${part}`);
     for (const declaration of rule[2]!.matchAll(/(?:^|;)\s*([\w-]+)\s*:\s*([^;{}]+)/g)) {
       const [, property, value] = declaration;
-      if (/^--accent(?:-|$)/.test(property!) && selectorParts(selector).some((part) => part === ".moco-ui")) violations.push("Control appearance must not recolor the root accent");
+      if (/^--accent(?:-|$)/.test(property!) && selectorParts(selector).some((part) => part === ".kulo-ui")) violations.push("Control appearance must not recolor the root accent");
       if (/^(?:--focus|--danger(?:-|$)|--success(?:-|$)|--warning(?:-|$)|--tw-ring[\w-]*|outline(?:-|$)|animation(?:-|$)|transition(?:-|$)|transform|translate|opacity|pointer-events)/.test(property!)) {
         violations.push(`Control appearance must preserve library state/motion: ${property}`);
       }
@@ -208,7 +208,7 @@ export function auditHeroUiControlSlots(source: string, installedStyles: string)
   for (const rule of clean.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     for (const match of rule[1]!.matchAll(/\.([a-zA-Z_][\w-]*)/g)) {
       const name = match[1]!;
-      if (!name.startsWith("moco-") && !known.has(name)) unknown.add(name);
+      if (!name.startsWith("kulo-") && !known.has(name)) unknown.add(name);
     }
   }
   return [...unknown].map((name) => `.${name} is not an installed HeroUI styling slot`);

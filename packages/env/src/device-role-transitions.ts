@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { DeviceChatInvitation, DevicePeerConfig, DeviceRoleTransition } from "@moco/protocol";
+import type { DeviceChatInvitation, DevicePeerConfig, DeviceRoleTransition } from "@kulo/protocol";
 import { activateStagedPeer, authenticatedPeerHub, detachActivePeer, getPeerConfigPath, invalidDeviceInvitation, pairingFingerprint, stageDevicePeer, stagedPeerForAction } from "./peer-config.js";
 
 export interface PreparedDeviceRoleChange {
@@ -96,7 +96,7 @@ export class DeviceRoleTransitions {
     if (!restore) throw new Error("未能切换运行模式，请检查本机服务后重试。");
     try { return await restore(); }
     catch {
-      const failure = new Error("运行服务未能恢复，请重新打开 Moco。");
+      const failure = new Error("运行服务未能恢复，请重新打开 Kulo。");
       this.#runtime.onRecoveryFailure?.(failure);
       throw failure;
     }

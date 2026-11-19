@@ -1,4 +1,4 @@
-import { redactSensitiveText, UiActionInputSchema, UiValuesSchema, type UiActionInput, type UiCardSnapshot } from "@moco/protocol";
+import { redactSensitiveText, UiActionInputSchema, UiValuesSchema, type UiActionInput, type UiCardSnapshot } from "@kulo/protocol";
 
 export type CardValues = UiActionInput["values"];
 
@@ -23,7 +23,7 @@ export interface DraftReadResult {
 const sessionDrafts = new Map<string, CardDraft>();
 
 function storageKey(cardId: string): string {
-  return `moco:ui-card-draft:v1:${cardId}`;
+  return `kulo:ui-card-draft:v1:${cardId}`;
 }
 
 export function cardInitialValues(card: UiCardSnapshot): CardValues {

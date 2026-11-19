@@ -1,10 +1,10 @@
 import { useRef, useState } from "react";
 import { Alert, Button, Chip, Dropdown, Label, Modal, Skeleton, Spinner, Table, TextArea, TextField } from "@heroui/react";
-import { DEFAULT_IMAGE_TEST_PROMPT, redactSensitiveText, type CapabilitiesWorkspaceSnapshot, type CapabilityRecord, type MediaJob, type SettingsAssistantContext } from "@moco/protocol";
-import { mocoRest } from "../../moco-api";
-import { useI18n } from "../../moco-i18n";
+import { DEFAULT_IMAGE_TEST_PROMPT, redactSensitiveText, type CapabilitiesWorkspaceSnapshot, type CapabilityRecord, type MediaJob, type SettingsAssistantContext } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
+import { useI18n } from "../../kulo-i18n";
 import { ConfirmDialog } from "../../components/confirm-dialog";
-import { AttachmentLightbox, type PreviewableImage } from "../../moco-composer";
+import { AttachmentLightbox, type PreviewableImage } from "../../kulo-composer";
 import { MediaMessage } from "../chat/media-message";
 import { imageActionError, imageCommandId } from "./image-provider-picker";
 import { ADD_IMAGE_PROMPT, IMAGE_ROUTING_PROMPT, capabilityStatusColor, capabilityStatusLabel } from "./capability-views";
@@ -54,8 +54,8 @@ export function ImageTestModal({
               <Modal.Heading>{t(`试生成 · ${capability.name}`, `Test · ${capability.name}`)}</Modal.Heading>
               <Modal.CloseTrigger aria-label={t("关闭", "Close")} isDisabled={submitting} />
             </Modal.Header>
-            <Modal.Body className="moco-form-stack">
-              <TextField className="moco-form-field" variant="secondary" fullWidth value={prompt} onChange={onPromptChange} isDisabled={submitting || running}>
+            <Modal.Body className="kulo-form-stack">
+              <TextField className="kulo-form-field" variant="secondary" fullWidth value={prompt} onChange={onPromptChange} isDisabled={submitting || running}>
                 <Label>{t("提示词", "Prompt")}</Label>
                 <TextArea className="scrollbar min-h-24" rows={3} />
               </TextField>
@@ -118,7 +118,7 @@ export function ImageCapabilitiesPanel({ workspace, clientId, connected, disable
     if (!removeTarget) return;
     const chosen = removeTarget;
     await execute(`remove:${chosen.id}`, async () => {
-      await mocoRest.deleteImageCapability(chosen.id, chosen.revision, imageCommandId("remove"));
+      await kuloRest.deleteImageCapability(chosen.id, chosen.revision, imageCommandId("remove"));
       setRemoveTarget(undefined);
       requestAnimationFrame(() => (manageButtons.current.get(chosen.id) ?? addButton.current)?.focus());
     });
@@ -151,7 +151,7 @@ export function ImageCapabilitiesPanel({ workspace, clientId, connected, disable
     setTestError(undefined);
     try {
       const trimmed = testPrompt.trim();
-      const job = await mocoRest.testImageCapability(activeTestCapability.id, {
+      const job = await kuloRest.testImageCapability(activeTestCapability.id, {
         clientId,
         commandId: imageCommandId("test"),
         ...(trimmed ? { prompt: trimmed } : {}),
@@ -169,21 +169,21 @@ export function ImageCapabilitiesPanel({ workspace, clientId, connected, disable
   return <div className="flex min-w-0 flex-col gap-6">
     <SettingsSection title={t("图像模型", "Image models")} action={<div className="flex items-center gap-2">{onOpenModels && <Button variant="ghost" size="sm" isDisabled={blocked} onPress={onOpenModels}>{t("模型设置", "Model settings")}</Button>}<Button ref={addButton} variant="secondary" size="sm" isDisabled={blocked} onPress={() => onRequest(undefined, ADD_IMAGE_PROMPT)}>{t("添加图像模型", "Add image model")}</Button></div>}>
       {actionError && <Alert status="danger"><Alert.Content><Alert.Description>{actionError}</Alert.Description></Alert.Content></Alert>}
-      <Table variant="secondary" className="moco-settings-table moco-capabilities-table"><Table.ScrollContainer className="moco-settings-table-scroll"><Table.Content aria-label={t("图像模型列表", "Image models")} selectionMode="none" keyboardNavigationBehavior="tab" className="moco-settings-table-content">
-        <Table.Header><Table.Column id="model" isRowHeader className="moco-settings-table-column">{t("模型", "Model")}</Table.Column><Table.Column id="connection" className="moco-settings-table-column">{t("服务连接", "Connection")}</Table.Column><Table.Column id="capabilities" className="moco-settings-table-column">{t("能力", "Capabilities")}</Table.Column><Table.Column id="status" className="moco-settings-table-column whitespace-nowrap">{t("状态", "Status")}</Table.Column><Table.Column id="actions" className="moco-settings-table-column moco-settings-table-actions">{t("操作", "Actions")}</Table.Column></Table.Header>
-        <Table.Body renderEmptyState={() => <div className="moco-table-empty-state">{workspace ? t("尚未添加图像模型", "No image models added") : error || !connected ? t("暂时无法读取", "Unable to load") : loading ? <span role="status" aria-label={t("加载中", "Loading")} className="flex gap-4"><Skeleton animationType="none" className="h-3 w-32" /><Skeleton animationType="none" className="h-3 w-16" /></span> : t("等待连接", "Waiting for connection")}</div>}>
+      <Table variant="secondary" className="kulo-settings-table kulo-capabilities-table"><Table.ScrollContainer className="kulo-settings-table-scroll"><Table.Content aria-label={t("图像模型列表", "Image models")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content">
+        <Table.Header><Table.Column id="model" isRowHeader className="kulo-settings-table-column">{t("模型", "Model")}</Table.Column><Table.Column id="connection" className="kulo-settings-table-column">{t("服务连接", "Connection")}</Table.Column><Table.Column id="capabilities" className="kulo-settings-table-column">{t("能力", "Capabilities")}</Table.Column><Table.Column id="status" className="kulo-settings-table-column whitespace-nowrap">{t("状态", "Status")}</Table.Column><Table.Column id="actions" className="kulo-settings-table-column kulo-settings-table-actions">{t("操作", "Actions")}</Table.Column></Table.Header>
+        <Table.Body renderEmptyState={() => <div className="kulo-table-empty-state">{workspace ? t("尚未添加图像模型", "No image models added") : error || !connected ? t("暂时无法读取", "Unable to load") : loading ? <span role="status" aria-label={t("加载中", "Loading")} className="flex gap-4"><Skeleton animationType="none" className="h-3 w-32" /><Skeleton animationType="none" className="h-3 w-16" /></span> : t("等待连接", "Waiting for connection")}</div>}>
           {records.map((capability) => {
             const connection = workspace?.connections.find((item) => item.id === capability.connectionId);
             const selected = target?.kind === "capability" && target.id === capability.id;
-            return <Table.Row key={capability.id} id={capability.id} textValue={capability.name}><Table.Cell className="moco-settings-table-cell"><div className="flex min-w-0 flex-col items-start gap-1"><div className="flex flex-wrap items-center gap-2"><span className="moco-item-title break-words">{capability.name}</span>{capability.isDefault && <Chip size="sm" variant="soft" color="accent">{t("默认", "Default")}</Chip>}</div><span className="moco-item-description break-words">{capability.modelId}</span>{capability.error && <p role="status" className="break-words text-xs text-danger">{imageActionError(new Error(capability.error))}</p>}</div></Table.Cell>
-              <Table.Cell className="moco-settings-table-cell"><span className="text-sm">{workspace?.imageSetup?.providers.find((provider) => provider.id === connection?.credentialProviderId)?.name ?? connection?.name ?? "—"}</span></Table.Cell>
-              <Table.Cell className="moco-settings-table-cell"><div className="flex flex-wrap gap-1"><Chip size="sm" variant="tertiary">{t("生图", "Generate")}</Chip>{capability.supportsEdit && <Chip size="sm" variant="tertiary">{t("编辑", "Edit")}</Chip>}{capability.formats.map((format) => <Chip key={format} size="sm" variant="tertiary">{format.toUpperCase()}</Chip>)}</div></Table.Cell>
-              <Table.Cell className="moco-settings-table-cell whitespace-nowrap"><Chip size="sm" variant="soft" className="shrink-0 whitespace-nowrap" color={capabilityStatusColor(capability)}>{capabilityStatusLabel(capability)}</Chip></Table.Cell>
-              <Table.Cell className="moco-settings-table-cell moco-settings-table-actions"><div className="moco-settings-table-action-group"><Button ref={(node) => { if (node) manageButtons.current.set(capability.id, node); else manageButtons.current.delete(capability.id); }} variant={selected ? "secondary" : "ghost"} size="sm" aria-label={t(`管理${capability.name}`, `Manage ${capability.name}`)} aria-pressed={selected} isDisabled={blocked} onPress={() => onRequest({ kind: "capability", id: capability.id })}>{t("管理", "Manage")}</Button><Dropdown><Button variant="ghost" size="sm" aria-label={t(`${capability.name}的更多操作`, `More actions for ${capability.name}`)} isDisabled={blocked}>{t("更多", "More")}</Button><Dropdown.Popover><Dropdown.Menu aria-label={t(`${capability.name}的操作`, `Actions for ${capability.name}`)} onAction={(key) => {
+            return <Table.Row key={capability.id} id={capability.id} textValue={capability.name}><Table.Cell className="kulo-settings-table-cell"><div className="flex min-w-0 flex-col items-start gap-1"><div className="flex flex-wrap items-center gap-2"><span className="kulo-item-title break-words">{capability.name}</span>{capability.isDefault && <Chip size="sm" variant="soft" color="accent">{t("默认", "Default")}</Chip>}</div><span className="kulo-item-description break-words">{capability.modelId}</span>{capability.error && <p role="status" className="break-words text-xs text-danger">{imageActionError(new Error(capability.error))}</p>}</div></Table.Cell>
+              <Table.Cell className="kulo-settings-table-cell"><span className="text-sm">{workspace?.imageSetup?.providers.find((provider) => provider.id === connection?.credentialProviderId)?.name ?? connection?.name ?? "—"}</span></Table.Cell>
+              <Table.Cell className="kulo-settings-table-cell"><div className="flex flex-wrap gap-1"><Chip size="sm" variant="tertiary">{t("生图", "Generate")}</Chip>{capability.supportsEdit && <Chip size="sm" variant="tertiary">{t("编辑", "Edit")}</Chip>}{capability.formats.map((format) => <Chip key={format} size="sm" variant="tertiary">{format.toUpperCase()}</Chip>)}</div></Table.Cell>
+              <Table.Cell className="kulo-settings-table-cell whitespace-nowrap"><Chip size="sm" variant="soft" className="shrink-0 whitespace-nowrap" color={capabilityStatusColor(capability)}>{capabilityStatusLabel(capability)}</Chip></Table.Cell>
+              <Table.Cell className="kulo-settings-table-cell kulo-settings-table-actions"><div className="kulo-settings-table-action-group"><Button ref={(node) => { if (node) manageButtons.current.set(capability.id, node); else manageButtons.current.delete(capability.id); }} variant={selected ? "secondary" : "ghost"} size="sm" aria-label={t(`管理${capability.name}`, `Manage ${capability.name}`)} aria-pressed={selected} isDisabled={blocked} onPress={() => onRequest({ kind: "capability", id: capability.id })}>{t("管理", "Manage")}</Button><Dropdown><Button variant="ghost" size="sm" aria-label={t(`${capability.name}的更多操作`, `More actions for ${capability.name}`)} isDisabled={blocked}>{t("更多", "More")}</Button><Dropdown.Popover><Dropdown.Menu aria-label={t(`${capability.name}的操作`, `Actions for ${capability.name}`)} onAction={(key) => {
                 if (key === "test") openTest(capability);
-                if (key === "approve") void execute(`approve:${capability.id}`, () => mocoRest.patchImageCapability(capability.id, { allowTaskGeneration: !capability.allowTaskGeneration, expectedRevision: capability.revision, commandId: imageCommandId("approve") }));
-                if (key === "default") void execute(`default:${capability.id}`, () => mocoRest.patchImageCapability(capability.id, { isDefault: true, expectedRevision: capability.revision, commandId: imageCommandId("default") }));
-                if (key === "toggle") void execute(`toggle:${capability.id}`, () => mocoRest.patchImageCapability(capability.id, { enabled: !capability.enabled, expectedRevision: capability.revision, commandId: imageCommandId("toggle") }));
+                if (key === "approve") void execute(`approve:${capability.id}`, () => kuloRest.patchImageCapability(capability.id, { allowTaskGeneration: !capability.allowTaskGeneration, expectedRevision: capability.revision, commandId: imageCommandId("approve") }));
+                if (key === "default") void execute(`default:${capability.id}`, () => kuloRest.patchImageCapability(capability.id, { isDefault: true, expectedRevision: capability.revision, commandId: imageCommandId("default") }));
+                if (key === "toggle") void execute(`toggle:${capability.id}`, () => kuloRest.patchImageCapability(capability.id, { enabled: !capability.enabled, expectedRevision: capability.revision, commandId: imageCommandId("toggle") }));
                 if (key === "remove") setRemoveTarget(capability);
               }}><Dropdown.Item id="test" isDisabled={!capability.enabled} textValue={t("试生成", "Test generation")}>{t("试生成", "Test generation")}</Dropdown.Item><Dropdown.Item id="approve" isDisabled={!capability.enabled} textValue={capability.allowTaskGeneration ? t("取消自动生图", "Revoke task generation") : t("允许任务生图", "Allow task generation")}>{capability.allowTaskGeneration ? t("取消自动生图", "Revoke task generation") : t("允许任务生图", "Allow task generation")}</Dropdown.Item><Dropdown.Item id="default" isDisabled={capability.isDefault || !capability.enabled} textValue={t("设为默认", "Set as default")}>{t("设为默认", "Set as default")}</Dropdown.Item><Dropdown.Item id="toggle" textValue={capability.enabled ? t("停用", "Disable") : t("启用", "Enable")}>{capability.enabled ? t("停用", "Disable") : t("启用", "Enable")}</Dropdown.Item><Dropdown.Item id="remove" variant="danger" textValue={t("移除", "Remove")}>{t("移除", "Remove")}</Dropdown.Item></Dropdown.Menu></Dropdown.Popover></Dropdown></div></Table.Cell>
             </Table.Row>;
@@ -193,8 +193,8 @@ export function ImageCapabilitiesPanel({ workspace, clientId, connected, disable
     </SettingsSection>
     {enabledRecords.length > 1 && <SettingsSection title={t("调用规则", "Selection rules")}>
       <SettingsList label={t("图像模型调用规则", "Image model routing")}>
-        <div className="moco-settings-list-row flex-wrap justify-between">
-          <span className="moco-item-title">{workspace?.imageRouting?.mode === "default" ? t("优先使用默认图像模型", "Prefer the default image model") : t("按任务自动选择图像模型", "Choose an image model for each task")}</span>
+        <div className="kulo-settings-list-row flex-wrap justify-between">
+          <span className="kulo-item-title">{workspace?.imageRouting?.mode === "default" ? t("优先使用默认图像模型", "Prefer the default image model") : t("按任务自动选择图像模型", "Choose an image model for each task")}</span>
           <Button size="sm" variant="secondary" isDisabled={blocked} onPress={() => onRequest(undefined, IMAGE_ROUTING_PROMPT)}>{t("修改规则", "Edit rules")}</Button>
         </div>
       </SettingsList>

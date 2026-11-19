@@ -1,16 +1,16 @@
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { obj, oneOf, opt, str } from "@earendil-works/pi-schema";
-import type { CustomizationCaller, MocoCustomizationService } from "./customization.js";
+import type { CustomizationCaller, KuloCustomizationService } from "./customization.js";
 import { CustomizationError } from "./customization-source.js";
 
 export interface CustomizationToolsHost {
-  service: () => MocoCustomizationService | Promise<MocoCustomizationService>;
+  service: () => KuloCustomizationService | Promise<KuloCustomizationService>;
   caller: (api: { conversationId: unknown; callId: string }) => CustomizationCaller | Promise<CustomizationCaller>;
   confirmValidate?: (
     sessionId: string,
     api: { conversationId: unknown; callId: string },
     caller: CustomizationCaller,
-    service: MocoCustomizationService,
+    service: KuloCustomizationService,
   ) => Promise<Record<string, unknown> | undefined>;
 }
 const output = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }] });
@@ -38,11 +38,11 @@ function requestFor(action: string, raw?: string): Record<string, unknown> {
 
 export function createCustomizationToolsExtension(host: CustomizationToolsHost) {
   return defineExtension({
-    name: "moco-customization",
+    name: "kulo-customization",
     tools: [
-      defineTool({ name: "moco_customization",
+      defineTool({ name: "kulo_customization",
         description:
-          "Managed Moco Web UI self-customization (use only when explicitly asked to modify Moco's own UI source; use settings/appearance tools for ordinary preferences). Supports `packages/web/{src,public,test}`: read before writing a candidate, then `validate` to stage for next launch (check `currentReleaseId`/`applicationState` via `status`; never overwrite runtime/credential/recovery paths via shell). `request` JSON: `prepare{summary}`, `read{session_id,path}`, `write{session_id,path,content,expected_revision}`, `validate`/`cancel{session_id}`. 关键词：客户端自改 桌面端界面源码定制 构建预览验证",
+          "Managed Kulo Web UI self-customization (use only when explicitly asked to modify Kulo's own UI source; use settings/appearance tools for ordinary preferences). Supports `packages/web/{src,public,test}`: read before writing a candidate, then `validate` to stage for next launch (check `currentReleaseId`/`applicationState` via `status`; never overwrite runtime/credential/recovery paths via shell). `request` JSON: `prepare{summary}`, `read{session_id,path}`, `write{session_id,path,content,expected_revision}`, `validate`/`cancel{session_id}`. 关键词：客户端自改 桌面端界面源码定制 构建预览验证",
         parameters: obj({ action: oneOf(ACTIONS), request: opt(str()) }),
         deferred: true,
         execute: async ({ action, request }, api) => {
@@ -60,7 +60,7 @@ export function createCustomizationToolsExtension(host: CustomizationToolsHost) 
             case "cancel": return output(await service.cancel(values.session_id as string, caller));
           }
         } }),
-      defineTool({ name: "moco_official_update", description: "Stage an official Moco release update from the host's configured trusted source while preserving validated customizations (takes effect on next launch). 关键词：检查官方更新 升级软件版本 安装新版本", parameters: obj({}), deferred: true, replay: "safe",
+      defineTool({ name: "kulo_official_update", description: "Stage an official Kulo release update from the host's configured trusted source while preserving validated customizations (takes effect on next launch). 关键词：检查官方更新 升级软件版本 安装新版本", parameters: obj({}), deferred: true, replay: "safe",
         execute: async (_args, api) => output(await (await host.service()).installOfficial(undefined, await host.caller(api))) }),
     ],
   });

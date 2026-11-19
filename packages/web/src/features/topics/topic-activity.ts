@@ -1,4 +1,4 @@
-import type { TicketCardView, TopicActivity, TopicSummary } from "@moco/protocol";
+import type { TicketCardView, TopicActivity, TopicSummary } from "@kulo/protocol";
 import { taskIsRecovering } from "../tasks/task-model";
 
 export interface TopicActivityState { running: boolean; queued: boolean; unread: boolean }

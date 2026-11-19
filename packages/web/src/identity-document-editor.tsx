@@ -1,4 +1,4 @@
-import { translate as tr, useI18n } from "./moco-i18n";
+import { translate as tr, useI18n } from "./kulo-i18n";
 /** Identity & relationship document editor: CAS guard, Diff review, Dual-Sign Modal & Rollback. */
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
@@ -12,10 +12,10 @@ import {
   TextArea,
   TextField,
 } from "@heroui/react";
-import type { IdentityFile, IdentityProposal, IdentityRead, IdentityVersion } from "@moco/protocol";
+import type { IdentityFile, IdentityProposal, IdentityRead, IdentityVersion } from "@kulo/protocol";
 import { ConfirmDialog } from "./components/confirm-dialog";
 import { useRegisterShortcutSave } from "./features/shortcuts/shortcuts";
-import { MocoApiError, mocoRest } from "./moco-api";
+import { KuloApiError, kuloRest } from "./kulo-api";
 
 function identityFileLabel(file: IdentityFile): string {
   switch (file) {
@@ -171,7 +171,7 @@ function IdentityConfirmationModal({
               {!busy && <Modal.CloseTrigger aria-label={tr("关闭", "Close")} />}
             </Modal.Header>
 
-            <Modal.Body className="moco-form-stack">
+            <Modal.Body className="kulo-form-stack">
               {active && (
                 <>
                   <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -193,7 +193,7 @@ function IdentityConfirmationModal({
                     </section>
                   </div>
 
-                  <TextField className="moco-form-field"
+                  <TextField className="kulo-form-field"
                     value={summary}
                     onChange={setSummary}
                     maxLength={500}
@@ -270,7 +270,7 @@ export function IdentityDocumentEditor({
   file,
   onDirtyChange,
   onBusyChange,
-  readFile = mocoRest.readIdentityFile,
+  readFile = kuloRest.readIdentityFile,
   directSave = false,
   identityProposal,
   onDismissProposal,
@@ -340,7 +340,7 @@ export function IdentityDocumentEditor({
       } catch (err) {
         if (seq !== reqSeq.current) return;
         setConflict(true);
-        if (err instanceof MocoApiError && err.status === 409) {
+        if (err instanceof KuloApiError && err.status === 409) {
           setError(tr("检测到版本冲突，请重新读取。", "Version conflict detected. Read the file again."));
         } else {
           setError(err instanceof Error ? err.message : tr("读取失败", "Read failed"));
@@ -388,7 +388,7 @@ export function IdentityDocumentEditor({
     if (!read?.lastBackup || loading || busy || conflict) return;
     setBusy(true);
     try {
-      const preview = await mocoRest.readIdentityBackup(file, read.lastBackup.backupId);
+      const preview = await kuloRest.readIdentityBackup(file, read.lastBackup.backupId);
       setError(undefined);
       setReview({
         ...createIdentitySaveReview(read, preview.content),
@@ -408,12 +408,12 @@ export function IdentityDocumentEditor({
     setBusy(true);
     try {
       if (review.backupId) {
-        if (directSave) await mocoRest.rollbackRelationship({
+        if (directSave) await kuloRest.rollbackRelationship({
           expected: review.expected ?? read.version,
           backupId: review.backupId,
           summary,
         });
-        else await mocoRest.rollbackIdentityFile({
+        else await kuloRest.rollbackIdentityFile({
           file,
           expected: review.expected ?? read.version,
           backupId: review.backupId,
@@ -422,7 +422,7 @@ export function IdentityDocumentEditor({
         });
         setNotice(tr("已恢复备份", "Backup restored"));
       } else {
-        await mocoRest.saveIdentityFile({
+        await kuloRest.saveIdentityFile({
           file,
           expected: review.expected ?? read.version,
           content: review.after,
@@ -436,7 +436,7 @@ export function IdentityDocumentEditor({
       await load(false);
       onSaved?.();
     } catch (err) {
-      if (err instanceof MocoApiError && err.status === 409) {
+      if (err instanceof KuloApiError && err.status === 409) {
         setConflict(true);
         setError(tr("文件已被更新，请重新读取。", "File updated. Read it again."));
       } else {
@@ -451,13 +451,13 @@ export function IdentityDocumentEditor({
     if (!read || loading || busy || conflict || tooLarge) return;
     setBusy(true);
     try {
-      await mocoRest.saveRelationship({ expected: read.version, content, summary: tr("修订协作关系", "Update collaboration") });
+      await kuloRest.saveRelationship({ expected: read.version, content, summary: tr("修订协作关系", "Update collaboration") });
       setError(undefined);
       setNotice(tr("已保存", "Saved"));
       await load(false);
       onSaved?.();
     } catch (err) {
-      if (err instanceof MocoApiError && err.status === 409) setConflict(true);
+      if (err instanceof KuloApiError && err.status === 409) setConflict(true);
       setError(err instanceof Error ? err.message : tr("保存失败", "Save failed"));
     } finally { setBusy(false); }
   };
@@ -486,10 +486,10 @@ export function IdentityDocumentEditor({
   const label = identityFileLabel(file);
 
   return (
-    <section ref={sectionRef} className="moco-identity-editor moco-settings-form gap-4" style={{ minHeight: 0 }} aria-label={tr(`${label}编辑器`, `${label} editor`)} aria-busy={loading || busy}>
+    <section ref={sectionRef} className="kulo-identity-editor kulo-settings-form gap-4" style={{ minHeight: 0 }} aria-label={tr(`${label}编辑器`, `${label} editor`)} aria-busy={loading || busy}>
       {identityProposal && <Alert status="accent" className="flex flex-wrap items-center gap-3 rounded-2xl p-3">
         <Alert.Indicator />
-        <Alert.Content className="flex-1 text-sm">{tr("Moco 提出了身份约定修改", "Moco proposed changes to the identity agreement")}</Alert.Content>
+        <Alert.Content className="flex-1 text-sm">{tr("Kulo 提出了身份约定修改", "Kulo proposed changes to the identity agreement")}</Alert.Content>
         <Button variant="secondary" size="sm" isDisabled={loading || busy || dirty || !read || conflict} onPress={() => {
           if (!read || loading || busy || conflict) return;
           setReview({ open: true, file, before: read.content, after: identityProposal.content, expected: identityProposal.expected, summary: identityProposal.summary });
@@ -511,7 +511,7 @@ export function IdentityDocumentEditor({
         )}
 
         {read && (
-          <div className="moco-identity-field flex min-h-0 flex-col rounded-2xl bg-surface-secondary p-1">
+          <div className="kulo-identity-field flex min-h-0 flex-col rounded-2xl bg-surface-secondary p-1">
             <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-xs text-muted">
               <span className="flex items-center gap-2 text-sm text-foreground">{label}{loading && <Spinner size="sm" aria-label={tr(`正在更新${label}`, `Updating ${label}`)} />}</span>
               <span className={tooLarge ? "font-medium text-danger" : undefined}>
@@ -526,7 +526,7 @@ export function IdentityDocumentEditor({
               spellCheck={false}
               readOnly={loading || busy}
               variant="secondary"
-              className="scrollbar moco-identity-textarea resize-y border-0 bg-transparent px-4 py-3 font-mono text-sm shadow-none "
+              className="scrollbar kulo-identity-textarea resize-y border-0 bg-transparent px-4 py-3 font-mono text-sm shadow-none "
               style={{ minHeight: "clamp(360px, calc(100dvh - 400px), 640px)" }}
               fullWidth
               onChange={(event) => {
@@ -549,7 +549,7 @@ export function IdentityDocumentEditor({
         )}
 
         {read && (
-          <div className="moco-settings-savebar">
+          <div className="kulo-settings-savebar">
             <span
               id={sizeMessageId}
               className={"shrink-0 whitespace-nowrap " + (tooLarge ? "text-sm font-medium text-danger" : "text-sm text-muted")}

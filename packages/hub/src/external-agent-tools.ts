@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { EXTERNAL_AGENT_MCP_TOOL_NAMES, redactSensitiveText, type ConnectionUseOperation, type ExternalAgentMcpToolName, type RolePreset, type TicketRecord, type WorkerReportRecord } from "@moco/protocol";
+import { EXTERNAL_AGENT_MCP_TOOL_NAMES, redactSensitiveText, type ConnectionUseOperation, type ExternalAgentMcpToolName, type RolePreset, type TicketRecord, type WorkerReportRecord } from "@kulo/protocol";
 
 export const EXTERNAL_AGENT_TOOL_HANDLER_NAMES: readonly ExternalAgentMcpToolName[] = EXTERNAL_AGENT_MCP_TOOL_NAMES;
 const EXTERNAL_AGENT_TOOL_HANDLER_SET = new Set<string>(EXTERNAL_AGENT_TOOL_HANDLER_NAMES);
@@ -114,7 +114,7 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
     if (!EXTERNAL_AGENT_TOOL_HANDLER_SET.has(call.name)) return fail("external_task_tool_unknown", "不支持此任务工具。");
     const toolName = call.name as ExternalAgentMcpToolName;
     switch (toolName) {
-      case "moco_task_context": {
+      case "kulo_task_context": {
         argumentsObject(call.args, []);
         const ticket = snapshot.ticket;
         return cleanResult({ taskId: ticket.id, title: ticket.title, goal: ticket.goal, scope: ticket.scope, acceptance: ticket.acceptance,
@@ -128,7 +128,7 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
           hasConnections: Boolean(ticket.connectionIds?.length),
           children: Object.values(snapshot.children).map((child) => child.taskId) });
       }
-      case "moco_task_report": {
+      case "kulo_task_report": {
         const args = argumentsObject(call.args, ["state", "summary", "deliverable", "question", "files"]);
         if (!["progress", "blocked", "ready", "failed"].includes(String(args.state))) fail("invalid_task_report_state", "任务汇报状态无效。");
         let files: ExternalAgentReportFile[] | undefined;
@@ -150,7 +150,7 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
         await read(scope);
         return cleanResult(await host.report(scope, report, files));
       }
-      case "moco_memory_recall": {
+      case "kulo_memory_recall": {
         if (!host.memory) fail("external_memory_unavailable", "共享记忆服务未启用。");
         const args = argumentsObject(call.args, ["query", "budget", "max_tokens"]);
         const query = publicText(args.query, "检索词", 3000)!;
@@ -168,21 +168,21 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
           ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
         }));
       }
-      case "moco_memory_search_pages": {
+      case "kulo_memory_search_pages": {
         if (!host.memory) fail("external_memory_unavailable", "共享记忆服务未启用。");
         const args = argumentsObject(call.args, ["query"]);
         const query = publicText(args.query, "搜索词", 2000)!;
         await read(scope);
         return cleanResult(await host.memory(scope, "hindsight_search_pages", { query }));
       }
-      case "moco_memory_read_page": {
+      case "kulo_memory_read_page": {
         if (!host.memory) fail("external_memory_unavailable", "共享记忆服务未启用。");
         const args = argumentsObject(call.args, ["page_id"]);
         const pageId = publicText(args.page_id, "知识页面编号", 240)!;
         await read(scope);
         return cleanResult(await host.memory(scope, "hindsight_get_page", { page_id: pageId }));
       }
-      case "moco_memory_ingest": {
+      case "kulo_memory_ingest": {
         if (!host.memory) fail("external_memory_unavailable", "共享记忆服务未启用。");
         const args = argumentsObject(call.args, ["title", "content"]);
         const title = publicText(args.title, "记忆标题", 240)!;
@@ -191,7 +191,7 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
         await read(scope);
         return cleanResult(await host.memory(scope, "hindsight_retain", { title, content }));
       }
-      case "moco_memory_reflect": {
+      case "kulo_memory_reflect": {
         if (!host.memory) fail("external_memory_unavailable", "共享记忆服务未启用。");
         const args = argumentsObject(call.args, ["query", "budget"]);
         const query = publicText(args.query, "推理问题", 2000)!;
@@ -200,13 +200,13 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
         await read(scope);
         return cleanResult(await host.memory(scope, "hindsight_reflect", { query, ...(budget ? { budget } : {}) }));
       }
-      case "moco_connections": {
+      case "kulo_connections": {
         argumentsObject(call.args, []);
         if (!host.connectionsList || !snapshot.ticket.connectionIds?.length) fail("external_connection_denied", "当前任务未获授权使用任何受管连接。");
         await read(scope);
         return cleanResult(await host.connectionsList(scope));
       }
-      case "moco_connection_use": {
+      case "kulo_connection_use": {
         if (!host.connectionUse || !snapshot.ticket.connectionIds?.length) fail("external_connection_denied", "当前任务未获授权使用任何受管连接。");
         const args = argumentsObject(call.args, ["connection_id", "operation", "command", "timeout_ms", "path", "method", "body", "content_type", "action", "params_json"]);
         const connectionId = identifier(args.connection_id, "连接标识");
@@ -252,14 +252,14 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
         await read(scope);
         return cleanResult(await host.connectionUse(scope, { connectionId, operation }));
       }
-      case "moco_agents": {
+      case "kulo_agents": {
         argumentsObject(call.args, []);
         collaboration(snapshot);
         const agents = await candidates(scope, snapshot);
         await read(scope);
         return cleanResult({ agents: agents.map(({ id, label, whenToUse, readOnly }) => ({ id, label, whenToUse, readOnly })) });
       }
-      case "moco_request_collaboration": {
+      case "kulo_request_collaboration": {
         collaboration(snapshot);
         const args = argumentsObject(call.args, ["request_id", "agent_id", "goal", "acceptance"]);
         const request: ExternalAgentCollaborationRequest = { requestId: identifier(args.request_id, "请求编号"), agentId: identifier(args.agent_id, "智能体编号"), goal: publicText(args.goal, "任务目标", 16000)!,
@@ -280,7 +280,7 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
         if (Object.keys(latest.children).length >= latest.maxSubagents && !Object.hasOwn(latest.children, request.requestId)) fail("external_collaboration_limit", "当前任务已达到子智能体上限。");
         return cleanResult(await host.delegate(scope, request));
       }
-      case "moco_child_task": {
+      case "kulo_child_task": {
         collaboration(snapshot);
         const args = argumentsObject(call.args, ["task_id"]);
         const childId = identifier(args.task_id, "子任务编号");

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { EnvNodeDescriptor, ProjectView, TicketCardView, TopicSummary } from "@moco/protocol";
+import type { EnvNodeDescriptor, ProjectView, TicketCardView, TopicSummary } from "@kulo/protocol";
 import { ALL_PROJECT_DEVICES, initialProjectDevice, joinProjectDirectory, ordinaryTopics, projectDevices, projectTickets, topicsForProject, unfinishedTicket } from "./project-model";
-import { scopeTickets, ticketWaitLabel } from "../../moco-tasks";
+import { scopeTickets, ticketWaitLabel } from "../../kulo-tasks";
 
 const topics: TopicSummary[] = [
-  { id: "root", conversationId: 0, title: "Moco 主会话", master: true, pinned: true, createdAt: 0, updatedAt: 10 },
+  { id: "root", conversationId: 0, title: "Kulo 主会话", master: true, pinned: true, createdAt: 0, updatedAt: 10 },
   { id: "plain", conversationId: 1, title: "普通讨论", createdAt: 1, updatedAt: 9 },
   { id: "a", conversationId: 2, title: "开发", projectId: "p", createdAt: 2, updatedAt: 5 },
   { id: "b", conversationId: 3, title: "需求", projectId: "p", pinned: true, createdAt: 3, updatedAt: 3 },
@@ -12,7 +12,7 @@ const topics: TopicSummary[] = [
   { id: "other", conversationId: 5, title: "另一个项目", projectId: "q", createdAt: 5, updatedAt: 5 },
 ];
 const ticket = (id: string, originTopicId: string, projectId?: string, status: TicketCardView["status"] = "queued"): TicketCardView => ({
-  id, title: id, role: "coder", roleLabel: "开发者", envId: "remote", workspaceDir: "/projects/moco", originTopicId, projectId, status, createdAt: 1, updatedAt: 1,
+  id, title: id, role: "coder", roleLabel: "开发者", envId: "remote", workspaceDir: "/projects/kulo", originTopicId, projectId, status, createdAt: 1, updatedAt: 1,
 });
 const devices = [
   { id: "local", name: "Hub", online: true, rootDir: "/hub" },
@@ -67,10 +67,10 @@ describe("project navigation boundaries", () => {
   });
 
   it("constructs remote directory paths using the target platform", () => {
-    expect(joinProjectDirectory("/projects/", "Moco")).toBe("/projects/Moco");
-    expect(joinProjectDirectory("/", "Moco")).toBe("/Moco");
-    expect(joinProjectDirectory("C:\\Projects\\", "Moco")).toBe("C:\\Projects\\Moco");
-    expect(joinProjectDirectory("C:/Projects", "Moco")).toBe("C:\\Projects\\Moco");
+    expect(joinProjectDirectory("/projects/", "Kulo")).toBe("/projects/Kulo");
+    expect(joinProjectDirectory("/", "Kulo")).toBe("/Kulo");
+    expect(joinProjectDirectory("C:\\Projects\\", "Kulo")).toBe("C:\\Projects\\Kulo");
+    expect(joinProjectDirectory("C:/Projects", "Kulo")).toBe("C:\\Projects\\Kulo");
     expect(joinProjectDirectory("\\\\server\\share", "项目 文件")).toBe("\\\\server\\share\\项目 文件");
     for (const invalid of ["", ".", "..", "../escape", "a\\b", "a\0b"]) expect(() => joinProjectDirectory("/projects", invalid)).toThrow();
   });

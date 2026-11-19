@@ -1,59 +1,59 @@
-@reference "../../moco.css";
+@reference "../../kulo.css";
 
-.moco-agent-profile {
+.kulo-agent-profile {
   min-width: 0;
   width: 100%;
   color: var(--foreground);
 }
-.moco-agent-profile-header {
+.kulo-agent-profile-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: center;
   min-width: 0;
-  border-radius: var(--moco-list-radius);
+  border-radius: var(--kulo-list-radius);
   background: var(--surface-secondary);
   transition: background-color 100ms var(--ease-out);
 }
 @media (hover: hover) {
-  .moco-agent-profile-header:has(> .moco-agent-profile-overview:hover),
-  .moco-agent-profile-header:has(> .moco-agent-profile-overview[data-hovered="true"]) {
+  .kulo-agent-profile-header:has(> .kulo-agent-profile-overview:hover),
+  .kulo-agent-profile-header:has(> .kulo-agent-profile-overview[data-hovered="true"]) {
     background: color-mix(in oklab, var(--foreground) 6%, var(--surface-secondary));
   }
 }
-.moco-agent-profile-header:has(> .moco-agent-profile-overview:active),
-.moco-agent-profile-header:has(> .moco-agent-profile-overview[data-pressed="true"]) {
+.kulo-agent-profile-header:has(> .kulo-agent-profile-overview:active),
+.kulo-agent-profile-header:has(> .kulo-agent-profile-overview[data-pressed="true"]) {
   background: color-mix(in oklab, var(--foreground) 10%, var(--surface-secondary));
 }
-.moco-agent-profile-header > .moco-cat-picker-trigger {
+.kulo-agent-profile-header > .kulo-cat-picker-trigger {
   grid-area: 1 / 1;
   justify-self: start;
   z-index: 1;
-  margin-inline-start: var(--moco-space-3);
+  margin-inline-start: var(--kulo-space-3);
 }
-.moco-agent-profile-overview {
+.kulo-agent-profile-overview {
   grid-area: 1 / 1;
   display: flex;
   width: 100%;
   min-width: 0;
   height: auto;
-  min-height: calc(64px + var(--moco-space-3) * 2);
+  min-height: calc(64px + var(--kulo-space-3) * 2);
   justify-content: flex-start;
   align-items: center;
-  gap: var(--moco-control-gap);
-  padding-block: var(--moco-space-3);
-  padding-inline-end: var(--moco-space-3);
-  padding-inline-start: calc(var(--moco-space-3) * 2 + 64px);
+  gap: var(--kulo-control-gap);
+  padding-block: var(--kulo-space-3);
+  padding-inline-end: var(--kulo-space-3);
+  padding-inline-start: calc(var(--kulo-space-3) * 2 + 64px);
   text-align: left;
 }
-.moco-agent-profile-avatar { width: 64px; height: 64px; flex: none; }
-.moco-agent-profile-identity { display: flex; width: 100%; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: var(--moco-space-1); }
-.moco-agent-profile-title-row { display: flex; width: 100%; min-width: 0; align-items: center; justify-content: space-between; gap: var(--moco-control-gap); }
-.moco-agent-profile-name { overflow: hidden; min-width: 0; font-size: var(--moco-text-heading); font-weight: 600; line-height: var(--moco-leading-heading); text-overflow: ellipsis; white-space: nowrap; }
-.moco-agent-profile-chat-label { color: var(--muted); font-size: var(--moco-text-caption); line-height: var(--moco-leading-caption); }
-.moco-agent-profile-presence { display: inline-flex; flex: none; align-items: center; gap: var(--moco-space-1); font-size: var(--moco-text-caption); font-weight: 400; line-height: var(--moco-leading-caption); }
-.moco-agent-profile-presence > i { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--muted); }
-.moco-agent-profile-presence > i[data-connected="true"] { background: var(--success); }
-.moco-agent-profile[data-calling="true"] .moco-voice-call { border-block: 1px solid var(--border); }
+.kulo-agent-profile-avatar { width: 64px; height: 64px; flex: none; }
+.kulo-agent-profile-identity { display: flex; width: 100%; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: var(--kulo-space-1); }
+.kulo-agent-profile-title-row { display: flex; width: 100%; min-width: 0; align-items: center; justify-content: space-between; gap: var(--kulo-control-gap); }
+.kulo-agent-profile-name { overflow: hidden; min-width: 0; font-size: var(--kulo-text-heading); font-weight: 600; line-height: var(--kulo-leading-heading); text-overflow: ellipsis; white-space: nowrap; }
+.kulo-agent-profile-chat-label { color: var(--muted); font-size: var(--kulo-text-caption); line-height: var(--kulo-leading-caption); }
+.kulo-agent-profile-presence { display: inline-flex; flex: none; align-items: center; gap: var(--kulo-space-1); font-size: var(--kulo-text-caption); font-weight: 400; line-height: var(--kulo-leading-caption); }
+.kulo-agent-profile-presence > i { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--muted); }
+.kulo-agent-profile-presence > i[data-connected="true"] { background: var(--success); }
+.kulo-agent-profile[data-calling="true"] .kulo-voice-call { border-block: 1px solid var(--border); }
 
-@media (prefers-reduced-motion: reduce) { .moco-agent-profile-header { transition: none; } }
-:root[data-reduce-motion="true"] .moco-agent-profile-header { transition: none; }
+@media (prefers-reduced-motion: reduce) { .kulo-agent-profile-header { transition: none; } }
+:root[data-reduce-motion="true"] .kulo-agent-profile-header { transition: none; }

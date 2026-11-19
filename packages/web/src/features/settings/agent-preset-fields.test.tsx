@@ -1,10 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { MocoSettingsView, RolePreset } from "@moco/protocol";
+import type { KuloSettingsView, RolePreset } from "@kulo/protocol";
 import { AgentPresetFields } from "./agent-preset-fields";
 import { SETTINGS_MODULES, toProviderModelItem, type ProviderModelGroup } from "./settings-helpers";
 
-const defaultModel: MocoSettingsView["blocks"]["model"]["value"] = {
+const defaultModel: KuloSettingsView["blocks"]["model"]["value"] = {
   baseUrl: "http://127.0.0.1:9/v1",
   apiMode: "openai-responses",
   defaultProvider: "api-demo",
