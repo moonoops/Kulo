@@ -4,233 +4,229 @@
 
 <h1 align="center">Moco</h1>
 
-<p align="center"><strong>你的常驻 Agent，协同多台设备</strong></p>
+<p align="center"><strong>你的跨设备常驻个人 SuperAgent</strong></p>
 
 <p align="center">
   <a href="README.md">English</a> | 简体中文
 </p>
 
 <p align="center">
+  <a href="https://github.com/moonoops/moco/releases"><img src="https://img.shields.io/github/v/release/moonoops/moco?color=blue" alt="Latest Release"></a>
+  <a href="https://github.com/moonoops/moco/stargazers"><img src="https://img.shields.io/github/stars/moonoops/moco?style=flat" alt="GitHub Stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPLv3-blue" alt="License: AGPLv3"></a>
   <img src="https://img.shields.io/badge/deployment-self--hosted-brightgreen" alt="Self-hosted">
+  <img src="https://img.shields.io/badge/node-%E2%89%A522.20-339933" alt="Node.js >= 22.20">
 </p>
 
-<!-- 确定公开仓库地址后添加 Release、Stars 徽章；配置工作流后再添加 CI 徽章。 -->
+Moco 是一套可自托管的跨设备常驻个人智能体。你始终与同一个 Moco 对话：它维系你的专属身份约定与协作关系，在隔离工作区中协同多台设备上的内置 Worker 与本地外部 Agent，并把经核查的结果带回同一个入口——将文字、语音、实时通话、生成式界面与后台并行执行融为一体。
 
-Moco 是可以自建的个人 Agent。你始终和同一个 Moco 交流，由它记住与你的关系、协调不同设备上的智能体，并把结果带回对话。文字、语音、可交互界面和后台任务，共同组成一个持续工作的伙伴。
-
-[多设备协作](#multi-device) · [SuperAgent](#superagent) · [多模态交互](#multimodal) · [记忆与共享](#memory) · [自定义与恢复](#customization) · [快速开始](#quick-start)
-
-> 主界面截图待补充：常驻对话、话题列表、任务进度与设备状态。
+[多设备协作](#multi-device) · [SuperAgent 与 Worker](#superagent) · [多模态与语音](#multimodal) · [记忆与安全](#memory-security) · [能力一览](#capabilities) · [快速开始](#quick-start) · [开发与贡献](#development)
 
 <a id="multi-device"></a>
-## 一套 Moco，连接多台设备
+## 一套 Moco，贯通你的多台设备
 
-你可以把 Host 主机部署在自己的电脑或服务器上，再让其他设备接入。Host 上的 **Hub** 负责主 Agent、会话、任务调度和状态存储；Device 上的 **Env** 提供任务实际执行的环境。
+在电脑或服务器上运行一台 **Host（`@moco/hub`）**，再按需接入其他设备的 **执行节点（`@moco/env`）**。Hub 承载常驻主 Agent、单一 SQLite 账本与任务看板；每个 Env 提供受系统隔离的真实执行环境，让文件读写、命令执行、浏览器/桌面操作和外部 Agent 原地运行。
 
-```text
-电脑 / 手机 / 平板上的浏览器
-             │
-        Host · Moco Hub
-        主 Agent / 会话 / 调度
-             │
-    ┌────────┼────────┐
-  本机 Env  设备 A Env  设备 B Env
-    文件      浏览器      开发工具
-```
+![Moco 多设备架构图：Web、桌面端、终端与移动端连接至 Host Moco Hub，通过可续传反向隧道 /ws/env 协同本机 Env 与远端执行节点](assets/readme/architecture-multi-device-zh.jpg)
 
-打开 Moco 的设备和执行任务的设备可以不同：你在手机上提出需求，Moco 可以安排电脑上的 Worker 整理文件，再调用另一台设备的开发工具。Host 也可以同时运行本机 Env，先在一台电脑上使用，随后逐步接入更多设备。
+- **对话与执行解耦**：在手机或轻薄本上提出需求，由工作站上的 Worker 改代码或另一台电脑操作浏览器。Host 自带本机 Env，单机即可起步，随时扩展更多设备。
+- **可续传的反向隧道（`/ws/env`）**：执行节点使用独立节点凭据主动连向 Hub，无需公网 IP；内置累积确认流续传缓冲（Stream Resume），网络短暂抖动时无缝续传不丢输出。
+- **三种便捷配对方式**：支持一次性配对命令（`moco join`）、SSH 辅助自动部署，以及**直接在对话里粘贴配对邀请完成接入或重新绑定**。
+- **设备亲和路由**：自动识别本地路径、`localhost` 端口、桌面/浏览器等本机信号并绑定目标设备；目标设备离线时如实汇报，不会暗中改派到其他机器。
+- **可选 Android 手机配对**：支持受管 TLS 连接器扫码配对、细粒度 Android 权限授权与通知投递。
 
-底层由 [Pi Durable](https://github.com/earendil-works/pi/tree/main/packages/durable) 和 [Pi Env](https://github.com/earendil-works/pi/tree/main/packages/env) 支撑，分别承担持久会话与执行环境能力，[Pi AI](https://github.com/earendil-works/pi/tree/main/packages/ai) 负责模型接入。多台客户端连接同一个 Hub，共同访问同一套 Moco。
+底层基于 [Pi Durable](https://github.com/earendil-works/pi/tree/main/packages/durable)（持久会话）、[Pi Env](https://github.com/earendil-works/pi/tree/main/packages/env)（执行环境）与 [Pi AI](https://github.com/earendil-works/pi/tree/main/packages/ai)（统一模型流与 OAuth 认证）构建。
 
 <a id="superagent"></a>
-## SuperAgent：始终和同一个 Moco 对话
+## SuperAgent：同一个主脑，背后是一支并行协作团队
 
-### 不同话题，同一个 Agent
+### 不同话题，始终是同一个 Moco
 
-Moco 的主 Agent 是你的固定对话入口。它负责理解需求、安排工作、跟进结果和向你汇报。新建话题只是换一个讨论空间：身份、与你的关系和协调职责保持一致，各话题保留各自的消息记录与任务上下文。
+主 Agent 是你唯一的固定协作入口。新建话题只是切换讨论空间：身份、协作习惯与协调职责保持连续，各话题消息与任务上下文相互独立，同时支持通过本地 SQLite FTS5 全文索引按权限跨话题检索历史。客户端通信基于 `/ws/client` 请求回执（`hub.ack`）与 IndexedDB 离线重发队列保障消息可靠送达。
 
-你可以在一个话题里研究旅行计划，在另一个话题里开发项目。切换话题后，已经派发的任务仍可继续执行，结果回到对应话题。主 Agent 会结合共享的身份与记忆、当前话题以及允许检索的历史接续交流，不会默认把所有话题全文混在一起。
+### 准全双工交互：随时插话、追单引导、自由切话题
 
-### 工作进行时，也能自由插话
+在主 Agent 思考、流式回复或跟进后台任务期间，你可以随时发送新消息——补充约束、纠正方向、追问进度或直接切到别的话题。新消息会在下一个处理节点被吸收，并可通过追单引导（`moco_steer`）调整运行中的任务。切换话题不会中断已派发的后台任务，结果完成后自动回到对应话题。
 
-主 Agent 思考、回复或跟进后台任务时，你都可以自由插话：补充条件、纠正方向、询问进度，或者先聊另一件事。新消息会在后续处理节点被吸收；正在执行的工具操作不一定立即停止。
+### 内置 Worker、子代理与并行暂存工作区
 
-例如，一次开发任务可以这样进行：
+![Moco SuperAgent 协同流程：准全双工对话经由 Moco 主脑编排器分派至内置 Worker 与外部 Agent，在系统沙箱与并行暂存工作区执行，由主脑核验并交付至对应话题](assets/readme/architecture-superagent-zh.jpg)
 
-1. 在开发话题里说：“让工作站上的 Codex 检查登录页，修复键盘操作。”
-2. 任务进行中补充：“保留现在的视觉样式，也检查一下窄屏。”Moco 接收新约束，调整后续安排。
-3. 切到另一个话题，和同一个 Moco 讨论周末计划；开发任务继续在后台执行。
-4. Codex 提交结果，主 Agent 检查改动与验证情况，再回到原来的开发话题向你交付。
+- **六大可定制内置角色**：**侦察员（Scout，只读摸底）**、**架构师（Architect，方案与子代理统筹）**、**开发者（Coder，实现与测试验证）**、**检验员（Checker，独立只读审查）**、**设计师（Designer，视觉与交互）**、**写作者（Writer，文档与内容）**。各角色支持独立配置模型、思考强度、提示词与权限边界。
+- **实时任务看板与子代理**：有界并发 Worker 调度、增量看板同步、重试/停止/阻塞提问回传，并支持按工单派生子代理（`moco_subagent`）处理复杂拆分任务。
+- **并行暂存工作区（Staged Workspaces）**：编码任务可在独立的写时复制（CoW）/ 克隆暂存目录中并行运行，多个 Worker 同时改动同一仓库互不覆盖；只读角色的越权改动会被自动丢弃，主脑审阅 Diff 后再决定应用或放弃。
+- **分层动态工具面**：按受众（对话、设置助手、电脑 Worker、Android Worker）将工具划分为常驻、事件触发与按需延迟加载三层，既保持上下文精简，又严格收敛权限面。
 
-### 主 Agent 协调，Worker 分工
+### 原生外部 Agent 与任务级 MCP 协同
 
-主 Agent 可以把复杂任务拆给不同 Worker，选择合适的角色、模型和设备。你无需分别管理每个智能体，也无需自己拼接它们的回答。
+Moco 可直接调度执行设备上已安装的本地外部 Agent：
 
-```text
-你提出需求、补充条件或调整方向
-              ↓
-     Moco 主 Agent 理解与协调
-              ↓
-   内置 Worker / Codex / Claude Code
-              ↓
-     在选定设备上执行，回传结果
-              ↓
-   主 Agent 检查产物，向你交付
-```
+- **正式支持**：**Codex**（App Server）、**Claude Code**（原生 SDK/CLI）、**Antigravity**（`agy acp`）、**DeepSeek Harness**（`dsh --profile acp`）。
+- **实验性支持**：**Grok Bot** 本地桥接（另预留 ChatGPT Dots 与 Meta Muse 接入指南）。
 
-除了内置 Worker，Moco 也能派发外部 Agent，例如 Codex 和 Claude Code，让它们在自己的原生运行环境中完成任务。外部 Agent 沿用各自的工具与权限配置，Moco 负责组织任务和接收回报。
-
-Worker 产物先交给主 Agent 检查，再由主 Agent 发布到对话。任务进展、需要你决定的问题和最终结果，都通过这个统一入口与你对接。
-
-> SuperAgent 演示待补充：任务分派 → 中途插话 → 切换话题 → 主 Agent 审核并交付。
+外部 Agent 在绑定设备上沿用自身的原生账号、工具和权限设置——Moco 从不在对话中索取其登录凭据——同时通过任务级 Moco MCP 工具获得上下文读取、结果汇报、协作请求、子任务派发、授权共享记忆与经审批的连接能力。
 
 <a id="multimodal"></a>
-## 多模态与生成式对话交互
+## 多模态、生成式 UI、语音与多端工作台
 
-除了文字，Moco 支持图片、音频、视频和文件输入，具体理解能力取决于所选模型与配置的处理能力。对话也可以呈现为更适合当前任务的交互形式。
+![Moco 多模态与语音交互流：文字、图片、音频、视频、PDF 文件以及离线 Sherpa-ONNX 识别、TTS 与全双工 Live 通话进入 Moco 多模态流，呈现为 20 种 HeroUI 生成式 UI 卡片、沙箱 HTML 产物与多端富媒体视图](assets/readme/architecture-multimodal-zh.jpg)
 
-**生成式 UI** 让 Agent 在对话中给出表格、图表、表单、选项和滑块。你直接调整参数、比较方案或提交选择，结构化结果回到 Agent，继续推动任务。交互组件来自受控的组件集合；需要更自由的展示时，也可提供在沙箱中运行的 HTML 产物。
+### 多模态对话与生成式 UI
 
-> 生成式 UI 演示待补充：用图表比较方案，在表单中调整条件并继续对话。
+支持文字、图片、音频、视频与任意文件输入；内置多媒体预览、带阅读进度记忆的 PDF 预览器、代码高亮块、引用回复、对话大纲与归档库，以及跨轮持久化保留的联网来源引用。
 
-**Live 全双工对话** 支持实时语音、字幕和打断。语音会话可以结合当前话题上下文，把需要执行的工作交给主 Agent，并接收任务更新。结束通话后，已派发的任务仍可继续。使用前需要配置支持的 Live 服务。
+- **生成式 UI（`json-render` + HeroUI v3）**：Agent 可在对话中直接渲染 20 种受控交互组件——包括表格、柱状图/折线图、表单、单选/多选、滑块、开关、复选框、标签页、折叠面板、指标卡、媒体与代码块——你的选择或表单提交会以结构化数据回传给 Agent 继续推进任务。
+- **沙箱 HTML 产物预览**：面向更自由的交互页面或数据报告，Moco 支持在隔离沙箱中安全呈现 HTML 交付物。
 
-> Live 演示待补充：语音交流 → 打断与补充 → 后台执行 → 结果返回。
+### 离线语音识别、朗读与全双工 Live 通话
 
-<a id="memory"></a>
-## 跨会话记忆，有边界的信息共享
+- **语音输入（ASR）**：支持本地离线 **Sherpa-ONNX** 语音识别或云端模型供应商。
+- **语音播报（TTS）**：支持 **OpenAI**、**Gemini** 与 **MiniMax**（国内/国际版），可调音色与语速。
+- **全双工 Live 实时通话**：支持接入 **OpenAI**、**Gemini** 与 **Vertex AI** Live 服务，提供实时语音、双语字幕、随时打断，并共享当前话题上下文；通话中可直接把复杂任务交给主脑后台执行，挂断后任务继续推进。
 
-Moco 在 Host 本地使用 SQLite 保存会话与任务状态，并维护身份、关系和近期工作信息。主 Agent 可以检索当前话题及同一项目内允许访问的历史，在后续对话中找回相关内容。持久记录为连续交流提供依据，实际回忆仍取决于检索和上下文选择。
+### Web、macOS 桌面端与终端工作台
 
-需要更长期的语义记忆时，可以启用可选的 **Hindsight 双 Bank**：
+- **HeroUI v3 三栏工作台（`@moco/web`、`@moco/desktop`）**：内置浅色 / 深色双主题、可定制的动态猫咪陪伴形象（`CatAvatar`），并提供统一的桌面端与 Web 键盘快捷键：
+  - `⌘/Ctrl+K` 搜索全部对话 · `⌘/Ctrl+F` 当前对话内查找 · `⌘/Ctrl+\` / `⇧⌘/Ctrl+\` 切换左右侧栏 · `⌘/Ctrl+.` 停止生成 · `⇧⌘/Ctrl+C` 复制最新回复 · `⌘/Ctrl+S` 保存更改；桌面端原生菜单另含 `⌘/Ctrl+N` 新建话题、`⌘/Ctrl+,` 设置、`⌘/Ctrl+1` 回到主对话。
+- **终端准全双工 TUI（`@moco/cli`）**：可通过 `moco dev` 或 `moco chat` 直接在终端交互。
 
-| 记忆区域 | 主 Agent | Worker |
-| --- | --- | --- |
-| 私有 Bank | 读写 | 禁止访问 |
-| 共享 Bank | 只读 | 读写 |
+<a id="memory-security"></a>
+## 有边界的记忆体系与纵深安全隔离
 
-私有记忆用于主 Agent 与你的持续关系；共享记忆用于任务知识和协作结果。权限由服务端和独立凭据执行。两个 Bank 可以位于同一 Hindsight 实例与数据库中，隔离依靠授权规则，并需要配套的设备、文件和凭据权限。
+![Moco 双 Bank 记忆与零信任安全架构：主 Agent 对私有身份文档与 moco-core 拥有读写权限、对 moco-shared 只读；系统沙箱隔离的 Worker 与外部 Agent 禁止访问私库、对 moco-shared 读写，并需逐任务审批使用系统密钥库连接；底层由 Ed25519 验签与 moco-rescue 独立救援兜底](assets/readme/architecture-memory-security-zh.jpg)
 
-启用共享记忆后，Worker 在任务开始时检索相关历史，提交工作报告后异步保存结果与验证记录，供后续任务复用。Codex、Claude Code 等外部 Agent 也能通过任务工具检索获授权的共享记忆、读取知识页面和提交新知识，无需获得主 Agent 的私有记忆权限。
+### 私有身份与协作关系文档
 
-Hindsight 默认关闭，无需启用也能使用 Moco。部署和权限细节见 [Hindsight 集成说明](integrations/hindsight/README.md)。
+Moco 在 `<MOCO_STATE_DIR>/identity` 维护两份私有文档：`identity-agreement.md`（修改需经显式双签 Diff 审阅、SHA-256 + 目录版本 CAS 锁校验并保留可回滚备份）与 `relationship.md`（支持手动编辑与空闲自主整理）。两份文档**仅对主 Agent 可见**，对后台 Worker 与外部 Agent 物理屏蔽。
 
-<a id="customization"></a>
-## 用对话配置，也为自定义留下退路
+### 可选 Hindsight 双 Bank 语义记忆
 
-你可以通过自然语言让主 Agent 配置能力、调整设置和组合工作流程。对于界面层面的定制，macOS 桌面版提供受管的 Web 界面修改流程：准备候选版本、构建与验证、在下次启动时启用，并检查新界面是否正常就绪；启动失败时可回到上一个可用版本。
+需要跨会话长期语义记忆时，可在设置中**一键托管部署本地 Hindsight**，或连接已加载 `integrations/hindsight` 授权扩展的 `hindsight-api-slim==1.2.1` 服务。`moco-core` 私有库与 `moco-shared` 共享库的权限边界在 Hindsight 进程内通过独立 Bearer 密钥（`MOCO_HINDSIGHT_ROUTER_API_KEY` 与 `MOCO_HINDSIGHT_WORKER_API_KEY`）强制执行，并在启动探活时做负向越权验证。Hindsight 默认关闭，部署与安全规约见 [integrations/hindsight/README.md](integrations/hindsight/README.md)。
 
-独立救援工具 `moco-rescue` 保留在主界面之外，可以检查安装状态、选择恢复版本并导出诊断日志，供你选择的第三方 Agent 排查修复。目前这套受管流程覆盖桌面 Web 界面，恢复范围是应用版本，不会撤销数据库变化或已经发生的外部操作。
+### 系统密钥库、系统沙箱与受管恢复
+
+- **系统密钥库与连接授权**：利用系统密钥库（macOS Keychain / Linux Secret Service / Windows Credential Manager）加密管理预置应用（**Apple 信息**、**Apple 邮件**、**GitHub**、**Figma**）、**SSH** 与自定义凭据。对话中粘贴的敏感信息会自动识别脱敏再入库；Worker 调用连接前须经逐任务显式授权。
+- **模型凭据隔离**：OAuth 订阅认证与自定义 API Key 位于相互隔离的 Provider ID 下，互不覆盖；已保存的 API Key 严格绑定原服务 origin，绝不会转发至修改后的第三方地址。
+- **OS 级 Worker 沙箱**：内置 Worker 在 macOS Seatbelt、Linux Bubblewrap 或 Windows 受限隔离环境中运行，物理屏蔽 Hub 状态目录与敏感用户目录（`.ssh`、`.gnupg`、`.kube`、`.aws`、`.claude`、`.codex`、`.gemini`）。
+- **受管界面定制与 `moco-rescue` 独立救援**：macOS 桌面端支持在隔离候选环境中定制 Web 界面、执行启动健康检查、Ed25519 官方更新验签，并在启动异常时自动回退至上一个稳定版本；主程序之外保留零业务依赖的 `moco-rescue` 命令行工具用于诊断、回滚、安全模式恢复、残留清理与脱敏日志导出。
+
+<a id="capabilities"></a>
+## 能力一览
+
+![Moco Hub 模块化能力引擎全景：涵盖模型与认证、联网搜索、电脑操作、技能与长上下文、生图与视频、连接与密钥库、定时任务以及配置与恢复](assets/readme/architecture-capabilities-zh.jpg)
+
+<details>
+<summary>展开查看完整能力与供应商明细</summary>
+
+| 能力模块 | 说明 |
+| --- | --- |
+| **模型与认证** | 支持 Pi AI 内置 OAuth 订阅登录（OpenAI/Codex、Anthropic、OpenRouter、GitHub Copilot、Kimi Coding、xAI 等）与主流 API 预设（OpenAI、Gemini、Vertex AI、Anthropic、DeepSeek、OpenRouter、xAI、Moonshot、MiniMax、智谱 Z.AI、通义千问、Groq、Mistral 及任意 OpenAI 兼容网关）。 |
+| **联网搜索** | 多方案优先级回退：免 Key **Exa** MCP 预设、**Tavily**、**Brave** 与可选 **DuckDuckGo**，并支持按模型单独开关原生联网工具与跨轮保留引用来源。 |
+| **电脑操作** | 按执行设备默认启用 `agent-browser` 与 `agent-desktop`，支持实时画面预览与系统权限诊断；可通过 `MOCO_COMPUTER_USE` 按设备独立开关。 |
+| **技能与扩展** | 内置按条件激活的预设技能（浏览器/桌面自动化、React 与 Web 设计规范、生成式卡片、能力配置等）、Vercel `skills` 发现安装与项目级技能，另可选 **Billion Context / `acp-kernel`** 长上下文压缩扩展。 |
+| **生图与视频** | 内置 OpenAI 与 Gemini 生图/改图预设（支持多图参考），并支持衔接浏览器 Flow 会话执行多媒体生成任务。 |
+| **连接与密钥库** | 基于系统密钥库的 Apple 信息、Apple 邮件、GitHub、Figma、SSH 与自定义凭据，配合入站脱敏与任务级审批。 |
+| **定时任务** | 通过自然语言安排一次性或周期性后台任务。 |
+| **设置助手** | 设置页内置对话式配置助手，安全引导完成模型、搜索、Hindsight、设备、技能与连接配置。 |
+
+</details>
 
 <a id="quick-start"></a>
 ## 快速开始
 
-先在一台电脑上运行完整的 Moco。需要 **Node.js ≥ 22.20.0** 和 **pnpm 11.25.0**，以下命令从源码仓库根目录执行：
+### 1. 从源码在本地运行
+
+需要 **Node.js ≥ 22.20.0** 与 **pnpm 11.25.0**：
 
 ```sh
+git clone https://github.com/moonoops/moco.git
+cd moco
 pnpm install
 cp .env.example .env
 ```
 
-编辑 `.env`，为 `MOCO_AUTH_TOKEN` 设置独立的随机密钥，建议至少 32 个字符；将 `MOCO_MODEL`、`MOCO_BASE_URL`、`MOCO_API_KEY` 替换为自己的模型配置。也可以先清空这三个示例值，启动后再通过界面设置模型与凭据。环境变量配置项见 [.env.example](.env.example)。
+编辑 `.env`，为 `MOCO_AUTH_TOKEN` 设置独立的随机密钥（建议至少 32 位）；将 `MOCO_BASE_URL`、`MOCO_API_KEY`、`MOCO_MODEL` 替换为自己的配置，或清空后启动应用并在 Web 设置页完成 API / OAuth 配置。全部环境变量见 [.env.example](.env.example)。
 
 ```sh
 pnpm build
 node packages/cli/dist/bin.js open
 ```
 
-`open` 会启动 Hub 与本机 Env，并打开已携带认证信息的浏览器页面，默认本地地址为 `http://localhost:7788`。完成模型配置后即可开始对话；需要操作指定目录时，为它创建项目。
+`open` 会启动 Hub 与内置本机 Env，并自动打开已携带认证信息的浏览器页面（默认 `http://localhost:7788`）。
 
-在 **macOS 14 及以上**，还可以构建并安装当前机器架构的桌面开发版：
+### 2. macOS 桌面应用（macOS 14+）
+
+为当前机器架构构建并安装独立桌面开发版（`Moco Dev`）：
 
 ```sh
 pnpm desktop:install --launch
 ```
 
-安装的 `Moco Dev` 使用独立的配置与状态，不读取源码目录的 `.env`；首次打开时需要在应用中完成配置。开发时，`pnpm dev` 会构建并在交互式终端中打开 TUI，`pnpm desktop:dev` 会构建并启动桌面应用。
+桌面版使用独立的数据目录与设置，不读取源码目录的 `.env`。日常开发可使用 `pnpm desktop:dev`（桌面端）或 `pnpm dev`（终端 TUI）。
 
-<a id="connect-devices"></a>
-## 接入更多设备
+### 3. 接入更多设备与浏览器运行环境
 
-打开「设置 → 设备互联 → 添加设备」，将生成的配对安装命令放到目标设备执行，也可以使用 SSH 辅助部署。每个 Env 使用独立的节点凭据，Hub 管理密钥只供客户端与管理操作使用。
+- **添加设备**：打开「设置 → 设备互联 → 添加设备」，在目标设备执行生成的一次性配对命令、使用 SSH 辅助部署，或直接把配对邀请粘贴进对话。已有源码构建的设备也可运行：
+  ```sh
+  node packages/cli/dist/bin.js join --hub <主脑地址> --invite <配对凭证>
+  ```
+- **浏览器自动化依赖**：网页操作需要 Chrome 或 Chromium；源码部署的执行节点可运行以下命令安装专用浏览器：
+  ```sh
+  pnpm --filter @moco/env exec agent-browser install
+  ```
 
-目标设备已有源码构建时，也可以使用：
+### CLI 常用命令
 
-```sh
-node packages/cli/dist/bin.js join --hub <hub-address> --invite <invitation>
-```
-
-将占位参数替换为邀请提供的地址与凭据，并确保设备能访问 Hub。配对后，`open` 或 `dev` 会使用保存的连接。设备上线后，再为它配置允许执行的能力，并绑定项目与授权目录。目标设备离线时，Moco 会如实报告，不会暗中改到其他设备执行。
-
-<a id="capabilities"></a>
-## 按需组合能力
-
-| 能力 | 用途 | 配置方式 |
-| --- | --- | --- |
-| 模型与角色 | 为主 Agent 和不同 Worker 选择模型 | 配置供应商、模型与凭据 |
-| Skills 与 MCP | 接入技能、工具和外部服务 | 安装所需技能或配置 MCP 连接 |
-| 浏览器与桌面操作 | 在授权设备上操作网页与应用、查看执行画面 | 默认启用，仍需运行依赖与系统授权；可用 `MOCO_COMPUTER_USE` 按设备调整或关闭 |
-| 外部 Agent | 派发 Codex、Claude Code 任务 | 在执行设备安装并配置相应 Agent |
-| 项目与工作目录 | 组织相关话题、文件和任务 | 为项目选择设备与工作目录 |
-| 生成式 UI 与产物 | 展示可交互内容，由主 Agent 检查后交付 | 随任务在对话中使用 |
-| 语音与 Live | 语音输入、播报与实时通话 | 配置相应语音或 Live 服务 |
-| 图片与视频生成 | 在任务中生成视觉内容 | 配置相应服务与模型，或执行设备上的浏览器会话 |
-| 可选长期记忆 | 保存与检索私有和共享知识 | 部署并连接 Hindsight |
-| 可选长上下文扩展 | 使用受管的长上下文压缩能力 | 按需启用 Billion Context / acp-kernel |
-| 定时任务 | 在指定时间执行一次或定期运行 | 通过对话安排 |
-
-Billion Context 扩展默认关闭；启用后仍由 Pi Durable 管理压缩流程。各项能力按需配置，模型和外部服务可能需要你自己的账号或凭据。
-
-浏览器操作需要 Chrome 或 Chromium。源码部署的执行设备可以运行以下命令安装浏览器运行环境：
-
-```sh
-pnpm --filter @moco/env exec agent-browser install
-```
+| 命令 | 说明 |
+| --- | --- |
+| `node packages/cli/dist/bin.js open [--no-open]` | 启动 Hub + 本机 Env 并打开认证后的 Web 控制台 |
+| `node packages/cli/dist/bin.js dev [--port 7788] [--no-tui] [--standalone]` | 连接已配对主脑，或单机启动本地 Hub 与终端 TUI |
+| `node packages/cli/dist/bin.js join --hub <地址> --invite <凭证> [--root ~/Moco]` | 作为执行节点配对加入已有主脑 |
+| `node packages/cli/dist/bin.js hub [--host 0.0.0.0] [--port 7788] [--no-local-env]` | 独立启动常驻 Hub 服务 |
+| `node packages/cli/dist/bin.js env --connect <ws地址> --id <env-id> --token <节点凭据>` | 独立启动执行节点并反向注册至 Hub |
+| `node packages/cli/dist/bin.js chat [--url ws://127.0.0.1:7788/ws/client] [--token <token>]` | 打开终端准全双工 TUI 客户端 |
+| `moco-rescue <inspect\|versions\|rollback\|export\|gc\|safe-mode\|cleanup> --data-dir <路径>` | 独立版本诊断、回滚、安全基线恢复与清理工具 |
 
 <a id="platforms"></a>
 ## 平台支持
 
-| 入口或组件 | 当前范围 |
+| 组件 | 当前支持范围 |
 | --- | --- |
-| Web 客户端 | 电脑、手机和平板上的现代浏览器 |
-| macOS 桌面版 | macOS 14+，可从源码构建本机架构开发版 |
-| Hub | Node.js 服务；执行任务还需具备可用的 Env |
-| macOS Env | 本机隔离执行，电脑操作需要相应系统授权 |
-| Linux / Windows Env | 可连接执行节点；需配置对应平台的隔离后端和运行依赖 |
-
-内置 Worker 需要可用的系统隔离后端。浏览器与桌面自动化的可用范围取决于执行设备；桌面操作需要可用的交互式图形会话，无图形桌面的服务器适合运行不依赖桌面的任务。目前桌面应用的打包脚本面向 macOS。
+| **Web 客户端** | 电脑、平板与手机上的现代浏览器 |
+| **桌面应用** | macOS 14+（Electron 外壳 + 独立便携 Node 运行时；当前打包脚本面向 macOS） |
+| **Hub** | Node.js ≥ 22.20 服务（macOS / Linux / Windows）；执行任务需至少连接一个 Env |
+| **macOS Env** | 内置 Seatbelt 沙箱；桌面自动化需授予辅助功能与屏幕录制权限 |
+| **Linux / Windows Env** | 需对应平台隔离后端（Bubblewrap / Windows 受限隔离）；桌面操作需交互式图形会话 |
 
 <a id="faq"></a>
 ## 常见问题
 
-**必须准备多台设备吗？**
+**必须有多台设备才能使用 Moco 吗？**
+不需要。单台电脑即可同时运行 Hub 与内置本机 Env，后续随时接入更多设备。
 
-不需要。单机可以同时运行 Hub 和本地 Env，之后再添加设备。
+**自托管是否意味着模型必须在本地运行？**
+你托管的是 Hub、SQLite 状态、身份文档与执行节点；模型推理位置取决于你的配置，可使用本地模型，也可对接云端 API 或 OAuth 订阅。
 
-**自建意味着模型也在本地运行吗？**
-
-Hub 和会话状态由你托管，模型运行位置取决于配置。使用云端模型或外部工具时，相关请求会发送给对应服务。
-
-**为什么在手机打开页面后无法录音或使用 Live？**
-
-录音和 Live 需要 HTTPS 或 `localhost` 安全上下文，以及浏览器的麦克风权限。局域网中的普通 HTTP IP 地址不满足这一要求。
+**为什么手机通过局域网 HTTP 打开后无法录音或发起 Live 通话？**
+浏览器麦克风采集与实时语音依赖安全上下文（`https://` 或 `localhost`）及麦克风权限，普通 `http://<局域网IP>` 会被浏览器限制。
 
 <a id="development"></a>
 ## 开发与贡献
 
-仓库使用 TypeScript 和 pnpm workspace：
+仓库采用 TypeScript + pnpm monorepo 结构：
 
 | 模块 | 职责 |
 | --- | --- |
-| [packages/hub](packages/hub) | 主 Agent、任务协调、HTTP / WebSocket 服务与状态存储 |
-| [packages/env](packages/env) | 执行环境与设备连接 |
-| [packages/web](packages/web) | React Web 界面 |
-| [packages/desktop](packages/desktop) | Electron 桌面外壳与打包 |
-| [packages/cli](packages/cli) | 命令行入口 |
-| [packages/protocol](packages/protocol) | 共享类型与协议 |
-| [packages/recovery](packages/recovery) | 版本验证与独立恢复运行时 |
-| [integrations/hindsight](integrations/hindsight) | 双 Bank 记忆授权扩展 |
+| [`packages/hub`](packages/hub) | 主脑编排器、任务看板、HTTP/WS 服务、工具体系、记忆、密钥库与 SQLite 账本 |
+| [`packages/env`](packages/env) | 执行节点、OS 沙箱、暂存工作区、电脑操作与外部 Agent 驱动 |
+| [`packages/web`](packages/web) | React 19 + Vite + Tailwind CSS v4 + HeroUI v3 工作台 |
+| [`packages/desktop`](packages/desktop) | Electron macOS 桌面外壳、原生菜单、快捷键与打包脚本 |
+| [`packages/cli`](packages/cli) | 命令行入口与终端 TUI |
+| [`packages/protocol`](packages/protocol) | 共享领域类型、Schema、工具目录与通信协议 |
+| [`packages/recovery`](packages/recovery) | 制品清单验签、自动回退与独立 `moco-rescue` 运行时 |
+| [`integrations/hindsight`](integrations/hindsight) | Hindsight 1.2.1 进程内双 Bank 记忆授权扩展 |
+
+提交 PR 前请运行全量检查：
 
 ```sh
 pnpm typecheck
@@ -238,38 +234,41 @@ pnpm build
 pnpm test
 ```
 
-修改 Hindsight 集成时，还需安装 `uv` 并运行 Python 测试：
+修改 Hindsight 集成时，请同时运行 Python 测试套件（需要 `uv`）：
 
 ```sh
 pnpm test:hindsight
 ```
 
-欢迎提交问题、改进建议和 Pull Request。问题报告请附复现步骤与脱敏日志；贡献代码时说明行为变化，完成相关验证，并保持中英文 README 同步。版本变化见 [CHANGELOG](CHANGELOG.md)。
+欢迎提交 Issue、建议和 Pull Request。问题反馈请附复现步骤与脱敏日志，修改功能时请保持中英文 README 同步。更多细节见 [CHANGELOG.md](CHANGELOG.md)、[.env.example](.env.example)、[integrations/hindsight/README.md](integrations/hindsight/README.md) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 <a id="acknowledgements"></a>
 ## 致谢
 
-Moco 建立在开源项目与社区分享之上，感谢：
+Moco 建立在众多优秀开源项目与社区分享之上，特别感谢：
 
-- [Pi](https://github.com/earendil-works/pi)：Pi Durable、Pi Env、Pi AI、Pi Schema 和 Chord，为持久 Agent、模型接入与执行环境提供基础。
-- Vercel Labs 的 [json-render](https://github.com/vercel-labs/json-render)、[skills](https://github.com/vercel-labs/skills)、[agent-skills](https://github.com/vercel-labs/agent-skills)、[agent-browser](https://github.com/vercel-labs/agent-browser) 与 [agent-desktop](https://github.com/vercel-labs/agent-desktop)：提供生成式 UI、技能与电脑操作能力。
-- Moco 使用 [acp-kernel](https://github.com/ranxianglei/acp-kernel) 与 [Billion Context](https://github.com/ranxianglei/billion-context) 提供可选的长上下文与压缩扩展。
-- [Hindsight](https://github.com/vectorize-io/hindsight)：提供长期记忆能力。
-- [HeroUI](https://github.com/heroui-inc/heroui)：提供界面组件。
-- [LINUX DO](https://linux.do/)：感谢论坛中的交流、探索和知识分享。
+- [Pi](https://github.com/earendil-works/pi) — Pi Durable、Pi Env、Pi AI、Pi Schema 与 Chord 提供持久会话、模型接入与执行环境基础。
+- Vercel Labs — [json-render](https://github.com/vercel-labs/json-render)、[skills](https://github.com/vercel-labs/skills)、[agent-skills](https://github.com/vercel-labs/agent-skills)、[agent-browser](https://github.com/vercel-labs/agent-browser) 与 [agent-desktop](https://github.com/vercel-labs/agent-desktop)。
+- [acp-kernel](https://github.com/ranxianglei/acp-kernel) 与 [Billion Context](https://github.com/ranxianglei/billion-context) 提供可选长上下文压缩扩展。
+- [Hindsight](https://github.com/vectorize-io/hindsight) 提供双 Bank 长期语义记忆能力。
+- [HeroUI](https://github.com/heroui-inc/heroui) 提供 v3 界面组件库。
+- [Sherpa-ONNX](https://github.com/k2-fsa/sherpa-onnx) 提供本地离线语音识别能力。
+- [LINUX DO](https://linux.do/) 社区的交流与知识分享。
 
-更多依赖及许可信息见 [第三方许可声明](THIRD_PARTY_NOTICES.md)。
+完整依赖许可与保留归属见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 <a id="license"></a>
 ## 开源协议
 
-Moco 自有代码采用 **GNU Affero General Public License v3.0 only（AGPL-3.0-only）**，完整条款见 [LICENSE](LICENSE)。第三方依赖、随附技能与其他第三方材料保留各自的许可，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+Moco 原创代码采用 **GNU Affero General Public License v3.0 only（AGPL-3.0-only）**，完整条款见 [LICENSE](LICENSE)。第三方依赖、随附技能与其他上游材料保留各自许可，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 <a id="star-history"></a>
 ## Star History
 
-> Star 趋势图待补充：仓库公开后接入真实数据。
-
-嵌入方式见 [Star History 官方说明](https://www.star-history.com/blog/how-to-use-github-star-history/#how-to-embed-the-chart-in-your-readme)。
-
-<!-- 确定公开仓库地址后，在此添加对应仓库的 Star History 图。 -->
+<a href="https://www.star-history.com/?repos=moonoops%2Fmoco&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=moonoops/moco&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=moonoops/moco&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=moonoops/moco&type=Date" />
+ </picture>
+</a>

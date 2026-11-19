@@ -4,228 +4,229 @@
 
 <h1 align="center">Moco</h1>
 
-<p align="center"><strong>Your always-on agent, across devices.</strong></p>
+<p align="center"><strong>Your always-on personal SuperAgent, across devices.</strong></p>
 
 <p align="center">
   English | <a href="README.zh-CN.md">简体中文</a>
 </p>
 
 <p align="center">
+  <a href="https://github.com/moonoops/moco/releases"><img src="https://img.shields.io/github/v/release/moonoops/moco?color=blue" alt="Latest Release"></a>
+  <a href="https://github.com/moonoops/moco/stargazers"><img src="https://img.shields.io/github/stars/moonoops/moco?style=flat" alt="GitHub Stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPLv3-blue" alt="License: AGPLv3"></a>
   <img src="https://img.shields.io/badge/deployment-self--hosted-brightgreen" alt="Self-hosted">
+  <img src="https://img.shields.io/badge/node-%E2%89%A522.20-339933" alt="Node.js >= 22.20">
 </p>
 
-<!-- Add repository-specific Release and Stars badges once the public repository URL is set. Add a CI badge when a workflow exists. -->
+Moco is a self-hosted, always-on personal agent that stays continuous across your devices. You keep talking to the same Moco: it holds your shared identity and working relationship, coordinates built-in Workers and native external agents across different machines in isolated workspaces, and brings verified results back to one place—combining text, voice, Live calls, Generative UI, and background execution.
 
-Moco is a self-hosted personal agent that stays available across your devices. You keep talking to the same Moco: it maintains your shared working relationship, coordinates agents on different machines, and brings their results back to the conversation. Text, voice, interactive interfaces, and background tasks work together in one place.
-
-[Multiple devices](#multi-device) · [SuperAgent](#superagent) · [Multimodal interaction](#multimodal) · [Memory and sharing](#memory) · [Customization and recovery](#customization) · [Quick start](#quick-start)
-
-> Screenshot placeholder: the main conversation, topic list, task progress, and connected devices.
+[Multi-device](#multi-device) · [SuperAgent & Workers](#superagent) · [Multimodal & Voice](#multimodal) · [Memory & Security](#memory-security) · [Capabilities](#capabilities) · [Quick start](#quick-start) · [Development](#development)
 
 <a id="multi-device"></a>
-## One Moco, multiple devices
+## One Moco, across your devices
 
-Run a Host on your computer or server, then connect other devices. The Host's **Hub** runs the main agent, manages conversations and tasks, and stores their state. Each Device's **Env** provides an environment where tasks actually run.
+Run a **Host (`@moco/hub`)** on your computer or server, then connect additional **Execution Nodes (`@moco/env`)**. The Hub runs the persistent main agent, stores conversations and task state in a single SQLite ledger, and coordinates work. Each Env provides an isolated runtime where files, tools, browsers, desktops, and external agents actually run.
 
-```text
-Web / desktop / terminal clients
-               |
-        Host · Moco Hub
-     Main agent / conversations / tasks
-               |
-       +-------+-------+
-    Local Env  Device A  Device B
-     Files     Browser  Dev tools
-```
+![Moco multi-device architecture: clients connect to Host Moco Hub, which coordinates Local Env and remote execution nodes over reverse WebSocket tunnels](assets/readme/architecture-multi-device-en.jpg)
 
-The device you use to talk to Moco can be different from the one doing the work. Ask from your phone, have a Worker organize files on your computer, and delegate a coding task to another machine. A Host can also run its own local Env, so you can start on one computer and add devices later.
+- **Decoupled conversation and execution**: Ask from your phone or laptop while a Worker edits code on a workstation or operates a browser on another machine. A Host can also run its own local Env, so you can start on a single computer and add devices later.
+- **Resilient reverse tunnels (`/ws/env`)**: Execution nodes connect outbound to the Hub with per-node credentials—no public IP required on worker machines—and maintain cumulative-ACK stream resume buffers to survive brief network drops without losing output.
+- **Three ways to add devices**: Run a one-time pairing command (`moco join`), deploy automatically over SSH, or **paste a pairing invitation directly into chat** to join or re-associate a device.
+- **Device-aware routing**: Moco recognizes local signals (paths, `localhost` ports, desktop/browser references) and pins tasks to the intended device. When a target device is offline, Moco reports it instead of silently executing elsewhere.
+- **Optional Android companion pairing**: Supports QR-code pairing over a managed TLS connector, granular Android device permissions, and mobile notification delivery.
 
-Moco builds on [Pi Durable](https://github.com/earendil-works/pi/tree/main/packages/durable) for persistent agent sessions, [Pi Env](https://github.com/earendil-works/pi/tree/main/packages/env) for execution environments, and [Pi AI](https://github.com/earendil-works/pi/tree/main/packages/ai) for model access. Multiple clients connect to the same Hub and share the same Moco.
+Moco builds on [Pi Durable](https://github.com/earendil-works/pi/tree/main/packages/durable) for durable agent sessions, [Pi Env](https://github.com/earendil-works/pi/tree/main/packages/env) for execution environments, and [Pi AI](https://github.com/earendil-works/pi/tree/main/packages/ai) for unified model streaming and OAuth flows.
 
 <a id="superagent"></a>
-## SuperAgent: keep talking to the same Moco
+## SuperAgent: one main agent, parallel execution behind it
 
-### Different topics, the same agent
+### Different topics, the same Moco
 
-The main agent is your ongoing point of contact. It understands your requests, arranges work, follows progress, and reports back. Creating a topic opens another discussion space while keeping the same identity, relationship, and coordinating role. Each topic retains its own messages and task context.
+The main agent is your single ongoing point of contact. Creating a topic opens a dedicated workspace while keeping the same identity, relationship, and coordinating role. Each topic retains its own messages and task context, while permitted cross-topic history is searchable through a local SQLite FTS5 index. Client delivery uses `/ws/client` request acknowledgements (`hub.ack`) backed by an IndexedDB outbox for reliable resend.
 
-You might plan a trip in one topic and develop a project in another. Switching topics leaves dispatched work running, with results returned to the relevant topic. Moco draws on its shared identity and memory, the current topic, and permitted history retrieval to continue the conversation. Topic histories remain separate and are retrieved within their allowed scope.
+### Quasi-full-duplex: interrupt, steer, and switch topics
 
-### Add a thought while work is in progress
+You can keep talking while Moco is thinking, streaming a reply, or coordinating background Workers. Add a constraint, change direction, check progress, or switch to another topic—new input is absorbed at the next processing boundary and can steer running tasks (`moco_steer`) without waiting for long jobs to finish. Switching topics never cancels dispatched work; results return to their owning topic.
 
-You can send another message while Moco is thinking, replying, or waiting for a Worker. Add a constraint, correct the direction, ask for progress, or move on to another subject. New messages are picked up at subsequent processing boundaries; an in-flight tool operation may finish before a change takes effect.
+### Built-in Workers, subagents & parallel staged workspaces
 
-For example, ask Codex to fix a login problem, then add a requirement to preserve an existing API. Moco can pass that guidance to the running task. You can discuss the release plan in another topic while it continues, then return to the original topic for Moco's reviewed result. Ask explicitly to stop a task when you want to cancel it; changing topics does not cancel work.
+![Moco SuperAgent orchestration workflow: quasi-full-duplex input flows through the Moco Main Orchestrator to Built-in Workers and External Agents inside isolated OS sandboxes and parallel staged workspaces, delivering verified results back to the topic](assets/readme/architecture-superagent-en.jpg)
 
-### A main agent with a team behind it
+- **Six customizable built-in roles**: **Scout** (read-only reconnaissance), **Architect** (design & subagent orchestration), **Coder** (implementation & test verification), **Checker** (independent read-only audit), **Designer** (visual & interaction craft), and **Writer** (clear drafting & editing). Each role supports independent model, thinking effort, prompt, and permission overrides.
+- **Live Ticket Board & subagents**: Bounded concurrency scheduling with incremental board updates, retry/stop controls, escalation questions, and per-ticket subagents (`moco_subagent`) for complex multi-step work.
+- **Parallel staged workspaces**: Built-in and external code tasks can execute inside isolated copy-on-write / cloned task workspaces so concurrent Workers do not step on each other. Read-only violations are automatically discarded, and the main agent inspects staged diffs before applying or discarding changes.
+- **Tiered dynamic tool surface**: Tools are partitioned by audience (chat, settings, computer workers, Android workers) into resident, event-triggered, and deferred tiers to keep prompts focused and privileges minimal.
 
-Moco can split complex work among Workers with different roles, models, and devices. You do not have to manage a separate conversation with every agent or assemble their answers yourself.
+### Native external agents with task-scoped MCP
 
-```text
-You ask, add context, or change direction
-                    |
-          Moco coordinates the work
-                    |
-    Built-in Workers / Codex / Claude Code
-                    |
-       Work runs on the selected device
-                    |
-       Moco reviews and delivers results
-```
+Moco delegates seamlessly to external coding agents installed on your execution devices:
 
-Alongside built-in Workers, Moco can delegate to external agents such as Codex and Claude Code. They use their native clients, accounts, tools, and permission settings, with task-scoped Moco tools available for reporting and authorized context. Install and authenticate the relevant client on the execution device before using it.
+- **Supported**: **Codex** (App Server), **Claude Code** (native SDK/CLI), **Antigravity** (`agy acp`), and **DeepSeek Harness** (`dsh --profile acp`).
+- **Experimental**: **Grok Bot** local bridge (plus reserved setup guides for ChatGPT Dots and Meta Muse).
 
-Worker artifacts are staged for the main agent to inspect before publication to the conversation. For staged code tasks, Moco can inspect the diff and apply the accepted changes. Progress updates, decisions that need your input, and final delivery all come through the main agent; task details remain available when you want to look closer.
-
-> Demo placeholder: delegate a task → add a constraint mid-task → switch topics → review and receive the result from Moco.
+External agents run on their bound device using their own native accounts, tools, and permissions—Moco never asks for their credentials in chat—while exposing task-scoped Moco MCP tools (`moco_task_context`, `moco_task_report`, `moco_request_collaboration`, `moco_child_task`, authorized shared memory, and approved connections).
 
 <a id="multimodal"></a>
-## Multimodal and generative conversation
+## Multimodal, Generative UI, voice & workbench
 
-Moco accepts text, images, audio, video, and files. Media understanding depends on the selected model and configured processing tools. Its replies can also take a form suited to the task.
+![Moco multimodal and Live voice flow: text, images, audio, video, PDFs, offline Sherpa-ONNX ASR, TTS, and full-duplex Live calls flow into 20-component Generative UI cards, sandboxed HTML artifacts, and rich workbench viewers](assets/readme/architecture-multimodal-en.jpg)
 
-**Generative UI** lets the agent produce tables, charts, forms, choices, and sliders inside the conversation. Compare options, adjust parameters, or submit a choice; the structured response goes back to the agent to continue the work. Interactive elements come from a registered component catalog. For more flexible presentation, Moco can also deliver HTML artifacts in an isolated preview.
+### Rich multimodal conversation & Generative UI
 
-> Generative UI demo placeholder: compare options in a chart, adjust a form, and continue the conversation.
+Moco accepts text, images, audio, video, and arbitrary files, with inline media previews, a built-in PDF viewer (with per-file reading-position memory), syntax-highlighted code blocks, reply references, a conversation outline & library, and persistent source citations.
 
-**Full-duplex Live conversation** supports real-time voice, captions, and interruption. A Live session can use the current topic's context, hand work to the main agent, and receive task updates. Hanging up leaves already-dispatched tasks running. Configure a supported Live service before starting a call.
+- **Generative UI (`json-render` + HeroUI v3)**: The agent can render interactive components directly in the conversation from a 20-component registered catalog—including tables, bar/line charts, forms, single/multi-select choices, sliders, switches, checkboxes, tabs, disclosures, metrics, media, and code—and receive structured user submissions to continue the workflow.
+- **Sandboxed HTML artifacts**: For bespoke visualizations or interactive deliverables, Moco can publish self-contained HTML artifacts rendered inside an isolated preview sandbox.
 
-> Live demo placeholder: talk → interrupt and clarify → delegate work → receive an update.
+### Voice: offline ASR, TTS & full-duplex Live calls
 
-<a id="memory"></a>
-## Memory across topics, sharing with boundaries
+- **Speech-to-text (ASR)**: Supports local offline **Sherpa-ONNX** speech recognition as well as configured model providers.
+- **Text-to-speech (TTS)**: Supports **OpenAI**, **Gemini**, and **MiniMax** (CN / Global) with configurable voices and speed.
+- **Full-duplex Live calls**: Real-time voice conversations with live transcripts and barge-in interruption via **OpenAI**, **Gemini**, or **Vertex AI**. Live sessions share the active topic's context, can hand off background tasks to the main agent, and keep dispatched tasks running after you hang up.
 
-Moco stores conversation and task state in local SQLite on the Host, alongside its identity, relationship, and recent-work context. The main agent can retrieve permitted history from the current topic or other topics in the same project. Stored records make continuity possible; retrieval and context selection determine what the agent uses in a particular reply.
+### Web, macOS Desktop & terminal clients
 
-For longer-term semantic memory, enable the optional **Hindsight dual-bank integration**:
+- **Three-pane HeroUI v3 workbench (`@moco/web`, `@moco/desktop`)**: Light and dark themes, interactive animated Cat companion (`CatAvatar` with customizable picker), and keyboard shortcuts across Desktop and Web:
+  - `⌘/Ctrl+K` search conversations · `⌘/Ctrl+F` find in conversation · `⌘/Ctrl+\` / `⇧⌘/Ctrl+\` toggle left/right panels · `⌘/Ctrl+.` stop generation · `⇧⌘/Ctrl+C` copy last reply · `⌘/Ctrl+S` save · Desktop menu: `⌘/Ctrl+N` new topic · `⌘/Ctrl+,` settings · `⌘/Ctrl+1` return to main chat.
+- **Interactive terminal TUI (`@moco/cli`)**: Connect directly from the terminal with `moco dev` or `moco chat`.
 
-| Memory bank | Main agent | Worker |
-| --- | --- | --- |
-| Private bank | Read and write | No access |
-| Shared bank | Read only | Read and write |
+<a id="memory-security"></a>
+## Memory with boundaries & security by design
 
-Private memory supports your ongoing relationship with Moco. Shared memory holds project knowledge and work reports. Workers can recall relevant project knowledge when starting a task and retain their reports afterward, so later Workers can build on that experience. External agents receive authorized shared-memory access through task-scoped tools.
+![Moco dual-bank memory and zero-trust security architecture: Main Agent has read/write access to private identity documents and moco-core plus read-only access to moco-shared; OS-sandboxed Workers and External Agents have no access to private data, read/write access to moco-shared, and per-task approval gates for OS Keychain connections; backed by Ed25519-verified UI customization and moco-rescue](assets/readme/architecture-memory-security-en.jpg)
 
-Separate credentials and server-side authorization enforce these roles. The two banks may live in the same Hindsight service and database; isolation relies on authorization rules together with the device, file, and credential permissions around them.
+### Private identity & relationship documents
 
-Hindsight is disabled by default, and Moco works without it. See the [Hindsight integration guide](integrations/hindsight/README.md) for deployment and authorization details.
+Moco maintains two private documents in `<MOCO_STATE_DIR>/identity`—`identity-agreement.md` (edited via explicit dual-confirmation Diff review with SHA-256 + CAS locking and backups) and `relationship.md` (editable by you or tidied autonomously when idle). Both are **strictly private to the main agent** and physically inaccessible to Workers and external agents.
 
-<a id="customization"></a>
-## Configure through conversation, customize with a recovery path
+### Optional Hindsight dual-bank semantic memory
 
-Ask the main agent to configure capabilities, change settings, or combine tools into a workflow. For interface customization, the macOS desktop app provides a managed Web UI modification process: prepare a separate candidate, build and validate it, schedule it for the next launch, and check that the new interface becomes ready. A failed launch can fall back to a compatible local version.
+Enable the optional **Hindsight** integration for long-term semantic recall, reflection, and knowledge pages—either with **one-click local managed deployment** from Settings or by connecting an existing `hindsight-api-slim==1.2.1` instance loaded with `integrations/hindsight`. Role isolation (`moco-core` vs. `moco-shared`) is enforced server-side inside the Hindsight process via separate Bearer credentials (`MOCO_HINDSIGHT_ROUTER_API_KEY` vs. `MOCO_HINDSIGHT_WORKER_API_KEY`) with negative probe verification on startup. Hindsight is disabled by default; see [integrations/hindsight/README.md](integrations/hindsight/README.md) for deployment details.
 
-An independent rescue tool, `moco-rescue`, remains available outside the main interface. It can inspect the installation, roll back an application version, and export diagnostic information for a third-party agent of your choice to investigate. Managed source customization currently covers the desktop Web interface. Recovery changes the application version; it does not undo database changes or actions already performed in external systems.
+### Credential vault, OS sandboxing & recovery
+
+- **OS keychain vault & Connections**: Store credentials in the system keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager) for built-in app connectors (**Apple Messages**, **Apple Mail**, **GitHub**, **Figma**), **SSH** hosts, and custom credentials. Inbound secrets pasted into chat are detected and redacted automatically before hitting history; Workers must request explicit per-task approval to use a connection.
+- **Provider credential isolation**: Built-in OAuth subscriptions and custom API keys live under isolated provider IDs so they never clobber each other, and stored API keys are strictly bound to their saved service origin.
+- **OS-level Worker sandboxing**: Built-in Workers run inside macOS Seatbelt, Linux Bubblewrap, or Windows restricted isolation, shielding Hub state and sensitive home directories (`.ssh`, `.gnupg`, `.kube`, `.aws`, `.claude`, `.codex`, `.gemini`).
+- **Managed desktop UI customization & `moco-rescue`**: On macOS Desktop, Moco supports modifying its own Web UI in an isolated candidate build, verifying startup readiness, checking Ed25519 signatures for official updates, and automatically rolling back failed launches. The standalone `moco-rescue` CLI remains outside the main app to inspect releases, roll back, enter safe mode, clean up stale executions, or export redacted diagnostics.
+
+<a id="capabilities"></a>
+## Capabilities at a glance
+
+![Moco Hub modular capability engine covering Models & Auth, Web Search, Computer Use, Skills & Context, Image & Video, Connections & Vault, Scheduled Tasks, and Settings & Recovery](assets/readme/architecture-capabilities-en.jpg)
+
+<details>
+<summary>View full capability & provider breakdown</summary>
+
+| Capability | Details |
+| --- | --- |
+| **Models & auth** | Built-in OAuth subscriptions (via Pi AI lazy-oauth: OpenAI/Codex, Anthropic, OpenRouter, GitHub Copilot, Kimi Coding, xAI, etc.) plus API presets (OpenAI, Gemini, Vertex AI, Anthropic, DeepSeek, OpenRouter, xAI, Moonshot, MiniMax, Z.AI, Qwen, Groq, Mistral, and custom OpenAI-compatible gateways). |
+| **Web search** | Multi-plan search with priority fallback: keyless **Exa** MCP preset, **Tavily**, **Brave**, and optional **DuckDuckGo**, plus per-model native web search toggle and persistent citations. |
+| **Computer use** | Enabled by default per Env via `agent-browser` and `agent-desktop`, with live preview streaming and OS permission checks. Control per device with `MOCO_COMPUTER_USE`. |
+| **Skills & extensions** | Conditional preset skills (browser/desktop automation, React & web design guidelines, GenUI cards, capability setup), Vercel `skills` discovery & project skills, plus optional **Billion Context / `acp-kernel`** long-context compression. |
+| **Image & video** | Built-in OpenAI & Gemini image generation/editing presets (with multi-reference support) plus browser-session Flow integration for media jobs. |
+| **Connections** | Keychain-backed Apple Messages, Apple Mail, GitHub, Figma, SSH, and custom credentials with chat redaction and per-task approval gates. |
+| **Scheduled tasks** | One-time and recurring tasks scheduled and managed in natural conversation. |
+| **Settings assistant** | Dedicated conversational assistant inside Settings to configure models, search, Hindsight, devices, skills, and connections safely. |
+
+</details>
 
 <a id="quick-start"></a>
 ## Quick start
 
-Start with a complete Moco installation on one computer. You need **Node.js ≥ 22.20.0** and **pnpm 11.25.0**. Run these commands from the source repository root:
+### 1. Run locally from source
+
+Requires **Node.js ≥ 22.20.0** and **pnpm 11.25.0**:
 
 ```sh
+git clone https://github.com/moonoops/moco.git
+cd moco
 pnpm install
 cp .env.example .env
 ```
 
-Edit `.env` and set `MOCO_AUTH_TOKEN` to a unique random secret; at least 32 characters is recommended. Replace the example `MOCO_BASE_URL`, `MOCO_API_KEY`, and `MOCO_MODEL` values with your provider settings, or clear those example values and configure the model in the interface after launch. See [.env.example](.env.example) for available options.
+Edit `.env` and set `MOCO_AUTH_TOKEN` to a unique random secret (at least 32 characters recommended). Replace `MOCO_BASE_URL`, `MOCO_API_KEY`, and `MOCO_MODEL` with your provider settings—or clear them and configure models/OAuth directly in the Web UI after launch. See [.env.example](.env.example) for all options.
 
 ```sh
 pnpm build
 node packages/cli/dist/bin.js open
 ```
 
-`open` starts the Hub and local Env, then opens an authenticated browser page. The default local address is `http://localhost:7788`. Configure a model, add a project when you need work in a specific directory, and start a conversation.
+`open` starts the Hub and built-in local Env, then opens an authenticated browser window at `http://localhost:7788`.
 
-On **macOS 14 or later**, you can also build and install the desktop development app for your machine's architecture:
+### 2. macOS desktop app (macOS 14+)
+
+Build and install the standalone macOS desktop app (`Moco Dev`) for your machine's architecture:
 
 ```sh
 pnpm desktop:install --launch
 ```
 
-The desktop development app, **Moco Dev**, has its own settings and data, separate from the source CLI's `.env`. Configure it through the app. For development, `pnpm dev` builds and opens the TUI in an interactive terminal; `pnpm desktop:dev` builds and starts the desktop app.
+The desktop app maintains its own data directory and settings separate from the source workspace's `.env`. For iterative development, use `pnpm desktop:dev` (desktop app) or `pnpm dev` (terminal TUI).
 
-<a id="connect-devices"></a>
-## Connect more devices
+### 3. Connect additional devices & browser runtime
 
-Open **Settings → Device interconnection → Add device**, then run the generated installation and pairing command on the target device. SSH-assisted deployment is also available. Each Env uses its own node credentials; the Hub's management token is reserved for clients and administration.
+- **Add a device**: Open **Settings → Device interconnection → Add device** and run the generated one-time pairing command on the target machine, use SSH-assisted deployment, or paste the invitation directly into chat. On a device with Moco already built from source, run:
+  ```sh
+  node packages/cli/dist/bin.js join --hub <host-address> --invite <invitation>
+  ```
+- **Browser automation runtime**: Browser tasks require Chrome or Chromium. On a source-based execution node, install the managed browser binary with:
+  ```sh
+  pnpm --filter @moco/env exec agent-browser install
+  ```
 
-If you have already built Moco from source on the target device, you can use:
+### CLI quick reference
 
-```sh
-node packages/cli/dist/bin.js join --hub <host-address> --invite <invitation>
-```
-
-Replace the placeholders with the invitation's address and credentials, and ensure the device can reach the Host. After pairing, `open` or `dev` uses the saved connection. Associate a project with the device and an authorized working directory. When a target is offline, Moco reports it instead of silently running the task elsewhere.
-
-<a id="capabilities"></a>
-## Add capabilities as you need them
-
-| Capability | Setup and use |
+| Command | Purpose |
 | --- | --- |
-| Models and roles | Choose the main agent's model and configure Worker roles in settings. |
-| External agents | Install and authenticate the client on its device, then add its connection and roles. |
-| Skills and MCP | Discover skills and connect tools or services for the work you do. |
-| Browser and desktop operation | Available by default on execution devices; install the required runtime and grant OS permissions. Use `MOCO_COMPUTER_USE` to select or disable these capabilities per device. |
-| Projects and working directories | Associate topics, files, and tasks with a project on a selected device. |
-| Generative UI and artifacts | Interact with generated content in the conversation and receive reviewed deliverables. |
-| Live voice | Configure the Live provider, model, credentials, and voice in call settings. |
-| Images and video | Configure the relevant service and model or a browser session on the execution device. |
-| Long-term memory | Configure Hindsight locally or connect an existing compatible service. |
-| Long-context extension | Optionally enable the managed Billion Context / acp-kernel integration. |
-| Scheduled work | Ask Moco to arrange a one-time or recurring task. |
-
-Billion Context is disabled by default; Pi Durable remains responsible for the compression lifecycle when the extension is enabled. Model providers and external services may require your own accounts or credentials.
-
-Browser automation needs Chrome or Chromium. To install the browser runtime on a source-based execution device:
-
-```sh
-pnpm --filter @moco/env exec agent-browser install
-```
+| `node packages/cli/dist/bin.js open [--no-open]` | Start Hub + local Env and open the authenticated Web UI |
+| `node packages/cli/dist/bin.js dev [--port 7788] [--no-tui] [--standalone]` | Connect to paired Hub or start a standalone local Hub + TUI |
+| `node packages/cli/dist/bin.js join --hub <url> --invite <token> [--root ~/Moco]` | Pair this machine as an Env node under an existing Hub |
+| `node packages/cli/dist/bin.js hub [--host 0.0.0.0] [--port 7788] [--no-local-env]` | Run a standalone Hub server |
+| `node packages/cli/dist/bin.js env --connect <ws-url> --id <env-id> --token <node-token>` | Run a standalone execution node connected to a Hub |
+| `node packages/cli/dist/bin.js chat [--url ws://127.0.0.1:7788/ws/client] [--token <token>]` | Open the interactive terminal TUI client |
+| `moco-rescue <inspect\|versions\|rollback\|export\|gc\|safe-mode\|cleanup> --data-dir <path>` | Independent version diagnosis, rollback, and recovery tool |
 
 <a id="platforms"></a>
 ## Platform support
 
-| Entry point or component | Current scope |
+| Component | Current scope |
 | --- | --- |
-| Web client | Modern browsers on computers, phones, and tablets. |
-| macOS desktop app | macOS 14+; source builds target the current machine's architecture. |
-| Hub | Node.js service; task execution also needs a working Env. |
-| macOS Env | Local isolated execution; computer operation needs the appropriate OS permissions. |
-| Linux / Windows Env | Execution nodes with the platform's isolation backend and runtime dependencies configured. |
-
-Built-in Worker execution requires its supported isolation backend. Browser and desktop automation depend on the execution device; desktop operation needs an interactive graphical session. Headless servers are suitable for tasks that do not require a desktop. The desktop app's packaging scripts currently target macOS.
+| **Web client** | Modern desktop, tablet, and mobile browsers |
+| **Desktop app** | macOS 14+ (Electron shell + portable Node runtime; packaging currently targets macOS) |
+| **Hub** | Node.js ≥ 22.20 service (macOS / Linux / Windows); task execution requires at least one connected Env |
+| **macOS Env** | Built-in Seatbelt sandbox; desktop automation requires Accessibility & Screen Recording permissions |
+| **Linux / Windows Env** | Execution nodes with Bubblewrap (Linux) or restricted Windows isolation; desktop automation requires an interactive graphical session |
 
 <a id="faq"></a>
 ## FAQ
 
-**Do I need multiple devices?**
+**Do I need multiple devices to use Moco?**
+No. One computer can run both the Hub and its built-in local Env; add other devices whenever you want.
 
-No. One computer can run the Hub and local Env. Add other devices when you need them.
+**Does self-hosting mean models run locally?**
+You self-host the Hub, SQLite state, identity documents, and execution nodes. Inference runs wherever your configured providers point—local models or cloud APIs/OAuth subscriptions.
 
-**Does self-hosting mean the model runs locally?**
-
-You host the Hub and conversation state. Where inference happens depends on your configuration. Cloud models and external tools send the relevant requests to their respective services.
-
-**Why can't I record audio or start Live from my phone?**
-
-Recording and Live need an HTTPS or `localhost` secure context and microphone permission. A plain HTTP LAN IP address does not meet that requirement.
+**Why can't I record voice or start a Live call from my phone over LAN HTTP?**
+Browser microphone capture and Live voice require a secure context (`https://` or `localhost`) plus microphone permission. Plain `http://<lan-ip>` origins are restricted by browsers.
 
 <a id="development"></a>
-## Development and contributions
+## Development & contributions
 
-Moco uses TypeScript and pnpm workspaces.
+Moco is a TypeScript + pnpm monorepo:
 
-| Directory | Responsibility |
+| Package | Responsibility |
 | --- | --- |
-| `packages/hub` | Main agent, orchestration, HTTP/WS service, and persistent state. |
-| `packages/env` | Execution nodes, devices, and external agent clients. |
-| `packages/web` | React conversation and settings interface. |
-| `packages/desktop` | Electron desktop shell and packaging. |
-| `packages/cli` | CLI and terminal interface. |
-| `packages/protocol` | Shared types and schemas. |
-| `packages/recovery` | Release verification and independent rescue runtime. |
-| `integrations/hindsight` | Dual-bank memory authorization extension. |
+| [`packages/hub`](packages/hub) | Main agent orchestrator, Ticket Board, HTTP/WS server, tools, memory, vault & SQLite ledger |
+| [`packages/env`](packages/env) | Execution nodes, OS sandboxing, staged workspaces, computer use & external agent drivers |
+| [`packages/web`](packages/web) | React 19 + Vite + Tailwind CSS v4 + HeroUI v3 workbench |
+| [`packages/desktop`](packages/desktop) | Electron macOS desktop shell, native menus, shortcuts & packager |
+| [`packages/cli`](packages/cli) | CLI entrypoint and terminal TUI |
+| [`packages/protocol`](packages/protocol) | Shared domain types, schemas, tool catalogs & protocol contracts |
+| [`packages/recovery`](packages/recovery) | Release manifest verification, auto-rollback & standalone `moco-rescue` runtime |
+| [`integrations/hindsight`](integrations/hindsight) | In-process dual-bank memory authorization extension for Hindsight 1.2.1 |
+
+Run the full verification suite before opening a PR:
 
 ```sh
 pnpm typecheck
@@ -233,40 +234,41 @@ pnpm build
 pnpm test
 ```
 
-Changes to the Hindsight integration also require its Python tests, using `uv`:
+If you change the Hindsight integration, also run its Python test suite (requires `uv`):
 
 ```sh
 pnpm test:hindsight
 ```
 
-Issues, suggestions, and pull requests are welcome. Include reproduction steps and redacted diagnostics in bug reports. Explain the behavior changed by a contribution, run the relevant checks, and keep the English and Chinese READMEs in sync.
-
-See the [changelog](CHANGELOG.md), [configuration example](.env.example), [Hindsight guide](integrations/hindsight/README.md), and [third-party notices](THIRD_PARTY_NOTICES.md) for more detail.
+Issues, ideas, and pull requests are welcome. Include reproduction steps and redacted logs in bug reports, keep English and Chinese READMEs in sync, and check [CHANGELOG.md](CHANGELOG.md), [.env.example](.env.example), [integrations/hindsight/README.md](integrations/hindsight/README.md), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
 
 <a id="acknowledgements"></a>
 ## Acknowledgements
 
-Moco builds on open-source projects and knowledge shared by their communities. Thank you to:
+Moco stands on the shoulders of open-source projects and communities. Thank you to:
 
-- [Pi](https://github.com/earendil-works/pi): Pi Durable, Pi Env, Pi AI, Pi Schema, and Chord provide the foundations for persistent agents, model access, and execution environments.
-- Vercel Labs: [json-render](https://github.com/vercel-labs/json-render), [skills](https://github.com/vercel-labs/skills), [agent-skills](https://github.com/vercel-labs/agent-skills), [agent-browser](https://github.com/vercel-labs/agent-browser), and [agent-desktop](https://github.com/vercel-labs/agent-desktop) support generative UI, skills, and computer operation.
-- Moco uses [acp-kernel](https://github.com/ranxianglei/acp-kernel) and the [Billion Context](https://github.com/ranxianglei/billion-context) approach for its optional long-context and compression integration.
-- [Hindsight](https://github.com/vectorize-io/hindsight) for long-term memory.
-- [HeroUI](https://github.com/heroui-inc/heroui) for interface components.
-- [LINUX DO](https://linux.do/) for the discussions, experiments, and knowledge shared by its community.
+- [Pi](https://github.com/earendil-works/pi) — Pi Durable, Pi Env, Pi AI, Pi Schema, and Chord power persistent sessions, model streaming, and execution environments.
+- Vercel Labs — [json-render](https://github.com/vercel-labs/json-render), [skills](https://github.com/vercel-labs/skills), [agent-skills](https://github.com/vercel-labs/agent-skills), [agent-browser](https://github.com/vercel-labs/agent-browser), and [agent-desktop](https://github.com/vercel-labs/agent-desktop).
+- [acp-kernel](https://github.com/ranxianglei/acp-kernel) and [Billion Context](https://github.com/ranxianglei/billion-context) for optional long-context compression.
+- [Hindsight](https://github.com/vectorize-io/hindsight) for dual-bank long-term semantic memory.
+- [HeroUI](https://github.com/heroui-inc/heroui) for v3 interface components.
+- [Sherpa-ONNX](https://github.com/k2-fsa/sherpa-onnx) for local offline speech recognition.
+- [LINUX DO](https://linux.do/) for community discussions and knowledge sharing.
 
-See [third-party notices](THIRD_PARTY_NOTICES.md) for dependency licenses and retained attributions.
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for dependency licenses and retained attributions.
 
 <a id="license"></a>
 ## License
 
-Moco's original code is licensed under the **GNU Affero General Public License v3.0 only (AGPL-3.0-only)**. See [LICENSE](LICENSE) for the full terms. Third-party dependencies, bundled skills, and other third-party materials retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Moco's original code is licensed under the **GNU Affero General Public License v3.0 only (AGPL-3.0-only)**. See [LICENSE](LICENSE) for full terms. Third-party dependencies, bundled skills, and upstream assets retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 <a id="star-history"></a>
 ## Star History
 
-> Star chart placeholder: connect the public repository once its URL is available.
-
-See the [official Star History embedding guide](https://www.star-history.com/blog/how-to-use-github-star-history/#how-to-embed-the-chart-in-your-readme).
-
-<!-- Add the repository's Star History chart here once the public URL is set. -->
+<a href="https://www.star-history.com/?repos=moonoops%2Fmoco&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=moonoops/moco&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=moonoops/moco&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=moonoops/moco&type=Date" />
+ </picture>
+</a>
