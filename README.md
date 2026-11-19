@@ -156,7 +156,7 @@ node packages/cli/dist/bin.js open
 
 ### 2. macOS desktop app (macOS 14+)
 
-- **Direct install (Apple Silicon)**: Download **`Moco-v0.1.0-macOS-arm64.dmg`** from [GitHub Releases](https://github.com/moonoops/moco/releases/latest), open it, and drag **`Moco Dev.app`** into **`Applications`**. Because this release uses ad-hoc signing, if macOS Gatekeeper blocks the first launch, run `xattr -cr "/Applications/Moco Dev.app"` once and reopen.
+- **Direct install (Apple Silicon)**: Download **`Moco-v0.1.1-macOS-arm64.dmg`** from [GitHub Releases](https://github.com/moonoops/moco/releases/latest), open it, and drag **`Moco Dev.app`** into **`Applications`**. Because this release uses ad-hoc signing, if macOS Gatekeeper blocks the first launch, run `xattr -cr "/Applications/Moco Dev.app"` once and reopen.
 - **Build from source**: Build and install the standalone desktop app for your machine's architecture:
 
 ```sh

@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.1.1 (2026-11-19)
+
+安全地基加固、关键高危边界交互确认与日常体验打磨版本（`v0.1.1`）。
+
+### Security & Runtime Hardening
+
+- **Linux 沙箱与离线定制构建加固（`@moco/env`、`@moco/hub`）**
+  - `network.offline === true` 时彻底跳过代理套接字挂载与代理环境变量注入，代理出口额外拦截 RFC1918 内网、Tailscale CGNAT（`100.64/10`）、IPv6 ULA 与组播地址。
+  - 受管源码定制的 `typecheck`、`build`、`test` 阶段默认运行在真离线模式；仅探测阶段放行 `localhost`，仅依赖安装阶段放行 `install`。
+- **外部智能体路径与沙箱 fail-closed 边界（`@moco/env`）**
+  - 外部 ACP 驱动文件操作新增软链 / 悬空软链规范化校验，阻断受保护的系统与 Moco 凭据路径，限制 `staged` 模式不越出暂存目录，并在 `read_only` 模式下禁止 `terminal/create`。
+  - 缺少隔离器或约束工作目录时强制 fail-closed，不再静默降级到裸执行。
+- **Web CSP、URL Token 擦除与 Peer 本地代理鉴权（`@moco/hub`、`@moco/env`、`@moco/web`）**
+  - 静态 HTML 响应补齐严格 `Content-Security-Policy`；前端吸收 `?token=` 后立即通过 `history.replaceState` 从地址栏清除。
+  - 本地 Peer 共享代理默认强制 Bearer Token 鉴权，不在日志中输出明文凭据。
+- **运行时稳定性修复（`@moco/hub`）**
+  - 修复 Watchdog 运行态追踪未 `await`、Watchdog/Recovery 缺少 `moco_inspect` 注入、级联停止子任务未串行化、非 `auto` 角色思考强度未透传、Worker `bash(timeout)` 缺上限保护，以及草稿上传文件定期自动清理。
+
+### High-Risk Redline Confirmations
+
+- **仅在 3 条高危红线处弹出原生内嵌确认卡片（普通操作保持零打扰）**
+  - 持久化应用定制构建（`moco_customization(action="validate")`）前需用户点击卡片确认，绑定内容指纹防篡改。
+  - 外部智能体权限请求（`moco_external_permission`）阻止模型替用户静默批准，原样展示外部工具原始选项，点击后立即执行。
+  - 暂存改动合并（`moco_apply_staged_changes`）普通代码改动直通；仅涉及敏感路径或冲突强制合并时要求用户确认。
+
+### UX & Desktop Refinements
+
+- **首启主对话一键连接模型（`@moco/web`）**：未配置默认模型时，主对话输入框直接展示「连接模型」按钮，一键跳转至「设置 → 模型」。
+- **桌面端后台任务系统通知（`@moco/desktop`、`@moco/web`）**：窗口失焦或处于后台时，后台任务实时进入完成 / 需确认 / 失败状态后发送 macOS 原生通知，点击即可切回 Moco 窗口。
+
 ## v0.1.0 (2026-11-17)
 
 Moco 首阶段正式基线版本（`v0.1.0`），基于 `@earendil-works/pi-durable` 与 `@earendil-works/pi-env` 构建的个人常驻超级智能体工作台。
