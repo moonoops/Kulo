@@ -128,8 +128,21 @@ export interface OrchestratorController {
   closeTicket(params: CloseTicketParams, context: Context): Promise<TicketCardView>;
   inspectWorker(ticketId: string, context: Context): Promise<WorkerInspectResult>;
   respondExternalAgentPermission?(ticketId: string, permissionId: string, choiceId: string, runEpoch: number, context: Context): Promise<WorkerInspectResult>;
+  confirmExternalAgentPermission?(
+    ticketId: string,
+    permissionId: string,
+    choiceId: string,
+    runEpoch: number,
+    source: { conversationId: number; callId: string },
+    context: Context,
+  ): Promise<WorkerInspectResult | Record<string, unknown>>;
   inspectStagedDiff?(ticketId: string, filePath: string | undefined, context: Context): Promise<StagedWorkspaceDiffDetail>;
   applyStagedChanges?(params: ApplyStagedChangesParams, context: Context): Promise<StagedWorkspaceApplyResult>;
+  applyStagedChangesFromTool?(
+    params: ApplyStagedChangesParams,
+    source: { conversationId: number; callId: string },
+    context: Context,
+  ): Promise<StagedWorkspaceApplyResult | Record<string, unknown>>;
   getBoardSnapshot(context: Context): Promise<{
     tickets: TicketCardView[];
     slots: SlotSummary;
@@ -379,10 +392,19 @@ export function createOrchestratorToolsExtension(
     deferred: true,
     parameters: obj({ ticket_id: str(), run_epoch: num(), permission_id: str(), choice_id: str() }),
     execute: async (args, api, context) => {
-      if (!(await isMainOrchestratorApi(api, context)).allowed || !controller.respondExternalAgentPermission) {
+      if (!(await isMainOrchestratorApi(api, context)).allowed || (!controller.confirmExternalAgentPermission && !controller.respondExternalAgentPermission)) {
         return { isError: true, output: [{ type: "text" as const, text: "Only the Moco Orchestrator may relay native Agent permission decisions." }] };
       }
-      const result = await controller.respondExternalAgentPermission(args.ticket_id, args.permission_id, args.choice_id, args.run_epoch, context);
+      const result = controller.confirmExternalAgentPermission
+        ? await controller.confirmExternalAgentPermission(
+            args.ticket_id,
+            args.permission_id,
+            args.choice_id,
+            args.run_epoch,
+            { conversationId: Number(api.conversationId), callId: api.callId },
+            context,
+          )
+        : await controller.respondExternalAgentPermission!(args.ticket_id, args.permission_id, args.choice_id, args.run_epoch, context);
       return { output: [{ type: "text" as const, text: JSON.stringify(result) }] };
     },
   });
@@ -418,16 +440,19 @@ export function createOrchestratorToolsExtension(
       allow_conflicts: opt(bool({ description: "Only set true after explicit user confirmation when source files changed concurrently." })),
     }),
     execute: async (args, api, context) => {
-      if (!(await isMainOrchestratorApi(api, context)).allowed || !controller.applyStagedChanges) {
+      if (!(await isMainOrchestratorApi(api, context)).allowed || (!controller.applyStagedChangesFromTool && !controller.applyStagedChanges)) {
         return { isError: true, output: [{ type: "text" as const, text: "Only the Moco Orchestrator may apply staged workspace changes." }] };
       }
-      const applied = await controller.applyStagedChanges({
+      const applyInput: ApplyStagedChangesParams = {
         commandId: args.command_id,
         ticketId: args.ticket_id,
         paths: args.paths,
         allowConflicts: args.allow_conflicts,
         originConversationId: Number(api.conversationId),
-      }, context);
+      };
+      const applied = controller.applyStagedChangesFromTool
+        ? await controller.applyStagedChangesFromTool(applyInput, { conversationId: Number(api.conversationId), callId: api.callId }, context)
+        : await controller.applyStagedChanges!(applyInput, context);
       return { output: [{ type: "text" as const, text: JSON.stringify(applied, null, 2) }] };
     },
   });

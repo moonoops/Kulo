@@ -203,7 +203,16 @@ import { extractAgentDispatchIntent, namedDispatchDevices, resolveAgentDispatch,
 import { createAppearanceCustomizationToolsExtension } from "./tools-appearance-customization.js";
 import { createCustomizationToolsExtension } from "./tools-customization.js";
 import { createDesktopCustomizationService } from "./customization-host.js";
-import type { MocoCustomizationService } from "./customization.js";
+import type { CustomizationCaller, MocoCustomizationService } from "./customization.js";
+import {
+  MocoActionConfirmations,
+  buildCustomizationConfirmCard,
+  buildExternalPermissionCard,
+  buildStagedApplyConfirmCard,
+  customizationValidateFingerprint,
+  externalPermissionFingerprint,
+  stagedApplyFingerprint,
+} from "./action-confirmations.js";
 import { API_KEY_ORIGIN_ENV } from "./providers.js";
 import { executeHindsightTool, isSafeMemoryText, probeHindsightConnection, resolveHindsightToken, resolveHindsightSharedReadToken } from "./hindsight.js";
 import {
@@ -1009,6 +1018,7 @@ export class MocoHub implements OrchestratorController {
   readonly uploads: MocoUploadStore;
   readonly settingsAssistant: SettingsAssistant;
   readonly uiCards: MocoUiCards;
+  readonly actionConfirmations: MocoActionConfirmations;
   readonly projects: MocoProjects;
   readonly skills: MocoSkills;
   readonly capabilities: MocoCapabilities;
@@ -1549,6 +1559,7 @@ export class MocoHub implements OrchestratorController {
       }
       void this.settingsAssistant.refreshIfConversation(card.originConversationId);
     } });
+    this.actionConfirmations = new MocoActionConfirmations({ harness: this.harness, uiCards: this.uiCards });
     this.deviceJoinStaging = params.deviceJoinStaging;
     this.settingsAssistant = new SettingsAssistant({
       harness: this.harness,
@@ -2264,8 +2275,10 @@ export class MocoHub implements OrchestratorController {
       closeTicket: (p, ctx) => hubRef!.closeTicket(p, ctx),
       inspectWorker: (id, ctx) => hubRef!.inspectWorker(id, ctx),
       respondExternalAgentPermission: (id, permissionId, choiceId, epoch, ctx) => hubRef!.respondExternalAgentPermission(id, permissionId, choiceId, epoch, ctx),
+      confirmExternalAgentPermission: (id, permissionId, choiceId, epoch, source, ctx) => hubRef!.#confirmExternalAgentPermission(id, permissionId, choiceId, epoch, source, ctx),
       inspectStagedDiff: (id, filePath, ctx) => hubRef!.inspectStagedDiff(id, filePath, ctx),
       applyStagedChanges: (p, ctx) => hubRef!.applyStagedChanges(p, ctx),
+      applyStagedChangesFromTool: (p, source, ctx) => hubRef!.#applyStagedChangesFromTool(p, source, ctx),
       getBoardSnapshot: (ctx) => hubRef!.getBoardSnapshot(ctx),
       readIdentityFiles: (f) => hubRef!.readIdentityFiles(f),
       proposeIdentity: (content, summary) => hubRef!.personality.proposeIdentity(content, summary),
@@ -2325,6 +2338,7 @@ export class MocoHub implements OrchestratorController {
     const customizationExt = config.customization ? createCustomizationToolsExtension({
       service: () => hubRef!.customizationService(),
       caller: (api) => hubRef!.#customizationCaller(api.conversationId),
+      confirmValidate: (sessionId, api, caller, service) => hubRef!.#confirmCustomizationValidate(sessionId, api, caller, service),
     }) : undefined;
     const appearanceCustomizationExt = createAppearanceCustomizationToolsExtension({ read: () => hubRef!.settingsAssistant.readAppearanceCustomization(),
       propose: (customization, commandId) => hubRef!.settingsAssistant.proposeAppearanceCustomization(customization, commandId) });
@@ -6094,6 +6108,189 @@ export class MocoHub implements OrchestratorController {
     return ticket;
   }
 
+  async #confirmCustomizationValidate(
+    sessionId: string,
+    api: { conversationId: unknown; callId: string },
+    caller: CustomizationCaller,
+    service: MocoCustomizationService,
+  ): Promise<Record<string, unknown> | undefined> {
+    if (!caller.canModify) return undefined;
+    const status = await service.status(caller);
+    const session = status.session && status.session.id === sessionId ? status.session : undefined;
+    if (!session || session.status === "pending" || !session.changedFiles?.length) return undefined;
+    const conversationId = Number(api.conversationId);
+    const state = await this.harness.snapshot(MocoStateDoc, BACKGROUND_CONTEXT);
+    const topicId = state?.conversationToTopic?.[String(conversationId)];
+    const fingerprint = customizationValidateFingerprint(session.id, session.revision, session.changedFiles);
+    const existing = await this.actionConfirmations.lookup(conversationId, "customization_validate", fingerprint);
+    if (existing?.status === "approved") return undefined;
+    const built = buildCustomizationConfirmCard(session.summary, session.changedFiles);
+    const { confirmation } = await this.actionConfirmations.ensurePendingCard({
+      conversationId,
+      ...(topicId ? { topicId } : {}),
+      callId: api.callId,
+      kind: "customization_validate",
+      fingerprint,
+      cardInput: built.input,
+      logicalIds: built.logicalIds,
+      payload: {
+        kind: "customization_validate",
+        sessionId: session.id,
+        revision: session.revision,
+        summary: session.summary,
+        changedFiles: [...session.changedFiles],
+      },
+    });
+    return {
+      status: "awaiting_user_confirmation",
+      cardId: confirmation.cardId,
+      sessionId: session.id,
+      revision: session.revision,
+      changedFiles: session.changedFiles,
+      message: "界面源码定制需要用户在聊天卡片中点击确认后才会执行构建与下次启动替换。已展示确认卡片，请简短告知用户并结束当前轮次。",
+    };
+  }
+
+  async #confirmExternalAgentPermission(
+    ticketId: string,
+    permissionId: string,
+    choiceId: string,
+    runEpoch: number,
+    source: { conversationId: number; callId: string },
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<WorkerInspectResult | Record<string, unknown>> {
+    const fingerprint = externalPermissionFingerprint(ticketId, runEpoch, permissionId);
+    const existing = await this.actionConfirmations.lookup(source.conversationId, "external_permission", fingerprint, context);
+    if (existing?.status === "approved" && existing.selectedChoiceId === choiceId) {
+      if (existing.executed) return this.inspectWorker(ticketId, context);
+      const result = await this.respondExternalAgentPermission(ticketId, permissionId, choiceId, runEpoch, context);
+      await this.actionConfirmations.markExecuted(existing.cardId, context);
+      return result;
+    }
+    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const ticket = state?.tickets[ticketId];
+    const execution = ticket?.externalExecution;
+    if (!ticket || !execution?.runId || ticket.status !== "running" || ticket.waiting || ticket.runEpoch !== runEpoch) {
+      throw new Error("外部任务的执行资格已改变，请重新查看待授权操作。");
+    }
+    const pending = execution.pendingPermissions?.find((permission) => permission.id === permissionId);
+    if (!pending?.choices.length) {
+      throw new Error("待授权操作或选项已失效，请重新查看。");
+    }
+    const topicId = state?.conversationToTopic?.[String(source.conversationId)];
+    const redactedChoices = pending.choices.map((choice) => ({
+      id: choice.id,
+      label: this.connectionManager.redact(choice.label),
+    }));
+    const built = buildExternalPermissionCard(this.connectionManager.redact(pending.title), redactedChoices);
+    const { confirmation } = await this.actionConfirmations.ensurePendingCard({
+      conversationId: source.conversationId,
+      ...(topicId ? { topicId } : {}),
+      ticketId,
+      callId: source.callId,
+      kind: "external_permission",
+      fingerprint,
+      cardInput: built.input,
+      logicalIds: built.logicalIds,
+      payload: {
+        kind: "external_permission",
+        ticketId,
+        runEpoch,
+        permissionId,
+        title: this.connectionManager.redact(pending.title),
+        choices: redactedChoices,
+      },
+    }, context);
+    return {
+      status: "awaiting_user_confirmation",
+      cardId: confirmation.cardId,
+      ticketId,
+      runEpoch,
+      permissionId,
+      message: "外部智能体权限请求需要用户本人在卡片中选择决定。已向用户展示原始权限选项卡片，请等待用户点击，不要代替用户授权。",
+    };
+  }
+
+  async #applyStagedChangesFromTool(
+    params: ApplyStagedChangesParams,
+    source: { conversationId: number; callId: string },
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<StagedWorkspaceApplyResult | Record<string, unknown>> {
+    const state = await this.harness.snapshot(MocoStateDoc, context);
+    const ticket = state?.tickets[params.ticketId];
+    if (!ticket) return this.applyStagedChanges(params, context);
+    const isExternalStaged = ticket.externalExecution?.workspaceMode === "staged";
+    const isBuiltInStaged = !ticket.externalExecution && ticket.workspaceStaging?.mode === "staged";
+    if (!isExternalStaged && !isBuiltInStaged) return this.applyStagedChanges(params, context);
+    if (isExternalStaged ? ticket.externalExecution!.stagedAppliedAt : ticket.workspaceStaging!.appliedAt) {
+      return this.applyStagedChanges(params, context);
+    }
+    let stagedDiff = isExternalStaged ? ticket.externalExecution!.stagedDiff : ticket.workspaceStaging!.stagedDiff;
+    if (!stagedDiff && !isTicketUnfinished(ticket) && ticket.status !== "stopped" && ticket.status !== "closed") {
+      try {
+        stagedDiff = await this.inspectStagedDiff(ticket.id, undefined, context);
+      } catch {
+        // Fall through to applyStagedChanges which reports the authoritative error.
+      }
+    }
+    const selectedPaths = params.paths?.length ? new Set(params.paths) : undefined;
+    const sensitivePaths = (stagedDiff?.sensitivePaths ?? []).filter((entry) => !selectedPaths || selectedPaths.has(entry));
+    const conflictFiles = (stagedDiff?.conflictFiles ?? []).filter((entry) => !selectedPaths || selectedPaths.has(entry));
+    const requiresConfirmation = sensitivePaths.length > 0 || conflictFiles.length > 0 || Boolean(params.allowConflicts);
+    if (!requiresConfirmation) {
+      return this.applyStagedChanges(params, context);
+    }
+    const fingerprint = stagedApplyFingerprint({
+      ticketId: ticket.id,
+      runEpoch: ticket.runEpoch,
+      paths: params.paths,
+      allowConflicts: Boolean(params.allowConflicts),
+      sensitivePaths,
+      conflictFiles,
+    });
+    const existing = await this.actionConfirmations.lookup(source.conversationId, "staged_apply", fingerprint, context);
+    if (existing?.status === "approved") {
+      const applied = await this.applyStagedChanges(params, context);
+      await this.actionConfirmations.markExecuted(existing.cardId, context);
+      return applied;
+    }
+    const topicId = state?.conversationToTopic?.[String(source.conversationId)];
+    const built = buildStagedApplyConfirmCard({
+      ticketId: ticket.id,
+      sensitivePaths,
+      conflictFiles,
+      allowConflicts: Boolean(params.allowConflicts),
+    });
+    const { confirmation } = await this.actionConfirmations.ensurePendingCard({
+      conversationId: source.conversationId,
+      ...(topicId ? { topicId } : {}),
+      ticketId: ticket.id,
+      callId: source.callId,
+      kind: "staged_apply",
+      fingerprint,
+      cardInput: built.input,
+      logicalIds: built.logicalIds,
+      payload: {
+        kind: "staged_apply",
+        ticketId: ticket.id,
+        runEpoch: ticket.runEpoch,
+        commandId: params.commandId,
+        ...(params.paths?.length ? { paths: [...params.paths] } : {}),
+        allowConflicts: Boolean(params.allowConflicts),
+        sensitivePaths,
+        conflictFiles,
+      },
+    }, context);
+    return {
+      status: "awaiting_user_confirmation",
+      cardId: confirmation.cardId,
+      ticketId: ticket.id,
+      sensitivePaths,
+      conflictFiles,
+      message: "此次合并涉及敏感路径或并发冲突，已向用户展示确认卡片，请简短告知用户并等待用户在卡片中点击确认。",
+    };
+  }
+
   async respondExternalAgentPermission(ticketId: string, permissionId: string, choiceId: string, runEpoch: number, context: Context = BACKGROUND_CONTEXT): Promise<WorkerInspectResult> {
     await this.#queueTicketOperation(ticketId, async () => {
       const state = await this.harness.snapshot(MocoStateDoc, context);
@@ -8018,13 +8215,61 @@ export class MocoHub implements OrchestratorController {
       if (!isActiveSettingsConversation(card.originConversationId, settings)) {
         throw new UiCardError("content_scope_denied", "请在主对话中提交卡片。", 403);
       }
-      return this.uiCards.submit(input, { conversationId: card.originConversationId });
+      const receipt = await this.uiCards.submit(input, { conversationId: card.originConversationId });
+      await this.#applyResolvedActionConfirmation(receipt, card.originConversationId, input.actionId);
+      return receipt;
     }
     const topicId = state?.conversationToTopic?.[String(card.originConversationId)];
     const topic = topicId ? state?.topics?.[topicId] : undefined;
     if (topic?.deletedAt) throw new UiCardError("content_scope_denied", "当前对话已删除。", 403);
     if (topic?.projectId) await this.projects.ensureAuthorized(topic.projectId, BACKGROUND_CONTEXT);
-    return this.uiCards.submit(input, { conversationId: card.originConversationId });
+    const receipt = await this.uiCards.submit(input, { conversationId: card.originConversationId });
+    await this.#applyResolvedActionConfirmation(receipt, card.originConversationId, input.actionId);
+    return receipt;
+  }
+
+  async #applyResolvedActionConfirmation(
+    receipt: UiActionReceipt,
+    conversationId: number,
+    actionId: string,
+  ): Promise<void> {
+    if (receipt.deduplicated) return;
+    const resolved = await this.actionConfirmations.resolveFromUiSubmit(receipt.cardId, actionId);
+    if (!resolved || resolved.status !== "approved") return;
+    if (resolved.payload.kind === "external_permission" && resolved.selectedChoiceId) {
+      try {
+        await this.respondExternalAgentPermission(
+          resolved.payload.ticketId,
+          resolved.payload.permissionId,
+          resolved.selectedChoiceId,
+          resolved.payload.runEpoch,
+        );
+        await this.actionConfirmations.markExecuted(resolved.cardId);
+      } catch (error) {
+        console.warn("[MocoConfirmation] External permission execution skipped", error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+    if (resolved.payload.kind === "staged_apply") {
+      try {
+        await this.applyStagedChanges({
+          commandId: resolved.payload.commandId,
+          ticketId: resolved.payload.ticketId,
+          paths: resolved.payload.paths,
+          allowConflicts: resolved.payload.allowConflicts,
+          originConversationId: conversationId,
+        });
+        await this.actionConfirmations.markExecuted(resolved.cardId);
+      } catch (error) {
+        console.warn("[MocoConfirmation] Staged apply execution skipped", error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+    if (resolved.payload.kind === "customization_validate") {
+      await this.harness.commit(async (tx) => {
+        await injectEventToolsInTx(tx, conversationId, ["moco_customization"]);
+      }, BACKGROUND_CONTEXT);
+    }
   }
 
   async #hydrateMessages(entries: readonly EntryRecord[], conversationId: number, options?: DisplayMessageOptions, context: Context = BACKGROUND_CONTEXT): Promise<ChatDisplayItem[]> {

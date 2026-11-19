@@ -6,6 +6,12 @@ import { CustomizationError } from "./customization-source.js";
 export interface CustomizationToolsHost {
   service: () => MocoCustomizationService | Promise<MocoCustomizationService>;
   caller: (api: { conversationId: unknown; callId: string }) => CustomizationCaller | Promise<CustomizationCaller>;
+  confirmValidate?: (
+    sessionId: string,
+    api: { conversationId: unknown; callId: string },
+    caller: CustomizationCaller,
+    service: MocoCustomizationService,
+  ) => Promise<Record<string, unknown> | undefined>;
 }
 const output = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }] });
 const ACTIONS = ["status", "prepare", "read", "write", "validate", "cancel"] as const;
@@ -46,7 +52,11 @@ export function createCustomizationToolsExtension(host: CustomizationToolsHost) 
             case "prepare": return output(await service.prepare({ summary: values.summary as string, commandId: "customization:" + api.callId }, caller));
             case "read": return output(await service.read(values.session_id as string, values.path as string, caller));
             case "write": return output(await service.write(values.session_id as string, values.path as string, values.content as string | null, values.expected_revision as number, caller));
-            case "validate": return output(await service.validateAndStage(values.session_id as string, caller));
+            case "validate": {
+              const pending = await host.confirmValidate?.(values.session_id as string, api, caller, service);
+              if (pending) return output(pending);
+              return output(await service.validateAndStage(values.session_id as string, caller));
+            }
             case "cancel": return output(await service.cancel(values.session_id as string, caller));
           }
         } }),
