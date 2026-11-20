@@ -1,6 +1,6 @@
 import { translate as t, useI18n } from "../../kulo-i18n";
 import { useEffect, useRef, useState } from "react";
-import { Button, Card, Disclosure, Input, Label, Link, ListBox, Select, TextArea, TextField } from "@heroui/react";
+import { Alert, Button, Card, Disclosure, Input, Label, Link, ListBox, Select, TextArea, TextField } from "@heroui/react";
 import {
   redactSensitiveText,
   type ConnectionAuthType,
@@ -12,8 +12,10 @@ import {
   type ConnectionRecordView,
   type ConnectionSaveRequest,
   type ConnectionSetupInput,
+  type NativeAppPermissionKind,
 } from "@kulo/protocol";
 import { kuloRest } from "../../kulo-api";
+import { openNativeAppPermissionSettings } from "../system-permissions/system-permissions";
 
 export const CONNECTION_KIND_LABEL: Record<ConnectionKind, string> = { ssh: "SSH 服务器", account: "账号", "api-key": "API Key", custom: "自定义凭据", app: "预置应用" };
 const CREDENTIAL_TEMPLATES = (["account", "ssh", "api-key", "custom"] as const).map((id) => ({ id, label: CONNECTION_KIND_LABEL[id] }));
@@ -135,17 +137,69 @@ export function safeConnectionInputError(error: unknown, draft?: ConnectionDraft
   return redactSensitiveText(error instanceof Error ? error.message : t("保存失败，请重试。", "Failed to save. Try again."), values.filter(Boolean));
 }
 
+export interface NativePermissionPrompt {
+  kind: NativeAppPermissionKind;
+  opened: boolean;
+  remote: boolean;
+  message: string;
+}
+
+export function nativePermissionKindForError(error: unknown): NativeAppPermissionKind | null {
+  const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined;
+  if (code === "connection_messages_full_disk_access_required") return "full-disk-access";
+  if (code === "connection_app_automation_required") return "automation";
+  return null;
+}
+
+export function nativePermissionPromptMessage(
+  kind: NativeAppPermissionKind,
+  state: "opened" | "remote" | "manual",
+  appName: string,
+  fallback?: string,
+): string {
+  if (kind === "full-disk-access") {
+    if (state === "opened") return t("已打开系统设置的「完全磁盘访问权限」。开启后重启 Kulo，再点击重新检查。", "Opened Full Disk Access in System Settings. Allow the app running Kulo, restart Kulo, then check again.");
+    if (state === "remote") return t("请在运行 Kulo 主脑的 Mac 上打开「系统设置 → 隐私与安全性 → 完全磁盘访问权限」，开启并重启后重新检查。", "On the Mac running the Kulo hub, open System Settings → Privacy & Security → Full Disk Access, allow Kulo, restart it, then check again.");
+    return fallback || t("请在系统设置的「完全磁盘访问权限」中允许运行 Kulo 的应用，重启 Kulo 后重新检查。", "Allow the app running Kulo in System Settings → Full Disk Access, restart Kulo, then check again.");
+  }
+  if (state === "opened") return t(`已打开系统设置的「自动化」。允许 Kulo 控制${appName}后点击重新检查。`, `Opened Automation in System Settings. Allow Kulo to control ${appName}, then check again.`);
+  if (state === "remote") return t(`请在运行 Kulo 主脑的 Mac 上打开「系统设置 → 隐私与安全性 → 自动化」，允许 Kulo 控制${appName}后重新检查。`, `On the Mac running the Kulo hub, open System Settings → Privacy & Security → Automation, allow Kulo to control ${appName}, then check again.`);
+  return fallback || t(`请在系统设置的「自动化」中允许 Kulo 控制${appName}，然后重新检查。`, `Allow Kulo to control ${appName} in System Settings → Automation, then check again.`);
+}
+
+export async function resolveNativePermissionPrompt(
+  error: unknown,
+  options: {
+    appName: string;
+    localHost?: boolean;
+    openSettings?: (kind: NativeAppPermissionKind, options?: { localHost?: boolean }) => Promise<"opened" | "remote">;
+  },
+): Promise<NativePermissionPrompt | null> {
+  const kind = nativePermissionKindForError(error);
+  if (!kind) return null;
+  const fallback = safeConnectionInputError(error);
+  try {
+    const outcome = await (options.openSettings ?? openNativeAppPermissionSettings)(kind, { localHost: options.localHost });
+    return { kind, opened: outcome === "opened", remote: outcome === "remote", message: nativePermissionPromptMessage(kind, outcome, options.appName, fallback) };
+  } catch (cause) {
+    const detail = cause instanceof Error && cause.message ? cause.message : undefined;
+    return { kind, opened: false, remote: false, message: nativePermissionPromptMessage(kind, "manual", options.appName, fallback || detail) };
+  }
+}
+
 export function visibleConnectionInputs(inputs: ConnectionSetupInput[], clientId: string): ConnectionSetupInput[] {
   return inputs.filter((input) => input.status === "pending" && input.clientId === clientId);
 }
 
-export function ConnectionSetupForm({ input, existing, application, clientId, connected, available, onChanged, onCompleted, onCancelled }: {
+export function ConnectionSetupForm({ input, existing, application, clientId, connected, available, localHost, initialPermissionPrompt = null, onChanged, onCompleted, onCancelled }: {
   input: ConnectionSetupInput;
   existing?: ConnectionRecordView;
   application?: ConnectionApplicationView;
   clientId: string;
   connected: boolean;
   available: boolean;
+  localHost?: boolean;
+  initialPermissionPrompt?: NativePermissionPrompt | null;
   onChanged: () => void;
   onCompleted?: (connection: ConnectionRecordView) => void;
   onCancelled?: () => void;
@@ -153,13 +207,17 @@ export function ConnectionSetupForm({ input, existing, application, clientId, co
   useI18n();
   const [draft, setDraft] = useState(() => createConnectionDraft(input, existing));
   const [busy, setBusy] = useState(false);
+  const [openingSettings, setOpeningSettings] = useState(false);
+  const [permissionPrompt, setPermissionPrompt] = useState<NativePermissionPrompt | null>(initialPermissionPrompt);
   const [error, setError] = useState<string | null>(null);
   const [finished, setFinished] = useState(false);
+  const mountedRef = useRef(true);
   const formRef = useRef<HTMLFormElement>(null);
   const nativeHeadingRef = useRef<HTMLHeadingElement>(null);
   const addFieldRef = useRef<HTMLButtonElement>(null);
   const isApp = draft.kind === "app";
   const nativeApp = isApp && application?.authentication === "macos";
+  const appName = application?.name ?? draft.name;
   const maySave = available || nativeApp;
   const disabled = !connected || !maySave || busy || finished || isApp && !application;
   const change = <K extends keyof ConnectionDraft>(key: K, value: ConnectionDraft[K]) => setDraft((current) => ({ ...current, [key]: value }));
@@ -179,6 +237,7 @@ export function ConnectionSetupForm({ input, existing, application, clientId, co
     setDraft((current) => ({ ...current, credentialFields: current.credentialFields.filter((field) => field.key !== key) }));
     focusField(next);
   };
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
   useEffect(() => { if (!connected || !available) setDraft(clearConnectionDraftSecrets); }, [connected, available]);
   useEffect(() => {
     if (!nativeApp) return;
@@ -186,10 +245,27 @@ export function ConnectionSetupForm({ input, existing, application, clientId, co
     return () => cancelAnimationFrame(frame);
   }, [nativeApp, input.id]);
 
+  const openPermissionSettings = async (kind: NativeAppPermissionKind) => {
+    if (openingSettings || busy || finished) return;
+    setOpeningSettings(true);
+    setError(null);
+    try {
+      const outcome = await openNativeAppPermissionSettings(kind, { localHost });
+      if (!mountedRef.current) return;
+      setPermissionPrompt({ kind, opened: outcome === "opened", remote: outcome === "remote", message: nativePermissionPromptMessage(kind, outcome, appName) });
+    } catch (cause) {
+      if (!mountedRef.current) return;
+      setError(safeConnectionInputError(cause));
+    } finally {
+      if (mountedRef.current) setOpeningSettings(false);
+    }
+  };
+
   const submit = async (cancel = false) => {
     if (busy || !connected || finished) return;
     if (input.clientId !== clientId || input.status !== "pending") { setError(t("请在发起配置的窗口继续。", "Continue in the window where you started setup.")); return; }
     setBusy(true); setError(null);
+    if (cancel) setPermissionPrompt(null);
     try {
       if (cancel) { await kuloRest.cancelConnectionInput(input.id, clientId); onCancelled?.(); }
       else {
@@ -197,10 +273,23 @@ export function ConnectionSetupForm({ input, existing, application, clientId, co
         const saved = await kuloRest.submitConnectionInput(input.id, { ...connectionSaveRequest(draft, input), clientId });
         onCompleted?.(saved.connection);
       }
+      if (!mountedRef.current) return;
+      setPermissionPrompt(null);
       setFinished(true);
       onChanged();
-    } catch (cause) { setError(safeConnectionInputError(cause, draft)); }
-    finally { setDraft(clearConnectionDraftSecrets); setBusy(false); }
+    } catch (cause) {
+      if (!mountedRef.current) return;
+      if (!cancel && nativeApp) {
+        const prompt = await resolveNativePermissionPrompt(cause, { appName, localHost });
+        if (!mountedRef.current) return;
+        if (prompt) { setPermissionPrompt(prompt); return; }
+      }
+      setPermissionPrompt(null);
+      setError(safeConnectionInputError(cause, draft));
+    }
+    finally {
+      if (mountedRef.current) { setDraft(clearConnectionDraftSecrets); setBusy(false); }
+    }
   };
 
   if (finished) return null;
@@ -265,27 +354,36 @@ export function ConnectionSetupForm({ input, existing, application, clientId, co
         </>}
         {isPassword && <TextField className="kulo-form-field" variant="primary" type="password" value={draft.password} onChange={(value) => change("password", value)} isDisabled={disabled} fullWidth><Label>{t("密码", "Password")}</Label><Input autoComplete="new-password" spellCheck={false} placeholder={secretPlaceholder} /></TextField>}
         </>}
+        {permissionPrompt && <Alert status="warning" role="status">
+          <Alert.Indicator />
+          <Alert.Content>
+            <Alert.Title>{permissionPrompt.kind === "full-disk-access" ? t("需要完全磁盘访问权限", "Full Disk Access required") : t("需要自动化权限", "Automation permission required")}</Alert.Title>
+            <Alert.Description className="break-words">{permissionPrompt.message}</Alert.Description>
+          </Alert.Content>
+        </Alert>}
         {error && <p role="alert" className="break-words text-xs text-danger">{error}</p>}
       </Card.Content>
-      <Card.Footer className="mt-3 justify-end gap-2">
-        <Button size="sm" variant="tertiary" isDisabled={!connected || busy} onPress={() => void submit(true)}>{t("取消", "Cancel")}</Button>
-        <Button size="sm" type="submit" variant="secondary" isPending={busy} isDisabled={disabled}>{nativeApp ? t("授权并连接", "Authorize and connect") : isApp ? t("连接应用", "Connect app") : draft.category === "information" ? t("保存信息", "Save information") : draft.kind === "ssh" ? t("保存并连接", "Save and connect") : t("保存凭据", "Save credentials")}</Button>
+      <Card.Footer className="mt-3 flex-wrap justify-end gap-2">
+        <Button size="sm" variant="tertiary" isDisabled={!connected || busy || openingSettings} onPress={() => void submit(true)}>{t("取消", "Cancel")}</Button>
+        {permissionPrompt && !permissionPrompt.remote && <Button size="sm" variant="secondary" isPending={openingSettings} isDisabled={!connected || busy || finished || openingSettings} onPress={() => void openPermissionSettings(permissionPrompt.kind)}>{t("打开系统设置", "Open System Settings")}</Button>}
+        <Button size="sm" type="submit" variant="secondary" isPending={busy} isDisabled={disabled || openingSettings}>{nativeApp ? (permissionPrompt ? t("重新检查", "Check again") : t("授权并连接", "Authorize and connect")) : isApp ? t("连接应用", "Connect app") : draft.category === "information" ? t("保存信息", "Save information") : draft.kind === "ssh" ? t("保存并连接", "Save and connect") : t("保存凭据", "Save credentials")}</Button>
       </Card.Footer>
     </form>
   </Card>;
 }
 
-export function ConnectionSetupInputs({ inputs, connections, applications, clientId, ...props }: {
+export function ConnectionSetupInputs({ inputs, connections, applications, clientId, localHost, ...props }: {
   inputs: ConnectionSetupInput[];
   connections: ConnectionRecordView[];
   applications?: ConnectionApplicationView[];
   clientId: string;
   connected: boolean;
   available: boolean;
+  localHost?: boolean;
   onChanged: () => void;
   onCompleted?: (connection: ConnectionRecordView) => void;
   onCancelled?: () => void;
 }) {
   useI18n();
-  return <>{visibleConnectionInputs(inputs, clientId).map((input) => <ConnectionSetupForm key={`${input.id}:${input.expectedRevision ?? 0}`} input={input} existing={connections.find((connection) => connection.id === input.connectionId)} application={applications?.find((application) => application.id === input.appId)} clientId={clientId} {...props} />)}</>;
+  return <>{visibleConnectionInputs(inputs, clientId).map((input) => <ConnectionSetupForm key={`${input.id}:${input.expectedRevision ?? 0}`} input={input} existing={connections.find((connection) => connection.id === input.connectionId)} application={applications?.find((application) => application.id === input.appId)} clientId={clientId} localHost={localHost} {...props} />)}</>;
 }

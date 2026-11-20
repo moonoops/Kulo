@@ -1,11 +1,17 @@
 import { withoutAbortSignal, type Context } from "@earendil-works/chord/context";
 import { getOrThrow, type ExecutionEnv, type FileInfo } from "@earendil-works/pi-durable/env";
+import type { MediaKind } from "@kulo/protocol";
 import { parseDocument } from "yaml";
 
 export interface SkillRuntimeContext {
   platform?: string;
   capabilities: readonly string[];
-  reactWorkspace: boolean;
+  reactWorkspace?: boolean;
+  executionDomain?: "computer" | "android";
+  mediaKinds?: readonly MediaKind[];
+  androidAvailable?: boolean;
+  customizationEnabled?: boolean;
+  memoryKnowledgeEnabled?: boolean;
   diagnostics?: readonly string[];
 }
 

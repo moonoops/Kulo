@@ -4,7 +4,8 @@ import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-dur
 import type { CredentialStore } from "@earendil-works/pi-ai";
 import type {
   BrowserRequest, BrowserResult, CapabilityConfigurationInput, CapabilityRecord,
-  CapabilitySnapshot, CapabilityStatus, CustomModelConfig, CustomProviderApi, EnvNodeDescriptor, MediaAdapterId,
+  CapabilitySnapshot, CapabilityStatus, ComputerUseConfigurationInput, ComputerUseSettings,
+  CustomModelConfig, CustomProviderApi, EnvNodeDescriptor, MediaAdapterId,
   MediaConnectionView, MediaKind, MediaOutputFormat, SetupInputRequest, ImageModelProfile,
   ImageRoutingSettings, ImageRoutingConfigurationInput, MediaJobRequest, ImageCapabilityRouting,
 } from "@kulo/protocol";
@@ -30,6 +31,7 @@ interface CommandReceipt {
   fingerprint: string;
   capability?: CapabilityRecord;
   routing?: ImageRoutingSettings;
+  computerUse?: ComputerUseSettings;
 }
 export interface KuloCapabilitiesState {
   revision: number;
@@ -39,6 +41,7 @@ export interface KuloCapabilitiesState {
   inputs: Record<string, StoredInput>;
   cleanup: Record<string, boolean>;
   imageRouting?: ImageRoutingSettings;
+  computerUse?: ComputerUseSettings;
   dismissedModelCapabilities?: Record<string, string>;
 }
 
@@ -255,6 +258,7 @@ export class KuloCapabilities {
       connections: await Promise.all(connections.map((item) => this.#connectionView(item))),
       capabilities: await Promise.all(capabilities.map((item) => this.#capabilityView(item, requireConnection(state, item.connectionId)))),
       imageRouting: clone(state?.imageRouting ?? defaultRouting()),
+      computerUse: clone(state?.computerUse ?? { browserEnabled: true, desktopEnabled: true }),
     };
   }
   #defaults(state: KuloCapabilitiesState, kind: MediaKind, preferred?: string): void {
@@ -644,6 +648,35 @@ export class KuloCapabilities {
   }
   async check(id: string, _clientId?: string): Promise<CapabilityRecord> {
     const result = await this.#serial(() => this.#checkInternal(id));
+    await this.#changed();
+    return result;
+  }
+
+  async computerUseSettings(): Promise<{ computerUse: ComputerUseSettings; revision: number }> {
+    const state = await this.#state();
+    return { computerUse: clone(state?.computerUse ?? { browserEnabled: true, desktopEnabled: true }), revision: state?.revision ?? 0 };
+  }
+  async configureComputerUse(input: ComputerUseConfigurationInput): Promise<{ computerUse: ComputerUseSettings; revision: number }> {
+    const commandId = identifier(input?.commandId, "操作标识");
+    if (!Number.isSafeInteger(input?.expectedRevision) || input.expectedRevision < 0
+      || typeof input.browserEnabled !== "boolean" || typeof input.desktopEnabled !== "boolean") {
+      fail(400, "invalid_computer_use", "电脑操控开关参数无效。");
+    }
+    const next: ComputerUseSettings = { browserEnabled: input.browserEnabled, desktopEnabled: input.desktopEnabled };
+    const signature = fingerprint({ action: "computer-use", ...next, expectedRevision: input.expectedRevision });
+    const result = await this.#serial(() => this.#options.harness.commit(async (tx) => {
+      const state = await tx.doc(KuloCapabilitiesDoc);
+      const receipt = own(state.commands, commandId);
+      if (receipt) {
+        if (receipt.fingerprint !== signature || !receipt.computerUse) fail(409, "capability_command_conflict", "同一操作标识不能用于不同配置。");
+        return { computerUse: clone(receipt.computerUse), revision: state.revision };
+      }
+      if (state.revision !== input.expectedRevision) fail(409, "capability_revision_conflict", "电脑操控配置已更新，请刷新后重试。");
+      state.computerUse = clone(next);
+      state.revision++;
+      state.commands[commandId] = { fingerprint: signature, computerUse: clone(next) };
+      return { computerUse: clone(next), revision: state.revision };
+    }, BACKGROUND_CONTEXT));
     await this.#changed();
     return result;
   }

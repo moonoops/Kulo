@@ -36,16 +36,34 @@ describe("background task rail", () => {
     expect(html).toContain("丢弃并关闭");
     expect(html).toContain(`aria-label="丢弃并关闭任务：${card.title}"`);
   });
-  it("renders global tasks in exactly three rows without heading bar, scope tabs, duplicate alerts or device metadata", () => {
+  it("renders global tasks in two compact rows with title, status and concise duration without summary, role or device metadata", () => {
     const html = renderToStaticMarkup(<KuloTaskRail tickets={[card]} onProject={() => {}} />);
     expect(html).not.toContain("kulo-task-rail-heading");
     expect(html).not.toContain("后台任务");
-    for (const value of [card.title, card.roleLabel, card.userSummary!]) expect(html).toContain(value);
-    expect(html).not.toContain(card.latestReport!.summary);
-    for (const value of ["当前会话", "全部任务", "提醒与建议", "Kulo's table", "private-device-id", "other-chat"]) expect(html).not.toContain(value);
-    for (const row of ["kulo-task-card-top", "kulo-task-summary", "kulo-task-card-foot"]) expect(html.split('class="' + row + '"')).toHaveLength(2);
+    expect(html).toContain(card.title);
+    expect(html).toContain("运行中");
+    expect(html).toContain("不到 1 分钟");
+    for (const value of [card.roleLabel, card.userSummary!, card.latestReport!.summary, "已运行 ", "用时 ", "当前会话", "全部任务", "提醒与建议", "Kulo's table", "private-device-id", "other-chat"]) {
+      expect(html).not.toContain(value);
+    }
+    expect(html.split('class="kulo-task-title"')).toHaveLength(2);
+    expect(html.split('class="kulo-task-card-foot"')).toHaveLength(2);
+    for (const removed of ["kulo-task-card-top", "kulo-task-summary", "kulo-task-agent"]) expect(html).not.toContain(removed);
     expect(html).toContain('data-tone="run"');
     expect(html).not.toContain("kulo-task-enter");
+  });
+
+  it("omits duration text on the rail card when elapsed time is unrecorded", () => {
+    const html = renderToStaticMarkup(
+      <KuloTaskRail
+        completedTaskDisplayHours={null}
+        tickets={[{ ...card, id: "unrecorded", status: "ready", startedRunningAt: undefined, accumulatedRunningMs: undefined, completedAt: 1 }]}
+        onProject={() => {}}
+      />,
+    );
+    expect(html).toContain("已完成");
+    expect(html).not.toContain("kulo-task-time");
+    expect(html).not.toContain("用时未记录");
   });
 
   it("shows soft distinct completion state and keeps error attention visible without duplicate cards", () => {

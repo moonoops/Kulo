@@ -56,6 +56,8 @@ import type {
   CapabilitiesWorkspaceSnapshot,
   CapabilityConfigurationInput,
   CapabilityRecord,
+  ComputerUseConfigurationInput,
+  ComputerUseSettings,
   ImageCapabilityDraft,
   ImageModelDiscovery,
   ImageRoutingSettings,
@@ -77,6 +79,7 @@ import type {
   ConnectionSetupInput,
   ConnectionSaveRequest,
   ConnectionRecordView,
+  NativeAppPermissionKind,
   SearchSnapshot,
   SearchPlanInput,
   SearchFailure,
@@ -272,8 +275,12 @@ export const kuloRest = {
     apiRequest<{ connection: ConnectionRecordView; fingerprint?: string; requiresTrust?: boolean }>(`/api/connections/${encodeURIComponent(id)}/test`, { method: "POST" }),
   trustConnection: (id: string, fingerprint: string) =>
     apiRequest<{ connection: ConnectionRecordView }>(`/api/connections/${encodeURIComponent(id)}/trust`, { method: "POST", body: { fingerprint } }),
+  openConnectionPermissionSettings: (kind: NativeAppPermissionKind) =>
+    apiRequest<{ ok: true }>("/api/connections/permission-settings", { method: "POST", body: { kind } }),
   getCapabilitiesWorkspace: (clientId: string, signal?: AbortSignal) =>
     apiRequest<CapabilitiesWorkspaceSnapshot>(`/api/capabilities?${new URLSearchParams({ clientId })}`, { signal }),
+  updateComputerUse: (body: ComputerUseConfigurationInput) =>
+    apiRequest<{ computerUse: ComputerUseSettings; revision: number }>("/api/capabilities/computer-use", { method: "PUT", body }),
   updateImageDraft: (body: { clientId: string; config: Omit<CapabilityConfigurationInput, "commandId">; expectedRevision?: number }) =>
     apiRequest<ImageCapabilityDraft>("/api/capabilities/image/draft", { method: "POST", body }),
   deleteImageDraft: (clientId: string, expectedRevision?: number) =>
@@ -467,6 +474,8 @@ export const kuloRest = {
     apiRequest<MemoryServiceSnapshot>(`/api/memory/service/jobs/${encodeURIComponent(id)}/decision`, { method: "POST", body }),
   setMemoryEnabled: (body: { enabled: boolean; expectedRevision: number }) =>
     apiRequest<MemoryServiceSnapshot>("/api/memory/service/enabled", { method: "POST", body }),
+  setMemoryKnowledgeGuidance: (body: { enabled: boolean; expectedRevision: number }) =>
+    apiRequest<MemoryServiceSnapshot>("/api/memory/service/knowledge-guidance", { method: "POST", body }),
   probeModel: (body?: ModelProbeRequest) =>
     apiRequest<ModelProbeResult>("/api/model/probe", {
       method: "POST",

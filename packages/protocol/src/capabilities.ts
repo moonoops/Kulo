@@ -176,11 +176,22 @@ export interface CapabilityConfigurationInput {
   routing?: ImageCapabilityRouting;
   customAdapter?: CustomImageAdapter;
 }
+export interface ComputerUseSettings {
+  browserEnabled: boolean;
+  desktopEnabled: boolean;
+}
+export interface ComputerUseConfigurationInput {
+  browserEnabled: boolean;
+  desktopEnabled: boolean;
+  expectedRevision: number;
+  commandId: string;
+}
 export interface CapabilitySnapshot {
   revision: number;
   capabilities: CapabilityRecord[];
   connections: MediaConnectionView[];
   imageRouting?: ImageRoutingSettings;
+  computerUse?: ComputerUseSettings;
 }
 
 export interface SetupInputRequest {

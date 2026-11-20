@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopAppCommand } from "./desktop-menu.js";
-import type { DesktopMicrophonePermissions, DesktopPermissionKind } from "./system-permissions.js";
+import type { DesktopMicrophonePermissions, DesktopPermissionSettingsKind } from "./system-permissions.js";
 
 const APP_COMMANDS: Record<DesktopAppCommand, true> = {
   "new-topic": true,
@@ -51,7 +51,7 @@ if (process.isMainFrame) {
     systemPermissions: {
       status: (): Promise<DesktopMicrophonePermissions> => permissionAction("kulo:system-permissions-status"),
       requestMicrophone: (): Promise<DesktopMicrophonePermissions> => permissionAction("kulo:system-permissions-request-microphone"),
-      openSettings: (kind: DesktopPermissionKind): Promise<void> => permissionAction("kulo:system-permissions-open-settings", kind),
+      openSettings: (kind: DesktopPermissionSettingsKind): Promise<void> => permissionAction("kulo:system-permissions-open-settings", kind),
     },
   });
 }

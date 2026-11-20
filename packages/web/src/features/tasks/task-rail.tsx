@@ -6,7 +6,7 @@ import { ConfirmDialog } from "../../components/confirm-dialog";
 import { KuloIcon } from "../../kulo-icon";
 import { ContentPresence, useReducedContentMotion } from "../chat/use-content-motion";
 import {
-  reconcileTaskRows, taskCompletedAt, taskIsRecovering, taskNeedsAttention, taskStatusLabel, taskSummary, taskTimeLabel,
+  reconcileTaskRows, taskCompletedAt, taskDurationLabel, taskIsRecovering, taskNeedsAttention, taskStatusLabel,
   visibleTaskCards, type TaskRow,
 } from "./task-model";
 import { TaskFailureActions, type TicketAction } from "./task-failure-actions";
@@ -19,10 +19,10 @@ function RailStatus({ ticket }: { ticket: TicketCardView }) {
   const label = ticket.status === "blocked" || ticket.status === "waiting" && ticket.waiting?.reason === "user" ? t("待确认", "Needs confirmation") : taskStatusLabel(ticket);
   const tone = ticket.cleanupPending || ticket.pendingWorkspaceApply ? "ask" : taskIsRecovering(ticket) ? "run" : ticket.status === "failed" ? "fail" : attention ? "ask" : ticket.status === "ready" ? ticket.externalAgentKind ? "wait" : "done" :
     ticket.status === "running" || ticket.status === "pausing" ? "run" : "wait";
-  return <span className="kulo-task-status" data-tone={tone}>
+  return <span className="kulo-task-status" data-tone={tone} title={label}>
     {tone === "run" ? <span className="kulo-task-run-dot" aria-hidden="true" /> :
       <KuloIcon name={tone === "fail" ? "error" : tone === "ask" ? "help" : tone === "done" ? "check" : "schedule"} size={13} />}
-    <span>{label}</span>
+    <span className="kulo-task-status-label">{label}</span>
   </span>;
 }
 
@@ -176,6 +176,7 @@ export function KuloTaskRail({
       {rows.map(row => {
         const ticket = row.ticket;
         const completed = taskCompletedAt(ticket);
+        const durationLabel = taskDurationLabel(ticket, now);
         const age = ticket.status === "ready" && !ticket.pendingWorkspaceApply && completed !== undefined && completedTaskDisplayHours !== null ?
           Math.min(1, Math.max(0, (now - completed) / (completedTaskDisplayHours * 3_600_000))) : 0;
         return <div className="kulo-task-row" data-ticket-id={ticket.id} key={ticket.id}
@@ -195,14 +196,10 @@ export function KuloTaskRail({
                   <Button type="button" variant="ghost" fullWidth className="kulo-task-card-button"
                     aria-label={ticket.title + t("，查看任务详情", ", view task details")} aria-current={projectedTicketId === ticket.id ? "true" : undefined}
                     onPress={() => onProject(ticket.id, ticket.title)}>
-                    <span className="kulo-task-card-top">
-                      <strong className="kulo-task-title" title={ticket.title}>{ticket.title}</strong>
-                      <RailStatus ticket={ticket} />
-                    </span>
-                    <span className="kulo-task-summary" title={taskSummary(ticket)}>{taskSummary(ticket)}</span>
+                    <strong className="kulo-task-title" title={ticket.title}>{ticket.title}</strong>
                     <span className="kulo-task-card-foot">
-                      <span className="kulo-task-agent" title={ticket.roleLabel}>{ticket.roleLabel}</span>
-                      <span className="kulo-task-time">{taskTimeLabel(ticket, now)}</span>
+                      <RailStatus ticket={ticket} />
+                      {durationLabel && <span className="kulo-task-time">{durationLabel}</span>}
                     </span>
                   </Button>
                   {ticket.status === "failed" && onRetry && onIgnore && <div className="kulo-task-card-actions">

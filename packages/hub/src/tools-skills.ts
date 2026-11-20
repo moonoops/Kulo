@@ -12,7 +12,18 @@ import { resolveDeferredAddTools } from "./tool-surface.js";
 export interface SkillToolsOptions {
   get: () => KuloSkills;
   audience: (api: Pick<ToolExecutionApi, "conversationId">) => SkillAudience | Promise<SkillAudience>;
-  runtimeContext?: (api: Pick<ToolExecutionApi, "conversationId" | "env">, context: Context, requirements: { reactWorkspace: boolean }) => Promise<SkillRuntimeContext | undefined>;
+  runtimeContext?: (
+    api: Pick<ToolExecutionApi, "conversationId" | "env">,
+    context: Context,
+    requirements: {
+      targetDevice: boolean;
+      reactWorkspace: boolean;
+      media: boolean;
+      android: boolean;
+      customization: boolean;
+      memoryKnowledge: boolean;
+    },
+  ) => Promise<SkillRuntimeContext | undefined>;
   executionScope?: (api: ToolExecutionApi) => Promise<{ scratchDir: string; assertActive: () => Promise<void> }>;
 }
 
@@ -28,8 +39,8 @@ process.exit(20);`;
 async function skillRuntime(options: SkillToolsOptions, audience: SkillAudience, id: string | undefined, api: Pick<ToolExecutionApi, "conversationId" | "env">, context: Context) {
   if (!options.runtimeContext) return undefined;
   const required = await options.get().runtimeRequirements(audience, id);
-  if (!required.targetDevice && !required.reactWorkspace) return undefined;
-  const runtime = await options.runtimeContext(api, context, { reactWorkspace: required.reactWorkspace });
+  if (!required.targetDevice && !required.reactWorkspace && !required.media && !required.android && !required.customization && !required.memoryKnowledge) return undefined;
+  const runtime = await options.runtimeContext(api, context, required);
   if (id && required.reactWorkspace && runtime?.diagnostics?.length) throw new SkillError(409, "skill_context_unavailable", runtime.diagnostics.join(" "));
   return runtime;
 }

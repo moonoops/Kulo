@@ -12,8 +12,11 @@ import {
   KuloStateDoc,
   canSwitchEnvDuringRecovery,
   detectSenderLocalSignals,
+  hasExplicitSenderReference,
   hasWorkerIsolation,
+  namedDispatchDevices,
   resolveComputerEnvBinding,
+  resolveNamedOrContextualEnv,
   startKuloHubServer,
 } from "@kulo/hub";
 import { composeWorkerInstructions } from "../packages/hub/src/prompts/worker.js";
@@ -169,6 +172,118 @@ describe("Batch 1b — R3 & R1.5 Pure Routing & Recovery Policy", () => {
       undefined,
     );
     expect(sameDevice).not.toContain("Cross-Device Guard");
+
+    const explicitHubTarget = composeWorkerInstructions(
+      {
+        id: "T-0012",
+        title: "Check Hub Hindsight",
+        goal: "Check Macmini.local",
+        scope: "Macmini.local",
+        envId: "local",
+        envBinding: "message_named",
+        workspaceDir: "/tmp/hub/table/T-0012",
+        senderSource: { deviceId: "laptop-a", name: "MacBook Pro" },
+      },
+      undefined,
+    );
+    expect(explicitHubTarget).not.toContain("Cross-Device Guard");
+  });
+
+  it("matches .local hostnames, compact/spaced variants, and natural Chinese/English verbs while preserving negations and avoiding generic 'local'", () => {
+    const macMini: EnvNodeDescriptor = {
+      ...onlineLocal,
+      id: "local",
+      name: "Macmini.local",
+      info: { hostname: "Macmini.local", platform: "darwin", arch: "arm64", release: "24", cpu: "Apple", memoryBytes: 0, ips: [] },
+    };
+    const macBook: EnvNodeDescriptor = {
+      ...onlineLocal,
+      id: "device-mbp",
+      kind: "reverse-ws",
+      name: "iKoomas-Macboom-Pro.local",
+      info: { hostname: "iKoomas-Macboom-Pro.local", platform: "darwin", arch: "arm64", release: "24", cpu: "Apple", memoryBytes: 0, ips: [] },
+    };
+    const envs = [macMini, macBook];
+
+    expect(namedDispatchDevices("检查一下macmini本机是否安装了hindsight，安装了的话就删了吧~", envs)).toEqual([["local"]]);
+    expect(namedDispatchDevices("看看 Mac mini 的配置", envs)).toEqual([["local"]]);
+    expect(namedDispatchDevices("把 Mac-mini 上的 hindsight 删掉", envs)).toEqual([["local"]]);
+    expect(namedDispatchDevices("修改 Macmini.local 的系统设置", envs)).toEqual([["local"]]);
+    expect(namedDispatchDevices("check Macmini's config and uninstall hindsight", envs)).toEqual([["local"]]);
+    expect(namedDispatchDevices("在主脑上检查一下安装情况", envs)).toEqual([["local"]]);
+
+    // Negations, hypotheticals, and generic English "local" must NOT match Hub local
+    expect(namedDispatchDevices("不要在 macmini 上执行", envs)).toEqual([]);
+    expect(namedDispatchDevices("如果 macmini 离线怎么办", envs)).toEqual([]);
+    expect(namedDispatchDevices("check local files in ~/Downloads", envs)).toEqual([]);
+  });
+
+  it("supports multi-turn contextual carry-over for explicitly named devices while respecting explicit sender pivots", () => {
+    const macMini: EnvNodeDescriptor = { ...onlineLocal, id: "local", name: "Macmini.local" };
+    const macBook: EnvNodeDescriptor = { ...onlineLocal, id: "device-mbp", kind: "reverse-ws", name: "iKoomas-Macboom-Pro.local" };
+    const office: EnvNodeDescriptor = { ...onlineLocal, id: "device-office", kind: "reverse-ws", name: "办公室工作站" };
+    const envs = [macMini, macBook, office];
+
+    // Turn 1: explicit current mention
+    expect(
+      resolveNamedOrContextualEnv({
+        currentText: "检查一下macmini本机是否安装了hindsight",
+        envs,
+        proposedEnvId: "local",
+      }),
+    ).toEqual({ envId: "local", source: "current" });
+
+    // Turn 1 with omitted env_id still resolves unambiguously to Macmini
+    expect(
+      resolveNamedOrContextualEnv({
+        currentText: "检查一下macmini本机是否安装了hindsight",
+        envs,
+      }),
+    ).toEqual({ envId: "local", source: "current" });
+
+    // Turn 2: follow-up without repeating device name carries over Macmini when model passes env_id="local"
+    expect(
+      resolveNamedOrContextualEnv({
+        currentText: "那就把 ~/.hindsight 也删了吧",
+        priorUserTurns: [{ text: "检查一下macmini本机是否安装了hindsight", sourceDeviceId: "device-mbp" }],
+        envs,
+        proposedEnvId: "local",
+      }),
+    ).toEqual({ envId: "local", source: "context" });
+
+    // Turn 3: explicit pivot back to sender ("这台电脑") blocks carry-over
+    expect(hasExplicitSenderReference("现在帮我检查这台电脑上的日志")).toBe(true);
+    expect(
+      resolveNamedOrContextualEnv({
+        currentText: "现在帮我检查这台电脑上的日志",
+        priorUserTurns: [{ text: "检查一下macmini本机是否安装了hindsight", sourceDeviceId: "device-mbp" }],
+        envs,
+        proposedEnvId: "local",
+      }),
+    ).toBeUndefined();
+
+    // After a prior turn pivoted back to sender, subsequent follow-up does NOT carry over stale Macmini
+    expect(
+      resolveNamedOrContextualEnv({
+        currentText: "删掉那个日志文件",
+        priorUserTurns: [
+          { text: "现在帮我检查这台电脑上的日志", sourceDeviceId: "device-mbp" },
+          { text: "检查一下macmini本机是否安装了hindsight", sourceDeviceId: "device-mbp" },
+        ],
+        envs,
+        proposedEnvId: "local",
+      }),
+    ).toBeUndefined();
+
+    // Unmentioned 3rd device is never carried over
+    expect(
+      resolveNamedOrContextualEnv({
+        currentText: "帮我做一份调研",
+        priorUserTurns: [{ text: "检查一下macmini本机是否安装了hindsight", sourceDeviceId: "device-mbp" }],
+        envs,
+        proposedEnvId: "device-office",
+      }),
+    ).toBeUndefined();
   });
 
   it("checks worker-isolation capability properly", () => {
@@ -405,5 +520,183 @@ describe("Batch 1b — Live Hub E2E Routing, Cross-Device Guard, Phone Attachmen
         envId: noSandbox.deviceId,
       }),
     ).rejects.toMatchObject({ code: "worker_isolation_unavailable" });
+  });
+
+  it("allows an offline paired MacBook to target online Macmini.local by short name, carries over on follow-up turns, and blocks explicit sender pivots", async () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kulo-cross-device-macmini-")));
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+    const provider = fauxProvider({ provider: "openai", models: [{ id: "cross-device-model" }] });
+    const models = createModels();
+    models.setProvider(provider.provider);
+    const actions = new Map<string, { name: string; args: Record<string, unknown> }>();
+    const consumed = new Set<string>();
+    const dispatchErrors: string[] = [];
+
+    provider.setResponses(Array.from({ length: 40 }, () => async (request: TranscriptContext) => {
+      if (hasTool(request, "kulo_dispatch")) {
+        const lastTool = request.messages.at(-1);
+        if (lastTool?.role === "toolResult" && lastTool.toolName === "kulo_dispatch" && lastTool.isError) {
+          dispatchErrors.push(JSON.stringify(lastTool.content));
+          return fauxAssistantMessage("派单被拦截。");
+        }
+        const lastUser = request.messages.filter((m) => m.role === "user").at(-1)?.content;
+        const input = typeof lastUser === "string" ? lastUser : JSON.stringify(lastUser ?? "");
+        for (const [marker, call] of actions) {
+          if (input.includes(marker) && !consumed.has(marker)) {
+            consumed.add(marker);
+            return fauxAssistantMessage([fauxToolCall(call.name, call.args)], { stopReason: "toolUse" });
+          }
+        }
+      } else if (hasTool(request, "kulo_report")) {
+        return fauxAssistantMessage([fauxToolCall("kulo_report", { state: "ready", summary: "Macmini 检查完成。" })], { stopReason: "toolUse" });
+      }
+      return fauxAssistantMessage("已完成。");
+    }));
+
+    const hub = await openTestHub({
+      models,
+      config: {
+        stateDir: path.join(dir, "state"),
+        identityDir: path.join(dir, "identity"),
+        localEnvRoot: path.join(dir, "local"),
+        localEnvName: "Macmini.local",
+        authToken: HUB_TEST_ADMIN_TOKEN,
+        envTokens: {},
+        enableLocalEnv: true,
+        maxConcurrentWorkers: 3,
+        watchdogMinutes: 0,
+        memory: { enabled: false },
+        model: { defaultProvider: "openai", defaultModel: "cross-device-model", thinkingLevel: "off", baseUrl: "http://127.0.0.1:9/v1" },
+      },
+    });
+    cleanups.push(() => hub.close());
+
+    vi.spyOn(hub.envManager, "createWorkerExecutionEnv").mockImplementation((_id, cwd) => new NodeExecutionEnv({ cwd }));
+    vi.spyOn(hub.envManager, "releaseWorkerExecutionEnv").mockResolvedValue({ cleanupPending: false });
+
+    const server = await startKuloHubServer(hub, { host: "127.0.0.1", port: 0 });
+    cleanups.push(() => server.close());
+
+    const apiReq = (pathname: string, method: string, body: unknown, auth = true) =>
+      fetch(`${server.url}${pathname}`, {
+        method,
+        headers: { "content-type": "application/json", ...(auth ? { authorization: `Bearer ${HUB_TEST_ADMIN_TOKEN}` } : {}) },
+        body: JSON.stringify(body),
+      });
+    expect((await apiReq("/api/devices", "PATCH", { enabled: true })).status).toBe(200);
+
+    // Pair MacBook and leave its Env OFFLINE while its chat client stays connected
+    const invite = await apiReq("/api/devices/invitations", "POST", { name: "iKoomas-Macboom-Pro.local", hubUrl: "https://hub.test" });
+    const invitation = (await invite.json()) as DeviceInvitation;
+    const token = /'([A-Za-z0-9_-]+)'$/.exec(invitation.command)![1]!;
+    const macbookRoot = path.join(dir, invitation.deviceId);
+    fs.mkdirSync(macbookRoot, { recursive: true });
+    const paired = await apiReq(
+      "/api/devices/pair",
+      "POST",
+      {
+        inviteToken: token,
+        rootDir: macbookRoot,
+        info: { hostname: "iKoomas-Macboom-Pro.local", platform: "darwin", arch: "arm64", release: "test", cpu: "test", memoryBytes: 0, ips: [] },
+      },
+      false,
+    );
+    const macbook = (await paired.json()) as DevicePeerConfig;
+
+    const chatWs = new WebSocket(server.clientWsUrl, { headers: { authorization: `Bearer ${macbook.clientToken}` } });
+    cleanups.push(() => { if (chatWs.readyState !== WebSocket.CLOSED) chatWs.terminate(); });
+    const msgs: HubToClientMessage[] = [];
+    chatWs.on("message", (raw) => msgs.push(JSON.parse(String(raw)) as HubToClientMessage));
+    await once(chatWs, "open");
+    await vi.waitFor(() => expect(msgs.some((m) => m.type === "hub.snapshot")).toBe(true), waitOptions);
+
+    const sendFromMacBook = async (requestId: string, content: string) => {
+      const start = msgs.length;
+      chatWs.send(JSON.stringify({ type: "chat.send", topicId: "root", requestId, content }));
+      await vi.waitFor(() => expect(msgs.slice(start).some((m) => m.type === "hub.ack" && m.requestId === requestId)).toBe(true), waitOptions);
+    };
+    const waitIdle = async () => {
+      await vi.waitFor(async () => expect((await hub.getTopicView("root")).live.busy).toBe(false), waitOptions);
+    };
+
+    // Turn 1: exact user phrasing from screenshot + goal with ~/ paths -> executes immediately on Macmini.local ("local")!
+    actions.set("[macmini-check]", {
+      name: "kulo_dispatch",
+      args: {
+        command_id: "cmd-macmini-check",
+        title: "检查 hindsight 安装状态",
+        goal: "Inspect Macmini.local for hindsight in ~/Applications, ~/.hindsight, ~/Library, ~/.config",
+        scope: "Read-only inspection on Macmini.local",
+        role: "scout",
+        env_id: "local",
+      },
+    });
+    await sendFromMacBook("req-macmini-1", "[macmini-check] 检查一下macmini本机是否安装了hindsight，安装了的话就删了吧~");
+    await vi.waitFor(async () => {
+      const snap = await hub.harness.snapshot(KuloStateDoc, context);
+      const t = Object.values(snap?.tickets ?? {}).find((x) => x.commandId === "cmd-macmini-check");
+      expect(t?.status).toBe("ready");
+      expect(t?.envId).toBe("local");
+      expect(t?.envBinding).toBe("message_named");
+    }, waitOptions);
+    await waitIdle();
+
+    // Turn 2: follow-up without repeating "macmini" carries over context to "local"!
+    actions.set("[macmini-followup]", {
+      name: "kulo_dispatch",
+      args: {
+        command_id: "cmd-macmini-followup",
+        title: "清理残留目录",
+        goal: "Inspect ~/.hindsight directory size on Macmini.local",
+        scope: "Macmini.local ~/.hindsight",
+        role: "scout",
+        env_id: "local",
+      },
+    });
+    await sendFromMacBook("req-macmini-2", "[macmini-followup] 顺便查一下 ~/.hindsight 占了多大空间");
+    await vi.waitFor(async () => {
+      const snap = await hub.harness.snapshot(KuloStateDoc, context);
+      const t = Object.values(snap?.tickets ?? {}).find((x) => x.commandId === "cmd-macmini-followup");
+      expect(t?.status).toBe("ready");
+      expect(t?.envId).toBe("local");
+      expect(t?.envBinding).toBe("message_named");
+    }, waitOptions);
+    await waitIdle();
+
+    // Turn 3: explicit pivot back to sender ("这台电脑") rejects wrong env_id="local"
+    actions.set("[sender-pivot]", {
+      name: "kulo_dispatch",
+      args: {
+        command_id: "cmd-sender-pivot-wrong",
+        title: "检查发信电脑日志",
+        goal: "检查这台电脑上的日志",
+        scope: "日志目录",
+        role: "scout",
+        env_id: "local",
+      },
+    });
+    await sendFromMacBook("req-sender-3", "[sender-pivot] 好了，现在检查一下这台电脑上的日志");
+    await waitIdle();
+    const snapAfterPivot = await hub.harness.snapshot(KuloStateDoc, context);
+    expect(Object.values(snapAfterPivot?.tickets ?? {}).find((x) => x.commandId === "cmd-sender-pivot-wrong")).toBeUndefined();
+    expect(dispatchErrors.some((e) => e.includes("默认在"))).toBe(true);
+
+    // Turn 4: guard against silent wrong-device parking when env_id is omitted but goal targets Macmini.local
+    actions.set("[goal-mismatch]", {
+      name: "kulo_dispatch",
+      args: {
+        command_id: "cmd-goal-mismatch",
+        title: "检查服务端路径",
+        goal: "Inspect Macmini.local ~/Library for leftovers",
+        scope: "Read-only check on Macmini.local",
+        role: "scout",
+      },
+    });
+    await sendFromMacBook("req-mismatch-4", "[goal-mismatch] 查一下是否还有残留");
+    await waitIdle();
+    const snapAfterMismatch = await hub.harness.snapshot(KuloStateDoc, context);
+    expect(Object.values(snapAfterMismatch?.tickets ?? {}).find((x) => x.commandId === "cmd-goal-mismatch")).toBeUndefined();
+    expect(dispatchErrors.some((e) => e.includes("未传入目标 env_id"))).toBe(true);
   });
 });

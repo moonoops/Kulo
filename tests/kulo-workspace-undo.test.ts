@@ -156,20 +156,19 @@ describe("capability workspace undo", () => {
     expect((await f.hub.capabilities.snapshot()).capabilities.find((cap) => cap.id === secondary.id)?.enabled).toBe(true);
   });
 
-  it("undoes Skill enable/disable with catalog CAS and preserves required builtin guards", async () => {
+  it("undoes Skill enable/disable with catalog CAS and preserves builtin and hidden capability guards", async () => {
     const f = await fixture();
-    expect(await f.tool("disable-image-skill", "kulo_skill_manage", { id: "image-generation", action: "disable" })).toMatchObject({ status: "applied", canUndo: true });
-    await Promise.all([f.hub.settingsAssistant.decide("disable-image-skill", "undo", context.clientId), f.hub.settingsAssistant.decide("disable-image-skill", "undo", context.clientId)]);
-    expect((await f.hub.skills.snapshot()).skills.find((skill) => skill.id === "image-generation")?.enabled).toBe(true);
-    expect(await f.tool("disable-image-again", "kulo_skill_manage", { id: "image-generation", action: "disable" })).toMatchObject({ canUndo: true });
+    expect(await f.tool("disable-html-skill", "kulo_skill_manage", { id: "interactive-html", action: "disable" })).toMatchObject({ status: "applied", canUndo: true });
+    await Promise.all([f.hub.settingsAssistant.decide("disable-html-skill", "undo", context.clientId), f.hub.settingsAssistant.decide("disable-html-skill", "undo", context.clientId)]);
+    expect((await f.hub.skills.snapshot()).skills.find((skill) => skill.id === "interactive-html")?.enabled).toBe(true);
+    expect(await f.tool("disable-html-again", "kulo_skill_manage", { id: "interactive-html", action: "disable" })).toMatchObject({ canUndo: true });
     const current = await f.hub.skills.snapshot();
-    await f.hub.skills.manage({ commandId: "concurrent-skill", id: "video-generation", action: "disable", expectedRevision: current.revision });
-    await expect(f.hub.settingsAssistant.decide("disable-image-again", "undo", context.clientId)).rejects.toMatchObject({ status: 409, code: "skill_revision_conflict" });
-    expect(await f.tool("scope-change", "kulo_skill_manage", { id: "image-generation", action: "enable", audiences: ["chat"] })).toMatchObject({ status: "applied", canUndo: false });
-    expect(await f.tool("disable-required", "kulo_skill_manage", { id: "capability-setup", action: "disable" })).toMatchObject({ status: "failed", canUndo: false });
-    expect((await f.hub.skills.snapshot()).skills.find((skill) => skill.id === "capability-setup")?.enabled).toBe(true);
+    await f.hub.skills.manage({ commandId: "concurrent-skill", id: "genui-cards", action: "disable", expectedRevision: current.revision });
+    await expect(f.hub.settingsAssistant.decide("disable-html-again", "undo", context.clientId)).rejects.toMatchObject({ status: 409, code: "skill_revision_conflict" });
+    expect(await f.tool("scope-change", "kulo_skill_manage", { id: "interactive-html", action: "enable", audiences: ["chat"] })).toMatchObject({ status: "applied", canUndo: false });
+    expect(await f.tool("disable-hidden", "kulo_skill_manage", { id: "image-generation", action: "disable" })).toMatchObject({ status: "failed", canUndo: false });
     const catalog = await f.hub.skills.snapshot();
-    await expect(f.hub.skills.manage({ id: "capability-setup", action: "remove", commandId: "remove-required", expectedRevision: catalog.revision })).rejects.toMatchObject({ code: "builtin_skill_managed" });
+    await expect(f.hub.skills.manage({ id: "genui-cards", action: "remove", commandId: "remove-builtin", expectedRevision: catalog.revision })).rejects.toMatchObject({ code: "builtin_skill_managed" });
   });
 
   it("rejects another client replaying an existing workspace command", async () => {

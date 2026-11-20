@@ -81,22 +81,24 @@ describe("direct skill management HTTP", () => {
     expect((await f.call("/api/skills")).body).toEqual(removed.body);
   });
 
-  it("preserves built-in deletion and required setup protections", async () => {
+  it("preserves built-in deletion protections and blocks direct edits to hidden capability guides", async () => {
     const f = await fixture();
     const before = await f.hub.skills.snapshot();
-    const disable = await f.call("/api/skills/capability-setup", "PATCH", { enabled: false, expectedRevision: before.revision, commandId: "required-disable" });
-    expect(disable.status).toBe(400);
-    expect(disable.body.code).toBe("required_skill");
-    const rescope = await f.call("/api/skills/capability-setup", "PATCH", { enabled: true, audiences: ["worker"], expectedRevision: before.revision, commandId: "required-rescope" });
-    expect(rescope.status).toBe(400);
-    expect(rescope.body.code).toBe("required_skill");
-    const remove = await f.call("/api/skills/image-generation", "DELETE", { expectedRevision: before.revision, commandId: "builtin-delete" });
+    expect(before.skills.map((item) => item.id)).toEqual(expect.arrayContaining(["genui-cards", "interactive-html"]));
+    expect(before.skills.some((item) => ["capability-setup", "image-generation", "desktop-automation", "browser-automation"].includes(item.id))).toBe(false);
+    const hidden = await f.call("/api/skills/image-generation", "PATCH", { enabled: false, expectedRevision: before.revision, commandId: "hidden-disable" });
+    expect(hidden.status).toBe(400);
+    expect(hidden.body.code).toBe("builtin_skill_managed");
+    const systemGuide = await f.call("/api/skills/capability-setup", "PATCH", { enabled: false, expectedRevision: before.revision, commandId: "system-disable" });
+    expect(systemGuide.status).toBe(404);
+    expect(systemGuide.body.code).toBe("skill_not_found");
+    const remove = await f.call("/api/skills/genui-cards", "DELETE", { expectedRevision: before.revision, commandId: "builtin-delete" });
     expect(remove.status).toBe(400);
     expect(remove.body.code).toBe("builtin_skill_managed");
     expect((await f.hub.skills.snapshot()).revision).toBe(before.revision);
-    const regular = await f.call("/api/skills/image-generation", "PATCH", { enabled: false, expectedRevision: before.revision, commandId: "builtin-disable" });
+    const regular = await f.call("/api/skills/interactive-html", "PATCH", { enabled: false, expectedRevision: before.revision, commandId: "builtin-disable" });
     expect(regular.status).toBe(200);
-    expect(regular.body.skills.find((item) => item.id === "image-generation")?.enabled).toBe(false);
+    expect(regular.body.skills.find((item) => item.id === "interactive-html")?.enabled).toBe(false);
   });
 
   it("rejects a deletion confirmed against a catalog that changed after the intent was opened", async () => {

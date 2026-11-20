@@ -1,8 +1,9 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron";
-import type { SystemPermissionKind, SystemPermissionState } from "@kulo/protocol";
+import type { SystemPermissionKind, SystemPermissionSettingsKind, SystemPermissionState } from "@kulo/protocol";
 import { isTrustedFileActionSender } from "./file-actions.js";
 
 export type DesktopPermissionKind = SystemPermissionKind;
+export type DesktopPermissionSettingsKind = SystemPermissionSettingsKind;
 export type DesktopPermissionState = SystemPermissionState;
 
 export interface DesktopMicrophonePermissions {
@@ -17,10 +18,12 @@ export interface DesktopSystemPermissionsOptions {
   openExternal(url: string): Promise<void>;
 }
 
-const settingsUrls: Record<DesktopPermissionKind, string> = {
+const settingsUrls: Record<DesktopPermissionSettingsKind, string> = {
   microphone: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
   accessibility: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
   screen: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+  "full-disk-access": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+  automation: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
 };
 
 export function createDesktopSystemPermissions(options: DesktopSystemPermissionsOptions) {
@@ -31,9 +34,9 @@ export function createDesktopSystemPermissions(options: DesktopSystemPermissions
   }
 
   async function openSettings(value: unknown): Promise<void> {
-    if (value !== "microphone" && value !== "accessibility" && value !== "screen") throw new Error("系统权限类型无效。");
+    if (typeof value !== "string" || !Object.hasOwn(settingsUrls, value)) throw new Error("系统权限类型无效。");
     if (options.platform !== "darwin") throw new Error("此系统不支持打开 macOS 权限设置。");
-    await options.openExternal(settingsUrls[value]);
+    await options.openExternal(settingsUrls[value as DesktopPermissionSettingsKind]);
   }
 
   async function request(): Promise<DesktopMicrophonePermissions> {

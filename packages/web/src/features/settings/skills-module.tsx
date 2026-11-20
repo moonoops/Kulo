@@ -11,7 +11,6 @@ import { IMPORT_SKILL_PROMPT } from "./capability-views";
 type SkillSettings = Pick<SkillRecord, "enabled" | "audiences">;
 type SkillDraft = SkillSettings & { record: SkillRecord; expectedRevision: number };
 type SkillRemoval = { record: SkillRecord; expectedRevision: number };
-const requiredSkill = (skill: SkillRecord) => skill.id === "capability-setup";
 const commandId = () => `skill-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 const report = (cause: unknown) => redactSecrets(cause instanceof Error ? cause.message : translate("技能操作失败，请重试。", "Skill action failed. Please retry."));
 
@@ -105,7 +104,7 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
     else discardDraft();
   };
   const openEditor = (skill: SkillRecord) => {
-    if (!snapshot || blocked || requiredSkill(skill)) return;
+    if (!snapshot || blocked) return;
     setDraft({ record: skill, enabled: skill.enabled, audiences: [...skill.audiences], expectedRevision: snapshot.revision });
     setEditorError(undefined); setConflict(false);
   };
@@ -137,7 +136,7 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
     finally { finish(); }
   };
   const toggle = async (skill: SkillRecord, enabled: boolean) => {
-    if (!snapshot || requiredSkill(skill) || !begin(`toggle:${skill.id}`)) return;
+    if (!snapshot || !begin(`toggle:${skill.id}`)) return;
     setError(undefined);
     try {
       const next = await kuloRest.updateSkill(skill.id, { enabled, expectedRevision: snapshot.revision, commandId: commandId() });
@@ -175,7 +174,7 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
       <Table.ScrollContainer className="kulo-settings-table-scroll">
         <Table.Content aria-label={t("技能列表", "Skills")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content kulo-skills-table-content">
           <Table.Header>
-            <Table.Column id="name" isRowHeader className="kulo-settings-table-column">{t("技能", "Skills")}</Table.Column>
+            <Table.Column id="name" isRowHeader className="kulo-settings-table-column kulo-settings-table-primary">{t("技能", "Skills")}</Table.Column>
             <Table.Column id="source" className="kulo-settings-table-column kulo-settings-table-meta">{t("来源", "Source")}</Table.Column>
             <Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-meta">{t("状态", "Status")}</Table.Column>
             <Table.Column id="enabled" className="kulo-settings-table-column kulo-settings-table-toggle">{t("启用", "Enable")}</Table.Column>
@@ -183,24 +182,23 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
           </Table.Header>
           <Table.Body renderEmptyState={() => snapshot ? <div className="kulo-table-empty-state">{t("尚无技能", "No skills")}</div> : !connected ? <div className="kulo-table-empty-state">{t("等待连接", "Waiting for connection")}</div> : <div className="kulo-table-empty-state w-full gap-4" role="status" aria-label={t("加载技能", "Loading skills")}><Skeleton animationType="none" className="h-3 w-32" /><Skeleton animationType="none" className="h-3 w-16" /></div>}>
             {(snapshot?.skills ?? []).map((skill) => {
-              const required = requiredSkill(skill);
-              const protectedReason = required ? t("能力配置指引是系统必需技能。", "The capability setup guide is required by the system.") : t("内置技能随应用维护，不能删除。", "Built-in skills are maintained with the app and cannot be deleted.");
+              const protectedReason = t("内置技能随应用维护，不能删除。", "Built-in skills are maintained with the app and cannot be deleted.");
               return <Table.Row key={skill.id} id={skill.id} textValue={skill.name}>
-                <Table.Cell className="kulo-settings-table-cell">
-                  <div className="flex min-w-0 flex-col items-start gap-1">
-                    <span className="kulo-item-title break-words">{skill.name}</span>
-                    <span className="kulo-item-description break-words">{skill.description}</span>
+                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-primary">
+                  <div className="kulo-settings-table-stack">
+                    <span className="kulo-item-title">{skill.name}</span>
+                    <span className="kulo-item-description">{skill.description}</span>
                     {skill.diagnostics.length > 0 && <span className="break-words text-xs text-warning">{skill.diagnostics.map((message) => redactSecrets(message)).join(" · ")}</span>}
                   </div>
                 </Table.Cell>
-                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta"><span title={skill.source === "builtin" ? protectedReason : undefined}>{required ? t("系统必需", "Required") : skill.source === "builtin" ? t("内置", "Built-in") : skill.source === "git" ? "Git" : t("本地导入", "Local import")}</span></Table.Cell>
+                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta"><span title={skill.source === "builtin" ? protectedReason : undefined}>{skill.source === "builtin" ? t("内置", "Built-in") : skill.source === "git" ? "Git" : t("本地导入", "Local import")}</span></Table.Cell>
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta"><Chip size="sm" variant="soft" color={!skill.enabled ? "default" : skill.diagnostics.length ? "warning" : "success"}>{skillStatusLabel(skill)}</Chip></Table.Cell>
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-toggle">
-                  <div className="kulo-settings-table-toggle-group"><Switch ref={(node) => { if (node) switches.current.set(skill.id, node); else switches.current.delete(skill.id); }} size="sm" isSelected={skill.enabled} isDisabled={blocked || required} aria-description={required ? protectedReason : undefined} onChange={(enabled) => void toggle(skill, enabled)}><Switch.Content><Label className="sr-only">{t("启用", "Enable")}{skill.name}</Label><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content></Switch></div>
+                  <div className="kulo-settings-table-toggle-group"><Switch ref={(node) => { if (node) switches.current.set(skill.id, node); else switches.current.delete(skill.id); }} size="sm" isSelected={skill.enabled} isDisabled={blocked} onChange={(enabled) => void toggle(skill, enabled)}><Switch.Content><Label className="sr-only">{t("启用", "Enable")}{skill.name}</Label><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content></Switch></div>
                 </Table.Cell>
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-actions">
                   <div className="kulo-settings-table-action-group">
-                    <Button ref={(node) => { if (node) editButtons.current.set(skill.id, node); else editButtons.current.delete(skill.id); }} size="sm" variant="ghost" aria-label={t(`编辑${skill.name}`, `Edit ${skill.name}`)} aria-description={required ? protectedReason : undefined} isDisabled={blocked || required} onPress={() => openEditor(skill)}>{t("编辑", "Edit")}</Button>
+                    <Button ref={(node) => { if (node) editButtons.current.set(skill.id, node); else editButtons.current.delete(skill.id); }} size="sm" variant="ghost" aria-label={t(`编辑${skill.name}`, `Edit ${skill.name}`)} isDisabled={blocked} onPress={() => openEditor(skill)}>{t("编辑", "Edit")}</Button>
                     <Button ref={(node) => { if (node) deleteButtons.current.set(skill.id, node); else deleteButtons.current.delete(skill.id); }} size="sm" variant="ghost" aria-label={t(`删除${skill.name}`, `Delete ${skill.name}`)} aria-description={skill.source === "builtin" ? protectedReason : undefined} isDisabled={blocked || skill.source === "builtin"} onPress={() => { if (snapshot) setRemove({ record: skill, expectedRevision: snapshot.revision }); }}>{t("删除", "Delete")}</Button>
                   </div>
                 </Table.Cell>

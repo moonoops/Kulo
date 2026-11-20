@@ -85,6 +85,7 @@ export interface ConnectionWorkspaceSnapshot {
   requests: ConnectionAccessRequest[];
   vault: { available: boolean; error?: string };
   applications?: ConnectionApplicationView[];
+  localHost?: boolean;
 }
 export interface ConnectionApplicationDefinition {
   id: ConnectionApplicationId;

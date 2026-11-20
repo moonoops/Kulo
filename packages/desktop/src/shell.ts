@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, Notification, session, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, Notification, powerMonitor, session, shell, systemPreferences } from "electron";
 import { RecoveryManager, readReleaseIdentity } from "@kulo/recovery";
 import { buildRuntimeEnvironment } from "./runtime-config.js";
 import { startNodeService, type NodeService } from "./child-service.js";
@@ -482,6 +482,10 @@ if (!lock) {
     configureSession();
     configureFileActions();
     configureDesktopSystemPermissionHandlers({ ipc: ipcMain, permissions: systemPermissions, owner: () => window, rendererOrigin: () => rendererOrigin });
+    powerMonitor.on("resume", () => {
+      if (quitting || !runtime?.child.connected) return;
+      runtime.child.send({ type: "system-resume" }, () => {});
+    });
     app.setAboutPanelOptions({ applicationName: DESKTOP_APP_NAME, applicationVersion: app.getVersion(), copyright: "Kulo" });
     updateMenu();
     requestStart(parseDevelopmentMode(process.argv));

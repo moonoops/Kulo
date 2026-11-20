@@ -77,14 +77,14 @@ export function ArchivedConversationsModule({ topics, projects, loaded, connecte
       <Table.ScrollContainer className="kulo-settings-table-scroll">
         <Table.Content aria-label={t("已归档会话列表", "Archived conversation list")} selectionMode="none" keyboardNavigationBehavior="tab" className="min-w-[480px]">
           <Table.Header>
-            <Table.Column id="title" isRowHeader className="kulo-settings-table-column">{t("标题", "Title")}</Table.Column>
-            <Table.Column id="scope" className="kulo-settings-table-column kulo-settings-table-meta">{t("所属", "Location")}</Table.Column>
+            <Table.Column id="title" isRowHeader className="kulo-settings-table-column kulo-settings-table-primary">{t("标题", "Title")}</Table.Column>
+            <Table.Column id="scope" className="kulo-settings-table-column kulo-settings-table-detail">{t("所属", "Location")}</Table.Column>
             <Table.Column id="actions" className="kulo-settings-table-column kulo-settings-table-actions">{t("操作", "Actions")}</Table.Column>
           </Table.Header>
           <Table.Body renderEmptyState={() => <div className="kulo-table-empty-state">{t("暂无已归档会话", "No archived conversations")}</div>}>
             {archived.map((topic) => <Table.Row key={topic.id} id={topic.id}>
-              <Table.Cell className="kulo-settings-table-cell"><span className="kulo-item-title break-words">{topic.title}</span></Table.Cell>
-              <Table.Cell className="kulo-settings-table-cell">{topic.projectId ? projectNames.get(topic.projectId) ?? t("项目话题", "Project topic") : t("话题", "Topic")}</Table.Cell>
+              <Table.Cell className="kulo-settings-table-cell kulo-settings-table-primary"><div className="kulo-settings-table-stack"><span className="kulo-item-title">{topic.title}</span></div></Table.Cell>
+              <Table.Cell className="kulo-settings-table-cell kulo-settings-table-detail"><span className="break-words text-sm">{topic.projectId ? projectNames.get(topic.projectId) ?? t("项目话题", "Project topic") : t("话题", "Topic")}</span></Table.Cell>
               <Table.Cell className="kulo-settings-table-cell kulo-settings-table-actions">
                 <Button type="button" size="sm" variant="secondary" isDisabled={!connected || pendingId !== null && pendingId !== topic.id} isPending={pendingId === topic.id}
                   ref={(button) => { if (button) buttons.current.set(topic.id, button); else buttons.current.delete(topic.id); }}

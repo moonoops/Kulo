@@ -27,7 +27,7 @@ export function ProviderConnectionTable({ label, emptyLabel, items, loading = fa
         <Table.Content className="kulo-settings-table-content" aria-label={label}
           selectionMode="none" keyboardNavigationBehavior="tab">
           <Table.Header>
-            <Table.Column id="name" isRowHeader className="kulo-settings-table-column">{t("连接", "Connection")}</Table.Column>
+            <Table.Column id="name" isRowHeader className="kulo-settings-table-column kulo-settings-table-primary">{t("连接", "Connection")}</Table.Column>
             <Table.Column id="models" className="kulo-settings-table-column kulo-settings-table-meta">{t("模型数量", "Models")}</Table.Column>
             <Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-meta">{t("状态", "Status")}</Table.Column>
             <Table.Column id="actions" className="kulo-settings-table-column kulo-settings-table-actions">{t("操作", "Actions")}</Table.Column>
@@ -39,9 +39,11 @@ export function ProviderConnectionTable({ label, emptyLabel, items, loading = fa
           )}>
             {(item) => (
               <Table.Row id={item.id} textValue={item.name}>
-                <Table.Cell className="kulo-settings-table-cell">
-                  <strong className="kulo-item-title block">{item.name}</strong>
-                  <span className="kulo-item-description mt-0.5 block">{item.protocol}</span>
+                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-primary">
+                  <div className="kulo-settings-table-stack">
+                    <strong className="kulo-item-title">{item.name}</strong>
+                    <span className="kulo-item-description">{item.protocol}</span>
+                  </div>
                 </Table.Cell>
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta tabular-nums">{t(`${item.modelCount} 个模型`, `${item.modelCount} ${item.modelCount === 1 ? "model" : "models"}`)}</Table.Cell>
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta">

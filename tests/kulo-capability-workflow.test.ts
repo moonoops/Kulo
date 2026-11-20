@@ -109,7 +109,8 @@ describe("capability workflow through real Hub", () => {
     await f.hub.settingsAssistant.send("添加生图能力并允许按需生成", settingsContext, "setup-once");
     await until(async () => !(await f.hub.settingsAssistant.getSnapshot()).live.busy && (await f.hub.capabilities.snapshot()).capabilities.length === 1);
     const workspace = await f.hub.getCapabilitiesSnapshot(settingsContext.clientId);
-    expect(workspace.skills.map((skill) => skill.id)).toContain("image-generation");
+    expect(workspace.skills.map((skill) => skill.id)).toEqual(["genui-cards", "interactive-html"]);
+    expect((await f.hub.skills.catalog("chat", { capabilities: [], mediaKinds: ["image"] })).map((skill) => skill.id)).toContain("image-generation");
     const input = workspace.inputs.find((item) => item.status === "pending")!;
     expect(input).toBeDefined();
     const unauthenticated = await fetch(`${server.url}/api/capabilities`);

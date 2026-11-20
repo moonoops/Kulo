@@ -38,6 +38,8 @@ export interface DevicePeerRuntime {
   authToken: string;
   /** Initial Env registration and authenticated access to the shared conversation API. */
   ready: Promise<void>;
+  /** Actively verify or recover the outbound Env and Hub connection (for example after OS wake from sleep). */
+  probeConnection(): void;
   close(): Promise<void>;
 }
 
@@ -178,6 +180,8 @@ export interface StartDevicePeerOptions {
   allowLeave?: boolean;
   onLeave?: () => Promise<void> | void;
   roleTransitions?: DeviceRoleTransitions;
+  heartbeatIdleMs?: number;
+  heartbeatTimeoutMs?: number;
   onLog?: (message: string) => void;
 }
 
@@ -468,6 +472,8 @@ async function listenDevicePeer(config: DevicePeerConfig, resolvedConfigPath: st
     rootDir: config.rootDir,
     authToken: config.envToken,
     protectedPaths,
+    ...(options.heartbeatIdleMs !== undefined ? { heartbeatIdleMs: options.heartbeatIdleMs } : {}),
+    ...(options.heartbeatTimeoutMs !== undefined ? { heartbeatTimeoutMs: options.heartbeatTimeoutMs } : {}),
     onLog: options.onLog,
   });
   await new Promise<void>((resolve, reject) => {
@@ -537,6 +543,18 @@ async function listenDevicePeer(config: DevicePeerConfig, resolvedConfigPath: st
     port,
     authToken: localAuthToken,
     ready,
+    probeConnection() {
+      if (closed) return;
+      agent.probeConnection();
+      if (!initiallyReady || readinessError) {
+        if (readinessRetry) {
+          clearTimeout(readinessRetry);
+          readinessRetry = undefined;
+        }
+        retryAttempt = 0;
+        void probeSharedUi();
+      }
+    },
     close() {
       closing ??= (async () => {
         closed = true;

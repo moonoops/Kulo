@@ -11,7 +11,7 @@ import {
   saveDesktopRuntimePort,
 } from "./runtime-config.js";
 
-interface Closable { close(): Promise<unknown> }
+interface Closable { close(): Promise<unknown>; probeConnection?(): void }
 
 export interface RuntimeResources {
   server?: Closable;
@@ -91,7 +91,10 @@ export async function runDesktopRuntime(): Promise<void> {
   };
 
   process.on("message", (message: unknown) => {
-    if (message && typeof message === "object" && (message as { type?: unknown }).type === "shutdown") void stop(0);
+    if (!message || typeof message !== "object") return;
+    const type = (message as { type?: unknown }).type;
+    if (type === "shutdown") void stop(0);
+    else if (type === "system-resume" && !stopping) resources.server?.probeConnection?.();
   });
   process.once("disconnect", () => { void stop(0); });
   process.once("SIGINT", () => { void stop(0); });

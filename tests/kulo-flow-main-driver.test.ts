@@ -123,10 +123,11 @@ describe("main Chrome Flow fixed driver", () => {
 
   it.skipIf(!flowBrowserExecutable())("runs the observed native DOM through agent-browser with intercepted network", async () => {
     const directory = fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'kulo-flow-dom-'));
+    const downloads = path.join(directory, 'downloads'); fs.mkdirSync(downloads, { recursive: true });
     const mp4 = Buffer.alloc(32); mp4.write("ftyp", 4);
     const config = path.join(directory, 'config.json'); fs.writeFileSync(config, '{}');
     const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: directory, USERPROFILE: directory, TMPDIR: directory, TMP: directory, TEMP: directory,
-      SystemRoot: process.env.SystemRoot, AGENT_BROWSER_SOCKET_DIR: directory, AGENT_BROWSER_NO_VERSION_CHECK: '1' };
+      SystemRoot: process.env.SystemRoot, AGENT_BROWSER_SOCKET_DIR: directory, AGENT_BROWSER_DOWNLOAD_PATH: downloads, AGENT_BROWSER_NO_VERSION_CHECK: '1' };
     const cli = async (args: string[], input?: string): Promise<Record<string, unknown>> => {
       const result = await runAgentCli({ tool: 'agent-browser', args: ['--json', '--session', 'fixture', '--config', config, ...args], cwd: directory, env, input, timeoutMs: 20_000 }) as { success: boolean; data: Record<string, unknown>; error?: string };
       if (!result.success) throw new Error('Fixture CLI failed: ' + result.error);
@@ -178,7 +179,7 @@ describe("main Chrome Flow fixed driver", () => {
           };
         </script></body></html>`;
     try {
-      await cli(['--executable-path', flowBrowserExecutable()!, 'open']);
+      await cli(['--executable-path', flowBrowserExecutable()!, '--download-path', downloads, 'open']);
       // Fulfil every request locally before opening the HTTPS fixture origin.
       await cli(['network', 'route', '*', '--body', '{}']);
       await cli(['open', project]);

@@ -85,6 +85,7 @@ import { ConversationOutline } from "./features/chat/conversation-outline";
 import { ConversationScene } from "./features/chat/conversation-scene";
 import { collectTicketNotifications } from "./features/tasks/task-notifications";
 import { ConversationFilesButton, ConversationSearchDialog, type ConversationDestination } from "./features/chat/conversation-library";
+import { ChatTargetDeviceMenu } from "./features/chat/target-device-menu";
 import { messageQuote } from "./features/chat/message-actions";
 import {
   hasBlockingOverlay,
@@ -689,6 +690,30 @@ function AppShell() {
     ? mainChatTitle
     : activeTopic?.title || t(`与 ${agentName} 对话`, `Chat with ${agentName}`);
   const activeProject = projects.find((project) => project.id === activeTopic?.projectId);
+  const [topicTargetOverrides, setTopicTargetOverrides] = useState<Record<string, string>>({});
+  const persistedTargetDeviceId = activeTopic?.projectId ? "" : (activeTopic?.targetDeviceId ?? "");
+  const selectedTargetDeviceId = activeTopic?.projectId
+    ? ""
+    : Object.hasOwn(topicTargetOverrides, activeTopicId)
+      ? topicTargetOverrides[activeTopicId]!
+      : persistedTargetDeviceId;
+  useEffect(() => {
+    setTopicTargetOverrides((current) => {
+      const entries = Object.entries(current);
+      if (!entries.length) return current;
+      let changed = false;
+      const next: Record<string, string> = {};
+      for (const [topicId, value] of entries) {
+        const topic = topics.find((item) => item.id === topicId);
+        if (topic && (topic.targetDeviceId ?? "") === value) {
+          changed = true;
+          continue;
+        }
+        next[topicId] = value;
+      }
+      return changed ? next : current;
+    });
+  }, [topics]);
   useEffect(() => {
     if (topicDrafts.isLocal(activeTopicId)) return;
     if (topics.length && !topics.some((topic) => topic.id === activeTopicId && !topic.deletedAt)) selectTopic("root");
@@ -991,7 +1016,7 @@ function AppShell() {
     const attachmentsToSend = readyDraftAttachments.map((a) => a.attachment!);
 
     if (isUploading || (!raw && attachmentsToSend.length === 0)) return;
-    const intent = JSON.stringify([currentDraftKey, draftEditRevisionRef.current, overrideText === undefined ? null : raw, readyDraftAttachments.map((item) => item.localId), replyTo ?? null]);
+    const intent = JSON.stringify([currentDraftKey, draftEditRevisionRef.current, overrideText === undefined ? null : raw, readyDraftAttachments.map((item) => item.localId), replyTo ?? null, selectedTargetDeviceId]);
     if (submittedIntentRef.current === intent) return;
     if (!outboxReady) {
       setActionError(t("待发队列尚未就绪，输入草稿已保留", "The send queue is not ready. Your draft is saved."));
@@ -1071,6 +1096,9 @@ function AppShell() {
     }
 
     const reqId = newDeliveryId("web");
+    const messageTargetDeviceId = !activeTopic?.projectId && (selectedTargetDeviceId !== "" || persistedTargetDeviceId !== "")
+      ? selectedTargetDeviceId
+      : undefined;
     await dispatchSubmissionWithAck({
       topicId: targetTopic,
       draftKey: composerDraftKey(targetTopic),
@@ -1080,6 +1108,7 @@ function AppShell() {
         content: raw,
         ...(replyTo ? { replyTo } : {}),
         ...(attachmentsToSend.length > 0 ? { attachments: attachmentsToSend } : {}),
+        ...(messageTargetDeviceId !== undefined ? { targetDeviceId: messageTargetDeviceId } : {}),
         requestId: reqId,
         whenBusy: "steer",
       },
@@ -1087,6 +1116,14 @@ function AppShell() {
       draftAttachments: readyDraftAttachments,
       state: "sending",
     });
+    if (targetTopic !== activeTopicId && Object.hasOwn(topicTargetOverrides, activeTopicId)) {
+      setTopicTargetOverrides((current) => {
+        const next = { ...current };
+        delete next[activeTopicId];
+        if (selectedTargetDeviceId) next[targetTopic] = selectedTargetDeviceId;
+        return next;
+      });
+    }
     consumeDraft();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : t("无法保存待发消息，草稿已保留", "Could not save the pending message. Your draft is saved."));
@@ -1566,6 +1603,16 @@ function AppShell() {
 
         {!settingsMode && !projectedTicketId && <>
           {locatingMessage && <Spinner size="sm" aria-label={t("正在定位消息", "Locating message")} />}
+          {!activeTopic?.projectId && (
+            <ChatTargetDeviceMenu
+              envs={envs}
+              selectedDeviceId={selectedTargetDeviceId}
+              disabled={!connected || live.busy}
+              onSelect={(deviceId) => {
+                setTopicTargetOverrides((current) => ({ ...current, [activeTopicId]: deviceId }));
+              }}
+            />
+          )}
           <Button size="sm" isIconOnly variant="ghost" className="kulo-window-control" aria-label={t("搜索对话正文", "Search conversation messages")} onPress={() => openConversationSearch("all")}><KuloIcon name="search" size={18} /></Button>
           <ConversationFilesButton topicId={activeTopicId} scopeKey={deliveryScope} revision={`${persistedMessages.at(-1)?.id ?? 0}:${persistedMessages.length}`} isLocal={Boolean(localTopics.selected)} onNavigate={navigateConversation} />
         </>}

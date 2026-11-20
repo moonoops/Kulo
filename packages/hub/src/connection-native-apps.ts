@@ -4,14 +4,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import type { ConnectionApplicationDefinition, ConnectionSecrets, ConnectionUseOperation, ConnectionUseResult } from "@kulo/protocol";
+import type { ConnectionApplicationDefinition, ConnectionSecrets, ConnectionUseOperation, ConnectionUseResult, NativeAppPermissionKind } from "@kulo/protocol";
 
 type NativeApplicationId = "messages" | "mail";
 type AppOperation = Extract<ConnectionUseOperation, { kind: "app" }>;
 
+const NATIVE_PERMISSION_SETTINGS_URLS: Record<NativeAppPermissionKind, string> = {
+  "full-disk-access": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+  automation: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+};
+
 export const NATIVE_CONNECTION_APPLICATIONS: ConnectionApplicationDefinition[] = [
   { id: "messages", name: "信息", description: "读取本机对话并发送 iMessage 或短信。", authentication: "macos",
-    instructions: ["先在本机信息 App 登录账号。", "在系统设置的隐私与安全性中，为运行 Kulo 的应用授予完全磁盘访问权限。", "点击连接时允许 Kulo 自动化控制信息；完成后重新测试。"],
+    instructions: ["先在本机信息 App 登录账号。", "点击授权后，在系统弹窗中允许 Kulo 自动化控制信息。", "在系统设置的「完全磁盘访问权限」中允许运行 Kulo 的应用，重启 Kulo 后重新检查。"],
     helpUrl: "https://support.apple.com/guide/mac-help/mh32356/mac",
     actions: [
       { id: "messages.list", label: "列出对话", readOnly: true, parameters: "limit?: integer，1–50，默认 20。" },
@@ -19,7 +24,7 @@ export const NATIVE_CONNECTION_APPLICATIONS: ConnectionApplicationDefinition[] =
       { id: "messages.send", label: "发送消息", readOnly: false, parameters: 'text: string，必填；chatId?: string（对话 GUID）与 to?: string（手机号或邮箱）必须且只能提供一个；service?: "iMessage" | "SMS"，to 默认 iMessage，chatId 默认所属服务。' },
     ] },
   { id: "mail", name: "邮件", description: "读取本机邮件、保存草稿并发送邮件。", authentication: "macos",
-    instructions: ["先在本机邮件 App 添加并启用邮箱。", "点击连接时允许 Kulo 自动化控制邮件。", "完成后重新测试，确认邮箱可读取。"],
+    instructions: ["先在本机邮件 App 添加并启用邮箱。", "点击授权后，在系统弹窗中允许 Kulo 自动化控制邮件。", "若系统未弹窗，请在系统设置的「自动化」中开启后重新检查。"],
     helpUrl: "https://support.apple.com/guide/mac-help/mchla1b1e1fe/mac",
     actions: [
       { id: "mail.list", label: "列出邮件", readOnly: true, parameters: 'account?: string（Mail 账号 ID）；mailbox?: string，默认 "inbox"，未指定 account 时支持 inbox/drafts/sent/trash/junk，指定 account 时使用该账号的邮箱名称路径；limit?: integer，1–50，默认 20；unreadOnly?: boolean，默认 false。' },
@@ -189,11 +194,14 @@ export class NativeConnectionApplications {
   }
   async probe(appId: string, _secrets: ConnectionSecrets, signal?: AbortSignal, options?: { requestPermission?: boolean }): Promise<{ username?: string }> {
     this.#assertPlatform(appId);
-    if (appId === "messages") {
+    const requestPermission = options?.requestPermission === true;
+    const probeMessagesDatabase = async () => {
       const read = await this.#run({ appId, action: "messages.probe_read", databasePath: this.#options.messagesDatabasePath ?? path.join(os.homedir(), "Library", "Messages", "chat.db") }, signal);
       if (read.readable !== true) fail("connection_messages_full_disk_access_required");
-    }
-    const result = await this.#run({ appId, action: "probe", requestPermission: options?.requestPermission === true }, signal);
+    };
+    if (appId === "messages" && !requestPermission) await probeMessagesDatabase();
+    const result = await this.#run({ appId, action: "probe", requestPermission }, signal);
+    if (appId === "messages" && requestPermission) await probeMessagesDatabase();
     if (result.authorized !== true || result.accountReady !== true || appId === "mail" && result.readable !== true) fail("connection_app_account_unavailable");
     return { ...(typeof result.username === "string" && result.username.length <= 256 ? { username: result.username } : {}) };
   }
@@ -207,4 +215,28 @@ export class NativeConnectionApplications {
     if (Buffer.byteLength(output, "utf8") > 128 * 1024) fail("connection_app_failed");
     return { kind: "app", output };
   }
+}
+
+export async function openNativePermissionSettings(
+  kind: unknown,
+  options: { platform?: NodeJS.Platform; launcher?: (url: string) => Promise<void> } = {},
+): Promise<void> {
+  if (typeof kind !== "string" || !Object.hasOwn(NATIVE_PERMISSION_SETTINGS_URLS, kind)) fail("connection_app_invalid_parameters");
+  if ((options.platform ?? process.platform) !== "darwin") fail("connection_app_platform_unavailable");
+  const url = NATIVE_PERMISSION_SETTINGS_URLS[kind as NativeAppPermissionKind];
+  if (options.launcher) {
+    await options.launcher(url);
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn("/usr/bin/open", [url], { stdio: "ignore", env: { PATH: "/usr/bin:/bin" }, windowsHide: true });
+    let timedOut = false;
+    const timeout = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 10_000);
+    child.once("error", () => { clearTimeout(timeout); reject(Object.assign(new Error("未能打开系统设置，请手动前往系统设置的「隐私与安全性」完成授权。"), { code: "connection_permission_settings_failed", status: 502 })); });
+    child.once("close", (status) => {
+      clearTimeout(timeout);
+      if (timedOut || status !== 0) reject(Object.assign(new Error("未能打开系统设置，请手动前往系统设置的「隐私与安全性」完成授权。"), { code: "connection_permission_settings_failed", status: 502 }));
+      else resolve();
+    });
+  });
 }

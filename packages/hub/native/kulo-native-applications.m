@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
 
 #ifndef KULO_JXA_SOURCE
 #define KULO_JXA_SOURCE "function kulo() { throw new Error('KULO_NATIVE:connection_app_unavailable'); }"
@@ -209,19 +210,26 @@ static NSDictionary *automate(NSDictionary *request) {
   NSString *bundleId = bundle.bundleIdentifier;
   if (!bundleId) return failure(@"connection_app_unavailable");
   BOOL permission = [action isEqualToString:@"probe"] && [request[@"requestPermission"] isEqual:@YES];
+  BOOL launched = NO;
   NSArray *running = [NSRunningApplication runningApplicationsWithBundleIdentifier:bundleId];
   if (running.count == 0 && permission) {
     NSError *launchError = nil;
     NSRunningApplication *application = [[NSWorkspace sharedWorkspace] launchApplicationAtURL:[NSURL fileURLWithPath:appPath] options:NSWorkspaceLaunchWithoutActivation configuration:@{} error:&launchError];
     if (!application || launchError) return failure(@"connection_app_not_running");
+    launched = YES;
+    for (int attempt = 0; attempt < 30 && !application.finishedLaunching && !application.terminated; attempt++) usleep(100000);
   } else if (running.count == 0) return failure(@"connection_app_not_running");
   AEAddressDesc target = { typeNull, NULL };
   NSData *identifier = [bundleId dataUsingEncoding:NSUTF8StringEncoding];
   if (AECreateDesc(typeApplicationBundleID, identifier.bytes, identifier.length, &target) != noErr) return failure(@"connection_app_unavailable");
   __block OSStatus authorization = errAEEventNotPermitted;
-  dispatch_semaphore_t finished = dispatch_semaphore_create(0);
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ authorization = AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, permission); dispatch_semaphore_signal(finished); });
-  dispatch_semaphore_wait(finished, DISPATCH_TIME_FOREVER);
+  for (int attempt = 0; attempt < (launched ? 15 : 1); attempt++) {
+    dispatch_semaphore_t finished = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ authorization = AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, permission); dispatch_semaphore_signal(finished); });
+    dispatch_semaphore_wait(finished, DISPATCH_TIME_FOREVER);
+    if (authorization != procNotFound) break;
+    if (launched && attempt + 1 < 15) usleep(200000);
+  }
   AEDisposeDesc(&target);
   if (authorization != noErr) return failure(authorization == procNotFound ? @"connection_app_not_running" : @"connection_app_automation_required");
   NSMutableDictionary *input = [request mutableCopy];

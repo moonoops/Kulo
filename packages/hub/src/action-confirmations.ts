@@ -7,7 +7,9 @@ import type { KuloUiCards } from "./ui-cards.js";
 export type ActionConfirmationKind =
   | "customization_validate"
   | "external_permission"
-  | "staged_apply";
+  | "staged_apply"
+  | "memory_service_operation"
+  | "host_action";
 
 export type ActionConfirmationPayload =
   | {
@@ -34,6 +36,27 @@ export type ActionConfirmationPayload =
       allowConflicts: boolean;
       sensitivePaths: string[];
       conflictFiles: string[];
+    }
+  | {
+      kind: "memory_service_operation";
+      jobId: string;
+      clientId: string;
+      operation: "deploy" | "configure" | "uninstall";
+      deviceName: string;
+      title: string;
+      changes: string[];
+    }
+  | {
+      kind: "host_action";
+      envId: string;
+      envName: string;
+      summary: string;
+      commands: string[];
+      cwd?: string;
+      timeoutMs?: number;
+      ticketId?: string;
+      runEpoch?: number;
+      requestId?: string;
     };
 
 export interface PendingActionConfirmation {
@@ -102,6 +125,94 @@ export function stagedApplyFingerprint(input: {
     [...input.sensitivePaths].sort(),
     [...input.conflictFiles].sort(),
   ]);
+}
+
+export function hostActionFingerprint(input: {
+  envId: string;
+  commands: readonly string[];
+  cwd?: string;
+  ticketId?: string;
+  runEpoch?: number;
+  requestId?: string;
+}): string {
+  return hashValue([
+    "host_action",
+    input.envId,
+    [...input.commands],
+    input.cwd ?? null,
+    input.ticketId ?? null,
+    input.runEpoch ?? null,
+    input.requestId ?? null,
+  ]);
+}
+
+export function buildHostActionConfirmCard(input: {
+  envName: string;
+  summary: string;
+  commands: readonly string[];
+  cwd?: string;
+}): {
+  input: UiCardInput;
+  logicalIds: string[];
+} {
+  const title = clip(`在 ${input.envName} 执行本机操作`, 120);
+  const code = input.commands.join("\n");
+  const fileName = clip(input.cwd ? `${input.envName} · ${input.cwd}` : input.envName, 120);
+  const cardInput: UiCardInput = {
+    title,
+    fallbackText: clip(`${title}：${input.summary}`, 400),
+    spec: {
+      root: "root",
+      elements: {
+        root: {
+          type: "Card",
+          props: {
+            title,
+            description: clip(input.summary, 240),
+          },
+          children: ["body"],
+        },
+        body: {
+          type: "Stack",
+          props: { gap: "sm" },
+          children: ["commands", "actions"],
+        },
+        commands: {
+          type: "Code",
+          props: {
+            fileName,
+            code,
+          },
+        },
+        actions: {
+          type: "Grid",
+          props: { columns: 2 },
+          children: ["btn_confirm", "btn_cancel"],
+        },
+        btn_confirm: {
+          type: "Button",
+          props: { actionId: "confirm", label: "允许执行", variant: "primary" },
+        },
+        btn_cancel: {
+          type: "Button",
+          props: { actionId: "cancel", label: "取消", variant: "secondary" },
+        },
+      },
+    },
+    actions: [
+      { id: "confirm", label: "允许执行", kind: "submit" },
+      { id: "cancel", label: "取消", kind: "cancel" },
+    ],
+  };
+  return { input: cardInput, logicalIds: ["confirm", "cancel"] };
+}
+
+export function memoryServiceOperationFingerprint(input: {
+  jobId: string;
+  clientId: string;
+  operation: "deploy" | "configure" | "uninstall";
+}): string {
+  return hashValue(["memory_service_operation", input.jobId, input.clientId, input.operation]);
 }
 
 export function buildCustomizationConfirmCard(summary: string, changedFiles: readonly string[]): {
@@ -285,6 +396,72 @@ export function buildStagedApplyConfirmCard(input: {
     },
     logicalIds: ["confirm", "cancel"],
   };
+}
+
+export function buildMemoryServiceConfirmCard(input: {
+  operation: "deploy" | "configure" | "uninstall";
+  title: string;
+  deviceName: string;
+  changes: readonly string[];
+}): {
+  input: UiCardInput;
+  logicalIds: string[];
+} {
+  const confirmLabel =
+    input.operation === "uninstall"
+      ? "确认卸载"
+      : input.operation === "deploy"
+        ? "确认部署"
+        : "确认保存配置";
+  const summaryLines = input.changes.length
+    ? input.changes.map((line) => `- ${line}`).join("\n")
+    : `- ${input.deviceName}`;
+  const cardInput: UiCardInput = {
+    title: clip(input.title, 120),
+    fallbackText: `${input.title}（${input.deviceName}）`,
+    spec: {
+      root: "root",
+      elements: {
+        root: {
+          type: "Card",
+          props: {
+            title: clip(input.title, 120),
+            description: clip(`目标主机：${input.deviceName}`, 240),
+          },
+          children: ["body"],
+        },
+        body: {
+          type: "Stack",
+          props: { gap: "sm" },
+          children: ["details", "actions"],
+        },
+        details: {
+          type: "Text",
+          props: {
+            text: clip(summaryLines, 2000),
+          },
+        },
+        actions: {
+          type: "Grid",
+          props: { columns: 2 },
+          children: ["btn_confirm", "btn_cancel"],
+        },
+        btn_confirm: {
+          type: "Button",
+          props: { actionId: "confirm", label: confirmLabel, variant: "primary" },
+        },
+        btn_cancel: {
+          type: "Button",
+          props: { actionId: "cancel", label: "取消", variant: "secondary" },
+        },
+      },
+    },
+    actions: [
+      { id: "confirm", label: confirmLabel, kind: "submit" },
+      { id: "cancel", label: "取消", kind: "cancel" },
+    ],
+  };
+  return { input: cardInput, logicalIds: ["confirm", "cancel"] };
 }
 
 export class KuloActionConfirmations {

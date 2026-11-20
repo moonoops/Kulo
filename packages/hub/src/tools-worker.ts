@@ -35,6 +35,7 @@ import { fetchWebPage, validatePublicWebUrl } from "./web-content.js";
 import { createWorkerSections } from "./prompts/worker.js";
 import { createComputerUseTools, type ComputerUseToolsOptions } from "./tools-computer-use.js";
 import { createConnectionTools, type ConnectionToolController } from "./tools-connections.js";
+import { createHostActionTool, type HostActionController } from "./tools-host-action.js";
 import type { UiAssetPublicationInput } from "./ui-cards.js";
 import type { KuloUploadStore } from "./uploads.js";
 import {
@@ -137,6 +138,7 @@ export function createWorkerExtension(options: {
   search?: () => KuloSearch;
   uploads?: KuloUploadStore;
   connections?: ConnectionToolController;
+  hostActions?: HostActionController;
   computerUse?: ComputerUseToolsOptions;
   onStateChanged?: () => void;
   publishAsset?: (input: UiAssetPublicationInput, api: ToolExecutionApi, context: Context) => Promise<ChatAttachment>;
@@ -593,6 +595,7 @@ export function createWorkerExtension(options: {
       ...workerHindsightTools,
       ...(options.computerUse ? createComputerUseTools(options.computerUse) : []),
       ...(options.connections ? createConnectionTools(options.connections, "worker") : []),
+      ...(options.hostActions ? [createHostActionTool(options.hostActions, "worker")] : []),
     ],
     hooks: [safetyHook],
   });

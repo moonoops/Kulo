@@ -30,20 +30,20 @@ async function fixture() {
 }
 
 describe("Kulo managed skills", () => {
-  it("loads built-ins by audience and keeps configuration instructions available", async () => {
+  it("loads user-facing built-ins cleanly, keeps system and capability guides hidden from the user table", async () => {
     const f = await fixture();
-    expect((await f.skills.snapshot()).skills).toHaveLength(12);
-    expect((await f.skills.catalog("settings")).map((skill) => skill.id)).toEqual(["capability-setup"]);
-    expect((await f.skills.catalog("worker")).map((skill) => skill.id)).toEqual(["image-generation", "video-generation"]);
-    await expect(f.skills.read("capability-setup", "SKILL.md", "chat")).rejects.toMatchObject({ status: 403 });
-    expect(await f.skills.read("capability-setup", "SKILL.md", "settings")).toContain("kulo_capability_configure");
-    await expect(f.skills.manage({ action: "disable", id: "capability-setup", commandId: "disable-setup" })).rejects.toMatchObject({ code: "required_skill" });
-    await expect(f.skills.manage({ action: "remove", id: "image-generation", commandId: "remove-builtin" })).rejects.toMatchObject({ code: "builtin_skill_managed" });
-    await f.skills.manage({ action: "disable", id: "image-generation", commandId: "disable-image" });
-    expect((await f.skills.catalog("chat")).map((skill) => skill.id)).toEqual(["genui-cards", "video-generation"]);
-    await expect(f.skills.read("image-generation")).rejects.toMatchObject({ status: 403 });
+    expect((await f.skills.snapshot()).skills.map((skill) => skill.id)).toEqual(["genui-cards", "interactive-html"]);
+    expect((await f.skills.catalog("settings")).map((skill) => skill.id)).toEqual(["genui-cards"]);
+    expect((await f.skills.catalog("worker")).map((skill) => skill.id)).toEqual(["interactive-html"]);
+    expect(await f.skills.readSystemGuide("capability-setup")).toContain("kulo_capability_configure");
+    await expect(f.skills.read("capability-setup", "SKILL.md", "chat")).rejects.toMatchObject({ status: 404 });
+    await expect(f.skills.manage({ action: "disable", id: "image-generation", commandId: "disable-hidden" })).rejects.toMatchObject({ code: "builtin_skill_managed" });
+    await expect(f.skills.manage({ action: "remove", id: "genui-cards", commandId: "remove-builtin" })).rejects.toMatchObject({ code: "builtin_skill_managed" });
+    await f.skills.manage({ action: "disable", id: "interactive-html", commandId: "disable-html" });
+    expect((await f.skills.catalog("chat")).map((skill) => skill.id)).toEqual(["genui-cards"]);
+    await expect(f.skills.read("interactive-html")).rejects.toMatchObject({ status: 403 });
     await f.skills.initialize();
-    expect((await f.skills.snapshot()).skills.find((skill) => skill.id === "image-generation")?.enabled).toBe(false);
+    expect((await f.skills.snapshot()).skills.find((skill) => skill.id === "interactive-html")?.enabled).toBe(false);
   });
 
   it("imports a bounded snapshot and deduplicates commands without following the source", async () => {
@@ -114,7 +114,7 @@ describe("Kulo managed skills", () => {
     fs.chmodSync(managedFile, 0o600);
     fs.writeFileSync(managedFile, Buffer.alloc(originalSize, "Z"));
     await expect(f.skills.read(skill.id, "SKILL.md", "worker")).rejects.toMatchObject({ code: "skill_resource_changed" });
-    expect((await f.skills.snapshot()).skills).toHaveLength(13);
+    expect((await f.skills.snapshot()).skills).toHaveLength(3);
   });
 
   it("enforces package limits and revision checks for simultaneous management", async () => {
@@ -125,8 +125,8 @@ describe("Kulo managed skills", () => {
     fs.unlinkSync(path.join(source, "large.bin"));
     const revision = (await f.skills.snapshot()).revision;
     const results = await Promise.allSettled([
-      f.skills.manage({ action: "disable", id: "image-generation", expectedRevision: revision, commandId: "competing-one" }),
-      f.skills.manage({ action: "disable", id: "video-generation", expectedRevision: revision, commandId: "competing-two" }),
+      f.skills.manage({ action: "disable", id: "genui-cards", expectedRevision: revision, commandId: "competing-one" }),
+      f.skills.manage({ action: "disable", id: "interactive-html", expectedRevision: revision, commandId: "competing-two" }),
     ]);
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(results.find((result) => result.status === "rejected")).toMatchObject({ reason: { code: "skill_revision_conflict" } });
@@ -134,15 +134,30 @@ describe("Kulo managed skills", () => {
     await expect(f.skills.manage({ action: "import", source: "git:file:///tmp/anything", commandId: "file-protocol" })).rejects.toMatchObject({ status: 400 });
   });
 
-  it("repairs the required setup skill when opening legacy or damaged metadata", async () => {
+  it("retires legacy removed built-ins and repairs hidden capability preset metadata on initialize", async () => {
     const f = await fixture();
     await f.harness.commit(async (tx) => {
       const state = await tx.doc(KuloSkillsDoc);
-      state.skills["capability-setup"]!.record.enabled = false;
-      state.skills["capability-setup"]!.record.audiences = ["chat"];
+      const now = Date.now();
+      for (const legacyId of ["capability-setup", "desktop-macos", "vercel-react-best-practices"]) {
+        state.skills[legacyId] = {
+          record: {
+            id: legacyId, name: legacyId, description: "legacy", source: "builtin",
+            version: "0".repeat(64), enabled: true, audiences: ["worker"], dependencies: [], diagnostics: [],
+            createdAt: now, updatedAt: now,
+          },
+          versions: {},
+          order: [],
+        };
+      }
+      state.skills["desktop-automation"]!.record.enabled = false;
+      state.skills["desktop-automation"]!.record.audiences = ["settings"];
     }, BACKGROUND_CONTEXT);
     await f.skills.initialize();
-    expect((await f.skills.catalog("settings")).map((entry) => entry.id)).toEqual(["capability-setup"]);
+    const snap = await f.skills.snapshot();
+    expect(snap.skills.map((entry) => entry.id)).toEqual(["genui-cards", "interactive-html"]);
+    const desktop = await f.skills.catalog("worker", { platform: "darwin", capabilities: ["agent-desktop"] });
+    expect(desktop.map((entry) => entry.id)).toContain("desktop-automation");
   });
 
   it("keeps explicit-only skills out of automatic selection without denying explicit reads", async () => {

@@ -407,7 +407,7 @@ export async function verifyMacApp(bundle) {
   await run("/usr/bin/codesign", ["--verify", "--deep", "--strict", bundle]);
   await verifyRecoveryCleanupRuntime(path.join(resources, "runtime/recovery"));
   // Importing from the packaged location catches missing Node and native dependencies without opening user data.
-  await run(node, ["--input-type=module", "-e", "await import('@kulo/hub'); await import('@kulo/env'); const r = await import('@kulo/recovery'); await r.verifyRelease(process.cwd(), await r.readReleaseManifest(process.cwd()), { full: true });"], {
+  await run(node, ["--input-type=module", "-e", "const hub = await import('@kulo/hub'); const bundled = await hub.inspectBundledBillionContextPackage(); if (!bundled || bundled.version !== hub.BILLION_CONTEXT_KERNEL_VERSION) throw new Error('安装包缺少内置 Billion Context 压缩内核。'); await import('@kulo/env'); const r = await import('@kulo/recovery'); await r.verifyRelease(process.cwd(), await r.readReleaseManifest(process.cwd()), { full: true });"], {
     cwd: app,
     env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: os.homedir(), TMPDIR: os.tmpdir() },
     maxBuffer: 1024 * 1024,

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import type { WorkerNetworkPolicy, WorkerSandboxOptions } from "./isolation.js";
@@ -95,7 +96,7 @@ export function buildLinuxSandboxArguments(options: WorkerSandboxOptions & { tem
   if (!offline) {
     args.push("--bind", path.join(options.temporaryDir, "network"), "/run/kulo-network");
   }
-  args.push("--chdir", options.workspaceDir, "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin", "--setenv", "HOME", path.join(options.temporaryDir, "home"), "--setenv", "TMPDIR", path.join(options.temporaryDir, "tmp"), "--setenv", "LANG", "C.UTF-8", "--setenv", "PORT", String(options.port));
+  args.push("--chdir", options.workspaceDir, "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin", "--setenv", "HOME", path.join(options.temporaryDir, "home"), "--setenv", "KULO_HOST_HOME", os.homedir(), "--setenv", "TMPDIR", path.join(options.temporaryDir, "tmp"), "--setenv", "LANG", "C.UTF-8", "--setenv", "PORT", String(options.port));
   if (!offline) {
     args.push("--setenv", "HTTP_PROXY", "http://127.0.0.1:3128", "--setenv", "HTTPS_PROXY", "http://127.0.0.1:3128", "--setenv", "http_proxy", "http://127.0.0.1:3128", "--setenv", "https_proxy", "http://127.0.0.1:3128", "--setenv", "NO_PROXY", "localhost,127.0.0.1,::1", "--setenv", "NODE_USE_ENV_PROXY", "1");
   }
@@ -242,4 +243,65 @@ export function createLinuxSandboxCommand(options: WorkerSandboxOptions & { temp
     offline,
   };
   return [process.execPath, "--input-type=module", "-e", standaloneFunctionSource(linuxOutside), JSON.stringify(config)];
+}
+
+/**
+ * Credential-isolated Linux bwrap invocation for host maintenance commands.
+ * Binds host filesystem with normal user permissions while overlaying all protected
+ * credential and Kulo state paths with inaccessible mode-000 placeholders.
+ */
+export function createLinuxHostMaintenanceCommand(options: {
+  cwd: string;
+  controlDir: string;
+  protectedPaths: readonly string[];
+  pathEnv: string;
+  proxyEnv: readonly string[];
+  command: string;
+}): readonly string[] {
+  const executable = bubblewrap();
+  if (!executable) throw new Error("Linux host maintenance requires bubblewrap; unrestricted host execution is disabled");
+  const privateDir = path.join(options.controlDir, "private-directory");
+  const privateFile = path.join(options.controlDir, "private-file");
+  fs.mkdirSync(privateDir, { recursive: true, mode: 0o000 });
+  fs.writeFileSync(privateFile, "", { mode: 0o000 });
+  const args: string[] = [
+    "--die-with-parent",
+    "--new-session",
+    "--cap-drop", "ALL",
+    "--clearenv",
+    "--dev-bind", "/", "/",
+    "--proc", "/proc",
+    "--dev", "/dev",
+  ];
+  for (const entry of options.protectedPaths) {
+    if (!fs.existsSync(entry)) continue;
+    let actual: string;
+    try {
+      actual = fs.realpathSync(entry);
+    } catch {
+      continue;
+    }
+    if (actual === "/") continue;
+    try {
+      args.push("--ro-bind", fs.statSync(actual).isDirectory() ? privateDir : privateFile, actual);
+    } catch {
+      // Ignore vanished path
+    }
+  }
+  const homeDir = os.homedir();
+  args.push(
+    "--chdir", options.cwd,
+    "--setenv", "PATH", options.pathEnv,
+    "--setenv", "HOME", homeDir,
+    "--setenv", "KULO_HOST_HOME", homeDir,
+    "--setenv", "TMPDIR", os.tmpdir(),
+    "--setenv", "LANG", "C.UTF-8",
+    "--setenv", "SHELL", "/bin/bash",
+  );
+  for (const pair of options.proxyEnv) {
+    const eq = pair.indexOf("=");
+    if (eq > 0) args.push("--setenv", pair.slice(0, eq), pair.slice(eq + 1));
+  }
+  args.push("--", "/bin/bash", "-lc", options.command);
+  return [executable, ...args];
 }

@@ -16,6 +16,7 @@ import { cleanupRecordedExecutions, hasOrphanedExecution } from "./worker-superv
 import { collectDeviceSystemInfo } from "./device-info.js";
 import { FlowBrowserService } from "./browser.js";
 import { ComputerUseService, computerUseConfiguration } from "./computer-use.js";
+import { HostActionService } from "./host-actions.js";
 import { StreamResumeBuffer } from "./stream-resume.js";
 import {
   STREAM_RESUME_CAPABILITY,
@@ -27,6 +28,8 @@ import {
   type StreamResumeState,
   isComputerUseRequest,
   isComputerUseResult,
+  isHostActionRequest,
+  isHostActionResult,
   isComputerPreviewTarget,
   isComputerPreviewUpdate,
   COMPUTER_PREVIEW_MAX_DATA,
@@ -35,6 +38,7 @@ import {
   type ProjectEnvRequest,
   type BrowserRequest,
   type ComputerUseRequest,
+  type HostActionRequest,
   type ComputerPreviewTarget,
   type ComputerPreviewUpdate,
 } from "@kulo/protocol";
@@ -55,6 +59,10 @@ function ownRuntimeProtectedPaths(): string[] {
   }
   return [...new Set(paths.filter((entry) => fs.existsSync(entry)))];
 }
+
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 15_000;
+const DEFAULT_HEARTBEAT_IDLE_MS = 25_000;
+const DEFAULT_HEARTBEAT_TIMEOUT_MS = 10_000;
 
 export interface KuloEnvAgentOptions {
   /** Hub WebSocket URL, e.g. `ws://127.0.0.1:7788/ws/env` or `wss://hub.example.com/ws/env` */
@@ -78,6 +86,12 @@ export interface KuloEnvAgentOptions {
   reconnect?: boolean;
   /** Grace window in ms to keep daemons and sessions alive during brief disconnects (default: 20_000). */
   streamResumeGraceMs?: number;
+  /** WebSocket connect handshake timeout in ms (default: 15_000). */
+  handshakeTimeoutMs?: number;
+  /** Max silence in ms before probing Hub with a WebSocket ping (default: 25_000; 0 disables idle probing). */
+  heartbeatIdleMs?: number;
+  /** Max time in ms to wait for a ping or registration response before terminating the socket (default: 10_000). */
+  heartbeatTimeoutMs?: number;
   onLog?: (msg: string) => void;
 }
 
@@ -98,6 +112,9 @@ export class KuloEnvAgent {
   readonly #streamAckTimers = new Map<number, NodeJS.Timeout>();
   readonly #cleaningStreams = new Map<number, Promise<boolean>>();
   readonly #streamResumeGraceMs: number;
+  readonly #handshakeTimeoutMs: number;
+  readonly #heartbeatIdleMs: number;
+  readonly #heartbeatTimeoutMs: number;
   #hubInstanceId?: string;
   #streamResumeNegotiated = false;
   #graceTimer: NodeJS.Timeout | null = null;
@@ -106,15 +123,21 @@ export class KuloEnvAgent {
   readonly #stagedWorkspaces: StagedWorkspaceService;
   readonly #browser: FlowBrowserService;
   readonly #computer: ComputerUseService;
+  readonly #hostActions: HostActionService;
   readonly #externalAgents: ExternalAgentService;
   readonly #externalTools = new Map<string, { ws: WebSocket; scope: ExternalAgentMcpInvocation; resolve: (result: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   readonly #computerRequests = new Map<string, { ws: WebSocket; controller: AbortController }>();
+  readonly #hostActionRequests = new Map<string, { ws: WebSocket; controller: AbortController }>();
   readonly #computerPreviews = new Map<string, { ws: WebSocket; stop: () => void; pending?: ComputerPreviewUpdate; flushTimer?: NodeJS.Timeout }>();
   #registered = false;
   #controlQueue: Promise<void> = Promise.resolve();
   #stopped = false;
   #reconnectAttempt = 0;
   #reconnectTimer: NodeJS.Timeout | null = null;
+  #connectStartedAt = 0;
+  #lastInboundAt = 0;
+  #livenessTimer: NodeJS.Timeout | null = null;
+  #probeTimer: NodeJS.Timeout | null = null;
   #registeredWaiters: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
 
   get registered(): boolean { return this.#registered && this.#ws?.readyState === WebSocket.OPEN; }
@@ -124,6 +147,9 @@ export class KuloEnvAgent {
   constructor(options: KuloEnvAgentOptions) {
     this.#options = options;
     this.#streamResumeGraceMs = options.streamResumeGraceMs ?? STREAM_RESUME_GRACE_MS;
+    this.#handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+    this.#heartbeatIdleMs = options.heartbeatIdleMs ?? DEFAULT_HEARTBEAT_IDLE_MS;
+    this.#heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
     this.#rootDir = path.resolve(options.rootDir);
     this.#launchProtectedPaths = [
       path.resolve(".env"),
@@ -136,6 +162,17 @@ export class KuloEnvAgent {
     this.#launchProtectedPaths.push(this.#browser.rootDir);
     this.#computer = options.computerUseService ?? new ComputerUseService({ rootDir: path.join(this.#projectDirectories.privateDirectory, "computer-use"), ...computerUseConfiguration() });
     this.#launchProtectedPaths.push(this.#computer.rootDir);
+    this.#hostActions = new HostActionService({
+      controlRoot: path.join(this.#projectDirectories.privateDirectory, "executions"),
+      getProtectedPaths: () => [
+        path.join(this.#rootDir, ".kulo-state"),
+        path.join(this.#rootDir, ".env"),
+        this.#projectDirectories.privateDirectory,
+        ...this.#launchProtectedPaths,
+        ...ownRuntimeProtectedPaths(),
+        ...(this.#options.protectedPaths ?? []),
+      ],
+    });
     this.#externalAgents = options.externalAgentService ?? new ExternalAgentService({ envId: options.envId, rootDir: this.#rootDir, projectRegistry: this.#projectDirectories, toolHandler: invocation => this.#requestExternalTool(invocation) });
   }
 
@@ -155,7 +192,9 @@ export class KuloEnvAgent {
     for (const waiter of this.#registeredWaiters.splice(0)) {
       waiter.reject(new Error("Env agent stopped"));
     }
+    this.#clearLivenessTimers();
     this.#cancelComputerRequests();
+    this.#cancelHostActionRequests();
     if (this.#graceTimer) {
       clearTimeout(this.#graceTimer);
       this.#graceTimer = null;
@@ -166,7 +205,7 @@ export class KuloEnvAgent {
     }
     await this.#externalAgents.close();
     await this.#killAllDaemons();
-    const browserCleanup = Promise.allSettled([this.#browser.suspend(), this.#computer.suspend()]);
+    const browserCleanup = Promise.allSettled([this.#browser.suspend(), this.#computer.suspend(), this.#hostActions.suspend()]);
     if (this.#ws) {
       const ws = this.#ws;
       this.#ws = null;
@@ -183,19 +222,143 @@ export class KuloEnvAgent {
     if ((await browserCleanup).some((result) => result.status === "rejected")) throw new Error("Some owned browser or desktop sessions could not close");
   }
 
+  /** Actively verify the Hub WebSocket or accelerate a pending reconnect (for example after OS wake from sleep). */
+  probeConnection(): void {
+    if (this.#stopped) return;
+    const ws = this.#ws;
+    if (!ws || ws.readyState === WebSocket.CLOSED) {
+      if (this.#reconnectTimer) {
+        clearTimeout(this.#reconnectTimer);
+        this.#reconnectTimer = null;
+        this.#reconnectAttempt = 0;
+        this.#connect();
+      }
+      return;
+    }
+    if (ws.readyState === WebSocket.OPEN) {
+      this.#sendProbe(ws, {
+        forcePing: true,
+        reason: this.#registered ? "Hub connection heartbeat timed out" : "Hub registration timed out",
+      });
+      return;
+    }
+    if (ws.readyState === WebSocket.CLOSING) {
+      ws.terminate();
+      return;
+    }
+    if (ws.readyState === WebSocket.CONNECTING) {
+      const elapsed = Date.now() - this.#connectStartedAt;
+      const staleAfterMs = this.#handshakeTimeoutMs > 0 ? Math.min(2_000, this.#handshakeTimeoutMs) : 2_000;
+      if (elapsed < 0 || elapsed >= staleAfterMs) {
+        ws.terminate();
+      }
+    }
+  }
+
+  #clearProbeTimer(): void {
+    if (this.#probeTimer) {
+      clearTimeout(this.#probeTimer);
+      this.#probeTimer = null;
+    }
+  }
+
+  #clearLivenessTimers(): void {
+    if (this.#livenessTimer) {
+      clearInterval(this.#livenessTimer);
+      this.#livenessTimer = null;
+    }
+    this.#clearProbeTimer();
+  }
+
+  #recordInboundActivity(ws: WebSocket): void {
+    if (ws !== this.#ws) return;
+    this.#lastInboundAt = Date.now();
+    if (this.#registered) {
+      this.#clearProbeTimer();
+    }
+  }
+
+  #armProbeTimeout(ws: WebSocket, reason: string): void {
+    if (this.#stopped || ws !== this.#ws || this.#heartbeatTimeoutMs <= 0 || this.#probeTimer) return;
+    this.#probeTimer = setTimeout(() => {
+      this.#probeTimer = null;
+      if (this.#stopped || ws !== this.#ws) return;
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.CLOSING) {
+        this.#log(`${reason}; reconnecting...`);
+        ws.terminate();
+      }
+    }, this.#heartbeatTimeoutMs);
+    this.#probeTimer.unref();
+  }
+
+  #sendProbe(ws: WebSocket, options: { forcePing?: boolean; reason?: string } = {}): void {
+    if (this.#stopped || ws !== this.#ws || ws.readyState !== WebSocket.OPEN) return;
+    const alreadyProbing = Boolean(this.#probeTimer);
+    this.#armProbeTimeout(ws, options.reason ?? "Hub connection heartbeat timed out");
+    if (alreadyProbing && !options.forcePing) return;
+    try {
+      ws.ping(undefined, undefined, (err) => {
+        if (err && ws === this.#ws && !this.#stopped) {
+          this.#log(`Hub ping failed (${err.message}); reconnecting...`);
+          ws.terminate();
+        }
+      });
+    } catch (err) {
+      if (ws === this.#ws && !this.#stopped) {
+        this.#log(`Hub ping failed (${err instanceof Error ? err.message : String(err)}); reconnecting...`);
+        ws.terminate();
+      }
+    }
+  }
+
+  #startLivenessWatch(ws: WebSocket): void {
+    if (this.#livenessTimer) {
+      clearInterval(this.#livenessTimer);
+      this.#livenessTimer = null;
+    }
+    if (this.#heartbeatIdleMs <= 0) return;
+    const checkEveryMs = Math.min(5_000, Math.max(25, Math.floor(this.#heartbeatIdleMs / 2)));
+    this.#livenessTimer = setInterval(() => {
+      if (this.#stopped || ws !== this.#ws || ws.readyState !== WebSocket.OPEN) {
+        this.#clearLivenessTimers();
+        return;
+      }
+      const elapsed = Date.now() - this.#lastInboundAt;
+      if (elapsed < 0 || elapsed >= this.#heartbeatIdleMs) {
+        this.#sendProbe(ws);
+      }
+    }, checkEveryMs);
+    this.#livenessTimer.unref();
+  }
+
   #connect(): void {
     if (this.#stopped) return;
+    if (this.#reconnectTimer) {
+      clearTimeout(this.#reconnectTimer);
+      this.#reconnectTimer = null;
+    }
+    this.#clearLivenessTimers();
+    this.#connectStartedAt = Date.now();
 
-    const ws = new WebSocket(this.#options.hubUrl);
+    const ws = new WebSocket(this.#options.hubUrl, {
+      ...(this.#handshakeTimeoutMs > 0 ? { handshakeTimeout: this.#handshakeTimeoutMs } : {}),
+    });
     this.#ws = ws;
     this.#registered = false;
 
     ws.on("open", () => {
+      if (ws !== this.#ws || this.#stopped) {
+        ws.terminate();
+        return;
+      }
       this.#reconnectAttempt = 0;
+      this.#lastInboundAt = Date.now();
+      this.#startLivenessWatch(ws);
+      this.#armProbeTimeout(ws, "Hub registration timed out");
       const defaultCaps =
         process.platform === "darwin" ? ["fs", "bash", "macos-gui"] : ["fs", "bash"];
       const capabilities = Array.from(
-        new Set([...defaultCaps, STREAM_RESUME_CAPABILITY, "external-agents", ...workerIsolationCapabilities(), ...(this.#options.capabilities ?? []).filter((capability) => !["flow-browser", "agent-browser", "agent-desktop"].includes(capability)), ...(this.#browser.available ? ["flow-browser"] : []), ...this.#computer.capabilities()]),
+        new Set([...defaultCaps, STREAM_RESUME_CAPABILITY, "external-agents", "host-actions", ...workerIsolationCapabilities(), ...(this.#options.capabilities ?? []).filter((capability) => !["flow-browser", "agent-browser", "agent-desktop"].includes(capability)), ...(this.#browser.available ? ["flow-browser"] : []), ...this.#computer.capabilities()]),
       );
       const activeStreams: StreamResumeState[] = [];
       for (const streamId of this.#daemons.keys()) {
@@ -218,7 +381,17 @@ export class KuloEnvAgent {
       });
     });
 
+    ws.on("pong", () => {
+      this.#recordInboundActivity(ws);
+    });
+
+    ws.on("ping", () => {
+      this.#recordInboundActivity(ws);
+    });
+
     ws.on("message", (data, isBinary) => {
+      if (ws !== this.#ws) return;
+      this.#recordInboundActivity(ws);
       if (isBinary) {
         try {
           const buf = Buffer.isBuffer(data)
@@ -269,6 +442,7 @@ export class KuloEnvAgent {
         this.#hubInstanceId = msg.hubInstanceId;
         this.#streamResumeNegotiated = Boolean(msg.streamResumeSupported);
         this.#registered = true;
+        this.#clearProbeTimer();
         this.#log(`Registered env '${msg.envId}' -> ${this.#rootDir}`);
 
         if (hubRestarted) {
@@ -337,6 +511,13 @@ export class KuloEnvAgent {
           const pending = this.#computerRequests.get(msg.requestId);
           if (pending?.ws === ws) pending.controller.abort();
         }
+      } else if (msg.type === "hub.host_action_request") {
+        void this.#handleHostActionRequest(ws, msg.requestId, msg.request);
+      } else if (msg.type === "hub.host_action_cancel") {
+        if (ws === this.#ws && this.#registered && typeof msg.requestId === "string") {
+          const pending = this.#hostActionRequests.get(msg.requestId);
+          if (pending?.ws === ws) pending.controller.abort();
+        }
       } else if (msg.type === "hub.close_stream") {
         void this.#stopStream(msg.streamId, true).catch((error: unknown) => this.#log(error instanceof Error ? error.message : "Worker cleanup failed"));
       }
@@ -345,10 +526,12 @@ export class KuloEnvAgent {
     ws.on("close", (code, reasonBuf) => {
       for (const [id, pending] of this.#externalTools) if (pending.ws === ws) { clearTimeout(pending.timer); this.#externalTools.delete(id); pending.reject(new Error("Hub disconnected before task tool result was confirmed")); }
       const isCurrentSocket = ws === this.#ws;
-      if (isCurrentSocket) {
-        this.#registered = false;
-        this.#cancelComputerRequests(ws);
-      }
+      if (!isCurrentSocket) return;
+      this.#ws = null;
+      this.#registered = false;
+      this.#clearLivenessTimers();
+      this.#cancelComputerRequests(ws);
+      this.#cancelHostActionRequests(ws);
 
       const immediateRevokeOrStop =
         this.#stopped ||
@@ -365,12 +548,10 @@ export class KuloEnvAgent {
           clearTimeout(this.#graceTimer);
           this.#graceTimer = null;
         }
-        if (isCurrentSocket) {
-          void this.#browser.suspend().catch((error: unknown) => this.#log(error instanceof Error ? error.message : "Flow browser cleanup failed"));
-          void this.#computer.suspend().catch(() => this.#log("Computer-use session cleanup failed"));
-        }
+        void this.#browser.suspend().catch((error: unknown) => this.#log(error instanceof Error ? error.message : "Flow browser cleanup failed"));
+        void this.#computer.suspend().catch(() => this.#log("Computer-use session cleanup failed"));
         void this.#killAllDaemons().catch((error: unknown) => this.#log(error instanceof Error ? error.message : "Worker cleanup failed"));
-      } else if (isCurrentSocket && !this.#graceTimer) {
+      } else if (!this.#graceTimer) {
         // Hold active daemons, browser, and computer sessions alive for the 20s reconnect grace window.
         this.#graceTimer = setTimeout(() => {
           this.#graceTimer = null;
@@ -401,10 +582,17 @@ export class KuloEnvAgent {
         return;
       }
 
+      if (this.#reconnectTimer) {
+        clearTimeout(this.#reconnectTimer);
+        this.#reconnectTimer = null;
+      }
       const attempt = this.#reconnectAttempt++;
       const delayMs = attempt === 0 ? 300 : Math.min(15_000, 800 * 2 ** Math.min(attempt - 1, 4));
       this.#log(`Disconnected from Hub (${code}). Reconnecting in ${delayMs}ms...`);
-      this.#reconnectTimer = setTimeout(() => this.#connect(), delayMs);
+      this.#reconnectTimer = setTimeout(() => {
+        this.#reconnectTimer = null;
+        this.#connect();
+      }, delayMs);
       this.#reconnectTimer.unref();
     });
 
@@ -660,6 +848,45 @@ export class KuloEnvAgent {
       if (ws && pending.ws !== ws) continue;
       pending.controller.abort();
       this.#computerRequests.delete(id);
+    }
+  }
+
+  async #handleHostActionRequest(ws: WebSocket, requestId: string, request: HostActionRequest): Promise<void> {
+    if (ws !== this.#ws || !this.#registered || this.#stopped || ws.readyState !== ws.OPEN) return;
+    if (typeof requestId !== "string" || !/^[a-f0-9]{32}$/.test(requestId) || !isHostActionRequest(request)) {
+      if (typeof requestId === "string" && /^[a-f0-9]{32}$/.test(requestId)) {
+        this.#sendControl(ws, { type: "env.host_action_result", requestId, error: "Invalid host action request" });
+      }
+      return;
+    }
+    if (this.#hostActionRequests.has(requestId)) return;
+    if (this.#hostActionRequests.size >= 16) {
+      this.#sendControl(ws, { type: "env.host_action_result", requestId, error: "Host action request limit reached" });
+      return;
+    }
+    const controller = new AbortController();
+    this.#hostActionRequests.set(requestId, { ws, controller });
+    const active = () => ws === this.#ws && this.#registered && !this.#stopped && ws.readyState === ws.OPEN && !controller.signal.aborted;
+    try {
+      const result = await this.#hostActions.execute(request, controller.signal);
+      if (!active()) return;
+      if (!isHostActionResult(result, request)) throw new Error("Invalid host action result");
+      this.#sendControl(ws, { type: "env.host_action_result", requestId, result });
+    } catch (error) {
+      if (active()) {
+        const message = error instanceof Error ? error.message.slice(0, 2000) : "Host action failed";
+        this.#sendControl(ws, { type: "env.host_action_result", requestId, error: message });
+      }
+    } finally {
+      if (this.#hostActionRequests.get(requestId)?.controller === controller) this.#hostActionRequests.delete(requestId);
+    }
+  }
+
+  #cancelHostActionRequests(ws?: WebSocket): void {
+    for (const [id, pending] of this.#hostActionRequests) {
+      if (ws && pending.ws !== ws) continue;
+      pending.controller.abort();
+      this.#hostActionRequests.delete(id);
     }
   }
 

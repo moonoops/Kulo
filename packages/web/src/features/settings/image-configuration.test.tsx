@@ -129,6 +129,7 @@ describe("image configuration UI", () => {
     const next = { ...workspace, imageSetup: { ...workspace.imageSetup!, discovery: candidates } };
     const html = renderToStaticMarkup(<ImageProviderPicker workspace={next} clientId="client-a" connected onChanged={vi.fn()} />);
     expect(html).toContain("需配置接口");
+    expect(html).not.toContain("chip--tertiary");
     expect(html).toContain('aria-label="配置待确认的图片模型"');
     const draftResponse = { id: "configured-candidate-draft", clientId: "client-a", revision: 1, config: draft, updatedAt: 2 };
     const update = vi.spyOn(kuloRest, "updateImageDraft").mockResolvedValue(draftResponse);
@@ -142,10 +143,12 @@ describe("image configuration UI", () => {
     const rules = ["one", "two", "three"].map((id) => ({ id, name: id, capabilityId: "model", enabled: true }));
     expect(moveImageRoutingRule(rules, "two", -1).map((rule) => rule.id)).toEqual(["two", "one", "three"]);
     expect(moveImageRoutingRule(rules, "three", 1)).toBe(rules);
-    const html = renderToStaticMarkup(<ImageRoutingEditor workspace={workspace} clientId="client-a" connected onChanged={vi.fn()} />);
+    const html = renderToStaticMarkup(<ImageRoutingEditor workspace={{ ...workspace, imageRouting: { mode: "auto", preference: "balanced", instructions: "", rules: [{ id: "r1", name: "矢量图", capabilityId: "image-one", enabled: false }] } }} clientId="client-a" connected onChanged={vi.fn()} />);
     expect(html).toContain("由 Kulo 自动判断");
     expect(html).toContain("选择偏好");
     expect(html).toContain("添加规则");
+    expect(html).toContain("kulo-settings-table-actions");
+    expect(html).toContain("kulo-settings-table-action-group");
   });
 
   it("keeps the left workspace limited to the model table and its original add action", () => {

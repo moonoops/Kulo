@@ -40,6 +40,8 @@ const ORCHESTRATOR_BENCHMARK: readonly BenchmarkCase[] = [
   { query: "把自动归档天数改一下", expectedAnyOf: ["kulo_settings_update"] },
   { query: "帮我打开设置页面去添加 API 密钥", expectedAnyOf: ["kulo_settings_navigate"] },
   { query: "跳转到长期记忆设置页配置", expectedAnyOf: ["kulo_settings_navigate"] },
+  { query: "检查本机是否安装了 Hindsight 长期记忆服务", expectedAnyOf: ["kulo_memory_service_read"] },
+  { query: "卸载删除本机 Hindsight 记忆服务", expectedAnyOf: ["kulo_memory_service_prepare"] },
 
   // Persisted Chat History
   { query: "搜索以前聊过的历史聊天记录", expectedAnyOf: ["kulo_history_search"] },

@@ -8,6 +8,7 @@ import { ConfirmDialog } from "../../components/confirm-dialog";
 import { OtherExtensionsModule } from "./other-extensions-module";
 import { SettingsSection } from "./settings-layout";
 import { useSettingsNavigation } from "./use-settings-navigation";
+import { ComputerUseModule } from "./computer-use-module";
 import { SkillsModule } from "./skills-module";
 import { ImageCapabilitiesPanel } from "./image-capabilities-panel";
 import { CAPABILITY_VIEWS, CONNECT_FLOW_PROMPT, capabilityStatusColor, capabilityStatusLabel, capabilityTargetView, type CapabilityView } from "./capability-views";
@@ -45,9 +46,9 @@ function MediaCapabilitiesTable({ kind, snapshot, connected, disabled, error, en
     <Table.ScrollContainer className="kulo-settings-table-scroll">
       <Table.Content aria-label={image ? t("图像模型列表", "Image models") : t("视频连接列表", "Video connections")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content">
         <Table.Header>
-          <Table.Column id="name" isRowHeader className="kulo-settings-table-column">{image ? t("模型", "Model") : t("连接", "Connection")}</Table.Column>
-          <Table.Column id="details" className="kulo-settings-table-column kulo-settings-table-meta">{image ? t("格式", "Formats") : t("设备", "Device")}</Table.Column>
-          <Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-meta">{t("状态", "Status")}</Table.Column>
+          <Table.Column id="name" isRowHeader className="kulo-settings-table-column kulo-settings-table-primary">{image ? t("模型", "Model") : t("连接", "Connection")}</Table.Column>
+          <Table.Column id="details" className="kulo-settings-table-column kulo-settings-table-detail">{image ? t("格式", "Formats") : t("设备", "Device")}</Table.Column>
+          <Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-status">{t("状态", "Status")}</Table.Column>
           <Table.Column id="actions" className="kulo-settings-table-column kulo-settings-table-actions">{t("操作", "Actions")}</Table.Column>
         </Table.Header>
         <Table.Body renderEmptyState={() => <WorkspaceEmptyState loaded={Boolean(snapshot)} connected={connected} error={error} empty={image ? t("尚未添加图像模型", "No image models added") : t("尚未连接 Google Flow", "Google Flow is not connected")} />}>
@@ -57,20 +58,22 @@ function MediaCapabilitiesTable({ kind, snapshot, connected, disabled, error, en
             const device = flow ? envs.find((env) => env.id === connection.browserEnvId)?.name ?? connection.browserEnvId : undefined;
             const selected = target?.kind === "capability" && target.id === capability.id;
             return <Table.Row key={capability.id} id={capability.id} textValue={capability.name}>
-              <Table.Cell className="kulo-settings-table-cell">
-                <div className="flex min-w-0 flex-col items-start gap-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="kulo-item-title break-words">{capability.name}</span>
-                    {capability.isDefault && <Chip size="sm" variant="soft" color="accent">{t("默认", "Default")}</Chip>}
-                  </div>
-                  <span className="kulo-item-description break-words">{flow ? t("Google Flow · 会员网页", "Google Flow · subscription website") : capability.modelId}</span>
+              <Table.Cell className="kulo-settings-table-cell kulo-settings-table-primary">
+                <div className="kulo-settings-table-stack">
+                  <span className="kulo-item-title">{capability.name}</span>
+                  <span className="kulo-item-description">{flow ? t("Google Flow · 会员网页", "Google Flow · subscription website") : capability.modelId}</span>
                   {capability.error && <p className="break-words text-xs text-danger">{redactSecrets(capability.error)}</p>}
                 </div>
               </Table.Cell>
-              <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta">
-                {image ? <div className="flex flex-wrap gap-1">{capability.formats.map((format) => <Chip key={format} size="sm" variant="tertiary">{format.toUpperCase()}</Chip>)}</div> : <span className="text-sm">{device ?? "—"}</span>}
+              <Table.Cell className="kulo-settings-table-cell kulo-settings-table-detail">
+                {image ? <span className="kulo-item-description">{capability.formats.map((format) => format.toUpperCase()).join(" · ") || "—"}</span> : <span className="break-words text-sm">{device ?? "—"}</span>}
               </Table.Cell>
-              <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta"><Chip size="sm" variant="soft" color={capabilityStatusColor(capability)}>{capabilityStatusLabel(capability)}</Chip></Table.Cell>
+              <Table.Cell className="kulo-settings-table-cell kulo-settings-table-status">
+                <div className="kulo-settings-table-stack">
+                  <Chip size="sm" variant="soft" className="shrink-0 whitespace-nowrap" color={capabilityStatusColor(capability)}>{capabilityStatusLabel(capability)}</Chip>
+                  {capability.isDefault && <span className="kulo-item-description kulo-settings-table-status-note">{t("默认", "Default")}</span>}
+                </div>
+              </Table.Cell>
               <Table.Cell className="kulo-settings-table-cell kulo-settings-table-actions">
                 <div className="kulo-settings-table-action-group"><Button size="sm" variant={selected ? "secondary" : "ghost"} aria-label={t(`管理${capability.name}`, `Manage ${capability.name}`)} aria-pressed={selected} isDisabled={!connected || disabled} onPress={() => onRequest({ kind: "capability", id: capability.id })}>{t("管理", "Manage")}</Button></div>
               </Table.Cell>
@@ -146,6 +149,7 @@ export function CapabilitiesModule({ snapshot, settings, loading, error, connect
         </SettingsSection>
       </Tabs.Panel>
       <Tabs.Panel id="search"><SearchModule snapshot={snapshot?.search} connected={connected} disabled={requestsDisabled} onRefresh={onRefresh} onDirtyChange={setSearchDirty} /></Tabs.Panel>
+      <Tabs.Panel id="computer"><ComputerUseModule state={snapshot ? { revision: snapshot.revision, computerUse: snapshot.computerUse ?? { browserEnabled: true, desktopEnabled: true } } : null} envs={envs} connected={connected} disabled={requestsDisabled} onRefresh={onRefresh} /></Tabs.Panel>
       <Tabs.Panel id="skills"><SkillsModule snapshot={snapshot ? { revision: snapshot.skillRevision, skills: snapshot.skills } : null} connected={connected} disabled={requestsDisabled} onRequest={onRequest} onRefresh={onRefresh} onDirtyChange={setSkillsDirty} /></Tabs.Panel>
       <Tabs.Panel id="colab"><SettingsSection title="Colab CLI"><div className="kulo-table-empty-state rounded-2xl bg-surface-secondary">{t("暂未开放", "Not available yet")}</div></SettingsSection></Tabs.Panel>
       <Tabs.Panel id="other"><OtherExtensionsModule snapshot={snapshot?.extensions} connected={connected} disabled={requestsDisabled} target={target} onRequest={onRequest} onRefresh={onRefresh} /></Tabs.Panel>

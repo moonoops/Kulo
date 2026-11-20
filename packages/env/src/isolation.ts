@@ -99,15 +99,54 @@ function normalizedPorts(values: readonly number[] | undefined): number[] {
   return ports.sort((a, b) => a - b);
 }
 
-export function defaultProtectedPaths(): string[] {
-  const homeDir = os.homedir();
+const SENSITIVE_CONFIG_SUBDIRS: readonly string[] = [
+  "gh",
+  "gcloud",
+  "rclone",
+  "op",
+  "1Password",
+  "sops",
+  "hub",
+  "configstore",
+  "netlify",
+  "vercel",
+  "stripe",
+  "doctl",
+  "helm",
+  "firebase",
+  "aws",
+  "azure",
+  "codex",
+  "claude",
+  "anthropic",
+  "openai",
+  "kulo",
+  "heroku",
+  "tailscale",
+  "fly",
+  "railway",
+  "supabase",
+  "cloudflare",
+  "wrangler",
+  "docker",
+  "kubernetes",
+  "pip",
+  "pypirc",
+  "npm",
+  "pnpm",
+  "yarn",
+  "cursor",
+  "zed",
+];
+
+export function defaultProtectedPaths(homeDir = os.homedir()): string[] {
   return [
     path.join(homeDir, ".ssh"),
     path.join(homeDir, ".gnupg"),
     path.join(homeDir, ".kube"),
     path.join(homeDir, ".claude"),
     path.join(homeDir, ".codex"),
-    path.join(homeDir, ".config"),
+    ...SENSITIVE_CONFIG_SUBDIRS.map((entry) => path.join(homeDir, ".config", entry)),
     path.join(homeDir, ".dsh"),
     path.join(homeDir, ".aws"),
     path.join(homeDir, ".azure"),
@@ -118,7 +157,7 @@ export function defaultProtectedPaths(): string[] {
     path.join(homeDir, "Library/Keychains"),
     path.join(homeDir, "Library/Cookies"),
     path.join(homeDir, "Library/Group Containers/2BUA8C4S2C.com.1password"),
-    ...applicationProtectedPaths(),
+    ...applicationProtectedPaths(homeDir),
   ];
 }
 
@@ -149,7 +188,7 @@ function applicationContainerFilter(): string {
   return `(regex #${quoted(`^${escaped}/(com[.]apple[.](mail|MobileSMS|iChat|messages)([.][^/]*)?|com[.]apple[.]share[.]Mail[.]compose)(/|$)`)})`;
 }
 
-function workerExecutionPath(protectedPaths: readonly string[]): string {
+export function workerExecutionPath(protectedPaths: readonly string[]): string {
   const homeDir = os.homedir();
   const candidates = [
     ...(process.env.PATH ?? "").split(path.delimiter),
@@ -186,7 +225,7 @@ function workerExecutionPath(protectedPaths: readonly string[]): string {
   return [...seen].join(":");
 }
 
-function workerProxyEnvironment(): string[] {
+export function workerProxyEnvironment(): string[] {
   const keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"] as const;
   const entries: string[] = [];
   for (const key of keys) {
@@ -365,6 +404,52 @@ export function buildWorkerSandboxProfile(options: {
   ].join("\n");
 }
 
+/**
+ * Credential-isolated Seatbelt profile for user-approved (or always-allowed) host maintenance.
+ * Allows writing to ordinary user-writable host paths (e.g. Homebrew, global npm/pip, ~/...)
+ * while keeping credentials, keychains, private Mail/Messages stores, Kulo private state/runtime,
+ * launchd SSH agent sockets, cross-sandbox kern.procargs, and AppleEvents strictly denied.
+ */
+export function buildHostMaintenanceSandboxProfile(options: {
+  protectedPaths: readonly string[];
+  sandboxIdentity?: { marker: string; negative: string };
+}): string {
+  const protectedPaths = [
+    ...new Set(
+      nativeProtectedPaths([
+        ...defaultProtectedPaths(),
+        ...options.protectedPaths,
+        ...applicationProtectedPaths(),
+      ]).map(canonicalExecutionPath),
+    ),
+  ];
+  const protectedAncestors = new Set<string>();
+  for (const entry of protectedPaths) {
+    for (let ancestor = path.dirname(entry); ancestor !== path.dirname(ancestor); ancestor = path.dirname(ancestor)) {
+      protectedAncestors.add(ancestor);
+    }
+  }
+  return [
+    "(version 1)",
+    "(allow default)",
+    "(deny appleevent-send)",
+    '(deny mach-lookup (global-name "com.apple.imagent") (global-name "com.apple.coreservices.appleevents"))',
+    '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',
+    "(deny process-info*)",
+    "(allow process-info* (target same-sandbox))",
+    ...protectedPaths.map((entry) => `(deny file-read* file-write* (subpath ${quoted(entry)}))`),
+    ...(process.platform === "darwin" ? [`(deny file-read* file-write* ${applicationContainerFilter()})`] : []),
+    ...[...protectedAncestors].map((entry) => `(deny file-write-unlink (literal ${quoted(entry)}))`),
+    '(deny file-read* file-write* (subpath "/System/Volumes/Data"))',
+    '(deny network-outbound (remote unix-socket (regex #"^/private/tmp/com[.]apple[.]launchd[.][^/]+/Listeners$")))',
+    '(deny mach-lookup (global-name-regex #"^kulo[.](worker|customization|unowned)[.]"))',
+    ...(options.sandboxIdentity ? [
+      `(allow mach-lookup (global-name ${quoted(options.sandboxIdentity.marker)}))`,
+      `(deny mach-lookup (global-name ${quoted(options.sandboxIdentity.negative)}))`,
+    ] : []),
+  ].join("\n");
+}
+
 export function createWorkerSandbox(options: WorkerSandboxOptions): WorkerSandbox {
   if ((process.platform === "darwin" && !fs.existsSync("/usr/bin/sandbox-exec")) ||
       (process.platform === "linux" && !linuxSandboxAvailable()) ||
@@ -431,7 +516,7 @@ export function createWorkerSandbox(options: WorkerSandboxOptions): WorkerSandbo
     } else {
       innerCommand = [
         "/usr/bin/env", "-i", `PATH=${workerExecutionPath([...protectedPaths, controlDir])}`,
-        `HOME=${homeDir}`, `TMPDIR=${tempDir}`, `PORT=${port}`, "LANG=en_US.UTF-8", "SHELL=/bin/bash",
+        `HOME=${homeDir}`, `KULO_HOST_HOME=${os.homedir()}`, `TMPDIR=${tempDir}`, `PORT=${port}`, "LANG=en_US.UTF-8", "SHELL=/bin/bash",
         ...(network.offline ? [] : workerProxyEnvironment()),
         "/usr/bin/sandbox-exec", "-p", profile, executable,
       ];

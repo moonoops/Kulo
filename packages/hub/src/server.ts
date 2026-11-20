@@ -25,8 +25,10 @@ import {
   type SettingsBlockName,
   type ConnectionSaveRequest,
   type ConnectionPrepareRequest,
+  type NativeAppPermissionKind,
   type ExtensionOperationRequest,
 } from "@kulo/protocol";
+import { openNativePermissionSettings } from "./connection-native-apps.js";
 import { IdentityFilesError, KULO_IDENTITY_TEMPLATES } from "./identity-files.js";
 import { PersonalityError } from "./personality.js";
 import { MemoryServiceError } from "./memory-service.js";
@@ -37,6 +39,7 @@ import { VoiceCallsError } from "./voice-calls.js";
 import { SearchError } from "./search.js";
 import { ConversationQueryError, decodeConversationTopicId } from "./conversation-query.js";
 import { SkillError } from "./skills.js";
+import { CapabilityError } from "./capabilities.js";
 import type { KuloHub } from "./hub.js";
 import { topicActivity } from "./topic-activity.js";
 import { SettingsUpdateError } from "./settings.js";
@@ -192,6 +195,7 @@ export interface KuloHubServerOptions {
   peerRootDir?: string;
   onJoinPeer?: (config: DevicePeerConfig) => Promise<void> | void;
   roleTransitions?: DeviceRoleTransitions;
+  openNativePermissionSettings?: (kind: NativeAppPermissionKind) => Promise<void>;
 }
 
 export async function startKuloHubServer(
@@ -1121,7 +1125,7 @@ export async function startKuloHubServer(
           if (pathname === "/api/connections" && req.method === "GET") {
             const clientId = parsedUrl.searchParams.get("clientId") ?? undefined;
             if (clientId && (clientId.length > 160 || /[\x00-\x20\x7f]/.test(clientId))) throw Object.assign(new Error("窗口标识无效。"), { status: 400 });
-            sendJson(res, 200, await hub.connectionManager.snapshot(clientId));
+            sendJson(res, 200, { ...(await hub.connectionManager.snapshot(clientId)), localHost: hasLocalDeviceControl(req, parsedUrl) });
             return;
           }
           if (pathname === "/api/connections" && req.method === "POST") {
@@ -1130,6 +1134,27 @@ export async function startKuloHubServer(
           }
           if (pathname === "/api/connections/prepare" && req.method === "POST") {
             sendJson(res, 201, await hub.connectionManager.prepare(await readJsonObject(req) as unknown as ConnectionPrepareRequest));
+            return;
+          }
+          if (pathname === "/api/connections/permission-settings") {
+            if (req.method !== "POST") {
+              sendJson(res, 405, { error: "此系统权限接口不支持该操作。", code: "connection_permission_settings_method_not_allowed" });
+              return;
+            }
+            if (req.headers["sec-fetch-site"] === "cross-site" || req.headers.origin && req.headers.origin !== requestOrigin(req)) {
+              throw Object.assign(new Error("请在 Kulo 中打开系统权限设置。"), { status: 403, code: "connection_permission_settings_origin_required" });
+            }
+            if (!hasLocalDeviceControl(req, parsedUrl)) {
+              throw Object.assign(new Error("请在主脑 Mac 上打开系统设置完成授权。"), { status: 403, code: "connection_permission_settings_remote" });
+            }
+            const body = await readJsonObject(req, 1024);
+            if (Object.keys(body).some((key) => key !== "kind") || (body.kind !== "full-disk-access" && body.kind !== "automation")) {
+              throw Object.assign(new Error("系统权限类型无效。"), { status: 400, code: "connection_app_invalid_parameters" });
+            }
+            await (options.openNativePermissionSettings
+              ? options.openNativePermissionSettings(body.kind)
+              : openNativePermissionSettings(body.kind));
+            sendJson(res, 200, { ok: true });
             return;
           }
           const input = /^\/api\/connections\/inputs\/([^/]+)\/(submit|cancel)$/.exec(pathname);
@@ -1358,6 +1383,25 @@ export async function startKuloHubServer(
 
         if (pathname === "/api/capabilities" && req.method === "GET") {
           sendJson(res, 200, await hub.getCapabilitiesSnapshot(parsedUrl.searchParams.get("clientId") ?? undefined));
+          return;
+        }
+        if (pathname === "/api/capabilities/computer-use" && req.method === "PUT") {
+          const body = await readJsonObject(req);
+          const allowed = ["browserEnabled", "desktopEnabled", "expectedRevision", "commandId"];
+          if (Object.keys(body).some((key) => !allowed.includes(key))
+            || typeof body.browserEnabled !== "boolean"
+            || typeof body.desktopEnabled !== "boolean"
+            || !Number.isSafeInteger(body.expectedRevision) || (body.expectedRevision as number) < 0
+            || typeof body.commandId !== "string") {
+            throw new CapabilityError(400, "invalid_computer_use", "电脑操控开关参数无效。");
+          }
+          res.setHeader("cache-control", "no-store");
+          sendJson(res, 200, await hub.configureComputerUse({
+            browserEnabled: body.browserEnabled,
+            desktopEnabled: body.desktopEnabled,
+            expectedRevision: body.expectedRevision as number,
+            commandId: body.commandId,
+          }));
           return;
         }
         if (await handleImageConfigurationHttp(hub, req, res, parsedUrl, readJsonObject, sendJson)) return;
@@ -1780,6 +1824,12 @@ export async function startKuloHubServer(
           sendJson(res, 200, await hub.memoryService.setEnabled(body.enabled as boolean, body.expectedRevision as number));
           return;
         }
+        if (pathname === "/api/memory/service/knowledge-guidance" && req.method === "POST") {
+          const body = await readJsonObject(req);
+          if (Object.keys(body).some((key) => !["enabled", "expectedRevision"].includes(key))) throw new MemoryServiceError(400, "invalid_memory_request", "知识整理指引字段无效。");
+          sendJson(res, 200, await hub.memoryService.setKnowledgeGuidanceEnabled(body.enabled as boolean, body.expectedRevision as number));
+          return;
+        }
         const memoryInput = pathname.match(/^\/api\/memory\/service\/inputs\/([^/]+)$/);
         if (memoryInput && req.method === "POST") {
           const body = await readJsonObject(req);
@@ -1996,7 +2046,7 @@ export async function startKuloHubServer(
         sendJson(res, err.status, { error: err.message, code: err.code });
         return;
       }
-      if (err instanceof IdentityFilesError || err instanceof PersonalityError || err instanceof MemoryServiceError || err instanceof ExtensionError || err instanceof ExtensionPackageError || err instanceof VoiceError || err instanceof VoiceCallsError || err instanceof SkillError || err instanceof ConversationQueryError) {
+      if (err instanceof IdentityFilesError || err instanceof PersonalityError || err instanceof MemoryServiceError || err instanceof ExtensionError || err instanceof ExtensionPackageError || err instanceof VoiceError || err instanceof VoiceCallsError || err instanceof SkillError || err instanceof CapabilityError || err instanceof ConversationQueryError) {
         sendJson(res, err.status, { error: err.message, code: err.code });
         return;
       }
@@ -2010,11 +2060,13 @@ export async function startKuloHubServer(
           ? ((err as { status: number }).status)
           : sessionFailed ? 503 : 500;
       const code = err instanceof Error && "code" in err ? err.code : undefined;
+      const connectionCode = (pathname === "/api/connections" || pathname.startsWith("/api/connections/")) &&
+        typeof code === "string" && /^connection_[a-z0-9_]+$/.test(code) ? code : undefined;
       const deviceCode = pathname === "/api/devices/join" && typeof code === "string" &&
         ["device_invitation_invalid", "device_host_unreachable", "local_tasks_running", "role_switch_busy"].includes(code) ? code : undefined;
       sendJson(res, status, {
         error: sessionFailed ? "本地会话存储连接异常，请重启 Kulo 后重试。" : hub.connectionManager.redact(err instanceof Error ? err.message : String(err)),
-        ...(sessionFailed ? { code: "session_failed" } : deviceCode ? { code: deviceCode } : {}),
+        ...(sessionFailed ? { code: "session_failed" } : connectionCode ? { code: connectionCode } : deviceCode ? { code: deviceCode } : {}),
       });
     }
   };

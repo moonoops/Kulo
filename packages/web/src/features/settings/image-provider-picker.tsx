@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, Card, Checkbox, Chip, Input, Label, TextField } from "@heroui/react";
+import { Button, Card, Checkbox, Input, Label, TextField } from "@heroui/react";
 import { redactSecrets, type CapabilitiesWorkspaceSnapshot, type ImageModelCandidate, type ImageModelDiscovery } from "@kulo/protocol";
 import { kuloRest } from "../../kulo-api";
 import { translate, useI18n } from "../../kulo-i18n";
@@ -108,7 +108,7 @@ function OwnedImageProviderPicker({ workspace, clientId, connected, disabled = f
             const next = new Set(previous); if (checked) next.add(candidate.id); else next.delete(candidate.id); return next;
           })}>
             <Checkbox.Content className="items-start"><Checkbox.Control className="mt-1"><Checkbox.Indicator /></Checkbox.Control>
-              <span className="flex min-w-0 flex-col gap-1"><span className="flex flex-wrap items-center gap-2"><span className="kulo-item-title break-words">{candidate.name}</span>{candidate.alreadyAdded ? <Chip size="sm" variant="tertiary">{t("已添加", "Added")}</Chip> : candidate.needsConfiguration && <Chip size="sm" variant="tertiary" className="shrink-0 whitespace-nowrap">{t("需配置接口", "Configure API")}</Chip>}</span><span className="kulo-item-description break-words">{candidate.providerName} · {candidate.modelId}</span>{candidate.needsConfiguration && candidate.configurationReason && <span className="text-xs text-muted">{redactSecrets(candidate.configurationReason)}</span>}</span>
+              <span className="flex min-w-0 flex-col gap-1"><span className="kulo-item-title break-words">{candidate.name}</span><span className="kulo-item-description break-words">{[candidate.providerName, candidate.modelId, candidate.alreadyAdded ? t("已添加", "Added") : candidate.needsConfiguration ? t("需配置接口", "Configure API") : ""].filter(Boolean).join(" · ")}</span>{candidate.needsConfiguration && candidate.configurationReason && <span className="text-xs text-muted">{redactSecrets(candidate.configurationReason)}</span>}</span>
             </Checkbox.Content>
           </Checkbox>
           {candidate.needsConfiguration && !candidate.alreadyAdded && <Button variant="secondary" size="sm" aria-label={t(`配置${candidate.name}`, `Configure ${candidate.name}`)} isDisabled={blocked} onPress={() => void configure(candidate)}>{t("配置", "Configure")}</Button>}

@@ -4,10 +4,11 @@ import { defineDoc, defineExtension, defineTask, ROOT_CONVERSATION_ID, type Harn
 import { redactSecrets, type ExtensionJob, type ExtensionOperationRequest, type ExtensionRecord, type ExtensionWorkspaceSnapshot } from "@kulo/protocol";
 import { analyzeExtensionSource, type ExtensionSourceAnalysis } from "./extension-sources.js";
 import { BILLION_CONTEXT_ADAPTER_VERSION, BILLION_CONTEXT_KERNEL_VERSION, BILLION_CONTEXT_PACKAGE_SOURCE, ExtensionPackageError,
-  inspectBillionContextPackage, installBillionContextPackage, removeBillionContextPackage, type ExtensionPackageInfo } from "./extension-packages.js";
+  inspectAvailableBillionContextPackage, installBillionContextPackage, loadAvailableBillionContextPackage, loadBillionContextPackage,
+  removeBillionContextPackage, type ExtensionPackageInfo, type LoadedBillionContextPackage } from "./extension-packages.js";
 
 interface StoredJob { view: ExtensionJob; fingerprint: string; expectedRevision: number }
-interface ExtensionsState { revision: number; items: Record<string, ExtensionRecord>; jobs: Record<string, StoredJob> }
+interface ExtensionsState { revision: number; items: Record<string, ExtensionRecord>; jobs: Record<string, StoredJob>; removed?: Record<string, boolean> }
 const context = BACKGROUND_CONTEXT;
 const ID = "billion-context";
 const ACTIVE = new Set<ExtensionJob["status"]>(["queued", "running"]);
@@ -33,10 +34,14 @@ function identifier(raw: unknown, label: string): string {
 function publicError(error: unknown): string {
   return redactSecrets(error instanceof ExtensionError || error instanceof ExtensionPackageError ? error.message : "扩展操作未完成，请检查安装和上下文状态后重试。").slice(0, 600);
 }
+export interface ExtensionPackageInspectOptions {
+  includeBundled?: boolean;
+}
 export interface ExtensionPackageExecutor {
-  inspect(): Promise<ExtensionPackageInfo | null>;
+  inspect(options?: ExtensionPackageInspectOptions): Promise<ExtensionPackageInfo | null>;
   install(signal: AbortSignal): Promise<ExtensionPackageInfo>;
   remove(): Promise<void>;
+  load?(options?: ExtensionPackageInspectOptions): Promise<LoadedBillionContextPackage>;
 }
 export interface KuloExtensionsOptions {
   harness: Harness;
@@ -57,12 +62,24 @@ export class KuloExtensions {
   #closed = false;
   constructor(options: KuloExtensionsOptions) {
     this.#options = options;
-    this.#packages = options.packages ?? { inspect: () => inspectBillionContextPackage(options.stateDir),
-      install: (signal) => installBillionContextPackage({ stateDir: options.stateDir, signal }), remove: () => removeBillionContextPackage(options.stateDir) };
+    this.#packages = options.packages ?? {
+      inspect: (inspectOptions) => inspectAvailableBillionContextPackage(options.stateDir, inspectOptions),
+      install: (signal) => installBillionContextPackage({ stateDir: options.stateDir, signal }),
+      remove: () => removeBillionContextPackage(options.stateDir),
+      load: (loadOptions) => loadAvailableBillionContextPackage(options.stateDir, loadOptions),
+    };
   }
   #now() { return this.#options.now?.() ?? Date.now(); }
   #changed() { this.#options.onChange?.(); }
   #serial<T>(run: () => Promise<T>): Promise<T> { const pending = this.#queue.then(run); this.#queue = pending.catch(() => {}); return pending; }
+  async loadPackage(): Promise<LoadedBillionContextPackage | null> {
+    const state = await this.#options.harness.snapshot(ExtensionsDoc, context);
+    const includeBundled = !own(state?.removed, ID);
+    const info = await this.#packages.inspect({ includeBundled });
+    if (!info) return null;
+    if (this.#packages.load) return this.#packages.load({ includeBundled });
+    return loadBillionContextPackage(this.#options.stateDir);
+  }
   async snapshot(_clientId?: string): Promise<ExtensionWorkspaceSnapshot> {
     const state = await this.#options.harness.snapshot(ExtensionsDoc, context);
     return { revision: state?.revision ?? 1, items: clone(Object.values(state?.items ?? { [ID]: initialRecord() })),
@@ -81,7 +98,8 @@ export class KuloExtensions {
     }
     let info: ExtensionPackageInfo | null;
     try {
-      info = await this.#packages.inspect();
+      const includeBundled = !own(state.removed, ID);
+      info = await this.#packages.inspect({ includeBundled });
       if (state.items[ID]!.enabled) {
         if (!info) throw new ExtensionError(409, "extension_package_missing", "已启用的上下文压缩包缺失，请重新安装。");
         await this.#options.compaction.enable();
@@ -146,8 +164,10 @@ export class KuloExtensions {
     this.#executions.set(jobId, execution); return execution;
   }
   async #execute(jobId: string, signal?: AbortSignal): Promise<void> {
-    const stored = own((await this.#options.harness.snapshot(ExtensionsDoc, context))?.jobs, jobId);
+    const snapshot = await this.#options.harness.snapshot(ExtensionsDoc, context);
+    const stored = own(snapshot?.jobs, jobId);
     if (!stored || !ACTIVE.has(stored.view.status)) return;
+    const includeBundled = !own(snapshot?.removed, stored.view.extensionId);
     const job = clone(stored), controller = new AbortController();
     this.#controllers.set(jobId, controller);
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
@@ -157,10 +177,10 @@ export class KuloExtensions {
       if (job.view.operation === "install") {
         await this.#stage(jobId, "安装并验证上下文压缩内核");
         combined.throwIfAborted();
-        info = await this.#packages.inspect() ?? await this.#packages.install(combined);
+        info = await this.#packages.inspect({ includeBundled }) ?? await this.#packages.install(combined);
       } else if (job.view.operation === "enable") {
         await this.#stage(jobId, "接入主会话压缩");
-        info = await this.#packages.inspect();
+        info = await this.#packages.inspect({ includeBundled });
         if (!info) fail(409, "extension_not_installed", "上下文压缩包缺失，请重新安装。");
         combined.throwIfAborted();
         await this.#options.compaction.enable();
@@ -176,7 +196,7 @@ export class KuloExtensions {
         }, context);
         this.#changed();
         if (job.view.operation === "remove") { await this.#stage(jobId, "删除受管程序并保留会话历史"); combined.throwIfAborted(); await this.#packages.remove(); }
-        else info = await this.#packages.inspect();
+        else info = await this.#packages.inspect({ includeBundled });
       }
       combined.throwIfAborted();
       await this.#options.harness.commit(async (tx) => {
@@ -184,6 +204,8 @@ export class KuloExtensions {
         if (!ACTIVE.has(current.view.status)) return;
         if (current.view.taskId !== undefined && (await tx.task(current.view.taskId as TaskId))?.abortRequested) return;
         if (item.revision !== job.expectedRevision) fail(409, "extension_revision_conflict", "扩展状态已变化，操作结果未覆盖新设置。");
+        if (job.view.operation === "remove") doc.removed = { ...(doc.removed ?? {}), [job.view.extensionId]: true };
+        else if (job.view.operation === "install" && doc.removed) delete doc.removed[job.view.extensionId];
         item.enabled = job.view.operation === "enable";
         item.status = info ? item.enabled ? "running" : "stopped" : "not_installed";
         if (info) { item.installedVersion = info.version; item.adapterVersion = info.adapterVersion; item.sourceUrl = info.sourceUrl; }

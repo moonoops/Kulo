@@ -11,7 +11,9 @@ import { isSkillApplicable, loadSkillPresets, type SkillPreset } from "./skill-p
 import type { SkillRuntimeContext } from "./skill-runtime.js";
 
 const AUDIENCES: SkillAudience[] = ["settings", "chat", "worker"];
-const BUILTINS = ["capability-setup", "genui-cards", "image-generation", "video-generation"] as const;
+const BUILTINS = ["genui-cards", "interactive-html"] as const;
+const SYSTEM_GUIDES = ["capability-setup"] as const;
+export type SystemSkillGuideId = (typeof SYSTEM_GUIDES)[number];
 const MAX_FILES = 512;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_PACKAGE_BYTES = 16 * 1024 * 1024;
@@ -410,17 +412,50 @@ export class KuloSkills {
     return true;
   }
 
+  #builtinRoot(): string {
+    const adjacent = fileURLToPath(new URL("./skills/", import.meta.url));
+    return fs.existsSync(adjacent) ? adjacent : fileURLToPath(new URL("../skills/", import.meta.url));
+  }
+
+  #isHiddenPreset(record: Pick<SkillRecord, "id" | "source">): boolean {
+    return record.source === "builtin" && Boolean(this.#presets.get(record.id)?.hidden);
+  }
+
+  async readSystemGuide(id: SystemSkillGuideId, resource = "SKILL.md"): Promise<string> {
+    if (!SYSTEM_GUIDES.includes(id)) throw new SkillError(404, "skill_not_found", "系统指引不存在。");
+    const name = resourcePath(resource);
+    let location = path.join(this.#builtinRoot(), id);
+    const rootInfo = fs.lstatSync(location);
+    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new SkillError(404, "skill_not_found", "系统指引目录无效。");
+    for (const part of name.split("/")) {
+      location = path.join(location, part);
+      if (!fs.existsSync(location)) throw new SkillError(404, "skill_resource_not_found", "系统指引资源不存在。");
+      if (fs.lstatSync(location).isSymbolicLink()) throw new SkillError(409, "skill_resource_changed", "系统指引位置无效。");
+    }
+    const handle = fs.openSync(location, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    try {
+      const info = fs.fstatSync(handle);
+      if (!info.isFile() || info.size > MAX_TEXT_BYTES) throw new SkillError(413, "skill_resource_too_large", "系统指引资源过大。");
+      const bytes = readBounded(handle, info.size);
+      try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+      catch { throw new SkillError(400, "skill_resource_binary", "系统指引资源不是 UTF-8 文本。"); }
+    } finally { fs.closeSync(handle); }
+  }
+
   async initialize(): Promise<void> {
     await this.#serial(async () => {
       this.#ensureRoot();
-      const adjacent = fileURLToPath(new URL("./skills/", import.meta.url));
-      const builtinRoot = fs.existsSync(adjacent) ? adjacent : fileURLToPath(new URL("../skills/", import.meta.url));
+      const builtinRoot = this.#builtinRoot();
       const presets = loadSkillPresets(builtinRoot);
       this.#presets.clear();
       for (const preset of presets) this.#presets.set(preset.id, preset);
       const builtinAudiences = (name: (typeof BUILTINS)[number]): SkillAudience[] =>
-        name === "capability-setup" ? ["settings"] : name === "genui-cards" ? ["chat"] : ["chat", "worker"];
-      const bundled = [...BUILTINS.map((name) => ({ id: name, directory: name, audiences: builtinAudiences(name), enabled: true })), ...presets];
+        name === "genui-cards" ? ["chat", "settings"] : ["chat", "worker"];
+      const bundled: Array<{ id: string; directory: string; audiences: SkillAudience[]; enabled: boolean; hidden?: boolean }> = [
+        ...BUILTINS.map((name) => ({ id: name, directory: name, audiences: builtinAudiences(name), enabled: true })),
+        ...presets,
+      ];
+      const activeBuiltins = new Set(bundled.map((entry) => entry.id));
       let changed = false;
       for (const entry of bundled) {
         const name = entry.id;
@@ -430,22 +465,56 @@ export class KuloSkills {
         await this.#options.harness.commit(async (tx) => {
           const state = await tx.doc(KuloSkillsDoc);
           const previous = own(state.skills, name);
-          const fixedAudiences = name === "capability-setup" ? entry.audiences : undefined;
-          if (previous?.record.version === prepared.record.version && !previous.removed && (!fixedAudiences || previous.record.enabled && JSON.stringify(previous.record.audiences) === JSON.stringify(fixedAudiences))) return;
+          const fixedAudiences = entry.hidden ? [...entry.audiences].sort() : undefined;
+          if (previous?.record.version === prepared.record.version && !previous.removed
+            && (!fixedAudiences || previous.record.enabled === entry.enabled && JSON.stringify(previous.record.audiences) === JSON.stringify(fixedAudiences))) return;
           this.#put(state, prepared, previous);
+          if (entry.hidden) {
+            state.skills[name]!.record.enabled = entry.enabled;
+            state.skills[name]!.record.audiences = fixedAudiences!;
+          }
           changed = true;
           state.revision++;
         }, BACKGROUND_CONTEXT);
       }
+      await this.#options.harness.commit(async (tx) => {
+        const state = await tx.doc(KuloSkillsDoc);
+        let retiredAny = false;
+        for (const [id, entry] of Object.entries(state.skills)) {
+          if (entry.record.source === "builtin" && !entry.removed && !activeBuiltins.has(id)) {
+            entry.removed = true;
+            entry.record.enabled = false;
+            entry.record.updatedAt = Date.now();
+            retiredAny = true;
+          }
+        }
+        if (retiredAny) {
+          changed = true;
+          state.revision++;
+        }
+      }, BACKGROUND_CONTEXT);
       if (changed) await this.#collectHistory();
     });
   }
 
   async snapshot(): Promise<SkillSnapshot> {
     const state = await this.#options.harness.snapshot(KuloSkillsDoc, BACKGROUND_CONTEXT);
-    return { revision: state?.revision ?? 0, skills: Object.values(state?.skills ?? {}).filter((entry) => !entry.removed).map((entry) => clone(entry.record)).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)) };
+    return {
+      revision: state?.revision ?? 0,
+      skills: Object.values(state?.skills ?? {})
+        .filter((entry) => !entry.removed && !this.#isHiddenPreset(entry.record))
+        .map((entry) => clone(entry.record))
+        .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
+    };
   }
-  async runtimeRequirements(audience: SkillAudience, id?: string): Promise<{ targetDevice: boolean; reactWorkspace: boolean }> {
+  async runtimeRequirements(audience: SkillAudience, id?: string): Promise<{
+    targetDevice: boolean;
+    reactWorkspace: boolean;
+    media: boolean;
+    android: boolean;
+    customization: boolean;
+    memoryKnowledge: boolean;
+  }> {
     if (!AUDIENCES.includes(audience)) invalid("Skill 使用范围无效。");
     const state = await this.#options.harness.snapshot(KuloSkillsDoc, BACKGROUND_CONTEXT);
     const entries = id ? [own(state?.skills, id)] : Object.values(state?.skills ?? {});
@@ -455,8 +524,16 @@ export class KuloSkills {
       const preset = this.#presets.get(entry.record.id);
       return preset ? [preset.condition] : [];
     });
-    return { targetDevice: conditions.some((condition) => !!condition.capability || !!condition.platform),
-      reactWorkspace: conditions.some((condition) => condition.projectFramework === "react") };
+    const checksAndroidDomain = audience === "worker" && entries.some((entry) =>
+      entry && !entry.removed && entry.record.enabled && entry.record.source === "builtin" && entry.record.id === "interactive-html");
+    return {
+      targetDevice: conditions.some((condition) => !!condition.capability || !!condition.platform),
+      reactWorkspace: conditions.some((condition) => condition.projectFramework === "react"),
+      media: conditions.some((condition) => !!condition.mediaKind),
+      android: checksAndroidDomain || conditions.some((condition) => Boolean(condition.androidAvailable)),
+      customization: conditions.some((condition) => Boolean(condition.customizationEnabled)),
+      memoryKnowledge: conditions.some((condition) => Boolean(condition.memoryKnowledgeEnabled)),
+    };
   }
   async catalog(audience: SkillAudience, runtime?: SkillRuntimeContext): Promise<SkillRecord[]> {
     if (!AUDIENCES.includes(audience)) invalid("Skill 使用范围无效。");
@@ -523,7 +600,6 @@ export class KuloSkills {
       enabled: previous && !previous.removed ? previous.record.enabled : prepared.record.enabled,
       audiences: previous && !previous.removed ? previous.record.audiences : prepared.record.audiences,
     };
-    if (record.id === "capability-setup") { record.enabled = true; record.audiences = ["settings"]; }
     state.skills[record.id] = {
       record,
       versions: { ...(previous?.versions ?? {}), [record.version]: { record: prepared.record, files: prepared.files, manualOnly: prepared.manualOnly, ...(prepared.commit ? { commit: prepared.commit } : {}) } },
@@ -550,8 +626,8 @@ export class KuloSkills {
       if (input.expectedRevision !== undefined && input.expectedRevision !== (before?.revision ?? 0)) throw new SkillError(409, "skill_revision_conflict", "Skill 目录已更新，请重新读取。");
       const previous = input.id ? own(before?.skills, input.id) : undefined;
       if (input.action !== "import" && (!previous || previous.removed)) throw new SkillError(404, "skill_not_found", "Skill 不存在。");
+      if (previous && this.#isHiddenPreset(previous.record)) throw new SkillError(400, "builtin_skill_managed", "该能力内置指引随对应能力开关自动管理。");
       if (previous?.record.source === "builtin" && ["update", "remove", "rollback"].includes(input.action)) throw new SkillError(400, "builtin_skill_managed", "内置 Skill 随应用维护。");
-      if (input.id === "capability-setup" && (input.action === "disable" || scope && JSON.stringify(scope) !== JSON.stringify(["settings"]))) throw new SkillError(400, "required_skill", "能力配置 Skill 是设置页必需的系统指引。");
       let prepared: PreparedSkill | undefined;
       if (input.action === "import") {
         if (!source) invalid("请提供 Skill 来源。");

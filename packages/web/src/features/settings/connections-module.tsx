@@ -104,16 +104,16 @@ export function ConnectionsModule({ snapshot, loading, error, connected, prepari
       <Table.ScrollContainer className="kulo-settings-table-scroll">
         <Table.Content aria-label={category === "credential" ? t("凭据列表", "Credentials") : t("其他信息列表", "Other information")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content">
           <Table.Header>
-            <Table.Column id="name" isRowHeader className="kulo-settings-table-column">{t("名称", "Name")}</Table.Column>
+            <Table.Column id="name" isRowHeader className="kulo-settings-table-column kulo-settings-table-primary">{t("名称", "Name")}</Table.Column>
             <Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-meta">{t("状态", "Status")}</Table.Column>
             <Table.Column id="actions" className="kulo-settings-table-column kulo-settings-table-actions">{t("操作", "Actions")}</Table.Column>
           </Table.Header>
           <Table.Body items={records} renderEmptyState={() => <div className="kulo-table-empty-state">{category === "credential" ? t("尚未添加凭据", "No credentials added") : t("尚未保存其他信息", "No other information saved")}</div>}>
             {(connection) => <Table.Row id={connection.id} textValue={connection.name}>
-              <Table.Cell className="kulo-settings-table-cell">
+              <Table.Cell className="kulo-settings-table-cell kulo-settings-table-primary">
                 <div className="kulo-connection-name">
                   <ConnectionIcon kind={connection.kind} category={category} />
-                  <div className="kulo-connection-copy"><span className="kulo-item-title">{connection.name}</span>{connectionAddress(connection) && <span className="kulo-item-description break-words">{connectionAddress(connection)}</span>}</div>
+                  <div className="kulo-connection-copy"><span className="kulo-item-title">{connection.name}</span>{connectionAddress(connection) && <span className="kulo-item-description">{connectionAddress(connection)}</span>}</div>
                 </div>
               </Table.Cell>
               <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta">
@@ -154,7 +154,7 @@ export function ConnectionsModule({ snapshot, loading, error, connected, prepari
             <Table.ScrollContainer className="kulo-settings-table-scroll">
               <Table.Content aria-label={t("应用列表", "Apps")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content">
                 <Table.Header>
-                  <Table.Column id="name" isRowHeader className="kulo-settings-table-column">{t("应用", "Apps")}</Table.Column>
+                  <Table.Column id="name" isRowHeader className="kulo-settings-table-column kulo-settings-table-primary">{t("应用", "Apps")}</Table.Column>
                   <Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-meta">{t("状态", "Status")}</Table.Column>
                   <Table.Column id="actions" className="kulo-settings-table-column kulo-settings-table-actions">{t("操作", "Actions")}</Table.Column>
                 </Table.Header>
@@ -163,7 +163,7 @@ export function ConnectionsModule({ snapshot, loading, error, connected, prepari
                     const isConnected = application.status === "connected";
                     const actionLabel = isConnected ? t("取消连接", "Disconnect") : application.status === "needs_attention" ? t("重新连接", "Reconnect") : t("连接", "Connect");
                     return <Table.Row id={application.id} textValue={application.name}>
-                      <Table.Cell className="kulo-settings-table-cell">
+                      <Table.Cell className="kulo-settings-table-cell kulo-settings-table-primary">
                         <div className="kulo-connection-name">
                           <ConnectionIcon appId={application.id} />
                           <div className="kulo-connection-copy"><span className="kulo-item-title">{application.name}</span><span className="kulo-item-description">{application.description}</span></div>

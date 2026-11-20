@@ -100,14 +100,23 @@ function duration(ms: number): string {
   return Math.floor(minutes / 60) + t(" 小时", " hr") + (remainder ? " " + remainder + t(" 分钟", " min") : "");
 }
 
-export function taskTimeLabel(ticket: TaskTiming, now: number): string {
-  if (ticket.status === "queued") return t("已排队 ", "Queued for ") + duration(now - (ticket.queuedAt ?? ticket.createdAt));
+export function taskDurationLabel(ticket: TaskTiming, now: number): string | undefined {
+  if (ticket.status === "queued") return duration(now - (ticket.queuedAt ?? ticket.createdAt));
   if (ticket.status === "waiting" || ticket.status === "blocked") {
-    return ticket.waiting ? t("已等待 ", "Waiting for ") + duration(now - ticket.waiting.since) : t("等待中", "Waiting");
+    return ticket.waiting ? duration(now - ticket.waiting.since) : undefined;
   }
   const elapsed = taskRunningMs(ticket, now);
+  return elapsed === undefined ? undefined : duration(elapsed);
+}
+
+export function taskTimeLabel(ticket: TaskTiming, now: number): string {
+  const elapsed = taskDurationLabel(ticket, now);
+  if (ticket.status === "queued") return t("已排队 ", "Queued for ") + elapsed!;
+  if (ticket.status === "waiting" || ticket.status === "blocked") {
+    return elapsed ? t("已等待 ", "Waiting for ") + elapsed : t("等待中", "Waiting");
+  }
   if (elapsed === undefined) return ticket.status === "running" || ticket.status === "pausing" ? t("运行中", "Running") : t("用时未记录", "Duration not recorded");
-  return (ticket.status === "running" || ticket.status === "pausing" ? t("已运行 ", "Running for ") : t("用时 ", "Took ")) + duration(elapsed);
+  return (ticket.status === "running" || ticket.status === "pausing" ? t("已运行 ", "Running for ") : t("用时 ", "Took ")) + elapsed;
 }
 
 export function taskSummary(ticket: TicketCardView): string {

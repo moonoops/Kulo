@@ -12,29 +12,8 @@
     "mode": "copy",
     "telemetry": false
   },
-  "files": {
-    "upstream/references/commands-interaction.md": {
-      "sha256": "5ef8a87be8aed9b0102adb3c332dcd50586c7fb28dc0f1490207ab9321673bf5",
-      "bytes": 22477
-    },
-    "upstream/references/commands-observation.md": {
-      "sha256": "9c31aec6f51dacfc14ff68dc04533a8dcf3ed5edb3f935d90e453f471894b936",
-      "bytes": 12069
-    },
-    "upstream/references/commands-system.md": {
-      "sha256": "673c931a285b360c1deb669983e87ca8571ee8520f48c81f00d49f711e0e95ac",
-      "bytes": 24779
-    },
-    "upstream/references/workflows.md": {
-      "sha256": "9c5a93361f992d73eff50e9ec99bb895424ababd57d3f6742ff71e73734c1af1",
-      "bytes": 9078
-    },
-    "upstream/SKILL.md": {
-      "sha256": "abd913be10552c028e461e0a45c20e3734a7a1e5251fc2f9ef6fd63fdd606a6e",
-      "bytes": 9849
-    }
-  },
-  "modifications": "Original upstream documentation is unchanged. Kulo routing lives in the parent SKILL.md. Executable scripts and templates are omitted.",
+  "files": {},
+  "modifications": "Distilled for Kulo's controlled semantic kulo_desktop surface (status/snapshot/click/type/set-value/scroll/wait/close) with merged macOS/Linux/Windows references in references/. Unsupported raw CLI flags, physical/headed input instructions, and executable scripts are omitted.",
   "licenseFile": {
     "path": "LICENSE",
     "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",

@@ -29,14 +29,12 @@ describe("direct skill settings", () => {
     expect(toggle).not.toContain("disabled");
   });
 
-  it("keeps actual data visible offline and clearly protects built-in or required skills", () => {
-    const builtin = { ...skill, id: "image-generation", name: "image-generation", source: "builtin" as const };
-    const required = { ...builtin, id: "capability-setup", name: "capability-setup", audiences: ["settings" as const] };
-    const html = render({ revision: 5, skills: [builtin, required] });
-    expect(html).toContain("系统必需");
-    expect(html).toMatch(/<button\b(?=[^>]*aria-label="编辑image-generation")(?![^>]*disabled)[^>]*>/);
-    expect(html).toMatch(/<button\b(?=[^>]*aria-label="删除image-generation")(?=[^>]*disabled)[^>]*>/);
-    expect(html).toMatch(/<button\b(?=[^>]*aria-label="编辑capability-setup")(?=[^>]*disabled)[^>]*>/);
+  it("keeps actual data visible offline and protects built-in skills from deletion while allowing edits", () => {
+    const builtin = { ...skill, id: "genui-cards", name: "genui-cards", source: "builtin" as const };
+    const html = render({ revision: 5, skills: [builtin] });
+    expect(html).toContain("内置");
+    expect(html).toMatch(/<button\b(?=[^>]*aria-label="编辑genui-cards")(?![^>]*disabled)[^>]*>/);
+    expect(html).toMatch(/<button\b(?=[^>]*aria-label="删除genui-cards")(?=[^>]*disabled)[^>]*>/);
     expect(html).toContain("内置技能随应用维护，不能删除");
     const offline = render(snapshot, false);
     expect(offline).toContain(skill.description);

@@ -15,6 +15,7 @@ for (const id of selected) if (!manifest.presets.some((entry) => entry.id === id
 
 for (const preset of manifest.presets) {
   if (selected.size && !selected.has(preset.id)) continue;
+  if (!preset.upstream) continue;
   const { repository, ref, sourcePath } = preset.upstream;
   if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repository) || !/^[a-f0-9]{40}$/.test(ref)
     || !/^[a-zA-Z0-9_-]+$/.test(preset.directory) || sourcePath.split("/").some((part) => !/^[a-zA-Z0-9_.-]+$/.test(part) || part === "." || part === "..")) {

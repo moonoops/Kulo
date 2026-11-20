@@ -10,6 +10,7 @@ import { StagedWorkspaceService } from "./staged-workspace-service.js";
 import { cleanupRecordedExecutions, hasOrphanedExecution } from "./worker-supervisor.js";
 import { FlowBrowserService } from "./browser.js";
 import { ComputerUseService, computerUseConfiguration } from "./computer-use.js";
+import { HostActionService } from "./host-actions.js";
 import { StreamResumeBuffer } from "./stream-resume.js";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import {
@@ -35,6 +36,9 @@ import {
   type ExternalAgentMcpToolName,
   isComputerUseRequest,
   isComputerUseResult,
+  isHostActionRequest,
+  isHostActionResult,
+  HOST_ACTION_MAX_RESULT,
   isComputerPreviewTarget,
   isComputerPreviewUpdate,
   COMPUTER_USE_MAX_RESULT,
@@ -67,6 +71,8 @@ import {
   type BrowserResult,
   type ComputerUseRequest,
   type ComputerUseResult,
+  type HostActionRequest,
+  type HostActionResult,
   type ComputerPreviewTarget,
   type ComputerPreviewUpdate,
 } from "@kulo/protocol";
@@ -128,6 +134,7 @@ interface RemoteWsPeer {
   connectionState: "online" | "reconnecting" | "offline";
   streamResumeSupported: boolean;
   graceTimer?: NodeJS.Timeout;
+  missedPings: number;
   pendingCloseStreamIds: Set<number>;
   unackedTotalBytes: number;
 }
@@ -138,6 +145,17 @@ interface PendingComputerRequest {
   ws?: WebSocket;
   controller: AbortController;
   resolve: (result: ComputerUseResult) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+  removeAbort: () => void;
+}
+
+interface PendingHostActionRequest {
+  envId: string;
+  request: HostActionRequest;
+  ws?: WebSocket;
+  controller: AbortController;
+  resolve: (result: HostActionResult) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
   removeAbort: () => void;
@@ -187,6 +205,10 @@ export interface EnvManagerOptions {
   getProtectedPaths?: () => string[];
   /** Grace window in ms to keep stream-resume-v1 peers alive across brief disconnects (default: 20_000). */
   streamResumeGraceMs?: number;
+  /** Interval in ms for Hub keepalive pings to remote WebSocket env nodes (default: 15_000). */
+  pingIntervalMs?: number;
+  /** Consecutive unanswered ping intervals before terminating a silent remote WebSocket (default: 3; 0 disables). */
+  maxMissedPings?: number;
   /** Callback fired whenever the list or status of environments changes. */
   onChange?: (envs: EnvNodeDescriptor[]) => void;
 }
@@ -219,7 +241,9 @@ export class EnvManager {
   readonly #externalToolRequests = new Map<WebSocket, Set<string>>();
   #localBrowser: FlowBrowserService | null = null;
   #localComputer: ComputerUseService | null = null;
+  #localHostActions: HostActionService | null = null;
   readonly #computerRequests = new Map<string, PendingComputerRequest>();
+  readonly #hostActionRequests = new Map<string, PendingHostActionRequest>();
   readonly #computerPreviews = new Map<string, { envId: string; ws?: WebSocket; lease?: string; listener: (update: ComputerPreviewUpdate) => void; stop?: () => void }>();
   readonly #androidRequests = new Map<string, PendingAndroidRequest>();
   readonly #androidControls = new Map<string, PendingAndroidControl>();
@@ -290,6 +314,14 @@ export class EnvManager {
       this.#additionalProtectedPaths.add(this.#localBrowser.rootDir);
       this.#localComputer = this.#options.computerUseService ?? new ComputerUseService({ rootDir: path.join(this.#localProjects.privateDirectory, "computer-use"), ...this.#computerConfiguration });
       this.#additionalProtectedPaths.add(this.#localComputer.rootDir);
+      this.#localHostActions = new HostActionService({
+        controlRoot: path.join(this.#localProjects.privateDirectory, "executions"),
+        getProtectedPaths: () => [
+          ...(this.#options.getProtectedPaths?.() ?? []),
+          ...this.#additionalProtectedPaths,
+          this.#localProjects!.privateDirectory,
+        ],
+      });
       this.#localExternalAgents = new ExternalAgentService({ envId: "local", rootDir, projectRegistry: this.#localProjects, toolHandler: this.#externalAgentToolHandler });
       await this.#localExternalAgents.recover();
       await cleanupRecordedExecutions(path.join(this.#localProjects.privateDirectory, "executions"));
@@ -306,21 +338,27 @@ export class EnvManager {
         arch: process.arch,
         rootDir,
         executionKind: "pi-env",
-        capabilities: [...(process.platform === "darwin" ? ["fs", "bash", "macos-local"] : ["fs", "bash"]), "external-agents", ...workerIsolationCapabilities(), ...(this.#localBrowser.available ? ["flow-browser"] : []), ...this.#localComputer.capabilities()],
+        capabilities: [...(process.platform === "darwin" ? ["fs", "bash", "macos-local"] : ["fs", "bash"]), "external-agents", "host-actions", ...workerIsolationCapabilities(), ...(this.#localBrowser.available ? ["flow-browser"] : []), ...this.#localComputer.capabilities()],
         connectedAt: now,
         lastSeenAt: now,
       };
     }
 
     // 3. Keepalive ping loop for remote WebSocket env nodes
+    const pingIntervalMs = this.#options.pingIntervalMs ?? 15_000;
+    const maxMissedPings = this.#options.maxMissedPings ?? 3;
     this.#pingTimer = setInterval(() => {
       const now = Date.now();
       for (const peer of this.#wsPeers.values()) {
-        if (peer.ws && peer.ws.readyState === peer.ws.OPEN) {
-          this.#sendControl(peer.ws, { type: "hub.ping", ts: now });
+        if (!peer.ws || peer.ws.readyState !== peer.ws.OPEN) continue;
+        if (maxMissedPings > 0 && peer.missedPings >= maxMissedPings) {
+          peer.ws.terminate();
+          continue;
         }
+        peer.missedPings += 1;
+        this.#sendControl(peer.ws, { type: "hub.ping", ts: now });
       }
-    }, 15_000);
+    }, pingIntervalMs);
     this.#pingTimer.unref();
   }
 
@@ -359,6 +397,21 @@ export class EnvManager {
     let boundEnvId: string | null = null;
     let boundLease: string | undefined;
 
+    const touchPeerActivity = () => {
+      if (this.#closed || !boundEnvId) return;
+      const currentLease = this.#deviceConnectionLeases.get(boundEnvId);
+      if (currentLease !== undefined && !sameToken(boundLease, currentLease)) {
+        ws.close(4009, "Stale connection lease");
+        return;
+      }
+      const peer = this.#wsPeers.get(boundEnvId);
+      if (!peer || peer.ws !== ws) return;
+      peer.missedPings = 0;
+      peer.descriptor.lastSeenAt = Date.now();
+    };
+    ws.on("ping", touchPeerActivity);
+    ws.on("pong", touchPeerActivity);
+
     ws.on("message", (data, isBinary) => {
       if (this.#closed) {
         ws.close(1001, "Hub shutting down");
@@ -377,6 +430,7 @@ export class EnvManager {
         if (!boundEnvId) return;
         const peer = this.#wsPeers.get(boundEnvId);
         if (!peer || peer.ws !== ws) return;
+        peer.missedPings = 0;
         peer.descriptor.lastSeenAt = Date.now();
         try {
           const buf = Buffer.isBuffer(data)
@@ -495,6 +549,7 @@ export class EnvManager {
           }
           peer.ws = ws;
           peer.connectionState = "online";
+          peer.missedPings = 0;
           peer.connectionLease = msg.connectionLease;
           peer.descriptor = {
             id: envId,
@@ -573,6 +628,7 @@ export class EnvManager {
             this.#failAndroidRequests(envId, "Android device reconnected before confirming the operation");
             this.#failBrowserRequests(envId, "Browser device reconnected before confirming the operation");
             this.#failComputerRequests(envId, "Computer-use device reconnected before confirming the operation");
+            this.#failHostActionRequests(envId, "Device reconnected before confirming the host action");
             this.#failProjectRequests(envId, "Project device reconnected before confirming the operation");
             // Tear down previous socket & streams if replacing stale connection
             if (peer.ws && peer.ws !== ws) {
@@ -591,6 +647,7 @@ export class EnvManager {
             }
             peer.ws = ws;
             peer.connectionState = "online";
+            peer.missedPings = 0;
             peer.streamResumeSupported = supportsResume;
             peer.unackedTotalBytes = 0;
             peer.connectionLease = msg.connectionLease;
@@ -632,6 +689,7 @@ export class EnvManager {
               connectionLease: msg.connectionLease,
               connectionState: "online",
               streamResumeSupported: supportsResume,
+              missedPings: 0,
               pendingCloseStreamIds: new Set(),
               unackedTotalBytes: 0,
             };
@@ -673,6 +731,7 @@ export class EnvManager {
 
       const peer = this.#wsPeers.get(boundEnvId);
       if (!peer || peer.ws !== ws) return;
+      peer.missedPings = 0;
       peer.descriptor.lastSeenAt = Date.now();
 
       if (msg.type === "env.android_status") {
@@ -790,6 +849,14 @@ export class EnvManager {
           || data.toString("utf8").length > COMPUTER_USE_MAX_RESULT + 4096) {
           this.#finishComputerRequest(msg.requestId, undefined, new Error("Invalid computer-use response"));
         } else this.#finishComputerRequest(msg.requestId, msg.result);
+      } else if (msg.type === "env.host_action_result") {
+        const pending = this.#hostActionRequests.get(msg.requestId);
+        if (!pending || pending.envId !== boundEnvId || pending.ws !== ws) return;
+        if (msg.error) this.#finishHostActionRequest(msg.requestId, undefined, new Error(redactSensitiveText(msg.error).slice(0, 2000)));
+        else if (!isHostActionResult(msg.result, pending.request) || msg.result.platform !== peer.descriptor.platform
+          || data.toString("utf8").length > HOST_ACTION_MAX_RESULT + 4096) {
+          this.#finishHostActionRequest(msg.requestId, undefined, new Error("Invalid host action response"));
+        } else this.#finishHostActionRequest(msg.requestId, msg.result);
       } else if (msg.type === "env.browser_result") {
         const pending = this.#browserRequests.get(msg.requestId);
         if (!pending || pending.envId !== boundEnvId) return;
@@ -864,6 +931,7 @@ export class EnvManager {
 
         this.#failBrowserRequests(boundEnvId, "Browser device disconnected before confirming the operation");
         this.#failComputerRequests(boundEnvId, "Computer-use device disconnected before confirming the operation");
+        this.#failHostActionRequests(boundEnvId, "Device disconnected before confirming the host action");
         this.#failAndroidRequests(boundEnvId, "Android device disconnected before confirming the operation");
         this.#failProjectRequests(boundEnvId, "Project device disconnected before confirming the operation");
         this.#failExternalAgentRequests(boundEnvId, "External agent device disconnected; inspect the existing run after reconnecting");
@@ -871,6 +939,7 @@ export class EnvManager {
 
         if (canGraceReconnect) {
           peer.ws = null;
+          peer.missedPings = 0;
           peer.connectionState = "reconnecting";
           // Preserve descriptor.online = true during the 20s grace window so prompt caches & assertions stay stable.
           for (const stream of peer.streams.values()) {
@@ -889,6 +958,7 @@ export class EnvManager {
             peer.graceTimer = undefined;
           }
           peer.ws = null;
+          peer.missedPings = 0;
           peer.connectionState = "offline";
           peer.descriptor.online = false;
           this.#failAllStreams(peer, "Env WebSocket disconnected");
@@ -915,6 +985,7 @@ export class EnvManager {
     this.#deviceTokens.set(id, token);
     if (previous !== undefined && !sameToken(previous, token)) {
       this.#failComputerRequests(id, "Computer-use device credential changed");
+      this.#failHostActionRequests(id, "Device credential changed");
       this.#failAndroidRequests(id, "Android device credential changed");
       const peer = this.#wsPeers.get(id);
       if (peer) {
@@ -938,6 +1009,7 @@ export class EnvManager {
     if (this.#wsPeers.get(envId)?.connectionLease !== lease) {
       this.#cancelAndroidNotificationClassification(envId);
       this.#failComputerRequests(envId, "Computer-use device connection lease changed");
+      this.#failHostActionRequests(envId, "Device connection lease changed");
       this.#failAndroidRequests(envId, "Android device connection lease changed");
     }
   }
@@ -954,6 +1026,7 @@ export class EnvManager {
         this.#cancelAndroidNotificationClassification(peer.descriptor.id);
         this.#failBrowserRequests(peer.descriptor.id, "Device interconnection disabled");
         this.#failComputerRequests(peer.descriptor.id, "Device interconnection disabled");
+        this.#failHostActionRequests(peer.descriptor.id, "Device interconnection disabled");
         this.#failAndroidRequests(peer.descriptor.id, "Device interconnection disabled");
         peer.connectionState = "offline";
         peer.descriptor.online = false;
@@ -969,6 +1042,7 @@ export class EnvManager {
     this.#cancelAndroidNotificationClassification(id);
     this.#failBrowserRequests(id, "Browser device removed");
     this.#failComputerRequests(id, "Computer-use device removed");
+    this.#failHostActionRequests(id, "Device removed");
     this.#failExternalAgentRequests(id, "External agent device removed before confirming the operation");
     this.#failAndroidRequests(id, "Android device removed");
     this.#deviceTokens.delete(id);
@@ -1219,6 +1293,92 @@ export class EnvManager {
         }, () => this.#finishComputerRequest(requestId, undefined, new Error("Computer-use device could not confirm the operation; observe the target before retrying")));
       }
     });
+  }
+
+  async requestHostAction(envId: string, request: HostActionRequest, signal?: AbortSignal): Promise<HostActionResult> {
+    if (this.#closed) throw new Error("Env manager is closed");
+    if (!isHostActionRequest(request)) throw new Error("Invalid host action request");
+    if (signal?.aborted) throw Object.assign(new Error("Host action cancelled"), { name: "AbortError" });
+    const descriptor = this.getEnvDescriptor(envId);
+    if (!descriptor?.online) throw new Error(`目标设备 '${envId}' 当前离线`);
+    if (descriptor.executionKind === "native-device" || !["darwin", "linux", "win32"].includes(descriptor.platform)) {
+      throw new Error("当前设备不支持本机诊断或运维操作");
+    }
+    if (!descriptor.capabilities.includes("host-actions")) {
+      throw new Error("目标设备端版本尚未支持本机诊断或运维操作，请更新该设备上的 Kulo 客户端");
+    }
+    if (this.#hostActionRequests.size >= 16) throw new Error("Host action request limit reached");
+    const peer = envId === "local" ? undefined : this.#wsPeers.get(envId);
+    if (envId === "local" ? !this.#localHostActions : !peer?.ws || peer.ws.readyState !== peer.ws.OPEN) {
+      throw new Error("本机操作需要目标设备的有效节点连接");
+    }
+    const expectedLease = this.#deviceConnectionLeases.get(envId);
+    if (peer && expectedLease !== undefined && !sameToken(peer.connectionLease, expectedLease)) {
+      throw new Error("Device connection lease changed");
+    }
+    const requestId = randomBytes(16).toString("hex");
+    const timeoutMs = request.kind === "run" ? Math.min((request.timeoutMs ?? 120_000) + 15_000, 620_000) : 20_000;
+    return new Promise((resolve, reject) => {
+      const controller = new AbortController();
+      const cancel = () => this.#finishHostActionRequest(requestId, undefined, Object.assign(new Error("本机操作已取消"), { name: "AbortError" }));
+      const timer = setTimeout(() => this.#finishHostActionRequest(requestId, undefined, new Error("本机操作超时未响应")), timeoutMs);
+      timer.unref();
+      const pending: PendingHostActionRequest = {
+        envId,
+        request,
+        ...(peer?.ws ? { ws: peer.ws } : {}),
+        controller,
+        resolve,
+        reject,
+        timer,
+        removeAbort: () => signal?.removeEventListener("abort", cancel),
+      };
+      this.#hostActionRequests.set(requestId, pending);
+      signal?.addEventListener("abort", cancel, { once: true });
+      if (signal?.aborted) { cancel(); return; }
+      if (pending.ws) {
+        this.#sendControl(pending.ws, { type: "hub.host_action_request", requestId, request });
+      } else {
+        const active = () => !this.#closed && this.#hostActionRequests.get(requestId) === pending && !controller.signal.aborted;
+        void Promise.resolve().then(() => {
+          if (!active()) throw new Error("本机操作已取消");
+          return this.#localHostActions!.execute(request, controller.signal);
+        }).then((result) => {
+          if (!active()) return;
+          if (!isHostActionResult(result, request)) this.#finishHostActionRequest(requestId, undefined, new Error("Invalid host action response"));
+          else this.#finishHostActionRequest(requestId, result);
+        }, (error: unknown) => {
+          this.#finishHostActionRequest(
+            requestId,
+            undefined,
+            error instanceof Error ? error : new Error("本机操作执行失败"),
+          );
+        });
+      }
+    });
+  }
+
+  #finishHostActionRequest(requestId: string, result?: HostActionResult, error?: Error): void {
+    const pending = this.#hostActionRequests.get(requestId);
+    if (!pending) return;
+    this.#hostActionRequests.delete(requestId);
+    clearTimeout(pending.timer);
+    pending.removeAbort();
+    if (error) {
+      pending.controller.abort();
+      if (pending.ws && pending.ws.readyState === pending.ws.OPEN) {
+        this.#sendControl(pending.ws, { type: "hub.host_action_cancel", requestId });
+      }
+      pending.reject(error);
+    } else {
+      pending.resolve(result!);
+    }
+  }
+
+  #failHostActionRequests(envId: string, message: string): void {
+    for (const [id, pending] of this.#hostActionRequests) {
+      if (pending.envId === envId) this.#finishHostActionRequest(id, undefined, new Error(message));
+    }
   }
 
   async closeComputerUseSession(envId: string, sessionId: string): Promise<void> {
@@ -1791,10 +1951,11 @@ export class EnvManager {
     for (const id of this.#androidRequests.keys()) this.#finishAndroidRequest(id, undefined, new Error("Env manager closed before Android operation completed"));
     for (const id of this.#androidControls.keys()) this.#finishAndroidControl(id, undefined, new Error("Env manager closed before Android stop was confirmed"));
     for (const id of this.#computerRequests.keys()) this.#finishComputerRequest(id, undefined, new Error("Env manager closed before computer-use operation completed"));
+    for (const id of this.#hostActionRequests.keys()) this.#finishHostActionRequest(id, undefined, new Error("Env manager closed before host action completed"));
     for (const pending of this.#browserRequests.values()) { clearTimeout(pending.timer); pending.reject(new Error("Env manager closed before browser operation completed")); }
     this.#browserRequests.clear();
     for (const pending of [...this.#externalAgentRequests.values()]) { pending.finish(); pending.reject(new Error("Env manager closed; inspect existing external runs before retrying")); }
-    const browserCleanup = Promise.allSettled([this.#localBrowser?.close(), this.#localComputer?.close(), this.#localExternalAgents?.close()]);
+    const browserCleanup = Promise.allSettled([this.#localBrowser?.close(), this.#localComputer?.close(), this.#localHostActions?.suspend(), this.#localExternalAgents?.close()]);
     this.invalidateWorkerEnvironments();
     await Promise.all(this.#cleanupTasks);
     for (const [id, pending] of this.#projectRequests) {

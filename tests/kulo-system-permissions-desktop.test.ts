@@ -72,14 +72,18 @@ describe("desktop system permission actions", () => {
     const f = fixture();
     await f.permissions.openSettings("accessibility");
     await f.permissions.openSettings("screen");
+    await f.permissions.openSettings("full-disk-access");
+    await f.permissions.openSettings("automation");
     expect(f.openExternal.mock.calls.map(([url]) => url)).toEqual([
       "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
       "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
     ]);
     for (const kind of ["camera", "microphone?foo", "__proto__", "https://example.com", undefined, {}, ["microphone"]]) {
       await expect(f.permissions.openSettings(kind)).rejects.toThrow("类型无效");
     }
-    expect(f.openExternal).toHaveBeenCalledTimes(2);
+    expect(f.openExternal).toHaveBeenCalledTimes(4);
     f.openExternal.mockRejectedValueOnce(new Error("Settings could not open"));
     await expect(f.permissions.openSettings("microphone")).rejects.toThrow("Settings could not open");
   });
@@ -107,7 +111,13 @@ describe("desktop system permission IPC", () => {
     expect(f.askForMicrophone).not.toHaveBeenCalled();
     await expect(f.invoke("kulo:system-permissions-request-microphone")).resolves.toMatchObject({ permissions: [{ state: "granted" }] });
     await f.invoke("kulo:system-permissions-open-settings", f.event, "screen");
-    expect(f.openExternal).toHaveBeenCalledWith("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture");
+    await f.invoke("kulo:system-permissions-open-settings", f.event, "full-disk-access");
+    await f.invoke("kulo:system-permissions-open-settings", f.event, "automation");
+    expect(f.openExternal.mock.calls.map(([url]) => url)).toEqual([
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+    ]);
   });
 
   it("rejects other windows, same-origin subframes and navigated frames before inspecting native state", async () => {

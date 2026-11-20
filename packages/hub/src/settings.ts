@@ -30,6 +30,7 @@ import {
   type CustomProviderApi,
   type CustomProviderConfig,
   type ExecutorSlotsConfig,
+  type HostActionPermission,
   type ExternalAgentBinding,
   type ExternalAgentModelInfo,
   type ExternalClientConnection,
@@ -604,6 +605,7 @@ function normalizeExecutorConfig(
   const autoArchiveEnabled = typeof obj.autoArchiveEnabled === "boolean" ? obj.autoArchiveEnabled : true;
   const autoArchiveDays = typeof obj.autoArchiveDays === "number" && Number.isSafeInteger(obj.autoArchiveDays) &&
     obj.autoArchiveDays >= 1 && obj.autoArchiveDays <= 3650 ? obj.autoArchiveDays : 7;
+  const hostActionPermission: HostActionPermission = obj.hostActionPermission === "always" ? "always" : "ask";
   return {
     maxConcurrentWorkers,
     maxSubagentsPerTicket,
@@ -612,6 +614,7 @@ function normalizeExecutorConfig(
     completedTaskDisplayHours,
     autoArchiveEnabled,
     autoArchiveDays,
+    hostActionPermission,
   };
 }
 
@@ -741,6 +744,7 @@ export const KuloSettingsDoc = defineDoc<KuloDurableSettings & JsonObject>({
         completedTaskDisplayHours: 3,
         autoArchiveEnabled: true,
         autoArchiveDays: 7,
+        hostActionPermission: "ask",
       },
       roles: {},
       model: {
@@ -835,6 +839,7 @@ export function normalizeMemoryConfig(value: HindsightMemoryConfig): HindsightMe
   return {
     accessMode: value.accessMode === "scoped" || value.accessMode === "private-only" ? value.accessMode : "kulo",
     enabled: Boolean(value.enabled),
+    ...(value.knowledgeGuidanceEnabled ? { knowledgeGuidanceEnabled: true } : {}),
     endpoint: value.endpoint || "http://127.0.0.1:8888",
     endpoints: Array.isArray(value.endpoints) ? [...value.endpoints] : [],
     caCertPem: value.caCertPem ?? "",
@@ -894,6 +899,7 @@ export function hydrateSettingsFromConfig(
       completedTaskDisplayHours: config.completedTaskDisplayHours === undefined ? 3 : config.completedTaskDisplayHours,
       autoArchiveEnabled: true,
       autoArchiveDays: 7,
+      hostActionPermission: "ask",
     };
     doc.roles = cleanJson(config.roles);
     syncExternalClientsInSettings(doc);
@@ -1223,6 +1229,13 @@ export function applySettingsBlockUpdate(
       if (typeof autoArchiveDays !== "number" || !Number.isSafeInteger(autoArchiveDays) || autoArchiveDays < 1 || autoArchiveDays > 3650) {
         throw new SettingsUpdateError(400, "自动归档天数需为 1~3650 的整数。");
       }
+      const rawHostPermission = val.hostActionPermission === undefined
+        ? (prevExecutor.hostActionPermission ?? "ask")
+        : val.hostActionPermission;
+      if (rawHostPermission !== "ask" && rawHostPermission !== "always") {
+        throw new SettingsUpdateError(400, "执行权限需为需要授权或总是允许。");
+      }
+      const hostActionPermission: HostActionPermission = rawHostPermission;
       const paused = Boolean(val.paused);
       if (
         !Number.isInteger(maxConcurrentWorkers) ||
@@ -1248,8 +1261,9 @@ export function applySettingsBlockUpdate(
         completedTaskDisplayHours,
         autoArchiveEnabled,
         autoArchiveDays,
+        hostActionPermission,
       };
-      summary = `并发上限 ${maxConcurrentWorkers} · 子智能体 ${maxSubagentsPerTicket} · 巡检${watchdogMinutes > 0 ? ` ${watchdogMinutes} 分钟` : "关闭"} · 已完成任务${completedTaskDisplayHours === null ? "一直显示" : `显示 ${completedTaskDisplayHours} 小时`} · 自动归档${autoArchiveEnabled ? ` ${autoArchiveDays} 天` : "关闭"}${paused ? "（已暂停新派单）" : ""}`;
+      summary = `并发上限 ${maxConcurrentWorkers} · 子智能体 ${maxSubagentsPerTicket} · 巡检${watchdogMinutes > 0 ? ` ${watchdogMinutes} 分钟` : "关闭"} · 已完成任务${completedTaskDisplayHours === null ? "一直显示" : `显示 ${completedTaskDisplayHours} 小时`} · 自动归档${autoArchiveEnabled ? ` ${autoArchiveDays} 天` : "关闭"} · 执行权限${hostActionPermission === "always" ? "总是允许" : "需要授权"}${paused ? "（已暂停新派单）" : ""}`;
       break;
     }
 
@@ -1568,9 +1582,14 @@ export function applySettingsBlockUpdate(
       }
       const previous = normalizeMemoryConfig(doc.memory);
       const changedOrigin = memoryOrigins(previous) !== memoryOrigins({ endpoint, endpoints });
+      const knowledgeGuidanceEnabled =
+        val.knowledgeGuidanceEnabled === undefined
+          ? Boolean(previous.knowledgeGuidanceEnabled)
+          : Boolean(val.knowledgeGuidanceEnabled);
       const next: HindsightMemoryConfig = {
         accessMode: val.accessMode === "scoped" || val.accessMode === "private-only" ? val.accessMode : "kulo",
         enabled,
+        ...(knowledgeGuidanceEnabled ? { knowledgeGuidanceEnabled: true } : {}),
         endpoint,
         endpoints,
         caCertPem: typeof val.caCertPem === "string" ? val.caCertPem : "",

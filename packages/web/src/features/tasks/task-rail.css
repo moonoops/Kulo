@@ -12,20 +12,19 @@
 .kulo-task-card-content { display: block; padding: 0; }
 .kulo-task-card-button { display: flex; height: auto; min-width: 0; flex-direction: column; align-items: stretch; justify-content: start; gap: var(--kulo-space-2); padding: var(--kulo-list-padding-block) var(--kulo-list-padding-inline); text-align: left; white-space: normal; border-radius: 16px; background: transparent; }
 .kulo-task-card-button[data-hovered="true"] { background: color-mix(in oklab, var(--foreground) 4%, transparent); }
-.kulo-task-card-top { display: flex; align-items: center; min-height: 24px; gap: var(--kulo-control-gap); width: 100%; }
-.kulo-task-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--kulo-text-body); line-height: var(--kulo-leading-body); font-weight: 600; color: var(--foreground); }
-.kulo-task-status { display: inline-flex; flex: none; align-items: center; gap: var(--kulo-space-1); font-size: var(--kulo-text-caption); line-height: var(--kulo-leading-caption); font-weight: 400; color: var(--muted); white-space: nowrap; }
+.kulo-task-title { display: block; width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--kulo-text-body); line-height: var(--kulo-leading-body); font-weight: 600; color: var(--foreground); }
+.kulo-task-card-foot { display: flex; width: 100%; min-width: 0; align-items: center; justify-content: space-between; gap: var(--kulo-control-gap); color: var(--muted); font-size: var(--kulo-text-caption); line-height: var(--kulo-leading-caption); font-weight: 400; }
+.kulo-task-status { display: inline-flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: var(--kulo-space-1); font-size: var(--kulo-text-caption); line-height: var(--kulo-leading-caption); font-weight: 400; color: var(--muted); white-space: nowrap; }
+.kulo-task-status-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kulo-task-status[data-tone="run"] { color: color-mix(in oklab, var(--accent-soft-foreground) 50%, var(--muted)); }
-.kulo-task-run-dot { display: block; width: 5px; height: 5px; border-radius: 50%; margin-inline: 3px; background: currentColor; }
+.kulo-task-run-dot { display: block; flex: none; width: 5px; height: 5px; border-radius: 50%; margin-inline: 3px; background: currentColor; }
+.kulo-task-status > .mc-icon { flex: none; }
 .kulo-task-status[data-tone="done"] { color: color-mix(in oklab, var(--success-soft-foreground) 50%, var(--muted)); }
-.kulo-task-status[data-tone="ask"],.kulo-task-status[data-tone="fail"] { border-radius: 99px; padding: 3px 6px; }
+.kulo-task-status[data-tone="ask"],.kulo-task-status[data-tone="fail"] { border-radius: 99px; padding: 2px 6px; }
 .kulo-task-status[data-tone="ask"] { color: var(--warning-soft-foreground); background: var(--warning-soft); }
 .kulo-task-status[data-tone="fail"] { color: var(--danger-soft-foreground); background: var(--danger-soft); }
-.kulo-task-summary { display: block; width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--kulo-text-caption); line-height: var(--kulo-leading-caption); font-weight: 400; }
-.kulo-task-card-foot { display: flex; width: 100%; align-items: baseline; justify-content: space-between; gap: var(--kulo-space-2); color: var(--muted); font-size: var(--kulo-text-caption); line-height: var(--kulo-leading-caption); font-weight: 400; }
 .kulo-task-card-actions { padding: 0 var(--kulo-list-padding-inline) var(--kulo-list-padding-block); }
 .kulo-task-card-actions .kulo-task-failure-actions { gap: var(--kulo-control-gap); }
-.kulo-task-agent { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kulo-task-time { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .kulo-task-empty { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: var(--kulo-space-2); padding-block: 48px; color: var(--muted); font-size: var(--kulo-text-body); line-height: var(--kulo-leading-body); }
 .kulo-task-enter { animation: kulo-task-enter 220ms ease-out; }

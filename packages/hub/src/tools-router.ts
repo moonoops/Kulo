@@ -33,6 +33,7 @@ import { createWebSearchTool } from "./tools-search.js";
 import { createWebFetchTool } from "./tools-worker.js";
 import type { KuloSearch } from "./search.js";
 import { createConnectionTools, type ConnectionToolController } from "./tools-connections.js";
+import { createHostActionTool, type HostActionController } from "./tools-host-action.js";
 
 export interface DispatchTicketParams {
   commandId: string;
@@ -119,6 +120,7 @@ export interface CloseTicketParams {
 
 export interface OrchestratorController {
   connections?: ConnectionToolController;
+  hostActions?: HostActionController;
   showDeviceInvitation?(conversationId: number, callId: string): Promise<void>;
   dispatchTicket(params: DispatchTicketParams, context: Context): Promise<TicketCardView>;
   dispatchTicketForModel?(params: DispatchTicketParams, context: Context): Promise<DispatchTicketModelOutcome>;
@@ -568,6 +570,7 @@ export function createOrchestratorToolsExtension(
       createWebSearchTool(getSearch),
       ...hindsightTools,
       ...(controller.connections ? createConnectionTools(controller.connections, "orchestrator") : []),
+      ...(controller.hostActions ? [createHostActionTool(controller.hostActions, "orchestrator")] : []),
     ],
   });
 }

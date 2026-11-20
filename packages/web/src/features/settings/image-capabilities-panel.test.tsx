@@ -79,6 +79,26 @@ describe("left image workspace handoff", () => {
     expect(onRequest).toHaveBeenCalledWith(undefined, IMAGE_ROUTING_PROMPT);
   });
 
+  it("places default status in the status column and groups capabilities into two semantic lines", () => {
+    const rich: CapabilitiesWorkspaceSnapshot = {
+      ...workspace,
+      capabilities: [{ ...workspace.capabilities[0]!, name: "GPT Image 2.6 Flare", formats: ["png", "jpeg", "webp", "gif", "svg"], supportsEdit: true, isDefault: true, allowTaskGeneration: true, status: "ready" }],
+    };
+    const html = renderToStaticMarkup(<ImageCapabilitiesPanel workspace={rich} clientId="client-one" connected loading={false} error={null} onRequest={vi.fn()} onRefresh={vi.fn()} />);
+    expect(html).toContain("kulo-settings-table-content--wide");
+    expect(html).not.toContain("chip--accent");
+    expect(html).not.toContain("chip--tertiary");
+    const primaryCell = html.match(/<td[^>]*kulo-settings-table-primary[^>]*>[\s\S]*?<\/td>/)?.[0] ?? "";
+    const capabilitiesCell = html.match(/<td[^>]*kulo-settings-table-capabilities[^>]*>[\s\S]*?<\/td>/)?.[0] ?? "";
+    const statusCell = html.match(/<td[^>]*kulo-settings-table-status[^>]*>[\s\S]*?<\/td>/)?.[0] ?? "";
+    expect(primaryCell).toContain("GPT Image 2.6 Flare");
+    expect(primaryCell).not.toContain("默认");
+    expect(capabilitiesCell).toContain("生图 · 编辑");
+    expect(capabilitiesCell).toContain("PNG · JPEG · WEBP · GIF · SVG");
+    expect(statusCell).toContain("可用");
+    expect(statusCell).toContain("默认");
+  });
+
   it("renders the image test modal with the cat ice-cream default prompt and live result preview", () => {
     const job: MediaJob = {
       id: "job-1", operationId: "op-1", capabilityId: "image-one", capabilityRevision: 1, connectionId: "images", adapter: "openai-image",

@@ -218,6 +218,45 @@ describe("managed other extensions", () => {
     expect((await f.service.snapshot()).jobs[0]?.status).toBe("cancelled");
     expect((await f.service.snapshot()).items[0]?.enabled).toBe(false);
   });
+  it("recognizes a bundled pre-installed package by default, respects user removal across restarts, and heals prior install errors", async () => {
+    let managedInstalled = false;
+    let service!: KuloExtensions;
+    const registry = createRegistry(), extension = createExtensionsExtension(() => service); registry.install(extension);
+    const harness = await Harness.open(new MemoryStorage(), { models: createModels(), registry }, context);
+    await harness.root(context);
+    closing.push(() => harness.close(context));
+    const packages = {
+      inspect: vi.fn(async (opts?: { includeBundled?: boolean }) => managedInstalled || opts?.includeBundled !== false ? { ...info, bundled: !managedInstalled } : null),
+      install: vi.fn(async () => { managedInstalled = true; return { ...info }; }),
+      remove: vi.fn(async () => { managedInstalled = false; }),
+    };
+    const compaction = { enable: vi.fn(async () => {}), stop: vi.fn(async () => {}) };
+    service = new KuloExtensions({ harness, operationTask: extension.operationTask, stateDir: "/synthetic", packages, compaction });
+    // Simulate a legacy hub that previously failed online npm installation.
+    await harness.commit(async (tx) => {
+      const doc = await tx.doc(ExtensionsDoc);
+      doc.items["billion-context"]!.status = "error";
+      doc.items["billion-context"]!.error = "上下文压缩依赖安装失败（退出码 1）。";
+    }, context);
+    await service.initialize();
+    const healed = (await service.snapshot()).items[0]!;
+    expect(healed).toMatchObject({ status: "stopped", enabled: false, installedVersion: info.version });
+    expect(healed.error).toBeUndefined();
+    // Explicit removal persists across subsequent restarts.
+    await service.request({ id: "billion-context", operation: "remove", expectedRevision: healed.revision, commandId: "remove-bundled" });
+    const removing = (await service.snapshot()).jobs[0]!;
+    await harness.waitForTask(removing.taskId as TaskId, context);
+    expect((await service.snapshot()).items[0]).toMatchObject({ status: "not_installed", enabled: false });
+    await service.initialize();
+    expect((await service.snapshot()).items[0]).toMatchObject({ status: "not_installed", enabled: false });
+    // Reinstalling clears the removal marker and returns to stopped.
+    const removedItem = (await service.snapshot()).items[0]!;
+    await service.request({ id: "billion-context", operation: "install", expectedRevision: removedItem.revision, commandId: "reinstall-bundled" });
+    const reinstalling = (await service.snapshot()).jobs.at(-1)!;
+    await harness.waitForTask(reinstalling.taskId as TaskId, context);
+    expect((await service.snapshot()).items[0]).toMatchObject({ status: "stopped", enabled: false, installedVersion: info.version });
+    expect(packages.install).toHaveBeenCalledOnce();
+  });
 });
 
 describe("extension source assessment", () => {

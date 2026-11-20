@@ -597,4 +597,54 @@ describe("desktop runtime with a real Node backend", () => {
       await hostHub.close();
     }
   }, 35_000);
+
+  it("probes the joined Peer Env WebSocket immediately when desktop runtime receives system-resume IPC", async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ items: [] }));
+    });
+    const wss = new WebSocketServer({ server, path: "/ws/env" });
+    let pingCount = 0;
+    let connected = false;
+    wss.on("connection", (ws) => {
+      ws.on("ping", () => { pingCount += 1; });
+      ws.on("message", (raw) => {
+        const msg = JSON.parse(raw.toString("utf8")) as { type?: string; envId?: string };
+        if (msg.type === "env.register") {
+          connected = true;
+          ws.send(JSON.stringify({ type: "hub.registered", envId: msg.envId }));
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address() as { port: number };
+    try {
+      const dataDir = root();
+      const paths = resolveDesktopRuntimePaths(dataDir);
+      prepareDesktopRuntime(paths);
+      savePeerConfig({
+        version: 1,
+        hubUrl: `http://127.0.0.1:${addr.port}`,
+        deviceId: "dev-resume-probe",
+        name: "ResumePeer",
+        envToken: "resume-peer-env-secret",
+        clientToken: "resume-peer-client-secret",
+        rootDir: paths.workspaceDir,
+      }, paths.peerConfigPath);
+
+      const running = startRealRuntime(dataDir);
+      await running.ready;
+      await vi.waitFor(() => expect(connected).toBe(true), { timeout: 10_000, interval: 25 });
+      expect(pingCount).toBe(0);
+
+      running.child.send({ type: "system-resume" });
+      await vi.waitFor(() => expect(pingCount).toBeGreaterThanOrEqual(1), { timeout: 5_000, interval: 25 });
+
+      running.child.send({ type: "shutdown" });
+      expect(await running.exited).toEqual({ code: 0, signal: null });
+    } finally {
+      for (const client of wss.clients) client.terminate();
+      await new Promise<void>((resolve) => wss.close(() => server.close(() => resolve())));
+    }
+  }, 30_000);
 });

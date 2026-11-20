@@ -184,7 +184,7 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
           <Table.Content aria-label={t("系统权限列表", "System permission list")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content">
             <Table.Header>
               <Table.Column id="permission" isRowHeader className="kulo-settings-table-column">{t("权限", "Permission")}</Table.Column>
-              <Table.Column id="device" className="kulo-settings-table-column">{t("设备", "Device")}</Table.Column>
+              <Table.Column id="device" className="kulo-settings-table-column kulo-settings-table-detail">{t("设备", "Device")}</Table.Column>
               <Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-meta">{t("状态", "Status")}</Table.Column>
               <Table.Column id="action" className="kulo-settings-table-column kulo-settings-table-actions">{t("操作", "Actions")}</Table.Column>
             </Table.Header>
@@ -193,7 +193,7 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
               const displayState = current?.state ?? (kind !== "microphone" && env && env.platform !== "darwin" ? "unsupported" : undefined);
               return <Table.Row key={kind} id={kind}>
                 <Table.Cell className="kulo-settings-table-cell whitespace-nowrap"><span className="kulo-item-title">{label(kind)}</span><div className="kulo-item-description">{kind === "microphone" ? t("语音输入、通话", "Voice input and calls") : kind === "accessibility" ? t("读取和操作应用", "Read and control apps") : t("桌面窗口预览", "Desktop window previews")}</div></Table.Cell>
-                <Table.Cell className="kulo-settings-table-cell break-words">{scope(kind)}</Table.Cell>
+                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-detail break-words">{scope(kind)}</Table.Cell>
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta">{statusChip(displayState)}{current?.detail && <div className="kulo-item-description mt-2 max-w-56 whitespace-normal">{current.detail}</div>}</Table.Cell>
                 <Table.Cell focusMode="child" className="kulo-settings-table-cell kulo-settings-table-actions">{({ id }) => <PermissionAction cellId={id!} label={t(`设置${label(kind)}权限`, `Set up ${label(kind)} permission`)} disabled={!canRequest(kind) || (kind === "microphone" ? state.microphoneChecking : state.desktopChecking)} onPress={(trigger) => openGuide([kind], trigger)}>{current?.state === "granted" ? t("已授权", "Allowed") : current?.state === "denied" ? t("前往设置", "Open settings") : t("授权", "Allow")}</PermissionAction>}</Table.Cell>
               </Table.Row>;

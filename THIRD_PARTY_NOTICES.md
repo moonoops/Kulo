@@ -92,8 +92,9 @@ text, and preserve the notices present in the original material.
 
 Kulo uses [acp-kernel](https://github.com/ranxianglei/acp-kernel), from the
 [Billion Context](https://github.com/ranxianglei/billion-context) project, for its
-optional Billion Context compression integration. The integration installs
-`acp-kernel` **0.0.101** separately and is disabled by default.
+optional Billion Context compression integration. Kulo bundles `acp-kernel`
+**0.0.101** pre-installed out of the box and keeps the integration disabled by
+default until explicitly enabled.
 
 Copyright (c) 2026 ranxianglei. The upstream licenses contain the MIT terms **plus
 an additional product attribution requirement**. The package's `MIT` metadata

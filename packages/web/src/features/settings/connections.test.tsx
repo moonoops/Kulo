@@ -1,7 +1,16 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConnectionApplicationView, ConnectionRecordView, ConnectionSetupInput, ConnectionWorkspaceSnapshot } from "@kulo/protocol";
-import { ConnectionSetupForm, clearConnectionDraftSecrets, connectionSaveRequest, createConnectionDraft, safeConnectionInputError, visibleConnectionInputs } from "./connection-setup-inputs";
+import {
+  ConnectionSetupForm,
+  clearConnectionDraftSecrets,
+  connectionSaveRequest,
+  createConnectionDraft,
+  nativePermissionKindForError,
+  resolveNativePermissionPrompt,
+  safeConnectionInputError,
+  visibleConnectionInputs,
+} from "./connection-setup-inputs";
 import { ConnectionsModule, applicationStatusLabel, connectionAddress, connectionCategory, connectionStatusLabel } from "./connections-module";
 import { checkConnectionFollowup, connectionFollowupResult } from "./connection-followup";
 import { kuloRest } from "../../kulo-api";
@@ -253,6 +262,43 @@ describe("preset application setup", () => {
     expect(html).not.toContain("<input");
     expect(html).not.toContain("<textarea");
     expect(html.match(/<button\b(?=[^>]*type="submit")[^>]*>/)?.[0]).not.toContain("disabled");
+  });
+
+  it("maps missing macOS connector permissions into guided System Settings prompts instead of red error text", async () => {
+    const fullDiskError = Object.assign(new Error("无法读取信息数据库。"), { code: "connection_messages_full_disk_access_required" });
+    const automationError = Object.assign(new Error("需要自动化权限。"), { code: "connection_app_automation_required" });
+    expect(nativePermissionKindForError(fullDiskError)).toBe("full-disk-access");
+    expect(nativePermissionKindForError(automationError)).toBe("automation");
+    expect(nativePermissionKindForError(new Error("普通失败"))).toBeNull();
+
+    const openSettings = vi.fn().mockResolvedValueOnce("opened").mockResolvedValueOnce("remote").mockRejectedValueOnce(new Error("open failed"));
+    const openedPrompt = await resolveNativePermissionPrompt(fullDiskError, { appName: "信息", localHost: true, openSettings });
+    expect(openedPrompt).toMatchObject({ kind: "full-disk-access", opened: true, remote: false });
+    expect(openedPrompt?.message).toContain("已打开系统设置");
+    expect(openSettings).toHaveBeenCalledWith("full-disk-access", { localHost: true });
+
+    const remotePrompt = await resolveNativePermissionPrompt(automationError, { appName: "邮件", localHost: false, openSettings });
+    expect(remotePrompt).toMatchObject({ kind: "automation", opened: false, remote: true });
+    expect(remotePrompt?.message).toContain("主脑的 Mac");
+
+    const manualPrompt = await resolveNativePermissionPrompt(fullDiskError, { appName: "信息", localHost: true, openSettings });
+    expect(manualPrompt).toMatchObject({ kind: "full-disk-access", opened: false, remote: false });
+
+    const localHtml = renderToStaticMarkup(
+      <ConnectionSetupForm input={appInput} application={nativeApplication} clientId="tab-a" connected available localHost initialPermissionPrompt={openedPrompt} onChanged={() => {}} />,
+    );
+    expect(localHtml).toContain("需要完全磁盘访问权限");
+    expect(localHtml).toContain("打开系统设置");
+    expect(localHtml).toContain("重新检查");
+    expect(localHtml).not.toContain("text-danger");
+
+    const remoteHtml = renderToStaticMarkup(
+      <ConnectionSetupForm input={appInput} application={nativeApplication} clientId="tab-a" connected available localHost={false} initialPermissionPrompt={remotePrompt} onChanged={() => {}} />,
+    );
+    expect(remoteHtml).toContain("需要自动化权限");
+    expect(remoteHtml).not.toContain("打开系统设置");
+    expect(remoteHtml).toContain("重新检查");
+    expect(remoteHtml).not.toContain("text-danger");
   });
 
   it("shows token guidance and submits only a replacement token to the private endpoint", () => {

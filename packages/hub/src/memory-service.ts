@@ -220,6 +220,24 @@ export class KuloMemoryService {
     });
     return this.snapshot();
   }
+  async setKnowledgeGuidanceEnabled(enabled: boolean, expectedRevision: number): Promise<MemoryServiceSnapshot> {
+    if (typeof enabled !== "boolean" || !Number.isSafeInteger(expectedRevision)) fail(400, "invalid_memory_request", "知识整理指引设置无效。");
+    await this.#serial(async () => {
+      const state = await this.#options.harness.snapshot(MemoryServiceDoc, ctx);
+      if (Object.values(state?.jobs ?? {}).some((job) => job.view.status === "running")) fail(409, "memory_service_busy", "记忆服务正在处理配置，请稍后重试。");
+      if (this.#options.settings().blocks.memory.revision !== expectedRevision) fail(409, "memory_revision_conflict", "记忆设置已更新，请刷新后重试。");
+      const current = this.#options.memory();
+      const candidate = { ...current, knowledgeGuidanceEnabled: enabled };
+      this.#options.validateMemory?.(candidate);
+      const saved = await this.#options.harness.commit(async (tx) => {
+        const settings = await tx.doc(KuloSettingsDoc);
+        applySettingsBlockUpdate(settings, "memory", expectedRevision, candidate);
+        return clone(settings) as KuloDurableSettings;
+      }, ctx);
+      await this.#options.applied(saved);
+    });
+    return this.snapshot();
+  }
   async prepare(raw: MemoryServicePrepareRequest): Promise<MemoryServiceSnapshot> {
     if (!raw || typeof raw !== "object" || Object.keys(raw).some((key) => !["commandId", "clientId", "expectedRevision", "operation", "model", "connection", "deleteData"].includes(key))) fail(400, "invalid_memory_request", "配置请求无效，凭据请使用保密输入。");
     const id = identifier(raw.commandId, "操作标识"), clientId = identifier(raw.clientId, "客户端");

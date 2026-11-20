@@ -4,6 +4,83 @@ import type {
   TicketEnvBinding,
   TicketRecord,
 } from "@kulo/protocol";
+import { namedDispatchDevices } from "./agent-routing.js";
+
+const EXPLICIT_SENDER_DEICTIC_PATTERNS: readonly RegExp[] = [
+  /这台(?:电脑|设备|机器|笔记本)|我(?:的)?(?:电脑|笔记本|机器)|我电脑上|当前(?:电脑|设备|机器)/,
+  /\b(?:this|my)\s+(?:computer|machine|laptop|mac|pc|device)\b/i,
+];
+
+export function hasExplicitSenderReference(text: string | undefined): boolean {
+  if (!text || !text.trim()) return false;
+  return EXPLICIT_SENDER_DEICTIC_PATTERNS.some((re) => re.test(text));
+}
+
+export interface PriorUserDeviceTurn {
+  text?: string;
+  targetDeviceId?: string;
+  sourceDeviceId?: string;
+}
+
+export interface NamedOrContextualEnvResolution {
+  envId: string;
+  source: "current" | "context";
+}
+
+/**
+ * Resolve an explicitly user-named device from the current user turn, or carry over
+ * the most recently established device target from prior turns in the same conversation
+ * when the model explicitly passes `proposedEnvId` and the user has not pivoted back
+ * to the sender machine or another device.
+ */
+export function resolveNamedOrContextualEnv(input: {
+  currentText?: string;
+  priorUserTurns?: readonly PriorUserDeviceTurn[];
+  envs: readonly EnvNodeDescriptor[];
+  proposedEnvId?: string;
+  isRecovery?: boolean;
+}): NamedOrContextualEnvResolution | undefined {
+  if (input.isRecovery) return undefined;
+  const { currentText, priorUserTurns = [], envs, proposedEnvId } = input;
+  const currentNamed = namedDispatchDevices(currentText, envs);
+  const currentUnambiguous = [
+    ...new Set(currentNamed.filter((ids) => ids.length === 1).map((ids) => ids[0]!)),
+  ];
+  const currentExplicitSender = hasExplicitSenderReference(currentText);
+
+  if (proposedEnvId) {
+    if (currentUnambiguous.includes(proposedEnvId)) {
+      return { envId: proposedEnvId, source: "current" };
+    }
+    if (currentUnambiguous.length > 0) return undefined;
+    if (currentExplicitSender) return undefined;
+    for (const turn of priorUserTurns) {
+      if (turn.targetDeviceId) {
+        return turn.targetDeviceId === proposedEnvId
+          ? { envId: proposedEnvId, source: "context" }
+          : undefined;
+      }
+      const priorNamed = namedDispatchDevices(turn.text, envs);
+      const priorUnambiguous = [
+        ...new Set(priorNamed.filter((ids) => ids.length === 1).map((ids) => ids[0]!)),
+      ];
+      if (priorUnambiguous.length > 0) {
+        return priorUnambiguous.includes(proposedEnvId)
+          ? { envId: proposedEnvId, source: "context" }
+          : undefined;
+      }
+      if (hasExplicitSenderReference(turn.text) && turn.sourceDeviceId && turn.sourceDeviceId !== proposedEnvId) {
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+
+  if (currentUnambiguous.length === 1 && !currentExplicitSender) {
+    return { envId: currentUnambiguous[0]!, source: "current" };
+  }
+  return undefined;
+}
 
 const LOCAL_PATH_PATTERNS: readonly RegExp[] = [
   /(?:^|[\s"'`(])~[/\\]/,

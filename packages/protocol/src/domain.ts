@@ -517,6 +517,7 @@ export interface MemoryBanksConfig {
 export interface HindsightMemoryConfig {
   accessMode?: "kulo" | "scoped" | "private-only";
   enabled: boolean;
+  knowledgeGuidanceEnabled?: boolean;
   endpoint: string;
   endpoints: string[];
   caCertPem: string;
@@ -569,6 +570,7 @@ export interface PresentationConfig {
 }
 
 export type CompletedTaskDisplayHours = 1 | 3 | 6 | null;
+export type HostActionPermission = "ask" | "always";
 
 export interface ExecutorSlotsConfig {
   maxConcurrentWorkers: number;
@@ -578,6 +580,7 @@ export interface ExecutorSlotsConfig {
   completedTaskDisplayHours?: CompletedTaskDisplayHours;
   autoArchiveEnabled?: boolean;
   autoArchiveDays?: number;
+  hostActionPermission?: HostActionPermission;
 }
 
 export type ModelModality = "text" | "image" | "audio" | "video" | "pdf";

@@ -105,28 +105,98 @@ function unquotedText(text: string, names: readonly { text: string }[]): string 
     });
 }
 
+const DEVICE_MODEL_PATTERNS: readonly { pattern: RegExp; variants: readonly string[] }[] = [
+  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*mini(?:[^a-z0-9]|$)/i, variants: ["Macmini", "Mac mini", "Mac-mini"] },
+  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*studio(?:[^a-z0-9]|$)/i, variants: ["MacStudio", "Mac Studio", "Mac-Studio"] },
+  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*pro(?:[^a-z0-9]|$)/i, variants: ["MacPro", "Mac Pro", "Mac-Pro"] },
+  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*book\s*[-_]?\s*pro(?:[^a-z0-9]|$)/i, variants: ["MacBookPro", "MacBook Pro", "MacBook-Pro", "MacBook"] },
+  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*book\s*[-_]?\s*air(?:[^a-z0-9]|$)/i, variants: ["MacBookAir", "MacBook Air", "MacBook-Air", "MacBook"] },
+  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*book(?:[^a-z0-9]|$)/i, variants: ["MacBook"] },
+  { pattern: /(?:^|[^a-z0-9])imac(?:[^a-z0-9]|$)/i, variants: ["iMac"] },
+];
+
+function expandDeviceNameVariants(raw: string): string[] {
+  const normalized = raw.normalize("NFKC").trim();
+  if (!validName(normalized)) return [];
+  const seeds = new Set<string>([normalized]);
+  const wrappedLocal = /^Local\s*\(([^()]+)\)$/i.exec(normalized)?.[1]?.trim();
+  if (wrappedLocal && validName(wrappedLocal)) seeds.add(wrappedLocal);
+  for (const seed of [...seeds]) {
+    const stripped = seed.replace(/\.(?:local|lan|home\.arpa)\.?$/i, "").trim();
+    if (stripped && stripped !== seed && validName(stripped)) seeds.add(stripped);
+  }
+  const results = new Set<string>();
+  for (const seed of seeds) {
+    results.add(seed);
+    if (/^[A-Za-z0-9._\-\s]+$/.test(seed)) {
+      const spaced = seed.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+      if (spaced.length >= 3 && validName(spaced)) {
+        results.add(spaced);
+        const hyphenated = spaced.replace(/\s+/g, "-");
+        if (hyphenated !== spaced && validName(hyphenated)) results.add(hyphenated);
+      }
+      const compact = seed.replace(/[\s_-]+/g, "");
+      if (compact.length >= 3 && validName(compact)) results.add(compact);
+    }
+    for (const model of DEVICE_MODEL_PATTERNS) {
+      if (model.pattern.test(seed)) {
+        for (const variant of model.variants) results.add(variant);
+      }
+    }
+  }
+  return [...results];
+}
+
+function deviceAliases(envs: readonly EnvNodeDescriptor[]): Alias[] {
+  const aliases = new Map<string, Alias>();
+  const register = (name: string, deviceId: string) => {
+    if (!validName(name)) return;
+    const key = canonical(name);
+    const alias = aliases.get(key) ?? { text: name.normalize("NFKC"), ids: [] };
+    if (!alias.ids.includes(deviceId)) alias.ids.push(deviceId);
+    aliases.set(key, alias);
+  };
+  for (const device of envs) {
+    const rawNames: string[] = [];
+    if (device.name && !(device.id === "local" && canonical(device.name) === "local")) rawNames.push(device.name);
+    if (device.info?.hostname) rawNames.push(device.info.hostname);
+    if (device.id !== "local") rawNames.push(device.id);
+    if (device.id === "local") rawNames.push("主脑", "Hub");
+    for (const raw of rawNames) {
+      for (const variant of expandDeviceNameVariants(raw)) {
+        if (device.id === "local" && canonical(variant) === "local") continue;
+        register(variant, device.id);
+      }
+    }
+  }
+  return [...aliases.values()].sort((a, b) => b.text.length - a.text.length);
+}
+
 /** Match explicit device placement in the original message, including overlapping device names. */
 export function namedDispatchDevices(text: string | undefined, envs: readonly EnvNodeDescriptor[]): string[][] {
   if (!text) return [];
-  const aliases = new Map<string, Alias>();
-  for (const device of envs) {
-    for (const name of [device.name, device.id, ...(device.id === "local" ? ["主脑", "Hub"] : [])]) {
-      if (!validName(name)) continue;
-      const key = canonical(name);
-      const alias = aliases.get(key) ?? { text: name.normalize("NFKC"), ids: [] };
-      if (!alias.ids.includes(device.id)) alias.ids.push(device.id);
-      aliases.set(key, alias);
-    }
-  }
-  const names = [...aliases.values()].sort((a, b) => b.text.length - a.text.length);
+  const names = deviceAliases(envs);
+  if (!names.length) return [];
   const source = unquotedText(text.normalize("NFKC"), names);
   const targets = namesIn(source, names).filter(({ alias, start, end }) => {
     const clause = source.slice(0, start).split(/[。.!！？?；;，,\n]/).at(-1)!;
     const after = source.slice(end);
-    return alias.ids.length > 0 && !/(?:不要|别|不用|无需|禁止|避免|例如|假设)|\b(?:not|never|avoid|without|if|example)\b/i.test(clause) &&
-      !/^\s*(?:[上里中]\s*)?(?:请勿|请不要|不要|别|不用|无需|禁止|避免|do not\b|don't\b|must not\b)/i.test(after) &&
-      (/(?:在|到|去|用|通过|让|交给)\s*(?:设备\s*)?$|\b(?:on|using|to|use)\s+(?:(?:my|your|the)\s+)?$/i.test(clause) ||
-        /^\s*(?:请|帮我|麻烦)?\s*$/.test(clause) && /^\s*[上里中]/.test(after));
+    if (alias.ids.length === 0) return false;
+    if (/(?:不要|别|不用|无需|不必|不能|不得|禁止|避免|不是|除了|例如|假设|如果|假如)|\b(?:not|never|avoid|without|except|instead\s+of|if|example)\b/i.test(clause)) {
+      return false;
+    }
+    if (/^\s*(?:(?:本机|本地|上|里|中)\s*)?(?:请勿|请不要|不要|别|不用|无需|禁止|避免|do not\b|don't\b|must not\b)/i.test(after)) {
+      return false;
+    }
+    const precededByPreposition =
+      /(?:在|到|去|用|通过|让|交给|给|把|将|对|向|从)\s*(?:设备\s*)?$|\b(?:on|using|to|use|in|at|for|from|of)\s+(?:(?:my|your|the)\s+)?$/i.test(clause);
+    const precededByAction =
+      /(?:检查|查看|看看|看下|看一看|排查|确认|检测|查询|查一下|查下|修改|更改|调整|配置|设置|更新|安装|卸载|删除|删掉|清理|清除|移除|启动|停止|重启|关闭|打开|操作|运行|执行|测试|登录|连接|同步|备份)(?:一下|下|看看)?\s*(?:设备\s*)?$/i.test(clause) ||
+      /\b(?:check|inspect|verify|configure|config|update|edit|modify|change|install|uninstall|remove|delete|clean|restart|reboot|start|stop|run|test|access|open|sync)\s+(?:(?:if|whether)\s+)?(?:(?:my|your|the)\s+)?$/i.test(clause);
+    const followedByDeviceScope =
+      /^\s*(?:本机|本地|电脑|机器|主机|主脑|节点|设备|终端|系统|环境|桌面|目录|文件|端口|服务|配置|设置|上|里|中|的)/.test(after) ||
+      /^(?:['’]s\b|\s+(?:local|machine|host|computer|device|config|settings|system|environment|files?|directories?|folders?)\b)/i.test(after);
+    return precededByPreposition || precededByAction || followedByDeviceScope;
   });
   return targets.map(({ alias }) => alias.ids);
 }
@@ -184,8 +254,12 @@ export function extractAgentDispatchIntent(text: string, roles: Roles, envs: rea
     if (!match.at && !direct && (!verb || between.length > 120 || /(?:介绍|解释|比较|对比)|\b(?:explain|compare)\b/i.test(between))) continue;
     if (!/[A-Za-z0-9_-]/.test(match.alias.text.at(-1)!) && /^[\p{L}]/u.test(after) && !/^(?:在|于|从|到|来|去|帮|负责|写|修|做|检|审|查|设|研|调|实|开|处|排|测|接|协|完|跑|执|和|与|或|以及)/.test(after)) continue;
     const devicePrefix = clause || before.slice(-120);
-    const devices = envs.filter(env => [env.id, env.name].some(name => validName(name) && new RegExp(`${/^[A-Za-z0-9_-]/.test(name) ? "(?<![A-Za-z0-9_-])" : ""}${escaped(name.normalize("NFKC"))}${/[A-Za-z0-9_-]$/.test(name) ? "(?![A-Za-z0-9_-])" : ""}`, "iu").test(devicePrefix)));
-    const namedEnv = devices.length === 1 ? devices[0]!.id : undefined;
+    const devicePool = deviceAliases(envs);
+    const matchedDeviceIds = new Set<string>();
+    for (const item of namesIn(devicePrefix, devicePool)) {
+      for (const id of item.alias.ids) matchedDeviceIds.add(id);
+    }
+    const namedEnv = matchedDeviceIds.size === 1 ? [...matchedDeviceIds][0] : undefined;
     let ids = match.alias.ids;
     if (match.alias.internal) ids = ["coder"];
     else if (match.at && ownRole(roles, match.alias.text)) ids = [match.alias.text];

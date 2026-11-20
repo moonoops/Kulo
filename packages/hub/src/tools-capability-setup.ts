@@ -51,11 +51,14 @@ export function createCapabilitySetupExtension(get: () => SetupHost) {
       },
     };
   };
-  const skillUndo = async (id: string, expectedRevision: number, commandId: string): Promise<WorkspaceUndoSupport> => {
+  const skillUndo = async (id: string, expectedRevision: number, commandId: string): Promise<WorkspaceUndoSupport | undefined> => {
     const remembered = (await get().harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT))?.actions.find((item) => item.view.id === commandId)?.workspaceUndoBefore;
     const snapshot = await get().skills.snapshot();
     const skill = snapshot.skills.find((item) => item.id === id);
-    if (!(remembered?.kind === "skill" && remembered.id === id) && (!skill || snapshot.revision !== expectedRevision)) throw new Error("Skill 目录已更新，请重新读取后修改。");
+    if (!(remembered?.kind === "skill" && remembered.id === id)) {
+      if (snapshot.revision !== expectedRevision) throw new Error("Skill 目录已更新，请重新读取后修改。");
+      if (!skill) return undefined;
+    }
     return {
       before: remembered?.kind === "skill" && remembered.id === id ? remembered : { kind: "skill", id, enabled: skill!.enabled, version: skill!.version, audiences: [...skill!.audiences], catalogRevision: snapshot.revision },
       complete: async (before, value) => {
@@ -98,7 +101,7 @@ export function createCapabilitySetupExtension(get: () => SetupHost) {
     name: "kulo-capability-setup",
     sections: [section("kulo_capability_setup", async () => {
       await context();
-      return get().skills.read("capability-setup", "SKILL.md", "settings");
+      return get().skills.readSystemGuide("capability-setup");
     }, { tag: false })],
     tools: [
       defineTool({ name: "kulo_capabilities_read", description: "Read configured media capabilities, service connections, Skills, active browser/secret input requests, connected devices, projects, and reusable API-key `credentialProviders` (never returns secrets; call before modifying).", parameters: obj({}), replay: "safe", execute: async (_args, api, ctx) => {

@@ -21,6 +21,7 @@ import type { BrowserRequest, BrowserResult, CapabilitiesWorkspaceSnapshot } fro
 import type { VoiceSnapshot } from "./voice.js";
 import type { ComputerUseRequest, ComputerUseResult } from "./computer-use.js";
 import type { ComputerPreviewTarget, ComputerPreviewUpdate } from "./computer-preview.js";
+import type { HostActionRequest, HostActionResult } from "./host-actions.js";
 
 // ============================================================================
 // Client <-> Hub WebSocket Protocol (/ws/client)
@@ -226,6 +227,7 @@ export type EnvToHubControlMessage =
   | { type: "env.notification_classify"; request: import("./android-notifications.js").AndroidNotificationClassification }
   | { type: "env.notification_cancel"; requestId: string; bindingId: string }
   | { type: "env.computer_result"; requestId: string; result?: ComputerUseResult; error?: string }
+  | { type: "env.host_action_result"; requestId: string; result?: HostActionResult; error?: string }
   | { type: "env.browser_result"; requestId: string; result?: BrowserResult; error?: string }
   | {
       type: "env.project_result";
@@ -288,6 +290,8 @@ export type HubToEnvControlMessage =
   | { type: "hub.notification_decision"; result: import("./android-notifications.js").AndroidNotificationClassificationResult }
   | { type: "hub.computer_request"; requestId: string; request: ComputerUseRequest }
   | { type: "hub.computer_cancel"; requestId: string }
+  | { type: "hub.host_action_request"; requestId: string; request: HostActionRequest }
+  | { type: "hub.host_action_cancel"; requestId: string }
   | { type: "hub.browser_request"; requestId: string; request: BrowserRequest }
   | { type: "hub.project_request"; requestId: string; request: ProjectEnvRequest }
   | {

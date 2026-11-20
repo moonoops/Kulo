@@ -99,6 +99,12 @@ describe("capability workspace", () => {
     expect(html).toContain("书房 Mac");
     expect(html).toContain('aria-label="视频连接列表"');
     expect(html).toContain("待连接");
+    expect(html).not.toContain("chip--accent");
+    const primaryCell = html.match(/<td[^>]*kulo-settings-table-primary[^>]*>[\s\S]*?<\/td>/)?.[0] ?? "";
+    const statusCell = html.match(/<td[^>]*kulo-settings-table-status[^>]*>[\s\S]*?<\/td>/)?.[0] ?? "";
+    expect(primaryCell).toContain("Flow 视频");
+    expect(primaryCell).not.toContain("默认");
+    expect(statusCell).toContain("默认");
     expect(html).not.toContain("API Key");
   });
 
@@ -114,15 +120,18 @@ describe("capability workspace", () => {
     expect(failed).toContain("产品图片");
   });
 
-  it("orders the seven tabs and keeps Colab as a placeholder", () => {
+  it("orders the eight tabs, includes Computer Use, and keeps Colab as a placeholder", () => {
     const html = renderWorkspace(snapshot, undefined, "colab");
-    const positions = ["图像", "语音", "视频", "搜索", "技能", "Colab", "其他"].map((label) => html.indexOf(`>${label}<`));
+    const positions = ["图像", "语音", "视频", "搜索", "电脑操控", "技能", "Colab", "其他"].map((label) => html.indexOf(`>${label}<`));
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
     expect(html).toContain("Colab CLI");
     expect(html).toContain("暂未开放");
     expect(html).not.toContain("添加图像模型");
     expect(html).not.toContain("连接 Google Flow");
+    const computerHtml = renderWorkspace({ ...snapshot, computerUse: { browserEnabled: true, desktopEnabled: false } }, undefined, "computer");
+    expect(computerHtml).toContain("浏览器操控");
+    expect(computerHtml).toContain("桌面操控");
   });
 
   it("separates image and video records and routes a selected video to its panel", () => {

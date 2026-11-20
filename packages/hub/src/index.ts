@@ -97,6 +97,15 @@ export {
 export {
   canSwitchEnvDuringRecovery,
   detectSenderLocalSignals,
+  hasExplicitSenderReference,
   hasWorkerIsolation,
   resolveComputerEnvBinding,
+  resolveNamedOrContextualEnv,
+  type NamedOrContextualEnvResolution,
+  type PriorUserDeviceTurn,
 } from "./env-routing-policy.js";
+export { namedDispatchDevices } from "./agent-routing.js";
+export {
+  BILLION_CONTEXT_KERNEL_VERSION,
+  inspectBundledBillionContextPackage,
+} from "./extension-packages.js";

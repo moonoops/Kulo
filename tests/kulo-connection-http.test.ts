@@ -45,13 +45,14 @@ async function fixture() {
       authToken: HUB_TEST_ADMIN_TOKEN, envTokens: { "test-node": nodeToken }, workerEnvIds: ["test-node"], memory: { enabled: false }, watchdogMinutes: 0,
       model: { defaultProvider: "connections-http", defaultModel: "test", thinkingLevel: "off", apiKey: "" } } });
   resources.push(() => hub.close());
-  const server = await startKuloHubServer(hub, { host: "127.0.0.1", port: 0 });
+  const openNativePermissionSettings = vi.fn(async () => {});
+  const server = await startKuloHubServer(hub, { host: "127.0.0.1", port: 0, openNativePermissionSettings });
   resources.push(() => server.close());
-  const request = (endpoint: string, method = "GET", body?: unknown, token: string | null = HUB_TEST_ADMIN_TOKEN) => fetch(`${server.url}${endpoint}`, {
-    method, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
+  const request = (endpoint: string, method = "GET", body?: unknown, token: string | null = HUB_TEST_ADMIN_TOKEN, extraHeaders?: Record<string, string>) => fetch(`${server.url}${endpoint}`, {
+    method, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...extraHeaders },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
-  return { request, manager, vault, executor, hub, applications };
+  return { request, manager, vault, executor, hub, applications, openNativePermissionSettings, url: server.url };
 }
 
 describe("connection authorization HTTP boundary", () => {
@@ -196,5 +197,36 @@ describe("connection authorization HTTP boundary", () => {
     expect((await tested.json() as { connection: ConnectionRecordView }).connection.status).toBe("verified");
     expect(f.executor.execute).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(await (await f.request("/api/connections")).json())).not.toContain(key);
+  });
+
+  it("forwards native permission error codes and gates local permission settings opening", async () => {
+    const f = await fixture();
+    const localSnapshot = await (await f.request("/api/connections")).json() as ConnectionWorkspaceSnapshot;
+    expect(localSnapshot.localHost).toBe(true);
+    const forwardedSnapshot = await (await f.request("/api/connections", "GET", undefined, HUB_TEST_ADMIN_TOKEN, { "x-forwarded-for": "198.51.100.10" })).json() as ConnectionWorkspaceSnapshot;
+    expect(forwardedSnapshot.localHost).toBe(false);
+
+    const prepared = await f.request("/api/connections/prepare", "POST", { clientId: "perm-tab", category: "app", appId: "messages" });
+    const input = await prepared.json() as ConnectionSetupInput;
+    vi.mocked(f.applications.probe).mockRejectedValueOnce(Object.assign(new Error("无法读取信息数据库。"), { code: "connection_messages_full_disk_access_required", status: 409 }));
+    const failed = await f.request(`/api/connections/inputs/${input.id}/submit`, "POST", { clientId: "perm-tab", name: "信息", kind: "app", category: "app", appId: "messages" });
+    expect(failed.status).toBe(409);
+    expect(await failed.json()).toEqual({ error: "无法读取信息数据库。", code: "connection_messages_full_disk_access_required" });
+
+    expect((await f.request("/api/connections/permission-settings", "POST", { kind: "full-disk-access" }, null)).status).toBe(401);
+    expect((await f.request("/api/connections/permission-settings", "GET")).status).toBe(405);
+    expect((await f.request("/api/connections/permission-settings", "POST", { kind: "full-disk-access" }, HUB_TEST_ADMIN_TOKEN, { Origin: "https://evil.example" })).status).toBe(403);
+    const remote = await f.request("/api/connections/permission-settings", "POST", { kind: "full-disk-access" }, HUB_TEST_ADMIN_TOKEN, { "x-forwarded-for": "198.51.100.10" });
+    expect(remote.status).toBe(403);
+    expect(await remote.json()).toMatchObject({ code: "connection_permission_settings_remote" });
+    expect((await f.request("/api/connections/permission-settings", "POST", { kind: "microphone" })).status).toBe(400);
+    expect((await f.request("/api/connections/permission-settings", "POST", { kind: "automation", extra: true })).status).toBe(400);
+    expect(f.openNativePermissionSettings).not.toHaveBeenCalled();
+
+    const okFullDisk = await f.request("/api/connections/permission-settings", "POST", { kind: "full-disk-access" }, HUB_TEST_ADMIN_TOKEN, { Origin: f.url });
+    expect(okFullDisk.status).toBe(200);
+    const okAutomation = await f.request("/api/connections/permission-settings", "POST", { kind: "automation" }, HUB_TEST_ADMIN_TOKEN, { Origin: f.url });
+    expect(okAutomation.status).toBe(200);
+    expect(f.openNativePermissionSettings.mock.calls).toEqual([["full-disk-access"], ["automation"]]);
   });
 });

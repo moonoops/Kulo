@@ -23,6 +23,7 @@ export * from "./image-setup.js";
 export * from "./personality.js";
 export * from "./memory-service.js";
 export * from "./computer-use.js";
+export * from "./host-actions.js";
 export * from "./system-permissions.js";
 export * from "./computer-preview.js";
 export * from "./connections.js";

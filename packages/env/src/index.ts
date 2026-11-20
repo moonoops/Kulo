@@ -5,7 +5,8 @@ export { activateStagedPeer, localPeerProof, localPeerProxyToken, stageDevicePee
 export { FlowBrowserService, flowBrowserExecutable, type FlowBrowserDriver, type FlowBrowserServiceOptions } from "./browser.js";
 export { KuloEnvAgent, type KuloEnvAgentOptions } from "./agent.js";
 export { ComputerUseService, computerUseConfiguration } from "./computer-use.js";
-export { buildWorkerSandboxProfile, canonicalExecutionPath, createWorkerSandbox, defaultProtectedPaths, discoverGitWriteDeniedPaths, isApplicationPrivatePath, type WorkerExecutionOptions, type WorkerNetworkPolicy } from "./isolation.js";
+export { HostActionService, expandHostPath, validateHostMaintenanceCommands } from "./host-actions.js";
+export { buildHostMaintenanceSandboxProfile, buildWorkerSandboxProfile, canonicalExecutionPath, createWorkerSandbox, defaultProtectedPaths, discoverGitWriteDeniedPaths, isApplicationPrivatePath, type WorkerExecutionOptions, type WorkerNetworkPolicy } from "./isolation.js";
 export { buildLinuxSandboxArguments, isRestrictedLinuxProxyAddress } from "./isolation-linux.js";
 export { buildWindowsSandboxPolicy } from "./isolation-windows.js";
 export { createMacSandboxCleanupCommand } from "./isolation-macos.js";

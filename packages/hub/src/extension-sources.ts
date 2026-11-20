@@ -84,7 +84,7 @@ export async function analyzeExtensionSource(raw: string, options: { signal?: Ab
   const builtin = source.kind === "github" ? BUILTIN_REPOSITORIES.has(`${source.owner}/${source.name}`.toLowerCase()) : BUILTIN_PACKAGES.has(source.name);
   if (builtin) return { sourceUrl: source.url, name: "Billion Context 上下文压缩", route: "builtin", compatibility: "ready", installable: true,
     extensionId: "billion-context", version: options.builtinVersion,
-    reasons: ["使用已验证的 Kulo 内核适配包，保留 Pi Durable 会话和压缩提交机制。", "安装后保持关闭，可在“其他”中启用。"] };
+    reasons: ["使用已验证的 Kulo 内置内核适配包，保留 Pi Durable 会话和压缩提交机制。", "出厂默认预装并保持关闭，可在“其他”中直接启用。"] };
   let manifest: Record<string, unknown> | undefined, metadata: Record<string, unknown> | undefined;
   try {
     if (source.kind === "npm") {

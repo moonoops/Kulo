@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultRolePresets, type MemoryServiceJob, type MemoryServiceSecretInput, type MemoryServiceSnapshot, type KuloSettingsView } from "@kulo/protocol";
 import { kuloRest } from "../../kulo-api";
 import { createMemoryServiceRequest, decideMemoryServiceJob, initialMemoryServiceDraft, MemoryServiceForm, MemoryServiceJobCard, submitMemoryServiceSecret, type MemoryServiceDraft } from "./memory-service-dialogue";
-import { acknowledgeMemoryEnabled, createMemoryConnectionRequest, memoryConnectionDirty, memoryConnectionEditor, MemoryConnectionForm, reconcileMemoryConnection, setSavedMemoryEnabled } from "./memory-service-panel";
+import { acknowledgeMemoryEnabled, createMemoryConnectionRequest, memoryConnectionDirty, memoryConnectionEditor, MemoryConnectionForm, reconcileMemoryConnection, setSavedMemoryEnabled, setSavedMemoryKnowledgeGuidance } from "./memory-service-panel";
 import { isMemoryDialogueOperation } from "./memory-service-events";
 
 const connection = { enabled: false, endpoint: "http://127.0.0.1:8888", endpoints: [], caCertPem: "", routerApiKeyEnv: "", workerApiKeyEnv: "", authFile: "", autoAttachTopLevelRouters: false, banks: { private: "kulo-core", shared: "kulo-shared" } };
@@ -45,8 +45,11 @@ describe("memory service approval and private input", () => {
     expect(html).toContain("上次连接失败");
     expect(html.indexOf('aria-label="测试连接"')).toBeLessThan(html.indexOf("上次连接失败"));
     const inputs = html.match(/<input\b[^>]*>/g) ?? [];
-    expect(inputs).toHaveLength(6);
-    for (const input of inputs) expect(input).not.toContain("disabled");
+    expect(inputs).toHaveLength(7);
+    for (const input of inputs) {
+      if (input.includes('aria-label="启用知识整理指引"')) expect(input).toContain("disabled");
+      else expect(input).not.toContain("disabled");
+    }
     const button = html.match(/<button\b[^>]*aria-label="测试连接"[^>]*>/)?.[0];
     expect(button).toContain('data-pending="true"');
     expect(button).not.toMatch(/\sdisabled=/);
@@ -204,6 +207,35 @@ describe("memory service approval and private input", () => {
     expect(enabledSwitch).not.toContain("disabled");
     expect(enabled).toContain("验证并保存");
     expect(enabled).toContain("连接配置未保存");
+    const knowledgeOff = empty.match(/<input\b[^>]*aria-label="启用知识整理指引"[^>]*>/)?.[0];
+    expect(knowledgeOff).toContain("disabled");
+    expect(knowledgeOff).not.toContain("checked");
+    const savedKnowledge = { ...settings, blocks: { ...settings.blocks, memory: { ...settings.blocks.memory, value: { ...connection, enabled: true, knowledgeGuidanceEnabled: true } } } };
+    const withKnowledge = renderToStaticMarkup(
+      <MemoryConnectionForm
+        settings={savedKnowledge}
+        snapshot={{ ...snapshot, connection: savedKnowledge.blocks.memory.value }}
+        editor={memoryConnectionEditor(savedKnowledge.blocks.memory)}
+        onChange={() => {}}
+        onEnabledChange={() => {}}
+        onKnowledgeGuidanceChange={() => {}}
+        onSave={() => {}}
+        onProbe={() => {}}
+        onDiscard={() => {}}
+        onReload={() => {}}
+      />,
+    );
+    const knowledgeOn = withKnowledge.match(/<input\b[^>]*aria-label="启用知识整理指引"[^>]*>/)?.[0];
+    expect(knowledgeOn).toContain("checked");
+    expect(knowledgeOn).not.toContain("disabled");
+  });
+
+  it("toggles the independent knowledge guidance switch via its dedicated endpoint", async () => {
+    const service = { ...snapshot, revision: 2, connection: { ...connection, enabled: true, knowledgeGuidanceEnabled: true } };
+    const toggle = vi.spyOn(kuloRest, "setMemoryKnowledgeGuidance").mockResolvedValue(service);
+    const result = await setSavedMemoryKnowledgeGuidance(settings.blocks.memory, true);
+    expect(toggle).toHaveBeenCalledExactlyOnceWith({ enabled: true, expectedRevision: 1 });
+    expect(result.connection.knowledgeGuidanceEnabled).toBe(true);
   });
 
   it("toggles only the saved connection and rebases without submitting or clearing complex drafts", async () => {

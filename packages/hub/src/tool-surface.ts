@@ -32,6 +32,8 @@ export interface ToolSurfaceRuntimeState {
   webSearchAvailable: boolean;
   customizationEnabled: boolean;
   deviceInviteAvailable: boolean;
+  computerUseBrowserEnabled?: boolean;
+  computerUseDesktopEnabled?: boolean;
   readOnly?: boolean;
   allowSubagents?: boolean;
   settingsModule?: SettingsAssistantModule;
@@ -277,12 +279,14 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     audiences: ["chat", ...ALL_COMPUTER_WORKERS],
     tier: "deferred",
     scope: "global",
+    requires: (s) => s.computerUseBrowserEnabled !== false,
   },
   {
     name: "kulo_desktop",
     audiences: ALL_COMPUTER_WORKERS,
     tier: "deferred",
     scope: "global",
+    requires: (s) => s.computerUseDesktopEnabled !== false,
   },
 
   // 5. UI Cards & Artifact Publication
@@ -316,7 +320,7 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
   // 6. Skills
   {
     name: "kulo_skill_read",
-    audiences: CHAT_SETTINGS_COMPUTER,
+    audiences: [...CHAT_SETTINGS_COMPUTER, ...ALL_ANDROID_WORKERS],
     tier: "resident",
     scope: "global",
   },
@@ -363,6 +367,12 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
   },
 
   // 9. Connections
+  {
+    name: "kulo_host_action",
+    audiences: ["chat", ...ALL_COMPUTER_WORKERS],
+    tier: "deferred",
+    scope: "global",
+  },
   {
     name: "kulo_connections",
     audiences: CHAT_SETTINGS_COMPUTER,
@@ -542,6 +552,19 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
       s.audience === "settings" && s.settingsModule === "appearance" ? "resident" : "deferred",
     scope: "global",
   },
+  ...[
+    "kulo_memory_service_read",
+    "kulo_memory_service_prepare",
+  ].map(
+    (name): ToolSurfaceEntry => ({
+      name,
+      audiences: ALL_ORCHESTRATOR,
+      tier: "deferred",
+      tierFor: (s) =>
+        s.audience === "settings" && s.settingsModule === "identity" ? "resident" : "deferred",
+      scope: "global",
+    }),
+  ),
 
   // 14. Window-Scoped Settings Tools (`scope: "window"`, strictly forbidden outside `settings`)
   {
@@ -612,18 +635,6 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
       tier: name === "kulo_capabilities_read" || name === "kulo_capability_configure" || name === "kulo_image_draft" ? "resident" : "deferred",
       scope: "window",
       windowGuard: (s) => s.settingsModule === "capabilities",
-    }),
-  ),
-  ...[
-    "kulo_memory_service_read",
-    "kulo_memory_service_prepare",
-  ].map(
-    (name): ToolSurfaceEntry => ({
-      name,
-      audiences: ["settings"],
-      tier: "resident",
-      scope: "window",
-      windowGuard: (s) => s.settingsModule === "identity",
     }),
   ),
   {

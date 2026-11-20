@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -7,6 +9,7 @@ import { createHost, defineFacet, openStore, sqliteBackend } from "@earendil-wor
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { buildFacet, discoverPlugins, evaluateFacet } from "@earendil-works/chord/plugins";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
+import { redactSecrets } from "@kulo/protocol";
 
 export const BILLION_CONTEXT_KERNEL_VERSION = "0.0.101";
 export const BILLION_CONTEXT_ADAPTER_VERSION = "0.1.0";
@@ -35,17 +38,23 @@ export interface ExtensionPackageInfo {
   digest: string;
   kernelDigest: string;
   installedAt: number;
+  bundled?: boolean;
 }
 export interface ExtensionPackageInstallOptions {
   stateDir: string;
   signal?: AbortSignal;
   npmCommand?: readonly string[];
+  bundledKernelDir?: string | null;
 }
 export interface LoadedBillionContextPackage {
   info: ExtensionPackageInfo;
   kernel: Readonly<Record<string, unknown>>;
   close(): Promise<void>;
 }
+
+const MAX_KERNEL_BYTES = 16 * 1024 * 1024;
+const MAX_KERNEL_FILES = 1000;
+const DIAGNOSTIC_TAIL_CHARS = 16 * 1024;
 
 function locations(stateDir: string) {
   const root = path.resolve(stateDir, "extensions", "packages");
@@ -68,6 +77,54 @@ async function packageJson(directory: string): Promise<Record<string, unknown>> 
   const value: unknown = JSON.parse(await fs.readFile(filename, "utf8"));
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ExtensionPackageError("extension_package_invalid", "扩展版本清单无效。");
   return value as Record<string, unknown>;
+}
+
+export async function resolveBundledBillionContextKernel(): Promise<string | null> {
+  let candidate: string | null = null;
+  if (typeof import.meta.resolve === "function") {
+    try {
+      const entry = fileURLToPath(import.meta.resolve("acp-kernel"));
+      candidate = path.resolve(path.dirname(entry), "..");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") throw error;
+    }
+  }
+  if (!candidate) {
+    let cursor = path.dirname(fileURLToPath(import.meta.url));
+    for (;;) {
+      const probe = path.join(cursor, "node_modules", "acp-kernel", "package.json");
+      const found = await fs.lstat(probe).then((stat) => stat.isFile() || stat.isSymbolicLink(), () => false);
+      if (found) { candidate = path.dirname(probe); break; }
+      const parent = path.dirname(cursor);
+      if (parent === cursor) break;
+      cursor = parent;
+    }
+  }
+  if (!candidate) return null;
+  let directory: string;
+  try { directory = await fs.realpath(candidate); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+  const stat = await fs.lstat(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
+  let engine: Record<string, unknown>;
+  try { engine = await packageJson(directory); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+  if (engine.name !== "acp-kernel" || engine.version !== BILLION_CONTEXT_KERNEL_VERSION) return null;
+  const entry = await fs.lstat(path.join(directory, "dist", "index.js"))
+    .catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : Promise.reject(error));
+  if (!entry || !entry.isFile() || entry.isSymbolicLink()) return null;
+  return directory;
+}
+
+export async function inspectBundledBillionContextPackage(): Promise<ExtensionPackageInfo | null> {
+  const directory = await resolveBundledBillionContextKernel();
+  if (!directory) return null;
+  return {
+    id: PACKAGE_FOLDER, packageName: "acp-kernel", version: BILLION_CONTEXT_KERNEL_VERSION,
+    adapterVersion: BILLION_CONTEXT_ADAPTER_VERSION, sourceUrl: BILLION_CONTEXT_PACKAGE_SOURCE,
+    directory, digest: "", kernelDigest: "", installedAt: 0, bundled: true,
+  };
 }
 
 export async function inspectBillionContextPackage(stateDir: string): Promise<ExtensionPackageInfo | null> {
@@ -95,14 +152,23 @@ export async function inspectBillionContextPackage(stateDir: string): Promise<Ex
     sourceUrl: BILLION_CONTEXT_PACKAGE_SOURCE, directory: await fs.realpath(directory), digest: record.digest, kernelDigest: record.kernelDigest, installedAt: record.installedAt };
 }
 
+export async function inspectAvailableBillionContextPackage(
+  stateDir: string,
+  options: { includeBundled?: boolean } = {},
+): Promise<ExtensionPackageInfo | null> {
+  const managed = await inspectBillionContextPackage(stateDir);
+  if (managed) return managed;
+  if (options.includeBundled === false) return null;
+  return inspectBundledBillionContextPackage();
+}
+
 const FACET = `import { defineFacet, registerKernel } from "${API_MODULE}";
 import * as kernel from "${KERNEL_MODULE}";
 export default defineFacet(() => { registerKernel(kernel); });\n`;
 
 /** The reviewed facet imports one pinned library; the official loader owns its build and activation. */
-async function kernelDigest(directory: string): Promise<string> {
+async function kernelDigest(root: string): Promise<string> {
   const hash = createHash("sha256");
-  const root = path.join(directory, "node_modules", "acp-kernel");
   let bytes = 0, files = 0;
   const walk = async (folder: string): Promise<void> => {
     for (const name of (await fs.readdir(folder)).sort()) {
@@ -110,7 +176,7 @@ async function kernelDigest(directory: string): Promise<string> {
       if (stat.isSymbolicLink() || !stat.isFile() && !stat.isDirectory()) throw new ExtensionPackageError("extension_package_invalid", "内核包包含不受支持的文件。");
       if (stat.isDirectory()) { await walk(file); continue; }
       bytes += stat.size; files++;
-      if (bytes > 16 * 1024 * 1024 || files > 1000) throw new ExtensionPackageError("extension_package_invalid", "内核包大小超出限制。");
+      if (bytes > MAX_KERNEL_BYTES || files > MAX_KERNEL_FILES) throw new ExtensionPackageError("extension_package_invalid", "内核包大小超出限制。");
       hash.update(path.relative(root, file).split(path.sep).join("/")); hash.update("\0");
       hash.update(await fs.readFile(file)); hash.update("\0");
     }
@@ -119,28 +185,53 @@ async function kernelDigest(directory: string): Promise<string> {
   return hash.digest("hex");
 }
 
-async function loadKernel(directory: string, signal?: AbortSignal, expected?: { kernelDigest: string; digest: string }): Promise<{ kernel: Readonly<Record<string, unknown>>; digest: string; kernelDigest: string; close(): Promise<void> }> {
+async function copyRegularTree(source: string, destination: string): Promise<void> {
+  let bytes = 0, files = 0;
+  const walk = async (from: string, to: string): Promise<void> => {
+    await fs.mkdir(to, { recursive: true, mode: 0o700 });
+    for (const name of (await fs.readdir(from)).sort()) {
+      const src = path.join(from, name), dst = path.join(to, name);
+      const stat = await fs.lstat(src);
+      if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory())) {
+        throw new ExtensionPackageError("extension_package_invalid", "内核包包含不受支持的文件。");
+      }
+      if (stat.isDirectory()) { await walk(src, dst); continue; }
+      bytes += stat.size; files++;
+      if (bytes > MAX_KERNEL_BYTES || files > MAX_KERNEL_FILES) {
+        throw new ExtensionPackageError("extension_package_invalid", "内核包大小超出限制。");
+      }
+      await fs.copyFile(src, dst);
+    }
+  };
+  await walk(source, destination);
+}
+
+async function loadKernelFromDirectories(
+  adapterDirectory: string,
+  kernelDirectory: string,
+  signal?: AbortSignal,
+  expected?: { kernelDigest: string; digest: string },
+): Promise<{ kernel: Readonly<Record<string, unknown>>; digest: string; kernelDigest: string; close(): Promise<void> }> {
   const context = signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT;
-  await regularDirectory(path.join(directory, "node_modules"));
-  await regularDirectory(path.join(directory, "node_modules", "acp-kernel"));
-  const actualKernelDigest = await kernelDigest(directory);
+  await regularDirectory(kernelDirectory);
+  const actualKernelDigest = await kernelDigest(kernelDirectory);
   if (expected !== undefined && actualKernelDigest !== expected.kernelDigest) throw new ExtensionPackageError("extension_integrity_mismatch", "上下文压缩内核内容已改变，请重新安装。");
-  const discovery = await discoverPlugins([path.dirname(directory)], { kinds: ["worker"] }, context);
-  const real = await fs.realpath(directory);
+  const discovery = await discoverPlugins([path.dirname(adapterDirectory)], { kinds: ["worker"] }, context);
+  const real = await fs.realpath(adapterDirectory);
   const plugin = discovery.plugins.find((candidate) => candidate.dir === real);
   if (!plugin || discovery.problems.length) throw new ExtensionPackageError("extension_package_invalid", "扩展入口发现失败。");
   const built = await buildFacet(plugin, "worker", { hostPackages: [API_MODULE, KERNEL_MODULE], platform: "node", api: API, kinds: ["worker"] }, context);
   if (built.kind !== "script") throw new ExtensionPackageError("extension_build_failed", "上下文压缩扩展构建失败。");
   if (expected !== undefined && built.digest !== expected.digest) throw new ExtensionPackageError("extension_integrity_mismatch", "扩展适配器内容已改变，请重新安装。");
   // The published ESM library uses import.meta.url. Loading it as a host package preserves Node's ESM semantics.
-  const module: unknown = await import(pathToFileURL(path.join(directory, "node_modules", "acp-kernel", "dist", "index.js")).href);
+  const module: unknown = await import(pathToFileURL(path.join(kernelDirectory, "dist", "index.js")).href);
   let kernel: Readonly<Record<string, unknown>> | undefined;
   const facet = evaluateFacet(built, { plugin, hostPackages: { [KERNEL_MODULE]: module, [API_MODULE]: { defineFacet, registerKernel: (value: unknown) => {
-      if (kernel || !value || typeof value !== "object" || !["createCore", "createInitialState", "defaultConfig", "collectBlockContent"].every((name) => typeof (value as Record<string, unknown>)[name] === "function")) {
-        throw new ExtensionPackageError("extension_kernel_invalid", "上下文压缩内核接口验证失败。");
-      }
-      kernel = value as Readonly<Record<string, unknown>>;
-    } } } });
+    if (kernel || !value || typeof value !== "object" || !["createCore", "createInitialState", "defaultConfig", "collectBlockContent"].every((name) => typeof (value as Record<string, unknown>)[name] === "function")) {
+      throw new ExtensionPackageError("extension_kernel_invalid", "上下文压缩内核接口验证失败。");
+    }
+    kernel = value as Readonly<Record<string, unknown>>;
+  } } } });
   const store = await openStore(sqliteBackend(await openNodeSqliteDatabase(":memory:")), context);
   const errors: unknown[] = [];
   const host = createHost({ store, onError: (error) => errors.push(error) });
@@ -153,6 +244,11 @@ async function loadKernel(directory: string, signal?: AbortSignal, expected?: { 
   } catch (error) { await close(); throw error; }
 }
 
+async function loadKernel(directory: string, signal?: AbortSignal, expected?: { kernelDigest: string; digest: string }) {
+  await regularDirectory(path.join(directory, "node_modules"));
+  return loadKernelFromDirectories(directory, path.join(directory, "node_modules", "acp-kernel"), signal, expected);
+}
+
 /** Inherited npm/user configuration is deliberately absent from the install process. */
 export function extensionInstallEnvironment(parent: NodeJS.ProcessEnv, home: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
@@ -162,6 +258,80 @@ export function extensionInstallEnvironment(parent: NodeJS.ProcessEnv, home: str
   return { ...env, HOME: home, USERPROFILE: home, NPM_CONFIG_USERCONFIG: path.join(home, "npmrc"), NPM_CONFIG_GLOBALCONFIG: path.join(home, "global-npmrc"),
     NPM_CONFIG_CACHE: path.join(home, "cache"), NPM_CONFIG_IGNORE_SCRIPTS: "true", NPM_CONFIG_AUDIT: "false", NPM_CONFIG_FUND: "false",
     NPM_CONFIG_REGISTRY: "https://registry.npmjs.org/", GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(home, "gitconfig") };
+}
+
+async function isExecutableFile(file: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(file);
+    if (!stat.isFile()) return false;
+    await fs.access(file, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function resolveExtensionNpmCommand(
+  parent: NodeJS.ProcessEnv,
+  explicit?: readonly string[],
+  options: { platform?: NodeJS.Platform; execPath?: string; checkExecutable?: (file: string) => Promise<boolean> } = {},
+): Promise<{ command: readonly string[]; extraPathDirs: string[] }> {
+  if (explicit !== undefined) return { command: explicit, extraPathDirs: [] };
+  const platform = options.platform ?? process.platform;
+  const pathLib = platform === "win32" ? path.win32 : path.posix;
+  const delimiter = platform === "win32" ? ";" : ":";
+  const binary = platform === "win32" ? "npm.cmd" : "npm";
+  const execDir = pathLib.dirname(options.execPath ?? process.execPath);
+  const home = parent.HOME ?? parent.USERPROFILE;
+  const candidates = [
+    ...(parent.PATH ?? "").split(delimiter),
+    execDir,
+    ...(platform === "win32" ? [] : ["/opt/homebrew/bin", "/usr/local/bin", ...(home ? [pathLib.join(home, ".local", "bin")] : [])]),
+  ];
+  const seen = new Set<string>();
+  const check = options.checkExecutable ?? isExecutableFile;
+  for (const dir of candidates) {
+    const trimmed = dir.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    const fullPath = pathLib.join(trimmed, binary);
+    if (await check(fullPath)) {
+      const extraPathDirs = [execDir, trimmed].filter((entry, index, list) => Boolean(entry) && list.indexOf(entry) === index);
+      return { command: [fullPath], extraPathDirs };
+    }
+  }
+  throw new ExtensionPackageError("extension_install_failed", "上下文压缩依赖安装失败：当前运行环境未找到 npm 命令。", 502);
+}
+
+function sanitizeInstallerDiagnostic(text: string): string {
+  return redactSecrets(text)
+    .replace(/\b(https?:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1••••@")
+    .replace(/(\b(?:_?auth[_-]?token|access[_-]?token|token|password|passwd|secret|api[_-]?key)\s*[=:]\s*)[^\s&"']+/gi, "$1••••");
+}
+
+export function summarizeExtensionInstallFailure(code: number | null, stderr: string, stdout = ""): string {
+  const combined = sanitizeInstallerDiagnostic(`${stderr}\n${stdout}`);
+  const suffix = `退出码 ${code ?? "中断"}`;
+  if (/spawn\s+npm\b[^\n]*\bENOENT\b|\bENOENT\b[^\n]*\bnpm\b/i.test(combined)) {
+    return "上下文压缩依赖安装失败：当前运行环境未找到 npm 命令。";
+  }
+  if (/\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|ERR_SOCKET_TIMEOUT|EPROTO)\b|network\s+(?:error|timeout)|fetch failed/i.test(combined)) {
+    return `上下文压缩依赖安装失败：无法连接 npm 源（${suffix}，请检查网络或代理）。`;
+  }
+  if (/\b(?:CERT_[A-Z_]+|UNABLE_TO_VERIFY_LEAF_SIGNATURE|SELF_SIGNED_CERT_IN_CHAIN|DEPTH_ZERO_SELF_SIGNED_CERT)\b/i.test(combined)) {
+    return `上下文压缩依赖安装失败：TLS 证书校验失败（${suffix}）。`;
+  }
+  if (/\b(?:EACCES|EPERM|EROFS)\b/i.test(combined)) {
+    return `上下文压缩依赖安装失败：安装目录权限不足（${suffix}）。`;
+  }
+  if (/\bENOSPC\b/i.test(combined)) {
+    return `上下文压缩依赖安装失败：磁盘空间不足（${suffix}）。`;
+  }
+  const npmCode = /npm\s+(?:ERR!|error)\s+code\s+([A-Z0-9_-]{2,40})/i.exec(combined)?.[1];
+  if (npmCode) {
+    return `上下文压缩依赖安装失败（${npmCode}，${suffix}）。`;
+  }
+  return `上下文压缩依赖安装失败（${suffix}）。`;
 }
 
 export async function terminateExtensionInstaller(pid: number, options: { platform?: NodeJS.Platform; systemRoot?: string; launch?: typeof spawn } = {}): Promise<void> {
@@ -205,7 +375,13 @@ async function cleanupStaging(root: string): Promise<void> {
   }
 }
 
+function appendTail(current: string, chunk: Buffer): string {
+  const next = current + chunk.toString("utf8");
+  return next.length > DIAGNOSTIC_TAIL_CHARS ? next.slice(-DIAGNOSTIC_TAIL_CHARS) : next;
+}
+
 async function installDependenciesClean(directory: string, options: ExtensionPackageInstallOptions, owner: Record<string, unknown>): Promise<void> {
+  const resolvedNpm = await resolveExtensionNpmCommand(process.env, options.npmCommand);
   const home = await fs.mkdtemp(path.join(path.dirname(directory), ".install-env-"));
   await fs.writeFile(path.join(home, "npmrc"), "", { mode: 0o600 });
   await fs.writeFile(path.join(home, "global-npmrc"), "", { mode: 0o600 });
@@ -223,16 +399,30 @@ await installDependencies(plugin,context,{npmCommand:input.npmCommand});`;
   let cleanup = true;
   try {
     options.signal?.throwIfAborted();
+    const installEnv = extensionInstallEnvironment(process.env, home);
+    if (resolvedNpm.extraPathDirs.length) {
+      const existing = (installEnv.PATH ?? "").split(path.delimiter).filter(Boolean);
+      const merged: string[] = [];
+      for (const dir of [...resolvedNpm.extraPathDirs, ...existing]) {
+        if (dir && !merged.includes(dir)) merged.push(dir);
+      }
+      installEnv.PATH = merged.join(path.delimiter);
+    }
     const child = spawn(process.execPath, ["--input-type=module", "-e", script],
-      { cwd: path.dirname(fileURLToPath(import.meta.url)), env: extensionInstallEnvironment(process.env, home), stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
+      { cwd: path.dirname(fileURLToPath(import.meta.url)), env: installEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
     let termination: Promise<void> | undefined, stopFailure: unknown;
     const stop = () => {
       if (child.pid === undefined || child.exitCode !== null) return;
       termination ??= terminateExtensionInstaller(child.pid).catch((error: unknown) => { stopFailure = error; child.kill(); });
     };
-    let bytes = 0;
-    const consume = (data: Buffer) => { bytes += data.length; if (bytes > 1024 * 1024) stop(); };
-    child.stdout.on("data", consume); child.stderr.on("data", consume);
+    let bytes = 0, stdoutTail = "", stderrTail = "";
+    const consume = (stream: "stdout" | "stderr") => (data: Buffer) => {
+      bytes += data.length;
+      if (stream === "stdout") stdoutTail = appendTail(stdoutTail, data);
+      else stderrTail = appendTail(stderrTail, data);
+      if (bytes > 1024 * 1024) stop();
+    };
+    child.stdout.on("data", consume("stdout")); child.stderr.on("data", consume("stderr"));
     options.signal?.addEventListener("abort", stop, { once: true });
     if (options.signal?.aborted) stop();
     try {
@@ -242,12 +432,16 @@ await installDependencies(plugin,context,{npmCommand:input.npmCommand});`;
       owner.installerPid = child.pid ?? null;
       await fs.writeFile(path.join(path.dirname(directory), STAGING_MARKER), JSON.stringify(owner), { mode: 0o600 });
       const realDirectory = await fs.realpath(directory);
-      child.stdin.end(JSON.stringify({ root: path.dirname(realDirectory), directory: realDirectory, npmCommand: options.npmCommand ?? ["npm"] }));
+      child.stdin.end(JSON.stringify({ root: path.dirname(realDirectory), directory: realDirectory, npmCommand: resolvedNpm.command }));
       const code = await completed;
       await termination;
       if (stopFailure) { cleanup = false; throw new ExtensionPackageError("extension_cleanup_pending", "无法确认安装进程已停止，临时文件已保留。", 502); }
       options.signal?.throwIfAborted();
-      if (code !== 0) throw new ExtensionPackageError("extension_install_failed", `上下文压缩依赖安装失败（退出码 ${code ?? "中断"}）。`, 502);
+      if (code !== 0) {
+        const redactedDetail = sanitizeInstallerDiagnostic((stderrTail.trim() || stdoutTail.trim()).slice(-2000));
+        if (redactedDetail) console.error(`[KuloExtensions] dependency install failed (exit ${code ?? "signal"}):\n${redactedDetail}`);
+        throw new ExtensionPackageError("extension_install_failed", summarizeExtensionInstallFailure(code, stderrTail, stdoutTail), 502);
+      }
     } catch (error) {
       stop(); await termination;
       if (stopFailure) { cleanup = false; throw new ExtensionPackageError("extension_cleanup_pending", "无法确认安装进程已停止，临时文件已保留。", 502); }
@@ -266,6 +460,9 @@ export async function installBillionContextPackage(options: ExtensionPackageInst
   await regularDirectory(root);
   const finalDirectory = path.join(await fs.realpath(root), PACKAGE_FOLDER);
   await cleanupStaging(root);
+  const bundledKernel = options.npmCommand !== undefined || options.bundledKernelDir === null
+    ? null
+    : (options.bundledKernelDir ?? await resolveBundledBillionContextKernel());
   const staging = await fs.mkdtemp(path.join(root, ".billion-context-"));
   const staged = path.join(staging, PACKAGE_FOLDER);
   const owner = { kind: "kulo-extension-install", version: BILLION_CONTEXT_KERNEL_VERSION, ownerPid: process.pid, installerPid: null as number | null };
@@ -275,9 +472,14 @@ export async function installBillionContextPackage(options: ExtensionPackageInst
     await fs.mkdir(staged);
     await fs.writeFile(path.join(staged, "package.json"), `${JSON.stringify({ name: ADAPTER_NAME, version: BILLION_CONTEXT_ADAPTER_VERSION, private: true, type: "module", dependencies: { "acp-kernel": BILLION_CONTEXT_KERNEL_VERSION }, chord: { plugins: ["."] } }, null, 2)}\n`, { mode: 0o600 });
     await fs.writeFile(path.join(staged, "worker.ts"), FACET, { mode: 0o600 });
-    await installDependenciesClean(staged, options, owner);
-    const lock = JSON.parse(await fs.readFile(path.join(staged, "package-lock.json"), "utf8")) as { packages?: Record<string, { integrity?: string }> };
-    if (lock.packages?.["node_modules/acp-kernel"]?.integrity !== KERNEL_INTEGRITY) throw new ExtensionPackageError("extension_integrity_mismatch", "上下文压缩内核完整性验证失败。");
+    if (bundledKernel) {
+      options.signal?.throwIfAborted();
+      await copyRegularTree(bundledKernel, path.join(staged, "node_modules", "acp-kernel"));
+    } else {
+      await installDependenciesClean(staged, options, owner);
+      const lock = JSON.parse(await fs.readFile(path.join(staged, "package-lock.json"), "utf8")) as { packages?: Record<string, { integrity?: string }> };
+      if (lock.packages?.["node_modules/acp-kernel"]?.integrity !== KERNEL_INTEGRITY) throw new ExtensionPackageError("extension_integrity_mismatch", "上下文压缩内核完整性验证失败。");
+    }
     const engine = await packageJson(path.join(staged, "node_modules", "acp-kernel"));
     if (engine.name !== "acp-kernel" || engine.version !== BILLION_CONTEXT_KERNEL_VERSION) throw new ExtensionPackageError("extension_version_mismatch", "上下文压缩内核版本验证失败。");
     const checked = await loadKernel(staged, options.signal);
@@ -299,6 +501,37 @@ export async function loadBillionContextPackage(stateDir: string): Promise<Loade
   let closed = false;
   return { info, kernel: runtime.kernel, close: async () => { if (!closed) { closed = true; try { await runtime.close(); }
     finally { const count = (loaded.get(info.directory) ?? 1) - 1; if (count > 0) loaded.set(info.directory, count); else loaded.delete(info.directory); } } } };
+}
+
+export async function loadBundledBillionContextPackage(signal?: AbortSignal): Promise<LoadedBillionContextPackage> {
+  const info = await inspectBundledBillionContextPackage();
+  if (!info) throw new ExtensionPackageError("extension_not_installed", "请先安装 Billion Context。");
+  const staging = await fs.mkdtemp(path.join(os.tmpdir(), "kulo-billion-adapter-"));
+  const adapter = path.join(staging, PACKAGE_FOLDER);
+  try {
+    await fs.mkdir(adapter, { mode: 0o700 });
+    await fs.writeFile(path.join(adapter, "package.json"), `${JSON.stringify({ name: ADAPTER_NAME, version: BILLION_CONTEXT_ADAPTER_VERSION, private: true, type: "module", chord: { plugins: ["."] } }, null, 2)}\n`, { mode: 0o600 });
+    await fs.writeFile(path.join(adapter, "worker.ts"), FACET, { mode: 0o600 });
+    const runtime = await loadKernelFromDirectories(adapter, info.directory, signal);
+    let closed = false;
+    return {
+      info: { ...info, digest: runtime.digest, kernelDigest: runtime.kernelDigest },
+      kernel: runtime.kernel,
+      close: async () => { if (!closed) { closed = true; await runtime.close(); } },
+    };
+  } finally {
+    await fs.rm(staging, { recursive: true, force: true });
+  }
+}
+
+export async function loadAvailableBillionContextPackage(
+  stateDir: string,
+  options: { includeBundled?: boolean; signal?: AbortSignal } = {},
+): Promise<LoadedBillionContextPackage> {
+  const managed = await inspectBillionContextPackage(stateDir);
+  if (managed) return loadBillionContextPackage(stateDir);
+  if (options.includeBundled === false) throw new ExtensionPackageError("extension_not_installed", "请先安装 Billion Context。");
+  return loadBundledBillionContextPackage(options.signal);
 }
 
 export async function removeBillionContextPackage(stateDir: string): Promise<void> {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { apiRequest } from "../../kulo-api";
-import { authorizeMicrophone, guideDesktopPermissions, noteMicrophoneAccess, readDesktopPermissions, readMicrophonePermission, requestSystemPermissionHelp } from "./system-permissions";
+import { authorizeMicrophone, guideDesktopPermissions, noteMicrophoneAccess, openNativeAppPermissionSettings, readDesktopPermissions, readMicrophonePermission, requestSystemPermissionHelp } from "./system-permissions";
 
 vi.mock("../../kulo-api", () => ({ apiRequest: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); noteMicrophoneAccess(false); });
@@ -103,5 +103,26 @@ describe("system permission client", () => {
     const event = dispatchEvent.mock.calls[0]?.[0] as CustomEvent;
     expect(event.type).toBe("kulo:system-permission-help");
     expect(event.detail).toEqual({ kind: "screen", envId: "remote" });
+  });
+
+  it("opens native app permission settings through desktop IPC on local hubs, falls back to hub API, and never opens settings on remote peers", async () => {
+    const openSettings = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("window", { kuloDesktop: { systemPermissions: { openSettings } } });
+    expect(await openNativeAppPermissionSettings("full-disk-access", { localHost: true })).toBe("opened");
+    expect(openSettings).toHaveBeenCalledWith("full-disk-access");
+    expect(apiRequest).not.toHaveBeenCalled();
+
+    expect(await openNativeAppPermissionSettings("full-disk-access", { localHost: false })).toBe("remote");
+    expect(openSettings).toHaveBeenCalledTimes(1);
+    expect(apiRequest).not.toHaveBeenCalled();
+
+    openSettings.mockRejectedValueOnce(new Error("系统权限类型无效。"));
+    vi.mocked(apiRequest).mockResolvedValueOnce({ ok: true });
+    expect(await openNativeAppPermissionSettings("automation", { localHost: true })).toBe("opened");
+    expect(apiRequest).toHaveBeenCalledWith("/api/connections/permission-settings", { method: "POST", body: { kind: "automation" } });
+
+    vi.stubGlobal("window", {});
+    vi.mocked(apiRequest).mockRejectedValueOnce(Object.assign(new Error("remote"), { code: "connection_permission_settings_remote" }));
+    expect(await openNativeAppPermissionSettings("full-disk-access")).toBe("remote");
   });
 });

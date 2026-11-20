@@ -16,9 +16,12 @@ import { KuloStateDoc, type KuloHub } from "@kulo/hub";
 import {
   buildCustomizationConfirmCard,
   buildExternalPermissionCard,
+  buildMemoryServiceConfirmCard,
   buildStagedApplyConfirmCard,
   customizationValidateFingerprint,
 } from "../packages/hub/src/action-confirmations.js";
+import { HindsightLocalService } from "../packages/hub/src/hindsight-service.js";
+import { MemoryServiceDoc } from "../packages/hub/src/memory-service.js";
 import { openTestHub } from "./helpers/secure-hub.js";
 
 const dirs: string[] = [];
@@ -57,6 +60,15 @@ describe("Hard-redline user confirmations (Package 2)", () => {
     });
     expect(() => validateUiCardInput(c3.input)).not.toThrow();
     expect(c3.logicalIds).toEqual(["confirm", "cancel"]);
+
+    const c4 = buildMemoryServiceConfirmCard({
+      operation: "uninstall",
+      title: "卸载本机 Hindsight",
+      deviceName: "Macmini.local",
+      changes: ["Macmini.local", "同时删除此安装的记忆数据"],
+    });
+    expect(() => validateUiCardInput(c4.input)).not.toThrow();
+    expect(c4.logicalIds).toEqual(["confirm", "cancel"]);
   });
 
   it("gates sensitive staged merges behind a UI card while allowing ordinary merges immediately", async () => {
@@ -429,5 +441,184 @@ describe("Hard-redline user confirmations (Package 2)", () => {
       expect(validateSpy).toHaveBeenCalledTimes(1);
     }, { timeout: 6_000, interval: 40 });
     expect(turn).toBeGreaterThanOrEqual(2);
+  });
+
+  it("allows Main Chat to inspect Hub Hindsight status and uninstall via an in-chat confirmation card", async () => {
+    const stateDir = tempDir("memory-state");
+    const localEnvRoot = tempDir("memory-env");
+
+    let installed = true;
+    vi.spyOn(HindsightLocalService.prototype, "inspect").mockImplementation(async () => ({
+      installed,
+      running: installed,
+      platform: "darwin",
+      deviceName: "Macmini.local",
+      ...(installed ? { endpoint: "http://127.0.0.1:18888", phase: "running" } : { phase: "absent" }),
+    }));
+    const uninstallSpy = vi.spyOn(HindsightLocalService.prototype, "uninstall").mockImplementation(async () => {
+      installed = false;
+      return { installed: false, running: false, platform: "darwin", deviceName: "Macmini.local", phase: "absent" };
+    });
+
+    const faux = fauxProvider({ provider: "mem-confirm-test", models: [{ id: "mem-confirm-model" }] });
+    const models = createModels();
+    models.setProvider(faux.provider);
+
+    let step = 0;
+    const prepareOutputs: string[] = [];
+    faux.setResponses(
+      Array.from({ length: 12 }, () => (ctx: TranscriptContext) => {
+        const lastTool = ctx.messages.at(-1);
+        if (lastTool?.role === "toolResult" && lastTool.toolName === "kulo_memory_service_read") {
+          return fauxAssistantMessage(
+            [
+              fauxToolCall("kulo_memory_service_prepare", {
+                operation: "uninstall",
+                config: JSON.stringify({ deleteData: true }),
+              }),
+            ],
+            { stopReason: "toolUse" },
+          );
+        }
+        if (lastTool?.role === "toolResult" && lastTool.toolName === "kulo_memory_service_prepare") {
+          prepareOutputs.push(lastTool.content.map((c) => ("text" in c ? c.text : "")).join(""));
+          return fauxAssistantMessage([fauxText("已生成卸载确认卡，请确认后执行。")]);
+        }
+        step += 1;
+        if (step === 1) {
+          return fauxAssistantMessage(
+            [fauxToolCall("tool_search", { query: "检查 Hindsight 长期记忆服务 安装状态", limit: 3 })],
+            { stopReason: "toolUse" },
+          );
+        }
+        if (step === 2) {
+          return fauxAssistantMessage([fauxToolCall("kulo_memory_service_read", {})], { stopReason: "toolUse" });
+        }
+        return fauxAssistantMessage([fauxText("已完成卸载。")]);
+      }),
+    );
+
+    const hub = await openTestHub({
+      models,
+      providerId: "mem-confirm-test",
+      config: {
+        stateDir,
+        localEnvRoot,
+        model: { defaultProvider: "mem-confirm-test", defaultModel: "mem-confirm-model", thinkingLevel: "off" },
+      },
+    });
+    hubs.push(hub);
+
+    const sub = await hub.sendUserMessage("检查一下 macmini 本机是否安装了 hindsight，安装了的话就删了吧");
+    await sub.wait(BACKGROUND_CONTEXT);
+
+    expect(uninstallSpy).not.toHaveBeenCalled();
+    expect(prepareOutputs).toHaveLength(1);
+    expect(prepareOutputs[0]).toContain("awaiting_user_confirmation");
+
+    const cards = await hub.uiCards.snapshot(Number(hub.rootConversation.id));
+    expect(cards).toHaveLength(1);
+    const confirmCard = cards[0]!;
+    const confirmAction = confirmCard.actions.find((a) => a.kind === "submit")!;
+
+    await hub.submitUiAction({
+      cardId: confirmCard.cardId,
+      revision: confirmCard.revision,
+      actionId: confirmAction.id,
+      values: {},
+      commandId: "user-confirm-hindsight-uninstall",
+    });
+
+    await vi.waitFor(() => {
+      expect(uninstallSpy).toHaveBeenCalledTimes(1);
+      expect(installed).toBe(false);
+    }, { timeout: 6_000, interval: 40 });
+    expect(uninstallSpy.mock.calls[0]?.[0]?.deleteData).toBe(true);
+
+    const memDoc = await hub.harness.snapshot(MemoryServiceDoc, BACKGROUND_CONTEXT);
+    const jobs = Object.values(memDoc?.jobs ?? {});
+    expect(jobs.some((job) => job.view.operation === "uninstall" && job.view.status === "succeeded")).toBe(true);
+  });
+
+  it("rejects the prepared Hub Hindsight job cleanly when the user cancels the Main Chat confirmation card", async () => {
+    const stateDir = tempDir("memory-cancel-state");
+    const localEnvRoot = tempDir("memory-cancel-env");
+
+    vi.spyOn(HindsightLocalService.prototype, "inspect").mockResolvedValue({
+      installed: true,
+      running: true,
+      platform: "darwin",
+      deviceName: "Macmini.local",
+      endpoint: "http://127.0.0.1:18888",
+      phase: "running",
+    });
+    const uninstallSpy = vi.spyOn(HindsightLocalService.prototype, "uninstall").mockResolvedValue({
+      installed: false,
+      running: false,
+      platform: "darwin",
+      deviceName: "Macmini.local",
+      phase: "absent",
+    });
+
+    const faux = fauxProvider({ provider: "mem-cancel-test", models: [{ id: "mem-cancel-model" }] });
+    const models = createModels();
+    models.setProvider(faux.provider);
+
+    let step = 0;
+    faux.setResponses(
+      Array.from({ length: 10 }, () => (ctx: TranscriptContext) => {
+        const lastTool = ctx.messages.at(-1);
+        if (lastTool?.role === "toolResult" && lastTool.toolName === "kulo_memory_service_read") {
+          return fauxAssistantMessage(
+            [fauxToolCall("kulo_memory_service_prepare", { operation: "uninstall" })],
+            { stopReason: "toolUse" },
+          );
+        }
+        if (lastTool?.role === "toolResult" && lastTool.toolName === "kulo_memory_service_prepare") {
+          return fauxAssistantMessage([fauxText("请确认是否卸载。")]);
+        }
+        step += 1;
+        if (step === 1) {
+          return fauxAssistantMessage(
+            [fauxToolCall("tool_search", { query: "检查 Hindsight 长期记忆服务", limit: 3 })],
+            { stopReason: "toolUse" },
+          );
+        }
+        if (step === 2) {
+          return fauxAssistantMessage([fauxToolCall("kulo_memory_service_read", {})], { stopReason: "toolUse" });
+        }
+        return fauxAssistantMessage([fauxText("已取消卸载。")]);
+      }),
+    );
+
+    const hub = await openTestHub({
+      models,
+      providerId: "mem-cancel-test",
+      config: {
+        stateDir,
+        localEnvRoot,
+        model: { defaultProvider: "mem-cancel-test", defaultModel: "mem-cancel-model", thinkingLevel: "off" },
+      },
+    });
+    hubs.push(hub);
+
+    const sub = await hub.sendUserMessage("卸载主脑上的 hindsight");
+    await sub.wait(BACKGROUND_CONTEXT);
+
+    const cards = await hub.uiCards.snapshot(Number(hub.rootConversation.id));
+    expect(cards).toHaveLength(1);
+    const cancelAction = cards[0]!.actions.find((a) => a.kind === "cancel")!;
+
+    await hub.submitUiAction({
+      cardId: cards[0]!.cardId,
+      revision: cards[0]!.revision,
+      actionId: cancelAction.id,
+      values: {},
+      commandId: "user-cancel-hindsight-uninstall",
+    });
+
+    expect(uninstallSpy).not.toHaveBeenCalled();
+    const memDoc = await hub.harness.snapshot(MemoryServiceDoc, BACKGROUND_CONTEXT);
+    expect(Object.values(memDoc?.jobs ?? {}).some((job) => job.view.status === "rejected")).toBe(true);
   });
 });

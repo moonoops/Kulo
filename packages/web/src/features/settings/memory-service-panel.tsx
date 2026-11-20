@@ -4,13 +4,13 @@ import { Alert, Button, Chip, Input, Label, Spinner, Switch, TextField } from "@
 import { redactSecrets, type HindsightAccessMode, type HindsightProbeResult, type MemoryConnectionUpdateRequest, type MemoryServiceSnapshot, type KuloSettingsView } from "@kulo/protocol";
 import { KuloApiError, kuloRest } from "../../kulo-api";
 import { safeSetupInputError } from "./capability-setup-inputs";
-import { SettingsSaveBar, SettingsSection } from "./settings-layout";
+import { SettingsList, SettingsSaveBar, SettingsSection } from "./settings-layout";
 import { MemoryServerList } from "./memory-server-list";
 import { MEMORY_CONNECTION_FOCUS_EVENT, MEMORY_SERVICE_CHANGED_EVENT, publishMemoryService, requestMemoryService } from "./memory-service-events";
 import { useSettingsPending } from "./settings-save-activity";
 
 type MemoryBlock = KuloSettingsView["blocks"]["memory"];
-type MemoryConnectionAction = "probe" | "save" | "reload" | "enabled";
+type MemoryConnectionAction = "probe" | "save" | "reload" | "enabled" | "knowledge";
 export interface MemoryConnectionDraft {
   enabled: boolean;
   endpoint: string;
@@ -58,6 +58,9 @@ export function setSavedMemoryEnabled(block: MemoryBlock, enabled: boolean): Pro
   // This endpoint reads the saved connection on the server; connection drafts and keys never cross this boundary.
   return kuloRest.setMemoryEnabled({ enabled, expectedRevision: block.revision });
 }
+export function setSavedMemoryKnowledgeGuidance(block: MemoryBlock, enabled: boolean): Promise<MemoryServiceSnapshot> {
+  return kuloRest.setMemoryKnowledgeGuidance({ enabled, expectedRevision: block.revision });
+}
 export function createMemoryConnectionRequest(draft: MemoryConnectionDraft, expectedRevision: number): MemoryConnectionUpdateRequest {
   return {
     expectedRevision, enabled: draft.enabled,
@@ -88,28 +91,37 @@ function ConnectionSecret({ label, value, saved, clear, disabled, onChange, onCl
   </div>;
 }
 
-export function MemoryConnectionForm({ settings, savedMemory = settings.blocks.memory, snapshot, editor, pending, loading = false, connected = true, error, enabledError, probe, onChange, onEnabledChange, onEnabledRetry, onSave, onProbe, onDiscard, onReload, onRetry }: {
+export function MemoryConnectionForm({ settings, savedMemory = settings.blocks.memory, snapshot, editor, pending, loading = false, connected = true, error, enabledError, probe, onChange, onEnabledChange, onEnabledRetry, onKnowledgeGuidanceChange, onSave, onProbe, onDiscard, onReload, onRetry }: {
   settings: KuloSettingsView; snapshot: MemoryServiceSnapshot | null; editor: MemoryConnectionEditor;
   savedMemory?: MemoryBlock; pending?: MemoryConnectionAction; loading?: boolean; connected?: boolean; error?: string; enabledError?: string; probe?: HindsightProbeResult;
   onChange: (draft: MemoryConnectionDraft) => void; onSave: (event: FormEvent<HTMLFormElement>) => void;
   onEnabledChange: (enabled: boolean) => void; onEnabledRetry?: () => void;
+  onKnowledgeGuidanceChange?: (enabled: boolean) => void;
   onProbe: () => void; onDiscard: () => void; onReload: () => void;
   onRetry?: () => void;
 }) {
   useI18n();
   const { draft } = editor;
   const enabledControlRef = useRef<HTMLDivElement>(null);
+  const knowledgeControlRef = useRef<HTMLElement>(null);
   const restoreEnabledFocus = useRef(false);
+  const restoreKnowledgeFocus = useRef(false);
   const busy = Boolean(pending);
   const dirty = memoryConnectionDirty(editor);
   const running = snapshot?.jobs.some((job) => job.status === "running") ?? false;
   const disabled = !connected || running;
   const reusable = sameOrigins(draft, savedMemory.value);
-  const enabled = snapshot && snapshot.revision >= savedMemory.revision ? snapshot.connection.enabled : savedMemory.value.enabled;
+  const activeConnection = snapshot && snapshot.revision >= savedMemory.revision ? snapshot.connection : savedMemory.value;
+  const enabled = activeConnection.enabled;
+  const knowledgeGuidanceEnabled = Boolean(activeConnection.knowledgeGuidanceEnabled);
   useEffect(() => {
     if (!pending && restoreEnabledFocus.current) {
       restoreEnabledFocus.current = false;
       if (document.activeElement === document.body) enabledControlRef.current?.querySelector<HTMLElement>('[role="switch"]')?.focus();
+    }
+    if (!pending && restoreKnowledgeFocus.current) {
+      restoreKnowledgeFocus.current = false;
+      if (document.activeElement === document.body) knowledgeControlRef.current?.querySelector<HTMLElement>('[role="switch"]')?.focus();
     }
   }, [pending]);
   const change = <K extends keyof MemoryConnectionDraft>(key: K, value: MemoryConnectionDraft[K]) => onChange({ ...draft, [key]: value });
@@ -117,7 +129,29 @@ export function MemoryConnectionForm({ settings, savedMemory = settings.blocks.m
     <div inert={busy || undefined}>
       <SettingsSection title={t("长期记忆", "Long-term memory")} status={<Chip size="sm" variant="soft" color={enabled ? "success" : "default"}>{enabled ? t("已启用", "Enabled") : t("未启用", "Disabled")}</Chip>} action={
         <div ref={enabledControlRef} className="flex items-center gap-2">{pending === "enabled" && <Spinner size="sm" aria-label={t("保存启用状态", "Saving enabled state")} />}<Switch aria-label={t("启用长期记忆", "Enable long-term memory")} isSelected={enabled} isDisabled={disabled} onChange={(next) => { restoreEnabledFocus.current = enabledControlRef.current?.contains(document.activeElement) ?? false; onEnabledChange(next); }}><Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content></Switch></div>
-      }>{null}</SettingsSection>
+      }>
+        <SettingsList label={t("长期记忆选项", "Long-term memory options")}>
+          <Switch
+            ref={knowledgeControlRef as never}
+            className="w-full"
+            aria-label={t("启用知识整理指引", "Enable knowledge organization guide")}
+            isSelected={enabled && knowledgeGuidanceEnabled}
+            isDisabled={disabled || !enabled || !onKnowledgeGuidanceChange}
+            onChange={(next) => {
+              restoreKnowledgeFocus.current = knowledgeControlRef.current?.contains(document.activeElement) ?? false;
+              onKnowledgeGuidanceChange?.(next);
+            }}
+          >
+            <Switch.Content className="kulo-settings-row kulo-settings-row--toggle">
+              <div className="flex min-w-0 items-center gap-2">
+                <Label className="text-sm font-normal text-foreground">{t("知识整理指引", "Knowledge organization guide")}</Label>
+                {pending === "knowledge" && <Spinner size="sm" aria-label={t("保存知识整理指引", "Saving knowledge guide state")} />}
+              </div>
+              <Switch.Control className="justify-self-end"><Switch.Thumb /></Switch.Control>
+            </Switch.Content>
+          </Switch>
+        </SettingsList>
+      </SettingsSection>
     </div>
     {enabledError && <Alert status="danger" role="alert" className="rounded-2xl p-3"><Alert.Content className="flex-1 break-words text-sm">{enabledError}</Alert.Content>{onEnabledRetry && <Button type="button" size="sm" variant="secondary" isDisabled={busy || !connected} onPress={onEnabledRetry}>{t("重试", "Retry")}</Button>}</Alert>}
     <form className="kulo-settings-form gap-4" aria-label={t("长期记忆连接设置", "Long-term memory connection settings")} onSubmit={onSave}>
@@ -175,10 +209,10 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
   const [pending, setPending] = useState<MemoryConnectionAction>();
   const pendingRef = useRef(false);
   const busy = Boolean(pending);
-  useSettingsPending(pending === "save" || pending === "enabled");
+  useSettingsPending(pending === "save" || pending === "enabled" || pending === "knowledge");
   const [error, setError] = useState<string>();
   const [enabledError, setEnabledError] = useState<string>();
-  const [enabledRetry, setEnabledRetry] = useState<{ enabled: boolean; revision: number } | "sync">();
+  const [enabledRetry, setEnabledRetry] = useState<{ kind: "enabled" | "knowledge"; enabled: boolean; revision: number } | "sync">();
   const [loadError, setLoadError] = useState<string>();
   const [probe, setProbe] = useState<HindsightProbeResult>();
   const [refresh, setRefresh] = useState(0);
@@ -235,12 +269,38 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
     } catch (cause) {
       const message = redactSecrets(cause instanceof Error ? cause.message : t("更新启用状态失败", "Failed to update enabled state"));
       setEnabledError(committed ? t(`启用状态已更新，读取最新配置失败：${message}`, `Enabled state updated; failed to load settings: ${message}`) : message);
-      setEnabledRetry(committed || cause instanceof KuloApiError && cause.code === "memory_revision_conflict" ? "sync" : { enabled, revision: saved.revision });
+      setEnabledRetry(committed || cause instanceof KuloApiError && cause.code === "memory_revision_conflict" ? "sync" : { kind: "enabled", enabled, revision: saved.revision });
+    } finally { pendingRef.current = false; setPending(undefined); }
+  };
+  const toggleKnowledgeGuidance = async (enabled: boolean) => {
+    if (pendingRef.current || !connected || snapshot?.jobs.some((job) => job.status === "running")) return;
+    pendingRef.current = true;
+    setPending("knowledge");
+    const saved = savedMemoryRef.current;
+    let committed = false;
+    try {
+      const service = await setSavedMemoryKnowledgeGuidance(saved, enabled);
+      committed = true;
+      const next = { ...saved, revision: service.revision, value: service.connection };
+      rememberMemory(next);
+      setEditor((current) => acknowledgeMemoryEnabled(current, next, saved.revision));
+      setSnapshot(service);
+      setLoadError(undefined);
+      publishMemoryService(service);
+      await syncEnabled();
+    } catch (cause) {
+      const message = redactSecrets(cause instanceof Error ? cause.message : t("更新知识整理指引失败", "Failed to update knowledge guide setting"));
+      setEnabledError(committed ? t(`设置已更新，读取最新配置失败：${message}`, `Setting updated; failed to load settings: ${message}`) : message);
+      setEnabledRetry(committed || cause instanceof KuloApiError && cause.code === "memory_revision_conflict" ? "sync" : { kind: "knowledge", enabled, revision: saved.revision });
     } finally { pendingRef.current = false; setPending(undefined); }
   };
   const retryEnabled = async () => {
     if (!enabledRetry) return;
-    if (enabledRetry !== "sync" && enabledRetry.revision === savedMemoryRef.current.revision) { await toggleEnabled(enabledRetry.enabled); return; }
+    if (enabledRetry !== "sync" && enabledRetry.revision === savedMemoryRef.current.revision) {
+      if (enabledRetry.kind === "knowledge") await toggleKnowledgeGuidance(enabledRetry.enabled);
+      else await toggleEnabled(enabledRetry.enabled);
+      return;
+    }
     if (pendingRef.current || !connected) return;
     pendingRef.current = true;
     setPending("enabled");
@@ -278,6 +338,7 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
   };
   return <div ref={formRef}><MemoryConnectionForm settings={settings} savedMemory={savedMemory} snapshot={snapshot} editor={editor} pending={pending} loading={loading} connected={connected} error={error ?? loadError} enabledError={enabledError} probe={probe}
     onEnabledChange={(enabled) => void toggleEnabled(enabled)} onEnabledRetry={enabledRetry ? () => void retryEnabled() : undefined}
+    onKnowledgeGuidanceChange={(enabled) => void toggleKnowledgeGuidance(enabled)}
     onChange={(draft) => { setEditor((current) => ({ ...current, draft })); setError(undefined); setProbe(undefined); }}
     onSave={(event) => { event.preventDefault(); void submit(false); }} onProbe={() => void submit(true)} onDiscard={() => reset()}
     onReload={() => void reload()} onRetry={!error && loadError ? () => setRefresh((value) => value + 1) : undefined} /></div>;

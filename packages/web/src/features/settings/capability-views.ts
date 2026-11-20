@@ -6,6 +6,7 @@ export const CAPABILITY_VIEWS = [
   { id: "voice", label: "语音", englishLabel: "Voice" },
   { id: "video", label: "视频", englishLabel: "Video" },
   { id: "search", label: "搜索", englishLabel: "Search" },
+  { id: "computer", label: "电脑操控", englishLabel: "Computer Use" },
   { id: "skills", label: "技能", englishLabel: "Skills" },
   { id: "colab", label: "Colab", englishLabel: "Colab" },
   { id: "other", label: "其他", englishLabel: "Other" },

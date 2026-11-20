@@ -232,4 +232,68 @@ describe("managed extensions through real Hub and HTTP", () => {
     await f.operation("remove", "align-race-remove");
     expect(await inspectBillionContextPackage(f.stateDir)).toBeNull();
   });
+
+  it("ships Billion Context pre-installed and disabled by default in a real Hub without npm, and supports direct enable/stop/remove/offline reinstall", async () => {
+    const stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kulo-extensions-bundled-http-")));
+    cleanup.push(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+    vi.stubEnv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+    const provider = fauxProvider({ provider: "openai", models: [{ id: "extensions-bundled" }] });
+    const models = createModels(); models.setProvider(routeSettingsTitleRequests(provider));
+    const hub = await openTestHub({ models, config: {
+      stateDir, identityDir: path.join(stateDir, "identity"), authToken: HUB_TEST_ADMIN_TOKEN,
+      envTokens: { node: envToken }, workerEnvIds: ["node"], enableLocalEnv: false, watchdogMinutes: 0, memory: { enabled: false },
+      model: { defaultProvider: "openai", defaultModel: "extensions-bundled", thinkingLevel: "off", apiKey: "" },
+    } });
+    cleanup.push(() => hub.close());
+    const server = await startKuloHubServer(hub, { host: "127.0.0.1", port: 0 });
+    cleanup.push(() => server.close());
+    const call = async (route: string, body?: unknown) => {
+      const response = await fetch(`${server.url}${route}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers: { Authorization: `Bearer ${HUB_TEST_ADMIN_TOKEN}`, "Content-Type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      return { status: response.status, value: await response.json() as ExtensionWorkspaceSnapshot };
+    };
+    const operate = async (operation: ExtensionOperation, commandId: string) => {
+      const item = (await hub.extensions.snapshot()).items[0]!;
+      const res = await call("/api/extensions/billion-context/operations", { operation, commandId, expectedRevision: item.revision });
+      expect(res.status).toBe(200);
+      let state!: ExtensionWorkspaceSnapshot;
+      await vi.waitFor(async () => {
+        state = await hub.extensions.snapshot();
+        expect(state.jobs.find((job) => job.id === commandId)?.status).toBe("completed");
+      }, { timeout: 10_000, interval: 20 });
+      return state;
+    };
+
+    const initial = await call("/api/extensions");
+    expect(initial.status).toBe(200);
+    expect(initial.value.items).toEqual([expect.objectContaining({
+      id: "billion-context", name: "Billion Context 上下文压缩", enabled: false, status: "stopped",
+      installedVersion: BILLION_CONTEXT_KERNEL_VERSION, availableVersion: BILLION_CONTEXT_KERNEL_VERSION,
+    })]);
+    expect((await hub.harness.snapshot(ContextCompactionDoc, hub.rootConversation.id, BACKGROUND_CONTEXT))?.enabled ?? false).toBe(false);
+
+    // Direct enable works out of the box without running install first.
+    const enabled = await operate("enable", "bundled-enable");
+    expect(enabled.items[0]).toMatchObject({ enabled: true, status: "running", installedVersion: BILLION_CONTEXT_KERNEL_VERSION });
+    expect(await hub.harness.snapshot(ContextCompactionDoc, hub.rootConversation.id, BACKGROUND_CONTEXT)).toMatchObject({
+      enabled: true, kernelVersion: BILLION_CONTEXT_KERNEL_VERSION,
+    });
+
+    const stopped = await operate("stop", "bundled-stop");
+    expect(stopped.items[0]).toMatchObject({ enabled: false, status: "stopped", installedVersion: BILLION_CONTEXT_KERNEL_VERSION });
+
+    const removed = await operate("remove", "bundled-remove");
+    expect(removed.items[0]).toMatchObject({ enabled: false, status: "not_installed" });
+    expect(removed.items[0]?.installedVersion).toBeUndefined();
+    await hub.extensions.initialize();
+    expect((await hub.extensions.snapshot()).items[0]).toMatchObject({ enabled: false, status: "not_installed" });
+
+    // Reinstalling works offline even with Finder's minimal PATH (no npm).
+    const reinstalled = await operate("install", "bundled-reinstall");
+    expect(reinstalled.items[0]).toMatchObject({ enabled: false, status: "stopped", installedVersion: BILLION_CONTEXT_KERNEL_VERSION });
+    expect((await inspectBillionContextPackage(stateDir))?.version).toBe(BILLION_CONTEXT_KERNEL_VERSION);
+  });
 });

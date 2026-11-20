@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import vm from "node:vm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { NativeConnectionApplications, NATIVE_CONNECTION_APPLICATIONS, type NativeApplicationRequest } from "../packages/hub/src/connection-native-apps.js";
+import { NativeConnectionApplications, NATIVE_CONNECTION_APPLICATIONS, openNativePermissionSettings, type NativeApplicationRequest } from "../packages/hub/src/connection-native-apps.js";
 
 const directories: string[] = [];
 let buildDirectory: string | undefined;
@@ -119,6 +119,43 @@ describe("native connection application contract", () => {
     ]);
     runner.mockImplementation(async () => ({ readable: false }));
     await expect(applications.probe("messages", {})).rejects.toMatchObject({ code: "connection_messages_full_disk_access_required" });
+  });
+
+  it("prompts for Messages Automation before checking Full Disk Access during interactive authorization", async () => {
+    const calls: Array<{ action: string; requestPermission?: boolean }> = [];
+    const applications = new NativeConnectionApplications({
+      platform: "darwin",
+      messagesDatabasePath: "/synthetic/chat.db",
+      runner: async (request) => {
+        calls.push({ action: request.action, requestPermission: request.requestPermission });
+        return request.action === "probe"
+          ? { authorized: true, accountReady: true, username: "fixture-messages-account" }
+          : { readable: false };
+      },
+    });
+    await expect(applications.probe("messages", {}, undefined, { requestPermission: true })).rejects.toMatchObject({
+      code: "connection_messages_full_disk_access_required",
+    });
+    expect(calls).toEqual([
+      { action: "probe", requestPermission: true },
+      { action: "messages.probe_read", requestPermission: undefined },
+    ]);
+  });
+
+  it("opens only fixed macOS privacy URLs for native connector permissions", async () => {
+    const opened: string[] = [];
+    const launcher = async (url: string) => { opened.push(url); };
+    await openNativePermissionSettings("full-disk-access", { platform: "darwin", launcher });
+    await openNativePermissionSettings("automation", { platform: "darwin", launcher });
+    expect(opened).toEqual([
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+    ]);
+    await expect(openNativePermissionSettings("full-disk-access", { platform: "linux", launcher })).rejects.toMatchObject({ code: "connection_app_platform_unavailable" });
+    for (const invalid of ["microphone", "__proto__", "https://example.com", "", null]) {
+      await expect(openNativePermissionSettings(invalid, { platform: "darwin", launcher })).rejects.toMatchObject({ code: "connection_app_invalid_parameters" });
+    }
+    expect(opened).toHaveLength(2);
   });
 
   it("requests Automation only during an explicit setup probe", async () => {

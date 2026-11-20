@@ -107,9 +107,9 @@ export function OtherExtensionsModule({ snapshot: incoming, connected, disabled 
     {loading && !snapshot && <div className="flex items-center gap-2 text-sm text-muted" role="status"><Spinner size="sm" />{t("加载扩展…", "Loading extensions…")}</div>}
     {snapshot && <Table variant="secondary" className="kulo-settings-table kulo-capabilities-table">
       <Table.ScrollContainer className="kulo-settings-table-scroll">
-        <Table.Content aria-label={t("其他扩展列表", "Other extensions")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content">
+        <Table.Content aria-label={t("其他扩展列表", "Other extensions")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content kulo-settings-table-content--wide">
           <Table.Header>
-            <Table.Column id="name" isRowHeader className="kulo-settings-table-column">{t("名称", "Name")}</Table.Column>
+            <Table.Column id="name" isRowHeader className="kulo-settings-table-column kulo-settings-table-primary">{t("名称", "Name")}</Table.Column>
             <Table.Column id="version" className="kulo-settings-table-column kulo-settings-table-meta">{t("版本", "Version")}</Table.Column>
             <Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-meta">{t("状态", "Status")}</Table.Column>
             <Table.Column id="enabled" className="kulo-settings-table-column kulo-settings-table-toggle">{t("启用", "Enable")}</Table.Column>
@@ -123,19 +123,19 @@ export function OtherExtensionsModule({ snapshot: incoming, connected, disabled 
               const job = [...snapshot.jobs].reverse().find((item) => item.extensionId === extension.id && (item.status === "queued" || item.status === "running"));
               const selected = target?.kind === "extension" && target.id === extension.id;
               return <Table.Row key={extension.id} id={extension.id} textValue={extension.name}>
-                <Table.Cell className="kulo-settings-table-cell">
-                  <div className="flex min-w-0 flex-col items-start gap-1">
-                    <span className="kulo-item-title break-words">{extension.name}</span>
+                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-primary">
+                  <div className="kulo-settings-table-stack">
+                    <span className="kulo-item-title">{extension.name}</span>
                     {extension.error && <span className="break-words text-xs text-danger">{redactSecrets(extension.error)}</span>}
                   </div>
                 </Table.Cell>
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta"><span className="text-sm">{extensionVersionLabel(extension)}</span></Table.Cell>
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta">
-                  <div className="flex flex-col items-start gap-1.5">
+                  <div className="kulo-settings-table-stack">
                     <Chip size="sm" variant="soft" color={extension.status === "running" ? "success" : extension.status === "error" ? "danger" : "default"}>
                       {STATUS_LABELS[extension.status]}
                     </Chip>
-                    {job && <span className="flex items-center gap-1.5 text-xs text-muted" role="status"><Spinner size="sm" aria-label={`${extension.name}${STATUS_LABELS[extension.status]}`} />{redactSecrets(job.stage)}</span>}
+                    {job && <span className="flex items-center gap-1.5 whitespace-normal break-words text-xs text-muted" role="status"><Spinner size="sm" aria-label={`${extension.name}${STATUS_LABELS[extension.status]}`} />{redactSecrets(job.stage)}</span>}
                   </div>
                 </Table.Cell>
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-toggle">

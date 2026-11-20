@@ -5,12 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type TranscriptContext } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import { startKuloHubServer } from "../packages/hub/src/server.js";
 import { openTestHub } from "./helpers/secure-hub.js";
 import { HUB_TEST_ADMIN_TOKEN } from "./helpers/hub-auth.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 const nativeWorkers = process.platform === "darwin" && fs.existsSync("/usr/bin/sandbox-exec");
-const frontend = ["vercel-react-best-practices", "vercel-composition-patterns", "web-design-guidelines"];
 const answer = () => fauxAssistantMessage([fauxText("任务结果已收到。")]);
 const call = (name: string, args: Record<string, unknown>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
 
@@ -31,81 +31,144 @@ function isWorker(request: TranscriptContext): boolean {
 }
 
 function catalog(request: TranscriptContext): string {
-  return request.messages.flatMap((message) => message.role === "system" ? [message.sections?.kulo_skills ?? ""] : []).at(-1) ?? "";
+  return request.messages.flatMap((message) => message.role === "system" && message.sections?.kulo_skills ? [message.sections.kulo_skills] : []).at(-1) ?? "";
 }
 
-async function fixture(react: boolean, operations: Array<{ name: string; args: Record<string, unknown> }>) {
+async function createHubFixture(options: {
+  memory?: { enabled: boolean; knowledgeGuidanceEnabled?: boolean };
+} = {}) {
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kulo-skill-worker-")));
   cleanup.push(() => fs.rmSync(directory, { recursive: true, force: true }));
   const workspace = path.join(directory, "project");
   fs.mkdirSync(workspace);
-  fs.writeFileSync(path.join(workspace, "package.json"), JSON.stringify({ name: "skill-flow", private: true, workspaces: ["packages/*"] }));
-  if (react) {
-    const app = path.join(workspace, "packages", "app"); fs.mkdirSync(app, { recursive: true });
-    fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "app", dependencies: { react: "^19.0.0" } }));
-  }
+  fs.writeFileSync(path.join(workspace, "package.json"), JSON.stringify({ name: "skill-flow", private: true }));
   const provider = fauxProvider({ provider: "openai", models: [{ id: "skill-worker-model" }] });
   const models = createModels(); models.setProvider(provider.provider);
   const requests: TranscriptContext[] = [];
+  let activeOperations: Array<{ name: string; args: Record<string, unknown> }> = [];
   let stage = 0;
   provider.setResponses(Array.from({ length: 48 }, () => (request: TranscriptContext) => {
     if (!isWorker(request)) return answer();
     requests.push(request);
-    const operation = operations[stage++];
+    const operation = activeOperations[stage++];
     return operation ? call(operation.name, operation.args) : call("kulo_report", { state: "ready", summary: "预置 Skill 验证完成。" });
   }));
   const hub = await openTestHub({ models, config: {
     authToken: HUB_TEST_ADMIN_TOKEN, stateDir: path.join(directory, "state"), identityDir: path.join(directory, "identity"), localEnvRoot: path.join(directory, "runtime"),
-    enableLocalEnv: true, memory: { enabled: false }, watchdogMinutes: 0,
+    enableLocalEnv: true,
+    memory: options.memory?.enabled
+      ? { enabled: true, knowledgeGuidanceEnabled: options.memory.knowledgeGuidanceEnabled, endpoint: "http://127.0.0.1:19999", accessMode: "kulo", routerApiKey: "r".repeat(36), workerApiKey: "w".repeat(36) }
+      : { enabled: false },
+    watchdogMinutes: 0,
     model: { defaultProvider: "openai", defaultModel: "skill-worker-model", thinkingLevel: "off", apiKey: "" },
   } });
   cleanup.push(() => hub.close());
   // Known credential text must not corrupt boolean fields in Skill tool JSON.
   hub.connectionManager.rememberSecrets(["false"]);
   const project = await hub.projects.create({ commandId: "skill-project", name: "Skill project", deviceId: "local", workspaceDir: workspace });
-  const ticket = await hub.dispatchTicket({ commandId: "skill-work", title: "验证预置 Skill", goal: "读取并准备任务需要的 Skill", scope: "当前项目", role: "coder", projectId: project.id });
-  await vi.waitFor(async () => {
-    const { ticket: current } = await hub.inspectTicketDetail(ticket.id);
-    expect(current.status, JSON.stringify(current.latestReport)).toBe("ready");
-    expect(current.cleanupPending).not.toBe(true);
-  }, { timeout: 15_000, interval: 25 });
-  const completed = (await hub.inspectTicketDetail(ticket.id)).ticket;
-  const conversation = await hub.harness.conversation(completed.workerConversationId as ConversationId, BACKGROUND_CONTEXT);
-  const results = (await conversation!.context(BACKGROUND_CONTEXT)).messages.filter((message) => message.role === "toolResult" && message.toolName.startsWith("kulo_skill_"));
-  return { hub, requests, results, ticket: completed };
+  const dispatch = async (commandId: string, operations: Array<{ name: string; args: Record<string, unknown> }>) => {
+    activeOperations = operations;
+    stage = 0;
+    const ticket = await hub.dispatchTicket({ commandId, title: "验证预置 Skill", goal: "读取并准备任务需要的 Skill", scope: "当前项目", role: "coder", projectId: project.id });
+    await vi.waitFor(async () => {
+      const { ticket: current } = await hub.inspectTicketDetail(ticket.id);
+      expect(current.status, JSON.stringify(current.latestReport)).toBe("ready");
+      expect(current.cleanupPending).not.toBe(true);
+    }, { timeout: 15_000, interval: 25 });
+    const completed = (await hub.inspectTicketDetail(ticket.id)).ticket;
+    const conversation = await hub.harness.conversation(completed.workerConversationId as ConversationId, BACKGROUND_CONTEXT);
+    const results = (await conversation!.context(BACKGROUND_CONTEXT)).messages.filter((message) => message.role === "toolResult" && message.toolName.startsWith("kulo_skill_"));
+    return { ticket: completed, results };
+  };
+  return { hub, requests, dispatch };
 }
 
-describe.skipIf(!nativeWorkers)("conditional Skills through real Hub Workers", () => {
-  it("detects the executing React workspace, reads applicable guides and materializes into its sandbox", async () => {
+describe.skipIf(!nativeWorkers)("conditional Skills & capability switches through real Hub Workers", () => {
+  it("loads Computer Use guides and platform references when enabled and materializes into sandbox", async () => {
     vi.stubEnv("KULO_COMPUTER_USE", "browser,desktop");
-    const f = await fixture(true, [
+    const f = await createHubFixture();
+    const { ticket, results } = await f.dispatch("skill-work-enabled", [
       { name: "kulo_skill_read", args: { id: "browser-automation" } },
-      { name: "kulo_skill_read", args: { id: "desktop-macos" } },
-      { name: "kulo_skill_read", args: { id: "vercel-react-best-practices" } },
+      { name: "kulo_skill_read", args: { id: "desktop-automation", resource: "references/macos.md" } },
+      { name: "kulo_skill_read", args: { id: "interactive-html" } },
       { name: "kulo_skill_materialize", args: { id: "browser-automation" } },
     ]);
     const initial = catalog(f.requests[0]!);
-    for (const id of ["browser-automation", "desktop-automation", "desktop-macos", ...frontend]) expect(initial).toContain(`"id":"${id}"`);
-    expect(initial).not.toContain('"id":"desktop-linux"'); expect(initial).not.toContain('"id":"desktop-windows"');
-    expect(JSON.stringify(f.requests[0])).not.toContain("# React 性能");
-    expect(f.results).toHaveLength(4);
-    expect(f.results.every((result) => result.role === "toolResult" && !result.isError)).toBe(true);
-    const materialized = f.results.find((result) => result.role === "toolResult" && result.toolName === "kulo_skill_materialize")!;
+    for (const id of ["browser-automation", "desktop-automation", "interactive-html"]) expect(initial).toContain(`"id":"${id}"`);
+    expect(initial).not.toContain('"id":"image-generation"');
+    expect(initial).not.toContain('"id":"video-generation"');
+    expect(initial).not.toContain('"id":"hindsight-knowledge"');
+    expect(results).toHaveLength(4);
+    expect(results.every((result) => result.role === "toolResult" && !result.isError)).toBe(true);
+    const materialized = results.find((result) => result.role === "toolResult" && result.toolName === "kulo_skill_materialize")!;
     const data = JSON.parse(materialized.content.filter((part) => part.type === "text").map((part) => part.text).join("\n"));
-    const browser = (await f.hub.skills.snapshot()).skills.find((skill) => skill.id === "browser-automation")!;
-    expect(data).toMatchObject({ id: browser.id, version: browser.version });
-    expect(data.directory.startsWith(`${f.ticket.scratchDir}${path.sep}`)).toBe(true);
+    expect(data.id).toBe("browser-automation");
+    expect(data.directory.startsWith(`${ticket.scratchDir}${path.sep}`)).toBe(true);
     expect(fs.readFileSync(path.join(data.directory, "SKILL.md"), "utf8")).toContain("kulo_browser");
   });
 
-  it("does not inherit the Hub repository's React stack or disabled desktop capabilities", async () => {
-    vi.stubEnv("KULO_COMPUTER_USE", "");
-    const f = await fixture(false, [{ name: "kulo_skill_read", args: { id: "vercel-react-best-practices" } }]);
+  it("hides both Computer Use tools and guides when Computer Use toggles are turned off", async () => {
+    vi.stubEnv("KULO_COMPUTER_USE", "browser,desktop");
+    const f = await createHubFixture();
+    const server = await startKuloHubServer(f.hub, { host: "127.0.0.1", port: 0 });
+    cleanup.push(() => server.close());
+
+    const before = await f.hub.getCapabilitiesSnapshot();
+    expect(before.computerUse).toEqual({ browserEnabled: true, desktopEnabled: true });
+
+    const res = await fetch(`${server.url}/api/capabilities/computer-use`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", authorization: `Bearer ${HUB_TEST_ADMIN_TOKEN}` },
+      body: JSON.stringify({ browserEnabled: false, desktopEnabled: false, expectedRevision: before.revision, commandId: "cu-off" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ computerUse: { browserEnabled: false, desktopEnabled: false } });
+
+    const rootAgent = await f.hub.rootConversation.agent(BACKGROUND_CONTEXT);
+    expect(rootAgent.callable.map((t) => t.name)).not.toContain("kulo_browser");
+
+    const { ticket, results } = await f.dispatch("skill-work-disabled", [
+      { name: "kulo_skill_read", args: { id: "browser-automation" } },
+      { name: "kulo_skill_read", args: { id: "desktop-automation" } },
+    ]);
     const initial = catalog(f.requests[0]!);
-    expect(initial).toContain('"id":"image-generation"');
-    for (const id of [...frontend, "browser-automation", "desktop-automation", "desktop-macos"]) expect(initial).not.toContain(`"id":"${id}"`);
-    expect(f.results).toHaveLength(1);
-    expect(f.results[0]).toMatchObject({ isError: true });
-    expect(JSON.stringify(f.results[0])).toContain("不适用于当前执行设备或项目");
+    expect(initial).toContain('"id":"interactive-html"');
+    expect(initial).not.toContain('"id":"browser-automation"');
+    expect(initial).not.toContain('"id":"desktop-automation"');
+    expect(results).toHaveLength(2);
+    expect(results.every((r) => r.isError)).toBe(true);
+
+    const workerConv = (await f.hub.harness.conversation(ticket.workerConversationId as ConversationId, BACKGROUND_CONTEXT))!;
+    const workerCallable = (await workerConv.agent(BACKGROUND_CONTEXT)).callable.map((t) => t.name);
+    expect(workerCallable).not.toContain("kulo_browser");
+    expect(workerCallable).not.toContain("kulo_desktop");
+  });
+
+  it("exposes hindsight-knowledge only when both long-term memory and the independent knowledge guide switch are enabled", async () => {
+    vi.stubEnv("KULO_COMPUTER_USE", "");
+    const f = await createHubFixture({
+      memory: { enabled: true, knowledgeGuidanceEnabled: false },
+    });
+    const server = await startKuloHubServer(f.hub, { host: "127.0.0.1", port: 0 });
+    cleanup.push(() => server.close());
+
+    // Initially off -> hidden and denied even though long-term memory is enabled
+    const firstRun = await f.dispatch("skill-memory-guide-off", [{ name: "kulo_skill_read", args: { id: "hindsight-knowledge" } }]);
+    expect(catalog(f.requests[0]!)).not.toContain('"id":"hindsight-knowledge"');
+    expect(firstRun.results[0]).toMatchObject({ isError: true });
+
+    // Enable independent knowledge guidance switch via Long-Term Memory HTTP endpoint
+    const settings = f.hub.getSettingsView();
+    const res = await fetch(`${server.url}/api/memory/service/knowledge-guidance`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${HUB_TEST_ADMIN_TOKEN}` },
+      body: JSON.stringify({ enabled: true, expectedRevision: settings.blocks.memory.revision }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json() as { connection: { knowledgeGuidanceEnabled?: boolean } }).connection.knowledgeGuidanceEnabled).toBe(true);
+
+    const secondRun = await f.dispatch("skill-memory-guide-on", [{ name: "kulo_skill_read", args: { id: "hindsight-knowledge" } }]);
+    expect(catalog(f.requests[f.requests.length - 1]!)).toContain('"id":"hindsight-knowledge"');
+    expect(secondRun.results[0]).toMatchObject({ isError: false });
   });
 });

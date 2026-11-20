@@ -30,12 +30,12 @@ function TableBody({ columns, rows, caption, sort, onSortChange, selection }: {
         onSelectionChange={selection?.onChange} disabledKeys={selection?.isDisabled ? rows.map((row) => row.id) : undefined}
         disabledBehavior="selection" aria-invalid={selection?.error ? true : undefined} aria-describedby={selection?.error ? errorId : undefined}>
         <Table.Header>
-          {selection && <Table.Column id="__kulo-selection" textValue={tr("选择", "Select")}>
+          {selection && <Table.Column id="__kulo-selection" className="whitespace-nowrap" textValue={tr("选择", "Select")}>
             {selection.mode === "multiple" ? <Checkbox slot="selection" aria-label={tr("选择本页全部行", "Select all rows on this page")} isDisabled={selection.isDisabled || !rows.length}>
               <Checkbox.Content className="kulo-genui-table-check"><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control></Checkbox.Content>
             </Checkbox> : <span>{tr("选择", "Select")}</span>}
           </Table.Column>}
-          {columns.map((column, index) => <Table.Column key={column.key} id={column.key} isRowHeader={index === 0} allowsSorting>
+          {columns.map((column, index) => <Table.Column key={column.key} id={column.key} isRowHeader={index === 0} allowsSorting className="whitespace-nowrap">
             {column.label}
           </Table.Column>)}
         </Table.Header>

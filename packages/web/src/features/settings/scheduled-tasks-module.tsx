@@ -109,7 +109,7 @@ export function ScheduledTasksModule({ tickets, loaded, connected, loadError, on
       <Table.ScrollContainer className="kulo-settings-table-scroll">
         <Table.Content aria-label={t("定时任务列表", "Scheduled task list")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content">
           <Table.Header>
-            <Table.Column id="task" isRowHeader className="kulo-settings-table-column">{t("任务", "Task")}</Table.Column>
+            <Table.Column id="task" isRowHeader className="kulo-settings-table-column kulo-settings-table-primary">{t("任务", "Task")}</Table.Column>
             <Table.Column id="time" className="kulo-settings-table-column kulo-settings-table-meta">{t("执行时间", "Run time")}</Table.Column>
             <Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-meta">{t("状态", "Status")}</Table.Column>
             <Table.Column id="actions" className="kulo-settings-table-column kulo-settings-table-actions">{t("操作", "Actions")}</Table.Column>
@@ -120,10 +120,10 @@ export function ScheduledTasksModule({ tickets, loaded, connected, loadError, on
               const at = schedule.nextRunAt ?? (schedule.repeatEverySeconds === undefined ? schedule.executeAt : null);
               const canStop = !["ready", "stopped", "closed"].includes(task.status);
               return <Table.Row key={task.id} id={task.id} textValue={task.title}>
-                <Table.Cell className="kulo-settings-table-cell">
-                  <div className="flex min-w-0 flex-col items-start gap-1">
-                    <span className="kulo-item-title break-words">{task.title}</span>
-                    {task.userSummary && <span className="kulo-item-description whitespace-pre-wrap break-words">{task.userSummary}</span>}
+                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-primary">
+                  <div className="kulo-settings-table-stack">
+                    <span className="kulo-item-title">{task.title}</span>
+                    {task.userSummary && <span className="kulo-item-description whitespace-pre-wrap">{task.userSummary}</span>}
                   </div>
                 </Table.Cell>
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta">

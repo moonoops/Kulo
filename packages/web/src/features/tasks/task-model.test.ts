@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TicketCardView } from "@kulo/protocol";
-import { reconcileTaskRows, taskHasExpired, taskIsRecovering, taskNeedsAttention, taskRunningMs, taskStatusLabel, taskSummary, taskTimeLabel, visibleTaskCards } from "./task-model";
+import { reconcileTaskRows, taskDurationLabel, taskHasExpired, taskIsRecovering, taskNeedsAttention, taskRunningMs, taskStatusLabel, taskSummary, taskTimeLabel, visibleTaskCards } from "./task-model";
 
 const hour = 3_600_000;
 const ticket = (id: string, changes: Partial<TicketCardView> = {}): TicketCardView => ({
@@ -64,9 +64,15 @@ describe("global background tasks", () => {
     const active = ticket("active", { accumulatedRunningMs: 120_000, startedRunningAt: 600_000 });
     expect(taskRunningMs(active, 780_000)).toBe(300_000);
     expect(taskTimeLabel(active, 780_000)).toBe("已运行 5 分钟");
+    expect(taskDurationLabel(active, 780_000)).toBe("5 分钟");
     expect(taskTimeLabel({ ...active, status: "waiting", waiting: { reason: "env", since: 720_000 } }, 780_000)).toBe("已等待 1 分钟");
+    expect(taskDurationLabel({ ...active, status: "waiting", waiting: { reason: "env", since: 720_000 } }, 780_000)).toBe("1 分钟");
+    expect(taskDurationLabel({ ...active, status: "waiting", waiting: undefined }, 780_000)).toBeUndefined();
     expect(taskTimeLabel({ ...active, status: "queued", queuedAt: 720_000 }, 780_000)).toBe("已排队 1 分钟");
+    expect(taskDurationLabel({ ...active, status: "queued", queuedAt: 720_000 }, 780_000)).toBe("1 分钟");
     expect(taskRunningMs(ticket("unknown"), 780_000)).toBeUndefined();
+    expect(taskDurationLabel(ticket("unknown"), 780_000)).toBeUndefined();
+    expect(taskDurationLabel(ticket("unknown", { status: "ready" }), 780_000)).toBeUndefined();
     expect(taskTimeLabel(ticket("unknown", { status: "ready" }), 780_000)).toBe("用时未记录");
   });
 

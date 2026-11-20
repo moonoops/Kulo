@@ -1,4 +1,6 @@
 export type SystemPermissionKind = "microphone" | "accessibility" | "screen";
+export type NativeAppPermissionKind = "full-disk-access" | "automation";
+export type SystemPermissionSettingsKind = SystemPermissionKind | NativeAppPermissionKind;
 
 export type SystemPermissionState = "granted" | "not-determined" | "denied" | "restricted" | "unknown" | "unsupported";
 

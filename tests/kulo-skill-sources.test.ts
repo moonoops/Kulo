@@ -94,7 +94,7 @@ describe("official skills source adapter", () => {
     expect(fs.readdirSync(f.stagingDir)).toEqual([]);
   });
 
-  it.each(["browser-automation", "desktop-automation", "vercel-react-best-practices", "vercel-composition-patterns", "web-design-guidelines"])("installs bundled %s as its root skill with nested upstream guidance", async (name) => {
+  it.each(["browser-automation", "desktop-automation"])("installs bundled %s as its root skill with provenance metadata", async (name) => {
     const f = fixture(); const source = path.resolve("packages/hub/skills", name);
     const result = await installSkillSource(parseSkillSource(source), { stagingDir: f.stagingDir });
     expect(fs.readFileSync(path.join(result.directory, "SKILL.md"), "utf8")).toContain(`name: ${name}`);

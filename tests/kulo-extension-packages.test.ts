@@ -7,14 +7,16 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BILLION_CONTEXT_KERNEL_VERSION, discoverExtensionPackages, extensionInstallEnvironment,
-  inspectBillionContextPackage, installBillionContextPackage, loadBillionContextPackage, removeBillionContextPackage,
-  terminateExtensionInstaller,
+  inspectAvailableBillionContextPackage, inspectBillionContextPackage, inspectBundledBillionContextPackage,
+  installBillionContextPackage, loadAvailableBillionContextPackage, loadBillionContextPackage,
+  loadBundledBillionContextPackage, removeBillionContextPackage, resolveExtensionNpmCommand,
+  summarizeExtensionInstallFailure, terminateExtensionInstaller,
 } from "../packages/hub/src/extension-packages.js";
 
 const roots: string[] = [];
-afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 
-function fixture(options: { version?: string; fail?: boolean; hang?: boolean; realKernel?: boolean } = {}) {
+function fixture(options: { version?: string; fail?: boolean; failStderr?: string; hang?: boolean; realKernel?: boolean } = {}) {
   const stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kulo-extension-packages-")));
   roots.push(stateDir);
   const log = path.join(stateDir, "install.json");
@@ -23,6 +25,7 @@ function fixture(options: { version?: string; fail?: boolean; hang?: boolean; re
   fs.writeFileSync(npm, `const fs=require('node:fs'),path=require('node:path');
 const args=process.argv.slice(2);if(!args.includes('--ignore-scripts'))process.exit(17);
 fs.writeFileSync(${JSON.stringify(log)},JSON.stringify({args,secret:process.env.KULO_EXTENSION_TEST_SECRET,home:process.env.HOME,userconfig:process.env.NPM_CONFIG_USERCONFIG,globalconfig:process.env.NPM_CONFIG_GLOBALCONFIG}));
+${options.failStderr ? `process.stderr.write(${JSON.stringify(options.failStderr)});` : ""}
 ${options.fail ? "process.exit(19);" : ""}
 ${options.hang ? "setInterval(()=>{},1000);return;" : ""}
 const dir=path.join(process.cwd(),'node_modules/acp-kernel');fs.mkdirSync(path.join(dir,'dist'),{recursive:true});
@@ -180,5 +183,79 @@ describe("official Chord extension package foundation", () => {
     const loaded = await loadBillionContextPackage(alias);
     await expect(removeBillionContextPackage(f.stateDir)).rejects.toMatchObject({ code: "extension_running" });
     await loaded.close(); await removeBillionContextPackage(f.stateDir);
+  });
+
+  it("discovers and loads the bundled kernel offline without npm or stateDir installation", async () => {
+    const stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kulo-extension-bundled-")));
+    roots.push(stateDir);
+    const bundled = await inspectBundledBillionContextPackage();
+    expect(bundled).toMatchObject({ id: "billion-context", packageName: "acp-kernel", version: BILLION_CONTEXT_KERNEL_VERSION, bundled: true });
+    expect(await inspectAvailableBillionContextPackage(stateDir)).toEqual(bundled);
+    expect(await inspectAvailableBillionContextPackage(stateDir, { includeBundled: false })).toBeNull();
+    const directBundled = await loadBundledBillionContextPackage();
+    expect(directBundled.info.bundled).toBe(true);
+    await directBundled.close();
+    const loaded = await loadAvailableBillionContextPackage(stateDir);
+    try {
+      const kernel = loaded.kernel as unknown as typeof import("acp-kernel");
+      const core = kernel.createCore();
+      const config = kernel.defaultConfig(32_000, { preserveRecentMessages: 0, preserveRecentTokens: 0 });
+      const messages: import("acp-kernel").CoreMessage[] = [
+        { id: "m1", role: "user", contentType: "text", text: "Bundled check alpha-19." },
+        { id: "m2", role: "assistant", contentType: "text", text: "Completed bundled verification. ".repeat(200) },
+        { id: "m3", role: "user", contentType: "text", text: "Next step." },
+      ];
+      const turn = core.processTurn({ state: kernel.createInitialState(), messages, config, tokenCount: 2000, renderTags: "none" });
+      const applied = core.applyCompression({
+        state: turn.state, messages, config,
+        ranges: [{ startRef: turn.state.messageRefs.byRaw.m1!, endRef: turn.state.messageRefs.byRaw.m2!, summary: "Bundled check alpha-19 verified and completed; retain this exact value when continuing the task." }],
+      });
+      expect(applied.result.errors).toEqual([]);
+      expect(applied.result.blocksCreated).toBe(1);
+    } finally { await loaded.close(); }
+    // Even with a minimal macOS Finder PATH lacking npm, offline install from bundled kernel succeeds.
+    vi.stubEnv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+    const installed = await installBillionContextPackage({ stateDir });
+    expect(installed).toMatchObject({ id: "billion-context", version: BILLION_CONTEXT_KERNEL_VERSION, adapterVersion: "0.1.0" });
+    expect(await inspectBillionContextPackage(stateDir)).toEqual(installed);
+    const loadedManaged = await loadBillionContextPackage(stateDir);
+    await loadedManaged.close();
+    // A corrupted unmanaged directory in stateDir must still fail instead of silently falling back to bundled.
+    const badStateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kulo-extension-unmanaged-")));
+    roots.push(badStateDir);
+    fs.mkdirSync(path.join(badStateDir, "extensions/packages/billion-context"), { recursive: true });
+    await expect(inspectAvailableBillionContextPackage(badStateDir)).rejects.toMatchObject({ code: "extension_directory_unmanaged" });
+  });
+
+  it("resolves fallback npm paths for GUI launches and summarizes redacted installer stderr", async () => {
+    const resolved = await resolveExtensionNpmCommand(
+      { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: "/Users/example" },
+      undefined,
+      { platform: "darwin", execPath: "/Applications/Kulo Dev.app/Contents/Resources/runtime/node", checkExecutable: async (file) => file === "/opt/homebrew/bin/npm" },
+    );
+    expect(resolved.command).toEqual(["/opt/homebrew/bin/npm"]);
+    expect(resolved.extraPathDirs).toEqual(["/Applications/Kulo Dev.app/Contents/Resources/runtime", "/opt/homebrew/bin"]);
+    await expect(resolveExtensionNpmCommand(
+      { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+      undefined,
+      { platform: "darwin", execPath: "/Applications/Kulo Dev.app/Contents/Resources/runtime/node", checkExecutable: async () => false },
+    )).rejects.toMatchObject({ code: "extension_install_failed", message: expect.stringContaining("未找到 npm 命令") });
+
+    expect(summarizeExtensionInstallFailure(1, "Error: spawn npm ENOENT")).toContain("未找到 npm 命令");
+    expect(summarizeExtensionInstallFailure(1, "npm error code ENOTFOUND\ngetaddrinfo ENOTFOUND registry.npmjs.org")).toContain("无法连接 npm 源");
+    expect(summarizeExtensionInstallFailure(1, "npm error code SELF_SIGNED_CERT_IN_CHAIN")).toContain("TLS 证书校验失败");
+    expect(summarizeExtensionInstallFailure(1, "npm error code EACCES")).toContain("安装目录权限不足");
+    expect(summarizeExtensionInstallFailure(1, "npm error code E404")).toContain("E404");
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const f = fixture({ fail: true, failStderr: "npm error code ENOTFOUND http://user:proxy-secret-value@127.0.0.1:7890 token=synthetic-npm-secret-value\n" });
+    await expect(installBillionContextPackage(f)).rejects.toMatchObject({
+      code: "extension_install_failed",
+      message: expect.stringContaining("无法连接 npm 源"),
+    });
+    expect(errorSpy).toHaveBeenCalled();
+    const logged = errorSpy.mock.calls.flat().join("\n");
+    expect(logged).not.toContain("synthetic-npm-secret-value");
+    expect(logged).not.toContain("proxy-secret-value");
   });
 });
