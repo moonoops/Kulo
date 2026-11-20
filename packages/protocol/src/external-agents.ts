@@ -233,6 +233,59 @@ export interface AgentConfigurationWorkspace {
   draft?: AgentConfigurationDraft;
 }
 
+export interface ExternalAgentScanCandidate {
+  kind: ExternalAgentKind;
+  label: string;
+  status: "supported" | "experimental" | "reserved";
+  envId: string;
+  envName: string;
+  online: boolean;
+  installed: boolean;
+  alreadyConnected: boolean;
+  connectedClientId?: string;
+  connectedVerified?: boolean;
+  executable?: string;
+  version?: string;
+  error?: string;
+}
+
+export interface ExternalAgentScanResult {
+  scannedAt: number;
+  devices: Array<{ id: string; name: string; online: boolean }>;
+  candidates: ExternalAgentScanCandidate[];
+}
+
+export interface ExternalAgentQuickConnectRequest {
+  kind: ExternalAgentKind;
+  envId: string;
+  commandId: string;
+  runTest?: boolean;
+  executable?: string;
+  agentRef?: string;
+  cdpUrl?: string;
+  experimental?: boolean;
+  label?: string;
+  whenToUse?: string;
+  prompt?: string;
+  modelId?: string;
+  thinkingLevel?: string;
+  allowSubagents?: boolean;
+  dispatchPolicy?: import("./agent-routing.js").AgentDispatchPolicy;
+}
+
+export interface ExternalAgentQuickConnectResult {
+  agentId: string;
+  clientId: string;
+  kind: ExternalAgentKind;
+  envId: string;
+  label: string;
+  enabled: boolean;
+  verificationLevel: "protocol" | "roundtrip";
+  version?: string;
+  modelsCount: number;
+  settings: import("./domain.js").KuloSettingsView;
+}
+
 export interface ExternalTicketExecution {
   binding: ExternalAgentBinding;
   modelId?: string;

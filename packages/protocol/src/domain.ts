@@ -265,6 +265,20 @@ export interface TopicActivity {
   lastAssistantMessageId?: number;
 }
 
+export type MainSessionNotificationKind =
+  | "reply_completed"
+  | "attention_required"
+  | "run_failed";
+
+export interface MainSessionNotificationEvent {
+  id: string;
+  kind: MainSessionNotificationKind;
+  topicId: string;
+  topicTitle?: string;
+  summary?: string;
+  createdAt: number;
+}
+
 export interface TopicSummary {
   id: string;
   conversationId: number;
@@ -273,6 +287,9 @@ export interface TopicSummary {
   pinned?: boolean;
   archived?: boolean;
   draft?: boolean;
+  origin?: "user" | "proactive";
+  situationId?: string;
+  proactiveSeq?: number;
   createdAt: number;
   updatedAt: number;
   projectId?: string | null;

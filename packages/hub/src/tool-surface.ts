@@ -39,6 +39,7 @@ export interface ToolSurfaceRuntimeState {
   settingsModule?: SettingsAssistantModule;
   settingsActive?: boolean;
   hasStagedDeviceJoin?: boolean;
+  assistantActive?: boolean;
   androidTargets?: readonly EnvNodeDescriptor[];
 }
 
@@ -610,6 +611,8 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     }),
   ),
   ...[
+    "kulo_agent_configuration_scan",
+    "kulo_agent_configuration_connect",
     "kulo_agent_configuration_read",
     "kulo_agent_configuration_prepare",
     "kulo_agent_configuration_update",
@@ -670,6 +673,55 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
       windowGuard: (s) => s.settingsModule === "machines" || Boolean(s.hasStagedDeviceJoin),
     }),
   ),
+  {
+    name: "kulo_assistant_digests",
+    audiences: ["chat"],
+    tier: "deferred",
+    scope: "global",
+    requires: (s) => Boolean(s.assistantActive),
+  },
+  {
+    name: "kulo_assistant_event_read",
+    audiences: ["chat"],
+    tier: "deferred",
+    scope: "global",
+    requires: (s) => Boolean(s.assistantActive),
+  },
+  {
+    name: "kulo_assistant_read",
+    audiences: ["chat", "settings"],
+    tier: "deferred",
+    tierFor: (s) => (s.audience === "settings" && s.settingsModule === "connections" ? "resident" : "deferred"),
+    scope: "global",
+  },
+  {
+    name: "kulo_assistant_configure",
+    audiences: ["chat", "settings"],
+    tier: "deferred",
+    tierFor: (s) => (s.audience === "settings" && s.settingsModule === "connections" ? "resident" : "deferred"),
+    scope: "global",
+  },
+  {
+    name: "kulo_spark_mail",
+    audiences: ["chat", "settings"],
+    tier: "deferred",
+    tierFor: (s) => (s.audience === "settings" && s.settingsModule === "connections" ? "resident" : "deferred"),
+    scope: "global",
+  },
+  {
+    name: "kulo_home_assistant",
+    audiences: ["chat", "settings"],
+    tier: "deferred",
+    tierFor: (s) => (s.audience === "settings" && s.settingsModule === "connections" ? "resident" : "deferred"),
+    scope: "global",
+  },
+  {
+    name: "kulo_lark_bridge",
+    audiences: ["chat", "settings"],
+    tier: "deferred",
+    tierFor: (s) => (s.audience === "settings" && s.settingsModule === "connections" ? "resident" : "deferred"),
+    scope: "global",
+  },
 ];
 
 const ANDROID_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = ANDROID_TOOL_CATALOG.map((definition) => {

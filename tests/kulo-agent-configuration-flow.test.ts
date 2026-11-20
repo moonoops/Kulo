@@ -191,6 +191,66 @@ describe("external agent setup through the real Hub settings Agent", () => {
     expect(f.native.mock.calls.map(([, request]) => request.operation)).toEqual(["probe"]);
   });
 
+  it("scans installed clients first and connects in one step when confirmed", async () => {
+    const f = await fixture();
+    const views: KuloSettingsView[] = [];
+    cleanup.push(f.hub.subscribe({ onSettings: (view) => views.push(view) }));
+    f.native.mockImplementation(async (envId, request): Promise<ExternalAgentResponse> => {
+      expect(envId).toBe(f.device.id);
+      if (request.operation === "detect") {
+        const installed = request.kind === "codex" || request.kind === "claude-code";
+        return {
+          type: "detection",
+          detection: {
+            ...structuredClone(f.detection),
+            kind: request.kind,
+            installed,
+            ...(installed ? { version: `${request.kind}-1.0` } : { executable: undefined, version: undefined, error: "not found" }),
+          },
+        };
+      }
+      if (request.operation === "probe") {
+        return {
+          type: "detection",
+          detection: {
+            ...structuredClone(f.detection),
+            kind: request.binding.kind,
+            version: `${request.binding.kind}-1.0`,
+            models: [{ id: "native-default", name: "Native Default", isDefault: true }],
+          },
+        };
+      }
+      throw new Error(`Unexpected native request: ${request.operation}`);
+    });
+    let scannedKinds: string[] = [];
+    f.provider.setResponses([
+      () => tool("scan"),
+      (context) => {
+        const result = toolValue<{ candidates: Array<{ kind: string; installed: boolean; alreadyConnected: boolean }> }>(context, "scan");
+        scannedKinds = result.candidates.filter((item) => item.installed && !item.alreadyConnected).map((item) => item.kind);
+        return text("在 Settings test Mac 上检测到可连接的 Codex 和 Claude Code，是否帮你连接？");
+      },
+    ]);
+    await f.send("帮我连接本地 Agent", "agent-fast-scan");
+    await settled(f.hub, "检测到可连接的 Codex 和 Claude Code");
+    expect(scannedKinds).toEqual(["codex", "claude-code"]);
+
+    let connectedResult!: { agentId: string; enabled: boolean; verificationLevel: string };
+    f.provider.setResponses([
+      () => tool("connect", { client_kind: "codex", env_id: f.device.id, run_test: false }),
+      (context) => {
+        connectedResult = toolValue(context, "connect");
+        return text("已完成 Codex 协议检查并保存。");
+      },
+    ]);
+    await f.send("先只做协议检查并保存 Codex", "agent-fast-connect");
+    await settled(f.hub, "已完成 Codex 协议检查并保存");
+    expect(connectedResult).toMatchObject({ enabled: false, verificationLevel: "protocol" });
+    const role = f.hub.getSettingsView().blocks.roles.value[connectedResult.agentId];
+    expect(role).toMatchObject({ enabled: false, external: { kind: "codex", envId: f.device.id, version: "codex-1.0" } });
+    expect(views.some((view) => Boolean(view.blocks.roles.value[connectedResult.agentId]))).toBe(true);
+  });
+
   it("keeps setup guides out of normal chat and automatic Worker skill catalogs", async () => {
     const f = await fixture(); const traces: TranscriptContext[] = [];
     expect((await f.hub.skills.snapshot()).skills.some((skill) => skill.id === "agent-configuration")).toBe(false);

@@ -32,6 +32,8 @@ function fixture() {
     path.join(home, "Library/Containers/com.apple.MobileSMS.MessagesExtension/Data/private.db"),
     path.join(home, "Library/Group Containers/group.com.apple.mail/private.db"),
     path.join(home, "Library/Group Containers/com.apple.MailPersonaStorage/private.db"),
+    path.join(home, "Library/Group Containers/group.com.apple.usernoted/db2/db"),
+    path.join(home, "Library/Group Containers/group.com.apple.usernoted/db2/db-wal"),
   ];
   for (const file of privateFiles) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -45,6 +47,7 @@ describe.skipIf(process.platform !== "darwin")("native application data remains 
     const f = fixture();
     expect(defaultProtectedPaths()).toEqual(expect.arrayContaining(f.privateRoots));
     for (const file of f.privateFiles) expect(isApplicationPrivatePath(file)).toBe(true);
+    expect(isApplicationPrivatePath("/private/var/folders/ab/cd123456/0/com.apple.notificationcenter/db2/db")).toBe(true);
     expect(isApplicationPrivatePath(f.project)).toBe(false);
     expect(isApplicationPrivatePath(path.join(f.library, "Containers/com.example.Project/Data"))).toBe(false);
   });

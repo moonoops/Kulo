@@ -115,7 +115,7 @@ export class KuloAndroidNotifications {
       const completion = this.#host.models.completeSimple(model, { messages: [
         { role: "system", content: INSTRUCTIONS, timestamp: Date.now() },
         { role: "user", content: this.#host.redact(JSON.stringify({ userRules: request.ruleText, defaultRule: request.defaultRule, untrustedNotification: request.notification })), timestamp: Date.now() },
-      ] }, { signal: controller.signal, maxTokens: Math.min(1500, model.maxTokens || 1500), cacheRetention: "none" });
+      ] }, { signal: controller.signal, maxTokens: Math.min(1500, model.maxTokens || 1500), cacheRetention: "none", disableNativeTools: true } as Parameters<Models["completeSimple"]>[2]);
       physicalStarted = true;
       void completion.finally(() => this.#controllers.delete(controller)).catch(() => {});
       const aborted = new Promise<never>((_resolve, reject) => {

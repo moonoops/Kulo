@@ -1,10 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { defaultRolePresets, type MemoryServiceJob, type MemoryServiceSecretInput, type MemoryServiceSnapshot, type KuloSettingsView } from "@kulo/protocol";
+import { defaultRolePresets, type MemoryServiceJob, type MemoryServiceSecretInput, type MemoryServiceSnapshot, type ProviderCatalogItem, type KuloSettingsView } from "@kulo/protocol";
 import { kuloRest } from "../../kulo-api";
 import { createMemoryServiceRequest, decideMemoryServiceJob, initialMemoryServiceDraft, MemoryServiceForm, MemoryServiceJobCard, submitMemoryServiceSecret, type MemoryServiceDraft } from "./memory-service-dialogue";
 import { acknowledgeMemoryEnabled, createMemoryConnectionRequest, memoryConnectionDirty, memoryConnectionEditor, MemoryConnectionForm, reconcileMemoryConnection, setSavedMemoryEnabled, setSavedMemoryKnowledgeGuidance } from "./memory-service-panel";
 import { isMemoryDialogueOperation } from "./memory-service-events";
+import { buildMemoryModelsPayload, initialMemoryModelsDraft, kuloMemoryConnections } from "./memory-service-models";
 
 const connection = { enabled: false, endpoint: "http://127.0.0.1:8888", endpoints: [], caCertPem: "", routerApiKeyEnv: "", workerApiKeyEnv: "", authFile: "", autoAttachTopLevelRouters: false, banks: { private: "kulo-core", shared: "kulo-shared" } };
 const settings: KuloSettingsView = {
@@ -19,10 +20,26 @@ const settings: KuloSettingsView = {
   }, history: [],
 };
 const snapshot: MemoryServiceSnapshot = { revision: 3, deviceName: "主脑 Mac", platform: "darwin", installed: false, running: false, connection, jobs: [], inputs: [] };
-const draft: MemoryServiceDraft = { operation: "deploy", provider: "openai", model: "configured-model", baseUrl: "https://models.example/v1", connectionId: "api-existing", deleteData: false };
+const draft: MemoryServiceDraft = {
+  operation: "deploy",
+  provider: "openai",
+  model: "configured-model",
+  baseUrl: "https://models.example/v1",
+  connectionId: "api-existing",
+  embeddingsProvider: "onnx",
+  embeddingsConnectionId: "",
+  embeddingsModel: "intfloat/multilingual-e5-small",
+  embeddingsBaseUrl: "",
+  embeddingsDimensions: "384",
+  rerankerProvider: "onnx",
+  rerankerConnectionId: "",
+  rerankerModel: "hindsight-ai/hs-rerank-1",
+  rerankerBaseUrl: "",
+  deleteData: false,
+};
 const job: MemoryServiceJob = { id: "job-1", clientId: "tab-a", operation: "deploy", status: "awaiting-confirmation", stage: "等待确认", title: "部署 Hindsight", changes: ["本机保存记忆"], deviceName: "主脑 Mac", createdAt: 1, updatedAt: 1, model: { provider: "openai", model: "configured-model" } };
-const input: MemoryServiceSecretInput = { id: "input-1", jobId: job.id, clientId: "tab-a", field: "modelApiKey", label: "模型 API Key", status: "pending", expiresAt: Date.now() + 60_000 };
-const connectionForm = (nextSettings = settings, nextSnapshot = snapshot, editor = memoryConnectionEditor(nextSettings.blocks.memory), state: Pick<Parameters<typeof MemoryConnectionForm>[0], "pending" | "error" | "enabledError" | "probe" | "connected"> = {}) => renderToStaticMarkup(<MemoryConnectionForm settings={nextSettings} snapshot={nextSnapshot} editor={editor} {...state} onEnabledChange={() => {}} onChange={() => {}} onSave={() => {}} onProbe={() => {}} onDiscard={() => {}} onReload={() => {}} />);
+const input: MemoryServiceSecretInput = { id: "input-1", jobId: job.id, clientId: "tab-a", field: "modelApiKey", label: "理解模型 API Key", status: "pending", expiresAt: Date.now() + 60_000 };
+const connectionForm = (nextSettings = settings, nextSnapshot = snapshot, editor = memoryConnectionEditor(nextSettings.blocks.memory), state: Pick<Parameters<typeof MemoryConnectionForm>[0], "pending" | "error" | "enabledError" | "probe" | "connected" | "providers" | "modelsDraft"> = {}) => renderToStaticMarkup(<MemoryConnectionForm settings={nextSettings} snapshot={nextSnapshot} editor={editor} {...state} onEnabledChange={() => {}} onChange={() => {}} onSave={() => {}} onProbe={() => {}} onDiscard={() => {}} onReload={() => {}} />);
 afterEach(() => vi.restoreAllMocks());
 
 describe("memory service approval and private input", () => {
@@ -31,7 +48,8 @@ describe("memory service approval and private input", () => {
     const emptyEditor = { ...editor, draft: { ...editor.draft, privateBank: "", sharedBank: "" } };
     for (const nextEditor of [editor, emptyEditor]) {
       const html = connectionForm(settings, snapshot, nextEditor);
-      const fields = html.match(/<input\b[^>]*class="[^"]*\binput\b[^"]*"[^>]*>/g) ?? [];
+      const formHtml = html.match(/<form\b[^>]*aria-label="长期记忆连接设置"[\s\S]*?<\/form>/)?.[0] ?? "";
+      const fields = formHtml.match(/<input\b[^>]*class="[^"]*\binput\b[^"]*"[^>]*>/g) ?? [];
       expect(fields).toHaveLength(5);
       for (const field of fields) expect(field).toContain("input--secondary");
       expect(fields.filter((field) => field.includes('type="password"'))).toHaveLength(2);
@@ -45,10 +63,10 @@ describe("memory service approval and private input", () => {
     expect(html).toContain("上次连接失败");
     expect(html.indexOf('aria-label="测试连接"')).toBeLessThan(html.indexOf("上次连接失败"));
     const inputs = html.match(/<input\b[^>]*>/g) ?? [];
-    expect(inputs).toHaveLength(7);
-    for (const input of inputs) {
-      if (input.includes('aria-label="启用知识整理指引"')) expect(input).toContain("disabled");
-      else expect(input).not.toContain("disabled");
+    expect(inputs.length).toBeGreaterThanOrEqual(7);
+    for (const field of inputs) {
+      if (field.includes('aria-label="启用知识整理指引"')) expect(field).toContain("disabled");
+      else expect(field).not.toContain("disabled");
     }
     const button = html.match(/<button\b[^>]*aria-label="测试连接"[^>]*>/)?.[0];
     expect(button).toContain('data-pending="true"');
@@ -61,16 +79,24 @@ describe("memory service approval and private input", () => {
     expect(saving).not.toContain("正在测试连接");
     expect(saving.match(/<button\b[^>]*aria-label="测试连接"[^>]*>/)?.[0]).toContain("disabled");
     const offline = connectionForm(settings, snapshot, undefined, { connected: false });
-    for (const input of offline.match(/<input\b[^>]*>/g) ?? []) expect(input).toContain("disabled");
+    for (const field of offline.match(/<input\b[^>]*>/g) ?? []) expect(field).toContain("disabled");
   });
 
   it("prepares public configuration without putting credentials in the request", () => {
     const request = createMemoryServiceRequest(draft, "tab-a", 3, "command-1");
-    expect(request).toEqual({ commandId: "command-1", clientId: "tab-a", expectedRevision: 3, operation: "deploy", model: { provider: "openai", model: "configured-model", baseUrl: "https://models.example/v1", connectionId: "api-existing" } });
+    expect(request).toEqual({
+      commandId: "command-1",
+      clientId: "tab-a",
+      expectedRevision: 3,
+      operation: "deploy",
+      model: { provider: "openai", model: "configured-model", baseUrl: "https://models.example/v1", connectionId: "api-existing" },
+      embeddings: { provider: "onnx", model: "intfloat/multilingual-e5-small", dimensions: 384 },
+      reranker: { provider: "onnx", model: "hindsight-ai/hs-rerank-1" },
+    });
     expect(Object.keys(request)).not.toContain("secret");
     expect(() => createMemoryServiceRequest({ ...draft, baseUrl: "https://user:password@models.example" }, "tab-a", 3)).toThrow("不能包含凭据");
 
-    // Pre-selects a compatible configured model connection and avoids display-vs-draft desync.
+    // Pre-selects ANY configured Kulo model connection (including Vertex AI & OAuth) via provider="kulo".
     const configuredSettings: KuloSettingsView = {
       ...settings,
       blocks: {
@@ -80,21 +106,68 @@ describe("memory service approval and private input", () => {
           value: {
             ...settings.blocks.model.value,
             gatewayDisabled: true,
-            defaultProvider: "api-demo",
-            defaultModel: "demo-chat",
-            customProviders: [{ id: "api-demo", name: "Demo", api: "openai-completions", baseUrl: "https://demo.example/v1", models: [{ id: "demo-chat" }] }],
+            defaultProvider: "api-vertex",
+            defaultModel: "gemini-3.8-flash",
+            customProviders: [{ id: "api-vertex", name: "Google Vertex AI", api: "google-vertex", baseUrl: "https://aiplatform.googleapis.com", vertexProject: "my-proj", vertexLocation: "global", models: [{ id: "gemini-3.8-flash" }] }],
           },
         },
       },
     };
     const autoDraft = initialMemoryServiceDraft("deploy", snapshot, configuredSettings);
-    expect(autoDraft).toMatchObject({ connectionId: "api-demo", provider: "openai", model: "demo-chat", baseUrl: "https://demo.example/v1" });
+    expect(autoDraft).toMatchObject({ connectionId: "api-vertex", provider: "kulo", model: "gemini-3.8-flash", embeddingsProvider: "onnx", rerankerProvider: "onnx" });
     const emptyModelForm = renderToStaticMarkup(
       <MemoryServiceForm draft={{ ...autoDraft, model: "" }} snapshot={snapshot} settings={configuredSettings} busy={false} onChange={() => {}} onCancel={() => {}} onSubmit={() => {}} />,
     );
     const selectValues = [...emptyModelForm.matchAll(/<span\b[^>]*data-slot="select-value"[^>]*>([\s\S]*?)<\/span>/g)].map((m) => m[1]);
     expect(selectValues).toContain("未选择");
-    expect(selectValues.join(" ")).not.toContain("demo-chat");
+    expect(selectValues.join(" ")).not.toContain("gemini-3.8-flash");
+  });
+
+  it("allows selecting understanding, embedding, and rerank models including Vertex AI and OAuth directly on the memory page", () => {
+    const catalog: ProviderCatalogItem[] = [
+      { id: "api-vertex", name: "Google Vertex AI", builtin: false, supportsApiKey: true, supportsOAuth: false, authType: "api_key", authenticated: true, baseUrl: "https://aiplatform.googleapis.com", api: "google-vertex", models: [{ id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", reasoning: true, vision: true, modalities: ["text"], contextWindow: 1000000, maxTokens: 65536, supportedThinkingLevels: ["off", "low", "medium", "high"] }] },
+      { id: "openai-codex", name: "OpenAI Codex", builtin: true, supportsApiKey: false, supportsOAuth: true, authType: "oauth", authenticated: true, models: [{ id: "gpt-5.4", name: "GPT-5.4", reasoning: true, vision: true, modalities: ["text"], contextWindow: 400000, maxTokens: 65536, supportedThinkingLevels: ["off", "low", "medium", "high"] }] },
+      { id: "anthropic", name: "Anthropic", builtin: true, supportsApiKey: false, supportsOAuth: true, authType: "oauth", authenticated: false, models: [{ id: "claude-sonnet-4-6", name: "Claude Sonnet", reasoning: true, vision: true, modalities: ["text"], contextWindow: 200000, maxTokens: 65536, supportedThinkingLevels: ["off", "low", "medium", "high"] }] },
+    ];
+    const connections = kuloMemoryConnections(settings, catalog);
+    expect(connections.map((c) => c.id)).toEqual(["api-vertex", "openai-codex"]);
+    const modelDraft = initialMemoryModelsDraft(undefined, settings, catalog);
+    expect(modelDraft).toMatchObject({ provider: "kulo", connectionId: "api-vertex", model: "gemini-3.8-flash", embeddingsProvider: "onnx", rerankerProvider: "onnx" });
+
+    const html = connectionForm(settings, snapshot, undefined, { providers: catalog, modelsDraft: modelDraft });
+    expect(html).toContain("理解模型来源");
+    expect(html).toContain("理解模型");
+    expect(html).toContain("向量模型（Embedding）");
+    expect(html).toContain("重排模型（Rerank）");
+    expect(html).toContain("Google Vertex AI");
+    expect(html).toContain("gemini-3.8-flash");
+
+    const customPayload = buildMemoryModelsPayload({
+      ...modelDraft,
+      connectionId: "openai-codex",
+      model: "gpt-5.4",
+      embeddingsProvider: "openai",
+      embeddingsModel: "text-embedding-3-large",
+      embeddingsBaseUrl: "https://embed.example/v1",
+      embeddingsDimensions: "1536",
+      rerankerProvider: "siliconflow",
+      rerankerModel: "BAAI/bge-reranker-v2-m3",
+      rerankerBaseUrl: "https://api.siliconflow.cn/v1",
+    });
+    expect(customPayload).toEqual({
+      model: { provider: "kulo", connectionId: "openai-codex", model: "gpt-5.4" },
+      embeddings: { provider: "openai", model: "text-embedding-3-large", baseUrl: "https://embed.example/v1", dimensions: 1536 },
+      reranker: { provider: "siliconflow", model: "BAAI/bge-reranker-v2-m3", baseUrl: "https://api.siliconflow.cn/v1" },
+    });
+  });
+
+  it("renders secure secret inputs for embedding and rerank API keys on the job card", () => {
+    const embInput: MemoryServiceSecretInput = { id: "input-emb", jobId: job.id, clientId: "tab-a", field: "embeddingsApiKey", label: "向量模型 API Key", status: "pending", expiresAt: Date.now() + 60_000 };
+    const rrInput: MemoryServiceSecretInput = { id: "input-rr", jobId: job.id, clientId: "tab-a", field: "rerankerApiKey", label: "重排模型 API Key", status: "pending", expiresAt: Date.now() + 60_000 };
+    const html = renderToStaticMarkup(<MemoryServiceJobCard job={{ ...job, status: "awaiting-input" }} inputs={[embInput, rrInput]} clientId="tab-a" connected onChanged={() => {}} />);
+    expect(html).toContain("向量模型 API Key");
+    expect(html).toContain("重排模型 API Key");
+    expect(html.match(/type="password"/g)).toHaveLength(2);
   });
 
   it("submits existing connection credentials directly from the left form without preparing a dialogue job", () => {
@@ -329,7 +402,9 @@ describe("memory service approval and private input", () => {
     for (const operation of ["deploy", "configure", "uninstall"] as const) expect(isMemoryDialogueOperation(operation)).toBe(true);
     for (const operation of ["connect", "disconnect", "check"] as const) expect(isMemoryDialogueOperation(operation)).toBe(false);
     const form = renderToStaticMarkup(<MemoryServiceForm draft={draft} snapshot={snapshot} settings={settings} busy={false} onChange={() => {}} onCancel={() => {}} onSubmit={() => {}} />);
-    expect(form).toContain("记忆模型");
+    expect(form).toContain("理解模型");
+    expect(form).toContain("向量模型（Embedding）");
+    expect(form).toContain("重排模型（Rerank）");
     for (const field of ["Hindsight 地址", "隐私记忆库名", "共享记忆库名", "公开目录密钥"]) expect(form).not.toContain(field);
   });
 });

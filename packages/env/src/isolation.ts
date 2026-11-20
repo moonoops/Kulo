@@ -168,18 +168,25 @@ export function applicationProtectedPaths(homeDir = os.homedir()): string[] {
     "Library/Messages", "Library/SMS", "Library/Mail", "Library/Application Support/Mail",
     "Library/Containers/com.apple.iChat", "Library/Containers/com.apple.MobileSMS", "Library/Containers/com.apple.messages", "Library/Containers/com.apple.mail",
     "Library/Group Containers/group.com.apple.messages", "Library/Group Containers/group.com.apple.mail", "Library/Group Containers/com.apple.MailPersonaStorage",
+    "Library/Group Containers/group.com.apple.usernoted",
   ].map((entry) => path.join(homeDir, entry));
 }
 
 const PRIVATE_APP_CONTAINER = /^(?:com\.apple\.(?:mail|MobileSMS|iChat|messages)(?:\.[^/\\]+)?|com\.apple\.share\.Mail\.compose)$/u;
+const LEGACY_NOTIFICATION_CENTER_PATH = /^\/(?:private\/)?var\/folders\/[^/]+\/[^/]+\/0\/com\.apple\.notificationcenter(?:\/|$)/u;
 
 export function isApplicationPrivatePath(value: string): boolean {
   if (process.platform !== "darwin") return false;
   const actual = canonicalExecutionPath(value);
+  if (LEGACY_NOTIFICATION_CENTER_PATH.test(actual)) return true;
   if (applicationProtectedPaths().some((entry) => inside(actual, canonicalExecutionPath(entry)))) return true;
   const containers = canonicalExecutionPath(path.join(os.homedir(), "Library/Containers"));
   const relative = path.relative(containers, actual);
   return !relative.startsWith("..") && !path.isAbsolute(relative) && PRIVATE_APP_CONTAINER.test(relative.split(path.sep)[0] ?? "");
+}
+
+function legacyNotificationCenterFilter(): string {
+  return '(regex #"^/private/var/folders/[^/]+/[^/]+/0/com[.]apple[.]notificationcenter(/|$)")';
 }
 
 function applicationContainerFilter(): string {
@@ -387,7 +394,10 @@ export function buildWorkerSandboxProfile(options: {
       return [`(deny file-read* ${filter(readExceptions)})`, `(deny file-write* ${filter(taskExceptions)})`];
     }),
     ...writeDeniedPaths.map((entry) => `(deny file-write* (subpath ${quoted(entry)}))`),
-    ...(process.platform === "darwin" ? [`(deny file-read* file-write* ${applicationContainerFilter()})`] : []),
+    ...(process.platform === "darwin" ? [
+      `(deny file-read* file-write* ${applicationContainerFilter()})`,
+      `(deny file-read* file-write* ${legacyNotificationCenterFilter()})`,
+    ] : []),
     // A writable ancestor cannot be renamed to move a private or write-denied entry beyond its path rule.
     ...[...protectedAncestors].map((entry) => `(deny file-write-unlink (literal ${quoted(entry)}))`),
     '(deny file-read* file-write* (subpath "/System/Volumes/Data"))',
@@ -438,7 +448,10 @@ export function buildHostMaintenanceSandboxProfile(options: {
     "(deny process-info*)",
     "(allow process-info* (target same-sandbox))",
     ...protectedPaths.map((entry) => `(deny file-read* file-write* (subpath ${quoted(entry)}))`),
-    ...(process.platform === "darwin" ? [`(deny file-read* file-write* ${applicationContainerFilter()})`] : []),
+    ...(process.platform === "darwin" ? [
+      `(deny file-read* file-write* ${applicationContainerFilter()})`,
+      `(deny file-read* file-write* ${legacyNotificationCenterFilter()})`,
+    ] : []),
     ...[...protectedAncestors].map((entry) => `(deny file-write-unlink (literal ${quoted(entry)}))`),
     '(deny file-read* file-write* (subpath "/System/Volumes/Data"))',
     '(deny network-outbound (remote unix-socket (regex #"^/private/tmp/com[.]apple[.]launchd[.][^/]+/Listeners$")))',

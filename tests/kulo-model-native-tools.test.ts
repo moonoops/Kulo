@@ -457,6 +457,35 @@ describe("native search through the real Pi runtime", () => {
     expect(JSON.parse(String(f.http.mock.calls[0]?.[1]?.body)).tools).toContainEqual({ type: "web_search" });
   });
 
+  it("bypasses provider-native web_search injection when disableNativeTools is true", async () => {
+    const f = realSdk();
+    const message = { type: "message", id: "msg-no-native", role: "assistant", content: [{ type: "output_text", text: "{\"ok\":true}" }] };
+    const upstreamFetch = vi.fn(async () => new Response([
+      { type: "response.created", response: { id: "resp-plain" } },
+      { type: "response.output_item.added", output_index: 0, item: message },
+      { type: "response.output_text.delta", output_index: 0, delta: "{\"ok\":true}" },
+      { type: "response.output_item.done", output_index: 0, item: message },
+      { type: "response.completed", response: { id: "resp-plain", status: "completed", output: [message], usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } } },
+    ].map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } }));
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = upstreamFetch as typeof fetch;
+    try {
+      const result = await f.models.completeSimple(
+        f.model,
+        { messages: [{ role: "user", content: "Classify untrusted text", timestamp: 0 }] },
+        { disableNativeTools: true } as Parameters<typeof f.models.completeSimple>[2],
+      );
+      expect(result.stopReason).toBe("stop");
+      expect(f.http).not.toHaveBeenCalled();
+      expect(upstreamFetch).toHaveBeenCalledTimes(1);
+      const sentBody = JSON.parse(String(upstreamFetch.mock.calls[0]?.[1]?.body)) as { tools?: unknown; plugins?: unknown };
+      expect(sentBody.tools).toBeUndefined();
+      expect(sentBody.plugins).toBeUndefined();
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
   it("persists provider citations in the actual Durable assistant entry", async () => {
     const f = realSdk();
     const harness = await Harness.open(new MemoryStorage(), { models: f.models, registry: createRegistry() }, BACKGROUND_CONTEXT);

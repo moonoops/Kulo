@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { defaultRolePresets, type EnvNodeDescriptor, type ExternalClientConnection, type RolePreset } from "@kulo/protocol";
+import { defaultRolePresets, type EnvNodeDescriptor, type ExternalAgentScanResult, type ExternalClientConnection, type RolePreset } from "@kulo/protocol";
 import { ExternalAgentsList } from "./external-agents-list";
+import { ExternalAgentConnectCard, partitionExternalAgentScan } from "./external-agent-connect-card";
 import { deriveExternalClients, internalAgentPresets, withExternalAgentPresets } from "./external-agents-view";
 import { advanceSettingsAssistantPageScope } from "./settings-assistant-page-scope";
 import { getSettingsAssistantShortcuts } from "./settings-assistant-actions";
@@ -31,18 +32,65 @@ const codexClient: ExternalClientConnection = {
 const device = { id: "mac", name: "开发电脑", online: true } as EnvNodeDescriptor;
 
 describe("external agents in settings", () => {
-  it.each([true, false])("offers page-scoped connection introductions with model availability %s", (hasModel) => {
+  it.each([true, false])("offers direct page-scoped agent connection shortcuts without synthetic chat prompts (%s)", (hasModel) => {
     const shortcuts = getSettingsAssistantShortcuts("workers", hasModel, "dark");
     expect(shortcuts.map((item) => item.label)).toEqual(["连接 Agent 客户端", "连接 Personal Agent"]);
     const client = shortcuts.find((item) => item.kind === "agent" && item.action === "client");
     const personal = shortcuts.find((item) => item.kind === "agent" && item.action === "personal");
-    expect(client?.kind).toBe("agent");
-    if (client?.kind !== "agent" || personal?.kind !== "agent") throw new Error("Connection shortcuts missing");
-    for (const name of ["Codex", "Claude Code", "Antigravity", "DeepSeek Harness"]) expect(client.introduction).toContain(name);
-    for (const name of ["Grok Bot", "ChatGPT Dots", "Meta Muse"]) expect(personal.introduction).toContain(name);
+    expect(client).toEqual({ id: "connect-agent-client", label: "连接 Agent 客户端", kind: "agent", action: "client" });
+    expect(personal).toEqual({ id: "connect-personal-agent", label: "连接 Personal Agent", kind: "agent", action: "personal" });
     for (const page of ["models", "appearance", "connections", "capabilities"] as const) {
       expect(getSettingsAssistantShortcuts(page, hasModel, "dark").some((item) => item.kind === "agent")).toBe(false);
     }
+  });
+
+  it("renders direct scanned local client candidates with one-click connect and batch connect controls", () => {
+    const scan: ExternalAgentScanResult = {
+      scannedAt: 1,
+      devices: [
+        { id: "mac", name: "MacMini", online: true },
+        { id: "book", name: "Macbook", online: true },
+      ],
+      candidates: [
+        { kind: "codex", label: "Codex", status: "supported", envId: "mac", envName: "MacMini", online: true, installed: true, alreadyConnected: false, version: "0.9.1" },
+        { kind: "claude-code", label: "Claude Code", status: "supported", envId: "book", envName: "Macbook", online: true, installed: true, alreadyConnected: false, version: "1.2.0" },
+        { kind: "antigravity", label: "Antigravity", status: "supported", envId: "mac", envName: "MacMini", online: true, installed: true, alreadyConnected: true, connectedClientId: "antigravity:mac", connectedVerified: true, version: "2.0.0" },
+        { kind: "dsh", label: "DeepSeek Harness", status: "supported", envId: "mac", envName: "MacMini", online: true, installed: false, alreadyConnected: false },
+      ],
+    };
+    const partitioned = partitionExternalAgentScan(scan);
+    expect(partitioned.multiDevice).toBe(true);
+    expect(partitioned.connectable.map((item) => item.kind)).toEqual(["codex", "claude-code"]);
+    expect(partitioned.missingLabels).toEqual(["DeepSeek Harness"]);
+
+    const html = renderToStaticMarkup(
+      <ExternalAgentConnectCard mode="client" clientId="tab-a" connected envs={[device]} initialScan={scan} onClose={vi.fn()} />,
+    );
+    expect(html).toContain("连接 Agent 客户端");
+    expect(html).toContain("Codex");
+    expect(html).toContain("MacMini · 0.9.1");
+    expect(html).toContain("Claude Code");
+    expect(html).toContain("Macbook · 1.2.0");
+    expect(html).toContain("Antigravity");
+    expect(html).toContain("已连接");
+    expect(html).toContain("全部连接（2）");
+    expect(html).toContain("未检测到：");
+    expect(html).toContain("DeepSeek Harness");
+  });
+
+  it("renders the direct personal agent card with experimental Grok Bot fields and reserved statuses", () => {
+    const html = renderToStaticMarkup(
+      <ExternalAgentConnectCard mode="personal" clientId="tab-a" connected envs={[device]} onClose={vi.fn()} />,
+    );
+    expect(html).toContain("连接 Personal Agent");
+    expect(html).toContain("Grok Bot");
+    expect(html).toContain("实验");
+    expect(html).toContain("本机调试地址");
+    expect(html).toContain("Bot 名称");
+    expect(html).toContain("检查并保存");
+    expect(html).toContain("ChatGPT Dots");
+    expect(html).toContain("Meta Muse");
+    expect(html).toContain("暂未开放");
   });
 
   it("groups multiple external agent personas under one connected client with streamlined 5-field editors", () => {

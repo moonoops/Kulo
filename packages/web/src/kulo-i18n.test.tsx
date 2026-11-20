@@ -39,8 +39,8 @@ describe("interface language preferences", () => {
 
 describe("settings navigation", () => {
   it("follows the requested order and names in both languages", () => {
-    expect(SETTINGS_MODULES.map((module) => module.title)).toEqual(["外观", "模型", "智能体", "工具技能", "记忆", "授权凭据", "系统权限", "设备互联", "定时任务", "已归档会话"]);
-    expect(SETTINGS_MODULES.map((module) => settingsModuleTitle(module.id, "en"))).toEqual(["Appearance", "Models", "Agents", "Tools & skills", "Memory", "Credentials", "System permissions", "Devices", "Scheduled tasks", "Archived conversations"]);
+    expect(SETTINGS_MODULES.map((module) => module.title)).toEqual(["通用", "模型", "智能体", "工具技能", "记忆", "授权凭据", "系统权限", "设备互联", "定时任务", "已归档会话"]);
+    expect(SETTINGS_MODULES.map((module) => settingsModuleTitle(module.id, "en"))).toEqual(["General", "Models", "Agents", "Tools & skills", "Memory", "Credentials", "System permissions", "Devices", "Scheduled tasks", "Archived conversations"]);
     expect(SETTINGS_MODULES.map((module) => settingsModuleTitle(module.id, "zh-CN"))).toEqual(SETTINGS_MODULES.map((module) => module.title));
   });
 });

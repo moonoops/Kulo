@@ -34,6 +34,7 @@ import type {
   HindsightProbeResult,
   HubToClientMessage,
   LiveStreamState,
+  MainSessionNotificationEvent,
   ModelProbeRequest,
   ModelProbeResult,
   KuloSettingsView,
@@ -87,7 +88,18 @@ import type {
   WebSearchResult,
   VoiceSnapshot,
   ExtensionWorkspaceSnapshot,
+  ExternalAgentKind,
+  ExternalAgentQuickConnectRequest,
+  ExternalAgentQuickConnectResult,
+  ExternalAgentScanResult,
+  AmbientLocalEngine,
+  AssistantItemView,
+  AssistantWorkspaceSnapshot,
 } from "@kulo/protocol";
+
+export interface AssistantWorkspaceView extends AssistantWorkspaceSnapshot {
+  localHost?: boolean;
+}
 
 export const EMPTY_SETTINGS_ASSISTANT: SettingsAssistantSnapshot = {
   topicId: null,
@@ -277,6 +289,29 @@ export const kuloRest = {
     apiRequest<{ connection: ConnectionRecordView }>(`/api/connections/${encodeURIComponent(id)}/trust`, { method: "POST", body: { fingerprint } }),
   openConnectionPermissionSettings: (kind: NativeAppPermissionKind) =>
     apiRequest<{ ok: true }>("/api/connections/permission-settings", { method: "POST", body: { kind } }),
+  getAssistantWorkspace: (signal?: AbortSignal) =>
+    apiRequest<AssistantWorkspaceView>("/api/assistant", { signal }),
+  configureAssistantNotifications: (body: { enabled?: boolean; muteApp?: string; unmuteApp?: string }) =>
+    apiRequest<AssistantWorkspaceView>("/api/assistant/configure", { method: "POST", body }),
+  configureAssistantBackgroundModel: (body: {
+    mode: "auto" | "local-managed" | "kulo-provider";
+    engine?: AmbientLocalEngine;
+    modelId?: string;
+    providerId?: string;
+    confirmed?: boolean;
+  }) =>
+    apiRequest<{
+      requiresConfirmation?: boolean;
+      proposal?: Record<string, unknown>;
+      snapshot: AssistantWorkspaceSnapshot;
+      localHost?: boolean;
+    }>("/api/assistant/background-model", { method: "POST", body }),
+  configureAssistantSpark: (body: { enabled: boolean }) =>
+    apiRequest<AssistantWorkspaceView>("/api/assistant/spark", { method: "POST", body }),
+  configureAssistantHomeAssistant: (body: { enabled?: boolean; baseUrl?: string; token?: string; clearToken?: boolean }) =>
+    apiRequest<AssistantWorkspaceView>("/api/assistant/home-assistant", { method: "POST", body }),
+  configureAssistantLark: (body: { enabled?: boolean; selectedProfiles?: string[]; syncNow?: boolean }) =>
+    apiRequest<AssistantWorkspaceView>("/api/assistant/lark", { method: "POST", body }),
   getCapabilitiesWorkspace: (clientId: string, signal?: AbortSignal) =>
     apiRequest<CapabilitiesWorkspaceSnapshot>(`/api/capabilities?${new URLSearchParams({ clientId })}`, { signal }),
   updateComputerUse: (body: ComputerUseConfigurationInput) =>
@@ -302,13 +337,17 @@ export const kuloRest = {
   deleteImageCapability: (id: string, expectedRevision: number, commandId: string) =>
     apiRequest<{ removed: true }>(`/api/capabilities/image/${encodeURIComponent(id)}`, { method: "DELETE", body: { expectedRevision, commandId } }),
   getSkills: (signal?: AbortSignal) => apiRequest<SkillSnapshot>("/api/skills", { signal }),
+  importSkill: (body: { source: string; expectedRevision: number; commandId: string; audiences?: SkillAudience[] }) =>
+    apiRequest<SkillSnapshot>("/api/skills/import", { method: "POST", body }),
   updateSkill: (id: string, body: { enabled: boolean; audiences?: SkillAudience[]; expectedRevision: number; commandId: string }) =>
     apiRequest<SkillSnapshot>(`/api/skills/${encodeURIComponent(id)}`, { method: "PATCH", body }),
   deleteSkill: (id: string, body: { expectedRevision: number; commandId: string }) =>
     apiRequest<SkillSnapshot>(`/api/skills/${encodeURIComponent(id)}`, { method: "DELETE", body }),
   getExtensions: (signal?: AbortSignal) => apiRequest<ExtensionWorkspaceSnapshot>("/api/extensions", { signal }),
-  manageExtension: (id: string, body: { operation: "enable" | "stop" | "remove"; expectedRevision: number; commandId: string }) =>
+  manageExtension: (id: string, body: { operation: "install" | "enable" | "stop" | "remove"; expectedRevision: number; commandId: string }) =>
     apiRequest<ExtensionWorkspaceSnapshot>(`/api/extensions/${encodeURIComponent(id)}/operations`, { method: "POST", body }),
+  connectGoogleFlow: (body: { clientId: string; envId: string; commandId: string; name?: string }) =>
+    apiRequest<{ capability: CapabilityRecord; input?: SetupInputRequest; snapshot: CapabilitiesWorkspaceSnapshot }>("/api/capabilities/flow", { method: "POST", body }),
   getSearch: (signal?: AbortSignal) => apiRequest<SearchSnapshot>("/api/search", { signal }),
   saveSearchPlan: (body: SearchPlanInput) => apiRequest<SearchSnapshot>("/api/search/plans", { method: "POST", body }),
   reorderSearchPlans: (ids: string[], expectedRevision: number) =>
@@ -398,6 +437,10 @@ export const kuloRest = {
       { method: "DELETE" },
     ),
   getSettings: () => apiRequest<KuloSettingsView>("/api/settings"),
+  scanExternalAgents: (body: { envId?: string; kinds?: ExternalAgentKind[] } = {}, options?: { signal?: AbortSignal }) =>
+    apiRequest<ExternalAgentScanResult>("/api/external-clients/scan", { method: "POST", body, signal: options?.signal }),
+  connectExternalAgent: (body: ExternalAgentQuickConnectRequest & { clientId: string }) =>
+    apiRequest<ExternalAgentQuickConnectResult>("/api/external-clients/connect", { method: "POST", body }),
   refreshExternalClient: (clientId: string) =>
     apiRequest<{ settings: KuloSettingsView; client: import("@kulo/protocol").ExternalClientConnection }>(
       `/api/external-clients/${encodeURIComponent(clientId)}/refresh`,
@@ -612,6 +655,7 @@ export interface KuloWsAckResult {
   deduplicated?: boolean;
   topicId?: string;
   ticketId?: string;
+  itemId?: string;
   submissionId?: number;
   delivery?: "queued" | "accepted";
 }
@@ -623,6 +667,7 @@ const COMMAND_ID_MESSAGE_TYPES = new Set<ClientToHubMessage["type"]>([
   "ticket.close",
   "schedule.stop",
   "schedule.delete",
+  "assistant.item_action",
 ]);
 
 function attachTrackingId(msg: ClientToHubMessage): {
@@ -678,6 +723,8 @@ export function useKuloHubConnection() {
   });
   const [agentTerminal, setAgentTerminal] = useState<AgentTerminalState | null>(null);
   const [tickets, setTickets] = useState<TicketCardView[]>([]);
+  const [assistantItems, setAssistantItems] = useState<AssistantItemView[]>([]);
+  const assistantRevisionRef = useRef(-1);
   const [ticketsLoaded, setTicketsLoaded] = useState(false);
   const [schedulesLoaded, setSchedulesLoaded] = useState(false);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
@@ -719,6 +766,11 @@ export function useKuloHubConnection() {
   topicsLoadedRef.current = topicsLoaded;
   const schedulesLoadedRef = useRef(schedulesLoaded);
   schedulesLoadedRef.current = schedulesLoaded;
+  const notificationListenersRef = useRef(new Set<(event: MainSessionNotificationEvent) => void>());
+  const subscribeNotification = useCallback((listener: (event: MainSessionNotificationEvent) => void) => {
+    notificationListenersRef.current.add(listener);
+    return () => { notificationListenersRef.current.delete(listener); };
+  }, []);
 
   const pendingAcksRef = useRef(new Map<string, PendingWsAcknowledgement<KuloWsAckResult>>());
   const outboxRef = useRef<ReliableOutbox | null>(null);
@@ -1143,6 +1195,10 @@ export function useKuloHubConnection() {
               boardTickets = msg.tickets;
               resyncingBoard = false;
               setTickets(boardTickets);
+              if (msg.assistantItems !== undefined) {
+                assistantRevisionRef.current = msg.assistantRevision ?? 0;
+                setAssistantItems(msg.assistantItems);
+              }
               setTicketsLoaded(true);
               setSchedulesLoaded(true);
               setSnapshotError(null);
@@ -1165,6 +1221,11 @@ export function useKuloHubConnection() {
               break;
             case "hub.topic_activity":
               setTopicActivities((current) => ({ ...current, [msg.topicId]: msg.activity }));
+              break;
+            case "hub.notification":
+              for (const listener of notificationListenersRef.current) {
+                listener(msg.event);
+              }
               break;
             case "hub.messages":
               if (acceptsTopicFrame(msg.topicId, msg.selectionVersion)) {
@@ -1196,6 +1257,12 @@ export function useKuloHubConnection() {
               setTickets(msg.tickets);
               setSchedulesLoaded(true);
               setSlots(msg.slots);
+              break;
+            case "hub.assistant_items":
+              if (msg.assistantRevision >= assistantRevisionRef.current) {
+                assistantRevisionRef.current = msg.assistantRevision;
+                setAssistantItems(msg.items);
+              }
               break;
             case "hub.ticket_delta": {
               if (boardRevision !== undefined && msg.ticketRevision <= boardRevision) break;
@@ -1255,6 +1322,7 @@ export function useKuloHubConnection() {
                     deduplicated: msg.deduplicated,
                     topicId: msg.topicId,
                     ticketId: msg.ticketId,
+                    itemId: msg.itemId,
                     submissionId: msg.submissionId,
                     delivery: msg.delivery,
                   });
@@ -1465,6 +1533,7 @@ export function useKuloHubConnection() {
     live,
     terminalEntries: agentTerminal?.topicId === activeTopicId ? agentTerminal.entries : [],
     tickets,
+    assistantItems,
     ticketsLoaded,
     schedulesLoaded,
     snapshotError,
@@ -1491,5 +1560,6 @@ export function useKuloHubConnection() {
     clearError,
     sendWs,
     sendWsWithAck,
+    subscribeNotification,
   };
 }

@@ -30,9 +30,13 @@ describe("settings controls and layout", () => {
     expect(html).toContain("中 · 14 px");
     expect(html).toContain("中文");
     expect(html).toContain('aria-label="外观偏好"');
-    expect(html.match(/class="[^"]*\bkulo-settings-row\b/g)).toHaveLength(4);
+    expect(html.match(/class="[^"]*\bkulo-settings-row\b/g)).toHaveLength(7);
     expect(html).toContain('aria-label="自动切换形象"');
     expect(html).toContain('aria-label="动态"');
+    expect(html).toContain('aria-label="通知偏好"');
+    expect(html).toContain('aria-label="系统通知"');
+    expect(html).toContain('aria-label="提示音"');
+    expect(html).toContain('aria-label="任务栏红点"');
     expect(html).not.toContain("grid-cols-4");
     expect(html).not.toContain('type="range"');
     expect(html).not.toContain("对话字号预览");

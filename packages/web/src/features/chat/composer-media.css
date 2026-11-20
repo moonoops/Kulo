@@ -33,13 +33,14 @@
   text-overflow: ellipsis;
 }
 .kulo-composer-input-row > .button,
-.kulo-composer-voice-control,
+.kulo-composer-actions > .button,
 .kulo-composer-microphone { height: var(--kulo-control-height); }
 .kulo-composer-button { width: var(--kulo-control-height); min-width: var(--kulo-control-height); height: var(--kulo-control-height); flex-shrink: 0; }
 .kulo-composer-upload-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; flex: none; }
 .kulo-composer-voice-status { display: flex; align-items: center; gap: var(--kulo-control-gap); min-width: 0; padding: var(--kulo-space-1) var(--kulo-space-3); font-size: var(--kulo-text-body); line-height: var(--kulo-leading-body); }
 .kulo-composer-voice-status > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.kulo-composer-voice-control { display: flex; align-items: center; gap: var(--kulo-control-gap); flex: none; }
+.kulo-composer-voice-control,
+.kulo-composer-actions { display: flex; align-items: center; gap: var(--kulo-control-gap); flex: none; }
 .kulo-composer-input-row[data-voice-active] { align-items: center; flex-wrap: nowrap; }
 .kulo-composer-waveform { min-width: 0; height: 32px; flex: 1; color: var(--muted); }
 .kulo-composer-waveform line { stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; }
@@ -50,8 +51,8 @@
   .kulo-composer-input-row { flex-wrap: wrap; }
   .kulo-composer-input-row .kulo-composer-input { order: -1; flex-basis: 100%; }
   .kulo-composer-voice-control { margin-inline-start: auto; }
-  .kulo-composer-input-row > .button:last-child { margin-inline-start: auto; }
-  .kulo-composer-voice-control + .button:last-child { margin-inline-start: 0; }
+  .kulo-composer-input-row > :is(.button, .kulo-composer-actions):last-child { margin-inline-start: auto; }
+  .kulo-composer-voice-control + :is(.button, .kulo-composer-actions):last-child { margin-inline-start: 0; }
 }
 @media (pointer: coarse) { .kulo-composer-media-item > .button { min-width: 44px; min-height: 44px; } }
 @media (pointer: coarse) {
@@ -61,5 +62,5 @@
   .kulo-composer-media-item .kulo-composer-attachment-action,
   .kulo-composer-media-item .kulo-composer-retry-upload { position: static; width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
   .kulo-composer-media-item[data-status="error"] { width: min(100%, 280px); border: 1px solid var(--danger); }
-  .kulo-composer-input-row > .button, .kulo-composer-microphone { min-width: 44px; min-height: 44px; }
+  .kulo-composer-input-row > .button, .kulo-composer-actions > .button, .kulo-composer-microphone { min-width: 44px; min-height: 44px; }
 }

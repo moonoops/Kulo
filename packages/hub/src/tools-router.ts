@@ -223,7 +223,7 @@ export function createOrchestratorToolsExtension(
       provider_override: opt(str({ description: "Provider ID override for built-in Workers." })),
       model_override: opt(str({ description: "Model ID override for built-in Workers." })),
       task_kind: opt(oneOf(AGENT_TASK_KINDS, { description: "Task kind for default Agent routing." })),
-      thinking_level: opt(oneOf(["off", "minimal", "low", "medium", "high", "xhigh", "max"], { description: "Thinking effort override." })),
+      thinking_level: opt(oneOf(["off", "minimal", "low", "medium", "high", "xhigh", "max"], { description: "Thinking effort override (prefer 'low' or 'medium' for interactive multi-step browser/desktop UI tasks when the role uses 'auto')." })),
       env_id: opt(str({ description: "Explicit user-named or bound target device ID; omit to resolve from project_id or target_scope." })),
       execution_domain: opt(oneOf(["computer", "android"], { description: "'android' for phone-only Worker; 'computer' for filesystem/project work." })),
       source_request_id: opt(str({ description: "requestId from [KULO_MESSAGE_SOURCE] when disambiguating multi-device turns." })),

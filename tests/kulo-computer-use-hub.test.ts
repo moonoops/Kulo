@@ -103,11 +103,12 @@ describe("computer use through real Hub Workers", () => {
     const views = await f.hub.listComputerPreviews("root");
     expect(views).toHaveLength(1);
     expect(views[0]).toMatchObject({ ticketId: ticket.id, tool: "browser", envId: "local", title: "查看页面" });
+    expect(await f.hub.listComputerPreviews("*")).toEqual(views);
     expect(await f.hub.listComputerPreviews("another-topic")).toEqual([]);
     await expect(f.hub.subscribeComputerPreview(views[0]!.id, "another-topic", () => {})).rejects.toThrow("已失效");
     expect(nativePreview).not.toHaveBeenCalled();
     const updates: ComputerPreviewUpdate[] = [];
-    const dispose = await f.hub.subscribeComputerPreview(views[0]!.id, "root", (update) => updates.push(update));
+    const dispose = await f.hub.subscribeComputerPreview(views[0]!.id, "*", (update) => updates.push(update));
     const frame: ComputerPreviewUpdate = { state: "live", frame: { mimeType: "image/png", data: "iVBORw==", capturedAt: Date.now() } };
     emit(frame);
     await vi.waitFor(() => expect(updates).toEqual([frame]));
@@ -115,12 +116,35 @@ describe("computer use through real Hub Workers", () => {
     release();
     await stopping;
     expect(await f.hub.listComputerPreviews("root")).toEqual([]);
+    expect(await f.hub.listComputerPreviews("*")).toEqual([]);
     emit(frame);
     await vi.waitFor(() => expect(updates.at(-1)).toEqual({ state: "closed" }));
     expect(unsubscribe).toHaveBeenCalledOnce();
     dispose();
     expect(unsubscribe).toHaveBeenCalledOnce();
     expect(JSON.stringify(await f.toolResults((await f.hub.inspectTicketDetail(ticket.id)).ticket.workerConversationId))).not.toContain("iVBORw==");
+  });
+
+  it("discovers previews across non-deleted topics with global scope '*' and drops them when their topic is deleted", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const f = await fixture([{ action: "open", url: "https://example.com" }, { action: "snapshot" }], async (request) => {
+      if (request.action === "snapshot") await held;
+    });
+    cleanups.push(release);
+    const topic = await f.hub.createTopic("次话题");
+    const ticket = await f.hub.dispatchTicket({ commandId: "browser-preview-global", title: "次话题网页巡检", goal: "观察指定网页", scope: "任务浏览器", role: "coder", envId: "local", originConversationId: topic.conversationId });
+    await vi.waitFor(() => expect(f.native.mock.calls.some(([, request]) => request.action === "snapshot")).toBe(true));
+    expect(await f.hub.listComputerPreviews("root")).toEqual([]);
+    const topicViews = await f.hub.listComputerPreviews(topic.id);
+    const globalViews = await f.hub.listComputerPreviews("*");
+    expect(topicViews).toHaveLength(1);
+    expect(globalViews).toEqual(topicViews);
+    expect(globalViews[0]).toMatchObject({ ticketId: ticket.id, title: "次话题网页巡检" });
+    const deleting = f.hub.deleteTopic(topic.id, BACKGROUND_CONTEXT, { stopTasks: true });
+    release();
+    await deleting;
+    expect(await f.hub.listComputerPreviews("*")).toEqual([]);
   });
 
   it("does not close an explicitly closed session again during ticket release", async () => {

@@ -160,6 +160,80 @@ export function createDesktopMenuTemplate(options: DesktopMenuOptions): MenuItem
   ];
 }
 
+export interface DesktopContextMenuEditFlags {
+  canUndo?: boolean;
+  canRedo?: boolean;
+  canCut?: boolean;
+  canCopy?: boolean;
+  canPaste?: boolean;
+  canDelete?: boolean;
+  canSelectAll?: boolean;
+  canEditRichly?: boolean;
+}
+
+export interface DesktopContextMenuParams {
+  isEditable: boolean;
+  selectionText: string;
+  editFlags?: DesktopContextMenuEditFlags;
+  misspelledWord?: string;
+  dictionarySuggestions?: readonly string[];
+}
+
+export interface DesktopContextMenuOptions {
+  hasClipboardContent?: boolean;
+  copyLinkUrl?: string;
+  onPaste?: () => void;
+  onReplaceMisspelling?: (suggestion: string) => void;
+  onCopyLink?: (url: string) => void;
+}
+
+export function createDesktopContextMenuTemplate(
+  params: DesktopContextMenuParams,
+  options: DesktopContextMenuOptions = {},
+): MenuItemConstructorOptions[] {
+  const flags = params.editFlags ?? {};
+  if (params.isEditable) {
+    const items: MenuItemConstructorOptions[] = [];
+    const suggestions = params.misspelledWord && params.dictionarySuggestions?.length && options.onReplaceMisspelling
+      ? params.dictionarySuggestions.slice(0, 5)
+      : [];
+    if (suggestions.length > 0) {
+      for (const suggestion of suggestions) {
+        items.push({ label: suggestion, click: () => options.onReplaceMisspelling!(suggestion) });
+      }
+      items.push({ type: "separator" });
+    }
+    const pasteItem: MenuItemConstructorOptions = flags.canPaste
+      ? { role: "paste", label: "粘贴", enabled: true }
+      : options.hasClipboardContent && options.onPaste
+        ? { label: "粘贴", enabled: true, click: options.onPaste }
+        : { role: "paste", label: "粘贴", enabled: false };
+    items.push(
+      { role: "undo", label: "撤销", enabled: Boolean(flags.canUndo) },
+      { role: "redo", label: "重做", enabled: Boolean(flags.canRedo) },
+      { type: "separator" },
+      { role: "cut", label: "剪切", enabled: Boolean(flags.canCut) },
+      { role: "copy", label: "复制", enabled: Boolean(flags.canCopy) },
+      pasteItem,
+      ...(flags.canEditRichly ? [{ role: "pasteAndMatchStyle" as const, label: "粘贴并匹配样式", enabled: Boolean(flags.canPaste) }] : []),
+      { role: "delete", label: "删除", enabled: Boolean(flags.canDelete) },
+      { type: "separator" },
+      { role: "selectAll", label: "全选", enabled: Boolean(flags.canSelectAll) },
+    );
+    return items;
+  }
+
+  const items: MenuItemConstructorOptions[] = [];
+  if (params.selectionText.trim().length > 0) {
+    items.push({ role: "copy", label: "复制", enabled: flags.canCopy !== false });
+  }
+  if (options.copyLinkUrl && options.onCopyLink) {
+    const linkUrl = options.copyLinkUrl;
+    items.push({ label: "复制链接", click: () => options.onCopyLink!(linkUrl) });
+  }
+  return items;
+}
+
 export interface ManagedDesktopWindow {
   isDestroyed(): boolean;
   isFullScreen(): boolean;

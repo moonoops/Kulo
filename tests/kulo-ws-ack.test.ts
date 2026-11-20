@@ -732,6 +732,84 @@ describe("WebSocket Request ACK, Error Attribution & Idempotency Suite", () => {
     }
   });
 
+  it("4. allows human UI ticket.close on stopped tickets idempotently while keeping AI close guards on stopped tickets", async () => {
+    const stateDir = makeTempDir("ticket-close-stopped");
+    const workRoot = makeTempDir("work-root-stopped");
+    const faux = fauxProvider({ provider: "openai", models: [{ id: "gpt-4o" }] });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([() => fauxAssistantMessage([fauxText("执行中")])]);
+
+    const hub = await openTestHub({
+      config: {
+        authToken: HUB_TEST_ADMIN_TOKEN,
+        stateDir,
+        localEnvRoot: workRoot,
+        model: {
+          baseUrl: "http://127.0.0.1:9/v1",
+          apiMode: "openai-completions",
+          defaultModel: "gpt-4o",
+          thinkingLevel: "medium",
+        },
+      },
+      models,
+    });
+    const server = await startKuloHubServer(hub, { port: 0 });
+    try {
+      const client = await openWsClient(server.clientWsUrl);
+      await client.waitFor("hub.snapshot");
+      const dispatched = await hub.dispatchTicket({
+        commandId: "dispatch-stop-close-1",
+        title: "可归档的已停止任务",
+        goal: "验证手动停止后可归档",
+        scope: workRoot,
+        role: "coder",
+      });
+      await hub.stopTicket(dispatched.id, "手动停止");
+
+      await expect(
+        hub.closeTicket({
+          ticketId: dispatched.id,
+          commandId: "ai-close-stopped-1",
+          originConversationId: 1,
+          kind: "obsolete",
+          reason: "AI 尝试关闭",
+        }),
+      ).rejects.toThrow("human-stopped; cannot overwrite as closed.");
+
+      client.send({
+        type: "ticket.close",
+        ticketId: dispatched.id,
+        kind: "obsolete",
+        reason: "用户归档",
+        commandId: "cmd-close-stopped-1",
+      });
+      const ack1 = await client.waitFor("hub.ack", (m) => m.commandId === "cmd-close-stopped-1");
+      expect(ack1.ticketId).toBe(dispatched.id);
+
+      const closedDetail = await hub.inspectTicketDetail(dispatched.id);
+      expect(closedDetail.ticket.status).toBe("closed");
+      expect(closedDetail.ticket.stoppedReason).toBe("手动停止");
+      expect(closedDetail.ticket.closure?.reason).toBe("用户归档");
+
+      client.send({
+        type: "ticket.close",
+        ticketId: dispatched.id,
+        kind: "obsolete",
+        reason: "二次归档",
+        commandId: "cmd-close-stopped-2",
+      });
+      const ack2 = await client.waitFor("hub.ack", (m) => m.commandId === "cmd-close-stopped-2");
+      expect(ack2.ticketId).toBe(dispatched.id);
+      expect((await hub.inspectTicketDetail(dispatched.id)).ticket.closure?.reason).toBe("用户归档");
+
+      await client.close();
+    } finally {
+      await server.close();
+      await hub.close();
+    }
+  });
+
   it("enforces same-origin on /ws/client, sets no-referrer/nosniff headers, and returns safe 503 when web dist is missing", async () => {
     const stateDir = makeTempDir("http-security-state");
     const emptyWebDir = makeTempDir("empty-web-dist");

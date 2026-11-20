@@ -15,6 +15,10 @@ export function taskIsRecovering(ticket: Pick<TicketCardView, "status" | "recove
   return ticket.recovery?.state === "recovering" && ["failed", "queued", "running", "pausing"].includes(ticket.status);
 }
 
+export function isTaskUnfinished(ticket: Pick<TicketCardView, "status">): boolean {
+  return ["queued", "running", "pausing", "waiting", "blocked"].includes(ticket.status);
+}
+
 export function ticketHasPendingWorkspaceApply(
   ticket: Pick<TicketRecord, "status" | "workspaceStaging" | "externalExecution">,
 ): boolean {

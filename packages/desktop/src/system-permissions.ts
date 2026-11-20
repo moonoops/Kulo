@@ -24,6 +24,7 @@ const settingsUrls: Record<DesktopPermissionSettingsKind, string> = {
   screen: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
   "full-disk-access": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
   automation: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+  notifications: "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
 };
 
 export function createDesktopSystemPermissions(options: DesktopSystemPermissionsOptions) {

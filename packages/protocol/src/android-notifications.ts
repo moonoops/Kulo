@@ -1,3 +1,5 @@
+import { isOneTimeCodeText } from "./assistant.js";
+
 export interface AndroidNotificationDecision {
   action: "retain" | "clear" | "collect" | "notify";
   title?: string;
@@ -79,7 +81,7 @@ export function isProtectedAndroidNotification(item: AndroidNotificationClassifi
   return item.ongoing || !item.clearable || item.groupSummary ||
     ["call", "alarm", "service", "sys", "navigation", "transport", "emergency"].includes(item.category) ||
     /^(?:android|com\.android\.(?:systemui|phone|server\.telecom|permissioncontroller|settings)|com\.google\.android\.permissioncontroller|com\.miui\.securitycenter|io\.kulo\.app(?:\.dev)?)$/.test(item.packageName) ||
-    /验证码|动态码|校验码|口令|一次性密码|verification code|one[ -]?time (?:pass|code)|\botp\b|sensitive.*(?:hidden|redacted)|敏感.*(?:隐藏|内容)/i.test(`${item.title}\n${item.text}\n${item.subtext}`);
+    isOneTimeCodeText(`${item.title}\n${item.text}\n${item.subtext}`);
 }
 
 export function isAndroidNotificationClassificationResult(value: unknown, request?: AndroidNotificationClassification): value is AndroidNotificationClassificationResult {

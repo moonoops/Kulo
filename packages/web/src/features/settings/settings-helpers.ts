@@ -30,7 +30,7 @@ export function acceptSettingsSnapshot(current: KuloSettingsView | null, next: K
 }
 
 export const SETTINGS_MODULES = [
-  { id: "appearance", icon: "palette" as KuloIconName, title: "外观" },
+  { id: "appearance", icon: "sliders" as KuloIconName, title: "通用" },
   { id: "models", icon: "token" as KuloIconName, title: "模型" },
   { id: "workers", icon: "team" as KuloIconName, title: "智能体" },
   { id: "capabilities", icon: "tools" as KuloIconName, title: "工具技能" },
@@ -45,7 +45,7 @@ export const SETTINGS_MODULES = [
 export type SettingsModuleId = (typeof SETTINGS_MODULES)[number]["id"];
 
 const SETTINGS_MODULE_TITLES: Record<SettingsModuleId, string> = {
-  appearance: "Appearance", models: "Models", workers: "Agents", capabilities: "Tools & skills",
+  appearance: "General", models: "Models", workers: "Agents", capabilities: "Tools & skills",
   identity: "Memory", connections: "Credentials", permissions: "System permissions", machines: "Devices", schedules: "Scheduled tasks", archives: "Archived conversations",
 };
 

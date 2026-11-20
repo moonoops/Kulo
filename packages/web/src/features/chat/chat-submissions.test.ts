@@ -121,7 +121,7 @@ describe("chat submissions", () => {
     const timeline = splitChatTimeline(merged);
     expect(timeline.transcript).toEqual(server.slice(0, 2));
     expect(timeline.pending.map((item) => item.id)).toEqual([-11, pending.localMessageId]);
-    expect(chatDeliveryLabel(server[0]!)).toBe("待处理");
+    expect(chatDeliveryLabel(server[0]!)).toBeUndefined();
     expect(chatDeliveryLabel(server[2]!)).toBe("待继续");
     expect(chatDeliveryLabel(timeline.pending[1]!)).toBe("发送中");
   });

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type TranscriptContext } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import { KuloEnvAgent } from "../packages/env/src/agent.js";
 import { startKuloHubServer } from "../packages/hub/src/server.js";
 import { openTestHub } from "./helpers/secure-hub.js";
 import { HUB_TEST_ADMIN_TOKEN } from "./helpers/hub-auth.js";
@@ -170,5 +171,134 @@ describe.skipIf(!nativeWorkers)("conditional Skills & capability switches throug
     const secondRun = await f.dispatch("skill-memory-guide-on", [{ name: "kulo_skill_read", args: { id: "hindsight-knowledge" } }]);
     expect(catalog(f.requests[f.requests.length - 1]!)).toContain('"id":"hindsight-knowledge"');
     expect(secondRun.results[0]).toMatchObject({ isError: false });
+  });
+});
+
+describe("orchestrator multi-device Skill resolution", () => {
+  it("keeps desktop-automation and browser-automation readable when a turn mentions multiple online computers", async () => {
+    vi.stubEnv("KULO_COMPUTER_USE", "browser,desktop");
+    const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kulo-skill-multi-")));
+    cleanup.push(() => fs.rmSync(directory, { recursive: true, force: true }));
+    const macbookRoot = path.join(directory, "macbook-env");
+    const macminiRoot = path.join(directory, "macmini-env");
+    fs.mkdirSync(macbookRoot);
+    fs.mkdirSync(macminiRoot);
+    const provider = fauxProvider({ provider: "openai", models: [{ id: "orch-skill-model" }] });
+    const models = createModels();
+    models.setProvider(provider.provider);
+    const requests: TranscriptContext[] = [];
+    let step = 0;
+    provider.setResponses([
+      (request) => {
+        requests.push(request);
+        step++;
+        return call("kulo_skill_read", { id: "desktop-automation" });
+      },
+      (request) => {
+        requests.push(request);
+        step++;
+        return call("kulo_skill_read", { id: "desktop-automation", resource: "references/macos.md" });
+      },
+      (request) => {
+        requests.push(request);
+        step++;
+        return fauxAssistantMessage([fauxText("多设备桌面指引已读取。")]);
+      },
+      // Second user turn after Macbook disconnects: targeting only offline Macbook must deny desktop-automation.
+      (request) => {
+        requests.push(request);
+        step++;
+        return call("kulo_skill_read", { id: "desktop-automation" });
+      },
+      (request) => {
+        requests.push(request);
+        step++;
+        return fauxAssistantMessage([fauxText("离线设备不可读取。")]);
+      },
+    ]);
+    const hub = await openTestHub({
+      models,
+      config: {
+        authToken: HUB_TEST_ADMIN_TOKEN,
+        stateDir: path.join(directory, "state"),
+        identityDir: path.join(directory, "identity"),
+        localEnvRoot: path.join(directory, "local-env"),
+        enableLocalEnv: true,
+        envTokens: {
+          "device-macbook": "macbook-secret-token",
+          "device-macmini": "macmini-secret-token",
+        },
+        watchdogMinutes: 0,
+        model: { defaultProvider: "openai", defaultModel: "orch-skill-model", thinkingLevel: "off", apiKey: "" },
+      },
+    });
+    cleanup.push(() => hub.close());
+    const server = await startKuloHubServer(hub, { host: "127.0.0.1", port: 0 });
+    cleanup.push(() => server.close());
+
+    const macbookAgent = new KuloEnvAgent({
+      hubUrl: server.envWsUrl,
+      envId: "device-macbook",
+      name: "Macbook",
+      rootDir: macbookRoot,
+      authToken: "macbook-secret-token",
+      capabilities: ["agent-browser", "agent-desktop"],
+      reconnect: false,
+    });
+    const macminiAgent = new KuloEnvAgent({
+      hubUrl: server.envWsUrl,
+      envId: "device-macmini",
+      name: "MacMini",
+      rootDir: macminiRoot,
+      authToken: "macmini-secret-token",
+      capabilities: ["agent-browser", "agent-desktop"],
+      reconnect: false,
+    });
+    await macbookAgent.start();
+    await macminiAgent.start();
+    cleanup.push(() => macbookAgent.stop());
+    cleanup.push(() => macminiAgent.stop());
+    await vi.waitFor(() => {
+      expect(hub.envManager.getEnvDescriptor("device-macbook")?.online).toBe(true);
+      expect(hub.envManager.getEnvDescriptor("device-macmini")?.online).toBe(true);
+    });
+
+    await hub.sendUserMessage("看看我的 computer use 在 Macbook 和 MacMini 上是否有效", {
+      source: { deviceId: "device-macbook", name: "Macbook", kind: "computer" },
+      requestId: "req-multi-1",
+    });
+    await hub.rootConversation.waitForIdle(BACKGROUND_CONTEXT);
+
+    expect(step).toBe(3);
+    const firstCatalog = catalog(requests[0]!);
+    expect(firstCatalog).toContain('"id":"desktop-automation"');
+    expect(firstCatalog).toContain('"id":"browser-automation"');
+
+    const messagesAfterMulti = (await hub.rootConversation.context(BACKGROUND_CONTEXT)).messages;
+    const skillResults = messagesAfterMulti.filter((message) => message.role === "toolResult" && message.toolName === "kulo_skill_read");
+    expect(skillResults).toHaveLength(2);
+    expect(skillResults[0]).toMatchObject({ isError: false });
+    expect(skillResults[1]).toMatchObject({ isError: false });
+    const bodyText = skillResults.map((result) => result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n")).join("\n");
+    expect(bodyText).toContain("设置 → 系统权限");
+    expect(bodyText).toContain('state: "blocked"');
+
+    // Negative case: disconnect both named devices and mention them -> fallback must not leak local capabilities.
+    await macbookAgent.stop();
+    await macminiAgent.stop();
+    await vi.waitFor(() => {
+      expect(hub.envManager.getEnvDescriptor("device-macbook")?.online).toBe(false);
+      expect(hub.envManager.getEnvDescriptor("device-macmini")?.online).toBe(false);
+    });
+    await hub.sendUserMessage("在 Macbook 和 MacMini 上检查桌面自动化", {
+      requestId: "req-offline-1",
+    });
+    await hub.rootConversation.waitForIdle(BACKGROUND_CONTEXT);
+
+    const offlineCatalog = catalog(requests[3]!);
+    expect(offlineCatalog).not.toContain('"id":"desktop-automation"');
+    const allSkillResults = (await hub.rootConversation.context(BACKGROUND_CONTEXT)).messages
+      .filter((message) => message.role === "toolResult" && message.toolName === "kulo_skill_read");
+    expect(allSkillResults.at(-1)).toMatchObject({ isError: true });
   });
 });

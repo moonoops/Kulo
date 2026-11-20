@@ -22,6 +22,7 @@ interface PreviewOptions {
   rootDir: string;
   runner: AgentCliRunner;
   browserInvocation(sessionId: string): Omit<AgentCliInvocation, "tool" | "timeoutMs" | "signal"> | undefined;
+  browserDisconnectMessage?(sessionId: string): string | undefined;
   desktopTarget(sessionId: string): { app: string; windowId?: string } | undefined;
   desktopEnvironment(): NodeJS.ProcessEnv;
   queueDesktop(work: () => Promise<void>): void;
@@ -62,11 +63,23 @@ export class ComputerPreviewService {
     else this.#desktop(entry);
   }
 
-  clearDesktop(sessionId: string, state: "connecting" | "unavailable"): void {
+  clearDesktop(
+    sessionId: string,
+    state: "connecting" | "unavailable",
+    detail?: { message?: string; permissionRequired?: "accessibility" | "screen" },
+  ): void {
     const entry = this.#entries.get(`desktop:${sessionId}`);
     if (!entry) return;
     entry.desktopBinding = undefined;
-    this.#publish(entry, { state, ...(state === "unavailable" ? { message: "无法确认当前目标窗口" } : {}) });
+    this.#publish(entry, {
+      state,
+      ...(state === "unavailable"
+        ? {
+            message: detail?.message ?? "无法确认当前目标窗口",
+            ...(detail?.permissionRequired ? { permissionRequired: detail.permissionRequired } : {}),
+          }
+        : {}),
+    });
   }
 
   close(target: ComputerPreviewTarget): void {
@@ -130,13 +143,15 @@ export class ComputerPreviewService {
           this.#publish(entry, update);
           if (Number.isSafeInteger(message.seq) && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "ack", seq: message.seq }));
         } else if (message?.type === "status" && message.connected === false) {
-          this.#publish(entry, { state: "unavailable", message: "浏览器画面连接已断开" });
+          this.#publish(entry, { state: "unavailable", message: this.#options.browserDisconnectMessage?.(entry.target.sessionId) ?? "浏览器画面连接已断开" });
+        } else if (message?.type === "status" && message.connected === true && entry.update.state === "unavailable") {
+          this.#publish(entry, { state: "connecting" });
         }
       });
       socket.on("error", () => this.#publish(entry, { state: "unavailable", message: "浏览器画面连接失败" }));
       socket.on("close", () => {
         if (entry.socket === socket) entry.socket = undefined;
-        this.#publish(entry, { state: "unavailable", message: "浏览器画面连接已断开" });
+        this.#publish(entry, { state: "unavailable", message: this.#options.browserDisconnectMessage?.(entry.target.sessionId) ?? "浏览器画面连接已断开" });
         this.#reconnect(entry);
       });
     } catch {

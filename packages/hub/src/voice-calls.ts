@@ -340,6 +340,10 @@ export class KuloVoiceCalls {
     await this.#finish(call);
   }
 
+  hasActiveCalls(): boolean {
+    return [...this.#calls.values()].some((call) => !call.ended);
+  }
+
   async close(): Promise<void> {
     this.#closed = true;
     await this.#tail;

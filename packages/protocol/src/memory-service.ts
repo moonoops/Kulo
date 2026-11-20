@@ -1,19 +1,42 @@
 import type { HindsightProbeResult, KuloSettingsView, PublicMemoryConfig } from "./domain.js";
 
 export type HindsightAccessMode = "kulo" | "scoped" | "private-only";
-export type HindsightModelProvider = "openai" | "anthropic" | "gemini" | "groq" | "ollama";
+export type HindsightModelProvider = "kulo" | "openai" | "anthropic" | "gemini" | "groq" | "ollama";
+export type HindsightEmbeddingsProvider = "onnx" | "openai" | "google" | "cohere" | "tei";
+export type HindsightRerankerProvider = "onnx" | "rrf" | "cohere" | "siliconflow" | "alibaba" | "zeroentropy" | "tei";
 
 export interface HindsightServiceModel {
   provider: HindsightModelProvider;
   model: string;
   baseUrl?: string;
-  /** Optional Kulo API connection; OAuth credentials are not exported. */
+  /** Kulo provider connection ID (required for provider="kulo"; optional API-key reuse for direct providers). */
+  connectionId?: string;
+}
+
+export interface HindsightEmbeddingsModel {
+  provider: HindsightEmbeddingsProvider;
+  model?: string;
+  baseUrl?: string;
+  connectionId?: string;
+  dimensions?: number;
+}
+
+export interface HindsightRerankerModel {
+  provider: HindsightRerankerProvider;
+  model?: string;
+  baseUrl?: string;
   connectionId?: string;
 }
 
 export type MemoryServiceOperation = "deploy" | "configure" | "connect" | "disconnect" | "uninstall" | "check";
 export type MemoryServiceJobStatus = "awaiting-input" | "awaiting-confirmation" | "running" | "succeeded" | "failed" | "rejected";
-export type MemoryServiceSecretField = "modelApiKey" | "routerApiKey" | "workerApiKey" | "sharedReadApiKey";
+export type MemoryServiceSecretField =
+  | "modelApiKey"
+  | "embeddingsApiKey"
+  | "rerankerApiKey"
+  | "routerApiKey"
+  | "workerApiKey"
+  | "sharedReadApiKey";
 
 export interface MemoryServiceConnection {
   endpoint: string;
@@ -47,6 +70,8 @@ export interface MemoryServicePrepareRequest {
   expectedRevision: number;
   operation: MemoryServiceOperation;
   model?: HindsightServiceModel;
+  embeddings?: HindsightEmbeddingsModel;
+  reranker?: HindsightRerankerModel;
   connection?: MemoryServiceConnection;
   deleteData?: boolean;
 }
@@ -63,6 +88,8 @@ export interface MemoryServiceJob {
   createdAt: number;
   updatedAt: number;
   model?: HindsightServiceModel;
+  embeddings?: HindsightEmbeddingsModel;
+  reranker?: HindsightRerankerModel;
   connection?: MemoryServiceConnection;
   deleteData?: boolean;
   error?: string;
@@ -88,6 +115,8 @@ export interface MemoryServiceSnapshot {
   endpoint?: string;
   version?: string;
   model?: HindsightServiceModel;
+  embeddings?: HindsightEmbeddingsModel;
+  reranker?: HindsightRerankerModel;
   dataDirectory?: string;
   phase?: string;
   connection: PublicMemoryConfig;

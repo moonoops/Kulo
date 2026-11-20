@@ -136,7 +136,6 @@ export function chatDeliveryLabel(item: ChatViewItem): string | undefined {
   if (submission?.state === "unconfirmed_disconnect") return t("待确认", "Awaiting confirmation");
   if (submission?.state === "failed") return t(`发送失败${submission.error ? `：${submission.error}` : ""}`, `Sending failed${submission.error ? `: ${submission.error}` : ""}`);
   if (item.delivery === "paused") return t("待继续", "Waiting to continue");
-  if (item.delivery === "queued") return t("待处理", "Pending");
   return undefined;
 }
 

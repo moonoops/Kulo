@@ -20,3 +20,6 @@ export { StagedWorkspaceService, type StagedWorkspaceServiceOptions } from "./st
 export { EXTERNAL_AGENT_MCP_DEFINED_TOOL_NAMES, EXTERNAL_AGENT_MCP_TOOLS, type ExternalAgentMcpInvocation, type ExternalAgentMcpScope } from "./external-agent-mcp.js";
 export { LocalInstanceOwner, LocalInstanceInUseError, discoverLocalInstance, localListenerOrigin, claimKuloRuntime, discoverKuloRuntime } from "./local-instance.js";
 export { discoverDevicePeer, DevicePeerInUseError } from "./peer-runtime-owner.js";
+export { parseBinaryPlist, extractNotificationPlist, type ParsedNotificationPlist, type PlistValue } from "./connectors/bplist.js";
+export { MacOsNotificationSensor, friendlyAppLabel, resolveMacOsNotificationDbPath, type MacOsNotificationSensorOptions } from "./connectors/macos-notifications.js";
+export { SparkMailConnector, buildSparkCliArgs, findSparkExecutable, inferSparkAccessTier, type SparkMailConnectorOptions, type SparkExecRunner, type SparkExecResult } from "./connectors/spark-mail.js";

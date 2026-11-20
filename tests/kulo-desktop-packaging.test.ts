@@ -3,9 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createReleaseManifest, readReleaseIdentity, readReleaseManifest, verifyRelease, writeReleaseManifest } from "@kulo/recovery";
-import { assertClosedLinks, finalizePackagedRelease, prepareMacAgentClis, prepareRecoveryRuntime, preserveConnectorBroker, repairDeployedSelfLink, verifyRecoveryCleanupRuntime, withPreservedWorkspaceState } from "../packages/desktop/scripts/package.mjs";
+import { assertClosedLinks, finalizePackagedRelease, parseCodeSigningIdentities, prepareMacAgentClis, prepareRecoveryRuntime, preserveConnectorBroker, repairDeployedSelfLink, resolveMacSignIdentity, signMacAppBundle, verifyRecoveryCleanupRuntime, withPreservedWorkspaceState } from "../packages/desktop/scripts/package.mjs";
 
 const temporary: string[] = [];
 const desktopRoot = fileURLToPath(new URL("../packages/desktop/", import.meta.url)).replace(/\/$/, "");
@@ -328,5 +328,83 @@ describe("desktop deployment workspace cache", () => {
     const updated = JSON.stringify({ ...state, projects: {}, settings: { ...state.settings, dev: false, production: true } });
     await expect(withPreservedWorkspaceState(root, async () => fs.writeFile(cache, updated))).rejects.toThrow("工作区依赖或配置发生变化");
     expect(await fs.readFile(cache, "utf8")).toBe(updated);
+  });
+});
+
+describe("macOS app bundle code signing", () => {
+  const sampleIdentities = [
+    '  1) 1111111111111111111111111111111111111111 "Revoked Dev" (CSSMERR_TP_CERT_REVOKED)',
+    '  2) 2222222222222222222222222222222222222222 "Apple Development: Example Dev (TEAM123456)"',
+    '  3) 3333333333333333333333333333333333333333 "Developer ID Application: Example Corp (TEAM123456)"',
+    '  4) 4444444444444444444444444444444444444444 "Kulo Local Dev"',
+    '     4 valid identities found',
+  ].join("\n");
+
+  it("parses valid identities while ignoring revoked/invalid entries", () => {
+    expect(parseCodeSigningIdentities(sampleIdentities)).toEqual([
+      { hash: "2222222222222222222222222222222222222222", name: "Apple Development: Example Dev (TEAM123456)" },
+      { hash: "3333333333333333333333333333333333333333", name: "Developer ID Application: Example Corp (TEAM123456)" },
+      { hash: "4444444444444444444444444444444444444444", name: "Kulo Local Dev" },
+    ]);
+  });
+
+  it("prioritizes explicit identity, Kulo local cert, Developer ID, Apple Development, then ad-hoc", async () => {
+    await expect(resolveMacSignIdentity({ signIdentity: "Custom Cert" })).resolves.toMatchObject({
+      identity: "Custom Cert", source: "explicit", useTimestamp: false,
+    });
+    await expect(resolveMacSignIdentity({ signIdentity: "adhoc" })).resolves.toMatchObject({
+      identity: "-", source: "explicit-adhoc",
+    });
+    await expect(resolveMacSignIdentity({ signIdentity: "--bad" })).rejects.toThrow("无效");
+
+    await expect(resolveMacSignIdentity({ signIdentity: "", listIdentities: async () => sampleIdentities })).resolves.toMatchObject({
+      identity: "4444444444444444444444444444444444444444", label: "Kulo Local Dev", source: "auto", useTimestamp: false,
+    });
+    const withoutKulo = sampleIdentities.split("\n").filter((line) => !line.includes("Kulo Local Dev")).join("\n");
+    await expect(resolveMacSignIdentity({ signIdentity: "", listIdentities: async () => withoutKulo })).resolves.toMatchObject({
+      identity: "3333333333333333333333333333333333333333", source: "auto", useTimestamp: true,
+    });
+    const onlyAppleDev = sampleIdentities.split("\n").filter((line) => line.includes("Apple Development")).join("\n");
+    await expect(resolveMacSignIdentity({ signIdentity: "", listIdentities: async () => onlyAppleDev })).resolves.toMatchObject({
+      identity: "2222222222222222222222222222222222222222", source: "auto", useTimestamp: false,
+    });
+    await expect(resolveMacSignIdentity({ signIdentity: "", listIdentities: async () => "0 valid identities found" })).resolves.toMatchObject({
+      identity: "-", source: "fallback-adhoc",
+    });
+  });
+
+  it("signs with stable certificates without overriding nested bundle identifiers and falls back only for auto identities", async () => {
+    const calls: Array<{ file: string; args: string[] }> = [];
+    const exec = vi.fn(async (file: string, args: string[]) => {
+      calls.push({ file, args });
+      return { stdout: "", stderr: "" };
+    });
+
+    const devSigned = await signMacAppBundle("/tmp/Kulo Dev.app", {
+      signIdentity: "",
+      listIdentities: async () => '  1) 2222222222222222222222222222222222222222 "Apple Development: Example Dev (TEAM123456)"',
+      run: exec,
+    });
+    expect(devSigned).toMatchObject({ identity: "2222222222222222222222222222222222222222", source: "auto" });
+    expect(calls[0]?.args).toEqual(["--force", "--deep", "--sign", "2222222222222222222222222222222222222222", "--preserve-metadata=entitlements", "--timestamp=none", "/tmp/Kulo Dev.app"]);
+
+    // Auto-selected signing failure (e.g. locked keychain in CI) falls back to ad-hoc.
+    const lockedExec = vi.fn(async (_file: string, args: string[]) => {
+      if (args[3] !== "-") throw new Error("errSecInteractionNotAllowed");
+      return { stdout: "", stderr: "" };
+    });
+    const fallback = await signMacAppBundle("/tmp/Kulo Dev.app", {
+      signIdentity: "",
+      listIdentities: async () => '  1) 2222222222222222222222222222222222222222 "Apple Development: Example Dev (TEAM123456)"',
+      run: lockedExec,
+    });
+    expect(fallback).toMatchObject({ identity: "-", source: "fallback-adhoc" });
+    expect(lockedExec).toHaveBeenCalledTimes(2);
+
+    // Explicit identity failures propagate instead of silently downgrading to ad-hoc.
+    await expect(signMacAppBundle("/tmp/Kulo Dev.app", {
+      signIdentity: "Developer ID Application: Example Corp (TEAM123456)",
+      run: lockedExec,
+    })).rejects.toThrow("errSecInteractionNotAllowed");
   });
 });

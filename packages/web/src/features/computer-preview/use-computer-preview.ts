@@ -11,11 +11,15 @@ export function computerPreviewSocketUrl(topicId: string): string {
   return url.toString();
 }
 
-export function useComputerPreview(topicId: string, enabled: boolean) {
+export function useComputerPreview(topicId: string, enabled: boolean, surfaceVisible = true) {
   const client = useMemo(() => new ComputerPreviewClient({ connect: () => new WebSocket(computerPreviewSocketUrl(topicId)) as unknown as PreviewSocket }), [topicId]);
   const state = useSyncExternalStore(client.subscribe, client.getSnapshot, () => EMPTY_PREVIEW_STATE);
   useEffect(() => {
+    client.setSurfaceVisible(surfaceVisible);
+  }, [client, surfaceVisible]);
+  useEffect(() => {
     if (!enabled) return;
+    client.setSurfaceVisible(surfaceVisible);
     client.start();
     const visibility = () => client.setPageVisible(document.visibilityState !== "hidden");
     visibility();

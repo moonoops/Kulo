@@ -1,41 +1,40 @@
 import { translate as t, useI18n } from "../../kulo-i18n";
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Alert, Button, Card, Checkbox, Chip, Input, Label, ListBox, Select, Spinner, TextField } from "@heroui/react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Alert, Button, Card, Checkbox, Chip, Input, Label, Spinner, TextField } from "@heroui/react";
 import {
-  isConversationModel,
   redactSecrets,
-  type HindsightModelProvider,
-  type HindsightServiceModel,
   type MemoryServiceJob,
   type MemoryServiceOperation,
   type MemoryServicePrepareRequest,
   type MemoryServiceSecretInput,
   type MemoryServiceSnapshot,
+  type ProviderCatalogItem,
   type KuloSettingsView,
 } from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { kuloRest } from "../../kulo-api";
 import { safeSetupInputError } from "./capability-setup-inputs";
 import { isMemoryDialogueOperation, MEMORY_SERVICE_INTENT_EVENT, publishMemoryService, requestMemoryConnectionFocus, takeMemoryServiceIntent, type MemoryDialogueOperation } from "./memory-service-events";
+import { MemoryModelFields } from "./memory-model-fields";
+import {
+  buildMemoryModelsPayload,
+  initialMemoryModelsDraft,
+  kuloMemoryConnections,
+  type MemoryModelsDraft,
+} from "./memory-service-models";
 
 const operationLabels = (): Record<MemoryServiceOperation, string> => ({
   deploy: t("在本机部署 Hindsight", "Deploy Hindsight locally"), configure: t("配置记忆服务", "Configure memory service"), connect: t("连接已有 Hindsight", "Connect existing Hindsight"), disconnect: t("断开记忆连接", "Disconnect memory"), uninstall: t("卸载本机记忆服务", "Uninstall local memory service"), check: t("检测记忆连接", "Check memory connection"),
 });
-const modelProviders = (): Array<{ id: HindsightModelProvider; label: string }> => ([
-  { id: "openai", label: t("OpenAI 兼容 API", "OpenAI-compatible API") }, { id: "anthropic", label: "Anthropic" }, { id: "gemini", label: "Gemini" }, { id: "groq", label: "Groq" }, { id: "ollama", label: "Ollama" },
-]);
 const statusLabels = (): Record<MemoryServiceJob["status"], string> => ({
   "awaiting-input": t("待填写凭据", "Credentials required"), "awaiting-confirmation": t("待确认", "Awaiting confirmation"), running: t("处理中", "Processing"), succeeded: t("已完成", "Completed"), failed: t("未完成", "Incomplete"), rejected: t("已取消", "Cancelled"),
 });
+const MODEL_SECRET_FIELDS = new Set<MemoryServiceSecretInput["field"]>(["modelApiKey", "embeddingsApiKey", "rerankerApiKey"]);
 const pending = (job: MemoryServiceJob) => job.status === "running" || job.status === "awaiting-input";
 const id = () => `memory-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 
-export interface MemoryServiceDraft {
+export interface MemoryServiceDraft extends MemoryModelsDraft {
   operation: MemoryDialogueOperation;
-  provider: HindsightModelProvider;
-  model: string;
-  baseUrl: string;
-  connectionId: string;
   deleteData: boolean;
 }
 
@@ -43,64 +42,22 @@ export function initialMemoryServiceDraft(
   operation: MemoryDialogueOperation,
   snapshot: MemoryServiceSnapshot,
   settings?: KuloSettingsView,
+  providers?: ProviderCatalogItem[],
 ): MemoryServiceDraft {
-  const saved = snapshot.model;
-  if (saved) {
-    return {
-      operation,
-      provider: saved.provider,
-      model: saved.model,
-      baseUrl: saved.baseUrl ?? "",
-      connectionId: saved.connectionId ?? "",
-      deleteData: false,
-    };
-  }
-  if ((operation === "deploy" || operation === "configure") && settings) {
-    const connections = modelConnections(settings);
-    const preferredId = settings.blocks.model.value.defaultProvider;
-    const chosen =
-      connections.find((item) => item.id === preferredId && item.model) ??
-      connections.find((item) => Boolean(item.model)) ??
-      connections.find((item) => item.id === preferredId) ??
-      connections[0];
-    if (chosen) {
-      return {
-        operation,
-        provider: chosen.provider,
-        model: chosen.model || chosen.models[0] || "",
-        baseUrl: chosen.baseUrl,
-        connectionId: chosen.id,
-        deleteData: false,
-      };
-    }
-  }
   return {
     operation,
-    provider: "openai",
-    model: "",
-    baseUrl: "",
-    connectionId: "",
+    ...initialMemoryModelsDraft(snapshot, settings, providers),
     deleteData: false,
   };
-}
-
-function safeUrl(raw: string, label: string): string {
-  const value = raw.trim();
-  let parsed: URL;
-  try { parsed = new URL(value); } catch { throw new Error(t(`请输入有效的${label}。`, `Enter a valid ${label}.`)); }
-  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error(t(`${label}不能包含凭据、查询参数或锚点。`, `${label} cannot include credentials, query parameters, or fragments.`));
-  return value.replace(/\/+$/, "");
 }
 
 export function createMemoryServiceRequest(draft: MemoryServiceDraft, clientId: string, expectedRevision: number, commandId = id()): MemoryServicePrepareRequest {
   const request: MemoryServicePrepareRequest = { commandId, clientId, expectedRevision, operation: draft.operation };
   if (draft.operation === "deploy" || draft.operation === "configure") {
-    if (!draft.model.trim()) throw new Error(t("请选择或填写记忆模型。", "Select or enter a memory model."));
-    request.model = {
-      provider: draft.provider, model: draft.model.trim(),
-      ...(draft.baseUrl.trim() ? { baseUrl: safeUrl(draft.baseUrl, t("模型地址", "Model URL")) } : {}),
-      ...(draft.connectionId ? { connectionId: draft.connectionId } : {}),
-    };
+    const models = buildMemoryModelsPayload(draft);
+    request.model = models.model;
+    request.embeddings = models.embeddings;
+    request.reranker = models.reranker;
   }
   if (draft.operation === "uninstall") request.deleteData = draft.deleteData;
   return request;
@@ -191,7 +148,7 @@ export function MemoryServiceJobCard({ job, inputs, clientId, connected, onChang
       {job.status === "running" && <div className="flex items-center gap-2" role="status"><Spinner size="sm" aria-label={t("记忆服务处理中", "Memory service is processing")} /><span>{job.stage}</span></div>}
       {job.status === "succeeded" && <p role="status">{job.stage}</p>}
       {(job.operation === "deploy" || job.operation === "configure") && job.model && <p className="text-muted">{t("记忆存于本机；所选模型服务将处理记忆内容。", "Memory is stored locally. The selected model service processes its content.")}</p>}
-      {job.status === "awaiting-input" && own && inputs.filter((input) => input.jobId === job.id && input.field === "modelApiKey" && input.clientId === clientId && input.status === "pending").map((input) => <MemorySecretField key={input.id} input={input} clientId={clientId} connected={connected} onChanged={onChanged} />)}
+      {job.status === "awaiting-input" && own && inputs.filter((input) => input.jobId === job.id && MODEL_SECRET_FIELDS.has(input.field) && input.clientId === clientId && input.status === "pending").map((input) => <MemorySecretField key={input.id} input={input} clientId={clientId} connected={connected} onChanged={onChanged} />)}
       {job.probe && <p className={job.probe.healthy ? "text-success" : "text-danger"}>{job.probe.healthy ? job.probe.isolationVerified ? t("连接与隔离检查通过", "Connection and isolation verified") : t("主脑私库连接正常", "Private memory bank connected") : t("连接检查未通过", "Connection check failed")}</p>}
       {(error || job.error) && <p role="alert" className="break-words text-danger">{error ?? redactSecrets(job.error!)}</p>}
     </Card.Content>
@@ -205,53 +162,11 @@ export function MemoryServiceJobCard({ job, inputs, clientId, connected, onChang
   </Card>;
 }
 
-function modelConnections(settings: KuloSettingsView) {
-  const model = settings.blocks.model;
-  const connections: Array<{ id: string; label: string; provider: HindsightModelProvider; baseUrl: string; model: string; models: string[] }> = [];
-  if (!model.value.gatewayDisabled && (model.hasApiKey || (model.value.gatewayModels?.length ?? 0) > 0)) {
-    const chatIds = [...new Set((model.value.gatewayModels ?? []).filter(isConversationModel).map((m) => m.id.trim()).filter(Boolean))];
-    if (model.value.defaultProvider === "kulo-gateway" && model.value.defaultModel.trim() && !chatIds.includes(model.value.defaultModel.trim())) {
-      chatIds.unshift(model.value.defaultModel.trim());
-    }
-    connections.push({
-      id: "kulo-gateway",
-      label: model.value.gatewayName?.trim() || t("默认 API 连接", "Default API connection"),
-      provider: "openai",
-      baseUrl: model.value.baseUrl,
-      model: chatIds[0] ?? model.value.defaultModel,
-      models: chatIds,
-    });
-  }
-  for (const item of model.value.customProviders ?? []) {
-    const provider: HindsightModelProvider | undefined = item.preset === "groq"
-      ? "groq"
-      : item.api === "anthropic-messages"
-        ? "anthropic"
-        : item.api === "google-generative-ai"
-          ? "gemini"
-          : item.api.startsWith("openai-")
-            ? "openai"
-            : undefined;
-    if (!provider) continue;
-    const chatIds = [...new Set(item.models.filter(isConversationModel).map((m) => m.id.trim()).filter(Boolean))];
-    const defaultForConn = model.value.defaultProvider === item.id ? model.value.defaultModel.trim() : "";
-    if (defaultForConn && !chatIds.includes(defaultForConn)) chatIds.unshift(defaultForConn);
-    connections.push({
-      id: item.id,
-      label: item.name || item.id,
-      provider,
-      baseUrl: item.baseUrl,
-      model: defaultForConn || chatIds[0] || "",
-      models: chatIds,
-    });
-  }
-  return connections;
-}
-
-export function MemoryServiceForm({ draft, snapshot, settings, busy, error, onChange, onCancel, onSubmit }: {
+export function MemoryServiceForm({ draft, snapshot, settings, providers, busy, error, onChange, onCancel, onSubmit }: {
   draft: MemoryServiceDraft;
   snapshot: MemoryServiceSnapshot;
   settings: KuloSettingsView;
+  providers?: ProviderCatalogItem[];
   busy: boolean;
   error?: string;
   onChange: (draft: MemoryServiceDraft) => void;
@@ -259,32 +174,21 @@ export function MemoryServiceForm({ draft, snapshot, settings, busy, error, onCh
   onSubmit: () => void;
 }) {
   useI18n();
-  const connections = modelConnections(settings);
-  const selectedConnection = connections.find((item) => item.id === draft.connectionId);
-  const selectableModels = selectedConnection?.models.length
-    ? [...new Set([...selectedConnection.models, ...(draft.model.trim() ? [draft.model.trim()] : [])])]
-    : [];
+  const connections = useMemo(() => kuloMemoryConnections(settings, providers), [settings, providers]);
   const modelForm = draft.operation === "deploy" || draft.operation === "configure";
   return <Card variant="secondary" className="min-w-0 gap-3 rounded-2xl p-3" aria-label={operationLabels()[draft.operation]}>
     <Card.Header><Card.Title className="text-sm">{operationLabels()[draft.operation]}</Card.Title><Card.Description className="text-xs">{t("部署设备：", "Deployment device: ")}{snapshot.deviceName}</Card.Description></Card.Header>
     <Card.Content>
       <form id="memory-service-form" className="kulo-form-stack" onSubmit={(event) => { event.preventDefault(); onSubmit(); }}>
-        {modelForm && <>
-          {connections.length > 0 && <Select variant="primary" className="kulo-form-field" value={draft.connectionId || "__separate__"} onChange={(value) => {
-            const connection = connections.find((item) => item.id === value);
-            onChange(connection ? { ...draft, connectionId: connection.id, provider: connection.provider, baseUrl: connection.baseUrl, model: connection.model || connection.models[0] || "" } : { ...draft, connectionId: "" });
-          }} isDisabled={busy} fullWidth><Label>{t("模型凭据来源", "Model credentials")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger><Select.Popover><ListBox><ListBox.Item id="__separate__" textValue={t("单独配置", "Configure separately")}>{t("单独配置", "Configure separately")}<ListBox.ItemIndicator /></ListBox.Item>{connections.map((connection) => <ListBox.Item key={connection.id} id={connection.id} textValue={connection.label}>{connection.label}<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover></Select>}
-          {!selectedConnection && <Select variant="primary" className="kulo-form-field" value={draft.provider} onChange={(value) => { if (value) onChange({ ...draft, provider: String(value) as HindsightModelProvider, connectionId: "", baseUrl: "", model: "" }); }} isDisabled={busy} fullWidth>
-            <Label>{t("模型供应商", "Model provider")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger><Select.Popover><ListBox>{modelProviders().map((provider) => <ListBox.Item key={provider.id} id={provider.id} textValue={provider.label}>{provider.label}<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover>
-          </Select>}
-          {selectableModels.length > 0
-            ? <Select variant="primary" className="kulo-form-field" placeholder={t("未选择", "Not selected")} value={draft.model && selectableModels.includes(draft.model) ? draft.model : null} onChange={(value) => { if (value) onChange({ ...draft, model: String(value) }); }} isDisabled={busy} fullWidth>
-                <Label>{t("记忆模型", "Memory model")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-                <Select.Popover><ListBox>{selectableModels.map((modelId) => <ListBox.Item key={modelId} id={modelId} textValue={modelId}>{modelId}<ListBox.ItemIndicator /></ListBox.Item>)}</ListBox></Select.Popover>
-              </Select>
-            : <TextField variant="primary" className="kulo-form-field" value={draft.model} onChange={(model) => onChange({ ...draft, model })} isRequired isDisabled={busy} fullWidth><Label>{t("记忆模型", "Memory model")}</Label><Input spellCheck={false} /></TextField>}
-          {!selectedConnection && <TextField variant="primary" className="kulo-form-field" value={draft.baseUrl} onChange={(baseUrl) => onChange({ ...draft, baseUrl, connectionId: "" })} isDisabled={busy} fullWidth><Label>{t("模型地址（可选）", "Model URL (optional)")}</Label><Input type="url" spellCheck={false} placeholder={draft.provider === "ollama" ? "http://127.0.0.1:11434" : t("使用供应商默认地址", "Use the provider's default URL")} /></TextField>}
-        </>}
+        {modelForm && (
+          <MemoryModelFields
+            draft={draft}
+            connections={connections}
+            disabled={busy}
+            layout="form"
+            onChange={(next) => onChange({ ...draft, ...next })}
+          />
+        )}
         {draft.operation === "uninstall" && <Checkbox isSelected={draft.deleteData} onChange={(deleteData) => onChange({ ...draft, deleteData })} isDisabled={busy}><Checkbox.Content><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>{t("同时删除记忆数据", "Also delete memory data")}</Checkbox.Content></Checkbox>}
         {error && <Alert status="danger" className="rounded-xl p-2"><Alert.Content className="break-words text-xs">{error}</Alert.Content></Alert>}
       </form>
@@ -296,19 +200,29 @@ export function MemoryServiceForm({ draft, snapshot, settings, busy, error, onCh
 export function MemoryServiceDialogue({ clientId, settings, connected, refreshKey }: { clientId: string; settings: KuloSettingsView; connected: boolean; refreshKey: string }) {
   useI18n();
   const [snapshot, setSnapshot] = useState<MemoryServiceSnapshot | null>(null);
+  const [providers, setProviders] = useState<ProviderCatalogItem[]>();
   const [draft, setDraft] = useState<MemoryServiceDraft | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const alive = useRef(true);
   const changed = useCallback((next: MemoryServiceSnapshot) => { if (alive.current) { setSnapshot(next); setError(undefined); publishMemoryService(next); } }, []);
   const load = useCallback(async () => { const next = await kuloRest.getMemoryService(clientId); changed(next); return next; }, [clientId, changed]);
+  const loadProviders = useCallback(async () => {
+    try {
+      const res = await kuloRest.listProviders();
+      if (alive.current) setProviders(res.providers);
+      return res.providers;
+    } catch {
+      return undefined;
+    }
+  }, []);
   const begin = async (operation: MemoryServiceOperation) => {
     if (!isMemoryDialogueOperation(operation)) { requestMemoryConnectionFocus(); return; }
     if (busy || !connected) return;
     setBusy(true); setError(undefined);
     try {
-      const current = await load();
-      setDraft(initialMemoryServiceDraft(operation, current, settings));
+      const [current, catalog] = await Promise.all([load(), loadProviders()]);
+      setDraft(initialMemoryServiceDraft(operation, current, settings, catalog ?? providers));
     } catch (cause) { if (alive.current) setError(redactSecrets(cause instanceof Error ? cause.message : t("无法读取记忆服务", "Unable to load memory service"))); }
     finally { if (alive.current) setBusy(false); }
   };
@@ -321,7 +235,8 @@ export function MemoryServiceDialogue({ clientId, settings, connected, refreshKe
   useEffect(() => {
     if (!connected) return;
     void load().catch((cause) => { if (alive.current) setError(redactSecrets(cause instanceof Error ? cause.message : t("读取服务失败", "Failed to load service"))); });
-  }, [connected, refreshKey, load]);
+    void loadProviders();
+  }, [connected, refreshKey, settings.blocks.model.revision, load, loadProviders]);
   useEffect(() => {
     const receive = () => { const operation = takeMemoryServiceIntent(); if (operation) void beginRef.current(operation); };
     window.addEventListener(MEMORY_SERVICE_INTENT_EVENT, receive);
@@ -345,7 +260,7 @@ export function MemoryServiceDialogue({ clientId, settings, connected, refreshKe
   if (!draft && !jobs.length && !error && !busy) return null;
   return <div className="flex min-w-0 flex-col gap-3" aria-label={t("记忆服务配置对话", "Memory service setup conversation")}>
     {jobs.map((job) => <MemoryServiceJobCard key={job.id} job={job} inputs={snapshot?.inputs ?? []} clientId={clientId} connected={connected} onChanged={changed} />)}
-    {draft && snapshot && <MemoryServiceForm draft={draft} snapshot={snapshot} settings={settings} busy={busy} error={error} onChange={setDraft} onCancel={() => { setDraft(null); setError(undefined); }} onSubmit={() => void prepare()} />}
+    {draft && snapshot && <MemoryServiceForm draft={draft} snapshot={snapshot} settings={settings} providers={providers} busy={busy} error={error} onChange={setDraft} onCancel={() => { setDraft(null); setError(undefined); }} onSubmit={() => void prepare()} />}
     {!draft && error && <Alert status="danger" className="rounded-2xl p-3"><Alert.Content className="break-words text-xs">{error}</Alert.Content><Button size="sm" variant="tertiary" onPress={() => void load().catch((cause) => setError(redactSecrets(cause instanceof Error ? cause.message : t("加载失败", "Failed to load"))))}>{t("重试", "Retry")}</Button></Alert>}
     {busy && !draft && <Spinner size="sm" aria-label={t("准备记忆服务操作", "Preparing memory service operation")} />}
   </div>;

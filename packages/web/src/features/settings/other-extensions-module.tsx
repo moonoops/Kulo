@@ -1,13 +1,13 @@
 import { useI18n, translate, type KuloLanguage } from "../../kulo-i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Chip, Label, Spinner, Switch, Table } from "@heroui/react";
+import { Alert, Button, Chip, Input, Label, Modal, Spinner, Switch, Table, TextField } from "@heroui/react";
 import { redactSecrets, type ExtensionRecord, type ExtensionStatus, type ExtensionWorkspaceSnapshot, type SettingsAssistantContext } from "@kulo/protocol";
 import { kuloRest } from "../../kulo-api";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 
 const TRANSITIONAL = new Set<ExtensionStatus>(["installing", "starting", "stopping", "removing"]);
 type Target = NonNullable<SettingsAssistantContext["target"]>;
-type PageOperation = "enable" | "stop" | "remove";
+type PageOperation = "install" | "enable" | "stop" | "remove";
 
 const BUILTIN_EXTENSION_NAMES: Readonly<Record<string, Readonly<Record<KuloLanguage, string>>>> = {
   "billion-context": {
@@ -72,7 +72,10 @@ export function OtherExtensionsModule({ snapshot: incoming, connected, disabled 
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();
   const [remove, setRemove] = useState<ExtensionRecord>();
+  const [addOpen, setAddOpen] = useState(false);
+  const [projectUrl, setProjectUrl] = useState("");
   const mounted = useRef(true);
+  const addButton = useRef<HTMLButtonElement>(null);
   const manageButtons = useRef(new Map<string, HTMLButtonElement>());
   const removeButtons = useRef(new Map<string, HTMLButtonElement>());
   const acceptSnapshot = useCallback((next: ExtensionWorkspaceSnapshot) => {
@@ -131,11 +134,25 @@ export function OtherExtensionsModule({ snapshot: incoming, connected, disabled 
     }
   };
 
+  const closeAdd = () => {
+    setAddOpen(false);
+    setProjectUrl("");
+    requestAnimationFrame(() => addButton.current?.focus());
+  };
+
+  const submitAdd = () => {
+    const url = projectUrl.trim();
+    if (!url || !connected || disabled || Boolean(busy)) return;
+    setAddOpen(false);
+    setProjectUrl("");
+    onRequest(undefined, t(`评估这个项目能否接入 Kulo：${url}`, `Evaluate whether this project can be integrated into Kulo: ${url}`));
+  };
+
   return <section className="flex min-w-0 flex-col gap-4" aria-label={t("其他扩展", "Other extensions")}>
     <div className="kulo-settings-section-head">
       <h2 className="kulo-section-title">{t("其他扩展", "Other extensions")}</h2>
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="secondary" isDisabled={!connected || disabled || Boolean(busy)} onPress={() => onRequest(undefined, t("评估一个项目是否能接入 Kulo，请先让我提供项目链接。", "Evaluate whether a project can be integrated into Kulo. Ask me for the project URL first."))}>{t("添加扩展", "Add extension")}</Button>
+        <Button ref={addButton} size="sm" variant="secondary" isDisabled={!connected || disabled || Boolean(busy)} onPress={() => setAddOpen(true)}>{t("添加扩展", "Add extension")}</Button>
       </div>
     </div>
     {error && <Alert status="danger" role="alert">
@@ -186,7 +203,7 @@ export function OtherExtensionsModule({ snapshot: incoming, connected, disabled 
                 </Table.Cell>
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-actions">
                   <div className="kulo-settings-table-action-group">
-                    {!installed && <Button size="sm" variant="ghost" aria-label={t(`安装${displayName}`, `Install ${displayName}`)} isDisabled={blocked} onPress={() => onRequest({ kind: "extension", id: extension.id }, t(`安装${displayName}，安装完成后保持关闭。`, `Install ${displayName} and leave it disabled after installation.`))}>{t("安装", "Install")}</Button>}
+                    {!installed && <Button size="sm" variant="ghost" aria-label={t(`安装${displayName}`, `Install ${displayName}`)} isDisabled={blocked} isPending={busy === `install:${extension.id}`} onPress={() => void operate(extension, "install")}>{t("安装", "Install")}</Button>}
                     <Button ref={(node) => { if (node) manageButtons.current.set(extension.id, node); else manageButtons.current.delete(extension.id); }} size="sm" variant="ghost" aria-label={t(`管理${displayName}`, `Manage ${displayName}`)} aria-pressed={selected} isDisabled={!connected || disabled} onPress={() => onRequest({ kind: "extension", id: extension.id })}>{t("管理", "Manage")}</Button>
                     {extension.enabled && <Button size="sm" variant="ghost" aria-label={t(`停止${displayName}`, `Stop ${displayName}`)} isDisabled={blocked} isPending={busy === `stop:${extension.id}`} onPress={() => void operate(extension, "stop")}>{t("停止", "Stop")}</Button>}
                     {(installed || extension.status === "error") && <Button ref={(node) => { if (node) removeButtons.current.set(extension.id, node); else removeButtons.current.delete(extension.id); }} size="sm" variant="ghost" aria-label={t(`删除${displayName}`, `Delete ${displayName}`)} isDisabled={blocked} onPress={() => setRemove(extension)}>{t("删除", "Delete")}</Button>}
@@ -198,6 +215,30 @@ export function OtherExtensionsModule({ snapshot: incoming, connected, disabled 
         </Table.Content>
       </Table.ScrollContainer>
     </Table>}
+    <Modal isOpen={addOpen} onOpenChange={(open) => { if (!open) closeAdd(); }}>
+      <Modal.Backdrop isOpen={addOpen} onOpenChange={(open) => { if (!open) closeAdd(); }}>
+        <Modal.Container size="sm" placement="center" scroll="inside">
+          <Modal.Dialog aria-label={t("添加扩展", "Add extension")}>
+            <form className="contents" onSubmit={(event) => { event.preventDefault(); submitAdd(); }}>
+              <Modal.Header>
+                <Modal.Heading>{t("添加扩展", "Add extension")}</Modal.Heading>
+                <Modal.CloseTrigger aria-label={t("关闭", "Close")} />
+              </Modal.Header>
+              <Modal.Body className="flex min-w-0 flex-col gap-4">
+                <TextField className="kulo-form-field" variant="secondary" fullWidth isRequired value={projectUrl} onChange={setProjectUrl} isDisabled={!connected || disabled}>
+                  <Label>{t("项目链接", "Project URL")}</Label>
+                  <Input type="url" autoFocus spellCheck={false} placeholder="https://github.com/..." />
+                </TextField>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="tertiary" onPress={closeAdd}>{t("取消", "Cancel")}</Button>
+                <Button type="submit" variant="primary" isDisabled={!connected || disabled || !projectUrl.trim()}>{t("评估接入", "Evaluate")}</Button>
+              </Modal.Footer>
+            </form>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+    </Modal>
     <ConfirmDialog open={Boolean(remove)} title={t(`删除${remove ? extensionDisplayName(remove, language) : "扩展"}？`, `Delete ${remove ? extensionDisplayName(remove, language) : "Extension"}?`)} description={t("保留主对话和历史记录。", "The main conversation and history will be kept.")} confirmLabel={t("删除", "Delete")} isPending={Boolean(busy)} onCancel={cancelRemove} onConfirm={() => { if (remove) void operate(remove, "remove"); }} />
   </section>;
 }

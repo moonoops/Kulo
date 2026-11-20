@@ -404,4 +404,49 @@ describe("Hindsight setup confirmation and credential custody", () => {
       if (taskId !== undefined) await f.harness.waitForTask(taskId as TaskId, context);
     }
   });
+
+  it("supports provider='kulo' without secret prompts, collects embedding/rerank API keys securely, and reports clear provider validation errors", async () => {
+    const f = await fixture({ resolveKey: false });
+    vi.mocked(f.local.deploy).mockImplementationOnce(async (input) => {
+      expect(input.model).toEqual({ provider: "kulo", connectionId: "api-vertex", model: "gemini-3.8-flash" });
+      expect(input.apiKey).toBeUndefined();
+      expect(input.embeddings).toEqual({ provider: "openai", model: "text-embedding-3-small" });
+      expect(input.reranker).toEqual({ provider: "siliconflow", model: "BAAI/bge-reranker-v2-m3" });
+      expect(input.embeddingsApiKey).toBe("emb-key-123456");
+      expect(input.rerankerApiKey).toBe("rr-key-123456");
+      return { endpoint: "http://127.0.0.1:18888", routerApiKey: ROUTER, workerApiKey: WORKER, banks: { private: "kulo-core", shared: "kulo-shared" } };
+    });
+
+    // Clear provider error (never misleadingly says "密钥请使用保密输入" for an unsupported provider name).
+    await expect(f.service.prepare({
+      commandId: "bad-provider",
+      clientId: "browser-a",
+      expectedRevision: f.settings().revisions.memory,
+      operation: "deploy",
+      model: { provider: "google-vertex" as never, model: "gemini-3.8-flash" },
+    })).rejects.toMatchObject({ status: 400, code: "invalid_memory_model", message: expect.stringContaining("不支持的理解模型供应商") });
+
+    // Deploy with Kulo bridge model (no modelApiKey needed!) + remote embedding & rerank (secure inputs requested).
+    const prepared = await f.service.prepare({
+      commandId: "deploy-kulo-full",
+      clientId: "browser-a",
+      expectedRevision: f.settings().revisions.memory,
+      operation: "deploy",
+      model: { provider: "kulo", connectionId: "api-vertex", model: "gemini-3.8-flash" },
+      embeddings: { provider: "openai", model: "text-embedding-3-small" },
+      reranker: { provider: "siliconflow", model: "BAAI/bge-reranker-v2-m3" },
+    });
+    const job = prepared.jobs.find((item) => item.id === "deploy-kulo-full")!;
+    expect(job.status).toBe("awaiting-input");
+    const pendingInputs = prepared.inputs.filter((item) => item.jobId === job.id);
+    expect(pendingInputs.map((item) => item.field).sort()).toEqual(["embeddingsApiKey", "rerankerApiKey"]);
+
+    await f.service.submitInput(pendingInputs.find((item) => item.field === "embeddingsApiKey")!.id, "browser-a", { secret: "emb-key-123456" });
+    const ready = await f.service.submitInput(pendingInputs.find((item) => item.field === "rerankerApiKey")!.id, "browser-a", { secret: "rr-key-123456" });
+    expect(ready.jobs.find((item) => item.id === job.id)?.status).toBe("awaiting-confirmation");
+    await f.service.decide(job.id, "browser-a", "confirm");
+    await f.settle();
+    expect(f.local.deploy).toHaveBeenCalledOnce();
+    expect(f.values.size).toBe(0);
+  });
 });

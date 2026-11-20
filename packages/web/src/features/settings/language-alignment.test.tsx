@@ -12,16 +12,10 @@ import { setLanguage } from "../../kulo-i18n";
 import {
   ADD_IMAGE_PROMPT,
   ADD_IMAGE_PROMPT_EN,
-  CONNECT_FLOW_PROMPT,
-  CONNECT_FLOW_PROMPT_EN,
   IMAGE_ROUTING_PROMPT,
   IMAGE_ROUTING_PROMPT_EN,
-  IMPORT_SKILL_PROMPT,
-  IMPORT_SKILL_PROMPT_EN,
   getAddImagePrompt,
-  getConnectFlowPrompt,
   getImageRoutingPrompt,
-  getImportSkillPrompt,
   isAddImagePrompt,
   isImageRoutingPrompt,
 } from "./capability-views";
@@ -214,8 +208,6 @@ describe("built-in skills, roles, extensions, and prompts localization", () => {
     expect(extensionJobStageLabel("等待执行")).toBe("等待执行");
     expect(getAddImagePrompt()).toBe(ADD_IMAGE_PROMPT);
     expect(getImageRoutingPrompt()).toBe(IMAGE_ROUTING_PROMPT);
-    expect(getConnectFlowPrompt()).toBe(CONNECT_FLOW_PROMPT);
-    expect(getImportSkillPrompt()).toBe(IMPORT_SKILL_PROMPT);
 
     setLanguage("en");
     const enExtHtml = renderToStaticMarkup(
@@ -228,8 +220,6 @@ describe("built-in skills, roles, extensions, and prompts localization", () => {
 
     expect(getAddImagePrompt()).toBe(ADD_IMAGE_PROMPT_EN);
     expect(getImageRoutingPrompt()).toBe(IMAGE_ROUTING_PROMPT_EN);
-    expect(getConnectFlowPrompt()).toBe(CONNECT_FLOW_PROMPT_EN);
-    expect(getImportSkillPrompt()).toBe(IMPORT_SKILL_PROMPT_EN);
     expect(isAddImagePrompt(ADD_IMAGE_PROMPT)).toBe(true);
     expect(isAddImagePrompt(ADD_IMAGE_PROMPT_EN)).toBe(true);
     expect(isImageRoutingPrompt(IMAGE_ROUTING_PROMPT)).toBe(true);

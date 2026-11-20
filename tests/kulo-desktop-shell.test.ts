@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startNodeService, type NodeService } from "../packages/desktop/src/child-service.js";
 import { desktopContentSecurityPolicy, desktopWindowChrome, externalHttpUrl, localHttpOrigin, parseDevelopmentMode, shouldAuthorizeDesktopRequest } from "../packages/desktop/src/desktop-config.js";
-import { createDesktopMenuTemplate, createMainWindowCloseController, DESKTOP_APP_COMMANDS, isDesktopAppCommand, shouldRevealWindowForCommand, type DesktopAppCommand } from "../packages/desktop/src/desktop-menu.js";
+import { createDesktopContextMenuTemplate, createDesktopMenuTemplate, createMainWindowCloseController, DESKTOP_APP_COMMANDS, isDesktopAppCommand, shouldRevealWindowForCommand, type DesktopAppCommand } from "../packages/desktop/src/desktop-menu.js";
 
 const directories: string[] = [];
 const services: NodeService<unknown>[] = [];
@@ -242,5 +242,71 @@ describe("desktop menu shortcuts and window close lifecycle", () => {
     const confirmedReload = { preventDefault: vi.fn() };
     controller.handleWillPreventUnload(confirmedReload, false, () => true);
     expect(confirmedReload.preventDefault).toHaveBeenCalledTimes(1);
+  });
+
+  it("builds native edit context menus for editable controls, clipboard media paste, text selections, and safe links", () => {
+    const onPaste = vi.fn();
+    const onReplaceMisspelling = vi.fn();
+    const onCopyLink = vi.fn();
+
+    const editable = createDesktopContextMenuTemplate(
+      {
+        isEditable: true,
+        selectionText: "helo",
+        misspelledWord: "helo",
+        dictionarySuggestions: ["hello", "help"],
+        editFlags: {
+          canUndo: true,
+          canRedo: false,
+          canCut: true,
+          canCopy: true,
+          canPaste: false,
+          canDelete: true,
+          canSelectAll: true,
+          canEditRichly: true,
+        },
+      },
+      { hasClipboardContent: true, onPaste, onReplaceMisspelling },
+    );
+    expect(editable.map((item) => item.label).filter(Boolean)).toEqual([
+      "hello",
+      "help",
+      "撤销",
+      "重做",
+      "剪切",
+      "复制",
+      "粘贴",
+      "粘贴并匹配样式",
+      "删除",
+      "全选",
+    ]);
+    const suggestionItem = editable.find((item) => item.label === "hello");
+    suggestionItem?.click?.(suggestionItem as never, undefined, {} as never);
+    expect(onReplaceMisspelling).toHaveBeenCalledWith("hello");
+
+    const pasteItem = editable.find((item) => item.label === "粘贴");
+    expect(pasteItem?.enabled).toBe(true);
+    expect(pasteItem?.role).toBeUndefined();
+    pasteItem?.click?.(pasteItem as never, undefined, {} as never);
+    expect(onPaste).toHaveBeenCalledTimes(1);
+
+    const disabledPaste = createDesktopContextMenuTemplate({
+      isEditable: true,
+      selectionText: "",
+      editFlags: { canPaste: false, canSelectAll: false },
+    });
+    const disabledPasteItem = disabledPaste.find((item) => item.label === "粘贴");
+    expect(disabledPasteItem).toMatchObject({ role: "paste", label: "粘贴", enabled: false });
+
+    const selectionAndLink = createDesktopContextMenuTemplate(
+      { isEditable: false, selectionText: "选中文字", editFlags: { canCopy: true } },
+      { copyLinkUrl: "https://example.com/docs", onCopyLink },
+    );
+    expect(selectionAndLink.map((item) => item.label)).toEqual(["复制", "复制链接"]);
+    const linkItem = selectionAndLink.find((item) => item.label === "复制链接");
+    linkItem?.click?.(linkItem as never, undefined, {} as never);
+    expect(onCopyLink).toHaveBeenCalledWith("https://example.com/docs");
+
+    expect(createDesktopContextMenuTemplate({ isEditable: false, selectionText: "   " })).toEqual([]);
   });
 });

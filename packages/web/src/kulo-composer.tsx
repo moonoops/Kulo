@@ -27,7 +27,7 @@ import { useVoiceWorkspace } from "./features/voice/voice-context";
 import type { VoiceCallTarget } from "./features/voice/use-voice-call";
 import { CallStatusIcon } from "./features/voice/call-status-icon";
 import { MessageReply } from "./features/chat/message-reply";
-import { resolveComposerAction } from "./features/chat/composer-actions";
+import { resolveComposerActions } from "./features/chat/composer-actions";
 import "./features/chat/composer-media.css";
 import "./features/chat/composer-actions.css";
 
@@ -385,11 +385,25 @@ export function KuloComposer({
   const hasFailed = attachments.some((item) => item.status === "error");
   const hasSendablePayload = draftText.trim().length > 0 || attachments.some((item) => item.status === "ready" && item.attachment);
   const canSend = deviceJoin ? !voiceActive && (deviceJoin.phase === "preview" || deviceJoin.phase === "retry")
-    : canQueueMessages && !busy && !isSendDisabled && !onConfigure && !voiceActive && uploadingCount === 0 && !hasFailed && hasSendablePayload;
-  const action = deviceJoin ? "send" : resolveComposerAction({ busy, canStop: Boolean(onAbort), needsConfiguration: Boolean(onConfigure), hasPayload: hasSendablePayload, hasAttachments: attachments.length > 0,
-    canCall: Boolean(allowVoice && voiceWorkspace && (voiceCallTarget || onResolveVoiceCallTarget)) });
+    : canQueueMessages && !isSendDisabled && !onConfigure && !voiceActive && uploadingCount === 0 && !hasFailed && hasSendablePayload;
+  const { primary: action, showStop } = deviceJoin
+    ? { primary: "send" as const, showStop: false }
+    : resolveComposerActions({
+        busy,
+        canStop: Boolean(onAbort),
+        allowBusySend: !isSendDisabled,
+        needsConfiguration: Boolean(onConfigure),
+        hasPayload: hasSendablePayload,
+        hasAttachments: attachments.length > 0,
+        canCall: Boolean(allowVoice && voiceWorkspace && (voiceCallTarget || onResolveVoiceCallTarget)),
+      });
+  const stopLabel = tr("停止生成", "Stop generating");
   const actionLabel = deviceJoin ? joining ? tr("正在接入", "Joining") : deviceJoin.phase === "retry" ? tr("重试接入", "Retry joining") : deviceJoin.sameHost ? tr("打开主会话", "Open main chat") : tr("接入主 Kulo", "Join host Kulo")
-    : action === "stop" ? tr("停止生成", "Stop generating") : action === "call" ? callLabel : tr("发送", "Send");
+    : action === "stop" ? stopLabel : action === "call" ? callLabel : tr("发送", "Send");
+  const submitFromButton = () => {
+    onSubmit();
+    if (!deviceJoin) requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+  };
   const cancelDeviceJoin = () => {
     deviceJoin?.cancel();
     requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
@@ -504,21 +518,30 @@ export function KuloComposer({
         onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }} />
       {allowVoice && allowAttachments && !onConfigure && !deviceJoin && <div className="kulo-composer-voice-control">
         <Button ref={microphoneRef} isIconOnly variant="tertiary" aria-label={tr("语音输入", "Voice input")}
-          isDisabled={busy || callActive || !connected || isSendDisabled || !onTranscribeVoice || voice.canRetry}
+          isDisabled={callActive || !connected || isSendDisabled || !onTranscribeVoice || voice.canRetry}
           className="kulo-composer-microphone kulo-composer-button kulo-composer-control" onPress={() => void voice.start()}>
           <MicrophoneGlyph />
         </Button>
       </div>}
-      {action === "configure" ? <Button size="sm" className="kulo-composer-configure shrink-0" onPress={onConfigure}>{tr("连接模型", "Connect a model")}</Button> : <Tooltip delay={350}>
-        <Button isIconOnly variant={action === "stop" || action === "send" && canSend ? "primary" : "tertiary"}
-          isDisabled={action === "call" ? callDisabled : action === "send" ? !canSend : false}
-          isPending={joining || action === "call" && preparingCall} aria-label={actionLabel} data-composer-action={deviceJoin ? "join" : action}
-          className={`kulo-composer-button${action === "call" ? " kulo-composer-call" : action === "send" ? " kulo-composer-send" : ""}${action === "call" || action === "send" && !canSend ? " kulo-composer-control" : ""}`}
-          onPress={action === "stop" ? onAbort : action === "call" ? () => void openCall() : onSubmit}>
-          <span key={action} className="kulo-composer-action-icon" aria-hidden="true">{action === "stop" ? <KuloIcon name="stop" size={18} fill="currentColor" stroke="none" /> : action === "call" ? <CallStatusIcon state={preparingCall ? "connecting" : callState} muted={currentCall?.muted} /> : joining || uploadingCount ? <Spinner size="sm" /> : <KuloIcon name="send" size={18} />}</span>
-        </Button>
-        <Tooltip.Content placement="top">{actionLabel}</Tooltip.Content>
-      </Tooltip>}
+      <div className="kulo-composer-actions">
+        {showStop && <Tooltip delay={350}>
+          <Button isIconOnly variant="tertiary" aria-label={stopLabel} data-composer-action="stop"
+            className="kulo-composer-button kulo-composer-control" onPress={onAbort}>
+            <span className="kulo-composer-action-icon" aria-hidden="true"><KuloIcon name="stop" size={18} fill="currentColor" stroke="none" /></span>
+          </Button>
+          <Tooltip.Content placement="top">{stopLabel}</Tooltip.Content>
+        </Tooltip>}
+        {action === "configure" ? <Button size="sm" className="kulo-composer-configure shrink-0" onPress={onConfigure}>{tr("连接模型", "Connect a model")}</Button> : <Tooltip key={deviceJoin ? "join" : action} delay={350}>
+          <Button isIconOnly variant={action === "stop" || action === "send" && canSend ? "primary" : "tertiary"}
+            isDisabled={action === "call" ? callDisabled : action === "send" ? !canSend : false}
+            isPending={joining || action === "call" && preparingCall} aria-label={actionLabel} data-composer-action={deviceJoin ? "join" : action}
+            className={`kulo-composer-button${action === "call" ? " kulo-composer-call" : action === "send" ? " kulo-composer-send" : ""}${action === "call" || action === "send" && !canSend ? " kulo-composer-control" : ""}`}
+            onPress={action === "stop" ? onAbort : action === "call" ? () => void openCall() : submitFromButton}>
+            <span key={action} className="kulo-composer-action-icon" aria-hidden="true">{action === "stop" ? <KuloIcon name="stop" size={18} fill="currentColor" stroke="none" /> : action === "call" ? <CallStatusIcon state={preparingCall ? "connecting" : callState} muted={currentCall?.muted} /> : joining || uploadingCount ? <Spinner size="sm" /> : <KuloIcon name="send" size={18} />}</span>
+          </Button>
+          <Tooltip.Content placement="top">{actionLabel}</Tooltip.Content>
+        </Tooltip>}
+      </div>
       </>}
     </div>
     {deviceJoin?.message && <div className="flex min-w-0 flex-wrap items-center gap-2 px-3 pb-2">

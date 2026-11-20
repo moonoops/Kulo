@@ -11,6 +11,9 @@ import { cleanupRecordedExecutions, hasOrphanedExecution } from "./worker-superv
 import { FlowBrowserService } from "./browser.js";
 import { ComputerUseService, computerUseConfiguration } from "./computer-use.js";
 import { HostActionService } from "./host-actions.js";
+import { collectDeviceSystemInfo } from "./device-info.js";
+import { MacOsNotificationSensor } from "./connectors/macos-notifications.js";
+import { SparkMailConnector } from "./connectors/spark-mail.js";
 import { StreamResumeBuffer } from "./stream-resume.js";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import {
@@ -25,6 +28,17 @@ import type { WebSocket } from "ws";
 import {
   STREAM_RESUME_CAPABILITY,
   STREAM_RESUME_GRACE_MS,
+  CONNECTORS_CAPABILITY,
+  CONNECTOR_MAX_BATCH_BYTES,
+  isConnectorCallRequest,
+  isConnectorEventBatch,
+  isConnectorSourceStatus,
+  type ConnectorBatchAck,
+  type ConnectorCallRequest,
+  type ConnectorCallResult,
+  type ConnectorEventBatch,
+  type ConnectorSourceConfig,
+  type ConnectorSourceStatus,
   decodeSequencedStreamChunk,
   decodeStreamChunk,
   encodeSequencedStreamChunk,
@@ -209,6 +223,10 @@ export interface EnvManagerOptions {
   pingIntervalMs?: number;
   /** Consecutive unanswered ping intervals before terminating a silent remote WebSocket (default: 3; 0 disables). */
   maxMissedPings?: number;
+  /** Stable Hub identifier used to scope connector cursors on paired Envs. */
+  hubId?: string;
+  /** Optional override for local macOS notification database path (primarily for tests). */
+  localNotificationsDbPath?: string;
   /** Callback fired whenever the list or status of environments changes. */
   onChange?: (envs: EnvNodeDescriptor[]) => void;
 }
@@ -249,6 +267,16 @@ export class EnvManager {
   readonly #androidControls = new Map<string, PendingAndroidControl>();
   #notificationClassifier?: (request: AndroidNotificationClassification, signal: AbortSignal) => Promise<AndroidNotificationClassificationResult>;
   readonly #notificationControllers = new Map<WebSocket, Map<string, { bindingId: string; controller: AbortController }>>();
+  #hubId: string;
+  #localNotificationSensor: MacOsNotificationSensor | null = null;
+  readonly #localSparkConnector = new SparkMailConnector();
+  readonly #connectorCalls = new Map<string, { envId: string; ws: WebSocket; resolve: (result: ConnectorCallResult) => void; timer: NodeJS.Timeout }>();
+  #connectorConfig: ConnectorSourceConfig = { driverId: "macos-notifications", enabled: false, mutedApps: [] };
+  readonly #connectorStatuses = new Map<string, ConnectorSourceStatus>();
+  #connectorHandlers?: {
+    onStatus?: (envId: string, status: ConnectorSourceStatus) => void;
+    onEvents?: (envId: string, batch: ConnectorEventBatch) => Promise<ConnectorBatchAck> | ConnectorBatchAck;
+  };
   readonly #browserRequests = new Map<string, { envId: string; profileRef: string; jobId?: string; resolve: (result: BrowserResult) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   readonly #projectRequests = new Map<string, { envId: string; resolve: (value: NonNullable<Extract<EnvToHubControlMessage, {type:"env.project_result"}>["result"]>) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   readonly #pendingRevocations = new Map<string, Set<string>>();
@@ -270,12 +298,121 @@ export class EnvManager {
       throw new Error("Each Env identity requires a non-empty, unique node credential");
     }
     this.#options = options;
+    this.#hubId = options.hubId?.trim() || "kulo-hub";
     this.#streamResumeGraceMs = options.streamResumeGraceMs ?? STREAM_RESUME_GRACE_MS;
     this.#computerConfiguration = options.computerUseService ? undefined : computerUseConfiguration();
   }
 
   get hubInstanceId(): string {
     return this.#hubInstanceId;
+  }
+
+  setHubId(hubId: string): void {
+    const normalized = hubId.trim();
+    if (!normalized) return;
+    this.#hubId = normalized;
+    this.#localNotificationSensor?.setHubIdentity(normalized);
+  }
+
+  setConnectorHandlers(handlers?: {
+    onStatus?: (envId: string, status: ConnectorSourceStatus) => void;
+    onEvents?: (envId: string, batch: ConnectorEventBatch) => Promise<ConnectorBatchAck> | ConnectorBatchAck;
+  }): void {
+    this.#connectorHandlers = handlers;
+  }
+
+  setConnectorConfig(config: ConnectorSourceConfig): void {
+    this.#connectorConfig = {
+      driverId: config.driverId,
+      enabled: Boolean(config.enabled),
+      mutedApps: [...new Set(config.mutedApps.map((item) => item.trim()).filter(Boolean))].slice(0, 256),
+    };
+    this.#localNotificationSensor?.configure(this.#connectorConfig);
+    for (const peer of this.#wsPeers.values()) {
+      if (
+        peer.connectionState === "online" &&
+        peer.ws &&
+        peer.descriptor.executionKind === "pi-env" &&
+        peer.descriptor.capabilities.includes(CONNECTORS_CAPABILITY)
+      ) {
+        this.#sendControl(peer.ws, { type: "hub.connector_config", config: this.#connectorConfig });
+      }
+    }
+  }
+
+  getConnectorStatuses(): ConnectorSourceStatus[] {
+    const result: ConnectorSourceStatus[] = [];
+    if (this.#localNotificationSensor) {
+      result.push(this.#localNotificationSensor.status);
+    }
+    for (const [envId, peer] of this.#wsPeers) {
+      if (peer.connectionState !== "online") continue;
+      const status = this.#connectorStatuses.get(`${envId}:macos-notifications`);
+      if (status) result.push(status);
+    }
+    return result;
+  }
+
+  async callConnector(envId: string, request: ConnectorCallRequest, timeoutMs = 20_000): Promise<ConnectorCallResult> {
+    if (!isConnectorCallRequest(request)) {
+      return { ok: false, code: "invalid_request", error: "连接器请求格式无效" };
+    }
+    if (envId === "local") {
+      if (!this.#localDescriptor) {
+        return { ok: false, code: "env_unavailable", error: "本机执行环境未启用" };
+      }
+      return this.#localSparkConnector.invoke(request);
+    }
+    const peer = this.#wsPeers.get(envId);
+    if (!peer || peer.connectionState !== "online" || !peer.ws || peer.descriptor.executionKind !== "pi-env") {
+      return { ok: false, code: "env_offline", error: `设备 ${envId} 当前不在线` };
+    }
+    if (!peer.descriptor.capabilities.includes(CONNECTORS_CAPABILITY)) {
+      return { ok: false, code: "connectors_unsupported", error: `设备 ${peer.descriptor.name} 需要更新至新版 Kulo` };
+    }
+    const ws = peer.ws;
+    const requestId = `cc-${randomBytes(8).toString("hex")}`;
+    return new Promise<ConnectorCallResult>((resolve) => {
+      const timer = setTimeout(() => {
+        this.#connectorCalls.delete(requestId);
+        resolve({ ok: false, code: "timeout", error: "连接器调用超时" });
+      }, timeoutMs);
+      timer.unref();
+      this.#connectorCalls.set(requestId, { envId, ws, resolve, timer });
+      try {
+        this.#sendControl(ws, { type: "hub.connector_call", requestId, request });
+      } catch {
+        clearTimeout(timer);
+        this.#connectorCalls.delete(requestId);
+        resolve({ ok: false, code: "send_failed", error: "发送连接器调用失败" });
+      }
+    });
+  }
+
+  async #dispatchConnectorBatch(envId: string, batch: ConnectorEventBatch): Promise<ConnectorBatchAck> {
+    if (!this.#connectorHandlers?.onEvents) {
+      return {
+        batchId: batch.batchId,
+        driverId: batch.driverId,
+        streamId: batch.streamId,
+        sourceEpoch: batch.sourceEpoch,
+        cursorAfter: batch.cursorAfter,
+        status: "rejected",
+        code: "assistant_unavailable",
+      };
+    }
+    try {
+      return await this.#connectorHandlers.onEvents(envId, batch);
+    } catch {
+      return {
+        batchId: batch.batchId,
+        driverId: batch.driverId,
+        streamId: batch.streamId,
+        sourceEpoch: batch.sourceEpoch,
+        status: "rejected",
+        code: "ingest_failed",
+      };
+    }
   }
 
   getConnectionState(envId: string): "online" | "reconnecting" | "offline" {
@@ -338,10 +475,34 @@ export class EnvManager {
         arch: process.arch,
         rootDir,
         executionKind: "pi-env",
-        capabilities: [...(process.platform === "darwin" ? ["fs", "bash", "macos-local"] : ["fs", "bash"]), "external-agents", "host-actions", ...workerIsolationCapabilities(), ...(this.#localBrowser.available ? ["flow-browser"] : []), ...this.#localComputer.capabilities()],
+        capabilities: [...(process.platform === "darwin" ? ["fs", "bash", "macos-local", CONNECTORS_CAPABILITY] : ["fs", "bash"]), "external-agents", "host-actions", ...workerIsolationCapabilities(), ...(this.#localBrowser.available ? ["flow-browser"] : []), ...this.#localComputer.capabilities()],
         connectedAt: now,
         lastSeenAt: now,
+        info: collectDeviceSystemInfo(),
       };
+      if (process.platform === "darwin") {
+        const localSensor = new MacOsNotificationSensor({
+          envId: "local",
+          envName: this.#localDescriptor.name,
+          privateDir: this.#localProjects.privateDirectory,
+          ...(this.#options.localNotificationsDbPath ? { databasePath: this.#options.localNotificationsDbPath } : {}),
+          onStatus: (status) => {
+            this.#connectorStatuses.set(`local:${status.driverId}`, status);
+            this.#connectorHandlers?.onStatus?.("local", status);
+          },
+          onBatch: (batch) => {
+            void this.#dispatchConnectorBatch("local", batch).then((ack) => {
+              localSensor.handleAck(ack);
+            });
+          },
+        });
+        localSensor.setHubIdentity(this.#hubId);
+        this.#localNotificationSensor = localSensor;
+        this.#connectorStatuses.set("local:macos-notifications", localSensor.status);
+        if (this.#connectorConfig.enabled) {
+          localSensor.configure(this.#connectorConfig);
+        }
+      }
     }
 
     // 3. Keepalive ping loop for remote WebSocket env nodes
@@ -464,10 +625,33 @@ export class EnvManager {
       }
 
       let msg: EnvToHubControlMessage;
+      const frameBytes = Buffer.byteLength(data.toString("utf8"));
       if (boundEnvId && this.#wsPeers.get(boundEnvId)?.descriptor.executionKind === "native-device" &&
-          Buffer.byteLength(data.toString("utf8")) > 1024 * 1024 + 4096) {
+          frameBytes > 1024 * 1024 + 4096) {
         ws.close(4002, "Android control frame too large");
         return;
+      }
+      if (boundEnvId && frameBytes > CONNECTOR_MAX_BATCH_BYTES + 16_384) {
+        const rawText = data.toString("utf8");
+        if (rawText.includes('"env.connector_events"')) {
+          const batchIdMatch = /"batchId"\s*:\s*"([^"]{1,160})"/.exec(rawText);
+          const streamIdMatch = /"streamId"\s*:\s*"([^"]{1,256})"/.exec(rawText);
+          const epochMatch = /"sourceEpoch"\s*:\s*"([^"]{1,160})"/.exec(rawText);
+          if (batchIdMatch?.[1] && streamIdMatch?.[1] && epochMatch?.[1]) {
+            this.#sendControl(ws, {
+              type: "hub.connector_ack",
+              ack: {
+                batchId: batchIdMatch[1],
+                driverId: "macos-notifications",
+                streamId: streamIdMatch[1],
+                sourceEpoch: epochMatch[1],
+                status: "rejected",
+                code: "batch_too_large",
+              },
+            });
+          }
+          return;
+        }
       }
       try {
         msg = JSON.parse(data.toString("utf8")) as EnvToHubControlMessage;
@@ -523,6 +707,7 @@ export class EnvManager {
         }
         const capabilities = executionKind === "native-device" || msg.capabilities.length ? msg.capabilities : ["fs", "bash"];
         const supportsResume = executionKind === "pi-env" && capabilities.includes(STREAM_RESUME_CAPABILITY);
+        const connectorsSupported = executionKind === "pi-env" && capabilities.includes(CONNECTORS_CAPABILITY);
         const reportedActiveStreams: StreamResumeState[] = msg.activeStreams ?? [];
 
         boundEnvId = envId;
@@ -595,11 +780,15 @@ export class EnvManager {
           this.#sendControl(ws, {
             type: "hub.registered",
             envId,
+            ...(connectorsSupported ? { hubId: this.#hubId, connectorsSupported: true } : {}),
             hubInstanceId: this.#hubInstanceId,
             streamResumeSupported: true,
             resumedStreams,
             ...(closeStreams.length ? { closeStreams } : {}),
           });
+          if (connectorsSupported) {
+            this.#sendControl(ws, { type: "hub.connector_config", config: this.#connectorConfig });
+          }
 
           // Replay Hub's unacked outgoing frames and lift TCP backpressure
           for (const { streamId } of resumedStreams) {
@@ -704,6 +893,7 @@ export class EnvManager {
           this.#sendControl(ws, {
             type: "hub.registered",
             envId,
+            ...(connectorsSupported ? { hubId: this.#hubId, connectorsSupported: true } : {}),
             ...(supportsResume
               ? {
                   hubInstanceId: this.#hubInstanceId,
@@ -712,6 +902,9 @@ export class EnvManager {
                 }
               : {}),
           });
+          if (connectorsSupported) {
+            this.#sendControl(ws, { type: "hub.connector_config", config: this.#connectorConfig });
+          }
         }
 
         const pendingRevocations = this.#pendingRevocations.get(envId);
@@ -783,6 +976,21 @@ export class EnvManager {
       } else if (msg.type === "env.notification_cancel") {
         const pending = this.#notificationControllers.get(ws)?.get(msg.requestId);
         if (pending?.bindingId === msg.bindingId) pending.controller.abort();
+      } else if (msg.type === "env.connector_call_result") {
+        const pending = this.#connectorCalls.get(msg.requestId);
+        if (!pending || pending.envId !== boundEnvId || pending.ws !== ws) return;
+        clearTimeout(pending.timer);
+        this.#connectorCalls.delete(msg.requestId);
+        if (data.toString("utf8").length > CONNECTOR_MAX_BATCH_BYTES * 2) {
+          pending.resolve({ ok: false, code: "result_too_large", error: "连接器返回数据超出大小限制" });
+          return;
+        }
+        const res = msg.result;
+        if (!res || typeof res !== "object" || typeof res.ok !== "boolean") {
+          pending.resolve({ ok: false, code: "invalid_result", error: "连接器返回格式无效" });
+          return;
+        }
+        pending.resolve(res);
       } else if (msg.type === "env.android_result") {
         const pending = this.#androidRequests.get(msg.requestId);
         if (!pending || pending.envId !== boundEnvId || pending.ws !== ws) return;
@@ -841,6 +1049,41 @@ export class EnvManager {
         }, (error: unknown) => {
           if (this.#wsPeers.get(envId)?.ws === ws && !this.#closed) this.#sendControl(ws, { type: "hub.external_agent_tool_result", requestId: msg.requestId, runId: msg.runId, taskId: msg.taskId, runEpoch: msg.runEpoch, error: redactSensitiveText(error instanceof Error ? error.message : "Kulo task tool failed").slice(0, 2000) });
         }).finally(() => pending!.delete(msg.requestId));
+      } else if (msg.type === "env.connector_status") {
+        if (peer.descriptor.executionKind !== "pi-env" || !isConnectorSourceStatus(msg.status)) return;
+        const normalized: ConnectorSourceStatus = {
+          ...msg.status,
+          envId: boundEnvId,
+          envName: peer.descriptor.name,
+          platform: peer.descriptor.platform,
+        };
+        this.#connectorStatuses.set(`${boundEnvId}:${normalized.driverId}`, normalized);
+        this.#connectorHandlers?.onStatus?.(boundEnvId, normalized);
+      } else if (msg.type === "env.connector_events") {
+        if (peer.descriptor.executionKind !== "pi-env") return;
+        const rawBatch = msg.batch as Partial<ConnectorEventBatch> | undefined;
+        if (!isConnectorEventBatch(rawBatch)) {
+          if (rawBatch && typeof rawBatch.batchId === "string" && typeof rawBatch.streamId === "string" && typeof rawBatch.sourceEpoch === "string") {
+            this.#sendControl(ws, {
+              type: "hub.connector_ack",
+              ack: {
+                batchId: rawBatch.batchId.slice(0, 160),
+                driverId: "macos-notifications",
+                streamId: rawBatch.streamId.slice(0, 256),
+                sourceEpoch: rawBatch.sourceEpoch.slice(0, 160),
+                status: "rejected",
+                code: "invalid_batch",
+              },
+            });
+          }
+          return;
+        }
+        const envId = boundEnvId;
+        void this.#dispatchConnectorBatch(envId, rawBatch).then((ack) => {
+          if (this.#wsPeers.get(envId)?.ws === ws && !this.#closed) {
+            this.#sendControl(ws, { type: "hub.connector_ack", ack });
+          }
+        });
       } else if (msg.type === "env.computer_result") {
         const pending = this.#computerRequests.get(msg.requestId);
         if (!pending || pending.envId !== boundEnvId || pending.ws !== ws) return;
@@ -1211,6 +1454,13 @@ export class EnvManager {
 
   #failExternalAgentRequests(envId: string, message: string): void {
     for (const pending of [...this.#externalAgentRequests.values()]) if (pending.envId === envId) { pending.finish(); pending.reject(new Error(message)); }
+    for (const [id, pending] of [...this.#connectorCalls.entries()]) {
+      if (pending.envId === envId) {
+        clearTimeout(pending.timer);
+        this.#connectorCalls.delete(id);
+        pending.resolve({ ok: false, code: "env_disconnected", error: message });
+      }
+    }
   }
 
   async #projectRequest(envId: string, request: ProjectEnvRequest): Promise<NonNullable<Extract<EnvToHubControlMessage, { type: "env.project_result" }>["result"]>> {
@@ -1948,6 +2198,9 @@ export class EnvManager {
     for (const id of this.#computerPreviews.keys()) this.#endComputerPreview(id, { state: "closed" });
     this.#deviceConnectionLeases.clear();
     this.setAndroidNotificationClassifier(undefined);
+    this.setConnectorHandlers(undefined);
+    this.#localNotificationSensor?.close();
+    this.#localNotificationSensor = null;
     for (const id of this.#androidRequests.keys()) this.#finishAndroidRequest(id, undefined, new Error("Env manager closed before Android operation completed"));
     for (const id of this.#androidControls.keys()) this.#finishAndroidControl(id, undefined, new Error("Env manager closed before Android stop was confirmed"));
     for (const id of this.#computerRequests.keys()) this.#finishComputerRequest(id, undefined, new Error("Env manager closed before computer-use operation completed"));
@@ -1955,6 +2208,11 @@ export class EnvManager {
     for (const pending of this.#browserRequests.values()) { clearTimeout(pending.timer); pending.reject(new Error("Env manager closed before browser operation completed")); }
     this.#browserRequests.clear();
     for (const pending of [...this.#externalAgentRequests.values()]) { pending.finish(); pending.reject(new Error("Env manager closed; inspect existing external runs before retrying")); }
+    for (const [id, pending] of [...this.#connectorCalls.entries()]) {
+      clearTimeout(pending.timer);
+      this.#connectorCalls.delete(id);
+      pending.resolve({ ok: false, code: "env_manager_closed", error: "Env manager closed" });
+    }
     const browserCleanup = Promise.allSettled([this.#localBrowser?.close(), this.#localComputer?.close(), this.#localHostActions?.suspend(), this.#localExternalAgents?.close()]);
     this.invalidateWorkerEnvironments();
     await Promise.all(this.#cleanupTasks);

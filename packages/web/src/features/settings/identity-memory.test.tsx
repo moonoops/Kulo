@@ -95,8 +95,9 @@ describe("memory credential fields", () => {
     const settings = memorySettings(true, true);
     settings.blocks.memory.value.endpoints = ["https://backup-one.example", "https://backup-two.example"];
     const html = renderToStaticMarkup(<IdentityModule settings={settings} onSettingsUpdated={() => {}} />);
-    for (const label of ["Hindsight 地址", "主地址", "备用地址 1", "备用地址 2", "隐私记忆库名", "共享记忆库名"]) expect(html).toContain(label);
-    expect(html.match(/type="url"/g)).toHaveLength(3);
+    const connectionFormHtml = html.match(/<form\b[^>]*aria-label="长期记忆连接设置"[\s\S]*?<\/form>/)?.[0] ?? "";
+    for (const label of ["Hindsight 地址", "主地址", "备用地址 1", "备用地址 2", "隐私记忆库名", "共享记忆库名"]) expect(connectionFormHtml).toContain(label);
+    expect(connectionFormHtml.match(/type="url"/g)).toHaveLength(3);
     expect(html).not.toContain("高级连接设置");
     expect(html).not.toContain("CA 证书");
     expect(html.indexOf("https://backup-two.example")).toBeLessThan(html.indexOf("公开目录密钥"));

@@ -100,6 +100,66 @@ describe("sidebar conversation activity", () => {
     expect(reconcileTopicActivity({ topics: [], tickets: [], topicActivities: {}, seen }).seen).toBe(seen);
     expect(reconcileTopicActivity({ topics, tickets: [], topicActivities: {}, seen }).seen.removed).toBeUndefined();
   });
+
+  it("marks first-seen proactive topics unread until viewed and re-marks on proactiveSeq bumps", () => {
+    const proactive: TopicSummary = {
+      id: "proactive-1",
+      conversationId: 3,
+      title: "Q4 预算表",
+      origin: "proactive",
+      situationId: "sit-q4",
+      proactiveSeq: 1,
+      createdAt: 10,
+      updatedAt: 10,
+    };
+    const first = reconcileTopicActivity({
+      topics: [...topics, proactive],
+      tickets: [],
+      topicActivities: { "proactive-1": activity(20) },
+      seen: {},
+      readableTopicId: "root",
+    });
+    expect(first.states["proactive-1"]?.unread).toBe(true);
+    // Persists unread across reload until opened.
+    const reloaded = reconcileTopicActivity({
+      topics: [...topics, proactive],
+      tickets: [],
+      topicActivities: {},
+      seen: parseSeenTopicActivities(JSON.stringify(first.seen)),
+      readableTopicId: "root",
+    });
+    expect(reloaded.states["proactive-1"]?.unread).toBe(true);
+
+    // Viewing clears unread.
+    const opened = reconcileTopicActivity({
+      topics: [...topics, proactive],
+      tickets: [],
+      topicActivities: { "proactive-1": activity(20) },
+      seen: reloaded.seen,
+      readableTopicId: "proactive-1",
+    });
+    expect(opened.states["proactive-1"]?.unread).toBe(false);
+    expect(opened.seen["proactive-1"]?.proactiveSeq).toBe(1);
+
+    // Switching away keeps it read; bumping proactiveSeq marks it unread again.
+    const away = reconcileTopicActivity({
+      topics: [...topics, proactive],
+      tickets: [],
+      topicActivities: { "proactive-1": activity(20) },
+      seen: opened.seen,
+      readableTopicId: "root",
+    });
+    expect(away.states["proactive-1"]?.unread).toBe(false);
+
+    const bumped = reconcileTopicActivity({
+      topics: [...topics, { ...proactive, proactiveSeq: 2 }],
+      tickets: [],
+      topicActivities: { "proactive-1": activity(20) },
+      seen: away.seen,
+      readableTopicId: "root",
+    });
+    expect(bumped.states["proactive-1"]?.unread).toBe(true);
+  });
 });
 
 describe("conversation notifications", () => {

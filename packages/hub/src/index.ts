@@ -58,6 +58,14 @@ export {
   type KuloHubInitOptions,
 } from "./hub.js";
 export { startKuloHubServer, type KuloHubServer, type KuloHubServerOptions } from "./server.js";
+export {
+  MEMORY_LLM_BRIDGE_FILENAME,
+  MEMORY_LLM_BRIDGE_OWNER,
+  MEMORY_LLM_BRIDGE_PATH,
+  MemoryLlmBridge,
+  MemoryLlmBridgeError,
+  type MemoryLlmBridgeResponse,
+} from "./memory-llm-bridge.js";
 export { findRunningHub, HubStateInUseError } from "./state-owner.js";
 export { DeviceJoinStaging, type HubDeviceController } from "./tools-devices.js";
 export { KuloPersonality, PersonalityDoc, PersonalityError, defaultPersonalitySettings, nextRelationshipRun } from "./personality.js";
@@ -81,6 +89,11 @@ export {
   type StoredUploadRecord,
 } from "./uploads.js";
 export { KuloConnections, type ConnectionVault, type ConnectionTextReceipt, type ConnectionTestResult } from "./connections.js";
+export { AssistantDoc, ensureAssistantState, upsertAssistantCardInDoc, dismissAssistantItemInDoc } from "./assistant-state.js";
+export { AssistantLedger, type StoredAssistantEvent, type StoredAssistantDigest } from "./assistant-ledger.js";
+export { AmbientModelService, loopbackJsonPost } from "./ambient-model-service.js";
+export { AssistantSorter, parseSorterOutput } from "./assistant-sorter.js";
+export { AssistantCoordinator, parseCoordinatorDecision, situationIdFromKey } from "./assistant-coordinator.js";
 export { LocalConnectionVault, ConnectionVaultError, type ConnectionVaultKeyStore } from "./connection-vault.js";
 export { LocalConnectionExecutor, type ConnectionExecutionBackend } from "./connection-execution.js";
 export { SecureCredentialStore } from "./secure-provider-credentials.js";
@@ -111,3 +124,29 @@ export {
   BILLION_CONTEXT_KERNEL_VERSION,
   inspectBundledBillionContextPackage,
 } from "./extension-packages.js";
+export {
+  createTopicNotificationBaseline,
+  detectMainSessionNotification,
+  isUserFacingAssistantMessage,
+  type TopicNotificationBaseline,
+} from "./session-notifications.js";
+export { SparkMailService, type SparkMailServiceHost } from "./connectors/spark-mail-service.js";
+export {
+  HomeAssistantService,
+  assertSafeHaServiceCall,
+  curateHomeAssistantEntities,
+  isBlockedPhysicalEntity,
+  validateLanHaUrl,
+  type HomeAssistantPersistedConfig,
+  type HomeAssistantServiceHost,
+  type RawHaState,
+} from "./connectors/home-assistant.js";
+export {
+  LarkConnectorService,
+  findLarkCliExecutable,
+  parseLarkProfileList,
+  type LarkConnectorServiceHost,
+  type LarkExecResult,
+  type LarkExecRunner,
+  type LarkPersistedConfig,
+} from "./connectors/lark-connector.js";

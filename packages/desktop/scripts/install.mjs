@@ -39,7 +39,7 @@ export async function installMacApp(options = {}) {
   const destination = options.destination ?? defaultDestination;
   const dataDir = options.dataDir ?? path.join(os.homedir(), "Library/Application Support", APP_NAME);
   if (!path.isAbsolute(destination) || !path.isAbsolute(dataDir) || path.parse(destination).root === destination || path.parse(dataDir).root === dataDir) throw new Error("安装位置和数据目录必须是独立绝对路径。");
-  const source = options.source ?? await packageMacApp();
+  const source = options.source ?? await packageMacApp({ signIdentity: options.signIdentity });
   await verifyMacApp(source);
   const sourceRoot = path.join(source, "Contents/Resources/app");
   const sourceRequire = createRequire(path.join(sourceRoot, "package.json"));

@@ -1,16 +1,31 @@
 import { translate as t, useI18n } from "../../kulo-i18n";
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Alert, Button, Chip, Input, Label, Spinner, Switch, TextField } from "@heroui/react";
-import { redactSecrets, type HindsightAccessMode, type HindsightProbeResult, type MemoryConnectionUpdateRequest, type MemoryServiceSnapshot, type KuloSettingsView } from "@kulo/protocol";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Alert, Button, Checkbox, Chip, Input, Label, Spinner, Switch, TextField } from "@heroui/react";
+import { redactSecrets, type HindsightAccessMode, type HindsightProbeResult, type MemoryConnectionUpdateRequest, type MemoryServiceSnapshot, type ProviderCatalogItem, type KuloSettingsView } from "@kulo/protocol";
+import { ConfirmDialog } from "../../components/confirm-dialog";
 import { KuloApiError, kuloRest } from "../../kulo-api";
 import { safeSetupInputError } from "./capability-setup-inputs";
 import { SettingsList, SettingsSaveBar, SettingsSection } from "./settings-layout";
 import { MemoryServerList } from "./memory-server-list";
+import { MemoryModelFields } from "./memory-model-fields";
+import { MemoryServiceJobCard } from "./memory-service-dialogue";
+import {
+  buildMemoryModelsPayload,
+  formatEmbeddingsModelLabel,
+  formatRerankerModelLabel,
+  formatUnderstandingModelLabel,
+  initialMemoryModelsDraft,
+  kuloMemoryConnections,
+  memoryModelsEqual,
+  type MemoryModelsDraft,
+} from "./memory-service-models";
 import { MEMORY_CONNECTION_FOCUS_EVENT, MEMORY_SERVICE_CHANGED_EVENT, publishMemoryService, requestMemoryService } from "./memory-service-events";
 import { useSettingsPending } from "./settings-save-activity";
 
 type MemoryBlock = KuloSettingsView["blocks"]["memory"];
 type MemoryConnectionAction = "probe" | "save" | "reload" | "enabled" | "knowledge";
+const newPanelId = (prefix: string) => `${prefix}-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+
 export interface MemoryConnectionDraft {
   enabled: boolean;
   endpoint: string;
@@ -91,13 +106,65 @@ function ConnectionSecret({ label, value, saved, clear, disabled, onChange, onCl
   </div>;
 }
 
-export function MemoryConnectionForm({ settings, savedMemory = settings.blocks.memory, snapshot, editor, pending, loading = false, connected = true, error, enabledError, probe, onChange, onEnabledChange, onEnabledRetry, onKnowledgeGuidanceChange, onSave, onProbe, onDiscard, onReload, onRetry }: {
-  settings: KuloSettingsView; snapshot: MemoryServiceSnapshot | null; editor: MemoryConnectionEditor;
-  savedMemory?: MemoryBlock; pending?: MemoryConnectionAction; loading?: boolean; connected?: boolean; error?: string; enabledError?: string; probe?: HindsightProbeResult;
-  onChange: (draft: MemoryConnectionDraft) => void; onSave: (event: FormEvent<HTMLFormElement>) => void;
-  onEnabledChange: (enabled: boolean) => void; onEnabledRetry?: () => void;
+export function MemoryConnectionForm({
+  settings,
+  savedMemory = settings.blocks.memory,
+  snapshot,
+  providers,
+  editor,
+  modelsDraft,
+  modelsError,
+  modelsBusy = false,
+  panelClientId,
+  pending,
+  loading = false,
+  connected = true,
+  error,
+  enabledError,
+  probe,
+  onChange,
+  onModelsChange,
+  onLocalDeploy,
+  onLocalConfigure,
+  onLocalUninstall,
+  onJobChanged,
+  onEnabledChange,
+  onEnabledRetry,
+  onKnowledgeGuidanceChange,
+  onSave,
+  onProbe,
+  onDiscard,
+  onReload,
+  onRetry,
+}: {
+  settings: KuloSettingsView;
+  snapshot: MemoryServiceSnapshot | null;
+  providers?: ProviderCatalogItem[];
+  editor: MemoryConnectionEditor;
+  modelsDraft?: MemoryModelsDraft;
+  modelsError?: string;
+  modelsBusy?: boolean;
+  panelClientId?: string;
+  savedMemory?: MemoryBlock;
+  pending?: MemoryConnectionAction;
+  loading?: boolean;
+  connected?: boolean;
+  error?: string;
+  enabledError?: string;
+  probe?: HindsightProbeResult;
+  onChange: (draft: MemoryConnectionDraft) => void;
+  onModelsChange?: (draft: MemoryModelsDraft) => void;
+  onLocalDeploy?: () => void;
+  onLocalConfigure?: () => void;
+  onLocalUninstall?: () => void;
+  onJobChanged?: (snapshot: MemoryServiceSnapshot) => void;
+  onSave: (event: FormEvent<HTMLFormElement>) => void;
+  onEnabledChange: (enabled: boolean) => void;
+  onEnabledRetry?: () => void;
   onKnowledgeGuidanceChange?: (enabled: boolean) => void;
-  onProbe: () => void; onDiscard: () => void; onReload: () => void;
+  onProbe: () => void;
+  onDiscard: () => void;
+  onReload: () => void;
   onRetry?: () => void;
 }) {
   useI18n();
@@ -114,6 +181,15 @@ export function MemoryConnectionForm({ settings, savedMemory = settings.blocks.m
   const activeConnection = snapshot && snapshot.revision >= savedMemory.revision ? snapshot.connection : savedMemory.value;
   const enabled = activeConnection.enabled;
   const knowledgeGuidanceEnabled = Boolean(activeConnection.knowledgeGuidanceEnabled);
+  const kuloConnections = useMemo(() => kuloMemoryConnections(settings, providers), [settings, providers]);
+  const effectiveModelsDraft = useMemo(
+    () => modelsDraft ?? initialMemoryModelsDraft(snapshot ?? undefined, settings, providers),
+    [modelsDraft, snapshot, settings, providers],
+  );
+  const panelJobs = useMemo(
+    () => (panelClientId ? (snapshot?.jobs ?? []).filter((job) => job.clientId === panelClientId && ["awaiting-input", "awaiting-confirmation", "running", "failed"].includes(job.status)).slice(-4) : []),
+    [panelClientId, snapshot?.jobs],
+  );
   useEffect(() => {
     if (!pending && restoreEnabledFocus.current) {
       restoreEnabledFocus.current = false;
@@ -184,13 +260,26 @@ export function MemoryConnectionForm({ settings, savedMemory = settings.blocks.m
       {snapshot?.installed && <dl className="mb-5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-3 text-sm">
         <dt className="text-muted">{t("部署设备", "Deployment device")}</dt><dd className="break-words">{snapshot.deviceName}</dd>
         <dt className="text-muted">{t("服务状态", "Service status")}</dt><dd>{snapshot.running ? t("运行中", "Running") : t("已停止", "Stopped")}{snapshot.version ? ` · ${snapshot.version}` : ""}</dd>
-        {snapshot.model && <><dt className="text-muted">{t("记忆模型", "Memory model")}</dt><dd className="break-all">{snapshot.model.provider} / {snapshot.model.model}</dd></>}
+        {snapshot.model && <><dt className="text-muted">{t("理解模型", "Understanding model")}</dt><dd className="break-all">{formatUnderstandingModelLabel(snapshot.model, kuloConnections)}</dd></>}
+        {snapshot.embeddings && <><dt className="text-muted">{t("向量模型", "Embedding model")}</dt><dd className="break-all">{formatEmbeddingsModelLabel(snapshot.embeddings)}</dd></>}
+        {snapshot.reranker && <><dt className="text-muted">{t("重排模型", "Rerank model")}</dt><dd className="break-all">{formatRerankerModelLabel(snapshot.reranker)}</dd></>}
       </dl>}
-      <div className="flex flex-wrap gap-2">
-        {(!snapshot?.installed || snapshot.phase === "failed") && <Button type="button" variant="secondary" isDisabled={disabled} onPress={() => requestMemoryService("deploy")}>{snapshot?.phase === "failed" ? t("恢复部署", "Resume deployment") : t("在本机配置 Hindsight", "Set up Hindsight locally")}</Button>}
-        {snapshot?.installed && snapshot.phase !== "failed" && <Button type="button" variant="secondary" isDisabled={disabled} onPress={() => requestMemoryService("configure")}>{t("配置本机模型", "Configure local model")}</Button>}
-        {snapshot?.installed && <Button type="button" variant="danger" isDisabled={disabled} onPress={() => requestMemoryService("uninstall")}>{t("卸载本机服务", "Uninstall local service")}</Button>}
+      <MemoryModelFields
+        draft={effectiveModelsDraft}
+        connections={kuloConnections}
+        disabled={disabled || modelsBusy}
+        layout="settings"
+        onChange={(next) => onModelsChange?.(next)}
+      />
+      {modelsError && <Alert status="danger" role="alert" className="mt-4 rounded-2xl p-3"><Alert.Content className="flex-1 break-words text-sm">{modelsError}</Alert.Content></Alert>}
+      <div className="mt-4 flex flex-wrap gap-2">
+        {(!snapshot?.installed || snapshot.phase === "failed") && <Button type="button" variant="secondary" isPending={modelsBusy} isDisabled={disabled || modelsBusy} onPress={() => onLocalDeploy ? onLocalDeploy() : requestMemoryService("deploy")}>{snapshot?.phase === "failed" ? t("恢复部署", "Resume deployment") : t("在本机配置 Hindsight", "Set up Hindsight locally")}</Button>}
+        {snapshot?.installed && snapshot.phase !== "failed" && <Button type="button" variant="secondary" isPending={modelsBusy} isDisabled={disabled || modelsBusy} onPress={() => onLocalConfigure ? onLocalConfigure() : requestMemoryService("configure")}>{t("配置本机模型", "Configure local model")}</Button>}
+        {snapshot?.installed && <Button type="button" variant="danger" isDisabled={disabled || modelsBusy} onPress={() => onLocalUninstall ? onLocalUninstall() : requestMemoryService("uninstall")}>{t("卸载本机服务", "Uninstall local service")}</Button>}
       </div>
+      {panelClientId && panelJobs.length > 0 && <div className="mt-4 flex min-w-0 flex-col gap-3">
+        {panelJobs.map((job) => <MemoryServiceJobCard key={job.id} job={job} inputs={snapshot?.inputs ?? []} clientId={panelClientId} connected={connected} onChanged={(next) => onJobChanged?.(next)} />)}
+      </div>}
     </SettingsSection>
     </div>
   </div>;
@@ -201,15 +290,24 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
   onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void;
 }) {
   useI18n();
+  const panelClientId = useRef(newPanelId("memory-panel")).current;
   const [snapshot, setSnapshot] = useState<MemoryServiceSnapshot | null>(null);
+  const [providers, setProviders] = useState<ProviderCatalogItem[]>();
   const [savedMemory, setSavedMemory] = useState(settings.blocks.memory);
   const savedMemoryRef = useRef(savedMemory);
   const [editor, setEditor] = useState(() => memoryConnectionEditor(settings.blocks.memory));
+  const [modelsBase, setModelsBase] = useState<MemoryModelsDraft>(() => initialMemoryModelsDraft(undefined, settings));
+  const [modelsDraft, setModelsDraft] = useState<MemoryModelsDraft>(() => initialMemoryModelsDraft(undefined, settings));
+  const modelsDirtyRef = useRef(false);
+  const [modelsBusy, setModelsBusy] = useState(false);
+  const [modelsError, setModelsError] = useState<string>();
+  const [uninstallOpen, setUninstallOpen] = useState(false);
+  const [uninstallDeleteData, setUninstallDeleteData] = useState(false);
   const [loading, setLoading] = useState(false);
   const [pending, setPending] = useState<MemoryConnectionAction>();
   const pendingRef = useRef(false);
-  const busy = Boolean(pending);
-  useSettingsPending(pending === "save" || pending === "enabled" || pending === "knowledge");
+  const busy = Boolean(pending) || modelsBusy;
+  useSettingsPending(pending === "save" || pending === "enabled" || pending === "knowledge" || modelsBusy);
   const [error, setError] = useState<string>();
   const [enabledError, setEnabledError] = useState<string>();
   const [enabledRetry, setEnabledRetry] = useState<{ kind: "enabled" | "knowledge"; enabled: boolean; revision: number } | "sync">();
@@ -217,29 +315,95 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
   const [probe, setProbe] = useState<HindsightProbeResult>();
   const [refresh, setRefresh] = useState(0);
   const formRef = useRef<HTMLDivElement>(null);
+  const lastSucceededJobRef = useRef<string | undefined>(undefined);
   const dirty = memoryConnectionDirty(editor);
-  const rememberMemory = (block: MemoryBlock) => {
+  const modelsDirty = !memoryModelsEqual(modelsDraft, modelsBase);
+  modelsDirtyRef.current = modelsDirty;
+
+  const rememberMemory = useCallback((block: MemoryBlock) => {
     if (block.revision < savedMemoryRef.current.revision) return;
     savedMemoryRef.current = block;
     setSavedMemory(block);
-  };
-  useEffect(() => { rememberMemory(settings.blocks.memory); setEditor((current) => reconcileMemoryConnection(current, settings.blocks.memory)); setProbe(undefined); }, [settings.blocks.memory.revision]);
+  }, []);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const providersRef = useRef(providers);
+  providersRef.current = providers;
+  const onSettingsUpdatedRef = useRef(onSettingsUpdated);
+  onSettingsUpdatedRef.current = onSettingsUpdated;
+
+  const syncModelsFrom = useCallback((nextSnapshot: MemoryServiceSnapshot | null, nextProviders?: ProviderCatalogItem[]) => {
+    const computed = initialMemoryModelsDraft(nextSnapshot ?? undefined, settingsRef.current, nextProviders ?? providersRef.current);
+    setModelsBase(computed);
+    if (!modelsDirtyRef.current) setModelsDraft(computed);
+  }, []);
+
+  useEffect(() => { rememberMemory(settings.blocks.memory); setEditor((current) => reconcileMemoryConnection(current, settings.blocks.memory)); setProbe(undefined); }, [settings.blocks.memory.revision, rememberMemory]);
   useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
   useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
+
+  const applyPanelSnapshot = useCallback((next: MemoryServiceSnapshot, nextProviders?: ProviderCatalogItem[]) => {
+    setSnapshot((current) => current && current.revision > next.revision ? current : next);
+    setLoadError(undefined);
+    syncModelsFrom(next, nextProviders);
+    const succeeded = next.jobs.findLast((job) => job.clientId === panelClientId && job.status === "succeeded");
+    if (succeeded && succeeded.id !== lastSucceededJobRef.current) {
+      lastSucceededJobRef.current = succeeded.id;
+      void kuloRest.getSettings().then((latest) => {
+        rememberMemory(latest.blocks.memory);
+        setEditor((current) => reconcileMemoryConnection(current, latest.blocks.memory));
+        onSettingsUpdatedRef.current(latest);
+      }).catch(() => {});
+    }
+  }, [panelClientId, rememberMemory, syncModelsFrom]);
+
   useEffect(() => {
     if (!connected) return;
     let alive = true;
     setLoading(true);
-    void kuloRest.getMemoryService().then((next) => { if (alive) { setSnapshot((current) => current && current.revision > next.revision ? current : next); setLoadError(undefined); } }, (cause) => { if (alive) setLoadError(redactSecrets(cause instanceof Error ? cause.message : t("读取服务失败", "Failed to load service"))); }).finally(() => { if (alive) setLoading(false); });
+    void Promise.all([
+      kuloRest.getMemoryService(panelClientId),
+      kuloRest.listProviders().then((res) => res.providers).catch(() => undefined),
+    ]).then(([next, catalog]) => {
+      if (!alive) return;
+      if (catalog) {
+        providersRef.current = catalog;
+        setProviders(catalog);
+      }
+      applyPanelSnapshot(next, catalog);
+    }, (cause) => {
+      if (alive) setLoadError(redactSecrets(cause instanceof Error ? cause.message : t("读取服务失败", "Failed to load service")));
+    }).finally(() => {
+      if (alive) setLoading(false);
+    });
     return () => { alive = false; };
-  }, [connected, settings.blocks.memory.revision, refresh]);
+  }, [connected, settings.blocks.memory.revision, settings.blocks.model.revision, refresh, panelClientId, applyPanelSnapshot]);
+
+  const hasPanelPendingWork = snapshot?.jobs.some((job) => job.clientId === panelClientId && (job.status === "running" || job.status === "awaiting-input")) ?? false;
   useEffect(() => {
-    const changed = (event: Event) => { const next = (event as CustomEvent<MemoryServiceSnapshot>).detail; setSnapshot((current) => current && current.revision > next.revision ? current : next); setLoadError(undefined); };
+    if (!connected || !hasPanelPendingWork) return;
+    let alive = true;
+    const timer = setInterval(() => {
+      void kuloRest.getMemoryService(panelClientId).then((next) => {
+        if (alive) applyPanelSnapshot(next);
+      }).catch(() => {});
+    }, 1500);
+    return () => { alive = false; clearInterval(timer); };
+  }, [connected, hasPanelPendingWork, panelClientId, applyPanelSnapshot]);
+
+  useEffect(() => {
+    const changed = (event: Event) => {
+      const next = (event as CustomEvent<MemoryServiceSnapshot>).detail;
+      setSnapshot((current) => current && current.revision > next.revision ? current : next);
+      setLoadError(undefined);
+      syncModelsFrom(next);
+    };
     const focus = () => { requestAnimationFrame(() => { formRef.current?.scrollIntoView({ block: "start" }); formRef.current?.querySelector<HTMLInputElement>('input[type="url"]')?.focus(); }); };
     window.addEventListener(MEMORY_SERVICE_CHANGED_EVENT, changed);
     window.addEventListener(MEMORY_CONNECTION_FOCUS_EVENT, focus);
     return () => { window.removeEventListener(MEMORY_SERVICE_CHANGED_EVENT, changed); window.removeEventListener(MEMORY_CONNECTION_FOCUS_EVENT, focus); };
-  }, []);
+  }, [syncModelsFrom]);
+
   const reset = (next?: KuloSettingsView) => { if (next) { rememberMemory(next.blocks.memory); setEnabledError(undefined); setEnabledRetry(undefined); } setEditor(memoryConnectionEditor(next?.blocks.memory ?? savedMemoryRef.current)); setError(undefined); setProbe(undefined); };
   const syncEnabled = async () => {
     const latest = await kuloRest.getSettings();
@@ -336,10 +500,102 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
       setProbe(undefined);
     } finally { pendingRef.current = false; setPending(undefined); }
   };
-  return <div ref={formRef}><MemoryConnectionForm settings={settings} savedMemory={savedMemory} snapshot={snapshot} editor={editor} pending={pending} loading={loading} connected={connected} error={error ?? loadError} enabledError={enabledError} probe={probe}
-    onEnabledChange={(enabled) => void toggleEnabled(enabled)} onEnabledRetry={enabledRetry ? () => void retryEnabled() : undefined}
-    onKnowledgeGuidanceChange={(enabled) => void toggleKnowledgeGuidance(enabled)}
-    onChange={(draft) => { setEditor((current) => ({ ...current, draft })); setError(undefined); setProbe(undefined); }}
-    onSave={(event) => { event.preventDefault(); void submit(false); }} onProbe={() => void submit(true)} onDiscard={() => reset()}
-    onReload={() => void reload()} onRetry={!error && loadError ? () => setRefresh((value) => value + 1) : undefined} /></div>;
+  const prepareLocalOperation = async (operation: "deploy" | "configure" | "uninstall", deleteData?: boolean) => {
+    if (modelsBusy || !connected) return;
+    setModelsBusy(true);
+    setModelsError(undefined);
+    try {
+      const current = snapshot ?? await kuloRest.getMemoryService(panelClientId);
+      const request = operation === "uninstall"
+        ? {
+            commandId: newPanelId("memory"),
+            clientId: panelClientId,
+            expectedRevision: current.revision,
+            operation: "uninstall" as const,
+            deleteData: Boolean(deleteData),
+          }
+        : {
+            commandId: newPanelId("memory"),
+            clientId: panelClientId,
+            expectedRevision: current.revision,
+            operation,
+            ...buildMemoryModelsPayload(modelsDraft),
+          };
+      const next = await kuloRest.prepareMemoryService(request);
+      if (operation === "uninstall") {
+        setUninstallOpen(false);
+        setUninstallDeleteData(false);
+        const created = next.jobs.find((job) => job.id === request.commandId);
+        if (created && created.status === "awaiting-confirmation") {
+          const decided = await kuloRest.decideMemoryService(created.id, { clientId: panelClientId, decision: "confirm" });
+          applyPanelSnapshot(decided);
+          publishMemoryService(decided);
+          return;
+        }
+      }
+      applyPanelSnapshot(next);
+      publishMemoryService(next);
+    } catch (cause) {
+      setModelsError(redactSecrets(cause instanceof Error ? cause.message : t("准备操作失败", "Failed to prepare operation")));
+    } finally {
+      setModelsBusy(false);
+    }
+  };
+  const handleJobChanged = (next: MemoryServiceSnapshot) => {
+    applyPanelSnapshot(next);
+    publishMemoryService(next);
+  };
+
+  return <div ref={formRef}>
+    <MemoryConnectionForm
+      settings={settings}
+      savedMemory={savedMemory}
+      snapshot={snapshot}
+      providers={providers}
+      editor={editor}
+      modelsDraft={modelsDraft}
+      modelsError={modelsError}
+      modelsBusy={modelsBusy}
+      panelClientId={panelClientId}
+      pending={pending}
+      loading={loading}
+      connected={connected}
+      error={error ?? loadError}
+      enabledError={enabledError}
+      probe={probe}
+      onEnabledChange={(enabled) => void toggleEnabled(enabled)}
+      onEnabledRetry={enabledRetry ? () => void retryEnabled() : undefined}
+      onKnowledgeGuidanceChange={(enabled) => void toggleKnowledgeGuidance(enabled)}
+      onChange={(draft) => { setEditor((current) => ({ ...current, draft })); setError(undefined); setProbe(undefined); }}
+      onModelsChange={(next) => { setModelsDraft(next); setModelsError(undefined); }}
+      onLocalDeploy={() => void prepareLocalOperation("deploy")}
+      onLocalConfigure={() => void prepareLocalOperation("configure")}
+      onLocalUninstall={() => { setUninstallDeleteData(false); setUninstallOpen(true); }}
+      onJobChanged={handleJobChanged}
+      onSave={(event) => { event.preventDefault(); void submit(false); }}
+      onProbe={() => void submit(true)}
+      onDiscard={() => reset()}
+      onReload={() => void reload()}
+      onRetry={!error && loadError ? () => setRefresh((value) => value + 1) : undefined}
+    />
+    <ConfirmDialog
+      open={uninstallOpen}
+      title={t("卸载本机 Hindsight？", "Uninstall local Hindsight?")}
+      description={
+        <div className="space-y-3">
+          {snapshot?.deviceName && <p>{snapshot.deviceName}</p>}
+          <Checkbox isSelected={uninstallDeleteData} onChange={setUninstallDeleteData} isDisabled={modelsBusy}>
+            <Checkbox.Content>
+              <Checkbox.Control><Checkbox.Indicator /></Checkbox.Control>
+              {t("同时删除记忆数据", "Also delete memory data")}
+            </Checkbox.Content>
+          </Checkbox>
+        </div>
+      }
+      confirmLabel={uninstallDeleteData ? t("卸载并删除数据", "Uninstall and delete data") : t("卸载并保留数据", "Uninstall and keep data")}
+      isPending={modelsBusy}
+      onCancel={() => { if (!modelsBusy) setUninstallOpen(false); }}
+      onConfirm={() => void prepareLocalOperation("uninstall", uninstallDeleteData)}
+    />
+  </div>;
 }

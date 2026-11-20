@@ -5,10 +5,21 @@ import type { DesktopPreferencesBridge } from "../settings/desktop-preferences";
 import type { DesktopSystemPermissionBridge } from "../system-permissions/system-permissions";
 import type { AppShortcutCommand } from "../shortcuts/shortcuts";
 
+export interface DesktopNotificationBridgePayload {
+  title: string;
+  body?: string;
+  topicId?: string;
+  eventId?: string;
+  dedupeKey?: string;
+  force?: boolean;
+}
+
 export interface DesktopFileBridge {
   ready?(): Promise<void>;
   onCommand?(listener: (command: AppShortcutCommand) => void): () => void;
-  notify?(payload: { title: string; body?: string; topicId?: string }): Promise<void>;
+  notify?(payload: DesktopNotificationBridgePayload): Promise<boolean | void>;
+  setBadge?(active: boolean): Promise<void>;
+  onNotificationOpen?(listener: (target: { topicId: string }) => void): () => void;
   preferences?: DesktopPreferencesBridge;
   systemPermissions?: DesktopSystemPermissionBridge;
   openFile(assetId: string, target: "default" | "browser"): Promise<void>;

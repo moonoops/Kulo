@@ -22,6 +22,8 @@ export interface PreviewStopState { pending: boolean; accepted?: boolean; error?
 export interface ComputerPreviewState {
   sessions: ComputerPreviewSessionView[];
   selectedId?: string;
+  activeTicketId?: string;
+  selectedByTicket: Record<string, string>;
   displays: Record<string, PreviewDisplay>;
   stops: Record<string, PreviewStopState>;
   collapsed: boolean;
@@ -31,7 +33,7 @@ export interface ComputerPreviewState {
 }
 
 export const EMPTY_PREVIEW_STATE: ComputerPreviewState = {
-  sessions: [], displays: {}, stops: {}, collapsed: false, expanded: false, connection: "connecting",
+  sessions: [], selectedByTicket: {}, displays: {}, stops: {}, collapsed: false, expanded: false, connection: "connecting",
 };
 
 function session(value: unknown): value is ComputerPreviewSessionView {
@@ -60,6 +62,7 @@ export class ComputerPreviewClient {
   #retry = 0;
   #generation = 0;
   #pageVisible = true;
+  #surfaceVisible = true;
 
   constructor(readonly options: {
     connect(): PreviewSocket;
@@ -152,16 +155,36 @@ export class ComputerPreviewClient {
       const sessions = v.sessions;
       const displays: Record<string, PreviewDisplay> = {};
       const stops: Record<string, PreviewStopState> = {};
+      const selectedByTicket: Record<string, string> = {};
       for (const item of sessions) {
         const previous = this.#state.sessions.find((entry) => entry.id === item.id);
         if (previous?.ticketId === item.ticketId && previous.tool === item.tool && previous.envId === item.envId && previous.app === item.app) displays[item.id] = this.#state.displays[item.id] ?? { state: "connecting" };
         else { this.#revoke(this.#state.displays[item.id]?.imageUrl); displays[item.id] = { state: "connecting" }; }
         if (this.#state.stops[item.ticketId]) stops[item.ticketId] = this.#state.stops[item.ticketId]!;
+        if (!selectedByTicket[item.ticketId]) {
+          const previousChoice = this.#state.selectedByTicket[item.ticketId];
+          selectedByTicket[item.ticketId] = previousChoice && sessions.some((entry) => entry.ticketId === item.ticketId && entry.id === previousChoice)
+            ? previousChoice
+            : item.id;
+        }
       }
       for (const [id, display] of Object.entries(this.#state.displays)) if (!displays[id]) this.#revoke(display.imageUrl);
-      this.#set({ ...this.#state, sessions, displays, stops,
-        selectedId: sessions.some((item) => item.id === this.#state.selectedId) ? this.#state.selectedId : sessions[0]?.id,
-        error: undefined });
+      const selectedStillExists = Boolean(this.#state.selectedId && sessions.some((item) => item.id === this.#state.selectedId));
+      const activeTicketId = sessions.length === 0
+        ? undefined
+        : this.#state.activeTicketId && sessions.some((item) => item.ticketId === this.#state.activeTicketId)
+          ? this.#state.activeTicketId
+          : sessions[0]!.ticketId;
+      const selectedId = sessions.length === 0
+        ? undefined
+        : selectedStillExists
+          ? this.#state.selectedId
+          : (activeTicketId ? selectedByTicket[activeTicketId] : undefined) ?? sessions[0]!.id;
+      const collapsed = sessions.length === 0 ? false : this.#state.collapsed;
+      const expanded = sessions.length === 0 ? false : this.#state.expanded && selectedStillExists;
+      const visibilityChanged = this.#effectiveVisible(collapsed, expanded) !== this.#effectiveVisible(this.#state.collapsed, this.#state.expanded);
+      this.#set({ ...this.#state, sessions, displays, stops, selectedByTicket, activeTicketId, selectedId, collapsed, expanded, error: undefined });
+      if (visibilityChanged) this.#sendVisibility();
     } else if (v.type === "preview.update") {
       if (typeof v.id !== "string" || !isComputerPreviewUpdate(v.update)) { this.#invalid(); return; }
       if (!this.#state.sessions.some((item) => item.id === v.id)) return;
@@ -181,15 +204,72 @@ export class ComputerPreviewClient {
     } else this.#invalid();
   }
 
+  #effectiveVisible(collapsed = this.#state.collapsed, expanded = this.#state.expanded): boolean {
+    return this.#pageVisible && (expanded || (this.#surfaceVisible && !collapsed));
+  }
+
   #sendVisibility(): void {
-    if (this.#socket?.readyState === 1) this.#socket.send(JSON.stringify({ type: "preview.visibility", visible: !this.#state.collapsed && this.#pageVisible }));
+    if (this.#socket?.readyState === 1) this.#socket.send(JSON.stringify({ type: "preview.visibility", visible: this.#effectiveVisible() }));
   }
 
   setPageVisible(visible: boolean): void { this.#pageVisible = visible; this.#sendVisibility(); }
+  setSurfaceVisible(visible: boolean): void {
+    if (this.#surfaceVisible === visible) return;
+    this.#surfaceVisible = visible;
+    this.#sendVisibility();
+  }
   setCollapsed(collapsed: boolean): void { this.#set({ ...this.#state, collapsed }); this.#sendVisibility(); }
-  setExpanded(expanded: boolean): void { this.#set({ ...this.#state, expanded, collapsed: false }); this.#sendVisibility(); }
+  setExpanded(expanded: boolean): void {
+    this.#set({ ...this.#state, expanded, ...(expanded ? { collapsed: false } : {}) });
+    this.#sendVisibility();
+  }
+  expandTicket(ticketId: string): void {
+    const matches = this.#state.sessions.filter((item) => item.ticketId === ticketId);
+    if (matches.length === 0) return;
+    const saved = this.#state.selectedByTicket[ticketId];
+    const targetId = saved && matches.some((item) => item.id === saved) ? saved : matches[0]!.id;
+    this.#set({
+      ...this.#state,
+      activeTicketId: ticketId,
+      selectedId: targetId,
+      selectedByTicket: { ...this.#state.selectedByTicket, [ticketId]: targetId },
+      collapsed: false,
+    });
+    this.#sendVisibility();
+  }
+  collapseTicket(ticketId: string): void {
+    if (this.#state.activeTicketId !== ticketId || this.#state.collapsed) return;
+    this.#set({ ...this.#state, collapsed: true });
+    this.#sendVisibility();
+  }
+  openModal(id?: string): void {
+    const target = (id ? this.#state.sessions.find((item) => item.id === id) : undefined)
+      ?? this.#state.sessions.find((item) => item.id === this.#state.selectedId)
+      ?? this.#state.sessions[0];
+    if (!target) return;
+    this.#set({
+      ...this.#state,
+      selectedId: target.id,
+      activeTicketId: target.ticketId,
+      selectedByTicket: { ...this.#state.selectedByTicket, [target.ticketId]: target.id },
+      expanded: true,
+    });
+    this.#sendVisibility();
+  }
+  closeModal(): void {
+    if (!this.#state.expanded) return;
+    this.#set({ ...this.#state, expanded: false });
+    this.#sendVisibility();
+  }
   select(id: string): void {
-    if (this.#state.sessions.some((item) => item.id === id)) this.#set({ ...this.#state, selectedId: id });
+    const target = this.#state.sessions.find((item) => item.id === id);
+    if (!target) return;
+    this.#set({
+      ...this.#state,
+      selectedId: target.id,
+      activeTicketId: target.ticketId,
+      selectedByTicket: { ...this.#state.selectedByTicket, [target.ticketId]: target.id },
+    });
   }
 
   frameFailed(id: string, imageUrl: string): void {
@@ -198,10 +278,10 @@ export class ComputerPreviewClient {
     this.#set({ ...this.#state, displays: { ...this.#state.displays, [id]: { state: "unavailable", message: "invalid_frame" } } });
   }
 
-  async stopTask(stop: (ticketId: string) => Promise<unknown>): Promise<void> {
-    const selected = this.#state.sessions.find((item) => item.id === this.#state.selectedId);
-    if (!selected || this.#state.stops[selected.ticketId]?.pending || this.#state.stops[selected.ticketId]?.accepted) return;
-    const ticketId = selected.ticketId;
+  async stopTask(stop: (ticketId: string) => Promise<unknown>, explicitTicketId?: string): Promise<void> {
+    const ticketId = explicitTicketId ?? this.#state.sessions.find((item) => item.id === this.#state.selectedId)?.ticketId;
+    if (!ticketId || !this.#state.sessions.some((item) => item.ticketId === ticketId)) return;
+    if (this.#state.stops[ticketId]?.pending || this.#state.stops[ticketId]?.accepted) return;
     const pending: PreviewStopState = { pending: true };
     this.#set({ ...this.#state, stops: { ...this.#state.stops, [ticketId]: pending } });
     const change = (status: PreviewStopState) => {

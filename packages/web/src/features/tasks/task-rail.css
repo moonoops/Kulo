@@ -1,6 +1,19 @@
 @reference "../../kulo.css";
 
-.kulo-task-rail { @apply scrollbar; height: 100%; min-height: 0; overflow-y: auto; padding: 0; outline: none; overscroll-behavior: contain; overflow-anchor: none; }
+.kulo-task-rail { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.kulo-task-rail-toolbar { display: flex; flex: none; align-items: center; justify-content: flex-end; padding-bottom: var(--kulo-space-2); }
+.kulo-task-rail-error { flex: none; margin: 0 0 var(--kulo-space-2); color: var(--danger); font-size: var(--kulo-text-caption); line-height: var(--kulo-leading-caption); }
+.kulo-task-rail-scroll { @apply scrollbar; flex: 1; min-height: 0; overflow-y: auto; padding: 0; outline: none; overscroll-behavior: contain; overflow-anchor: none; }
+.kulo-assistant-rail-section { display: block; min-width: 0; }
+.kulo-assistant-rail-section[data-has-tasks="true"] { margin-bottom: var(--kulo-space-3); border-bottom: 1px solid var(--border); }
+.kulo-assistant-card[data-kind="alert"] { background: color-mix(in oklab, var(--warning) 8%, var(--surface-secondary)); }
+.kulo-assistant-card[data-kind="decision"] { background: color-mix(in oklab, var(--accent) 7%, var(--surface-secondary)); }
+.kulo-assistant-card-controls { display: flex; flex: none; align-items: center; align-self: flex-start; padding-top: var(--kulo-space-2); padding-inline-end: var(--kulo-space-2); }
+.kulo-task-card-main:has(.kulo-assistant-card-controls) .kulo-task-card-button { padding-inline-end: var(--kulo-space-1); }
+.kulo-assistant-summary { display: -webkit-box; width: 100%; min-width: 0; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; color: var(--muted); font-size: var(--kulo-text-caption); line-height: var(--kulo-leading-caption); font-weight: 400; }
+.kulo-assistant-preview { display: -webkit-box; width: 100%; min-width: 0; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; padding-inline-start: var(--kulo-space-2); border-inline-start: 2px solid var(--border); color: var(--foreground); font-size: var(--kulo-text-caption); line-height: var(--kulo-leading-caption); font-weight: 400; }
+.kulo-assistant-source { display: inline-flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: var(--kulo-space-1); color: var(--muted); font-size: var(--kulo-text-caption); line-height: var(--kulo-leading-caption); font-weight: 400; white-space: nowrap; }
+.kulo-assistant-source > .mc-icon { flex: none; }
 .kulo-task-list { position: relative; }
 .kulo-task-row { position: relative; min-width: 0; }
 .kulo-task-space { padding-bottom: var(--kulo-space-3); }
@@ -10,7 +23,11 @@
 .kulo-task-card[data-state="failed"] { background: color-mix(in oklab, var(--danger) 8%, var(--surface-secondary)); }
 .kulo-task-card[data-selected="true"] { outline: 1px solid color-mix(in oklab, var(--foreground) 22%, transparent); outline-offset: -1px; }
 .kulo-task-card-content { display: block; padding: 0; }
-.kulo-task-card-button { display: flex; height: auto; min-width: 0; flex-direction: column; align-items: stretch; justify-content: start; gap: var(--kulo-space-2); padding: var(--kulo-list-padding-block) var(--kulo-list-padding-inline); text-align: left; white-space: normal; border-radius: 16px; background: transparent; }
+.kulo-task-card-main { display: flex; align-items: center; min-width: 0; }
+.kulo-task-card-button { display: flex; flex: 1; height: auto; min-width: 0; flex-direction: column; align-items: stretch; justify-content: start; gap: var(--kulo-space-2); padding: var(--kulo-list-padding-block) var(--kulo-list-padding-inline); text-align: left; white-space: normal; border-radius: 16px; background: transparent; }
+.kulo-task-card-main:has(.kulo-task-archive-button) .kulo-task-card-button { padding-inline-end: var(--kulo-space-2); }
+.kulo-task-archive-button { flex: none; margin-inline-end: var(--kulo-space-2); }
+.kulo-task-clear-all { flex: none; }
 .kulo-task-card-button[data-hovered="true"] { background: color-mix(in oklab, var(--foreground) 4%, transparent); }
 .kulo-task-title { display: block; width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--kulo-text-body); line-height: var(--kulo-leading-body); font-weight: 600; color: var(--foreground); }
 .kulo-task-card-foot { display: flex; width: 100%; min-width: 0; align-items: center; justify-content: space-between; gap: var(--kulo-control-gap); color: var(--muted); font-size: var(--kulo-text-caption); line-height: var(--kulo-leading-caption); font-weight: 400; }

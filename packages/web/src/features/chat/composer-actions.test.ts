@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { resolveComposerAction } from "./composer-actions";
+import { resolveComposerAction, resolveComposerActions } from "./composer-actions";
 
 const state = { busy: false, canStop: true, needsConfiguration: false, hasPayload: false, hasAttachments: false, canCall: true };
 
 describe("composer primary action precedence", () => {
-  it("keeps stop above a next draft, upload, configuration or call", () => {
-    for (const patch of [{}, { hasPayload: true }, { hasAttachments: true }, { needsConfiguration: true }]) {
-      expect(resolveComposerAction({ ...state, ...patch, busy: true })).toBe("stop");
+  it("keeps stop as the sole primary action while busy without an editable send", () => {
+    for (const patch of [{}, { needsConfiguration: true }, { hasPayload: true, allowBusySend: false }, { hasAttachments: true, allowBusySend: false }]) {
+      expect(resolveComposerActions({ ...state, ...patch, busy: true })).toEqual({ primary: "stop", showStop: false });
     }
+  });
+  it("shows send alongside stop when busy with text or attachments and busy sending is enabled", () => {
+    expect(resolveComposerActions({ ...state, busy: true, hasPayload: true })).toEqual({ primary: "send", showStop: true });
+    expect(resolveComposerActions({ ...state, busy: true, hasAttachments: true })).toEqual({ primary: "send", showStop: true });
+    expect(resolveComposerActions({ ...state, busy: true, hasPayload: true, canStop: false })).toEqual({ primary: "send", showStop: false });
   });
   it("returns to calling only for a completely empty idle composer", () => {
     expect(resolveComposerAction(state)).toBe("call");

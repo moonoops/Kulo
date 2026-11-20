@@ -17,10 +17,15 @@ import { collectDeviceSystemInfo } from "./device-info.js";
 import { FlowBrowserService } from "./browser.js";
 import { ComputerUseService, computerUseConfiguration } from "./computer-use.js";
 import { HostActionService } from "./host-actions.js";
+import { MacOsNotificationSensor } from "./connectors/macos-notifications.js";
+import { SparkMailConnector } from "./connectors/spark-mail.js";
 import { StreamResumeBuffer } from "./stream-resume.js";
 import {
   STREAM_RESUME_CAPABILITY,
   STREAM_RESUME_GRACE_MS,
+  CONNECTORS_CAPABILITY,
+  isConnectorCallRequest,
+  isConnectorSourceConfig,
   decodeSequencedStreamChunk,
   decodeStreamChunk,
   encodeSequencedStreamChunk,
@@ -82,6 +87,8 @@ export interface KuloEnvAgentOptions {
   externalAgentService?: ExternalAgentService;
   /** Optional extra capability tags, e.g. `["macos-gui"]` */
   capabilities?: string[];
+  /** Optional override for macOS notification database path (primarily for tests). */
+  notificationsDbPath?: string;
   /** Auto-reconnect when disconnected (default: true) */
   reconnect?: boolean;
   /** Grace window in ms to keep daemons and sessions alive during brief disconnects (default: 20_000). */
@@ -116,7 +123,10 @@ export class KuloEnvAgent {
   readonly #heartbeatIdleMs: number;
   readonly #heartbeatTimeoutMs: number;
   #hubInstanceId?: string;
+  #connectorsNegotiated = false;
   #streamResumeNegotiated = false;
+  #notificationSensor: MacOsNotificationSensor | null = null;
+  readonly #sparkConnector = new SparkMailConnector();
   #graceTimer: NodeJS.Timeout | null = null;
   #unackedTotalBytes = 0;
   readonly #projectDirectories: ProjectDirectoryRegistry;
@@ -174,6 +184,24 @@ export class KuloEnvAgent {
       ],
     });
     this.#externalAgents = options.externalAgentService ?? new ExternalAgentService({ envId: options.envId, rootDir: this.#rootDir, projectRegistry: this.#projectDirectories, toolHandler: invocation => this.#requestExternalTool(invocation) });
+    if (process.platform === "darwin") {
+      this.#notificationSensor = new MacOsNotificationSensor({
+        envId: options.envId,
+        envName: options.name ?? `${options.envId} (${os.hostname()})`,
+        privateDir: this.#projectDirectories.privateDirectory,
+        ...(options.notificationsDbPath ? { databasePath: options.notificationsDbPath } : {}),
+        onStatus: (status) => {
+          if (this.#connectorsNegotiated && this.#registered && this.#ws?.readyState === WebSocket.OPEN) {
+            this.#sendControl(this.#ws, { type: "env.connector_status", status });
+          }
+        },
+        onBatch: (batch) => {
+          if (this.#connectorsNegotiated && this.#registered && this.#ws?.readyState === WebSocket.OPEN) {
+            this.#sendControl(this.#ws, { type: "env.connector_events", batch });
+          }
+        },
+      });
+    }
   }
 
   /** Start the agent and resolve once initial registration with Hub completes. */
@@ -204,6 +232,7 @@ export class KuloEnvAgent {
       this.#reconnectTimer = null;
     }
     await this.#externalAgents.close();
+    this.#notificationSensor?.close();
     await this.#killAllDaemons();
     const browserCleanup = Promise.allSettled([this.#browser.suspend(), this.#computer.suspend(), this.#hostActions.suspend()]);
     if (this.#ws) {
@@ -356,7 +385,7 @@ export class KuloEnvAgent {
       this.#startLivenessWatch(ws);
       this.#armProbeTimeout(ws, "Hub registration timed out");
       const defaultCaps =
-        process.platform === "darwin" ? ["fs", "bash", "macos-gui"] : ["fs", "bash"];
+        process.platform === "darwin" ? ["fs", "bash", "macos-gui", CONNECTORS_CAPABILITY] : ["fs", "bash"];
       const capabilities = Array.from(
         new Set([...defaultCaps, STREAM_RESUME_CAPABILITY, "external-agents", "host-actions", ...workerIsolationCapabilities(), ...(this.#options.capabilities ?? []).filter((capability) => !["flow-browser", "agent-browser", "agent-desktop"].includes(capability)), ...(this.#browser.available ? ["flow-browser"] : []), ...this.#computer.capabilities()]),
       );
@@ -441,9 +470,16 @@ export class KuloEnvAgent {
         const hubRestarted = Boolean(this.#hubInstanceId && msg.hubInstanceId && this.#hubInstanceId !== msg.hubInstanceId);
         this.#hubInstanceId = msg.hubInstanceId;
         this.#streamResumeNegotiated = Boolean(msg.streamResumeSupported);
+        this.#connectorsNegotiated = Boolean(msg.connectorsSupported);
+        if (this.#connectorsNegotiated && this.#notificationSensor) {
+          if (msg.hubId) this.#notificationSensor.setHubIdentity(msg.hubId);
+        }
         this.#registered = true;
         this.#clearProbeTimer();
         this.#log(`Registered env '${msg.envId}' -> ${this.#rootDir}`);
+        if (this.#connectorsNegotiated && this.#notificationSensor) {
+          this.#sendControl(ws, { type: "env.connector_status", status: this.#notificationSensor.status });
+        }
 
         if (hubRestarted) {
           void this.#browser.suspend().catch(() => {});
@@ -518,6 +554,35 @@ export class KuloEnvAgent {
           const pending = this.#hostActionRequests.get(msg.requestId);
           if (pending?.ws === ws) pending.controller.abort();
         }
+      } else if (msg.type === "hub.connector_config") {
+        if (this.#connectorsNegotiated && isConnectorSourceConfig(msg.config)) {
+          this.#notificationSensor?.configure(msg.config);
+        }
+      } else if (msg.type === "hub.connector_ack") {
+        if (this.#connectorsNegotiated && msg.ack) {
+          this.#notificationSensor?.handleAck(msg.ack);
+        }
+      } else if (msg.type === "hub.connector_call") {
+        if (this.#connectorsNegotiated && typeof msg.requestId === "string" && isConnectorCallRequest(msg.request)) {
+          void this.#sparkConnector
+            .invoke(msg.request)
+            .then((result) => {
+              if (ws === this.#ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "env.connector_call_result", requestId: msg.requestId, result }));
+              }
+            })
+            .catch((error: unknown) => {
+              if (ws === this.#ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(
+                  JSON.stringify({
+                    type: "env.connector_call_result",
+                    requestId: msg.requestId,
+                    result: { ok: false, code: "internal_error", error: error instanceof Error ? error.message : "连接器执行失败" },
+                  }),
+                );
+              }
+            });
+        }
       } else if (msg.type === "hub.close_stream") {
         void this.#stopStream(msg.streamId, true).catch((error: unknown) => this.#log(error instanceof Error ? error.message : "Worker cleanup failed"));
       }
@@ -529,6 +594,7 @@ export class KuloEnvAgent {
       if (!isCurrentSocket) return;
       this.#ws = null;
       this.#registered = false;
+      this.#connectorsNegotiated = false;
       this.#clearLivenessTimers();
       this.#cancelComputerRequests(ws);
       this.#cancelHostActionRequests(ws);

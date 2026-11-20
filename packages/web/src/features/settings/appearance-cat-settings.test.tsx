@@ -42,7 +42,10 @@ describe("Kulo appearance settings", () => {
     expect(html).toContain('aria-label="动态"');
     expect(controls.get("自动切换形象")?.isSelected).toBe(true);
     expect(controls.get("动态")?.isSelected).toBe(true);
-    expect(html.match(/role="switch"/g)).toHaveLength(2);
+    expect(controls.get("系统通知")?.isSelected).toBe(true);
+    expect(controls.get("提示音")?.isSelected).toBe(false);
+    expect(controls.get("任务栏红点")?.isSelected).toBe(true);
+    expect(html.match(/role="switch"/g)).toHaveLength(5);
   });
 
   it("changes motion without replacing a manually selected outfit", () => {

@@ -6,6 +6,7 @@ import type {
   EnvNodeDescriptor,
   LiveStreamState,
   KuloSettingsView,
+  MainSessionNotificationEvent,
   SlotSummary,
   TicketCardView,
   TicketClosureKind,
@@ -22,6 +23,16 @@ import type { VoiceSnapshot } from "./voice.js";
 import type { ComputerUseRequest, ComputerUseResult } from "./computer-use.js";
 import type { ComputerPreviewTarget, ComputerPreviewUpdate } from "./computer-preview.js";
 import type { HostActionRequest, HostActionResult } from "./host-actions.js";
+import type {
+  AssistantItemAction,
+  AssistantItemView,
+  ConnectorBatchAck,
+  ConnectorCallRequest,
+  ConnectorCallResult,
+  ConnectorEventBatch,
+  ConnectorSourceConfig,
+  ConnectorSourceStatus,
+} from "./assistant.js";
 
 // ============================================================================
 // Client <-> Hub WebSocket Protocol (/ws/client)
@@ -105,6 +116,14 @@ export type ClientToHubMessage =
       ticketId: string;
       requestId?: string;
     }
+  | {
+      type: "assistant.item_action";
+      itemId: string;
+      expectedRevision: number;
+      action: AssistantItemAction;
+      commandId?: string;
+      requestId?: string;
+    }
   | { type: "client.ping"; requestId?: string }
   | {
       type: "state.sync";
@@ -131,6 +150,8 @@ export type HubToClientMessage =
       live: LiveStreamState;
       tickets: TicketCardView[];
       ticketRevision?: number;
+      assistantItems?: AssistantItemView[];
+      assistantRevision?: number;
       slots: SlotSummary;
       envs: EnvNodeDescriptor[];
       projects?: ProjectView[];
@@ -143,6 +164,7 @@ export type HubToClientMessage =
     }
   | { type: "hub.projects"; projects: ProjectView[] }
   | { type: "hub.topic_activity"; topicId: string; activity: TopicActivity }
+  | { type: "hub.notification"; event: MainSessionNotificationEvent }
   | {
       type: "hub.live";
       topicId?: string;
@@ -162,6 +184,11 @@ export type HubToClientMessage =
       slots: SlotSummary;
     }
   | ({ type: "hub.ticket_delta" } & TicketBoardDelta)
+  | {
+      type: "hub.assistant_items";
+      assistantRevision: number;
+      items: AssistantItemView[];
+    }
   | {
       type: "hub.envs";
       envs: EnvNodeDescriptor[];
@@ -187,6 +214,7 @@ export type HubToClientMessage =
       commandId?: string;
       topicId?: string;
       ticketId?: string;
+      itemId?: string;
       deduplicated?: boolean;
       submissionId?: number;
       delivery?: "queued" | "accepted";
@@ -227,6 +255,9 @@ export type EnvToHubControlMessage =
   | { type: "env.android_control_result"; requestId: string; result: import("./android.js").AndroidControlResult }
   | { type: "env.notification_classify"; request: import("./android-notifications.js").AndroidNotificationClassification }
   | { type: "env.notification_cancel"; requestId: string; bindingId: string }
+  | { type: "env.connector_status"; status: ConnectorSourceStatus }
+  | { type: "env.connector_events"; batch: ConnectorEventBatch }
+  | { type: "env.connector_call_result"; requestId: string; result: ConnectorCallResult }
   | { type: "env.computer_result"; requestId: string; result?: ComputerUseResult; error?: string }
   | { type: "env.host_action_result"; requestId: string; result?: HostActionResult; error?: string }
   | { type: "env.browser_result"; requestId: string; result?: BrowserResult; error?: string }
@@ -289,6 +320,9 @@ export type HubToEnvControlMessage =
   | { type: "hub.android_request"; requestId: string; budgetMs: number; request: import("./android.js").AndroidRequest }
   | { type: "hub.android_cancel"; requestId: string; request: import("./android.js").AndroidCancel }
   | { type: "hub.notification_decision"; result: import("./android-notifications.js").AndroidNotificationClassificationResult }
+  | { type: "hub.connector_ack"; ack: ConnectorBatchAck }
+  | { type: "hub.connector_config"; config: ConnectorSourceConfig }
+  | { type: "hub.connector_call"; requestId: string; request: ConnectorCallRequest }
   | { type: "hub.computer_request"; requestId: string; request: ComputerUseRequest }
   | { type: "hub.computer_cancel"; requestId: string }
   | { type: "hub.host_action_request"; requestId: string; request: HostActionRequest }
@@ -298,6 +332,10 @@ export type HubToEnvControlMessage =
   | {
       type: "hub.registered";
       envId: string;
+      /** Stable Hub identity used to scope per-Hub connector cursors on paired Envs. */
+      hubId?: string;
+      /** True when Hub accepts connectors-v1 source status and event batches. */
+      connectorsSupported?: boolean;
       /** Unique Hub runtime instance identifier for stream-resume-v1 validation. */
       hubInstanceId?: string;
       /** True when stream-resume-v1 sequenced binary framing and 20s resume were negotiated. */

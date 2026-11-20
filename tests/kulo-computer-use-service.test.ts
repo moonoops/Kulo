@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ComputerUseService, computerUseConfiguration } from "../packages/env/src/computer-use.js";
+import { ComputerUseService, computerUseConfiguration, type ComputerUseServiceOptions } from "../packages/env/src/computer-use.js";
+import { parseMacosChromeBackgroundTasksStatus, resolveManagedBrowserExecutable } from "../packages/env/src/computer-browser-host.js";
 import { AgentCliError, type AgentCliInvocation, type AgentCliRunner } from "../packages/env/src/agent-cli.js";
 
 const roots: string[] = [];
@@ -11,12 +12,12 @@ const services: ComputerUseService[] = [];
 const browserSnapshot = { success: true, data: { snapshot: '- textbox "Name" [ref=e1]', refs: { e1: { role: "textbox", name: "Name" } } } };
 const desktopSnapshot = { ok: true, data: { app: "TextEdit", snapshot_id: "s123", complete: true, tree: { role: "window", children: [{ role: "textbox", ref_id: "@s123:e1" }] } } };
 
-function fixture(options: { platform?: NodeJS.Platform; browserEnabled?: boolean; desktopEnabled?: boolean; runner?: AgentCliRunner } = {}) {
+function fixture(options: Partial<Omit<ComputerUseServiceOptions, "rootDir">> = {}) {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "kulo-computer-use-"));
   roots.push(rootDir);
   const runner = vi.fn<AgentCliRunner>(options.runner ?? (async (request) => {
     if (request.tool === "agent-browser") {
-      if (request.args.includes("doctor")) return { success: true, checks: [{ id: "chrome.binary", status: "pass" }], summary: { pass: 1 } };
+      if (request.args.includes("doctor")) return { success: true, checks: [{ id: "chrome.binary", status: "pass" }], summary: { pass: 1, warn: 0 } };
       if (request.args.includes("snapshot")) return structuredClone(browserSnapshot);
       if (request.args.includes("batch")) return [{ index: 0, success: true, result: { value: "input should be omitted" } }];
       return { success: true, data: {} };
@@ -24,7 +25,16 @@ function fixture(options: { platform?: NodeJS.Platform; browserEnabled?: boolean
     if (request.args.includes("snapshot")) return structuredClone(desktopSnapshot);
     return { ok: true, data: { accessibility: { state: "granted" } } };
   }));
-  const service = new ComputerUseService({ rootDir, platform: "darwin", browserEnabled: true, desktopEnabled: true, ...options, runner });
+  const service = new ComputerUseService({
+    rootDir,
+    platform: "darwin",
+    browserEnabled: true,
+    desktopEnabled: true,
+    resolveBrowserExecutable: () => ({}),
+    checkMacosChromeBackgroundTasks: async () => "allowed",
+    ...options,
+    runner,
+  });
   services.push(service);
   return { service, runner, rootDir };
 }
@@ -161,6 +171,143 @@ describe("managed browser sessions", () => {
     const environment = runner.mock.calls[0]![0].env!;
     expect(environment.AGENT_BROWSER_NAMESPACE).toBeUndefined();
     expect(Buffer.byteLength(path.join(environment.AGENT_BROWSER_SOCKET_DIR!, "s".repeat(64) + ".sock")) + 8).toBeLessThanOrEqual(103);
+  });
+
+  it("places --timeout after the wait subcommand for both text and ref waits", async () => {
+    const { service, runner } = fixture();
+    await service.request({ tool: "browser", action: "open", sessionId: "one", url: "https://example.com" });
+    await service.request({ tool: "browser", action: "wait", sessionId: "one", text: "Mac mini", timeoutMs: 8000 });
+    const textWaitArgs = runner.mock.calls.at(-1)![0].args;
+    const textWaitIndex = textWaitArgs.indexOf("wait");
+    expect(textWaitIndex).toBeGreaterThan(-1);
+    expect(textWaitArgs.slice(textWaitIndex)).toEqual(["wait", "--text", "Mac mini", "--timeout", "8000"]);
+
+    await service.request({ tool: "browser", action: "snapshot", sessionId: "one" });
+    await service.request({ tool: "browser", action: "wait", sessionId: "one", ref: "e1", timeoutMs: 5000 });
+    const refWaitArgs = runner.mock.calls.at(-1)![0].args;
+    const refWaitIndex = refWaitArgs.indexOf("wait");
+    expect(refWaitIndex).toBeGreaterThan(-1);
+    expect(refWaitArgs.slice(refWaitIndex)).toEqual(["wait", "@e1", "--timeout", "5000"]);
+  });
+
+  it("prefers isolated macOS Chrome for Testing binaries and warns when system Chrome background tasks are disallowed", async () => {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "kulo-cft-home-"));
+    roots.push(fakeHome);
+    const oldBin = path.join(fakeHome, ".cache", "puppeteer", "chrome", "mac_arm-148.0.7778.97", "chrome-mac-arm64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing");
+    const newBin = path.join(fakeHome, ".cache", "puppeteer", "chrome", "mac_arm-149.0.7827.22", "chrome-mac-arm64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing");
+    for (const file of [oldBin, newBin]) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "#!/bin/sh\n", { mode: 0o755 });
+    }
+    expect(resolveManagedBrowserExecutable({ platform: "darwin", arch: "arm64", env: {}, homeDir: fakeHome })).toEqual({ executablePath: newBin, source: "chrome-for-testing" });
+    expect(resolveManagedBrowserExecutable({ platform: "darwin", arch: "arm64", env: { KULO_BROWSER_EXECUTABLE_PATH: "/custom/chrome" }, homeDir: fakeHome })).toEqual({ executablePath: "/custom/chrome", source: "env" });
+    expect(resolveManagedBrowserExecutable({ platform: "linux", arch: "x64", env: {}, homeDir: fakeHome })).toEqual({});
+
+    expect(parseMacosChromeBackgroundTasksStatus(`
+ #31:
+                Name: Google Chrome - background tasks
+                Type: background tasks (0x2000)
+         Disposition: [enabled, disallowed, notified] (0x9)
+          Identifier: 8192.com.google.Chrome
+   Parent Identifier: 2.com.google.Chrome
+`)).toBe("disallowed");
+    expect(parseMacosChromeBackgroundTasksStatus(`
+ #31:
+                Name: Google Chrome - background tasks
+                Type: background tasks (0x2000)
+         Disposition: [enabled, allowed, notified] (0xb)
+          Identifier: 8192.com.google.Chrome
+`)).toBe("allowed");
+    expect(parseMacosChromeBackgroundTasksStatus("no chrome entries")).toBe("unknown");
+
+    const isolated = fixture({
+      resolveBrowserExecutable: () => ({ executablePath: newBin, source: "chrome-for-testing" }),
+      checkMacosChromeBackgroundTasks: async () => "disallowed",
+      runner: async () => ({
+        success: true,
+        checks: [{ id: "chrome.installed", status: "pass", message: "Google Chrome 157 at /Applications/Google Chrome.app/Contents/MacOS/Google Chrome" }],
+        summary: { pass: 1, warn: 0 },
+      }),
+    });
+    const isolatedStatus = await isolated.service.request({ tool: "browser", action: "status" });
+    expect(isolatedStatus).toMatchObject({ ok: true, data: { managedExecutable: newBin } });
+    expect((isolatedStatus.data as Record<string, unknown>).backgroundTasksDisallowed).toBeUndefined();
+    expect(isolated.runner.mock.calls[0]![0].env?.AGENT_BROWSER_EXECUTABLE_PATH).toBe(newBin);
+
+    const disallowed = fixture({
+      resolveBrowserExecutable: () => ({}),
+      checkMacosChromeBackgroundTasks: async () => "disallowed",
+      runner: async () => ({
+        success: true,
+        checks: [{ id: "chrome.installed", status: "pass", message: "Google Chrome 157 at /Applications/Google Chrome.app/Contents/MacOS/Google Chrome" }],
+        summary: { pass: 1, warn: 0 },
+      }),
+    });
+    const warnedStatus = await disallowed.service.request({ tool: "browser", action: "status" });
+    expect(warnedStatus).toMatchObject({ ok: true, data: { backgroundTasksDisallowed: true, summary: { pass: 1, warn: 1 } } });
+    expect((warnedStatus.data as { checks: Array<{ id: string; status: string }> }).checks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "macos.chrome_background_tasks", status: "warn" })]),
+    );
+  });
+
+  it("detects unexpected browser process restarts inside an active session and surfaces macOS BTM root cause", async () => {
+    let callIndex = 0;
+    const { service } = fixture({
+      resolveBrowserExecutable: () => ({}),
+      checkMacosChromeBackgroundTasks: async () => "disallowed",
+      runner: async (request) => {
+        callIndex++;
+        if (request.args.includes("open")) {
+          return { success: true, data: { url: "https://www.bilibili.com", lifecycle: { launched: true, reused: false, relaunchedBrowser: false } } };
+        }
+        if (request.args.includes("snapshot")) {
+          return {
+            success: true,
+            data: callIndex === 2
+              ? { origin: "https://www.bilibili.com", refs: { e1: { role: "textbox" } }, lifecycle: { launched: false, reused: true, relaunchedBrowser: false } }
+              : { origin: "about:blank", refs: {}, lifecycle: { launched: true, reused: false, relaunchedBrowser: false } },
+          };
+        }
+        if (request.args.includes("url")) {
+          return { success: true, data: { url: "about:blank", lifecycle: { launched: true, reused: false, relaunchedBrowser: false } } };
+        }
+        return { success: true, data: {} };
+      },
+    });
+    const opened = await service.request({ tool: "browser", action: "open", sessionId: "one", url: "https://www.bilibili.com" });
+    expect(opened.ok).toBe(true);
+    expect((opened.data as Record<string, unknown>).sessionReset).toBeUndefined();
+
+    const firstSnap = await service.request({ tool: "browser", action: "snapshot", sessionId: "one" });
+    expect(firstSnap.ok).toBe(true);
+    expect((firstSnap.data as Record<string, unknown>).sessionReset).toBeUndefined();
+
+    const crashedUrl = await service.request({ tool: "browser", action: "get-url", sessionId: "one" });
+    expect(crashedUrl).toMatchObject({
+      ok: true,
+      data: {
+        url: "about:blank",
+        sessionReset: {
+          unexpectedRestart: true,
+          restartCount: 1,
+          cause: "macos_chrome_background_tasks_disallowed",
+        },
+      },
+    });
+    // Previous ref e1 must have been cleared when the browser unexpectedly restarted.
+    expect(await service.request({ tool: "browser", action: "click", sessionId: "one", ref: "e1" })).toMatchObject({ ok: false, error: { code: "REF_NOT_AUTHORIZED" } });
+
+    const crashedSnap = await service.request({ tool: "browser", action: "snapshot", sessionId: "one" });
+    expect(crashedSnap).toMatchObject({
+      ok: true,
+      data: {
+        sessionReset: {
+          unexpectedRestart: true,
+          restartCount: 2,
+          cause: "macos_chrome_background_tasks_disallowed",
+        },
+      },
+    });
   });
 });
 

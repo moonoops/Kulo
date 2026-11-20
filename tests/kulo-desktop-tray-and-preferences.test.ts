@@ -8,6 +8,7 @@ import { createMainWindowCloseController } from "../packages/desktop/src/desktop
 import {
   configureDesktopPreferenceHandlers,
   createDesktopPreferencesStore,
+  DEFAULT_DESKTOP_NOTIFICATION_PREFERENCES,
   DEFAULT_DESKTOP_PREFERENCES,
   DESKTOP_PREFERENCES_CHANNELS,
   DESKTOP_PREFERENCES_FILENAME,
@@ -34,36 +35,85 @@ afterEach(() => {
   }
 });
 
-describe("desktop background running preferences", () => {
-  it("defaults to background running enabled and persists atomic private updates", () => {
+describe("desktop background running and notification preferences", () => {
+  it("defaults to background running, notifications and badge enabled with sound muted, and persists atomic private updates", () => {
     const dir = directory();
     const onChange = vi.fn();
     const store = createDesktopPreferencesStore({ dataDir: dir, onChange });
     expect(store.get()).toEqual(DEFAULT_DESKTOP_PREFERENCES);
-    expect(store.get().backgroundRunning).toBe(true);
+    expect(store.get()).toEqual({
+      backgroundRunning: true,
+      notifications: { enabled: true, sound: false, badge: true },
+    });
 
-    expect(store.update({ backgroundRunning: false })).toEqual({ backgroundRunning: false });
-    expect(store.get()).toEqual({ backgroundRunning: false });
-    expect(onChange).toHaveBeenCalledWith({ backgroundRunning: false });
+    expect(store.update({ backgroundRunning: false })).toEqual({
+      backgroundRunning: false,
+      notifications: { enabled: true, sound: false, badge: true },
+    });
+    expect(onChange).toHaveBeenCalledWith({
+      backgroundRunning: false,
+      notifications: { enabled: true, sound: false, badge: true },
+    });
+
+    expect(store.update({ notifications: { sound: true, badge: false } })).toEqual({
+      backgroundRunning: false,
+      notifications: { enabled: true, sound: true, badge: false },
+    });
 
     const file = path.join(dir, DESKTOP_PREFERENCES_FILENAME);
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
-    expect(readDesktopPreferencesFile(file)).toEqual({ backgroundRunning: false });
+    expect(readDesktopPreferencesFile(file)).toEqual({
+      backgroundRunning: false,
+      notifications: { enabled: true, sound: true, badge: false },
+    });
 
     const reloaded = createDesktopPreferencesStore({ dataDir: dir });
-    expect(reloaded.get()).toEqual({ backgroundRunning: false });
-    expect(reloaded.update({ backgroundRunning: true })).toEqual({ backgroundRunning: true });
-    expect(readDesktopPreferencesFile(file)).toEqual({ backgroundRunning: true });
+    expect(reloaded.get()).toEqual({
+      backgroundRunning: false,
+      notifications: { enabled: true, sound: true, badge: false },
+    });
+    expect(reloaded.update({ backgroundRunning: true, notifications: { enabled: false } })).toEqual({
+      backgroundRunning: true,
+      notifications: { enabled: false, sound: true, badge: false },
+    });
+    expect(readDesktopPreferencesFile(file)).toEqual({
+      backgroundRunning: true,
+      notifications: { enabled: false, sound: true, badge: false },
+    });
+  });
+
+  it("migrates legacy desktop-preferences.json containing only backgroundRunning without losing state", () => {
+    const dir = directory();
+    const file = path.join(dir, DESKTOP_PREFERENCES_FILENAME);
+    fs.writeFileSync(file, JSON.stringify({ formatVersion: 1, backgroundRunning: false }), { mode: 0o600 });
+    expect(readDesktopPreferencesFile(file)).toEqual({
+      backgroundRunning: false,
+      notifications: { ...DEFAULT_DESKTOP_NOTIFICATION_PREFERENCES },
+    });
   });
 
   it("rejects invalid preference updates without modifying saved state", () => {
     const dir = directory();
     const onChange = vi.fn();
     const store = createDesktopPreferencesStore({ dataDir: dir, onChange });
-    for (const invalid of [null, undefined, [], {}, { backgroundRunning: "true" }, { backgroundRunning: 1 }, { unknown: true }, { backgroundRunning: false, extra: 1 }]) {
+    for (const invalid of [
+      null,
+      undefined,
+      [],
+      {},
+      { backgroundRunning: "true" },
+      { backgroundRunning: 1 },
+      { unknown: true },
+      { backgroundRunning: false, extra: 1 },
+      { notifications: null },
+      { notifications: {} },
+      { notifications: { enabled: "yes" } },
+      { notifications: { sound: 1 } },
+      { notifications: { badge: true, extra: false } },
+    ]) {
       expect(() => store.update(invalid)).toThrow();
     }
-    expect(store.get()).toEqual({ backgroundRunning: true });
+    expect(store.get()).toEqual(DEFAULT_DESKTOP_PREFERENCES);
     expect(onChange).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(dir, DESKTOP_PREFERENCES_FILENAME))).toBe(false);
   });
@@ -74,7 +124,7 @@ describe("desktop background running preferences", () => {
     fs.writeFileSync(file, "{broken json", { mode: 0o600 });
     const logs: string[] = [];
     const store = createDesktopPreferencesStore({ dataDir: dir, onLog: (msg) => logs.push(msg) });
-    expect(store.get()).toEqual({ backgroundRunning: true });
+    expect(store.get()).toEqual(DEFAULT_DESKTOP_PREFERENCES);
     expect(logs.length).toBe(1);
 
     const linkedDir = directory();
@@ -83,7 +133,7 @@ describe("desktop background running preferences", () => {
     const linkFile = path.join(linkedDir, DESKTOP_PREFERENCES_FILENAME);
     fs.symlinkSync(outside, linkFile);
     expect(() => readDesktopPreferencesFile(linkFile)).toThrow();
-    expect(() => writeDesktopPreferencesFile(linkFile, { backgroundRunning: true })).toThrow("不可用");
+    expect(() => writeDesktopPreferencesFile(linkFile, { backgroundRunning: true, notifications: { ...DEFAULT_DESKTOP_NOTIFICATION_PREFERENCES } })).toThrow("不可用");
     expect(JSON.parse(fs.readFileSync(outside, "utf8")).backgroundRunning).toBe(false);
 
     const readOnlyDir = directory();
@@ -119,9 +169,15 @@ describe("desktop background running preferences", () => {
     const invoke = (channel: string, sender = event, ...args: unknown[]) =>
       Promise.resolve().then(() => handlers.get(channel)!(sender, ...args));
 
-    await expect(invoke(DESKTOP_PREFERENCES_CHANNELS.get)).resolves.toEqual({ backgroundRunning: true });
-    await expect(invoke(DESKTOP_PREFERENCES_CHANNELS.set, event, { backgroundRunning: false })).resolves.toEqual({ backgroundRunning: false });
-    await expect(invoke(DESKTOP_PREFERENCES_CHANNELS.get)).resolves.toEqual({ backgroundRunning: false });
+    await expect(invoke(DESKTOP_PREFERENCES_CHANNELS.get)).resolves.toEqual(DEFAULT_DESKTOP_PREFERENCES);
+    await expect(invoke(DESKTOP_PREFERENCES_CHANNELS.set, event, { backgroundRunning: false, notifications: { sound: true } })).resolves.toEqual({
+      backgroundRunning: false,
+      notifications: { enabled: true, sound: true, badge: true },
+    });
+    await expect(invoke(DESKTOP_PREFERENCES_CHANNELS.get)).resolves.toEqual({
+      backgroundRunning: false,
+      notifications: { enabled: true, sound: true, badge: true },
+    });
 
     await expect(invoke(DESKTOP_PREFERENCES_CHANNELS.get, event, "extra")).rejects.toThrow("参数无效");
     await expect(invoke(DESKTOP_PREFERENCES_CHANNELS.set, event)).rejects.toThrow("参数无效");
@@ -144,13 +200,20 @@ describe("desktop background running preferences", () => {
   });
 });
 
-describe("desktop tray lifecycle and template icon", () => {
+describe("desktop tray lifecycle, template icon and red-dot badge", () => {
   function fakeTray() {
     let destroyed = false;
     const clickListeners: Array<() => void> = [];
-    const tray: ManagedTray & { emitClick(): void; setToolTip: ReturnType<typeof vi.fn>; setContextMenu: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> } = {
+    const tray: ManagedTray & {
+      emitClick(): void;
+      setToolTip: ReturnType<typeof vi.fn>;
+      setContextMenu: ReturnType<typeof vi.fn>;
+      setImage: ReturnType<typeof vi.fn>;
+      destroy: ReturnType<typeof vi.fn>;
+    } = {
       setToolTip: vi.fn(),
       setContextMenu: vi.fn(),
+      setImage: vi.fn(),
       on: vi.fn((_event: "click", listener: () => void) => { clickListeners.push(listener); }),
       destroy: vi.fn(() => { destroyed = true; }),
       isDestroyed: () => destroyed,
@@ -187,9 +250,11 @@ describe("desktop tray lifecycle and template icon", () => {
     expect(onQuit).toHaveBeenCalledOnce();
   });
 
-  it("creates, updates, toggles, and disposes the tray cleanly across platforms", () => {
+  it("creates, updates, toggles badge/theme, and disposes the tray cleanly across platforms", () => {
     const created: ReturnType<typeof fakeTray>[] = [];
     const onFocusWindow = vi.fn();
+    let dark = false;
+    const resolveIcon = vi.fn((badgeActive: boolean) => (badgeActive ? (dark ? "badge-dark" : "badge-light") : "template"));
     const controller = createDesktopTrayController({
       appName: "Kulo Dev",
       platform: "darwin",
@@ -198,6 +263,7 @@ describe("desktop tray lifecycle and template icon", () => {
         created.push(tray);
         return tray;
       },
+      resolveIcon,
       buildMenu: (template: MenuItemConstructorOptions[]) => ({ template }),
       onFocusWindow,
       onNewTopic: vi.fn(),
@@ -210,8 +276,23 @@ describe("desktop tray lifecycle and template icon", () => {
     expect(controller.isActive()).toBe(true);
     expect(created).toHaveLength(1);
     expect(created[0]!.setToolTip).toHaveBeenCalledWith("Kulo Dev");
+    expect(created[0]!.setImage).toHaveBeenCalledWith("template");
     expect(created[0]!.setContextMenu).toHaveBeenCalledTimes(1);
     expect(created[0]!.on).not.toHaveBeenCalled();
+
+    // Activate red dot badge and respond to theme change
+    controller.setBadge(true);
+    expect(created[0]!.setImage).toHaveBeenLastCalledWith("badge-light");
+    expect(created[0]!.setToolTip).toHaveBeenLastCalledWith("Kulo Dev · 有新回复");
+
+    dark = true;
+    controller.refreshTheme();
+    expect(created[0]!.setImage).toHaveBeenLastCalledWith("badge-dark");
+
+    // Clear badge back to monochrome template
+    controller.setBadge(false);
+    expect(created[0]!.setImage).toHaveBeenLastCalledWith("template");
+    expect(created[0]!.setToolTip).toHaveBeenLastCalledWith("Kulo Dev");
 
     // Repeat sync refreshes menu without creating a duplicate tray icon.
     controller.sync(true);
@@ -254,10 +335,14 @@ describe("desktop tray lifecycle and template icon", () => {
     winController.dispose();
   });
 
-  it("marks macOS tray icons as template images and rejects empty images", () => {
+  it("marks macOS template icons appropriately and preserves color for non-template red-dot badge icons", () => {
     const macImage = { isEmpty: () => false, setTemplateImage: vi.fn() };
     expect(loadDesktopTrayIcon("/tmp/kulo-trayTemplate.png", () => macImage, "darwin")).toBe(macImage);
     expect(macImage.setTemplateImage).toHaveBeenCalledWith(true);
+
+    const badgeImage = { isEmpty: () => false, setTemplateImage: vi.fn() };
+    expect(loadDesktopTrayIcon("/tmp/kulo-tray-badge-light.png", () => badgeImage, "darwin", { template: false })).toBe(badgeImage);
+    expect(badgeImage.setTemplateImage).toHaveBeenCalledWith(false);
 
     const winImage = { isEmpty: () => false, setTemplateImage: vi.fn() };
     expect(loadDesktopTrayIcon("/tmp/kulo-trayTemplate.png", () => winImage, "win32")).toBe(winImage);
@@ -267,11 +352,15 @@ describe("desktop tray lifecycle and template icon", () => {
     expect(() => loadDesktopTrayIcon("/tmp/missing.png", () => emptyImage, "darwin")).toThrow("无法加载任务栏常驻图标");
   });
 
-  it("ships crisp 1x and 2x macOS template PNG assets for the sunglasses cat tray icon", () => {
+  it("ships crisp 1x and 2x macOS template and red-dot badge PNG assets for the sunglasses cat tray icon", () => {
     const assetsDir = fileURLToPath(new URL("../packages/desktop/assets/", import.meta.url));
     for (const [filename, expectedSize] of [
       ["kulo-trayTemplate.png", 22],
       ["kulo-trayTemplate@2x.png", 44],
+      ["kulo-tray-badge-light.png", 22],
+      ["kulo-tray-badge-light@2x.png", 44],
+      ["kulo-tray-badge-dark.png", 22],
+      ["kulo-tray-badge-dark@2x.png", 44],
     ] as const) {
       const bytes = fs.readFileSync(path.join(assetsDir, filename));
       // PNG signature + IHDR width & height bytes

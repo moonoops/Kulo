@@ -1,12 +1,11 @@
 import { useI18n, translate, type KuloLanguage } from "../../kulo-i18n";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Alert, Button, Checkbox, CheckboxGroup, Chip, Label, Modal, Skeleton, Switch, Table } from "@heroui/react";
+import { Alert, Button, Checkbox, CheckboxGroup, Chip, Input, Label, Modal, Skeleton, Switch, Table, TextField } from "@heroui/react";
 import { redactSecrets, type SkillAudience, type SkillRecord, type SkillSnapshot } from "@kulo/protocol";
 import { KuloApiError, kuloRest } from "../../kulo-api";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { useSettingsPending } from "./settings-save-activity";
 import { SettingsSection } from "./settings-layout";
-import { getImportSkillPrompt } from "./capability-views";
 
 const BUILTIN_SKILL_DESCRIPTIONS: Readonly<Record<string, Readonly<Record<KuloLanguage, string>>>> = {
   "genui-cards": {
@@ -119,15 +118,19 @@ export function SkillsModule(props: SkillsModuleProps) {
   return <SkillsWorkspace key={props.snapshot === null ? "unloaded" : "loaded"} {...props} />;
 }
 
-function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRequest, onRefresh, onDirtyChange }: SkillsModuleProps) {
+function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRefresh, onDirtyChange }: SkillsModuleProps) {
   const { t, language } = useI18n();
   const [snapshot, setSnapshot] = useState(incoming);
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();
   const [draft, setDraft] = useState<SkillDraft>();
   const [discardEditor, setDiscardEditor] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importSource, setImportSource] = useState("");
+  const [importError, setImportError] = useState<string>();
+  const [importConflict, setImportConflict] = useState(false);
   const draftDirty = skillDraftDirty(draft);
-  useSettingsPending(busy === "save" || Boolean(busy?.startsWith("toggle:")));
+  useSettingsPending(busy === "save" || busy === "import" || Boolean(busy?.startsWith("toggle:")));
   useEffect(() => { onDirtyChange?.(draftDirty); }, [draftDirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   const [editorError, setEditorError] = useState<string>();
@@ -225,7 +228,47 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
     } finally { finish(); }
   };
 
-  return <SettingsSection title={t("技能", "Skills")} action={<Button ref={importButton} variant="secondary" size="sm" isDisabled={blocked || !onRequest} onPress={() => onRequest?.(undefined, getImportSkillPrompt(language))}>{t("导入技能", "Import skill")}</Button>}>
+  const closeImport = () => {
+    if (busyRef.current) return;
+    setImportOpen(false);
+    setImportSource("");
+    setImportError(undefined);
+    setImportConflict(false);
+    requestAnimationFrame(() => importButton.current?.focus());
+  };
+  const submitImport = async () => {
+    const source = importSource.trim();
+    if (!snapshot || !source) { setImportError(t("请输入技能来源。", "Enter a skill source.")); return; }
+    if (!begin("import")) return;
+    setImportError(undefined);
+    setImportConflict(false);
+    try {
+      const next = await kuloRest.importSkill({ source, expectedRevision: snapshot.revision, commandId: commandId() });
+      if (mounted.current) {
+        accept(next);
+        setImportOpen(false);
+        setImportSource("");
+        setError(undefined);
+        onRefresh();
+        requestAnimationFrame(() => importButton.current?.focus());
+      }
+    } catch (cause) {
+      if (mounted.current) {
+        setImportError(report(cause));
+        setImportConflict(cause instanceof KuloApiError && cause.status === 409);
+      }
+    } finally { finish(); }
+  };
+  const reloadCatalogForImport = async () => {
+    if (!begin("reload")) return;
+    try {
+      const next = await kuloRest.getSkills();
+      if (mounted.current) { accept(next); setImportError(undefined); setImportConflict(false); }
+    } catch (cause) { if (mounted.current) setImportError(report(cause)); }
+    finally { finish(); }
+  };
+
+  return <SettingsSection title={t("技能", "Skills")} action={<Button ref={importButton} variant="secondary" size="sm" isDisabled={blocked || !snapshot} onPress={() => { setImportError(undefined); setImportConflict(false); setImportOpen(true); }}>{t("导入技能", "Import skill")}</Button>}>
     {error && <Alert status="danger" role="alert"><Alert.Content>{error}</Alert.Content><Button size="sm" variant="ghost" isDisabled={blocked} onPress={onRefresh}>{t("刷新", "Refresh")}</Button></Alert>}
     <Table variant="secondary" className="kulo-settings-table kulo-capabilities-table" aria-busy={Boolean(busy) || undefined}>
       <Table.ScrollContainer className="kulo-settings-table-scroll">
@@ -275,6 +318,23 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
               {editorError && <Alert status="danger" role="alert"><Alert.Content>{editorError}</Alert.Content>{conflict && <Button variant="ghost" size="sm" isDisabled={blocked} onPress={() => void reloadDraft()}>{t("载入最新设置", "Load latest settings")}</Button>}</Alert>}
             </Modal.Body>
             <Modal.Footer><Button variant="tertiary" isDisabled={Boolean(busy)} onPress={closeEditor}>{t("取消", "Cancel")}</Button><Button type="submit" isPending={busy === "save"} isDisabled={!connected || disabled || Boolean(busy) || !draft?.audiences.length || Boolean(snapshot && draft && !snapshot.skills.some((skill) => skill.id === draft.record.id))}>{t("保存", "Save")}</Button></Modal.Footer>
+          </form>
+        </Modal.Dialog></Modal.Container>
+      </Modal.Backdrop>
+    </Modal>
+    <Modal isOpen={importOpen} onOpenChange={(open) => { if (!open) closeImport(); }}>
+      <Modal.Backdrop isOpen={importOpen} isDismissable={!busy} isKeyboardDismissDisabled={Boolean(busy)} onOpenChange={(open) => { if (!open) closeImport(); }}>
+        <Modal.Container size="sm" placement="center" scroll="inside"><Modal.Dialog aria-label={t("导入技能", "Import skill")}>
+          <form className="contents" onSubmit={(event) => { event.preventDefault(); void submitImport(); }}>
+            <Modal.Header><Modal.Heading>{t("导入技能", "Import skill")}</Modal.Heading><Modal.CloseTrigger aria-label={t("关闭", "Close")} isDisabled={Boolean(busy)} /></Modal.Header>
+            <Modal.Body className="flex min-w-0 flex-col gap-4">
+              <TextField className="kulo-form-field" variant="secondary" fullWidth isRequired value={importSource} onChange={(value) => { setImportSource(value); setImportError(undefined); }} isDisabled={blocked}>
+                <Label>{t("技能来源", "Skill source")}</Label>
+                <Input autoFocus spellCheck={false} placeholder={t("Git 链接、owner/repo@skill 或本地路径", "Git URL, owner/repo@skill, or local path")} />
+              </TextField>
+              {importError && <Alert status="danger" role="alert"><Alert.Content>{importError}</Alert.Content>{importConflict && <Button variant="ghost" size="sm" isDisabled={blocked} onPress={() => void reloadCatalogForImport()}>{t("载入最新设置", "Load latest settings")}</Button>}</Alert>}
+            </Modal.Body>
+            <Modal.Footer><Button variant="tertiary" isDisabled={Boolean(busy)} onPress={closeImport}>{t("取消", "Cancel")}</Button><Button type="submit" variant="primary" isPending={busy === "import"} isDisabled={blocked || !importSource.trim()}>{t("导入", "Import")}</Button></Modal.Footer>
           </form>
         </Modal.Dialog></Modal.Container>
       </Modal.Backdrop>

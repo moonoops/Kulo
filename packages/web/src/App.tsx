@@ -21,6 +21,8 @@ import {
 import {
   parseStandaloneDeviceInvitation,
   redactDeviceInvitationText,
+  type AssistantItemAction,
+  type AssistantItemView,
   type ChatReplyReference,
   type ConversationMessageWindow,
   type SettingsAssistantContext,
@@ -28,7 +30,8 @@ import {
 } from "@kulo/protocol";
 import { ConfirmDialog } from "./components/confirm-dialog";
 import { KuloTurnErrorCard } from "./features/chat/turn-error-card";
-import { ComputerPreview } from "./features/computer-preview/computer-preview";
+import { ComputerPreviewModal } from "./features/computer-preview/computer-preview";
+import { useComputerPreview } from "./features/computer-preview/use-computer-preview";
 import { describeLocalizedKuloError } from "./kulo-error";
 import {
   WorkbenchShell,
@@ -51,6 +54,7 @@ import { useCapabilitiesWorkspace } from "./features/settings/use-capabilities-w
 import { isAddImagePrompt, isImageRoutingPrompt, type CapabilityView, type ImageAssistantRequest } from "./features/settings/capability-views";
 import { syncPresentationLanguage } from "./features/settings/language-sync";
 import { useConnectionsWorkspace } from "./features/settings/use-connections-workspace";
+import { useAssistantWorkspace } from "./features/settings/use-assistant-workspace";
 import type { ConnectionPrepare } from "./features/settings/connections-module";
 import type { SettingsAssistantEntryIntent } from "./features/settings/settings-assistant-actions";
 import type { SystemPermissionEntry } from "./features/system-permissions/system-permissions";
@@ -84,7 +88,8 @@ import { legacyInvitationCode, redactChatInvitation } from "./features/chat/devi
 import { consumeReplyDraft, restoreReplyDraft, type ReplyDrafts } from "./features/chat/reply-reference";
 import { ConversationOutline } from "./features/chat/conversation-outline";
 import { ConversationScene } from "./features/chat/conversation-scene";
-import { collectTicketNotifications } from "./features/tasks/task-notifications";
+import { useKuloNotifications } from "./features/notifications/use-kulo-notifications";
+import { isTaskUnfinished } from "./features/tasks/task-model";
 import { ConversationFilesButton, ConversationSearchDialog, type ConversationDestination } from "./features/chat/conversation-library";
 import { ChatTargetDeviceMenu } from "./features/chat/target-device-menu";
 import { messageQuote } from "./features/chat/message-actions";
@@ -189,6 +194,7 @@ function AppShell() {
     loadEarlierMessages,
     live: persistedLive,
     tickets,
+    assistantItems,
     topicActivities,
     ticketsLoaded,
     schedulesLoaded,
@@ -216,6 +222,7 @@ function AppShell() {
     clearError,
     sendWs,
     sendWsWithAck,
+    subscribeNotification,
   } = useKuloHubConnection();
   const [messageWindow, setMessageWindow] = useState<ConversationMessageWindow>();
   const [messageWindowLoading, setMessageWindowLoading] = useState(false);
@@ -356,6 +363,8 @@ function AppShell() {
   const [projectedTicketId, setProjectedTicketId] = useState<string | undefined>();
   const projectedTicketRef = useRef(projectedTicketId);
   projectedTicketRef.current = projectedTicketId;
+  const ticketsRef = useRef(tickets);
+  ticketsRef.current = tickets;
   const [projectedTitle, setProjectedTitle] = useState<string>("");
   const [projectNavigation, setProjectNavigation] = useState<ProjectNavigationRequest>();
   useEffect(() => {
@@ -482,6 +491,14 @@ function AppShell() {
     sizeClass === "compact" ? sheet === "left" : !collapsed.left;
   const rightExpanded =
     sizeClass === "expanded" ? !(settingsMode ? settingsRightCollapsed : collapsed.right) : sheet === "right";
+  const computerPreview = useComputerPreview("*", connected && !settingsMode, !settingsMode && rightExpanded);
+  const stopComputerPreviewTask = useCallback(async (ticketId: string) => {
+    await sendWsWithAck({ type: "ticket.stop", ticketId, reason: "手动停止" });
+  }, [sendWsWithAck]);
+  const computerPreviewBinding = useMemo(
+    () => ({ state: computerPreview.state, client: computerPreview.client, onStop: stopComputerPreviewTask }),
+    [computerPreview.state, computerPreview.client, stopComputerPreviewTask],
+  );
 
   // Auto-close narrow drawer when viewport widens past its breakpoint
   useEffect(() => {
@@ -666,6 +683,26 @@ function AppShell() {
     clientId: settingsAssistantControls.clientId,
     assistantBusy: settingsAssistant.live.busy,
   });
+  const assistantWorkspace = useAssistantWorkspace({
+    enabled: settingsMode && settingsModule === "connections",
+    connected,
+    assistantBusy: settingsAssistant.live.busy,
+  });
+  const requestAssistantPrompt = useCallback((prompt: string) => {
+    setSettingsTarget(undefined);
+    setSettingsFocusRequest((value) => value + 1);
+    setSettingsRightCollapsed(false);
+    if (sizeClass !== "expanded") setSheet("right");
+    void settingsAssistantControls.send(prompt, null);
+  }, [settingsAssistantControls.send, sizeClass]);
+  const requestAssistantAcceleration = useCallback(() => {
+    requestAssistantPrompt(
+      t(
+        "请分析这台主机的硬件配置，推荐合适的本机后台加速方案（如 oMLX）与模型，待我确认后再执行部署。",
+        "Analyze this host's hardware and recommend a local background acceleration setup (such as oMLX) and model. Wait for my confirmation before installing.",
+      ),
+    );
+  }, [requestAssistantPrompt]);
   const requestConnectionPrepare: ConnectionPrepare = useCallback(async (fields) => {
     if (!connected) throw new Error(t("与中枢连接已断开。", "Disconnected from the hub."));
     setConnectionPreparing(true);
@@ -740,25 +777,24 @@ function AppShell() {
   const currentModelId = settings?.blocks.model.value.defaultModel;
   const hasConfiguredModel = Boolean(currentModelId?.trim());
   const lastMessageId = messages[messages.length - 1]?.id ?? 0;
-  const previousTicketStatusesRef = useRef<Map<string, TicketCardView["status"]>>(new Map());
-  useEffect(() => {
-    const prev = previousTicketStatusesRef.current;
-    const notifyDesktop = typeof window === "undefined" ? undefined : window.kuloDesktop?.notify;
-    if (notifyDesktop && prev.size > 0 && (document.hidden || !document.hasFocus())) {
-      for (const note of collectTicketNotifications(prev, tickets)) {
-        void notifyDesktop({
-          title: note.title,
-          body: note.body,
-          ...(note.topicId ? { topicId: note.topicId } : {}),
-        }).catch((error: unknown) => {
-          console.warn("[KuloNotify] Desktop notification failed", error);
-        });
-      }
-    }
-    const next = new Map<string, TicketCardView["status"]>();
-    for (const ticket of tickets) next.set(ticket.id, ticket.status);
-    previousTicketStatusesRef.current = next;
-  }, [tickets]);
+  const openTopicFromNotification = useCallback((topicId: string) => {
+    const exists = topicId === "root" || topics.some((topic) => topic.id === topicId && !topic.deletedAt);
+    const targetTopicId = exists ? topicId : "root";
+    runGuardedNavigation(() => {
+      if (settingsDirty) setSettingsEditorEpoch((epoch) => epoch + 1);
+      setSettingsMode(false);
+      setSettingsDirty(false);
+      setProjectedTicketId(undefined);
+      setSheet(undefined);
+      selectTopic(targetTopicId);
+    });
+  }, [topics, runGuardedNavigation, settingsDirty, selectTopic]);
+  useKuloNotifications({
+    subscribeNotification,
+    topics,
+    agentName,
+    onOpenTopic: openTopicFromNotification,
+  });
 
   const activeRunFailure = useMemo(() => {
     if (live.busy || !live.runFailure) return null;
@@ -925,6 +961,43 @@ function AppShell() {
     if (projectedTicketRef.current === ticketId) closeProjection();
   }, [sendWsWithAck, projectedTicketId, closeProjection]);
 
+  const archiveTicket = useCallback(async (ticketId: string) => {
+    const target = ticketsRef.current.find((ticket) => ticket.id === ticketId);
+    if (target && isTaskUnfinished(target)) {
+      await sendWsWithAck({ type: "ticket.stop", ticketId, reason: "用户归档" });
+    }
+    await sendWsWithAck({ type: "ticket.close", ticketId, kind: "obsolete", reason: "用户归档" });
+    if (projectedTicketRef.current === ticketId) closeProjection();
+  }, [sendWsWithAck, closeProjection]);
+
+  const archiveAllTickets = useCallback(async (ticketIds: readonly string[]) => {
+    const uniqueIds = Array.from(new Set(ticketIds));
+    if (!uniqueIds.length) return;
+    const results = await Promise.allSettled(uniqueIds.map((ticketId) => archiveTicket(ticketId)));
+    const failed = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failed.length > 0) {
+      const first = failed[0]!.reason;
+      throw first instanceof Error ? first : new Error(t("部分任务删除失败，请重试。", "Some tasks could not be deleted. Try again."));
+    }
+  }, [archiveTicket]);
+
+  const handleAssistantItemAction = useCallback(async (item: AssistantItemView, action: AssistantItemAction) => {
+    const ack = await sendWsWithAck({
+      type: "assistant.item_action",
+      itemId: item.id,
+      expectedRevision: item.revision,
+      action,
+      commandId: newDeliveryId(`assistant:${item.id}:${action}`),
+    });
+    if (action === "promote_to_topic" && ack.topicId) {
+      setSettingsMode(false);
+      setSettingsDirty(false);
+      setProjectedTicketId(undefined);
+      setSheet(undefined);
+      selectTopic(ack.topicId);
+    }
+  }, [sendWsWithAck, selectTopic]);
+
   const handleCreateTopic = async (projectId?: string) => {
     topicDrafts.start(projectId, t("新对话", "New conversation"));
     setSettingsMode(false);
@@ -1041,9 +1114,10 @@ function AppShell() {
       setActionError(t("待发队列尚未就绪，输入草稿已保留", "The send queue is not ready. Your draft is saved."));
       return;
     }
-    if (!projectedTicketId && viewingHistory) {
-      setMessageWindow(undefined);
+    if (!projectedTicketId) {
+      if (viewingHistory) setMessageWindow(undefined);
       nearBottomRef.current = true;
+      setShowToBottom(false);
     }
     submitFlightRef.current = true;
     const sourceDraftKey = currentDraftKey;
@@ -1687,6 +1761,25 @@ function AppShell() {
           </Chip>
         )}
 
+        {!settingsMode && !rightExpanded && computerPreview.state.sessions.length > 0 && (() => {
+          const primary = computerPreview.state.sessions.find((item) => item.id === computerPreview.state.selectedId)
+            ?? computerPreview.state.sessions[0]!;
+          const count = computerPreview.state.sessions.length;
+          return (
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="kulo-window-control kulo-preview-titlebar-trigger"
+              aria-label={t(`查看实时画面：${primary.title}`, `View live preview: ${primary.title}`)}
+              onPress={() => computerPreview.client.openModal(primary.id)}
+            >
+              <KuloIcon name={primary.tool === "browser" ? "video" : "image"} size={14} />
+              <span>{count > 1 ? t(`实时画面 (${count})`, `Live view (${count})`) : t("实时画面", "Live view")}</span>
+            </Button>
+          );
+        })()}
+
       </div>
   );
 
@@ -1765,9 +1858,6 @@ function AppShell() {
         </div>
       )}
 
-      {!settingsMode && !topicDrafts.isLocal(activeTopicId) && <ComputerPreview key={activeTopicId} topicId={activeTopicId} connected={connected}
-        onStop={async (ticketId) => { await sendWsWithAck({ type: "ticket.stop", ticketId, reason: "手动停止" }); }} />}
-
       {!settingsMode && !projectedTicketId && viewingHistory && <div className="kulo-history-location">
         <span className="kulo-history-location-label kulo-item-description"><KuloIcon name="search" size={16} />{t("正在查看历史消息", "Viewing historical messages")}</span>
         <Button size="sm" variant="secondary" onPress={scrollToLatest}>{t("回到最新消息", "Jump to latest")}</Button>
@@ -1819,6 +1909,10 @@ function AppShell() {
           connectionPreparing={connectionPreparing}
           onConnectionPrepare={requestConnectionPrepare}
           onConnectionsRefresh={() => void connectionsWorkspace.refresh()}
+          assistantWorkspace={assistantWorkspace.snapshot}
+          onAssistantWorkspaceUpdated={assistantWorkspace.setSnapshot}
+          onRequestAssistantAcceleration={requestAssistantAcceleration}
+          onRequestAssistantPrompt={requestAssistantPrompt}
           onOpenModels={() => {
             runGuardedNavigation(() => {
               if (settingsDirty) setSettingsEditorEpoch((epoch) => epoch + 1);
@@ -2099,15 +2193,20 @@ function AppShell() {
     ) : (
       <KuloTaskRail
         tickets={tickets}
+        assistantItems={assistantItems}
+        onAssistantItemAction={handleAssistantItemAction}
         projectedTicketId={projectedTicketId}
         completedTaskDisplayHours={settings?.blocks.executor.value.completedTaskDisplayHours}
         connected={connected}
         canQueueActions={outboxReady}
         loaded={ticketsLoaded}
         snapshotVersion={ticketSnapshotVersion}
+        computerPreview={computerPreviewBinding}
         onProject={projectTask}
         onRetry={retryTicket}
         onIgnore={ignoreTicket}
+        onArchive={archiveTicket}
+        onArchiveAll={archiveAllTickets}
       />
     );
 
@@ -2153,6 +2252,13 @@ function AppShell() {
       <AttachmentLightbox
         image={lightboxImage}
         onClose={() => setLightboxImage(null)}
+      />
+
+      <ComputerPreviewModal
+        state={computerPreview.state}
+        client={computerPreview.client}
+        connected={connected}
+        onStop={stopComputerPreviewTask}
       />
 
       <ConfirmDialog

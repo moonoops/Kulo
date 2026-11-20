@@ -302,4 +302,65 @@ describe("Kulo-owned Hindsight local service", () => {
     const other = path.join(f.directory, "unrelated"); await fs.mkdir(other); await fs.symlink(other, f.root);
     await expect(f.deploy()).rejects.toThrow("符号链接"); expect(f.calls).toHaveLength(0);
   });
+
+  it("deploys and configures Kulo bridge models alongside custom embedding and rerank providers, clearing secrets on keep-data uninstall", async () => {
+    const f = await fixture();
+    const connection = await f.service.deploy({
+      commandId: "install-kulo-bridge",
+      model: { provider: "kulo", connectionId: "api-vertex", model: "gemini-3.8-flash" },
+      embeddings: { provider: "openai", model: "text-embedding-3-large", baseUrl: "https://embed.example.test/v1", dimensions: 1536 },
+      reranker: { provider: "siliconflow", model: "BAAI/bge-reranker-v2-m3", baseUrl: "https://api.siliconflow.cn/v1" },
+      embeddingsApiKey: "embed-secret-0000000000000000000000000",
+      rerankerApiKey: "rerank-secret-00000000000000000000000",
+    });
+    expect(connection.model).toEqual({ provider: "kulo", connectionId: "api-vertex", model: "gemini-3.8-flash" });
+    expect(connection.embeddings).toEqual({ provider: "openai", model: "text-embedding-3-large", baseUrl: "https://embed.example.test/v1", dimensions: 1536 });
+    expect(connection.reranker).toEqual({ provider: "siliconflow", model: "BAAI/bge-reranker-v2-m3", baseUrl: "https://api.siliconflow.cn/v1" });
+
+    const runtime1 = JSON.parse(await fs.readFile(path.join(f.root, "runtime.json"), "utf8")) as { env: Record<string, string> };
+    expect(runtime1.env.HINDSIGHT_API_LLM_PROVIDER).toBe("kulo_hindsight.bridge:KuloBridgeLLM");
+    expect(runtime1.env.HINDSIGHT_API_LLM_MODEL).toBe("gemini-3.8-flash");
+    expect(runtime1.env.HINDSIGHT_API_LLM_API_KEY).toBe("");
+    expect(runtime1.env.KULO_HINDSIGHT_MODEL_PROVIDER_ID).toBe("api-vertex");
+    expect(runtime1.env.KULO_HINDSIGHT_BRIDGE_FILE).toMatch(/memory-llm-bridge\.json$/);
+    expect(runtime1.env.HINDSIGHT_API_EMBEDDINGS_PROVIDER).toBe("openai");
+    expect(runtime1.env.HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL).toBe("text-embedding-3-large");
+    expect(runtime1.env.HINDSIGHT_API_EMBEDDINGS_OPENAI_DIMENSIONS).toBe("1536");
+    expect(runtime1.env.HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY).toBe("embed-secret-0000000000000000000000000");
+    expect(runtime1.env.HINDSIGHT_API_RERANKER_PROVIDER).toBe("siliconflow");
+    expect(runtime1.env.HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY).toBe("rerank-secret-00000000000000000000000");
+
+    // Reconfiguring to RRF + local ONNX removes stale remote provider env keys cleanly.
+    const updated = await f.service.configure({
+      commandId: "reconfigure-local-retrieval",
+      model: { provider: "kulo", connectionId: "openai-codex", model: "gpt-5.4" },
+      embeddings: { provider: "onnx", model: "BAAI/bge-m3", dimensions: 1024 },
+      reranker: { provider: "rrf" },
+    });
+    expect(updated.model).toEqual({ provider: "kulo", connectionId: "openai-codex", model: "gpt-5.4" });
+    expect(updated.embeddings).toEqual({ provider: "onnx", model: "BAAI/bge-m3", dimensions: 1024 });
+    expect(updated.reranker).toEqual({ provider: "rrf" });
+    const runtime2 = JSON.parse(await fs.readFile(path.join(f.root, "runtime.json"), "utf8")) as { env: Record<string, string> };
+    expect(runtime2.env.KULO_HINDSIGHT_MODEL_PROVIDER_ID).toBe("openai-codex");
+    expect(runtime2.env.HINDSIGHT_API_EMBEDDINGS_PROVIDER).toBe("onnx");
+    expect(runtime2.env.HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_ID).toBe("BAAI/bge-m3");
+    expect(runtime2.env.HINDSIGHT_API_EMBEDDINGS_ONNX_DIMENSIONS).toBe("1024");
+    expect(runtime2.env.HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY).toBeUndefined();
+    expect(runtime2.env.HINDSIGHT_API_RERANKER_PROVIDER).toBe("rrf");
+    expect(runtime2.env.HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY).toBeUndefined();
+
+    // Re-add remote keys and confirm uninstall(deleteData: false) scrubs them from retained runtime.json.
+    await f.service.configure({
+      commandId: "reconfigure-remote-again",
+      model: { provider: "kulo", connectionId: "openai-codex", model: "gpt-5.4" },
+      embeddings: { provider: "google", model: "gemini-embedding-001" },
+      reranker: { provider: "cohere", model: "rerank-multilingual-v3.0" },
+      embeddingsApiKey: "gem-embed-secret-00000000000000000000",
+      rerankerApiKey: "cohere-rerank-secret-0000000000000000",
+    });
+    await f.service.uninstall({ commandId: "uninstall-keep", deleteData: false });
+    const retained = JSON.parse(await fs.readFile(path.join(f.root, "runtime.json"), "utf8")) as { env: Record<string, string> };
+    expect(retained.env.HINDSIGHT_API_EMBEDDINGS_GEMINI_API_KEY).toBeUndefined();
+    expect(retained.env.HINDSIGHT_API_RERANKER_COHERE_API_KEY).toBeUndefined();
+  });
 });

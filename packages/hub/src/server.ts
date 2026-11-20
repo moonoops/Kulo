@@ -12,6 +12,7 @@ import {
   formatDeviceChatInvitation,
   normalizeKuloLanguage,
   normalizeVertexConfig,
+  isAssistantItemAction,
   isDesktopSystemPermissions,
   parseDeviceJoinInput,
   type DeviceChatInvitation,
@@ -32,6 +33,7 @@ import {
 import { openNativePermissionSettings } from "./connection-native-apps.js";
 import { IdentityFilesError, getIdentityTemplate } from "./identity-files.js";
 import { PersonalityError } from "./personality.js";
+import { MEMORY_LLM_BRIDGE_PATH, MemoryLlmBridgeError } from "./memory-llm-bridge.js";
 import { MemoryServiceError } from "./memory-service.js";
 import { ExtensionError } from "./extensions.js";
 import { ExtensionPackageError } from "./extension-packages.js";
@@ -41,6 +43,7 @@ import { SearchError } from "./search.js";
 import { ConversationQueryError, decodeConversationTopicId } from "./conversation-query.js";
 import { SkillError } from "./skills.js";
 import { CapabilityError } from "./capabilities.js";
+import { AgentConfigurationError } from "./agent-configuration.js";
 import type { KuloHub } from "./hub.js";
 import { topicActivity } from "./topic-activity.js";
 import { SettingsUpdateError } from "./settings.js";
@@ -502,6 +505,24 @@ export async function startKuloHubServer(
   };
 
   const lastTopicActivities = new Map<string, string>();
+  const assistantStreamClients = new Set<{ res: http.ServerResponse; heartbeat: NodeJS.Timeout }>();
+  const broadcastAssistantSse = (event: string, data: unknown) => {
+    const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    for (const client of [...assistantStreamClients]) {
+      if (client.res.writableEnded || client.res.destroyed) {
+        clearInterval(client.heartbeat);
+        assistantStreamClients.delete(client);
+        continue;
+      }
+      try {
+        client.res.write(frame);
+      } catch {
+        clearInterval(client.heartbeat);
+        assistantStreamClients.delete(client);
+      }
+    }
+  };
+
   const unsubscribeHub = hub.subscribe({
     onVoice: (snapshot) => broadcastToAllClients({ type: "hub.voice", snapshot }),
     onCapabilities: (snapshot) => broadcastToAllClients({ type: "hub.capabilities", snapshot: { ...snapshot, inputs: [] } }),
@@ -529,10 +550,19 @@ export async function startKuloHubServer(
         { type: "hub.live", topicId, live },
       );
     },
+    onNotification: (event) => {
+      broadcastToAllClients({ type: "hub.notification", event });
+    },
     onTopics: (topics) => {
       const existing = new Set(topics.map((topic) => topic.id));
       for (const topicId of lastTopicActivities.keys()) if (!existing.has(topicId)) lastTopicActivities.delete(topicId);
       broadcastToAllClients({ type: "hub.topics", topics });
+      const proactive = topics.filter((topic) => topic.origin === "proactive" && !topic.deletedAt);
+      if (proactive.length > 0) broadcastAssistantSse("proactive_topics", { topics: proactive });
+    },
+    onAssistantItems: (assistantRevision, items) => {
+      broadcastToAllClients({ type: "hub.assistant_items", assistantRevision, items });
+      broadcastAssistantSse("assistant_items", { assistantRevision, items });
     },
     onProjects: (projects) => broadcastToAllClients({ type: "hub.projects", projects }),
     onTicketDelta: (delta, snapshot) => {
@@ -804,7 +834,8 @@ export async function startKuloHubServer(
           case "ticket.stop":
           case "ticket.close":
           case "schedule.stop":
-          case "schedule.delete": {
+          case "schedule.delete":
+          case "assistant.item_action": {
             sendAck(await hub.deliverClientMessage(msg, deviceClients.get(ws) ?? "local"));
             break;
           }
@@ -949,6 +980,32 @@ export async function startKuloHubServer(
           ok: true,
           version: KULO_VERSION,
         });
+        return;
+      }
+
+      if (req.method === "POST" && pathname === MEMORY_LLM_BRIDGE_PATH) {
+        if (closing || !hub.memoryLlmBridge.authenticate(req)) {
+          sendJson(res, 401, { error: { code: "bridge_unauthorized", message: "未授权的记忆模型桥接请求。", retryable: false } });
+          return;
+        }
+        const abortController = new AbortController();
+        const abortOnDisconnect = () => { if (!res.writableEnded) abortController.abort(); };
+        res.once("close", abortOnDisconnect);
+        try {
+          const body = await readJsonBody(req, 4 * 1024 * 1024);
+          const result = await hub.memoryLlmBridge.handleCall(body, abortController.signal);
+          sendJson(res, 200, result);
+        } catch (error) {
+          if (error instanceof MemoryLlmBridgeError) {
+            sendJson(res, error.status, { error: error.body });
+          } else if (error instanceof SyntaxError) {
+            sendJson(res, 400, { error: { code: "invalid_request", message: "请求 JSON 格式无效。", retryable: false } });
+          } else {
+            sendJson(res, 500, { error: { code: "upstream_error", message: hub.connectionManager.redact(error instanceof Error ? error.message : "记忆模型调用失败。"), retryable: true } });
+          }
+        } finally {
+          res.off("close", abortOnDisconnect);
+        }
         return;
       }
 
@@ -1118,6 +1175,139 @@ export async function startKuloHubServer(
             return;
           }
           sendJson(res, 404, { error: "语音接口不存在" });
+          return;
+        }
+
+        if (pathname === "/api/assistant" || pathname.startsWith("/api/assistant/")) {
+          res.setHeader("cache-control", "no-store");
+          if (pathname === "/api/assistant" && req.method === "GET") {
+            sendJson(res, 200, { ...(await hub.getAssistantWorkspace()), localHost: hasLocalDeviceControl(req, parsedUrl) });
+            return;
+          }
+          if (pathname === "/api/assistant/configure" && req.method === "POST") {
+            const body = await readJsonObject(req, 64 * 1024);
+            sendJson(res, 200, {
+              ...(await hub.configureAssistantNotifications({
+                ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+                ...(typeof body.muteApp === "string" ? { muteApp: body.muteApp } : {}),
+                ...(typeof body.unmuteApp === "string" ? { unmuteApp: body.unmuteApp } : {}),
+              })),
+              localHost: hasLocalDeviceControl(req, parsedUrl),
+            });
+            return;
+          }
+          if (pathname === "/api/assistant/background-model" && req.method === "POST") {
+            const body = await readJsonObject(req, 64 * 1024);
+            const mode = body.mode;
+            if (mode !== "auto" && mode !== "local-managed" && mode !== "kulo-provider") {
+              throw Object.assign(new Error("后台模型模式无效。"), { status: 400 });
+            }
+            const engine = body.engine === "omlx" || body.engine === "ollama" ? body.engine : undefined;
+            const result = await hub.configureAssistantBackgroundModel({
+              mode,
+              ...(engine ? { engine } : {}),
+              ...(typeof body.modelId === "string" ? { modelId: body.modelId } : {}),
+              ...(typeof body.providerId === "string" ? { providerId: body.providerId } : {}),
+              confirmed: body.confirmed === true,
+            });
+            sendJson(res, 200, { ...result, localHost: hasLocalDeviceControl(req, parsedUrl) });
+            return;
+          }
+          if (pathname === "/api/assistant/spark" && req.method === "POST") {
+            const body = await readJsonObject(req, 32 * 1024);
+            if (typeof body.enabled !== "boolean") {
+              throw Object.assign(new Error("缺少 Spark Mail 开关参数。"), { status: 400 });
+            }
+            await hub.configureAssistantSpark({ enabled: body.enabled });
+            sendJson(res, 200, { ...(await hub.getAssistantWorkspace()), localHost: hasLocalDeviceControl(req, parsedUrl) });
+            return;
+          }
+          if (pathname === "/api/assistant/home-assistant" && req.method === "POST") {
+            const body = await readJsonObject(req, 64 * 1024);
+            if (body.deployLocal === true) {
+              const deployed = await hub.homeAssistant.deployLocalContainer({ confirmed: body.confirmed === true });
+              sendJson(res, 200, { ...deployed, snapshot: await hub.getAssistantWorkspace(), localHost: hasLocalDeviceControl(req, parsedUrl) });
+              return;
+            }
+            await hub.configureAssistantHomeAssistant({
+              ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+              ...(typeof body.baseUrl === "string" ? { baseUrl: body.baseUrl } : {}),
+              ...(typeof body.token === "string" ? { token: body.token } : {}),
+              ...(body.clearToken === true ? { clearToken: true } : {}),
+            });
+            sendJson(res, 200, { ...(await hub.getAssistantWorkspace()), localHost: hasLocalDeviceControl(req, parsedUrl) });
+            return;
+          }
+          if (pathname === "/api/assistant/home-assistant/entities" && req.method === "GET") {
+            const domain = parsedUrl.searchParams.get("domain") ?? undefined;
+            const query = parsedUrl.searchParams.get("q") ?? undefined;
+            sendJson(res, 200, hub.homeAssistant.listEntities({ ...(domain ? { domain } : {}), ...(query ? { query } : {}) }));
+            return;
+          }
+          if (pathname === "/api/assistant/lark" && req.method === "POST") {
+            const body = await readJsonObject(req, 32 * 1024);
+            if (body.syncNow === true) {
+              const sync = await hub.larkConnector.syncNow();
+              sendJson(res, 200, { sync, snapshot: await hub.getAssistantWorkspace(), localHost: hasLocalDeviceControl(req, parsedUrl) });
+              return;
+            }
+            await hub.configureAssistantLark({
+              ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+              ...(Array.isArray(body.selectedProfiles)
+                ? { selectedProfiles: body.selectedProfiles.filter((item): item is string => typeof item === "string") }
+                : {}),
+            });
+            sendJson(res, 200, { ...(await hub.getAssistantWorkspace()), localHost: hasLocalDeviceControl(req, parsedUrl) });
+            return;
+          }
+          // Phase 4: Self-built mobile / external client real-time sync gateway
+          if (pathname === "/api/assistant/items" && req.method === "GET") {
+            sendJson(res, 200, await hub.getAssistantItemsSnapshot());
+            return;
+          }
+          const itemActionMatch = /^\/api\/assistant\/items\/([^/]+)\/action$/.exec(pathname);
+          if (itemActionMatch && req.method === "POST") {
+            const body = await readJsonObject(req, 32 * 1024);
+            const itemId = decodeURIComponent(itemActionMatch[1]!);
+            const action = body.action;
+            const expectedRevision = body.expectedRevision;
+            if (!isAssistantItemAction(action) || typeof expectedRevision !== "number" || !Number.isSafeInteger(expectedRevision)) {
+              throw Object.assign(new Error("提醒动作参数无效。"), { status: 400 });
+            }
+            const commandId = typeof body.commandId === "string" && body.commandId.trim() ? body.commandId.trim() : `http:${randomUUID()}`;
+            const ack = await hub.deliverClientMessage(
+              { type: "assistant.item_action", itemId, expectedRevision, action, commandId },
+              currentDevice(req, parsedUrl),
+            );
+            sendJson(res, 200, ack);
+            return;
+          }
+          if (pathname === "/api/assistant/stream" && req.method === "GET") {
+            res.writeHead(200, {
+              "content-type": "text/event-stream; charset=utf-8",
+              "cache-control": "no-cache, no-store, must-revalidate",
+              connection: "keep-alive",
+              "x-accel-buffering": "no",
+            });
+            const initial = await hub.getAssistantItemsSnapshot();
+            res.write(`event: assistant_items\ndata: ${JSON.stringify(initial)}\n\n`);
+            const heartbeat = setInterval(() => {
+              if (!res.writableEnded && !res.destroyed) {
+                try { res.write(": keepalive\n\n"); } catch { /* ignore */ }
+              }
+            }, 20_000);
+            heartbeat.unref();
+            const entry = { res, heartbeat };
+            assistantStreamClients.add(entry);
+            const cleanup = () => {
+              clearInterval(heartbeat);
+              assistantStreamClients.delete(entry);
+            };
+            req.on("close", cleanup);
+            res.on("close", cleanup);
+            return;
+          }
+          sendJson(res, 404, { error: "Not found" });
           return;
         }
 
@@ -1412,6 +1602,26 @@ export async function startKuloHubServer(
           sendJson(res, 200, await hub.skills.snapshot());
           return;
         }
+        if (pathname === "/api/skills/import" && req.method === "POST") {
+          const body = await readJsonObject(req);
+          const allowed = ["source", "expectedRevision", "commandId", "audiences"];
+          if (Object.keys(body).some((key) => !allowed.includes(key)) ||
+              typeof body.source !== "string" || !body.source.trim() ||
+              !Number.isSafeInteger(body.expectedRevision) || (body.expectedRevision as number) < 0 ||
+              typeof body.commandId !== "string") {
+            throw new SkillError(400, "invalid_skill_request", "导入技能参数无效。");
+          }
+          const snapshot = await hub.skills.manage({
+            action: "import",
+            source: body.source,
+            expectedRevision: body.expectedRevision as number,
+            commandId: body.commandId,
+            ...(body.audiences !== undefined ? { audiences: body.audiences as never } : {}),
+          });
+          res.setHeader("cache-control", "no-store");
+          sendJson(res, 200, snapshot);
+          return;
+        }
         const skillRoute = /^\/api\/skills\/([^/]+)$/.exec(pathname);
         if (skillRoute && (req.method === "PATCH" || req.method === "DELETE")) {
           const body = await readJsonObject(req);
@@ -1485,6 +1695,44 @@ export async function startKuloHubServer(
             const result = await hub.search.test(decodeURIComponent(searchPlanRoute[1]!), body.expectedRevision as number, controller.signal);
             if (!res.destroyed) sendJson(res, 200, { snapshot: await hub.search.snapshot(), result });
           } finally { res.off("close", onClose); }
+          return;
+        }
+        if (pathname === "/api/capabilities/flow" && req.method === "POST") {
+          const body = await readJsonObject(req);
+          const allowed = ["clientId", "envId", "commandId", "name"];
+          if (Object.keys(body).some((key) => !allowed.includes(key)) ||
+              typeof body.clientId !== "string" || !body.clientId.trim() || body.clientId.length > 120 ||
+              typeof body.envId !== "string" || !body.envId.trim() || body.envId.length > 180 ||
+              typeof body.commandId !== "string" || !body.commandId.trim() || body.commandId.length > 180 ||
+              (body.name !== undefined && typeof body.name !== "string")) {
+            throw new CapabilityError(400, "invalid_capability_flow", "Google Flow 连接参数无效。");
+          }
+          const existingWorkspace = await hub.capabilities.snapshot();
+          const existingConnection = existingWorkspace.connections.find(
+            (connection) => connection.adapter === "flow-browser" && connection.browserEnvId === body.envId,
+          );
+          const existingCapability = existingConnection
+            ? existingWorkspace.capabilities.find((capability) => capability.connectionId === existingConnection.id && capability.kind === "video")
+            : undefined;
+          const saved = await hub.capabilities.configure({
+            commandId: body.commandId,
+            ...(existingCapability ? { id: existingCapability.id, expectedRevision: existingCapability.revision } : {}),
+            name: existingCapability?.name ?? (typeof body.name === "string" && body.name.trim() ? body.name.trim() : "Google Flow"),
+            adapter: "flow-browser",
+            modelId: "auto",
+            browserEnvId: body.envId,
+            enabled: true,
+            allowTaskGeneration: true,
+          });
+          const input = saved.status !== "ready"
+            ? await hub.capabilities.requestInput(saved.id, "browser", body.clientId)
+            : undefined;
+          res.setHeader("cache-control", "no-store");
+          sendJson(res, 200, {
+            capability: saved,
+            ...(input ? { input } : {}),
+            snapshot: await hub.getCapabilitiesSnapshot(body.clientId),
+          });
           return;
         }
         const capabilityInput = /^\/api\/capabilities\/inputs\/([^/]+)(\/browser)?$/.exec(pathname);
@@ -1665,6 +1913,32 @@ export async function startKuloHubServer(
         // Settings API
         if (req.method === "GET" && pathname === "/api/settings") {
           sendJson(res, 200, hub.getSettingsView());
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/api/external-clients/scan") {
+          const body = await readJsonObject(req);
+          if (Object.keys(body).some((key) => key !== "envId" && key !== "kinds")) {
+            throw new AgentConfigurationError(400, "invalid_agent_configuration", "扫描参数无效。");
+          }
+          if (body.envId !== undefined && typeof body.envId !== "string") {
+            throw new AgentConfigurationError(400, "invalid_agent_configuration", "设备标识无效。");
+          }
+          if (body.kinds !== undefined && (!Array.isArray(body.kinds) || body.kinds.some((item) => typeof item !== "string"))) {
+            throw new AgentConfigurationError(400, "invalid_agent_configuration", "客户端类型列表无效。");
+          }
+          res.setHeader("cache-control", "no-store");
+          sendJson(res, 200, await hub.agentConfiguration.scan({
+            ...(typeof body.envId === "string" && body.envId.trim() ? { envId: body.envId.trim() } : {}),
+            ...(Array.isArray(body.kinds) ? { kinds: body.kinds as never } : {}),
+          }));
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/api/external-clients/connect") {
+          const body = await readJsonObject(req);
+          res.setHeader("cache-control", "no-store");
+          sendJson(res, 200, await hub.agentConfiguration.quickConnect(body as never));
           return;
         }
 
@@ -2053,7 +2327,7 @@ export async function startKuloHubServer(
         sendJson(res, err.status, { error: err.message, code: err.code });
         return;
       }
-      if (err instanceof IdentityFilesError || err instanceof PersonalityError || err instanceof MemoryServiceError || err instanceof ExtensionError || err instanceof ExtensionPackageError || err instanceof VoiceError || err instanceof VoiceCallsError || err instanceof SkillError || err instanceof CapabilityError || err instanceof ConversationQueryError) {
+      if (err instanceof IdentityFilesError || err instanceof PersonalityError || err instanceof MemoryServiceError || err instanceof ExtensionError || err instanceof ExtensionPackageError || err instanceof VoiceError || err instanceof VoiceCallsError || err instanceof SkillError || err instanceof CapabilityError || err instanceof AgentConfigurationError || err instanceof ConversationQueryError) {
         sendJson(res, err.status, { error: err.message, code: err.code });
         return;
       }
@@ -2176,6 +2450,7 @@ export async function startKuloHubServer(
     if (bound && typeof bound !== "string") {
       try {
         httpServer.once("close", hub.localInstance.publish(bound));
+        httpServer.once("close", hub.memoryLlmBridge.publish(bound.port));
         if (options.runtimeOwner) httpServer.once("close", options.runtimeOwner.publish(bound));
       }
       catch (error) {
@@ -2211,6 +2486,11 @@ export async function startKuloHubServer(
       await listenerTransition;
       sshDevices.close();
       unsubscribeHub();
+      for (const client of [...assistantStreamClients]) {
+        clearInterval(client.heartbeat);
+        try { client.res.end(); } catch { /* ignore */ }
+      }
+      assistantStreamClients.clear();
       for (const ws of clientWss.clients) {
         try {
           ws.close(1001, "Server closing");

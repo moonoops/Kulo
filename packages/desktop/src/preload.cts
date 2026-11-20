@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopAppCommand } from "./desktop-menu.js";
-import type { DesktopPreferences } from "./desktop-preferences.js";
+import type { DesktopNotificationPreferences, DesktopPreferences, DesktopPreferencesPatch } from "./desktop-preferences.js";
+import type { DesktopNotificationPayload } from "./notifications.js";
 import type { DesktopMicrophonePermissions, DesktopPermissionSettingsKind } from "./system-permissions.js";
 
 const APP_COMMANDS: Record<DesktopAppCommand, true> = {
@@ -15,6 +16,26 @@ const APP_COMMANDS: Record<DesktopAppCommand, true> = {
   "copy-last-reply": true,
   "save-active": true,
 };
+
+function normalizePreferencesSnapshot(value: unknown): DesktopPreferences | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.backgroundRunning !== "boolean") return null;
+  const notifications = record.notifications;
+  if (!notifications || typeof notifications !== "object" || Array.isArray(notifications)) return null;
+  const notif = notifications as Record<string, unknown>;
+  if (typeof notif.enabled !== "boolean" || typeof notif.sound !== "boolean" || typeof notif.badge !== "boolean") {
+    return null;
+  }
+  return {
+    backgroundRunning: record.backgroundRunning,
+    notifications: {
+      enabled: notif.enabled,
+      sound: notif.sound,
+      badge: notif.badge,
+    } satisfies DesktopNotificationPreferences,
+  };
+}
 
 async function fileAction<T>(channel: "kulo:open-file" | "kulo:save-file", ...args: unknown[]): Promise<T> {
   try { return await ipcRenderer.invoke(channel, ...args) as T; }
@@ -55,17 +76,31 @@ if (process.isMainFrame) {
     },
     openFile: (assetId: string, target: "default" | "browser"): Promise<void> => fileAction("kulo:open-file", assetId, target),
     saveFile: (assetId: string): Promise<"saved" | "canceled"> => fileAction("kulo:save-file", assetId),
-    notify: (payload: { title: string; body?: string; topicId?: string }): Promise<void> =>
+    notify: (payload: DesktopNotificationPayload): Promise<boolean> =>
       ipcRenderer.invoke("kulo:notify", payload),
+    setBadge: (active: boolean): Promise<void> =>
+      ipcRenderer.invoke("kulo:badge-set", active),
+    onNotificationOpen: (listener: (target: { topicId: string }) => void): (() => void) => {
+      if (typeof listener !== "function") return () => {};
+      const wrapped = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+        if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+          const topicId = (payload as { topicId?: unknown }).topicId;
+          if (typeof topicId === "string" && /^[a-zA-Z0-9_-]{1,120}$/.test(topicId)) {
+            listener({ topicId });
+          }
+        }
+      };
+      ipcRenderer.on("kulo:notification-open", wrapped);
+      return () => { ipcRenderer.removeListener("kulo:notification-open", wrapped); };
+    },
     preferences: {
       get: (): Promise<DesktopPreferences> => preferencesAction("kulo:desktop-preferences-get"),
-      set: (patch: Partial<DesktopPreferences>): Promise<DesktopPreferences> => preferencesAction("kulo:desktop-preferences-set", patch),
+      set: (patch: DesktopPreferencesPatch): Promise<DesktopPreferences> => preferencesAction("kulo:desktop-preferences-set", patch),
       onChange: (listener: (preferences: DesktopPreferences) => void): (() => void) => {
         if (typeof listener !== "function") return () => {};
         const wrapped = (_event: Electron.IpcRendererEvent, value: unknown) => {
-          if (value && typeof value === "object" && !Array.isArray(value) && typeof (value as { backgroundRunning?: unknown }).backgroundRunning === "boolean") {
-            listener({ backgroundRunning: (value as DesktopPreferences).backgroundRunning });
-          }
+          const normalized = normalizePreferencesSnapshot(value);
+          if (normalized) listener(normalized);
         };
         ipcRenderer.on("kulo:desktop-preferences-changed", wrapped);
         return () => { ipcRenderer.removeListener("kulo:desktop-preferences-changed", wrapped); };

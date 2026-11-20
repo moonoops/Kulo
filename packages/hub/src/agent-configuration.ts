@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-durable";
-import { EXTERNAL_AGENT_KINDS, externalClientConnectionId, redactSensitiveText, type AgentConfigurationDraft, type AgentConfigurationWorkspace, type AgentDispatchPolicy, type EnvNodeDescriptor, type ExternalAgentCatalogItem, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentRequest, type ExternalAgentResponse, type KuloSettingsView, type RolePreset } from "@kulo/protocol";
+import { EXTERNAL_AGENT_KINDS, externalClientConnectionId, redactSensitiveText, type AgentConfigurationDraft, type AgentConfigurationWorkspace, type AgentDispatchPolicy, type EnvNodeDescriptor, type ExternalAgentBinding, type ExternalAgentCatalogItem, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentQuickConnectRequest, type ExternalAgentQuickConnectResult, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentScanCandidate, type ExternalAgentScanResult, type KuloSettingsView, type RolePreset } from "@kulo/protocol";
 import { assertAgentDefaultScopes, normalizeAgentDispatchPolicy } from "./agent-routing.js";
 
 export interface AgentConfigurationCommit {
@@ -20,7 +20,7 @@ export interface AgentConfigurationCommit {
 }
 export interface AgentConfigurationSaveResult { agentId: string; enabled: boolean; settings: KuloSettingsView }
 export interface AgentConfigurationRemovalCommit { fingerprint: string; clientId: string; agentId: string; expectedRevision: number }
-type ReceiptResult = AgentConfigurationSaveResult | { agentId: string; removed: true; settings: KuloSettingsView } | AgentConfigurationDraft;
+type ReceiptResult = AgentConfigurationSaveResult | ExternalAgentQuickConnectResult | { agentId: string; removed: true; settings: KuloSettingsView } | AgentConfigurationDraft;
 interface ConfigurationState {
   drafts: Record<string, AgentConfigurationDraft>;
   commits: Record<string, AgentConfigurationCommit>;
@@ -142,6 +142,277 @@ export class KuloAgentConfiguration {
     const projects = (await this.#options.projects?.() ?? []).map(({ id, name, envId }) => ({ id, name, envId }));
     await this.#guard(clientId, guard);
     return clone({ catalog: [...EXTERNAL_AGENT_CATALOG], devices: this.#options.envs().filter((env) => env.executionKind !== "native-device").map(({ id, name, online }) => ({ id, name, online })), projects, agents: Object.values(this.#options.settings().blocks.roles.value).filter((role) => role.external).map((role) => ({ id: role.id, label: role.label, enabled: role.enabled !== false, binding: role.external!, ...(role.dispatchPolicy ? { dispatchPolicy: role.dispatchPolicy } : {}) })), ...(draft ? { draft } : {}) });
+  }
+  async scan(options: { clientId?: string; envId?: string; kinds?: ExternalAgentKind[] } = {}, guard?: Guard): Promise<ExternalAgentScanResult> {
+    const clientId = options.clientId !== undefined ? identifier(options.clientId) : undefined;
+    const envId = options.envId !== undefined ? identifier(options.envId) : undefined;
+    if (clientId) await this.#guard(clientId, guard); else await guard?.();
+    const allDevices = this.#options.envs().filter((env) => env.executionKind !== "native-device");
+    if (envId && !allDevices.some((env) => env.id === envId)) fail(400, "agent_device_not_found", "请选择已连接的电脑执行设备。");
+    const scopedDevices = envId ? allDevices.filter((env) => env.id === envId) : allDevices;
+    const targetKinds = options.kinds?.length
+      ? [...new Set(options.kinds.map((entry) => kind(entry)))]
+      : EXTERNAL_AGENT_CATALOG.filter((item) => item.status === "supported").map((item) => item.kind);
+    const settingsView = this.#options.settings();
+    const connectedMap = new Map<string, { clientId: string; verified: boolean }>();
+    for (const client of Object.values(settingsView.externalClients ?? {})) {
+      const baseKey = `${client.kind}:${client.envId}`;
+      const prev = connectedMap.get(baseKey);
+      connectedMap.set(baseKey, { clientId: client.id, verified: Boolean(prev?.verified || client.verifiedAt) });
+    }
+    for (const role of Object.values(settingsView.blocks.roles.value)) {
+      if (!role.external) continue;
+      const baseKey = `${role.external.kind}:${role.external.envId}`;
+      const cid = role.externalClientId?.trim() || externalClientConnectionId(role.external);
+      const prev = connectedMap.get(baseKey);
+      connectedMap.set(baseKey, { clientId: prev?.clientId ?? cid, verified: Boolean(prev?.verified || role.external.verifiedAt) });
+    }
+    const onlineDevices = scopedDevices.filter((env) => env.online);
+    const redactMessage = (value: string) => redactSensitiveText(this.#options.redact?.(value) ?? value).slice(0, 400);
+    const checks: Array<{ deviceIndex: number; kindIndex: number; promise: Promise<ExternalAgentScanCandidate> }> = [];
+    for (const [deviceIndex, device] of onlineDevices.entries()) {
+      for (const [kindIndex, clientKind] of targetKinds.entries()) {
+        const item = catalog(clientKind);
+        const existing = connectedMap.get(`${clientKind}:${device.id}`);
+        const promise = (async (): Promise<ExternalAgentScanCandidate> => {
+          try {
+            const response = await this.#options.request(device.id, { operation: "detect", kind: clientKind });
+            if (response.type !== "detection" || response.detection.kind !== clientKind) {
+              return {
+                kind: clientKind, label: item.label, status: item.status, envId: device.id, envName: device.name, online: true,
+                installed: false, alreadyConnected: Boolean(existing), ...(existing ? { connectedClientId: existing.clientId, connectedVerified: existing.verified } : {}),
+                error: "执行设备返回的客户端检测结果无效。",
+              };
+            }
+            const detection = clone(response.detection);
+            this.#public(detection);
+            return {
+              kind: clientKind, label: item.label, status: item.status, envId: device.id, envName: device.name, online: true,
+              installed: Boolean(detection.installed),
+              alreadyConnected: Boolean(existing),
+              ...(existing ? { connectedClientId: existing.clientId, connectedVerified: existing.verified } : {}),
+              ...(detection.executable ? { executable: detection.executable } : {}),
+              ...(detection.version ? { version: detection.version } : {}),
+              ...(detection.error ? { error: redactMessage(detection.error) } : {}),
+            };
+          } catch (cause) {
+            return {
+              kind: clientKind, label: item.label, status: item.status, envId: device.id, envName: device.name, online: true,
+              installed: false, alreadyConnected: Boolean(existing), ...(existing ? { connectedClientId: existing.clientId, connectedVerified: existing.verified } : {}),
+              error: redactMessage(cause instanceof Error ? cause.message : "检测客户端失败。"),
+            };
+          }
+        })();
+        checks.push({ deviceIndex, kindIndex, promise });
+      }
+    }
+    const resolved = await Promise.all(checks.map(async (entry) => ({ ...entry, candidate: await entry.promise })));
+    if (clientId) await this.#guard(clientId, guard); else await guard?.();
+    const rank = (candidate: ExternalAgentScanCandidate) =>
+      candidate.installed ? (candidate.alreadyConnected && candidate.connectedVerified ? 1 : 0) : 2;
+    resolved.sort((left, right) =>
+      rank(left.candidate) - rank(right.candidate) || left.deviceIndex - right.deviceIndex || left.kindIndex - right.kindIndex,
+    );
+    return clone({
+      scannedAt: Date.now(),
+      devices: scopedDevices.map(({ id, name, online }) => ({ id, name, online })),
+      candidates: resolved.map((entry) => entry.candidate),
+    });
+  }
+  async quickConnect(input: ExternalAgentQuickConnectRequest & { clientId: string }, guard?: Guard): Promise<ExternalAgentQuickConnectResult> {
+    if (!input || typeof input !== "object" || Array.isArray(input)) fail(400, "invalid_agent_configuration", "智能体连接参数无效。");
+    const allowed = ["clientId", "kind", "envId", "commandId", "runTest", "executable", "agentRef", "cdpUrl", "experimental", "label", "whenToUse", "prompt", "modelId", "thinkingLevel", "allowSubagents", "dispatchPolicy"];
+    if (Object.keys(input).some((key) => !allowed.includes(key))) fail(400, "invalid_agent_configuration_field", "智能体配置不接收凭据、环境变量或任意启动命令。");
+    this.#public(input);
+    const clientId = identifier(input.clientId);
+    const commandId = identifier(input.commandId);
+    const clientKind = kind(input.kind);
+    const envId = identifier(input.envId);
+    if (input.runTest !== undefined && typeof input.runTest !== "boolean") fail(400, "invalid_agent_configuration", "测试参数无效。");
+    if (input.experimental !== undefined && typeof input.experimental !== "boolean") fail(400, "invalid_agent_configuration", "实验接入选择无效。");
+    if (input.allowSubagents !== undefined && typeof input.allowSubagents !== "boolean") fail(400, "invalid_agent_configuration", "智能体开关无效。");
+    assertAvailable(clientKind, input.experimental);
+    if (clientKind === "grok-bot" && input.runTest === true) {
+      fail(409, "agent_roundtrip_unsupported", "Grok Bot 当前仅支持实验性协议检测，尚未提供稳定的真实收发校验，配置保存后保持停用。");
+    }
+    const label = input.label !== undefined ? publicText(input.label, "label", 120) : "";
+    const whenToUse = input.whenToUse !== undefined ? publicText(input.whenToUse, "whenToUse", 2000, true) : "";
+    const prompt = input.prompt !== undefined ? publicText(input.prompt, "prompt", 16_000, true) : "";
+    const modelId = input.modelId !== undefined ? publicText(input.modelId, "modelId", 512) : "";
+    const thinkingLevel = input.thinkingLevel !== undefined ? nativeThinkingLevel(input.thinkingLevel) : undefined;
+    const executable = input.executable !== undefined ? publicText(input.executable, "executable", 2048) : "";
+    if (executable && !path.posix.isAbsolute(executable) && !path.win32.isAbsolute(executable)) {
+      fail(400, "invalid_agent_executable", "客户端路径必须为设备上的绝对路径。");
+    }
+    const agentRef = input.agentRef !== undefined ? publicText(input.agentRef, "agentRef", 240) : "";
+    let cdpUrl = "";
+    if (input.cdpUrl !== undefined) {
+      const rawUrl = publicText(input.cdpUrl, "本机调试地址", 2048);
+      if (rawUrl) {
+        let parsed: URL;
+        try { parsed = new URL(rawUrl); } catch { return fail(400, "invalid_agent_debug_endpoint", "请输入已存在的本机调试地址。"); }
+        if (clientKind !== "grok-bot" || parsed.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(parsed.hostname) || parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== "/") {
+          fail(400, "invalid_agent_debug_endpoint", "实验调试只允许无凭据的本机 HTTP loopback 根地址（127.0.0.1 或 [::1]）。");
+        }
+        cdpUrl = parsed.href;
+      }
+    }
+    if (input.dispatchPolicy !== undefined && (!input.dispatchPolicy || typeof input.dispatchPolicy !== "object" || Array.isArray(input.dispatchPolicy))) {
+      fail(400, "invalid_agent_dispatch_policy", "默认承接设置无效。");
+    }
+    return this.#serial(async () => {
+      await this.#guard(clientId, guard);
+      const key = `quickConnect:${hash([clientId, commandId])}`;
+      const fingerprint = hash(input);
+      const previous = await this.#receipt<ExternalAgentQuickConnectResult>(key, fingerprint);
+      if (previous) return previous;
+      const committed = (await this.#state())?.commits[key];
+      if (committed && committed.fingerprint !== fingerprint) fail(409, "agent_configuration_command_conflict", "此操作标识已用于另一份智能体配置。");
+      const device = this.#device(envId);
+      const item = catalog(clientKind);
+      let commit: AgentConfigurationCommit;
+      let verificationLevel: "protocol" | "roundtrip";
+      if (committed) {
+        commit = committed;
+        verificationLevel = commit.role.external?.verifiedAt ? "roundtrip" : "protocol";
+      } else {
+        const binding: ExternalAgentBinding = {
+          kind: clientKind,
+          envId,
+          ...(executable ? { executable } : {}),
+          ...(agentRef ? { agentRef } : {}),
+          ...(cdpUrl ? { cdpUrl } : {}),
+          ...(input.experimental !== undefined ? { experimental: input.experimental } : {}),
+        };
+        const probeResponse = await this.#options.request(envId, { operation: "probe", binding: clone(binding), ...(modelId ? { modelId } : {}) });
+        await this.#guard(clientId, guard);
+        if (probeResponse.type !== "detection" || probeResponse.detection.kind !== clientKind) {
+          fail(502, "agent_probe_invalid", "执行设备返回的客户端检测结果无效。");
+        }
+        const detection = clone(probeResponse.detection);
+        this.#public(detection);
+        if (!detection.installed) fail(409, "agent_not_installed", detection.error || `未在 ${device.name} 上检测到 ${item.label}。`);
+        if (detection.error) fail(409, "agent_probe_failed", detection.error);
+        if (detection.authenticated === false) fail(409, "agent_not_authenticated", `${item.label} 尚未在 ${device.name} 完成登录，请先在原客户端登录后重试。`);
+        if (detection.executable) binding.executable = detection.executable;
+        if (detection.version) binding.version = detection.version;
+        binding.capabilities = detection.capabilities;
+
+        const resolvedLabel = label || `${item.label} · ${device.name}`;
+        const resolvedWhenToUse = whenToUse || (clientKind === "grok-bot" || clientKind === "dots" || clientKind === "muse"
+          ? "Tasks explicitly assigned to this personal agent by the user."
+          : "Code implementation, debugging, and verification on this execution device.");
+        const resolvedPrompt = prompt || DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT;
+        const shouldVerify = input.runTest !== false && item.status === "supported";
+        verificationLevel = "protocol";
+        if (shouldVerify) {
+          if (!this.#options.verifyRoundtrip) fail(409, "agent_roundtrip_unavailable", "当前执行设备尚不支持受控收发测试。");
+          const tempDraft: AgentConfigurationDraft = {
+            id: `agent-quick-${commandId}`,
+            revision: 1,
+            clientId,
+            settingsRevision: this.#options.settings().blocks.roles.revision,
+            binding: clone(binding),
+            label: resolvedLabel,
+            whenToUse: resolvedWhenToUse,
+            prompt: resolvedPrompt,
+            ...(modelId ? { modelId } : {}),
+            ...(thinkingLevel ? { thinkingLevel } : {}),
+            readOnly: false,
+            allowSubagents: input.allowSubagents ?? false,
+            detection,
+            verification: { at: Date.now(), level: "protocol", version: detection.version },
+            updatedAt: Date.now(),
+          };
+          const nonce = `KULO_AGENT_VERIFY_${hash(["quick", clientId, clientKind, envId, commandId]).slice(0, 24)}`;
+          await this.#remember(key, fingerprint, "pending");
+          let evidence: { sessionId?: string; version?: string };
+          try {
+            evidence = await this.#options.verifyRoundtrip(clone(tempDraft), nonce);
+            await this.#guard(clientId, guard);
+          } catch (cause) {
+            await this.#remember(key, fingerprint, "uncertain");
+            throw cause;
+          }
+          binding.verifiedAt = Date.now();
+          if (evidence.version) binding.version = evidence.version;
+          verificationLevel = "roundtrip";
+        }
+        const rolesBlock = this.#options.settings().blocks.roles;
+        const externalClientId = externalClientConnectionId(binding);
+        const existingUpgrade = !label
+          ? Object.values(rolesBlock.value).find((role) => role.external && (role.externalClientId ?? externalClientConnectionId(role.external)) === externalClientId && !role.external.verifiedAt)
+          : undefined;
+        const roleId = existingUpgrade?.id ?? `external-${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+        const policyDraft: AgentConfigurationDraft = {
+          id: roleId,
+          agentId: existingUpgrade?.id,
+          revision: 1,
+          clientId,
+          settingsRevision: rolesBlock.revision,
+          binding,
+          label: existingUpgrade?.label ?? resolvedLabel,
+          whenToUse: whenToUse || existingUpgrade?.whenToUse || resolvedWhenToUse,
+          prompt: prompt || existingUpgrade?.prompt || resolvedPrompt,
+          readOnly: false,
+          allowSubagents: input.allowSubagents ?? existingUpgrade?.allowSubagents ?? false,
+          ...(input.dispatchPolicy ? { dispatchPolicy: { defaultFor: input.dispatchPolicy.defaultFor ?? [], ...(input.dispatchPolicy.projectIds !== undefined ? { projectIds: [...input.dispatchPolicy.projectIds] } : {}) } } : existingUpgrade?.dispatchPolicy ? { dispatchPolicy: clone(existingUpgrade.dispatchPolicy) } : {}),
+          updatedAt: Date.now(),
+        };
+        const policy = await this.#validateDispatchPolicy(policyDraft, guard);
+        const enabled = verificationLevel === "roundtrip" && item.status === "supported";
+        const role: RolePreset = {
+          id: roleId,
+          label: policyDraft.label,
+          whenToUse: policyDraft.whenToUse,
+          prompt: policyDraft.prompt,
+          readOnly: false,
+          allowSubagents: policyDraft.allowSubagents,
+          ...(modelId ? { modelId } : {}),
+          ...(thinkingLevel ? { thinkingLevel } : {}),
+          ...(policy ? { dispatchPolicy: clone(policy) } : {}),
+          enabled,
+          externalClientId,
+          external: clone(binding),
+        };
+        if (!role.enabled && role.external) delete role.external.verifiedAt;
+        commit = {
+          fingerprint,
+          clientId,
+          draftId: `agent-quick-${commandId}`,
+          draftRevision: 1,
+          expectedRevision: rolesBlock.revision,
+          role: clone(role),
+          ...(detection.models ? { models: clone(detection.models) } : {}),
+        };
+      }
+      await this.#guard(clientId, guard);
+      const settings = await this.#options.saveRole({
+        role: clone(commit.role),
+        ...(commit.models ? { models: clone(commit.models) } : {}),
+        expectedRevision: commit.expectedRevision,
+        commandId,
+        operationKey: key,
+        fingerprint,
+        commit,
+      });
+      const result: ExternalAgentQuickConnectResult = {
+        agentId: commit.role.id,
+        clientId: commit.role.externalClientId ?? externalClientConnectionId(commit.role.external!),
+        kind: clientKind,
+        envId,
+        label: commit.role.label,
+        enabled: commit.role.enabled !== false,
+        verificationLevel,
+        ...(commit.role.external?.version ? { version: commit.role.external.version } : {}),
+        modelsCount: commit.models?.length ?? 0,
+        settings,
+      };
+      this.#public(result);
+      await this.#remember(key, fingerprint, "complete", result);
+      await this.#options.onChanged?.();
+      return clone(result);
+    });
   }
   async prepare(input: { clientId: string; kind: ExternalAgentKind; envId: string; agentId?: string; commandId?: string }, guard?: Guard) {
     const clientId = identifier(input.clientId); const clientKind = kind(input.kind); const envId = identifier(input.envId);

@@ -2,6 +2,13 @@ export interface DesktopNotificationPayload {
   title: string;
   body?: string;
   topicId?: string;
+  eventId?: string;
+  dedupeKey?: string;
+  force?: boolean;
+}
+
+export interface RenderedDesktopNotificationPayload extends DesktopNotificationPayload {
+  silent: boolean;
 }
 
 function sanitizeText(value: unknown, maxLength: number): string | undefined {
@@ -9,6 +16,12 @@ function sanitizeText(value: unknown, maxLength: number): string | undefined {
   const cleaned = value.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
   if (!cleaned) return undefined;
   return cleaned.length <= maxLength ? cleaned : `${cleaned.slice(0, maxLength - 1)}…`;
+}
+
+function sanitizeSafeToken(value: unknown, maxLength = 120): string | undefined {
+  return typeof value === "string" && /^[a-zA-Z0-9_.:-]{1,160}$/.test(value) && value.length <= maxLength
+    ? value
+    : undefined;
 }
 
 export function normalizeDesktopNotificationPayload(raw: unknown): DesktopNotificationPayload | null {
@@ -20,30 +33,96 @@ export function normalizeDesktopNotificationPayload(raw: unknown): DesktopNotifi
   const topicId = typeof input.topicId === "string" && /^[a-zA-Z0-9_-]{1,120}$/.test(input.topicId)
     ? input.topicId
     : undefined;
+  const eventId = sanitizeSafeToken(input.eventId, 160);
+  const dedupeKey = sanitizeSafeToken(input.dedupeKey, 160);
+  const force = input.force === true ? true : undefined;
   return {
     title,
     ...(body ? { body } : {}),
     ...(topicId ? { topicId } : {}),
+    ...(eventId ? { eventId } : {}),
+    ...(dedupeKey ? { dedupeKey } : {}),
+    ...(force ? { force } : {}),
   };
 }
 
 export interface DesktopNotificationControllerOptions {
   isSupported: () => boolean;
   isWindowFocused: () => boolean;
-  showNotification: (payload: DesktopNotificationPayload, onClick: () => void) => void;
+  getPreferences?: () => { enabled: boolean; sound: boolean };
+  coalesceMs?: number;
+  soundCooldownMs?: number;
+  now?: () => number;
+  showNotification: (payload: RenderedDesktopNotificationPayload, onClick: () => void) => void;
   onFocusWindow: (topicId?: string) => void;
 }
 
+const MAX_RECENT_EVENT_IDS = 200;
+
 export function createDesktopNotifications(options: DesktopNotificationControllerOptions) {
+  const seenEventIds = new Set<string>();
+  const pendingByKey = new Map<string, { payload: DesktopNotificationPayload; timer: ReturnType<typeof setTimeout> }>();
+  const coalesceMs = options.coalesceMs ?? 1_200;
+  const soundCooldownMs = options.soundCooldownMs ?? 3_000;
+  const now = options.now ?? (() => Date.now());
+  let lastSoundAt = -Infinity;
+  let disposed = false;
+
+  const rememberEventId = (eventId: string) => {
+    seenEventIds.add(eventId);
+    if (seenEventIds.size > MAX_RECENT_EVENT_IDS) {
+      const oldest = seenEventIds.values().next().value;
+      if (oldest !== undefined) seenEventIds.delete(oldest);
+    }
+  };
+
+  const deliver = (payload: DesktopNotificationPayload): boolean => {
+    if (disposed || !options.isSupported()) return false;
+    const prefs = options.getPreferences?.() ?? { enabled: true, sound: false };
+    if (!payload.force && (!prefs.enabled || options.isWindowFocused())) return false;
+    const timestamp = now();
+    let silent = !prefs.sound;
+    if (!silent && !payload.force && timestamp - lastSoundAt < soundCooldownMs) {
+      silent = true;
+    }
+    if (!silent) lastSoundAt = timestamp;
+    options.showNotification({ ...payload, silent }, () => {
+      options.onFocusWindow(payload.topicId);
+    });
+    return true;
+  };
+
   return {
     notify(raw: unknown): boolean {
+      if (disposed) return false;
       const payload = normalizeDesktopNotificationPayload(raw);
       if (!payload) return false;
-      if (!options.isSupported() || options.isWindowFocused()) return false;
-      options.showNotification(payload, () => {
-        options.onFocusWindow(payload.topicId);
-      });
-      return true;
+      if (!options.isSupported()) return false;
+      const prefs = options.getPreferences?.() ?? { enabled: true, sound: false };
+      if (!payload.force && (!prefs.enabled || options.isWindowFocused())) return false;
+      if (payload.eventId) {
+        if (seenEventIds.has(payload.eventId)) return false;
+        rememberEventId(payload.eventId);
+      }
+
+      if (!payload.force && payload.dedupeKey && coalesceMs > 0) {
+        const existing = pendingByKey.get(payload.dedupeKey);
+        if (existing) clearTimeout(existing.timer);
+        const timer = setTimeout(() => {
+          pendingByKey.delete(payload.dedupeKey!);
+          deliver(payload);
+        }, coalesceMs);
+        timer.unref?.();
+        pendingByKey.set(payload.dedupeKey, { payload, timer });
+        return true;
+      }
+
+      return deliver(payload);
+    },
+    dispose(): void {
+      disposed = true;
+      for (const entry of pendingByKey.values()) clearTimeout(entry.timer);
+      pendingByKey.clear();
     },
   };
 }

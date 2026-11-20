@@ -97,5 +97,8 @@ describe("skill REST requests", () => {
     expect(fetch).toHaveBeenLastCalledWith("/api/skills/import-one", expect.objectContaining({ method: "DELETE", body: JSON.stringify(remove) }));
     expect(await kuloRest.getSkills()).toEqual(snapshot);
     expect(fetch).toHaveBeenLastCalledWith("/api/skills", expect.objectContaining({ method: "GET" }));
+    const imported = { source: "https://github.com/acme/skills#path=review", expectedRevision: 5, commandId: "import-once" };
+    expect(await kuloRest.importSkill(imported)).toEqual(snapshot);
+    expect(fetch).toHaveBeenLastCalledWith("/api/skills/import", expect.objectContaining({ method: "POST", body: JSON.stringify(imported) }));
   });
 });

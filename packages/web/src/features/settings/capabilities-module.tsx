@@ -1,7 +1,8 @@
 import { useI18n } from "../../kulo-i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Chip, Skeleton, Table, Tabs } from "@heroui/react";
+import { Alert, Button, Chip, Label, ListBox, Modal, Select, Skeleton, Table, Tabs } from "@heroui/react";
 import { redactSecrets, type CapabilitiesWorkspaceSnapshot, type EnvNodeDescriptor, type KuloSettingsView, type SettingsAssistantContext } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
 import { SearchModule } from "./search-module";
 import { VoiceModule } from "./voice-module";
 import { ConfirmDialog } from "../../components/confirm-dialog";
@@ -11,7 +12,7 @@ import { useSettingsNavigation } from "./use-settings-navigation";
 import { ComputerUseModule } from "./computer-use-module";
 import { SkillsModule } from "./skills-module";
 import { ImageCapabilitiesPanel } from "./image-capabilities-panel";
-import { CAPABILITY_VIEWS, capabilityStatusColor, capabilityStatusLabel, capabilityTargetView, getConnectFlowPrompt, type CapabilityView } from "./capability-views";
+import { CAPABILITY_VIEWS, capabilityStatusColor, capabilityStatusLabel, capabilityTargetView, type CapabilityView } from "./capability-views";
 
 export { capabilityStatusLabel } from "./capability-views";
 export { skillStatusLabel } from "./skills-module";
@@ -109,6 +110,13 @@ export function CapabilitiesModule({ snapshot, settings, loading, error, connect
   const [voiceDirty, setVoiceDirty] = useState(false);
   const [searchDirty, setSearchDirty] = useState(false);
   const [skillsDirty, setSkillsDirty] = useState(false);
+  const [flowPickerOpen, setFlowPickerOpen] = useState(false);
+  const [selectedFlowEnvId, setSelectedFlowEnvId] = useState("");
+  const [flowBusy, setFlowBusy] = useState(false);
+  const [flowError, setFlowError] = useState<string>();
+  const flowButton = useRef<HTMLButtonElement>(null);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const dirty = voiceDirty || searchDirty || skillsDirty;
   const viewNavigation = useSettingsNavigation(dirty);
   useEffect(() => {
@@ -125,7 +133,45 @@ export function CapabilitiesModule({ snapshot, settings, loading, error, connect
     if (!targetView || targetView === currentView.current) return;
     viewNavigation.navigate(() => selectView(targetView));
   }, [target?.kind, target?.id, targetView, selectView]);
-  const actionDisabled = !connected || requestsDisabled;
+  const flowDevices = envs.filter((env) => env.online && env.executionKind !== "native-device" && env.capabilities.includes("flow-browser"));
+  const flowCommandId = () => `flow-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+  const connectFlow = async (envId: string) => {
+    if (!connected || flowBusy || !clientId) return;
+    setFlowBusy(true);
+    setFlowError(undefined);
+    try {
+      const result = await kuloRest.connectGoogleFlow({ clientId, envId, commandId: flowCommandId() });
+      if (!mounted.current) return;
+      setFlowPickerOpen(false);
+      onRefresh();
+      onRequest({ kind: "capability", id: result.capability.id });
+    } catch (cause) {
+      if (mounted.current) {
+        setFlowError(redactSecrets(cause instanceof Error ? cause.message : t("连接 Google Flow 失败，请重试。", "Failed to connect Google Flow. Please retry.")));
+      }
+    } finally {
+      if (mounted.current) setFlowBusy(false);
+    }
+  };
+  const startFlowConnect = () => {
+    if (!connected || flowBusy || !clientId) return;
+    setFlowError(undefined);
+    if (flowDevices.length === 0) {
+      setFlowError(t("暂无支持 Google Flow 的在线电脑设备。", "No online computer supports Google Flow."));
+      return;
+    }
+    if (flowDevices.length === 1) {
+      void connectFlow(flowDevices[0]!.id);
+      return;
+    }
+    setSelectedFlowEnvId(flowDevices[0]!.id);
+    setFlowPickerOpen(true);
+  };
+  const closeFlowPicker = () => {
+    if (flowBusy) return;
+    setFlowPickerOpen(false);
+    requestAnimationFrame(() => flowButton.current?.focus());
+  };
   return <section className="@container flex min-w-0 flex-col gap-6" aria-label={t("工具技能", "Tools and skills")}>
     <Tabs selectedKey={view} onSelectionChange={(key) => {
       const next = CAPABILITY_VIEWS.find((item) => item.id === key)?.id;
@@ -144,7 +190,8 @@ export function CapabilitiesModule({ snapshot, settings, loading, error, connect
       </Tabs.Panel>
       <Tabs.Panel id="voice"><VoiceModule connected={connected} settings={settings} disabled={requestsDisabled} onDirtyChange={setVoiceDirty} onOpenModels={onOpenModels} /></Tabs.Panel>
       <Tabs.Panel id="video">
-        <SettingsSection title={t("视频连接", "Video connections")} action={<Button variant="secondary" size="sm" isDisabled={actionDisabled} onPress={() => onRequest(undefined, getConnectFlowPrompt())}>{t("连接 Google Flow", "Connect Google Flow")}</Button>}>
+        <SettingsSection title={t("视频连接", "Video connections")} action={<Button ref={flowButton} variant="secondary" size="sm" isPending={flowBusy && !flowPickerOpen} isDisabled={!connected || flowBusy || !clientId} onPress={startFlowConnect}>{t("连接 Google Flow", "Connect Google Flow")}</Button>}>
+          {flowError && !flowPickerOpen && <Alert status="danger" role="alert"><Alert.Content>{flowError}</Alert.Content></Alert>}
           <MediaCapabilitiesTable kind="video" snapshot={snapshot} connected={connected} disabled={requestsDisabled} error={error} envs={envs} target={target} onRequest={onRequest} />
         </SettingsSection>
       </Tabs.Panel>
@@ -154,6 +201,36 @@ export function CapabilitiesModule({ snapshot, settings, loading, error, connect
       <Tabs.Panel id="colab"><SettingsSection title="Colab CLI"><div className="kulo-table-empty-state rounded-2xl bg-surface-secondary">{t("暂未开放", "Not available yet")}</div></SettingsSection></Tabs.Panel>
       <Tabs.Panel id="other"><OtherExtensionsModule snapshot={snapshot?.extensions} connected={connected} disabled={requestsDisabled} target={target} onRequest={onRequest} onRefresh={onRefresh} /></Tabs.Panel>
     </Tabs>
+    <Modal isOpen={flowPickerOpen} onOpenChange={(open) => { if (!open) closeFlowPicker(); }}>
+      <Modal.Backdrop isOpen={flowPickerOpen} isDismissable={!flowBusy} isKeyboardDismissDisabled={flowBusy} onOpenChange={(open) => { if (!open) closeFlowPicker(); }}>
+        <Modal.Container size="sm" placement="center" scroll="inside">
+          <Modal.Dialog aria-label={t("连接 Google Flow", "Connect Google Flow")}>
+            <form className="contents" onSubmit={(event) => { event.preventDefault(); if (selectedFlowEnvId) void connectFlow(selectedFlowEnvId); }}>
+              <Modal.Header>
+                <Modal.Heading>{t("连接 Google Flow", "Connect Google Flow")}</Modal.Heading>
+                <Modal.CloseTrigger aria-label={t("关闭", "Close")} isDisabled={flowBusy} />
+              </Modal.Header>
+              <Modal.Body className="flex min-w-0 flex-col gap-4">
+                <Select className="kulo-form-field" variant="secondary" fullWidth value={selectedFlowEnvId || null} onChange={(key) => setSelectedFlowEnvId(String(key ?? ""))} isDisabled={flowBusy}>
+                  <Label>{t("选择设备", "Choose device")}</Label>
+                  <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                  <Select.Popover>
+                    <ListBox>
+                      {flowDevices.map((env) => <ListBox.Item key={env.id} id={env.id} textValue={env.name}>{env.name}</ListBox.Item>)}
+                    </ListBox>
+                  </Select.Popover>
+                </Select>
+                {flowError && <Alert status="danger" role="alert"><Alert.Content>{flowError}</Alert.Content></Alert>}
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="tertiary" isDisabled={flowBusy} onPress={closeFlowPicker}>{t("取消", "Cancel")}</Button>
+                <Button type="submit" variant="primary" isPending={flowBusy} isDisabled={!connected || flowBusy || !selectedFlowEnvId}>{t("连接", "Connect")}</Button>
+              </Modal.Footer>
+            </form>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+    </Modal>
     <ConfirmDialog open={viewNavigation.needsConfirmation} title={t("放弃未保存的修改？", "Discard unsaved changes?")} confirmLabel={t("放弃修改", "Discard changes")} cancelLabel={t("继续编辑", "Keep editing")} status="warning" onCancel={viewNavigation.cancel} onConfirm={() => { setVoiceDirty(false); setSearchDirty(false); setSkillsDirty(false); viewNavigation.discard(); }} />
   </section>;
 }

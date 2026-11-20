@@ -6,7 +6,7 @@ import { RecoveryManager, readReleaseIdentity } from "@kulo/recovery";
 import { buildRuntimeEnvironment } from "./runtime-config.js";
 import { startNodeService, type NodeService } from "./child-service.js";
 import { DESKTOP_APP_NAME, desktopContentSecurityPolicy, desktopWindowChrome, externalHttpUrl, localHttpOrigin, parseDevelopmentMode, resolveDesktopDataDirectory, shouldAuthorizeDesktopRequest, type DevelopmentMode } from "./desktop-config.js";
-import { createDesktopMenuTemplate, createMainWindowCloseController, shouldRevealWindowForCommand, type DesktopAppCommand } from "./desktop-menu.js";
+import { createDesktopContextMenuTemplate, createDesktopMenuTemplate, createMainWindowCloseController, shouldRevealWindowForCommand, type DesktopAppCommand } from "./desktop-menu.js";
 import { configureDesktopPreferenceHandlers, createDesktopPreferencesStore, DESKTOP_PREFERENCES_CHANNELS } from "./desktop-preferences.js";
 import { createDesktopTrayController, loadDesktopTrayIcon } from "./desktop-tray.js";
 import { createDesktopFileActions, isTrustedFileActionSender, type DesktopFileConnection } from "./file-actions.js";
@@ -43,10 +43,20 @@ let recoveryRequestedFor: string | undefined;
 const uiReady = new DesktopStartupReady();
 const closeController = createMainWindowCloseController();
 const trayIconPath = fileURLToPath(new URL("../assets/kulo-trayTemplate.png", import.meta.url));
+const trayBadgeLightIconPath = fileURLToPath(new URL("../assets/kulo-tray-badge-light.png", import.meta.url));
+const trayBadgeDarkIconPath = fileURLToPath(new URL("../assets/kulo-tray-badge-dark.png", import.meta.url));
+function resolveTrayIcon(badgeActive: boolean) {
+  if (!badgeActive) {
+    return loadDesktopTrayIcon(trayIconPath, (file) => nativeImage.createFromPath(file), process.platform, { template: true });
+  }
+  const badgePath = nativeTheme.shouldUseDarkColors ? trayBadgeDarkIconPath : trayBadgeLightIconPath;
+  return loadDesktopTrayIcon(badgePath, (file) => nativeImage.createFromPath(file), process.platform, { template: false });
+}
 const trayController = createDesktopTrayController({
   appName: DESKTOP_APP_NAME,
   platform: process.platform,
-  createTray: () => new Tray(loadDesktopTrayIcon(trayIconPath, (file) => nativeImage.createFromPath(file), process.platform)),
+  createTray: () => new Tray(resolveTrayIcon(false)),
+  resolveIcon: resolveTrayIcon,
   buildMenu: (template) => Menu.buildFromTemplate(template),
   onFocusWindow: () => focusWindow(),
   onNewTopic: () => dispatchWindowCommand("new-topic"),
@@ -58,6 +68,9 @@ const desktopPreferences = createDesktopPreferencesStore({
   dataDir,
   onChange: (next) => {
     trayController.sync(next.backgroundRunning);
+    if (!next.notifications.badge) {
+      applyBadge(false);
+    }
     if (!next.backgroundRunning && window && !window.isDestroyed() && !window.isVisible()) {
       focusWindow();
     }
@@ -89,14 +102,36 @@ const systemPermissions = createDesktopSystemPermissions({
   openExternal: (url) => shell.openExternal(url),
 });
 
+function isWindowFocused(): boolean {
+  return Boolean(window && !window.isDestroyed() && window.isVisible() && window.isFocused());
+}
+
+function applyBadge(active: boolean): void {
+  const effective = Boolean(active && desktopPreferences.get().notifications.badge && !isWindowFocused());
+  if (process.platform === "darwin") {
+    app.dock?.setBadge(effective ? "•" : "");
+  } else if (typeof app.setBadgeCount === "function") {
+    app.setBadgeCount(effective ? 1 : 0);
+  }
+  trayController.setBadge(effective);
+}
+
+function dispatchNotificationOpen(topicId: string): void {
+  if (quitting || booting || !window || window.isDestroyed()) return;
+  if (!trustedRenderer(window.webContents.mainFrame?.origin)) return;
+  window.webContents.send("kulo:notification-open", { topicId });
+}
+
 const activeNotifications = new Set<Notification>();
 const desktopNotifications = createDesktopNotifications({
   isSupported: () => Notification.isSupported(),
-  isWindowFocused: () => Boolean(window && !window.isDestroyed() && window.isVisible() && window.isFocused()),
+  isWindowFocused,
+  getPreferences: () => desktopPreferences.get().notifications,
   showNotification: (payload, onClick) => {
     const notification = new Notification({
       title: payload.title,
       ...(payload.body ? { body: payload.body } : {}),
+      silent: payload.silent,
     });
     activeNotifications.add(notification);
     notification.on("click", () => {
@@ -108,7 +143,10 @@ const desktopNotifications = createDesktopNotifications({
     });
     notification.show();
   },
-  onFocusWindow: () => focusWindow(),
+  onFocusWindow: (topicId) => {
+    focusWindow();
+    if (topicId) dispatchNotificationOpen(topicId);
+  },
 });
 
 function configureFileActions(): void {
@@ -129,7 +167,12 @@ function configureFileActions(): void {
   });
   ipcMain.handle("kulo:notify", (event, payload: unknown) => {
     authorize(event);
-    desktopNotifications.notify(payload);
+    return desktopNotifications.notify(payload);
+  });
+  ipcMain.handle("kulo:badge-set", (event, active: unknown) => {
+    authorize(event);
+    if (typeof active !== "boolean") throw new Error("任务栏红点参数无效。");
+    applyBadge(active);
   });
 }
 
@@ -150,6 +193,7 @@ function focusWindow(): void {
   window.show();
   window.focus();
   app.focus({ steal: true });
+  applyBadge(false);
 }
 
 function dispatchWindowCommand(command: DesktopAppCommand): void {
@@ -236,6 +280,38 @@ function createWindow(): BrowserWindow {
     if (!trustedRenderer(url)) { event.preventDefault(); void openExternal(url); }
   });
   created.webContents.on("will-attach-webview", (event) => event.preventDefault());
+  let contextMenuRequestId = 0;
+  created.webContents.on("context-menu", (_event, params) => {
+    if (created.isDestroyed() || !trustedRenderer(created.webContents.mainFrame?.origin)) return;
+    const requestToken = ++contextMenuRequestId;
+    const copyLinkUrl = params.linkURL ? externalHttpUrl(params.linkURL, managementToken) : undefined;
+    const popupMenu = (hasClipboardContent: boolean) => {
+      if (requestToken !== contextMenuRequestId || created.isDestroyed() || !trustedRenderer(created.webContents.mainFrame?.origin)) return;
+      const template = createDesktopContextMenuTemplate(params, {
+        hasClipboardContent,
+        copyLinkUrl,
+        onPaste: () => { if (!created.isDestroyed()) created.webContents.paste(); },
+        onReplaceMisspelling: (suggestion) => { if (!created.isDestroyed()) created.webContents.replaceMisspelling(suggestion); },
+        onCopyLink: (url) => {
+          void clipboard.writeText(url).catch((error: unknown) => {
+            log(`复制链接失败：${error instanceof Error ? error.message : "未知错误"}`);
+          });
+        },
+      });
+      if (template.length > 0) Menu.buildFromTemplate(template).popup({ window: created });
+    };
+    if (params.isEditable && !params.editFlags.canPaste) {
+      void clipboard.read().then(
+        (items) => popupMenu(items.some((item) => item.types.length > 0)),
+        (error: unknown) => {
+          log(`读取剪贴板状态失败：${error instanceof Error ? error.message : "未知错误"}`);
+          popupMenu(false);
+        },
+      );
+      return;
+    }
+    popupMenu(false);
+  });
   created.webContents.on("did-start-navigation", (details) => {
     if (details.isMainFrame && !details.isSameDocument) closeController.clearPendingReload();
   });
@@ -265,6 +341,7 @@ function createWindow(): BrowserWindow {
       }) === 0,
     );
   });
+  created.on("focus", () => applyBadge(false));
   created.on("close", (event) => closeController.handleClose(event, created, quitting, desktopPreferences.get().backgroundRunning));
   created.on("leave-full-screen", () => closeController.handleLeaveFullScreen(created, quitting));
   created.on("closed", () => {
@@ -514,6 +591,8 @@ if (!lock) {
     event.preventDefault();
     if (quitting) return;
     quitting = true;
+    desktopNotifications.dispose();
+    applyBadge(false);
     trayController.dispose();
     controlWatcher?.close();
     controlWatcher = undefined;
@@ -530,6 +609,7 @@ if (!lock) {
     configureDesktopPreferenceHandlers({ ipc: ipcMain, preferences: desktopPreferences, owner: () => window, rendererOrigin: () => rendererOrigin });
     configureDesktopSystemPermissionHandlers({ ipc: ipcMain, permissions: systemPermissions, owner: () => window, rendererOrigin: () => rendererOrigin });
     trayController.sync(desktopPreferences.get().backgroundRunning);
+    nativeTheme.on("updated", () => trayController.refreshTheme());
     powerMonitor.on("resume", () => {
       if (quitting || !runtime?.child.connected) return;
       runtime.child.send({ type: "system-resume" }, () => {});

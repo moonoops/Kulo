@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TicketCardView } from "@kulo/protocol";
-import { reconcileTaskRows, taskDurationLabel, taskHasExpired, taskIsRecovering, taskNeedsAttention, taskRunningMs, taskStatusLabel, taskSummary, taskTimeLabel, visibleTaskCards } from "./task-model";
+import { isTaskUnfinished, reconcileTaskRows, taskDurationLabel, taskHasExpired, taskIsRecovering, taskNeedsAttention, taskRunningMs, taskStatusLabel, taskSummary, taskTimeLabel, visibleTaskCards } from "./task-model";
 
 const hour = 3_600_000;
 const ticket = (id: string, changes: Partial<TicketCardView> = {}): TicketCardView => ({
@@ -99,5 +99,14 @@ describe("task row presence", () => {
     const rows = reconcileTaskRows([{ ticket: old, present: false, enter: false }], [fresh, resumed], new Set(["new"]));
     expect(rows.map(row => [row.ticket.id, row.present, row.enter])).toEqual([["new", true, true], ["old", true, false]]);
     expect(reconcileTaskRows([], [old], new Set())[0]?.enter).toBe(false);
+  });
+
+  it("identifies unfinished task statuses accurately", () => {
+    for (const status of ["queued", "running", "pausing", "waiting", "blocked"] as const) {
+      expect(isTaskUnfinished(ticket(status, { status }))).toBe(true);
+    }
+    for (const status of ["ready", "failed", "stopped", "closed"] as const) {
+      expect(isTaskUnfinished(ticket(status, { status }))).toBe(false);
+    }
   });
 });

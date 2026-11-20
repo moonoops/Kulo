@@ -86,9 +86,17 @@ describe("voice input", () => {
     expect(html).not.toContain('data-voice-active="true"');
   });
 
-  it("uses the primary accent for the generation stop button", () => {
-    const stop = button(render("", true), "停止生成");
+  it("uses the primary accent for the generation stop button and keeps voice input available while busy", () => {
+    const emptyBusy = render("", true);
+    const stop = button(emptyBusy, "停止生成");
     expect(stop).toContain("button--primary");
     expect(stop).not.toContain("button--danger");
+    expect(button(emptyBusy, "语音输入")).not.toMatch(/\sdisabled(?:=|\s|>)/);
+
+    const draftBusy = render("插话内容", true);
+    expect(button(draftBusy, "停止生成")).toContain("kulo-composer-control");
+    expect(button(draftBusy, "发送")).toContain("button--primary");
+    expect(button(draftBusy, "发送")).not.toMatch(/\sdisabled(?:=|\s|>)/);
+    expect(button(draftBusy, "语音输入")).not.toMatch(/\sdisabled(?:=|\s|>)/);
   });
 });

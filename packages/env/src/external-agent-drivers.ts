@@ -131,7 +131,9 @@ function isWithinAcpDir(target: string, root: string): boolean {
 function isProtectedAcpPath(canonicalTarget: string, includeGitControl: boolean): boolean {
   const normalized = canonicalTarget.replace(/\\/g, "/");
   if (/(?:^|\/)(?:\.kulo-state|\.secure)(?:\/|$)/.test(normalized)) return true;
-  if (/(?:^|\/)(?:connection\.json|devices\.json|runtime-token|kulo\.sqlite(?:-wal|-shm)?)$/.test(normalized)) return true;
+  if (/(?:^|\/)(?:connection\.json|devices\.json|runtime-token|(?:kulo|assistant)\.sqlite(?:-wal|-shm)?)$/.test(normalized)) return true;
+  if (/\/Library\/Group Containers\/group\.com\.apple\.usernoted(?:\/|$)/.test(normalized)) return true;
+  if (/^\/(?:private\/)?var\/folders\/[^/]+\/[^/]+\/0\/com\.apple\.notificationcenter(?:\/|$)/.test(normalized)) return true;
   if (includeGitControl && /(?:^|\/)\.git\/(?:hooks(?:\/|$)|config$)/.test(normalized)) return true;
   for (const entry of defaultProtectedPaths()) {
     if (isWithinAcpDir(canonicalTarget, entry)) return true;

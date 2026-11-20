@@ -375,6 +375,10 @@ export async function prepareRuntimePayload(stage, options = {}) {
   await assertRegularFile(path.join(stage, "assets/kulo-icon.png"));
   await assertRegularFile(path.join(stage, "assets/kulo-trayTemplate.png"));
   await assertRegularFile(path.join(stage, "assets/kulo-trayTemplate@2x.png"));
+  await assertRegularFile(path.join(stage, "assets/kulo-tray-badge-light.png"));
+  await assertRegularFile(path.join(stage, "assets/kulo-tray-badge-light@2x.png"));
+  await assertRegularFile(path.join(stage, "assets/kulo-tray-badge-dark.png"));
+  await assertRegularFile(path.join(stage, "assets/kulo-tray-badge-dark@2x.png"));
   await assertRegularFile(path.join(stage, "dist/runtime.js"));
   await assertRegularFile(path.join(stage, "web/dist/index.html"));
   await assertRegularFile(path.join(packages.env, "dist/peer.mjs"));
@@ -391,6 +395,100 @@ export async function prepareRuntimePayload(stage, options = {}) {
   await assertClosedLinks(stage);
 }
 
+export function parseCodeSigningIdentities(output) {
+  const identities = [];
+  for (const line of String(output ?? "").split(/\r?\n/)) {
+    const match = /^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"([^"]+)"(?:\s+\(([^)]+)\))?\s*$/.exec(line);
+    if (!match) continue;
+    const [, hash, name, note] = match;
+    if (note && /CSSMERR|REVOKED|EXPIRED|INVALID/i.test(note)) continue;
+    identities.push({ hash: hash.toUpperCase(), name });
+  }
+  return identities;
+}
+
+export async function resolveMacSignIdentity(options = {}) {
+  const rawExplicit = options.signIdentity ?? process.env.KULO_MAC_SIGN_IDENTITY;
+  const explicit = typeof rawExplicit === "string" ? rawExplicit.trim() : "";
+  if (explicit) {
+    if (explicit === "-" || explicit.toLowerCase() === "adhoc") {
+      return { identity: "-", label: "ad-hoc", source: "explicit-adhoc", useTimestamp: false };
+    }
+    if (explicit.length > 256 || /[\x00-\x1f\x7f]/.test(explicit) || explicit.startsWith("-")) {
+      throw new Error("macOS 签名证书标识无效。");
+    }
+    return {
+      identity: explicit,
+      label: explicit,
+      source: "explicit",
+      useTimestamp: explicit.startsWith("Developer ID Application:"),
+    };
+  }
+  const listIdentities = options.listIdentities ?? (async () => {
+    const { stdout } = await run("/usr/bin/security", ["find-identity", "-v", "-p", "codesigning"], {
+      timeout: 5_000,
+      maxBuffer: 256 * 1024,
+    });
+    return stdout;
+  });
+  let identities = [];
+  try {
+    identities = parseCodeSigningIdentities(await listIdentities());
+  } catch {
+    return { identity: "-", label: "ad-hoc", source: "fallback-adhoc", useTimestamp: false };
+  }
+  const preferred =
+    identities.find((entry) => /^Kulo\b/i.test(entry.name))
+    ?? identities.find((entry) => entry.name.startsWith("Developer ID Application:"))
+    ?? identities.find((entry) => entry.name.startsWith("Apple Development:"));
+  if (preferred) {
+    return {
+      identity: preferred.hash,
+      label: preferred.name,
+      source: "auto",
+      useTimestamp: preferred.name.startsWith("Developer ID Application:"),
+    };
+  }
+  return { identity: "-", label: "ad-hoc", source: "fallback-adhoc", useTimestamp: false };
+}
+
+export async function signMacAppBundle(bundle, options = {}) {
+  const resolved = await resolveMacSignIdentity(options);
+  const exec = options.run ?? run;
+  const argsFor = (identity, useTimestamp) => (
+    identity === "-"
+      ? ["--force", "--deep", "--sign", "-", "--preserve-metadata=entitlements", "--identifier", APP_ID, bundle]
+      : [
+          "--force",
+          "--deep",
+          "--sign",
+          identity,
+          "--preserve-metadata=entitlements",
+          useTimestamp ? "--timestamp" : "--timestamp=none",
+          bundle,
+        ]
+  );
+  if (resolved.identity === "-") {
+    await exec("/usr/bin/codesign", argsFor("-", false), { maxBuffer: 1024 * 1024 });
+    return resolved;
+  }
+  try {
+    await exec("/usr/bin/codesign", argsFor(resolved.identity, Boolean(resolved.useTimestamp)), { maxBuffer: 1024 * 1024 });
+    return resolved;
+  } catch (error) {
+    if (resolved.source === "explicit") throw error;
+    // Keychain may be locked in headless/CI shells; fall back to ad-hoc only for auto-selected certificates.
+    await exec("/usr/bin/codesign", argsFor("-", false), { maxBuffer: 1024 * 1024 });
+    return {
+      identity: "-",
+      label: "ad-hoc",
+      source: "fallback-adhoc",
+      useTimestamp: false,
+      fallbackReason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export async function verifyMacApp(bundle) {
   const resources = path.join(bundle, "Contents/Resources");
   const app = path.join(resources, "app");
@@ -402,6 +500,10 @@ export async function verifyMacApp(bundle) {
   await assertRegularFile(path.join(app, "assets/kulo-icon.png"));
   await assertRegularFile(path.join(app, "assets/kulo-trayTemplate.png"));
   await assertRegularFile(path.join(app, "assets/kulo-trayTemplate@2x.png"));
+  await assertRegularFile(path.join(app, "assets/kulo-tray-badge-light.png"));
+  await assertRegularFile(path.join(app, "assets/kulo-tray-badge-light@2x.png"));
+  await assertRegularFile(path.join(app, "assets/kulo-tray-badge-dark.png"));
+  await assertRegularFile(path.join(app, "assets/kulo-tray-badge-dark@2x.png"));
   await assertRegularFile(path.join(app, "dist/shell.js"));
   await assertRegularFile(path.join(app, "dist/runtime.js"));
   await assertRegularFile(path.join(app, "web/dist/index.html"));
@@ -505,9 +607,12 @@ export async function packageMacApp(options = {}) {
     // Packager strips fields from package.json; hash the final payload before signing it.
     const finalResources = path.join(bundle, "Contents/Resources");
     await finalizePackagedRelease(path.join(finalResources, "app"), path.join(finalResources, "runtime"), releaseOptions);
-    await run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", "--preserve-metadata=entitlements", "--identifier", APP_ID, bundle], { maxBuffer: 1024 * 1024 });
+    const signed = await signMacAppBundle(bundle, { signIdentity: options.signIdentity });
     await verifyMacApp(bundle);
-    console.log(`已构建：${bundle}`);
+    console.log(`已构建：${bundle}（签名：${signed.label}）`);
+    if (signed.identity === "-") {
+      console.warn("提示：当前使用 ad-hoc 临时签名，每次重新安装后 macOS 辅助功能/录屏等系统权限需要重新授权；配置本机签名证书或 KULO_MAC_SIGN_IDENTITY 可保留权限。");
+    }
     return bundle;
   } finally {
     await fs.rm(temporary, { recursive: true, force: true });

@@ -138,4 +138,52 @@ describe("computer preview lifecycle", () => {
     expect(client.getSnapshot().displays["browser-1"]).toEqual({ state: "unavailable", message: "invalid_frame" });
     client.close();
   });
+
+  it("enforces mutual-exclusion expansion across tickets, stops collapsed tickets independently, and gates visibility on rail/modal state", async () => {
+    const { client, socket } = setup();
+    expect(client.getSnapshot()).toMatchObject({ activeTicketId: "ticket-1", collapsed: false, expanded: false });
+
+    client.expandTicket("ticket-2");
+    expect(client.getSnapshot()).toMatchObject({ activeTicketId: "ticket-2", selectedId: "desktop-2", collapsed: false });
+
+    // Stopping a non-expanded ticket targets that explicit ticket without switching activeTicketId.
+    const stop = vi.fn().mockResolvedValue(undefined);
+    await client.stopTask(stop, "ticket-1");
+    expect(stop).toHaveBeenCalledWith("ticket-1");
+    expect(client.getSnapshot().stops["ticket-1"]).toEqual({ pending: false, accepted: true });
+    expect(client.getSnapshot().activeTicketId).toBe("ticket-2");
+
+    // Collapsing only affects the expanded ticket; pausing the right rail pauses frames while modal overrides it.
+    client.collapseTicket("ticket-1");
+    expect(client.getSnapshot().collapsed).toBe(false);
+    client.collapseTicket("ticket-2");
+    expect(client.getSnapshot().collapsed).toBe(true);
+    expect(socket.sent.at(-1)).toEqual({ type: "preview.visibility", visible: false });
+
+    client.expandTicket("ticket-2");
+    expect(socket.sent.at(-1)).toEqual({ type: "preview.visibility", visible: true });
+
+    client.setSurfaceVisible(false);
+    expect(socket.sent.at(-1)).toEqual({ type: "preview.visibility", visible: false });
+
+    client.openModal("browser-1");
+    expect(client.getSnapshot()).toMatchObject({ expanded: true, selectedId: "browser-1", activeTicketId: "ticket-1" });
+    expect(socket.sent.at(-1)).toEqual({ type: "preview.visibility", visible: true });
+
+    client.closeModal();
+    expect(client.getSnapshot().expanded).toBe(false);
+    expect(socket.sent.at(-1)).toEqual({ type: "preview.visibility", visible: false });
+
+    // Re-opening modal and removing the zoomed session auto-closes the modal and resets collapsed when empty.
+    client.setSurfaceVisible(true);
+    client.openModal("browser-1");
+    socket.emit({ type: "preview.sessions", sessions: [previewSessions[1]!] });
+    expect(client.getSnapshot()).toMatchObject({ expanded: false, activeTicketId: "ticket-2", selectedId: "desktop-2" });
+
+    client.collapseTicket("ticket-2");
+    expect(client.getSnapshot().collapsed).toBe(true);
+    socket.emit({ type: "preview.sessions", sessions: [] });
+    expect(client.getSnapshot()).toMatchObject({ collapsed: false, expanded: false, activeTicketId: undefined, selectedId: undefined });
+    client.close();
+  });
 });

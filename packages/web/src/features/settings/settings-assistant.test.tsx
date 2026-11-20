@@ -41,18 +41,23 @@ const appearanceAction: SettingsAssistantAction = {
 };
 
 describe("settings assistant action boundaries", () => {
-  it.each(["light", "dark", "system"] as const)("offers appearance customization rather than duplicating %s theme controls", (mode) => {
+  it.each(["light", "dark", "system"] as const)("offers appearance customization prefills rather than duplicating %s theme controls", (mode) => {
     const appearance = getSettingsAssistantShortcuts("appearance", true, mode);
     expect(appearance.map((shortcut) => shortcut.label)).toEqual(["创建我的配色", "更换应用字体"]);
-    expect(appearance.every((shortcut) => shortcut.kind === "ask")).toBe(true);
+    expect(appearance.every((shortcut) => shortcut.kind === "prefill" && shortcut.draft.length > 0 && shortcut.draft.length < 30)).toBe(true);
     expect(appearance.some((shortcut) => shortcut.kind === "appearance" || shortcut.kind === "navigate")).toBe(false);
   });
 
-  it.each([true, false])("offers the connected model setup workflows with model availability %s", (hasModel) => {
+  it.each([true, false])("offers direct model setup cards and concise calibration with model availability %s", (hasModel) => {
     const shortcuts = getSettingsAssistantShortcuts("models", hasModel, "dark");
     expect(shortcuts.map((shortcut) => shortcut.label)).toEqual(["自动接入供应商", "校准模型配置", "排查调用失败"]);
     expect(shortcuts.map((shortcut) => shortcut.kind === "model" && shortcut.action)).toEqual(["connect", "calibrate", "diagnose"]);
-    expect(shortcuts.every((shortcut) => shortcut.kind === "model" && shortcut.prompt.length > 0)).toBe(true);
+    const connect = shortcuts.find((shortcut) => shortcut.id === "connect-provider");
+    const calibrate = shortcuts.find((shortcut) => shortcut.id === "calibrate-models");
+    const diagnose = shortcuts.find((shortcut) => shortcut.id === "diagnose-models");
+    expect(connect?.kind === "model" && connect.prompt).toBeUndefined();
+    expect(diagnose?.kind === "model" && diagnose.prompt).toBeUndefined();
+    expect(calibrate?.kind === "model" && calibrate.prompt).toBe("校准已有模型配置");
   });
 
   it.each(SETTINGS_MODULES.filter((module) => module.id !== "appearance" && module.id !== "models" && module.id !== "workers" && module.id !== "capabilities"))("keeps $id task suggestions hidden until that capability is connected", ({ id }) => {

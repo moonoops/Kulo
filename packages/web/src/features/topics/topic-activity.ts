@@ -7,6 +7,7 @@ export interface SeenTopicActivity {
   settled: number | null;
   tasks: Record<string, string>;
   unread?: boolean;
+  proactiveSeq?: number;
 }
 export type SeenTopicActivities = Record<string, SeenTopicActivity>;
 
@@ -32,6 +33,7 @@ export function parseSeenTopicActivities(value: string | null): SeenTopicActivit
         (item.assistant === null || Number.isSafeInteger(item.assistant) && item.assistant >= 0) &&
         (item.settled === null || Number.isSafeInteger(item.settled) && item.settled >= 0) &&
         (item.unread === undefined || typeof item.unread === "boolean") &&
+        (item.proactiveSeq === undefined || Number.isSafeInteger(item.proactiveSeq) && item.proactiveSeq >= 0) &&
         item.tasks && typeof item.tasks === "object" && !Array.isArray(item.tasks) && Object.values(item.tasks).every((token) => typeof token === "string"));
     }));
   } catch { return {}; }
@@ -60,7 +62,14 @@ export function reconcileTopicActivity({ topics, tickets, topicActivities, seen,
     const assistant = activity ? activity.lastAssistantMessageId ?? 0 : previous?.assistant ?? null;
     // Reading a partial reply does not acknowledge its eventual completion.
     const settled = activity && !activity.busy ? assistant : previous?.settled ?? (activity ? assistant : null);
-    const baseline: SeenTopicActivity = { assistant, settled, tasks, unread: false };
+    const proactiveSeq = topic.origin === "proactive" ? (topic.proactiveSeq ?? 1) : undefined;
+    const baseline: SeenTopicActivity = {
+      assistant,
+      settled,
+      tasks,
+      unread: false,
+      ...(proactiveSeq !== undefined ? { proactiveSeq } : {}),
+    };
     let unread = false;
     if (previous) {
       const newAssistant = activity && previous.assistant !== null && assistant !== null && assistant > previous.assistant;
@@ -70,9 +79,10 @@ export function reconcileTopicActivity({ topics, tickets, topicActivities, seen,
         if (old !== undefined) return old !== tasks[ticket.id];
         return Boolean(ticket.latestReport || ["ready", "failed", "blocked", "waiting", "stopped"].includes(ticket.status));
       });
+      const proactiveBump = proactiveSeq !== undefined && proactiveSeq > (previous.proactiveSeq ?? 0);
       // Idle topic caches are intentionally absent after a Hub restart. Keep a known
       // unread result until the user reads it, without retaining stale running state.
-      unread = Boolean(previous.unread || newAssistant || completedReply || taskProgress);
+      unread = Boolean(previous.unread || newAssistant || completedReply || taskProgress || proactiveBump);
       const trackedTasks = { ...previous.tasks };
       for (const ticket of associated) {
         if (!(ticket.id in trackedTasks) && !ticket.latestReport && ["queued", "running", "pausing"].includes(ticket.status)) trackedTasks[ticket.id] = tasks[ticket.id]!;
@@ -82,7 +92,15 @@ export function reconcileTopicActivity({ topics, tickets, topicActivities, seen,
         settled: previous.settled === null ? settled : previous.settled,
         tasks: trackedTasks,
         unread,
+        ...(previous.proactiveSeq !== undefined
+          ? { proactiveSeq: previous.proactiveSeq }
+          : proactiveSeq !== undefined
+            ? { proactiveSeq: 0 }
+            : {}),
       };
+    } else if (proactiveSeq !== undefined && readableTopicId !== topic.id) {
+      unread = true;
+      nextSeen[topic.id] = { assistant, settled, tasks, unread: true, proactiveSeq: 0 };
     } else nextSeen[topic.id] = baseline;
     states[topic.id] = {
       running: Boolean(activity?.busy || associated.some((ticket) => ["running", "pausing"].includes(ticket.status) || taskIsRecovering(ticket))),

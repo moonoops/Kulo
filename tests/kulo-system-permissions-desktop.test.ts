@@ -74,16 +74,18 @@ describe("desktop system permission actions", () => {
     await f.permissions.openSettings("screen");
     await f.permissions.openSettings("full-disk-access");
     await f.permissions.openSettings("automation");
+    await f.permissions.openSettings("notifications");
     expect(f.openExternal.mock.calls.map(([url]) => url)).toEqual([
       "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
       "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
       "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
       "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+      "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
     ]);
     for (const kind of ["camera", "microphone?foo", "__proto__", "https://example.com", undefined, {}, ["microphone"]]) {
       await expect(f.permissions.openSettings(kind)).rejects.toThrow("类型无效");
     }
-    expect(f.openExternal).toHaveBeenCalledTimes(4);
+    expect(f.openExternal).toHaveBeenCalledTimes(5);
     f.openExternal.mockRejectedValueOnce(new Error("Settings could not open"));
     await expect(f.permissions.openSettings("microphone")).rejects.toThrow("Settings could not open");
   });

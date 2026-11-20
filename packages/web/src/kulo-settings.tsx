@@ -29,6 +29,7 @@ import {
 import { KuloSettingsRail } from "./features/settings/settings-rail";
 import type { SettingsAssistantEntryIntent } from "./features/settings/settings-assistant-actions";
 import { ConnectionsModule, type ConnectionPrepare } from "./features/settings/connections-module";
+import type { AssistantWorkspaceView } from "./kulo-api";
 import type { RecentWorkSource } from "./features/settings/recent-work-updates";
 
 export { KuloSettingsRail, SETTINGS_MODULES, type SettingsModuleId };
@@ -71,6 +72,10 @@ export function KuloSettingsBoard({
   connectionPreparing = false,
   onConnectionPrepare,
   onConnectionsRefresh,
+  assistantWorkspace,
+  onAssistantWorkspaceUpdated,
+  onRequestAssistantAcceleration,
+  onRequestAssistantPrompt,
   permissionEntry,
   onPermissionEntryHandled,
   onOpenModels,
@@ -112,6 +117,10 @@ export function KuloSettingsBoard({
   connectionPreparing?: boolean;
   onConnectionPrepare?: ConnectionPrepare;
   onConnectionsRefresh?: () => void;
+  assistantWorkspace?: AssistantWorkspaceView | null;
+  onAssistantWorkspaceUpdated?: (next: AssistantWorkspaceView) => void;
+  onRequestAssistantAcceleration?: () => void;
+  onRequestAssistantPrompt?: (prompt: string) => void;
   permissionEntry?: SystemPermissionEntry | null;
   onPermissionEntryHandled?: (id: string) => void;
   onOpenModels?: () => void;
@@ -134,7 +143,7 @@ export function KuloSettingsBoard({
             </Alert>
           </div>
         )}
-        {module === "connections" && <ConnectionsModule snapshot={connections ?? null} loading={connectionsLoading} error={connectionsError} connected={connected} preparing={connectionPreparing} onPrepare={onConnectionPrepare ?? (async () => {})} onRefresh={onConnectionsRefresh ?? (() => {})} entryIntent={entryIntent} onIntentHandled={onIntentHandled} />}
+        {module === "connections" && <ConnectionsModule snapshot={connections ?? null} loading={connectionsLoading} error={connectionsError} connected={connected} preparing={connectionPreparing} onPrepare={onConnectionPrepare ?? (async () => {})} onRefresh={onConnectionsRefresh ?? (() => {})} entryIntent={entryIntent} onIntentHandled={onIntentHandled} assistant={assistantWorkspace} onAssistantUpdated={onAssistantWorkspaceUpdated} onRequestAssistantAcceleration={onRequestAssistantAcceleration} onRequestAssistantPrompt={onRequestAssistantPrompt} />}
         {module === "capabilities" && <CapabilitiesModule clientId={clientId} snapshot={capabilities ?? null} settings={settings} loading={capabilitiesLoading} error={capabilitiesError} connected={connected} requestsDisabled={capabilityRequestsDisabled} envs={envs} target={capabilityTarget} view={capabilityView} onViewChange={onCapabilityViewChange} voiceSettingsRequested={voiceSettingsRequested} onRequest={onCapabilityRequest ?? (() => {})} onRefresh={onCapabilitiesRefresh ?? (() => {})} onDirtyChange={onDirtyChange} onOpenModels={onOpenModels} />}
         {module === "models" && settings && (
           <ModelsModule settings={settings} onSettingsUpdated={onSettingsUpdated} onDirtyChange={onDirtyChange} entryIntent={entryIntent} onIntentHandled={onIntentHandled} />

@@ -94,6 +94,20 @@ describe("external Agent configuration tool call identities", () => {
     expect(f.settings.blocks.roles.value[saved.agentId]).toBeUndefined();
   });
 
+  it("replays one-step connect with opaque call IDs without double-running verification or save", async () => {
+    const f = await fixture();
+    const scan = await f.invoke<{ candidates: Array<{ kind: string; installed: boolean; alreadyConnected: boolean }> }>("scan", {}, "call_scan|fc_200");
+    expect(scan.candidates.some((item) => item.kind === "antigravity" && item.installed && !item.alreadyConnected)).toBe(true);
+    const args = { client_kind: "antigravity", env_id: "local", run_test: true };
+    const first = await f.invoke<{ agentId: string; enabled: boolean; verificationLevel: string }>("connect", args, "call_connect|fc_201");
+    expect(first).toMatchObject({ enabled: true, verificationLevel: "roundtrip" });
+    expect(await f.invoke("connect", args, "call_connect|fc_201")).toEqual(first);
+    expect(f.verifyRoundtrip).toHaveBeenCalledTimes(1);
+    expect(f.saveRole).toHaveBeenCalledTimes(1);
+    const afterScan = await f.invoke<{ candidates: Array<{ kind: string; installed: boolean; alreadyConnected: boolean; connectedVerified?: boolean }> }>("scan", {}, "call_scan|fc_202");
+    expect(afterScan.candidates.find((item) => item.kind === "antigravity")).toMatchObject({ alreadyConnected: true, connectedVerified: true });
+  });
+
   it("retains strict public client, device and Agent identifier validation", async () => {
     const f = await fixture();
     await expect(f.service.prepare({ clientId: "window|opaque", kind: "antigravity", envId: "local", commandId: "safe-call" })).rejects.toMatchObject({ code: "invalid_agent_configuration_id" });

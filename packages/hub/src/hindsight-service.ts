@@ -5,13 +5,84 @@ import net from "node:net";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type { HindsightModelProvider } from "@kulo/protocol";
+import type {
+  HindsightEmbeddingsModel,
+  HindsightEmbeddingsProvider,
+  HindsightModelProvider,
+  HindsightRerankerModel,
+  HindsightRerankerProvider,
+} from "@kulo/protocol";
+import { MEMORY_LLM_BRIDGE_FILENAME } from "./memory-llm-bridge.js";
 import { HINDSIGHT_RETAIN_MISSIONS } from "./prompts.js";
 
 export const MANAGED_HINDSIGHT_VERSION = "1.2.1";
 const OWNER = "kulo-managed-hindsight-v1";
-const PROVIDERS = new Set(["openai", "anthropic", "gemini", "groq", "ollama"]);
-const MODEL_DEFAULT_URL: Record<HindsightModelProvider, string> = { openai: "https://api.openai.com", anthropic: "https://api.anthropic.com", gemini: "https://generativelanguage.googleapis.com", groq: "https://api.groq.com", ollama: "http://localhost:11434" };
+const KULO_BRIDGE_PROVIDER = "kulo_hindsight.bridge:KuloBridgeLLM";
+const PROVIDERS = new Set<HindsightModelProvider>(["kulo", "openai", "anthropic", "gemini", "groq", "ollama"]);
+const EMBEDDINGS_PROVIDERS = new Set<HindsightEmbeddingsProvider>(["onnx", "openai", "google", "cohere", "tei"]);
+const RERANKER_PROVIDERS = new Set<HindsightRerankerProvider>(["onnx", "rrf", "cohere", "siliconflow", "alibaba", "zeroentropy", "tei"]);
+const MODEL_DEFAULT_URL: Record<Exclude<HindsightModelProvider, "kulo">, string> = {
+  openai: "https://api.openai.com",
+  anthropic: "https://api.anthropic.com",
+  gemini: "https://generativelanguage.googleapis.com",
+  groq: "https://api.groq.com",
+  ollama: "http://localhost:11434",
+};
+const EMBEDDINGS_DEFAULT_URL: Partial<Record<HindsightEmbeddingsProvider, string>> = {
+  openai: "https://api.openai.com",
+  google: "https://generativelanguage.googleapis.com",
+  cohere: "https://api.cohere.com",
+};
+const RERANKER_DEFAULT_URL: Partial<Record<HindsightRerankerProvider, string>> = {
+  cohere: "https://api.cohere.com",
+  siliconflow: "https://api.siliconflow.cn",
+  alibaba: "https://dashscope.aliyuncs.com",
+  zeroentropy: "https://api.zeroentropy.dev",
+};
+export const DEFAULT_LOCAL_EMBEDDINGS: HindsightEmbeddingsModel = {
+  provider: "onnx",
+  model: "intfloat/multilingual-e5-small",
+  dimensions: 384,
+};
+export const DEFAULT_LOCAL_RERANKER: HindsightRerankerModel = {
+  provider: "onnx",
+  model: "hindsight-ai/hs-rerank-1",
+};
+const EMBEDDINGS_ENV_KEYS = [
+  "HINDSIGHT_API_EMBEDDINGS_PROVIDER",
+  "HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_ID",
+  "HINDSIGHT_API_EMBEDDINGS_ONNX_DIMENSIONS",
+  "HINDSIGHT_API_EMBEDDINGS_ONNX_THREADS",
+  "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
+  "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL",
+  "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL",
+  "HINDSIGHT_API_EMBEDDINGS_OPENAI_DIMENSIONS",
+  "HINDSIGHT_API_EMBEDDINGS_GEMINI_API_KEY",
+  "HINDSIGHT_API_EMBEDDINGS_GEMINI_MODEL",
+  "HINDSIGHT_API_EMBEDDINGS_GEMINI_OUTPUT_DIMENSIONALITY",
+  "HINDSIGHT_API_EMBEDDINGS_COHERE_API_KEY",
+  "HINDSIGHT_API_EMBEDDINGS_COHERE_MODEL",
+  "HINDSIGHT_API_EMBEDDINGS_COHERE_BASE_URL",
+  "HINDSIGHT_API_EMBEDDINGS_COHERE_OUTPUT_DIMENSIONS",
+  "HINDSIGHT_API_EMBEDDINGS_TEI_URL",
+] as const;
+const RERANKER_ENV_KEYS = [
+  "HINDSIGHT_API_RERANKER_PROVIDER",
+  "HINDSIGHT_API_RERANKER_ONNX_MODEL_ID",
+  "HINDSIGHT_API_RERANKER_ONNX_THREADS",
+  "HINDSIGHT_API_RERANKER_COHERE_API_KEY",
+  "HINDSIGHT_API_RERANKER_COHERE_MODEL",
+  "HINDSIGHT_API_RERANKER_COHERE_BASE_URL",
+  "HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY",
+  "HINDSIGHT_API_RERANKER_SILICONFLOW_MODEL",
+  "HINDSIGHT_API_RERANKER_SILICONFLOW_BASE_URL",
+  "HINDSIGHT_API_RERANKER_ALIBABA_API_KEY",
+  "HINDSIGHT_API_RERANKER_ALIBABA_MODEL",
+  "HINDSIGHT_API_RERANKER_ZEROENTROPY_API_KEY",
+  "HINDSIGHT_API_RERANKER_ZEROENTROPY_MODEL",
+  "HINDSIGHT_API_RERANKER_ZEROENTROPY_BASE_URL",
+  "HINDSIGHT_API_RERANKER_TEI_URL",
+] as const;
 
 /** Intentional diagnostics with fixed, secret-free wording suitable for the setup UI. */
 export class HindsightServiceError extends Error {
@@ -33,6 +104,8 @@ export interface LocalHindsightStatus {
   endpoint: string;
   version: string;
   model?: LocalHindsightModel;
+  embeddings?: HindsightEmbeddingsModel;
+  reranker?: HindsightRerankerModel;
   dataDirectory: string;
   phase: "absent" | "installing" | "stopped" | "verifying" | "ready" | "failed";
   error?: string;
@@ -46,7 +119,11 @@ export interface LocalHindsightConnection extends LocalHindsightStatus {
 export interface HindsightServiceCommand {
   commandId: string;
   model: LocalHindsightModel;
+  embeddings?: HindsightEmbeddingsModel;
+  reranker?: HindsightRerankerModel;
   apiKey?: string;
+  embeddingsApiKey?: string;
+  rerankerApiKey?: string;
   onProgress?: (phase: string) => void | Promise<void>;
 }
 export interface HindsightProcessOptions {
@@ -62,6 +139,8 @@ interface Manifest {
   label: string;
   port: number;
   model: LocalHindsightModel;
+  embeddings?: HindsightEmbeddingsModel;
+  reranker?: HindsightRerankerModel;
   phase: LocalHindsightStatus["phase"];
   commandId: string;
   configuredAt?: number;
@@ -74,6 +153,7 @@ interface RuntimeFile {
 }
 export interface HindsightLocalServiceOptions {
   stateDir: string;
+  bridgeFile?: string;
   integrationDir?: string;
   platform?: string;
   homeDir?: string;
@@ -88,18 +168,66 @@ export interface HindsightLocalServiceOptions {
 
 const xml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 const systemd = (value: string) => `"${value.replace(/%/g, "%%").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-const modelOrigin = (model: LocalHindsightModel) => new URL(model.baseUrl || MODEL_DEFAULT_URL[model.provider]).origin;
+const modelOrigin = (model: LocalHindsightModel) => model.provider === "kulo" ? `kulo:${model.connectionId ?? ""}` : new URL(model.baseUrl || MODEL_DEFAULT_URL[model.provider]).origin;
+const embeddingsOrigin = (model: HindsightEmbeddingsModel) => {
+  if (model.provider === "onnx") return "onnx";
+  if (model.provider === "tei") return new URL(model.baseUrl!).origin;
+  return new URL(model.baseUrl || EMBEDDINGS_DEFAULT_URL[model.provider]!).origin;
+};
+const rerankerOrigin = (model: HindsightRerankerModel) => {
+  if (model.provider === "onnx" || model.provider === "rrf") return model.provider;
+  if (model.provider === "tei") return new URL(model.baseUrl!).origin;
+  return new URL(model.baseUrl || RERANKER_DEFAULT_URL[model.provider]!).origin;
+};
+function cleanServiceUrl(raw: string, label: string): string {
+  let url: URL;
+  try { url = new URL(raw.trim()); } catch { throw new HindsightServiceError(`${label}无效。`); }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new HindsightServiceError(`${label}必须是不含凭据、查询参数的 HTTP(S) 地址。`);
+  if (url.protocol === "http:" && !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) throw new HindsightServiceError(`远端${label}必须使用 HTTPS。`);
+  return url.toString().replace(/\/+$/, "");
+}
 function modelConfig(raw: LocalHindsightModel): LocalHindsightModel {
   if (!raw || !PROVIDERS.has(raw.provider) || typeof raw.model !== "string" || !raw.model.trim() || raw.model.length > 200 || /[\x00-\x1f]/.test(raw.model)) throw new HindsightServiceError("请选择受支持的 Hindsight 模型供应商和模型。");
-  let baseUrl: string | undefined;
-  if (raw.baseUrl?.trim()) {
-    let url: URL;
-    try { url = new URL(raw.baseUrl.trim()); } catch { throw new HindsightServiceError("模型服务地址无效。"); }
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new HindsightServiceError("模型地址必须是不含凭据、查询参数的 HTTP(S) 地址。");
-    if (url.protocol === "http:" && !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) throw new HindsightServiceError("远端模型连接必须使用 HTTPS。");
-    baseUrl = url.toString().replace(/\/+$/, "");
+  if (raw.provider === "kulo") {
+    if (typeof raw.connectionId !== "string" || !raw.connectionId.trim() || raw.connectionId.length > 160 || /[\x00-\x1f]/.test(raw.connectionId)) throw new HindsightServiceError("请选择有效的 Kulo 模型连接。");
+    return { provider: "kulo", model: raw.model.trim(), connectionId: raw.connectionId.trim() };
   }
+  const baseUrl = raw.baseUrl?.trim() ? cleanServiceUrl(raw.baseUrl, "模型地址") : undefined;
   return { provider: raw.provider, model: raw.model.trim(), ...(baseUrl ? { baseUrl } : {}), ...(raw.connectionId ? { connectionId: raw.connectionId } : {}) };
+}
+function embeddingsConfig(raw?: HindsightEmbeddingsModel): HindsightEmbeddingsModel {
+  if (!raw) return { ...DEFAULT_LOCAL_EMBEDDINGS };
+  if (!EMBEDDINGS_PROVIDERS.has(raw.provider)) throw new HindsightServiceError("请选择受支持的向量模型（Embedding）供应商。");
+  const model = typeof raw.model === "string" && raw.model.trim() ? raw.model.trim() : undefined;
+  if (model && (model.length > 200 || /[\x00-\x1f]/.test(model))) throw new HindsightServiceError("向量模型名称无效。");
+  const baseUrl = raw.baseUrl?.trim() ? cleanServiceUrl(raw.baseUrl, "向量服务地址") : undefined;
+  if (raw.provider === "tei" && !baseUrl) throw new HindsightServiceError("TEI 向量服务必须填写服务地址。");
+  const dimensions = raw.dimensions !== undefined ? Math.trunc(raw.dimensions) : undefined;
+  if (dimensions !== undefined && (!Number.isSafeInteger(dimensions) || dimensions < 32 || dimensions > 8192)) throw new HindsightServiceError("向量维度必须在 32 到 8192 之间。");
+  const resolvedModel = model ?? (raw.provider === "onnx" ? DEFAULT_LOCAL_EMBEDDINGS.model : raw.provider === "openai" ? "text-embedding-3-small" : raw.provider === "google" ? "gemini-embedding-001" : raw.provider === "cohere" ? "embed-multilingual-v3.0" : undefined);
+  const resolvedDims = dimensions ?? (raw.provider === "onnx" && resolvedModel === DEFAULT_LOCAL_EMBEDDINGS.model ? DEFAULT_LOCAL_EMBEDDINGS.dimensions : undefined);
+  return {
+    provider: raw.provider,
+    ...(resolvedModel ? { model: resolvedModel } : {}),
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(raw.connectionId ? { connectionId: raw.connectionId } : {}),
+    ...(resolvedDims !== undefined ? { dimensions: resolvedDims } : {}),
+  };
+}
+function rerankerConfig(raw?: HindsightRerankerModel): HindsightRerankerModel {
+  if (!raw) return { ...DEFAULT_LOCAL_RERANKER };
+  if (!RERANKER_PROVIDERS.has(raw.provider)) throw new HindsightServiceError("请选择受支持的重排模型（Rerank）供应商。");
+  const model = typeof raw.model === "string" && raw.model.trim() ? raw.model.trim() : undefined;
+  if (model && (model.length > 200 || /[\x00-\x1f]/.test(model))) throw new HindsightServiceError("重排模型名称无效。");
+  const baseUrl = raw.baseUrl?.trim() ? cleanServiceUrl(raw.baseUrl, "重排服务地址") : undefined;
+  if (raw.provider === "tei" && !baseUrl) throw new HindsightServiceError("TEI 重排服务必须填写服务地址。");
+  const resolvedModel = model ?? (raw.provider === "onnx" ? DEFAULT_LOCAL_RERANKER.model : raw.provider === "cohere" ? "rerank-multilingual-v3.0" : raw.provider === "siliconflow" ? "BAAI/bge-reranker-v2-m3" : raw.provider === "alibaba" ? "qwen3-rerank" : raw.provider === "zeroentropy" ? "zerank-2" : undefined);
+  return {
+    provider: raw.provider,
+    ...(resolvedModel ? { model: resolvedModel } : {}),
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(raw.connectionId ? { connectionId: raw.connectionId } : {}),
+  };
 }
 
 async function runProcess(command: string, args: string[], options: HindsightProcessOptions): ReturnType<HindsightProcessRunner> {
@@ -123,6 +251,7 @@ async function runProcess(command: string, args: string[], options: HindsightPro
 export class HindsightLocalService {
   readonly root: string;
   readonly #options: HindsightLocalServiceOptions;
+  readonly #bridgeFile: string;
   readonly #platform: string;
   readonly #home: string;
   readonly #run: HindsightProcessRunner;
@@ -135,7 +264,9 @@ export class HindsightLocalService {
 
   constructor(options: HindsightLocalServiceOptions) {
     this.#options = options;
-    this.root = path.join(path.resolve(options.stateDir), "managed-hindsight");
+    const resolvedState = path.resolve(options.stateDir);
+    this.root = path.join(resolvedState, "managed-hindsight");
+    this.#bridgeFile = options.bridgeFile ?? path.join(resolvedState, MEMORY_LLM_BRIDGE_FILENAME);
     this.#platform = options.platform ?? process.platform;
     this.#home = options.homeDir ?? os.homedir();
     this.#run = options.run ?? runProcess;
@@ -285,7 +416,17 @@ export class HindsightLocalService {
     throw new HindsightServiceError("Hindsight 未在时限内启动，请检查托管服务日志后重试。");
   }
   #status(manifest: Manifest | undefined, running = false): LocalHindsightStatus {
-    return { installed: Boolean(manifest && manifest.phase !== "absent"), running, platform: this.#platform, deviceName: this.#options.deviceName ?? os.hostname(), endpoint: this.#endpoint(manifest), version: MANAGED_HINDSIGHT_VERSION, ...(manifest ? { model: manifest.model } : {}), dataDirectory: path.join(this.root, "home"), phase: manifest ? running && manifest.phase === "ready" ? "ready" : manifest.phase === "ready" ? "stopped" : manifest.phase : "absent" };
+    return {
+      installed: Boolean(manifest && manifest.phase !== "absent"),
+      running,
+      platform: this.#platform,
+      deviceName: this.#options.deviceName ?? os.hostname(),
+      endpoint: this.#endpoint(manifest),
+      version: MANAGED_HINDSIGHT_VERSION,
+      ...(manifest ? { model: manifest.model, embeddings: manifest.embeddings ?? { ...DEFAULT_LOCAL_EMBEDDINGS }, reranker: manifest.reranker ?? { ...DEFAULT_LOCAL_RERANKER } } : {}),
+      dataDirectory: path.join(this.root, "home"),
+      phase: manifest ? running && manifest.phase === "ready" ? "ready" : manifest.phase === "ready" ? "stopped" : manifest.phase : "absent",
+    };
   }
   #removedDuring(epoch: number): LocalHindsightStatus | undefined {
     return this.#removalStatus && (this.#removing || epoch !== this.#removalEpoch) ? { ...this.#removalStatus } : undefined;
@@ -332,16 +473,145 @@ export class HindsightLocalService {
   }
   #checkCommand(commandId: string) { if (typeof commandId !== "string" || !commandId.trim() || commandId.length > 200) throw new HindsightServiceError("部署操作标识无效。"); }
   #checkPlatform() { if (!["darwin", "linux"].includes(this.#platform)) throw new HindsightServiceError("本机托管部署目前支持 macOS 和 Linux 用户级服务。"); }
-  #modelEnv(model: LocalHindsightModel, apiKey?: string): Record<string, string> {
-    if (model.provider !== "ollama" && !apiKey?.trim()) throw new HindsightServiceError("请先通过保密输入配置 Hindsight 模型 API Key。");
-    if (apiKey && (apiKey.length > 16_384 || /[\x00-\x20\x7f]/.test(apiKey))) throw new HindsightServiceError("模型 API Key 格式无效。");
-    return { HINDSIGHT_API_LLM_PROVIDER: model.provider, HINDSIGHT_API_LLM_MODEL: model.model, HINDSIGHT_API_LLM_API_KEY: apiKey ?? "", HINDSIGHT_API_LLM_BASE_URL: model.baseUrl ?? "", HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS: "16000", HINDSIGHT_API_LLM_MAX_CONCURRENT: "2" };
+  #checkApiKey(apiKey: string | undefined, label: string, required: boolean) {
+    if (required && !apiKey?.trim()) throw new HindsightServiceError(`请先通过保密输入配置 ${label} API Key。`);
+    if (apiKey && (apiKey.length > 16_384 || /[\x00-\x20\x7f]/.test(apiKey))) throw new HindsightServiceError(`${label} API Key 格式无效。`);
+  }
+  #applyModelEnv(target: Record<string, string>, model: LocalHindsightModel, apiKey?: string): void {
+    if (model.provider === "kulo") {
+      delete target.HINDSIGHT_API_LLM_API_KEY;
+      target.HINDSIGHT_API_LLM_PROVIDER = KULO_BRIDGE_PROVIDER;
+      target.HINDSIGHT_API_LLM_MODEL = model.model;
+      target.HINDSIGHT_API_LLM_API_KEY = "";
+      target.HINDSIGHT_API_LLM_BASE_URL = "";
+      target.KULO_HINDSIGHT_MODEL_PROVIDER_ID = model.connectionId!;
+      target.KULO_HINDSIGHT_BRIDGE_FILE = this.#bridgeFile;
+      target.HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS = "16000";
+      target.HINDSIGHT_API_LLM_MAX_CONCURRENT = "2";
+      return;
+    }
+    this.#checkApiKey(apiKey, "Hindsight 模型", model.provider !== "ollama");
+    delete target.KULO_HINDSIGHT_MODEL_PROVIDER_ID;
+    delete target.KULO_HINDSIGHT_BRIDGE_FILE;
+    target.HINDSIGHT_API_LLM_PROVIDER = model.provider;
+    target.HINDSIGHT_API_LLM_MODEL = model.model;
+    target.HINDSIGHT_API_LLM_API_KEY = apiKey ?? "";
+    target.HINDSIGHT_API_LLM_BASE_URL = model.baseUrl ?? "";
+    target.HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS = "16000";
+    target.HINDSIGHT_API_LLM_MAX_CONCURRENT = "2";
+  }
+  #existingEmbeddingsApiKey(env: Record<string, string>, provider: HindsightEmbeddingsProvider): string | undefined {
+    if (provider === "openai") return env.HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY || undefined;
+    if (provider === "google") return env.HINDSIGHT_API_EMBEDDINGS_GEMINI_API_KEY || undefined;
+    if (provider === "cohere") return env.HINDSIGHT_API_EMBEDDINGS_COHERE_API_KEY || undefined;
+    return undefined;
+  }
+  #applyEmbeddingsEnv(target: Record<string, string>, embeddings: HindsightEmbeddingsModel, apiKey?: string): void {
+    for (const key of EMBEDDINGS_ENV_KEYS) delete target[key];
+    target.HINDSIGHT_API_EMBEDDINGS_PROVIDER = embeddings.provider;
+    if (embeddings.provider === "onnx") {
+      target.HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_ID = embeddings.model || DEFAULT_LOCAL_EMBEDDINGS.model!;
+      if (embeddings.dimensions !== undefined) target.HINDSIGHT_API_EMBEDDINGS_ONNX_DIMENSIONS = String(embeddings.dimensions);
+      target.HINDSIGHT_API_EMBEDDINGS_ONNX_THREADS = "2";
+      return;
+    }
+    if (embeddings.provider === "tei") {
+      target.HINDSIGHT_API_EMBEDDINGS_TEI_URL = embeddings.baseUrl!;
+      return;
+    }
+    this.#checkApiKey(apiKey, "向量模型（Embedding）", true);
+    if (embeddings.provider === "openai") {
+      target.HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY = apiKey!.trim();
+      target.HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL = embeddings.model || "text-embedding-3-small";
+      if (embeddings.baseUrl) target.HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL = embeddings.baseUrl;
+      if (embeddings.dimensions !== undefined) target.HINDSIGHT_API_EMBEDDINGS_OPENAI_DIMENSIONS = String(embeddings.dimensions);
+      return;
+    }
+    if (embeddings.provider === "google") {
+      target.HINDSIGHT_API_EMBEDDINGS_GEMINI_API_KEY = apiKey!.trim();
+      target.HINDSIGHT_API_EMBEDDINGS_GEMINI_MODEL = embeddings.model || "gemini-embedding-001";
+      if (embeddings.dimensions !== undefined) target.HINDSIGHT_API_EMBEDDINGS_GEMINI_OUTPUT_DIMENSIONALITY = String(embeddings.dimensions);
+      return;
+    }
+    if (embeddings.provider === "cohere") {
+      target.HINDSIGHT_API_EMBEDDINGS_COHERE_API_KEY = apiKey!.trim();
+      target.HINDSIGHT_API_EMBEDDINGS_COHERE_MODEL = embeddings.model || "embed-multilingual-v3.0";
+      if (embeddings.baseUrl) target.HINDSIGHT_API_EMBEDDINGS_COHERE_BASE_URL = embeddings.baseUrl;
+      if (embeddings.dimensions !== undefined) target.HINDSIGHT_API_EMBEDDINGS_COHERE_OUTPUT_DIMENSIONS = String(embeddings.dimensions);
+    }
+  }
+  #existingRerankerApiKey(env: Record<string, string>, provider: HindsightRerankerProvider): string | undefined {
+    if (provider === "cohere") return env.HINDSIGHT_API_RERANKER_COHERE_API_KEY || undefined;
+    if (provider === "siliconflow") return env.HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY || undefined;
+    if (provider === "alibaba") return env.HINDSIGHT_API_RERANKER_ALIBABA_API_KEY || undefined;
+    if (provider === "zeroentropy") return env.HINDSIGHT_API_RERANKER_ZEROENTROPY_API_KEY || undefined;
+    return undefined;
+  }
+  #applyRerankerEnv(target: Record<string, string>, reranker: HindsightRerankerModel, apiKey?: string): void {
+    for (const key of RERANKER_ENV_KEYS) delete target[key];
+    target.HINDSIGHT_API_RERANKER_PROVIDER = reranker.provider;
+    if (reranker.provider === "rrf") return;
+    if (reranker.provider === "onnx") {
+      target.HINDSIGHT_API_RERANKER_ONNX_MODEL_ID = reranker.model || DEFAULT_LOCAL_RERANKER.model!;
+      target.HINDSIGHT_API_RERANKER_ONNX_THREADS = "2";
+      return;
+    }
+    if (reranker.provider === "tei") {
+      target.HINDSIGHT_API_RERANKER_TEI_URL = reranker.baseUrl!;
+      return;
+    }
+    this.#checkApiKey(apiKey, "重排模型（Rerank）", true);
+    if (reranker.provider === "cohere") {
+      target.HINDSIGHT_API_RERANKER_COHERE_API_KEY = apiKey!.trim();
+      target.HINDSIGHT_API_RERANKER_COHERE_MODEL = reranker.model || "rerank-multilingual-v3.0";
+      if (reranker.baseUrl) target.HINDSIGHT_API_RERANKER_COHERE_BASE_URL = reranker.baseUrl;
+      return;
+    }
+    if (reranker.provider === "siliconflow") {
+      target.HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY = apiKey!.trim();
+      target.HINDSIGHT_API_RERANKER_SILICONFLOW_MODEL = reranker.model || "BAAI/bge-reranker-v2-m3";
+      if (reranker.baseUrl) target.HINDSIGHT_API_RERANKER_SILICONFLOW_BASE_URL = reranker.baseUrl;
+      return;
+    }
+    if (reranker.provider === "alibaba") {
+      target.HINDSIGHT_API_RERANKER_ALIBABA_API_KEY = apiKey!.trim();
+      target.HINDSIGHT_API_RERANKER_ALIBABA_MODEL = reranker.model || "qwen3-rerank";
+      return;
+    }
+    if (reranker.provider === "zeroentropy") {
+      target.HINDSIGHT_API_RERANKER_ZEROENTROPY_API_KEY = apiKey!.trim();
+      target.HINDSIGHT_API_RERANKER_ZEROENTROPY_MODEL = reranker.model || "zerank-2";
+      if (reranker.baseUrl) target.HINDSIGHT_API_RERANKER_ZEROENTROPY_BASE_URL = reranker.baseUrl;
+    }
+  }
+  async #syncSource(installIntoExistingVenv = false): Promise<string> {
+    const integration = this.#options.integrationDir ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../integrations/hindsight");
+    const source = path.join(this.root, "source");
+    await this.#regular(source);
+    if (installIntoExistingVenv) {
+      const currentToml = await fs.readFile(path.join(integration, "pyproject.toml"), "utf8");
+      const installedToml = await this.#regular(path.join(source, "pyproject.toml")) ? await fs.readFile(path.join(source, "pyproject.toml"), "utf8") : "";
+      const hasBridge = await this.#regular(path.join(source, "src", "kulo_hindsight", "bridge.py"));
+      if (currentToml === installedToml && hasBridge) return source;
+    }
+    await fs.mkdir(source, { recursive: true, mode: 0o700 });
+    await fs.cp(path.join(integration, "src"), path.join(source, "src"), { recursive: true, dereference: false, filter: (file) => !file.includes("__pycache__") && !file.endsWith(".pyc") });
+    await fs.copyFile(path.join(integration, "pyproject.toml"), path.join(source, "pyproject.toml"));
+    if (installIntoExistingVenv) {
+      await this.#command("uv", ["pip", "install", "--no-config", "--no-deps", "--python", this.#python, source], 300_000);
+    }
+    return source;
   }
   deploy(command: HindsightServiceCommand): Promise<LocalHindsightConnection> {
     return this.#exclusive(async () => {
       this.#checkCommand(command.commandId); this.#checkPlatform();
       const model = modelConfig(command.model);
-      const modelEnv = this.#modelEnv(model, command.apiKey);
+      const embeddings = embeddingsConfig(command.embeddings);
+      const reranker = rerankerConfig(command.reranker);
+      const stagedEnv: Record<string, string> = {};
+      this.#applyModelEnv(stagedEnv, model, command.apiKey);
+      this.#applyEmbeddingsEnv(stagedEnv, embeddings, command.embeddingsApiKey);
+      this.#applyRerankerEnv(stagedEnv, reranker, command.rerankerApiKey);
       let manifest = await this.#manifest();
       if (manifest?.phase === "ready") {
         if (manifest.commandId !== command.commandId) throw new HindsightServiceError("本机已由 Kulo 部署 Hindsight，请使用配置服务。");
@@ -351,36 +621,47 @@ export class HindsightLocalService {
       await this.#regular(this.root);
       await fs.chmod(this.root, 0o700);
       if (!manifest) {
-        manifest = { owner: OWNER, version: MANAGED_HINDSIGHT_VERSION, root: this.root, label: this.#label(), port: await this.#port(), model, phase: "installing", commandId: command.commandId, serviceSetupStarted: false };
+        manifest = { owner: OWNER, version: MANAGED_HINDSIGHT_VERSION, root: this.root, label: this.#label(), port: await this.#port(), model, embeddings, reranker, phase: "installing", commandId: command.commandId, serviceSetupStarted: false };
         await this.#saveManifest(manifest);
       } else if (manifest.phase === "absent") {
-        manifest = { ...manifest, model, phase: "installing", commandId: command.commandId, serviceSetupStarted: false };
+        manifest = { ...manifest, model, embeddings, reranker, phase: "installing", commandId: command.commandId, serviceSetupStarted: false };
         delete manifest.verificationId;
         await this.#saveManifest(manifest);
       } else if (manifest.phase === "failed" && manifest.commandId !== command.commandId) {
         await this.#stop(manifest);
-        manifest = { ...manifest, model, phase: "installing", commandId: command.commandId };
+        manifest = { ...manifest, model, embeddings, reranker, phase: "installing", commandId: command.commandId };
         delete manifest.verificationId;
         await this.#saveManifest(manifest);
       } else if (manifest.commandId !== command.commandId) throw new HindsightServiceError("已有未完成的 Hindsight 安装，请重试原操作。");
       const directories = ["home", "cache", "cache/uv", "python"];
       for (const directory of directories) { const target = path.join(this.root, directory); await this.#regular(target); await fs.mkdir(target, { recursive: true, mode: 0o700 }); }
       const existingRuntime = await this.#regular(this.#runtimePath) ? await this.#runtime() : undefined;
-      const env: Record<string, string> = { ...existingRuntime?.env,
-        ...modelEnv, KULO_HINDSIGHT_ROUTER_API_KEY: existingRuntime?.env.KULO_HINDSIGHT_ROUTER_API_KEY ?? randomBytes(32).toString("hex"), KULO_HINDSIGHT_WORKER_API_KEY: existingRuntime?.env.KULO_HINDSIGHT_WORKER_API_KEY ?? randomBytes(32).toString("hex"), KULO_HINDSIGHT_MANAGEMENT_API_KEY: existingRuntime?.env.KULO_HINDSIGHT_MANAGEMENT_API_KEY ?? randomBytes(32).toString("hex"),
-        KULO_HINDSIGHT_PRIVATE_BANK: "kulo-core", KULO_HINDSIGHT_SHARED_BANK: "kulo-shared", HINDSIGHT_API_DATABASE_URL: existingRuntime?.env.HINDSIGHT_API_DATABASE_URL ?? `pg0://kulo:${randomBytes(32).toString("hex")}@${manifest.label.replace(/\./g, "-")}`,
-        HINDSIGHT_API_HOST: "127.0.0.1", HINDSIGHT_API_PORT: String(manifest.port), HINDSIGHT_API_WORKER_ID: manifest.label, HINDSIGHT_API_MCP_ENABLED: "false", HINDSIGHT_API_LLM_TRACE_ENABLED: "false", HINDSIGHT_API_EMBEDDINGS_PROVIDER: "onnx", HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_ID: "intfloat/multilingual-e5-small", HINDSIGHT_API_EMBEDDINGS_ONNX_DIMENSIONS: "384", HINDSIGHT_API_EMBEDDINGS_ONNX_THREADS: "2", HINDSIGHT_API_RERANKER_PROVIDER: "onnx", HINDSIGHT_API_RERANKER_ONNX_MODEL_ID: "hindsight-ai/hs-rerank-1", HINDSIGHT_API_RERANKER_ONNX_THREADS: "2", HINDSIGHT_API_LOG_LEVEL: "WARNING", HINDSIGHT_API_WORKER_MAX_SLOTS: "2", HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS: "1" };
+      const env: Record<string, string> = {
+        ...existingRuntime?.env,
+        KULO_HINDSIGHT_ROUTER_API_KEY: existingRuntime?.env.KULO_HINDSIGHT_ROUTER_API_KEY ?? randomBytes(32).toString("hex"),
+        KULO_HINDSIGHT_WORKER_API_KEY: existingRuntime?.env.KULO_HINDSIGHT_WORKER_API_KEY ?? randomBytes(32).toString("hex"),
+        KULO_HINDSIGHT_MANAGEMENT_API_KEY: existingRuntime?.env.KULO_HINDSIGHT_MANAGEMENT_API_KEY ?? randomBytes(32).toString("hex"),
+        KULO_HINDSIGHT_PRIVATE_BANK: "kulo-core",
+        KULO_HINDSIGHT_SHARED_BANK: "kulo-shared",
+        HINDSIGHT_API_DATABASE_URL: existingRuntime?.env.HINDSIGHT_API_DATABASE_URL ?? `pg0://kulo:${randomBytes(32).toString("hex")}@${manifest.label.replace(/\./g, "-")}`,
+        HINDSIGHT_API_HOST: "127.0.0.1",
+        HINDSIGHT_API_PORT: String(manifest.port),
+        HINDSIGHT_API_WORKER_ID: manifest.label,
+        HINDSIGHT_API_MCP_ENABLED: "false",
+        HINDSIGHT_API_LLM_TRACE_ENABLED: "false",
+        HINDSIGHT_API_LOG_LEVEL: "WARNING",
+        HINDSIGHT_API_WORKER_MAX_SLOTS: "2",
+        HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS: "1",
+      };
+      this.#applyModelEnv(env, model, command.apiKey);
+      this.#applyEmbeddingsEnv(env, embeddings, command.embeddingsApiKey);
+      this.#applyRerankerEnv(env, reranker, command.rerankerApiKey);
       await this.#write(this.#runtimePath, JSON.stringify({ owner: OWNER, env } satisfies RuntimeFile));
       if (!await this.#regular(path.join(this.root, "service.log"))) await this.#write(path.join(this.root, "service.log"), "");
       try {
         await command.onProgress?.("检查安装环境");
         await this.#command("uv", ["--version"]);
-        const integration = this.#options.integrationDir ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../integrations/hindsight");
-        const source = path.join(this.root, "source");
-        await this.#regular(source);
-        await fs.mkdir(source, { recursive: true, mode: 0o700 });
-        await fs.cp(path.join(integration, "src"), path.join(source, "src"), { recursive: true, dereference: false, filter: (file) => !file.includes("__pycache__") && !file.endsWith(".pyc") });
-        await fs.copyFile(path.join(integration, "pyproject.toml"), path.join(source, "pyproject.toml"));
+        const source = await this.#syncSource(false);
         await command.onProgress?.("安装 Hindsight 与本地检索模型");
         await this.#command("uv", ["venv", "--no-project", "--no-config", "--managed-python", "--allow-existing", "--python", "3.12", path.join(this.root, "venv")], 300_000);
         await this.#command("uv", ["pip", "install", "--no-config", "--python", this.#python, `hindsight-api-slim[local-onnx,embedded-db]==${MANAGED_HINDSIGHT_VERSION}`, source], 1_800_000);
@@ -422,15 +703,33 @@ export class HindsightLocalService {
       const before = await this.#runtime();
       const model = modelConfig(command.model);
       const beforeModel = manifest.model;
-      const sameOrigin = modelOrigin(beforeModel) === modelOrigin(model) && beforeModel.provider === model.provider;
-      const apiKey = command.apiKey ?? (sameOrigin ? before.env.HINDSIGHT_API_LLM_API_KEY : undefined);
-      const after: RuntimeFile = { owner: OWNER, env: { ...before.env, ...this.#modelEnv(model, apiKey) } };
+      const sameModelOrigin = model.provider !== "kulo" && beforeModel.provider === model.provider && modelOrigin(beforeModel) === modelOrigin(model);
+      const apiKey = command.apiKey ?? (sameModelOrigin ? before.env.HINDSIGHT_API_LLM_API_KEY : undefined);
+
+      const beforeEmbeddings = manifest.embeddings ?? { ...DEFAULT_LOCAL_EMBEDDINGS };
+      const embeddings = embeddingsConfig(command.embeddings ?? beforeEmbeddings);
+      const sameEmbeddingsOrigin = beforeEmbeddings.provider === embeddings.provider && embeddingsOrigin(beforeEmbeddings) === embeddingsOrigin(embeddings);
+      const embeddingsApiKey = command.embeddingsApiKey ?? (sameEmbeddingsOrigin ? this.#existingEmbeddingsApiKey(before.env, embeddings.provider) : undefined);
+
+      const beforeReranker = manifest.reranker ?? { ...DEFAULT_LOCAL_RERANKER };
+      const reranker = rerankerConfig(command.reranker ?? beforeReranker);
+      const sameRerankerOrigin = beforeReranker.provider === reranker.provider && rerankerOrigin(beforeReranker) === rerankerOrigin(reranker);
+      const rerankerApiKey = command.rerankerApiKey ?? (sameRerankerOrigin ? this.#existingRerankerApiKey(before.env, reranker.provider) : undefined);
+
+      const nextEnv: Record<string, string> = { ...before.env };
+      this.#applyModelEnv(nextEnv, model, apiKey);
+      this.#applyEmbeddingsEnv(nextEnv, embeddings, embeddingsApiKey);
+      this.#applyRerankerEnv(nextEnv, reranker, rerankerApiKey);
+      const after: RuntimeFile = { owner: OWNER, env: nextEnv };
       await command.onProgress?.("更新记忆模型配置");
+      if (model.provider === "kulo") {
+        await this.#syncSource(true);
+      }
       await this.#write(backupPath, JSON.stringify({ owner: OWNER, commandId: command.commandId, manifest, runtime: before }));
       await this.#write(this.#runtimePath, JSON.stringify(after));
       try {
         await this.#start(manifest);
-        const candidate = { ...manifest, model, commandId: command.commandId, phase: "verifying" as const };
+        const candidate = { ...manifest, model, embeddings, reranker, commandId: command.commandId, phase: "verifying" as const };
         const connection = await this.#verify(candidate);
         await fs.unlink(backupPath);
         return connection;
@@ -499,7 +798,15 @@ export class HindsightLocalService {
   async #connection(manifest: Manifest, runtime: RuntimeFile): Promise<LocalHindsightConnection> {
     const status = await this.inspect();
     if (!status.running) throw new HindsightServiceError("Hindsight 服务未运行，请重试检查。");
-    return { ...status, model: manifest.model, routerApiKey: runtime.env.KULO_HINDSIGHT_ROUTER_API_KEY!, workerApiKey: runtime.env.KULO_HINDSIGHT_WORKER_API_KEY!, banks: { private: "kulo-core", shared: "kulo-shared" } };
+    return {
+      ...status,
+      model: manifest.model,
+      embeddings: manifest.embeddings ?? { ...DEFAULT_LOCAL_EMBEDDINGS },
+      reranker: manifest.reranker ?? { ...DEFAULT_LOCAL_RERANKER },
+      routerApiKey: runtime.env.KULO_HINDSIGHT_ROUTER_API_KEY!,
+      workerApiKey: runtime.env.KULO_HINDSIGHT_WORKER_API_KEY!,
+      banks: { private: "kulo-core", shared: "kulo-shared" },
+    };
   }
   verify(): Promise<LocalHindsightConnection> { return this.#exclusive(async () => { const manifest = await this.#manifest(); if (!manifest) throw new HindsightServiceError("没有可验证的本机 Hindsight 安装。"); return this.#verify(manifest); }); }
   uninstall(command: { commandId: string; deleteData?: boolean; onProgress?: (phase: string) => void | Promise<void> }): Promise<LocalHindsightStatus> {
@@ -525,10 +832,19 @@ export class HindsightLocalService {
       } else {
         // Retained databases stay recoverable, while model API keys are removed.
         const runtime = await this.#runtime();
-        delete runtime.env.HINDSIGHT_API_LLM_API_KEY;
-        delete runtime.env.KULO_HINDSIGHT_ROUTER_API_KEY;
-        delete runtime.env.KULO_HINDSIGHT_WORKER_API_KEY;
-        delete runtime.env.KULO_HINDSIGHT_MANAGEMENT_API_KEY;
+        for (const key of [
+          "HINDSIGHT_API_LLM_API_KEY",
+          "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
+          "HINDSIGHT_API_EMBEDDINGS_GEMINI_API_KEY",
+          "HINDSIGHT_API_EMBEDDINGS_COHERE_API_KEY",
+          "HINDSIGHT_API_RERANKER_COHERE_API_KEY",
+          "HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY",
+          "HINDSIGHT_API_RERANKER_ALIBABA_API_KEY",
+          "HINDSIGHT_API_RERANKER_ZEROENTROPY_API_KEY",
+          "KULO_HINDSIGHT_ROUTER_API_KEY",
+          "KULO_HINDSIGHT_WORKER_API_KEY",
+          "KULO_HINDSIGHT_MANAGEMENT_API_KEY",
+        ]) delete runtime.env[key];
         await this.#write(this.#runtimePath, JSON.stringify(runtime));
         for (const directory of ["venv", "source", "python", "cache", "home/.cache", "configuration-backup.json"]) await fs.rm(path.join(this.root, directory), { recursive: true, force: true });
         manifest.phase = "absent"; manifest.commandId = command.commandId; await this.#saveManifest(manifest);

@@ -405,3 +405,105 @@ describe("settings draft privacy", () => {
     expect(stored).toBeNull();
   });
 });
+
+describe("ambient awareness controls inside connections", () => {
+  it("renders notification switch, local acceleration entry, FDA guidance, and muted apps when assistant snapshot is supplied", () => {
+    const assistant = {
+      revision: 2,
+      enabled: true,
+      sources: [
+        {
+          driverId: "macos-notifications" as const,
+          envId: "local",
+          envName: "Mac Studio",
+          platform: "darwin",
+          enabled: true,
+          permission: "full_disk_access_required" as const,
+          mutedApps: ["com.example.ads"],
+        },
+      ],
+      mutedApps: ["com.example.ads"],
+      backgroundModel: {
+        mode: "auto" as const,
+        running: false,
+        revision: 1,
+      },
+      digestCount24h: 4,
+      localHost: true,
+    };
+
+    const localHtml = renderToStaticMarkup(
+      <ConnectionsModule
+        snapshot={snapshot}
+        loading={false}
+        error={null}
+        connected
+        onPrepare={async () => {}}
+        onRefresh={() => {}}
+        assistant={assistant}
+        onRequestAssistantAcceleration={() => {}}
+      />,
+    );
+    expect(localHtml).toContain("实时感知");
+    expect(localHtml).toContain("macOS 通知中心");
+    expect(localHtml).toContain("需要完全磁盘访问权限");
+    expect(localHtml).toContain("打开系统设置");
+    expect(localHtml).toContain("本机免费加速");
+    expect(localHtml).toContain("跟随当前模型");
+    expect(localHtml).toContain("已屏蔽应用");
+    expect(localHtml).toContain('aria-label="取消屏蔽 com.example.ads"');
+
+    // Remote-only FDA hides local "打开系统设置" button and names the remote Mac.
+    const remoteHtml = renderToStaticMarkup(
+      <ConnectionsModule
+        snapshot={snapshot}
+        loading={false}
+        error={null}
+        connected
+        onPrepare={async () => {}}
+        onRefresh={() => {}}
+        assistant={{
+          ...assistant,
+          localHost: false,
+          sources: [{ ...assistant.sources[0]!, envId: "macbook-1", envName: "MacBook Pro" }],
+        }}
+      />,
+    );
+    expect(remoteHtml).toContain("MacBook Pro");
+    expect(remoteHtml).not.toContain("打开系统设置");
+
+    // Full Phase 2-4 ecosystem rows (Spark Mail, Home Assistant, Lark dual-org) render cleanly inside the single grouped list.
+    const fullEcosystemHtml = renderToStaticMarkup(
+      <ConnectionsModule
+        snapshot={snapshot}
+        loading={false}
+        error={null}
+        connected
+        onPrepare={async () => {}}
+        onRefresh={() => {}}
+        assistant={{
+          ...assistant,
+          spark: { enabled: true, available: true, accountCount: 2, accessTier: "triage" },
+          homeAssistant: { enabled: true, connected: true, hasToken: true, curatedEntities: 18, filteredNoiseCount: 140 },
+          lark: {
+            enabled: true,
+            cliAvailable: true,
+            profiles: [
+              { name: "personal", ready: true, organizationKind: "personal" },
+              { name: "enterprise", ready: true, organizationKind: "enterprise" },
+            ],
+            selectedProfiles: ["personal", "enterprise"],
+          },
+        }}
+        onRequestAssistantAcceleration={() => {}}
+        onRequestAssistantPrompt={() => {}}
+      />,
+    );
+    expect(fullEcosystemHtml).toContain("Spark Mail");
+    expect(fullEcosystemHtml).toContain("已连接 · 2 账号");
+    expect(fullEcosystemHtml).toContain("米家 / Home Assistant");
+    expect(fullEcosystemHtml).toContain("已连接 · 18 设备");
+    expect(fullEcosystemHtml).toContain("飞书 (lark-cli)");
+    expect(fullEcosystemHtml).toContain("已连接 · 2 个组织");
+  });
+});

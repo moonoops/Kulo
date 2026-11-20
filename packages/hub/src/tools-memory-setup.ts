@@ -46,7 +46,7 @@ export function createMemorySetupExtension(get: () => MemorySetupHost) {
     tools: [
       defineTool({
         name: "kulo_memory_service_read",
-        description: "Read Hub host local Hindsight installation, running status, connection, job, and secret-input status plus reusable API model connections (never returns secrets). 关键词：Hindsight 长期记忆服务 安装状态 卸载 部署 检查本机记忆服务",
+        description: "Read Hub host local Hindsight installation, running status, understanding/embedding/reranker models, connection, job, and secret-input status plus all ready Kulo model connections (API Key, Vertex AI, and logged-in OAuth subscriptions; never returns secrets). 关键词：Hindsight 长期记忆服务 安装状态 卸载 部署 检查本机记忆服务 向量模型 重排模型 理解模型",
         parameters: obj({}),
         deferred: true,
         replay: "safe",
@@ -63,18 +63,29 @@ export function createMemorySetupExtension(get: () => MemorySetupHost) {
           const providers = await get().listProviders();
           await get().harness.commit(async (tx) => { (await tx.doc(SettingsAssistantDoc)).observedRevisions.memory = snapshot.revision; }, BACKGROUND_CONTEXT);
           const addTools = isSettings ? [] : await resolveDeferredAddTools(api, context, ["kulo_memory_service_prepare"]);
-          return {
-            ...output({ ...snapshot, apiConnections: providers.filter((provider) => provider.authType === "api_key").map((provider) => ({
-              id: provider.id, name: provider.name, baseUrl: provider.baseUrl,
+          const kuloConnections = providers
+            .filter((provider) => provider.authenticated && provider.models.length > 0)
+            .map((provider) => ({
+              id: provider.id,
+              name: provider.name,
+              authType: provider.authType,
+              baseUrl: provider.baseUrl,
+              memoryModelProvider: "kulo" as const,
               models: provider.models.slice(0, 40).map((model) => ({ id: model.id, name: model.name, api: model.api })),
-            })) }),
+            }));
+          return {
+            ...output({
+              ...snapshot,
+              kuloConnections,
+              apiConnections: kuloConnections.filter((provider) => provider.authType === "api_key"),
+            }),
             ...(addTools.length ? { control: { addTools } } : {}),
           };
         },
       }),
       defineTool({
         name: "kulo_memory_service_prepare",
-        description: "Manage Hub host local Hindsight: `deploy`, memory-model `configure`, `uninstall`, or toggle long-term memory `enable` / `disable` (with connection health check on `enable`; read status first via `kulo_memory_service_read`). In main chat, executes directly with main-Agent authority by default; set `ask_user=true` if you want a user confirmation card first (`config` JSON allows `model` or `deleteData` only, no secrets). 关键词：卸载 Hindsight 删除记忆服务 部署记忆服务 配置 Hindsight 开启长期记忆 关闭长期记忆 打开记忆开关",
+        description: "Manage Hub host local Hindsight: `deploy`, model `configure`, `uninstall`, or toggle long-term memory `enable` / `disable` (with connection health check on `enable`; read status first via `kulo_memory_service_read`). In main chat, executes directly with main-Agent authority by default; set `ask_user=true` for a user confirmation card. `config` JSON allows `model`, `embeddings`, `reranker`, or `deleteData` only (never secrets). For ANY ready Kulo connection (including Google Vertex AI, OpenAI/Anthropic/Gemini/proxies, or logged-in OAuth), pass `model: {\"provider\":\"kulo\",\"connectionId\":\"<id>\",\"model\":\"<modelId>\"}`. Standalone direct providers use `openai|anthropic|gemini|groq|ollama`. Optional `embeddings` (`onnx|openai|google|cohere|tei`) and `reranker` (`onnx|rrf|cohere|siliconflow|alibaba|zeroentropy|tei`) default to local ONNX. 关键词：卸载 Hindsight 删除记忆服务 部署记忆服务 配置 Hindsight 开启长期记忆 关闭长期记忆 打开记忆开关 配置向量模型 配置重排模型",
         parameters: obj({
           operation: oneOf(["deploy", "configure", "uninstall", "enable", "disable"]),
           config: opt(str()),
@@ -102,7 +113,7 @@ export function createMemorySetupExtension(get: () => MemorySetupHost) {
           }
           if (config && config.length > 8000) throw new Error("配置内容过长。");
           const value = config ? JSON.parse(config) as Record<string, unknown> : {};
-          if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["model", "deleteData"].includes(key))) throw new Error("配置字段无效；连接信息请在左侧表单填写，模型凭据请使用保密输入。");
+          if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["model", "embeddings", "reranker", "deleteData"].includes(key))) throw new Error("配置字段无效；仅支持 model、embeddings、reranker 或 deleteData，连接信息请在左侧表单填写，凭据请使用保密输入。");
           const commandId = memoryCommandId(api.callId);
           const snapshot = await get().memoryService.prepare({ ...value, operation, commandId, clientId, expectedRevision: revision } as MemoryServicePrepareRequest);
           if (isSettings) return output(snapshot);

@@ -19,8 +19,17 @@ afterEach(async () => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-function service(runner: AgentCliRunner) {
-  const instance = new ComputerUseService({ rootDir: directory(), platform: "darwin", browserEnabled: true, desktopEnabled: true, runner });
+function service(runner: AgentCliRunner, options: Partial<ConstructorParameters<typeof ComputerUseService>[0]> = {}) {
+  const instance = new ComputerUseService({
+    rootDir: directory(),
+    platform: "darwin",
+    browserEnabled: true,
+    desktopEnabled: true,
+    resolveBrowserExecutable: () => ({}),
+    checkMacosChromeBackgroundTasks: async () => "allowed",
+    ...options,
+    runner,
+  });
   cleanup.push(() => instance.close());
   return instance;
 }
@@ -99,6 +108,31 @@ describe("Env browser preview", () => {
     expect(await computer.request({ tool: "browser", action: "click", sessionId: "one", ref: "e1" })).toMatchObject({ ok: true });
     stop();
   });
+
+  it("explains macOS background-task Chrome kills on disconnect and leaves unavailable when connected returns", async () => {
+    const stream = await host();
+    let serverSocket: WebSocket | undefined;
+    stream.sockets.on("connection", (socket) => {
+      serverSocket = socket;
+      socket.send(JSON.stringify({ type: "frame", seq: 1, data: "/9j/2Q==", metadata: { timestamp: Date.now() } }));
+    });
+    const runner = vi.fn<AgentCliRunner>(async (invocation) => invocation.args.includes("stream")
+      ? { success: true, data: { enabled: true, port: stream.port, connected: true, screencasting: true } }
+      : { success: true, data: {} });
+    const computer = service(runner, { checkMacosChromeBackgroundTasks: async () => "disallowed" });
+    const updates: ComputerPreviewUpdate[] = [];
+    const stop = computer.subscribePreview({ tool: "browser", sessionId: "one" }, (update) => updates.push(update));
+    await computer.request({ tool: "browser", action: "open", sessionId: "one", url: "https://example.com" });
+    await vi.waitFor(() => expect(updates.at(-1)?.state).toBe("live"));
+    serverSocket!.send(JSON.stringify({ type: "status", connected: false, screencasting: true }));
+    await vi.waitFor(() => expect(updates.at(-1)).toMatchObject({
+      state: "unavailable",
+      message: expect.stringContaining("允许在后台"),
+    }));
+    serverSocket!.send(JSON.stringify({ type: "status", connected: true, screencasting: true }));
+    await vi.waitFor(() => expect(updates.at(-1)).toEqual({ state: "connecting" }));
+    stop();
+  });
 });
 
 describe("Env desktop preview", () => {
@@ -173,6 +207,26 @@ describe("Env desktop preview", () => {
     expect(fresh[0]?.frame).toBeUndefined();
     expect(runner.mock.calls.filter(([call]) => call.args.includes("screenshot"))).toHaveLength(1);
     unsubscribe();
+    stop();
+  });
+
+  it("reports accessibility permission requirement when desktop snapshot returns PERM_DENIED", async () => {
+    const runner = vi.fn<AgentCliRunner>(async () => ({
+      ok: false,
+      error: { code: "PERM_DENIED", message: "Accessibility permission not granted" },
+    }));
+    const computer = service(runner);
+    const updates: ComputerPreviewUpdate[] = [];
+    const stop = computer.subscribePreview({ tool: "desktop", sessionId: "perm" }, (update) => updates.push(update));
+    expect(await computer.request({ tool: "desktop", action: "snapshot", sessionId: "perm", app: "Finder" })).toMatchObject({
+      ok: false,
+      error: { code: "PERM_DENIED" },
+    });
+    expect(updates.at(-1)).toEqual({
+      state: "unavailable",
+      message: "需要辅助功能权限才能读取应用窗口",
+      permissionRequired: "accessibility",
+    });
     stop();
   });
 });

@@ -354,12 +354,26 @@ function nativeStream(
   return stream;
 }
 
+export interface NativeToolsBypassOptions {
+  /** Explicitly bypasses provider-native search/tool injection for zero-tool internal classifiers. */
+  disableNativeTools?: boolean;
+}
+
+export type NativeToolsSimpleStreamOptions = ModelsSimpleStreamOptions & NativeToolsBypassOptions;
+export type NativeToolsApiStreamOptions<TApi extends Api> = ModelsApiStreamOptions<TApi> & NativeToolsBypassOptions;
+
 /** Keep native tools scoped to the model selected for this generation, including workers. */
 export function withNativeToolsModels(models: Models, config: NativeToolsModelsOptions): Models {
   return new Proxy(models, {
     get(target, property) {
       if (["stream", "streamSimple", "complete", "completeSimple"].includes(String(property))) {
-        return (model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions | ModelsApiStreamOptions<Api>) => {
+        return (model: Model<Api>, context: Context, options?: NativeToolsSimpleStreamOptions | NativeToolsApiStreamOptions<Api>) => {
+          const bypass = Boolean(options?.disableNativeTools);
+          const cleanOptions = bypass && options ? (({ disableNativeTools: _ignore, ...rest }) => rest)(options) : options;
+          if (bypass) {
+            const member = target[property as "stream"] as (...args: unknown[]) => unknown;
+            return member.call(target, model, context, cleanOptions);
+          }
           // Saved settings can outlive an API change or a legacy plan migration.
           // Keep the agent's search function when this API cannot combine its tools.
           const compatible = supportsNativeWebSearch(model.api, model) &&
@@ -368,10 +382,10 @@ export function withNativeToolsModels(models: Models, config: NativeToolsModelsO
           const hasNativeHistory = model.api === "anthropic-messages" && context.messages.some((message) => message.role === "assistant" && message.provider === model.provider && message.api === model.api && message.model === model.id && (message as NativeSearchMessage).kuloNativeContent !== undefined);
           if (!webSearch && !hasNativeHistory) {
             const member = target[property as "stream"] as (...args: unknown[]) => unknown;
-            return member.call(target, model, context, options);
+            return member.call(target, model, context, cleanOptions);
           }
           const method = property === "streamSimple" || property === "completeSimple" ? "streamSimple" : "stream";
-          const result = nativeStream(target, method, model, context, options, config, webSearch);
+          const result = nativeStream(target, method, model, context, cleanOptions, config, webSearch);
           return property === "complete" || property === "completeSimple" ? result.result() : result;
         };
       }

@@ -83,16 +83,27 @@ import { createMediaToolsExtension } from "./tools-media.js";
 import { createMediaExportExtension } from "./tools-media-export.js";
 import { createMemoryLifecycleExtension } from "./memory-lifecycle.js";
 import { HindsightLocalService } from "./hindsight-service.js";
+import { MemoryLlmBridge } from "./memory-llm-bridge.js";
 import { KuloMemoryService, MemoryServiceDoc, createMemoryServiceExtension } from "./memory-service.js";
 import { createMemorySetupExtension } from "./tools-memory-setup.js";
 import { KuloExtensions, createExtensionsExtension, type ExtensionPackageExecutor } from "./extensions.js";
 import { createExtensionSetupExtension } from "./tools-extensions.js";
 import { KuloConversationHistory } from "./conversation-history.js";
 import { ConversationQueries } from "./conversation-query.js";
-import type { ConversationSearchInput, MemoryServiceJob } from "@kulo/protocol";
+import type { ConversationSearchInput, MainSessionNotificationEvent, MemoryServiceJob } from "@kulo/protocol";
 import { topicActivity } from "./topic-activity.js";
+import { createTopicNotificationBaseline, detectMainSessionNotification, type TopicNotificationBaseline } from "./session-notifications.js";
 import { listTaskDeliverables, readTaskDeliverable, reportFileReferences, taskDeliverableError, TaskDeliverableError, type TaskDeliverableOptions } from "./task-deliverables.js";
 import { createHistoryToolsExtension } from "./tools-history.js";
+import { AssistantDoc, ensureAssistantState } from "./assistant-state.js";
+import { AssistantLedger } from "./assistant-ledger.js";
+import { AmbientModelService } from "./ambient-model-service.js";
+import { AssistantSorter } from "./assistant-sorter.js";
+import { AssistantCoordinator } from "./assistant-coordinator.js";
+import { createAssistantToolsExtension } from "./tools-assistant.js";
+import { SparkMailService } from "./connectors/spark-mail-service.js";
+import { HomeAssistantService } from "./connectors/home-assistant.js";
+import { LarkConnectorService } from "./connectors/lark-connector.js";
 import { ContextCompactionDoc, createContextCompactionController, validateBillionKernel, type BillionKernelRuntime } from "./context-compaction.js";
 import { type LoadedBillionContextPackage } from "./extension-packages.js";
 import { stageProjectSkillSource } from "./skill-source-env.js";
@@ -105,6 +116,11 @@ import {
   getMessageParts,
   getUiSpecFields,
   redactSensitiveText,
+  type AmbientLocalEngine,
+  type AssistantItemView,
+  type AssistantWorkspaceSnapshot,
+  type ConnectorBatchAck,
+  type ConnectorEventBatch,
   type AgentExpressionState,
   type AgentFace,
   type ChatAttachment,
@@ -975,11 +991,13 @@ export interface HubEventListener {
   onProjects?: (projects: ProjectView[]) => void;
   onTickets?: (tickets: TicketCardView[], slots: SlotSummary) => void;
   onTicketDelta?: (delta: TicketBoardDelta, snapshot: () => ReturnType<TicketBoardProjection["snapshot"]>) => void;
+  onAssistantItems?: (assistantRevision: number, items: AssistantItemView[]) => void;
   onEnvs?: (envs: EnvNodeDescriptor[]) => void;
   onExpression?: (expression: AgentExpressionState | null) => void;
   onSettings?: (settings: KuloSettingsView) => void;
   onSettingsAssistant?: (snapshot: SettingsAssistantSnapshot) => void;
   onUiCard?: (card: UiCardSnapshot) => void;
+  onNotification?: (event: MainSessionNotificationEvent) => void;
 }
 
 interface WatchedTopicCache {
@@ -988,6 +1006,7 @@ interface WatchedTopicCache {
   watch: ConversationWatch;
   messages: ChatDisplayItem[];
   live: LiveStreamState;
+  notificationBaseline: TopicNotificationBaseline;
 }
 
 type TopicView = Pick<WatchedTopicCache, "topicId" | "messages" | "live"> & { historyBefore?: number };
@@ -1057,9 +1076,17 @@ export class KuloHub implements OrchestratorController {
   readonly voiceCalls: KuloVoiceCalls;
   readonly #voiceTranscriptions = new Map<string, Promise<ChatAttachment>>();
   readonly mediaJobs: KuloMediaJobs;
+  readonly memoryLlmBridge: MemoryLlmBridge;
   readonly memoryService: KuloMemoryService;
   readonly extensions: KuloExtensions;
   readonly history: KuloConversationHistory;
+  readonly assistantLedger: AssistantLedger;
+  readonly ambientModel: AmbientModelService;
+  readonly assistantSorter: AssistantSorter;
+  readonly assistantCoordinator: AssistantCoordinator;
+  readonly sparkMail: SparkMailService;
+  readonly homeAssistant: HomeAssistantService;
+  readonly larkConnector: LarkConnectorService;
   readonly connectionManager: KuloConnections;
   readonly connections: ConnectionToolController;
 
@@ -1097,6 +1124,7 @@ export class KuloHub implements OrchestratorController {
   readonly #memorySetupExt: ReturnType<typeof createMemorySetupExtension>;
   readonly #redactionExt: ReturnType<typeof createCredentialRedactionExtension>;
   readonly #historyExt: ReturnType<typeof createHistoryToolsExtension>;
+  readonly #assistantToolsExt: ReturnType<typeof createAssistantToolsExtension>;
   readonly #customizationExtensions: ReturnType<typeof createCustomizationToolsExtension>[];
   #customizationService: Promise<KuloCustomizationService> | undefined;
   #customizationInstance: KuloCustomizationService | undefined;
@@ -1106,6 +1134,7 @@ export class KuloHub implements OrchestratorController {
   #contextEnabled = false;
   #ttsEnabled = false;
   #webSearchAvailable = true;
+  #assistantActive = false;
   #computerUseSettings: ComputerUseSettings = { browserEnabled: true, desktopEnabled: true };
   readonly #contextPreferenceUpdates = new Set<Promise<void>>();
   #envTransition: Promise<void> = Promise.resolve();
@@ -1114,6 +1143,7 @@ export class KuloHub implements OrchestratorController {
   readonly #subagentBatches = new Map<number, Promise<void>>();
   readonly #listeners = new Set<HubEventListener>();
   readonly #topicCaches = new Map<string, WatchedTopicCache>();
+  readonly #topicTitleCache = new Map<string, string>();
   #queryService?: ConversationQueries;
   readonly #chatAdmissions = new Map<string, Promise<unknown>>();
   readonly #deliveryAdmissions = new Map<string, Promise<unknown>>();
@@ -1195,6 +1225,7 @@ export class KuloHub implements OrchestratorController {
     extensionsExt: ReturnType<typeof createExtensionsExtension>;
     extensionSetupExt: ReturnType<typeof createExtensionSetupExtension>;
     historyExt: ReturnType<typeof createHistoryToolsExtension>;
+    assistantToolsExt: ReturnType<typeof createAssistantToolsExtension>;
     contextCompaction: ReturnType<typeof createContextCompactionController>;
     extensionPackages?: ExtensionPackageExecutor;
     connectionManager: KuloConnections;
@@ -1267,25 +1298,201 @@ export class KuloHub implements OrchestratorController {
     this.#memorySetupExt = params.memorySetupExt;
     this.#memoryLifecycleExt = params.memoryLifecycleExt;
     this.#historyExt = params.historyExt;
+    this.#assistantToolsExt = params.assistantToolsExt;
     this.#customizationExtensions = params.customizationExt ? [params.customizationExt] : [];
     this.#contextCompaction = params.contextCompaction;
     this.history = new KuloConversationHistory({ harness: this.harness, stateDir: this.config.stateDir });
+    this.assistantLedger = new AssistantLedger({ stateDir: this.config.stateDir });
+    const redactAssistantText = (text: string): string =>
+      this.connectionManager.redact(redactSensitiveText(text));
+    this.ambientModel = new AmbientModelService({
+      stateDir: this.config.stateDir,
+      models: this.#models,
+      defaultModel: () => this.#resolveOrchestratorAgent().model,
+      persistedConfig: async () => {
+        const snap = await this.harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT);
+        return snap?.backgroundModel ?? { mode: "auto", revision: 1 };
+      },
+      saveConfig: async (next) => {
+        await this.harness.commit(async (tx) => {
+          const doc = await tx.doc(AssistantDoc);
+          ensureAssistantState(doc);
+          doc.backgroundModel = next;
+          doc.revision += 1;
+        }, BACKGROUND_CONTEXT);
+      },
+      redact: redactAssistantText,
+    });
+    this.sparkMail = new SparkMailService({
+      listOnlineEnvs: () => this.envManager.listEnvs(),
+      callConnector: (envId, request, timeoutMs) => this.envManager.callConnector(envId, request, timeoutMs),
+      isEnabled: async () => {
+        const snap = await this.harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT);
+        return Boolean(snap?.spark?.enabled);
+      },
+      redact: redactAssistantText,
+    });
+    this.homeAssistant = new HomeAssistantService({
+      vault: this.connectionManager.localVault,
+      persistedConfig: async () => {
+        const snap = await this.harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT);
+        return snap?.homeAssistant ?? { enabled: false };
+      },
+      saveConfig: async (next) => {
+        await this.harness.commit(async (tx) => {
+          const doc = await tx.doc(AssistantDoc);
+          ensureAssistantState(doc);
+          doc.homeAssistant = {
+            enabled: next.enabled,
+            ...(next.baseUrl ? { baseUrl: next.baseUrl } : {}),
+          };
+          doc.revision += 1;
+        }, BACKGROUND_CONTEXT);
+      },
+      redact: redactAssistantText,
+      onAlertEvent: (event) => {
+        void this.#ingestInternalAssistantEvents("home-assistant", [event]).catch(() => {});
+      },
+    });
+    this.larkConnector = new LarkConnectorService({
+      persistedConfig: async () => {
+        const snap = await this.harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT);
+        return snap?.lark ?? { enabled: false, selectedProfiles: [] };
+      },
+      saveConfig: async (next) => {
+        await this.harness.commit(async (tx) => {
+          const doc = await tx.doc(AssistantDoc);
+          ensureAssistantState(doc);
+          doc.lark = { enabled: next.enabled, selectedProfiles: [...next.selectedProfiles] };
+          doc.revision += 1;
+        }, BACKGROUND_CONTEXT);
+      },
+      redact: redactAssistantText,
+      onEvents: async (profile, events) => {
+        await this.#ingestInternalAssistantEvents("lark-cli", events, `lark:${profile}`);
+      },
+    });
+    this.assistantCoordinator = new AssistantCoordinator({
+      harness: this.harness,
+      ledger: this.assistantLedger,
+      ambientModel: this.ambientModel,
+      agentName: () => this.#liveSettings.presentation.agentName,
+      envDisplayName: (envId) => this.envManager.getEnvDescriptor(envId)?.name,
+      isForegroundBusy: () => {
+        if (this.voiceCalls.hasActiveCalls()) return true;
+        for (const cache of this.#topicCaches.values()) {
+          if (cache.live.busy) return true;
+        }
+        return false;
+      },
+      redact: redactAssistantText,
+      createDetachedOrchestratorConversation: async (ctx) => {
+        const orchestratorAgent = this.#resolveOrchestratorAgent();
+        const conv = await this.harness.createConversation(
+          {
+            ownership: { kind: "ownerless" },
+            agent: {
+              model: orchestratorAgent.model,
+              thinkingLevel: orchestratorAgent.thinkingLevel,
+              extensions: this.#orchestratorExtensions(false),
+              tools: this.#orchestratorTools(false),
+              cwd: this.#mainWorkspaceDir,
+              maxTurns: 25,
+            },
+          },
+          ctx,
+        );
+        return { id: conv.id };
+      },
+      onItemsChanged: (revision, items) => this.#emitAssistantItems(revision, items),
+      onTopicsChanged: (topics) => this.#emitTopics(topics),
+      onMutedAppsChanged: (mutedApps) => {
+        void this.harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT).then((snap) => {
+          this.envManager.setConnectorConfig({
+            driverId: "macos-notifications",
+            enabled: Boolean(snap?.enabled),
+            mutedApps,
+          });
+        }).catch(() => {});
+      },
+      executePendingAction: async (action) => {
+        if (action.kind === "spark_create_draft") {
+          const body = typeof action.params.body === "string" ? action.params.body : "";
+          const res = await this.sparkMail.executeConfirmedDraft(
+            {
+              ...(typeof action.params.replyToThreadId === "string" ? { replyToThreadId: action.params.replyToThreadId } : {}),
+              ...(typeof action.params.to === "string" ? { to: action.params.to } : {}),
+              ...(typeof action.params.subject === "string" ? { subject: action.params.subject } : {}),
+              body,
+            },
+            action.envId,
+          );
+          return { ok: res.ok, ...(res.error ? { error: res.error } : {}) };
+        }
+        if (action.kind === "ha_call_service") {
+          const domain = typeof action.params.domain === "string" ? action.params.domain : "";
+          const service = typeof action.params.service === "string" ? action.params.service : "";
+          const entityId = typeof action.params.entityId === "string" ? action.params.entityId : undefined;
+          await this.homeAssistant.callService({
+            domain,
+            service,
+            ...(entityId ? { entityId } : {}),
+            triggerSource: "user_confirmed_l2",
+          });
+          return { ok: true };
+        }
+        if (action.kind === "lark_send_reply") {
+          return this.larkConnector.executeConfirmedReply({
+            ...(typeof action.params.profile === "string" ? { profile: action.params.profile } : {}),
+            chatId: typeof action.params.chatId === "string" ? action.params.chatId : "",
+            text: typeof action.params.text === "string" ? action.params.text : "",
+          });
+        }
+        return { ok: false, error: "不支持的待确认动作类型。" };
+      },
+    });
+    this.assistantSorter = new AssistantSorter({
+      ledger: this.assistantLedger,
+      ambientModel: this.ambientModel,
+      redact: redactAssistantText,
+      onNotifyBrain: (payload) => this.assistantCoordinator.enqueueEscalation(payload),
+    });
+    this.envManager.setConnectorHandlers({
+      onEvents: (envId, batch) => this.#ingestConnectorBatch(envId, batch),
+    });
     this.extensions = new KuloExtensions({
       harness: this.harness, stateDir: this.config.stateDir, operationTask: params.extensionsExt.operationTask,
       packages: params.extensionPackages,
       compaction: { enable: () => this.#enableContextExtension(), stop: () => this.#stopContextExtension() },
       onChange: () => { void this.#broadcastCapabilities().catch((error: unknown) => console.error("[KuloExtensions]", this.connectionManager.redact(error instanceof Error ? error.message : String(error)))); },
     });
+    this.memoryLlmBridge = new MemoryLlmBridge({
+      stateDir: this.config.stateDir,
+      models: this.#models,
+      redact: (value) => this.connectionManager.redact(value),
+    });
     this.memoryService = new KuloMemoryService({
       harness: this.harness, operationTask: params.memoryServiceExt.operationTask,
-      local: new HindsightLocalService({ stateDir: this.config.stateDir }),
+      local: new HindsightLocalService({ stateDir: this.config.stateDir, bridgeFile: this.memoryLlmBridge.descriptorPath }),
       credentials: params.credentialStore,
       settings: () => this.getSettingsView(), memory: () => this.#liveSettings.memory,
       validateMemory: (memory) => assertMemoryIdentitySeparation(memory, this.config, this.envManager),
       applied: async (doc) => { await this.#applyLiveSettings(doc, BACKGROUND_CONTEXT); this.#emitSettings(this.getSettingsView()); },
+      validateKuloModel: async (connectionId, modelId) => {
+        const providers = await this.listProviders();
+        const provider = providers.find((item) => item.id === connectionId);
+        if (!provider) return { ok: false, error: `未找到模型连接 ${connectionId}，请先在「模型」设置添加。` };
+        if (!provider.authenticated) return { ok: false, error: `模型连接「${provider.name}」尚未配置凭据或未登录，请先在「模型」设置完成授权。` };
+        if (!this.#models.getModel(connectionId, modelId)) return { ok: false, error: `模型连接「${provider.name}」下未找到对话模型 ${modelId}。` };
+        return { ok: true };
+      },
       resolveModelCredential: async (model) => {
+        if (model.provider === "kulo") return undefined;
         const defaults = { openai: "https://api.openai.com/v1", anthropic: "https://api.anthropic.com", gemini: "https://generativelanguage.googleapis.com", groq: "https://api.groq.com/openai/v1", ollama: "http://127.0.0.1:11434" };
         return model.connectionId ? this.#providerManager?.resolveServiceApiKey(model.connectionId, model.model, model.baseUrl ?? defaults[model.provider]) : undefined;
+      },
+      resolveServiceCredential: async (connectionId, modelId, baseUrl) => {
+        return this.#providerManager?.resolveProbeApiKey(connectionId, baseUrl) ?? this.#providerManager?.resolveServiceApiKey(connectionId, modelId, baseUrl);
       },
     });
     this.skills = new KuloSkills({ harness: this.harness, stateDir: this.config.stateDir, onChanged: () => this.#broadcastCapabilities(),
@@ -1609,6 +1816,7 @@ export class KuloHub implements OrchestratorController {
         params.voiceExt,
         params.memoryServiceExt,
         params.historyExt,
+        params.assistantToolsExt,
         params.contextCompaction.extension,
       ],
       settingsTierExtension: params.settingsTierExt,
@@ -2278,6 +2486,9 @@ export class KuloHub implements OrchestratorController {
       onInlineCandidateSettled: (ticketId) => {
         if (hubRef) hubRef.#notifyInlineWaiters(ticketId);
       },
+      onOriginConversationRelayed: async (originConvId, ctx) => {
+        if (hubRef) await hubRef.#ensureTopicWatchedByConversation(originConvId, ctx);
+      },
     });
 
     const schedulerExt = defineExtension({
@@ -2383,6 +2594,8 @@ export class KuloHub implements OrchestratorController {
     });
     const agentConfigurationExt = createAgentConfigurationToolsExtension({ service: {
       workspace: (...args) => hubRef!.agentConfiguration.workspace(...args),
+      scan: (...args) => hubRef!.agentConfiguration.scan(...args),
+      quickConnect: (...args) => hubRef!.agentConfiguration.quickConnect(...args),
       prepare: (...args) => hubRef!.agentConfiguration.prepare(...args),
       updateDraft: (...args) => hubRef!.agentConfiguration.updateDraft(...args),
       detect: (...args) => hubRef!.agentConfiguration.detect(...args),
@@ -2454,17 +2667,13 @@ export class KuloHub implements OrchestratorController {
           let platform: string | undefined;
           let capabilities: string[] = [];
           if (requirements.targetDevice) {
-            try {
-              const resolved = await hubRef!.#resolveOrchestratorTargetEnvId(
-                Number(api.conversationId),
-                undefined,
-                context,
-              );
-              platform = resolved.descriptor.platform;
-              capabilities = filterComputerCaps(resolved.descriptor.capabilities);
-            } catch {
-              capabilities = [];
-            }
+            const target = await hubRef!.#resolveOrchestratorSkillTarget(
+              Number(api.conversationId),
+              api.taskId !== undefined ? Number(api.taskId) : undefined,
+              context,
+            );
+            platform = target.platform;
+            capabilities = filterComputerCaps(target.capabilities);
           }
           return {
             ...(platform ? { platform } : {}),
@@ -2601,6 +2810,20 @@ export class KuloHub implements OrchestratorController {
     const extensionsExt = createExtensionsExtension(() => hubRef!.extensions);
     const extensionSetupExt = createExtensionSetupExtension(() => hubRef!);
     const historyExt = createHistoryToolsExtension(() => hubRef!.history);
+    const assistantToolsExt = createAssistantToolsExtension(() => ({
+      ledger: hubRef!.assistantLedger,
+      sparkMail: hubRef!.sparkMail,
+      homeAssistant: hubRef!.homeAssistant,
+      larkConnector: hubRef!.larkConnector,
+      redact: (text) => hubRef!.connectionManager.redact(redactSensitiveText(text)),
+      workspaceSnapshot: () => hubRef!.getAssistantWorkspace(),
+      configureNotifications: (input) => hubRef!.configureAssistantNotifications(input),
+      configureSpark: (input) => hubRef!.configureAssistantSpark(input),
+      configureHomeAssistant: (input) => hubRef!.configureAssistantHomeAssistant(input),
+      configureLark: (input) => hubRef!.configureAssistantLark(input),
+      proposeDecisionCard: (input) => hubRef!.assistantCoordinator.proposeDecisionCard(input),
+      configureBackgroundModel: (input) => hubRef!.configureAssistantBackgroundModel(input),
+    }));
     const toolSearchExt = createToolSearchExtension();
     const androidExt = createAndroidToolsExtension({
       hubId: () => {
@@ -2678,6 +2901,7 @@ export class KuloHub implements OrchestratorController {
     registry.install(extensionsExt);
     registry.install(extensionSetupExt);
     registry.install(historyExt);
+    registry.install(assistantToolsExt);
     registry.install(contextCompaction.extension);
 
     const harness = await Harness.open(
@@ -2825,7 +3049,7 @@ export class KuloHub implements OrchestratorController {
       agent: {
         model: orchestratorAgent.model,
         thinkingLevel: orchestratorAgent.thinkingLevel,
-        extensions: [redactionExt, orchestratorExt, codingToolsExt, orchestratorGuardExt, computerUseExt, toolSearchExt, contentExt, projectExt, skillExt, orchestratorTailExt, mediaExt, voiceExt, memoryServiceExt, memorySetupExt, historyExt, globalSettingsExt, ...(customizationExt ? [customizationExt] : []), contextCompaction.extension],
+        extensions: [redactionExt, orchestratorExt, codingToolsExt, orchestratorGuardExt, computerUseExt, toolSearchExt, contentExt, projectExt, skillExt, orchestratorTailExt, mediaExt, voiceExt, memoryServiceExt, memorySetupExt, historyExt, assistantToolsExt, globalSettingsExt, ...(customizationExt ? [customizationExt] : []), contextCompaction.extension],
         cwd: mainWorkspaceDir,
         maxTurns: 25,
       },
@@ -2835,7 +3059,7 @@ export class KuloHub implements OrchestratorController {
       {
         model: orchestratorAgent.model,
         thinkingLevel: orchestratorAgent.thinkingLevel,
-        extensions: [redactionExt, orchestratorExt, codingToolsExt, orchestratorGuardExt, computerUseExt, toolSearchExt, contentExt, projectExt, skillExt, orchestratorTailExt, mediaExt, voiceExt, memoryServiceExt, memorySetupExt, historyExt, globalSettingsExt, ...(customizationExt ? [customizationExt] : []), contextCompaction.extension],
+        extensions: [redactionExt, orchestratorExt, codingToolsExt, orchestratorGuardExt, computerUseExt, toolSearchExt, contentExt, projectExt, skillExt, orchestratorTailExt, mediaExt, voiceExt, memoryServiceExt, memorySetupExt, historyExt, assistantToolsExt, globalSettingsExt, ...(customizationExt ? [customizationExt] : []), contextCompaction.extension],
         cwd: mainWorkspaceDir,
         maxTurns: 25,
       },
@@ -2892,6 +3116,7 @@ export class KuloHub implements OrchestratorController {
       extensionPackages: init.extensionPackages,
       extensionSetupExt,
       historyExt,
+      assistantToolsExt,
       contextCompaction,
       connectionManager,
       connections,
@@ -2921,6 +3146,25 @@ export class KuloHub implements OrchestratorController {
     await hub.voice.initialize({ prepareAsr: false });
     await hub.#syncProviderVoiceModels();
     hub.#ttsEnabled = (await hub.voice.snapshot()).tts.enabled;
+    const assistantSnap = await harness.snapshot(AssistantDoc, context);
+    hub.#assistantActive = Boolean(
+      assistantSnap?.enabled ||
+        assistantSnap?.spark?.enabled ||
+        assistantSnap?.homeAssistant?.enabled ||
+        assistantSnap?.lark?.enabled ||
+        (await hub.assistantLedger.hasAnyRecords()),
+    );
+    await hub.ambientModel.start();
+    await hub.homeAssistant.start().catch(() => {});
+    await hub.larkConnector.start().catch(() => {});
+    if (assistantSnap?.enabled) {
+      envManager.setConnectorConfig({
+        driverId: "macos-notifications",
+        enabled: true,
+        mutedApps: assistantSnap.mutedApps ?? [],
+      });
+    }
+    void hub.assistantLedger.pruneExpiredBodies().catch(() => {});
     bootSettings = hub.#liveSettings;
 
     await hub.#ensureTopicWatched("root", rootConversation, context);
@@ -2931,6 +3175,7 @@ export class KuloHub implements OrchestratorController {
     ]);
     const activeConversations = new Set(unfinished.submissions.map((submission) => Number(submission.conversationId)));
     for (const topic of Object.values(topicState?.topics ?? {})) {
+      if (!topic.deletedAt && topic.title) hub.#topicTitleCache.set(topic.id, topic.title);
       if (topic.deletedAt || !activeConversations.has(topic.conversationId) || hub.#topicCaches.has(topic.id)) continue;
       const conversation = await harness.conversation(topic.conversationId as ConversationId, context);
       if (conversation) await hub.#ensureTopicWatched(topic.id, conversation, context);
@@ -3005,15 +3250,21 @@ export class KuloHub implements OrchestratorController {
   async listComputerPreviews(topicId: string): Promise<ComputerPreviewSessionView[]> {
     if (this.#closed || !topicId || topicId.length > 256) return [];
     const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-    const topic = state?.topics?.[topicId];
-    if (!topic || topic.deletedAt) return [];
+    const allTopics = topicId === "*";
+    if (!allTopics) {
+      const topic = state?.topics?.[topicId];
+      if (!topic || topic.deletedAt) return [];
+    }
     const sessions: ComputerPreviewSessionView[] = [];
     for (const [key, session] of this.#computerSessions) {
       const scope = resolveTicketExecutionScope(state, session.conversationId as ConversationId);
       const ticket = scope?.ticket;
       const env = this.envManager.getEnvDescriptor(session.envId);
+      const originTopicId = ticket ? (ticket.originTopicId ?? "root") : undefined;
+      const originTopic = originTopicId ? state?.topics?.[originTopicId] : undefined;
       if (!ticket || ticket.id !== session.ticketId || ticket.status !== "running" || ticket.runEpoch !== session.runEpoch
-        || ticket.envId !== session.envId || (ticket.originTopicId ?? "root") !== topicId
+        || ticket.envId !== session.envId || !originTopic || originTopic.deletedAt
+        || (!allTopics && originTopicId !== topicId)
         || scope.subagent && scope.subagent.state !== "running" || !env?.online
         || !env.capabilities.includes(`agent-${session.tool}`)) continue;
       sessions.push({ id: createHash("sha256").update(key).digest("hex"), ticketId: ticket.id, tool: session.tool,
@@ -3504,6 +3755,7 @@ export class KuloHub implements OrchestratorController {
       computerUseBrowserEnabled: this.#computerUseSettings.browserEnabled,
       computerUseDesktopEnabled: this.#computerUseSettings.desktopEnabled,
       hasStagedDeviceJoin: Boolean(this.deviceJoinStaging.hasActive),
+      assistantActive: this.#assistantActive,
       ...extra,
     };
   }
@@ -3534,6 +3786,7 @@ export class KuloHub implements OrchestratorController {
       ...(isRoot ? [this.#memoryServiceExt] : []),
       this.#memorySetupExt,
       this.#historyExt,
+      this.#assistantToolsExt,
       this.#globalSettingsExt,
       ...this.#customizationExtensions,
       this.#contextCompaction.extension,
@@ -3604,6 +3857,7 @@ export class KuloHub implements OrchestratorController {
       throw new Error("手机执行入口的主脑身份无效或已变化。");
     }
     this.#androidHubId = hubId;
+    this.envManager.setHubId(hubId);
   }
 
   async #validateMediaInput(assetId: string, source: MediaJobSource): Promise<void> {
@@ -4121,7 +4375,9 @@ export class KuloHub implements OrchestratorController {
         const report = current.latestReport?.state === "blocked" ? current.latestReport : undefined;
         const question = report?.question ?? preservedWait.detail ?? "请确认下一步";
         const origin = await this.harness.conversation((ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) as ConversationId, context);
-        if (origin) await this.harness.commit(async (tx) => {
+        if (origin) {
+          await this.#ensureTopicWatchedByConversation(Number(origin.id), context);
+          await this.harness.commit(async (tx) => {
           if (isBlockedCoordinatorWait) {
             await injectEventToolsInTx(tx, origin.id, ["kulo_inspect", "kulo_ticket_ask_user"]);
           }
@@ -4143,6 +4399,7 @@ export class KuloHub implements OrchestratorController {
             } },
           });
         }, context);
+        }
         if (!this.#recovering) this.harness.resume();
       }
     }
@@ -5106,6 +5363,16 @@ export class KuloHub implements OrchestratorController {
       case "schedule.delete":
         await this.deleteScheduledTask(message.ticketId, context, intent);
         fallback = { ticketId: message.ticketId }; break;
+      case "assistant.item_action": {
+        const res = await this.assistantCoordinator.performItemAction({
+          itemId: message.itemId,
+          expectedRevision: message.expectedRevision,
+          action: message.action,
+          intent,
+          context,
+        });
+        return { ...res.ack, ...(res.deduplicated ? { deduplicated: true } : {}) };
+      }
     }
     const receipt = intent ? await this.#deliveryReceipt(intent, context) : undefined;
     return { ...(receipt?.phase === "complete" ? receipt.ack as DeliveryAck : fallback), ...(intent?.replayed ? { deduplicated: true } : {}) };
@@ -7932,12 +8199,16 @@ export class KuloHub implements OrchestratorController {
       }
       assertRecoveryGuard(state, recoveryGuard);
       if (recoveryGuard && params.kind !== "superseded") throw new Error("未解决的失败不能在自动恢复中忽略。");
+      if (t.status === "closed" && params.originConversationId === undefined) {
+        await writeDeliveryReceipt(tx, intent, { ticketId: params.ticketId });
+        return toTicketCardView(t, activeRoles);
+      }
       if (isTicketUnfinished(t)) {
         throw new Error(
           `Ticket '${params.ticketId}' is still ${t.status}; stop it or wait until settled before closing.`,
         );
       }
-      if (t.status === "stopped") {
+      if (t.status === "stopped" && params.originConversationId !== undefined) {
         throw new Error(
           `Ticket '${params.ticketId}' is human-stopped; cannot overwrite as closed.`,
         );
@@ -7955,7 +8226,7 @@ export class KuloHub implements OrchestratorController {
       recordProcessedCommand(state, cleanCmdId, params.ticketId, "close");
       await writeDeliveryReceipt(tx, intent, { ticketId: params.ticketId });
       const now = Date.now();
-      if (getActiveStagedCwd(t) || hasPendingWorkspaceApply(t)) {
+      if (!t.cleanupPending && (getActiveStagedCwd(t) || hasPendingWorkspaceApply(t))) {
         stagedToDiscard = cloneJson(t);
         if (t.workspaceStaging && !t.workspaceStaging.appliedAt) {
           t.workspaceStaging.discardedAt = now;
@@ -7968,7 +8239,8 @@ export class KuloHub implements OrchestratorController {
         }
       }
       transitionTicketStatus(t, "closed", now);
-      releaseProjectWrite(state, t.id, { force: true });
+      if (t.schedule) t.schedule.nextRunAt = null;
+      releaseProjectWrite(state, t.id, { force: !t.cleanupPending });
       const prior = t.recovery;
       t.recovery = undefined;
       if (prior && (prior.rootTicketId ?? t.id) === t.id) {
@@ -8048,11 +8320,12 @@ export class KuloHub implements OrchestratorController {
     topicId = "root",
     context: Context = BACKGROUND_CONTEXT,
   ) {
-    const [board, topics, topicView, projects] = await Promise.all([
+    const [board, topics, topicView, projects, assistantDoc] = await Promise.all([
       this.getBoardSnapshot(context),
       this.listTopics(context),
       this.getTopicView(topicId, context),
       this.projects.list(context),
+      this.harness.snapshot(AssistantDoc, context),
     ]);
     return {
       activeTopicId: topicView.topicId,
@@ -8063,9 +8336,232 @@ export class KuloHub implements OrchestratorController {
       historyBefore: topicView.historyBefore,
       live: topicView.live,
       ...board,
+      assistantItems: assistantDoc?.items ? cloneJson(assistantDoc.items) : [],
+      assistantRevision: assistantDoc?.assistantRevision ?? 1,
       projects,
       expression: this.getActiveExpression(),
       settings: this.getSettingsView(),
+    };
+  }
+
+  async getAssistantWorkspace(context: Context = BACKGROUND_CONTEXT): Promise<AssistantWorkspaceSnapshot> {
+    const [snap, backgroundModel, digestCount24h, spark, homeAssistant, lark] = await Promise.all([
+      this.harness.snapshot(AssistantDoc, context),
+      this.ambientModel.status(),
+      this.assistantLedger.countDigestsSince(Date.now() - 24 * 3_600_000),
+      this.sparkMail.status().catch(() => ({ enabled: false, available: false })),
+      this.homeAssistant.status().catch(() => ({ enabled: false, connected: false, hasToken: false })),
+      this.larkConnector.status().catch(() => ({ enabled: false, cliAvailable: false, profiles: [], selectedProfiles: [] })),
+    ]);
+    return {
+      revision: snap?.revision ?? 1,
+      enabled: Boolean(snap?.enabled),
+      sources: this.envManager.getConnectorStatuses(),
+      mutedApps: snap?.mutedApps ? [...snap.mutedApps] : [],
+      backgroundModel,
+      advice: this.ambientModel.advise(),
+      digestCount24h,
+      spark,
+      homeAssistant,
+      lark,
+    };
+  }
+
+  async getAssistantItemsSnapshot(context: Context = BACKGROUND_CONTEXT): Promise<{
+    assistantRevision: number;
+    items: AssistantItemView[];
+  }> {
+    const snap = await this.harness.snapshot(AssistantDoc, context);
+    return {
+      assistantRevision: snap?.assistantRevision ?? 1,
+      items: snap?.items ? cloneJson(snap.items) : [],
+    };
+  }
+
+  async configureAssistantSpark(
+    input: { enabled: boolean },
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<import("@kulo/protocol").SparkConnectorSnapshot> {
+    await this.harness.commit(async (tx) => {
+      const doc = await tx.doc(AssistantDoc);
+      ensureAssistantState(doc);
+      doc.spark = { enabled: Boolean(input.enabled) };
+      doc.revision += 1;
+    }, context);
+    this.sparkMail.invalidateCache();
+    await this.#refreshAssistantActiveFlag(context);
+    return this.sparkMail.status({ force: true });
+  }
+
+  async configureAssistantHomeAssistant(
+    input: { enabled?: boolean; baseUrl?: string; token?: string; clearToken?: boolean },
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<import("@kulo/protocol").HomeAssistantSnapshot> {
+    const snap = await this.homeAssistant.configure(input);
+    await this.#refreshAssistantActiveFlag(context);
+    return snap;
+  }
+
+  async configureAssistantLark(
+    input: { enabled?: boolean; selectedProfiles?: string[] },
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<import("@kulo/protocol").LarkConnectorSnapshot> {
+    const snap = await this.larkConnector.configure(input);
+    await this.#refreshAssistantActiveFlag(context);
+    return snap;
+  }
+
+  async #refreshAssistantActiveFlag(context: Context): Promise<void> {
+    const snap = await this.harness.snapshot(AssistantDoc, context);
+    const active = Boolean(
+      snap?.enabled ||
+        snap?.spark?.enabled ||
+        snap?.homeAssistant?.enabled ||
+        snap?.lark?.enabled ||
+        (await this.assistantLedger.hasAnyRecords()),
+    );
+    if (active !== this.#assistantActive) {
+      this.#assistantActive = active;
+      await this.#reconfigureOrchestratorConversations(context);
+    }
+  }
+
+  async #ingestInternalAssistantEvents(
+    driverId: "home-assistant" | "lark-cli",
+    events: import("@kulo/protocol").RawConnectorEvent[],
+    streamSuffix: string = driverId,
+  ): Promise<void> {
+    if (events.length === 0) return;
+    const redact = (text: string): string => this.connectionManager.redact(redactSensitiveText(text));
+    const batch: ConnectorEventBatch = {
+      batchId: `${driverId}-${Date.now()}`,
+      driverId,
+      streamId: `${this.#androidHubId ?? "kulo-hub"}:local:${streamSuffix}`,
+      sourceEpoch: "v1",
+      cursorAfter: String(Date.now()),
+      events,
+    };
+    const { inserted } = await this.assistantLedger.ingestBatch("local", batch, redact);
+    if (inserted.length > 0) {
+      this.assistantSorter.enqueue(inserted);
+      await this.#refreshAssistantActiveFlag(BACKGROUND_CONTEXT);
+    }
+  }
+
+  async configureAssistantNotifications(
+    input: { enabled?: boolean; muteApp?: string; unmuteApp?: string },
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<AssistantWorkspaceSnapshot> {
+    const nextState = await this.harness.commit(async (tx) => {
+      const doc = await tx.doc(AssistantDoc);
+      ensureAssistantState(doc);
+      if (typeof input.enabled === "boolean") doc.enabled = input.enabled;
+      const mute = input.muteApp?.trim();
+      if (mute && mute.length <= 255 && !doc.mutedApps.includes(mute)) {
+        doc.mutedApps = [...doc.mutedApps, mute].slice(0, 256);
+        doc.items = doc.items.filter((item) => item.sourceApp !== mute);
+        doc.assistantRevision += 1;
+      }
+      const unmute = input.unmuteApp?.trim();
+      if (unmute) {
+        doc.mutedApps = doc.mutedApps.filter((app) => app !== unmute);
+      }
+      doc.revision += 1;
+      return {
+        enabled: doc.enabled,
+        mutedApps: [...doc.mutedApps],
+        assistantRevision: doc.assistantRevision,
+        items: cloneJson(doc.items),
+      };
+    }, context);
+
+    this.envManager.setConnectorConfig({
+      driverId: "macos-notifications",
+      enabled: nextState.enabled,
+      mutedApps: nextState.mutedApps,
+    });
+    this.#emitAssistantItems(nextState.assistantRevision, nextState.items);
+
+    const becameActive = nextState.enabled || (await this.assistantLedger.hasAnyRecords());
+    if (becameActive !== this.#assistantActive) {
+      this.#assistantActive = becameActive;
+      await this.#reconfigureOrchestratorConversations(context);
+    }
+    return this.getAssistantWorkspace(context);
+  }
+
+  async configureAssistantBackgroundModel(
+    input: {
+      mode: "auto" | "local-managed" | "kulo-provider";
+      engine?: AmbientLocalEngine;
+      modelId?: string;
+      providerId?: string;
+      confirmed?: boolean;
+    },
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<{ requiresConfirmation?: boolean; proposal?: Record<string, unknown>; snapshot: AssistantWorkspaceSnapshot }> {
+    if (input.mode === "local-managed") {
+      const advice = this.ambientModel.advise();
+      const engine = input.engine ?? advice.recommendedEngine ?? "omlx";
+      const modelId = input.modelId?.trim() || advice.recommendedModelId || "mlx-community/Qwen3-4B-Instruct-2507-4bit";
+      if (!input.confirmed) {
+        return {
+          requiresConfirmation: true,
+          proposal: {
+            host: advice.hostName,
+            engine,
+            modelId,
+            estimatedRamGb: advice.estimatedRamGb,
+            reason: advice.reason,
+          },
+          snapshot: await this.getAssistantWorkspace(context),
+        };
+      }
+      await this.ambientModel.deployLocalManaged({ engine, modelId });
+      return { snapshot: await this.getAssistantWorkspace(context) };
+    }
+    await this.ambientModel.configureAutoOrProvider({
+      mode: input.mode,
+      providerId: input.providerId,
+      modelId: input.modelId,
+    });
+    return { snapshot: await this.getAssistantWorkspace(context) };
+  }
+
+  async #ingestConnectorBatch(envId: string, batch: ConnectorEventBatch): Promise<ConnectorBatchAck> {
+    const snap = await this.harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT);
+    if (!snap?.enabled) {
+      return {
+        batchId: batch.batchId,
+        driverId: batch.driverId,
+        streamId: batch.streamId,
+        sourceEpoch: batch.sourceEpoch,
+        cursorAfter: batch.cursorAfter,
+        status: "rejected",
+        code: "source_disabled",
+      };
+    }
+    const muted = new Set(snap.mutedApps ?? []);
+    const filteredBatch: ConnectorEventBatch = {
+      ...batch,
+      events: batch.events.filter((ev) => !muted.has(ev.appId)),
+    };
+    const redact = (value: string) => this.connectionManager.redact(redactSensitiveText(value));
+    const { inserted } = await this.assistantLedger.ingestBatch(envId, filteredBatch, redact);
+    if (inserted.length > 0) {
+      if (!this.#assistantActive) {
+        this.#assistantActive = true;
+        void this.#reconfigureOrchestratorConversations(BACKGROUND_CONTEXT).catch(() => {});
+      }
+      this.assistantSorter.enqueue(inserted);
+    }
+    return {
+      batchId: batch.batchId,
+      driverId: batch.driverId,
+      streamId: batch.streamId,
+      sourceEpoch: batch.sourceEpoch,
+      cursorAfter: batch.cursorAfter,
+      status: "accepted",
     };
   }
 
@@ -8510,6 +9006,13 @@ export class KuloHub implements OrchestratorController {
     await finish(() => this.voice.close());
     await finish(() => this.connectionManager.close());
     await finish(() => this.envManager.setAndroidNotificationClassifier(undefined));
+    await finish(() => this.envManager.setConnectorHandlers(undefined));
+    await finish(() => this.larkConnector.close());
+    await finish(() => this.homeAssistant.close());
+    await finish(() => this.assistantSorter.close());
+    await finish(() => this.assistantCoordinator.close());
+    await finish(() => this.ambientModel.close());
+    await finish(() => this.assistantLedger.close());
     await finish(() => this.#androidNotifications.close());
     await finish(() => this.#topicTitles.close());
     await finish(() => this.personality.close());
@@ -8615,12 +9118,15 @@ export class KuloHub implements OrchestratorController {
     // Another selection of this cold topic may have attached its watch during hydration.
     const attached = this.#topicCaches.get(topicId);
     if (attached) { await watch.stop(); return attached; }
+    const initialMessages = this.#projectTopicMessages(watch.value, Number(conversation.id));
+    const initialLive = redactCredentialData(this.#projectTopicLiveState(watch.value, Number(conversation.id)), (text) => this.connectionManager.redact(text));
     const cache: WatchedTopicCache = {
       topicId,
       conversation,
       watch,
-      messages: this.#projectTopicMessages(watch.value, Number(conversation.id)),
-      live: redactCredentialData(this.#projectTopicLiveState(watch.value, Number(conversation.id)), (text) => this.connectionManager.redact(text)),
+      messages: initialMessages,
+      live: initialLive,
+      notificationBaseline: createTopicNotificationBaseline(initialMessages, initialLive),
     };
     this.#topicCaches.set(topicId, cache);
 
@@ -8630,6 +9136,19 @@ export class KuloHub implements OrchestratorController {
     });
 
     return cache;
+  }
+
+  async #ensureTopicWatchedByConversation(conversationId: number, context: Context): Promise<void> {
+    if (this.#closed) return;
+    const state = await this.harness.snapshot(KuloStateDoc, context);
+    const topicId = state?.conversationToTopic?.[String(conversationId)];
+    if (!topicId) return;
+    const topic = state?.topics?.[topicId];
+    if (!topic || topic.deletedAt) return;
+    if (topic.title) this.#topicTitleCache.set(topicId, topic.title);
+    if (this.#topicCaches.has(topicId)) return;
+    const conversation = await this.harness.conversation(conversationId as ConversationId, context);
+    if (conversation) await this.#ensureTopicWatched(topicId, conversation, context);
   }
 
   async submitUiAction(input: UiActionInput): Promise<UiActionReceipt> {
@@ -9374,11 +9893,21 @@ export class KuloHub implements OrchestratorController {
     const wasBusy = cache.live.busy;
     cache.live = redactCredentialData(this.#projectTopicLiveState(value, Number(cache.conversation.id)), (text) => this.connectionManager.redact(text));
     if (wasBusy && !cache.live.busy && cache.topicId !== "root") this.#recordTopicActivity(cache.topicId);
+    const notification = detectMainSessionNotification({
+      topicId: cache.topicId,
+      topicTitle: cache.topicId === "root" ? undefined : this.#topicTitleCache.get(cache.topicId),
+      previous: cache.notificationBaseline,
+      messages,
+      live: cache.live,
+      redact: (text) => this.connectionManager.redact(text),
+    });
+    cache.notificationBaseline = notification.next;
     this.voiceCalls.topicUpdated(cache.topicId, messages, cache.live);
     this.#topicTitles.observe(cache.topicId, messages, cache.live.busy || Boolean(cache.live.runFailure));
     for (const listener of this.#listeners) {
       listener.onTopicView?.(cache.topicId, messages, cache.live);
       if (cache.topicId === "root") listener.onRootView?.(messages, cache.live);
+      if (notification.event && !this.#recovering) listener.onNotification?.(notification.event);
     }
   }
 
@@ -9907,6 +10436,78 @@ export class KuloHub implements OrchestratorController {
     return { topicId, envId, descriptor };
   }
 
+  async #resolveOrchestratorSkillTarget(
+    conversationId: number,
+    toolTaskId: number | undefined,
+    context: Context,
+  ): Promise<{ platform?: string; capabilities: string[] }> {
+    try {
+      const resolved = await this.#resolveOrchestratorTargetEnvId(
+        conversationId,
+        toolTaskId,
+        context,
+      );
+      return {
+        platform: resolved.descriptor.platform,
+        capabilities: [...resolved.descriptor.capabilities],
+      };
+    } catch (error) {
+      if (
+        !(error instanceof ProjectError) ||
+        (error.code !== "target_device_conflict" && error.code !== "source_device_ambiguous")
+      ) {
+        return { capabilities: [] };
+      }
+      // Multi-device turns cannot bind a single read-only browser session, but the
+      // orchestrator still needs capability-gated Skills (e.g. desktop-automation /
+      // browser-automation) to plan and dispatch work across those online computers.
+      const state = await this.harness.snapshot(KuloStateDoc, context);
+      const topicId = state?.conversationToTopic?.[String(conversationId)] ?? "root";
+      const topic = state?.topics?.[topicId];
+      if (!topic || topic.deletedAt) return { capabilities: [] };
+
+      const envs = this.envManager.listEnvs();
+      const inputs = await this.#currentControlInputs(conversationId, context, toolTaskId);
+      const candidateIds = new Set<string>();
+      for (const inp of inputs) {
+        const routing = chatRoutingData(inp);
+        if (routing.targetDeviceId) candidateIds.add(routing.targetDeviceId);
+        if (routing.text) {
+          for (const id of namedDispatchDevices(routing.text, envs).flat()) {
+            candidateIds.add(id);
+          }
+        }
+      }
+      if (topic.targetDeviceId) candidateIds.add(topic.targetDeviceId);
+      if (topic.projectId) {
+        try {
+          const project = await this.projects.get(topic.projectId, context);
+          candidateIds.add(project.deviceId);
+        } catch {
+          // Ignore unavailable project bindings when collecting candidate devices.
+        }
+      }
+      if (error.code === "source_device_ambiguous" || candidateIds.size === 0) {
+        for (const inp of inputs) {
+          const sourceId = chatRoutingData(inp).source?.deviceId;
+          if (sourceId) candidateIds.add(sourceId);
+        }
+      }
+
+      const onlineComputers = [...candidateIds]
+        .map((id) => this.envManager.getEnvDescriptor(id))
+        .filter((desc): desc is EnvNodeDescriptor => Boolean(desc?.online && desc.executionKind !== "native-device"));
+      if (!onlineComputers.length) return { capabilities: [] };
+
+      const capabilities = [...new Set(onlineComputers.flatMap((desc) => desc.capabilities))];
+      const platforms = new Set(onlineComputers.map((desc) => desc.platform));
+      return {
+        ...(platforms.size === 1 ? { platform: [...platforms][0] } : {}),
+        capabilities,
+      };
+    }
+  }
+
   async #assertChatReadTarget(conversationId: number, toolTaskId: number, environment: string | undefined, context: Context) {
     const inputs = await this.#currentControlInputs(conversationId, context, toolTaskId);
     const message = chatRoutingData(inputs[0]);
@@ -10364,8 +10965,18 @@ export class KuloHub implements OrchestratorController {
   }
 
   #emitTopics(topics: TopicSummary[]): void {
+    this.#topicTitleCache.clear();
+    for (const topic of topics) {
+      if (!topic.deletedAt && topic.title) this.#topicTitleCache.set(topic.id, topic.title);
+    }
     for (const listener of this.#listeners) {
       listener.onTopics?.(topics);
+    }
+  }
+
+  #emitAssistantItems(assistantRevision: number, items: AssistantItemView[]): void {
+    for (const listener of this.#listeners) {
+      listener.onAssistantItems?.(assistantRevision, items);
     }
   }
 

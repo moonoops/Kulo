@@ -13,7 +13,7 @@ export interface SkillToolsOptions {
   get: () => KuloSkills;
   audience: (api: Pick<ToolExecutionApi, "conversationId">) => SkillAudience | Promise<SkillAudience>;
   runtimeContext?: (
-    api: Pick<ToolExecutionApi, "conversationId" | "env">,
+    api: Pick<ToolExecutionApi, "conversationId" | "env"> & Partial<Pick<ToolExecutionApi, "taskId">>,
     context: Context,
     requirements: {
       targetDevice: boolean;
@@ -36,7 +36,7 @@ for (const directory of dirs) for (const extension of extensions) {
 }
 process.exit(20);`;
 
-async function skillRuntime(options: SkillToolsOptions, audience: SkillAudience, id: string | undefined, api: Pick<ToolExecutionApi, "conversationId" | "env">, context: Context) {
+async function skillRuntime(options: SkillToolsOptions, audience: SkillAudience, id: string | undefined, api: Pick<ToolExecutionApi, "conversationId" | "env"> & Partial<Pick<ToolExecutionApi, "taskId">>, context: Context) {
   if (!options.runtimeContext) return undefined;
   const required = await options.get().runtimeRequirements(audience, id);
   if (!required.targetDevice && !required.reactWorkspace && !required.media && !required.android && !required.customization && !required.memoryKnowledge) return undefined;

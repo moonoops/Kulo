@@ -98,12 +98,15 @@ describe("other extensions settings", () => {
 });
 
 describe("extension management requests", () => {
-  it("sends revision and command identity to the scoped operation endpoint", async () => {
-    const next = workspace({ ...extension, revision: 2, status: "stopping" });
+  it("sends revision and command identity to the scoped operation endpoint including direct install", async () => {
+    const next = workspace({ ...extension, revision: 2, status: "installing" });
     const fetch = vi.fn(async () => new Response(JSON.stringify(next), { headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetch);
-    const body = { operation: "stop" as const, expectedRevision: 1, commandId: "stop-once" };
-    expect(await kuloRest.manageExtension("extension/id", body)).toEqual(next);
-    expect(fetch).toHaveBeenCalledWith("/api/extensions/extension%2Fid/operations", expect.objectContaining({ method: "POST", body: JSON.stringify(body) }));
+    const installBody = { operation: "install" as const, expectedRevision: 1, commandId: "install-once" };
+    expect(await kuloRest.manageExtension("extension/id", installBody)).toEqual(next);
+    expect(fetch).toHaveBeenCalledWith("/api/extensions/extension%2Fid/operations", expect.objectContaining({ method: "POST", body: JSON.stringify(installBody) }));
+    const stopBody = { operation: "stop" as const, expectedRevision: 2, commandId: "stop-once" };
+    expect(await kuloRest.manageExtension("extension/id", stopBody)).toEqual(next);
+    expect(fetch).toHaveBeenCalledWith("/api/extensions/extension%2Fid/operations", expect.objectContaining({ method: "POST", body: JSON.stringify(stopBody) }));
   });
 });

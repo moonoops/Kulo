@@ -24,10 +24,6 @@ export const ADD_IMAGE_PROMPT = "添加图像模型。先读取当前图像配�
 export const ADD_IMAGE_PROMPT_EN = "Add an image model. Inspect the current image configuration and shared draft first; when reusing an existing provider, discover available image models and show a selection card, or fill the shared configuration for a new service. Ask only for missing details and collect credentials via the secret input.";
 export const IMAGE_ROUTING_PROMPT = "查看已配置图像模型及当前调用规则，解释系统如何按任务自动选择，并根据我的要求修改规则。保留明确指定模型的优先级，只补问缺少的偏好。";
 export const IMAGE_ROUTING_PROMPT_EN = "Inspect the configured image models and current selection rules, explain how Kulo picks a model per task, and update the rules per my preferences. Keep explicitly requested models at highest priority and ask only for missing preferences.";
-export const CONNECT_FLOW_PROMPT = "连接 Google Flow，用已有会员积分生成视频。请先确认要使用的设备，并引导我在该设备的浏览器完成登录。";
-export const CONNECT_FLOW_PROMPT_EN = "Connect Google Flow to generate videos using existing subscription credits. Confirm which device to use first, then guide me to sign in inside that device's browser.";
-export const IMPORT_SKILL_PROMPT = "导入一个 Skill，请先询问我来源。";
-export const IMPORT_SKILL_PROMPT_EN = "Import a Skill. Ask me for its source first.";
 
 export function getAddImagePrompt(language?: KuloLanguage): string {
   return language ? (language === "en" ? ADD_IMAGE_PROMPT_EN : ADD_IMAGE_PROMPT) : translate(ADD_IMAGE_PROMPT, ADD_IMAGE_PROMPT_EN);
@@ -35,14 +31,6 @@ export function getAddImagePrompt(language?: KuloLanguage): string {
 
 export function getImageRoutingPrompt(language?: KuloLanguage): string {
   return language ? (language === "en" ? IMAGE_ROUTING_PROMPT_EN : IMAGE_ROUTING_PROMPT) : translate(IMAGE_ROUTING_PROMPT, IMAGE_ROUTING_PROMPT_EN);
-}
-
-export function getConnectFlowPrompt(language?: KuloLanguage): string {
-  return language ? (language === "en" ? CONNECT_FLOW_PROMPT_EN : CONNECT_FLOW_PROMPT) : translate(CONNECT_FLOW_PROMPT, CONNECT_FLOW_PROMPT_EN);
-}
-
-export function getImportSkillPrompt(language?: KuloLanguage): string {
-  return language ? (language === "en" ? IMPORT_SKILL_PROMPT_EN : IMPORT_SKILL_PROMPT) : translate(IMPORT_SKILL_PROMPT, IMPORT_SKILL_PROMPT_EN);
 }
 
 export function isAddImagePrompt(prompt: string | undefined): boolean {

@@ -189,7 +189,7 @@ export function createOrchestratorSections(options: {
       }));
     return [
       "## Worker Roles",
-      "Pass the matching `role` and `task_kind` to `kulo_dispatch` (when thinking is `auto`, optionally set `thinking_level`: `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`):",
+      "Pass the matching `role` and `task_kind` to `kulo_dispatch` (when thinking is `auto`, optionally set `thinking_level`: `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`; for multi-step interactive browser/desktop UI tasks via `kulo_browser`/`kulo_desktop`, prefer `thinking_level: \"low\"` or `\"medium\"` so step-by-step page interactions stay responsive):",
       "| role | Name | Model | Thinking | Capabilities | When to Use |",
       "| --- | --- | --- | --- | --- | --- |",
       ...rows,

@@ -41,12 +41,20 @@ describe("contextual composer calling", () => {
     expect(html).not.toContain("kulo-composer-call");
   });
 
-  it("keeps stop as the only primary action while a following draft is edited", () => {
-    const html = render({ text: "下一条草稿", busy: true, active: true });
-    expect(button(html, "停止生成")).not.toContain("disabled");
-    expect(html).not.toContain('aria-label="发送"');
-    expect(html).not.toContain("kulo-composer-call");
-    expect(html).toContain("下一条草稿</textarea>");
+  it("shows stop as the sole action while busy and empty, and shows send beside stop when a draft exists", () => {
+    const emptyBusy = render({ text: "", busy: true, active: true });
+    expect(button(emptyBusy, "停止生成")).not.toContain("disabled");
+    expect(button(emptyBusy, "停止生成")).toContain("button--primary");
+    expect(emptyBusy).not.toContain('aria-label="发送"');
+    expect(emptyBusy).not.toContain("kulo-composer-call");
+
+    const draftBusy = render({ text: "下一条草稿", busy: true, active: true });
+    expect(button(draftBusy, "停止生成")).not.toContain("disabled");
+    expect(button(draftBusy, "停止生成")).toContain("kulo-composer-control");
+    expect(button(draftBusy, "发送")).not.toContain("disabled");
+    expect(button(draftBusy, "发送")).toContain("button--primary");
+    expect(draftBusy).not.toContain("kulo-composer-call");
+    expect(draftBusy).toContain("下一条草稿</textarea>");
   });
 
   it("keeps upload and settings states from becoming call actions", () => {

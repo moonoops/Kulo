@@ -74,6 +74,7 @@ export interface WorkerTicketTaskDependencies {
   inspectBuiltInStagedDiff?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<StagedWorkspaceDiffSummary | undefined>;
   discardBuiltInStagedWorkspace?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<void>;
   onInlineCandidateSettled?: (ticketId: string) => void;
+  onOriginConversationRelayed?: (originConversationId: number, context: Context) => Promise<void>;
 }
 
 export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
@@ -1017,6 +1018,9 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
               eventTools.push("kulo_ticket_ask_user");
             }
 
+            if (deps.onOriginConversationRelayed) {
+              await deps.onOriginConversationRelayed(Number(targetConv.id), context).catch(() => {});
+            }
             let notifyInlineWaiter = false;
             await runtime.commit(async (tx) => {
               const state = await tx.doc(KuloStateDoc);

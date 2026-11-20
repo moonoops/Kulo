@@ -9,7 +9,17 @@
   "engines": {
     "node": ">=22.20.0"
   },
-  "files": ["dist", "web", "assets/kulo-icon.png", "assets/kulo-trayTemplate.png", "assets/kulo-trayTemplate@2x.png"],
+  "files": [
+    "dist",
+    "web",
+    "assets/kulo-icon.png",
+    "assets/kulo-trayTemplate.png",
+    "assets/kulo-trayTemplate@2x.png",
+    "assets/kulo-tray-badge-light.png",
+    "assets/kulo-tray-badge-light@2x.png",
+    "assets/kulo-tray-badge-dark.png",
+    "assets/kulo-tray-badge-dark@2x.png"
+  ],
   "scripts": {
     "icons": "swift scripts/generate-icons.swift",
     "build": "tsc -p tsconfig.json",

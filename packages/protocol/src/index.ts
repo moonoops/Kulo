@@ -33,5 +33,6 @@ export * from "./voice.js";
 export * from "./extensions.js";
 export * from "./android.js";
 export * from "./android-notifications.js";
+export * from "./assistant.js";
 
 export type * from "./recovery.js";

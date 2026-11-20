@@ -5,7 +5,7 @@ import { AGENT_TASK_KINDS, EXTERNAL_AGENT_KINDS, type SettingsAssistantContext }
 import type { AgentConfigurationPatch, KuloAgentConfiguration } from "./agent-configuration.js";
 
 export interface AgentConfigurationToolsOptions {
-  service: Pick<KuloAgentConfiguration, "workspace" | "readGuide" | "prepare" | "updateDraft" | "detect" | "probe" | "authenticate" | "verify" | "save" | "remove" | "discard">;
+  service: Pick<KuloAgentConfiguration, "workspace" | "scan" | "quickConnect" | "prepare" | "updateDraft" | "detect" | "probe" | "authenticate" | "verify" | "save" | "remove" | "discard" | "readGuide">;
   context: (expectedConversationId?: number) => Promise<SettingsAssistantContext>;
 }
 
@@ -29,6 +29,30 @@ export function createAgentConfigurationToolsExtension(options: AgentConfigurati
     name: "kulo-agent-configuration",
     sections: [section("kulo_agent_configuration", async () => { await scope(); return options.service.readGuide(); }, { tag: false })],
     tools: [
+      defineTool({ name: "kulo_agent_configuration_scan", description: "Scan online computer devices (or one `env_id`) for installed local external Agent clients (codex, claude-code, antigravity, dsh) and report which are already connected vs. ready to connect. Always call this FIRST when the user wants to connect an Agent client, before asking questions.", parameters: obj({ env_id: opt(str()) }), replay: "safe", execute: async ({ env_id }, api) => { const s = await scope(Number(api.conversationId)); return result(await options.service.scan({ clientId: s.clientId, ...(env_id ? { envId: env_id } : {}) }, s.guard)); } }),
+      defineTool({ name: "kulo_agent_configuration_connect", description: "One-step protocol probe, optional minimal roundtrip verification (`run_test: true` only with user consent; `false` saves disabled), and save for a detected external Agent client using client-native defaults (explicit-naming-only dispatch unless specified). Call directly after the user confirms which scanned client(s) to connect.", parameters: obj({ client_kind: oneOf(EXTERNAL_AGENT_KINDS), env_id: str(), run_test: bool(), label: opt(str()), when_to_use: opt(str()), prompt: opt(str()), model_id: opt(str()), thinking_level: opt(str()), allow_subagents: opt(bool()), executable: opt(str()), agent_ref: opt(str()), cdp_url: opt(str()), experimental: opt(bool()), default_for: opt(arr(oneOf(AGENT_TASK_KINDS), { maxItems: AGENT_TASK_KINDS.length })), project_ids: opt(arr(str(), { maxItems: 200 })) }), execute: async (args, api) => {
+        const s = await scope(Number(api.conversationId));
+        return result(await options.service.quickConnect({
+          clientId: s.clientId,
+          kind: args.client_kind,
+          envId: args.env_id,
+          commandId: configurationCommandId(api.callId),
+          runTest: args.run_test,
+          ...(args.label !== undefined ? { label: args.label } : {}),
+          ...(args.when_to_use !== undefined ? { whenToUse: args.when_to_use } : {}),
+          ...(args.prompt !== undefined ? { prompt: args.prompt } : {}),
+          ...(args.model_id !== undefined ? { modelId: args.model_id } : {}),
+          ...(args.thinking_level !== undefined ? { thinkingLevel: args.thinking_level } : {}),
+          ...(args.allow_subagents !== undefined ? { allowSubagents: args.allow_subagents } : {}),
+          ...(args.executable !== undefined ? { executable: args.executable } : {}),
+          ...(args.agent_ref !== undefined ? { agentRef: args.agent_ref } : {}),
+          ...(args.cdp_url !== undefined ? { cdpUrl: args.cdp_url } : {}),
+          ...(args.experimental !== undefined ? { experimental: args.experimental } : {}),
+          ...(args.default_for !== undefined || args.project_ids !== undefined
+            ? { dispatchPolicy: { defaultFor: args.default_for ?? [], ...(args.project_ids !== undefined ? { projectIds: args.project_ids } : {}) } }
+            : {}),
+        }, s.guard));
+      } }),
       defineTool({ name: "kulo_agent_configuration_read", description: "Read the current window's external Agent draft, connected devices, projects, and saved Agent default dispatch scopes; pass optional `client_kind` to also read that client's bundled local integration guide (Agents Settings page only; never returns credentials).", parameters: obj({ client_kind: opt(oneOf(EXTERNAL_AGENT_KINDS)) }), replay: "safe", execute: async ({ client_kind }, api) => { const s = await scope(Number(api.conversationId)); const workspace = await options.service.workspace(s.clientId, s.guard); return result(client_kind ? { ...workspace, guide: await options.service.readGuide(client_kind) } : workspace); } }),
       defineTool({ name: "kulo_agent_configuration_prepare", description: "Create or resume the current window's external Agent draft on a connected computer (`env_id`); pass `agent_id` when editing a saved external Agent.", parameters: obj({ client_kind: oneOf(EXTERNAL_AGENT_KINDS), env_id: str(), agent_id: opt(str()) }), execute: async (args, api) => { const s = await scope(Number(api.conversationId)); return result(await options.service.prepare({ clientId: s.clientId, kind: args.client_kind, envId: args.env_id, agentId: args.agent_id === "" ? undefined : args.agent_id, commandId: configurationCommandId(api.callId) }, s.guard)); } }),
       defineTool({ name: "kulo_agent_configuration_update", description: "Update an external Agent draft's label, role instructions, default dispatch scope (`default_for: []` = explicit naming only; `project_ids: []` = all projects & ungrouped tasks on bound device), optional `model_id`/`thinking_level` (empty or `auto` uses native client default), and `allow_subagents` (Hub collaboration only; native tools/MCP/permissions remain client-managed; never accepts secrets or arbitrary commands).", parameters: obj({ expected_revision: num(), label: opt(str()), when_to_use: opt(str()), prompt: opt(str()), model_id: opt(str()), thinking_level: opt(str()), allow_subagents: opt(bool()), client_kind: opt(oneOf(EXTERNAL_AGENT_KINDS)), env_id: opt(str()), executable: opt(str()), agent_ref: opt(str()), cdp_url: opt(str()), experimental: opt(bool()), default_for: opt(arr(oneOf(AGENT_TASK_KINDS), { maxItems: AGENT_TASK_KINDS.length })), project_ids: opt(arr(str(), { maxItems: 200 })) }), execute: async (args, api) => {

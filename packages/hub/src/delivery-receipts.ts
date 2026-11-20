@@ -1,14 +1,15 @@
 import { createHash } from "node:crypto";
 import { defineDocFamily, type JsonObject, type Tx } from "@earendil-works/pi-durable";
-import type { ChatReplyReference, ClientToHubMessage } from "@kulo/protocol";
+import { isAssistantItemAction, type ChatReplyReference, type ClientToHubMessage } from "@kulo/protocol";
 
 export type ReliableClientMessage = Extract<ClientToHubMessage, {
-  type: "chat.send" | "chat.abort" | "chat.retry" | "ticket.steer" | "ticket.retry" | "ticket.stop" | "ticket.close" | "schedule.stop" | "schedule.delete";
+  type: "chat.send" | "chat.abort" | "chat.retry" | "ticket.steer" | "ticket.retry" | "ticket.stop" | "ticket.close" | "schedule.stop" | "schedule.delete" | "assistant.item_action";
 }>;
 
 export interface DeliveryAck {
   topicId?: string;
   ticketId?: string;
+  itemId?: string;
   submissionId?: number;
   delivery?: "queued" | "accepted";
 }
@@ -122,6 +123,11 @@ export function validateReliableClientMessage(message: ReliableClientMessage): v
     case "ticket.close":
       if (!["obsolete", "superseded"].includes(message.kind) || typeof message.reason !== "string" ||
         message.replacementTicketId !== undefined && !identifier(message.replacementTicketId)) invalid();
+      break;
+    case "assistant.item_action":
+      if (!identifier(message.itemId) || !Number.isSafeInteger(message.expectedRevision) || message.expectedRevision < 1 || !isAssistantItemAction(message.action)) {
+        invalid();
+      }
       break;
   }
 }

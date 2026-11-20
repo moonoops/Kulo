@@ -2,7 +2,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setLanguage } from "../../kulo-i18n";
 import { AppearanceModule } from "./appearance-module";
-import { desktopPreferencesBridge, useDesktopPreferences, type DesktopPreferences, type DesktopPreferencesBridge } from "./desktop-preferences";
+import {
+  DEFAULT_DESKTOP_NOTIFICATION_PREFERENCES,
+  desktopPreferencesBridge,
+  useDesktopPreferences,
+  type DesktopPreferences,
+  type DesktopPreferencesBridge,
+} from "./desktop-preferences";
 
 const hooks = vi.hoisted(() => ({
   cells: [] as unknown[],
@@ -70,41 +76,62 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("desktop background running settings UI", () => {
-  it("hides desktop-only background settings in regular web browsers", () => {
+describe("desktop background running and notification settings UI", () => {
+  it("hides desktop-only background settings in regular web browsers while showing notifications", () => {
     expect(desktopPreferencesBridge()).toBeUndefined();
     const html = renderToStaticMarkup(<AppearanceModule />);
     expect(html).not.toContain("桌面客户端");
     expect(html).not.toContain("后台运行");
+    expect(html).toContain("通知");
+    expect(html).toContain("系统通知");
+    expect(html).toContain("提示音");
+    expect(html).toContain("任务栏红点");
   });
 
-  it("renders the desktop background running switch in Appearance settings in both Chinese and English", () => {
+  it("renders desktop background running and notification controls in both Chinese and English", () => {
     const preferences: DesktopPreferencesBridge = {
-      get: vi.fn(async () => ({ backgroundRunning: true })),
-      set: vi.fn(async (patch) => ({ backgroundRunning: patch.backgroundRunning ?? true })),
+      get: vi.fn(async () => ({ backgroundRunning: true, notifications: { ...DEFAULT_DESKTOP_NOTIFICATION_PREFERENCES } })),
+      set: vi.fn(async (patch) => ({
+        backgroundRunning: patch.backgroundRunning ?? true,
+        notifications: { ...DEFAULT_DESKTOP_NOTIFICATION_PREFERENCES, ...(patch.notifications ?? {}) },
+      })),
       onChange: vi.fn(() => () => {}),
     };
-    vi.stubGlobal("window", { kuloDesktop: { preferences } });
+    vi.stubGlobal("window", { kuloDesktop: { preferences, systemPermissions: { status: vi.fn(), requestMicrophone: vi.fn(), openSettings: vi.fn() } } });
     expect(desktopPreferencesBridge()).toBe(preferences);
 
     const zhHtml = renderToStaticMarkup(<AppearanceModule />);
     expect(zhHtml).toContain("桌面客户端");
     expect(zhHtml).toContain("后台运行");
+    expect(zhHtml).toContain("系统通知设置");
+    expect(zhHtml).toContain("发送测试通知");
 
     setLanguage("en");
     const enHtml = renderToStaticMarkup(<AppearanceModule />);
     expect(enHtml).toContain("Desktop app");
     expect(enHtml).toContain("Run in background");
+    expect(enHtml).toContain("Notifications");
+    expect(enHtml).toContain("System notifications");
+    expect(enHtml).toContain("Sound");
+    expect(enHtml).toContain("Taskbar badge");
+    expect(enHtml).toContain("System settings");
+    expect(enHtml).toContain("Send test notification");
   });
 
-  it("loads preferences, toggles immediately, surfaces honest errors with retry, and syncs external changes", async () => {
+  it("loads preferences, toggles background and notifications immediately, retries failures, and syncs external changes", async () => {
     let externalListener: ((prefs: DesktopPreferences) => void) | undefined;
-    let stored = true;
+    let stored: DesktopPreferences = {
+      backgroundRunning: true,
+      notifications: { ...DEFAULT_DESKTOP_NOTIFICATION_PREFERENCES },
+    };
     const bridge: DesktopPreferencesBridge = {
-      get: vi.fn(async () => ({ backgroundRunning: stored })),
+      get: vi.fn(async () => ({ backgroundRunning: stored.backgroundRunning, notifications: { ...stored.notifications } })),
       set: vi.fn(async (patch) => {
-        stored = patch.backgroundRunning ?? stored;
-        return { backgroundRunning: stored };
+        stored = {
+          backgroundRunning: patch.backgroundRunning ?? stored.backgroundRunning,
+          notifications: { ...stored.notifications, ...(patch.notifications ?? {}) },
+        };
+        return { backgroundRunning: stored.backgroundRunning, notifications: { ...stored.notifications } };
       }),
       onChange: vi.fn((listener) => {
         externalListener = listener;
@@ -122,31 +149,49 @@ describe("desktop background running settings UI", () => {
 
     const loaded = renderPreferencesHook(bridge);
     expect(loaded.loading).toBe(false);
-    expect(loaded.preferences).toEqual({ backgroundRunning: true });
+    expect(loaded.preferences).toEqual({
+      backgroundRunning: true,
+      notifications: { enabled: true, sound: false, badge: true },
+    });
     expect(loaded.error).toBeNull();
 
-    // Toggle off
+    // Toggle background running off
     await loaded.setBackgroundRunning(false);
     const turnedOff = renderPreferencesHook(bridge);
     expect(bridge.set).toHaveBeenCalledWith({ backgroundRunning: false });
-    expect(turnedOff.preferences).toEqual({ backgroundRunning: false });
+    expect(turnedOff.preferences).toEqual({
+      backgroundRunning: false,
+      notifications: { enabled: true, sound: false, badge: true },
+    });
     expect(turnedOff.saving).toBe(false);
+
+    // Toggle notifications sound on and badge off
+    await turnedOff.setNotifications({ sound: true });
+    const soundOn = renderPreferencesHook(bridge);
+    expect(bridge.set).toHaveBeenCalledWith({ notifications: { sound: true } });
+    expect(soundOn.preferences?.notifications).toEqual({ enabled: true, sound: true, badge: true });
 
     // Failed write preserves last confirmed state and allows retry
     (bridge.set as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("磁盘写入失败"));
-    await turnedOff.setBackgroundRunning(true);
+    await soundOn.setNotifications({ badge: false });
     const errored = renderPreferencesHook(bridge);
-    expect(errored.preferences).toEqual({ backgroundRunning: false });
+    expect(errored.preferences?.notifications).toEqual({ enabled: true, sound: true, badge: true });
     expect(errored.error).toBe("磁盘写入失败");
 
     await errored.retry();
     const retried = renderPreferencesHook(bridge);
-    expect(retried.preferences).toEqual({ backgroundRunning: true });
+    expect(retried.preferences?.notifications).toEqual({ enabled: true, sound: true, badge: false });
     expect(retried.error).toBeNull();
 
     // External main-process change syncs immediately
-    externalListener?.({ backgroundRunning: false });
+    externalListener?.({
+      backgroundRunning: true,
+      notifications: { enabled: false, sound: false, badge: true },
+    });
     const synced = renderPreferencesHook(bridge);
-    expect(synced.preferences).toEqual({ backgroundRunning: false });
+    expect(synced.preferences).toEqual({
+      backgroundRunning: true,
+      notifications: { enabled: false, sound: false, badge: true },
+    });
   });
 });

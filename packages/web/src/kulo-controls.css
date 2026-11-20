@@ -170,7 +170,7 @@
     --button-bg: var(--surface);
   }
 
-  .kulo-ui :is(.kulo-topic-actions, .kulo-message-action) {
+  .kulo-ui :is(.kulo-topic-actions, .kulo-message-action, .kulo-task-archive-button, .kulo-task-clear-all) {
     --button-fg: var(--muted);
   }
 

@@ -31,6 +31,7 @@ import { SettingsAssistantHistory } from "./settings-assistant-history";
 import { createImageDraftConfig, imageConfigFromCapability, ImageCapabilityEditor } from "./image-capability-editor";
 import { ImageProviderPicker } from "./image-provider-picker";
 import { ImageRoutingEditor } from "./image-routing-editor";
+import { ExternalAgentConnectCard } from "./external-agent-connect-card";
 
 type LocalInfo = { title: string; text: string; error?: boolean; scope?: SettingsModuleId };
 const UPLOAD_MENU_KINDS = ["image", "file"] as const;
@@ -73,6 +74,7 @@ export function SettingsAssistantPanel({
   const [applicationPicker, setApplicationPicker] = useState(false);
   const [connectionFollowup, setConnectionFollowup] = useState<ConnectionRecordView | null>(null);
   const [modelAction, setModelAction] = useState<"connect" | "calibrate" | "diagnose" | null>(null);
+  const [agentPanel, setAgentPanel] = useState<"client" | "personal" | null>(null);
   const [modelRefresh, setModelRefresh] = useState(0);
   const [modelHasDraft, setModelHasDraft] = useState(false);
   const [modelDraftKey, setModelDraftKey] = useState("");
@@ -140,7 +142,7 @@ export function SettingsAssistantPanel({
   useEffect(() => {
     const el = scrollRef.current;
     if (el && nearBottomRef.current) el.scrollTop = el.scrollHeight;
-  }, [snapshot.messages, snapshot.actions, snapshot.live.streamingText, snapshot.live.busy, localInfo, controls.localAppearance, capabilityInputs, controls.target, setupCompletion, connections?.inputs, applicationPicker, connectionFollowup, imageKey, imagePanel, imagePreparing, imageError]);
+  }, [snapshot.messages, snapshot.actions, snapshot.live.streamingText, snapshot.live.busy, localInfo, controls.localAppearance, capabilityInputs, controls.target, setupCompletion, connections?.inputs, applicationPicker, connectionFollowup, imageKey, imagePanel, imagePreparing, imageError, agentPanel]);
 
   useEffect(() => {
     const scroll = scrollRef.current; const card = imageCardRef.current;
@@ -186,11 +188,16 @@ export function SettingsAssistantPanel({
     setApplicationPicker(false);
     setConnectionFollowup(null);
     setModelAction(null);
+    setAgentPanel(null);
     setDismissedModelDraft(null);
     setImageSelection(null);
     setImageError(null);
     nearBottomRef.current = true;
   }, [snapshot.topicId]);
+
+  useEffect(() => {
+    if (module !== "workers") setAgentPanel(null);
+  }, [module]);
 
   const closeImagePanel = () => {
     setImageSelection({ key: imageKey, panel: null });
@@ -240,13 +247,16 @@ export function SettingsAssistantPanel({
     nearBottomRef.current = true;
     switch (shortcut.kind) {
       case "agent":
-        setLocalInfo({ title: shortcut.label, text: shortcut.introduction, scope: "workers" });
-        if (hasModel && connected && loaded) await controls.send(shortcut.prompt);
+        setLocalInfo(null);
+        setAgentPanel(shortcut.action);
         break;
       case "model":
         setDismissedModelDraft(null);
-        if (shortcut.action === "diagnose" || !hasModel) setModelAction(shortcut.action);
-        if (hasModel) await controls.send(shortcut.prompt);
+        if (shortcut.action === "connect" || shortcut.action === "diagnose" || !hasModel) {
+          setModelAction(shortcut.action);
+        } else if (shortcut.prompt) {
+          await controls.send(shortcut.prompt);
+        }
         break;
       case "image":
         await prepareImage(shortcut.action);
@@ -256,6 +266,15 @@ export function SettingsAssistantPanel({
         setApplicationPicker(false); setConnectionFollowup(null);
         try { await onConnectionPrepare?.({ category: shortcut.category, kind: shortcut.category === "information" ? "custom" : "account" }); }
         catch (cause) { setLocalInfo({ title: t("未打开连接表单", "Connection form did not open"), text: redactSensitiveText(cause instanceof Error ? cause.message : t("打开连接表单失败", "Failed to open connection form")), error: true }); }
+        break;
+      case "prefill":
+        controls.setDraft(shortcut.draft);
+        requestAnimationFrame(() => {
+          const input = composerRef.current;
+          if (!input) return;
+          input.focus();
+          input.setSelectionRange(shortcut.draft.length, shortcut.draft.length);
+        });
         break;
       case "ask":
         if (module === "capabilities") controls.clearTarget?.();
@@ -282,19 +301,30 @@ export function SettingsAssistantPanel({
 
   const shortcutButtons = (compact: boolean) => (
     <div className="kulo-settings-assistant-suggestions" aria-label={imageView ? t("图像配置", "Image configuration") : t("可以交给 Kulo 的任务", "Tasks for Kulo")}>
-      {shortcuts.map((shortcut) => (
-        <Button
-          key={shortcut.id}
-          variant="ghost"
-          size="sm"
-          className="kulo-settings-assistant-suggestion"
-          isPending={shortcut.kind === "image" && imagePreparing === shortcut.action}
-          isDisabled={controls.switchingConversation || (shortcut.kind === "image" ? imageDisabled || !capabilitiesWorkspace : shortcut.kind === "connection" ? !connected || connectionPreparing : shortcut.kind === "agent" ? controls.sending || snapshot.live.busy || controls.unconfirmedSend : (shortcut.kind === "ask" || shortcut.kind === "model") && (!connected || controls.sending || snapshot.live.busy || controls.unconfirmedSend || shortcut.kind === "ask" && (!hasModel || !loaded)))}
-          onPress={() => void handleShortcut(shortcut)}
-        >
-          {shortcut.label}
-        </Button>
-      ))}
+      {shortcuts.map((shortcut) => {
+        const directModel = shortcut.kind === "model" && (shortcut.action === "connect" || shortcut.action === "diagnose" || !hasModel);
+        const disabled = controls.switchingConversation || (
+          shortcut.kind === "image" ? imageDisabled || !capabilitiesWorkspace
+            : shortcut.kind === "connection" ? !connected || connectionPreparing
+              : shortcut.kind === "agent" ? !connected
+                : shortcut.kind === "prefill" ? !connected || !hasModel || !loaded
+                  : directModel ? !connected
+                    : (shortcut.kind === "ask" || shortcut.kind === "model") && (!connected || controls.sending || snapshot.live.busy || controls.unconfirmedSend || !hasModel || !loaded)
+        );
+        return (
+          <Button
+            key={shortcut.id}
+            variant="ghost"
+            size="sm"
+            className="kulo-settings-assistant-suggestion"
+            isPending={shortcut.kind === "image" && imagePreparing === shortcut.action}
+            isDisabled={disabled}
+            onPress={() => void handleShortcut(shortcut)}
+          >
+            {shortcut.label}
+          </Button>
+        );
+      })}
     </div>
   );
 
@@ -344,7 +374,7 @@ export function SettingsAssistantPanel({
         const el = scrollRef.current;
         if (el) nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
       }}>
-        {!hasConversation && !showModelCard && !(imageView && imagePanel) && (
+        {!hasConversation && !showModelCard && !(imageView && imagePanel) && !(module === "workers" && agentPanel !== null) && (
           <div className="kulo-settings-assistant-intro">
             <p className="kulo-section-title">{settingsAssistantGreeting()}</p>
             {!hasModel && <p className="text-sm">{t("先连接一个模型，即可开始对话。", "Connect a model to start a conversation.")}</p>}
@@ -400,6 +430,17 @@ export function SettingsAssistantPanel({
           ))}
           {controls.localAppearance && <Card variant="secondary" className="flex-row items-center justify-between gap-2 rounded-2xl p-3"><Card.Content className="text-sm">{t("已切换为", "Switched to ")}{appearanceName(controls.localAppearance.appearance)}</Card.Content><Card.Footer><Button size="sm" variant="ghost" onPress={controls.undoLocalAppearance}>{t("撤销", "Undo")}</Button></Card.Footer></Card>}
           {localInfo && (!localInfo.scope || localInfo.scope === module) && <Card variant="secondary" className="gap-2 rounded-2xl p-3" aria-label={localInfo.title}><Card.Content className={localInfo.error ? "text-sm text-danger" : "text-sm"}><KuloMarkdown text={localInfo.text} /></Card.Content></Card>}
+          {module === "workers" && agentPanel !== null && (
+            <ExternalAgentConnectCard
+              key={`${controls.clientId}:${agentPanel}`}
+              mode={agentPanel}
+              clientId={controls.clientId}
+              connected={connected}
+              disabled={controls.switchingConversation}
+              envs={envs}
+              onClose={() => { setAgentPanel(null); composerRef.current?.focus(); }}
+            />
+          )}
           {module === "identity" && settings && <MemoryServiceDialogue clientId={controls.clientId} settings={settings} connected={connected} refreshKey={`${settings.blocks.memory.revision}:${snapshot.live.busy}:${snapshot.actions.length}:${snapshot.messages.length}`} />}
           {module === "connections" && connections && <ConnectionSetupInputs inputs={connections.inputs} connections={connections.connections} clientId={controls.clientId} connected={connected} available={connections.vault.available} localHost={connections.localHost} onChanged={() => {
             onConnectionsRefresh?.();
@@ -424,7 +465,14 @@ export function SettingsAssistantPanel({
             {imagePanel === "draft" && imageDraft && <ImageCapabilityEditor key={controls.clientId} workspace={capabilitiesWorkspace} clientId={controls.clientId} connected={connected} disabled={imageDisabled} onChanged={onCapabilityInputsChanged ?? noop} onClose={closeImagePanel} />}
             {imagePanel === "routing" && <ImageRoutingEditor key={controls.clientId} workspace={capabilitiesWorkspace} clientId={controls.clientId} connected={connected} disabled={imageDisabled} onChanged={onCapabilityInputsChanged ?? noop} onClose={closeImagePanel} />}
           </div>}
-          {module === "capabilities" && <CapabilitySetupInputs inputs={capabilityInputs} clientId={controls.clientId} target={controls.target} envs={envs} connected={connected} onChanged={onCapabilityInputsChanged ?? noop} onCompleted={(request) => void continueSetup(request)} />}
+          {module === "capabilities" && <CapabilitySetupInputs inputs={capabilityInputs} clientId={controls.clientId} target={controls.target} envs={envs} connected={connected} onChanged={onCapabilityInputsChanged ?? noop} onCompleted={(request) => {
+            const capability = capabilitiesWorkspace?.capabilities.find((item) => item.id === request.capabilityId);
+            if (request.kind === "browser" && capability?.allowTaskGeneration) {
+              setLocalInfo({ title: t("Google Flow 已连接", "Google Flow connected"), text: t("Google Flow 已就绪。", "Google Flow is ready."), scope: "capabilities" });
+              return;
+            }
+            void continueSetup(request);
+          }} />}
           {module === "capabilities" && setupCompletion && <Card variant="secondary" className="gap-2 rounded-2xl p-3" aria-label={t("继续能力配置", "Continue capability setup")}>
             <Card.Content className="text-sm">{setupCompletion.request.kind === "secret" ? t("密钥已保存", "API key saved") : t("Flow 标签页已连接", "Flow tab connected")}</Card.Content>
             {setupCompletion.error && <Card.Content role="alert" className="text-xs text-danger">{setupCompletion.error}</Card.Content>}

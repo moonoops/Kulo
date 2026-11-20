@@ -18,7 +18,7 @@ function sendButton(html: string): string {
 }
 
 describe("multimedia composer states", () => {
-  it.each([{ text: "", isSendDisabled: false }, { text: "保留的草稿", isSendDisabled: true }, { text: "下一条草稿", isSendDisabled: false }])("shows a filled stop square while waiting for the agent: %j", ({ text, isSendDisabled }) => {
+  it.each([{ text: "", isSendDisabled: false }, { text: "保留的草稿", isSendDisabled: true }])("shows only a filled stop square while waiting for the agent without busy send: %j", ({ text, isSendDisabled }) => {
     const html = renderToStaticMarkup(<KuloComposer draftText={text} onDraftTextChange={vi.fn()} attachments={[]}
       onEnqueueFiles={vi.fn()} onRemoveAttachment={vi.fn()} onSubmit={vi.fn()} onAbort={vi.fn()}
       busy connected isSendDisabled={isSendDisabled} placeholder="输入消息" />);
@@ -28,6 +28,18 @@ describe("multimedia composer states", () => {
     expect(stop).toContain('stroke="none"');
     expect(stop).not.toContain(`d="${KULO_ICONS.pause}"`);
     expect(html).not.toContain('aria-label="发送"');
+  });
+
+  it("keeps stop accessible alongside an enabled send button for busy interjections", () => {
+    const html = renderToStaticMarkup(<KuloComposer draftText="插话追问" onDraftTextChange={vi.fn()} attachments={[]}
+      onEnqueueFiles={vi.fn()} onRemoveAttachment={vi.fn()} onSubmit={vi.fn()} onAbort={vi.fn()}
+      busy connected placeholder="输入消息" />);
+    const stop = html.match(/<button\b[^>]*aria-label="停止生成"[^>]*>([\s\S]*?)<\/button>/);
+    expect(stop?.[0]).toContain("kulo-composer-control");
+    expect(stop?.[0]).not.toContain("disabled");
+    expect(stop?.[1]).toContain(`d="${KULO_ICONS.stop}"`);
+    expect(sendButton(html)).toContain("button--primary");
+    expect(sendButton(html)).not.toContain("disabled");
   });
 
   it("allows offline text queueing only after durable storage is ready", () => {

@@ -4,6 +4,12 @@ import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { COMPUTER_USE_MAX_RESULT, isComputerUseRequest, isComputerUseResult, type ComputerUseRequest, type ComputerUseResult, type ComputerPreviewTarget, type ComputerPreviewUpdate, type DesktopSystemPermissions, type SystemPermissionState } from "@kulo/protocol";
 import { AgentCliError, runAgentCli, type AgentCliInvocation, type AgentCliRunner } from "./agent-cli.js";
+import {
+  checkMacosChromeBackgroundTasks,
+  resolveManagedBrowserExecutable,
+  type MacosChromeBackgroundTaskState,
+  type ManagedBrowserExecutable,
+} from "./computer-browser-host.js";
 import { ComputerPreviewService } from "./computer-preview.js";
 
 export interface ComputerUseServiceOptions {
@@ -12,6 +18,8 @@ export interface ComputerUseServiceOptions {
   runner?: AgentCliRunner;
   browserEnabled?: boolean;
   desktopEnabled?: boolean;
+  resolveBrowserExecutable?: () => ManagedBrowserExecutable;
+  checkMacosChromeBackgroundTasks?: (signal?: AbortSignal) => Promise<MacosChromeBackgroundTaskState>;
 }
 
 export function computerUseConfiguration(value = process.env.KULO_COMPUTER_USE): { browserEnabled: boolean; desktopEnabled: boolean } {
@@ -20,7 +28,14 @@ export function computerUseConfiguration(value = process.env.KULO_COMPUTER_USE):
   return { browserEnabled: tools.includes("browser"), desktopEnabled: tools.includes("desktop") };
 }
 
-type BrowserSession = { refs: Set<string>; cleanupRequired: boolean; previewReady?: boolean };
+type BrowserSession = {
+  refs: Set<string>;
+  cleanupRequired: boolean;
+  previewReady?: boolean;
+  launchedOnce?: boolean;
+  unexpectedRestarts: number;
+  usingSystemMacosChrome?: boolean;
+};
 type DesktopSession = { app: string; windowId?: string; refs: Set<string> };
 type NativeEnvelope = { success?: boolean; ok?: boolean; data?: unknown; result?: unknown; error?: unknown; code?: unknown; checks?: unknown; summary?: unknown };
 
@@ -83,12 +98,17 @@ export class ComputerUseService {
   readonly #journal: string;
   readonly #fences = new Map<string, number>();
   readonly #previews: ComputerPreviewService;
+  readonly #resolveBrowserExecutable: () => ManagedBrowserExecutable;
+  readonly #checkMacosChromeBackgroundTasks: (signal?: AbortSignal) => Promise<MacosChromeBackgroundTaskState>;
   #lifecycle = new AbortController();
   #generation = 0;
   #closed = false;
   #suspending?: Promise<void>;
   #cleanupFailed = false;
   #recovery?: Promise<void>;
+  #macosChromeBtmState: MacosChromeBackgroundTaskState = "unknown";
+  #macosChromeBtmCheckedAt = 0;
+  #macosChromeBtmCheck?: Promise<MacosChromeBackgroundTaskState>;
 
   constructor(options: ComputerUseServiceOptions) {
     this.rootDir = privateDirectory(path.resolve(options.rootDir));
@@ -96,6 +116,10 @@ export class ComputerUseService {
     this.#runner = options.runner ?? runAgentCli;
     this.#browserEnabled = options.browserEnabled ?? false;
     this.#desktopEnabled = options.desktopEnabled ?? false;
+    this.#resolveBrowserExecutable = options.resolveBrowserExecutable
+      ?? (() => resolveManagedBrowserExecutable({ platform: this.#platform }));
+    this.#checkMacosChromeBackgroundTasks = options.checkMacosChromeBackgroundTasks
+      ?? ((signal) => checkMacosChromeBackgroundTasks(this.#platform, signal));
     const namespace = createHash("sha256").update(this.rootDir).digest("hex").slice(0,20);
     // macOS TMPDIR is often too long for Unix sockets, even with short session ids.
     this.#browserSocketDirectory = path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", `mab-${namespace.slice(0,12)}`);
@@ -109,6 +133,16 @@ export class ComputerUseService {
       runner: this.#runner,
       browserInvocation: (sessionId) => this.#browser.get(sessionId)?.previewReady && !this.#browser.get(sessionId)!.cleanupRequired
         ? { args: this.#browserArgs(sessionId), cwd: this.rootDir, env: this.#environment("browser") } : undefined,
+      browserDisconnectMessage: (sessionId) => {
+        const session = this.#browser.get(sessionId);
+        if (session?.usingSystemMacosChrome) {
+          void this.#refreshMacosChromeBtm(false).catch(() => {});
+          if (this.#macosChromeBtmState === "disallowed") {
+            return "浏览器进程被 macOS 后台权限终止（请在系统设置「允许在后台」中开启 Google Chrome）";
+          }
+        }
+        return undefined;
+      },
       desktopTarget: (sessionId) => this.#desktop.get(sessionId),
       desktopEnvironment: () => this.#environment("desktop"),
       queueDesktop: (work) => {
@@ -195,7 +229,7 @@ export class ComputerUseService {
       const value = object(JSON.parse(fs.readFileSync(descriptor, "utf8")));
       if (!value || Object.keys(value).some((key) => key !== "version" && key !== "sessions") || value.version !== 1 || !Array.isArray(value.sessions) || value.sessions.length > MAX_BROWSER_SESSIONS || new Set(value.sessions).size !== value.sessions.length
         || value.sessions.some((session) => typeof session !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(session))) throw new Error("Invalid managed browser journal");
-      for (const sessionId of value.sessions as string[]) this.#browser.set(sessionId, { refs: new Set(), cleanupRequired: true });
+      for (const sessionId of value.sessions as string[]) this.#browser.set(sessionId, { refs: new Set(), cleanupRequired: true, unexpectedRestarts: 0 });
     } finally { fs.closeSync(descriptor); }
   }
 
@@ -239,6 +273,27 @@ export class ComputerUseService {
     return work;
   }
 
+  #refreshMacosChromeBtm(force = false, signal?: AbortSignal): Promise<MacosChromeBackgroundTaskState> {
+    if (this.#platform !== "darwin") return Promise.resolve("unknown");
+    if (!force && this.#macosChromeBtmCheckedAt > 0 && Date.now() - this.#macosChromeBtmCheckedAt < 30_000) {
+      return Promise.resolve(this.#macosChromeBtmState);
+    }
+    if (this.#macosChromeBtmCheck) return this.#macosChromeBtmCheck;
+    const work = this.#checkMacosChromeBackgroundTasks(signal)
+      .then((state) => {
+        this.#macosChromeBtmState = state;
+        this.#macosChromeBtmCheckedAt = Date.now();
+        return state;
+      }, () => this.#macosChromeBtmState);
+    this.#macosChromeBtmCheck = work;
+    void work.finally(() => { if (this.#macosChromeBtmCheck === work) this.#macosChromeBtmCheck = undefined; });
+    return work;
+  }
+
+  #usesSystemMacosChrome(selected: ManagedBrowserExecutable): boolean {
+    return this.#platform === "darwin" && (!selected.executablePath || selected.executablePath.includes("/Google Chrome.app/"));
+  }
+
   #environment(tool: ComputerUseRequest["tool"]): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {};
     for (const key of inheritedEnvironment) if (process.env[key] !== undefined) env[key] = process.env[key];
@@ -250,8 +305,8 @@ export class ComputerUseService {
       env.AGENT_BROWSER_STREAM_QUALITY = "40";
       env.AGENT_BROWSER_STREAM_MAX_WIDTH = "960";
       env.AGENT_BROWSER_STREAM_MAX_HEIGHT = "640";
-      const executable = process.env.KULO_BROWSER_EXECUTABLE_PATH ?? process.env.AGENT_BROWSER_EXECUTABLE_PATH;
-      if (executable) env.AGENT_BROWSER_EXECUTABLE_PATH = executable;
+      const selected = this.#resolveBrowserExecutable();
+      if (selected.executablePath) env.AGENT_BROWSER_EXECUTABLE_PATH = selected.executablePath;
     } else env.AGENT_DESKTOP_HOME = privateDirectory(path.join(this.rootDir, "desktop"));
     return env;
   }
@@ -332,7 +387,48 @@ export class ComputerUseService {
       if (request.tool === "browser") {
         const report = object(native);
         if (typeof report?.success !== "boolean" || !Array.isArray(report.checks)) throw new AgentCliError("CLI_INVALID_OUTPUT", "The browser returned an invalid diagnostic response");
-        return this.#result(request, { configured: true, installed: true, diagnosticsPassed: report.success, executionVerified: false, cleanupPending: this.#cleanupFailed || Boolean(this.#recovery), checks: report.checks, summary: report.summary });
+        const selected = this.#resolveBrowserExecutable();
+        const checks = [...report.checks];
+        const summary = object(report.summary) ? { ...object(report.summary)! } : report.summary;
+        if (selected.source === "chrome-for-testing" && selected.executablePath) {
+          checks.push({
+            category: "Chrome",
+            id: "chrome.managed_executable",
+            status: "info",
+            message: `Using isolated automation browser: ${selected.executablePath}`,
+          });
+        }
+        let backgroundTasksDisallowed = false;
+        const doctorUsesSystemChrome = checks.some((item) => {
+          const check = object(item);
+          return typeof check?.message === "string" && check.message.includes("/Google Chrome.app/");
+        });
+        if (this.#usesSystemMacosChrome(selected) && (doctorUsesSystemChrome || selected.executablePath?.includes("/Google Chrome.app/"))) {
+          const btmState = await this.#refreshMacosChromeBtm(true, signal);
+          if (btmState === "disallowed") {
+            backgroundTasksDisallowed = true;
+            checks.push({
+              category: "macOS",
+              id: "macos.chrome_background_tasks",
+              status: "warn",
+              message: "Google Chrome background tasks are disallowed in macOS Login Items & Extensions; macOS loginwindow will force-quit headless Chrome after ~30 seconds unless allowed or an isolated automation browser (Chrome for Testing) is used.",
+              fix: "Enable Google Chrome under System Settings → General → Login Items & Extensions → Allow in the Background, or install an automation browser (agent-browser install / KULO_BROWSER_EXECUTABLE_PATH).",
+            });
+            const summaryObj = object(summary);
+            if (summaryObj && typeof summaryObj.warn === "number") summaryObj.warn += 1;
+          }
+        }
+        return this.#result(request, {
+          configured: true,
+          installed: true,
+          diagnosticsPassed: report.success,
+          executionVerified: false,
+          cleanupPending: this.#cleanupFailed || Boolean(this.#recovery),
+          ...(selected.executablePath ? { managedExecutable: selected.executablePath } : {}),
+          ...(backgroundTasksDisallowed ? { backgroundTasksDisallowed: true } : {}),
+          checks,
+          summary,
+        });
       }
       const result = this.#native(request, native);
       return result.failure ?? this.#result(request, { configured: true, installed: true, status: result.data });
@@ -348,11 +444,14 @@ export class ComputerUseService {
     if (request.action === "close" && !session) return this.#result(request, { closed: true });
     if (request.action === "open" && !session) {
       if (this.#browser.size >= MAX_BROWSER_SESSIONS) return this.#error(request, "SESSION_LIMIT", "Close an existing browser session before opening another");
-      session = { refs: new Set(), cleanupRequired: false };
+      const selected = this.#resolveBrowserExecutable();
+      const usingSystemMacosChrome = this.#usesSystemMacosChrome(selected);
+      session = { refs: new Set(), cleanupRequired: false, unexpectedRestarts: 0, usingSystemMacosChrome };
       this.#browser.set(request.sessionId, session);
       // Journal before spawning: a detached daemon may outlive this Env process.
       try { this.#persistJournal(); }
       catch (error) { this.#browser.delete(request.sessionId); throw error; }
+      if (usingSystemMacosChrome) void this.#refreshMacosChromeBtm(false).catch(() => {});
     }
     if (!session) return this.#error(request, "SESSION_NOT_FOUND", "Open a browser session before using it");
     if ("ref" in request && request.ref !== undefined && !session.refs.has(request.ref.replace(/^@/, ""))) return this.#error(request, "REF_NOT_AUTHORIZED", "Take a fresh snapshot in this browser session before acting on a ref");
@@ -373,9 +472,10 @@ export class ComputerUseService {
         args.push("scroll", request.direction, String(request.amount ?? 500));
         break;
       case "wait":
+        args.push("wait");
+        if (request.ref !== undefined) args.push(`@${request.ref.replace(/^@/, "")}`);
+        else args.push("--text", request.text!);
         if (request.timeoutMs !== undefined) args.push("--timeout", String(request.timeoutMs));
-        if (request.ref !== undefined) args.push("wait", `@${request.ref.replace(/^@/, "")}`);
-        else args.push("wait", "--text", request.text!);
         break;
       case "back": case "forward": case "close": args.push(request.action); break;
     }
@@ -383,11 +483,48 @@ export class ComputerUseService {
     const value = await this.#call(request, args, active, signal, input);
     const native = this.#native(request, value, batch);
     if (native.failure) return native.failure;
-    if (request.action === "open") session.previewReady = true;
+    const lifecycle = object(object(native.data)?.lifecycle);
+    const unexpectedRestart =
+      request.action !== "close"
+      && Boolean(session.launchedOnce)
+      && lifecycle?.launched === true
+      && lifecycle?.reused === false
+      && lifecycle?.relaunchedBrowser !== true;
+    if (request.action === "open") {
+      session.previewReady = true;
+      session.launchedOnce = true;
+    }
+    let sessionReset: { unexpectedRestart: true; restartCount: number; cause?: string; message: string } | undefined;
+    if (unexpectedRestart) {
+      session.unexpectedRestarts += 1;
+      if (request.action !== "open") session.refs.clear();
+      const btmState = session.usingSystemMacosChrome
+        ? (this.#macosChromeBtmState !== "unknown" ? this.#macosChromeBtmState : await this.#refreshMacosChromeBtm(false, signal))
+        : "unknown";
+      const base = request.action === "open"
+        ? "The previous managed browser process exited unexpectedly before this navigation and a fresh browser instance was started."
+        : "The managed browser process exited unexpectedly between commands and was restarted on a blank page (about:blank); previous page state and refs were lost.";
+      const detail = btmState === "disallowed"
+        ? " Root cause: macOS Login Items & Extensions ('Allow in the Background') has Google Chrome disabled, so macOS loginwindow force-quits headless Chrome after ~30 seconds. Stop retrying in a loop and report blocked so the user can enable Google Chrome in Allow in the Background or install an isolated automation browser (Chrome for Testing)."
+        : session.unexpectedRestarts >= 2
+          ? ` The managed browser has exited unexpectedly ${session.unexpectedRestarts} times in this session. Stop retrying in a loop and report blocked with this diagnostic.`
+          : " Re-open the target URL before continuing, and report blocked if this repeats.";
+      sessionReset = {
+        unexpectedRestart: true,
+        restartCount: session.unexpectedRestarts,
+        ...(btmState === "disallowed" ? { cause: "macos_chrome_background_tasks_disallowed" } : {}),
+        message: base + detail,
+      };
+    }
     if (request.action === "close") this.#forgetBrowser(request.sessionId);
     if (request.action === "snapshot") session.refs = references(native.data, false);
     if (request.action !== "close") this.#previews.changed({ tool: "browser", sessionId: request.sessionId });
-    return this.#result(request, batch ? { actionAccepted: true, observationRequired: true } : native.data);
+    const payload = batch
+      ? { actionAccepted: true, observationRequired: true, ...(sessionReset ? { sessionReset } : {}) }
+      : sessionReset && object(native.data)
+        ? { ...object(native.data)!, sessionReset }
+        : native.data;
+    return this.#result(request, payload);
   }
 
   async #executeDesktop(request: Extract<ComputerUseRequest, { tool: "desktop"; sessionId: string }>, active: () => boolean, signal: AbortSignal): Promise<ComputerUseResult> {
@@ -432,7 +569,16 @@ export class ComputerUseService {
     }
     const native = this.#native(request, await this.#call(request, args, active, signal, input));
     if (native.failure) {
-      if (request.action === "snapshot" || request.action === "wait") this.#previews.clearDesktop(request.sessionId, "unavailable");
+      if (request.action === "snapshot" || request.action === "wait") {
+        const permissionDenied = native.failure.error?.code === "PERM_DENIED";
+        this.#previews.clearDesktop(
+          request.sessionId,
+          "unavailable",
+          permissionDenied
+            ? { message: "需要辅助功能权限才能读取应用窗口", permissionRequired: "accessibility" }
+            : undefined,
+        );
+      }
       return native.failure;
     }
     if (request.action === "snapshot" || request.action === "wait") {
