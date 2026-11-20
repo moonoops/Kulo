@@ -10,6 +10,7 @@ import {
   CUSTOM_PROVIDER_APIS,
   KULO_VERSION,
   formatDeviceChatInvitation,
+  normalizeKuloLanguage,
   normalizeVertexConfig,
   isDesktopSystemPermissions,
   parseDeviceJoinInput,
@@ -29,7 +30,7 @@ import {
   type ExtensionOperationRequest,
 } from "@kulo/protocol";
 import { openNativePermissionSettings } from "./connection-native-apps.js";
-import { IdentityFilesError, KULO_IDENTITY_TEMPLATES } from "./identity-files.js";
+import { IdentityFilesError, getIdentityTemplate } from "./identity-files.js";
 import { PersonalityError } from "./personality.js";
 import { MemoryServiceError } from "./memory-service.js";
 import { ExtensionError } from "./extensions.js";
@@ -1737,11 +1738,16 @@ export async function startKuloHubServer(
           return;
         }
         if (req.method === "GET" && pathname === "/api/personality/identity") {
-          sendJson(res, 200, await hub.personality.readIdentity());
+          const language = normalizeKuloLanguage(parsedUrl.searchParams.get("lang"));
+          sendJson(res, 200, await hub.personality.readIdentity(language ? { language } : undefined));
           return;
         }
         if (req.method === "GET" && pathname === "/api/personality/identity/preset") {
-          sendJson(res, 200, { content: KULO_IDENTITY_TEMPLATES["identity-agreement.md"] });
+          const language =
+            normalizeKuloLanguage(parsedUrl.searchParams.get("lang")) ??
+            hub.getSettingsView().blocks.presentation.value.language ??
+            "en";
+          sendJson(res, 200, { content: getIdentityTemplate("identity-agreement.md", language) });
           return;
         }
         if (req.method === "POST" && pathname === "/api/personality/identity/dismiss") {
@@ -1776,7 +1782,8 @@ export async function startKuloHubServer(
 
         if (req.method === "GET" && pathname === "/api/identity/file") {
           const file = parsedUrl.searchParams.get("file") as IdentityFile | null;
-          sendJson(res, 200, await hub.identityFiles.read(file));
+          const language = normalizeKuloLanguage(parsedUrl.searchParams.get("lang"));
+          sendJson(res, 200, await hub.identityFiles.read(file, language ? { language } : undefined));
           return;
         }
 

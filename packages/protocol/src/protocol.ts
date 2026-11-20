@@ -68,6 +68,7 @@ export type ClientToHubMessage =
       text: string;
       replyTo?: ChatReplyReference;
       attachments?: ChatAttachment[];
+      decisionOptionId?: string;
       commandId?: string;
     }
   | {

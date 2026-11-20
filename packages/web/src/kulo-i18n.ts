@@ -1,6 +1,7 @@
 import { useCallback, useSyncExternalStore } from "react";
+import { normalizeKuloLanguage, type KuloLanguage } from "@kulo/protocol";
 
-export type KuloLanguage = "zh-CN" | "en";
+export type { KuloLanguage };
 export type Translate = (chinese: string, english: string) => string;
 
 export const LANGUAGE_STORAGE_KEY = "kulo:language";
@@ -11,6 +12,15 @@ export const LANGUAGE_OPTIONS = [
 
 export function parseLanguage(value: unknown): KuloLanguage {
   return value === "en" ? "en" : "zh-CN";
+}
+
+export function hasStoredLanguage(): boolean {
+  try {
+    if (typeof localStorage === "undefined") return false;
+    return normalizeKuloLanguage(localStorage.getItem(LANGUAGE_STORAGE_KEY)) !== undefined;
+  } catch {
+    return false;
+  }
 }
 
 let cachedLanguage: KuloLanguage | undefined;

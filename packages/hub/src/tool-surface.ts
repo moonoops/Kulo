@@ -205,6 +205,12 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     scope: "global",
   },
   {
+    name: "kulo_ticket_ask_user",
+    audiences: ALL_ORCHESTRATOR,
+    tier: "event",
+    scope: "global",
+  },
+  {
     name: "kulo_inspect_staged_diff",
     audiences: ALL_ORCHESTRATOR,
     tier: "event",
@@ -371,6 +377,12 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     name: "kulo_host_action",
     audiences: ["chat", ...ALL_COMPUTER_WORKERS],
     tier: "deferred",
+    scope: "global",
+  },
+  {
+    name: "kulo_host_action_decide",
+    audiences: ALL_ORCHESTRATOR,
+    tier: "event",
     scope: "global",
   },
   {

@@ -92,4 +92,36 @@ describe("task failure details", () => {
     expect(pending).toContain('data-pending="true"');
     expect(html).not.toContain("已接收回复");
   });
+
+  it("renders structured quick-action buttons alongside optional manual input and prefers localized waiting detail", () => {
+    const html = render({
+      status: "waiting",
+      latestReport: { state: "blocked", summary: "Port conflict", question: "Reuse 8888 or install on a new port?", at: 2 },
+      waiting: {
+        reason: "user",
+        since: 2,
+        detail: "8888 端口已运行旧版 Hindsight，如何处理？",
+        options: [
+          { id: "reuse", label: "复用现有 8888 实例", tone: "primary" },
+          { id: "reinstall", label: "换端口全新安装", tone: "secondary" },
+        ],
+      },
+    });
+    expect(html).toContain("8888 端口已运行旧版 Hindsight，如何处理？");
+    expect(html).not.toContain("Reuse 8888 or install on a new port?");
+    expect(html).toContain("复用现有 8888 实例");
+    expect(html).toContain("换端口全新安装");
+    expect(html).toContain("按说明提交");
+  });
+
+  it("shows coordinating status without surfacing the user blocker form when waiting on main Agent judgment", () => {
+    const html = render({
+      status: "waiting",
+      latestReport: { state: "blocked", summary: "Need choice", question: "Internal worker blocker", at: 2 },
+      waiting: { reason: "coordinator", since: 2, detail: "Internal worker blocker" },
+    });
+    expect(html).toContain("主脑研判中");
+    expect(html).not.toContain("问题待确认");
+    expect(html).not.toContain("<textarea");
+  });
 });

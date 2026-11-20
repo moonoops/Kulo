@@ -1190,7 +1190,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
       }
       case "models": return { settings: settings.blocks.model, providers: await this.#host.providers() };
       case "workers": return { executor: settings.blocks.executor, roles: settings.blocks.roles };
-      case "identity": return { presentation: settings.blocks.presentation, memory: settings.blocks.memory, identity: settings.blocks.identity, note: "身份文件修改必须在身份编辑器确认；Hindsight 地址、凭据、连接测试和启用开关均在左侧长期记忆表单管理。右侧仅处理本机部署、模型配置和卸载。" };
+      case "identity": return { presentation: settings.blocks.presentation, memory: settings.blocks.memory, identity: settings.blocks.identity, note: "身份文件修改必须在身份编辑器确认；本机 Hindsight 的状态查看、部署、模型配置、卸载，以及带健康检查的长期记忆启用/停用开关均可通过 kulo_memory_service_read 与 kulo_memory_service_prepare 直接办理（外部 Hindsight 连接地址与密钥录入仍通过设置页保密表单完成）。" };
       case "machines": {
         const controller = this.#host.deviceController?.();
         return controller ? { ...controller.view(clientId), machines: this.#host.envs() } : { machines: this.#host.envs() };
@@ -2148,6 +2148,7 @@ export function createGlobalSettingsToolsExtension(get: () => SettingsAssistant)
           const section = args.section ?? "current";
           const followUps: string[] = [];
           if (["current", "models", "workers", "identity"].includes(section)) followUps.push("kulo_settings_update");
+          if (["current", "identity"].includes(section)) followUps.push("kulo_memory_service_read");
           if (section === "appearance") followUps.push("kulo_settings_appearance");
           if (section === "extensions") followUps.push("kulo_extension_manage");
           if (section === "capabilities") followUps.push("kulo_capability_manage", "kulo_skill_manage");
@@ -2159,7 +2160,7 @@ export function createGlobalSettingsToolsExtension(get: () => SettingsAssistant)
       }),
       defineTool({
         name: "kulo_settings_update",
-        description: "Apply allowlisted settings changes immediately (`block` in `model`/`executor`/`presentation`/`roles`; `changes` JSON object using `roleId.field` for `roles`; read settings first; excludes credentials, URLs, Identity files, and Hindsight connection toggles). 关键词：修改设置 调整并发子智能体上限 切换默认模型 改名 角色配置 自动归档",
+        description: "Apply allowlisted settings changes immediately (`block` in `model`/`executor`/`presentation`/`roles`; `changes` JSON object using `roleId.field` for `roles`; read settings first; excludes credentials, URLs, and Identity files—use `kulo_memory_service_read` / `kulo_memory_service_prepare` for Hindsight setup and memory enable/disable toggles). 关键词：修改设置 调整并发子智能体上限 切换默认模型 改名 角色配置 自动归档",
         parameters: obj({ block: oneOf(["model", "executor", "presentation", "roles"]), changes: str(), title: str() }),
         deferred: true,
         execute: async (args, api) => result(await get().update(args.block, args.changes, args.title, api.callId, Number(api.conversationId))),

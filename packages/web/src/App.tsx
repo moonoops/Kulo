@@ -48,7 +48,8 @@ import { useSettingsAssistant } from "./features/settings/use-settings-assistant
 import { useSettingsNavigation } from "./features/settings/use-settings-navigation";
 import { settingsSaveActivity } from "./features/settings/settings-save-activity";
 import { useCapabilitiesWorkspace } from "./features/settings/use-capabilities-workspace";
-import { ADD_IMAGE_PROMPT, IMAGE_ROUTING_PROMPT, type CapabilityView, type ImageAssistantRequest } from "./features/settings/capability-views";
+import { isAddImagePrompt, isImageRoutingPrompt, type CapabilityView, type ImageAssistantRequest } from "./features/settings/capability-views";
+import { syncPresentationLanguage } from "./features/settings/language-sync";
 import { useConnectionsWorkspace } from "./features/settings/use-connections-workspace";
 import type { ConnectionPrepare } from "./features/settings/connections-module";
 import type { SettingsAssistantEntryIntent } from "./features/settings/settings-assistant-actions";
@@ -60,7 +61,7 @@ import {
   type TicketDetailSnapshot,
 } from "./kulo-api";
 import { useKuloAppearance } from "./kulo-appearance";
-import { useI18n, translate as t } from "./kulo-i18n";
+import { getLanguage, hasStoredLanguage, setLanguage, useI18n, translate as t } from "./kulo-i18n";
 import { acceptSettingsSnapshot, settingsModuleTitle } from "./features/settings/settings-helpers";
 import {
   AttachmentLightbox,
@@ -324,6 +325,24 @@ function AppShell() {
   const acceptSavedSettings = useCallback((next: NonNullable<typeof settings>) => {
     setSettings((current) => acceptSettingsSnapshot(current, next));
   }, [setSettings]);
+  const syncedHubLanguageRef = useRef(false);
+  const adoptedHubLanguageRef = useRef(false);
+  useEffect(() => {
+    if (!connected || !settings) return;
+    const hubLanguage = settings.blocks.presentation.value.language;
+    if (hubLanguage) {
+      syncedHubLanguageRef.current = true;
+      if (!adoptedHubLanguageRef.current && !hasStoredLanguage()) {
+        adoptedHubLanguageRef.current = true;
+        setLanguage(hubLanguage);
+      }
+      return;
+    }
+    if (!syncedHubLanguageRef.current) {
+      syncedHubLanguageRef.current = true;
+      void syncPresentationLanguage(settings, getLanguage(), acceptSavedSettings);
+    }
+  }, [connected, settings, acceptSavedSettings]);
   const [settingsEditorEpoch, setSettingsEditorEpoch] = useState(0);
   const [settingsEntryIntent, setSettingsEntryIntent] = useState<SettingsAssistantEntryIntent | null>(null);
   const [permissionEntry, setPermissionEntry] = useState<SystemPermissionEntry | null>(null);
@@ -666,9 +685,9 @@ function AppShell() {
     setSettingsRightCollapsed(false);
     if (sizeClass !== "expanded") setSheet("right");
     const imageCapability = target?.kind === "capability" && capabilitiesWorkspace.snapshot?.capabilities.find((item) => item.id === target.id && item.kind === "image");
-    if (imageCapability || capabilityView === "image" && (prompt === ADD_IMAGE_PROMPT || prompt === IMAGE_ROUTING_PROMPT)) {
+    if (imageCapability || capabilityView === "image" && (isAddImagePrompt(prompt) || isImageRoutingPrompt(prompt))) {
       setCapabilityView("image");
-      setImageAssistantRequest({ id: ++imageAssistantRequestSequence.current, action: prompt === IMAGE_ROUTING_PROMPT ? "routing" : "configure", capabilityId: imageCapability ? imageCapability.id : undefined });
+      setImageAssistantRequest({ id: ++imageAssistantRequestSequence.current, action: isImageRoutingPrompt(prompt) ? "routing" : "configure", capabilityId: imageCapability ? imageCapability.id : undefined });
       return;
     }
     if (prompt) void settingsAssistantControls.send(prompt, target ?? null);
@@ -1607,6 +1626,7 @@ function AppShell() {
             <ChatTargetDeviceMenu
               envs={envs}
               selectedDeviceId={selectedTargetDeviceId}
+              connected={connected}
               disabled={!connected || live.busy}
               onSelect={(deviceId) => {
                 setTopicTargetOverrides((current) => ({ ...current, [activeTopicId]: deviceId }));
@@ -1836,14 +1856,15 @@ function AppShell() {
               canQueueActions={outboxReady}
               pendingAnswer={pendingAnswer}
               roleLabel={projectedCard?.roleLabel ?? projectedDetail.ticket.role}
-              onAnswerBlocker={async (id, answer, commandId) => {
+              onAnswerBlocker={async (id, answer, commandId, decisionOptionId) => {
                 const ans = redactDeviceInvitationText(answer);
                 const draftKey = blockerDraftKey(projectedDetail.ticket);
-                const existing = outboxRecords.find((record) => record.envelope.type === "ticket.steer" && record.metadata?.draftKey === draftKey && record.envelope.text === ans && (record.state === "queued" || record.state === "sending"));
+                const existing = outboxRecords.find((record) => record.envelope.type === "ticket.steer" && record.metadata?.draftKey === draftKey && record.envelope.text === ans && record.envelope.decisionOptionId === decisionOptionId && (record.state === "queued" || record.state === "sending"));
                 const record = existing ?? await enqueueWs({
                   type: "ticket.steer",
                   ticketId: id,
                   text: ans,
+                  ...(decisionOptionId ? { decisionOptionId } : {}),
                   commandId,
                 }, { draftKey, topicId: projectedDetail.ticket.originTopicId ?? "root", rawUserText: ans }, deliveryScope);
                 await waitForQueuedAck(record);

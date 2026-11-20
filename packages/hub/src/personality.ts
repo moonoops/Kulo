@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-durable";
 import type {
-  IdentityRead, IdentitySaved, IdentityVersion, IdentityProposal, PersonalitySettings,
+  IdentityRead, IdentitySaved, IdentityVersion, IdentityProposal, KuloLanguage, PersonalitySettings,
   PersonalitySnapshot, RelationshipRollbackRequest, RelationshipUpdateSettings,
   RelationshipUpdateStatus, RelationshipWriteRequest,
 } from "@kulo/protocol";
@@ -191,8 +191,8 @@ export class KuloPersonality {
     });
   }
 
-  async readIdentity(): Promise<IdentityRead> {
-    return this.#options.identityFiles.read(IDENTITY_AGREEMENT_FILE);
+  async readIdentity(options?: { language?: KuloLanguage }): Promise<IdentityRead> {
+    return this.#options.identityFiles.read(IDENTITY_AGREEMENT_FILE, options);
   }
 
   async context(): Promise<{ identityAgreement: string; relationship: string; recentWorkEnabled: boolean }> {

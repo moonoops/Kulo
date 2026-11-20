@@ -50,6 +50,8 @@ export function ticketTone(status: TicketStatus): TaskTone {
 export function ticketWaitLabel(waiting: TicketCardView["waiting"]): string {
   switch (waiting?.reason) {
     case "user": return t("等待确认", "Awaiting confirmation");
+    case "coordinator": return t("主脑研判中", "Coordinating");
+    case "connection": return t("等待连接", "Waiting for connection");
     case "env": return t("等待设备", "Waiting for device");
     case "time": return t("等待时间", "Waiting for scheduled time");
     case "external": return t("等待外部结果", "Waiting for external result");

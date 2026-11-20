@@ -1,8 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { Select } from "@heroui/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EnvNodeDescriptor } from "@kulo/protocol";
 import { permissionCanBeRequested, SystemPermissionsModule } from "./system-permissions-module";
 import { SETTINGS_MODULES, settingsModuleTitle } from "./settings-helpers";
+
+afterEach(() => { vi.restoreAllMocks(); });
 
 const env: EnvNodeDescriptor = { id: "remote", name: "办公室 Mac", kind: "reverse-ws", online: true, platform: "darwin", arch: "arm64", rootDir: "/workspace", capabilities: ["agent-desktop"], connectedAt: 1, lastSeenAt: 1 };
 
@@ -26,11 +29,21 @@ describe("system permission settings", () => {
     expect(html).not.toContain("未保存");
   });
 
-  it("uses a consistent local device label across selector and all three permission rows when on the local machine", () => {
+  it("uses a consistent leading local device tag, current-first order, and status dots across selector and permission rows", () => {
+    vi.spyOn(Select, "Popover").mockImplementation(({ children }) => <>{children}</>);
     const local: EnvNodeDescriptor = { id: "local", name: "MacBook-Pro.local", kind: "local", online: true, platform: "darwin", arch: "arm64", rootDir: "/workspace", capabilities: ["agent-desktop"], connectedAt: 1, lastSeenAt: 1 };
-    const html = renderToStaticMarkup(<SystemPermissionsModule envs={[local, env]} currentDeviceId="local" />);
-    expect(html.split("MacBook-Pro.local（本机）").length - 1).toBeGreaterThanOrEqual(4);
+    const offlinePeer: EnvNodeDescriptor = { ...env, id: "offline", name: "离线工作站", online: false };
+    const html = renderToStaticMarkup(<SystemPermissionsModule envs={[offlinePeer, env, local]} currentDeviceId="local" />);
+    expect(html.split('<span class="kulo-device-local-tag">本机</span>').length - 1).toBeGreaterThanOrEqual(4);
+    expect(html.indexOf("kulo-device-local-tag")).toBeLessThan(html.indexOf("MacBook-Pro.local"));
+    expect(html).not.toContain("（本机）");
     expect(html).not.toContain("当前客户端");
+    expect(html).toContain('data-online="true"');
+    expect(html).toContain('data-online="false"');
+
+    const listboxSlice = html.slice(html.indexOf('role="listbox"'));
+    expect(listboxSlice.indexOf("MacBook-Pro.local")).toBeLessThan(listboxSlice.indexOf("办公室 Mac"));
+    expect(listboxSlice.indexOf("办公室 Mac")).toBeLessThan(listboxSlice.indexOf("离线工作站"));
   });
 
   it("allows recovery only for known requestable states", () => {

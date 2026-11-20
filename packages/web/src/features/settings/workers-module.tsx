@@ -12,7 +12,8 @@ import {
   toast,
 } from "@heroui/react";
 import {
-  defaultRolePresets,
+  areInternalRolesAtDefaults,
+  localizeRolePresets,
   type EnvNodeDescriptor,
   type ExternalClientConnection,
   type ProjectView,
@@ -42,31 +43,6 @@ const EMPTY_AGENT: RolePreset = {
   allowSubagents: false, thinkingLevel: "auto", enabled: true,
 };
 
-function localizedRoleLabel(
-  id: string,
-  label: string,
-  defaultLabel: string | undefined,
-  t: (zh: string, en: string) => string,
-): string {
-  if (!defaultLabel || label !== defaultLabel) return label;
-  switch (id) {
-    case "scout":
-      return t("侦察员", "Scout");
-    case "architect":
-      return t("架构师", "Architect");
-    case "coder":
-      return t("开发者", "Coder");
-    case "checker":
-      return t("检验员", "Checker");
-    case "designer":
-      return t("设计师", "Designer");
-    case "writer":
-      return t("写作者", "Writer");
-    default:
-      return label;
-  }
-}
-
 export function WorkersModule({
   settings,
   envs,
@@ -80,13 +56,14 @@ export function WorkersModule({
   onSettingsUpdated: (next: KuloSettingsView) => void;
   onDirtyChange?: (dirty: boolean) => void;
 }) {
-  const { t } = useI18n();
+  const { t, language: activeLanguage } = useI18n();
+  const language = activeLanguage === "en" ? "en" : "zh-CN";
   const rolesBlock = settings.blocks.roles;
   const modelBlock = settings.blocks.model;
 
   const [baseRevision, setBaseRevision] = useState(rolesBlock.revision);
   const [baseRoles, setBaseRoles] = useState<Record<string, RolePreset>>(() => rolesBlock.value);
-  const [roles, setRoles] = useState<Record<string, RolePreset>>(() => rolesBlock.value);
+  const [roles, setRoles] = useState<Record<string, RolePreset>>(() => localizeRolePresets(rolesBlock.value, language));
   const [openRole, setOpenRole] = useState<string | null>(null);
   const { providers, error: catalogError, refresh: refreshProviders } = useProviderCatalog(settings);
   const [creatingOpen, setCreatingOpen] = useState(false);
@@ -113,17 +90,21 @@ export function WorkersModule({
   useSettingsPending(busy);
   const providerError = catalogError ? catalogError instanceof Error ? catalogError.message : t("读取模型目录失败", "Failed to load model catalog") : undefined;
 
-  const defaultPresets = useMemo(() => defaultRolePresets(), []);
+  const localizedBaseRoles = useMemo(() => localizeRolePresets(baseRoles, language), [baseRoles, language]);
   const internalRoles = useMemo(() => internalAgentPresets(roles), [roles]);
   const savedInternalRoles = useMemo(() => internalAgentPresets(baseRoles), [baseRoles]);
-  const atDefaults = JSON.stringify(internalRoles) === JSON.stringify(defaultPresets);
-  const dirty = JSON.stringify(roles) !== JSON.stringify(baseRoles);
+  const atDefaults = useMemo(() => areInternalRolesAtDefaults(internalRoles), [internalRoles]);
+  const dirty = JSON.stringify(roles) !== JSON.stringify(localizedBaseRoles);
   const creatingDirty =
     creatingOpen && JSON.stringify(newRole) !== JSON.stringify(EMPTY_AGENT);
   const pageDirty = dirty || creatingDirty || externalCreatingDirty;
   const roleEntries = Object.entries(internalRoles);
   const totalRoleCount = roleEntries.length;
   const enabledRoleCount = Object.values(savedInternalRoles).filter((role) => role.enabled !== false).length;
+
+  useEffect(() => {
+    setRoles((current) => localizeRolePresets(current, language));
+  }, [language]);
 
   useEffect(() => {
     if (busy || !focusAfterToggle.current) return;
@@ -147,14 +128,14 @@ export function WorkersModule({
       return;
     }
     if (!dirty) {
-      setRoles(incoming);
+      setRoles(localizeRolePresets(incoming, language));
       setBaseRevision(rolesBlock.revision);
       setBaseRoles(incoming);
       setConflict(false);
     } else {
       setConflict(true);
     }
-  }, [rolesBlock.revision, rolesBlock.value, baseRevision, baseRoles, dirty]);
+  }, [rolesBlock.revision, rolesBlock.value, baseRevision, baseRoles, dirty, language]);
 
   const providerModelGroups = useMemo(
     () => buildProviderModelGroups(modelBlock.value, providers),
@@ -198,10 +179,11 @@ export function WorkersModule({
         (await kuloRest.saveSettingsBlock("roles", revision, value)).settings);
       if (next.blocks.roles.revision >= latestRolesBlock.current.revision) {
         const incoming = next.blocks.roles.value;
+        const localizedIncoming = localizeRolePresets(incoming, language);
         latestRolesBlock.current = next.blocks.roles;
         setRoles((current) => mutation.kind === "restore"
-          ? { ...internalAgentPresets(incoming), ...rebaseRoleDrafts(baseRoles, current, externalAgentPresets(incoming)) }
-          : rebaseRoleDrafts(baseRoles, current, incoming));
+          ? { ...internalAgentPresets(localizedIncoming), ...rebaseRoleDrafts(localizedBaseRoles, current, externalAgentPresets(localizedIncoming)) }
+          : rebaseRoleDrafts(localizedBaseRoles, current, localizedIncoming));
         setBaseRoles(incoming);
         setBaseRevision(next.blocks.roles.revision);
         setConflict(false);
@@ -265,7 +247,7 @@ export function WorkersModule({
       if (res.settings.blocks.roles.revision >= latestRolesBlock.current.revision) {
         const incoming = res.settings.blocks.roles.value;
         latestRolesBlock.current = res.settings.blocks.roles;
-        setRoles((current) => rebaseRoleDrafts(baseRoles, current, incoming));
+        setRoles((current) => rebaseRoleDrafts(localizedBaseRoles, current, localizeRolePresets(incoming, language)));
         setBaseRoles(incoming);
         setBaseRevision(res.settings.blocks.roles.revision);
         setConflict(false);
@@ -282,7 +264,7 @@ export function WorkersModule({
   };
 
   const handleResetDefaults = async () => {
-    const res = await persistMutation({ kind: "restore" });
+    const res = await persistMutation({ kind: "restore", language });
     if (res.ok) {
       cancelCreate();
       setOpenRole(null);
@@ -311,7 +293,7 @@ export function WorkersModule({
       if (res.settings.blocks.roles.revision >= latestRolesBlock.current.revision) {
         const incoming = res.settings.blocks.roles.value;
         latestRolesBlock.current = res.settings.blocks.roles;
-        setRoles((current) => rebaseRoleDrafts(baseRoles, current, incoming));
+        setRoles((current) => rebaseRoleDrafts(localizedBaseRoles, current, localizeRolePresets(incoming, language)));
         setBaseRoles(incoming);
         setBaseRevision(res.settings.blocks.roles.revision);
         setConflict(false);
@@ -344,7 +326,7 @@ export function WorkersModule({
       const latest = await kuloRest.getSettings();
       latestRolesBlock.current = latest.blocks.roles;
       onSettingsUpdated(latest);
-      setRoles(latest.blocks.roles.value);
+      setRoles(localizeRolePresets(latest.blocks.roles.value, language));
       setBaseRevision(latest.blocks.roles.revision);
       setBaseRoles(latest.blocks.roles.value);
       setConflict(false);
@@ -362,7 +344,7 @@ export function WorkersModule({
 
   const discardAll = () => {
     const latest = latestRolesBlock.current;
-    setRoles(latest.value);
+    setRoles(localizeRolePresets(latest.value, language));
     setBaseRevision(latest.revision);
     setBaseRoles(latest.value);
     setConflict(false);
@@ -387,7 +369,7 @@ export function WorkersModule({
         latestRolesBlock.current = res.settings.blocks.roles;
         setBaseRevision(res.settings.blocks.roles.revision);
         setBaseRoles(res.settings.blocks.roles.value);
-        setRoles(res.settings.blocks.roles.value);
+        setRoles(localizeRolePresets(res.settings.blocks.roles.value, language));
         onSettingsUpdated(res.settings);
         setConflict(false);
       }
@@ -466,7 +448,7 @@ export function WorkersModule({
             const disableSwitchOff = enabled && enabledRoleCount <= 1;
             const roleModelMeta = findRoleModelMeta(role.provider, role.modelId);
             const displayModel = role.modelId?.trim() || t("默认模型", "Default model");
-            const displayLabel = localizedRoleLabel(id, role.label, defaultPresets[id]?.label, t);
+            const displayLabel = role.label;
 
             return (
               <Disclosure

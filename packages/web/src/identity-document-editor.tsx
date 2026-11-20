@@ -290,7 +290,7 @@ export function IdentityDocumentEditor({
   loadPreset?: () => Promise<{ content: string }>;
   refreshKey?: string | number;
 }) {
-  useI18n();
+  const { language } = useI18n();
   const [reloadRequested, setReloadRequested] = useState(false);
   const [read, setRead] = useState<IdentityRead | null>(null);
   const [content, setContent] = useState("");
@@ -309,7 +309,10 @@ export function IdentityDocumentEditor({
   const sizeMessageId = useId();
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
+  const readExistsRef = useRef<boolean | null>(null);
+  readExistsRef.current = read ? read.exists : null;
   const previousLocation = useRef({ file, directoryRevision, refreshKey });
+  const previousLanguage = useRef(language);
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -377,6 +380,14 @@ export function IdentityDocumentEditor({
       reqSeq.current++;
     };
   }, [load, file, directoryRevision, refreshKey]);
+
+  useEffect(() => {
+    if (previousLanguage.current === language) return;
+    previousLanguage.current = language;
+    if (readExistsRef.current === false && !dirtyRef.current) {
+      void load(false);
+    }
+  }, [language, load]);
 
   const openSaveReview = () => {
     if (!read || loading || busy || tooLarge || conflict) return;

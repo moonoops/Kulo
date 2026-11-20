@@ -125,7 +125,9 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
 
           const agentBlock = deps.ticketAgentBlock?.(ticket);
           if (agentBlock) {
-            ticket.latestReport = { state: "blocked", summary: agentBlock, question: "请恢复指定 Agent 的可用状态，或明确选择其他 Agent。", at: runtime.now() };
+            const question = "请恢复指定 Agent 的可用状态，或明确选择其他 Agent。";
+            ticket.latestReport = { state: "blocked", summary: agentBlock, question, at: runtime.now() };
+            ticket.waiting = { reason: "user", since: runtime.now(), detail: question };
             return { status: "running", checkpoint: { phase: "deliver_report" } };
           }
 
@@ -225,7 +227,9 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           await runtime.commit(async (tx) => {
             const current = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
             if (!current || current.runEpoch !== task.input.runEpoch) return { status: "terminal", outcome: { status: "aborted" } };
-            current.latestReport = { state: "blocked", summary: agentBlock, question: "请恢复指定 Agent 的可用状态，或明确选择其他 Agent。", at: runtime.now() };
+            const question = "请恢复指定 Agent 的可用状态，或明确选择其他 Agent。";
+            current.latestReport = { state: "blocked", summary: agentBlock, question, at: runtime.now() };
+            current.waiting = { reason: "user", since: runtime.now(), detail: question };
             return { status: "running", checkpoint: { phase: "deliver_report" } };
           }, context);
           return;
@@ -371,12 +375,14 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             await runtime.commit(async (tx) => {
               const current = (await tx.doc(KuloStateDoc)).tickets[task.input.ticketId];
               if (current?.runEpoch === task.input.runEpoch && current.status !== "stopped" && current.status !== "closed") {
+                const question = `${message}\n是否确认授权在原项目目录直接修改，或缩小任务范围？`;
                 current.latestReport = {
                   state: "blocked",
                   summary: message,
-                  question: `${message}\n是否确认授权在原项目目录直接修改，或缩小任务范围？`,
+                  question,
                   at: runtime.now(),
                 };
+                current.waiting = { reason: "user", since: runtime.now(), detail: question };
               }
               return { status: "running", checkpoint: { phase: "deliver_report" } };
             }, context);
@@ -661,14 +667,16 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                   at: runtime.now(),
                 });
               } else {
+                const question = run.state === "failed"
+                  ? `具体原因：${redact(run.error || "客户端未返回失败原因")}\n请按错误原因恢复指定客户端后，再决定是否重试；不会自动改派其他智能体。`
+                  : "请检查原会话后决定是否继续；未自动重发任务。";
                 live.latestReport = withViolation({
                   state: "blocked",
                   summary: redact(run.error || `客户端状态：${run.state}`),
-                  question: run.state === "failed"
-                    ? `具体原因：${redact(run.error || "客户端未返回失败原因")}\n请按错误原因恢复指定客户端后，再决定是否重试；不会自动改派其他智能体。`
-                    : "请检查原会话后决定是否继续；未自动重发任务。",
+                  question,
                   at: runtime.now(),
                 });
+                live.waiting = { reason: "user", since: runtime.now(), detail: question };
               }
               return { status: "running", checkpoint: { phase: "deliver_report" } };
             }
@@ -693,7 +701,9 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                 const { runEpoch: _re, version: _ver, ...preserved } = live.externalExecution!.explicitReadyReport!;
                 live.latestReport = preserved;
               } else {
-                live.latestReport = { state: "blocked", summary: message, question: "原执行接收状态不明确，请核对客户端后继续；未自动重发。", at: runtime.now() };
+                const question = "原执行接收状态不明确，请核对客户端后继续；未自动重发。";
+                live.latestReport = { state: "blocked", summary: message, question, at: runtime.now() };
+                live.waiting = { reason: "user", since: runtime.now(), detail: question };
               }
             }
             return { status: "running", checkpoint: { phase: "deliver_report" } };
@@ -728,7 +738,13 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             !pending.workspaceStaging.discardedAt &&
             pending.status !== "stopped" &&
             pending.status !== "closed" &&
-            !(pending.waiting && !(pending.waiting.reason === "user" && pending.latestReport?.state === "blocked")),
+            !(
+              pending.waiting &&
+              !(
+                (pending.waiting.reason === "user" || pending.waiting.reason === "coordinator") &&
+                pending.latestReport?.state === "blocked"
+              )
+            ),
         );
         if (canInspectBuiltInStaged && deps.inspectBuiltInStagedDiff) {
           builtInStagedDiff = await deps.inspectBuiltInStagedDiff(pending, context).catch(() => undefined);
@@ -798,7 +814,13 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             return { status: "terminal", outcome: { status: "completed", result: null } };
           }
 
-          if (ticket.waiting && !(ticket.waiting.reason === "user" && ticket.latestReport?.state === "blocked")) {
+          if (
+            ticket.waiting &&
+            !(
+              (ticket.waiting.reason === "user" || ticket.waiting.reason === "coordinator") &&
+              ticket.latestReport?.state === "blocked"
+            )
+          ) {
             transitionTicketStatus(ticket, "waiting", now);
             releaseSlot(state, ticket.id, { releaseWrite: !hasPendingWorkspaceApply(ticket) });
             parked = true;
@@ -867,8 +889,18 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           }
           transitionTicketStatus(ticket, finalReport.state === "blocked" ? "waiting" : finalReport.state === "progress" ? "ready" : finalReport.state, now);
           if (finalReport.state === "blocked") {
-            ticket.waiting = { reason: "user", since: now, detail: finalReport.question ?? finalReport.summary };
-            waitingReason = "user";
+            const keepUserWait = ticket.waiting?.reason === "user";
+            ticket.waiting = keepUserWait
+              ? {
+                  ...ticket.waiting!,
+                  detail: ticket.waiting!.detail ?? finalReport.question ?? finalReport.summary,
+                }
+              : {
+                  reason: "coordinator",
+                  since: now,
+                  detail: finalReport.question ?? finalReport.summary,
+                };
+            waitingReason = ticket.waiting.reason;
           } else {
             ticket.waiting = undefined;
           }
@@ -920,6 +952,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
               ...(finalReport.overflowAsset ? { overflowAsset: { ...finalReport.overflowAsset } } : {}),
               ...(finalReport.readOnlyViolation ? { readOnlyViolation: JSON.parse(JSON.stringify(finalReport.readOnlyViolation)) as WorkerReportRecord["readOnlyViolation"] } : {}),
               ...(finalReport.question ? { question: finalReport.question } : {}),
+              ...(finalReport.options?.length ? { options: [...finalReport.options] } : {}),
               at: finalReport.at,
             },
           };
@@ -979,6 +1012,9 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             }
             if (report.state === "failed" || report.state === "blocked") {
               eventTools.push("kulo_inspect");
+            }
+            if (report.state === "blocked") {
+              eventTools.push("kulo_ticket_ask_user");
             }
 
             let notifyInlineWaiter = false;

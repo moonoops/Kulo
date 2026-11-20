@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopAppCommand } from "./desktop-menu.js";
+import type { DesktopPreferences } from "./desktop-preferences.js";
 import type { DesktopMicrophonePermissions, DesktopPermissionSettingsKind } from "./system-permissions.js";
 
 const APP_COMMANDS: Record<DesktopAppCommand, true> = {
@@ -31,6 +32,14 @@ async function permissionAction<T>(channel: "kulo:system-permissions-status" | "
   }
 }
 
+async function preferencesAction<T>(channel: "kulo:desktop-preferences-get" | "kulo:desktop-preferences-set", ...args: unknown[]): Promise<T> {
+  try { return await ipcRenderer.invoke(channel, ...args) as T; }
+  catch (error) {
+    const message = error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "") : "桌面偏好操作失败，请重试。";
+    throw new Error(message);
+  }
+}
+
 if (process.isMainFrame) {
   contextBridge.exposeInMainWorld("kuloDesktop", {
     ready: (): Promise<void> => ipcRenderer.invoke("kulo:ui-ready"),
@@ -48,6 +57,20 @@ if (process.isMainFrame) {
     saveFile: (assetId: string): Promise<"saved" | "canceled"> => fileAction("kulo:save-file", assetId),
     notify: (payload: { title: string; body?: string; topicId?: string }): Promise<void> =>
       ipcRenderer.invoke("kulo:notify", payload),
+    preferences: {
+      get: (): Promise<DesktopPreferences> => preferencesAction("kulo:desktop-preferences-get"),
+      set: (patch: Partial<DesktopPreferences>): Promise<DesktopPreferences> => preferencesAction("kulo:desktop-preferences-set", patch),
+      onChange: (listener: (preferences: DesktopPreferences) => void): (() => void) => {
+        if (typeof listener !== "function") return () => {};
+        const wrapped = (_event: Electron.IpcRendererEvent, value: unknown) => {
+          if (value && typeof value === "object" && !Array.isArray(value) && typeof (value as { backgroundRunning?: unknown }).backgroundRunning === "boolean") {
+            listener({ backgroundRunning: (value as DesktopPreferences).backgroundRunning });
+          }
+        };
+        ipcRenderer.on("kulo:desktop-preferences-changed", wrapped);
+        return () => { ipcRenderer.removeListener("kulo:desktop-preferences-changed", wrapped); };
+      },
+    },
     systemPermissions: {
       status: (): Promise<DesktopMicrophonePermissions> => permissionAction("kulo:system-permissions-status"),
       requestMicrophone: (): Promise<DesktopMicrophonePermissions> => permissionAction("kulo:system-permissions-request-microphone"),

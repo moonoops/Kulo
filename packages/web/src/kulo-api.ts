@@ -1,7 +1,7 @@
 /** Typed REST + Multi-Topic WebSocket client for KuloHub. */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { applyTicketBoardDelta } from "@kulo/protocol";
-import { translate as t } from "./kulo-i18n";
+import { applyTicketBoardDelta, normalizeKuloLanguage } from "@kulo/protocol";
+import { getLanguage, translate as t, type KuloLanguage } from "./kulo-i18n";
 import { mergeChatHistory } from "./features/chat/chat-submissions";
 import { deviceInvitationCopies } from "./features/chat/device-invitation-copies";
 import { sendWithAcknowledgement, type PendingWsAcknowledgement } from "./features/chat/ws-acknowledgements";
@@ -436,8 +436,10 @@ export const kuloRest = {
   getPersonality: () => apiRequest<PersonalitySnapshot>("/api/personality"),
   savePersonalitySettings: (body: PersonalitySettingsRequest) =>
     apiRequest<PersonalitySnapshot>("/api/personality/settings", { method: "POST", body }),
-  readIdentityAgreement: () => apiRequest<IdentityRead>("/api/personality/identity"),
-  readIdentityPreset: () => apiRequest<{ content: string }>("/api/personality/identity/preset"),
+  readIdentityAgreement: () =>
+    apiRequest<IdentityRead>(`/api/personality/identity?lang=${encodeURIComponent(getLanguage())}`),
+  readIdentityPreset: (lang?: KuloLanguage) =>
+    apiRequest<{ content: string }>(`/api/personality/identity/preset?lang=${encodeURIComponent(normalizeKuloLanguage(lang) ?? getLanguage())}`),
   dismissIdentityProposal: (id: string) =>
     apiRequest<PersonalitySnapshot>("/api/personality/identity/dismiss", { method: "POST", body: { id } }),
   saveRelationship: (body: RelationshipWriteRequest) =>
@@ -448,8 +450,8 @@ export const kuloRest = {
     apiRequest<RecentWorkSnapshot>(`/api/personality/recent-work${topicId ? `?topicId=${encodeURIComponent(topicId)}` : ""}`, { signal }),
   refreshRecentWork: (topicId?: string, signal?: AbortSignal) =>
     apiRequest<RecentWorkSnapshot>("/api/personality/recent-work/refresh", { method: "POST", body: { topicId }, signal }),
-  readIdentityFile: (file: IdentityFile) =>
-    apiRequest<IdentityRead>(`/api/identity/file?file=${encodeURIComponent(file)}`),
+  readIdentityFile: (file: IdentityFile, lang?: KuloLanguage) =>
+    apiRequest<IdentityRead>(`/api/identity/file?file=${encodeURIComponent(file)}&lang=${encodeURIComponent(normalizeKuloLanguage(lang) ?? getLanguage())}`),
   readIdentityBackup: (file: IdentityFile, backupId: string) =>
     apiRequest<IdentityBackup & { content: string }>(
       `/api/identity/backup?file=${encodeURIComponent(file)}&backupId=${encodeURIComponent(backupId)}`,

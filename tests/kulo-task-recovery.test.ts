@@ -287,7 +287,7 @@ describe("durable automatic recovery", () => {
     });
     const spoken = vi.spyOn(hub.voiceCalls, "taskUpdated");
     await hub.dispatchTicket({ commandId: "test:needs-user", title: "完成目标", goal: "完成目标", scope: "原任务授权内" });
-    await until(async () => (await hub.getBoardSnapshot()).tickets.some(t => t.id === "T-0002" && t.status === "waiting" && t.waiting?.reason === "user"));
+    await until(async () => (await hub.getBoardSnapshot()).tickets.some(t => t.id === "T-0002" && t.status === "waiting" && t.waiting?.reason === "coordinator"));
     await until(async () => (await hub.rootConversation.context(BACKGROUND_CONTEXT)).entries.filter(WorkerRelayEntry.is)
       .some(entry => entry.data.state === "blocked"));
     await hub.rootConversation.waitForIdle(BACKGROUND_CONTEXT);
@@ -295,7 +295,7 @@ describe("durable automatic recovery", () => {
     await until(async () => (await hub.harness.commit(tx => tx.task(taskId), BACKGROUND_CONTEXT))?.state.status === "terminal");
     const s = (await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))!;
     expect(s.tickets["T-0001"]?.recovery?.state).toBe("exhausted");
-    expect(s.tickets["T-0002"]).toMatchObject({ status: "waiting", waiting: { reason: "user", detail: question } });
+    expect(s.tickets["T-0002"]).toMatchObject({ status: "waiting", waiting: { reason: "coordinator", detail: question } });
     const repeated = await wakeRecovery(hub, "T-0001", t => { t.recovery!.deadlineAt = Date.now() - 1; });
     await until(async () => (await hub.harness.commit(tx => tx.task(repeated), BACKGROUND_CONTEXT))?.state.status === "terminal");
     const relays = (await hub.rootConversation.context(BACKGROUND_CONTEXT)).entries.filter(WorkerRelayEntry.is);

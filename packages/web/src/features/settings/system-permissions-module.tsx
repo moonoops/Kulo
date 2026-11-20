@@ -2,6 +2,7 @@ import { useCallback, useContext, useEffect, useRef, useState, useSyncExternalSt
 import { Alert, Button, Checkbox, Chip, Label, ListBox, Modal, Select, Table } from "@heroui/react";
 import { TableStateContext, type Key } from "react-aria-components/Table";
 import type { DeviceInterconnectionView, EnvNodeDescriptor, SystemPermissionKind, SystemPermissionState, SystemPermissionStatus } from "@kulo/protocol";
+import { DeviceName, DevicePresence, formatDeviceLabel, orderDevices } from "../../components/device-identity";
 import { useI18n } from "../../kulo-i18n";
 import { deviceApi } from "./device-api";
 import { SettingsList, SettingsSection } from "./settings-layout";
@@ -65,7 +66,9 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
   useEffect(() => {
     if (!connected || currentDeviceId !== undefined) return;
     const controller = new AbortController();
-    void deviceApi.get(controller.signal).then((view) => { if (!controller.signal.aborted) setDeviceView(view); }).catch(() => {});
+    void deviceApi.get(controller.signal).then((view) => { if (!controller.signal.aborted) setDeviceView(view); }).catch((error: unknown) => {
+      if (!controller.signal.aborted) console.warn("[KuloPermissions] Failed to resolve current device identity", error);
+    });
     return () => controller.abort();
   }, [connected, currentDeviceId, envKey]);
   useEffect(() => {
@@ -81,18 +84,23 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
   }, [loader]);
 
   const rawDeviceName = (id: string, fallback: string) => deviceView?.devices.find((device) => device.id === id)?.name ?? fallback;
-  const formatDevice = (id: string, name: string) => resolvedCurrentDeviceId && id === resolvedCurrentDeviceId ? t(`${name}（本机）`, `${name} (this device)`) : name;
+  const isCurrentDevice = (id: string) => Boolean(resolvedCurrentDeviceId && id === resolvedCurrentDeviceId);
+  const orderedEnvs = orderDevices(
+    envs.map((device) => ({ ...device, name: rawDeviceName(device.id, device.name) })),
+    { currentDeviceId: resolvedCurrentDeviceId },
+  );
+  const selectedEnv = orderedEnvs.find((device) => device.id === envId);
   const currentClientDevice = resolvedCurrentDeviceId
-    ? (deviceView?.devices.find((device) => device.id === resolvedCurrentDeviceId) ?? envs.find((device) => device.id === resolvedCurrentDeviceId))
+    ? (deviceView?.devices.find((device) => device.id === resolvedCurrentDeviceId) ?? orderedEnvs.find((device) => device.id === resolvedCurrentDeviceId))
     : undefined;
-  const envDisplayName = env ? formatDevice(env.id, rawDeviceName(env.id, env.name)) : undefined;
+  const envDisplayName = selectedEnv ? formatDeviceLabel(selectedEnv.name, isCurrentDevice(selectedEnv.id)) : undefined;
   const permission = (kind: SystemPermissionKind, snapshot: PermissionStatusSnapshot = state): SystemPermissionStatus | undefined =>
     kind === "microphone" ? snapshot.microphone ?? undefined : snapshot.desktop?.permissions.find((item) => item.kind === kind);
   const label = (kind: SystemPermissionKind) => kind === "microphone" ? t("麦克风", "Microphone") : kind === "accessibility" ? t("辅助功能", "Accessibility") : t("屏幕录制", "Screen recording");
   const statusLabel = (status: SystemPermissionState | undefined) => ({ granted: t("已授权", "Allowed"), "not-determined": t("未申请", "Not requested"), denied: t("未授权", "Not allowed"), restricted: t("受系统限制", "Restricted"), unknown: t("待确认", "Unknown"), unsupported: t("不支持", "Unsupported") })[status ?? "unknown"];
   const scope = (kind: SystemPermissionKind) => kind === "microphone"
-    ? (currentClientDevice ? formatDevice(currentClientDevice.id, currentClientDevice.name) : t("当前客户端", "This client"))
-    : (envDisplayName ?? t("未选择设备", "No device selected"));
+    ? (currentClientDevice ? <DeviceName name={rawDeviceName(currentClientDevice.id, currentClientDevice.name)} isCurrent={isCurrentDevice(currentClientDevice.id)} /> : t("当前客户端", "This client"))
+    : (selectedEnv ? <DeviceName name={selectedEnv.name} isCurrent={isCurrentDevice(selectedEnv.id)} /> : t("未选择设备", "No device selected"));
   const canRequest = (kind: SystemPermissionKind) => permissionCanBeRequested(permission(kind)?.state) && (kind === "microphone" ? !state.microphoneError : !state.desktopError && !desktopError);
   const statusChip = (status: SystemPermissionState | undefined) => <Chip size="sm" variant="soft" color={status === "granted" ? "success" : status === "restricted" || status === "denied" ? "warning" : "default"}><Chip.Label>{statusLabel(status)}</Chip.Label></Chip>;
 
@@ -173,9 +181,28 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
       <Button ref={checkButton} variant="secondary" isPending={state.checking} onPress={() => void loader.refresh()}>{t("检查权限", "Check permissions")}</Button>
       <Button variant="primary" isDisabled={!KINDS.some(canRequest)} onPress={(event) => openGuide(undefined, event.target)}>{t("开始授权", "Set up permissions")}</Button>
     </div>}>
-      {envs.length > 0 && <SettingsList label={t("执行设备", "Execution device")}><Select variant="secondary" className="kulo-settings-row" value={envId || null} onChange={(value) => { if (typeof value === "string") { userSelectedEnv.current = true; setEnvId(value); } }} isDisabled={Boolean(guide)}>
-        <Label>{t("桌面执行设备", "Desktop execution device")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-        <Select.Popover><ListBox>{envs.map((device) => { const itemLabel = formatDevice(device.id, rawDeviceName(device.id, device.name)); return <ListBox.Item key={device.id} id={device.id} textValue={itemLabel}>{itemLabel}{!device.online ? t(" · 离线", " · Offline") : ""}<ListBox.ItemIndicator /></ListBox.Item>; })}</ListBox></Select.Popover>
+      {orderedEnvs.length > 0 && <SettingsList label={t("执行设备", "Execution device")}><Select variant="secondary" className="kulo-settings-row" value={envId || null} onChange={(value) => { if (typeof value === "string") { userSelectedEnv.current = true; setEnvId(value); } }} isDisabled={Boolean(guide)}>
+        <Label>{t("桌面执行设备", "Desktop execution device")}</Label>
+        <Select.Trigger>
+          <Select.Value className="min-w-0">
+            {selectedEnv ? (
+              <span className="flex min-w-0 items-center justify-between gap-2">
+                <DeviceName name={selectedEnv.name} isCurrent={isCurrentDevice(selectedEnv.id)} singleLine />
+                <DevicePresence online={selectedEnv.online} showOnlineText={false} />
+              </span>
+            ) : undefined}
+          </Select.Value>
+          <Select.Indicator />
+        </Select.Trigger>
+        <Select.Popover><ListBox>{orderedEnvs.map((device) => {
+          const current = isCurrentDevice(device.id);
+          const itemLabel = formatDeviceLabel(device.name, current);
+          return <ListBox.Item key={device.id} id={device.id} textValue={itemLabel}>
+            <Label className="min-w-0 flex-1 whitespace-normal break-words"><DeviceName name={device.name} isCurrent={current} /></Label>
+            <DevicePresence online={device.online} className="ml-auto" />
+            <ListBox.ItemIndicator />
+          </ListBox.Item>;
+        })}</ListBox></Select.Popover>
       </Select></SettingsList>}
       {state.microphoneError && <Alert status="danger" role="alert"><Alert.Content>{state.microphoneError}</Alert.Content></Alert>}
       {state.desktopError && <Alert status={desktopError ? "warning" : "danger"} role={desktopError ? "status" : "alert"}><Alert.Content>{state.desktopError}</Alert.Content></Alert>}

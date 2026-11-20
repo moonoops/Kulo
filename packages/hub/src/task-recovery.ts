@@ -70,7 +70,7 @@ export function recoveryLeaf(state: Readonly<KuloDurableState>, root: TicketReco
 
 export function recoveryWaitSummary(ticket: TicketRecord): string {
   if (ticket.status === "queued") return "替代方案仍在排队，目标尚未完成。";
-  const labels = { user: "等待用户确认", env: "等待设备", time: "等待约定时间", external: "等待外部结果",
+  const labels = { user: "等待用户确认", coordinator: "主脑研判中", env: "等待设备", time: "等待约定时间", external: "等待外部结果",
     project: "等待项目可用", connection: "等待连接授权" } as const;
   const label = ticket.waiting ? labels[ticket.waiting.reason] : "等待继续执行";
   const detail = ticket.waiting?.detail?.trim();
@@ -81,7 +81,11 @@ export function isSilentRecoveryFailure(state: Readonly<KuloDurableState>, ticke
   if (ticket.status !== "failed" || !ticket.recovery) return false;
   if (ticket.recovery.state === "recovering") return true;
   const target = recoveryLeaf(state, ticket, lookup);
-  return target.status === "blocked" || target.status === "waiting" && target.waiting?.reason === "user";
+  return (
+    target.status === "blocked" ||
+    (target.status === "waiting" &&
+      (target.waiting?.reason === "user" || target.waiting?.reason === "coordinator"))
+  );
 }
 
 export function assertRecoveryGuard(state: Readonly<KuloDurableState>, guard: WorkerRecoveryEntryData | undefined): void {

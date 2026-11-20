@@ -15,6 +15,7 @@ import type {
   ChatReplyReference,
   DispatchCardMeta,
   TicketCardView,
+  TicketWaitOption,
 } from "@kulo/protocol";
 import { ConfirmDialog } from "./components/confirm-dialog";
 import type { TicketDetailSnapshot } from "./kulo-api";
@@ -160,7 +161,7 @@ export function KuloTaskProjection({
   canQueueActions?: boolean;
   pendingAnswer?: { text: string; commandId: string };
   roleLabel: string;
-  onAnswerBlocker: (ticketId: string, answer: string, commandId: string) => Promise<void>;
+  onAnswerBlocker: (ticketId: string, answer: string, commandId: string, decisionOptionId?: string) => Promise<void>;
   onStop: TicketAction;
   onRetry: TicketAction;
   onArchiveClose: TicketAction;
@@ -213,7 +214,8 @@ export function KuloTaskProjection({
 
   const summary =
     ticket.latestReport?.summary ?? ticket.userSummary ?? ticket.goal;
-  const question = ticket.latestReport?.question ?? ticket.waiting?.detail ?? summary;
+  const question = ticket.waiting?.detail ?? ticket.latestReport?.question ?? summary;
+  const decisionOptions: readonly TicketWaitOption[] = ticket.waiting?.options ?? [];
   const recovering = taskIsRecovering(ticket);
   const pendingWorkspaceApply = ticketHasPendingWorkspaceApply(ticket);
   const failed = ticket.status === "failed";
@@ -225,24 +227,24 @@ export function KuloTaskProjection({
   const displayResult = result ? compactTaskPaths(result, ticket) : undefined;
   const fullReport = detailedFileReport ? deliverable : displayResult !== result ? result : undefined;
 
-  const submitAnswer = async (e: FormEvent) => {
-    e.preventDefault();
-    const clean = answer.trim();
+  const submitDecision = async (rawText: string, optionId?: string) => {
+    const clean = rawText.trim();
     if (!clean || !canQueueActions || submittingAnswer || answerFlightsRef.current.has(ticket.id)) return;
     const ticketId = ticket.id;
     answerFlightsRef.current.add(ticketId);
     setAnswerError(null);
     setPendingAnswers(current => ({ ...current, [ticketId]: true }));
+    const dedupKey = optionId ? `${optionId}:${clean}` : clean;
     const cmdId =
-      (answerCmdIdRef.current?.ticketId === ticketId && answerCmdIdRef.current.text === clean ? answerCmdIdRef.current.commandId : undefined) ??
+      (answerCmdIdRef.current?.ticketId === ticketId && answerCmdIdRef.current.text === dedupKey ? answerCmdIdRef.current.commandId : undefined) ??
       newDeliveryId(`ans:${ticket.id}`);
-    answerCmdIdRef.current = { ticketId, text: clean, commandId: cmdId };
+    answerCmdIdRef.current = { ticketId, text: dedupKey, commandId: cmdId };
     try {
-      await onAnswerBlocker(ticketId, clean, cmdId);
+      await onAnswerBlocker(ticketId, clean, cmdId, optionId);
       if (activeTicketIdRef.current === ticketId) {
         answerCmdIdRef.current = null;
         setSubmittedAnswer({ text: clean, atUpdatedAt: ticket.updatedAt });
-        setAnswer("");
+        if (!optionId) setAnswer("");
       }
     } catch (err) {
       if (activeTicketIdRef.current === ticketId) {
@@ -252,6 +254,11 @@ export function KuloTaskProjection({
       answerFlightsRef.current.delete(ticketId);
       setPendingAnswers(current => { const next = { ...current }; delete next[ticketId]; return next; });
     }
+  };
+
+  const submitAnswer = async (e: FormEvent) => {
+    e.preventDefault();
+    await submitDecision(answer);
   };
 
   const runControl = async (action: "retry" | "close" | "stop", handler: TicketAction) => {
@@ -343,46 +350,62 @@ export function KuloTaskProjection({
             </blockquote>
             {submittedAnswer ? (
               <p className="text-xs text-muted">
-                {t(`已接收回复（等待 Worker 继续推进）：${submittedAnswer.text}`, `Reply received (waiting for Worker to continue): ${submittedAnswer.text}`)}
+                {t(`已接收回复（等待任务继续推进）：${submittedAnswer.text}`, `Reply received (waiting for task to continue): ${submittedAnswer.text}`)}
               </p>
             ) : (
-              <form className="flex flex-col gap-2.5" onSubmit={(e) => void submitAnswer(e)}>
-                <TextArea
-                  variant="secondary"
-                  className="scrollbar"
-                  aria-label={t("回答待确认问题", "Answer the pending question")}
-                  placeholder={t("输入你的决定…", "Enter your decision…")}
-                  rows={3}
-                  disabled={submittingAnswer}
-                  value={pendingAnswer?.text ?? answer}
-                  onChange={(e) => {
-                    setAnswer(e.target.value);
-                    answerCmdIdRef.current = null;
-                  }}
-                  fullWidth
-                />
-                {answerError && <p className="kulo-task-action-error" role="alert">{answerError}</p>}
-                <div className="flex items-center justify-end gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    isDisabled={submittingAnswer}
-                    onPress={onDefer}
-                  >
-
-                    {t("稍后", "Later")}
-                  </Button>
-                  <Button
-                    type="submit"
-                    variant="primary"
-                    size="sm"
-                    isPending={submittingAnswer}
-                    isDisabled={!answer.trim() || !canQueueActions || submittingAnswer}
-                  >
-                    {submittingAnswer ? t("提交中…", "Submitting…") : t("确认提交", "Submit")}
-                  </Button>
-                </div>
-              </form>
+              <div className="flex flex-col gap-3">
+                {decisionOptions.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2" role="group" aria-label={t("快捷选项", "Quick choices")}>
+                    {decisionOptions.map((option, index) => (
+                      <Button
+                        key={option.id}
+                        size="sm"
+                        variant={option.tone ?? (index === 0 ? "primary" : "secondary")}
+                        isDisabled={!canQueueActions || submittingAnswer}
+                        onPress={() => void submitDecision(option.value ?? option.label, option.id)}
+                      >
+                        {option.label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+                <form className="flex flex-col gap-2.5" onSubmit={(e) => void submitAnswer(e)}>
+                  <TextArea
+                    variant="secondary"
+                    className="scrollbar"
+                    aria-label={t("回答待确认问题", "Answer the pending question")}
+                    placeholder={decisionOptions.length > 0 ? t("或手动输入补充说明、替代方案…", "Or enter custom instructions…") : t("输入你的决定…", "Enter your decision…")}
+                    rows={decisionOptions.length > 0 ? 2 : 3}
+                    disabled={submittingAnswer}
+                    value={pendingAnswer?.text ?? answer}
+                    onChange={(e) => {
+                      setAnswer(e.target.value);
+                      answerCmdIdRef.current = null;
+                    }}
+                    fullWidth
+                  />
+                  {answerError && <p className="kulo-task-action-error" role="alert">{answerError}</p>}
+                  <div className="flex items-center justify-end gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      isDisabled={submittingAnswer}
+                      onPress={onDefer}
+                    >
+                      {t("稍后", "Later")}
+                    </Button>
+                    <Button
+                      type="submit"
+                      variant={decisionOptions.length > 0 ? "secondary" : "primary"}
+                      size="sm"
+                      isPending={submittingAnswer}
+                      isDisabled={!answer.trim() || !canQueueActions || submittingAnswer}
+                    >
+                      {submittingAnswer ? t("提交中…", "Submitting…") : decisionOptions.length > 0 ? t("按说明提交", "Submit note") : t("确认提交", "Submit")}
+                    </Button>
+                  </div>
+                </form>
+              </div>
             )}
           </section>
         )}

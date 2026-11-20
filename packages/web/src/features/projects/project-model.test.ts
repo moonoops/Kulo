@@ -45,6 +45,16 @@ describe("project navigation boundaries", () => {
     expect(projectDevices(envs, [ { deviceId: "local", deviceName: "旧项目设备名", availability: "ready" } as ProjectView ])[0]?.name).toBe("Local (old-hostname)");
   });
 
+  it("orders the current device first ahead of the Hub, followed by online then offline devices", () => {
+    const known = [
+      { id: "local", name: "Macmini.local", online: true, rootDir: "/hub" },
+      { id: "studio", name: "Office-Studio.local", online: false, rootDir: "/studio" },
+      { id: "macbook", name: "iKoomas-Macboom-Pro.local", online: true, rootDir: "/mbp" },
+    ];
+    expect(projectDevices([], [], known, "macbook").map((device) => device.id)).toEqual(["macbook", "local", "studio"]);
+    expect(projectDevices([], [], known).map((device) => device.id)).toEqual(["local", "macbook", "studio"]);
+  });
+
   it("targets project tasks independently of their originating ordinary conversation", () => {
     const tasks = [ticket("ordinary-project", "plain", "p"), ticket("project-local", "a", "p"), ticket("other-project", "plain", "q")];
     expect(scopeTickets(tasks, "project", "plain", "p").map((task) => task.id)).toEqual(["ordinary-project", "project-local"]);

@@ -390,7 +390,7 @@ describe("Kulo Hub + Pi Env End-to-End Suite", () => {
 
       await waitForCondition(async () => {
         const board = await hub.getBoardSnapshot();
-        return board.tickets[0]?.status === "waiting" && board.tickets[0]?.waiting?.reason === "user" && board.slots.used === 0;
+        return board.tickets[0]?.status === "waiting" && board.tickets[0]?.waiting?.reason === "coordinator" && board.slots.used === 0;
       }, 12_000, 60, diagnose);
 
       const blockedBoard = await hub.getBoardSnapshot();

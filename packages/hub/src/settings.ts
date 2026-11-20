@@ -17,6 +17,7 @@ import {
   MODEL_PROTOCOL_ADAPTERS,
   MODEL_PURPOSES,
   normalizeImageGenerationParameters,
+  normalizeKuloLanguage,
   normalizeVertexConfig,
   buildVertexModelBaseUrl,
   validateCustomImageAdapter,
@@ -30,7 +31,6 @@ import {
   type CustomProviderApi,
   type CustomProviderConfig,
   type ExecutorSlotsConfig,
-  type HostActionPermission,
   type ExternalAgentBinding,
   type ExternalAgentModelInfo,
   type ExternalClientConnection,
@@ -605,7 +605,6 @@ function normalizeExecutorConfig(
   const autoArchiveEnabled = typeof obj.autoArchiveEnabled === "boolean" ? obj.autoArchiveEnabled : true;
   const autoArchiveDays = typeof obj.autoArchiveDays === "number" && Number.isSafeInteger(obj.autoArchiveDays) &&
     obj.autoArchiveDays >= 1 && obj.autoArchiveDays <= 3650 ? obj.autoArchiveDays : 7;
-  const hostActionPermission: HostActionPermission = obj.hostActionPermission === "always" ? "always" : "ask";
   return {
     maxConcurrentWorkers,
     maxSubagentsPerTicket,
@@ -614,7 +613,6 @@ function normalizeExecutorConfig(
     completedTaskDisplayHours,
     autoArchiveEnabled,
     autoArchiveDays,
-    hostActionPermission,
   };
 }
 
@@ -744,7 +742,6 @@ export const KuloSettingsDoc = defineDoc<KuloDurableSettings & JsonObject>({
         completedTaskDisplayHours: 3,
         autoArchiveEnabled: true,
         autoArchiveDays: 7,
-        hostActionPermission: "ask",
       },
       roles: {},
       model: {
@@ -899,7 +896,6 @@ export function hydrateSettingsFromConfig(
       completedTaskDisplayHours: config.completedTaskDisplayHours === undefined ? 3 : config.completedTaskDisplayHours,
       autoArchiveEnabled: true,
       autoArchiveDays: 7,
-      hostActionPermission: "ask",
     };
     doc.roles = cleanJson(config.roles);
     syncExternalClientsInSettings(doc);
@@ -1194,11 +1190,24 @@ export function applySettingsBlockUpdate(
     case "presentation": {
       const agentName = String(val.agentName ?? "").trim();
       const workbenchName = String(val.workbenchName ?? "").trim();
+      const hasLanguage = Object.hasOwn(val, "language") && val.language !== undefined;
+      const language = hasLanguage ? normalizeKuloLanguage(val.language) : doc.presentation.language;
+      if (hasLanguage && !language) {
+        throw new SettingsUpdateError(400, "界面语言设置无效。");
+      }
       if (!agentName || agentName.length > 80 || !workbenchName || workbenchName.length > 120) {
         throw new SettingsUpdateError(400, "显示名称不能为空且长度需在限制范围内。");
       }
-      doc.presentation = { agentName, workbenchName };
-      summary = `更新智能体名称为「${agentName}」`;
+      const prevAgentName = doc.presentation.agentName;
+      const prevLanguage = doc.presentation.language;
+      doc.presentation = {
+        agentName,
+        workbenchName,
+        ...(language ? { language } : {}),
+      };
+      summary = hasLanguage && language !== prevLanguage && agentName === prevAgentName
+        ? `更新界面语言为「${language === "en" ? "English" : "中文"}」`
+        : `更新智能体名称为「${agentName}」`;
       break;
     }
 
@@ -1229,13 +1238,6 @@ export function applySettingsBlockUpdate(
       if (typeof autoArchiveDays !== "number" || !Number.isSafeInteger(autoArchiveDays) || autoArchiveDays < 1 || autoArchiveDays > 3650) {
         throw new SettingsUpdateError(400, "自动归档天数需为 1~3650 的整数。");
       }
-      const rawHostPermission = val.hostActionPermission === undefined
-        ? (prevExecutor.hostActionPermission ?? "ask")
-        : val.hostActionPermission;
-      if (rawHostPermission !== "ask" && rawHostPermission !== "always") {
-        throw new SettingsUpdateError(400, "执行权限需为需要授权或总是允许。");
-      }
-      const hostActionPermission: HostActionPermission = rawHostPermission;
       const paused = Boolean(val.paused);
       if (
         !Number.isInteger(maxConcurrentWorkers) ||
@@ -1261,9 +1263,8 @@ export function applySettingsBlockUpdate(
         completedTaskDisplayHours,
         autoArchiveEnabled,
         autoArchiveDays,
-        hostActionPermission,
       };
-      summary = `并发上限 ${maxConcurrentWorkers} · 子智能体 ${maxSubagentsPerTicket} · 巡检${watchdogMinutes > 0 ? ` ${watchdogMinutes} 分钟` : "关闭"} · 已完成任务${completedTaskDisplayHours === null ? "一直显示" : `显示 ${completedTaskDisplayHours} 小时`} · 自动归档${autoArchiveEnabled ? ` ${autoArchiveDays} 天` : "关闭"} · 执行权限${hostActionPermission === "always" ? "总是允许" : "需要授权"}${paused ? "（已暂停新派单）" : ""}`;
+      summary = `并发上限 ${maxConcurrentWorkers} · 子智能体 ${maxSubagentsPerTicket} · 巡检${watchdogMinutes > 0 ? ` ${watchdogMinutes} 分钟` : "关闭"} · 已完成任务${completedTaskDisplayHours === null ? "一直显示" : `显示 ${completedTaskDisplayHours} 小时`} · 自动归档${autoArchiveEnabled ? ` ${autoArchiveDays} 天` : "关闭"}${paused ? "（已暂停新派单）" : ""}`;
       break;
     }
 

@@ -29,7 +29,14 @@ export type HostActionCaller =
 
 export type HostActionRunOutcome =
   | { status: "executed"; envId: string; envName: string; result: HostActionResult }
+  | { status: "awaiting_orchestrator_decision"; requestId: string; envId: string; envName: string; message: string }
   | { status: "awaiting_user_confirmation"; cardId: string; envId: string; envName: string; message: string };
+
+export type HostActionDecideOutcome =
+  | { status: "executed"; requestId: string; envId: string; envName: string; result: HostActionResult; settledCardId?: string; message: string }
+  | { status: "denied"; requestId: string; ticketId?: string; settledCardId?: string; message: string }
+  | { status: "awaiting_user_confirmation"; requestId: string; cardId: string; envId: string; envName: string; message: string }
+  | { status: "already_resolved"; requestId: string; message: string };
 
 export interface HostActionController {
   inspect(
@@ -54,6 +61,15 @@ export interface HostActionController {
     },
     context: Context,
   ): Promise<HostActionRunOutcome>;
+  decide?(
+    caller: Extract<HostActionCaller, { kind: "orchestrator" }>,
+    input: {
+      requestId: string;
+      decision: "approve" | "deny" | "ask_user";
+      reason?: string;
+    },
+    context: Context,
+  ): Promise<HostActionDecideOutcome>;
 }
 
 async function resolveCaller(
@@ -110,7 +126,9 @@ export function createHostActionTool(
   return defineTool({
     name: "kulo_host_action",
     description:
-      "Read-only host diagnostics (`action='inspect'`: cross-platform process list without env vars, listening ports, real user home path, and non-sensitive path existence/listing—no confirmation required) and credential-isolated host maintenance outside the project workspace (`action='run'`: e.g. package install/uninstall, cleanup, user service control; requires one user confirmation card unless host permission is set to always allow, and never escalates to sudo/root or exposes credentials). Group related maintenance steps into one `run` call. 关键词：本机诊断 进程列表 监听端口 宿主机排查 本机运维 安装卸载 清理软件",
+      audience === "orchestrator"
+        ? "Read-only host diagnostics (`action='inspect'`: cross-platform process list without env vars, listening ports, real user home path, and non-sensitive path existence/listing) and credential-isolated host maintenance outside the project workspace (`action='run'`: e.g. package install/uninstall, cleanup, user service control; executes directly with full main-Agent authority, never escalates to sudo/root or exposes credentials). Group related maintenance steps into one `run` call. 关键词：本机诊断 进程列表 监听端口 宿主机排查 本机运维 安装卸载 清理软件"
+        : "Read-only host diagnostics (`action='inspect'`: cross-platform process list without env vars, listening ports, real user home path, and non-sensitive path existence/listing—no approval required) and credential-isolated host maintenance outside the project workspace (`action='run'`: e.g. package install/uninstall, cleanup, user service control; submitted to the main Agent for smart approval before execution, never escalates to sudo/root or exposes credentials). Group related maintenance steps into one `run` call. 关键词：本机诊断 进程列表 监听端口 宿主机排查 本机运维 安装卸载 清理软件",
     parameters: obj({
       action: oneOf(["inspect", "run"]),
       env_id: opt(str({ description: "Target device env ID (orchestrator only; Workers are locked to their bound device)." })),
@@ -205,7 +223,7 @@ export function createHostActionTool(
           context,
         );
 
-        if (outcome.status === "awaiting_user_confirmation") {
+        if (outcome.status === "awaiting_user_confirmation" || outcome.status === "awaiting_orchestrator_decision") {
           return {
             output: [{ type: "text" as const, text: JSON.stringify(outcome) }],
             details: outcome as never,
@@ -223,6 +241,57 @@ export function createHostActionTool(
           output: [{
             type: "text" as const,
             text: redactSecrets(error instanceof Error ? error.message : "本机操作失败"),
+          }],
+        };
+      }
+    },
+  });
+}
+
+export function createHostActionDecideTool(controller: HostActionController) {
+  return defineTool({
+    name: "kulo_host_action_decide",
+    description:
+      "Decide on a Worker's pending `kulo_host_action(run)` request (main Agent only). Audit the raw `commands`, `cwd`, and `envId` against the user's real intent: call `decision='approve'` to run immediately and resume the Worker (and settle any open card), `decision='deny'` with `reason` to reject/redirect the Worker, or `decision='ask_user'` to present an interactive confirmation card (Allow / Reject / Manual input) when risky or out of scope. 关键词：审批本机操作 批准拒绝Worker命令 本机运维裁决",
+    parameters: obj({
+      request_id: str({ description: "Pending host action request ID (or card ID) from [KULO_HOST_ACTION_REQUEST]." }),
+      decision: oneOf(["approve", "deny", "ask_user"]),
+      reason: opt(str({ description: "Optional denial/redirection guidance for the Worker, or concise risk note shown on the card when decision='ask_user'." })),
+    }),
+    deferred: true,
+    replay: "unsafe",
+    execute: async (args, api, context) => {
+      try {
+        const caller = await resolveCaller(api, "orchestrator", context);
+        if (caller.kind !== "orchestrator" || !controller.decide) {
+          return {
+            isError: true,
+            output: [{ type: "text" as const, text: "仅主智能体可以裁决本机操作申请。" }],
+          };
+        }
+        const requestId = args.request_id.trim();
+        if (!requestId) {
+          throw new Error("缺少 request_id。");
+        }
+        const outcome = await controller.decide(
+          caller,
+          {
+            requestId,
+            decision: args.decision,
+            ...(args.reason?.trim() ? { reason: args.reason.trim() } : {}),
+          },
+          context,
+        );
+        return {
+          output: [{ type: "text" as const, text: JSON.stringify(outcome) }],
+          details: outcome as never,
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          output: [{
+            type: "text" as const,
+            text: redactSecrets(error instanceof Error ? error.message : "裁决本机操作申请失败"),
           }],
         };
       }

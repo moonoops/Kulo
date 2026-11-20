@@ -9,7 +9,7 @@
   "engines": {
     "node": ">=22.20.0"
   },
-  "files": ["dist", "web", "assets/kulo-icon.png"],
+  "files": ["dist", "web", "assets/kulo-icon.png", "assets/kulo-trayTemplate.png", "assets/kulo-trayTemplate@2x.png"],
   "scripts": {
     "icons": "swift scripts/generate-icons.swift",
     "build": "tsc -p tsconfig.json",

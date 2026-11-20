@@ -165,7 +165,7 @@ export function KuloSettingsBoard({
         {module === "permissions" && <SystemPermissionsModule envs={envs} connected={connected} entry={permissionEntry} onEntryHandled={onPermissionEntryHandled} />}
         {module === "schedules" && <ScheduledTasksModule tickets={tickets} loaded={ticketsLoaded} connected={connected} loadError={snapshotError} onRefresh={onSnapshotRefresh} actions={scheduledTaskActions} />}
         {module === "archives" && <ArchivedConversationsModule topics={topics} projects={projects} loaded={topicsLoaded} connected={connected} loadError={snapshotError} onRefresh={onSnapshotRefresh} onRestored={onTopicRestored} />}
-        {module === "appearance" && <AppearanceModule />}
+        {module === "appearance" && <AppearanceModule settings={settings} connected={connected} onSettingsUpdated={onSettingsUpdated} />}
       </div>
     </div>
   );

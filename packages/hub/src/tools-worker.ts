@@ -15,6 +15,7 @@ import type {
   CapabilitySnapshot,
   HindsightMemoryConfig,
   ChatAttachment,
+  KuloLanguage,
   RolePreset,
   ThinkingEffort,
   WorkerReportState,
@@ -145,6 +146,7 @@ export function createWorkerExtension(options: {
   getIdentityDir: () => string;
   getMemoryConfig: () => HindsightMemoryConfig;
   getRoles?: () => Record<string, RolePreset>;
+  getLanguage?: () => KuloLanguage | undefined;
   getMaxSubagentsPerTicket?: () => number;
   getMediaCapabilities?: () => Promise<CapabilitySnapshot>;
   mediaJob?: (id: string, conversationId: number) => Promise<{ id: string; status: string; error?: string }>;
@@ -178,7 +180,13 @@ export function createWorkerExtension(options: {
       question: opt(
         str({
           description:
-            "Required when state='blocked': one concrete question or permission request for the human.",
+            "Required when state='blocked': one concrete blocker or decision request for the coordinator (main Agent). The main Agent resolves it directly when possible, or escalates to the user when needed.",
+        }),
+      ),
+      options: opt(
+        arr(str({ minLength: 1, maxLength: 120 }), {
+          maxItems: 6,
+          description: "Optional concise candidate choices when state='blocked' involves discrete alternatives.",
         }),
       ),
     }),
@@ -190,7 +198,7 @@ export function createWorkerExtension(options: {
           output: [
             {
               type: "text",
-              text: "When state='blocked', you must provide a concrete `question` for the human.",
+              text: "When state='blocked', you must provide a concrete `question` for the coordinator.",
             },
           ],
         };
@@ -228,6 +236,7 @@ export function createWorkerExtension(options: {
       const rawDeliverable = args.deliverable?.trim() || deliveryErrors.length
         ? [args.deliverable?.trim(), ...deliveryErrors].filter(Boolean).join("\n")
         : undefined;
+      const cleanOptions = (args.options ?? []).map((item) => item.trim()).filter(Boolean).slice(0, 6);
       const spilledReport = spillOversizedReport({
         uploads: options.uploads,
         ticketId: active.ticket.id,
@@ -240,6 +249,7 @@ export function createWorkerExtension(options: {
           summary: rawSummary,
           ...(rawDeliverable ? { deliverable: rawDeliverable } : {}),
           ...(args.question?.trim() ? { question: args.question.trim() } : {}),
+          ...(cleanOptions.length ? { options: cleanOptions } : {}),
           at: api.now(),
         },
       });
@@ -578,6 +588,7 @@ export function createWorkerExtension(options: {
     name: "kulo-worker",
     sections: createWorkerSections({
       getRoles: options.getRoles ?? (() => ({})),
+      getLanguage: options.getLanguage,
       getMemoryEnabled: () => {
         const mem = options.getMemoryConfig();
         return mem.enabled && mem.accessMode !== "private-only";

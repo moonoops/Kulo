@@ -1,6 +1,7 @@
 import type { ChatAttachment } from "@kulo/protocol";
 import { ensureMediaSession, getAuthTokenFromUrl } from "../../kulo-api";
 import { translate as tr } from "../../kulo-i18n";
+import type { DesktopPreferencesBridge } from "../settings/desktop-preferences";
 import type { DesktopSystemPermissionBridge } from "../system-permissions/system-permissions";
 import type { AppShortcutCommand } from "../shortcuts/shortcuts";
 
@@ -8,6 +9,7 @@ export interface DesktopFileBridge {
   ready?(): Promise<void>;
   onCommand?(listener: (command: AppShortcutCommand) => void): () => void;
   notify?(payload: { title: string; body?: string; topicId?: string }): Promise<void>;
+  preferences?: DesktopPreferencesBridge;
   systemPermissions?: DesktopSystemPermissionBridge;
   openFile(assetId: string, target: "default" | "browser"): Promise<void>;
   saveFile(assetId: string): Promise<"saved" | "canceled">;

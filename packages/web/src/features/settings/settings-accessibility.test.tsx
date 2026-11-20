@@ -92,11 +92,10 @@ describe("settings controls and layout", () => {
       expect(html).toContain(label);
     }
     expect(html).not.toContain('role="radio');
-    expect(html.match(/<button\b/g)).toHaveLength(3);
+    expect(html.match(/<button\b/g)).toHaveLength(2);
     expect(html).toContain('aria-label="超时检查说明"');
     expect(html).toContain("已完成任务显示时长");
-    expect(html).toContain("执行权限");
-    expect(html).toContain("需要授权");
+    expect(html).not.toContain("执行权限");
     expect(html.indexOf("已完成任务显示时长")).toBeGreaterThan(html.indexOf("超时检查"));
     expect(html).not.toContain("安全护栏");
     expect(html).not.toContain("kulo-settings-savebar");

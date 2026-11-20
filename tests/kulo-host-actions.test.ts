@@ -178,6 +178,23 @@ describe("Worker sandbox refinements & HostActionService", () => {
     expect(fs.existsSync(secretDir)).toBe(true);
   });
 
+  it("keeps supervised host maintenance commands alive past immediate stdin EOF (regression)", async () => {
+    const root = tempDir("long-running-cmd");
+    const service = new HostActionService({
+      controlRoot: path.join(root, "control"),
+      getProtectedPaths: () => [],
+    });
+    const res = await service.execute({
+      kind: "run",
+      cwd: root,
+      commands: [`${JSON.stringify(process.execPath)} -e "setTimeout(() => console.log('survived-300ms'), 300)"`],
+      timeoutMs: 15_000,
+    });
+    expect(res.ok).toBe(true);
+    expect(res.steps?.[0]?.exitCode).toBe(0);
+    expect(res.stdout).toContain("survived-300ms");
+  }, 20_000);
+
   it.skipIf(process.platform !== "darwin")("relays host actions over WebSocket to a remote KuloEnvAgent", async () => {
     const root = tempDir("remote-ws");
     const envRoot = path.join(root, "env");
@@ -213,31 +230,33 @@ describe("Worker sandbox refinements & HostActionService", () => {
   });
 });
 
-describe("Host action confirmation flow & hostActionPermission setting", () => {
-  it("builds a GenUI-valid host action confirmation card", () => {
+describe("Host action Main-Agent authority, smart judgment, escalation cards & chat settlement", () => {
+  it("builds a GenUI-valid host action confirmation card with Allow, Reject, and Manual Input", () => {
     const built = buildHostActionConfirmCard({
       envName: "Macmini.local",
       summary: "卸载并清理 hindsight",
       commands: ["brew uninstall hindsight", "rm -rf ~/.hindsight"],
       cwd: "/Users/demo",
+      reason: "涉及删除本地数据目录",
     });
     expect(() => validateUiCardInput(built.input)).not.toThrow();
-    expect(built.logicalIds).toEqual(["confirm", "cancel"]);
+    expect(built.logicalIds).toEqual(["confirm", "cancel", "manual"]);
   });
 
-  it.skipIf(process.platform !== "darwin")("persists hostActionPermission ('ask' | 'always'), blocks LLM elevation, gates 'ask' behind confirmation card, and runs immediately under 'always'", async () => {
+  it.skipIf(process.platform !== "darwin")("lets Main Agent run host actions directly, lets Main Agent silently approve Worker requests, and still blocks read-only roles", async () => {
     const stateDir = tempDir("hub-state");
     const localEnvRoot = tempDir("hub-env");
     const outsideDir = tempDir("outside-target");
-    const markerAsk = path.join(outsideDir, "approved-by-card.txt");
-    const markerAlways = path.join(outsideDir, "auto-allowed.txt");
+    const markerMain = path.join(outsideDir, "main-direct.txt");
+    const markerWorker = path.join(outsideDir, "worker-smart-approved.txt");
 
     const faux = fauxProvider({ provider: "host-action-test", models: [{ id: "host-model" }] });
     const models = createModels();
     models.setProvider(faux.provider);
 
-    let scenario: "worker-ask" | "worker-always" | "scout-readonly" = "worker-ask";
+    let scenario: "worker-approve" | "scout-readonly" = "worker-approve";
     let readOnlyToolError = "";
+    let orchestratorSawRequest = false;
 
     faux.setResponses(
       Array.from({ length: 30 }, () => (ctx: TranscriptContext) => {
@@ -256,11 +275,11 @@ describe("Host action confirmation flow & hostActionPermission setting", () => {
 
           const hostRunResults = ctx.messages.filter((m) => m.role === "toolResult" && m.toolName === "kulo_host_action");
           const resumedAfterApproval = ctx.messages.some(
-            (m) => m.role === "user" && typeof m.content === "string" && m.content.includes("用户已批准"),
+            (m) => m.role === "user" && typeof m.content === "string" && m.content.includes("主智能体已批准"),
           );
           if (resumedAfterApproval) {
             return fauxAssistantMessage(
-              [fauxToolCall("kulo_report", { state: "ready", summary: "Host maintenance completed after approval." })],
+              [fauxToolCall("kulo_report", { state: "ready", summary: "Host maintenance completed after smart approval." })],
               { stopReason: "toolUse" },
             );
           }
@@ -277,32 +296,57 @@ describe("Host action confirmation flow & hostActionPermission setting", () => {
               { stopReason: "toolUse" },
             );
           }
-          if (hostRunResults.length === 0) {
-            const targetFile = scenario === "worker-always" ? markerAlways : markerAsk;
-            return fauxAssistantMessage(
-              [
-                fauxToolCall("kulo_host_action", {
-                  action: "run",
-                  summary: "写入外部测试标记",
-                  commands: [`echo ok > ${JSON.stringify(targetFile)}`],
-                  cwd: outsideDir,
-                }),
-              ],
-              { stopReason: "toolUse" },
-            );
-          }
           return fauxAssistantMessage(
-            [fauxToolCall("kulo_report", { state: "ready", summary: "Host maintenance executed immediately." })],
+            [
+              fauxToolCall("kulo_host_action", {
+                action: "run",
+                summary: "写入外部测试标记",
+                commands: [`echo ok > ${JSON.stringify(markerWorker)}`],
+                cwd: outsideDir,
+              }),
+            ],
             { stopReason: "toolUse" },
           );
         }
 
-        const lastUser = ctx.messages[ctx.messages.findLastIndex((m) => m.role === "user")];
+        const lastUserIdx = ctx.messages.findLastIndex((m) => m.role === "user");
+        const lastUser = ctx.messages[lastUserIdx];
         const lastText = typeof lastUser?.content === "string" ? lastUser.content : "";
-        if (lastText.includes("[KULO_WORKER_RELAY]") || lastText.includes("kulo.ui.action")) {
-          return fauxAssistantMessage([fauxText("已收到更新。")]);
+        const turnResults = ctx.messages.slice(lastUserIdx + 1).filter((m) => m.role === "toolResult");
+
+        if (lastText.includes("[KULO_HOST_ACTION_REQUEST]")) {
+          orchestratorSawRequest = true;
+          if (turnResults.some((m) => m.toolName === "kulo_host_action_decide")) {
+            return fauxAssistantMessage([fauxText("[COORDINATOR_OK]")]);
+          }
+          const reqMatch = /Request ID:\s*(\S+)/.exec(lastText);
+          return fauxAssistantMessage(
+            [fauxToolCall("kulo_host_action_decide", { request_id: reqMatch![1]!, decision: "approve" })],
+            { stopReason: "toolUse" },
+          );
         }
-        return fauxAssistantMessage([fauxText("好的。")]);
+        if (lastText.includes("主脑直接本机运维")) {
+          if (turnResults.some((m) => m.toolName === "kulo_host_action")) {
+            return fauxAssistantMessage([fauxText("主脑已直接完成本机操作。")]);
+          }
+          const hasHostAction = Boolean(ctx.tools?.some((t) => t.name === "kulo_host_action")) ||
+            ctx.messages.some((m) => m.role === "system" && "toolsAdded" in m && Array.isArray(m.toolsAdded) && m.toolsAdded.some((t) => t.name === "kulo_host_action"));
+          if (!hasHostAction) {
+            return fauxAssistantMessage([fauxToolCall("tool_search", { query: "kulo_host_action", limit: 3 })], { stopReason: "toolUse" });
+          }
+          return fauxAssistantMessage(
+            [
+              fauxToolCall("kulo_host_action", {
+                action: "run",
+                summary: "主脑直接创建测试文件",
+                commands: [`echo main > ${JSON.stringify(markerMain)}`],
+                cwd: outsideDir,
+              }),
+            ],
+            { stopReason: "toolUse" },
+          );
+        }
+        return fauxAssistantMessage([fauxText("已收到更新。")]);
       }),
     );
 
@@ -321,87 +365,34 @@ describe("Host action confirmation flow & hostActionPermission setting", () => {
     });
     hubs.push(hub);
 
-    // 1. Default setting is 'ask', invalid values rejected, SettingsAssistant cannot elevate
-    const initialExec = hub.getSettingsView().blocks.executor;
-    expect(initialExec.value.hostActionPermission).toBe("ask");
-    await expect(
-      hub.updateSettingsBlock("executor", initialExec.revision, { ...initialExec.value, hostActionPermission: "root" }),
-    ).rejects.toThrow("执行权限");
-    await expect(
-      hub.settingsAssistant.update("executor", '{"hostActionPermission":"always"}', "自动提权", "elevate-deny"),
-    ).rejects.toThrow("专用操作");
-    expect(hub.getSettingsView().blocks.executor.value.hostActionPermission).toBe("ask");
+    // 1. Main Agent calls kulo_host_action(run) directly without any confirmation card
+    const subMain = await hub.sendUserMessage("主脑直接本机运维");
+    await subMain.wait(BACKGROUND_CONTEXT);
+    expect(fs.existsSync(markerMain)).toBe(true);
+    expect(await hub.uiCards.snapshot(Number(hub.rootConversation.id))).toHaveLength(0);
 
-    // 2. Under 'ask': writable Worker triggers confirmation card & parks cleanly; clicking Allow executes and resumes Worker
-    scenario = "worker-ask";
+    // 2. Writable Worker submits host_action -> Main Agent smart-approves silently -> executes & resumes Worker with 0 cards!
+    scenario = "worker-approve";
     const t1 = await hub.dispatchTicket({
-      commandId: "host-ask-1",
-      title: "清理外部目录",
+      commandId: "host-smart-1",
+      title: "外部目录运维",
       goal: "在工作区外创建标记文件",
       scope: outsideDir,
       role: "coder",
       envId: "local",
     });
 
-    let confirmCardId = "";
     await vi.waitFor(async () => {
-      const state = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-      const ticket = state?.tickets[t1.id];
-      expect(ticket?.status).toBe("waiting");
-      expect(ticket?.waiting?.reason).toBe("user");
-      expect(ticket?.waiting?.waitToken).toMatch(/^host-action:/);
-      confirmCardId = ticket!.waiting!.waitToken!.slice("host-action:".length);
-    }, { timeout: 15_000 });
-
-    expect(fs.existsSync(markerAsk)).toBe(false);
-    const card = await hub.uiCards.get(confirmCardId);
-    expect(card?.title).toContain("执行本机操作");
-    const allowAction = card!.actions.find((a) => a.label === "允许执行");
-    expect(allowAction).toBeTruthy();
-
-    await hub.submitUiAction({
-      cardId: card!.cardId,
-      revision: card!.revision,
-      actionId: allowAction!.id,
-      values: {},
-      commandId: "approve-host-ask-1",
-    });
-
-    await vi.waitFor(async () => {
-      expect(fs.existsSync(markerAsk)).toBe(true);
       const state = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
       expect(state?.tickets[t1.id]?.status).toBe("ready");
     }, { timeout: 15_000 });
+    expect(orchestratorSawRequest).toBe(true);
+    expect(fs.existsSync(markerWorker)).toBe(true);
+    expect(await hub.uiCards.snapshot(Number(hub.rootConversation.id))).toHaveLength(0);
 
-    // 3. Switch executor setting to 'always'
-    const beforeAlways = hub.getSettingsView().blocks.executor;
-    const updated = await hub.updateSettingsBlock("executor", beforeAlways.revision, {
-      ...beforeAlways.value,
-      hostActionPermission: "always",
-    });
-    expect(updated.settings.blocks.executor.value.hostActionPermission).toBe("always");
-
-    // 4. Under 'always': writable Worker executes directly WITHOUT creating a new confirmation card
-    scenario = "worker-always";
-    const cardsBefore = (await hub.uiCards.snapshot(Number(hub.rootConversation.id))).length;
-    const t2 = await hub.dispatchTicket({
-      commandId: "host-always-1",
-      title: "免确认运维",
-      goal: "在工作区外创建自动标记",
-      scope: outsideDir,
-      role: "coder",
-      envId: "local",
-    });
-    await vi.waitFor(async () => {
-      const state = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-      expect(state?.tickets[t2.id]?.status).toBe("ready");
-    }, { timeout: 15_000 });
-    expect(fs.existsSync(markerAlways)).toBe(true);
-    expect((await hub.uiCards.snapshot(Number(hub.rootConversation.id))).length).toBe(cardsBefore);
-
-    // 5. Even under 'always': readOnly role (scout) is STILL rejected from host maintenance 'run'
+    // 3. Read-only role (scout) is STILL rejected from host maintenance 'run'
     scenario = "scout-readonly";
-    const t3 = await hub.dispatchTicket({
+    const t2 = await hub.dispatchTicket({
       commandId: "host-scout-ro-1",
       title: "只读侦察测试",
       goal: "尝试只读角色执行 run",
@@ -411,12 +402,135 @@ describe("Host action confirmation flow & hostActionPermission setting", () => {
     });
     await vi.waitFor(async () => {
       const state = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-      expect(state?.tickets[t3.id]?.status).toBe("failed");
+      expect(state?.tickets[t2.id]?.status).toBe("failed");
     }, { timeout: 15_000 });
     expect(readOnlyToolError).toContain("只读");
   }, 30_000);
 
-  it.skipIf(process.platform !== "darwin")("resumes Worker cleanly on card denial without executing the command", async () => {
+  it.skipIf(process.platform !== "darwin")("escalates risky Worker host action to card and settles the card automatically when user replies in chat instead of clicking", async () => {
+    const stateDir = tempDir("hub-chat-settle-state");
+    const localEnvRoot = tempDir("hub-chat-settle-env");
+    const outsideDir = tempDir("outside-chat-settle");
+    const markerSettled = path.join(outsideDir, "settled-by-chat.txt");
+
+    const faux = fauxProvider({ provider: "host-settle-test", models: [{ id: "host-model" }] });
+    const models = createModels();
+    models.setProvider(faux.provider);
+
+    let capturedRequestId = "";
+    faux.setResponses(
+      Array.from({ length: 24 }, () => (ctx: TranscriptContext) => {
+        const isOrchestrator =
+          Boolean(ctx.tools?.some((t) => t.name === "kulo_dispatch")) ||
+          ctx.messages.some((m) => m.role === "system" && "toolsAdded" in m && Array.isArray(m.toolsAdded) && m.toolsAdded.some((t) => t.name === "kulo_dispatch"));
+        if (!isOrchestrator) {
+          const alreadyReported = ctx.messages.some((m) => m.role === "toolResult" && m.toolName === "kulo_report");
+          if (alreadyReported) return fauxAssistantMessage([fauxText("Done")]);
+          const hasHostAction = Boolean(ctx.tools?.some((t) => t.name === "kulo_host_action")) ||
+            ctx.messages.some((m) => m.role === "system" && "toolsAdded" in m && Array.isArray(m.toolsAdded) && m.toolsAdded.some((t) => t.name === "kulo_host_action"));
+          if (!hasHostAction) {
+            return fauxAssistantMessage([fauxToolCall("tool_search", { query: "kulo_host_action", limit: 3 })], { stopReason: "toolUse" });
+          }
+          const resumed = ctx.messages.some((m) => m.role === "user" && typeof m.content === "string" && m.content.includes("已批准"));
+          if (resumed) {
+            return fauxAssistantMessage(
+              [fauxToolCall("kulo_report", { state: "ready", summary: "Completed after chat settlement." })],
+              { stopReason: "toolUse" },
+            );
+          }
+          return fauxAssistantMessage(
+            [
+              fauxToolCall("kulo_host_action", {
+                action: "run",
+                summary: "高风险清理操作",
+                commands: [`echo chat-ok > ${JSON.stringify(markerSettled)}`],
+                cwd: outsideDir,
+              }),
+            ],
+            { stopReason: "toolUse" },
+          );
+        }
+
+        const lastUserIdx = ctx.messages.findLastIndex((m) => m.role === "user");
+        const lastText = typeof ctx.messages[lastUserIdx]?.content === "string" ? ctx.messages[lastUserIdx]!.content as string : "";
+        const turnResults = ctx.messages.slice(lastUserIdx + 1).filter((m) => m.role === "toolResult");
+
+        if (lastText.includes("[KULO_HOST_ACTION_REQUEST]")) {
+          const reqMatch = /Request ID:\s*(\S+)/.exec(lastText);
+          capturedRequestId = reqMatch![1]!;
+          if (turnResults.some((m) => m.toolName === "kulo_host_action_decide")) {
+            return fauxAssistantMessage([fauxText("这项操作有一定风险，请在卡片确认或直接回复我。")]);
+          }
+          return fauxAssistantMessage(
+            [fauxToolCall("kulo_host_action_decide", { request_id: capturedRequestId, decision: "ask_user", reason: "涉及外部目录写入" })],
+            { stopReason: "toolUse" },
+          );
+        }
+        if (lastText.includes("允许执行吧")) {
+          if (turnResults.some((m) => m.toolName === "kulo_host_action_decide")) {
+            return fauxAssistantMessage([fauxText("好的，已替你执行并恢复任务。")]);
+          }
+          return fauxAssistantMessage(
+            [fauxToolCall("kulo_host_action_decide", { request_id: capturedRequestId, decision: "approve" })],
+            { stopReason: "toolUse" },
+          );
+        }
+        return fauxAssistantMessage([fauxText("任务已完成。")]);
+      }),
+    );
+
+    const hub = await openTestHub({
+      models,
+      providerId: "host-settle-test",
+      config: {
+        stateDir,
+        localEnvRoot,
+        model: { defaultProvider: "host-settle-test", defaultModel: "host-model", thinkingLevel: "off" },
+      },
+    });
+    hubs.push(hub);
+
+    const ticket = await hub.dispatchTicket({
+      commandId: "host-escalate-1",
+      title: "风险清理任务",
+      goal: "测试升级弹卡与对话收口",
+      scope: outsideDir,
+      role: "coder",
+      envId: "local",
+    });
+
+    let cardId = "";
+    await vi.waitFor(async () => {
+      const state = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+      const t = state?.tickets[ticket.id];
+      expect(t?.status).toBe("waiting");
+      expect(t?.waiting?.reason).toBe("user");
+      expect(t?.waiting?.cardId).toBeTruthy();
+      expect(t?.waiting?.options?.map((o) => o.label)).toEqual(["允许", "拒绝"]);
+      cardId = t!.waiting!.cardId!;
+    }, { timeout: 15_000 });
+
+    expect(fs.existsSync(markerSettled)).toBe(false);
+    const openCard = await hub.uiCards.get(cardId);
+    expect(openCard?.status).toBe("ready");
+
+    // User replies in natural language chat WITHOUT clicking the card!
+    const sub = await hub.sendUserMessage("允许执行吧");
+    await sub.wait(BACKGROUND_CONTEXT);
+
+    await vi.waitFor(async () => {
+      expect(fs.existsSync(markerSettled)).toBe(true);
+      const state = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+      expect(state?.tickets[ticket.id]?.status).toBe("ready");
+    }, { timeout: 15_000 });
+
+    // The open card was automatically settled and locked so it cannot be double-clicked!
+    const settledCard = await hub.uiCards.get(cardId);
+    expect(settledCard?.status).toBe("submitted");
+    expect(settledCard?.resultSummary).toBe("已通过对话允许");
+  }, 30_000);
+
+  it.skipIf(process.platform !== "darwin")("resumes Worker cleanly on escalated card denial without executing the command", async () => {
     const stateDir = tempDir("hub-deny-state");
     const localEnvRoot = tempDir("hub-deny-env");
     const outsideDir = tempDir("outside-deny");
@@ -428,7 +542,7 @@ describe("Host action confirmation flow & hostActionPermission setting", () => {
 
     let workerSawDenial = false;
     faux.setResponses(
-      Array.from({ length: 16 }, () => (ctx: TranscriptContext) => {
+      Array.from({ length: 20 }, () => (ctx: TranscriptContext) => {
         const isOrchestrator =
           Boolean(ctx.tools?.some((t) => t.name === "kulo_dispatch")) ||
           ctx.messages.some((m) => m.role === "system" && "toolsAdded" in m && Array.isArray(m.toolsAdded) && m.toolsAdded.some((t) => t.name === "kulo_dispatch"));
@@ -438,11 +552,11 @@ describe("Host action confirmation flow & hostActionPermission setting", () => {
           if (!hasHostAction) {
             return fauxAssistantMessage([fauxToolCall("tool_search", { query: "kulo_host_action", limit: 3 })], { stopReason: "toolUse" });
           }
-          const sawDenial = ctx.messages.some((m) => m.role === "user" && typeof m.content === "string" && m.content.includes("用户取消了"));
+          const sawDenial = ctx.messages.some((m) => m.role === "user" && typeof m.content === "string" && m.content.includes("用户拒绝了"));
           if (sawDenial) {
             workerSawDenial = true;
             return fauxAssistantMessage(
-              [fauxToolCall("kulo_report", { state: "ready", summary: "User cancelled host maintenance." })],
+              [fauxToolCall("kulo_report", { state: "ready", summary: "User rejected host maintenance." })],
               { stopReason: "toolUse" },
             );
           }
@@ -455,6 +569,16 @@ describe("Host action confirmation flow & hostActionPermission setting", () => {
                 cwd: outsideDir,
               }),
             ],
+            { stopReason: "toolUse" },
+          );
+        }
+        const lastUserIdx = ctx.messages.findLastIndex((m) => m.role === "user");
+        const lastText = typeof ctx.messages[lastUserIdx]?.content === "string" ? ctx.messages[lastUserIdx]!.content as string : "";
+        const turnResults = ctx.messages.slice(lastUserIdx + 1).filter((m) => m.role === "toolResult");
+        if (lastText.includes("[KULO_HOST_ACTION_REQUEST]") && !turnResults.some((m) => m.toolName === "kulo_host_action_decide")) {
+          const reqMatch = /Request ID:\s*(\S+)/.exec(lastText);
+          return fauxAssistantMessage(
+            [fauxToolCall("kulo_host_action_decide", { request_id: reqMatch![1]!, decision: "ask_user", reason: "请确认是否清理" })],
             { stopReason: "toolUse" },
           );
         }
@@ -487,12 +611,13 @@ describe("Host action confirmation flow & hostActionPermission setting", () => {
       const state = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
       const t = state?.tickets[ticket.id];
       expect(t?.status).toBe("waiting");
-      expect(t?.waiting?.waitToken).toMatch(/^host-action:/);
-      cardId = t!.waiting!.waitToken!.slice("host-action:".length);
+      expect(t?.waiting?.reason).toBe("user");
+      expect(t?.waiting?.cardId).toBeTruthy();
+      cardId = t!.waiting!.cardId!;
     }, { timeout: 15_000 });
 
     const card = await hub.uiCards.get(cardId);
-    const cancelAction = card!.actions.find((a) => a.label === "取消");
+    const cancelAction = card!.actions.find((a) => a.label === "拒绝");
     expect(cancelAction).toBeTruthy();
 
     await hub.submitUiAction({
@@ -509,5 +634,5 @@ describe("Host action confirmation flow & hostActionPermission setting", () => {
     }, { timeout: 15_000 });
     expect(workerSawDenial).toBe(true);
     expect(fs.existsSync(markerDenied)).toBe(false);
-  }, 20_000);
+  }, 25_000);
 });

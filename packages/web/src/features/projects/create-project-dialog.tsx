@@ -2,6 +2,7 @@ import { useI18n } from "../../kulo-i18n";
 import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Input, Label, ListBox, Modal, Radio, RadioGroup, Select, Spinner, TextField } from "@heroui/react";
 import type { ProjectDirectoryListing, ProjectView } from "@kulo/protocol";
+import { DeviceName, DevicePresence, formatDeviceLabel, orderDevices } from "../../components/device-identity";
 import { kuloRest } from "../../kulo-api";
 import { KuloIcon } from "../../kulo-icon";
 import { joinProjectDirectory, type ProjectDevice } from "./project-model";
@@ -54,13 +55,15 @@ export function ProjectDirectoryBrowser({ listing, browsing, creating, onBrowse 
   );
 }
 
-export function CreateProjectDialog({ devices, initialDeviceId, onCreated, onClose }: {
+export function CreateProjectDialog({ devices, currentDeviceId, initialDeviceId, onCreated, onClose }: {
   devices: readonly ProjectDevice[];
+  currentDeviceId?: string;
   initialDeviceId?: string;
   onCreated: (project: ProjectView) => void;
   onClose: () => void;
 }) {
   const { t } = useI18n();
+  const orderedDevices = orderDevices(devices, { currentDeviceId });
   const [deviceId, setDeviceId] = useState(initialDeviceId ?? "");
   const [name, setName] = useState("");
   const [mode, setMode] = useState("existing");
@@ -72,7 +75,8 @@ export function CreateProjectDialog({ devices, initialDeviceId, onCreated, onClo
   const [error, setError] = useState<string>();
   const [commandId, setCommandId] = useState(() => crypto.randomUUID());
   const browseRequest = useRef<AbortController | undefined>(undefined);
-  const device = devices.find((candidate) => candidate.id === deviceId);
+  const isCurrent = (id: string) => Boolean(currentDeviceId && id === currentDeviceId);
+  const device = orderedDevices.find((candidate) => candidate.id === deviceId);
 
   useEffect(() => () => browseRequest.current?.abort(), []);
 
@@ -126,16 +130,28 @@ export function CreateProjectDialog({ devices, initialDeviceId, onCreated, onClo
             <Modal.Body className="kulo-form-stack">
               {error && <Alert status="danger"><Alert.Indicator /><Alert.Content><Alert.Title>{error}</Alert.Title></Alert.Content></Alert>}
               <Select className="kulo-form-field" variant="secondary" fullWidth value={deviceId || null} isDisabled={creating} placeholder={t("选择设备", "Select device")}
-                disabledKeys={devices.filter((candidate) => !candidate.online).map((candidate) => candidate.id)}
+                disabledKeys={orderedDevices.filter((candidate) => !candidate.online).map((candidate) => candidate.id)}
                 onChange={(value) => {
                   browseRequest.current?.abort(); setBrowsing(false); setListing(undefined); setDirectory("");
                   change(setDeviceId, String(value ?? ""));
                 }}>
                 <Label>{t("设备", "Device")}</Label>
-                <Select.Trigger className="min-w-0"><Select.Value className="min-w-0 truncate" /><Select.Indicator /></Select.Trigger>
+                <Select.Trigger className="min-w-0">
+                  <Select.Value className="min-w-0 flex-1">
+                    {device ? (
+                      <span className="flex min-w-0 items-center justify-between gap-2">
+                        <DeviceName name={device.name} isCurrent={isCurrent(device.id)} singleLine />
+                        <DevicePresence online={device.online} showOnlineText={false} />
+                      </span>
+                    ) : undefined}
+                  </Select.Value>
+                  <Select.Indicator />
+                </Select.Trigger>
                 <Select.Popover><ListBox aria-label={t("项目所在设备", "Project device")}>
-                  {devices.map((candidate) => <ListBox.Item key={candidate.id} id={candidate.id} textValue={candidate.name}>
-                    <Label className="min-w-0 flex-1 truncate">{candidate.name}{candidate.online ? "" : t(" · 离线", " · Offline")}</Label><ListBox.ItemIndicator />
+                  {orderedDevices.map((candidate) => <ListBox.Item key={candidate.id} id={candidate.id} textValue={formatDeviceLabel(candidate.name, isCurrent(candidate.id))}>
+                    <Label className="min-w-0 flex-1 whitespace-normal break-words"><DeviceName name={candidate.name} isCurrent={isCurrent(candidate.id)} /></Label>
+                    <DevicePresence online={candidate.online} className="ml-auto" />
+                    <ListBox.ItemIndicator />
                   </ListBox.Item>)}
                 </ListBox></Select.Popover>
               </Select>

@@ -73,7 +73,7 @@ afterEach(async () => {
 });
 
 describe("Step 4: A1s+ Sandboxed Orchestrator Coding Tools & A2-lite Single-Delivery Inline Dispatch", () => {
-  it("allows Main Chat atomic write/edit/bash inside workspaceDir and enforces path, secret, network, timeout, and active-ticket write locks", async () => {
+  it("grants Main Agent full workspace/network authority while still enforcing credential, catastrophic-command, and active-ticket write locks", async () => {
     const stateDir = makeTempDir("state");
     const identityDir = makeTempDir("identity");
     const localEnvRoot = makeTempDir("workspace");
@@ -145,16 +145,15 @@ describe("Step 4: A1s+ Sandboxed Orchestrator Coding Tools & A2-lite Single-Deli
           if (turnResults.length === 0) {
             return fauxAssistantMessage(
               [
-                fauxToolCall("write", { path: path.join(outsideDir, "hack.txt"), content: "nope" }),
                 fauxToolCall("read", { path: path.join(identityDir, "identity-agreement.md") }),
                 fauxToolCall("read", { path: path.join(stateDir, "kulo.sqlite") }),
-                fauxToolCall("bash", { command: "curl https://example.com" }),
+                fauxToolCall("bash", { command: "echo curl-not-blocked && true" }),
                 fauxToolCall("bash", { command: "rm -rf /" }),
               ],
               { stopReason: "toolUse" },
             );
           }
-          return fauxAssistantMessage([fauxText("安全护栏已全部拦截。")]);
+          return fauxAssistantMessage([fauxText("物理底线校验完成。")]);
         }
 
         // write_lock_conflict
@@ -194,21 +193,24 @@ describe("Step 4: A1s+ Sandboxed Orchestrator Coding Tools & A2-lite Single-Deli
     expect(fs.readFileSync(path.join(localEnvRoot, "renamed.txt"), "utf8")).toBe("hello kulo\n");
     expect((await hub.getBoardSnapshot()).tickets).toHaveLength(0);
 
-    // 2. Security guards: outside workspace write, private identity dir read, stateDir read, network bash, dangerous bash
+    // 2. Main Agent full authority + physical baselines:
+    //    - ordinary/network bash succeeds (host-wide writes use kulo_host_action directly without cards)
+    //    - private identity dir read, stateDir read, catastrophic rm -rf / stay blocked
     turnMode = "security_guards";
-    const sub2 = await hub.sendUserMessage("测试越界读写与联网命令拦截");
+    const sub2 = await hub.sendUserMessage("测试主脑权限与底层安全物理底线");
     expect((await sub2.wait(BACKGROUND_CONTEXT)).status).toBe("done");
-    expect(fs.existsSync(path.join(outsideDir, "hack.txt"))).toBe(false);
 
     const entries2 = await hub.rootConversation.entries({ order: "ascending" }, 100, undefined, BACKGROUND_CONTEXT);
     const guardResults = entries2.items
       .flatMap((e) => e.model ?? [])
       .filter((m) => m.role === "toolResult")
-      .slice(-5);
-    expect(guardResults).toHaveLength(5);
-    for (const res of guardResults) {
-      expect(res.isError).toBe(true);
-    }
+      .slice(-4);
+    expect(guardResults).toHaveLength(4);
+    const byText = (needle: string) => guardResults.find((m) => JSON.stringify(m.content).includes(needle));
+    expect(byText("私有身份目录")?.isError).toBe(true);
+    expect(byText("状态库或凭据目录")?.isError).toBe(true);
+    expect(byText("curl-not-blocked")?.isError).toBe(false);
+    expect(byText("毁灭性 Shell 命令")?.isError).toBe(true);
 
     // 3. Active writable ticket write-lock guard on same workspace directory
     const lockTicket = await hub.dispatchTicket({

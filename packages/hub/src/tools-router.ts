@@ -24,6 +24,7 @@ import {
   type ThinkingEffort,
   type TicketCardView,
   type TicketClosureKind,
+  type TicketWaitOption,
   type WorkerInspectResult,
 } from "@kulo/protocol";
 import { isMainOrchestratorApi } from "./settings-doc.js";
@@ -33,7 +34,7 @@ import { createWebSearchTool } from "./tools-search.js";
 import { createWebFetchTool } from "./tools-worker.js";
 import type { KuloSearch } from "./search.js";
 import { createConnectionTools, type ConnectionToolController } from "./tools-connections.js";
-import { createHostActionTool, type HostActionController } from "./tools-host-action.js";
+import { createHostActionDecideTool, createHostActionTool, type HostActionController } from "./tools-host-action.js";
 
 export interface DispatchTicketParams {
   commandId: string;
@@ -93,6 +94,7 @@ export interface SteerTicketParams {
   text: string;
   replyTo?: ChatReplyReference;
   attachments?: ChatAttachment[];
+  decisionOptionId?: string;
   principalId?: string;
   originConversationId?: number;
   originToolTaskId?: number;
@@ -105,7 +107,15 @@ export interface ApplyStagedChangesParams {
   ticketId: string;
   paths?: string[];
   allowConflicts?: boolean;
+  askUser?: boolean;
   originConversationId?: number;
+}
+
+export interface AskUserForTicketParams {
+  ticketId: string;
+  question: string;
+  options?: TicketWaitOption[];
+  showCard?: boolean;
 }
 
 export interface CloseTicketParams {
@@ -130,14 +140,23 @@ export interface OrchestratorController {
   closeTicket(params: CloseTicketParams, context: Context): Promise<TicketCardView>;
   inspectWorker(ticketId: string, context: Context): Promise<WorkerInspectResult>;
   respondExternalAgentPermission?(ticketId: string, permissionId: string, choiceId: string, runEpoch: number, context: Context): Promise<WorkerInspectResult>;
-  confirmExternalAgentPermission?(
-    ticketId: string,
-    permissionId: string,
-    choiceId: string,
-    runEpoch: number,
+  handleExternalAgentPermission?(
+    input: {
+      ticketId: string;
+      permissionId: string;
+      choiceId?: string;
+      runEpoch: number;
+      mode: "decide" | "ask_user";
+      reason?: string;
+    },
     source: { conversationId: number; callId: string },
     context: Context,
   ): Promise<WorkerInspectResult | Record<string, unknown>>;
+  askUserForTicket?(
+    params: AskUserForTicketParams,
+    source: { conversationId: number; callId: string },
+    context: Context,
+  ): Promise<Record<string, unknown>>;
   inspectStagedDiff?(ticketId: string, filePath: string | undefined, context: Context): Promise<StagedWorkspaceDiffDetail>;
   applyStagedChanges?(params: ApplyStagedChangesParams, context: Context): Promise<StagedWorkspaceApplyResult>;
   applyStagedChangesFromTool?(
@@ -390,24 +409,78 @@ export function createOrchestratorToolsExtension(
 
   const externalPermissionTool = defineTool({
     name: "kulo_external_permission",
-    description: "Relay the user's decision for an actual native client permission request. First use kulo_inspect and preserve its run_epoch and exact permission/choice IDs. The client owns its permission policy; present its original choices without changing them or deciding on the user's behalf. 关键词：外部智能体权限审批 授权决定 允许拒绝",
+    description: "Handle a local external Agent's native permission request (main Agent only). Evaluate it against the user's real goal first: call `mode='decide'` (default) with exact `choice_id` to approve/reject directly (prefer single-use allow over permanent global grants, and settle any open card), or call `mode='ask_user'` (omit `choice_id`) to present an interactive confirmation card (native choices + manual input) when risky or needing user choice. 关键词：外部智能体权限审批 授权决定 允许拒绝",
     deferred: true,
-    parameters: obj({ ticket_id: str(), run_epoch: num(), permission_id: str(), choice_id: str() }),
+    parameters: obj({
+      ticket_id: str(),
+      run_epoch: num(),
+      permission_id: str(),
+      mode: opt(oneOf(["decide", "ask_user"])),
+      choice_id: opt(str({ description: "Required when mode='decide' (default): exact native choice ID." })),
+      reason: opt(str({ description: "Optional concise risk summary shown to the user when mode='ask_user'." })),
+    }),
     execute: async (args, api, context) => {
-      if (!(await isMainOrchestratorApi(api, context)).allowed || (!controller.confirmExternalAgentPermission && !controller.respondExternalAgentPermission)) {
-        return { isError: true, output: [{ type: "text" as const, text: "Only the Kulo Orchestrator may relay native Agent permission decisions." }] };
+      if (!(await isMainOrchestratorApi(api, context)).allowed || (!controller.handleExternalAgentPermission && !controller.respondExternalAgentPermission)) {
+        return { isError: true, output: [{ type: "text" as const, text: "Only the Kulo Orchestrator may handle native Agent permission decisions." }] };
       }
-      const result = controller.confirmExternalAgentPermission
-        ? await controller.confirmExternalAgentPermission(
-            args.ticket_id,
-            args.permission_id,
-            args.choice_id,
-            args.run_epoch,
+      const mode = args.mode ?? "decide";
+      if (mode === "decide" && !args.choice_id?.trim()) {
+        return { isError: true, output: [{ type: "text" as const, text: "mode='decide' 时必须提供有效的 choice_id。" }] };
+      }
+      const result = controller.handleExternalAgentPermission
+        ? await controller.handleExternalAgentPermission(
+            {
+              ticketId: args.ticket_id,
+              permissionId: args.permission_id,
+              ...(args.choice_id?.trim() ? { choiceId: args.choice_id.trim() } : {}),
+              runEpoch: args.run_epoch,
+              mode,
+              ...(args.reason?.trim() ? { reason: args.reason.trim() } : {}),
+            },
             { conversationId: Number(api.conversationId), callId: api.callId },
             context,
           )
-        : await controller.respondExternalAgentPermission!(args.ticket_id, args.permission_id, args.choice_id, args.run_epoch, context);
+        : await controller.respondExternalAgentPermission!(args.ticket_id, args.permission_id, args.choice_id!.trim(), args.run_epoch, context);
       return { output: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    },
+  });
+
+  const ticketAskUserTool = defineTool({
+    name: "kulo_ticket_ask_user",
+    description:
+      "Escalate a waiting/blocked Worker Ticket to the user ONLY when the main Agent genuinely needs human judgment or risk consent. Provide a concise question in the active conversation language (no internal IDs/logs) and concrete clickable options (e.g. 允许/拒绝 or discrete solution choices); shows an interactive card with options + manual input by default and syncs Task Detail without blocking chat. 关键词：向用户确认 任务决策卡片 升级用户确认",
+    deferred: true,
+    parameters: obj({
+      ticket_id: str({ description: "Target waiting/blocked Ticket ID." }),
+      question: str({ description: "Concise user-facing question in the active conversation language." }),
+      options: opt(
+        arr(
+          obj({
+            id: str({ minLength: 1, maxLength: 64 }),
+            label: str({ minLength: 1, maxLength: 120 }),
+            tone: opt(oneOf(["primary", "secondary", "danger"])),
+            value: opt(str({ maxLength: 400 })),
+          }),
+          { maxItems: 11, description: "Optional quick-action buttons shown alongside manual input." },
+        ),
+      ),
+      show_card: opt(bool({ description: "Default true: show interactive decision card in chat; set false to ask purely via text while still syncing Task Detail." })),
+    }),
+    execute: async (args, api, context) => {
+      if (!(await isMainOrchestratorApi(api, context)).allowed || !controller.askUserForTicket) {
+        return { isError: true, output: [{ type: "text" as const, text: "Only the Kulo Orchestrator may escalate a ticket to the user." }] };
+      }
+      const outcome = await controller.askUserForTicket(
+        {
+          ticketId: args.ticket_id,
+          question: args.question,
+          ...(args.options?.length ? { options: args.options as TicketWaitOption[] } : {}),
+          ...(args.show_card !== undefined ? { showCard: args.show_card } : {}),
+        },
+        { conversationId: Number(api.conversationId), callId: api.callId },
+        context,
+      );
+      return { output: [{ type: "text" as const, text: JSON.stringify(outcome) }] };
     },
   });
 
@@ -433,13 +506,14 @@ export function createOrchestratorToolsExtension(
   const applyStagedChangesTool = defineTool({
     name: "kulo_apply_staged_changes",
     description:
-      "Merge reviewed Worker or external Agent staged workspace changes back into the authorized project directory and clean up the isolated staged clone. If conflictFiles or [HIGH-SENSITIVITY PATHS] are reported, ask the user first before merging (and set allow_conflicts=true only on explicit user confirmation). 关键词：合并暂存改动 应用代码补丁 落地工作区修改",
+      "Merge reviewed Worker or external Agent staged workspace changes back into the authorized project directory and clean up the isolated staged clone. Executes directly with main-Agent authority once you have verified the diff; set `ask_user=true` only when you want user confirmation first (e.g. risky changes or unresolved concurrent conflicts). 关键词：合并暂存改动 应用代码补丁 落地工作区修改",
     deferred: true,
     parameters: obj({
       command_id: str({ description: "Unique idempotency key for this staged merge." }),
       ticket_id: str({ description: "Settled Ticket ID whose staged changes were reviewed." }),
       paths: opt(arr(str(), { description: "Optional subset of relative file paths to apply; omit to apply all staged changes." })),
-      allow_conflicts: opt(bool({ description: "Only set true after explicit user confirmation when source files changed concurrently." })),
+      allow_conflicts: opt(bool({ description: "Set true when overriding concurrent source-file conflicts after review." })),
+      ask_user: opt(bool({ description: "Optional: set true to present a confirmation card before merging." })),
     }),
     execute: async (args, api, context) => {
       if (!(await isMainOrchestratorApi(api, context)).allowed || (!controller.applyStagedChangesFromTool && !controller.applyStagedChanges)) {
@@ -450,6 +524,7 @@ export function createOrchestratorToolsExtension(
         ticketId: args.ticket_id,
         paths: args.paths,
         allowConflicts: args.allow_conflicts,
+        askUser: args.ask_user,
         originConversationId: Number(api.conversationId),
       };
       const applied = controller.applyStagedChangesFromTool
@@ -560,6 +635,7 @@ export function createOrchestratorToolsExtension(
       statusTool,
       inspectTool,
       ...(controller.respondExternalAgentPermission ? [externalPermissionTool] : []),
+      ...(controller.askUserForTicket ? [ticketAskUserTool] : []),
       ...(controller.inspectStagedDiff ? [inspectStagedDiffTool] : []),
       ...(controller.applyStagedChanges ? [applyStagedChangesTool] : []),
       identityReadTool,
@@ -570,7 +646,9 @@ export function createOrchestratorToolsExtension(
       createWebSearchTool(getSearch),
       ...hindsightTools,
       ...(controller.connections ? createConnectionTools(controller.connections, "orchestrator") : []),
-      ...(controller.hostActions ? [createHostActionTool(controller.hostActions, "orchestrator")] : []),
+      ...(controller.hostActions
+        ? [createHostActionTool(controller.hostActions, "orchestrator"), createHostActionDecideTool(controller.hostActions)]
+        : []),
     ],
   });
 }

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Disclosure, Dropdown, Input, Label, Modal, Separator, Spinner, TextField } from "@heroui/react";
 import type { DeviceInterconnectionView, EnvNodeDescriptor, ProjectView, TicketCardView, TopicSummary } from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
+import { DeviceName, DevicePresence, formatDeviceLabel } from "../../components/device-identity";
 import { KuloApiError, kuloRest } from "../../kulo-api";
 import { KuloIcon } from "../../kulo-icon";
 import { deviceApi } from "../settings/device-api";
@@ -36,7 +37,7 @@ function savedExpandedProjects(): Record<string, boolean> {
 }
 
 
-export function ProjectsSidebar({ projects, topics, tickets, topicActivity = {}, envs, connected, activeTopicId, projectedTicketId, projectNavigation, onProjectNavigationHandled,
+export function ProjectsSidebar({ projects, topics, tickets, topicActivity = {}, envs, connected, currentDeviceId, activeTopicId, projectedTicketId, projectNavigation, onProjectNavigationHandled,
   creating, onCreatingChange, selectedProjectId, onSelectedProjectChange, query, onQueryChange, onCreateTopic, onSelectTopic, onPatchTopic, onRequestDeleteTopic, onProjectsChange, onTopicsChange, onManageDevices }: {
   projects: ProjectView[];
   topics: TopicSummary[];
@@ -44,6 +45,7 @@ export function ProjectsSidebar({ projects, topics, tickets, topicActivity = {},
   topicActivity?: Record<string, TopicRowActivity>;
   envs: EnvNodeDescriptor[];
   connected: boolean;
+  currentDeviceId?: string;
   creating: boolean;
   onCreatingChange: (creating: boolean) => void;
   selectedProjectId?: string;
@@ -105,17 +107,19 @@ export function ProjectsSidebar({ projects, topics, tickets, topicActivity = {},
       const knownView = view as DeviceInterconnectionView & { currentDeviceKnown?: boolean };
       setDeviceView(knownView);
       setDeviceError(undefined);
-      const devices = projectDevices(envs, projects, knownView.devices.map((device) => ({ ...device, online: device.status === "online" })));
-      setDeviceFilter((current) => initialProjectDevice(current ?? savedDeviceFilter(), knownView.currentDeviceId, knownView.currentDeviceKnown === true, devices));
+      const knownCurrentId = currentDeviceId ?? (knownView.currentDeviceKnown === true ? knownView.currentDeviceId : undefined);
+      const devices = projectDevices(envs, projects, knownView.devices.map((device) => ({ ...device, online: device.status === "online" })), knownCurrentId);
+      setDeviceFilter((current) => initialProjectDevice(current ?? savedDeviceFilter(), knownCurrentId, Boolean(knownCurrentId), devices));
     }).catch((err: unknown) => {
       if (!request.signal.aborted) { setDeviceError(err instanceof Error ? err.message : t("读取设备失败", "Failed to load devices")); setDeviceFilter((current) => current ?? ALL_PROJECT_DEVICES); }
     }).finally(() => { if (!request.signal.aborted) setDeviceLoading(false); });
     return () => request.abort();
-  }, [connected, envKey, refresh]);
+  }, [connected, currentDeviceId, envKey, refresh]);
 
+  const resolvedCurrentDeviceId = currentDeviceId ?? (deviceView?.currentDeviceKnown === true ? deviceView.currentDeviceId : undefined);
   const devices = useMemo(() => projectDevices(envs, projects, deviceView?.devices.map((device) => ({
     id: device.id, name: device.name, rootDir: device.rootDir, online: device.status === "online",
-  }))), [envs, projects, deviceView]);
+  })), resolvedCurrentDeviceId), [envs, projects, deviceView, resolvedCurrentDeviceId]);
   useEffect(() => {
     const key = `${activeTopicId}:${activeProjectId ?? ""}`;
     if (previousTopic.current === key) return;
@@ -144,11 +148,14 @@ export function ProjectsSidebar({ projects, topics, tickets, topicActivity = {},
   }, [projectNavigation]);
 
   const selectedDevice = devices.find((device) => device.id === deviceFilter);
-  const currentKnown = deviceView?.currentDeviceKnown === true;
-  const label = (id: string, name: string) => currentKnown && id === deviceView?.currentDeviceId ? t(`${name}（本机）`, `${name} (this device)`) : name;
+  const isCurrentDevice = (id: string) => Boolean(resolvedCurrentDeviceId && id === resolvedCurrentDeviceId);
+  const label = (id: string, name: string) => formatDeviceLabel(name, isCurrentDevice(id));
   const selectedDeviceLabel = selectedDevice
-    ? currentKnown && selectedDevice.id === deviceView?.currentDeviceId ? t("本机", "This device") : selectedDevice.name
+    ? label(selectedDevice.id, selectedDevice.name)
     : deviceLoading && deviceFilter === undefined ? t("读取设备…", "Loading devices…") : t("全部设备", "All devices");
+  const selectedDeviceTitle = selectedDevice
+    ? `${selectedDeviceLabel} · ${selectedDevice.online ? t("在线", "Online") : t("离线", "Offline")}`
+    : selectedDeviceLabel;
   const matchingProjects = projects.filter((project) => !project.deletedAt && (deviceFilter === undefined || deviceFilter === ALL_PROJECT_DEVICES || project.deviceId === deviceFilter))
     .filter((project) => !query.trim() || project.name.toLowerCase().includes(query.trim().toLowerCase()) || topicsForProject(topics, project.id).some((topic) => topic.title.toLowerCase().includes(query.trim().toLowerCase())))
     .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -193,8 +200,14 @@ export function ProjectsSidebar({ projects, topics, tickets, topicActivity = {},
       <Dropdown>
         <Button ref={deviceButtonRef} size="sm" variant="ghost" fullWidth className="kulo-navigation-control kulo-navigation-surface min-w-0 justify-start gap-2 px-2" aria-label={t("选择项目设备", "Select project device")}>
           <KuloIcon name="devices" size={17} className="shrink-0 text-muted" />
-          <span className="min-w-0 flex-1 truncate text-left" title={selectedDevice ? label(selectedDevice.id, selectedDevice.name) : selectedDeviceLabel}>{selectedDeviceLabel}</span>
-          {selectedDevice && !selectedDevice.online && <span className="shrink-0 text-xs text-muted">{t("离线", "Offline")}</span>}
+          {selectedDevice ? <>
+            <span className="flex min-w-0 flex-1 items-center text-left" title={selectedDeviceTitle}>
+              <DeviceName name={selectedDevice.name} isCurrent={isCurrentDevice(selectedDevice.id)} singleLine />
+            </span>
+            <DevicePresence online={selectedDevice.online} showOnlineText={false} />
+          </> : (
+            <span className="min-w-0 flex-1 truncate text-left" title={selectedDeviceTitle}>{selectedDeviceLabel}</span>
+          )}
           <KuloIcon name="chevron-down" size={15} className="shrink-0 text-muted" />
         </Button>
         <Dropdown.Popover placement="bottom start" className="w-72 max-w-[calc(100vw-2rem)]">
@@ -204,7 +217,7 @@ export function ProjectsSidebar({ projects, topics, tickets, topicActivity = {},
             <Dropdown.Item id={ALL_PROJECT_DEVICES} textValue={t("全部设备", "All devices")} className="kulo-navigation-menu-item"><Dropdown.ItemIndicator /><Label className="kulo-navigation-menu-label">{t("全部设备", "All devices")}</Label></Dropdown.Item>
             <Separator />
             {devices.map((device) => <Dropdown.Item key={device.id} id={`device:${device.id}`} textValue={label(device.id, device.name)} className="kulo-navigation-menu-item">
-              <Dropdown.ItemIndicator /><Label className="kulo-navigation-menu-label min-w-0 flex-1 whitespace-normal break-words">{label(device.id, device.name)}</Label><span className="ml-auto shrink-0 text-xs text-muted">{device.online ? t("在线", "Online") : t("离线", "Offline")}</span>
+              <Dropdown.ItemIndicator /><Label className="kulo-navigation-menu-label min-w-0 flex-1 whitespace-normal break-words"><DeviceName name={device.name} isCurrent={isCurrentDevice(device.id)} /></Label><DevicePresence online={device.online} className="ml-auto" />
             </Dropdown.Item>)}
             <Separator />
             <Dropdown.Item id="create" textValue={t("新建项目", "New project")} className="kulo-navigation-menu-item"><KuloIcon name="add" size={16} /><Label className="kulo-navigation-menu-label">{t("新建项目", "New project")}</Label></Dropdown.Item>
@@ -218,9 +231,10 @@ export function ProjectsSidebar({ projects, topics, tickets, topicActivity = {},
       {groups.map((group, index) => <div key={group.device?.id ?? index} role="group" aria-label={group.device ? t(`${label(group.device.id, group.device.name)}的项目`, `Projects on ${label(group.device.id, group.device.name)}`) : undefined} className="flex min-w-0 flex-col">
         {(deviceFilter === ALL_PROJECT_DEVICES || deviceFilter === undefined) && group.device && <div className="flex h-8 min-w-0 items-center gap-2 px-2 text-xs text-muted">
           <KuloIcon name="devices" size={14} className="shrink-0" />
-          <span className="min-w-0 flex-1 truncate font-medium" title={label(group.device.id, group.device.name)}>{label(group.device.id, group.device.name)}</span>
-          <span aria-hidden="true" className={`size-1.5 shrink-0 rounded-full ${group.device.online ? "bg-success" : "bg-muted"}`} />
-          {!group.device.online && <span className="shrink-0">{t("离线", "Offline")}</span>}
+          <span className="flex min-w-0 flex-1 items-center font-medium" title={label(group.device.id, group.device.name)}>
+            <DeviceName name={group.device.name} isCurrent={isCurrentDevice(group.device.id)} singleLine />
+          </span>
+          <DevicePresence online={group.device.online} showOnlineText={false} />
         </div>}
         {group.projects.map((project) => {
           const projectTopics = topicsForProject(topics, project.id);
@@ -261,7 +275,7 @@ export function ProjectsSidebar({ projects, topics, tickets, topicActivity = {},
       </div>)}
       {!matchingProjects.length && <div className="flex flex-col items-center gap-2 py-8 text-sm text-muted">{deviceLoading ? <Spinner size="sm" /> : <KuloIcon name="folder" size={22} />}<span>{query.trim() ? t("没有匹配的项目", "No matching projects") : t("暂无项目", "No projects yet")}</span></div>}
     </nav>
-    {creating && <CreateProjectDialog devices={devices} initialDeviceId={deviceFilter !== ALL_PROJECT_DEVICES ? deviceFilter : undefined} onClose={() => onCreatingChange(false)} onCreated={(project) => {
+    {creating && <CreateProjectDialog devices={devices} currentDeviceId={resolvedCurrentDeviceId} initialDeviceId={deviceFilter !== ALL_PROJECT_DEVICES ? deviceFilter : undefined} onClose={() => onCreatingChange(false)} onCreated={(project) => {
       onProjectsChange((current) => [project, ...current.filter((candidate) => candidate.id !== project.id)]);
       onQueryChange("");
       setDeviceFilter((current) => current === ALL_PROJECT_DEVICES ? current : project.deviceId);

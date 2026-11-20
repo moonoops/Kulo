@@ -169,12 +169,18 @@ export interface ManagedDesktopWindow {
 }
 
 export interface MainWindowCloseController {
-  handleClose(event: { preventDefault(): void }, win: ManagedDesktopWindow, isQuitting: boolean): void;
+  handleClose(event: { preventDefault(): void }, win: ManagedDesktopWindow, isQuitting: boolean, keepRunningInBackground?: boolean): void;
   handleLeaveFullScreen(win: ManagedDesktopWindow, isQuitting: boolean): void;
   handleFocusOrActivate(): void;
   requestReload(win: ManagedDesktopWindow): void;
   clearPendingReload(): void;
-  handleWillPreventUnload(event: { preventDefault(): void }, isQuitting: boolean, confirmReload: () => boolean): void;
+  handleWillPreventUnload(
+    event: { preventDefault(): void },
+    isQuitting: boolean,
+    confirmReload: () => boolean,
+    keepRunningInBackground?: boolean,
+    confirmClose?: () => boolean,
+  ): void;
 }
 
 export function createMainWindowCloseController(reloadWindowMs = 2_000): MainWindowCloseController {
@@ -191,8 +197,12 @@ export function createMainWindowCloseController(reloadWindowMs = 2_000): MainWin
   };
 
   return {
-    handleClose(event, win, isQuitting) {
+    handleClose(event, win, isQuitting, keepRunningInBackground = true) {
       if (isQuitting) return;
+      if (!keepRunningInBackground) {
+        hideAfterFullScreen = false;
+        return;
+      }
       event.preventDefault();
       if (win.isDestroyed()) return;
       if (win.isFullScreen()) {
@@ -220,7 +230,7 @@ export function createMainWindowCloseController(reloadWindowMs = 2_000): MainWin
       win.webContents.reload();
     },
     clearPendingReload,
-    handleWillPreventUnload(event, isQuitting, confirmReload) {
+    handleWillPreventUnload(event, isQuitting, confirmReload, keepRunningInBackground = true, confirmClose = confirmReload) {
       if (isQuitting) {
         clearPendingReload();
         event.preventDefault();
@@ -229,6 +239,10 @@ export function createMainWindowCloseController(reloadWindowMs = 2_000): MainWin
       if (pendingReload) {
         clearPendingReload();
         if (confirmReload()) event.preventDefault();
+        return;
+      }
+      if (!keepRunningInBackground) {
+        if (confirmClose()) event.preventDefault();
         return;
       }
       // Closing the main desktop window only hides it while keeping the renderer and unsaved drafts alive.

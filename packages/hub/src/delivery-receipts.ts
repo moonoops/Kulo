@@ -114,6 +114,7 @@ export function validateReliableClientMessage(message: ReliableClientMessage): v
       break;
     case "ticket.steer":
       if (typeof message.text !== "string") invalid();
+      if (message.decisionOptionId !== undefined && !identifier(message.decisionOptionId)) invalid();
       break;
     case "ticket.stop":
       if (message.reason !== undefined && typeof message.reason !== "string") invalid();

@@ -18,11 +18,34 @@ import {
   type IdentitySaved,
   type IdentityVersion,
   type IdentityWriteRequest,
+  type KuloLanguage,
 } from "@kulo/protocol";
 
 export { IDENTITY_FILES };
 
 export const IDENTITY_AGREEMENT_FILE = "identity-agreement.md" as const;
+
+export const KULO_IDENTITY_TEMPLATES_ZH: Readonly<Record<IdentityFile, string>> = {
+  "identity-agreement.md": `# 身份约定
+
+角色：用户的长期个人助手——从接收目标到核实验收全程负责，并对交付给用户的最终结果负责。
+
+## 沟通方式
+- **清晰务实**：先给结论或建议，再按需补充关键依据。简单交流保持简短；复杂比较或多部分说明条理清晰，不堆砌套话、行话或含糊免责声明。
+- **基于证据表态**：证据充分时给出明确判断与理由。结论依赖前提或存在实质不确定性时，如实说明一次或指出会改变结论的关键条件，不模棱两可。
+
+## 判断与担当
+- **核实可变事实**：涉及当前文件、运行状态、外部来源与已完成操作的陈述先核实再说明；稳定的常识问题直接作答。区分已核实事实与推断，不猜测或编造未经检查的细节。
+- **独立判断**：把准确性与结果放在迎合之上。方案可行时直接推进，不刻意奉承；前提有误时指出具体风险和可行替代方案。受到质疑时重新核对事实——错了坦诚纠正，对了以证据冷静坚持。
+- **对结果负责、按影响止步**：在已授权范围内把常规读取和可逆工作做到验收完成，委派出的工作须核实达标后再背书。遇到破坏性变更、向对话外发布内容（消息、邮件、远程仓库）或重大方向分岔前先停下，只向用户确认那一个必要决定。
+
+本约定不覆盖系统权限或工具隔离边界。如需修改本身份约定，提出变更前须征得用户确认。
+`,
+  "relationship.md": `# 协作关系
+
+记录在与用户协作中沉淀下来的长期上下文——例如偏好的称呼、沟通深度与格式习惯、哪些事务可直接推进以及哪些需要先确认，以及相关背景信息。
+`,
+};
 
 export const KULO_IDENTITY_TEMPLATES: Readonly<Record<IdentityFile, string>> = {
   "identity-agreement.md": `# Identity Agreement
@@ -45,6 +68,10 @@ This agreement does not override system permissions or tool isolation. Ask for u
 Records durable context learned from working with the user—such as preferred name, communication depth and format preferences, what to handle autonomously versus confirm first, and relevant background.
 `,
 };
+
+export function getIdentityTemplate(file: IdentityFile, language: KuloLanguage = "en"): string {
+  return language === "zh-CN" ? KULO_IDENTITY_TEMPLATES_ZH[file] : KULO_IDENTITY_TEMPLATES[file];
+}
 
 export class IdentityFilesError extends Error {
   constructor(
@@ -78,6 +105,7 @@ export interface IdentityBackupRetention {
 
 export interface KuloIdentityFilesOptions {
   retention?: IdentityBackupRetention;
+  getLanguage?: () => KuloLanguage | undefined;
 }
 
 const digest = (bytes: Uint8Array): string =>
@@ -668,13 +696,14 @@ export class KuloIdentityFiles {
     if (deleted) await this.syncDirectory(directory);
   }
 
-  async read(value: unknown): Promise<IdentityRead> {
+  async read(value: unknown, options?: { language?: KuloLanguage }): Promise<IdentityRead> {
     if (!isIdentityFile(value)) throw invalid();
     const file = value;
+    const templateLanguage = options?.language ?? this.options.getLanguage?.() ?? "en";
     return this.safe(async () => {
       const state = this.state();
       if (!state.directory) {
-        const content = KULO_IDENTITY_TEMPLATES[file];
+        const content = getIdentityTemplate(file, templateLanguage);
         this.assertState(state);
         return {
           file,
@@ -692,7 +721,7 @@ export class KuloIdentityFiles {
           const lastBackup = await this.lastBackup(root, file);
           const content = current.exists
             ? decodeUtf8(current.bytes)
-            : KULO_IDENTITY_TEMPLATES[file];
+            : getIdentityTemplate(file, templateLanguage);
           await this.assertRoot(root);
           return {
             file,

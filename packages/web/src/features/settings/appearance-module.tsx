@@ -1,8 +1,11 @@
-import { Button, Label, ListBox, Radio, RadioGroup, Select, Switch } from "@heroui/react";
+import { Alert, Button, Label, ListBox, Radio, RadioGroup, Select, Spinner, Switch } from "@heroui/react";
+import type { KuloSettingsView } from "@kulo/protocol";
 import { isCatAppearance } from "../../components/cat-catalog";
 import { saveCatPreferences, useCatPreferences } from "../../components/cat-preferences";
 import { CHAT_FONT_SIZE_OPTIONS, useKuloAppearance, type KuloModePreference } from "../../kulo-appearance";
 import { LANGUAGE_OPTIONS, useI18n, type KuloLanguage } from "../../kulo-i18n";
+import { useDesktopPreferences } from "./desktop-preferences";
+import { syncPresentationLanguage } from "./language-sync";
 import { SettingsList, SettingsSection } from "./settings-layout";
 
 const APPEARANCE_PREVIEWS = {
@@ -10,10 +13,25 @@ const APPEARANCE_PREVIEWS = {
   dark: new URL("../../assets/kulo-appearance-dark.png", import.meta.url).href,
 };
 
-export function AppearanceModule() {
+export function AppearanceModule({
+  settings,
+  connected = true,
+  onSettingsUpdated,
+}: {
+  settings?: KuloSettingsView | null;
+  connected?: boolean;
+  onSettingsUpdated?: (next: KuloSettingsView) => void;
+} = {}) {
   const { mode, sysDark, setMode, chatFontSize, setChatFontSize, customization, resetCustomization, appearanceError } = useKuloAppearance();
   const { language, setLanguage, t } = useI18n();
+  const handleLanguageChange = (next: KuloLanguage) => {
+    setLanguage(next);
+    if (connected && settings) {
+      void syncPresentationLanguage(settings, next, onSettingsUpdated);
+    }
+  };
   const catPreferences = useCatPreferences();
+  const desktopPreferences = useDesktopPreferences();
   const setAutomaticAppearance = (automatic: boolean) => {
     if (automatic) { saveCatPreferences({ appearance: "auto" }); return; }
     if (catPreferences.appearance !== "auto") { saveCatPreferences({ appearance: catPreferences.appearance }); return; }
@@ -57,7 +75,7 @@ export function AppearanceModule() {
       </SettingsSection>
       <SettingsList label={t("外观偏好", "Appearance preferences")}>
         <Select variant="secondary" value={language}
-          onChange={(value) => { if (value !== null) setLanguage(value as KuloLanguage); }}
+          onChange={(value) => { if (value !== null) handleLanguageChange(value as KuloLanguage); }}
           className="kulo-settings-row kulo-settings-row--choice">
           <Label>{t("语言", "Language")}</Label>
           <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
@@ -102,6 +120,36 @@ export function AppearanceModule() {
           ? t("无法读取形象偏好，请检查浏览器存储权限。", "Cannot read appearance preferences. Check browser storage permissions.")
           : t("无法保存形象偏好，请检查浏览器存储权限。", "Cannot save appearance preferences. Check browser storage permissions.")}</p>}
       </SettingsSection>
+      {desktopPreferences.supported && <SettingsSection title={t("桌面客户端", "Desktop app")}>
+        <SettingsList label={t("桌面客户端偏好", "Desktop app preferences")}>
+          <Switch
+            className="w-full"
+            aria-label={t("后台运行", "Run in background")}
+            isSelected={desktopPreferences.preferences?.backgroundRunning ?? false}
+            isDisabled={desktopPreferences.loading || desktopPreferences.preferences === null}
+            isReadOnly={desktopPreferences.saving}
+            onChange={(enabled) => { void desktopPreferences.setBackgroundRunning(enabled); }}
+          >
+            <Switch.Content className="kulo-settings-row kulo-settings-row--toggle">
+              <Label className="kulo-field-label">
+                {t("后台运行", "Run in background")}
+                {(desktopPreferences.loading || desktopPreferences.saving) && (
+                  <Spinner size="sm" aria-label={desktopPreferences.loading ? t("正在读取", "Loading") : t("正在保存", "Saving")} />
+                )}
+              </Label>
+              <Switch.Control><Switch.Thumb /></Switch.Control>
+            </Switch.Content>
+          </Switch>
+        </SettingsList>
+        {desktopPreferences.error && (
+          <Alert status="danger" role="alert">
+            <Alert.Content>{desktopPreferences.error}</Alert.Content>
+            <Button size="sm" variant="tertiary" onPress={() => { void desktopPreferences.retry(); }}>
+              {t("重试", "Retry")}
+            </Button>
+          </Alert>
+        )}
+      </SettingsSection>}
       {customization && <SettingsSection title={t("个人外观", "Personal appearance")} action={<Button size="sm" variant="ghost" onPress={resetCustomization}>{t("恢复默认", "Restore defaults")}</Button>}>
         <div className="flex min-w-0 flex-col gap-2 text-sm">
           <p className="font-medium">{customization.name}</p>

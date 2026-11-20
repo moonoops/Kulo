@@ -1,4 +1,4 @@
-import { defaultRolePresets, type KuloSettingsView, type RolePreset } from "@kulo/protocol";
+import { defaultRolePresets, type KuloLanguage, type KuloSettingsView, type RolePreset } from "@kulo/protocol";
 import { translate as t } from "../../kulo-i18n";
 import { internalAgentPresets, withExternalAgentPresets } from "./external-agents-view";
 
@@ -6,12 +6,12 @@ export type RoleMutation =
   | { kind: "enabled"; id: string; enabled: boolean }
   | { kind: "create"; role: RolePreset }
   | { kind: "delete"; id: string }
-  | { kind: "restore" };
+  | { kind: "restore"; language?: KuloLanguage };
 
 export function roleMutationValue(saved: Record<string, RolePreset>, mutation: RoleMutation): Record<string, RolePreset> {
   let next: Record<string, RolePreset>;
   if (mutation.kind === "restore") {
-    next = withExternalAgentPresets(defaultRolePresets(), saved);
+    next = withExternalAgentPresets(defaultRolePresets(mutation.language ?? "en"), saved);
   } else if (mutation.kind === "create") {
     if (saved[mutation.role.id]) throw new Error(t("智能体标识已存在，请使用其他标识。", "This agent ID already exists. Use another ID."));
     next = { ...saved, [mutation.role.id]: mutation.role };

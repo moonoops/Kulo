@@ -100,6 +100,8 @@ export interface WorkerReportRecord {
   /** Recorded when a read-only external agent mutated files via native tools/shell. */
   readOnlyViolation?: import("./external-agents.js").ReadOnlyViolationSummary;
   question?: string;
+  /** Optional structured choice suggestions when reporting state='blocked'. */
+  options?: string[];
   at: number;
 }
 
@@ -564,9 +566,20 @@ export interface HindsightProbeResult {
 // Kulo Runtime Settings & Revision CAS
 // ============================================================================
 
+export type KuloLanguage = "zh-CN" | "en";
+
+export function normalizeKuloLanguage(value: unknown): KuloLanguage | undefined {
+  return value === "zh-CN" || value === "en" ? value : undefined;
+}
+
+export function resolveKuloLanguage(value: unknown): KuloLanguage {
+  return value === "en" ? "en" : "zh-CN";
+}
+
 export interface PresentationConfig {
   agentName: string;
   workbenchName: string;
+  language?: KuloLanguage;
 }
 
 export type CompletedTaskDisplayHours = 1 | 3 | 6 | null;

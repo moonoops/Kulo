@@ -114,8 +114,6 @@ describe("runtime single-setting persistence", () => {
     expect(executorSettingValue(legacy, "completedTaskDisplayHours")).toBe(3);
     expect(executorSettingValue(legacy, "autoArchiveEnabled")).toBe(true);
     expect(executorSettingValue(legacy, "autoArchiveDays")).toBe(7);
-    expect(executorSettingValue(legacy, "hostActionPermission")).toBe("ask");
     expect(executorSettingValue({ ...initialValue, completedTaskDisplayHours: null }, "completedTaskDisplayHours")).toBeNull();
-    expect(executorSettingValue({ ...initialValue, hostActionPermission: "always" }, "hostActionPermission")).toBe("always");
   });
 });

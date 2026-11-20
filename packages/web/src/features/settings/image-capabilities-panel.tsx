@@ -7,7 +7,7 @@ import { ConfirmDialog } from "../../components/confirm-dialog";
 import { AttachmentLightbox, type PreviewableImage } from "../../kulo-composer";
 import { MediaMessage } from "../chat/media-message";
 import { imageActionError, imageCommandId } from "./image-provider-picker";
-import { ADD_IMAGE_PROMPT, IMAGE_ROUTING_PROMPT, capabilityStatusColor, capabilityStatusLabel } from "./capability-views";
+import { capabilityStatusColor, capabilityStatusLabel, getAddImagePrompt, getImageRoutingPrompt } from "./capability-views";
 import { SettingsList, SettingsSection } from "./settings-layout";
 
 const ACTIVE_TEST_STATUSES = new Set<MediaJob["status"]>(["queued", "submitting", "running", "collecting"]);
@@ -167,7 +167,7 @@ export function ImageCapabilitiesPanel({ workspace, clientId, connected, disable
     }
   };
   return <div className="flex min-w-0 flex-col gap-6">
-    <SettingsSection title={t("图像模型", "Image models")} action={<div className="flex items-center gap-2">{onOpenModels && <Button variant="ghost" size="sm" isDisabled={blocked} onPress={onOpenModels}>{t("模型设置", "Model settings")}</Button>}<Button ref={addButton} variant="secondary" size="sm" isDisabled={blocked} onPress={() => onRequest(undefined, ADD_IMAGE_PROMPT)}>{t("添加图像模型", "Add image model")}</Button></div>}>
+    <SettingsSection title={t("图像模型", "Image models")} action={<div className="flex items-center gap-2">{onOpenModels && <Button variant="ghost" size="sm" isDisabled={blocked} onPress={onOpenModels}>{t("模型设置", "Model settings")}</Button>}<Button ref={addButton} variant="secondary" size="sm" isDisabled={blocked} onPress={() => onRequest(undefined, getAddImagePrompt())}>{t("添加图像模型", "Add image model")}</Button></div>}>
       {actionError && <Alert status="danger"><Alert.Content><Alert.Description>{actionError}</Alert.Description></Alert.Content></Alert>}
       <Table variant="secondary" className="kulo-settings-table kulo-capabilities-table"><Table.ScrollContainer className="kulo-settings-table-scroll"><Table.Content aria-label={t("图像模型列表", "Image models")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content kulo-settings-table-content--wide">
         <Table.Header><Table.Column id="model" isRowHeader className="kulo-settings-table-column kulo-settings-table-primary">{t("模型", "Model")}</Table.Column><Table.Column id="connection" className="kulo-settings-table-column kulo-settings-table-detail">{t("服务连接", "Connection")}</Table.Column><Table.Column id="capabilities" className="kulo-settings-table-column kulo-settings-table-capabilities">{t("能力", "Capabilities")}</Table.Column><Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-status">{t("状态", "Status")}</Table.Column><Table.Column id="actions" className="kulo-settings-table-column kulo-settings-table-actions">{t("操作", "Actions")}</Table.Column></Table.Header>
@@ -197,7 +197,7 @@ export function ImageCapabilitiesPanel({ workspace, clientId, connected, disable
       <SettingsList label={t("图像模型调用规则", "Image model routing")}>
         <div className="kulo-settings-list-row flex-wrap justify-between">
           <span className="kulo-item-title">{workspace?.imageRouting?.mode === "default" ? t("优先使用默认图像模型", "Prefer the default image model") : t("按任务自动选择图像模型", "Choose an image model for each task")}</span>
-          <Button size="sm" variant="secondary" isDisabled={blocked} onPress={() => onRequest(undefined, IMAGE_ROUTING_PROMPT)}>{t("修改规则", "Edit rules")}</Button>
+          <Button size="sm" variant="secondary" isDisabled={blocked} onPress={() => onRequest(undefined, getImageRoutingPrompt())}>{t("修改规则", "Edit rules")}</Button>
         </div>
       </SettingsList>
     </SettingsSection>}

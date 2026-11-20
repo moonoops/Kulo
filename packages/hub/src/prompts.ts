@@ -33,6 +33,7 @@ export {
   TITLE_INSTRUCTIONS,
   formatConnectionRequestMessage,
   formatExternalPermissionMessage,
+  formatHostActionRequestMessage,
   formatRecoveryExhaustedRelayMessage,
   formatStagedDiffRelayLines,
   formatWorkerRecoveryMessage,

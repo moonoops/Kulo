@@ -27,6 +27,7 @@ export function scheduledTaskStatus(task: TicketCardView): string {
       case "time": return t("待执行", "Scheduled");
       case "env": return t("等待设备", "Waiting for device");
       case "user": return t("待确认", "Awaiting confirmation");
+      case "coordinator": return t("主脑研判中", "Coordinating");
       case "external": return t("等待结果", "Waiting for result");
       case "connection": return t("等待授权", "Waiting for access");
       case "project": return t("等待项目", "Waiting for project");

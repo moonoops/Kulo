@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Label, ListBox, Popover, ProgressBar, Select, Switch } from "@heroui/react";
-import type { CompletedTaskDisplayHours, ExecutorSlotsConfig, HostActionPermission, KuloSettingsView, SlotSummary } from "@kulo/protocol";
+import type { CompletedTaskDisplayHours, ExecutorSlotsConfig, KuloSettingsView, SlotSummary } from "@kulo/protocol";
 import { KuloApiError, kuloRest } from "../../kulo-api";
 import { useI18n } from "../../kulo-i18n";
 import { KuloIcon } from "../../kulo-icon";
@@ -55,9 +55,6 @@ export function ConcurrencyModule({
   const displayTrigger = useRef<HTMLButtonElement>(null);
   const displayPopover = useRef<HTMLDivElement>(null);
   const restoreDisplayFocus = useRef(false);
-  const permissionTrigger = useRef<HTMLButtonElement>(null);
-  const permissionPopover = useRef<HTMLDivElement>(null);
-  const restorePermissionFocus = useRef(false);
   const busy = reloading || Object.values(pending).some(Boolean);
   useSettingsPending(busy);
 
@@ -69,7 +66,6 @@ export function ConcurrencyModule({
     completedTaskDisplayHours: t("已完成任务显示时长", "Show completed tasks for"),
     autoArchiveEnabled: t("自动归档", "Auto-archive"),
     autoArchiveDays: t("未活动超过", "Inactive for more than"),
-    hostActionPermission: t("执行权限", "Execution permission"),
   };
   const completedDisplayOptions: ReadonlyArray<{ value: string; hours: CompletedTaskDisplayHours; label: string }> = [
     { value: "1", hours: 1, label: t("1 小时", "1 hour") },
@@ -77,15 +73,10 @@ export function ConcurrencyModule({
     { value: "6", hours: 6, label: t("6 小时", "6 hours") },
     { value: "always", hours: null, label: t("一直显示", "Always show") },
   ];
-  const hostPermissionOptions: ReadonlyArray<{ value: HostActionPermission; label: string }> = [
-    { value: "ask", label: t("需要授权", "Ask first") },
-    { value: "always", label: t("总是允许", "Always allow") },
-  ];
   const autoArchiveEnabled = executorSettingValue(exec.value, "autoArchiveEnabled") !== false;
   const completedTaskDisplayHours = targets.completedTaskDisplayHours === undefined
     ? executorSettingValue(exec.value, "completedTaskDisplayHours")
     : targets.completedTaskDisplayHours;
-  const hostActionPermission: HostActionPermission = (targets.hostActionPermission ?? executorSettingValue(exec.value, "hostActionPermission")) === "always" ? "always" : "ask";
   const dirty = (Object.entries(drafts) as [NumberSetting, NumberDraft][]).some(([key, draft]) => !Object.is(draft.value, executorSettingValue(exec.value, key)));
 
   useEffect(() => {
@@ -100,14 +91,6 @@ export function ConcurrencyModule({
       displayTrigger.current?.focus({ preventScroll: true });
     }
   }, [pending.completedTaskDisplayHours]);
-
-  useEffect(() => {
-    if (pending.hostActionPermission || !restorePermissionFocus.current) return;
-    restorePermissionFocus.current = false;
-    if (typeof document !== "undefined" && document.activeElement === document.body && !permissionTrigger.current?.disabled) {
-      permissionTrigger.current?.focus({ preventScroll: true });
-    }
-  }, [pending.hostActionPermission]);
 
   function replaceDrafts(next: NumberDrafts) {
     draftsRef.current = next;
@@ -352,34 +335,6 @@ export function ConcurrencyModule({
             </Switch.Content>
           </Switch>
           {autoArchiveEnabled && <SettingsNumberField {...numberProps("autoArchiveDays")} unit={t("天", "days")} isDisabled={Boolean(pending.autoArchiveEnabled)} />}
-          <Select
-            variant="secondary"
-            value={hostActionPermission}
-            onChange={(value) => {
-              if (value === "ask" || value === "always") {
-                const focused = typeof document === "undefined" ? null : document.activeElement;
-                restorePermissionFocus.current = Boolean(focused && (focused === permissionTrigger.current || permissionPopover.current?.contains(focused)));
-                void saveSetting("hostActionPermission", value);
-              }
-            }}
-            isDisabled={Boolean(pending.hostActionPermission) || writer.blocked}
-            className="kulo-settings-row kulo-settings-row--choice"
-          >
-            <Label className="text-sm text-foreground">
-              {labels.hostActionPermission}
-              {pending.hostActionPermission && savingLabel}
-            </Label>
-            <Select.Trigger ref={permissionTrigger}><Select.Value /><Select.Indicator /></Select.Trigger>
-            <Select.Popover ref={permissionPopover} className="motion-reduce:animate-none">
-              <ListBox>
-                {hostPermissionOptions.map((option) => (
-                  <ListBox.Item key={option.value} id={option.value} textValue={option.label}>
-                    {option.label}<ListBox.ItemIndicator />
-                  </ListBox.Item>
-                ))}
-              </ListBox>
-            </Select.Popover>
-          </Select>
         </SettingsList>
       </SettingsSection>
 

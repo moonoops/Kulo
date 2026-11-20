@@ -232,13 +232,14 @@ describe("scheduled Worker tickets using native durable waits", () => {
       ? tool("kulo_report", { state: "blocked", summary: "备用服务需要授权", question })
       : tool("kulo_wait", { reason: "user", detail: question }));
     const card = await f.dispatch(`user-question-${mode}`, Date.now() + 50, 1);
-    await until(async () => (await f.hub.listScheduledTasks())[0]?.waiting?.reason === "user");
+    const expectedReason = mode === "report" ? "coordinator" : "user";
+    await until(async () => (await f.hub.listScheduledTasks())[0]?.waiting?.reason === expectedReason);
     await until(async () => (await f.hub.rootConversation.context(context)).entries.filter(WorkerRelayEntry.is).length === 1);
     await f.hub.rootConversation.waitForIdle(context);
     const relays = (await f.hub.rootConversation.context(context)).entries.filter(WorkerRelayEntry.is);
     expect(relays).toHaveLength(1);
     expect(relays[0]?.data).toMatchObject({ ticketId: card.id, state: "blocked", question });
-    expect((await f.hub.listScheduledTasks())[0]).toMatchObject({ status: "waiting", waiting: { reason: "user", detail: question }, schedule: { nextRunAt: null } });
+    expect((await f.hub.listScheduledTasks())[0]).toMatchObject({ status: "waiting", waiting: { reason: expectedReason, detail: question }, schedule: { nextRunAt: null } });
     expect((await f.hub.getBoardSnapshot()).slots.used).toBe(0);
     expect(f.requests).toHaveLength(1);
   });

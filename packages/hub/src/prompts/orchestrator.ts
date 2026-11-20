@@ -1,24 +1,28 @@
 import { ROOT_CONVERSATION_ID, section } from "@earendil-works/pi-durable";
-import type {
-  CapabilitySnapshot,
-  EnvNodeDescriptor,
-  HindsightMemoryConfig,
-  RolePreset,
+import {
+  localizeDefaultRolePreset,
+  type CapabilitySnapshot,
+  type EnvNodeDescriptor,
+  type HindsightMemoryConfig,
+  type KuloLanguage,
+  type RolePreset,
 } from "@kulo/protocol";
-import { KULO_IDENTITY_TEMPLATES, readIdentityContext } from "../identity-files.js";
+import { getIdentityTemplate, readIdentityContext } from "../identity-files.js";
 import { KuloProjectsDoc } from "../projects.js";
 import { buildRecentWorkSnapshot } from "../recent-work.js";
 import { SettingsAssistantDoc, isMainOrchestratorConversation } from "../settings-doc.js";
 import { KuloStateDoc } from "../state.js";
 
-export function buildPhilosophyPrompt(agentName = "Kulo"): string {
+export function buildPhilosophyPrompt(agentName = "Kulo", language?: KuloLanguage): string {
+  const defaultLanguage = language === "en" ? "English" : "Chinese";
   return `You are ${agentName}, the user-facing coordinating assistant in Kulo.
 You own the user conversation and delegate background work to isolated Workers via \`kulo_dispatch\`.
 
 ## Operating Rules
-- **Language**: Honor any requested deliverable language; otherwise follow the active conversation language, defaulting to Chinese when unspecified.
-- **When to Delegate**: Answer directly or run quick, single-step offline workspace checks/edits (\`read\`/\`write\`/\`edit\`/\`bash\` <= 15s, e.g. \`mv\`/rename, \`mkdir\`, \`git status\`, small config edits) when scoped to the active workspace and unlocked by any running Ticket. Delegate via \`kulo_dispatch\` for multi-step coding/debugging, multi-file refactors, network/package installs, builds/tests, mutable browser/desktop/Android work, or independent verification. If \`kulo_dispatch\` returns \`inline_delivery\`, answer directly from that verified result; otherwise confirm background work started and end your turn—never sleep, poll, or wait.
-- **Discuss vs. Act**: When exploring options, analyze trade-offs without modifying files. When asked to execute, honor explicit user target/action authorizations and ask only when scope is missing, ambiguous, or risky.
+- **Language**: Honor any requested deliverable language; otherwise match the active conversation language for visible replies and internal thinking/reasoning, defaulting to ${defaultLanguage}.
+- **Authority & Delegation**: You hold full personal-assistant authority across devices/workspaces (credentials stay protected; respect active Worker write locks). Handle quick answers, checks, and edits (\`read\`/\`write\`/\`edit\`/\`bash\`/\`kulo_host_action\`) directly; delegate via \`kulo_dispatch\` for multi-step coding, multi-file refactors, long builds/tests, mutable browser/desktop/Android work, or independent verification. If \`kulo_dispatch\` returns \`inline_delivery\`, answer directly from it; otherwise confirm dispatch and end your turn—never sleep or poll.
+- **Worker Gatekeeper**: All Worker permission requests and blockers come to you first. Approve or steer silently (\`[COORDINATOR_OK]\`) when safe and in scope; escalate via cards (\`ask_user\` / \`kulo_ticket_ask_user\`) or chat only when risky, ambiguous, or requiring user choice. When the user replies in chat about an open card, call the matching decision tool immediately so work resumes and the card settles cleanly.
+- **Discuss vs. Act**: Analyze options without editing files; when executing, honor explicit authorizations and ask only when scope is unclear or risky.
 - **Self-Contained Handoff**: Workers cannot see this chat, Identity Agreement, Working Relationship, or private memory. Pass a complete, redacted brief (goal, context, scope, acceptance criteria, and verbatim user constraints) via \`context_summary\` and \`attachment_ids\`, preserving explicit device, project, Agent, or format choices.
 - **In-Flight Control & Events**: Use \`kulo_steer\` to update or unblock an active ticket (keeping its bound device and scope), and \`kulo_stop\` only on explicit user request. Check \`current_time\` / \`time_zone\` via \`kulo_status\` before scheduling \`execute_at\`. Messages prefixed \`[KULO_...]\` are automated runtime events—handle them per instructions without addressing them as the user.
 - **Verify & Present**: Worker reports and staged items are unverified inputs. Inspect real diffs (\`kulo_inspect_staged_diff\`) or assets (\`kulo_inspect_asset\`) against acceptance criteria before merging (\`kulo_apply_staged_changes\`), publishing (\`kulo_publish_asset\` -> \`published\`), or claiming completion. Omit internal ticket IDs unless asked.
@@ -71,6 +75,7 @@ export function formatMediaRoutingSummary(snapshot: CapabilitySnapshot, isWorker
 
 export function createOrchestratorSections(options: {
   getAgentName?: () => string;
+  getLanguage?: () => KuloLanguage | undefined;
   getRoles: () => Record<string, RolePreset>;
   getEnvs: () => EnvNodeDescriptor[];
   getIdentityDir: () => string;
@@ -87,9 +92,10 @@ export function createOrchestratorSections(options: {
     const blocks = readIdentityContext(options.getIdentityDir());
     const find = (file: "identity-agreement.md" | "relationship.md") =>
       blocks.find((block) => block.file === file)?.text;
+    const templateLanguage = options.getLanguage?.() ?? "en";
     return {
-      identityAgreement: find("identity-agreement.md") ?? KULO_IDENTITY_TEMPLATES["identity-agreement.md"],
-      relationship: find("relationship.md") ?? KULO_IDENTITY_TEMPLATES["relationship.md"],
+      identityAgreement: find("identity-agreement.md") ?? getIdentityTemplate("identity-agreement.md", templateLanguage),
+      relationship: find("relationship.md") ?? getIdentityTemplate("relationship.md", templateLanguage),
       recentWorkEnabled: true,
     };
   };
@@ -113,7 +119,7 @@ export function createOrchestratorSections(options: {
 
   const corePhilosophySection = section(
     "kulo_orchestrator",
-    () => buildPhilosophyPrompt(options.getAgentName?.() || "Kulo"),
+    () => buildPhilosophyPrompt(options.getAgentName?.() || "Kulo", options.getLanguage?.()),
     { tag: false },
   );
 
@@ -148,7 +154,10 @@ export function createOrchestratorSections(options: {
   });
 
   const rolesSection = section("kulo_roles", () => {
-    const allRoles = Object.values(options.getRoles());
+    const language = options.getLanguage?.();
+    const allRoles = Object.values(options.getRoles()).map((r) =>
+      language ? localizeDefaultRolePreset(r, language) : r,
+    );
     const roles = allRoles
       .filter((r) => r.enabled !== false)
       .sort((a, b) => a.id.localeCompare(b.id));

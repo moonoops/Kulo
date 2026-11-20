@@ -1,4 +1,4 @@
-import { useI18n, translate } from "../../kulo-i18n";
+import { useI18n, translate, type KuloLanguage } from "../../kulo-i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Chip, Label, Spinner, Switch, Table } from "@heroui/react";
 import { redactSecrets, type ExtensionRecord, type ExtensionStatus, type ExtensionWorkspaceSnapshot, type SettingsAssistantContext } from "@kulo/protocol";
@@ -8,6 +8,44 @@ import { ConfirmDialog } from "../../components/confirm-dialog";
 const TRANSITIONAL = new Set<ExtensionStatus>(["installing", "starting", "stopping", "removing"]);
 type Target = NonNullable<SettingsAssistantContext["target"]>;
 type PageOperation = "enable" | "stop" | "remove";
+
+const BUILTIN_EXTENSION_NAMES: Readonly<Record<string, Readonly<Record<KuloLanguage, string>>>> = {
+  "billion-context": {
+    "zh-CN": "Billion Context 上下文压缩",
+    en: "Billion Context Compaction",
+  },
+};
+
+const BUILTIN_EXTENSION_STAGES: Readonly<Record<string, Readonly<Record<KuloLanguage, string>>>> = {
+  "等待执行": { "zh-CN": "等待执行", en: "Waiting to run" },
+  "安装并验证上下文压缩内核": { "zh-CN": "安装并验证上下文压缩内核", en: "Installing and verifying compaction kernel" },
+  "接入主会话压缩": { "zh-CN": "接入主会话压缩", en: "Connecting compaction to main chat" },
+  "保存上下文并停止扩展": { "zh-CN": "保存上下文并停止扩展", en: "Saving context and stopping extension" },
+  "删除受管程序并保留会话历史": { "zh-CN": "删除受管程序并保留会话历史", en: "Removing managed package while preserving history" },
+  "已完成": { "zh-CN": "已完成", en: "Completed" },
+  "未完成": { "zh-CN": "未完成", en: "Failed" },
+  "已取消": { "zh-CN": "已取消", en: "Cancelled" },
+};
+
+export function extensionDisplayName(
+  extension: Pick<ExtensionRecord, "id" | "name">,
+  language?: KuloLanguage,
+): string {
+  const builtin = BUILTIN_EXTENSION_NAMES[extension.id];
+  if (builtin && (extension.name === builtin["zh-CN"] || extension.name === builtin.en)) {
+    return language ? builtin[language] : translate(builtin["zh-CN"], builtin.en);
+  }
+  return extension.name;
+}
+
+export function extensionJobStageLabel(
+  stage: string,
+  language?: KuloLanguage,
+): string {
+  const localized = BUILTIN_EXTENSION_STAGES[stage];
+  if (!localized) return redactSecrets(stage);
+  return language ? localized[language] : translate(localized["zh-CN"], localized.en);
+}
 
 export function extensionVersionLabel(extension: ExtensionRecord): string {
   const prefix = extension.packageName ? `${extension.packageName} ` : "";
@@ -24,7 +62,7 @@ export function OtherExtensionsModule({ snapshot: incoming, connected, disabled 
   onRequest: (target?: Target, prompt?: string) => void;
   onRefresh: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const STATUS_LABELS: Record<ExtensionStatus, string> = {
     not_installed: t("未安装", "Not installed"), installing: t("安装中", "Installing"), stopped: t("已停止", "Stopped"), starting: t("启动中", "Starting"),
     running: t("运行中", "Running"), stopping: t("停止中", "Stopping"), removing: t("删除中", "Deleting"), error: t("异常", "Error"),
@@ -97,7 +135,7 @@ export function OtherExtensionsModule({ snapshot: incoming, connected, disabled 
     <div className="kulo-settings-section-head">
       <h2 className="kulo-section-title">{t("其他扩展", "Other extensions")}</h2>
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="secondary" isDisabled={!connected || disabled || Boolean(busy)} onPress={() => onRequest(undefined, "评估一个项目是否能接入 Kulo，请先让我提供项目链接。")}>{t("添加扩展", "Add extension")}</Button>
+        <Button size="sm" variant="secondary" isDisabled={!connected || disabled || Boolean(busy)} onPress={() => onRequest(undefined, t("评估一个项目是否能接入 Kulo，请先让我提供项目链接。", "Evaluate whether a project can be integrated into Kulo. Ask me for the project URL first."))}>{t("添加扩展", "Add extension")}</Button>
       </div>
     </div>
     {error && <Alert status="danger" role="alert">
@@ -117,15 +155,16 @@ export function OtherExtensionsModule({ snapshot: incoming, connected, disabled 
           </Table.Header>
           <Table.Body renderEmptyState={() => <div className="kulo-table-empty-state">{t("尚无扩展", "No extensions")}</div>}>
             {snapshot.items.map((extension) => {
+              const displayName = extensionDisplayName(extension, language);
               const installed = Boolean(extension.installedVersion);
               const transitioning = TRANSITIONAL.has(extension.status);
               const blocked = !connected || disabled || Boolean(busy) || transitioning;
               const job = [...snapshot.jobs].reverse().find((item) => item.extensionId === extension.id && (item.status === "queued" || item.status === "running"));
               const selected = target?.kind === "extension" && target.id === extension.id;
-              return <Table.Row key={extension.id} id={extension.id} textValue={extension.name}>
+              return <Table.Row key={extension.id} id={extension.id} textValue={displayName}>
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-primary">
                   <div className="kulo-settings-table-stack">
-                    <span className="kulo-item-title">{extension.name}</span>
+                    <span className="kulo-item-title">{displayName}</span>
                     {extension.error && <span className="break-words text-xs text-danger">{redactSecrets(extension.error)}</span>}
                   </div>
                 </Table.Cell>
@@ -135,22 +174,22 @@ export function OtherExtensionsModule({ snapshot: incoming, connected, disabled 
                     <Chip size="sm" variant="soft" color={extension.status === "running" ? "success" : extension.status === "error" ? "danger" : "default"}>
                       {STATUS_LABELS[extension.status]}
                     </Chip>
-                    {job && <span className="flex items-center gap-1.5 whitespace-normal break-words text-xs text-muted" role="status"><Spinner size="sm" aria-label={`${extension.name}${STATUS_LABELS[extension.status]}`} />{redactSecrets(job.stage)}</span>}
+                    {job && <span className="flex items-center gap-1.5 whitespace-normal break-words text-xs text-muted" role="status"><Spinner size="sm" aria-label={t(`${displayName}${STATUS_LABELS[extension.status]}`, `${displayName}: ${STATUS_LABELS[extension.status]}`)} />{extensionJobStageLabel(job.stage, language)}</span>}
                   </div>
                 </Table.Cell>
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-toggle">
                   <div className="kulo-settings-table-toggle-group">
                     <Switch size="sm" isSelected={extension.enabled} isDisabled={blocked || !installed} onChange={(enabled) => void operate(extension, enabled ? "enable" : "stop")}>
-                      <Switch.Content><Label className="sr-only">{t("启用", "Enable")}{extension.name}</Label><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content>
+                      <Switch.Content><Label className="sr-only">{t(`启用${displayName}`, `Enable ${displayName}`)}</Label><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content>
                     </Switch>
                   </div>
                 </Table.Cell>
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-actions">
                   <div className="kulo-settings-table-action-group">
-                    {!installed && <Button size="sm" variant="ghost" aria-label={t(`安装${extension.name}`, `Install ${extension.name}`)} isDisabled={blocked} onPress={() => onRequest({ kind: "extension", id: extension.id }, `安装${extension.name}，安装完成后保持关闭。`)}>{t("安装", "Install")}</Button>}
-                    <Button ref={(node) => { if (node) manageButtons.current.set(extension.id, node); else manageButtons.current.delete(extension.id); }} size="sm" variant="ghost" aria-label={t(`管理${extension.name}`, `Manage ${extension.name}`)} aria-pressed={selected} isDisabled={!connected || disabled} onPress={() => onRequest({ kind: "extension", id: extension.id })}>{t("管理", "Manage")}</Button>
-                    {extension.enabled && <Button size="sm" variant="ghost" aria-label={t(`停止${extension.name}`, `Stop ${extension.name}`)} isDisabled={blocked} isPending={busy === `stop:${extension.id}`} onPress={() => void operate(extension, "stop")}>{t("停止", "Stop")}</Button>}
-                    {(installed || extension.status === "error") && <Button ref={(node) => { if (node) removeButtons.current.set(extension.id, node); else removeButtons.current.delete(extension.id); }} size="sm" variant="ghost" aria-label={t(`删除${extension.name}`, `Delete ${extension.name}`)} isDisabled={blocked} onPress={() => setRemove(extension)}>{t("删除", "Delete")}</Button>}
+                    {!installed && <Button size="sm" variant="ghost" aria-label={t(`安装${displayName}`, `Install ${displayName}`)} isDisabled={blocked} onPress={() => onRequest({ kind: "extension", id: extension.id }, t(`安装${displayName}，安装完成后保持关闭。`, `Install ${displayName} and leave it disabled after installation.`))}>{t("安装", "Install")}</Button>}
+                    <Button ref={(node) => { if (node) manageButtons.current.set(extension.id, node); else manageButtons.current.delete(extension.id); }} size="sm" variant="ghost" aria-label={t(`管理${displayName}`, `Manage ${displayName}`)} aria-pressed={selected} isDisabled={!connected || disabled} onPress={() => onRequest({ kind: "extension", id: extension.id })}>{t("管理", "Manage")}</Button>
+                    {extension.enabled && <Button size="sm" variant="ghost" aria-label={t(`停止${displayName}`, `Stop ${displayName}`)} isDisabled={blocked} isPending={busy === `stop:${extension.id}`} onPress={() => void operate(extension, "stop")}>{t("停止", "Stop")}</Button>}
+                    {(installed || extension.status === "error") && <Button ref={(node) => { if (node) removeButtons.current.set(extension.id, node); else removeButtons.current.delete(extension.id); }} size="sm" variant="ghost" aria-label={t(`删除${displayName}`, `Delete ${displayName}`)} isDisabled={blocked} onPress={() => setRemove(extension)}>{t("删除", "Delete")}</Button>}
                   </div>
                 </Table.Cell>
               </Table.Row>;
@@ -159,6 +198,6 @@ export function OtherExtensionsModule({ snapshot: incoming, connected, disabled 
         </Table.Content>
       </Table.ScrollContainer>
     </Table>}
-    <ConfirmDialog open={Boolean(remove)} title={t(`删除${remove?.name ?? t("扩展", "Extension")}？`, `Delete ${remove?.name ?? t("扩展", "Extension")}?`)} description={t("保留主对话和历史记录。", "The main conversation and history will be kept.")} confirmLabel={t("删除", "Delete")} isPending={Boolean(busy)} onCancel={cancelRemove} onConfirm={() => { if (remove) void operate(remove, "remove"); }} />
+    <ConfirmDialog open={Boolean(remove)} title={t(`删除${remove ? extensionDisplayName(remove, language) : "扩展"}？`, `Delete ${remove ? extensionDisplayName(remove, language) : "Extension"}?`)} description={t("保留主对话和历史记录。", "The main conversation and history will be kept.")} confirmLabel={t("删除", "Delete")} isPending={Boolean(busy)} onCancel={cancelRemove} onConfirm={() => { if (remove) void operate(remove, "remove"); }} />
   </section>;
 }

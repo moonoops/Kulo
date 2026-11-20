@@ -1301,7 +1301,6 @@ describe("Kulo Phase 2 + GUI Integration Suite", () => {
         completedTaskDisplayHours: 3,
         autoArchiveEnabled: true,
         autoArchiveDays: 7,
-        hostActionPermission: "ask",
       });
     } finally {
       await server.close();

@@ -17,7 +17,9 @@ export {
   IDENTITY_FILES,
   IdentityFilesError,
   KULO_IDENTITY_TEMPLATES,
+  KULO_IDENTITY_TEMPLATES_ZH,
   KuloIdentityFiles,
+  getIdentityTemplate,
   readIdentityContext,
 } from "./identity-files.js";
 export {

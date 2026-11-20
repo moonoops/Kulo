@@ -1,5 +1,6 @@
 import { translate as t } from "../../kulo-i18n";
 import type { EnvNodeDescriptor, ProjectView, TicketCardView, TopicSummary } from "@kulo/protocol";
+import { orderDevices } from "../../components/device-identity";
 
 export const ALL_PROJECT_DEVICES = "*";
 export type UpdateProjectCollection<T> = (next: T[] | ((previous: T[]) => T[])) => void;
@@ -34,6 +35,7 @@ export function projectDevices(
   envs: readonly EnvNodeDescriptor[],
   projects: readonly ProjectView[],
   known: readonly ProjectDevice[] = [],
+  currentDeviceId?: string,
 ): ProjectDevice[] {
   const byId = new Map<string, ProjectDevice>();
   for (const project of projects) byId.set(project.deviceId, {
@@ -42,7 +44,7 @@ export function projectDevices(
   for (const device of known) byId.set(device.id, device);
   const knownNames = new Map(known.map((device) => [device.id, device.name]));
   for (const env of envs) byId.set(env.id, { id: env.id, name: knownNames.get(env.id) ?? env.name, online: env.online, rootDir: env.rootDir });
-  return [...byId.values()];
+  return orderDevices([...byId.values()], { currentDeviceId });
 }
 
 export function initialProjectDevice(saved: string | null, currentDeviceId: string | undefined, currentDeviceKnown: boolean, devices: readonly ProjectDevice[]): string {

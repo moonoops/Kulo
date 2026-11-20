@@ -373,6 +373,8 @@ export async function prepareRuntimePayload(stage, options = {}) {
   }
   await assertRegularFile(path.join(stage, "dist/main.js"));
   await assertRegularFile(path.join(stage, "assets/kulo-icon.png"));
+  await assertRegularFile(path.join(stage, "assets/kulo-trayTemplate.png"));
+  await assertRegularFile(path.join(stage, "assets/kulo-trayTemplate@2x.png"));
   await assertRegularFile(path.join(stage, "dist/runtime.js"));
   await assertRegularFile(path.join(stage, "web/dist/index.html"));
   await assertRegularFile(path.join(packages.env, "dist/peer.mjs"));
@@ -398,6 +400,8 @@ export async function verifyMacApp(bundle) {
   await assertRegularFile(path.join(bundle, `Contents/MacOS/${APP_NAME}`));
   await assertRegularFile(path.join(app, "dist/main.js"));
   await assertRegularFile(path.join(app, "assets/kulo-icon.png"));
+  await assertRegularFile(path.join(app, "assets/kulo-trayTemplate.png"));
+  await assertRegularFile(path.join(app, "assets/kulo-trayTemplate@2x.png"));
   await assertRegularFile(path.join(app, "dist/shell.js"));
   await assertRegularFile(path.join(app, "dist/runtime.js"));
   await assertRegularFile(path.join(app, "web/dist/index.html"));

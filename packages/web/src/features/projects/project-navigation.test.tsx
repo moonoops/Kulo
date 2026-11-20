@@ -1,8 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ComponentProps } from "react";
-import { Disclosure, Dropdown } from "@heroui/react";
+import { Disclosure, Dropdown, Modal, Select } from "@heroui/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ProjectView, TicketCardView, TopicSummary } from "@kulo/protocol";
+import type { EnvNodeDescriptor, ProjectView, TicketCardView, TopicSummary } from "@kulo/protocol";
+import { CreateProjectDialog } from "./create-project-dialog";
 import { ProjectsSidebar } from "./projects-sidebar";
 import { TopicRow } from "../topics/topic-row";
 import { KuloTaskProjection, TaskStatus } from "../../kulo-tasks";
@@ -47,9 +48,61 @@ describe("project navigation accessibility", () => {
     expect(html).toContain("工作站");
     expect(html).toContain("项目讨论");
     expect(html).toContain("离线");
+    expect(html).toContain('data-online="false"');
     expect(html).not.toContain("（本机）");
+    expect(html).not.toContain("kulo-device-local-tag");
     expect(html).not.toContain("移动会话");
     expect(html).not.toContain("恢复项目");
+  });
+
+  it("places the current device first with a leading local tag and online/offline dots across sidebar and creation dialog", () => {
+    vi.spyOn(Dropdown, "Popover").mockImplementation(({ children }) => <>{children}</>);
+    vi.spyOn(Select, "Popover").mockImplementation(({ children }) => <>{children}</>);
+    vi.spyOn(Modal, "Backdrop").mockImplementation(({ children }) => <>{children}</>);
+    vi.spyOn(Modal, "Container").mockImplementation(({ children }) => <>{children}</>);
+    vi.spyOn(Modal, "Dialog").mockImplementation(({ children }) => <>{children}</>);
+    const hubEnv: EnvNodeDescriptor = { id: "local", name: "Macmini.local", kind: "local", online: true, platform: "darwin", arch: "arm64", rootDir: "/hub", capabilities: ["fs"], connectedAt: 1, lastSeenAt: 1 };
+    const offlineEnv: EnvNodeDescriptor = { id: "studio", name: "Office-Studio.local", kind: "reverse-ws", online: false, platform: "darwin", arch: "arm64", rootDir: "/studio", capabilities: ["fs"], connectedAt: 1, lastSeenAt: 1 };
+    const currentEnv: EnvNodeDescriptor = { id: "macbook", name: "iKoomas-Macboom-Pro.local", kind: "reverse-ws", online: true, platform: "darwin", arch: "arm64", rootDir: "/mbp", capabilities: ["fs"], connectedAt: 1, lastSeenAt: 1 };
+    const currentProject: ProjectView = { ...project, id: "project-mbp", deviceId: "macbook", deviceName: "iKoomas-Macboom-Pro.local", availability: "ready" };
+    const hubProject: ProjectView = { ...project, id: "project-hub", deviceId: "local", deviceName: "Macmini.local", availability: "ready" };
+    const html = sidebar([hubProject, currentProject], [{ ...projectTopic, projectId: currentProject.id }], {
+      envs: [hubEnv, offlineEnv, currentEnv],
+      connected: true,
+      currentDeviceId: "macbook",
+    });
+
+    expect(html).toContain("kulo-device-local-tag");
+    expect(html).toContain('data-online="true"');
+    expect(html).toContain('data-online="false"');
+    expect(html).not.toContain("（本机）");
+
+    const menuSlice = html.slice(html.indexOf('aria-label="项目设备"'));
+    const idxCurrent = menuSlice.indexOf("iKoomas-Macboom-Pro.local");
+    const idxHub = menuSlice.indexOf("Macmini.local");
+    const idxOffline = menuSlice.indexOf("Office-Studio.local");
+    expect(idxCurrent).toBeGreaterThan(-1);
+    expect(idxCurrent).toBeLessThan(idxHub);
+    expect(idxHub).toBeLessThan(idxOffline);
+    expect(menuSlice.indexOf("kulo-device-local-tag")).toBeLessThan(idxCurrent);
+
+    const dialogHtml = renderToStaticMarkup(<CreateProjectDialog
+      devices={[
+        { id: "local", name: "Macmini.local", online: true, rootDir: "/hub" },
+        { id: "studio", name: "Office-Studio.local", online: false, rootDir: "/studio" },
+        { id: "macbook", name: "iKoomas-Macboom-Pro.local", online: true, rootDir: "/mbp" },
+      ]}
+      currentDeviceId="macbook"
+      initialDeviceId="macbook"
+      onCreated={() => {}}
+      onClose={() => {}}
+    />);
+    const listSlice = dialogHtml.slice(dialogHtml.indexOf('aria-label="项目所在设备"'));
+    expect(listSlice.indexOf("iKoomas-Macboom-Pro.local")).toBeLessThan(listSlice.indexOf("Macmini.local"));
+    expect(listSlice.indexOf("Macmini.local")).toBeLessThan(listSlice.indexOf("Office-Studio.local"));
+    expect(listSlice.indexOf("kulo-device-local-tag")).toBeLessThan(listSlice.indexOf("iKoomas-Macboom-Pro.local"));
+    expect(listSlice).toContain('data-online="true"');
+    expect(listSlice).toContain('data-online="false"');
   });
 
   it("renders project disclosure and actions without nested buttons or duplicate IDs", () => {

@@ -1,4 +1,4 @@
-import { useI18n, translate } from "../../kulo-i18n";
+import { useI18n, translate, type KuloLanguage } from "../../kulo-i18n";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, Button, Checkbox, CheckboxGroup, Chip, Label, Modal, Skeleton, Switch, Table } from "@heroui/react";
 import { redactSecrets, type SkillAudience, type SkillRecord, type SkillSnapshot } from "@kulo/protocol";
@@ -6,7 +6,64 @@ import { KuloApiError, kuloRest } from "../../kulo-api";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { useSettingsPending } from "./settings-save-activity";
 import { SettingsSection } from "./settings-layout";
-import { IMPORT_SKILL_PROMPT } from "./capability-views";
+import { getImportSkillPrompt } from "./capability-views";
+
+const BUILTIN_SKILL_DESCRIPTIONS: Readonly<Record<string, Readonly<Record<KuloLanguage, string>>>> = {
+  "genui-cards": {
+    "zh-CN": "使用 HeroUI v3 规范构建交互式结构化卡片，支持多元素表单、表格选择、图表与标签页布局。",
+    en: "Component specification and layout rules for interactive structured HeroUI v3 cards, including forms, table selection, charts, and tabbed views.",
+  },
+  "interactive-html": {
+    "zh-CN": "设计与交付离线自包含的交互式 HTML 作品（可视化、图表、仪表盘、原型），可在 Kulo 沙盒预览中清晰呈现。",
+    en: "Design and deliver self-contained offline interactive HTML deliverables (visualizations, diagrams, dashboards, prototypes) for Kulo's sandboxed preview.",
+  },
+  "image-generation": {
+    "zh-CN": "使用已配置的图像能力生成或编辑图片、项目素材与支持的 GIF，覆盖参考图、迭代修图与工作区导出。",
+    en: "Generate or edit images, project assets, and supported GIFs with configured image capabilities, handling reference images, iterative edits, and workspace export.",
+  },
+  "video-generation": {
+    "zh-CN": "使用已配置的视频能力规划分镜提示词、参考素材、Flow 会员生成、长耗时任务跟踪与结果交付。",
+    en: "Plan prompts/storyboards, reference assets, Flow membership generation, long-running job tracking, and delivery with configured video capabilities.",
+  },
+  "browser-automation": {
+    "zh-CN": "在绑定执行设备上安全执行网页导航、页面读取、表单填写与快照核验。",
+    en: "Automate web navigation, page reading, form filling, and snapshot verification on the bound execution device.",
+  },
+  "desktop-automation": {
+    "zh-CN": "检查绑定设备原生应用的辅助功能树并执行点击、输入与逐步核验，涵盖 macOS、Linux 与 Windows。",
+    en: "Inspect native app accessibility trees, click, enter values, and verify every step on the bound execution device across macOS, Linux, and Windows.",
+  },
+  "android-automation": {
+    "zh-CN": "通过类型化 Android 工具可靠操作已绑定手机，涵盖界面观察、无障碍交互、核验与权限交接。",
+    en: "Operate bound Android phones reliably via typed Android tools, covering observation, accessibility-first interaction, verification, and permission handoffs.",
+  },
+  "kulo-ui-customization": {
+    "zh-CN": "按用户明确要求安全修改 Kulo Web 界面源码的工作流与 HeroUI v3 设计约束。",
+    en: "Safe workflow and HeroUI v3 design invariants for modifying Kulo's own Web UI source when explicitly requested by the user.",
+  },
+  "hindsight-knowledge": {
+    "zh-CN": "使用 Pages、Mental Models、Reflect 与日期化纠偏系统性整理 Hindsight 长期记忆。",
+    en: "Structured workflow for organizing Hindsight long-term memory with Pages, Mental Models, Reflect, async operation checks, and dated corrections.",
+  },
+  "capability-setup": {
+    "zh-CN": "在「工具技能」设置页通过受控工具检查并配置多模态能力、电脑操控、技能与扩展。",
+    en: "Configure, inspect, and manage multimodal capabilities, Computer Use, Skills, and extensions on the Tools & Skills settings page.",
+  },
+  "agent-configuration": {
+    "zh-CN": "在「智能体」设置页通过分步引导连接本地外部 Agent 客户端并保存委派配置。",
+    en: "Connect local external Agent clients on the Agents settings page through guided setup and save dispatch configuration.",
+  },
+};
+
+export function localizedSkillDescription(
+  skill: Pick<SkillRecord, "id" | "source" | "description">,
+  language?: KuloLanguage,
+): string {
+  if (skill.source !== "builtin") return skill.description;
+  const localized = BUILTIN_SKILL_DESCRIPTIONS[skill.id];
+  if (!localized) return skill.description;
+  return language ? localized[language] : translate(localized["zh-CN"], localized.en);
+}
 
 type SkillSettings = Pick<SkillRecord, "enabled" | "audiences">;
 type SkillDraft = SkillSettings & { record: SkillRecord; expectedRevision: number };
@@ -63,7 +120,7 @@ export function SkillsModule(props: SkillsModuleProps) {
 }
 
 function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRequest, onRefresh, onDirtyChange }: SkillsModuleProps) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const [snapshot, setSnapshot] = useState(incoming);
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();
@@ -168,7 +225,7 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
     } finally { finish(); }
   };
 
-  return <SettingsSection title={t("技能", "Skills")} action={<Button ref={importButton} variant="secondary" size="sm" isDisabled={blocked || !onRequest} onPress={() => onRequest?.(undefined, IMPORT_SKILL_PROMPT)}>{t("导入技能", "Import skill")}</Button>}>
+  return <SettingsSection title={t("技能", "Skills")} action={<Button ref={importButton} variant="secondary" size="sm" isDisabled={blocked || !onRequest} onPress={() => onRequest?.(undefined, getImportSkillPrompt(language))}>{t("导入技能", "Import skill")}</Button>}>
     {error && <Alert status="danger" role="alert"><Alert.Content>{error}</Alert.Content><Button size="sm" variant="ghost" isDisabled={blocked} onPress={onRefresh}>{t("刷新", "Refresh")}</Button></Alert>}
     <Table variant="secondary" className="kulo-settings-table kulo-capabilities-table" aria-busy={Boolean(busy) || undefined}>
       <Table.ScrollContainer className="kulo-settings-table-scroll">
@@ -187,7 +244,7 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-primary">
                   <div className="kulo-settings-table-stack">
                     <span className="kulo-item-title">{skill.name}</span>
-                    <span className="kulo-item-description">{skill.description}</span>
+                    <span className="kulo-item-description">{localizedSkillDescription(skill, language)}</span>
                     {skill.diagnostics.length > 0 && <span className="break-words text-xs text-warning">{skill.diagnostics.map((message) => redactSecrets(message)).join(" · ")}</span>}
                   </div>
                 </Table.Cell>
@@ -212,7 +269,7 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
       <Modal.Backdrop isOpen={Boolean(draft)} isDismissable={!busy} isKeyboardDismissDisabled={Boolean(busy)} onOpenChange={(open) => { if (!open) closeEditor(); }}>
         <Modal.Container size="sm" placement="center" scroll="inside"><Modal.Dialog aria-label={t(`编辑${draft?.record.name ?? t("技能", "Skills")}`, `Edit ${draft?.record.name ?? t("技能", "Skills")}`)}>
           <form className="contents" onSubmit={(event) => { event.preventDefault(); void save(); }}>
-            <Modal.Header><Modal.Heading>{t("编辑", "Edit")}{draft?.record.name ?? t("技能", "Skills")}</Modal.Heading><Modal.CloseTrigger aria-label={t("关闭", "Close")} isDisabled={Boolean(busy)} /></Modal.Header>
+            <Modal.Header><Modal.Heading>{t(`编辑${draft?.record.name ?? "技能"}`, `Edit ${draft?.record.name ?? "skill"}`)}</Modal.Heading><Modal.CloseTrigger aria-label={t("关闭", "Close")} isDisabled={Boolean(busy)} /></Modal.Header>
             <Modal.Body className="flex min-w-0 flex-col gap-4">
               {draft && <SkillSettingsFields value={draft} disabled={!connected || disabled || Boolean(busy)} onChange={(value) => setDraft({ ...draft, ...value })} />}
               {editorError && <Alert status="danger" role="alert"><Alert.Content>{editorError}</Alert.Content>{conflict && <Button variant="ghost" size="sm" isDisabled={blocked} onPress={() => void reloadDraft()}>{t("载入最新设置", "Load latest settings")}</Button>}</Alert>}

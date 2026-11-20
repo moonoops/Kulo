@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   CUSTOM_PROVIDER_APIS,
+  normalizeKuloLanguage,
   normalizeVertexConfig,
   defaultRolePresets,
   type CompactionConfig,
@@ -367,9 +368,11 @@ export function resolveHubConfig(overrides: KuloHubConfigOverrides = {}): KuloHu
     },
   };
 
+  const presentationLanguage = normalizeKuloLanguage(overrides.presentation?.language);
   const presentation: PresentationConfig = {
     agentName: overrides.presentation?.agentName ?? "Kulo",
     workbenchName: overrides.presentation?.workbenchName ?? "Kulo's table",
+    ...(presentationLanguage ? { language: presentationLanguage } : {}),
   };
   const completedTaskDisplayHours = overrides.completedTaskDisplayHours === undefined
     ? 3

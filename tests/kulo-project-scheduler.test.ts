@@ -263,7 +263,7 @@ describe("durable project worker scheduling", () => {
     await until(async () => (await harness.commit((tx) => tx.task(taskId as never), BACKGROUND_CONTEXT))?.state.status === "terminal");
     await root.waitForIdle(BACKGROUND_CONTEXT);
     const s = (await harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))!;
-    expect(s.tickets.T1).toMatchObject({ status: "waiting", waiting: { reason: "user", detail: question }, latestReport: { state: "blocked", question } });
+    expect(s.tickets.T1).toMatchObject({ status: "waiting", waiting: { reason: "coordinator", detail: question }, latestReport: { state: "blocked", question } });
     expect(s.tickets.T1?.activeTaskId).toBeUndefined();
     expect(s.slots.holders).toEqual([]);
     expect(s.slots.writeHolders).toEqual([]);

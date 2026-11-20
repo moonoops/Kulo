@@ -128,6 +128,7 @@ import {
   type IdentityFile,
   type IdentityList,
   type IdentityRead,
+  type KuloLanguage,
   type DiscoverModelsRequest,
   type DiscoverModelsResponse,
   type EnvNodeDescriptor,
@@ -220,13 +221,17 @@ import {
   buildHostActionConfirmCard,
   buildMemoryServiceConfirmCard,
   buildStagedApplyConfirmCard,
+  buildTicketDecisionCard,
   customizationValidateFingerprint,
   externalPermissionFingerprint,
   hostActionFingerprint,
   memoryServiceOperationFingerprint,
   stagedApplyFingerprint,
+  ticketDecisionFingerprint,
+  type PendingActionConfirmation,
 } from "./action-confirmations.js";
-import type { HostActionCaller, HostActionController, HostActionRunOutcome } from "./tools-host-action.js";
+import type { HostActionCaller, HostActionController, HostActionDecideOutcome, HostActionRunOutcome } from "./tools-host-action.js";
+import type { AskUserForTicketParams } from "./tools-router.js";
 import { API_KEY_ORIGIN_ENV } from "./providers.js";
 import { executeHindsightTool, isSafeMemoryText, probeHindsightConnection, resolveHindsightToken, resolveHindsightSharedReadToken } from "./hindsight.js";
 import {
@@ -242,9 +247,11 @@ import {
   RELATIONSHIP_REVIEW_INSTRUCTIONS,
   createOrchestratorSections,
   formatConnectionRequestMessage,
+  formatHostActionRequestMessage,
   formatRecoveryExhaustedRelayMessage,
   formatWorkerInitialPrompt,
   formatWorkerRecoveryMessage,
+  formatWorkerRelayMessage,
   formatWorkerWatchdogMessage,
 } from "./prompts.js";
 import { createWorkerTicketTask } from "./scheduler.js";
@@ -829,7 +836,7 @@ export function extractDisplayMessages(entries: readonly EntryRecord[], options:
 
         const joinedText = textBlocks.join("\n").trim();
         const sources = joinedText ? sanitizeSearchSources([...native.sources, ...selectCitedSources(joinedText, pendingSources)]) : [];
-        if ((joinedText === "[WATCHDOG_OK]" || joinedText === "[RECOVERY_OK]") && toolCalls.length === 0) {
+        if ((joinedText === "[WATCHDOG_OK]" || joinedText === "[RECOVERY_OK]" || joinedText === "[COORDINATOR_OK]") && toolCalls.length === 0) {
           continue;
         }
 
@@ -901,8 +908,11 @@ export function extractLiveState(view: ConversationView, responseEntries: readon
     rawStreamingText &&
     !(
       activeTools.length === 0 &&
-      trimmedStreaming.startsWith("[W") &&
-      "[WATCHDOG_OK]".startsWith(trimmedStreaming)
+      (
+        (trimmedStreaming.startsWith("[W") && "[WATCHDOG_OK]".startsWith(trimmedStreaming)) ||
+        (trimmedStreaming.startsWith("[C") && "[COORDINATOR_OK]".startsWith(trimmedStreaming)) ||
+        (trimmedStreaming.startsWith("[R") && "[RECOVERY_OK]".startsWith(trimmedStreaming))
+      )
     )
   ) {
     streamingText = rawStreamingText;
@@ -1819,6 +1829,8 @@ export class KuloHub implements OrchestratorController {
       bootSettings?.executor.maxConcurrentWorkers ?? config.maxConcurrentWorkers;
     const getAgentName = () =>
       bootSettings?.presentation.agentName ?? config.presentation.agentName;
+    const getLiveLanguage = (): KuloLanguage | undefined =>
+      bootSettings?.presentation.language ?? config.presentation.language;
 
     if (providerManager) {
       providerManager.syncProviders(config.model, config.roles);
@@ -1838,19 +1850,13 @@ export class KuloHub implements OrchestratorController {
       tools: [routerReadTool],
     });
 
-    const ORCHESTRATOR_MAX_BASH_TIMEOUT_SECONDS = 15;
+    const ORCHESTRATOR_DEFAULT_BASH_TIMEOUT_SECONDS = 60;
+    const ORCHESTRATOR_MAX_BASH_TIMEOUT_SECONDS = 300;
     const ORCHESTRATOR_DANGEROUS_SHELL_PATTERNS: readonly RegExp[] = [
       /(?:^|[;&|]\s*)rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+\/(?:\s|$)/i,
       /(?:^|[;&|]\s*)mkfs\b/i,
       /(?:^|[;&|]\s*)dd\s+if=.*of=\/dev\//i,
-      /git\s+push\s+.*--force\b/i,
       /:\(\)\s*\{\s*:\|:&\s*\};:/,
-    ];
-    const ORCHESTRATOR_NETWORK_SHELL_PATTERNS: readonly RegExp[] = [
-      /(?:^|[;&|(\s])(?:curl|wget|nc|netcat|ncat|ssh|scp|sftp|rsync|telnet|ftp|ping|dig|nslookup|traceroute)\b/i,
-      /(?:^|[;&|(\s])(?:npm|pnpm|yarn|bun)\s+(?:install|i|add|dlx|exec|publish|update|up)\b/i,
-      /(?:^|[;&|(\s])(?:pip|pip3|uv)\s+(?:install|download)\b/i,
-      /(?:^|[;&|(\s])git\s+(?:clone|fetch|pull|push|ls-remote)\b/i,
     ];
     const isInsideLocalOrPosix = (candidatePath: string, dirPath: string): boolean => {
       if (!dirPath) return false;
@@ -1952,18 +1958,8 @@ export class KuloHub implements OrchestratorController {
                 ? api.env.id.slice("pi-env:".length)
                 : "local");
 
-          const checkWriteLockAndProjectScope = async (targetPath: string): Promise<string | undefined> => {
+          const checkActiveWriteLock = async (targetPath: string): Promise<string | undefined> => {
             const normalizedScopePath = targetEnvId === "local" ? safeCanonical(targetPath) : targetPath;
-            if (!authorizedProject) {
-              const projects = await hubRef!.projects.list(context);
-              const probe = { envId: targetEnvId, workspaceDir: normalizedScopePath, readOnly: false } as TicketRecord;
-              const overlap = projects.find((p) =>
-                ticketsShareWriteScope(probe, { envId: p.deviceId, workspaceDir: p.workspaceDir, readOnly: false } as TicketRecord),
-              );
-              if (overlap) {
-                return `该路径属于已注册项目「${overlap.name}」（${overlap.id}），请在对应项目会话中操作或使用 kulo_dispatch(project_id='${overlap.id}')。`;
-              }
-            }
             const writeProbe = {
               envId: targetEnvId,
               workspaceDir: normalizedScopePath,
@@ -2011,15 +2007,7 @@ export class KuloHub implements OrchestratorController {
             }
 
             if (toolName === "write" || toolName === "edit") {
-              const insideAuthorized = targetEnvId === "local"
-                ? isInsideLocalOrPosix(safeCanonical(absolute), safeCanonical(authorizedWorkspaceDir))
-                : isInsideLocalOrPosix(absolute, authorizedWorkspaceDir);
-              if (!insideAuthorized) {
-                return blockResult(
-                  `主脑仅允许在当前工作区 '${authorizedWorkspaceDir}' 内直接修改文件；跨目录操作请使用 kulo_dispatch。`,
-                );
-              }
-              const conflictReason = await checkWriteLockAndProjectScope(absolute);
+              const conflictReason = await checkActiveWriteLock(absolute);
               if (conflictReason) {
                 return blockResult(conflictReason);
               }
@@ -2032,14 +2020,7 @@ export class KuloHub implements OrchestratorController {
           for (const pattern of ORCHESTRATOR_DANGEROUS_SHELL_PATTERNS) {
             if (pattern.test(cmd)) {
               return blockResult(
-                `主脑安全护栏拦截了高危 Shell 命令："${cmd.slice(0, 120)}"。如需执行高风险变更，请先向用户确认或派单处理。`,
-              );
-            }
-          }
-          for (const pattern of ORCHESTRATOR_NETWORK_SHELL_PATTERNS) {
-            if (pattern.test(cmd)) {
-              return blockResult(
-                "主脑沙箱处于离线模式，禁止直接运行联网或依赖安装命令；网页查询请用 web_search / web_fetch，需要联网执行的开发任务请用 kulo_dispatch。",
+                `主脑安全护栏拦截了毁灭性 Shell 命令："${cmd.slice(0, 120)}"。`,
               );
             }
           }
@@ -2052,7 +2033,7 @@ export class KuloHub implements OrchestratorController {
           ) {
             return blockResult("主脑沙箱禁止通过 bash 访问私有身份目录或 Kulo 状态凭据文件。");
           }
-          const conflictReason = await checkWriteLockAndProjectScope(authorizedWorkspaceDir);
+          const conflictReason = await checkActiveWriteLock(authorizedWorkspaceDir);
           if (conflictReason) {
             return blockResult(conflictReason);
           }
@@ -2060,7 +2041,7 @@ export class KuloHub implements OrchestratorController {
           const clampedTimeout =
             typeof rawTimeout === "number" && Number.isFinite(rawTimeout) && rawTimeout > 0
               ? Math.min(rawTimeout, ORCHESTRATOR_MAX_BASH_TIMEOUT_SECONDS)
-              : ORCHESTRATOR_MAX_BASH_TIMEOUT_SECONDS;
+              : ORCHESTRATOR_DEFAULT_BASH_TIMEOUT_SECONDS;
           const nextArgs =
             rawTimeout !== clampedTimeout
               ? { ...(args as Record<string, unknown>), timeout: clampedTimeout }
@@ -2086,7 +2067,9 @@ export class KuloHub implements OrchestratorController {
       }
     };
 
-    const identityFiles = new KuloIdentityFiles(getLiveIdentityState);
+    const identityFiles = new KuloIdentityFiles(getLiveIdentityState, {
+      getLanguage: getLiveLanguage,
+    });
 
     const connections: ConnectionToolController = {
       list: (caller, ctx) => hubRef!.#connectionList(caller, ctx),
@@ -2215,6 +2198,7 @@ export class KuloHub implements OrchestratorController {
     const hostActions: HostActionController = {
       inspect: (caller, input, ctx) => hubRef!.#hostActionInspect(caller, input, ctx),
       run: (caller, input, ctx) => hubRef!.#hostActionRun(caller, input, ctx),
+      decide: (caller, input, ctx) => hubRef!.#hostActionDecide(caller, input, ctx),
     };
     const workerExt = createWorkerExtension({
       connections,
@@ -2226,6 +2210,7 @@ export class KuloHub implements OrchestratorController {
       getIdentityDir: getLiveIdentityDir,
       getMemoryConfig: getLiveMemory,
       getRoles: getLiveRoles,
+      getLanguage: getLiveLanguage,
       getMaxSubagentsPerTicket: () =>
         (hubRef ? hubRef.#liveSettings.executor.maxSubagentsPerTicket : bootSettings?.executor.maxSubagentsPerTicket) ??
         config.maxSubagentsPerTicket,
@@ -2260,9 +2245,10 @@ export class KuloHub implements OrchestratorController {
       getMaxConcurrentWorkers,
       isTicketRunnable: (ticket) => Boolean(hubRef && !hubRef.#recovering && !hubRef.#closed && hubRef.#ticketDevicesOnline(ticket)),
       onTicketWaiting: (id, reason) => {
-        if (hubRef && reason !== "user") hubRef.#notifyInlineWaiters(id);
+        if (hubRef && reason !== "user" && reason !== "coordinator") hubRef.#notifyInlineWaiters(id);
         if (hubRef && reason === "env") hubRef.#queueEnvReconcile();
         if (hubRef && reason === "connection") void hubRef.#relayConnectionRequest(id).catch((error) => console.error("[KuloConnectionRequest]", redact(error instanceof Error ? error.message : "连接申请转交失败")));
+        if (hubRef && reason === "coordinator") void hubRef.#relayHostActionRequest(id).catch((error) => console.error("[KuloHostActionRequest]", redact(error instanceof Error ? error.message : "本机操作审批转交失败")));
       },
       resumeWaitingTicket: async (id, ctx) => { if (hubRef) await hubRef.#resumeWaitingTicket(id, ctx); },
       prepareTicketRelease: (ticket) => hubRef!.#releaseTicketExecution(ticket, { park: Boolean(ticket.waiting) && isTicketUnfinished(ticket) }),
@@ -2315,7 +2301,8 @@ export class KuloHub implements OrchestratorController {
       closeTicket: (p, ctx) => hubRef!.closeTicket(p, ctx),
       inspectWorker: (id, ctx) => hubRef!.inspectWorker(id, ctx),
       respondExternalAgentPermission: (id, permissionId, choiceId, epoch, ctx) => hubRef!.respondExternalAgentPermission(id, permissionId, choiceId, epoch, ctx),
-      confirmExternalAgentPermission: (id, permissionId, choiceId, epoch, source, ctx) => hubRef!.#confirmExternalAgentPermission(id, permissionId, choiceId, epoch, source, ctx),
+      handleExternalAgentPermission: (input, source, ctx) => hubRef!.#handleExternalAgentPermission(input, source, ctx),
+      askUserForTicket: (params, source, ctx) => hubRef!.#askUserForTicket(params, source, ctx),
       inspectStagedDiff: (id, filePath, ctx) => hubRef!.inspectStagedDiff(id, filePath, ctx),
       applyStagedChanges: (p, ctx) => hubRef!.applyStagedChanges(p, ctx),
       applyStagedChangesFromTool: (p, source, ctx) => hubRef!.#applyStagedChangesFromTool(p, source, ctx),
@@ -2328,6 +2315,7 @@ export class KuloHub implements OrchestratorController {
 
     const allOrchestratorSections = createOrchestratorSections({
       getAgentName,
+      getLanguage: getLiveLanguage,
       getRoles: getLiveRoles,
       getEnvs: () => envManager.listEnvs(),
       getIdentityDir: getLiveIdentityDir,
@@ -2740,7 +2728,6 @@ export class KuloHub implements OrchestratorController {
                   projectId: authorized.id,
                   grantRevision: authorized.grantRevision,
                   readOnly: activeSettings,
-                  network: { offline: true },
                 });
               });
             }
@@ -2752,7 +2739,7 @@ export class KuloHub implements OrchestratorController {
             catch { defaultEnvId = undefined; }
             const envInfo = defaultEnvId ? envManager.getEnvDescriptor(defaultEnvId) : candidateEnv;
             const cwd = target.cwd ?? envInfo?.rootDir ?? mainWorkspaceDir;
-            const execOptions = { sandboxed: true, offline: true, readOnly: activeSettings };
+            const execOptions = { sandboxed: true, offline: false, readOnly: activeSettings };
             if (defaultEnvId) return envManager.createExecutionEnv(defaultEnvId, cwd, execOptions);
             return lazyProjectEnvironment(`kulo-env:${candidateEnv.id}`, cwd, async () => {
               const resolvedId = envManager.pickDefaultEnvId();
@@ -3847,7 +3834,7 @@ export class KuloHub implements OrchestratorController {
       for (const ticket of Object.values(state?.tickets ?? {})) {
         if (ticket.status !== "running" && ticket.status !== "pausing") continue;
         const waiting = ticket.waiting ?? (ticket.latestReport?.state === "blocked"
-          ? { reason: "user" as const, since: Date.now(), detail: ticket.latestReport.question ?? ticket.latestReport.summary } : undefined);
+          ? { reason: "coordinator" as const, since: Date.now(), detail: ticket.latestReport.question ?? ticket.latestReport.summary } : undefined);
         if (waiting) await this.#parkTicket(ticket.id, waiting);
       }
       if (!this.#recovering) {
@@ -3857,6 +3844,9 @@ export class KuloHub implements OrchestratorController {
       const connections = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
       for (const ticket of Object.values(connections?.tickets ?? {})) {
         if (ticket.status === "waiting" && ticket.waiting?.reason === "connection") await this.#relayConnectionRequest(ticket.id);
+        if (ticket.status === "waiting" && ticket.waiting?.reason === "coordinator" && ticket.waiting.waitToken?.startsWith("host-action-req:")) {
+          await this.#relayHostActionRequest(ticket.id);
+        }
       }
     }).catch((error) => { console.error("[KuloWaitReconcile]", error); });
     return this.#waitTransition;
@@ -4119,7 +4109,9 @@ export class KuloHub implements OrchestratorController {
     this.#untrackWorker(ticketId, ticket.runEpoch);
     const parked = await this.harness.snapshot(KuloStateDoc, context);
     if (parked?.tickets[ticketId]?.wakePending) await this.#resumeWaitingTicket(ticketId, context);
-    if (preservedWait.reason === "user" && !preservedWait.waitToken?.startsWith("host-action:")) {
+    const isBlockedCoordinatorWait =
+      preservedWait.reason === "coordinator" && !preservedWait.waitToken?.startsWith("host-action-req:");
+    if ((preservedWait.reason === "user" && !preservedWait.waitToken?.startsWith("host-action:")) || isBlockedCoordinatorWait) {
       const latest = await this.harness.snapshot(KuloStateDoc, context);
       const settingsLatest = await this.harness.snapshot(SettingsAssistantDoc, context);
       const originTopic = latest?.topics?.[ticket.originTopicId ?? "root"];
@@ -4129,16 +4121,35 @@ export class KuloHub implements OrchestratorController {
         const report = current.latestReport?.state === "blocked" ? current.latestReport : undefined;
         const question = report?.question ?? preservedWait.detail ?? "请确认下一步";
         const origin = await this.harness.conversation((ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) as ConversationId, context);
-        if (origin) await this.harness.commit((tx) => submitAutomaticChatInput(tx, origin, { type: "input", content: `[KULO_WORKER_RELAY]\nTicket ${ticket.title} is waiting on user confirmation: ${question}\nRelay this single question concisely in the active conversation language without exposing internal IDs.`,
-          whenBusy: "followUp", requestId: `kulo:wait-user:${ticketId}:${epoch}`,
-          entry: { kind: WorkerRelayEntry.kind, data: {
-            ticketId, title: current.title, role: current.role, state: "blocked",
-            summary: report?.summary ?? question, question, deliverable: report?.deliverable ?? null,
-          } },
-        }), context);
+        if (origin) await this.harness.commit(async (tx) => {
+          if (isBlockedCoordinatorWait) {
+            await injectEventToolsInTx(tx, origin.id, ["kulo_inspect", "kulo_ticket_ask_user"]);
+          }
+          return submitAutomaticChatInput(tx, origin, {
+            type: "input",
+            content: isBlockedCoordinatorWait
+              ? formatWorkerRelayMessage({
+                  ticketId,
+                  title: current.title,
+                  role: current.role,
+                  report: report ?? { state: "blocked", summary: question, question, at: Date.now() },
+                })
+              : `[KULO_WORKER_RELAY]\nTicket ${ticket.title} is waiting on user confirmation: ${question}\nRelay this single question concisely in the active conversation language without exposing internal IDs.`,
+            whenBusy: "followUp",
+            requestId: isBlockedCoordinatorWait ? `kulo:relay:${ticketId}:${epoch}` : `kulo:wait-user:${ticketId}:${epoch}`,
+            entry: { kind: WorkerRelayEntry.kind, data: {
+              ticketId, title: current.title, role: current.role, state: "blocked",
+              summary: report?.summary ?? question, question, deliverable: report?.deliverable ?? null,
+            } },
+          });
+        }, context);
+        if (!this.#recovering) this.harness.resume();
       }
     }
     if (preservedWait.reason === "connection") await this.#relayConnectionRequest(ticketId);
+    if (preservedWait.reason === "coordinator" && preservedWait.waitToken?.startsWith("host-action-req:")) {
+      await this.#relayHostActionRequest(ticketId);
+    }
     this.#notifyInlineWaiters(ticketId);
     await this.#broadcastTickets(context);
   }
@@ -4146,7 +4157,7 @@ export class KuloHub implements OrchestratorController {
   async #resumeWaitingTicket(ticketId: string, context: Context): Promise<void> {
     const state = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = state?.tickets[ticketId];
-    if (!ticket || ticket.status !== "waiting" || ((ticket.waiting?.reason === "user" || ticket.waiting?.reason === "connection") && !ticket.wakePending) || ticket.cleanupPending) return;
+    if (!ticket || ticket.status !== "waiting" || ((ticket.waiting?.reason === "user" || ticket.waiting?.reason === "connection" || ticket.waiting?.reason === "coordinator") && !ticket.wakePending) || ticket.cleanupPending) return;
     if (!ticket.wakePending && ticket.schedule?.nextRunAt != null && hasPendingWorkspaceApply(ticket)) return;
     if (ticket.schedule?.nextRunAt != null && ticket.schedule.nextRunAt > Date.now()) return;
     if (!ticket.wakePending && ticket.waiting?.until !== undefined && ticket.waiting.until > Date.now()) return;
@@ -5077,7 +5088,7 @@ export class KuloHub implements OrchestratorController {
         fallback = { topicId: message.topicId || "root" }; break;
       case "ticket.steer":
         await this.steerTicket({ ticketId: message.ticketId, text: message.text, attachments: message.attachments,
-          replyTo: message.replyTo, commandId: message.commandId ?? `steer-${randomUUID()}`, principalId }, context, intent);
+          replyTo: message.replyTo, decisionOptionId: message.decisionOptionId, commandId: message.commandId ?? `steer-${randomUUID()}`, principalId }, context, intent);
         fallback = { ticketId: message.ticketId }; break;
       case "ticket.retry":
         await this.retryTicket(message.ticketId, context, message.commandId, intent);
@@ -6329,22 +6340,45 @@ export class KuloHub implements OrchestratorController {
     };
   }
 
-  async #confirmExternalAgentPermission(
-    ticketId: string,
-    permissionId: string,
-    choiceId: string,
-    runEpoch: number,
+  async #handleExternalAgentPermission(
+    input: {
+      ticketId: string;
+      permissionId: string;
+      choiceId?: string;
+      runEpoch: number;
+      mode: "decide" | "ask_user";
+      reason?: string;
+    },
     source: { conversationId: number; callId: string },
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<WorkerInspectResult | Record<string, unknown>> {
+    const { ticketId, permissionId, choiceId, runEpoch, mode } = input;
     const fingerprint = externalPermissionFingerprint(ticketId, runEpoch, permissionId);
     const existing = await this.actionConfirmations.lookup(source.conversationId, "external_permission", fingerprint, context);
-    if (existing?.status === "approved" && existing.selectedChoiceId === choiceId) {
-      if (existing.executed) return this.inspectWorker(ticketId, context);
-      const result = await this.respondExternalAgentPermission(ticketId, permissionId, choiceId, runEpoch, context);
-      await this.actionConfirmations.markExecuted(existing.cardId, context);
+
+    if (mode === "decide") {
+      if (!choiceId?.trim()) {
+        throw new Error("mode='decide' 时必须提供有效的 choice_id。");
+      }
+      if (existing?.executed) {
+        return this.inspectWorker(ticketId, context);
+      }
+      const result = await this.respondExternalAgentPermission(ticketId, permissionId, choiceId.trim(), runEpoch, context);
+      if (existing && (existing.status === "pending" || existing.status === "pending_orchestrator")) {
+        await this.actionConfirmations.resolveProgrammatically(
+          existing.id,
+          {
+            status: "approved",
+            selectedChoiceId: choiceId.trim(),
+            resultSummary: existing.cardId ? "已通过对话处理" : "主智能体已处理",
+            markExecuted: true,
+          },
+          context,
+        );
+      }
       return result;
     }
+
     const state = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = state?.tickets[ticketId];
     const execution = ticket?.externalExecution;
@@ -6360,7 +6394,8 @@ export class KuloHub implements OrchestratorController {
       id: choice.id,
       label: this.connectionManager.redact(choice.label),
     }));
-    const built = buildExternalPermissionCard(this.connectionManager.redact(pending.title), redactedChoices);
+    const redactedReason = input.reason ? this.connectionManager.redact(input.reason) : undefined;
+    const built = buildExternalPermissionCard(this.connectionManager.redact(pending.title), redactedChoices, redactedReason);
     const { confirmation } = await this.actionConfirmations.ensurePendingCard({
       conversationId: source.conversationId,
       ...(topicId ? { topicId } : {}),
@@ -6382,10 +6417,101 @@ export class KuloHub implements OrchestratorController {
     return {
       status: "awaiting_user_confirmation",
       cardId: confirmation.cardId,
+      requestId: confirmation.id,
       ticketId,
       runEpoch,
       permissionId,
-      message: "外部智能体权限请求需要用户本人在卡片中选择决定。已向用户展示原始权限选项卡片，请等待用户点击，不要代替用户授权。",
+      message: "已向用户展示外部智能体权限确认卡片（含选项与手动输入），对话不阻塞；若用户直接在聊天中回复，可再次调用 kulo_external_permission(mode='decide') 立即生效并自动收口卡片。",
+    };
+  }
+
+  async #askUserForTicket(
+    params: AskUserForTicketParams,
+    source: { conversationId: number; callId: string },
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<Record<string, unknown>> {
+    const state = await this.harness.snapshot(KuloStateDoc, context);
+    const ticket = state?.tickets[params.ticketId];
+    if (!ticket || !isTicketUnfinished(ticket)) {
+      throw new Error(`任务 '${params.ticketId}' 不存在或已结束。`);
+    }
+    if ((ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) !== source.conversationId) {
+      throw new Error("该任务不属于当前会话。");
+    }
+    const cleanQuestion = this.connectionManager.redact(params.question.trim());
+    if (!cleanQuestion) {
+      throw new Error("向用户确认时必须提供清晰的问题描述。");
+    }
+    const cleanOptions = (params.options ?? [])
+      .slice(0, 11)
+      .map((option, index) => ({
+        id: option.id.trim() || `opt_${index}`,
+        label: this.connectionManager.redact(option.label.trim()).slice(0, 120),
+        ...(option.tone ? { tone: option.tone } : {}),
+        ...(option.value?.trim() ? { value: this.connectionManager.redact(option.value.trim()).slice(0, 400) } : {}),
+      }))
+      .filter((option) => option.label.length > 0);
+
+    let cardId: string | undefined;
+    let confirmationId: string | undefined;
+    if (params.showCard !== false) {
+      const topicId = state?.conversationToTopic?.[String(source.conversationId)];
+      const fingerprint = ticketDecisionFingerprint({
+        ticketId: ticket.id,
+        runEpoch: ticket.runEpoch,
+        question: cleanQuestion,
+        options: cleanOptions,
+      });
+      const built = buildTicketDecisionCard({
+        title: ticket.title,
+        question: cleanQuestion,
+        options: cleanOptions,
+      });
+      const { confirmation } = await this.actionConfirmations.ensurePendingCard({
+        conversationId: source.conversationId,
+        ...(topicId ? { topicId } : {}),
+        ticketId: ticket.id,
+        callId: source.callId,
+        kind: "ticket_decision",
+        fingerprint,
+        cardInput: built.input,
+        logicalIds: built.logicalIds,
+        payload: {
+          kind: "ticket_decision",
+          ticketId: ticket.id,
+          runEpoch: ticket.runEpoch,
+          question: cleanQuestion,
+          options: cleanOptions,
+        },
+      }, context);
+      cardId = confirmation.cardId;
+      confirmationId = confirmation.id;
+    }
+
+    const now = Date.now();
+    await this.harness.commit(async (tx) => {
+      const doc = await tx.doc(KuloStateDoc);
+      const live = doc.tickets[ticket.id];
+      if (!live || !isTicketUnfinished(live)) return;
+      live.waiting = {
+        reason: "user",
+        since: now,
+        detail: cleanQuestion,
+        ...(cleanOptions.length ? { options: cleanOptions } : {}),
+        ...(cardId ? { cardId } : {}),
+        ...(confirmationId ? { requestId: confirmationId } : {}),
+      };
+      live.updatedAt = now;
+    }, context);
+    await this.#broadcastTickets(context);
+    return {
+      status: "awaiting_user_decision",
+      ticketId: ticket.id,
+      ...(cardId ? { cardId } : {}),
+      ...(confirmationId ? { requestId: confirmationId } : {}),
+      question: cleanQuestion,
+      options: cleanOptions,
+      message: "已向用户发起任务决策确认（支持按钮选择、手动输入或在聊天中直接回复，对话不阻塞；若用户在聊天中回复，调用 kulo_steer 即可恢复任务并自动收口卡片）。",
     };
   }
 
@@ -6403,6 +6529,22 @@ export class KuloHub implements OrchestratorController {
     if (isExternalStaged ? ticket.externalExecution!.stagedAppliedAt : ticket.workspaceStaging!.appliedAt) {
       return this.applyStagedChanges(params, context);
     }
+
+    if (params.askUser !== true) {
+      const applied = await this.applyStagedChanges(params, context);
+      const pendingList = await this.actionConfirmations.listPendingForConversation(source.conversationId, context);
+      for (const item of pendingList) {
+        if (item.payload.kind === "staged_apply" && item.payload.ticketId === ticket.id) {
+          await this.actionConfirmations.resolveProgrammatically(
+            item.id,
+            { status: "approved", selectedChoiceId: "confirm", resultSummary: "已通过对话合并", markExecuted: true },
+            context,
+          );
+        }
+      }
+      return applied;
+    }
+
     let stagedDiff = isExternalStaged ? ticket.externalExecution!.stagedDiff : ticket.workspaceStaging!.stagedDiff;
     if (!stagedDiff && !isTicketUnfinished(ticket) && ticket.status !== "stopped" && ticket.status !== "closed") {
       try {
@@ -6414,10 +6556,6 @@ export class KuloHub implements OrchestratorController {
     const selectedPaths = params.paths?.length ? new Set(params.paths) : undefined;
     const sensitivePaths = (stagedDiff?.sensitivePaths ?? []).filter((entry) => !selectedPaths || selectedPaths.has(entry));
     const conflictFiles = (stagedDiff?.conflictFiles ?? []).filter((entry) => !selectedPaths || selectedPaths.has(entry));
-    const requiresConfirmation = sensitivePaths.length > 0 || conflictFiles.length > 0 || Boolean(params.allowConflicts);
-    if (!requiresConfirmation) {
-      return this.applyStagedChanges(params, context);
-    }
     const fingerprint = stagedApplyFingerprint({
       ticketId: ticket.id,
       runEpoch: ticket.runEpoch,
@@ -6429,7 +6567,7 @@ export class KuloHub implements OrchestratorController {
     const existing = await this.actionConfirmations.lookup(source.conversationId, "staged_apply", fingerprint, context);
     if (existing?.status === "approved") {
       const applied = await this.applyStagedChanges(params, context);
-      await this.actionConfirmations.markExecuted(existing.cardId, context);
+      await this.actionConfirmations.markExecuted(existing.id, context);
       return applied;
     }
     const topicId = state?.conversationToTopic?.[String(source.conversationId)];
@@ -6462,10 +6600,11 @@ export class KuloHub implements OrchestratorController {
     return {
       status: "awaiting_user_confirmation",
       cardId: confirmation.cardId,
+      requestId: confirmation.id,
       ticketId: ticket.id,
       sensitivePaths,
       conflictFiles,
-      message: "此次合并涉及敏感路径或并发冲突，已向用户展示确认卡片，请简短告知用户并等待用户在卡片中点击确认。",
+      message: "已向用户展示合并确认卡片（含允许/拒绝/手动输入），对话不阻塞；若用户直接在聊天中同意，你可以直接调用 kulo_apply_staged_changes 完成合并并自动收口卡片。",
     };
   }
 
@@ -6952,7 +7091,7 @@ export class KuloHub implements OrchestratorController {
   ): Promise<TicketCardView> {
     assertValidReplyReference(params.replyTo);
     const intent = suppliedIntent ?? clientDeliveryIntent({ type: "ticket.steer", ticketId: params.ticketId, commandId: params.commandId,
-      text: params.text, attachments: params.attachments, replyTo: params.replyTo, ...(params.resetRecovery ? { resetRecovery: true } : {}), ...(params.interrupt ? { interrupt: true } : {}) }, params.principalId);
+      text: params.text, attachments: params.attachments, replyTo: params.replyTo, ...(params.decisionOptionId ? { decisionOptionId: params.decisionOptionId } : {}), ...(params.resetRecovery ? { resetRecovery: true } : {}), ...(params.interrupt ? { interrupt: true } : {}) }, params.principalId);
     return this.#withDelivery(intent, context, () => this.#queueTicketOperation(params.ticketId, () => this.#steerTicket(params, context, intent)), (receipt) => this.#receiptTicket(receipt, context));
   }
 
@@ -6965,8 +7104,107 @@ export class KuloHub implements OrchestratorController {
     const snapshot = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = snapshot?.tickets[params.ticketId];
     if (!ticket) throw new Error(`Ticket '${params.ticketId}' not found`);
+    let effectiveText = params.text;
+    if (params.originConversationId === undefined && ticket.waiting?.requestId) {
+      const pending = await this.actionConfirmations.getById(ticket.waiting.requestId, context);
+      if (pending && pending.payload.kind === "host_action" && (pending.status === "pending" || pending.status === "pending_orchestrator")) {
+        const payload = pending.payload;
+        if (params.decisionOptionId === "confirm") {
+          const resolved = await this.actionConfirmations.resolveProgrammatically(
+            pending.id,
+            { status: "approved", selectedChoiceId: "confirm", resultSummary: "已在任务详情允许", markExecuted: true },
+            context,
+          );
+          if (resolved) {
+            try {
+              const result = await this.envManager.requestHostAction(payload.envId, {
+                kind: "run",
+                commands: payload.commands,
+                ...(payload.cwd ? { cwd: payload.cwd } : {}),
+                ...(payload.timeoutMs !== undefined ? { timeoutMs: payload.timeoutMs } : {}),
+              });
+              const safeOut = this.connectionManager.redact(JSON.stringify(result));
+              effectiveText = `用户已批准并在 ${payload.envName} (${payload.envId}) 上执行完成本机操作「${payload.summary}」。执行结果：\n${safeOut}\n请基于实际执行结果继续验证并完成当前任务。`;
+            } catch (error) {
+              const errMsg = this.connectionManager.redact(error instanceof Error ? error.message : "本机操作执行失败");
+              effectiveText = `用户已批准在 ${payload.envName} (${payload.envId}) 上执行本机操作「${payload.summary}」，但执行失败：${errMsg}\n请基于实际执行结果继续处理或向主智能体汇报。`;
+            }
+          }
+        } else if (params.decisionOptionId === "cancel") {
+          await this.actionConfirmations.resolveProgrammatically(
+            pending.id,
+            { status: "denied", selectedChoiceId: "cancel", resultSummary: "已在任务详情拒绝", markExecuted: true },
+            context,
+          );
+          effectiveText = `用户拒绝了在 ${payload.envName} (${payload.envId}) 上执行的本机操作「${payload.summary}」。请勿再次尝试同一操作，改用其他方案或直接向主智能体汇报。`;
+        } else {
+          // User typed custom manual text in Task Detail for a pending host_action -> hand off to Main Agent!
+          const manualText = this.connectionManager.redact(params.text.trim());
+          if (pending.cardId) {
+            await this.uiCards.settle(pending.cardId, { status: "submitted", resultSummary: "已在任务详情补充说明" });
+            await this.actionConfirmations.resolveFromUiSubmit(
+              pending.cardId,
+              Object.entries(pending.actionMap).find(([, logical]) => logical === "manual")?.[0] ?? "",
+              { instruction: manualText },
+              context,
+            );
+          }
+          const originConvId = (ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) as ConversationId;
+          const originConv = await this.harness.conversation(originConvId, context);
+          const updatedCard = await this.harness.commit(async (tx) => {
+            const state = await tx.doc(KuloStateDoc);
+            const live = state.tickets[params.ticketId];
+            if (!live) throw new Error(`Ticket '${params.ticketId}' not found`);
+            recordProcessedCommand(state, cleanCmdId, live.id, "steer");
+            await writeDeliveryReceipt(tx, intent, { ticketId: live.id });
+            live.waiting = {
+              reason: "coordinator",
+              since: Date.now(),
+              detail: manualText || live.waiting?.detail,
+              waitToken: `host-action-req:${pending.id}`,
+              requestId: pending.id,
+            };
+            live.updatedAt = Date.now();
+            if (originConv) {
+              await injectEventToolsInTx(tx, originConv.id, ["kulo_host_action_decide"]);
+              await submitAutomaticChatInput(tx, originConv, {
+                type: "input",
+                content: `[KULO_USER_TASK_INSTRUCTION]\n用户在任务「${live.title}」（${live.id}）的待确认本机操作（request_id="${pending.id}"）中手动输入了说明：\n${manualText}\n请结合用户说明调用 kulo_host_action_decide(approve/deny) 或 kulo_steer 处理。`,
+                whenBusy: "followUp",
+                requestId: `kulo:task-manual:${pending.id}:${cleanCmdId ?? randomUUID()}`,
+              });
+            }
+            return toTicketCardView(live, this.#liveSettings.roles);
+          }, context);
+          if (!this.#recovering) this.harness.resume();
+          await this.#broadcastTickets(context);
+          return updatedCard;
+        }
+      }
+    }
+    if (ticket.waiting?.requestId || ticket.waiting?.cardId) {
+      const targetId = ticket.waiting.requestId ?? ticket.waiting.cardId!;
+      const pending = await this.actionConfirmations.getById(targetId, context);
+      if (pending && pending.payload.kind === "ticket_decision" && (pending.status === "pending" || pending.status === "pending_orchestrator")) {
+        await this.actionConfirmations.resolveProgrammatically(
+          pending.id,
+          {
+            status: "approved",
+            selectedChoiceId: params.decisionOptionId ?? "chat",
+            resultSummary: params.originConversationId !== undefined ? "已通过对话处理" : "已在任务详情确认",
+            markExecuted: true,
+          },
+          context,
+        );
+      } else if (!pending && ticket.waiting.cardId) {
+        await this.uiCards.settle(ticket.waiting.cardId, {
+          status: "submitted",
+          resultSummary: params.originConversationId !== undefined ? "已通过对话处理" : "已在任务详情确认",
+        });
+      }
+    }
     const assignmentSource = params.originConversationId === undefined
-      ? { intent: extractAgentDispatchIntent(params.text, this.#liveSettings.roles, this.envManager.listEnvs()) }
+      ? { intent: extractAgentDispatchIntent(effectiveText, this.#liveSettings.roles, this.envManager.listEnvs()) }
       : await this.#agentDispatchSource(params.originConversationId, params.originToolTaskId, context);
     if (assignmentSource.intent) {
       const choice = resolveAgentDispatch({ roles: this.#liveSettings.roles, intent: assignmentSource.intent, requestedRole: ticket.role,
@@ -6996,7 +7234,7 @@ export class KuloHub implements OrchestratorController {
     if (!workerConv) throw new Error(`Worker conversation for '${params.ticketId}' not found`);
     if (cleanCmdId && await this.harness.commit(tx => tx.submissionByRequest(workerConv.id, `kulo:steer:${cleanCmdId}`), context)) legacyDeliveryConflict();
     const attachmentIds = this.uploads.resolveAttachments(params.attachments).map((item) => item.record.id);
-    const protectedMessage = await this.connectionManager.processText(params.text, {
+    const protectedMessage = await this.connectionManager.processText(effectiveText, {
       requestId: cleanCmdId ? `steer:${ticket.id}:${cleanCmdId}` : undefined, replyText: params.replyTo?.text,
     });
     const prompt = protectedMessage.text.trim() || "请查看补充附件并继续原任务。";
@@ -8405,7 +8643,7 @@ export class KuloHub implements OrchestratorController {
         throw new UiCardError("content_scope_denied", "请在主对话中提交卡片。", 403);
       }
       const receipt = await this.uiCards.submit(input, { conversationId: card.originConversationId });
-      await this.#applyResolvedActionConfirmation(receipt, card.originConversationId, input.actionId);
+      await this.#applyResolvedActionConfirmation(receipt, card.originConversationId, input.actionId, input.values);
       return receipt;
     }
     const topicId = state?.conversationToTopic?.[String(card.originConversationId)];
@@ -8413,8 +8651,14 @@ export class KuloHub implements OrchestratorController {
     if (topic?.deletedAt) throw new UiCardError("content_scope_denied", "当前对话已删除。", 403);
     if (topic?.projectId) await this.projects.ensureAuthorized(topic.projectId, BACKGROUND_CONTEXT);
     const receipt = await this.uiCards.submit(input, { conversationId: card.originConversationId });
-    await this.#applyResolvedActionConfirmation(receipt, card.originConversationId, input.actionId);
+    await this.#applyResolvedActionConfirmation(receipt, card.originConversationId, input.actionId, input.values);
     return receipt;
+  }
+
+  async executeMemoryServiceJob(input: { jobId: string; clientId: string }) {
+    await this.memoryService.decide(input.jobId, input.clientId, "confirm");
+    await this.#waitBrieflyForMemoryJob(input.jobId, 4_000);
+    return this.memoryService.snapshot(input.clientId);
   }
 
   async confirmMemoryServiceOperation(input: {
@@ -8457,7 +8701,10 @@ export class KuloHub implements OrchestratorController {
         changes: [...input.job.changes],
       },
     });
-    return { cardId: confirmation.cardId, status: confirmation.status };
+    return {
+      cardId: confirmation.cardId!,
+      status: confirmation.status === "pending_orchestrator" ? "pending" : confirmation.status,
+    };
   }
 
   async #resolveHostActionTargetEnv(
@@ -8538,8 +8785,9 @@ export class KuloHub implements OrchestratorController {
     }
     validateHostMaintenanceCommands(input.commands);
     const { envId, envName } = await this.#resolveHostActionTargetEnv(caller, input.envId, context);
-    const permission = this.#liveSettings.executor.hostActionPermission ?? "ask";
-    if (permission === "always") {
+
+    // Main Agent holds full personal-assistant authority and executes host actions directly.
+    if (caller.kind === "orchestrator") {
       const result = await this.envManager.requestHostAction(
         envId,
         {
@@ -8553,13 +8801,11 @@ export class KuloHub implements OrchestratorController {
       return { status: "executed", envId, envName, result };
     }
 
-    if (caller.kind === "worker" && caller.isSubagent) {
-      throw new Error("当前执行权限为「需要授权」，子智能体无法直接弹出审批卡；请将待执行的命令清单返回给父级 Worker 统一发起确认。");
+    if (caller.isSubagent) {
+      throw new Error("子智能体不能直接申请本机运维操作；请将待执行的命令清单返回给父级 Worker，由父级 Worker 统一提交给主智能体研判。");
     }
 
-    const originConversationId = caller.kind === "worker"
-      ? (caller.originConversationId || Number(ROOT_CONVERSATION_ID))
-      : caller.conversationId;
+    const originConversationId = caller.originConversationId || Number(ROOT_CONVERSATION_ID);
     const state = await this.harness.snapshot(KuloStateDoc, context);
     const topicId = state?.conversationToTopic?.[String(originConversationId)];
     const topic = topicId ? state?.topics?.[topicId] : undefined;
@@ -8571,7 +8817,9 @@ export class KuloHub implements OrchestratorController {
       envId,
       commands: input.commands,
       cwd: input.cwd,
-      ...(caller.kind === "worker" ? { ticketId: caller.ticketId, runEpoch: caller.runEpoch, requestId: caller.callId } : { requestId: caller.callId }),
+      ticketId: caller.ticketId,
+      runEpoch: caller.runEpoch,
+      requestId: caller.callId,
     });
     const existing = await this.actionConfirmations.lookup(originConversationId, "host_action", fingerprint, context);
     if (existing?.status === "approved" && !existing.executed) {
@@ -8585,27 +8833,15 @@ export class KuloHub implements OrchestratorController {
         },
         context.abortSignal,
       );
-      await this.actionConfirmations.markExecuted(existing.cardId, context);
+      await this.actionConfirmations.markExecuted(existing.id, context);
       return { status: "executed", envId, envName, result };
     }
 
     const redactedSummary = this.connectionManager.redact(input.summary);
-    const redactedCommands = input.commands.map((cmd) => this.connectionManager.redact(cmd));
-    const built = buildHostActionConfirmCard({
-      envName,
-      summary: redactedSummary,
-      commands: redactedCommands,
-      cwd: input.cwd,
-    });
-    const { confirmation } = await this.actionConfirmations.ensurePendingCard({
+    const confirmation = await this.actionConfirmations.createPendingOrchestratorRequest({
       conversationId: originConversationId,
-      ...(topicId ? { topicId } : {}),
-      ...(caller.kind === "worker" ? { ticketId: caller.ticketId } : {}),
-      callId: caller.callId,
       kind: "host_action",
       fingerprint,
-      cardInput: built.input,
-      logicalIds: built.logicalIds,
       payload: {
         kind: "host_action",
         envId,
@@ -8614,53 +8850,252 @@ export class KuloHub implements OrchestratorController {
         commands: [...input.commands],
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-        ...(caller.kind === "worker" ? { ticketId: caller.ticketId, runEpoch: caller.runEpoch, requestId: caller.callId } : { requestId: caller.callId }),
+        ticketId: caller.ticketId,
+        runEpoch: caller.runEpoch,
+        requestId: caller.callId,
       },
     }, context);
 
-    if (caller.kind === "worker") {
-      const now = Date.now();
-      await this.harness.commit(async (tx) => {
-        const doc = await tx.doc(KuloStateDoc);
-        const ticket = doc.tickets[caller.ticketId];
-        if (!ticket || ticket.status !== "running" || ticket.runEpoch !== caller.runEpoch) return;
-        ticket.waiting = {
-          reason: "user",
-          since: now,
-          detail: redactedSummary,
-          waitToken: `host-action:${confirmation.cardId}`,
-        };
-        ticket.updatedAt = now;
-      }, context);
-      this.#notifyInlineWaiters(caller.ticketId);
-      await this.#broadcastTickets(context);
-    }
+    const now = Date.now();
+    await this.harness.commit(async (tx) => {
+      const doc = await tx.doc(KuloStateDoc);
+      const ticket = doc.tickets[caller.ticketId];
+      if (!ticket || ticket.status !== "running" || ticket.runEpoch !== caller.runEpoch) return;
+      ticket.waiting = {
+        reason: "coordinator",
+        since: now,
+        detail: redactedSummary,
+        waitToken: `host-action-req:${confirmation.id}`,
+        requestId: confirmation.id,
+      };
+      ticket.updatedAt = now;
+    }, context);
+    this.#notifyInlineWaiters(caller.ticketId);
+    await this.#broadcastTickets(context);
 
     return {
-      status: "awaiting_user_confirmation",
-      cardId: confirmation.cardId,
+      status: "awaiting_orchestrator_decision",
+      requestId: confirmation.id,
       envId,
       envName,
-      message: caller.kind === "worker"
-        ? "已向用户发送本机操作确认卡片，当前任务已挂起等待授权。"
-        : "已向用户发送本机操作确认卡片，请结束本轮等待用户点击允许或取消。",
+      message: "已将本机操作申请提交给主智能体研判，当前任务已挂起等待裁决。",
+    };
+  }
+
+  async #relayHostActionRequest(ticketId: string): Promise<void> {
+    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+    const ticket = state?.tickets[ticketId];
+    if (
+      !ticket ||
+      ticket.status !== "waiting" ||
+      ticket.waiting?.reason !== "coordinator" ||
+      !ticket.waiting.waitToken?.startsWith("host-action-req:")
+    ) {
+      return;
+    }
+    const requestId = ticket.waiting.waitToken.slice("host-action-req:".length);
+    const confirmation = await this.actionConfirmations.getById(requestId, BACKGROUND_CONTEXT);
+    if (!confirmation || confirmation.status !== "pending_orchestrator" || confirmation.payload.kind !== "host_action") {
+      return;
+    }
+    const origin = await this.harness.conversation((ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) as ConversationId, BACKGROUND_CONTEXT);
+    if (!origin) return;
+    const payload = confirmation.payload;
+    const redactedCommands = payload.commands.map((cmd) => this.connectionManager.redact(cmd));
+    const message = formatHostActionRequestMessage({
+      requestId: confirmation.id,
+      ticketId: ticket.id,
+      title: ticket.title,
+      envId: payload.envId,
+      envName: payload.envName,
+      cwd: payload.cwd,
+      summary: this.connectionManager.redact(payload.summary),
+      commands: redactedCommands,
+    });
+    await this.harness.commit(async (tx) => {
+      await injectEventToolsInTx(tx, origin.id, ["kulo_host_action_decide"]);
+      return submitAutomaticChatInput(tx, origin, {
+        type: "input",
+        content: this.connectionManager.redact(message),
+        whenBusy: "followUp",
+        requestId: `kulo:host-action-request:${confirmation.id}`,
+      });
+    }, BACKGROUND_CONTEXT);
+    if (!this.#recovering) this.harness.resume();
+    await this.#broadcastTickets(BACKGROUND_CONTEXT);
+  }
+
+  async #hostActionDecide(
+    caller: Extract<HostActionCaller, { kind: "orchestrator" }>,
+    input: {
+      requestId: string;
+      decision: "approve" | "deny" | "ask_user";
+      reason?: string;
+    },
+    context: Context,
+  ): Promise<HostActionDecideOutcome> {
+    const pending = await this.actionConfirmations.getById(input.requestId, context);
+    if (!pending || pending.payload.kind !== "host_action" || pending.conversationId !== caller.conversationId) {
+      throw new Error(`找不到属于当前会话的本机操作申请 '${input.requestId}'。`);
+    }
+    if (pending.executed || (pending.status !== "pending_orchestrator" && pending.status !== "pending")) {
+      return {
+        status: "already_resolved",
+        requestId: pending.id,
+        message: "该本机操作申请已被处理完成。",
+      };
+    }
+    const payload = pending.payload;
+
+    if (input.decision === "ask_user") {
+      const state = await this.harness.snapshot(KuloStateDoc, context);
+      const topicId = state?.conversationToTopic?.[String(caller.conversationId)];
+      const redactedSummary = this.connectionManager.redact(payload.summary);
+      const redactedReason = input.reason ? this.connectionManager.redact(input.reason) : undefined;
+      const redactedCommands = payload.commands.map((cmd) => this.connectionManager.redact(cmd));
+      const built = buildHostActionConfirmCard({
+        envName: payload.envName,
+        summary: redactedSummary,
+        commands: redactedCommands,
+        cwd: payload.cwd,
+        reason: redactedReason,
+      });
+      const { confirmation } = await this.actionConfirmations.attachCardToRequest(
+        pending.id,
+        {
+          ...(topicId ? { topicId } : {}),
+          ...(payload.ticketId ? { ticketId: payload.ticketId } : {}),
+          callId: caller.callId,
+          cardInput: built.input,
+          logicalIds: built.logicalIds,
+        },
+        context,
+      );
+      if (payload.ticketId) {
+        const now = Date.now();
+        await this.harness.commit(async (tx) => {
+          const doc = await tx.doc(KuloStateDoc);
+          const ticket = doc.tickets[payload.ticketId!];
+          if (!ticket || !isTicketUnfinished(ticket)) return;
+          ticket.waiting = {
+            reason: "user",
+            since: now,
+            detail: redactedReason ? `${redactedSummary}（${redactedReason}）` : redactedSummary,
+            waitToken: `host-action:${confirmation.cardId}`,
+            cardId: confirmation.cardId,
+            requestId: confirmation.id,
+            options: [
+              { id: "confirm", label: "允许", tone: "primary" },
+              { id: "cancel", label: "拒绝", tone: "secondary" },
+            ],
+          };
+          ticket.updatedAt = now;
+        }, context);
+        await this.#broadcastTickets(context);
+      }
+      return {
+        status: "awaiting_user_confirmation",
+        requestId: confirmation.id,
+        cardId: confirmation.cardId!,
+        envId: payload.envId,
+        envName: payload.envName,
+        message: "已向用户弹出本机操作确认卡片（含允许/拒绝/手动输入），对话不阻塞；若用户直接在聊天中回复，你可以再次调用 kulo_host_action_decide 直接执行并自动收口该卡片。",
+      };
+    }
+
+    const openCardId = pending.cardId;
+    if (input.decision === "deny") {
+      const resolved = await this.actionConfirmations.resolveProgrammatically(
+        pending.id,
+        {
+          status: "denied",
+          selectedChoiceId: "cancel",
+          resultSummary: openCardId ? "已通过对话拒绝" : "主智能体已拒绝",
+          markExecuted: true,
+        },
+        context,
+      );
+      if (!resolved) {
+        return { status: "already_resolved", requestId: pending.id, message: "该本机操作申请已被处理完成。" };
+      }
+      if (payload.ticketId) {
+        const reasonText = input.reason ? this.connectionManager.redact(input.reason) : "主智能体评估后拒绝了该本机操作。";
+        await this.steerTicket({
+          ticketId: payload.ticketId,
+          commandId: `host-action:${resolved.id}:denied`,
+          text: `主智能体拒绝了在 ${payload.envName} (${payload.envId}) 上执行的本机操作「${payload.summary}」。原因/指引：${reasonText}\n请勿重复同一操作，按指引调整方案或向主智能体汇报。`,
+          originConversationId: caller.conversationId,
+        }, context);
+      }
+      return {
+        status: "denied",
+        requestId: resolved.id,
+        ...(payload.ticketId ? { ticketId: payload.ticketId } : {}),
+        ...(openCardId ? { settledCardId: openCardId } : {}),
+        message: "已拒绝该本机操作并通知 Worker 调整方案。",
+      };
+    }
+
+    // decision === "approve"
+    const resolved = await this.actionConfirmations.resolveProgrammatically(
+      pending.id,
+      {
+        status: "approved",
+        selectedChoiceId: "confirm",
+        resultSummary: openCardId ? "已通过对话允许" : "主智能体已允许",
+        markExecuted: true,
+      },
+      context,
+    );
+    if (!resolved) {
+      return { status: "already_resolved", requestId: pending.id, message: "该本机操作申请已被处理完成。" };
+    }
+    const result = await this.envManager.requestHostAction(
+      payload.envId,
+      {
+        kind: "run",
+        commands: payload.commands,
+        ...(payload.cwd ? { cwd: payload.cwd } : {}),
+        ...(payload.timeoutMs !== undefined ? { timeoutMs: payload.timeoutMs } : {}),
+      },
+      context.abortSignal,
+    );
+    if (payload.ticketId) {
+      const safeOut = this.connectionManager.redact(JSON.stringify(result));
+      const summaryText = `主智能体已批准并在 ${payload.envName} (${payload.envId}) 上执行完成本机操作「${payload.summary}」。执行结果：\n${safeOut}`;
+      await this.steerTicket({
+        ticketId: payload.ticketId,
+        commandId: `host-action:${resolved.id}:approved`,
+        text: `${summaryText}\n请基于实际执行结果继续验证并完成当前任务。`,
+        originConversationId: caller.conversationId,
+      }, context);
+    }
+    return {
+      status: "executed",
+      requestId: resolved.id,
+      envId: payload.envId,
+      envName: payload.envName,
+      result,
+      ...(openCardId ? { settledCardId: openCardId } : {}),
+      message: "已批准并执行完成，Worker 已恢复继续推进（如无需向用户汇报，可直接回复 [COORDINATOR_OK]）。",
     };
   }
 
   async #executeResolvedHostAction(
-    resolved: import("./action-confirmations.js").PendingActionConfirmation,
+    resolved: PendingActionConfirmation,
     conversationId: number,
   ): Promise<void> {
     if (resolved.payload.kind !== "host_action" || resolved.executed) return;
     const payload = resolved.payload;
+    const refId = resolved.cardId ?? resolved.id;
     if (resolved.status !== "approved") {
-      await this.actionConfirmations.markExecuted(resolved.cardId);
+      await this.actionConfirmations.markExecuted(resolved.id);
       if (payload.ticketId) {
         try {
           await this.steerTicket({
             ticketId: payload.ticketId,
-            commandId: `host-action:${resolved.cardId}:denied`,
-            text: `用户取消了在 ${payload.envName} (${payload.envId}) 上执行的本机操作「${payload.summary}」。请勿再次尝试同一操作，直接按现状向主智能体汇报。`,
+            commandId: `host-action:${refId}:denied`,
+            text: `用户拒绝了在 ${payload.envName} (${payload.envId}) 上执行的本机操作「${payload.summary}」。请勿再次尝试同一操作，直接按现状向主智能体汇报。`,
           });
         } catch (error) {
           console.warn("[KuloConfirmation] Failed to resume worker after host action denial", error instanceof Error ? error.message : String(error));
@@ -8677,11 +9112,11 @@ export class KuloHub implements OrchestratorController {
         ...(payload.cwd ? { cwd: payload.cwd } : {}),
         ...(payload.timeoutMs !== undefined ? { timeoutMs: payload.timeoutMs } : {}),
       });
-      await this.actionConfirmations.markExecuted(resolved.cardId);
+      await this.actionConfirmations.markExecuted(resolved.id);
       const safeOut = this.connectionManager.redact(JSON.stringify(result));
       summaryText = `用户已批准并在 ${payload.envName} (${payload.envId}) 上执行完成本机操作「${payload.summary}」。执行结果：\n${safeOut}`;
     } catch (error) {
-      await this.actionConfirmations.markExecuted(resolved.cardId);
+      await this.actionConfirmations.markExecuted(resolved.id);
       const errMsg = this.connectionManager.redact(error instanceof Error ? error.message : "本机操作执行失败");
       summaryText = `用户已批准在 ${payload.envName} (${payload.envId}) 上执行本机操作「${payload.summary}」，但执行失败：${errMsg}`;
     }
@@ -8690,7 +9125,7 @@ export class KuloHub implements OrchestratorController {
       try {
         await this.steerTicket({
           ticketId: payload.ticketId,
-          commandId: `host-action:${resolved.cardId}:approved`,
+          commandId: `host-action:${refId}:approved`,
           text: `${summaryText}\n请基于实际执行结果继续验证并完成当前任务。`,
         });
       } catch (error) {
@@ -8707,7 +9142,7 @@ export class KuloHub implements OrchestratorController {
             type: "input",
             content: `[KULO_HOST_ACTION_RESULT]\n${summaryText}\n请用当前对话语言向用户简洁反馈实际执行结果，不要暴露内部卡片或工单编号。`,
             whenBusy: "followUp",
-            requestId: `kulo:host-action-result:${resolved.cardId}`,
+            requestId: `kulo:host-action-result:${refId}`,
           }),
         BACKGROUND_CONTEXT,
       );
@@ -8736,10 +9171,55 @@ export class KuloHub implements OrchestratorController {
     receipt: UiActionReceipt,
     conversationId: number,
     actionId: string,
+    values?: import("@kulo/protocol").UiValues,
   ): Promise<void> {
     if (receipt.deduplicated) return;
-    const resolved = await this.actionConfirmations.resolveFromUiSubmit(receipt.cardId, actionId);
+    const resolved = await this.actionConfirmations.resolveFromUiSubmit(receipt.cardId, actionId, values);
     if (!resolved) return;
+
+    if (resolved.selectedChoiceId === "manual") {
+      const toolsToInject: string[] = [];
+      let ticketId: string | undefined;
+      if (resolved.payload.kind === "host_action") {
+        toolsToInject.push("kulo_host_action_decide");
+        ticketId = resolved.payload.ticketId;
+      } else if (resolved.payload.kind === "external_permission") {
+        toolsToInject.push("kulo_external_permission");
+        ticketId = resolved.payload.ticketId;
+      } else if (resolved.payload.kind === "ticket_decision") {
+        toolsToInject.push("kulo_ticket_ask_user");
+        ticketId = resolved.payload.ticketId;
+      } else if (resolved.payload.kind === "staged_apply") {
+        toolsToInject.push("kulo_apply_staged_changes");
+        ticketId = resolved.payload.ticketId;
+      } else if (resolved.payload.kind === "customization_validate") {
+        toolsToInject.push("kulo_customization");
+      } else if (resolved.payload.kind === "memory_service_operation") {
+        toolsToInject.push("kulo_memory_service_read", "kulo_memory_service_prepare");
+      }
+      await this.harness.commit(async (tx) => {
+        if (toolsToInject.length > 0) {
+          await injectEventToolsInTx(tx, conversationId, toolsToInject);
+        }
+        if (ticketId) {
+          const doc = await tx.doc(KuloStateDoc);
+          const ticket = doc.tickets[ticketId];
+          if (ticket && ticket.status === "waiting" && ticket.waiting?.reason === "user") {
+            ticket.waiting = {
+              reason: "coordinator",
+              since: Date.now(),
+              detail: resolved.manualInstruction || ticket.waiting.detail,
+              ...(resolved.payload.kind === "host_action" ? { waitToken: `host-action-req:${resolved.id}` } : {}),
+              requestId: resolved.id,
+            };
+            ticket.updatedAt = Date.now();
+          }
+        }
+      }, BACKGROUND_CONTEXT);
+      if (ticketId) await this.#broadcastTickets(BACKGROUND_CONTEXT);
+      return;
+    }
+
     if (resolved.payload.kind === "memory_service_operation") {
       const decision = resolved.status === "approved" ? "confirm" : "reject";
       try {
@@ -8747,7 +9227,7 @@ export class KuloHub implements OrchestratorController {
         if (decision === "confirm") {
           await this.#waitBrieflyForMemoryJob(resolved.payload.jobId, 4_000);
         }
-        await this.actionConfirmations.markExecuted(resolved.cardId);
+        await this.actionConfirmations.markExecuted(resolved.id);
       } catch (error) {
         console.warn("[KuloConfirmation] Memory service operation skipped", error instanceof Error ? error.message : String(error));
       }
@@ -8775,6 +9255,22 @@ export class KuloHub implements OrchestratorController {
       return;
     }
     if (resolved.status !== "approved") return;
+    if (resolved.payload.kind === "ticket_decision" && resolved.selectedChoiceId) {
+      try {
+        const chosen = resolved.payload.options.find((opt) => opt.id === resolved.selectedChoiceId);
+        const answerText = chosen?.value ?? chosen?.label ?? resolved.selectedChoiceId;
+        await this.actionConfirmations.markExecuted(resolved.id);
+        await this.steerTicket({
+          ticketId: resolved.payload.ticketId,
+          commandId: `ticket-decision:${resolved.cardId ?? resolved.id}`,
+          text: answerText,
+          decisionOptionId: resolved.selectedChoiceId,
+        });
+      } catch (error) {
+        console.warn("[KuloConfirmation] Ticket decision resume skipped", error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
     if (resolved.payload.kind === "external_permission" && resolved.selectedChoiceId) {
       try {
         await this.respondExternalAgentPermission(
@@ -8783,7 +9279,7 @@ export class KuloHub implements OrchestratorController {
           resolved.selectedChoiceId,
           resolved.payload.runEpoch,
         );
-        await this.actionConfirmations.markExecuted(resolved.cardId);
+        await this.actionConfirmations.markExecuted(resolved.id);
       } catch (error) {
         console.warn("[KuloConfirmation] External permission execution skipped", error instanceof Error ? error.message : String(error));
       }
@@ -8798,7 +9294,7 @@ export class KuloHub implements OrchestratorController {
           allowConflicts: resolved.payload.allowConflicts,
           originConversationId: conversationId,
         });
-        await this.actionConfirmations.markExecuted(resolved.cardId);
+        await this.actionConfirmations.markExecuted(resolved.id);
       } catch (error) {
         console.warn("[KuloConfirmation] Staged apply execution skipped", error instanceof Error ? error.message : String(error));
       }
@@ -9033,6 +9529,22 @@ export class KuloHub implements OrchestratorController {
           retained.add("kulo_inspect");
           retained.add("kulo_external_permission");
         }
+        if (
+          ticket.status === "waiting" &&
+          (ticket.waiting?.reason === "coordinator" || ticket.waiting?.reason === "user")
+        ) {
+          if (ticket.waiting.waitToken?.startsWith("host-action")) {
+            retained.add("kulo_host_action_decide");
+          } else if (ticket.latestReport?.state === "blocked" || ticket.waiting.reason === "coordinator") {
+            retained.add("kulo_ticket_ask_user");
+          }
+        }
+      }
+      const pendingConfirmations = await this.actionConfirmations.listPendingForConversation(convNum, context);
+      for (const pending of pendingConfirmations) {
+        if (pending.kind === "host_action") retained.add("kulo_host_action_decide");
+        if (pending.kind === "external_permission") retained.add("kulo_external_permission");
+        if (pending.kind === "ticket_decision") retained.add("kulo_ticket_ask_user");
       }
       if (
         connSnap.requests.some(
@@ -9566,8 +10078,12 @@ export class KuloHub implements OrchestratorController {
         nextAt = null;
         return;
       }
-      if (target.status === "blocked" || target.status === "waiting" && target.waiting?.reason === "user") {
-        // The Worker's blocker relay already handed this decision to the user.
+      if (
+        target.status === "blocked" ||
+        (target.status === "waiting" &&
+          (target.waiting?.reason === "user" || target.waiting?.reason === "coordinator"))
+      ) {
+        // The Worker's blocker relay already handed this decision to the coordinator/user.
         recovery.state = "exhausted";
         recovery.notifiedAt ??= target.latestReport?.at ?? now;
         recovery.nextAttemptAt = undefined;

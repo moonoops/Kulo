@@ -70,7 +70,7 @@ function page() {
       numbers: findElements<ComponentProps<typeof SettingsNumberField>>(tree, SettingsNumberField),
       switches: findElements<ComponentProps<typeof Switch>>(tree, Switch),
       select: findElements<ComponentProps<typeof Select>>(tree, Select)[0]!,
-      permissionSelect: findElements<ComponentProps<typeof Select>>(tree, Select)[1]!,
+      selectCount: findElements<ComponentProps<typeof Select>>(tree, Select).length,
       button: (label: string) => {
         const result = findElements<ComponentProps<typeof Button>>(tree, Button).find((button) => button.props.children === label);
         if (!result) throw new Error(`Missing button: ${label}`);
@@ -276,13 +276,8 @@ describe("runtime preferences autosave", () => {
     expect(view.onDirty).toHaveBeenLastCalledWith(false);
   });
 
-  it("saves hostActionPermission immediately when switched between ask and always", async () => {
-    const save = mockSaves();
+  it("omits the deprecated hostActionPermission selector from ConcurrencyModule", () => {
     const view = page();
-    expect(view.render().permissionSelect.props.value).toBe("ask");
-    view.render().permissionSelect.props.onChange?.("always");
-    await vi.waitFor(() => expect(view.onUpdated).toHaveBeenCalledOnce());
-    expect(save).toHaveBeenCalledWith("executor", 1, { ...initialValue, hostActionPermission: "always" });
-    expect(view.render().permissionSelect.props.value).toBe("always");
+    expect(view.render().selectCount).toBe(1);
   });
 });

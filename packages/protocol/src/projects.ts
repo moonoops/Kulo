@@ -50,13 +50,27 @@ export interface ProjectDirectoryGrant {
   platform?: string;
 }
 
+export interface TicketWaitOption {
+  id: string;
+  label: string;
+  tone?: "primary" | "secondary" | "danger";
+  /** Optional exact reply text sent when selected (defaults to label). */
+  value?: string;
+}
+
 export interface TicketWait {
-  reason: "user" | "env" | "time" | "external" | "project" | "connection";
+  reason: "user" | "env" | "time" | "external" | "project" | "connection" | "coordinator";
   since: number;
   until?: number;
   detail?: string;
   externalJobIds?: string[];
   waitToken?: string;
+  /** Structured quick-action choices surfaced alongside optional manual input. */
+  options?: TicketWaitOption[];
+  /** Linked interactive confirmation card ID in the origin chat conversation. */
+  cardId?: string;
+  /** Linked pending confirmation/request ID (e.g. host_action / external_permission). */
+  requestId?: string;
 }
 
 export interface StagedWorkspacePrepareResult {

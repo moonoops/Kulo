@@ -1,7 +1,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, defineTool, section, type Harness } from "@earendil-works/pi-durable";
-import { obj, oneOf, opt, str } from "@earendil-works/pi-schema";
-import type { MemoryServiceJob, MemoryServicePrepareRequest, ProviderCatalogItem } from "@kulo/protocol";
+import { bool, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
+import type { MemoryServiceJob, MemoryServicePrepareRequest, MemoryServiceSnapshot, ProviderCatalogItem } from "@kulo/protocol";
 import { SettingsAssistantDoc, type SettingsAssistant } from "./settings-assistant.js";
 import { isActiveSettingsConversation, isMainOrchestratorApi } from "./settings-doc.js";
 import { resolveDeferredAddTools } from "./tool-surface.js";
@@ -18,6 +18,10 @@ interface MemorySetupHost {
     callId: string;
     job: MemoryServiceJob;
   }): Promise<{ cardId: string; status: "pending" | "approved" | "denied" }>;
+  executeMemoryServiceJob?(input: {
+    jobId: string;
+    clientId: string;
+  }): Promise<MemoryServiceSnapshot>;
 }
 const output = (value: unknown) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }] });
 
@@ -70,11 +74,15 @@ export function createMemorySetupExtension(get: () => MemorySetupHost) {
       }),
       defineTool({
         name: "kulo_memory_service_prepare",
-        description: "Prepare a user confirmation card for Hub host local Hindsight `deploy`, memory-model `configure`, or `uninstall` (`config` JSON allows `model` or `deleteData` only, no secrets; `uninstall` keeps data by default; read status first with `kulo_memory_service_read`). 关键词：卸载 Hindsight 删除记忆服务 部署记忆服务 配置 Hindsight",
-        parameters: obj({ operation: oneOf(["deploy", "configure", "uninstall"]), config: opt(str()) }),
+        description: "Manage Hub host local Hindsight: `deploy`, memory-model `configure`, `uninstall`, or toggle long-term memory `enable` / `disable` (with connection health check on `enable`; read status first via `kulo_memory_service_read`). In main chat, executes directly with main-Agent authority by default; set `ask_user=true` if you want a user confirmation card first (`config` JSON allows `model` or `deleteData` only, no secrets). 关键词：卸载 Hindsight 删除记忆服务 部署记忆服务 配置 Hindsight 开启长期记忆 关闭长期记忆 打开记忆开关",
+        parameters: obj({
+          operation: oneOf(["deploy", "configure", "uninstall", "enable", "disable"]),
+          config: opt(str()),
+          ask_user: opt(bool({ description: "Main chat only: set true to show a confirmation card before executing deploy/configure/uninstall." })),
+        }),
         deferred: true,
         replay: "safe",
-        execute: async ({ operation, config }, api, context) => {
+        execute: async ({ operation, config, ask_user }, api, context) => {
           const { allowed, isSettings } = await isMainOrchestratorApi(api, context);
           if (!allowed) {
             return { isError: true, output: [{ type: "text" as const, text: "仅主会话或设置助手可管理本机记忆服务。" }] };
@@ -82,12 +90,19 @@ export function createMemorySetupExtension(get: () => MemorySetupHost) {
           const clientId = isSettings
             ? (await get().settingsAssistant.memoryContext()).clientId
             : mainChatMemoryClientId(Number(api.conversationId));
-          if (config && config.length > 8000) throw new Error("配置内容过长。");
-          const value = config ? JSON.parse(config) as Record<string, unknown> : {};
-          if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["model", "deleteData"].includes(key))) throw new Error("配置字段无效；连接信息请在左侧表单填写，模型凭据请使用保密输入。");
           const state = await get().harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
           const revision = state?.observedRevisions.memory;
           if (revision === undefined) throw new Error("请先读取记忆服务状态。");
+          if (operation === "enable" || operation === "disable") {
+            const snapshot = await get().memoryService.setEnabled(operation === "enable", revision);
+            await get().harness.commit(async (tx) => {
+              (await tx.doc(SettingsAssistantDoc)).observedRevisions.memory = snapshot.revision;
+            }, BACKGROUND_CONTEXT);
+            return output({ status: operation === "enable" ? "enabled" : "disabled", snapshot });
+          }
+          if (config && config.length > 8000) throw new Error("配置内容过长。");
+          const value = config ? JSON.parse(config) as Record<string, unknown> : {};
+          if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["model", "deleteData"].includes(key))) throw new Error("配置字段无效；连接信息请在左侧表单填写，模型凭据请使用保密输入。");
           const commandId = memoryCommandId(api.callId);
           const snapshot = await get().memoryService.prepare({ ...value, operation, commandId, clientId, expectedRevision: revision } as MemoryServicePrepareRequest);
           if (isSettings) return output(snapshot);
@@ -100,18 +115,32 @@ export function createMemorySetupExtension(get: () => MemorySetupHost) {
               note: "该操作需要输入新的 API 密钥；请勿在对话中要求用户发送密钥，可调用 kulo_settings_navigate(module='identity') 引导用户在设置页安全填写。",
             });
           }
-          if (job?.status === "awaiting-confirmation" && get().confirmMemoryServiceOperation) {
-            const confirmation = await get().confirmMemoryServiceOperation!({
-              conversationId: Number(api.conversationId),
-              callId: api.callId,
-              job,
-            });
-            return output({
-              status: "awaiting_user_confirmation",
-              cardId: confirmation.cardId,
-              job,
-              snapshot,
-            });
+          if (job?.status === "awaiting-confirmation") {
+            if (ask_user === true && get().confirmMemoryServiceOperation) {
+              const confirmation = await get().confirmMemoryServiceOperation!({
+                conversationId: Number(api.conversationId),
+                callId: api.callId,
+                job,
+              });
+              return output({
+                status: "awaiting_user_confirmation",
+                cardId: confirmation.cardId,
+                job,
+                snapshot,
+              });
+            }
+            if (get().executeMemoryServiceJob) {
+              const executed = await get().executeMemoryServiceJob!({ jobId: job.id, clientId });
+              await get().harness.commit(async (tx) => {
+                (await tx.doc(SettingsAssistantDoc)).observedRevisions.memory = executed.revision;
+              }, BACKGROUND_CONTEXT);
+              const updatedJob = executed.jobs.find((item) => item.id === job.id) ?? job;
+              return output({
+                status: updatedJob.status,
+                job: updatedJob,
+                snapshot: executed,
+              });
+            }
           }
           return output(snapshot);
         },

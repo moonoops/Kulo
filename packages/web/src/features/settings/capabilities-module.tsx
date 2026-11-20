@@ -11,7 +11,7 @@ import { useSettingsNavigation } from "./use-settings-navigation";
 import { ComputerUseModule } from "./computer-use-module";
 import { SkillsModule } from "./skills-module";
 import { ImageCapabilitiesPanel } from "./image-capabilities-panel";
-import { CAPABILITY_VIEWS, CONNECT_FLOW_PROMPT, capabilityStatusColor, capabilityStatusLabel, capabilityTargetView, type CapabilityView } from "./capability-views";
+import { CAPABILITY_VIEWS, capabilityStatusColor, capabilityStatusLabel, capabilityTargetView, getConnectFlowPrompt, type CapabilityView } from "./capability-views";
 
 export { capabilityStatusLabel } from "./capability-views";
 export { skillStatusLabel } from "./skills-module";
@@ -144,7 +144,7 @@ export function CapabilitiesModule({ snapshot, settings, loading, error, connect
       </Tabs.Panel>
       <Tabs.Panel id="voice"><VoiceModule connected={connected} settings={settings} disabled={requestsDisabled} onDirtyChange={setVoiceDirty} onOpenModels={onOpenModels} /></Tabs.Panel>
       <Tabs.Panel id="video">
-        <SettingsSection title={t("视频连接", "Video connections")} action={<Button variant="secondary" size="sm" isDisabled={actionDisabled} onPress={() => onRequest(undefined, CONNECT_FLOW_PROMPT)}>{t("连接 Google Flow", "Connect Google Flow")}</Button>}>
+        <SettingsSection title={t("视频连接", "Video connections")} action={<Button variant="secondary" size="sm" isDisabled={actionDisabled} onPress={() => onRequest(undefined, getConnectFlowPrompt())}>{t("连接 Google Flow", "Connect Google Flow")}</Button>}>
           <MediaCapabilitiesTable kind="video" snapshot={snapshot} connected={connected} disabled={requestsDisabled} error={error} envs={envs} target={target} onRequest={onRequest} />
         </SettingsSection>
       </Tabs.Panel>

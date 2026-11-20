@@ -632,7 +632,9 @@ export class HostActionService {
         const [exe, ...args] = wrappedCommand;
         const child = spawn(exe!, args, {
           cwd: params.cwd,
-          stdio: ["ignore", "pipe", "pipe"],
+          // Keep stdin piped open until completion/termination: worker-supervisor watches stdin EOF
+          // as a parent-death signal and kills the supervised child group immediately on /dev/null EOF.
+          stdio: ["pipe", "pipe", "pipe"],
           env:
             process.platform === "win32"
               ? {
@@ -663,7 +665,16 @@ export class HostActionService {
         let settled = false;
         let timedOut = false;
 
+        child.stdin?.on("error", () => {
+          // Ignore EPIPE when the supervised command exits quickly.
+        });
+
         const terminate = () => {
+          try {
+            child.stdin?.end();
+          } catch {
+            // ignore
+          }
           try {
             child.kill("SIGTERM");
           } catch {
@@ -714,6 +725,11 @@ export class HostActionService {
           settled = true;
           clearTimeout(timer);
           params.signal.removeEventListener("abort", onAbort);
+          try {
+            child.stdin?.destroy();
+          } catch {
+            // ignore
+          }
           reject(error);
         });
 
@@ -722,6 +738,11 @@ export class HostActionService {
           settled = true;
           clearTimeout(timer);
           params.signal.removeEventListener("abort", onAbort);
+          try {
+            child.stdin?.destroy();
+          } catch {
+            // ignore
+          }
           if (timedOut) {
             reject(new Error("本机运维命令执行超时。"));
             return;

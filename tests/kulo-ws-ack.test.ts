@@ -633,7 +633,7 @@ describe("WebSocket Request ACK, Error Attribution & Idempotency Suite", () => {
         "hub.tickets",
         (m) =>
           m.tickets.some(
-            (t) => t.id === dispatched.id && t.status === "waiting" && t.waiting?.reason === "user",
+            (t) => t.id === dispatched.id && t.status === "waiting" && t.waiting?.reason === "coordinator",
           ),
       );
       expect(waiting.slots.used).toBe(0);

@@ -9,7 +9,7 @@ export interface SubmissionBackupInput {
   draftKey: string;
   envelope:
     | { type: "chat.send"; topicId: string; content: string; attachments?: ChatAttachment[]; replyTo?: ChatReplyReference; requestId: string; whenBusy: "steer"; targetDeviceId?: string }
-    | { type: "ticket.steer"; ticketId: string; text: string; attachments?: ChatAttachment[]; replyTo?: ChatReplyReference; commandId: string };
+    | { type: "ticket.steer"; ticketId: string; text: string; attachments?: ChatAttachment[]; replyTo?: ChatReplyReference; decisionOptionId?: string; commandId: string };
   rawUserText: string;
   draftAttachments: DraftAttachment[];
   state: SubmissionState;

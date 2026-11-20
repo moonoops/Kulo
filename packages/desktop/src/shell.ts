@@ -1,12 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, Notification, powerMonitor, session, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, powerMonitor, session, shell, systemPreferences, Tray } from "electron";
 import { RecoveryManager, readReleaseIdentity } from "@kulo/recovery";
 import { buildRuntimeEnvironment } from "./runtime-config.js";
 import { startNodeService, type NodeService } from "./child-service.js";
 import { DESKTOP_APP_NAME, desktopContentSecurityPolicy, desktopWindowChrome, externalHttpUrl, localHttpOrigin, parseDevelopmentMode, resolveDesktopDataDirectory, shouldAuthorizeDesktopRequest, type DevelopmentMode } from "./desktop-config.js";
 import { createDesktopMenuTemplate, createMainWindowCloseController, shouldRevealWindowForCommand, type DesktopAppCommand } from "./desktop-menu.js";
+import { configureDesktopPreferenceHandlers, createDesktopPreferencesStore, DESKTOP_PREFERENCES_CHANNELS } from "./desktop-preferences.js";
+import { createDesktopTrayController, loadDesktopTrayIcon } from "./desktop-tray.js";
 import { createDesktopFileActions, isTrustedFileActionSender, type DesktopFileConnection } from "./file-actions.js";
 import { createDesktopNotifications } from "./notifications.js";
 import { configureDesktopSystemPermissionHandlers, createDesktopSystemPermissions } from "./system-permissions.js";
@@ -40,6 +42,31 @@ let launchAttempt: Awaited<ReturnType<RecoveryManager["prepareLaunch"]>> | undef
 let recoveryRequestedFor: string | undefined;
 const uiReady = new DesktopStartupReady();
 const closeController = createMainWindowCloseController();
+const trayIconPath = fileURLToPath(new URL("../assets/kulo-trayTemplate.png", import.meta.url));
+const trayController = createDesktopTrayController({
+  appName: DESKTOP_APP_NAME,
+  platform: process.platform,
+  createTray: () => new Tray(loadDesktopTrayIcon(trayIconPath, (file) => nativeImage.createFromPath(file), process.platform)),
+  buildMenu: (template) => Menu.buildFromTemplate(template),
+  onFocusWindow: () => focusWindow(),
+  onNewTopic: () => dispatchWindowCommand("new-topic"),
+  onOpenSettings: () => dispatchWindowCommand("open-settings"),
+  onQuit: () => app.quit(),
+  onLog: (message) => log(message),
+});
+const desktopPreferences = createDesktopPreferencesStore({
+  dataDir,
+  onChange: (next) => {
+    trayController.sync(next.backgroundRunning);
+    if (!next.backgroundRunning && window && !window.isDestroyed() && !window.isVisible()) {
+      focusWindow();
+    }
+    if (window && !window.isDestroyed() && trustedRenderer(window.webContents.mainFrame?.origin)) {
+      window.webContents.send(DESKTOP_PREFERENCES_CHANNELS.changed, next);
+    }
+  },
+  onLog: (message) => log(message),
+});
 
 interface RuntimeReady { url: string; token: string }
 
@@ -213,17 +240,32 @@ function createWindow(): BrowserWindow {
     if (details.isMainFrame && !details.isSameDocument) closeController.clearPendingReload();
   });
   created.webContents.on("will-prevent-unload", (event) => {
-    closeController.handleWillPreventUnload(event, quitting, () => dialog.showMessageBoxSync(created, {
-      type: "question",
-      buttons: ["重新加载", "取消"],
-      defaultId: 1,
-      cancelId: 1,
-      title: DESKTOP_APP_NAME,
-      message: "重新加载将丢失未保存的修改",
-      detail: "当前设置存在尚未保存的草稿。是否放弃修改并重新加载界面？",
-    }) === 0);
+    const keepRunningInBackground = desktopPreferences.get().backgroundRunning;
+    closeController.handleWillPreventUnload(
+      event,
+      quitting,
+      () => dialog.showMessageBoxSync(created, {
+        type: "question",
+        buttons: ["重新加载", "取消"],
+        defaultId: 1,
+        cancelId: 1,
+        title: DESKTOP_APP_NAME,
+        message: "重新加载将丢失未保存的修改",
+        detail: "当前设置存在尚未保存的草稿。是否放弃修改并重新加载界面？",
+      }) === 0,
+      keepRunningInBackground,
+      () => dialog.showMessageBoxSync(created, {
+        type: "question",
+        buttons: ["放弃并退出", "取消"],
+        defaultId: 1,
+        cancelId: 1,
+        title: DESKTOP_APP_NAME,
+        message: "关闭窗口将丢失未保存的修改",
+        detail: "当前设置存在尚未保存的草稿。是否放弃修改并退出 Kulo？",
+      }) === 0,
+    );
   });
-  created.on("close", (event) => closeController.handleClose(event, created, quitting));
+  created.on("close", (event) => closeController.handleClose(event, created, quitting, desktopPreferences.get().backgroundRunning));
   created.on("leave-full-screen", () => closeController.handleLeaveFullScreen(created, quitting));
   created.on("closed", () => {
     closeController.clearPendingReload();
@@ -464,11 +506,15 @@ if (!lock) {
     } catch (error) { dialog.showErrorBox("无法进入开发模式", error instanceof Error ? error.message : "无效开发配置。"); }
   });
   app.on("activate", () => focusWindow());
-  app.on("window-all-closed", () => {});
+  app.on("window-all-closed", () => {
+    if (quitting || booting || recoveryDialog) return;
+    if (!desktopPreferences.get().backgroundRunning) app.quit();
+  });
   app.on("before-quit", (event) => {
     event.preventDefault();
     if (quitting) return;
     quitting = true;
+    trayController.dispose();
     controlWatcher?.close();
     controlWatcher = undefined;
     void Promise.all([stopServices(), fileActions.close()]).then(() => {
@@ -481,7 +527,9 @@ if (!lock) {
   void app.whenReady().then(() => {
     configureSession();
     configureFileActions();
+    configureDesktopPreferenceHandlers({ ipc: ipcMain, preferences: desktopPreferences, owner: () => window, rendererOrigin: () => rendererOrigin });
     configureDesktopSystemPermissionHandlers({ ipc: ipcMain, permissions: systemPermissions, owner: () => window, rendererOrigin: () => rendererOrigin });
+    trayController.sync(desktopPreferences.get().backgroundRunning);
     powerMonitor.on("resume", () => {
       if (quitting || !runtime?.child.connected) return;
       runtime.child.send({ type: "system-resume" }, () => {});

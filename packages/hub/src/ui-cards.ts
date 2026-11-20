@@ -242,6 +242,38 @@ export class KuloUiCards {
     return clone(outcome.receipt);
   }
 
+  async settle(
+    cardId: string,
+    resolution: {
+      status: "submitted" | "cancelled";
+      resultSummary: string;
+      committedState?: import("@kulo/protocol").UiValues;
+    },
+  ): Promise<UiCardSnapshot | undefined> {
+    let changed = false;
+    const updated = await this.#host.harness.commit(async (tx) => {
+      const doc = await tx.doc(UiCardsDoc);
+      const current = doc.cards[cardId];
+      if (!current) return undefined;
+      if (current.status !== "ready" && current.status !== "failed") return clone(current);
+      const nextCommitted = resolution.committedState
+        ? validateUiValues(getUiSpecFields(current.spec), resolution.committedState, false)
+        : clone(current.committedState);
+      const card: UiCardSnapshot = {
+        ...clone(current),
+        revision: current.revision + 1,
+        status: resolution.status,
+        committedState: nextCommitted,
+        resultSummary: resolution.resultSummary,
+      };
+      doc.cards[cardId] = clone(card);
+      changed = true;
+      return card;
+    }, BACKGROUND_CONTEXT);
+    if (changed && updated) await this.#host.onChange?.(clone(updated));
+    return updated ? clone(updated) : undefined;
+  }
+
   async stageAsset(input: UiAssetPublicationInput, source: UiCardSource, importAsset: () => Promise<ChatAttachment>, finalize?: (tx: Tx, asset: ChatAttachment) => Promise<void>): Promise<ChatAttachment> {
     return this.publishAsset(input, source, importAsset, finalize, "review");
   }

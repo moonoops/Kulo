@@ -1,7 +1,7 @@
 import type { ExecutorSlotsConfig, KuloSettingsView } from "@kulo/protocol";
 import { KuloApiError } from "../../kulo-api";
 
-export type ExecutorSetting = keyof ExecutorSlotsConfig;
+export type ExecutorSetting = Exclude<keyof ExecutorSlotsConfig, "hostActionPermission">;
 
 export function executorSettingValue<K extends ExecutorSetting>(value: ExecutorSlotsConfig, key: K): ExecutorSlotsConfig[K] {
   switch (key) {
@@ -10,7 +10,6 @@ export function executorSettingValue<K extends ExecutorSetting>(value: ExecutorS
     case "completedTaskDisplayHours": return (value[key] === undefined ? 3 : value[key]) as ExecutorSlotsConfig[K];
     case "autoArchiveEnabled": return (value[key] ?? true) as ExecutorSlotsConfig[K];
     case "autoArchiveDays": return (value[key] ?? 7) as ExecutorSlotsConfig[K];
-    case "hostActionPermission": return (value[key] === "always" ? "always" : "ask") as ExecutorSlotsConfig[K];
     default: return value[key];
   }
 }

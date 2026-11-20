@@ -1,8 +1,7 @@
 import { isValidElement, type ComponentProps, type ReactElement, type ReactNode } from "react";
-import { Select } from "@heroui/react";
+import { Select, Switch } from "@heroui/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecutorSlotsConfig, KuloSettingsView } from "@kulo/protocol";
-import { kuloRest } from "../../kulo-api";
 import { ConversationModelSettings } from "./conversation-model-settings";
 
 const hooks = vi.hoisted(() => ({ cells: [] as unknown[], cursor: 0, effects: [] as Array<() => void> }));
@@ -47,7 +46,6 @@ const baseExecutor: ExecutorSlotsConfig = {
   completedTaskDisplayHours: 3,
   autoArchiveEnabled: true,
   autoArchiveDays: 7,
-  hostActionPermission: "ask",
 };
 
 function makeSettings(executor: ExecutorSlotsConfig = baseExecutor, rev = 2): KuloSettingsView {
@@ -74,7 +72,7 @@ function findElements<P>(tree: ReactNode, type: unknown): ReactElement<P>[] {
   return results;
 }
 
-describe("ConversationModelSettings execution permission selector", () => {
+describe("ConversationModelSettings popover", () => {
   beforeEach(() => {
     hooks.cells = [];
     hooks.cursor = 0;
@@ -82,37 +80,20 @@ describe("ConversationModelSettings execution permission selector", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders '需要授权' by default and saves 'always' to the executor settings block", async () => {
-    let current = makeSettings();
-    const onUpdated = vi.fn((next: KuloSettingsView) => { current = next; });
-    const saveSpy = vi.spyOn(kuloRest, "saveSettingsBlock").mockImplementation(async (_block, rev, value) => ({
-      settings: makeSettings(value as ExecutorSlotsConfig, rev + 1),
-      summary: "saved",
-    }));
-
-    const render = () => {
-      hooks.cursor = 0;
-      hooks.effects = [];
-      const tree = ConversationModelSettings({
-        settings: current,
-        onSettingsUpdated: onUpdated,
-        showProcess: true,
-        onShowProcessChange: vi.fn(),
-      });
-      for (const effect of hooks.effects) effect();
-      return findElements<ComponentProps<typeof Select>>(tree, Select)[0]!;
-    };
-
-    const select = render();
-    expect(select.props.value).toBe("ask");
-    expect(select.props["aria-label"]).toBe("执行权限");
-
-    select.props.onChange?.("always");
-    await vi.waitFor(() => expect(onUpdated).toHaveBeenCalledOnce());
-    expect(saveSpy).toHaveBeenCalledWith("executor", 2, {
-      ...baseExecutor,
-      hostActionPermission: "always",
+  it("omits the deprecated execution permission selector and keeps the execution process switch", () => {
+    const onShowProcessChange = vi.fn();
+    const tree = ConversationModelSettings({
+      settings: makeSettings(),
+      onSettingsUpdated: vi.fn(),
+      showProcess: true,
+      onShowProcessChange,
     });
-    expect(render().props.value).toBe("always");
+    for (const effect of hooks.effects) effect();
+
+    expect(findElements<ComponentProps<typeof Select>>(tree, Select)).toHaveLength(0);
+    const processSwitch = findElements<ComponentProps<typeof Switch>>(tree, Switch)[0]!;
+    expect(processSwitch.props.isSelected).toBe(true);
+    processSwitch.props.onChange?.(false);
+    expect(onShowProcessChange).toHaveBeenCalledWith(false);
   });
 });

@@ -1,4 +1,4 @@
-import type { RolePreset } from "./domain.js";
+import type { KuloLanguage, RolePreset } from "./domain.js";
 
 /**
  * Legacy and localized role aliases so older transcripts, Chinese voice/chat mentions
@@ -122,20 +122,155 @@ export function resolveRolePresetFromPool(
   return { roleId: fallbackId, preset: roles[fallbackId] };
 }
 
-/**
- * Built-in default Worker role presets for Kulo's multi-role background execution pool
- * and Worker-level Subagent delegation. Prompts state domain methodology only;
- * runtime permissions, available tools, and subagent authority are injected dynamically.
- */
-export function defaultRolePresets(): Record<string, RolePreset> {
-  return {
-    scout: {
-      id: "scout",
+export interface BuiltinRoleTexts {
+  label: string;
+  whenToUse: string;
+  prompt: string;
+}
+
+export const BUILTIN_ROLE_TEXTS: Readonly<Record<string, Readonly<Record<KuloLanguage, BuiltinRoleTexts>>>> = {
+  scout: {
+    en: {
       label: "Scout",
       whenToUse:
         "Fast codebase reconnaissance, call-chain tracing, and primary-source web verification.",
       prompt:
         "Focus on fast, high-signal reconnaissance and fact-finding. Locate implementations, trace call chains, and check primary external sources when needed. Deliver concise conclusions with exact file paths, symbols, line numbers, and core mechanics rather than raw search logs or code dumps.",
+    },
+    "zh-CN": {
+      label: "侦察员",
+      whenToUse:
+        "快速检索代码、追踪调用链与联网核实一手资料。",
+      prompt:
+        "专注于快速、高信噪比的代码侦察与事实核查。定位实现、追踪调用链，并在需要时核实外部一手资料。交付精炼结论，附上精确文件路径、符号、行号与核心机制说明，而非原始搜索日志或大段代码堆砌。",
+    },
+  },
+  architect: {
+    en: {
+      label: "Architect",
+      whenToUse:
+        "Unclear boundaries, cross-module refactoring, system trade-offs, and coordinated multi-role execution.",
+      prompt:
+        "Inspect existing code, dependencies, and constraints before proposing a design, separating verified facts from assumptions. Favor the minimum viable architecture: define goals and non-goals, interfaces and data contracts, compatibility/migration steps, edge risks, and concrete verification steps without speculative over-engineering.",
+    },
+    "zh-CN": {
+      label: "架构师",
+      whenToUse:
+        "需求边界不清、跨模块重构、系统权衡取舍与多角色协作统筹。",
+      prompt:
+        "提出方案前先核实现有代码、依赖与约束，严格区分已验证事实与假设。遵循最小可行架构原则：明确目标与非目标、接口与数据契约、兼容迁移步骤、边界风险及可执行的验证步骤，避免脱离证据的过度设计。",
+    },
+  },
+  coder: {
+    en: {
+      label: "Coder",
+      whenToUse:
+        "Scoped feature implementation, multi-file edits, bug fixes, and build/test verification.",
+      prompt:
+        "Read target modules and surrounding conventions before editing. Make minimal, clean changes that preserve existing abstractions, compatibility, and security boundaries. Write or update targeted tests and run relevant typecheck, build, and test commands to verify your changes.",
+    },
+    "zh-CN": {
+      label: "开发者",
+      whenToUse:
+        "范围明确的功能实现、多文件修改、缺陷修复与构建测试验证。",
+      prompt:
+        "修改前先阅读目标模块及周边约定，做最小、干净的改动以守护既有抽象、兼容性与安全边界。编写或更新针对性测试，并运行相关的类型检查、构建与测试命令来验证结果。",
+    },
+  },
+  checker: {
+    en: {
+      label: "Checker",
+      whenToUse:
+        "Independent defect review, edge-case audit, security/concurrency check, and acceptance verification.",
+      prompt:
+        "Audit target changes, codebases, or designs independently without modifying project files. On large audits, maintain a checklist and evidence notes in the scratch directory so context compaction never drops coverage. Prioritize real correctness bugs, race conditions, security gaps, regressions, and missing test coverage; group findings by severity (high, medium, low) with exact locations, trigger conditions, and fix directions.",
+    },
+    "zh-CN": {
+      label: "检验员",
+      whenToUse:
+        "独立缺陷复核、边界审计、安全与并发检查以及验收验证。",
+      prompt:
+        "在不修改项目文件的前提下独立审视目标变更、代码库或设计方案。大型复核时在草稿目录维护核查清单与证据笔记，防止上下文压缩遗漏覆盖面。优先聚焦真实的正确性缺陷、并发竞态、安全缺口、回归与测试缺失；按严重程度（高、中、低）分级给出精确位置、触发条件与修复方向。",
+    },
+  },
+  designer: {
+    en: {
+      label: "Designer",
+      whenToUse:
+        "UI/UX layout, visual hierarchy, styling tokens, motion polish, and interactive HTML/component design.",
+      prompt:
+        "Establish clear visual hierarchy, spacing rhythm, typography, and theme consistency before building, consulting any listed design skills when available. Check contrast in both light and dark modes, narrow-viewport responsiveness, keyboard focus, reduced motion, and complete interactive states (default, hover, focus, loading, empty, error); verify UI code changes with relevant typecheck or build checks.",
+    },
+    "zh-CN": {
+      label: "设计师",
+      whenToUse:
+        "UI/UX 布局、视觉层级、样式 token、动效打磨以及交互式 HTML 与组件设计。",
+      prompt:
+        "动手构建前先确立清晰的视觉层级、间距节奏、排版与主题一致性，并按需参考可用的设计技能。核查明暗模式对比度、窄屏响应式、键盘焦点、减弱动效以及完整交互状态（默认、悬停、聚焦、加载、空态、错误）；涉及界面代码改动时通过类型检查或构建验证。",
+    },
+  },
+  writer: {
+    en: {
+      label: "Writer",
+      whenToUse:
+        "Technical documentation, research syntheses, README/guides updates, and structured written deliverables.",
+      prompt:
+        "Clarify audience, purpose, and structure first, grounding claims in verified repository code or primary sources. Distinguish verified facts, inferences, and recommendations, flagging uncertainties plainly rather than inventing citations. Modify only explicitly requested documentation files (or write standalone drafts in the scratch directory); never alter application source code.",
+    },
+    "zh-CN": {
+      label: "写作者",
+      whenToUse:
+        "技术文档、调研综述、README/使用指南更新与结构化书面交付。",
+      prompt:
+        "先明确受众、目标与结构，所有结论均以已核实的仓库代码或一手来源为依据。严格区分已验证事实、推断与建议，坦诚标出不确定性而不编造引用。仅修改明确要求更新的文档文件（或在草稿目录撰写独立文稿），不改动应用业务源码。",
+    },
+  },
+};
+
+export function isFactoryRoleText(
+  roleId: string,
+  field: keyof BuiltinRoleTexts,
+  value: string,
+): boolean {
+  const texts = BUILTIN_ROLE_TEXTS[roleId];
+  if (!texts) return false;
+  return value === texts.en[field] || value === texts["zh-CN"][field];
+}
+
+export function localizeDefaultRolePreset(
+  role: RolePreset,
+  language: KuloLanguage,
+): RolePreset {
+  if (role.external || role.externalClientId) return role;
+  const texts = BUILTIN_ROLE_TEXTS[role.id];
+  if (!texts) return role;
+  const target = texts[language];
+  const label = isFactoryRoleText(role.id, "label", role.label) ? target.label : role.label;
+  const whenToUse = isFactoryRoleText(role.id, "whenToUse", role.whenToUse) ? target.whenToUse : role.whenToUse;
+  const prompt = isFactoryRoleText(role.id, "prompt", role.prompt) ? target.prompt : role.prompt;
+  if (label === role.label && whenToUse === role.whenToUse && prompt === role.prompt) return role;
+  return { ...role, label, whenToUse, prompt };
+}
+
+export function localizeRolePresets(
+  roles: Readonly<Record<string, RolePreset>>,
+  language: KuloLanguage,
+): Record<string, RolePreset> {
+  return Object.fromEntries(
+    Object.entries(roles).map(([id, role]) => [id, localizeDefaultRolePreset(role, language)]),
+  );
+}
+
+/**
+ * Built-in default Worker role presets for Kulo's multi-role background execution pool
+ * and Worker-level Subagent delegation. Prompts state domain methodology only;
+ * runtime permissions, available tools, and subagent authority are injected dynamically.
+ */
+export function defaultRolePresets(language: KuloLanguage = "en"): Record<string, RolePreset> {
+  return {
+    scout: {
+      id: "scout",
+      ...BUILTIN_ROLE_TEXTS.scout![language],
       enabled: true,
       readOnly: true,
       allowSubagents: false,
@@ -143,11 +278,7 @@ export function defaultRolePresets(): Record<string, RolePreset> {
     },
     architect: {
       id: "architect",
-      label: "Architect",
-      whenToUse:
-        "Unclear boundaries, cross-module refactoring, system trade-offs, and coordinated multi-role execution.",
-      prompt:
-        "Inspect existing code, dependencies, and constraints before proposing a design, separating verified facts from assumptions. Favor the minimum viable architecture: define goals and non-goals, interfaces and data contracts, compatibility/migration steps, edge risks, and concrete verification steps without speculative over-engineering.",
+      ...BUILTIN_ROLE_TEXTS.architect![language],
       enabled: true,
       readOnly: false,
       allowSubagents: true,
@@ -155,11 +286,7 @@ export function defaultRolePresets(): Record<string, RolePreset> {
     },
     coder: {
       id: "coder",
-      label: "Coder",
-      whenToUse:
-        "Scoped feature implementation, multi-file edits, bug fixes, and build/test verification.",
-      prompt:
-        "Read target modules and surrounding conventions before editing. Make minimal, clean changes that preserve existing abstractions, compatibility, and security boundaries. Write or update targeted tests and run relevant typecheck, build, and test commands to verify your changes.",
+      ...BUILTIN_ROLE_TEXTS.coder![language],
       enabled: true,
       readOnly: false,
       allowSubagents: true,
@@ -167,11 +294,7 @@ export function defaultRolePresets(): Record<string, RolePreset> {
     },
     checker: {
       id: "checker",
-      label: "Checker",
-      whenToUse:
-        "Independent defect review, edge-case audit, security/concurrency check, and acceptance verification.",
-      prompt:
-        "Audit target changes, codebases, or designs independently without modifying project files. On large audits, maintain a checklist and evidence notes in the scratch directory so context compaction never drops coverage. Prioritize real correctness bugs, race conditions, security gaps, regressions, and missing test coverage; group findings by severity (high, medium, low) with exact locations, trigger conditions, and fix directions.",
+      ...BUILTIN_ROLE_TEXTS.checker![language],
       enabled: true,
       readOnly: true,
       allowSubagents: true,
@@ -179,11 +302,7 @@ export function defaultRolePresets(): Record<string, RolePreset> {
     },
     designer: {
       id: "designer",
-      label: "Designer",
-      whenToUse:
-        "UI/UX layout, visual hierarchy, styling tokens, motion polish, and interactive HTML/component design.",
-      prompt:
-        "Establish clear visual hierarchy, spacing rhythm, typography, and theme consistency before building, consulting any listed design skills when available. Check contrast in both light and dark modes, narrow-viewport responsiveness, keyboard focus, reduced motion, and complete interactive states (default, hover, focus, loading, empty, error); verify UI code changes with relevant typecheck or build checks.",
+      ...BUILTIN_ROLE_TEXTS.designer![language],
       enabled: true,
       readOnly: false,
       allowSubagents: false,
@@ -191,15 +310,41 @@ export function defaultRolePresets(): Record<string, RolePreset> {
     },
     writer: {
       id: "writer",
-      label: "Writer",
-      whenToUse:
-        "Technical documentation, research syntheses, README/guides updates, and structured written deliverables.",
-      prompt:
-        "Clarify audience, purpose, and structure first, grounding claims in verified repository code or primary sources. Distinguish verified facts, inferences, and recommendations, flagging uncertainties plainly rather than inventing citations. Modify only explicitly requested documentation files (or write standalone drafts in the scratch directory); never alter application source code.",
+      ...BUILTIN_ROLE_TEXTS.writer![language],
       enabled: true,
       readOnly: false,
       allowSubagents: false,
       thinkingLevel: "medium",
     },
   };
+}
+
+export function areInternalRolesAtDefaults(
+  roles: Readonly<Record<string, RolePreset>>,
+): boolean {
+  const defaults = defaultRolePresets("en");
+  const defaultKeys = Object.keys(defaults);
+  const roleKeys = Object.keys(roles);
+  if (roleKeys.length !== defaultKeys.length) return false;
+  for (const id of defaultKeys) {
+    const raw = roles[id];
+    const def = defaults[id]!;
+    if (!raw || raw.external || raw.externalClientId || raw.dispatchPolicy) return false;
+    const actual = localizeDefaultRolePreset(raw, "en");
+    if (
+      actual.id !== def.id ||
+      actual.label !== def.label ||
+      actual.whenToUse !== def.whenToUse ||
+      actual.prompt !== def.prompt ||
+      (actual.enabled ?? true) !== (def.enabled ?? true) ||
+      Boolean(actual.readOnly) !== Boolean(def.readOnly) ||
+      Boolean(actual.allowSubagents) !== Boolean(def.allowSubagents) ||
+      (actual.provider?.trim() || undefined) !== def.provider ||
+      (actual.modelId?.trim() || undefined) !== def.modelId ||
+      (actual.thinkingLevel ?? "auto") !== (def.thinkingLevel ?? "auto")
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
