@@ -72,15 +72,31 @@ export const rerankerProviders = (): Array<{ id: HindsightRerankerProvider; labe
 export const ONNX_EMBEDDING_PRESETS: Array<{ id: string; label: string; dimensions?: number }> = [
   { id: "intfloat/multilingual-e5-small", label: "multilingual-e5-small (384d)", dimensions: 384 },
   { id: "intfloat/multilingual-e5-base", label: "multilingual-e5-base (768d)", dimensions: 768 },
-  { id: "BAAI/bge-small-zh-v1.5", label: "bge-small-zh-v1.5 (512d)", dimensions: 512 },
+  { id: "Xenova/bge-small-zh-v1.5", label: "bge-small-zh-v1.5 (512d)", dimensions: 512 },
   { id: "BAAI/bge-m3", label: "bge-m3 (1024d)", dimensions: 1024 },
 ];
 
 export const ONNX_RERANKER_PRESETS: Array<{ id: string; label: string }> = [
   { id: "hindsight-ai/hs-rerank-1", label: "hs-rerank-1" },
-  { id: "BAAI/bge-reranker-v2-m3", label: "bge-reranker-v2-m3" },
+  { id: "onnx-community/bge-reranker-v2-m3-ONNX", label: "bge-reranker-v2-m3" },
   { id: "BAAI/bge-reranker-base", label: "bge-reranker-base" },
 ];
+
+const ONNX_EMBEDDING_MODEL_ALIASES: Readonly<Record<string, string>> = {
+  "BAAI/bge-small-zh-v1.5": "Xenova/bge-small-zh-v1.5",
+};
+
+const ONNX_RERANKER_MODEL_ALIASES: Readonly<Record<string, string>> = {
+  "BAAI/bge-reranker-v2-m3": "onnx-community/bge-reranker-v2-m3-ONNX",
+};
+
+export function normalizeOnnxEmbeddingModelId(model: string): string {
+  return ONNX_EMBEDDING_MODEL_ALIASES[model] ?? model;
+}
+
+export function normalizeOnnxRerankerModelId(model: string): string {
+  return ONNX_RERANKER_MODEL_ALIASES[model] ?? model;
+}
 
 export function defaultEmbeddingsModelFor(provider: HindsightEmbeddingsProvider): string {
   switch (provider) {
@@ -221,19 +237,23 @@ export function initialMemoryModelsDraft(
   const reranker = saved?.reranker;
   const embeddingsProvider: HindsightEmbeddingsProvider = embeddings?.provider ?? "onnx";
   const rerankerProvider: HindsightRerankerProvider = reranker?.provider ?? "onnx";
+  const rawEmbeddingsModel = embeddings?.model ?? defaultEmbeddingsModelFor(embeddingsProvider);
+  const resolvedEmbeddingsModel = embeddingsProvider === "onnx" ? normalizeOnnxEmbeddingModelId(rawEmbeddingsModel) : rawEmbeddingsModel;
+  const rawRerankerModel = reranker?.model ?? defaultRerankerModelFor(rerankerProvider);
+  const resolvedRerankerModel = rerankerProvider === "onnx" ? normalizeOnnxRerankerModelId(rawRerankerModel) : rawRerankerModel;
   const baseModels = {
     embeddingsProvider,
     embeddingsConnectionId: embeddings?.connectionId ?? "",
-    embeddingsModel: embeddings?.model ?? defaultEmbeddingsModelFor(embeddingsProvider),
+    embeddingsModel: resolvedEmbeddingsModel,
     embeddingsBaseUrl: embeddings?.baseUrl ?? "",
     embeddingsDimensions: embeddings?.dimensions !== undefined
       ? String(embeddings.dimensions)
-      : embeddingsProvider === "onnx" && (!embeddings?.model || embeddings.model === DEFAULT_ONNX_EMBEDDING_MODEL)
+      : embeddingsProvider === "onnx" && (!embeddings?.model || resolvedEmbeddingsModel === DEFAULT_ONNX_EMBEDDING_MODEL)
         ? String(DEFAULT_ONNX_EMBEDDING_DIMENSIONS)
         : "",
     rerankerProvider,
     rerankerConnectionId: reranker?.connectionId ?? "",
-    rerankerModel: reranker?.model ?? defaultRerankerModelFor(rerankerProvider),
+    rerankerModel: resolvedRerankerModel,
     rerankerBaseUrl: reranker?.baseUrl ?? "",
   };
 
@@ -315,9 +335,11 @@ export function buildMemoryModelsPayload(draft: MemoryModelsDraft): {
     }
     dimensions = parsedDims;
   }
+  const rawEmbModel = draft.embeddingsProvider !== "tei" && draft.embeddingsModel.trim() ? draft.embeddingsModel.trim() : undefined;
+  const embModel = draft.embeddingsProvider === "onnx" && rawEmbModel ? normalizeOnnxEmbeddingModelId(rawEmbModel) : rawEmbModel;
   const embeddings: HindsightEmbeddingsModel = {
     provider: draft.embeddingsProvider,
-    ...(draft.embeddingsProvider !== "tei" && draft.embeddingsModel.trim() ? { model: draft.embeddingsModel.trim() } : {}),
+    ...(embModel ? { model: embModel } : {}),
     ...(embBaseUrl ? { baseUrl: embBaseUrl } : {}),
     ...(embeddingsUsesApiKey(draft.embeddingsProvider) && draft.embeddingsConnectionId.trim() ? { connectionId: draft.embeddingsConnectionId.trim() } : {}),
     ...(dimensions !== undefined ? { dimensions } : {}),
@@ -329,9 +351,11 @@ export function buildMemoryModelsPayload(draft: MemoryModelsDraft): {
   if (draft.rerankerProvider === "tei" && !rrBaseUrl) {
     throw new Error(t("请填写 TEI 重排服务地址。", "Enter the TEI rerank service URL."));
   }
+  const rawRrModel = draft.rerankerProvider !== "rrf" && draft.rerankerProvider !== "tei" && draft.rerankerModel.trim() ? draft.rerankerModel.trim() : undefined;
+  const rrModel = draft.rerankerProvider === "onnx" && rawRrModel ? normalizeOnnxRerankerModelId(rawRrModel) : rawRrModel;
   const reranker: HindsightRerankerModel = {
     provider: draft.rerankerProvider,
-    ...(draft.rerankerProvider !== "rrf" && draft.rerankerProvider !== "tei" && draft.rerankerModel.trim() ? { model: draft.rerankerModel.trim() } : {}),
+    ...(rrModel ? { model: rrModel } : {}),
     ...(rrBaseUrl ? { baseUrl: rrBaseUrl } : {}),
     ...(rerankerUsesApiKey(draft.rerankerProvider) && draft.rerankerConnectionId.trim() ? { connectionId: draft.rerankerConnectionId.trim() } : {}),
   };

@@ -182,14 +182,15 @@ function deviceAliases(envs: readonly EnvNodeDescriptor[]): Alias[] {
   };
   // Pass 1: Explicit device names, hostnames, IDs, and Hub aliases always take precedence.
   for (const device of envs) {
+    const isHubLocal = device.kind === "local" || device.id === "local";
     const rawNames: string[] = [];
-    if (device.name && !(device.id === "local" && canonical(device.name) === "local")) rawNames.push(device.name);
+    if (device.name && !(isHubLocal && canonical(device.name) === "local")) rawNames.push(device.name);
     if (device.info?.hostname) rawNames.push(device.info.hostname);
     if (device.id !== "local") rawNames.push(device.id);
-    if (device.id === "local") rawNames.push("主脑", "Hub");
+    if (isHubLocal) rawNames.push("主脑", "Hub");
     for (const raw of rawNames) {
       for (const variant of expandDeviceNameVariants(raw)) {
-        if (device.id === "local" && canonical(variant) === "local") continue;
+        if (isHubLocal && canonical(variant) === "local") continue;
         register(variant, device.id, true);
       }
     }
@@ -198,8 +199,9 @@ function deviceAliases(envs: readonly EnvNodeDescriptor[]): Alias[] {
   // without overriding or polluting aliases already claimed by an explicitly named device.
   for (const device of envs) {
     if (!device.info?.model) continue;
+    const isHubLocal = device.kind === "local" || device.id === "local";
     const explicitSeeds: string[] = [];
-    if (device.name && !(device.id === "local" && canonical(device.name) === "local")) explicitSeeds.push(device.name);
+    if (device.name && !(isHubLocal && canonical(device.name) === "local")) explicitSeeds.push(device.name);
     if (device.info.hostname) explicitSeeds.push(device.info.hostname);
     const explicitFamilies = new Set<string>();
     for (const seed of explicitSeeds) {
@@ -212,7 +214,7 @@ function deviceAliases(envs: readonly EnvNodeDescriptor[]): Alias[] {
       ![...modelFamilies].some((variant) => explicitFamilies.has(variant));
     if (conflictsWithExplicitName) continue;
     for (const variant of expandDeviceNameVariants(device.info.model)) {
-      if (device.id === "local" && canonical(variant) === "local") continue;
+      if (isHubLocal && canonical(variant) === "local") continue;
       register(variant, device.id, false);
     }
   }

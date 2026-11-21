@@ -18,7 +18,7 @@ export function isVisibleMessage(item: ChatDisplayItem): item is VisibleMessage 
 
 export const foldQueryText = (value: string) => value.normalize("NFKC").toLocaleLowerCase();
 export function messageText(item: VisibleMessage): string {
-  const text = getMessageParts(item).map((part) => part.type === "code" ? part.code : "assetId" in part ? [part.caption, part.asset?.name].filter(Boolean).join("\n") : messagePartFallback(part));
+  const text = getMessageParts(item).map((part) => part.type === "code" ? part.code : "assetId" in part ? [part.fallbackText, part.caption, part.asset?.name].filter(Boolean).join("\n") : messagePartFallback(part));
   return [...new Set([item.text, ...text].filter(Boolean))].join("\n");
 }
 

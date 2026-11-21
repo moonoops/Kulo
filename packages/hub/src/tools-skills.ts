@@ -93,7 +93,7 @@ export function createSkillToolsExtension(options: SkillToolsOptions) {
       const text = await options.get().read(args.id, args.resource ?? "SKILL.md", audience, args.version, runtime);
       return { output: [{ type: "text" as const, text }], ...(addTools.length ? { control: { addTools } } : {}) };
     } catch (error) {
-      if (audience === "settings" && error instanceof SkillError && error.status === 403) {
+      if (audience === "settings" && args.id !== "diagram-design" && error instanceof SkillError && error.status === 403) {
         const chatRuntime = await skillRuntime(options, "chat", args.id, api, context);
         return { output: [{ type: "text" as const, text: await options.get().read(args.id, args.resource ?? "SKILL.md", "chat", args.version, chatRuntime) }] };
       }
@@ -108,7 +108,7 @@ export function createSkillToolsExtension(options: SkillToolsOptions) {
       const chatRuntime = await skillRuntime(options, "chat", undefined, api, context);
       const chatSkills = await options.get().catalog("chat", chatRuntime);
       const seen = new Set(skills.map((item) => item.id));
-      skills = [...skills, ...chatSkills.filter((item) => !seen.has(item.id))];
+      skills = [...skills, ...chatSkills.filter((item) => item.id !== "diagram-design" && !seen.has(item.id))];
     }
     return ["Available on-demand Skills (call `kulo_skill_read` when relevant; Skills grant no extra permissions, and Workers needing bundled assets/scripts must stage them via `kulo_skill_materialize` using the returned node path):",
       ...(runtime?.diagnostics ?? []),

@@ -335,18 +335,62 @@ export function runWithLocalCredentialLock<T>(directory: string, operation: () =
   return run;
 }
 
+export function createStandbyVaultNamespace(dataDir: string): string {
+  return createHash("sha256").update("kulo-standby-vault-v1\0").update(path.resolve(dataDir)).digest("hex");
+}
+
+export async function getOrCreateClusterKek(options: {
+  dataDir: string;
+  hubStateDir: string;
+  keyStore?: ConnectionVaultKeyStore;
+  create?: boolean;
+}): Promise<Buffer> {
+  const namespace = createHash("sha256")
+    .update("kulo-standby-kek-v1\0")
+    .update(path.resolve(options.dataDir))
+    .digest("hex");
+  const store = options.keyStore ?? systemKeyStore(path.resolve(options.hubStateDir));
+  let key: Buffer;
+  try {
+    key = await store.getOrCreateKey(namespace, options.create ?? true);
+  } catch (error) {
+    throw error instanceof ConnectionVaultError ? error : new ConnectionVaultError("connection_vault_unavailable");
+  }
+  if (!Buffer.isBuffer(key) || key.length !== 32) {
+    throw new ConnectionVaultError("connection_vault_unavailable");
+  }
+  return Buffer.from(key);
+}
+
 export class LocalConnectionVault {
   readonly filePath: string;
   readonly namespace: string;
   readonly #stateDir: string;
   readonly #store: ConnectionVaultKeyStore;
   #key?: Buffer;
+  #onChange?: () => void;
 
-  constructor(options: { stateDir: string; keyStore?: ConnectionVaultKeyStore }) {
+  constructor(options: {
+    stateDir: string;
+    keyStore?: ConnectionVaultKeyStore;
+    helperStateDir?: string;
+    namespaceOverride?: string;
+  }) {
     this.#stateDir = path.resolve(options.stateDir);
     this.filePath = path.join(this.#stateDir, "connection-vault.json");
-    this.namespace = createHash("sha256").update("kulo-connection-vault-v1\0").update(this.#stateDir).digest("hex");
-    this.#store = options.keyStore ?? systemKeyStore(this.#stateDir);
+    if (options.namespaceOverride !== undefined) {
+      if (!/^[a-f0-9]{64}$/.test(options.namespaceOverride)) {
+        throw new ConnectionVaultError("connection_vault_invalid_input");
+      }
+      this.namespace = options.namespaceOverride;
+    } else {
+      this.namespace = createHash("sha256").update("kulo-connection-vault-v1\0").update(this.#stateDir).digest("hex");
+    }
+    this.#store = options.keyStore ?? systemKeyStore(path.resolve(options.helperStateDir ?? this.#stateDir));
+  }
+
+  setOnChange(hook: (() => void) | undefined): void {
+    this.#onChange = hook;
   }
 
   async #run<T>(operation: () => Promise<T>): Promise<T> {
@@ -485,16 +529,57 @@ export class LocalConnectionVault {
       } finally { plaintext.fill(0); }
       this.#write(entries, key);
     });
+    this.#onChange?.();
+  }
+
+  async replaceAllEntries(items: ReadonlyArray<{ ref: string; fields: ConnectionSecretFields }>): Promise<void> {
+    if (items.length > 10_000) throw new ConnectionVaultError("connection_vault_invalid_input");
+    const validated: Array<{ ref: string; fields: ConnectionSecretFields }> = [];
+    const seen = new Set<string>();
+    for (const item of items) {
+      if (!validRef(item.ref) || seen.has(item.ref)) throw new ConnectionVaultError("connection_vault_invalid_input");
+      seen.add(item.ref);
+      validated.push({ ref: item.ref, fields: fieldsCopy(item.fields) });
+    }
+    let changed = false;
+    await this.#run(async () => {
+      const document = this.#load();
+      if (!document && validated.length === 0) return;
+      const key = await this.#master(!document);
+      if (document) this.#validate(document, key);
+      const entries: Record<string, EncryptedEntry> = {};
+      for (const { ref, fields } of validated) {
+        const iv = randomBytes(12);
+        const cipher = createCipheriv("aes-256-gcm", key, iv);
+        cipher.setAAD(this.#aad(ref));
+        const plaintext = Buffer.from(JSON.stringify(fields), "utf8");
+        try {
+          const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+          entries[ref] = { iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), data: encrypted.toString("base64") };
+        } finally {
+          plaintext.fill(0);
+        }
+      }
+      this.#write(entries, key);
+      changed = true;
+    });
+    if (changed) this.#onChange?.();
   }
 
   async delete(ref: string): Promise<void> {
     if (!validRef(ref)) throw new ConnectionVaultError("connection_vault_invalid_input");
+    let changed = false;
     await this.#run(async () => {
       const document = this.#load();
       if (!document) return;
       const key = await this.#master(false);
       this.#validate(document, key);
-      if (Object.hasOwn(document.entries, ref)) { delete document.entries[ref]; this.#write(document.entries, key); }
+      if (Object.hasOwn(document.entries, ref)) {
+        delete document.entries[ref];
+        this.#write(document.entries, key);
+        changed = true;
+      }
     });
+    if (changed) this.#onChange?.();
   }
 }

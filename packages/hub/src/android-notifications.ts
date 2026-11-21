@@ -45,6 +45,9 @@ export class KuloAndroidNotifications {
   readonly #rate = new Map<string, number[]>();
   readonly #controllers = new Set<AbortController>();
   #closed = false;
+  #onWrite?: () => void;
+
+  setOnWrite(hook: (() => void) | undefined): void { this.#onWrite = hook; }
   #storageError = false;
 
   constructor(host: NotificationClassifierHost) {
@@ -142,6 +145,7 @@ export class KuloAndroidNotifications {
     try {
       fs.writeFileSync(temporary, bytes, { mode: 0o600 });
       fs.renameSync(temporary, this.#file);
+      this.#onWrite?.();
     } finally { fs.rmSync(temporary, { force: true }); }
   }
 

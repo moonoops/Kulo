@@ -7,7 +7,11 @@ import { getPeerConfigPath, localPeerProof, localPeerProxyToken } from "./peer-c
 function peerFiles(config: DevicePeerConfig, configPath: string): LocalInstanceFiles {
   const filename = path.resolve(configPath);
   // Embedded callers may run different device identities in the same installation.
-  const id = createHash("sha256").update(JSON.stringify([path.basename(filename), config.deviceId, config.hubUrl])).digest("hex").slice(0, 32);
+  // Cluster-aware peers key the single-instance lock on immutable cluster hubId rather than mutable hubUrl.
+  const scope = config.cluster?.hubId
+    ? [path.basename(filename), config.cluster.hubId, config.deviceId, path.resolve(config.rootDir)]
+    : [path.basename(filename), config.deviceId, config.hubUrl];
+  const id = createHash("sha256").update(JSON.stringify(scope)).digest("hex").slice(0, 32);
   return { directory: path.dirname(filename), name: "peer-" + id, identity: localPeerProof(config, "instance-owner") };
 }
 
@@ -21,7 +25,17 @@ export function claimDevicePeer(config: DevicePeerConfig, configPath: string): L
   }
 }
 
-export function discoverDevicePeer(config: DevicePeerConfig, localToken?: string, configPath = getPeerConfigPath()) {
+function legacyPeerFiles(config: DevicePeerConfig, configPath: string): LocalInstanceFiles {
+  const filename = path.resolve(configPath);
+  const id = createHash("sha256").update(JSON.stringify([path.basename(filename), config.deviceId, config.hubUrl])).digest("hex").slice(0, 32);
+  const legacyConfig: DevicePeerConfig = { ...config, cluster: undefined };
+  return { directory: path.dirname(filename), name: "peer-" + id, identity: localPeerProof(legacyConfig, "instance-owner") };
+}
+
+export async function discoverDevicePeer(config: DevicePeerConfig, localToken?: string, configPath = getPeerConfigPath()) {
   const token = localToken?.trim() || localPeerProxyToken(config);
-  return discoverLocalInstance(peerFiles(config, configPath), "/_kulo/instance", token);
+  const primary = await discoverLocalInstance(peerFiles(config, configPath), "/_kulo/instance", token);
+  if (primary || !config.cluster?.hubId) return primary;
+  const legacyToken = localToken?.trim() || localPeerProxyToken({ ...config, cluster: undefined });
+  return discoverLocalInstance(legacyPeerFiles(config, configPath), "/_kulo/instance", legacyToken);
 }

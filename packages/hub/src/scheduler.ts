@@ -288,6 +288,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                 recalledMemory,
                 materialized,
                 followUp: followUpText,
+                localEnvId: deps.envManager.localEnvId,
               });
           await runtime.commit(async (tx) => {
             const current = (await tx.doc(KuloStateDoc)).tickets[ticket.id];

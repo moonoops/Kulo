@@ -126,7 +126,7 @@ describe("Kulo declarative tool surface & Step 1–2 invariants", () => {
     // High-risk Android tools require explicit phone grants; readOnly hides mutating Android tools
     const ungrantedStatus: AndroidEnvStatus = {
       version: 1,
-      catalogVersion: 2,
+      catalogVersion: 3,
       enabled: true,
       paused: false,
       revision: 1,

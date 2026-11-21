@@ -398,7 +398,7 @@ function isWithinAcpDir(target: string, root: string): boolean {
 export function isProtectedAcpPath(canonicalTarget: string, includeGitControl: boolean, currentKind?: ExternalAgentKind): boolean {
   const normalized = canonicalTarget.replace(/\\/g, "/");
   if (/(?:^|\/)(?:\.kulo-state|\.secure)(?:\/|$)/.test(normalized)) return true;
-  if (/(?:^|\/)(?:connection\.json|devices\.json|runtime-token|(?:kulo|assistant)\.sqlite(?:-wal|-shm)?)$/.test(normalized)) return true;
+  if (/(?:^|\/)(?:connection\.json|devices\.json|runtime-token|node-identity\.json|cluster-membership\.json|cluster-transition\.json|cluster-sync-meta\.json|sync-key\.enc|vault-envelope\.enc|(?:kulo|assistant)\.sqlite(?:-wal|-shm)?)$/.test(normalized)) return true;
   if (/\/Library\/Group Containers\/group\.com\.apple\.usernoted(?:\/|$)/.test(normalized)) return true;
   if (/^\/(?:private\/)?var\/folders\/[^/]+\/[^/]+\/0\/com\.apple\.notificationcenter(?:\/|$)/.test(normalized)) return true;
   if (includeGitControl && /(?:^|\/)\.git\/(?:hooks(?:\/|$)|config$)/.test(normalized)) return true;

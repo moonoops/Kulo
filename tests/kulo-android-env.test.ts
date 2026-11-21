@@ -22,7 +22,7 @@ async function fixture() {
     await new Promise<void>((resolve) => wss.close(() => server.close(() => resolve())));
   });
   const url = `ws://127.0.0.1:${(server.address() as { port: number }).port}`;
-  const status: AndroidEnvStatus = { version: 1, catalogVersion: 1, enabled: true, paused: false, revision: 1, grants: ["device"],
+  const status: AndroidEnvStatus = { version: 1, catalogVersion: 3, enabled: true, paused: false, revision: 1, grants: ["device"],
     capabilities: ANDROID_TOOL_CATALOG.map((tool) => ({ action: tool.action, available: true })) };
   async function connect(lease = "lease-one") {
     const accepted = once(wss, "connection");
@@ -153,7 +153,7 @@ describe("native Android Env transport", () => {
 
   it("preserves parked epoch acknowledgement and public resource state over the real Env socket", async () => {
     const f = await fixture();
-    f.status.catalogVersion = 2;
+    f.status.catalogVersion = 3;
     f.status.resources = [{ ticketId: "T-1", kind: "audio_capture", id: "capture-one", state: "recording" }];
     const node = await f.connect();
     expect(f.manager.getEnvDescriptor("phone")?.android?.resources).toEqual(f.status.resources);

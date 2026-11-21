@@ -108,6 +108,8 @@ export interface IdentityBackupRetention {
 export interface KuloIdentityFilesOptions {
   retention?: IdentityBackupRetention;
   getLanguage?: () => KuloLanguage | undefined;
+  /** Default Hub-managed `<stateDir>/identity` directory for cross-host backup portability (P0-6). */
+  managedDirectory?: string;
 }
 
 const digest = (bytes: Uint8Array): string =>
@@ -258,6 +260,7 @@ const sameRead = (a: Stats, b: Stats): boolean =>
   a.mtimeMs === b.mtimeMs &&
   a.ctimeMs === b.ctimeMs;
 const directoryKey = (root: Root): string => `${root.stat.dev}:${root.stat.ino}`;
+export const MANAGED_IDENTITY_DIRECTORY_KEY = "managed:identity";
 
 const systemAlias = (target: string): boolean =>
   process.platform === "darwin" &&
@@ -284,6 +287,8 @@ function enforceSizeLimit(bytes: Buffer): void {
 }
 
 export class KuloIdentityFiles {
+  #onWrite?: () => void;
+
   constructor(
     private readonly getDirectoryState: () => IdentityDirectoryState,
     private readonly options: KuloIdentityFilesOptions = {},
@@ -293,6 +298,29 @@ export class KuloIdentityFiles {
       policy?.maxBytes !== undefined && (!Number.isSafeInteger(policy.maxBytes) || policy.maxBytes < 1)) {
       throw new Error("Invalid identity backup retention limits");
     }
+  }
+
+  setOnWrite(hook: (() => void) | undefined): void {
+    this.#onWrite = hook;
+  }
+
+  private isManagedRoot(root: Root): boolean {
+    const managed = this.options.managedDirectory;
+    if (!managed) return false;
+    const resolvedManaged = resolve(managed);
+    if (resolve(root.state.directory) === resolvedManaged || resolve(root.path) === resolvedManaged) {
+      return true;
+    }
+    try {
+      return realpathSync(resolvedManaged) === root.path;
+    } catch {
+      return false;
+    }
+  }
+
+  private matchesDirectoryIdentity(root: Root, recorded: string): boolean {
+    if (recorded === directoryKey(root)) return true;
+    return this.isManagedRoot(root) && recorded === MANAGED_IDENTITY_DIRECTORY_KEY;
   }
 
   private state(): IdentityDirectoryState {
@@ -530,7 +558,7 @@ export class KuloIdentityFiles {
       !bytes ||
       record.backupId !== backupId ||
       record.file !== file ||
-      record.directoryIdentity !== directoryKey(root) ||
+      !this.matchesDirectoryIdentity(root, record.directoryIdentity) ||
       record.sha256 !== match[3] ||
       stamp !== match[2] ||
       digest(bytes) !== record.sha256 ||
@@ -620,7 +648,7 @@ export class KuloIdentityFiles {
       sha256,
       previouslyMissing: !old.exists,
       summary,
-      directoryIdentity: directoryKey(root),
+      directoryIdentity: this.isManagedRoot(root) ? MANAGED_IDENTITY_DIRECTORY_KEY : directoryKey(root),
     };
     const created: string[] = [];
     try {
@@ -666,7 +694,7 @@ export class KuloIdentityFiles {
         if (error instanceof InvalidBackup || error instanceof SyntaxError || error instanceof IdentityFilesError && error.code === "identityUnavailable") continue;
         throw error;
       }
-      if (record.backupId !== name || record.directoryIdentity !== directoryKey(root) ||
+      if (record.backupId !== name || !this.matchesDirectoryIdentity(root, record.directoryIdentity) ||
         record.file !== `${match[1]}.md` || record.sha256 !== match[3] ||
         record.createdAt.replace(/[-:.]/g, "") !== match[2]) continue;
       known.push({ name, file: record.file, createdAt: record.createdAt, bytes: body.size + metadata.size, body, metadata });
@@ -891,6 +919,7 @@ export class KuloIdentityFiles {
             }
             committed = true;
             await this.syncDirectory(root.path);
+            this.#onWrite?.();
             try {
               await this.pruneBackups(root, [backupId, ...(operation === "rollback" ? [(input as IdentityRollbackRequest).backupId] : [])]);
             } catch {

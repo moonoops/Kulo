@@ -59,7 +59,7 @@ export async function runDesktopRuntime(): Promise<void> {
 
   const safeText = (raw: string): string => {
     let text = (hub ? hub.connectionManager.redact(raw) : raw).replaceAll(token, "[已隐藏]");
-    for (const secret of [activePeer?.envToken, activePeer?.clientToken]) {
+    for (const secret of [activePeer?.envToken, activePeer?.clientToken, activePeer?.standby?.syncToken]) {
       if (secret) text = text.replaceAll(secret, "[已隐藏]");
     }
     return text;
@@ -120,8 +120,21 @@ export async function runDesktopRuntime(): Promise<void> {
   try {
     // Imports that discover credentials or configuration run only after isolation is established.
     const { claimKuloRuntime, DeviceRoleTransitions, readPeerConfig, startDevicePeer } = await import("@kulo/env");
+    const {
+      createStandbyHostBridge,
+      getClusterProtectedPaths,
+      recoverInterruptedClusterTransition,
+      resolveClusterPaths,
+      runPreStartFence,
+    } = await import("@kulo/hub");
     if (stopping) return;
     runtimeOwner = claimKuloRuntime(paths.stateDir);
+    const clusterPaths = resolveClusterPaths(paths.dataDir, {
+      hubStateDir: paths.stateDir,
+      peerConfigPath: paths.peerConfigPath,
+    });
+    const clusterProtectedPaths = getClusterProtectedPaths(clusterPaths);
+    await recoverInterruptedClusterTransition(clusterPaths);
 
     const startPeerRuntime = async (peerConfig: DevicePeerConfig) => {
       await closeActiveResources();
@@ -132,8 +145,9 @@ export async function runDesktopRuntime(): Promise<void> {
         configPath: paths.peerConfigPath,
         authToken: token,
         webDistDir: options.webDir,
-        protectedPaths: [paths.stateDir, path.join(paths.dataDir, "chromium")],
+        protectedPaths: [paths.stateDir, path.join(paths.dataDir, "chromium"), ...clusterProtectedPaths],
         roleTransitions: roles,
+        standbyHost: createStandbyHostBridge({ paths: clusterPaths }),
         onLog: (message) => console.log(safeText(message)),
       });
       resources.server = peer;
@@ -156,6 +170,11 @@ export async function runDesktopRuntime(): Promise<void> {
         envTokens: {},
         workerEnvIds: [],
         enableLocalEnv: true,
+        extraProtectedPaths: [
+          ...clusterProtectedPaths,
+          path.dirname(paths.peerConfigPath),
+          path.join(paths.dataDir, "chromium"),
+        ],
         ...(options.appRoot ? { customization: {
           dataDir: paths.dataDir, appRoot: options.appRoot, nodePath: process.execPath,
           shellVersion: options.shellVersion, sourceRoot: options.sourceRoot,
@@ -166,6 +185,7 @@ export async function runDesktopRuntime(): Promise<void> {
       hub.envManager.protectPaths([
         path.dirname(paths.peerConfigPath),
         path.join(paths.dataDir, "chromium"),
+        ...clusterProtectedPaths,
       ]);
       const server: KuloHubServer = await startKuloHubServer(hub, {
         runtimeOwner,
@@ -174,6 +194,7 @@ export async function runDesktopRuntime(): Promise<void> {
         peerConfigPath: paths.peerConfigPath,
         peerRootDir: paths.workspaceDir,
         roleTransitions: roles,
+        clusterPaths,
       });
       resources.server = server;
       activePort = server.port;
@@ -186,9 +207,15 @@ export async function runDesktopRuntime(): Promise<void> {
       startHub: startHubRuntime, startPeer: startPeerRuntime, onRecoveryFailure: fatal,
     });
     const initialPeer = readPeerConfig(paths.peerConfigPath);
-    const readyUrl = initialPeer
-      ? (await startPeerRuntime(initialPeer)).url
-      : await startHubRuntime();
+    let readyUrl: string;
+    if (initialPeer) {
+      readyUrl = (await startPeerRuntime(initialPeer)).url;
+    } else {
+      const fence = await runPreStartFence(clusterPaths, { defaultRootDir: paths.workspaceDir });
+      readyUrl = fence.action === "start_peer"
+        ? (await startPeerRuntime(fence.peerConfig)).url
+        : await startHubRuntime();
+    }
     if (stopping) return;
     await new Promise<void>((resolve, reject) => {
       process.send!({ type: "ready", url: readyUrl, token }, (error) => error ? reject(error) : resolve());

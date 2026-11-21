@@ -3,7 +3,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, defineEntry, type ConversationId, type Harness, type JsonObject, type Tx } from "@earendil-works/pi-durable";
 import {
   UiActionInputSchema, getUiSpecFields, messagePartFallback, validateUiActionValues, validateUiCardInput, validateUiValues,
-  type ChatAttachment, type ChatReplyReference, type MessagePart, type UiActionDefinition, type UiActionInput, type UiActionReceipt,
+  type ChatAttachment, type ChatReplyReference, type DiagramMotionMode, type MessagePart, type UiActionDefinition, type UiActionInput, type UiActionReceipt,
   type UiCardInput, type UiCardSnapshot, type UiFieldDefinition, type UiSpec,
 } from "@kulo/protocol";
 
@@ -15,6 +15,14 @@ export interface UiCardSource {
   ticketId?: string;
 }
 export interface UiAssetPublicationInput { path: string; assetId?: string; name?: string; mimeType?: string; caption?: string; ticketId?: string }
+export interface UiDiagramPublicationInput {
+  title: string;
+  svg: string;
+  fallbackText: string;
+  caption?: string;
+  motion?: DiagramMotionMode;
+  allowGeometryWarnings?: boolean;
+}
 export interface ContentPublicationData {
   parts: MessagePart[];
   fallbackText: string;
@@ -291,6 +299,51 @@ export class KuloUiCards {
       return clone(await active.promise);
     }
     const promise = this.#publishImported(input, source, fingerprint, importAsset, finalize, visibility);
+    this.#imports.set(key, { fingerprint, promise });
+    try { return clone(await promise); } finally { this.#imports.delete(key); }
+  }
+
+  async publishDiagram(
+    input: { title: string; svg: string; fallbackText: string; caption?: string; motion: DiagramMotionMode },
+    source: UiCardSource,
+    importAsset: () => Promise<ChatAttachment>,
+    finalize?: (tx: Tx, asset: ChatAttachment) => Promise<void>,
+  ): Promise<ChatAttachment> {
+    checkSource(source);
+    const key = `diagram:${sourceKey(source)}`;
+    const fingerprint = hash({ type: "diagram", ...input });
+    const doc = await this.#host.harness.snapshot(UiCardsDoc, BACKGROUND_CONTEXT);
+    if (doc?.operations[key]) return this.#priorAsset(doc.operations[key], fingerprint);
+    const active = this.#imports.get(key);
+    if (active) {
+      if (active.fingerprint !== fingerprint) throw new UiCardError("ui_call_conflict", "同一工具调用不能发布不同内容。", 409);
+      return clone(await active.promise);
+    }
+    const promise = (async () => {
+      const asset = await importAsset();
+      if (!asset || !asset.id || asset.kind !== "file" || asset.presentation !== "diagram" || !asset.url.startsWith("/api/uploads/")) {
+        throw new UiCardError("invalid_published_asset", "图示资源导入无效。");
+      }
+      return this.#host.harness.commit(async (tx) => {
+        const currentDoc = await tx.doc(UiCardsDoc);
+        if (currentDoc.operations[key]) return this.#priorAsset(currentDoc.operations[key], fingerprint);
+        await finalize?.(tx, asset);
+        const topFallback = `${input.title}\n${input.fallbackText}`;
+        const parts: MessagePart[] = [{
+          partId: `diagram_${hash([source.conversationId, source.callId]).slice(0, 32)}`,
+          type: "file",
+          assetId: asset.id,
+          asset: clone(asset),
+          fallbackText: input.fallbackText,
+          ...(input.caption ? { caption: input.caption } : {}),
+        }];
+        await tx.appendEntry(ContentPublicationEntry, source.conversationId as ConversationId, {
+          data: { parts, fallbackText: topFallback, createdAt: Date.now(), ...publicationSource(source) } as ContentPublicationData & JsonObject,
+        });
+        currentDoc.operations[key] = { fingerprint, result: { kind: "asset", asset: clone(asset) } };
+        return clone(asset);
+      }, BACKGROUND_CONTEXT);
+    })();
     this.#imports.set(key, { fingerprint, promise });
     try { return clone(await promise); } finally { this.#imports.delete(key); }
   }

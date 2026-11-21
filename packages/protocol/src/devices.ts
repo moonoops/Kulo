@@ -30,6 +30,10 @@ export interface InterconnectedDevice {
   info?: DeviceSystemInfo;
   lastSeenAt?: number;
   error?: string;
+  clusterRole?: import("./cluster.js").ClusterRole;
+  isPreferredPrimary?: boolean;
+  warmStandbyCapable?: boolean;
+  syncStatus?: import("./cluster.js").ClusterSyncStatus;
 }
 
 export interface DeviceInterconnectionView {
@@ -40,9 +44,15 @@ export interface DeviceInterconnectionView {
   currentDeviceId: string;
   currentDeviceKnown?: boolean;
   canSwitchRole?: boolean;
+  canManageStandby?: boolean;
+  primaryNodeId?: string;
+  preferredPrimaryNodeId?: string;
+  clusterEpoch?: number;
   hubError?: string;
   hubUrls: string[];
   devices: InterconnectedDevice[];
+  failoverOffer?: import("./cluster.js").ClusterFailoverOffer;
+  failbackOffer?: import("./cluster.js").ClusterFailbackOffer;
 }
 
 /** A local role switch survives the change of the process's HTTP listener. */
@@ -301,4 +311,6 @@ export interface DevicePeerConfig {
   clientToken: string;
   rootDir: string;
   localPort?: number;
+  cluster?: import("./cluster.js").ClusterTopology;
+  standby?: import("./cluster.js").ClusterStandbyPeerConfig;
 }

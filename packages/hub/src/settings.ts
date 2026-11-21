@@ -2,6 +2,7 @@
  * Durable Runtime Settings Document (`KuloSettingsDoc`) with per-block Revision CAS,
  * Secret-Free Public Projection, and Snapshot Rollback History.
  */
+import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { defineDoc, type JsonObject } from "@earendil-works/pi-durable";
@@ -1132,7 +1133,19 @@ export function resolveEffectiveIdentityDir(
   defaultIdentityDir: string,
 ): string {
   const custom = doc.identity.directory?.trim();
-  return custom ? path.resolve(custom) : defaultIdentityDir;
+  if (!custom) return defaultIdentityDir;
+  const resolved = path.resolve(custom);
+  try {
+    if (fs.existsSync(resolved)) return resolved;
+  } catch {
+    // Fall through to managed fallback check
+  }
+  try {
+    if (fs.existsSync(defaultIdentityDir)) return defaultIdentityDir;
+  } catch {
+    // Keep custom path if default directory does not exist
+  }
+  return resolved;
 }
 
 export function toPublicSettingsView(

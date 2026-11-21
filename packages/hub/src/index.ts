@@ -124,7 +124,13 @@ export { AssistantLedger, type StoredAssistantEvent, type StoredAssistantDigest 
 export { AmbientModelService, loopbackJsonPost } from "./ambient-model-service.js";
 export { AssistantSorter, parseSorterOutput } from "./assistant-sorter.js";
 export { AssistantCoordinator, parseCoordinatorDecision, situationIdFromKey } from "./assistant-coordinator.js";
-export { LocalConnectionVault, ConnectionVaultError, type ConnectionVaultKeyStore } from "./connection-vault.js";
+export {
+  LocalConnectionVault,
+  ConnectionVaultError,
+  createStandbyVaultNamespace,
+  getOrCreateClusterKek,
+  type ConnectionVaultKeyStore,
+} from "./connection-vault.js";
 export { LocalConnectionExecutor, type ConnectionExecutionBackend } from "./connection-execution.js";
 export { SecureCredentialStore } from "./secure-provider-credentials.js";
 export { KuloAgentConfiguration, AgentConfigurationDoc, AgentConfigurationError, EXTERNAL_AGENT_CATALOG } from "./agent-configuration.js";
@@ -162,15 +168,35 @@ export {
 } from "./session-notifications.js";
 export { SparkMailService, type SparkMailServiceHost } from "./connectors/spark-mail-service.js";
 export {
+  DEFAULT_HA_ANNOUNCE_CONFIG,
   HomeAssistantService,
   assertSafeHaServiceCall,
+  assertSafeHaServiceCallDeep,
   curateHomeAssistantEntities,
   isBlockedPhysicalEntity,
+  normalizeHaAnnounceConfig,
+  resolveAndVerifyLanHost,
+  sanitizeServiceData,
+  validateHaAutomationDraft,
   validateLanHaUrl,
   type HomeAssistantPersistedConfig,
   type HomeAssistantServiceHost,
   type RawHaState,
 } from "./connectors/home-assistant.js";
+export {
+  DEFAULT_HA_SENTINEL_CONFIG,
+  HomeAssistantSentinel,
+  normalizeHaSentinelConfig,
+  parseCameraTriageOutput,
+  type HaCameraTriageResult,
+  type HomeAssistantSentinelHost,
+} from "./connectors/ha-sentinel.js";
+export {
+  HaLanAudioRelay,
+  isDirectLanHttpRequest,
+  isDirectLanRemoteAddress,
+  selectPhysicalLanIpv4,
+} from "./connectors/ha-lan-audio.js";
 export {
   LarkConnectorService,
   findLarkCliExecutable,
@@ -180,3 +206,48 @@ export {
   type LarkExecRunner,
   type LarkPersistedConfig,
 } from "./connectors/lark-connector.js";
+export {
+  migrateLegacyLocalReferences,
+  type LegacyLocalMigrationResult,
+} from "./cluster-migration.js";
+export {
+  CLUSTER_SYNC_MAX_PAGES_PER_REQUEST,
+  CLUSTER_SYNC_PAGE_SIZE,
+  CLUSTER_SYNC_UPLOAD_CHUNK_BYTES,
+  ClusterSyncHttpError,
+  ClusterSyncService,
+  StandbyReplicator,
+  ensureLocalClusterKeys,
+  isSafeSyncRelativePath,
+  readReplicaState,
+  readSyncMeta,
+  writeSyncMeta,
+  type ClusterSyncFileChunkResponse,
+  type ClusterSyncFileEntry,
+  type ClusterSyncManifest,
+  type ClusterSyncMeta,
+  type ClusterSyncServiceOptions,
+  type ClusterSyncSqliteEntry,
+  type ClusterSyncSqlitePagesResponse,
+  type ClusterSyncVaultPayload,
+  type EnsureClusterKeysOptions,
+  type StandbyReplicaState,
+  type StandbyReplicatorConfig,
+} from "./cluster-sync.js";
+export {
+  ClusterFenceMonitor,
+  applyReplicaForPromotion,
+  archiveDivergedHubForConflict,
+  clearConflictBackupNotice,
+  createStandbyHostBridge,
+  getClusterProtectedPaths,
+  readConflictBackupNotice,
+  recoverInterruptedClusterTransition,
+  resolveClusterPaths,
+  runPreStartFence,
+  type ApplyReplicaPromotionOptions,
+  type ClusterFenceMonitorOptions,
+  type ClusterPaths,
+  type CreateStandbyHostBridgeOptions,
+  type PreStartFenceResult,
+} from "./cluster-lifecycle.js";

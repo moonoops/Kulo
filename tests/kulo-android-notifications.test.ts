@@ -111,7 +111,7 @@ async function transport() {
   const server = http.createServer(); const wss = new WebSocketServer({ server }); wss.on("connection", socket => manager.handleEnvWebSocket(socket));
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   cleanup.push(async () => { for (const socket of wss.clients) socket.terminate(); await new Promise<void>(resolve => wss.close(() => server.close(() => resolve()))); });
-  const status: AndroidEnvStatus = { version: 1, catalogVersion: 2, enabled: true, paused: false, revision: 1, grants: ["notifications"],
+  const status: AndroidEnvStatus = { version: 1, catalogVersion: 3, enabled: true, paused: false, revision: 1, grants: ["notifications"],
     capabilities: ANDROID_TOOL_CATALOG.map(tool => ({ action: tool.action, available: true })) };
   const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as { port: number }).port}`); const received: Array<Record<string, any>> = [];
   socket.on("message", bytes => received.push(JSON.parse(bytes.toString()))); await once(socket, "open");

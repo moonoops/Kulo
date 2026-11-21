@@ -124,4 +124,26 @@ describe("hidden speech history", () => {
     const edited = { ...view, contributions: [[], [{ role: "user" as const, content: "[KULO_VOICE_CONTEXT: Kulo在通话中说]\n当前生效的修订文字", timestamp: 1 }]] };
     expect(voiceHistory(edited, (text) => text)).toEqual([{ role: "assistant", text: "当前生效的修订文字" }]);
   });
+
+  it("excludes internal worker relays/watchdogs and strips routing metadata trailers while preserving assistant replies", () => {
+    const view = contextView([
+      { kind: "kulo.worker_recovery", role: "user", text: "内部恢复提示" },
+      { kind: "pi.assistant", role: "assistant", text: "恢复阶段自检" },
+      { kind: "kulo.worker_relay", role: "user", text: "Overflow Handoff Report (internal review only)" },
+      { kind: "pi.assistant", role: "assistant", text: "后台任务已完成，结果如下。" },
+      { kind: "kulo.worker_watchdog", role: "user", text: "看门狗检查提示" },
+      { kind: "pi.assistant", role: "assistant", text: "[WATCHDOG_OK]" },
+      {
+        kind: "kulo.user",
+        role: "user",
+        text: "帮我看看今天日程\n\n[KULO_MESSAGE_SOURCE]\n{\"targetDeviceId\":\"local\"}\n\n[KULO_AGENT_ASSIGNMENT]\n{\"version\":1,\"targets\":[]}\nAuthoritative Agent assignment constraint parsed from this user message.",
+      },
+      { kind: "pi.assistant", role: "assistant", text: "今天下午三点有个评审会。" },
+    ]);
+    expect(voiceHistory(view, (text) => text)).toEqual([
+      { role: "assistant", text: "后台任务已完成，结果如下。" },
+      { role: "user", text: "帮我看看今天日程" },
+      { role: "assistant", text: "今天下午三点有个评审会。" },
+    ]);
+  });
 });

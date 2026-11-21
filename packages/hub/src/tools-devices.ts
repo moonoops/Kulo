@@ -151,8 +151,11 @@ export function createDeviceToolsExtension(host: () => DeviceAssistantHost) {
         execute: async (args, api) => {
           if (args.action === "remove") {
             const deviceId = args.device_id?.trim();
-            if (!deviceId || deviceId === "local") throw new Error("请指定要移除的已连接设备 ID（不能移除本机）。");
             const current = await host().readDevices();
+            const primaryId = "primaryNodeId" in current ? current.primaryNodeId : undefined;
+            if (!deviceId || deviceId === "local" || (primaryId && deviceId === primaryId)) {
+              throw new Error("请指定要移除的已连接设备 ID（不能移除主机）。");
+            }
             const target = "devices" in current ? current.devices.find((item) => item.id === deviceId) : undefined;
             const action = await host().proposeDeviceOperation({
               commandId: api.callId,
@@ -196,7 +199,8 @@ export function createDeviceToolsExtension(host: () => DeviceAssistantHost) {
               const name = args.name?.trim();
               if (!name) throw new Error("请提供新的设备或主机名称。");
               const view = await controller.rename(deviceId, name);
-              return { title: `重命名${deviceId === "local" ? "主机" : "设备"}为 ${name}`, changes: [`名称 → ${name}`], result: view };
+              const isHost = deviceId === "local" || deviceId === view.primaryNodeId;
+              return { title: `重命名${isHost ? "主机" : "设备"}为 ${name}`, changes: [`名称 → ${name}`], result: view };
             }
             const created = await controller.createInvitation({ hubUrl: args.hub_url?.trim(), name: args.name?.trim() });
             await host().openDeviceDialog("add-device", `${api.callId}:dialog`);

@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { ImageContent, TextContent, UserMessage } from "@earendil-works/pi-ai";
-import type { ChatAttachment } from "@kulo/protocol";
+import { DIAGRAM_LIMITS, isHtmlArtifact, type ChatAttachment } from "@kulo/protocol";
 import { inspectMediaPrefix, probeMediaFile, type MediaMetadata, type UploadKind } from "./media-probe.js";
 
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
@@ -111,22 +111,49 @@ export interface StoredUploadRecord extends MediaMetadata {
   posterUrl?: string;
   transcript?: ChatAttachment["transcript"];
   captions?: ChatAttachment["captions"];
-  presentation?: "voice";
+  presentation?: "voice" | "diagram";
+  diagramMotion?: "none" | "reveal" | "step";
   recordedDuration?: number;
   internalOnly?: boolean;
 }
 
 export interface UploadPresentationInput {
-  presentation?: "voice";
+  presentation?: "voice" | "diagram";
+  diagramMotion?: "none" | "reveal" | "step";
   recordedDuration?: number;
+  width?: number;
+  height?: number;
 }
 
-function validateUploadPresentation(input: UploadPresentationInput, kind?: UploadKind): void {
-  if (input.presentation !== undefined && input.presentation !== "voice") throw new UploadError("无效的附件展示类型", 400);
+function validateUploadPresentation(
+  input: UploadPresentationInput,
+  resolved?: { kind: UploadKind; name: string; mimeType: string },
+): void {
+  if (input.presentation !== undefined && input.presentation !== "voice" && input.presentation !== "diagram") {
+    throw new UploadError("无效的附件展示类型", 400);
+  }
   if (input.recordedDuration !== undefined && (input.presentation !== "voice" || typeof input.recordedDuration !== "number" || !Number.isFinite(input.recordedDuration) || input.recordedDuration < 0 || input.recordedDuration > 24 * 60 * 60)) {
     throw new UploadError("录音时长必须为 0 到 86400 秒，且仅用于语音消息", 400);
   }
-  if (input.presentation === "voice" && kind !== undefined && kind !== "audio") throw new UploadError("语音消息必须上传音频文件", 400);
+  if (input.diagramMotion !== undefined && (input.presentation !== "diagram" || !["none", "reveal", "step"].includes(input.diagramMotion))) {
+    throw new UploadError("图示动效模式无效", 400);
+  }
+  if (input.presentation === "diagram") {
+    if (input.width !== undefined && (!Number.isInteger(input.width) || input.width < DIAGRAM_LIMITS.minWidth || input.width > DIAGRAM_LIMITS.maxWidth)) {
+      throw new UploadError("图示宽度超出有效范围", 400);
+    }
+    if (input.height !== undefined && (!Number.isInteger(input.height) || input.height < DIAGRAM_LIMITS.minHeight || input.height > DIAGRAM_LIMITS.maxHeight)) {
+      throw new UploadError("图示高度超出有效范围", 400);
+    }
+  } else if (resolved === undefined && (input.width !== undefined || input.height !== undefined)) {
+    throw new UploadError("仅内联图示允许显式指定尺寸", 400);
+  }
+  if (resolved) {
+    if (input.presentation === "voice" && resolved.kind !== "audio") throw new UploadError("语音消息必须上传音频文件", 400);
+    if (input.presentation === "diagram" && (resolved.kind !== "file" || !isHtmlArtifact(resolved))) {
+      throw new UploadError("内联图示必须为受控 HTML 文档", 400);
+    }
+  }
 }
 
 export interface LoadedUpload {
@@ -215,9 +242,19 @@ export class KuloUploadStore {
   private readonly activeUploads = new Set<string>();
   private readonly pendingPublications = new Map<string, { ownerId?: string; result: Promise<ChatAttachment> }>();
   private chatScopes: Readonly<Record<string, readonly string[]>> = {};
+  private legacyLocalPrincipal?: string;
+  private onWriteHook?: () => void;
 
   constructor(uploadsDir: string) {
     this.dir = path.resolve(uploadsDir);
+  }
+
+  setLegacyLocalPrincipal(nodeId: string | undefined): void {
+    this.legacyLocalPrincipal = nodeId?.trim() || undefined;
+  }
+
+  setOnWrite(hook: (() => void) | undefined): void {
+    this.onWriteHook = hook;
   }
 
   private ensureDir(): void {
@@ -236,6 +273,7 @@ export class KuloUploadStore {
       fs.closeSync(descriptor);
       descriptor = undefined;
       fs.renameSync(temporary, metadataPath);
+      this.onWriteHook?.();
     } finally {
       if (descriptor !== undefined) fs.closeSync(descriptor);
       fs.rmSync(temporary, { force: true });
@@ -244,8 +282,18 @@ export class KuloUploadStore {
 
   private createRecord(input: { id: string; name: string; fileName: string; size: number; ownerId?: string; sha256: string; internalOnly?: boolean } & UploadPresentationInput, metadata: MediaMetadata): StoredUploadRecord {
     if (input.ownerId !== undefined && (!input.ownerId || input.ownerId.length > 240)) throw new UploadError("无效的上传归属", 400);
-    validateUploadPresentation(input, metadata.kind);
-    return { ...input, ...metadata, version: 2, createdAt: Date.now(), referenceScopes: [] };
+    validateUploadPresentation(input, { kind: metadata.kind, name: input.name, mimeType: metadata.mimeType });
+    const { width, height, diagramMotion, ...rest } = input;
+    return {
+      ...rest,
+      ...metadata,
+      ...(input.presentation === "diagram" && width !== undefined ? { width } : {}),
+      ...(input.presentation === "diagram" && height !== undefined ? { height } : {}),
+      ...(input.presentation === "diagram" && diagramMotion !== undefined ? { diagramMotion } : {}),
+      version: 2,
+      createdAt: Date.now(),
+      referenceScopes: [],
+    };
   }
 
   private checkSize(size: number, kind: UploadKind): void {
@@ -281,7 +329,7 @@ export class KuloUploadStore {
     this.checkSize(bytes.length, metadata.kind);
     const diskFileName = `${id}-${sanitizeDiskFilename(displayName)}`;
     const filePath = path.join(this.dir, diskFileName);
-    const record = this.createRecord({ id, name: displayName, fileName: diskFileName, size: bytes.length, ownerId: input.ownerId, sha256: crypto.createHash("sha256").update(bytes).digest("hex"), ...(input.internalOnly ? { internalOnly: true } : {}), presentation: input.presentation, recordedDuration: input.recordedDuration }, metadata);
+    const record = this.createRecord({ id, name: displayName, fileName: diskFileName, size: bytes.length, ownerId: input.ownerId, sha256: crypto.createHash("sha256").update(bytes).digest("hex"), ...(input.internalOnly ? { internalOnly: true } : {}), presentation: input.presentation, diagramMotion: input.diagramMotion, recordedDuration: input.recordedDuration, width: input.width, height: input.height }, metadata);
     const temporary = path.join(this.dir, `.${id}.partial`);
     let committed = false;
     try {
@@ -357,7 +405,7 @@ export class KuloUploadStore {
       const metadata = await probeMediaFile(temporary, inspectMediaPrefix(prefix, declaredMime, size));
       if (input.signal?.aborted) throw new UploadError("上传已取消", 499);
       this.checkSize(size, metadata.kind);
-      const record = this.createRecord({ id, name, fileName, size, ownerId: input.ownerId, sha256: hash.digest("hex"), presentation: input.presentation, recordedDuration: input.recordedDuration }, metadata);
+      const record = this.createRecord({ id, name, fileName, size, ownerId: input.ownerId, sha256: hash.digest("hex"), presentation: input.presentation, diagramMotion: input.diagramMotion, recordedDuration: input.recordedDuration, width: input.width, height: input.height }, metadata);
       await fs.promises.rename(temporary, filePath);
       committed = true;
       if (input.signal?.aborted) throw new UploadError("上传已取消", 499);
@@ -426,7 +474,7 @@ export class KuloUploadStore {
       try { fs.readSync(handle, prefix, 0, prefix.length, 0); } finally { fs.closeSync(handle); }
       parsed = { ...parsed, ...inspectMediaPrefix(prefix, parsed.mimeType, stat.size), version: 2 };
     }
-    try { validateUploadPresentation(parsed, parsed.kind); } catch { throw new UploadError("资源索引损坏", 500); }
+    try { validateUploadPresentation(parsed, { kind: parsed.kind, name: parsed.name, mimeType: parsed.mimeType }); } catch { throw new UploadError("资源索引损坏", 500); }
     if (migrated) this.writeRecord(parsed);
     return { record: parsed, filePath: resolvedFile };
   }
@@ -453,6 +501,7 @@ export class KuloUploadStore {
       ...(record.height === undefined ? {} : { height: record.height }),
       ...(record.duration === undefined ? {} : { duration: record.duration }),
       ...(record.presentation === undefined ? {} : { presentation: record.presentation }),
+      ...(record.diagramMotion === undefined ? {} : { diagramMotion: record.diagramMotion }),
       ...(record.recordedDuration === undefined ? {} : { recordedDuration: record.recordedDuration }),
       ...(record.posterUrl === undefined ? {} : { posterUrl: record.posterUrl }),
       ...(record.transcript === undefined ? {} : { transcript: record.transcript }),
@@ -473,7 +522,11 @@ export class KuloUploadStore {
     const loaded = this.getUpload(id);
     if (!loaded || !principalId) return false;
     const record = loaded.record;
-    return record.ownerId === undefined || record.ownerId === principalId || Boolean(record.referenceScopes?.some(canReadScope));
+    const ownerMatches =
+      record.ownerId === undefined ||
+      record.ownerId === principalId ||
+      (record.ownerId === "local" && Boolean(this.legacyLocalPrincipal && principalId === this.legacyLocalPrincipal));
+    return ownerMatches || Boolean(record.referenceScopes?.some(canReadScope));
   }
 
   attachmentsForBinding(refs: Array<Pick<ChatAttachment, "id"> | string> | undefined, ownerId?: string, canReadScope: (scope: string) => boolean = () => true): LoadedUpload[] {

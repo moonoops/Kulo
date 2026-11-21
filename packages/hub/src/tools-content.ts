@@ -1,8 +1,9 @@
 import { defineExtension, defineTool, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
-import { arr, int, obj, oneOf, opt, str, unknown } from "@earendil-works/pi-schema";
-import type { ChatAttachment, UiCardInput } from "@kulo/protocol";
-import { KuloUiCards, type UiAssetPublicationInput, type UiCardSource } from "./ui-cards.js";
+import { arr, bool, int, obj, oneOf, opt, str, unknown } from "@earendil-works/pi-schema";
+import type { ChatAttachment, DiagramMotionMode, UiCardInput } from "@kulo/protocol";
+import { KuloUiCards, type UiAssetPublicationInput, type UiCardSource, type UiDiagramPublicationInput } from "./ui-cards.js";
+import type { PublishedDiagramResult } from "./diagram-publication.js";
 import { KuloStateDoc, isOrchestratorConversation } from "./state.js";
 import { resolveDeferredAddTools } from "./tool-surface.js";
 
@@ -11,6 +12,7 @@ export interface ContentToolsOptions {
   scope: (api: ToolExecutionApi) => UiCardSource | Promise<UiCardSource>;
   /** Workers stage privately; only the main Agent may publish to the user. */
   publishAsset?: (input: UiAssetPublicationInput, api: ToolExecutionApi, context: Context) => Promise<ChatAttachment>;
+  publishDiagram?: (input: UiDiagramPublicationInput, api: ToolExecutionApi, context: Context) => Promise<PublishedDiagramResult>;
   inspectAsset?: (input: UiAssetPublicationInput & { offset?: number; limit?: number }, api: ToolExecutionApi, context: Context) => ToolExecutionResult | Promise<ToolExecutionResult>;
 }
 
@@ -64,6 +66,35 @@ export function createContentToolsExtension(options: ContentToolsOptions) {
         replay: "safe",
         execute: (args, api) => ordered(api, async () => result(await options.get().update({ cardId: args.card_id, revision: args.revision, ...cardInput(args) }, await options.scope(api)))),
       }),
+      ...(options.publishDiagram ? [defineTool({
+        name: "kulo_ui_diagram",
+        description:
+          "Embed a clean inline SVG diagram in Main Chat when visuals beat prose (takeaway first; `--d-*` tokens; `diagram-design` for complex types).",
+        parameters: obj({
+          title: str(),
+          svg: str(),
+          fallback_text: str(),
+          caption: opt(str()),
+          motion: opt(oneOf(["none", "reveal", "step"])),
+          allow_geometry_warnings: opt(bool()),
+        }),
+        replay: "safe",
+        execute: (args, api, context) => ordered(api, async () => {
+          try {
+            const published = await options.publishDiagram!({
+              title: args.title,
+              svg: args.svg,
+              fallbackText: args.fallback_text,
+              ...(args.caption !== undefined ? { caption: args.caption } : {}),
+              ...(args.motion !== undefined ? { motion: args.motion as DiagramMotionMode } : {}),
+              ...(args.allow_geometry_warnings !== undefined ? { allowGeometryWarnings: args.allow_geometry_warnings } : {}),
+            }, api, context);
+            return result(published);
+          } catch (error) {
+            return { isError: true, output: [{ type: "text" as const, text: error instanceof Error ? error.message : "图示发布失败。" }] };
+          }
+        }),
+      })] : []),
       ...(options.publishAsset ? [defineTool({
         name: "kulo_publish_asset",
         description:

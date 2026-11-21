@@ -92,9 +92,9 @@ const ORCHESTRATOR_BENCHMARK: readonly BenchmarkCase[] = [
 ];
 
 const ANDROID_BENCHMARK: readonly BenchmarkCase[] = [
-  { query: "给手机屏幕截屏截图看看画面", expectedAnyOf: ["android_screenshot"] },
-  { query: "在手机上打开启动微信应用", expectedAnyOf: ["android_open_app", "android_find_apps"] },
-  { query: "按名称查找搜索手机里安装的软件包应用", expectedAnyOf: ["android_find_apps", "android_app_info"] },
+  { query: "定一个明天早上7点的手机闹钟或计时器", expectedAnyOf: ["android_intent"] },
+  { query: "在手机上打开启动微信应用", expectedAnyOf: ["android_open", "android_apps"] },
+  { query: "按名称查找搜索手机里安装的软件包应用", expectedAnyOf: ["android_apps", "android_app_info"] },
   { query: "查看手机通知栏里的最新消息提醒", expectedAnyOf: ["android_notifications_query"] },
   { query: "查询手机日历里的今天会议日程安排", expectedAnyOf: ["android_calendar_query"] },
   { query: "在手机通讯录里查找联系人的电话号码", expectedAnyOf: ["android_contacts_query"] },
@@ -102,10 +102,10 @@ const ANDROID_BENCHMARK: readonly BenchmarkCase[] = [
   { query: "获取手机当前的 GPS 定位经纬度位置", expectedAnyOf: ["android_location"] },
   { query: "扫描附近的 WiFi 无线网络热点", expectedAnyOf: ["android_wifi"] },
   { query: "蓝牙扫描并连接蓝牙耳机设备", expectedAnyOf: ["android_bluetooth"] },
-  { query: "在手机输入框里打字输入一段文字", expectedAnyOf: ["android_input_text"] },
-  { query: "点击手机屏幕上的指定坐标位置", expectedAnyOf: ["android_tap", "android_node_action"] },
-  { query: "在手机屏幕上向上滑动翻页", expectedAnyOf: ["android_swipe"] },
-  { query: "按手机返回键回到上一页", expectedAnyOf: ["android_back", "android_global_action"] },
+  { query: "在手机输入框里打字输入一段文字", expectedAnyOf: ["android_type"] },
+  { query: "点击手机屏幕上的指定坐标位置", expectedAnyOf: ["android_tap_xy", "android_tap"] },
+  { query: "在手机屏幕上向上滑动翻页", expectedAnyOf: ["android_scroll"] },
+  { query: "按手机返回键回到上一页", expectedAnyOf: ["android_key"] },
   { query: "调节手机媒体音量和屏幕亮度勿扰模式", expectedAnyOf: ["android_settings_set", "android_settings_get"] },
   { query: "浏览列出手机授权文件夹里的文件列表", expectedAnyOf: ["android_file_list", "android_file_grants"] },
   { query: "把手机里的照片文档导出提取出来", expectedAnyOf: ["android_file_export"] },
@@ -215,7 +215,7 @@ describe("Step 3: tool_search bilingual recall, deterministic event injection & 
     hub.setAndroidHubIdentity("recall-android-hub");
     const status: AndroidEnvStatus = {
       version: 1,
-      catalogVersion: 1,
+      catalogVersion: 3,
       enabled: true,
       paused: false,
       revision: 1,

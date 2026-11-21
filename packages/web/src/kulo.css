@@ -338,8 +338,22 @@
 
 .mc-chat-scroll,
 .kulo-settings-assistant-scroll,
+.kulo-settings-assistant-pinned,
 .kulo-composer-input {
   @apply scrollbar;
+}
+
+.kulo-settings-assistant-pinned {
+  display: flex;
+  flex-shrink: 0;
+  min-width: 0;
+  max-height: 50%;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--separator);
 }
 
 .kulo-settings-assistant-scroll {

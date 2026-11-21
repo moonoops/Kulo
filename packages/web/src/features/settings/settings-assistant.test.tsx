@@ -392,4 +392,50 @@ describe("settings assistant visible states", () => {
     expect(commandFailure).toContain("保存失败");
     expect(commandFailure).not.toContain("test-only-placeholder");
   });
+
+  it("pins the memory service deployment card at the top of the conversation rail above the scrollable message log", () => {
+    const html = renderToStaticMarkup(
+      <SettingsAssistantPanel
+        module="identity"
+        agentName="Kulo"
+        settings={settings}
+        envs={[]}
+        snapshot={{ ...EMPTY_SETTINGS_ASSISTANT, messages: [{ id: 1, role: "user", text: "配置好了吗？" }] }}
+        memoryServiceSnapshot={{
+          revision: 1,
+          deviceName: "Macmini.local",
+          platform: "darwin",
+          installed: true,
+          running: false,
+          connection: settings.blocks.memory.value,
+          jobs: [{
+            id: "job-deploy-1",
+            clientId: "tab-a",
+            operation: "deploy",
+            status: "failed",
+            stage: "未完成",
+            title: "在本机部署 Hindsight",
+            changes: ["Macmini.local", "理解模型：api-google-vertex / gemini-3.8-flash"],
+            deviceName: "Macmini.local",
+            createdAt: 1,
+            updatedAt: 2,
+            error: "所选本机 ONNX 模型仓库缺少 onnx/model.onnx 文件",
+          }],
+          inputs: [],
+        }}
+        loaded
+        connected
+        error={null}
+        controls={controls()}
+      />,
+    );
+    const pinnedIndex = html.indexOf('class="kulo-settings-assistant-pinned"');
+    const cardIndex = html.indexOf("在本机部署 Hindsight");
+    const scrollIndex = html.indexOf('class="kulo-settings-assistant-scroll"');
+    const messageIndex = html.indexOf("配置好了吗？");
+    expect(pinnedIndex).toBeGreaterThan(0);
+    expect(cardIndex).toBeGreaterThan(pinnedIndex);
+    expect(scrollIndex).toBeGreaterThan(cardIndex);
+    expect(messageIndex).toBeGreaterThan(scrollIndex);
+  });
 });

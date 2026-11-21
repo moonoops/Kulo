@@ -268,8 +268,65 @@ describe("Live voice provider adapters", () => {
   it("rejects a terminal session event received before startup rather than leaving a probe pending", async () => {
     const { socket, promise } = begin();
     const rejected = expect(promise).rejects.toMatchObject({ code: "voice_live_startup_closed" });
-    socket.open(); socket.receive({ type: "session.closed" });
+    socket.open();
+    socket.receive({ type: "session.closed" });
     await rejected;
     expect(socket.terminated).toBe(true);
+  });
+
+  it("caps OpenAI startup input and instructions safely below GPT-Live token limits without splitting surrogates", async () => {
+    const hugeHistory = Array.from({ length: 24 }, (_, index) => ({
+      role: (index % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
+      text: `turn-${index}: ${"中文会话历史😀".repeat(400)}`,
+    }));
+    const hugeInstructions = `系统人设：${"规则说明😀".repeat(2500)}`;
+    const { promise, socket } = begin("openai", "gpt-live-1.1", {
+      instructions: hugeInstructions,
+      history: [...hugeHistory, { role: "user", text: "   " }],
+    });
+    socket.open();
+    const start = socket.sent[0]!;
+    expect(start.type).toBe("session.start");
+    const seeded = start.session.input as Array<{ role: string; content: Array<{ type: string; text: string }> }>;
+    expect(seeded.length).toBeGreaterThan(0);
+    expect(seeded.length).toBeLessThan(24);
+    expect(seeded.at(-1)?.content[0]?.text).toMatch(/^turn-23:/);
+    // Conservative byte check ensures rendered tokens stay well below OpenAI's 8,192-token session.input cap.
+    const seededBytes = seeded.reduce((sum, item) => sum + Buffer.byteLength(item.content[0]!.text), 0);
+    expect(seededBytes).toBeLessThan(18 * 1024);
+    expect(start.session.instructions).toContain("Delegation policy:");
+    expect(start.session.instructions).toContain("Delegate to the backend when:");
+    expect(start.session.instructions).not.toContain("<|SpawnThinking|>");
+    expect(Buffer.byteLength(start.session.instructions as string)).toBeLessThan(28 * 1024);
+    // Ensure code-point-safe truncation never produces lone UTF-16 surrogates.
+    const serialized = JSON.stringify(start);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(serialized)).toBe(false);
+    socket.receive({ type: "session.started", session: { id: "fixture-live-bounded" } });
+    const connection = await promise;
+    connection.close();
+    await connection.closed;
+  });
+
+  it("categorizes upstream context-limit rejections and redacts secrets in diagnostic logs", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const { socket, promise } = begin("openai", "gpt-live-1.1");
+      const rejected = expect(promise).rejects.toMatchObject({ code: "voice_live_context_too_large" });
+      socket.open();
+      socket.receive({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          code: "invalid_value",
+          param: "session.input",
+          message: "Initial input exceeds the maximum limit of 8192 tokens for fixture-private-key",
+        },
+      });
+      await rejected;
+      expect(warn).toHaveBeenCalled();
+      expect(warn.mock.calls.map((call) => call.join(" ")).join("\n")).not.toContain("fixture-private-key");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

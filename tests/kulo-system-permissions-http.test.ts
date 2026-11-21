@@ -59,7 +59,7 @@ describe("system permission management HTTP boundary", () => {
     const response = await f.request("/guide", { method: "POST", body: { kind: "screen" } });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ...permissionStates, guide: "started" });
-    expect(f.execute).toHaveBeenCalledWith("remote-mac", { tool: "desktop", action: "permission-guide" }, expect.any(AbortSignal));
+    expect(f.execute).toHaveBeenCalledWith("remote-mac", { tool: "desktop", action: "permission-guide", kind: "screen" }, expect.any(AbortSignal));
     for (const body of [{}, { kind: "microphone" }, { kind: "screen", request: true }, { kind: "screen;run-arbitrary-command" }]) {
       expect((await f.request("/guide", { method: "POST", body })).status).toBe(400);
     }

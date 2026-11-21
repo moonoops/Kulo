@@ -36,7 +36,7 @@ export function DeviceInvitationCopy({ hubId, hubName, connected, deliveryScope,
     if (copy.status === "copied" || copy.status === "manual") setView((current) => current ? { ...current, enabled: true } : current);
   }, [copy]);
 
-  const local = view?.hubId === hubId && view.role === "hub" && view.currentDeviceId === "local" && view.currentDeviceKnown === true;
+  const local = view?.hubId === hubId && view.role === "hub" && view.currentDeviceKnown === true;
   function issue() {
     if (connected && local && view && deliveryScope) {
       void deviceInvitationCopies.copy(deliveryScope, partId, (signal) => apiRequest<IssuedInvitation>("/api/devices/chat-invitations", {

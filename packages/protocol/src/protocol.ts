@@ -157,6 +157,7 @@ export type HubToClientMessage =
       projects?: ProjectView[];
       expression?: AgentExpressionState | null;
       settings?: KuloSettingsView;
+      cluster?: import("./cluster.js").ClusterClientSummary;
     }
   | {
       type: "hub.topics";
@@ -291,6 +292,18 @@ export type EnvToHubControlMessage =
       hubInstanceId?: string;
       /** Streams still held open during the 20s reconnect grace window with their highest contiguous rxSeq. */
       activeStreams?: StreamResumeState[];
+      /** Stable local HTTP listen port reported for cluster endpoint advertisement. */
+      listenPort?: number;
+      /** Current cluster epoch known by this node. */
+      clusterEpoch?: number;
+      /** Base64url X25519 public key used for standby sync envelope encryption. */
+      standbyPublicKey?: string;
+      /** Base64url Ed25519 public key used for node identity verification. */
+      identityPublicKey?: string;
+    }
+  | {
+      type: "env.sync_status";
+      status: import("./cluster.js").ClusterSyncStatus;
     }
   | {
       type: "env.stream_ready";
@@ -344,6 +357,28 @@ export type HubToEnvControlMessage =
       resumedStreams?: StreamResumeState[];
       /** Stream IDs that Env must terminate immediately (revoked, stopped, expired, or Hub restarted). */
       closeStreams?: number[];
+      /** Latest cluster topology pushed on registration. */
+      cluster?: import("./cluster.js").ClusterTopology;
+      /** Standby sync authorization pushed to approved standby peers. */
+      standby?: { enabled: boolean; syncToken: string };
+    }
+  | {
+      type: "hub.cluster_topology";
+      topology: import("./cluster.js").ClusterTopology;
+      /** Optional standby authorization update pushed specifically to this peer. */
+      standby?: { enabled: boolean; syncToken: string };
+    }
+  | {
+      type: "hub.sync_available";
+      notice: import("./cluster.js").ClusterSyncAvailableNotification;
+    }
+  | {
+      type: "hub.standby_wipe";
+      reason: string;
+    }
+  | {
+      type: "hub.cluster_handover";
+      directive: import("./cluster.js").ClusterHandoverDirective;
     }
   | {
       type: "hub.open_stream";

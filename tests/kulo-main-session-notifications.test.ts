@@ -32,7 +32,7 @@ function pendingCard(cardId: string, title = "确认执行命令"): UiCardSnapsh
   return {
     cardId,
     schemaVersion: 1,
-    catalogVersion: 1,
+    catalogVersion: 3,
     title,
     status: "ready",
     revision: 1,

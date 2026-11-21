@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, backup as sqliteBackup } from "node:sqlite";
 import type { ConnectorEventBatch, RawConnectorEvent } from "@kulo/protocol";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const MAX_AUTOMATION_BACKUPS = 50;
 const RAW_BODY_TTL_MS = 14 * 24 * 60 * 60 * 1_000;
 const DEDUPE_WINDOW_MS = 30_000;
 const SHORT_BODY_DEDUPE_WINDOW_MS = 5_000;
@@ -27,6 +28,26 @@ export interface StoredAssistantEvent {
   body: string;
   occurredAt: number;
   receivedAt: number;
+  snapshotRef?: string;
+}
+
+export interface HaSentinelStateRow {
+  entityId: string;
+  unavailableSince?: number;
+  offlineAlertedAt?: number;
+  lowBatteryAlertedAt?: number;
+  doorOpenSince?: number;
+  lastCameraTriageAt?: number;
+  updatedAt: number;
+}
+
+export interface HaAutomationBackupRow {
+  id: string;
+  automationId: string;
+  alias: string;
+  previousConfigJson?: string;
+  appliedConfigJson: string;
+  createdAt: number;
 }
 
 export interface StoredAssistantDigest {
@@ -79,6 +100,7 @@ export class AssistantLedger {
   #db: DatabaseSync | null = null;
   #serial: Promise<void> = Promise.resolve();
   #closed = false;
+  #onWrite?: () => void;
 
   constructor(options: AssistantLedgerOptions) {
     const dir = path.resolve(options.stateDir);
@@ -86,11 +108,24 @@ export class AssistantLedger {
     this.#rawBodyTtlMs = options.rawBodyTtlMs ?? RAW_BODY_TTL_MS;
   }
 
+  setOnWrite(hook: (() => void) | undefined): void {
+    this.#onWrite = hook;
+  }
+
+  async backupTo(destPath: string): Promise<boolean> {
+    return this.#enqueue(async () => {
+      if (!fs.existsSync(this.#dbPath) && !this.#db) return false;
+      const db = this.#open();
+      await sqliteBackup(db, destPath, { rate: 256 });
+      return true;
+    });
+  }
+
   get dbPath(): string {
     return this.#dbPath;
   }
 
-  #enqueue<T>(fn: () => T): Promise<T> {
+  #enqueue<T>(fn: () => T | Promise<T>): Promise<T> {
     if (this.#closed) return Promise.reject(new Error("Assistant ledger is closed"));
     const next = this.#serial.then(fn, fn);
     this.#serial = next.then(() => undefined, () => undefined);
@@ -124,7 +159,7 @@ export class AssistantLedger {
       db.close();
       throw new Error(`Unsupported assistant.sqlite schema version ${currentVersion}`);
     }
-    if (currentVersion < SCHEMA_VERSION) {
+    if (currentVersion < 1) {
       db.exec(`
         BEGIN;
         CREATE TABLE IF NOT EXISTS events (
@@ -146,6 +181,7 @@ export class AssistantLedger {
           received_at INTEGER NOT NULL,
           dedupe_key TEXT NOT NULL,
           body_pruned_at INTEGER,
+          snapshot_ref TEXT,
           UNIQUE(stream_id, source_epoch, native_event_id, event_version)
         );
         CREATE INDEX IF NOT EXISTS idx_events_dedupe ON events (dedupe_key, occurred_at);
@@ -175,6 +211,35 @@ export class AssistantLedger {
           category,
           tokenize = 'trigram'
         );
+        PRAGMA user_version = 1;
+        COMMIT;
+      `);
+    }
+    if (currentVersion < 2) {
+      const eventCols = db.prepare("PRAGMA table_info(events)").all() as Array<{ name?: string }>;
+      const hasSnapshotRef = eventCols.some((col) => col.name === "snapshot_ref");
+      db.exec(`
+        BEGIN;
+        ${hasSnapshotRef ? "" : "ALTER TABLE events ADD COLUMN snapshot_ref TEXT;"}
+        CREATE TABLE IF NOT EXISTS ha_sentinel_state (
+          entity_id TEXT PRIMARY KEY,
+          unavailable_since INTEGER,
+          offline_alerted_at INTEGER,
+          low_battery_alerted_at INTEGER,
+          door_open_since INTEGER,
+          last_camera_triage_at INTEGER,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS ha_automation_backups (
+          id TEXT PRIMARY KEY,
+          automation_id TEXT NOT NULL,
+          alias TEXT NOT NULL,
+          previous_config_json TEXT,
+          applied_config_json TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ha_auto_backups_created ON ha_automation_backups (created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_ha_auto_backups_auto_id ON ha_automation_backups (automation_id, created_at DESC);
         PRAGMA user_version = ${SCHEMA_VERSION};
         COMMIT;
       `);
@@ -204,8 +269,8 @@ export class AssistantLedger {
         INSERT OR IGNORE INTO events (
           id, env_id, driver_id, stream_id, source_epoch, native_event_id, event_version,
           app_id, app_label, thread_hint, sender, title, subtitle, body,
-          occurred_at, received_at, dedupe_key
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          occurred_at, received_at, dedupe_key, snapshot_ref
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       db.exec("BEGIN");
@@ -222,6 +287,7 @@ export class AssistantLedger {
           const sender = raw.sender !== undefined ? redact(raw.sender).slice(0, 256) : undefined;
           const threadHint = raw.threadHint !== undefined ? redact(raw.threadHint).slice(0, 256) : undefined;
           const appLabel = (raw.appLabel || raw.appId).slice(0, 200);
+          const snapshotRef = typeof raw.snapshotRef === "string" && raw.snapshotRef.trim() ? raw.snapshotRef.trim().slice(0, 160) : undefined;
           const dedupeKey = computeDedupeKey({ ...raw, title, subtitle, body, sender, threadHint });
           const shortBody = normalizeForDedupe(body).length <= SHORT_BODY_MAX_CHARS;
           const windowMs = shortBody ? SHORT_BODY_DEDUPE_WINDOW_MS : DEDUPE_WINDOW_MS;
@@ -249,6 +315,7 @@ export class AssistantLedger {
             raw.occurredAt,
             now,
             dedupeKey,
+            snapshotRef ?? null,
           ).changes;
           if (Number(changes) > 0) {
             inserted.push({
@@ -268,6 +335,7 @@ export class AssistantLedger {
               body,
               occurredAt: raw.occurredAt,
               receivedAt: now,
+              ...(snapshotRef ? { snapshotRef } : {}),
             });
           } else {
             deduplicatedCount += 1;
@@ -278,6 +346,7 @@ export class AssistantLedger {
         try { db.exec("ROLLBACK"); } catch { /* ignore */ }
         throw error;
       }
+      if (inserted.length > 0) this.#onWrite?.();
       return { inserted, deduplicatedCount };
     });
   }
@@ -318,6 +387,7 @@ export class AssistantLedger {
         try { db.exec("ROLLBACK"); } catch { /* ignore */ }
         throw error;
       }
+      this.#onWrite?.();
       return {
         ...input,
         id,
@@ -412,7 +482,7 @@ export class AssistantLedger {
       const placeholders = ids.map(() => "?").join(", ");
       const rows = db.prepare(`
         SELECT id, env_id, driver_id, stream_id, source_epoch, native_event_id, event_version,
-               app_id, app_label, thread_hint, sender, title, subtitle, body, occurred_at, received_at
+               app_id, app_label, thread_hint, sender, title, subtitle, body, occurred_at, received_at, snapshot_ref
         FROM events
         WHERE id IN (${placeholders})
         ORDER BY occurred_at ASC
@@ -434,7 +504,141 @@ export class AssistantLedger {
         body: redact(String(row.body ?? "")),
         occurredAt: Number(row.occurred_at),
         receivedAt: Number(row.received_at),
+        ...(typeof row.snapshot_ref === "string" && row.snapshot_ref ? { snapshotRef: row.snapshot_ref } : {}),
       }));
+    });
+  }
+
+  getAllHaSentinelStates(): Promise<HaSentinelStateRow[]> {
+    return this.#enqueue(() => {
+      const db = this.#open();
+      const rows = db.prepare(`
+        SELECT entity_id, unavailable_since, offline_alerted_at, low_battery_alerted_at,
+               door_open_since, last_camera_triage_at, updated_at
+        FROM ha_sentinel_state
+      `).all() as Array<Record<string, unknown>>;
+      return rows.map(mapHaSentinelStateRow);
+    });
+  }
+
+  upsertHaSentinelState(state: HaSentinelStateRow): Promise<void> {
+    return this.#enqueue(() => {
+      const db = this.#open();
+      db.prepare(`
+        INSERT INTO ha_sentinel_state (
+          entity_id, unavailable_since, offline_alerted_at, low_battery_alerted_at,
+          door_open_since, last_camera_triage_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(entity_id) DO UPDATE SET
+          unavailable_since = excluded.unavailable_since,
+          offline_alerted_at = excluded.offline_alerted_at,
+          low_battery_alerted_at = excluded.low_battery_alerted_at,
+          door_open_since = excluded.door_open_since,
+          last_camera_triage_at = excluded.last_camera_triage_at,
+          updated_at = excluded.updated_at
+      `).run(
+        state.entityId,
+        state.unavailableSince ?? null,
+        state.offlineAlertedAt ?? null,
+        state.lowBatteryAlertedAt ?? null,
+        state.doorOpenSince ?? null,
+        state.lastCameraTriageAt ?? null,
+        state.updatedAt,
+      );
+      this.#onWrite?.();
+    });
+  }
+
+  deleteHaSentinelState(entityId: string): Promise<void> {
+    return this.#enqueue(() => {
+      const db = this.#open();
+      const res = db.prepare("DELETE FROM ha_sentinel_state WHERE entity_id = ?").run(entityId);
+      if (Number(res.changes) > 0) this.#onWrite?.();
+    });
+  }
+
+  recordHaAutomationBackup(input: {
+    automationId: string;
+    alias: string;
+    previousConfigJson?: string;
+    appliedConfigJson: string;
+    now?: number;
+  }): Promise<HaAutomationBackupRow> {
+    return this.#enqueue(() => {
+      const db = this.#open();
+      const id = `habak-${randomUUID().slice(0, 12)}`;
+      const createdAt = input.now ?? Date.now();
+      db.exec("BEGIN");
+      try {
+        db.prepare(`
+          INSERT INTO ha_automation_backups (
+            id, automation_id, alias, previous_config_json, applied_config_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?)
+        `).run(
+          id,
+          input.automationId,
+          input.alias.slice(0, 200),
+          input.previousConfigJson ?? null,
+          input.appliedConfigJson,
+          createdAt,
+        );
+        // Keep only the latest 50 backups to prevent unbounded growth.
+        db.prepare(`
+          DELETE FROM ha_automation_backups
+          WHERE id NOT IN (
+            SELECT id FROM ha_automation_backups ORDER BY created_at DESC LIMIT ?
+          )
+        `).run(MAX_AUTOMATION_BACKUPS);
+        db.exec("COMMIT");
+      } catch (error) {
+        try { db.exec("ROLLBACK"); } catch { /* ignore */ }
+        throw error;
+      }
+      this.#onWrite?.();
+      return {
+        id,
+        automationId: input.automationId,
+        alias: input.alias.slice(0, 200),
+        ...(input.previousConfigJson !== undefined ? { previousConfigJson: input.previousConfigJson } : {}),
+        appliedConfigJson: input.appliedConfigJson,
+        createdAt,
+      };
+    });
+  }
+
+  getHaAutomationBackup(options: { backupId?: string; automationId?: string } = {}): Promise<HaAutomationBackupRow | undefined> {
+    return this.#enqueue(() => {
+      const db = this.#open();
+      let row: Record<string, unknown> | undefined;
+      if (options.backupId) {
+        row = db.prepare(`
+          SELECT id, automation_id, alias, previous_config_json, applied_config_json, created_at
+          FROM ha_automation_backups WHERE id = ? LIMIT 1
+        `).get(options.backupId) as Record<string, unknown> | undefined;
+      } else if (options.automationId) {
+        row = db.prepare(`
+          SELECT id, automation_id, alias, previous_config_json, applied_config_json, created_at
+          FROM ha_automation_backups WHERE automation_id = ? ORDER BY created_at DESC LIMIT 1
+        `).get(options.automationId) as Record<string, unknown> | undefined;
+      } else {
+        row = db.prepare(`
+          SELECT id, automation_id, alias, previous_config_json, applied_config_json, created_at
+          FROM ha_automation_backups ORDER BY created_at DESC LIMIT 1
+        `).get() as Record<string, unknown> | undefined;
+      }
+      return row ? mapHaAutomationBackupRow(row) : undefined;
+    });
+  }
+
+  listHaAutomationBackups(limit = 20): Promise<HaAutomationBackupRow[]> {
+    return this.#enqueue(() => {
+      const db = this.#open();
+      const bounded = Math.max(1, Math.min(MAX_AUTOMATION_BACKUPS, limit));
+      const rows = db.prepare(`
+        SELECT id, automation_id, alias, previous_config_json, applied_config_json, created_at
+        FROM ha_automation_backups ORDER BY created_at DESC LIMIT ?
+      `).all(bounded) as Array<Record<string, unknown>>;
+      return rows.map(mapHaAutomationBackupRow);
     });
   }
 
@@ -461,9 +665,11 @@ export class AssistantLedger {
       const db = this.#open();
       const cutoff = now - this.#rawBodyTtlMs;
       const res = db.prepare(
-        "UPDATE events SET body = '', subtitle = NULL, body_pruned_at = ? WHERE body_pruned_at IS NULL AND received_at < ?",
+        "UPDATE events SET body = '', subtitle = NULL, snapshot_ref = NULL, body_pruned_at = ? WHERE body_pruned_at IS NULL AND received_at < ?",
       ).run(now, cutoff);
-      return Number(res.changes);
+      const changes = Number(res.changes);
+      if (changes > 0) this.#onWrite?.();
+      return changes;
     });
   }
 
@@ -476,6 +682,29 @@ export class AssistantLedger {
       this.#db = null;
     }
   }
+}
+
+function mapHaSentinelStateRow(row: Record<string, unknown>): HaSentinelStateRow {
+  return {
+    entityId: String(row.entity_id),
+    ...(typeof row.unavailable_since === "number" ? { unavailableSince: row.unavailable_since } : {}),
+    ...(typeof row.offline_alerted_at === "number" ? { offlineAlertedAt: row.offline_alerted_at } : {}),
+    ...(typeof row.low_battery_alerted_at === "number" ? { lowBatteryAlertedAt: row.low_battery_alerted_at } : {}),
+    ...(typeof row.door_open_since === "number" ? { doorOpenSince: row.door_open_since } : {}),
+    ...(typeof row.last_camera_triage_at === "number" ? { lastCameraTriageAt: row.last_camera_triage_at } : {}),
+    updatedAt: Number(row.updated_at ?? 0),
+  };
+}
+
+function mapHaAutomationBackupRow(row: Record<string, unknown>): HaAutomationBackupRow {
+  return {
+    id: String(row.id),
+    automationId: String(row.automation_id),
+    alias: String(row.alias ?? ""),
+    ...(typeof row.previous_config_json === "string" ? { previousConfigJson: row.previous_config_json } : {}),
+    appliedConfigJson: String(row.applied_config_json ?? "{}"),
+    createdAt: Number(row.created_at ?? 0),
+  };
 }
 
 function mapDigestRow(row: Record<string, unknown>): StoredAssistantDigest {

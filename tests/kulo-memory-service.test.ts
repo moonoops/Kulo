@@ -496,4 +496,22 @@ describe("Hindsight setup confirmation and credential custody", () => {
     expect(dismissed.jobs.find((j) => j.id === "deploy-3")?.status).toBe("rejected");
     expect(dismissed.jobs.find((j) => j.id === "deploy-3")?.error).toBeUndefined();
   });
+
+  it("normalizes bare BGE ONNX model aliases in prepared jobs without rewriting remote provider models", async () => {
+    const f = await fixture();
+    const prepared = await f.service.prepare({
+      commandId: "deploy-onnx-alias",
+      clientId: "browser-a",
+      expectedRevision: f.settings().revisions.memory,
+      operation: "deploy",
+      model: { provider: "ollama", model: "llama3.2" },
+      embeddings: { provider: "onnx", model: "BAAI/bge-small-zh-v1.5", dimensions: 512 },
+      reranker: { provider: "onnx", model: "BAAI/bge-reranker-v2-m3" },
+    });
+    const job = prepared.jobs.find((item) => item.id === "deploy-onnx-alias")!;
+    expect(job.embeddings).toEqual({ provider: "onnx", model: "Xenova/bge-small-zh-v1.5", dimensions: 512 });
+    expect(job.reranker).toEqual({ provider: "onnx", model: "onnx-community/bge-reranker-v2-m3-ONNX" });
+    expect(job.changes.join("\n")).toContain("onnx-community/bge-reranker-v2-m3-ONNX");
+    expect(job.changes.join("\n")).toContain("Xenova/bge-small-zh-v1.5");
+  });
 });

@@ -4,7 +4,7 @@ import type { HindsightMemoryConfig } from "@kulo/protocol";
 import { executeHindsightTool } from "./hindsight.js";
 import { buildVoiceCallInstructions } from "./prompts.js";
 import { memoryCallerFromState } from "./tools-memory.js";
-import { WorkerRecoveryEntry, isRecoveryInputBoundary, type KuloDurableState } from "./state.js";
+import { WorkerRecoveryEntry, WorkerRelayEntry, WorkerWatchdogEntry, isRecoveryInputBoundary, type KuloDurableState } from "./state.js";
 import { VoiceTranscriptEntry } from "./voice-transcripts.js";
 
 interface VoiceHistoryMessage { role: "user" | "assistant"; text: string }
@@ -13,6 +13,16 @@ const SECTION_LIMITS: Record<string, number> = {
   kulo_relationship: 16 * 1024,
   kulo_recent_work: 4 * 1024,
 };
+const MAX_HISTORY_MESSAGES = 24;
+const MAX_HISTORY_ITEM_BYTES = 4 * 1024;
+const MAX_HISTORY_BYTES = 24 * 1024;
+
+function stripInternalUserMetadata(text: string): string {
+  return text
+    .replace(/(?:\n\n|^)\[KULO_AGENT_ASSIGNMENT\]\n\{[^\n]*\}\nAuthoritative Agent assignment constraint[^\n]*$/, "")
+    .replace(/(?:\n\n|^)\[KULO_MESSAGE_SOURCE\]\n\{[^\n]*\}(?=\n\n|$)/, "")
+    .trim();
+}
 
 function boundedText(text: string, limit: number): string {
   if (Buffer.byteLength(text) <= limit) return text;
@@ -44,11 +54,17 @@ export function voiceHistory(view: ContextView, redact: (text: string) => string
     if (WorkerRecoveryEntry.is(entry)) { recoveryTurn = true; continue; }
     if (isRecoveryInputBoundary(entry)) recoveryTurn = false;
     if (recoveryTurn) continue;
-    if (entry.kind === "kulo.voice.delegation" || entry.kind === "kulo.memory-context") continue;
+    if (
+      WorkerRelayEntry.is(entry) ||
+      WorkerWatchdogEntry.is(entry) ||
+      entry.kind === "kulo.voice.delegation" ||
+      entry.kind === "kulo.memory-context"
+    ) continue;
     for (const message of contributions) {
       if (message.role !== "user" && message.role !== "assistant") continue;
-      const text = typeof message.content === "string" ? message.content : message.content
+      const rawText = typeof message.content === "string" ? message.content : message.content
         .filter((part) => part.type === "text").map((part) => part.text).join("\n");
+      const text = message.role === "user" ? stripInternalUserMetadata(rawText) : rawText;
       if (message.role === "assistant" && ["[RECOVERY_OK]", "[WATCHDOG_OK]", "[COORDINATOR_OK]"].includes(text.trim())) continue;
       if (text.trim()) history.push({ role: message.role, text });
     }
@@ -56,10 +72,10 @@ export function voiceHistory(view: ContextView, redact: (text: string) => string
   const bounded: VoiceHistoryMessage[] = [];
   let bytes = 0;
   for (const message of history.reverse()) {
-    const text = boundedText(redact(message.text), 6 * 1024);
+    const text = boundedText(redact(message.text), MAX_HISTORY_ITEM_BYTES);
     if (!text.trim()) continue;
     const size = Buffer.byteLength(text);
-    if (bounded.length >= 24 || bytes + size > 32 * 1024) break;
+    if (bounded.length >= MAX_HISTORY_MESSAGES || bytes + size > MAX_HISTORY_BYTES) break;
     bounded.push({ role: message.role, text }); bytes += size;
   }
   return bounded.reverse();

@@ -233,6 +233,7 @@ export function useKuloAppearance() {
     setMode,
     setChatFontSize,
     customization: appearance.customization ?? null,
+    effectiveCustomization,
     setCustomization,
     resetCustomization,
     isPreviewingCustomization: currentPreview !== null,

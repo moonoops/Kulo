@@ -77,8 +77,10 @@ export function loadSkillPresets(directory: string): SkillPreset[] {
   return data.presets;
 }
 
+export const COMPUTER_ONLY_BUILTINS = new Set(["interactive-html", "diagram-design"]);
+
 export function isSkillApplicable(record: Pick<SkillRecord, "id" | "source">, presets: ReadonlyMap<string, SkillPreset>, runtime?: SkillRuntimeContext): boolean {
-  if (record.source === "builtin" && record.id === "interactive-html" && runtime?.executionDomain === "android") {
+  if (record.source === "builtin" && COMPUTER_ONLY_BUILTINS.has(record.id) && runtime?.executionDomain === "android") {
     return false;
   }
   const preset = record.source === "builtin" ? presets.get(record.id) : undefined;

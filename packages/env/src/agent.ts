@@ -24,6 +24,12 @@ import {
   STREAM_RESUME_CAPABILITY,
   STREAM_RESUME_GRACE_MS,
   CONNECTORS_CAPABILITY,
+  CLUSTER_FAILOVER_CAPABILITY,
+  WARM_STANDBY_CAPABILITY,
+  type ClusterHandoverDirective,
+  type ClusterSyncAvailableNotification,
+  type ClusterSyncStatus,
+  type ClusterTopology,
   isConnectorCallRequest,
   isConnectorSourceConfig,
   decodeSequencedStreamChunk,
@@ -99,6 +105,22 @@ export interface KuloEnvAgentOptions {
   heartbeatIdleMs?: number;
   /** Max time in ms to wait for a ping or registration response before terminating the socket (default: 10_000). */
   heartbeatTimeoutMs?: number;
+  /** Local HTTP listen port for cluster topology advertisement. */
+  getListenPort?: () => number | undefined;
+  /** True only for full Desktop / CLI runtimes capable of promoting to Active Hub. */
+  warmStandbyCapable?: boolean;
+  /** Current cluster epoch known by this peer. */
+  getClusterEpoch?: () => number | undefined;
+  /** Base64url X25519 public key for Standby encrypted replication. */
+  getStandbyPublicKey?: () => string | undefined;
+  /** Base64url Ed25519 public key for cluster node identity verification. */
+  getIdentityPublicKey?: () => string | undefined;
+  onClusterTopology?: (topology: ClusterTopology) => void;
+  onStandbyAuth?: (standby: { enabled: boolean; syncToken: string }) => void;
+  onSyncAvailable?: (notice: ClusterSyncAvailableNotification) => void;
+  onStandbyWipe?: (reason: string) => void;
+  onClusterHandover?: (directive: ClusterHandoverDirective) => void;
+  onConnectionStateChange?: (registered: boolean, closeCode?: number) => void;
   onLog?: (msg: string) => void;
 }
 
@@ -109,6 +131,7 @@ export interface KuloEnvAgentOptions {
  */
 export class KuloEnvAgent {
   readonly #options: KuloEnvAgentOptions;
+  #hubUrl: string;
   readonly #rootDir: string;
   readonly #launchProtectedPaths: string[];
   #ws: WebSocket | null = null;
@@ -156,6 +179,7 @@ export class KuloEnvAgent {
 
   constructor(options: KuloEnvAgentOptions) {
     this.#options = options;
+    this.#hubUrl = options.hubUrl;
     this.#streamResumeGraceMs = options.streamResumeGraceMs ?? STREAM_RESUME_GRACE_MS;
     this.#handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     this.#heartbeatIdleMs = options.heartbeatIdleMs ?? DEFAULT_HEARTBEAT_IDLE_MS;
@@ -249,6 +273,47 @@ export class KuloEnvAgent {
       });
     }
     if ((await browserCleanup).some((result) => result.status === "rejected")) throw new Error("Some owned browser or desktop sessions could not close");
+  }
+
+  /** Hot-switch the outbound WebSocket target to a new Active Hub without restarting the process. */
+  switchHub(nextHubUrl: string): void {
+    if (this.#stopped) return;
+    if (this.#hubUrl === nextHubUrl && this.#ws && (this.#ws.readyState === WebSocket.OPEN || this.#ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    this.#hubUrl = nextHubUrl;
+    this.#hubInstanceId = undefined;
+    this.#reconnectAttempt = 0;
+    if (this.#reconnectTimer) {
+      clearTimeout(this.#reconnectTimer);
+      this.#reconnectTimer = null;
+    }
+    const previous = this.#ws;
+    this.#ws = null;
+    const wasRegistered = this.#registered;
+    this.#registered = false;
+    this.#connectorsNegotiated = false;
+    this.#clearLivenessTimers();
+    if (previous) {
+      this.#cancelComputerRequests(previous);
+      this.#cancelHostActionRequests(previous);
+      try {
+        if (previous.readyState === WebSocket.CONNECTING) previous.terminate();
+        else if (previous.readyState === WebSocket.OPEN) previous.close(1000, "Switching cluster primary");
+      } catch {
+        // ignore
+      }
+    }
+    if (wasRegistered) this.#options.onConnectionStateChange?.(false, 1000);
+    void this.#browser.suspend().catch(() => {});
+    void this.#computer.suspend().catch(() => {});
+    void this.#killAllDaemons(true).catch(() => {});
+    this.#connect();
+  }
+
+  sendSyncStatus(status: ClusterSyncStatus): void {
+    if (!this.#registered || !this.#ws || this.#ws.readyState !== WebSocket.OPEN) return;
+    this.#sendControl(this.#ws, { type: "env.sync_status", status });
   }
 
   /** Actively verify the Hub WebSocket or accelerate a pending reconnect (for example after OS wake from sleep). */
@@ -369,7 +434,7 @@ export class KuloEnvAgent {
     this.#clearLivenessTimers();
     this.#connectStartedAt = Date.now();
 
-    const ws = new WebSocket(this.#options.hubUrl, {
+    const ws = new WebSocket(this.#hubUrl, {
       ...(this.#handshakeTimeoutMs > 0 ? { handshakeTimeout: this.#handshakeTimeoutMs } : {}),
     });
     this.#ws = ws;
@@ -387,13 +452,28 @@ export class KuloEnvAgent {
       const defaultCaps =
         process.platform === "darwin" ? ["fs", "bash", "macos-gui", CONNECTORS_CAPABILITY] : ["fs", "bash"];
       const capabilities = Array.from(
-        new Set([...defaultCaps, STREAM_RESUME_CAPABILITY, "external-agents", "host-actions", ...workerIsolationCapabilities(), ...(this.#options.capabilities ?? []).filter((capability) => !["flow-browser", "agent-browser", "agent-desktop"].includes(capability)), ...(this.#browser.available ? ["flow-browser"] : []), ...this.#computer.capabilities()]),
+        new Set([
+          ...defaultCaps,
+          STREAM_RESUME_CAPABILITY,
+          CLUSTER_FAILOVER_CAPABILITY,
+          ...(this.#options.warmStandbyCapable ? [WARM_STANDBY_CAPABILITY] : []),
+          "external-agents",
+          "host-actions",
+          ...workerIsolationCapabilities(),
+          ...(this.#options.capabilities ?? []).filter((capability) => !["flow-browser", "agent-browser", "agent-desktop"].includes(capability)),
+          ...(this.#browser.available ? ["flow-browser"] : []),
+          ...this.#computer.capabilities(),
+        ]),
       );
       const activeStreams: StreamResumeState[] = [];
       for (const streamId of this.#daemons.keys()) {
         const buffer = this.#streamBuffers.get(streamId);
         activeStreams.push({ streamId, rxSeq: buffer?.rxSeq ?? 0 });
       }
+      const listenPort = this.#options.getListenPort?.();
+      const clusterEpoch = this.#options.getClusterEpoch?.();
+      const standbyPublicKey = this.#options.getStandbyPublicKey?.();
+      const identityPublicKey = this.#options.getIdentityPublicKey?.();
 
       this.#sendControl(ws, {
         type: "env.register",
@@ -407,6 +487,10 @@ export class KuloEnvAgent {
         info: collectDeviceSystemInfo(),
         ...(this.#hubInstanceId ? { hubInstanceId: this.#hubInstanceId } : {}),
         ...(activeStreams.length ? { activeStreams } : {}),
+        ...(listenPort !== undefined ? { listenPort } : {}),
+        ...(clusterEpoch !== undefined ? { clusterEpoch } : {}),
+        ...(standbyPublicKey ? { standbyPublicKey } : {}),
+        ...(identityPublicKey ? { identityPublicKey } : {}),
       });
     });
 
@@ -477,6 +561,9 @@ export class KuloEnvAgent {
         this.#registered = true;
         this.#clearProbeTimer();
         this.#log(`Registered env '${msg.envId}' -> ${this.#rootDir}`);
+        this.#options.onConnectionStateChange?.(true);
+        if (msg.cluster) this.#options.onClusterTopology?.(msg.cluster);
+        if (msg.standby) this.#options.onStandbyAuth?.(msg.standby);
         if (this.#connectorsNegotiated && this.#notificationSensor) {
           this.#sendControl(ws, { type: "env.connector_status", status: this.#notificationSensor.status });
         }
@@ -583,6 +670,15 @@ export class KuloEnvAgent {
               }
             });
         }
+      } else if (msg.type === "hub.cluster_topology") {
+        this.#options.onClusterTopology?.(msg.topology);
+        if (msg.standby) this.#options.onStandbyAuth?.(msg.standby);
+      } else if (msg.type === "hub.sync_available") {
+        this.#options.onSyncAvailable?.(msg.notice);
+      } else if (msg.type === "hub.standby_wipe") {
+        this.#options.onStandbyWipe?.(msg.reason);
+      } else if (msg.type === "hub.cluster_handover") {
+        this.#options.onClusterHandover?.(msg.directive);
       } else if (msg.type === "hub.close_stream") {
         void this.#stopStream(msg.streamId, true).catch((error: unknown) => this.#log(error instanceof Error ? error.message : "Worker cleanup failed"));
       }
@@ -593,11 +689,13 @@ export class KuloEnvAgent {
       const isCurrentSocket = ws === this.#ws;
       if (!isCurrentSocket) return;
       this.#ws = null;
+      const wasRegistered = this.#registered;
       this.#registered = false;
       this.#connectorsNegotiated = false;
       this.#clearLivenessTimers();
       this.#cancelComputerRequests(ws);
       this.#cancelHostActionRequests(ws);
+      if (wasRegistered) this.#options.onConnectionStateChange?.(false, code);
 
       const immediateRevokeOrStop =
         this.#stopped ||

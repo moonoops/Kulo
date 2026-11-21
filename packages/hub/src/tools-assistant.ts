@@ -6,6 +6,8 @@ import type {
   AssistantItemView,
   AssistantPendingAction,
   AssistantWorkspaceSnapshot,
+  HomeAssistantAnnounceConfig,
+  HomeAssistantSentinelConfig,
   HomeAssistantSnapshot,
   LarkConnectorSnapshot,
   SparkConnectorSnapshot,
@@ -13,7 +15,11 @@ import type {
 import { isMainOrchestratorApi } from "./settings-doc.js";
 import type { AssistantLedger } from "./assistant-ledger.js";
 import type { SparkMailService } from "./connectors/spark-mail-service.js";
-import type { HomeAssistantService } from "./connectors/home-assistant.js";
+import {
+  assertSafeHaServiceCallDeep,
+  sanitizeServiceData,
+  type HomeAssistantService,
+} from "./connectors/home-assistant.js";
 import type { LarkConnectorService } from "./connectors/lark-connector.js";
 
 export interface AssistantToolsHost {
@@ -25,7 +31,14 @@ export interface AssistantToolsHost {
   workspaceSnapshot(): Promise<AssistantWorkspaceSnapshot>;
   configureNotifications(input: { enabled?: boolean; muteApp?: string; unmuteApp?: string }): Promise<AssistantWorkspaceSnapshot>;
   configureSpark(input: { enabled: boolean }): Promise<SparkConnectorSnapshot>;
-  configureHomeAssistant(input: { enabled?: boolean; baseUrl?: string; token?: string; clearToken?: boolean }): Promise<HomeAssistantSnapshot>;
+  configureHomeAssistant(input: {
+    enabled?: boolean;
+    baseUrl?: string;
+    token?: string;
+    clearToken?: boolean;
+    sentinel?: Partial<HomeAssistantSentinelConfig>;
+    announce?: Partial<HomeAssistantAnnounceConfig>;
+  }): Promise<HomeAssistantSnapshot>;
   configureLark(input: { enabled?: boolean; selectedProfiles?: string[] }): Promise<LarkConnectorSnapshot>;
   proposeDecisionCard(input: {
     situationKey: string;
@@ -277,19 +290,50 @@ export function createAssistantToolsExtension(get: () => AssistantToolsHost) {
       }),
       defineTool({
         name: "kulo_home_assistant",
-        description: "Manage Mi Home -> Home Assistant migration (OrbStack/Docker + XiaoMi/ha_xiaomi_home), inspect cleaned home entities, check LAN connection & /api/mcp status, propose L2 confirmation cards, or invoke safe non-security HA services on explicit user request. Physical security entities (locks, alarms, sirens, valves, garage doors) are permanently read-only. 关键词：智能家居 米家 Home Assistant HA 迁移 灯光 空调 窗帘 开关 传感器 OrbStack",
+        description: "Manage Mi Home -> Home Assistant setup (OrbStack/Docker + official XiaoMi/ha_xiaomi_home), inspect cleaned home entities with real room areas & attributes, call safe services with `service_data_json`, announce via speakers (e.g. XiaoAI), inspect history/automations/traces, propose plain-language L2 confirmation cards for HA native automations (never ask users for plaintext tokens in chat—direct them to Settings -> Credentials -> Mi Home / Home Assistant), or adjust sentinel/announce preferences. Physical security entities (locks, alarms, sirens, valves, garage doors) are permanently read-only. 关键词：智能家居 米家 Home Assistant HA 迁移 灯光 空调 窗帘 开关 传感器 无线开关 自动化 播报 小爱音箱 离线 门口 摄像头 OrbStack",
         parameters: obj({
-          action: oneOf(["status", "entities", "migration_guide", "deploy_local", "configure", "call_service", "propose_action"]),
-          domain: opt(str({ description: "HA domain (e.g. light, switch, climate, cover, fan, scene)." })),
-          service: opt(str({ description: "HA service (e.g. turn_on, turn_off, set_temperature)." })),
+          action: oneOf([
+            "status",
+            "entities",
+            "migration_guide",
+            "deploy_local",
+            "configure",
+            "call_service",
+            "propose_action",
+            "list_automations",
+            "get_automation",
+            "get_traces",
+            "get_history",
+            "propose_automation",
+            "propose_delete_automation",
+            "restore_automation",
+            "announce",
+            "configure_sentinel",
+            "configure_announce",
+          ]),
+          domain: opt(str({ description: "HA domain (e.g. light, switch, climate, cover, fan, scene, event, automation)." })),
+          service: opt(str({ description: "HA service (e.g. turn_on, turn_off, set_temperature, set_cover_position)." })),
           entity_id: opt(str({ description: "Target HA entity_id (e.g. light.living_room)." })),
+          service_data_json: opt(str({ description: "Optional JSON object of HA service parameters (e.g. '{\"temperature\":25,\"hvac_mode\":\"cool\"}' or '{\"brightness_pct\":60}')." })),
+          area: opt(str({ description: "Optional room/area name or areaId filter when action='entities'." })),
           query: opt(str({ description: "Filter text when action='entities'." })),
-          base_url: opt(str({ description: "LAN-only HA URL (e.g. http://127.0.0.1:8123) when action='configure'." })),
-          token: opt(str({ description: "Long-Lived Access Token stored encrypted in local vault when action='configure'." })),
+          include_attributes: opt(bool({ description: "Include curated device attributes when action='entities' (default true)." })),
+          base_url: opt(str({ description: "LAN-only HA URL (e.g. http://127.0.0.1:8123) when action='configure'. Never pass tokens here." })),
           enabled: opt(bool({ description: "Enable/disable HA connection when action='configure'." })),
           confirmed: opt(bool({ description: "Set true ONLY after user explicitly confirms deploying local HA container." })),
-          title: opt(str({ description: "Card title when action='propose_action'." })),
-          preview: opt(str({ description: "Short description of proposed home action when action='propose_action'." })),
+          install_xiaomi_home: opt(bool({ description: "Pre-install official XiaoMi/ha_xiaomi_home when action='deploy_local' (default true)." })),
+          config_id: opt(str({ description: "HA automation internal configId (attributes.id, NOT automation.* entity_id) for get/update/delete/traces/restore." })),
+          automation_json: opt(str({ description: "JSON object of HA automation config ({ alias, triggers, conditions?, actions, mode? }) when action='propose_automation'." })),
+          backup_id: opt(str({ description: "Optional backupId when action='restore_automation'." })),
+          entity_ids: opt(arr(str(), { description: "1-5 entity IDs when action='get_history'." })),
+          hours: opt(num({ description: "Lookback hours (1-168, default 24) when action='get_history'." })),
+          text: opt(str({ description: "Spoken announcement text when action='announce'." })),
+          speaker_entity_id: opt(str({ description: "Optional target speaker entity_id when action='announce'." })),
+          force: opt(bool({ description: "Set true when the user explicitly requests speaking right now via action='announce'." })),
+          sentinel_json: opt(str({ description: "Partial HomeAssistantSentinelConfig JSON patch when action='configure_sentinel'." })),
+          announce_json: opt(str({ description: "Partial HomeAssistantAnnounceConfig JSON patch when action='configure_announce'." })),
+          title: opt(str({ description: "Short plain-language card title when action='propose_action' or 'propose_automation'." })),
+          preview: opt(str({ description: "Concise plain-language Chinese summary (no raw YAML/JSON or entity IDs) for L2 card." })),
         }),
         deferred: true,
         replay: "safe",
@@ -308,21 +352,41 @@ export function createAssistantToolsExtension(get: () => AssistantToolsHost) {
               return textResult(await host.homeAssistant.adviseMigration());
             }
             if (args.action === "deploy_local") {
-              return textResult(await host.homeAssistant.deployLocalContainer({ confirmed: args.confirmed === true }));
+              return textResult(
+                await host.homeAssistant.deployLocalContainer({
+                  confirmed: args.confirmed === true,
+                  installXiaomiHome: args.install_xiaomi_home !== false,
+                }),
+              );
             }
             if (args.action === "configure") {
               return textResult(
                 await host.configureHomeAssistant({
                   ...(args.enabled !== undefined ? { enabled: args.enabled } : {}),
                   ...(args.base_url !== undefined ? { baseUrl: args.base_url } : {}),
-                  ...(args.token !== undefined ? { token: args.token } : {}),
                 }),
               );
+            }
+            if (args.action === "configure_sentinel") {
+              if (!args.sentinel_json?.trim()) {
+                return { isError: true, output: [{ type: "text", text: "configure_sentinel 需要提供 sentinel_json 配置补丁。" }] };
+              }
+              const patch = JSON.parse(args.sentinel_json) as Partial<HomeAssistantSentinelConfig>;
+              return textResult(await host.configureHomeAssistant({ sentinel: patch }));
+            }
+            if (args.action === "configure_announce") {
+              if (!args.announce_json?.trim()) {
+                return { isError: true, output: [{ type: "text", text: "configure_announce 需要提供 announce_json 配置补丁。" }] };
+              }
+              const patch = JSON.parse(args.announce_json) as Partial<HomeAssistantAnnounceConfig>;
+              return textResult(await host.configureHomeAssistant({ announce: patch }));
             }
             if (args.action === "entities") {
               const current = host.homeAssistant.listEntities({
                 ...(args.domain ? { domain: args.domain } : {}),
+                ...(args.area ? { area: args.area } : {}),
                 ...(args.query ? { query: args.query } : {}),
+                ...(args.include_attributes !== undefined ? { includeAttributes: args.include_attributes } : {}),
               });
               if (current.totalCount === 0) {
                 await host.homeAssistant.syncNow().catch(() => {});
@@ -330,43 +394,152 @@ export function createAssistantToolsExtension(get: () => AssistantToolsHost) {
               return textResult(
                 host.homeAssistant.listEntities({
                   ...(args.domain ? { domain: args.domain } : {}),
+                  ...(args.area ? { area: args.area } : {}),
                   ...(args.query ? { query: args.query } : {}),
+                  ...(args.include_attributes !== undefined ? { includeAttributes: args.include_attributes } : {}),
                 }),
               );
+            }
+            if (args.action === "list_automations") {
+              return textResult({ automations: host.homeAssistant.listAutomations() });
+            }
+            if (args.action === "get_automation") {
+              if (!args.config_id?.trim()) {
+                return { isError: true, output: [{ type: "text", text: "get_automation 需要提供 config_id（即实体的 attributes.id）。" }] };
+              }
+              return textResult(await host.homeAssistant.getAutomationConfig(args.config_id));
+            }
+            if (args.action === "get_traces") {
+              if (!args.config_id?.trim()) {
+                return { isError: true, output: [{ type: "text", text: "get_traces 需要提供 config_id。" }] };
+              }
+              return textResult(await host.homeAssistant.getTraces(args.config_id));
+            }
+            if (args.action === "get_history") {
+              if (!Array.isArray(args.entity_ids) || args.entity_ids.length === 0) {
+                return { isError: true, output: [{ type: "text", text: "get_history 需要提供 1 至 5 个 entity_ids。" }] };
+              }
+              return textResult(await host.homeAssistant.getHistory({ entityIds: args.entity_ids, hours: args.hours }));
+            }
+            if (args.action === "announce") {
+              if (!args.text?.trim()) {
+                return { isError: true, output: [{ type: "text", text: "announce 需要提供播报文本 text。" }] };
+              }
+              return textResult(
+                await host.homeAssistant.announce({
+                  text: args.text,
+                  ...(args.speaker_entity_id ? { speakerEntityId: args.speaker_entity_id } : {}),
+                  urgency: "high",
+                  force: args.force !== false,
+                }),
+              );
+            }
+            if (args.action === "restore_automation") {
+              return textResult(
+                await host.homeAssistant.restoreAutomationBackup({
+                  ...(args.backup_id ? { backupId: args.backup_id } : {}),
+                  ...(args.config_id ? { configId: args.config_id } : {}),
+                }),
+              );
+            }
+            if (args.action === "propose_automation") {
+              if (!args.automation_json?.trim()) {
+                return { isError: true, output: [{ type: "text", text: "propose_automation 需要提供 automation_json 配置。" }] };
+              }
+              const parsedDraft = JSON.parse(args.automation_json) as Record<string, unknown>;
+              const validated = await host.homeAssistant.validateAutomationDraft(parsedDraft);
+              // Deterministic configId generated AT PROPOSAL TIME so network-timeout L2 retries stay idempotent!
+              const configId = args.config_id?.trim() || `kulo_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+              const card = await host.proposeDecisionCard({
+                situationKey: `ha:auto:${configId}`,
+                sourceApp: "home-assistant",
+                sourceLabel: "智能家居",
+                title: (args.title?.trim() || `家居配置：${validated.alias}`).slice(0, 80),
+                summary: (args.preview?.trim() || validated.humanSummary).slice(0, 300),
+                pendingAction: {
+                  actionId: `ha-auto-${randomUUID().slice(0, 8)}`,
+                  kind: "ha_upsert_automation",
+                  label: "确认生效",
+                  targetLabel: validated.alias,
+                  previewText: (args.preview?.trim() || validated.humanSummary).slice(0, 300),
+                  driverId: "home-assistant",
+                  operation: "upsert_automation",
+                  params: {
+                    configId,
+                    config: validated.normalized,
+                  },
+                },
+              });
+              return textResult({ proposed: true, configId, summary: validated.humanSummary, card });
+            }
+            if (args.action === "propose_delete_automation") {
+              if (!args.config_id?.trim()) {
+                return { isError: true, output: [{ type: "text", text: "propose_delete_automation 需要提供 config_id。" }] };
+              }
+              const configId = args.config_id.trim();
+              const matched = host.homeAssistant.listAutomations().find((a) => a.configId === configId);
+              if (matched && !matched.editable) {
+                return { isError: true, output: [{ type: "text", text: `「${matched.name}」为只读配置，无法删除。` }] };
+              }
+              if (matched && /(?:alarm|security|smoke|gas|leak|门锁|安防|烟雾|燃气|漏水)/i.test(`${matched.name} ${matched.entityId}`)) {
+                return { isError: true, output: [{ type: "text", text: `物理安防红线：禁止删除疑似安防告警类自动化「${matched.name}」。` }] };
+              }
+              const label = matched?.name ?? configId;
+              const card = await host.proposeDecisionCard({
+                situationKey: `ha:auto-del:${configId}`,
+                sourceApp: "home-assistant",
+                sourceLabel: "智能家居",
+                title: (args.title?.trim() || `移除家居配置：${label}`).slice(0, 80),
+                summary: (args.preview?.trim() || `确认后将移除「${label}」自动化规则。`).slice(0, 300),
+                pendingAction: {
+                  actionId: `ha-del-${randomUUID().slice(0, 8)}`,
+                  kind: "ha_delete_automation",
+                  label: "确认移除",
+                  targetLabel: label,
+                  previewText: (args.preview?.trim() || `移除自动化：${label}`).slice(0, 300),
+                  driverId: "home-assistant",
+                  operation: "delete_automation",
+                  params: { configId },
+                },
+              });
+              return textResult({ proposed: true, configId, card });
             }
             if (args.action === "propose_action") {
               if (!args.domain || !args.service) {
                 return { isError: true, output: [{ type: "text", text: "propose_action 需要提供 domain 与 service。" }] };
               }
-              // Validate physical redline immediately before even proposing a card!
+              const serviceData = sanitizeServiceData(args.service_data_json);
               const entities = host.homeAssistant.listEntities();
-              const target = args.entity_id ? entities.entities.find((e) => e.entityId === args.entity_id) : undefined;
-              const { assertSafeHaServiceCall } = await import("./connectors/home-assistant.js");
-              assertSafeHaServiceCall({
+              const entityMap = new Map(entities.entities.map((e) => [e.entityId, e]));
+              const target = args.entity_id ? entityMap.get(args.entity_id) : undefined;
+              await assertSafeHaServiceCallDeep({
                 domain: args.domain,
                 service: args.service,
                 entityId: args.entity_id,
                 deviceClass: target?.deviceClass,
+                serviceData,
                 triggerSource: "user_confirmed_l2",
+                context: { entities: entityMap, stale: entities.stale },
               });
               const card = await host.proposeDecisionCard({
                 situationKey: `ha:${args.entity_id || `${args.domain}.${args.service}`}`,
                 sourceApp: "home-assistant",
-                sourceLabel: "Home Assistant",
+                sourceLabel: "智能家居",
                 title: (args.title?.trim() || `家居控制：${target?.name || args.entity_id || args.domain}`).slice(0, 80),
-                summary: (args.preview?.trim() || `确认后将执行 ${args.domain}.${args.service}`).slice(0, 300),
+                summary: (args.preview?.trim() || `确认后将操作「${target?.name || args.domain}」`).slice(0, 300),
                 pendingAction: {
                   actionId: `ha-${randomUUID().slice(0, 8)}`,
                   kind: "ha_call_service",
                   label: "确认执行",
                   targetLabel: target?.name || args.entity_id || `${args.domain}.${args.service}`,
-                  previewText: `${args.domain}.${args.service}${args.entity_id ? ` → ${args.entity_id}` : ""}`,
+                  previewText: (args.preview?.trim() || `${target?.name || args.entity_id || args.domain}`).slice(0, 300),
                   driverId: "home-assistant",
                   operation: `${args.domain}.${args.service}`,
                   params: {
                     domain: args.domain,
                     service: args.service,
                     ...(args.entity_id ? { entityId: args.entity_id } : {}),
+                    ...(serviceData ? { serviceData } : {}),
                   },
                 },
               });
@@ -376,10 +549,12 @@ export function createAssistantToolsExtension(get: () => AssistantToolsHost) {
             if (!args.domain || !args.service) {
               return { isError: true, output: [{ type: "text", text: "call_service 需要提供 domain 与 service。" }] };
             }
+            const serviceData = sanitizeServiceData(args.service_data_json);
             const res = await host.homeAssistant.callService({
               domain: args.domain,
               service: args.service,
               ...(args.entity_id ? { entityId: args.entity_id } : {}),
+              ...(serviceData ? { serviceData } : {}),
               triggerSource: "user_direct",
             });
             return textResult(res);

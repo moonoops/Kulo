@@ -31,6 +31,7 @@ export type MessagePart =
       assetId: string;
       asset?: ChatAttachment;
       caption?: string;
+      fallbackText?: string;
     }
   | { partId: string; type: "ui"; cardId: string; fallbackText: string; card?: UiCardSnapshot };
 
@@ -57,6 +58,6 @@ export function messagePartFallback(part: MessagePart): string {
     case "code": return `\`\`\`${part.language ?? ""}\n${part.code}\n\`\`\``;
     case "ui": return part.fallbackText;
     case "device-invitation": return `邀请设备加入 ${part.hubName}`;
-    default: return part.caption || part.asset?.name || `[${part.type}]`;
+    default: return part.fallbackText || part.caption || part.asset?.name || `[${part.type}]`;
   }
 }

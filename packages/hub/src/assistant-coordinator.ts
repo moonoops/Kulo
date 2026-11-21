@@ -7,6 +7,8 @@ import type {
   AssistantItemKind,
   AssistantItemView,
   AssistantPendingAction,
+  ChatAttachment,
+  MessagePart,
   TopicSummary,
 } from "@kulo/protocol";
 import type { AmbientModelService } from "./ambient-model-service.js";
@@ -16,8 +18,10 @@ import {
   dismissAssistantItemInDoc,
   ensureAssistantState,
   findSituationByKey,
+  isAssistantSourceEnabled,
   upsertAssistantCardInDoc,
 } from "./assistant-state.js";
+import { ChatAttachmentGrantsDoc } from "./chat-attachment-deliveries.js";
 import { ContentPublicationEntry, type ContentPublicationData } from "./ui-cards.js";
 import {
   assertDeliveryIntent,
@@ -26,7 +30,7 @@ import {
   type DeliveryAck,
   type DeliveryIntent,
 } from "./delivery-receipts.js";
-import { ensureDefaultRootTopic, KuloStateDoc, listSortedTopics } from "./state.js";
+import { applyTopicPreview, ensureDefaultRootTopic, KuloStateDoc, listSortedTopics, summarizeTopicPreview } from "./state.js";
 
 export interface CoordinatorDecision {
   action: "ignore" | "resolve_item" | "upsert_card" | "open_topic";
@@ -48,7 +52,18 @@ export interface AssistantCoordinatorHost {
   createDetachedOrchestratorConversation(context: Context): Promise<{ id: ConversationId }>;
   onItemsChanged(revision: number, items: AssistantItemView[]): void;
   onTopicsChanged(topics: TopicSummary[]): void;
+  onTopicContentChanged?(topicId: string): void;
   onMutedAppsChanged?(mutedApps: string[]): void;
+  materializeSnapshot?(snapshotRef: string, conversationId: number): Promise<ChatAttachment | undefined>;
+  onAlertSurfaced?(event: {
+    situationId: string;
+    kind: AssistantItemKind;
+    sourceApp: string;
+    sourceLabel: string;
+    title: string;
+    summary: string;
+    urgency: "low" | "normal" | "high";
+  }): void;
   executePendingAction?(action: AssistantPendingAction): Promise<{ ok: boolean; error?: string }>;
 }
 
@@ -178,7 +193,7 @@ export class AssistantCoordinator {
     const now = Date.now();
     const sitId = situationIdFromKey(sitKey);
     const snap = await this.#host.harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT);
-    if (!snap?.enabled) return;
+    if (!snap || !isAssistantSourceEnabled(snap, input.digest.appId)) return;
     if (snap.mutedApps?.includes(input.digest.appId)) return;
 
     const priorSituation = snap.situations?.[sitId] ?? findSituationByKey(snap, sitKey);
@@ -253,6 +268,7 @@ export class AssistantCoordinator {
     if (this.#closed || decision.action === "ignore") return;
 
     const sampleEvent = input.events[input.events.length - 1];
+    const snapshotRef = [...input.events].reverse().find((ev) => ev.snapshotRef)?.snapshotRef;
     const envName = sampleEvent ? this.#host.envDisplayName(sampleEvent.envId) : undefined;
     const cleanTitle = this.#host.redact(decision.title || input.digest.appLabel).slice(0, 80);
     const cleanSummary = this.#host.redact(decision.summary || input.digest.digest).slice(0, 300);
@@ -278,10 +294,11 @@ export class AssistantCoordinator {
     }
 
     if (decision.action === "upsert_card") {
+      const resolvedKind = decision.kind ?? (input.digest.urgency === "high" ? "alert" : "fyi");
       const committed = await this.#host.harness.commit(async (tx) => {
         const doc = await tx.doc(AssistantDoc);
         ensureAssistantState(doc);
-        if (!doc.enabled || doc.mutedApps.includes(input.digest.appId)) return null;
+        if (!isAssistantSourceEnabled(doc, input.digest.appId) || doc.mutedApps.includes(input.digest.appId)) return null;
         const currentSit = doc.situations[sitId];
         // Prevent slow out-of-order coordinator output from resurrecting a card the user just dismissed.
         if (currentSit && currentSit.status === "dismissed" && currentSit.updatedAt > priorUpdatedAt) {
@@ -290,37 +307,59 @@ export class AssistantCoordinator {
         upsertAssistantCardInDoc(doc, {
           situationId: sitId,
           situationKey: sitKey,
-          kind: decision.kind ?? (input.digest.urgency === "high" ? "alert" : "fyi"),
+          kind: resolvedKind,
           sourceApp: input.digest.appId,
           sourceLabel: input.digest.appLabel,
           ...(envName ? { envName } : {}),
           title: cleanTitle,
           summary: cleanSummary,
+          ...(snapshotRef ? { snapshotRef } : {}),
           now: Date.now(),
         });
         return { revision: doc.assistantRevision, items: cloneAssistantItems(doc.items) };
       }, BACKGROUND_CONTEXT);
-      if (committed) this.#host.onItemsChanged(committed.revision, committed.items);
+      if (committed) {
+        this.#host.onItemsChanged(committed.revision, committed.items);
+        this.#host.onAlertSurfaced?.({
+          situationId: sitId,
+          kind: resolvedKind,
+          sourceApp: input.digest.appId,
+          sourceLabel: input.digest.appLabel,
+          title: cleanTitle,
+          summary: cleanSummary,
+          urgency: input.digest.urgency,
+        });
+      }
       return;
     }
 
     // decision.action === "open_topic": create conversation OUTSIDE tx, then atomically bind inside ONE tx.
     const latestSnap = await this.#host.harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT);
+    const stateSnap = await this.#host.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const existingLinkedTopic = latestSnap?.situations?.[sitId]?.linkedTopicId;
-    const preCreatedConv = existingLinkedTopic
+    const existingLiveTopic = existingLinkedTopic ? stateSnap?.topics?.[existingLinkedTopic] : undefined;
+    const preCreatedConv = existingLiveTopic && !existingLiveTopic.deletedAt
       ? undefined
       : await this.#host.createDetachedOrchestratorConversation(BACKGROUND_CONTEXT);
+    const resolvedTargetConvId = existingLiveTopic && !existingLiveTopic.deletedAt
+      ? existingLiveTopic.conversationId
+      : (preCreatedConv?.id as number | undefined);
+    const effectiveSnapshotRef = snapshotRef ?? latestSnap?.situations?.[sitId]?.snapshotRef;
+    const snapshotAsset = effectiveSnapshotRef && resolvedTargetConvId !== undefined
+      ? await this.#host.materializeSnapshot?.(effectiveSnapshotRef, resolvedTargetConvId).catch(() => undefined)
+      : undefined;
 
     const briefingText = this.#host.redact(
       decision.briefingMarkdown || `**${cleanTitle}**（来源：${input.digest.appLabel}${envName ? ` · ${envName}` : ""}）\n\n${cleanSummary}`,
     );
 
+    const resolvedKind = decision.kind ?? "alert";
     const committed = await this.#host.harness.commit(async (tx) => {
       const doc = await tx.doc(AssistantDoc);
       const state = await tx.doc(KuloStateDoc);
       ensureAssistantState(doc);
       ensureDefaultRootTopic(state, this.#host.agentName());
-      if (!doc.enabled || doc.mutedApps.includes(input.digest.appId)) return null;
+      if (!isAssistantSourceEnabled(doc, input.digest.appId) || doc.mutedApps.includes(input.digest.appId)) return null;
 
       const currentSit = doc.situations[sitId];
       if (currentSit && currentSit.status === "dismissed" && currentSit.updatedAt > priorUpdatedAt) {
@@ -355,28 +394,48 @@ export class AssistantCoordinator {
 
       if (targetConvId === undefined || !topicId) return null;
 
+      const parts: MessagePart[] = [{ partId: `proactive:${sitId}:${ts}`, type: "markdown", text: briefingText }];
+      if (snapshotAsset) {
+        const grants = await tx.doc(ChatAttachmentGrantsDoc);
+        const scope = `conversation:${targetConvId}`;
+        const scopes = grants.byAsset[snapshotAsset.id] ?? [];
+        if (!scopes.includes(scope)) grants.byAsset[snapshotAsset.id] = [...scopes, scope];
+        parts.push({
+          partId: `proactive-img:${sitId}:${ts}`,
+          type: "image",
+          assetId: snapshotAsset.id,
+          asset: JSON.parse(JSON.stringify(snapshotAsset)) as ChatAttachment,
+        });
+      }
+
       await tx.appendEntry(ContentPublicationEntry, targetConvId as ConversationId, {
         data: {
-          parts: [{ partId: `proactive:${sitId}:${ts}`, type: "markdown", text: briefingText }],
+          parts,
           fallbackText: briefingText,
           createdAt: ts,
         } as unknown as ContentPublicationData & JsonObject,
       });
+      const targetTopic = state.topics?.[topicId];
+      if (targetTopic) {
+        applyTopicPreview(targetTopic, summarizeTopicPreview([{ role: "assistant", text: briefingText, createdAt: ts }]), ts);
+      }
 
       upsertAssistantCardInDoc(doc, {
         situationId: sitId,
         situationKey: sitKey,
-        kind: decision.kind ?? "alert",
+        kind: resolvedKind,
         sourceApp: input.digest.appId,
         sourceLabel: input.digest.appLabel,
         ...(envName ? { envName } : {}),
         title: cleanTitle,
         summary: cleanSummary,
         linkedTopicId: topicId,
+        ...(effectiveSnapshotRef ? { snapshotRef: effectiveSnapshotRef } : {}),
         now: ts,
       });
 
       return {
+        topicId,
         revision: doc.assistantRevision,
         items: cloneAssistantItems(doc.items),
         topics: listSortedTopics(state),
@@ -385,7 +444,17 @@ export class AssistantCoordinator {
 
     if (committed) {
       this.#host.onTopicsChanged(committed.topics);
+      this.#host.onTopicContentChanged?.(committed.topicId);
       this.#host.onItemsChanged(committed.revision, committed.items);
+      this.#host.onAlertSurfaced?.({
+        situationId: sitId,
+        kind: resolvedKind,
+        sourceApp: input.digest.appId,
+        sourceLabel: input.digest.appLabel,
+        title: cleanTitle,
+        summary: cleanSummary,
+        urgency: input.digest.urgency,
+      });
     }
   }
 
@@ -433,6 +502,32 @@ export class AssistantCoordinator {
     }, context);
     this.#host.onItemsChanged(committed.revision, committed.items);
     return committed.card;
+  }
+
+  /**
+   * Silently clears an active right-rail card when the underlying situation resolves on its own
+   * (e.g., an offline Home Assistant device comes back online).
+   */
+  async resolveSituationByKey(situationKey: string, context: Context = BACKGROUND_CONTEXT): Promise<boolean> {
+    if (this.#closed) return false;
+    const sitId = situationIdFromKey(situationKey);
+    const result = await this.#host.harness.commit(async (tx) => {
+      const doc = await tx.doc(AssistantDoc);
+      ensureAssistantState(doc);
+      const match = doc.items.find((item) => item.situationId === sitId);
+      if (!match) return null;
+      doc.items = doc.items.filter((item) => item.id !== match.id);
+      const sit = doc.situations[match.situationId];
+      if (sit) {
+        sit.status = "resolved";
+        sit.updatedAt = Date.now();
+      }
+      doc.assistantRevision += 1;
+      return { revision: doc.assistantRevision, items: cloneAssistantItems(doc.items) };
+    }, context);
+    if (!result) return false;
+    this.#host.onItemsChanged(result.revision, result.items);
+    return true;
   }
 
   /**
@@ -530,12 +625,21 @@ export class AssistantCoordinator {
     }
 
     let preCreatedConv: { id: ConversationId } | undefined;
+    let promotedSnapshotAsset: ChatAttachment | undefined;
     if (input.action === "promote_to_topic") {
-      const snap = await this.#host.harness.snapshot(AssistantDoc, context);
+      const [snap, stateSnap] = await Promise.all([
+        this.#host.harness.snapshot(AssistantDoc, context),
+        this.#host.harness.snapshot(KuloStateDoc, context),
+      ]);
       const item = snap?.items?.find((candidate) => candidate.id === input.itemId);
-      const linked = item?.linkedTopicId ?? (item ? snap?.situations?.[item.situationId]?.linkedTopicId : undefined);
-      if (item && !linked) {
+      const sit = item ? snap?.situations?.[item.situationId] : undefined;
+      const linked = item?.linkedTopicId ?? sit?.linkedTopicId;
+      const linkedTopic = linked ? stateSnap?.topics?.[linked] : undefined;
+      if (item && (!linkedTopic || linkedTopic.deletedAt)) {
         preCreatedConv = await this.#host.createDetachedOrchestratorConversation(context);
+        if (sit?.snapshotRef) {
+          promotedSnapshotAsset = await this.#host.materializeSnapshot?.(sit.snapshotRef, preCreatedConv.id as number).catch(() => undefined);
+        }
       }
     }
 
@@ -610,13 +714,27 @@ export class AssistantCoordinator {
         state.topics![topicId] = record;
         state.conversationToTopic![String(convId)] = topicId;
         const intro = `**${item.title}**（来源：${item.sourceLabel}${item.envName ? ` · ${item.envName}` : ""}）\n\n${item.summary}`;
+        const parts: MessagePart[] = [{ partId: `promote:${item.id}:${now}`, type: "markdown", text: intro }];
+        if (promotedSnapshotAsset) {
+          const grants = await tx.doc(ChatAttachmentGrantsDoc);
+          const scope = `conversation:${convId}`;
+          const scopes = grants.byAsset[promotedSnapshotAsset.id] ?? [];
+          if (!scopes.includes(scope)) grants.byAsset[promotedSnapshotAsset.id] = [...scopes, scope];
+          parts.push({
+            partId: `promote-img:${item.id}:${now}`,
+            type: "image",
+            assetId: promotedSnapshotAsset.id,
+            asset: JSON.parse(JSON.stringify(promotedSnapshotAsset)) as ChatAttachment,
+          });
+        }
         await tx.appendEntry(ContentPublicationEntry, convId as ConversationId, {
           data: {
-            parts: [{ partId: `promote:${item.id}:${now}`, type: "markdown", text: intro }],
+            parts,
             fallbackText: intro,
             createdAt: now,
           } as unknown as ContentPublicationData & JsonObject,
         });
+        applyTopicPreview(record, summarizeTopicPreview([{ role: "assistant", text: intro, createdAt: now }]), now);
         topicsChanged = listSortedTopics(state);
       }
 
@@ -632,12 +750,14 @@ export class AssistantCoordinator {
       await writeDeliveryReceipt(tx, input.intent, ack, "complete");
       return {
         ack,
+        promotedTopicId: topicId,
         itemsChanged: { revision: doc.assistantRevision, items: cloneAssistantItems(doc.items) },
         topicsChanged,
       };
     }, context);
 
     if (outcome.topicsChanged) this.#host.onTopicsChanged(outcome.topicsChanged);
+    if (outcome.promotedTopicId) this.#host.onTopicContentChanged?.(outcome.promotedTopicId);
     if (outcome.itemsChanged) this.#host.onItemsChanged(outcome.itemsChanged.revision, outcome.itemsChanged.items);
     if (outcome.mutedApps) this.#host.onMutedAppsChanged?.(outcome.mutedApps);
     return { ack: outcome.ack, ...(outcome.deduplicated ? { deduplicated: true } : {}) };

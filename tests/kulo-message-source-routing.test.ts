@@ -313,7 +313,7 @@ it("uses a sending phone's native execution domain when dispatch omits both devi
   const phone: EnvNodeDescriptor = {
     id: "sending-phone", name: "手机", kind: "reverse-ws", online: true, platform: "android", arch: "arm64", rootDir: "",
     executionKind: "native-device", capabilities: ["android-native-v1"], connectedAt: Date.now(), lastSeenAt: Date.now(),
-    android: { version: 1, catalogVersion: 1, enabled: true, paused: false, revision: 1, grants: ["device"], capabilities: [] },
+    android: { version: 1, catalogVersion: 3, enabled: true, paused: false, revision: 1, grants: ["device"], capabilities: [] },
   };
   const getEnv = f.hub.envManager.getEnvDescriptor.bind(f.hub.envManager);
   const listEnvs = f.hub.envManager.listEnvs.bind(f.hub.envManager);

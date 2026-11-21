@@ -214,6 +214,7 @@ export function resolveComputerEnvBinding(input: ComputerEnvResolutionInput): Co
   if (topicTargetDeviceId) {
     return { envId: topicTargetDeviceId, envBinding: "topic_target", waitForSource: false };
   }
+  const localEnvId = localEnv?.id ?? "local";
   if (namedEnvId) {
     return { envId: namedEnvId, envBinding: "message_named", waitForSource: false };
   }
@@ -226,10 +227,10 @@ export function resolveComputerEnvBinding(input: ComputerEnvResolutionInput): Co
         waitForSource: recoveryTicket.envBinding === "sender_local",
       };
     }
-    const target = proposedEnvId ?? (localEnv?.online && hasWorkerIsolation(localEnv) ? "local" : recoveryTicket.envId);
+    const target = proposedEnvId ?? (localEnv?.online && hasWorkerIsolation(localEnv) ? localEnvId : recoveryTicket.envId);
     return {
       envId: target,
-      envBinding: target === "local" ? "hub_local" : "pool_fallback",
+      envBinding: target === localEnvId ? "hub_local" : "pool_fallback",
       waitForSource: false,
     };
   }
@@ -303,7 +304,7 @@ export function resolveComputerEnvBinding(input: ComputerEnvResolutionInput): Co
     }
 
     // Location-independent task from a paired device: never drift to a 3rd unnamed device C
-    if (proposedEnvId && proposedEnvId !== sourceEnvId && proposedEnvId !== "local") {
+    if (proposedEnvId && proposedEnvId !== sourceEnvId && proposedEnvId !== localEnvId && proposedEnvId !== "local") {
       return {
         envId: sourceEnvId,
         envBinding: "sender_local",
@@ -315,7 +316,7 @@ export function resolveComputerEnvBinding(input: ComputerEnvResolutionInput): Co
     const localReady = Boolean(localEnv?.online && hasWorkerIsolation(localEnv));
     if (localReady) {
       return {
-        envId: "local",
+        envId: localEnvId,
         envBinding: "hub_local",
         waitForSource: false,
       };
@@ -332,13 +333,13 @@ export function resolveComputerEnvBinding(input: ComputerEnvResolutionInput): Co
   if (proposedEnvId) {
     return {
       envId: proposedEnvId,
-      envBinding: proposedEnvId === "local" ? "hub_local" : "pool_fallback",
+      envBinding: proposedEnvId === localEnvId || proposedEnvId === "local" ? "hub_local" : "pool_fallback",
       waitForSource: false,
     };
   }
   if (localEnv?.online && hasWorkerIsolation(localEnv)) {
     return {
-      envId: "local",
+      envId: localEnvId,
       envBinding: "hub_local",
       waitForSource: false,
     };
@@ -346,7 +347,7 @@ export function resolveComputerEnvBinding(input: ComputerEnvResolutionInput): Co
   const fallback = pickFallbackEnvId();
   return {
     envId: fallback,
-    envBinding: fallback === "local" ? "hub_local" : "pool_fallback",
+    envBinding: fallback === localEnvId || fallback === "local" ? "hub_local" : "pool_fallback",
     waitForSource: false,
   };
 }

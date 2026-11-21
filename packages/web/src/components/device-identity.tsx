@@ -4,6 +4,8 @@ export interface OrderableDevice {
   id: string;
   name: string;
   online: boolean;
+  kind?: string;
+  clusterRole?: string;
 }
 
 export function orderDevices<T extends OrderableDevice>(
@@ -25,8 +27,8 @@ export function orderDevices<T extends OrderableDevice>(
       if (aCurrent !== bCurrent) return aCurrent ? -1 : 1;
       if (a.device.online !== b.device.online) return a.device.online ? -1 : 1;
       if (preferHub) {
-        const aHub = a.device.id === "local";
-        const bHub = b.device.id === "local";
+        const aHub = a.device.kind === "local" || a.device.clusterRole === "primary" || a.device.id === "local";
+        const bHub = b.device.kind === "local" || b.device.clusterRole === "primary" || b.device.id === "local";
         if (aHub !== bHub) return aHub ? -1 : 1;
       }
       if (sortByName) {

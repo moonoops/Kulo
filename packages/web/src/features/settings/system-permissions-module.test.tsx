@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Select } from "@heroui/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EnvNodeDescriptor } from "@kulo/protocol";
-import { permissionCanBeRequested, SystemPermissionsModule } from "./system-permissions-module";
+import { nextPendingDesktopPermission, permissionCanBeRequested, SystemPermissionsModule } from "./system-permissions-module";
 import { SETTINGS_MODULES, settingsModuleTitle } from "./settings-helpers";
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -72,5 +72,11 @@ describe("system permission settings", () => {
   it("allows recovery only for known requestable states", () => {
     expect(["granted", "restricted", "unsupported", undefined].map((state) => permissionCanBeRequested(state as Parameters<typeof permissionCanBeRequested>[0]))).toEqual([false, false, false, false]);
     expect(["not-determined", "denied", "unknown"].map((state) => permissionCanBeRequested(state as Parameters<typeof permissionCanBeRequested>[0]))).toEqual([true, true, true]);
+  });
+
+  it("advances to the next ungranted desktop permission when opening System Settings", () => {
+    expect(nextPendingDesktopPermission(["accessibility", "screen"], () => "denied")).toBe("accessibility");
+    expect(nextPendingDesktopPermission(["accessibility", "screen"], (kind) => kind === "accessibility" ? "granted" : "denied")).toBe("screen");
+    expect(nextPendingDesktopPermission(["screen"], () => "denied")).toBe("screen");
   });
 });

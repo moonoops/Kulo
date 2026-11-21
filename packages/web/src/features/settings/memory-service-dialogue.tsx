@@ -143,7 +143,7 @@ export function MemoryServiceJobCard({ job, inputs, clientId, connected, onChang
     catch (cause) { setError(redactSecrets(cause instanceof Error ? cause.message : t("操作未完成，请重试。", "The operation did not finish. Try again."))); }
     finally { setBusy(false); }
   };
-  if (!isMemoryDialogueOperation(job.operation)) return <Card variant="secondary" className="min-w-0 gap-3 rounded-2xl p-3" aria-label={t("原连接操作", "Previous connection operation")}>
+  if (!isMemoryDialogueOperation(job.operation)) return <Card variant="secondary" className="min-w-0 shrink-0 gap-3 rounded-2xl p-3" aria-label={t("原连接操作", "Previous connection operation")}>
     <Card.Header><Card.Title className="text-sm">{t("连接配置", "Connection settings")}</Card.Title></Card.Header>
     <Card.Content className="text-xs">{t("请在左侧编辑并保存连接。", "Edit and save the connection on the left.")}</Card.Content>
     <Card.Footer className="flex-wrap justify-end gap-2">
@@ -151,13 +151,14 @@ export function MemoryServiceJobCard({ job, inputs, clientId, connected, onChang
       <Button size="sm" variant="secondary" onPress={requestMemoryConnectionFocus}>{t("编辑连接", "Edit connection")}</Button>
     </Card.Footer>
   </Card>;
-  return <Card variant="secondary" className="min-w-0 gap-3 rounded-2xl p-3" aria-label={job.title}>
+  const changes = job.changes.filter((change) => change.trim() !== job.deviceName.trim());
+  return <Card variant="secondary" className="min-w-0 shrink-0 gap-3 rounded-2xl p-3" aria-label={job.title}>
     <Card.Header className="gap-2">
       <div className="flex items-start justify-between gap-2"><Card.Title className="text-sm font-medium">{job.title}</Card.Title><Chip size="sm" variant="soft" className="shrink-0 text-xs">{statusLabels()[job.status]}</Chip></div>
       <Card.Description className="text-xs">{job.deviceName}</Card.Description>
     </Card.Header>
     <Card.Content className="flex min-w-0 flex-col gap-3 text-xs">
-      {job.changes.length > 0 && <div className="space-y-1 break-words">{job.changes.map((change, index) => <p key={index}>{change}</p>)}</div>}
+      {changes.length > 0 && <div className="space-y-1 break-words">{changes.map((change, index) => <p key={index}>{change}</p>)}</div>}
       {job.status === "running" && <div className="flex items-center gap-2" role="status"><Spinner size="sm" aria-label={t("记忆服务处理中", "Memory service is processing")} /><span>{job.stage}</span></div>}
       {job.status === "succeeded" && <p role="status">{job.stage}</p>}
       {(job.operation === "deploy" || job.operation === "configure") && job.model && <p className="text-muted">{t("记忆存于本机；所选模型服务将处理记忆内容。", "Memory is stored locally. The selected model service processes its content.")}</p>}
@@ -189,7 +190,7 @@ export function MemoryServiceForm({ draft, snapshot, settings, providers, busy, 
   useI18n();
   const connections = useMemo(() => kuloMemoryConnections(settings, providers), [settings, providers]);
   const modelForm = draft.operation === "deploy" || draft.operation === "configure";
-  return <Card variant="secondary" className="min-w-0 gap-3 rounded-2xl p-3" aria-label={operationLabels()[draft.operation]}>
+  return <Card variant="secondary" className="min-w-0 shrink-0 gap-3 rounded-2xl p-3" aria-label={operationLabels()[draft.operation]}>
     <Card.Header><Card.Title className="text-sm">{operationLabels()[draft.operation]}</Card.Title><Card.Description className="text-xs">{t("部署设备：", "Deployment device: ")}{snapshot.deviceName}</Card.Description></Card.Header>
     <Card.Content>
       <form id="memory-service-form" className="kulo-form-stack" onSubmit={(event) => { event.preventDefault(); onSubmit(); }}>
@@ -210,9 +211,16 @@ export function MemoryServiceForm({ draft, snapshot, settings, providers, busy, 
   </Card>;
 }
 
-export function MemoryServiceDialogue({ clientId, settings, connected, refreshKey }: { clientId: string; settings: KuloSettingsView; connected: boolean; refreshKey: string }) {
+export function MemoryServiceDialogue({ clientId, settings, connected, refreshKey, className, initialSnapshot = null }: {
+  clientId: string;
+  settings: KuloSettingsView;
+  connected: boolean;
+  refreshKey: string;
+  className?: string;
+  initialSnapshot?: MemoryServiceSnapshot | null;
+}) {
   useI18n();
-  const [snapshot, setSnapshot] = useState<MemoryServiceSnapshot | null>(null);
+  const [snapshot, setSnapshot] = useState<MemoryServiceSnapshot | null>(initialSnapshot);
   const [providers, setProviders] = useState<ProviderCatalogItem[]>();
   const [draft, setDraft] = useState<MemoryServiceDraft | null>(null);
   const [busy, setBusy] = useState(false);
@@ -282,10 +290,10 @@ export function MemoryServiceDialogue({ clientId, settings, connected, refreshKe
   };
   const jobs = visibleMemoryDialogueJobs(snapshot?.jobs ?? [], clientId, sessionJobIdsRef.current);
   if (!draft && !jobs.length && !error && !busy) return null;
-  return <div className="flex min-w-0 flex-col gap-3" aria-label={t("记忆服务配置对话", "Memory service setup conversation")}>
+  return <div className={className ?? "flex min-w-0 flex-col gap-3"} aria-label={t("记忆服务配置对话", "Memory service setup conversation")}>
     {jobs.map((job) => <MemoryServiceJobCard key={job.id} job={job} inputs={snapshot?.inputs ?? []} clientId={clientId} connected={connected} onChanged={changed} />)}
     {draft && snapshot && <MemoryServiceForm draft={draft} snapshot={snapshot} settings={settings} providers={providers} busy={busy} error={error} onChange={setDraft} onCancel={() => { setDraft(null); setError(undefined); }} onSubmit={() => void prepare()} />}
-    {!draft && error && <Alert status="danger" className="rounded-2xl p-3"><Alert.Content className="break-words text-xs">{error}</Alert.Content><Button size="sm" variant="tertiary" onPress={() => void load().catch((cause) => setError(redactSecrets(cause instanceof Error ? cause.message : t("加载失败", "Failed to load"))))}>{t("重试", "Retry")}</Button></Alert>}
+    {!draft && error && <Alert status="danger" className="shrink-0 rounded-2xl p-3"><Alert.Content className="break-words text-xs">{error}</Alert.Content><Button size="sm" variant="tertiary" onPress={() => void load().catch((cause) => setError(redactSecrets(cause instanceof Error ? cause.message : t("加载失败", "Failed to load"))))}>{t("重试", "Retry")}</Button></Alert>}
     {busy && !draft && <Spinner size="sm" aria-label={t("准备记忆服务操作", "Preparing memory service operation")} />}
   </div>;
 }

@@ -1,6 +1,7 @@
 import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
 import type { JsonObject, ToolExecutionResult } from "@earendil-works/pi-durable";
+import { extractInlineSvgsFromHtml, isHtmlArtifact, validateAndNormalizeDiagramSvg } from "@kulo/protocol";
 import { KuloUploadStore, UploadError, VISION_IMAGE_MIMES } from "./uploads.js";
 
 export interface AssetInspectionInput {
@@ -53,7 +54,34 @@ export function inspectAssetContent(input: AssetInspectionInput, uploads: KuloUp
   }
   if (isTextMime(asset.mimeType)) {
     if (!isUtf8(bytes) || bytes.includes(0)) throw new UploadError("待审资源不是有效的 UTF-8 文本，无法按文本读取。", 422);
-    const details = { asset, inspection: "text", contentProvided: true, ...page(bytes.toString("utf8"), offset, limit), warning } as unknown as JsonObject;
+    const fullText = bytes.toString("utf8");
+    let diagramSummary: Record<string, unknown> | undefined;
+    if (offset === 0 && isHtmlArtifact(asset)) {
+      const svgs = extractInlineSvgsFromHtml(fullText);
+      if (svgs.length > 0) {
+        const checked = svgs.slice(0, 12).map((svg, index) => {
+          const r = validateAndNormalizeDiagramSvg(svg);
+          return {
+            index: index + 1,
+            ok: r.ok,
+            nodes: r.stats.nodes,
+            connectors: r.stats.connectors,
+            ...(r.errors.length ? { errors: r.errors.slice(0, 4).map((e) => e.message) } : {}),
+            ...(r.warnings.length ? { warnings: r.warnings.slice(0, 4).map((w) => w.message) } : {}),
+          };
+        });
+        diagramSummary = {
+          svgCount: svgs.length,
+          passed: checked.filter((item) => item.ok).length,
+          issues: checked.filter((item) => !item.ok || item.warnings?.length),
+        };
+      }
+    }
+    const details = {
+      asset, inspection: "text", contentProvided: true, ...page(fullText, offset, limit),
+      ...(diagramSummary ? { diagramSummary } : {}),
+      warning,
+    } as unknown as JsonObject;
     return { details, output: [{ type: "text", text: JSON.stringify(details) }] };
   }
   const transcript = storedTranscript?.status !== "failed" ? storedTranscript?.text : undefined;

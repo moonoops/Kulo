@@ -9,6 +9,7 @@ export class VoiceCallsError extends Error {
 
 export interface VoiceCallConfiguration {
   provider: VoiceLiveProvider;
+  baseUrl?: string;
   modelId: string;
   voice: string;
   apiKey: string;
@@ -64,7 +65,7 @@ const identifier = (value: unknown, name: string): string => {
   if (typeof value !== "string" || !value.trim() || value.length > 240 || /[\x00-\x1f\x7f]/.test(value)) throw new VoiceCallsError(400, "invalid_voice_call", `${name}无效。`);
   return value.trim();
 };
-const configIdentity = (config: VoiceCallConfiguration) => JSON.stringify([config.provider, config.modelId, config.voice]);
+const configIdentity = (config: VoiceCallConfiguration) => JSON.stringify([config.provider, config.baseUrl ?? "", config.modelId, config.voice]);
 const messageId = (item: ChatDisplayItem) => String(item.id);
 const voiceMessage = (item: ChatDisplayItem): boolean => Boolean((item as ChatDisplayItem & { voiceCallId?: string }).voiceCallId || item.meta?.voiceCallId);
 const frameBuffer = (data: RawData): Buffer => Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data);
@@ -159,7 +160,14 @@ export class KuloVoiceCalls {
       } catch (error) {
         if (!call.ended) {
           const own = error instanceof VoiceCallsError;
-          await this.#fail(call, own ? error.message : "语音连接失败，请检查通话配置后重试。", own ? error.code : "voice_connection_failed");
+          const liveError = error instanceof Error && error.name === "VoiceLiveError" && typeof (error as { code?: unknown }).code === "string"
+            ? error as Error & { code: string }
+            : undefined;
+          await this.#fail(
+            call,
+            own ? error.message : liveError ? liveError.message : "语音连接失败，请检查通话配置后重试。",
+            own ? error.code : liveError ? liveError.code : "voice_connection_failed",
+          );
         }
       }
     })();

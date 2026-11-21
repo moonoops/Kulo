@@ -555,11 +555,14 @@ describe("Phase 4: External task Watchdog, pending-permission exemption & interr
     expect(finalTicket.latestReport?.deliverable).toContain("Recovered and finished in resumed session.");
 
     // Ensure no spurious blocked/failed relay was emitted for epoch 1's intentional interrupt!
-    const finalEntries = await hub.rootConversation.entries({}, 100, undefined, context);
-    const relaysForTicket = finalEntries.items.filter(
-      (e) => e.kind === "kulo.worker_relay" && (e.data as { ticketId?: string })?.ticketId === card.id,
-    );
-    expect(relaysForTicket).toHaveLength(1);
-    expect((relaysForTicket[0]!.data as { state?: string }).state).toBe("ready");
+    // The ready relay is submitted as a followUp while root may still be draining the watchdog turn.
+    await vi.waitFor(async () => {
+      const finalEntries = await hub.rootConversation.entries({}, 100, undefined, context);
+      const relaysForTicket = finalEntries.items.filter(
+        (e) => e.kind === "kulo.worker_relay" && (e.data as { ticketId?: string })?.ticketId === card.id,
+      );
+      expect(relaysForTicket).toHaveLength(1);
+      expect((relaysForTicket[0]!.data as { state?: string }).state).toBe("ready");
+    }, { timeout: 5000, interval: 40 });
   });
 });

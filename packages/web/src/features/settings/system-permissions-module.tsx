@@ -33,6 +33,14 @@ export function permissionCanBeRequested(state: SystemPermissionState | undefine
   return state !== undefined && state !== "granted" && state !== "restricted" && state !== "unsupported";
 }
 
+export function nextPendingDesktopPermission(
+  selected: readonly SystemPermissionKind[],
+  stateOf: (kind: "accessibility" | "screen") => SystemPermissionState | undefined,
+): "accessibility" | "screen" {
+  const desktopKinds = selected.filter((kind): kind is "accessibility" | "screen" => kind === "accessibility" || kind === "screen");
+  return desktopKinds.find((kind) => stateOf(kind) !== "granted") ?? desktopKinds[0] ?? "accessibility";
+}
+
 export function SystemPermissionsModule({ envs, connected = true, currentDeviceId, entry, onEntryHandled }: {
   envs: EnvNodeDescriptor[];
   connected?: boolean;
@@ -41,8 +49,9 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
   onEntryHandled?: (id: string) => void;
 }) {
   const { t } = useI18n();
+  const localEnvId = envs.find((device) => device.kind === "local")?.id ?? "local";
   const [selectedId, setSelectedId] = useState(() => {
-    const known = currentDeviceId ?? (desktopSystemPermissionBridge() ? "local" : undefined);
+    const known = currentDeviceId ?? (desktopSystemPermissionBridge() ? localEnvId : undefined);
     const knownTarget = known && envs.some((device) => device.id === known) ? known : CLIENT_TARGET_ID;
     if (entry?.kind === "microphone") return knownTarget;
     if (entry?.envId) return entry.envId;
@@ -64,7 +73,7 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
 
   const resolvedCurrentDeviceId = currentDeviceId
     ?? (deviceView ? (deviceView.currentDeviceKnown === true ? deviceView.currentDeviceId : undefined)
-      : desktopSystemPermissionBridge() ? "local" : undefined);
+      : desktopSystemPermissionBridge() ? localEnvId : undefined);
   const currentClientEnv = resolvedCurrentDeviceId ? envs.find((device) => device.id === resolvedCurrentDeviceId) : undefined;
   const clientTargetId = currentClientEnv?.id ?? CLIENT_TARGET_ID;
   const isClientOnly = selectedId === CLIENT_TARGET_ID;
@@ -214,7 +223,8 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
       if (kind === "microphone") await authorizeMicrophone();
       else {
         if (!env || desktopError) throw new Error(desktopError ?? t("暂无执行设备", "No execution device"));
-        await guideDesktopPermissions(env.id, guide.selected.includes("accessibility") ? "accessibility" : "screen");
+        const nextDesktopKind = nextPendingDesktopPermission(guide.selected, (item) => permission(item)?.state);
+        await guideDesktopPermissions(env.id, nextDesktopKind);
         if (mounted.current) setDesktopGuideStarted(true);
       }
       if (kind === "microphone") await loader.refreshMicrophone(); else await loader.refreshDesktop();
@@ -317,7 +327,7 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
               <Checkbox.Content className="gap-2"><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control><span>{label(kind)}</span></Checkbox.Content>
             </Checkbox>) : <>
               {guide?.step === "microphone" && <p className="text-sm text-muted">{micDeniedInBrowser ? t("在浏览器的网站设置中允许麦克风，然后返回检查。", "Allow the microphone in your browser's site settings, then return to check.") : state.microphone?.state === "denied" ? t("在系统设置中允许麦克风；如系统要求，重启 Kulo 后再检查。", "Allow the microphone in System Settings. Restart Kulo if requested, then check again.") : t("用于当前客户端的语音输入和通话。", "For voice input and calls on this client.")}</p>}
-              {guide?.step === "desktop" && <p className="text-sm text-muted">{desktopGuideStarted ? t(`在「${envDisplayName ?? ""}」完成系统授权后，返回检查。`, `Complete authorization on “${envDisplayName ?? ""}”, then return to check.`) : t(`在「${envDisplayName ?? ""}」引导辅助功能与屏幕录制授权。`, `Set up Accessibility and Screen Recording on “${envDisplayName ?? ""}”.`)}</p>}
+              {guide?.step === "desktop" && <p className="text-sm text-muted">{desktopGuideStarted ? t(`在「${envDisplayName ?? ""}」的系统设置完成授权后，返回检查。`, `Complete authorization in System Settings on “${envDisplayName ?? ""}”, then return to check.`) : t(`打开「${envDisplayName ?? ""}」的系统设置完成授权。`, `Open System Settings on “${envDisplayName ?? ""}” to allow access.`)}</p>}
               {guide?.step === "summary" && <p className="text-sm" role="status">{complete ? t("所选权限已就绪", "Selected permissions are ready") : t("部分权限尚未授权", "Some permissions are still not allowed")}</p>}
               <div className="flex flex-col gap-3">{guideKinds.map((kind) => <div key={kind} className="flex items-center justify-between gap-4"><span className="text-sm">{label(kind)}</span>{statusChip(permission(kind)?.state)}</div>)}</div>
             </>}
@@ -330,7 +340,7 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
               : guide?.step === "summary" ? <><Button variant="secondary" isPending={busy === "check" || guideChecking} isDisabled={Boolean(busy && busy !== "check")} onPress={() => void checkGuide()}>{t("重新检查", "Check again")}</Button><Button variant="primary" isDisabled={Boolean(busy)} onPress={closeGuide}>{t("完成", "Done")}</Button></>
                 : <><Button variant="tertiary" isDisabled={Boolean(busy)} onPress={() => { if (hasMoreSteps && guide) { setGuide(nextStep(guide)); setGuideError(null); } else closeGuide(); }}>{hasMoreSteps ? t("跳过", "Skip") : t("取消", "Cancel")}</Button>
                   <Button variant="secondary" isPending={busy === "check" || guideChecking} isDisabled={Boolean(busy && busy !== "check")} onPress={() => void checkGuide()}>{t("重新检查", "Check again")}</Button>
-                  {!(guide?.step === "microphone" && micDeniedInBrowser) && <Button variant="primary" isPending={busy === guide?.step} isDisabled={Boolean(busy) || guideChecking || (guide?.step === "microphone" ? !canRequest("microphone") : Boolean(desktopError))} onPress={() => void run(guide?.step === "microphone" ? "microphone" : "desktop")}>{guide?.step === "microphone" ? state.microphone?.state === "denied" ? t("打开系统设置", "Open System Settings") : t("授权麦克风", "Allow microphone") : desktopGuideStarted ? t("打开授权引导", "Open setup guide") : t("开始桌面授权", "Set up desktop permissions")}</Button>}</>}
+                  {!(guide?.step === "microphone" && micDeniedInBrowser) && <Button variant="primary" isPending={busy === guide?.step} isDisabled={Boolean(busy) || guideChecking || (guide?.step === "microphone" ? !canRequest("microphone") : Boolean(desktopError))} onPress={() => void run(guide?.step === "microphone" ? "microphone" : "desktop")}>{guide?.step === "microphone" ? state.microphone?.state === "denied" ? t("打开系统设置", "Open System Settings") : t("授权麦克风", "Allow microphone") : t("打开系统设置", "Open System Settings")}</Button>}</>}
           </Modal.Footer>
         </Modal.Dialog></Modal.Container>
       </Modal.Backdrop>

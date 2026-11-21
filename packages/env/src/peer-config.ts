@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash, createHmac, randomBytes } from "node:crypto";
-import type { DevicePeerConfig } from "@kulo/protocol";
+import { isClusterStandbyPeerConfig, isClusterTopology, type DevicePeerConfig } from "@kulo/protocol";
 import { collectDeviceSystemInfo } from "./device-info.js";
 import { LocalInstanceOwner } from "./local-instance.js";
 
@@ -11,7 +11,12 @@ export function getPeerConfigPath(): string {
 }
 
 export function localPeerProof(config: DevicePeerConfig, challenge: string): string {
-  return createHmac("sha256", config.clientToken).update(JSON.stringify(["kulo-local-peer-v1", config.deviceId, config.hubUrl, challenge])).digest("hex");
+  // Cluster-aware peers derive local ownership and proxy tokens from immutable cluster identity
+  // so hot-switching primary hubUrl never breaks active browser sessions or single-instance locks.
+  const scope = config.cluster?.hubId
+    ? ["kulo-local-peer-v2", config.cluster.hubId, config.deviceId, path.resolve(config.rootDir), challenge]
+    : ["kulo-local-peer-v1", config.deviceId, config.hubUrl, challenge];
+  return createHmac("sha256", config.clientToken).update(JSON.stringify(scope)).digest("hex");
 }
 
 export function localPeerProxyToken(config: DevicePeerConfig): string {
@@ -60,6 +65,12 @@ export function validatePeerConfig(value: unknown): DevicePeerConfig {
       (data.localPort !== undefined && (!Number.isInteger(data.localPort) || Number(data.localPort) < 0 || Number(data.localPort) > 65535))) {
     throw new Error("设备连接配置无效。");
   }
+  if (data.cluster !== undefined && !isClusterTopology(data.cluster)) {
+    throw new Error("设备集群拓扑配置无效。");
+  }
+  if (data.standby !== undefined && !isClusterStandbyPeerConfig(data.standby)) {
+    throw new Error("设备备用主机配置无效。");
+  }
   const rootDir = data.rootDir === "~" ? os.homedir() : data.rootDir.startsWith("~/") || data.rootDir.startsWith("~\\")
     ? path.join(os.homedir(), data.rootDir.slice(2)) : path.resolve(data.rootDir);
   return {
@@ -71,6 +82,8 @@ export function validatePeerConfig(value: unknown): DevicePeerConfig {
     clientToken: data.clientToken,
     rootDir,
     ...(data.localPort !== undefined ? { localPort: data.localPort as number } : {}),
+    ...(data.cluster !== undefined ? { cluster: data.cluster } : {}),
+    ...(data.standby !== undefined ? { standby: data.standby } : {}),
   };
 }
 
@@ -112,6 +125,26 @@ function writePrivateConfig(data: unknown, file: string, createOnly = false): vo
 
 export function savePeerConfig(config: DevicePeerConfig, file = getPeerConfigPath()): void {
   writePrivateConfig(validatePeerConfig(config), file);
+}
+
+export function updatePeerConfig(
+  updater: (current: DevicePeerConfig) => DevicePeerConfig | null,
+  file = getPeerConfigPath(),
+): DevicePeerConfig | null {
+  let updated: DevicePeerConfig | null = null;
+  withProfileLock(file, () => {
+    const current = readPeerConfig(file);
+    if (!current) return;
+    const next = updater(current);
+    if (!next) {
+      updated = current;
+      return;
+    }
+    const validated = validatePeerConfig(next);
+    writePrivateConfig(validated, file);
+    updated = validated;
+  });
+  return updated;
 }
 
 export function removePeerConfig(file = getPeerConfigPath()): void {

@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,6 +21,49 @@ export interface ComputerUseServiceOptions {
   desktopEnabled?: boolean;
   resolveBrowserExecutable?: () => ManagedBrowserExecutable;
   checkMacosChromeBackgroundTasks?: (signal?: AbortSignal) => Promise<MacosChromeBackgroundTaskState>;
+  openSystemSettings?: (url: string, signal?: AbortSignal) => Promise<void>;
+}
+
+export function macosDesktopPermissionSettingsUrl(
+  kind: "accessibility" | "screen",
+  release = os.release(),
+): string {
+  const darwinMajor = Number.parseInt(release.split(".")[0] ?? "", 10);
+  const pane = kind === "accessibility" ? "Privacy_Accessibility" : "Privacy_ScreenCapture";
+  const prefix = Number.isFinite(darwinMajor) && darwinMajor >= 22
+    ? "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?"
+    : "x-apple.systempreferences:com.apple.preference.security?";
+  return `${prefix}${pane}`;
+}
+
+async function openMacosSystemSettings(url: string, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new AgentCliError("OPERATION_CANCELLED", "The permission guide request was cancelled");
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn("/usr/bin/open", [url], { stdio: "ignore", env: { PATH: "/usr/bin:/bin" }, windowsHide: true });
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onAbort = () => {
+      try { child.kill("SIGKILL"); } catch { /* ignore */ }
+      finish(new AgentCliError("OPERATION_CANCELLED", "The permission guide request was cancelled"));
+    };
+    const timeout = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* ignore */ }
+      finish(new AgentCliError("NATIVE_OPERATION_FAILED", "Timed out opening System Settings; open Privacy & Security manually"));
+    }, 10_000);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    child.once("error", () => finish(new AgentCliError("NATIVE_OPERATION_FAILED", "Could not open System Settings; open Privacy & Security manually")));
+    child.once("close", (status) => {
+      if (status !== 0) finish(new AgentCliError("NATIVE_OPERATION_FAILED", "Could not open System Settings; open Privacy & Security manually"));
+      else finish();
+    });
+  });
 }
 
 export function computerUseConfiguration(value = process.env.KULO_COMPUTER_USE): { browserEnabled: boolean; desktopEnabled: boolean } {
@@ -100,6 +144,7 @@ export class ComputerUseService {
   readonly #previews: ComputerPreviewService;
   readonly #resolveBrowserExecutable: () => ManagedBrowserExecutable;
   readonly #checkMacosChromeBackgroundTasks: (signal?: AbortSignal) => Promise<MacosChromeBackgroundTaskState>;
+  readonly #openSystemSettings: (url: string, signal?: AbortSignal) => Promise<void>;
   #lifecycle = new AbortController();
   #generation = 0;
   #closed = false;
@@ -120,6 +165,7 @@ export class ComputerUseService {
       ?? (() => resolveManagedBrowserExecutable({ platform: this.#platform }));
     this.#checkMacosChromeBackgroundTasks = options.checkMacosChromeBackgroundTasks
       ?? ((signal) => checkMacosChromeBackgroundTasks(this.#platform, signal));
+    this.#openSystemSettings = options.openSystemSettings ?? openMacosSystemSettings;
     const namespace = createHash("sha256").update(this.rootDir).digest("hex").slice(0,20);
     // macOS TMPDIR is often too long for Unix sockets, even with short session ids.
     this.#browserSocketDirectory = path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", `mab-${namespace.slice(0,12)}`);
@@ -358,27 +404,51 @@ export class ComputerUseService {
         platform: this.#platform,
         permissions: [{ kind: "accessibility", state: "unsupported" }, { kind: "screen", state: "unsupported" }],
       } satisfies DesktopSystemPermissions);
-      let guide: DesktopSystemPermissions["guide"];
-      if (request.action === "permission-guide") {
-        const opened = this.#native(request, await this.#call(request, ["permissions", "--guide"], active, signal));
-        if (opened.failure) return opened.failure;
-        const state = object(opened.data)?.guide;
-        if (state !== "started" && state !== "already_running" && state !== "not_needed") {
-          throw new AgentCliError("CLI_INVALID_OUTPUT", "The permission guide did not confirm its state; check System Settings before retrying");
-        }
-        guide = state;
-      }
-      const checked = this.#native(request, await this.#call(request, ["permissions"], active, signal));
-      if (checked.failure) return checked.failure;
-      const data = object(checked.data);
-      const permission = (key: string): SystemPermissionState => {
-        const state = object(data?.[key])?.state;
-        if (typeof state !== "string" || !state || state.length > 64) throw new AgentCliError("CLI_INVALID_OUTPUT", "The desktop driver returned an invalid permission state");
-        return ["granted", "not-determined", "denied", "restricted", "unsupported"].includes(state) ? state as SystemPermissionState : "unknown";
+      const readStates = async (): Promise<
+        | { failure: ComputerUseResult }
+        | { accessibility: SystemPermissionState; screen: SystemPermissionState }
+      > => {
+        const checked = this.#native(request, await this.#call(request, ["permissions"], active, signal));
+        if (checked.failure) return { failure: checked.failure };
+        const data = object(checked.data);
+        const permission = (key: string): SystemPermissionState => {
+          const state = object(data?.[key])?.state;
+          if (typeof state !== "string" || !state || state.length > 64) throw new AgentCliError("CLI_INVALID_OUTPUT", "The desktop driver returned an invalid permission state");
+          return ["granted", "not-determined", "denied", "restricted", "unsupported"].includes(state) ? state as SystemPermissionState : "unknown";
+        };
+        return { accessibility: permission("accessibility"), screen: permission("screen_recording") };
       };
+      const initial = await readStates();
+      if ("failure" in initial) return initial.failure;
+      let guide: DesktopSystemPermissions["guide"];
+      let current = initial;
+      if (request.action === "permission-guide") {
+        // Open macOS System Settings directly instead of `agent-desktop permissions --guide`,
+        // whose floating NSPanel + full-screen NSStatusWindowLevel overlay interferes with
+        // keyboard input in macOS Privacy & Security password prompts.
+        const targetKind: "accessibility" | "screen" | undefined = request.kind
+          ? (request.kind === "accessibility"
+            ? (initial.accessibility === "granted" ? undefined : "accessibility")
+            : (initial.screen === "granted" ? undefined : "screen"))
+          : initial.accessibility !== "granted"
+            ? "accessibility"
+            : initial.screen !== "granted"
+              ? "screen"
+              : undefined;
+        if (!targetKind) {
+          guide = "not_needed";
+        } else {
+          if (!active()) throw new AgentCliError("OPERATION_CANCELLED", "The permission guide request was cancelled");
+          await this.#openSystemSettings(macosDesktopPermissionSettingsUrl(targetKind), signal);
+          guide = "started";
+          const refreshed = await readStates();
+          if ("failure" in refreshed) return refreshed.failure;
+          current = refreshed;
+        }
+      }
       return this.#result(request, {
         platform: this.#platform,
-        permissions: [{ kind: "accessibility", state: permission("accessibility") }, { kind: "screen", state: permission("screen_recording") }],
+        permissions: [{ kind: "accessibility", state: current.accessibility }, { kind: "screen", state: current.screen }],
         ...(guide ? { guide } : {}),
       } satisfies DesktopSystemPermissions);
     }

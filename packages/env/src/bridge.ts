@@ -30,6 +30,11 @@ import {
   STREAM_RESUME_GRACE_MS,
   CONNECTORS_CAPABILITY,
   CONNECTOR_MAX_BATCH_BYTES,
+  isClusterSyncStatus,
+  type ClusterHandoverDirective,
+  type ClusterSyncAvailableNotification,
+  type ClusterSyncStatus,
+  type ClusterTopology,
   isConnectorCallRequest,
   isConnectorEventBatch,
   isConnectorSourceStatus,
@@ -202,6 +207,8 @@ interface SshPeer {
 export interface EnvManagerOptions {
   /** Enable a built-in local execution environment on the Hub host itself. */
   enableLocal?: boolean;
+  /** Stable identifier for the local execution environment (defaults to `"local"` for single-host compatibility). */
+  localEnvId?: string;
   /** Root directory for the built-in local execution environment. */
   localRootDir?: string;
   /** Optional display name for the built-in local env. */
@@ -247,6 +254,12 @@ export class EnvManager {
 
   #localConnection: Connection | null = null;
   #localDescriptor: EnvNodeDescriptor | null = null;
+  #localEnvId: string;
+  #clusterHandlers?: {
+    getRegistrationPayload?: (envId: string) => { cluster?: ClusterTopology; standby?: { enabled: boolean; syncToken: string } } | undefined;
+    onSyncStatus?: (envId: string, status: ClusterSyncStatus) => void;
+    onPeerRegistered?: (envId: string, descriptor: EnvNodeDescriptor) => void;
+  };
 
   readonly #wsPeers = new Map<string, RemoteWsPeer>();
   readonly #sshPeers = new Map<string, SshPeer>();
@@ -298,9 +311,87 @@ export class EnvManager {
       throw new Error("Each Env identity requires a non-empty, unique node credential");
     }
     this.#options = options;
+    const initialLocalId = options.localEnvId?.trim();
+    this.#localEnvId = initialLocalId && /^[a-zA-Z0-9_-]{1,100}$/.test(initialLocalId) ? initialLocalId : "local";
     this.#hubId = options.hubId?.trim() || "kulo-hub";
     this.#streamResumeGraceMs = options.streamResumeGraceMs ?? STREAM_RESUME_GRACE_MS;
     this.#computerConfiguration = options.computerUseService ? undefined : computerUseConfiguration();
+  }
+
+  get localEnvId(): string {
+    return this.#localEnvId;
+  }
+
+  isLocalEnv(envId: string): boolean {
+    return envId === this.#localEnvId;
+  }
+
+  /** Promote the local environment ID in place (e.g., when upgrading from standalone `"local"` to a cluster `nodeId`). */
+  setLocalEnvId(nextId: string): void {
+    const clean = nextId.trim();
+    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(clean) || clean === this.#localEnvId) return;
+    const previous = this.#localEnvId;
+    this.#localEnvId = clean;
+    if (this.#localDescriptor) {
+      this.#localDescriptor = { ...this.#localDescriptor, id: clean };
+    }
+    const previousName = this.#deviceDisplayNames.get(previous);
+    if (previousName !== undefined) {
+      this.#deviceDisplayNames.delete(previous);
+      if (!this.#deviceDisplayNames.has(clean)) this.#deviceDisplayNames.set(clean, previousName);
+    }
+    const previousSensorStatus = this.#connectorStatuses.get(`${previous}:macos-notifications`);
+    if (previousSensorStatus) {
+      this.#connectorStatuses.delete(`${previous}:macos-notifications`);
+      this.#connectorStatuses.set(`${clean}:macos-notifications`, previousSensorStatus);
+    }
+    for (const entry of this.#workerConnections.values()) {
+      if (entry.envId === previous) entry.envId = clean;
+    }
+    this.#notifyChange();
+  }
+
+  setClusterHandlers(handlers?: {
+    getRegistrationPayload?: (envId: string) => { cluster?: ClusterTopology; standby?: { enabled: boolean; syncToken: string } } | undefined;
+    onSyncStatus?: (envId: string, status: ClusterSyncStatus) => void;
+    onPeerRegistered?: (envId: string, descriptor: EnvNodeDescriptor) => void;
+  }): void {
+    this.#clusterHandlers = handlers;
+  }
+
+  broadcastClusterTopology(topology: ClusterTopology): void {
+    for (const peer of this.#wsPeers.values()) {
+      if (peer.connectionState === "online" && peer.ws && peer.ws.readyState === peer.ws.OPEN && peer.descriptor.executionKind === "pi-env") {
+        const standby = this.#clusterHandlers?.getRegistrationPayload?.(peer.descriptor.id)?.standby;
+        this.#sendControl(peer.ws, {
+          type: "hub.cluster_topology",
+          topology,
+          ...(standby ? { standby } : {}),
+        });
+      }
+    }
+  }
+
+  notifySyncAvailable(envId: string, notice: ClusterSyncAvailableNotification): boolean {
+    const peer = this.#wsPeers.get(envId);
+    if (!peer || peer.connectionState !== "online" || !peer.ws || peer.ws.readyState !== peer.ws.OPEN) return false;
+    this.#sendControl(peer.ws, { type: "hub.sync_available", notice });
+    return true;
+  }
+
+  sendStandbyWipe(envId: string, reason: string): boolean {
+    const peer = this.#wsPeers.get(envId);
+    if (!peer || peer.connectionState !== "online" || !peer.ws || peer.ws.readyState !== peer.ws.OPEN) return false;
+    this.#sendControl(peer.ws, { type: "hub.standby_wipe", reason });
+    return true;
+  }
+
+  broadcastClusterHandover(directive: ClusterHandoverDirective): void {
+    for (const peer of this.#wsPeers.values()) {
+      if (peer.connectionState === "online" && peer.ws && peer.ws.readyState === peer.ws.OPEN && peer.descriptor.executionKind === "pi-env") {
+        this.#sendControl(peer.ws, { type: "hub.cluster_handover", directive });
+      }
+    }
   }
 
   get hubInstanceId(): string {
@@ -357,7 +448,7 @@ export class EnvManager {
     if (!isConnectorCallRequest(request)) {
       return { ok: false, code: "invalid_request", error: "连接器请求格式无效" };
     }
-    if (envId === "local") {
+    if (this.isLocalEnv(envId)) {
       if (!this.#localDescriptor) {
         return { ok: false, code: "env_unavailable", error: "本机执行环境未启用" };
       }
@@ -416,7 +507,7 @@ export class EnvManager {
   }
 
   getConnectionState(envId: string): "online" | "reconnecting" | "offline" {
-    if (envId === "local") return this.#localDescriptor?.online ? "online" : "offline";
+    if (this.isLocalEnv(envId)) return this.#localDescriptor?.online ? "online" : "offline";
     const peer = this.#wsPeers.get(envId);
     if (peer) return peer.connectionState;
     if (this.#sshPeers.has(envId)) return "online";
@@ -445,7 +536,8 @@ export class EnvManager {
     // 2. Optionally initialize built-in local Pi Env daemon
     if (this.#options.enableLocal !== false) {
       const rootDir = path.resolve(this.#options.localRootDir ?? process.cwd());
-      this.#localProjects = new ProjectDirectoryRegistry({ deviceId: "local", filePath: this.#options.projectGrantFile ?? path.join(rootDir, ".kulo-env", "project-grants.json"), scratchRoot: path.join(rootDir, "scratch"), getProtectedPaths: () => [...(this.#options.getProtectedPaths?.() ?? []), ...this.#additionalProtectedPaths] });
+      const localId = this.#localEnvId;
+      this.#localProjects = new ProjectDirectoryRegistry({ deviceId: localId, filePath: this.#options.projectGrantFile ?? path.join(rootDir, ".kulo-env", "project-grants.json"), scratchRoot: path.join(rootDir, "scratch"), getProtectedPaths: () => [...(this.#options.getProtectedPaths?.() ?? []), ...this.#additionalProtectedPaths] });
       this.#localStagedWorkspaces = new StagedWorkspaceService({ projectRegistry: this.#localProjects });
       this.#localBrowser = this.#options.browserService ?? new FlowBrowserService({ rootDir: path.join(this.#localProjects.privateDirectory, "browser") });
       this.#additionalProtectedPaths.add(this.#localBrowser.rootDir);
@@ -459,7 +551,7 @@ export class EnvManager {
           this.#localProjects!.privateDirectory,
         ],
       });
-      this.#localExternalAgents = new ExternalAgentService({ envId: "local", rootDir, projectRegistry: this.#localProjects, toolHandler: this.#externalAgentToolHandler });
+      this.#localExternalAgents = new ExternalAgentService({ envId: localId, rootDir, projectRegistry: this.#localProjects, toolHandler: this.#externalAgentToolHandler });
       await this.#localExternalAgents.recover();
       await cleanupRecordedExecutions(path.join(this.#localProjects.privateDirectory, "executions"));
       this.#localConnection = new Connection({
@@ -467,7 +559,7 @@ export class EnvManager {
       });
       const now = Date.now();
       this.#localDescriptor = {
-        id: "local",
+        id: localId,
         name: this.#options.localName ?? (os.hostname() || "Local"),
         kind: "local",
         online: true,
@@ -482,23 +574,23 @@ export class EnvManager {
       };
       if (process.platform === "darwin") {
         const localSensor = new MacOsNotificationSensor({
-          envId: "local",
+          envId: localId,
           envName: this.#localDescriptor.name,
           privateDir: this.#localProjects.privateDirectory,
           ...(this.#options.localNotificationsDbPath ? { databasePath: this.#options.localNotificationsDbPath } : {}),
           onStatus: (status) => {
-            this.#connectorStatuses.set(`local:${status.driverId}`, status);
-            this.#connectorHandlers?.onStatus?.("local", status);
+            this.#connectorStatuses.set(`${this.#localEnvId}:${status.driverId}`, status);
+            this.#connectorHandlers?.onStatus?.(this.#localEnvId, status);
           },
           onBatch: (batch) => {
-            void this.#dispatchConnectorBatch("local", batch).then((ack) => {
+            void this.#dispatchConnectorBatch(this.#localEnvId, batch).then((ack) => {
               localSensor.handleAck(ack);
             });
           },
         });
         localSensor.setHubIdentity(this.#hubId);
         this.#localNotificationSensor = localSensor;
-        this.#connectorStatuses.set("local:macos-notifications", localSensor.status);
+        this.#connectorStatuses.set(`${this.#localEnvId}:macos-notifications`, localSensor.status);
         if (this.#connectorConfig.enabled) {
           localSensor.configure(this.#connectorConfig);
         }
@@ -670,7 +762,7 @@ export class EnvManager {
           return;
         }
         const envId = typeof msg.envId === "string" ? msg.envId.trim() : "";
-        if (!envId || envId === "local") {
+        if (!envId || envId === "local" || this.isLocalEnv(envId)) {
           ws.close(4002, "Invalid or reserved envId");
           return;
         }
@@ -694,6 +786,10 @@ export class EnvManager {
             (msg.executionKind !== undefined && msg.executionKind !== "pi-env" && msg.executionKind !== "native-device") ||
             (msg.connectionLease !== undefined && (typeof msg.connectionLease !== "string" || !msg.connectionLease || msg.connectionLease.length > 256 || /\s/.test(msg.connectionLease))) ||
             (msg.hubInstanceId !== undefined && (typeof msg.hubInstanceId !== "string" || msg.hubInstanceId.length > 128)) ||
+            (msg.listenPort !== undefined && (!Number.isInteger(msg.listenPort) || msg.listenPort < 1 || msg.listenPort > 65535)) ||
+            (msg.clusterEpoch !== undefined && (!Number.isSafeInteger(msg.clusterEpoch) || msg.clusterEpoch < 1)) ||
+            (msg.standbyPublicKey !== undefined && (typeof msg.standbyPublicKey !== "string" || !/^[A-Za-z0-9_-]{32,256}$/.test(msg.standbyPublicKey))) ||
+            (msg.identityPublicKey !== undefined && (typeof msg.identityPublicKey !== "string" || !/^[A-Za-z0-9_-]{32,256}$/.test(msg.identityPublicKey))) ||
             (msg.activeStreams !== undefined && (!Array.isArray(msg.activeStreams) || msg.activeStreams.length > 256 ||
               msg.activeStreams.some((s) => !s || typeof s !== "object" || !Number.isSafeInteger(s.streamId) || s.streamId < 1 || !Number.isSafeInteger(s.rxSeq) || s.rxSeq < 0))) ||
             (msg.info !== undefined && !isDeviceSystemInfo(msg.info))) {
@@ -749,6 +845,10 @@ export class EnvManager {
             connectedAt: peer.descriptor.connectedAt,
             lastSeenAt: now,
             ...(msg.info ? { info: msg.info } : {}),
+            ...(msg.listenPort !== undefined ? { listenPort: msg.listenPort } : {}),
+            ...(msg.standbyPublicKey ? { standbyPublicKey: msg.standbyPublicKey } : {}),
+            ...(msg.identityPublicKey ? { identityPublicKey: msg.identityPublicKey } : {}),
+            ...(msg.clusterEpoch !== undefined ? { clusterEpoch: msg.clusterEpoch } : {}),
           };
 
           const envStreamMap = new Map(reportedActiveStreams.map((s) => [s.streamId, s.rxSeq]));
@@ -777,6 +877,7 @@ export class EnvManager {
           }
           closeStreams = [...closeSet];
 
+          const clusterPayload = executionKind === "pi-env" ? this.#clusterHandlers?.getRegistrationPayload?.(envId) : undefined;
           this.#sendControl(ws, {
             type: "hub.registered",
             envId,
@@ -785,6 +886,8 @@ export class EnvManager {
             streamResumeSupported: true,
             resumedStreams,
             ...(closeStreams.length ? { closeStreams } : {}),
+            ...(clusterPayload?.cluster ? { cluster: clusterPayload.cluster } : {}),
+            ...(clusterPayload?.standby ? { standby: clusterPayload.standby } : {}),
           });
           if (connectorsSupported) {
             this.#sendControl(ws, { type: "hub.connector_config", config: this.#connectorConfig });
@@ -853,6 +956,10 @@ export class EnvManager {
               connectedAt: now,
               lastSeenAt: now,
               ...(msg.info ? { info: msg.info } : {}),
+              ...(msg.listenPort !== undefined ? { listenPort: msg.listenPort } : {}),
+              ...(msg.standbyPublicKey ? { standbyPublicKey: msg.standbyPublicKey } : {}),
+              ...(msg.identityPublicKey ? { identityPublicKey: msg.identityPublicKey } : {}),
+              ...(msg.clusterEpoch !== undefined ? { clusterEpoch: msg.clusterEpoch } : {}),
             };
           } else {
             closeStreams = reportedActiveStreams.map((s) => s.streamId);
@@ -870,6 +977,10 @@ export class EnvManager {
                 connectedAt: now,
                 lastSeenAt: now,
                 ...(msg.info ? { info: msg.info } : {}),
+                ...(msg.listenPort !== undefined ? { listenPort: msg.listenPort } : {}),
+                ...(msg.standbyPublicKey ? { standbyPublicKey: msg.standbyPublicKey } : {}),
+                ...(msg.identityPublicKey ? { identityPublicKey: msg.identityPublicKey } : {}),
+                ...(msg.clusterEpoch !== undefined ? { clusterEpoch: msg.clusterEpoch } : {}),
               },
               ws,
               connection: null,
@@ -890,6 +1001,7 @@ export class EnvManager {
             });
           }
 
+          const clusterPayload = executionKind === "pi-env" ? this.#clusterHandlers?.getRegistrationPayload?.(envId) : undefined;
           this.#sendControl(ws, {
             type: "hub.registered",
             envId,
@@ -901,12 +1013,15 @@ export class EnvManager {
                   ...(closeStreams.length ? { closeStreams } : {}),
                 }
               : {}),
+            ...(clusterPayload?.cluster ? { cluster: clusterPayload.cluster } : {}),
+            ...(clusterPayload?.standby ? { standby: clusterPayload.standby } : {}),
           });
           if (connectorsSupported) {
             this.#sendControl(ws, { type: "hub.connector_config", config: this.#connectorConfig });
           }
         }
 
+        this.#clusterHandlers?.onPeerRegistered?.(envId, this.#displayDescriptor(peer.descriptor));
         const pendingRevocations = this.#pendingRevocations.get(envId);
         if (executionKind === "pi-env" && pendingRevocations?.size) {
           void Promise.all([...pendingRevocations].map((projectId) => this.revokeProjectDirectory(envId, projectId)))
@@ -926,6 +1041,15 @@ export class EnvManager {
       if (!peer || peer.ws !== ws) return;
       peer.missedPings = 0;
       peer.descriptor.lastSeenAt = Date.now();
+
+      if (msg.type === "env.sync_status") {
+        if (peer.descriptor.executionKind !== "pi-env" || !isClusterSyncStatus(msg.status)) {
+          ws.close(4002, "Invalid cluster sync status");
+          return;
+        }
+        this.#clusterHandlers?.onSyncStatus?.(boundEnvId, msg.status);
+        return;
+      }
 
       if (msg.type === "env.android_status") {
         if (peer.descriptor.executionKind !== "native-device" || !isAndroidEnvStatus(msg.status)) {
@@ -1221,7 +1345,7 @@ export class EnvManager {
       ...Object.entries(this.#options.envTokens ?? {}).filter(([envId]) => envId !== id).map(([, value]) => value),
       ...[...this.#deviceTokens].filter(([envId]) => envId !== id).map(([, value]) => value),
     ];
-    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id) || id === "local" || !token || /\s/.test(token) || sameToken(token, this.#options.authToken) || otherTokens.some((other) => sameToken(token, other))) {
+    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id) || id === "local" || this.isLocalEnv(id) || !token || /\s/.test(token) || sameToken(token, this.#options.authToken) || otherTokens.some((other) => sameToken(token, other))) {
       throw new Error("Invalid device credential");
     }
     const previous = this.#deviceTokens.get(id) ?? this.#options.envTokens?.[id];
@@ -1245,7 +1369,7 @@ export class EnvManager {
   /** Issuing a new route lease fences both pending registrations and already-bound sockets. */
   setDeviceConnectionLease(envId: string, lease: string): void {
     if (this.#closed) throw new Error("Env manager is closed");
-    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(envId) || envId === "local" || typeof lease !== "string" || !lease || lease.length > 256 || /\s/.test(lease)) {
+    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(envId) || envId === "local" || this.isLocalEnv(envId) || typeof lease !== "string" || !lease || lease.length > 256 || /\s/.test(lease)) {
       throw new Error("Invalid device connection lease");
     }
     this.#deviceConnectionLeases.set(envId, lease);
@@ -1429,9 +1553,9 @@ export class EnvManager {
     this.#assertPiEnv(envId);
     if (!isExternalAgentRequest(request) || JSON.stringify(request).length > 300_000) throw new Error("Invalid external agent control request");
     if ((request.operation === "run" || request.operation === "probe") && request.binding.envId !== envId) throw new Error("External agent binding belongs to another device");
-    if ((request.operation === "run" || request.operation === "probe") && envId !== "local" && !this.#options.workerEnvIds?.includes(envId) && !this.#deviceTokens.has(envId)) throw new Error(`Env '${envId}' has not been approved for isolated Worker execution`);
+    if ((request.operation === "run" || request.operation === "probe") && !this.isLocalEnv(envId) && !this.#options.workerEnvIds?.includes(envId) && !this.#deviceTokens.has(envId)) throw new Error(`Env '${envId}' has not been approved for isolated Worker execution`);
     if (signal?.aborted) throw new Error("External agent request was aborted");
-    if (envId === "local") {
+    if (this.isLocalEnv(envId)) {
       if (!this.#localExternalAgents) throw new Error("Local external agent runtime is not enabled");
       return this.#localExternalAgents.request(request, signal);
     }
@@ -1489,7 +1613,7 @@ export class EnvManager {
     const descriptor = this.getEnvDescriptor(envId);
     if (!descriptor?.online) throw new Error("Flow browser device is offline");
     if (!descriptor.capabilities.includes("flow-browser")) throw new Error("This device has no Flow browser capability");
-    if (envId === "local") {
+    if (this.isLocalEnv(envId)) {
       if (!this.#localBrowser) throw new Error("Local Flow browser is unavailable");
       return this.#localBrowser.request(request, () => !this.#closed);
     }
@@ -1516,8 +1640,8 @@ export class EnvManager {
     if (descriptor.executionKind === "native-device" || !["darwin", "linux", "win32"].includes(descriptor.platform)) throw new Error("This device has no supported computer-use driver");
     if (!descriptor.capabilities.includes(request.tool === "browser" ? "agent-browser" : "agent-desktop")) throw new Error(`Computer-use ${request.tool} is not enabled on this device`);
     if (this.#computerRequests.size >= 32) throw new Error("Computer-use request limit reached");
-    const peer = envId === "local" ? undefined : this.#wsPeers.get(envId);
-    if (envId === "local" ? !this.#localComputer : !peer?.ws || peer.ws.readyState !== peer.ws.OPEN) throw new Error("Computer use requires the target device's authenticated Env connection");
+    const peer = this.isLocalEnv(envId) ? undefined : this.#wsPeers.get(envId);
+    if (this.isLocalEnv(envId) ? !this.#localComputer : !peer?.ws || peer.ws.readyState !== peer.ws.OPEN) throw new Error("Computer use requires the target device's authenticated Env connection");
     const expectedLease = this.#deviceConnectionLeases.get(envId);
     if (peer && expectedLease !== undefined && !sameToken(peer.connectionLease, expectedLease)) throw new Error("Computer-use device connection lease changed");
     const requestId = randomBytes(16).toString("hex");
@@ -1558,8 +1682,8 @@ export class EnvManager {
       throw new Error("目标设备端版本尚未支持本机诊断或运维操作，请更新该设备上的 Kulo 客户端");
     }
     if (this.#hostActionRequests.size >= 16) throw new Error("Host action request limit reached");
-    const peer = envId === "local" ? undefined : this.#wsPeers.get(envId);
-    if (envId === "local" ? !this.#localHostActions : !peer?.ws || peer.ws.readyState !== peer.ws.OPEN) {
+    const peer = this.isLocalEnv(envId) ? undefined : this.#wsPeers.get(envId);
+    if (this.isLocalEnv(envId) ? !this.#localHostActions : !peer?.ws || peer.ws.readyState !== peer.ws.OPEN) {
       throw new Error("本机操作需要目标设备的有效节点连接");
     }
     const expectedLease = this.#deviceConnectionLeases.get(envId);
@@ -1645,8 +1769,8 @@ export class EnvManager {
     if (!descriptor?.online || descriptor.executionKind === "native-device" || !["darwin", "linux", "win32"].includes(descriptor.platform)) throw new Error("Computer preview device is unavailable");
     if (!descriptor.capabilities.includes(`agent-${target.tool}`)) throw new Error("Computer preview capability is disabled");
     if (this.#computerPreviews.size >= 16) throw new Error("Computer preview subscription limit reached");
-    const peer = envId === "local" ? undefined : this.#wsPeers.get(envId);
-    if (envId === "local" ? !this.#localComputer : !peer?.ws || peer.ws.readyState !== peer.ws.OPEN) throw new Error("Computer preview requires an authenticated Env connection");
+    const peer = this.isLocalEnv(envId) ? undefined : this.#wsPeers.get(envId);
+    if (this.isLocalEnv(envId) ? !this.#localComputer : !peer?.ws || peer.ws.readyState !== peer.ws.OPEN) throw new Error("Computer preview requires an authenticated Env connection");
     const lease = this.#deviceConnectionLeases.get(envId);
     if (peer && (this.#revokedDeviceIds.has(envId) || !this.#remoteConnectionsEnabled || lease !== undefined && !sameToken(peer.connectionLease, lease))) throw new Error("Computer preview device authorization changed");
     const subscriptionId = randomBytes(16).toString("hex");
@@ -1719,9 +1843,9 @@ export class EnvManager {
   }
 
   async listProjectDirectories(envId: string, directory?: string): Promise<ProjectDirectoryListing> {
-    if (envId === "local") {
+    if (this.isLocalEnv(envId)) {
       if (!this.#localProjects) throw new Error("Local project environment is not enabled");
-      return this.#localProjects.list(directory);
+      return { ...this.#localProjects.list(directory), deviceId: this.#localEnvId };
     }
     const result = await this.#projectRequest(envId, { action: "list", ...(directory ? { path: directory } : {}) });
     if (!("entries" in result) || result.deviceId !== envId || !Array.isArray(result.entries)) throw new Error("Project device returned an invalid directory list");
@@ -1729,7 +1853,7 @@ export class EnvManager {
   }
 
   async authorizeProjectDirectory(envId: string, input: AuthorizeDirectoryInput): Promise<ProjectDirectoryGrant> {
-    if (envId === "local") {
+    if (this.isLocalEnv(envId)) {
       if (!this.#localProjects) throw new Error("Local project environment is not enabled");
       const grant = this.#localProjects.authorize(input);
       this.#revokedProjects.delete(JSON.stringify([envId, input.projectId]));
@@ -1746,7 +1870,7 @@ export class EnvManager {
     input: { taskId: string; projectId: string; sourceDir: string; directoryId?: string; grantRevision?: number; fresh?: boolean },
   ): Promise<StagedWorkspacePrepareResult> {
     this.#assertPiEnv(envId);
-    if (envId === "local") {
+    if (this.isLocalEnv(envId)) {
       if (!this.#localStagedWorkspaces) throw new Error("Local staged workspace service is not enabled");
       return this.#localStagedWorkspaces.prepare(input);
     }
@@ -1763,7 +1887,7 @@ export class EnvManager {
     filePath?: string,
   ): Promise<StagedWorkspaceDiffDetail> {
     this.#assertPiEnv(envId);
-    if (envId === "local") {
+    if (this.isLocalEnv(envId)) {
       if (!this.#localStagedWorkspaces) throw new Error("Local staged workspace service is not enabled");
       return this.#localStagedWorkspaces.diff(taskId, filePath);
     }
@@ -1783,7 +1907,7 @@ export class EnvManager {
     input: { taskId: string; projectId: string; directoryId?: string; grantRevision?: number; paths?: string[]; allowConflicts?: boolean },
   ): Promise<StagedWorkspaceApplyResult> {
     this.#assertPiEnv(envId);
-    if (envId === "local") {
+    if (this.isLocalEnv(envId)) {
       if (!this.#localStagedWorkspaces) throw new Error("Local staged workspace service is not enabled");
       return this.#localStagedWorkspaces.apply(input);
     }
@@ -1800,7 +1924,7 @@ export class EnvManager {
     projectId?: string,
   ): Promise<{ discarded: boolean }> {
     this.#assertPiEnv(envId);
-    if (envId === "local") {
+    if (this.isLocalEnv(envId)) {
       if (!this.#localStagedWorkspaces) return { discarded: false };
       return this.#localStagedWorkspaces.discard(taskId, projectId);
     }
@@ -1818,7 +1942,7 @@ export class EnvManager {
   async revokeProjectDirectory(envId: string, projectId: string): Promise<{ cleanupPending: boolean }> {
     this.#assertPiEnv(envId);
     this.#revokedProjects.add(JSON.stringify([envId, projectId]));
-    if (envId === "local") {
+    if (this.isLocalEnv(envId)) {
       this.#localProjects?.revoke(projectId);
       this.#localStagedWorkspaces?.discardProject(projectId);
       const externalPending = await this.#localExternalAgents?.stopProject(projectId);
@@ -1850,8 +1974,8 @@ export class EnvManager {
 
   async releaseWorkerExecutionEnv(envId: string, cwd: string, options?: { scratchDir?: string }): Promise<{ cleanupPending: boolean }> {
     this.#assertPiEnv(envId);
-    const workspaceDir = envId === "local" ? canonicalExecutionPath(cwd) : cwd;
-    const scratchDir = envId === "local" && options?.scratchDir ? canonicalExecutionPath(options.scratchDir) : options?.scratchDir;
+    const workspaceDir = this.isLocalEnv(envId) ? canonicalExecutionPath(cwd) : cwd;
+    const scratchDir = this.isLocalEnv(envId) && options?.scratchDir ? canonicalExecutionPath(options.scratchDir) : options?.scratchDir;
     const matches = [...this.#workerConnections].filter(([, entry]) => entry.envId === envId && entry.cwd === workspaceDir && (!options || entry.scratchDir === scratchDir));
     const results = await Promise.all(matches.map(async ([key, entry]) => {
       entry.cleaning = true;
@@ -1864,7 +1988,7 @@ export class EnvManager {
       if (!pending && this.#workerConnections.get(key) === entry) this.#workerConnections.delete(key);
       return pending;
     }));
-    if (envId === "local") {
+    if (this.isLocalEnv(envId)) {
       const recordedPending = this.#localProjects ? await cleanupRecordedExecutions(path.join(this.#localProjects.privateDirectory, "executions"), { workspaceDir, ...(options ? { scratchDir } : {}) }) : false;
       return { cleanupPending: results.some(Boolean) || recordedPending };
     }
@@ -1901,7 +2025,7 @@ export class EnvManager {
 
   /** Look up one environment descriptor by ID. */
   getEnvDescriptor(envId: string): EnvNodeDescriptor | undefined {
-    if (envId === "local" && this.#localDescriptor) {
+    if (this.isLocalEnv(envId) && this.#localDescriptor) {
       return this.#displayDescriptor(this.#localDescriptor);
     }
     const wsPeer = this.#wsPeers.get(envId);
@@ -1913,9 +2037,10 @@ export class EnvManager {
 
   /** Display aliases do not change node identity or its self-reported system name. */
   setDeviceDisplayName(id: string, name: string | undefined): void {
-    if (this.#deviceDisplayNames.get(id) === name) return;
-    if (name === undefined) this.#deviceDisplayNames.delete(id);
-    else this.#deviceDisplayNames.set(id, name);
+    const resolvedId = id === "local" ? this.#localEnvId : id;
+    if (this.#deviceDisplayNames.get(resolvedId) === name) return;
+    if (name === undefined) this.#deviceDisplayNames.delete(resolvedId);
+    else this.#deviceDisplayNames.set(resolvedId, name);
     this.#notifyChange();
   }
 
@@ -1923,16 +2048,16 @@ export class EnvManager {
     return { ...descriptor, name: this.#deviceDisplayNames.get(descriptor.id) ?? descriptor.name };
   }
 
-  /** Pick default environment ID when dispatch omits `envId`: prefer active remote if local disabled, else `"local"` or first online. */
+  /** Pick default environment ID when dispatch omits `envId`: prefer active remote if local disabled, else local envId or first online. */
   pickDefaultEnvId(): string {
-    if (this.#localDescriptor?.online) return "local";
+    if (this.#localDescriptor?.online) return this.#localEnvId;
     for (const peer of this.#wsPeers.values()) {
       if (peer.descriptor.online && peer.descriptor.executionKind !== "native-device") return peer.descriptor.id;
     }
     for (const ssh of this.#sshPeers.values()) {
       if (ssh.descriptor.online) return ssh.descriptor.id;
     }
-    if (this.#localDescriptor) return "local";
+    if (this.#localDescriptor) return this.#localEnvId;
     for (const peer of this.#wsPeers.values()) {
       if (peer.descriptor.executionKind !== "native-device") return peer.descriptor.id;
     }
@@ -1941,7 +2066,7 @@ export class EnvManager {
 
   pickDefaultWorkerEnvId(): string {
     if (this.#closed) throw new Error("Env manager is closed");
-    if (this.#localDescriptor?.online && this.#localDescriptor.capabilities.includes("worker-isolation")) return "local";
+    if (this.#localDescriptor?.online && this.#localDescriptor.capabilities.includes("worker-isolation")) return this.#localEnvId;
     for (const envId of this.#options.workerEnvIds ?? []) {
       const descriptor = this.getEnvDescriptor(envId);
       if (descriptor?.online && descriptor.executionKind !== "native-device" && descriptor.capabilities.includes("worker-isolation")) return envId;
@@ -1957,7 +2082,7 @@ export class EnvManager {
   createWorkerExecutionEnv(envId: string, cwd: string, options: WorkerExecutionOptions = {}): ExecutionEnv {
     if (this.#closed) throw new Error("Env manager is closed");
     this.#assertPiEnv(envId);
-    if (envId === "local") {
+    if (this.isLocalEnv(envId)) {
       cwd = canonicalExecutionPath(cwd);
       if (options.scratchDir) options = { ...options, scratchDir: canonicalExecutionPath(options.scratchDir) };
     }
@@ -1972,7 +2097,7 @@ export class EnvManager {
       this.invalidateWorkerEnvironments();
       this.#workerProtection = protection;
     }
-    if (envId !== "local" && !this.#options.workerEnvIds?.includes(envId) && !this.#deviceTokens.has(envId)) {
+    if (!this.isLocalEnv(envId) && !this.#options.workerEnvIds?.includes(envId) && !this.#deviceTokens.has(envId)) {
       throw new Error(`Env '${envId}' has not been approved for isolated Worker execution`);
     }
     const descriptor = this.getEnvDescriptor(envId);
@@ -1984,7 +2109,7 @@ export class EnvManager {
     let entry = this.#workerConnections.get(cacheKey);
     if (entry?.cleaning) entry = undefined;
     if (!entry) {
-      if (envId === "local") {
+      if (this.isLocalEnv(envId)) {
         if (hasOrphanedExecution(path.join(this.#localProjects!.privateDirectory, "executions"), canonicalExecutionPath(cwd))) throw new Error("Previous Worker execution cleanup is pending");
         let workspaceRoot = canonicalExecutionPath(this.#localDescriptor!.rootDir);
         if (options.projectId && options.stagedTaskId) {
@@ -2057,7 +2182,7 @@ export class EnvManager {
     options?: { sandboxed?: boolean; readOnly?: boolean; offline?: boolean },
   ): ExecutionEnv {
     this.#assertPiEnv(envId);
-    if (envId === "local") {
+    if (this.isLocalEnv(envId)) {
       if (!this.#localConnection || !this.#localDescriptor) {
         throw new Error("Local execution environment is not enabled on this Hub");
       }
@@ -2092,7 +2217,7 @@ export class EnvManager {
             network,
           });
           entry = {
-            envId: "local",
+            envId: this.#localEnvId,
             cwd: canonicalCwd,
             connection: new Connection({ command: async () => sandbox.command }),
             sandbox,

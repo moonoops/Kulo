@@ -25,7 +25,12 @@ export interface ConnectionVault {
   refs?(): Promise<string[]>;
   ready(): Promise<{ available: boolean; error?: string }>;
 }
-interface StoredConnection extends ConnectionRecordView { credentialRef?: string; trustedHostFingerprint?: string }
+interface StoredConnection extends ConnectionRecordView {
+  credentialRef?: string;
+  trustedHostFingerprint?: string;
+  /** Physical cluster nodeId where a local stdio/loopback MCP connection was configured (P1-4). */
+  boundNodeId?: string;
+}
 interface ConnectionDocument {
   version: 1;
   connections: Record<string, StoredConnection>;
@@ -312,6 +317,8 @@ export class KuloConnections {
   readonly #applications: ConnectionApplicationBackend;
   readonly #platform: NodeJS.Platform;
   readonly #onChanged?: () => void | Promise<void>;
+  #onPersist?: () => void;
+  #clusterHostContext?: { localNodeId: string; legacyLocalNodeId?: string };
   readonly #mcpLocks: McpOAuthRefreshLockManager;
   readonly #mcpPool: McpConnectionPool;
   readonly mcpOAuth: McpOAuthSessionManager;
@@ -440,7 +447,25 @@ export class KuloConnections {
       fs.writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, { flag: "wx", mode: 0o600 });
       fs.renameSync(temporary, this.#file);
       this.#doc = next;
+      this.#onPersist?.();
     } finally { fs.rmSync(temporary, { force: true }); }
+  }
+  setOnPersist(hook: (() => void) | undefined): void { this.#onPersist = hook; }
+  setClusterHostContext(ctx: { localNodeId: string; legacyLocalNodeId?: string } | undefined): void {
+    this.#clusterHostContext = ctx;
+  }
+  #assertNotPausedLocalMcp(record: StoredConnection): void {
+    if (record.kind !== "mcp") return;
+    const isLocalBound = record.mcpTransport === "stdio" || (record.url ? (() => {
+      try { return isLoopbackHost(new URL(record.url).hostname); } catch { return false; }
+    })() : false);
+    if (!isLocalBound) return;
+    const ctx = this.#clusterHostContext;
+    if (!ctx || ctx.localNodeId === "local") return;
+    const ownerNodeId = record.boundNodeId ?? ctx.legacyLocalNodeId;
+    if (ownerNodeId && ownerNodeId !== ctx.localNodeId) {
+      fail("该本地 MCP 服务绑定在原主机，当前运行于备用主机故已自动暂停。", "connection_host_changed_paused", 409);
+    }
   }
   async #changed(): Promise<void> { await this.#onChanged?.(); }
   #view(record: StoredConnection): ConnectionRecordView {
@@ -732,10 +757,19 @@ export class KuloConnections {
       const now = Date.now();
       const keepMcpMeta = fields.kind === "mcp" && sameIdentity && previous?.kind === "mcp";
       const oauthAuthorized = fields.kind === "mcp" && sameIdentity && this.#mcpOAuthAuthorized.has(id);
+      const isLocalBoundMcp = fields.kind === "mcp" && (fields.mcpTransport === "stdio" || (fields.url ? (() => {
+        try { return isLoopbackHost(new URL(fields.url).hostname); } catch { return false; }
+      })() : false));
+      const boundNodeId = isLocalBoundMcp
+        ? (this.#clusterHostContext && this.#clusterHostContext.localNodeId !== "local"
+            ? this.#clusterHostContext.localNodeId
+            : previous?.boundNodeId)
+        : undefined;
       const record: StoredConnection = { ...fields, id, revision: (previous?.revision ?? 0) + 1,
         status: fields.kind === "app" ? "verified" : usable(fields, secrets, oauthAuthorized) ? (keepMcpMeta && previous.status === "verified" ? "verified" : "saved") : "incomplete",
         hasCredential: secretFields.length > 0, secretFields,
         createdAt: previous?.createdAt ?? now, updatedAt: now, source: previous?.source ?? source,
+        ...(boundNodeId ? { boundNodeId } : {}),
         ...(secretFields.length ? { credentialRef: ref } : {}),
         ...(keepMcpMeta && previous.mcpTools ? { mcpTools: previous.mcpTools } : {}),
         ...(keepMcpMeta && previous.mcpToolsUpdatedAt !== undefined ? { mcpToolsUpdatedAt: previous.mcpToolsUpdatedAt } : {}),
@@ -1097,6 +1131,7 @@ export class KuloConnections {
         return { kind: "information", output: JSON.stringify({ name: record.name, fields: record.secretFields.map((key) => ({ label: labels.get(key) ?? key, value: this.redact(secrets[key] ?? "") })) }) };
       }
       if (record.kind === "mcp" && operation.kind === "mcp") {
+        this.#assertNotPausedLocalMcp(record);
         const result = await this.#mcpPool.execute(this.#view(record), secrets, binding(record), operation, { readOnly: options.readOnly, signal });
         if (!this.hasGrant(ticketId, runEpoch, connectionId) || signal.aborted) fail("任务连接权限已撤销。", "connection_access_revoked", 403);
         return { ...result, output: this.redact(result.output) };
@@ -1151,6 +1186,7 @@ export class KuloConnections {
     }
     if (record.kind === "mcp") {
       try {
+        this.#assertNotPausedLocalMcp(record);
         const secrets = await this.#secrets(record);
         signal.throwIfAborted();
         const discovery = await this.#mcpPool.test(this.#view(record), secrets, binding(record), signal);

@@ -4,7 +4,10 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { pipeline } from "node:stream/promises";
-import { HTML_ARTIFACT_BROWSER_CSP, htmlArtifactBrowserDocument, isHtmlArtifact } from "@kulo/protocol";
+import {
+  HTML_ARTIFACT_BROWSER_CSP, HTML_DIAGRAM_BROWSER_CSP,
+  htmlArtifactBrowserDocument, htmlDiagramBrowserDocument, isHtmlArtifact,
+} from "@kulo/protocol";
 
 const ASSET_ID = /^att_[a-z0-9_]{6,48}$/;
 const DOCUMENT_EXTENSIONS = new Set([
@@ -17,7 +20,7 @@ const DOCUMENT_EXTENSIONS = new Set([
 ]);
 
 export interface DesktopFileConnection { url: string; token: string }
-interface FileMetadata { id: string; name: string; size: number; mimeType: string; kind: string }
+interface FileMetadata { id: string; name: string; size: number; mimeType: string; kind: string; presentation?: "voice" | "diagram" }
 interface PreparedFile { metadata: FileMetadata; bytes: Buffer; connection: DesktopFileConnection }
 
 export interface DesktopFileActionsOptions {
@@ -92,7 +95,7 @@ async function saveBytes(file: string, bytes: Buffer): Promise<void> {
 
 export function createDesktopFileActions(options: DesktopFileActionsOptions) {
   const request = options.fetch ?? fetch;
-  const documents = new Map<string, { file: string; size: number }>();
+  const documents = new Map<string, { file: string; size: number; csp: string }>();
   let server: Server | undefined;
   let previewOrigin: Promise<string> | undefined;
   let closed = false;
@@ -159,7 +162,7 @@ export function createDesktopFileActions(options: DesktopFileActionsOptions) {
           if (!stat.isFile() || stat.size !== html.size) throw new Error("预览文件已变化。");
           res.writeHead(200, {
             "content-type": "text/html; charset=utf-8", "content-length": html.size,
-            "content-security-policy": HTML_ARTIFACT_BROWSER_CSP, "referrer-policy": "no-referrer",
+            "content-security-policy": html.csp, "referrer-policy": "no-referrer",
             "cache-control": "private, no-store", "x-content-type-options": "nosniff",
             "cross-origin-resource-policy": "same-origin",
           });
@@ -188,8 +191,17 @@ export function createDesktopFileActions(options: DesktopFileActionsOptions) {
       if (isHtmlArtifact(file.metadata)) {
         const origin = await browserOrigin();
         const route = `/${randomBytes(24).toString("hex")}/${encodeURIComponent(filename(file.metadata.name))}`;
-        const html = Buffer.from(htmlArtifactBrowserDocument(file.bytes.toString("utf8"), file.metadata.name));
-        documents.set(route, { file: await cachedFile(file, html), size: html.length });
+        const diagram = file.metadata.presentation === "diagram";
+        const html = Buffer.from(
+          diagram
+            ? htmlDiagramBrowserDocument(file.bytes.toString("utf8"), file.metadata.name)
+            : htmlArtifactBrowserDocument(file.bytes.toString("utf8"), file.metadata.name),
+        );
+        documents.set(route, {
+          file: await cachedFile(file, html),
+          size: html.length,
+          csp: diagram ? HTML_DIAGRAM_BROWSER_CSP : HTML_ARTIFACT_BROWSER_CSP,
+        });
         assertConnection(file.connection);
         try { await options.openExternal(`${origin}${route}`); }
         catch { documents.delete(route); throw new Error("无法打开浏览器，请检查系统默认浏览器。"); }

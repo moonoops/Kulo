@@ -294,6 +294,8 @@ export interface TopicSummary {
   updatedAt: number;
   projectId?: string | null;
   targetDeviceId?: string;
+  lastMessagePreview?: string;
+  lastMessageAt?: number;
   deletedAt?: number;
   deletionId?: string;
 }
@@ -345,6 +347,10 @@ export interface EnvNodeDescriptor {
   connectedAt: number;
   lastSeenAt: number;
   info?: import("./devices.js").DeviceSystemInfo;
+  listenPort?: number;
+  standbyPublicKey?: string;
+  identityPublicKey?: string;
+  clusterEpoch?: number;
 }
 
 export interface ChatAttachment {
@@ -358,7 +364,9 @@ export interface ChatAttachment {
   height?: number;
   /** Media duration in seconds, when available. */
   duration?: number;
-  presentation?: "voice";
+  presentation?: "voice" | "diagram";
+  /** Valid only when presentation === "diagram": declares whether playback controls are present. */
+  diagramMotion?: "none" | "reveal" | "step";
   /** Recording timer, independent of probed media metadata. */
   recordedDuration?: number;
   posterUrl?: string;

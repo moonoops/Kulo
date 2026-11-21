@@ -44,6 +44,15 @@ export interface MobilePairingRequest {
   info: DeviceSystemInfo;
 }
 
+export interface MobileClusterHubInfo {
+  nodeId: string;
+  name: string;
+  role: "primary" | "standby";
+  priority: number;
+  spkiSHA256: string;
+  candidates: MobileConnectionCandidate[];
+}
+
 export interface MobilePublicProfile {
   version: 1;
   hubId: string;
@@ -53,6 +62,7 @@ export interface MobilePublicProfile {
   name: string;
   candidates: MobileConnectionCandidate[];
   pairedAt: number;
+  clusterHubs?: MobileClusterHubInfo[];
 }
 
 /** Pairing response and phone-private storage only. Never return this through public metadata APIs. */

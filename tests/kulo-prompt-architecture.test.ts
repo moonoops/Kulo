@@ -155,7 +155,7 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
     expect(sec.kulo_skills).toContain("genui-cards");
 
     const tools = offeredToolNames(first);
-    expect(tools).toHaveLength(13);
+    expect(tools).toHaveLength(14);
     expect(tools).toEqual(
       expect.arrayContaining([
         "kulo_dispatch",
@@ -170,6 +170,7 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
         "bash",
         "tool_search",
         "kulo_ui_show",
+        "kulo_ui_diagram",
         "kulo_skill_read",
       ]),
     );
@@ -305,7 +306,7 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
     const workerCallable = workerAgent.callable.map((t) => t.name);
     expect(workerDeferred).toContain("kulo_skill_materialize");
     expect(workerDeferred).toContain("kulo_publish_asset");
-    for (const forbidden of ["kulo_ui_show", "kulo_ui_update", "kulo_inspect_asset", "kulo_synthesize_speech"]) {
+    for (const forbidden of ["kulo_ui_show", "kulo_ui_update", "kulo_ui_diagram", "kulo_inspect_asset", "kulo_synthesize_speech"]) {
       expect(workerTools).not.toContain(forbidden);
       expect(workerCallable).not.toContain(forbidden);
     }
@@ -328,6 +329,7 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
       "kulo_wait",
       "kulo_ui_show",
       "kulo_ui_update",
+      "kulo_ui_diagram",
       "kulo_inspect_asset",
     ]) {
       expect(subTools).not.toContain(forbidden);

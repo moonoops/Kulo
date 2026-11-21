@@ -1,6 +1,8 @@
 /** Kulo Settings Board & Right Settings Assistant Rail (HeroUI v3). */
 import { Alert, Button } from "@heroui/react";
 import type {
+  ClusterFailoverCandidate,
+  ClusterLocalStatusView,
   EnvNodeDescriptor,
   KuloSettingsView,
   SlotSummary,
@@ -79,6 +81,10 @@ export function KuloSettingsBoard({
   permissionEntry,
   onPermissionEntryHandled,
   onOpenModels,
+  clusterStatus,
+  suppressHubOfflineAlert = false,
+  onPromoteCandidate,
+  onRequestHandover,
 }: {
   module: SettingsModuleId;
   settings: KuloSettingsView | null;
@@ -124,13 +130,18 @@ export function KuloSettingsBoard({
   permissionEntry?: SystemPermissionEntry | null;
   onPermissionEntryHandled?: (id: string) => void;
   onOpenModels?: () => void;
+  clusterStatus?: ClusterLocalStatusView | null;
+  suppressHubOfflineAlert?: boolean;
+  onPromoteCandidate?: (candidate: ClusterFailoverCandidate) => void;
+  onRequestHandover?: (targetNodeId: string, targetName: string) => void;
 }) {
   useI18n();
   const needsHubSettings = module === "models" || module === "workers" || module === "identity";
+  const localEnvId = envs.find((device) => device.kind === "local")?.id;
   return (
     <div className="kulo-settings-board" data-settings-module={module} data-kulo-navigation-key={`settings:${module}`} data-kulo-navigation="content">
       <div key={module} className="kulo-settings-page">
-        {needsHubSettings && !settings && (
+        {needsHubSettings && !settings && !(suppressHubOfflineAlert && !connected) && (
           <div className="kulo-settings-form">
             <Alert status={connected ? "default" : "warning"}>
               <Alert.Indicator />
@@ -143,7 +154,7 @@ export function KuloSettingsBoard({
             </Alert>
           </div>
         )}
-        {module === "connections" && <ConnectionsModule clientId={clientId} snapshot={connections ?? null} loading={connectionsLoading} error={connectionsError} connected={connected} preparing={connectionPreparing} onPrepare={onConnectionPrepare ?? (async () => {})} onRefresh={onConnectionsRefresh ?? (() => {})} entryIntent={entryIntent} onIntentHandled={onIntentHandled} assistant={assistantWorkspace} onAssistantUpdated={onAssistantWorkspaceUpdated} onRequestAssistantAcceleration={onRequestAssistantAcceleration} onRequestAssistantPrompt={onRequestAssistantPrompt} />}
+        {module === "connections" && <ConnectionsModule clientId={clientId} snapshot={connections ?? null} loading={connectionsLoading} error={connectionsError} connected={connected} localEnvId={localEnvId} preparing={connectionPreparing} onPrepare={onConnectionPrepare ?? (async () => {})} onRefresh={onConnectionsRefresh ?? (() => {})} entryIntent={entryIntent} onIntentHandled={onIntentHandled} assistant={assistantWorkspace} onAssistantUpdated={onAssistantWorkspaceUpdated} onRequestAssistantAcceleration={onRequestAssistantAcceleration} onRequestAssistantPrompt={onRequestAssistantPrompt} />}
         {module === "capabilities" && <CapabilitiesModule clientId={clientId} snapshot={capabilities ?? null} settings={settings} loading={capabilitiesLoading} error={capabilitiesError} connected={connected} requestsDisabled={capabilityRequestsDisabled} envs={envs} target={capabilityTarget} view={capabilityView} onViewChange={onCapabilityViewChange} voiceSettingsRequested={voiceSettingsRequested} onRequest={onCapabilityRequest ?? (() => {})} onRefresh={onCapabilitiesRefresh ?? (() => {})} onDirtyChange={onDirtyChange} onOpenModels={onOpenModels} />}
         {module === "models" && settings && (
           <ModelsModule settings={settings} onSettingsUpdated={onSettingsUpdated} onDirtyChange={onDirtyChange} entryIntent={entryIntent} onIntentHandled={onIntentHandled} />
@@ -170,7 +181,18 @@ export function KuloSettingsBoard({
             onIntentHandled={onIntentHandled}
           />
         )}
-        {module === "machines" && <MachinesModule envs={envs} entryIntent={entryIntent} onIntentHandled={onIntentHandled} onRoleChanged={onSnapshotRefresh} />}
+        {module === "machines" && (
+          <MachinesModule
+            envs={envs}
+            entryIntent={entryIntent}
+            onIntentHandled={onIntentHandled}
+            onRoleChanged={onSnapshotRefresh}
+            clusterStatus={clusterStatus}
+            suppressHubOfflineAlert={suppressHubOfflineAlert}
+            onPromoteCandidate={onPromoteCandidate}
+            onRequestHandover={onRequestHandover}
+          />
+        )}
         {module === "permissions" && <SystemPermissionsModule envs={envs} connected={connected} entry={permissionEntry} onEntryHandled={onPermissionEntryHandled} />}
         {module === "schedules" && <ScheduledTasksModule tickets={tickets} loaded={ticketsLoaded} connected={connected} loadError={snapshotError} onRefresh={onSnapshotRefresh} actions={scheduledTaskActions} />}
         {module === "archives" && <ArchivedConversationsModule topics={topics} projects={projects} loaded={topicsLoaded} connected={connected} loadError={snapshotError} onRefresh={onSnapshotRefresh} onRestored={onTopicRestored} />}

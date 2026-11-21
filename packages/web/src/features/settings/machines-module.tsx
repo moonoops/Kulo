@@ -1,7 +1,14 @@
 import { translate as t, useI18n } from "../../kulo-i18n";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type Key } from "react";
 import { Alert, Button, Card, Chip, Dropdown, Input, Label, Modal, Popover, Skeleton, Switch, TextField, toast } from "@heroui/react";
-import type { DeviceInterconnectionView, EnvNodeDescriptor, InterconnectedDevice } from "@kulo/protocol";
+import type {
+  ClusterFailoverCandidate,
+  ClusterLocalStatusView,
+  ClusterSyncStatus,
+  DeviceInterconnectionView,
+  EnvNodeDescriptor,
+  InterconnectedDevice,
+} from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { KuloApiError } from "../../kulo-api";
 import { KuloIcon } from "../../kulo-icon";
@@ -31,6 +38,22 @@ function DeviceStatus({ status }: { status: InterconnectedDevice["status"] }) {
   return <Chip className="kulo-device-status" size="sm" variant="soft" color={status === "online" ? "success" : status === "pending" ? "warning" : "default"}>
     <span className="kulo-device-status-dot" aria-hidden="true" /><Chip.Label>{statusLabels()[status]}</Chip.Label>
   </Chip>;
+}
+
+function StandbySyncBadge({ syncStatus }: { syncStatus?: ClusterSyncStatus }) {
+  useI18n();
+  if (!syncStatus) return null;
+  const label = syncStatus.state === "synced"
+    ? t("已同步", "Synced")
+    : syncStatus.state === "error"
+      ? t("同步异常", "Sync error")
+      : t("同步中", "Syncing");
+  const color = syncStatus.state === "synced"
+    ? "success"
+    : syncStatus.state === "error"
+      ? "danger"
+      : "default";
+  return <Chip size="sm" variant="soft" color={color}><Chip.Label>{label}</Chip.Label></Chip>;
 }
 
 function DeviceAddresses({ device }: { device: InterconnectedDevice }) {
@@ -73,30 +96,81 @@ function DeviceAddresses({ device }: { device: InterconnectedDevice }) {
   </div>;
 }
 
-function DeviceCard({ device, view, disabled, onRename, onRemove }: {
+function DeviceCard({
+  device,
+  view,
+  disabled,
+  actionBusy,
+  promoteCandidate,
+  onRename,
+  onRemove,
+  onSetStandby,
+  onUnsetStandby,
+  onHandover,
+  onPromote,
+}: {
   device: InterconnectedDevice;
   view: DeviceInterconnectionView;
   disabled?: boolean;
+  actionBusy?: boolean;
+  promoteCandidate?: ClusterFailoverCandidate;
   onRename: () => void;
   onRemove: () => void;
+  onSetStandby: () => void;
+  onUnsetStandby: () => void;
+  onHandover: () => void;
+  onPromote?: () => void;
 }) {
   useI18n();
-  const isHub = device.kind === "local";
+  const isPrimary = device.kind === "local" || device.clusterRole === "primary";
+  const isStandby = !isPrimary && device.clusterRole === "standby";
   const isCurrent = device.id === view.currentDeviceId;
-  const role = t(`${isHub ? "主机" : "设备"}${isCurrent ? " · 本机" : ""}`, `${isHub ? "Host" : "Device"}${isCurrent ? " · This device" : ""}`);
+  const roleBase = isPrimary
+    ? t("主机", "Host")
+    : isStandby
+      ? t("备用主机", "Standby host")
+      : t("设备", "Device");
+  const role = isCurrent ? `${roleBase} · ${t("本机", "This device")}` : roleBase;
+  const canGrantStandby = Boolean(!isPrimary && !isStandby && view.canManageStandby && !view.hubError && device.status === "online" && device.warmStandbyCapable);
+  const canHandover = Boolean(isStandby && !view.hubError && device.status === "online");
+  const canRevokeStandby = Boolean(isStandby && view.canManageStandby && !view.hubError);
+  const canPromoteOffline = Boolean(isStandby && view.hubError && promoteCandidate?.reachable && promoteCandidate?.canPromote && onPromote);
+
+  const handleMenuAction = (key: Key) => {
+    if (key === "rename") onRename();
+    else if (key === "set-standby") onSetStandby();
+    else if (key === "unset-standby") onUnsetStandby();
+    else if (key === "handover") onHandover();
+    else if (key === "remove") onRemove();
+  };
+
   return <Card className="kulo-device-card" variant="default" role="listitem" aria-label={device.name}>
     <Card.Header className="kulo-device-card-header">
-      <div className="kulo-device-card-role"><span>{role}</span><DeviceStatus status={device.status} /></div>
+      <div className="kulo-device-card-role">
+        <span>{role}</span>
+        <div className="flex items-center gap-1.5">
+          {isStandby && !view.hubError && <StandbySyncBadge syncStatus={device.syncStatus} />}
+          <DeviceStatus status={device.status} />
+        </div>
+      </div>
       <div className="kulo-device-card-identity">
         <div className="kulo-device-icon"><KuloIcon name="devices" size={22} /></div>
         <Card.Title className="kulo-device-card-name" title={device.name}>{device.name}</Card.Title>
         <div className="kulo-device-actions">
-          <Button size="sm" isIconOnly variant="ghost" isDisabled={disabled} aria-label={t(`修改${device.name}的${isHub ? "主机" : "设备"}名称`, `Rename ${isHub ? "host" : "device"} ${device.name}`)} onPress={onRename}><KuloIcon name="edit" size={16} /></Button>
-          {!isHub && <Dropdown>
+          {canPromoteOffline && (
+            <Button size="sm" variant="primary" isDisabled={actionBusy} onPress={onPromote}>
+              {t("切为主机", "Switch to host")}
+            </Button>
+          )}
+          <Button size="sm" isIconOnly variant="ghost" isDisabled={disabled} aria-label={t(`修改${device.name}的${isPrimary ? "主机" : "设备"}名称`, `Rename ${isPrimary ? "host" : "device"} ${device.name}`)} onPress={onRename}><KuloIcon name="edit" size={16} /></Button>
+          {!isPrimary && <Dropdown>
             <Button size="sm" isIconOnly variant="ghost" isDisabled={disabled} aria-label={t(`${device.name}操作`, `Actions for ${device.name}`)}><KuloIcon name="more" size={18} /></Button>
             <Dropdown.Popover placement="bottom end">
-              <Dropdown.Menu aria-label={t(`${device.name}操作`, `Actions for ${device.name}`)} onAction={(key) => key === "rename" ? onRename() : onRemove()}>
+              <Dropdown.Menu aria-label={t(`${device.name}操作`, `Actions for ${device.name}`)} onAction={handleMenuAction}>
                 <Dropdown.Item id="rename" textValue={t("重命名", "Rename")}><Label>{t("重命名", "Rename")}</Label></Dropdown.Item>
+                {canGrantStandby && <Dropdown.Item id="set-standby" textValue={t("设为备用主机", "Set as standby host")}><Label>{t("设为备用主机", "Set as standby host")}</Label></Dropdown.Item>}
+                {canHandover && <Dropdown.Item id="handover" textValue={t("切换为主机", "Switch to host")}><Label>{t("切换为主机", "Switch to host")}</Label></Dropdown.Item>}
+                {canRevokeStandby && <Dropdown.Item id="unset-standby" textValue={t("取消备用主机", "Remove standby role")}><Label>{t("取消备用主机", "Remove standby role")}</Label></Dropdown.Item>}
                 <Dropdown.Item id="remove" textValue={t("移除设备", "Remove device")} variant="danger"><Label>{t("移除设备", "Remove device")}</Label></Dropdown.Item>
               </Dropdown.Menu>
             </Dropdown.Popover>
@@ -111,6 +185,9 @@ function DeviceCard({ device, view, disabled, onRename, onRemove }: {
         {deviceMemory(device) && <div><dt>{t("内存", "Memory")}</dt><dd>{deviceMemory(device)}</dd></div>}
       </dl> : <p className="text-sm text-muted">{t("等待设备信息", "Waiting for device information")}</p>}
       {device.error && <p role="alert" className="break-words text-xs text-danger">{device.error}</p>}
+      {isStandby && device.syncStatus?.state === "error" && device.syncStatus.error && (
+        <p role="alert" className="break-words text-xs text-danger">{device.syncStatus.error}</p>
+      )}
     </Card.Content>
     {!!device.info?.ips.length && <Card.Footer className="kulo-device-card-network"><DeviceAddresses device={device} /></Card.Footer>}
   </Card>;
@@ -121,11 +198,19 @@ export function MachinesModule({
   entryIntent,
   onIntentHandled,
   onRoleChanged,
+  clusterStatus,
+  suppressHubOfflineAlert = false,
+  onPromoteCandidate,
+  onRequestHandover,
 }: {
   envs: EnvNodeDescriptor[];
   entryIntent?: SettingsAssistantEntryIntent | null;
   onIntentHandled?: (id: string) => void;
   onRoleChanged?: () => Promise<void> | void;
+  clusterStatus?: ClusterLocalStatusView | null;
+  suppressHubOfflineAlert?: boolean;
+  onPromoteCandidate?: (candidate: ClusterFailoverCandidate) => void;
+  onRequestHandover?: (targetNodeId: string, targetName: string) => void;
 }) {
   useI18n();
   const [view, setView] = useState<DeviceInterconnectionView>();
@@ -137,7 +222,12 @@ export function MachinesModule({
   const [rename, setRename] = useState<InterconnectedDevice>();
   const [name, setName] = useState("");
   const [renameError, setRenameError] = useState<string>();
-  const [confirm, setConfirm] = useState<{ kind: "disable" } | { kind: "leave" } | { kind: "remove"; device: InterconnectedDevice; force?: boolean }>();
+  const [confirm, setConfirm] = useState<
+    | { kind: "disable" }
+    | { kind: "leave" }
+    | { kind: "remove"; device: InterconnectedDevice; force?: boolean }
+    | { kind: "unset-standby"; device: InterconnectedDevice }
+  >();
   const [confirmError, setConfirmError] = useState<string>();
   const requestRef = useRef<AbortController | null>(null);
 
@@ -264,14 +354,63 @@ export function MachinesModule({
     }
   };
 
-  const hostDevices = view?.devices.filter((device) => device.kind === "local") ?? [];
-  const remoteDevices = view?.devices.filter((device) => device.kind !== "local") ?? [];
+  const setStandby = async (device: InterconnectedDevice, enabled: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    setActionError(undefined);
+    setConfirmError(undefined);
+    try {
+      requestRef.current?.abort();
+      const next = await deviceApi.setStandby(device.id, enabled);
+      setView(next);
+      setConfirm(undefined);
+      toast.success(
+        enabled
+          ? t(`已将「${device.name}」设为备用主机`, `${device.name} set as standby host`)
+          : t(`已取消「${device.name}」的备用主机`, `Removed standby role from ${device.name}`),
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : t("更新备用主机设置失败", "Failed to update standby host");
+      if (!enabled) setConfirmError(msg);
+      else setActionError(msg);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const isHostDevice = (device: InterconnectedDevice) =>
+    device.kind === "local" || device.clusterRole === "primary" || device.clusterRole === "standby";
+  const hostDevices = (view?.devices.filter(isHostDevice) ?? []).sort((a, b) => {
+    const aPrimary = a.kind === "local" || a.clusterRole === "primary" ? 0 : 1;
+    const bPrimary = b.kind === "local" || b.clusterRole === "primary" ? 0 : 1;
+    return aPrimary - bPrimary;
+  });
+  const remoteDevices = view?.devices.filter((device) => !isHostDevice(device)) ?? [];
   const mode = !view?.enabled ? t("单机模式", "Standalone mode") : view.role === "joined" ? t(`已连接主机 ${view.hubName}`, `Connected to host ${view.hubName}`) : t("本机作为主机", "This device is the host");
-  const renameKind = rename?.kind === "local" ? t("主机", "Host") : t("设备", "Device");
+  const renameKind = rename && (rename.kind === "local" || rename.clusterRole === "primary") ? t("主机", "Host") : t("设备", "Device");
   const error = actionError ?? loadingError;
-  const renderDevice = (device: InterconnectedDevice) => <DeviceCard key={device.id} device={device} view={view!} disabled={busy || Boolean(view?.hubError)}
-    onRename={() => { setRename(device); setName(device.name); setRenameError(undefined); }}
-    onRemove={() => { setConfirm({ kind: "remove", device }); setConfirmError(undefined); }} />;
+  const failoverCandidatesById = new Map(
+    (clusterStatus?.failoverOffer?.candidates ?? []).map((candidate) => [candidate.nodeId, candidate]),
+  );
+  const renderDevice = (device: InterconnectedDevice) => {
+    const candidate = failoverCandidatesById.get(device.id);
+    return (
+      <DeviceCard
+        key={device.id}
+        device={device}
+        view={view!}
+        disabled={busy || Boolean(view?.hubError)}
+        actionBusy={busy}
+        promoteCandidate={candidate}
+        onRename={() => { setRename(device); setName(device.name); setRenameError(undefined); }}
+        onRemove={() => { setConfirm({ kind: "remove", device }); setConfirmError(undefined); }}
+        onSetStandby={() => void setStandby(device, true)}
+        onUnsetStandby={() => { setConfirm({ kind: "unset-standby", device }); setConfirmError(undefined); }}
+        onHandover={() => onRequestHandover?.(device.id, device.name)}
+        onPromote={candidate && onPromoteCandidate ? () => onPromoteCandidate(candidate) : undefined}
+      />
+    );
+  };
 
   return (
     <div className="kulo-settings-form kulo-device-root">
@@ -289,7 +428,7 @@ export function MachinesModule({
         </div>
       ) : (
         <>
-          {view.hubError && (
+          {view.hubError && !suppressHubOfflineAlert && (
             <Alert status="warning">
               <Alert.Indicator />
               <Alert.Content><Alert.Title>{view.hubError}</Alert.Title></Alert.Content>
@@ -359,14 +498,54 @@ export function MachinesModule({
           </Modal.Container>
         </Modal.Backdrop>
       </Modal>
-      <ConfirmDialog open={!!confirm} title={confirm?.kind === "leave" ? t("断开与主机的连接？", "Disconnect from host?") : confirm?.kind === "disable" ? t("关闭设备互联？", "Turn off device connections?") : t(`${confirm?.kind === "remove" && confirm.force ? "中断任务并移除" : "移除"} ${confirm?.kind === "remove" ? confirm.device.name : "设备"}？`, `${confirm?.kind === "remove" && confirm.force ? "Interrupt tasks and remove" : "Remove"} ${confirm?.kind === "remove" ? confirm.device.name : "device"}?`)}
+      <ConfirmDialog
+        open={!!confirm}
+        title={
+          confirm?.kind === "leave"
+            ? t("断开与主机的连接？", "Disconnect from host?")
+            : confirm?.kind === "disable"
+              ? t("关闭设备互联？", "Turn off device connections?")
+              : confirm?.kind === "unset-standby"
+                ? t(`取消「${confirm.device.name}」的备用主机？`, `Remove standby role from “${confirm.device.name}”?`)
+                : t(`${confirm?.kind === "remove" && confirm.force ? "中断任务并移除" : "移除"} ${confirm?.kind === "remove" ? confirm.device.name : "设备"}？`, `${confirm?.kind === "remove" && confirm.force ? "Interrupt tasks and remove" : "Remove"} ${confirm?.kind === "remove" ? confirm.device.name : "device"}?`)
+        }
         description={<div className="flex flex-col gap-3">
-          <p>{confirm?.kind === "leave" ? t("断开后将切换回本机独立运行模式。", "This device will return to standalone mode.") : confirm?.kind === "disable" ? t("正在执行的远程任务将被中断，已添加的设备会保留。", "Running remote tasks will be interrupted. Added devices will be kept.") : confirm?.kind === "remove" && confirm.force ? t("这台设备上正在执行的任务将被中断，执行连接和界面访问将被撤销。", "Running tasks on this device will be interrupted. Execution connections and interface access will be revoked.") : t("这台设备的执行连接和界面访问将被撤销。", "Execution connections and interface access for this device will be revoked.")}</p>
+          <p>{
+            confirm?.kind === "leave"
+              ? t("断开后将切换回本机独立运行模式。", "This device will return to standalone mode.")
+              : confirm?.kind === "disable"
+                ? t("正在执行的远程任务将被中断，已添加的设备会保留。", "Running remote tasks will be interrupted. Added devices will be kept.")
+                : confirm?.kind === "unset-standby"
+                  ? t("将停止同步并清除该设备上的备用数据，设备仍保留在互联列表中。", "Syncing will stop and standby data on that device will be cleared. The device stays paired.")
+                  : confirm?.kind === "remove" && confirm.force
+                    ? t("这台设备上正在执行的任务将被中断，执行连接和界面访问将被撤销。", "Running tasks on this device will be interrupted. Execution connections and interface access will be revoked.")
+                    : t("这台设备的执行连接和界面访问将被撤销。", "Execution connections and interface access for this device will be revoked.")
+          }</p>
           {confirmError && <p role="alert" className="text-danger">{confirmError}</p>}
         </div>}
-        confirmLabel={confirm?.kind === "leave" ? t("断开连接", "Disconnect") : confirm?.kind === "disable" ? t("中断任务并关闭", "Interrupt tasks and turn off") : confirm?.kind === "remove" && confirm.force ? t("中断任务并移除", "Interrupt tasks and remove") : t("移除设备", "Remove device")} isPending={busy}
+        confirmLabel={
+          confirm?.kind === "leave"
+            ? t("断开连接", "Disconnect")
+            : confirm?.kind === "disable"
+              ? t("中断任务并关闭", "Interrupt tasks and turn off")
+              : confirm?.kind === "unset-standby"
+                ? t("取消备用主机", "Remove standby")
+                : confirm?.kind === "remove" && confirm.force
+                  ? t("中断任务并移除", "Interrupt tasks and remove")
+                  : t("移除设备", "Remove device")
+        }
+        isPending={busy}
         onCancel={() => { setConfirm(undefined); setConfirmError(undefined); }}
-        onConfirm={() => confirm?.kind === "leave" ? void leaveHost() : confirm?.kind === "disable" ? void setEnabled(false, true) : void removeDevice()} />
+        onConfirm={() =>
+          confirm?.kind === "leave"
+            ? void leaveHost()
+            : confirm?.kind === "disable"
+              ? void setEnabled(false, true)
+              : confirm?.kind === "unset-standby"
+                ? void setStandby(confirm.device, false)
+                : void removeDevice()
+        }
+      />
     </div>
   );
 }

@@ -310,6 +310,12 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     scope: "global",
   },
   {
+    name: "kulo_ui_diagram",
+    audiences: ["chat"],
+    tier: "resident",
+    scope: "global",
+  },
+  {
     name: "kulo_publish_asset",
     audiences: CHAT_SETTINGS_COMPUTER,
     tier: "event",

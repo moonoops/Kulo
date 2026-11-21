@@ -202,7 +202,7 @@ export class ConversationQueries {
           for (const part of getMessageParts(item)) {
             if (!("assetId" in part)) continue;
             const asset = this.source.attachment(part.assetId, topic.conversationId);
-            if (!asset || (assets.get(asset.id)?.messageId ?? -1) >= item.id) continue;
+            if (!asset || asset.presentation === "diagram" || (assets.get(asset.id)?.messageId ?? -1) >= item.id) continue;
             assets.set(asset.id, { asset, messageId: item.id, role: item.role,
               ...(item.createdAt !== undefined ? { createdAt: item.createdAt } : {}) });
           }

@@ -1,5 +1,6 @@
 import { translate as t } from "../../kulo-i18n";
 import type {
+  ClusterLocalStatusView,
   DeviceInterconnectionView,
   DeviceInvitation,
   DeviceRoleTransition,
@@ -80,10 +81,76 @@ export const mobileDeviceApi = {
   login: (signal?: AbortSignal) => apiRequest<{ authURL: string }>("/api/mobile/connection/login", { method: "POST", signal }),
 };
 
+export interface PromoteResponse {
+  id?: string;
+  targetRole?: DeviceRoleTransition["targetRole"];
+  status?: DeviceRoleTransition["status"];
+  delegated?: boolean;
+  targetNodeId?: string;
+  newPrimaryUrl?: string;
+}
+
+export interface HandoverResponse {
+  ok: boolean;
+  targetNodeId: string;
+  newPrimaryUrl: string;
+  epoch: number;
+  receipt?: DeviceRoleTransition;
+}
+
 export const deviceApi = {
   get: (signal?: AbortSignal) => apiRequest<DeviceInterconnectionView>(base, { signal, redirect: "error" }),
+  clusterStatus: (signal?: AbortSignal) =>
+    apiRequest<ClusterLocalStatusView>(`${base}/cluster-status`, { signal, redirect: "error" }),
+  dismissConflictNotice: () =>
+    apiRequest<{ ok: true }>(`${base}/cluster-conflict-notice`, { method: "DELETE" }),
   setEnabled: (enabled: boolean, force = false) =>
     apiRequest<DeviceInterconnectionView>(base, { method: "PATCH", body: { enabled, force } }),
+  setStandby: (id: string, enabled: boolean) =>
+    apiRequest<DeviceInterconnectionView>(`${base}/${encodeURIComponent(id)}/standby`, { method: "POST", body: { enabled } }),
+  promote: async (targetNodeId?: string, signal?: AbortSignal, id = newDeviceTransitionId()): Promise<PromoteResponse> => {
+    let acknowledgedId = id;
+    try {
+      const res = await apiRequest<PromoteResponse>(`${base}/promote`, {
+        method: "POST",
+        body: targetNodeId ? { targetNodeId } : {},
+        transitionId: id,
+        signal,
+        redirect: "error",
+      });
+      if (res?.delegated || res?.status === "ready") return res;
+      if (res?.id) acknowledgedId = res.id;
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (!(error instanceof TypeError)) throw error;
+    }
+    await waitForDeviceRole(acknowledgedId, "hub", signal);
+    return { id: acknowledgedId, targetRole: "hub", status: "ready" };
+  },
+  handover: async (targetNodeId?: string, force = false, signal?: AbortSignal): Promise<HandoverResponse> => {
+    let receiptId: string | undefined;
+    try {
+      const res = await apiRequest<HandoverResponse>("/api/cluster/handover", {
+        method: "POST",
+        body: { ...(targetNodeId ? { targetNodeId } : {}), force },
+        signal,
+        redirect: "error",
+      });
+      receiptId = res?.receipt?.id;
+      if (receiptId) {
+        await waitForDeviceRole(receiptId, "joined", signal).catch(() => undefined);
+      }
+      return res;
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (error instanceof TypeError) {
+        // Primary switched roles mid-response; give local peer a brief moment to settle.
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        return { ok: true, targetNodeId: targetNodeId ?? "", newPrimaryUrl: "", epoch: 0 };
+      }
+      throw error;
+    }
+  },
   invite: (hubUrl: string, name?: string, signal?: AbortSignal) =>
     apiRequest<DeviceInvitation>(`${base}/invitations`, { method: "POST", body: { hubUrl, name }, signal }),
   cancelInvite: (id: string) =>

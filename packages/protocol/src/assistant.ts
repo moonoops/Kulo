@@ -56,6 +56,8 @@ export interface RawConnectorEvent {
   body: string;
   occurredAt: number;
   fidelity: "notification" | "local-db" | "structured";
+  /** Optional internal reference to a sanitized temporary snapshot stored by Hub (never user-supplied over /ws/env). */
+  snapshotRef?: string;
 }
 
 export interface ConnectorEventBatch {
@@ -82,7 +84,12 @@ export type AssistantItemKind = "alert" | "fyi" | "decision";
 
 export type AssistantItemAction = "acknowledge" | "mute_app" | "promote_to_topic" | "confirm_action";
 
-export type AssistantPendingActionKind = "spark_create_draft" | "ha_call_service" | "lark_send_reply";
+export type AssistantPendingActionKind =
+  | "spark_create_draft"
+  | "ha_call_service"
+  | "ha_upsert_automation"
+  | "ha_delete_automation"
+  | "lark_send_reply";
 
 export interface AssistantPendingAction {
   actionId: string;
@@ -162,16 +169,51 @@ export interface SparkConnectorSnapshot {
   error?: string;
 }
 
+export type HomeAssistantAttributeValue = string | number | boolean | string[];
+
 export interface HomeAssistantEntityView {
   entityId: string;
   domain: string;
   name: string;
   state: string;
   area?: string;
+  areaId?: string;
+  deviceId?: string;
+  labels?: string[];
   deviceClass?: string;
   unit?: string;
   readOnlySecurity?: boolean;
+  readOnlyContext?: boolean;
+  configId?: string;
+  editable?: boolean;
+  attributes?: Record<string, HomeAssistantAttributeValue>;
   lastChanged?: string;
+}
+
+export interface HomeAssistantDoorwayTrigger {
+  triggerEntityId: string;
+  cameraEntityId?: string;
+  label?: string;
+  onlyWhenAwayOrNight?: boolean;
+}
+
+export interface HomeAssistantSentinelConfig {
+  offlineDetectionEnabled: boolean;
+  offlineThresholdSec: number;
+  ignoredOfflineEntities: string[];
+  lowBatteryThresholdPct: number;
+  visionCameraAllowlist: string[];
+  doorwayTriggers: HomeAssistantDoorwayTrigger[];
+}
+
+export interface HomeAssistantAnnounceConfig {
+  enabled: boolean;
+  defaultSpeakerEntityId?: string;
+  useKuloVoiceTts: boolean;
+  onlyWhenHome: boolean;
+  overrideQuietForCritical: boolean;
+  quietHours?: { start: string; end: string };
+  minUrgency: "normal" | "high";
 }
 
 export interface HomeAssistantMigrationAdvice {
@@ -179,6 +221,7 @@ export interface HomeAssistantMigrationAdvice {
   orbStackAvailable: boolean;
   containerRunning: boolean;
   port8123Reachable: boolean;
+  xiaomiHomeInstalled?: boolean;
   configDir: string;
   steps: string[];
 }
@@ -192,9 +235,16 @@ export interface HomeAssistantSnapshot {
   totalEntities?: number;
   curatedEntities?: number;
   filteredNoiseCount?: number;
+  areaCount?: number;
+  automationCount?: number;
+  speakerCount?: number;
   wsConnected?: boolean;
+  stale?: boolean;
+  staleReason?: string;
   lastSyncAt?: number;
   error?: string;
+  sentinel?: HomeAssistantSentinelConfig;
+  announce?: HomeAssistantAnnounceConfig;
   migration?: HomeAssistantMigrationAdvice;
 }
 
@@ -336,7 +386,8 @@ export function isRawConnectorEvent(value: unknown): value is RawConnectorEvent 
     typeof value.occurredAt === "number" &&
     Number.isSafeInteger(value.occurredAt) &&
     value.occurredAt >= 0 &&
-    (value.fidelity === "notification" || value.fidelity === "local-db" || value.fidelity === "structured");
+    (value.fidelity === "notification" || value.fidelity === "local-db" || value.fidelity === "structured") &&
+    (value.snapshotRef === undefined || safeId(value.snapshotRef, 160));
 }
 
 export function isConnectorEventBatch(value: unknown): value is ConnectorEventBatch {

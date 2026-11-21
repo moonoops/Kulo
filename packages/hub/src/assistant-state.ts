@@ -4,6 +4,8 @@ import type {
   AssistantItemKind,
   AssistantItemView,
   AssistantPendingAction,
+  HomeAssistantAnnounceConfig,
+  HomeAssistantSentinelConfig,
 } from "@kulo/protocol";
 
 export type AssistantSituationRecord = {
@@ -14,6 +16,7 @@ export type AssistantSituationRecord = {
   sourceLabel: string;
   status: "open" | "resolved" | "dismissed";
   linkedTopicId?: string;
+  snapshotRef?: string;
   lastEscalatedAt?: number;
   updatedAt: number;
 };
@@ -33,12 +36,32 @@ export type AssistantDurableState = {
   mutedApps: string[];
   backgroundModel: AssistantBackgroundModelPersisted;
   spark?: { enabled: boolean };
-  homeAssistant?: { enabled: boolean; baseUrl?: string };
+  homeAssistant?: {
+    enabled: boolean;
+    baseUrl?: string;
+    sentinel?: HomeAssistantSentinelConfig;
+    announce?: HomeAssistantAnnounceConfig;
+  };
   lark?: { enabled: boolean; selectedProfiles: string[] };
   assistantRevision: number;
   situations: Record<string, AssistantSituationRecord>;
   items: AssistantItemView[];
 };
+
+/**
+ * Checks whether the specific source app/connector is enabled in AssistantDoc so Home Assistant
+ * and Lark alerts still work when macOS Notification Center capture (`doc.enabled`) is off.
+ */
+export function isAssistantSourceEnabled(
+  doc: Readonly<AssistantDurableState> | undefined,
+  appId: string,
+): boolean {
+  if (!doc) return false;
+  if (appId === "home-assistant") return Boolean(doc.homeAssistant?.enabled);
+  if (appId.startsWith("lark:")) return Boolean(doc.lark?.enabled);
+  if (appId === "com.readdle.SparkDesktop") return Boolean(doc.spark?.enabled || doc.enabled);
+  return Boolean(doc.enabled);
+}
 
 const MAX_ACTIVE_ITEMS = 40;
 const MAX_SITUATIONS = 200;
@@ -115,6 +138,7 @@ export function upsertAssistantCardInDoc(
     primaryActionLabel?: string;
     pendingAction?: AssistantPendingAction;
     linkedTopicId?: string;
+    snapshotRef?: string;
     expiresAt?: number;
     now: number;
   },
@@ -122,6 +146,7 @@ export function upsertAssistantCardInDoc(
   ensureAssistantState(doc);
   const existingSituation = doc.situations[input.situationId];
   const resolvedLinkedTopicId = input.linkedTopicId ?? existingSituation?.linkedTopicId;
+  const resolvedSnapshotRef = input.snapshotRef ?? existingSituation?.snapshotRef;
   doc.situations[input.situationId] = {
     id: input.situationId,
     key: input.situationKey,
@@ -130,6 +155,7 @@ export function upsertAssistantCardInDoc(
     sourceLabel: input.sourceLabel,
     status: "open",
     ...(resolvedLinkedTopicId ? { linkedTopicId: resolvedLinkedTopicId } : {}),
+    ...(resolvedSnapshotRef ? { snapshotRef: resolvedSnapshotRef } : {}),
     lastEscalatedAt: input.now,
     updatedAt: input.now,
   };

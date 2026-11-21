@@ -127,6 +127,7 @@ describe("automatic topic archive", () => {
     expect(changes[0]!.filter((item) => item.archived).map((item) => item.id).sort()).toEqual([ordinary.id, project.id].sort());
     const topics = await f.hub.listTopics();
     for (const id of ["root", master.id, recent.id]) expect(topics.find((item) => item.id === id)?.archived).not.toBe(true);
+    expect(topics.find((item) => item.id === ordinary.id)?.lastMessagePreview).toBe("保留的消息");
     expect((await f.hub.getTopicView(ordinary.id)).messages.some((item) => item.text === "保留的消息")).toBe(true);
     await expect(f.hub.patchTopic("root", { archived: true })).rejects.toThrow("主对话不可归档");
     await expect(f.hub.deleteTopic("root")).rejects.toThrow("主对话不可删除");
@@ -185,11 +186,16 @@ describe("automatic topic archive", () => {
     try {
       const submission = await f.hub.sendUserMessage("处理请求", { topicId: topic.id });
       await running;
+      expect((await f.hub.listTopics()).find((item) => item.id === topic.id)?.lastMessagePreview).toBe("处理请求");
       await f.age([topic]);
       expect(await f.hub.archiveInactiveTopics()).toEqual([]);
       finish();
       await submission.wait(context);
-      await vi.waitFor(async () => expect((await f.hub.listTopics()).find((item) => item.id === topic.id)!.updatedAt).toBeGreaterThan(Date.now() - DAY));
+      await vi.waitFor(async () => {
+        const updated = (await f.hub.listTopics()).find((item) => item.id === topic.id)!;
+        expect(updated.updatedAt).toBeGreaterThan(Date.now() - DAY);
+        expect(updated.lastMessagePreview).toBe("完成");
+      });
       expect(await f.hub.archiveInactiveTopics()).toEqual([]);
     } finally { finish(); }
   });

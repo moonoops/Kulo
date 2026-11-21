@@ -9,7 +9,7 @@ import type {
   MemoryConnectionUpdateRequest, MemoryConnectionUpdateResult,
 } from "@kulo/protocol";
 import { probeHindsightConnection, resolveHindsightToken, resolveHindsightSharedReadToken } from "./hindsight.js";
-import { HindsightServiceError } from "./hindsight-service.js";
+import { HindsightServiceError, normalizeOnnxEmbeddingsModel, normalizeOnnxRerankerModel } from "./hindsight-service.js";
 import { KuloSettingsDoc, SettingsUpdateError, applySettingsBlockUpdate, type KuloDurableSettings } from "./settings.js";
 
 interface LocalStatus {
@@ -150,7 +150,8 @@ function embeddingsValue(raw: unknown): HindsightEmbeddingsModel {
   }
   const baseUrl = value.baseUrl ? endpoint(value.baseUrl) : undefined;
   if (value.provider === "tei" && !baseUrl) return fail(400, "invalid_memory_embeddings", "TEI 向量服务必须填写服务地址。");
-  const model = typeof value.model === "string" && value.model.trim() ? value.model.trim() : undefined;
+  const rawModel = typeof value.model === "string" && value.model.trim() ? value.model.trim() : undefined;
+  const model = value.provider === "onnx" && rawModel ? normalizeOnnxEmbeddingsModel(rawModel) : rawModel;
   return {
     provider: value.provider as HindsightEmbeddingsModel["provider"],
     ...(model ? { model } : {}),
@@ -175,7 +176,8 @@ function rerankerValue(raw: unknown): HindsightRerankerModel {
   }
   const baseUrl = value.baseUrl ? endpoint(value.baseUrl) : undefined;
   if (value.provider === "tei" && !baseUrl) return fail(400, "invalid_memory_reranker", "TEI 重排服务必须填写服务地址。");
-  const model = typeof value.model === "string" && value.model.trim() ? value.model.trim() : undefined;
+  const rawModel = typeof value.model === "string" && value.model.trim() ? value.model.trim() : undefined;
+  const model = value.provider === "onnx" && rawModel ? normalizeOnnxRerankerModel(rawModel) : rawModel;
   return {
     provider: value.provider as HindsightRerankerModel["provider"],
     ...(model ? { model } : {}),

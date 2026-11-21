@@ -1,13 +1,15 @@
 import { translate as tr, useI18n } from "../../kulo-i18n";
 import { Button, Card, Disclosure, Link, ListBox, Select, Slider } from "@heroui/react";
-import type { ChatAttachment } from "@kulo/protocol";
+import { isHtmlArtifact, type ChatAttachment } from "@kulo/protocol";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type SyntheticEvent } from "react";
 import { resolveAssetUrl } from "../../kulo-api";
 import { KuloIcon } from "../../kulo-icon";
 import { AssetImageGallery, formatAssetSize, safeContentUrl, type PreviewableImage } from "./asset-preview";
 import "./chat-content.css";
 import { FileMessage } from "./file-message";
+import { InlineDiagram } from "./inline-diagram";
 export { FileMessage } from "./file-message";
+export { InlineDiagram } from "./inline-diagram";
 
 const activeMedia = new Set<HTMLMediaElement>();
 const playbackPositions = new Map<string, number>();
@@ -67,15 +69,17 @@ function PlayGlyph({ playing }: { playing: boolean }) {
   return <KuloIcon name={playing ? "pause" : "play"} size={22} />;
 }
 
-export function MediaMessage({ asset, conversationKey, onPreviewImage, localPreview = false, defaultExpanded = true }: {
+export function MediaMessage({ asset, conversationKey, onPreviewImage, localPreview = false, defaultExpanded = true, fallbackText }: {
   asset: ChatAttachment;
   conversationKey?: string;
   onPreviewImage?: (image: PreviewableImage) => void;
   localPreview?: boolean;
   defaultExpanded?: boolean;
+  fallbackText?: string;
 }) {
   useI18n();
   if (asset.kind === "image") return <AssetImageGallery assets={[asset]} onPreviewImage={onPreviewImage} />;
+  if (asset.kind === "file" && asset.presentation === "diagram" && isHtmlArtifact(asset)) return <InlineDiagram asset={asset} fallbackText={fallbackText} />;
   if (asset.kind !== "audio" && asset.kind !== "video") return <FileMessage asset={asset} defaultExpanded={defaultExpanded} />;
   return <PlayableMedia asset={asset} conversationKey={conversationKey} localPreview={localPreview} />;
 }

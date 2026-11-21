@@ -92,8 +92,11 @@ export interface KuloHubConfig {
   envTokens: Record<string, string>;
   workerEnvIds: string[];
   enableLocalEnv: boolean;
+  localEnvId?: string;
   localEnvRoot?: string;
   localEnvName?: string;
+  /** Additional host paths protected from Worker and Orchestrator sandbox access (e.g. standby/backup dirs). */
+  extraProtectedPaths?: string[];
   /** Supplied by the trusted desktop host, never by a settings form. */
   customization?: KuloCustomizationConfig;
   maxConcurrentWorkers: number;
@@ -392,8 +395,10 @@ export function resolveHubConfig(overrides: KuloHubConfigOverrides = {}): KuloHu
     workerEnvIds: overrides.workerEnvIds ?? (process.env.KULO_WORKER_ENV_IDS ?? "")
       .split(",").map((id) => id.trim()).filter(Boolean),
     enableLocalEnv: overrides.enableLocalEnv ?? true,
+    ...(overrides.localEnvId ? { localEnvId: overrides.localEnvId } : {}),
     localEnvRoot: overrides.localEnvRoot,
     localEnvName: overrides.localEnvName,
+    ...(overrides.extraProtectedPaths?.length ? { extraProtectedPaths: [...overrides.extraProtectedPaths] } : {}),
     ...(overrides.customization ? { customization: { ...overrides.customization } } : {}),
     maxConcurrentWorkers:
       overrides.maxConcurrentWorkers ??

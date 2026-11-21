@@ -4,15 +4,24 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { createModels, fauxProvider } from "@earendil-works/pi-ai";
+import { WebSocketServer } from "ws";
+import { createModels, fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi-ai";
 import { buildSparkCliArgs, SparkMailConnector } from "@kulo/env";
 import {
+  AssistantLedger,
+  HaLanAudioRelay,
+  HomeAssistantSentinel,
   HomeAssistantService,
   LarkConnectorService,
   assertSafeHaServiceCall,
+  assertSafeHaServiceCallDeep,
   curateHomeAssistantEntities,
   parseLarkProfileList,
+  resolveAndVerifyLanHost,
+  sanitizeServiceData,
+  selectPhysicalLanIpv4,
   startKuloHubServer,
+  validateHaAutomationDraft,
   validateLanHaUrl,
 } from "@kulo/hub";
 import { LocalConnectionVault } from "../packages/hub/src/connection-vault.js";
@@ -232,6 +241,513 @@ describe("Phase 3: Home Assistant & Mi Home lossless migration", () => {
     } finally {
       await ha.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("enforces penetrating P0-1 physical security redlines on service_data, area_id, script/scene, and automation drafts", async () => {
+    const entities = new Map([
+      ["light.living", { entityId: "light.living", domain: "light", name: "客厅灯", state: "off", area: "客厅", areaId: "area_living", deviceId: "dev_light" }],
+      ["climate.bedroom", { entityId: "climate.bedroom", domain: "climate", name: "卧室空调", state: "cool", area: "卧室", areaId: "area_bedroom" }],
+      ["switch.cam_sleep", { entityId: "switch.cam_sleep", domain: "switch", name: "客厅摄像头休眠", state: "off", area: "客厅", areaId: "area_living" }],
+      ["lock.front_door", { entityId: "lock.front_door", domain: "lock", name: "入户门锁", state: "locked", area: "玄关", areaId: "area_entry", deviceId: "dev_lock", readOnlySecurity: true }],
+      ["event.bedside_switch", { entityId: "event.bedside_switch", domain: "event", name: "床头无线开关", state: "2026-11-21T06:00:00Z", area: "卧室", areaId: "area_bedroom", attributes: { event_types: ["single", "double", "long_press"] } }],
+      ["person.owner", { entityId: "person.owner", domain: "person", name: "主人", state: "home", readOnlyContext: true }],
+      ["scene.unsafe_all", { entityId: "scene.unsafe_all", domain: "scene", name: "危险场景", state: "scening", attributes: { entity_id: ["light.living", "lock.front_door"] } }],
+    ]);
+
+    // 1. service_data passthrough sanitation & penetrating homeassistant.* / array / area_id / scene / script guards.
+    expect(sanitizeServiceData('{"temperature":25,"hvac_mode":"cool"}')).toEqual({ temperature: 25, hvac_mode: "cool" });
+    expect(() =>
+      assertSafeHaServiceCall({
+        domain: "homeassistant",
+        service: "turn_off",
+        serviceData: { entity_id: ["light.living", "lock.front_door"] },
+        triggerSource: "user_direct",
+        context: { entities },
+      }),
+    ).toThrow(/物理安防红线/);
+    expect(() =>
+      assertSafeHaServiceCall({
+        domain: "homeassistant",
+        service: "turn_off",
+        serviceData: { entity_id: "all" },
+        triggerSource: "user_direct",
+        context: { entities },
+      }),
+    ).toThrow(/物理安防红线/);
+    expect(() =>
+      assertSafeHaServiceCall({
+        domain: "light",
+        service: "turn_off",
+        serviceData: { area_id: "area_entry" },
+        triggerSource: "user_direct",
+        context: { entities },
+      }),
+    ).toThrow(/高危安防实体/);
+    expect(() =>
+      assertSafeHaServiceCall({
+        domain: "scene",
+        service: "turn_on",
+        entityId: "scene.unsafe_all",
+        triggerSource: "user_direct",
+        context: { entities },
+      }),
+    ).toThrow(/高危安防设备/);
+    await expect(
+      assertSafeHaServiceCallDeep({
+        domain: "script",
+        service: "turn_on",
+        entityId: "script.sneaky_unlock",
+        triggerSource: "user_direct",
+        context: {
+          entities,
+          fetchScriptConfig: async () => ({
+            sequence: [{ action: "lock.unlock", target: { entity_id: "lock.front_door" } }],
+          }),
+        },
+      }),
+    ).rejects.toThrow(/物理安防红线/);
+
+    // 2. Automation draft P0-1 bypasses: choose.default, Device Action, event bus, Jinja template, bad event.* trigger.
+    await expect(
+      validateHaAutomationDraft(
+        {
+          alias: "Sneaky Choose Default",
+          triggers: [{ trigger: "state", entity_id: "person.owner", to: "home" }],
+          actions: [
+            {
+              choose: [{ conditions: [], sequence: [{ action: "light.turn_on", target: { entity_id: "light.living" } }] }],
+              default: [{ action: "lock.unlock", target: { entity_id: "lock.front_door" } }],
+            },
+          ],
+        },
+        { entities },
+      ),
+    ).rejects.toThrow(/物理安防红线/);
+
+    await expect(
+      validateHaAutomationDraft(
+        {
+          alias: "Opaque Device Action",
+          triggers: [{ trigger: "state", entity_id: "person.owner", to: "home" }],
+          actions: [{ domain: "lock", type: "unlock", device_id: "dev_lock", entity_id: "lock.front_door" }],
+        },
+        { entities },
+      ),
+    ).rejects.toThrow(/Device Action/);
+
+    await expect(
+      validateHaAutomationDraft(
+        {
+          alias: "Event Bus Action",
+          triggers: [{ trigger: "state", entity_id: "person.owner", to: "home" }],
+          actions: [{ event: "homeassistant.stop" }],
+        },
+        { entities },
+      ),
+    ).rejects.toThrow(/event 总线/);
+
+    await expect(
+      validateHaAutomationDraft(
+        {
+          alias: "Template Service Bypass",
+          triggers: [{ trigger: "state", entity_id: "person.owner", to: "home" }],
+          actions: [{ action: "{{ 'lock.unlock' }}", target: { entity_id: "lock.front_door" } }],
+        },
+        { entities },
+      ),
+    ).rejects.toThrow(/模板/);
+
+    await expect(
+      validateHaAutomationDraft(
+        {
+          alias: "Bad Event Entity Trigger",
+          triggers: [{ trigger: "state", entity_id: "event.bedside_switch", to: "double" }],
+          actions: [{ action: "light.turn_off", target: { entity_id: "light.living" } }],
+        },
+        { entities },
+      ),
+    ).rejects.toThrow(/主状态是时间戳/);
+
+    // 3. Valid wireless switch (`event.*` + attribute: "event_type") & come-home camera sleep automations pass cleanly!
+    const validSwitch = await validateHaAutomationDraft(
+      {
+        alias: "床头开关双击睡眠模式",
+        triggers: [{ trigger: "state", entity_id: "event.bedside_switch", attribute: "event_type", to: "double" }],
+        actions: [
+          { action: "light.turn_off", target: { entity_id: "light.living" } },
+          { action: "climate.set_temperature", target: { entity_id: "climate.bedroom" }, data: { temperature: 26 } },
+        ],
+      },
+      { entities },
+    );
+    expect(validSwitch.humanSummary).toContain("床头无线开关");
+    expect(validSwitch.humanSummary).toContain("调温至 26℃");
+
+    // 4. DNS Rebinding guard rejects .local / .ts.net resolving to public IP!
+    await expect(
+      resolveAndVerifyLanHost("homeassistant.local", async () => ({ address: "8.8.8.8", family: 4 })),
+    ).rejects.toThrow(/DNS 安全拦截/);
+    await expect(
+      resolveAndVerifyLanHost("homeassistant.local", async () => ({ address: "192.168.1.50", family: 4 })),
+    ).resolves.toEqual({ address: "192.168.1.50", family: 4 });
+  });
+
+  it("hydrates real areas via WS registries, performs automation CRUD + backup rollback + reload, and announces via LAN TTS or HA text fallback", async () => {
+    const stateDir = makeTempDir("ha-deep");
+    const vault = new LocalConnectionVault({
+      stateDir,
+      keyStore: {
+        async getOrCreateKey(ns) {
+          return createHash("sha256").update("ha-deep-key\0").update(ns).digest();
+        },
+        async checkAvailability() {},
+      },
+    });
+    const ledger = new AssistantLedger({ stateDir });
+    const relay = new HaLanAudioRelay();
+
+    const automations = new Map<string, Record<string, unknown>>([
+      ["kulo_existing1", { id: "kulo_existing1", alias: "旧回家配置", triggers: [], actions: [] }],
+    ]);
+    const calls: Array<{ method: string; url: string; body?: unknown }> = [];
+
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        const rawBody = Buffer.concat(chunks).toString("utf8");
+        const parsedBody = rawBody ? (() => { try { return JSON.parse(rawBody); } catch { return rawBody; } })() : undefined;
+        calls.push({ method: req.method ?? "GET", url: req.url ?? "", body: parsedBody });
+
+        if (req.url === "/api/states") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify([
+              { entity_id: "light.living", state: "on", attributes: { friendly_name: "客厅主灯", brightness: 180 } },
+              { entity_id: "switch.cam_sleep", state: "off", attributes: { friendly_name: "客厅摄像头休眠" } },
+              { entity_id: "person.me", state: "home", attributes: { friendly_name: "我" } },
+              { entity_id: "media_player.xiaoai_lx04", state: "idle", attributes: { friendly_name: "床头小爱触屏音箱" } },
+              { entity_id: "text.xiaoai_lx04_play_text", state: "", attributes: { friendly_name: "小爱音箱播放文本" } },
+              { entity_id: "automation.existing", state: "on", attributes: { friendly_name: "旧回家配置", id: "kulo_existing1" } },
+            ]),
+          );
+          return;
+        }
+        if (req.url === "/api/mcp") {
+          res.writeHead(404).end();
+          return;
+        }
+        const autoMatch = /^\/api\/config\/automation\/config\/([^/]+)$/.exec(req.url ?? "");
+        if (autoMatch) {
+          const cid = decodeURIComponent(autoMatch[1]!);
+          if (req.method === "GET") {
+            const existing = automations.get(cid);
+            if (!existing) { res.writeHead(404).end(); return; }
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify(existing));
+            return;
+          }
+          if (req.method === "POST") {
+            automations.set(cid, parsedBody as Record<string, unknown>);
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify({ result: "ok" }));
+            return;
+          }
+          if (req.method === "DELETE") {
+            automations.delete(cid);
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify({ result: "ok" }));
+            return;
+          }
+        }
+        if (req.url?.startsWith("/api/services/") && req.method === "POST") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify([]));
+          return;
+        }
+        res.writeHead(404).end();
+      });
+    });
+
+    const wss = new WebSocketServer({ noServer: true });
+    server.on("upgrade", (req, socket, head) => {
+      if (req.url === "/api/websocket") {
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          ws.send(JSON.stringify({ type: "auth_required" }));
+          ws.on("message", (data) => {
+            const msg = JSON.parse(data.toString("utf8")) as Record<string, unknown>;
+            if (msg.type === "auth") {
+              ws.send(JSON.stringify({ type: "auth_ok" }));
+            } else if (msg.type === "config/area_registry/list") {
+              ws.send(JSON.stringify({ id: msg.id, type: "result", success: true, result: [{ area_id: "living_room", name: "客厅" }] }));
+            } else if (msg.type === "config/device_registry/list") {
+              ws.send(JSON.stringify({ id: msg.id, type: "result", success: true, result: [{ id: "dev_1", area_id: "living_room" }] }));
+            } else if (msg.type === "config/entity_registry/list") {
+              ws.send(
+                JSON.stringify({
+                  id: msg.id,
+                  type: "result",
+                  success: true,
+                  result: [
+                    { entity_id: "light.living", device_id: "dev_1", labels: ["main"] },
+                    { entity_id: "switch.cam_sleep", area_id: "living_room" },
+                  ],
+                }),
+              );
+            } else if (msg.type === "subscribe_events") {
+              ws.send(JSON.stringify({ id: msg.id, type: "result", success: true, result: null }));
+            }
+          });
+        });
+      }
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    let persisted = { enabled: false as boolean, baseUrl: undefined as string | undefined };
+
+    const ha = new HomeAssistantService({
+      vault,
+      ledger,
+      stateDir,
+      lanAudioRelay: relay,
+      persistedConfig: async () => persisted,
+      saveConfig: async (next) => { persisted = next; },
+      redact: (t) => t,
+      now: () => new Date("2026-11-21T14:00:00+08:00").getTime(), // Daytime, outside quiet hours
+    });
+
+    try {
+      await ha.configure({ enabled: true, baseUrl: `http://127.0.0.1:${port}`, token: "tok-deep-1" });
+      // Wait briefly for WS auth_ok + registry sync.
+      await new Promise((r) => setTimeout(r, 150));
+
+      const living = ha.listEntities({ area: "客厅" });
+      expect(living.entities.map((e) => e.entityId)).toEqual(["light.living", "switch.cam_sleep"]);
+      expect(living.entities[0]!.attributes?.brightness).toBe(180);
+
+      // Upsert existing automation -> backs up previous config, reloads HA, and can roll back!
+      const upserted = await ha.upsertAutomation({
+        configId: "kulo_existing1",
+        config: {
+          alias: "回家自动关闭客厅摄像头",
+          triggers: [{ trigger: "state", entity_id: "person.me", to: "home" }],
+          actions: [{ action: "switch.turn_on", target: { entity_id: "switch.cam_sleep" } }],
+        },
+      });
+      expect(upserted.ok).toBe(true);
+      expect(upserted.backupId).toBeDefined();
+      expect(calls.some((c) => c.url === "/api/services/automation/reload")).toBe(true);
+
+      // Restore reverts back to previous config!
+      const reverted = await ha.restoreAutomationBackup({ backupId: upserted.backupId });
+      expect(reverted.restoredAction).toBe("reverted");
+      expect(automations.get("kulo_existing1")?.alias).toBe("旧回家配置");
+
+      // Delete automation uses DELETE method + reload!
+      const del = await ha.deleteAutomation("kulo_existing1");
+      expect(del.ok).toBe(true);
+      expect(automations.has("kulo_existing1")).toBe(false);
+
+      // Announce on single LX04 falls back cleanly to HA `text.set_value` when Hub is loopback-only!
+      const announced = await ha.announce({ text: "**门口**检测到快递，详情 https://example.com", urgency: "high" });
+      expect(announced.ok).toBe(true);
+      expect(announced.channel).toBe("ha_text");
+      expect(announced.speakerEntityId).toBe("text.xiaoai_lx04_play_text");
+      const textCall = calls.find((c) => c.url === "/api/services/text/set_value");
+      expect(textCall?.body).toMatchObject({ entity_id: "text.xiaoai_lx04_play_text", value: "门口 检测到快递，详情" });
+    } finally {
+      await ha.close();
+      await ledger.close();
+      await new Promise<void>((resolve) => wss.close(() => server.close(() => resolve())));
+    }
+  });
+
+  it("runs HomeAssistantSentinel offline aggregation/recovery, excludes event.*, gates doorway VLM snapshots, and exposes /_ha-tts/:clipId without /api/ 401", async () => {
+    // 1. selectPhysicalLanIpv4 skips utun / Tailscale / OrbStack / loopback and prefers physical RFC1918 interface.
+    const chosenIp = selectPhysicalLanIpv4("http://192.168.10.20:8123", {
+      lo0: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", mac: "00:00:00:00:00:00", internal: true, cidr: "127.0.0.1/8" }],
+      utun4: [{ address: "100.64.1.5", netmask: "255.192.0.0", family: "IPv4", mac: "00:00:00:00:00:00", internal: false, cidr: "100.64.1.5/10" }],
+      bridge100: [{ address: "192.168.64.1", netmask: "255.255.255.0", family: "IPv4", mac: "00:00:00:00:00:00", internal: false, cidr: "192.168.64.1/24" }],
+      en0: [{ address: "192.168.10.5", netmask: "255.255.255.0", family: "IPv4", mac: "00:00:00:00:00:00", internal: false, cidr: "192.168.10.5/24" }],
+    });
+    expect(chosenIp).toBe("192.168.10.5");
+
+    // 2. Sentinel: excludes event.* unknown initial state, aggregates offline devices, resolves on recovery, triages doorway camera opt-in.
+    const stateDir = makeTempDir("ha-sentinel");
+    const ledger = new AssistantLedger({ stateDir });
+    let clock = 1_700_000_000_000;
+    const events: Array<{ title: string; body: string; snapshotRef?: string }> = [];
+    const resolved: string[] = [];
+    let stale = false;
+    let entities = [
+      { entityId: "event.bedside_switch", domain: "event", name: "床头无线开关", state: "unknown" },
+      { entityId: "light.ceiling", domain: "light", name: "客厅吸顶灯", state: "unavailable" },
+      { entityId: "sensor.temp_1", domain: "sensor", name: "书房温度计", state: "unavailable", deviceClass: "temperature" },
+      { entityId: "sensor.temp_2", domain: "sensor", name: "卧室温度计", state: "unavailable", deviceClass: "temperature" },
+      { entityId: "binary_sensor.front_door_motion", domain: "binary_sensor", name: "门口人体", state: "off", deviceClass: "motion" },
+      { entityId: "person.me", domain: "person", name: "我", state: "not_home" },
+    ];
+    const fakeJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x02]);
+
+    const sentinel = new HomeAssistantSentinel({
+      stateDir,
+      ledger,
+      getConfig: async () => ({
+        offlineDetectionEnabled: true,
+        offlineThresholdSec: 120,
+        ignoredOfflineEntities: [],
+        lowBatteryThresholdPct: 15,
+        visionCameraAllowlist: ["camera.front_door"],
+        doorwayTriggers: [{ triggerEntityId: "binary_sensor.front_door_motion", cameraEntityId: "camera.front_door", label: "入户门口", onlyWhenAwayOrNight: true }],
+      }),
+      listEntities: () => entities,
+      isStale: () => stale,
+      isWsConnected: () => true,
+      fetchCameraSnapshot: async () => ({ bytes: fakeJpeg, mimeType: "image/jpeg" }),
+      completeVisionJson: async () => JSON.stringify({ verdict: "alert", label: "陌生人逗留", summary: "门口有陌生人停留超过半分钟。", confidence: "high" }),
+      onEvent: (ev) => events.push({ title: ev.title, body: ev.body, snapshotRef: ev.snapshotRef }),
+      onSituationResolved: (key) => resolved.push(key),
+      now: () => clock,
+      warmupMs: 0,
+      sweepIntervalMs: 60_000,
+      offlineAggregateWindowMs: 10_000,
+    });
+
+    await sentinel.start();
+    // When stale=true, sweep MUST NOT fire false offline alerts.
+    stale = true;
+    await sentinel.sweepNow();
+    expect(events).toHaveLength(0);
+
+    // Clear stale: first sweep records unavailableSince; advance 130s -> triggers aggregated batch (2 temp sensors ONLY; excludes event.* & light.*).
+    stale = false;
+    await sentinel.sweepNow();
+    clock += 130_000;
+    await sentinel.sweepNow();
+    sentinel.flushOfflineAlerts();
+    expect(events).toHaveLength(1);
+    expect(events[0]!.title).toContain("2 台家居设备异常离线");
+    expect(events[0]!.body).not.toContain("无线开关");
+    expect(events[0]!.body).not.toContain("吸顶灯");
+
+    // Device recovery silently resolves card!
+    sentinel.onEntityChanged(entities[2], { ...entities[2]!, state: "23.5" });
+    expect(resolved.some((k) => k.includes("ha:offline:sensor.temp_1"))).toBe(true);
+
+    // Doorway trigger while away -> VLM alert + temporary snapshot stored!
+    sentinel.onEntityChanged(entities[4], { ...entities[4]!, state: "on" });
+    await sentinel.waitIdle();
+    const doorwayEv = events.find((e) => e.title.includes("陌生人逗留"));
+    expect(doorwayEv).toBeDefined();
+    expect(doorwayEv!.snapshotRef).toMatch(/^hasnap_[a-f0-9]{24}\.jpg$/);
+    expect(sentinel.readTemporarySnapshot(doorwayEv!.snapshotRef!)?.bytes.equals(fakeJpeg)).toBe(true);
+    await sentinel.close();
+    await ledger.close();
+
+    // 3. Hub server: /_ha-tts/:clipId serves LAN audio without Bearer token (bypassing /api/ 401), supports HEAD & Range, rejects forwarded headers;
+    //    AND Coordinator surfaces HA alert even when macOS notification capture (doc.enabled) is FALSE!
+    const hubDir = makeTempDir("ha-hub-e2e");
+    const faux = fauxProvider({ provider: "openai", models: [{ id: "faux-1" }] });
+    faux.setResponses([
+      () => fauxAssistantMessage(fauxText(JSON.stringify({ digest: "入户门口检测到陌生人逗留", category: "system", disposition: "notify_brain", urgency: "high", situationKey: "ha:doorway:front", title: "入户门口异常" }))),
+      () => fauxAssistantMessage(fauxText(JSON.stringify({ action: "upsert_card", kind: "alert", title: "入户门口异常", summary: "检测到陌生人停留，点击展开查看抓拍。" }))),
+    ]);
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const hub = await openTestHub({
+      config: {
+        stateDir: hubDir,
+        identityDir: path.join(hubDir, "identity"),
+        authToken: HUB_TEST_ADMIN_TOKEN,
+        enableLocalEnv: false,
+        memory: { enabled: false },
+        model: { defaultProvider: "openai", defaultModel: "faux-1", baseUrl: "http://127.0.0.1:9/v1" },
+      },
+      models,
+    });
+    const srv = await startKuloHubServer(hub, { host: "127.0.0.1", port: 0 });
+    try {
+      // Test /_ha-tts/:clipId directly without Authorization header!
+      const clipBytes = Buffer.from("ID3dummy-mp3-audio-payload");
+      const clipId = hub.haLanAudio.store(clipBytes, "audio/mpeg");
+      const headRes = await fetch(`http://127.0.0.1:${srv.port}/_ha-tts/${clipId}`, { method: "HEAD" });
+      expect(headRes.status).toBe(200);
+      expect(headRes.headers.get("content-type")).toBe("audio/mpeg");
+
+      const rangeRes = await fetch(`http://127.0.0.1:${srv.port}/_ha-tts/${clipId}`, { headers: { range: "bytes=0-2" } });
+      expect(rangeRes.status).toBe(206);
+      expect(await rangeRes.text()).toBe("ID3");
+
+      const forwardedRes = await fetch(`http://127.0.0.1:${srv.port}/_ha-tts/${clipId}`, { headers: { "x-forwarded-for": "8.8.8.8" } });
+      expect(forwardedRes.status).toBe(403);
+
+      // Enable ONLY Home Assistant (macOS notifications `doc.enabled` stays FALSE!) -> alert card still surfaces!
+      await hub.configureAssistantHomeAssistant({ enabled: true });
+      const wsBefore = await hub.getAssistantWorkspace();
+      expect(wsBefore.enabled).toBe(false);
+      expect(wsBefore.homeAssistant?.enabled).toBe(true);
+
+      // Place a temporary doorway snapshot in Sentinel's private snapshot dir; verify it is NOT in hub.uploads until promoted,
+      // and once promoted to topic it becomes readable with 200 OK via ChatAttachmentGrantsDoc!
+      const snapRef = "hasnap_aabbccddeeff001122334455.jpg";
+      fs.mkdirSync(hub.homeAssistant.sentinel!.snapshotDir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(hub.homeAssistant.sentinel!.snapshotDir, snapRef), fakeJpeg, { mode: 0o600 });
+
+      const { inserted } = await hub.assistantLedger.ingestBatch(
+        "local",
+        {
+          batchId: "ha-b1",
+          driverId: "home-assistant",
+          streamId: "hub:local:home-assistant",
+          sourceEpoch: "v1",
+          cursorAfter: "1",
+          events: [
+            {
+              nativeEventId: "ha:doorway:front:1",
+              eventVersion: "v1",
+              appId: "home-assistant",
+              appLabel: "智能家居",
+              title: "入户门口异常",
+              body: "门口检测到陌生人逗留",
+              occurredAt: Date.now(),
+              fidelity: "structured",
+              snapshotRef: snapRef,
+            },
+          ],
+        },
+        (t) => t,
+      );
+      hub.assistantSorter.enqueue(inserted);
+      await hub.assistantSorter.flushAll();
+      await hub.assistantCoordinator.waitIdle();
+
+      const itemsSnap = await hub.getAssistantItemsSnapshot();
+      const card = itemsSnap.items.find((item) => item.sourceApp === "home-assistant" && item.title.includes("入户门口"));
+      expect(card).toBeDefined();
+
+      // Promote card to proactive topic -> snapshot materialized into hub.uploads + ChatAttachmentGrantsDoc -> HTTP 200 (not 403)!
+      const promoteRes = await fetchWithHubAuth(
+        `http://127.0.0.1:${srv.port}/api/assistant/items/${encodeURIComponent(card!.id)}/action`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ expectedRevision: card!.revision, action: "promote_to_topic", commandId: "cmd-ha-promote-1" }),
+        },
+      );
+      expect(promoteRes.status).toBe(200);
+      const promoted = (await promoteRes.json()) as { topicId?: string };
+      expect(promoted.topicId).toBeTruthy();
+
+      const topicView = await hub.getTopicView(promoted.topicId!);
+      const imgPart = topicView.messages.flatMap((m) => m.parts ?? []).find((p) => p.type === "image");
+      expect(imgPart).toBeDefined();
+      const mediaRes = await fetchWithHubAuth(`http://127.0.0.1:${srv.port}/api/uploads/${encodeURIComponent((imgPart as { assetId: string }).assetId)}`);
+      expect(mediaRes.status).toBe(200);
+    } finally {
+      await srv.close();
+      await hub.close();
     }
   });
 });

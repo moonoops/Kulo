@@ -12,7 +12,38 @@ export { buildWindowsSandboxPolicy } from "./isolation-windows.js";
 export { createMacSandboxCleanupCommand } from "./isolation-macos.js";
 export { collectDeviceSystemInfo } from "./device-info.js";
 export { ProjectDirectoryRegistry, type AuthorizeDirectoryInput } from "./project-directories.js";
-export { getPeerConfigPath, readPeerConfig, savePeerConfig, removePeerConfig, installDevicePeer, startDevicePeer, runInstalledPeer, renderPeerInstaller, normalizePeerHubUrl, type DevicePeerRuntime, type StartDevicePeerOptions } from "./peer.js";
+export { getPeerConfigPath, readPeerConfig, savePeerConfig, removePeerConfig, updatePeerConfig, installDevicePeer, startDevicePeer, runInstalledPeer, renderPeerInstaller, normalizePeerHubUrl, type DevicePeerRuntime, type StartDevicePeerOptions, type StandbyHostBridge } from "./peer.js";
+export {
+  CLUSTER_AUTH_HEADER,
+  ClusterNonceGuard,
+  computeClusterAuthHmac,
+  createClusterAuthHeader,
+  decryptKeyMaterialWithKek,
+  encryptClusterEnvelope,
+  encryptKeyMaterialWithKek,
+  generateClusterNodeId,
+  generateClusterNodeKeyMaterial,
+  importRawEd25519PublicKey,
+  importRawX25519PublicKey,
+  isLoopbackSocket,
+  isRfc1918Host,
+  parseClusterAuthHeader,
+  probeUrlsHappyEyeballs,
+  readClusterMembership,
+  readNodeIdentity,
+  readOrCreateNodeIdentity,
+  removeClusterMembership,
+  saveClusterMembership,
+  validateClusterMembership,
+  verifyAndDecryptClusterEnvelope,
+  type ClusterEncryptedEnvelope,
+  type ClusterEncryptedEnvelopeHeader,
+  type ClusterMembership,
+  type ClusterMembershipSelfTokens,
+  type ClusterNodeKeyMaterial,
+  type NodeIdentityFile,
+  type ParsedClusterAuthHeader,
+} from "./cluster-security.js";
 
 export { ExternalAgentService, isExternalAgentRequest, isExternalAgentResponse, type ExternalAgentServiceOptions, type ExternalAgentToolHandler } from "./external-agents.js";
 export { SAFE_HOST_GIT_ARGS, STAGED_NON_COW_MAX_BYTES, STAGED_NON_COW_MAX_FILES, StagedWorkspaceConflictError, StagedWorkspaceOversizedError, applyStagedChanges, cloneStagedWorkspace, computeStagedDiff, preflightNonCowWorkspace, safeHostGitEnv, scanWorkspaceManifest, type CloneStagedWorkspaceOptions } from "./staged-workspace.js";

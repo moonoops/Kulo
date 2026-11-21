@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DeviceChatInvitation, DevicePeerConfig, DeviceRoleTransition } from "@kulo/protocol";
-import { activateStagedPeer, authenticatedPeerHub, detachActivePeer, getPeerConfigPath, invalidDeviceInvitation, pairingFingerprint, stageDevicePeer, stagedPeerForAction } from "./peer-config.js";
+import { activateStagedPeer, authenticatedPeerHub, detachActivePeer, getPeerConfigPath, invalidDeviceInvitation, pairingFingerprint, savePeerConfig, stageDevicePeer, stagedPeerForAction } from "./peer-config.js";
 
 export interface PreparedDeviceRoleChange {
   receipt: DeviceRoleTransition;
@@ -165,6 +165,47 @@ export class DeviceRoleTransitions {
         try { await waitForPeerReady(peer); }
         catch { throw new Error("未能启动本机主机。已恢复设备页面，远程主机暂时不可达，可再次断开连接。"); }
         throw new Error("未能启动本机主机，已恢复原设备连接。请重试。");
+      }
+    }, requestedId);
+  }
+
+  /** Promote a warm standby peer in place into the cluster's Active Hub. */
+  promote(
+    config: DevicePeerConfig,
+    prepareReplica: () => Promise<void>,
+    requestedId?: string,
+  ): PreparedDeviceRoleChange {
+    const { startHub, startPeer, configPath = getPeerConfigPath() } = this.#runtime;
+    if (!startHub) throw Object.assign(new Error("当前运行模式不支持切换为主机。"), { status: 409 });
+    return this.#prepare(`promote:${requestedId ?? "self"}`, "hub", async () => {
+      await prepareReplica();
+      try {
+        await startHub();
+        detachActivePeer(config, configPath);
+      } catch (error) {
+        const peer = await this.#restore(startPeer && (() => startPeer(config)));
+        try { await waitForPeerReady(peer); }
+        catch { throw new Error("切换为主机失败，已恢复备用主机入口。请重试。"); }
+        throw error instanceof Error ? error : new Error("切换为主机失败，已恢复原连接。");
+      }
+    }, requestedId);
+  }
+
+  /** Demote the current Active Hub in place into a Standby Peer attached to the new primary. */
+  demoteToPeer(
+    nextConfig: DevicePeerConfig,
+    requestedId?: string,
+  ): PreparedDeviceRoleChange {
+    const { startHub, startPeer, configPath = getPeerConfigPath() } = this.#runtime;
+    if (!startPeer) throw Object.assign(new Error("当前运行模式不支持降级为备用主机。"), { status: 409 });
+    return this.#prepare(`demote:${nextConfig.hubUrl}:${nextConfig.cluster?.epoch ?? 0}`, "joined", async () => {
+      try {
+        savePeerConfig(nextConfig, configPath);
+        const peer = await startPeer(nextConfig);
+        await waitForPeerReady(peer);
+      } catch (error) {
+        await this.#restore(startHub);
+        throw error instanceof Error ? error : new Error("切换为备用主机失败，已恢复原主机运行。");
       }
     }, requestedId);
   }

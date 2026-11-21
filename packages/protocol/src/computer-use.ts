@@ -12,7 +12,7 @@ export type ComputerUseRequest =
   | { tool: "browser"; action: "wait"; sessionId: string; ref?: string; text?: string; timeoutMs?: number }
   | { tool: "desktop"; action: "status" }
   | { tool: "desktop"; action: "permissions" }
-  | { tool: "desktop"; action: "permission-guide" }
+  | { tool: "desktop"; action: "permission-guide"; kind?: "accessibility" | "screen" }
   | { tool: "desktop"; action: "snapshot"; sessionId: string; app: string }
   | { tool: "desktop"; action: "click"; sessionId: string; app: string; ref: string }
   | { tool: "desktop"; action: "type" | "set-value"; sessionId: string; app: string; ref: string; text: string }
@@ -41,7 +41,12 @@ export function isComputerUseRequest(value: unknown): value is ComputerUseReques
   if (v.tool !== "browser" && v.tool !== "desktop" || typeof v.action !== "string") return false;
   const allowed = new Set(["tool", "action"]);
   if (v.action === "status") return Object.keys(v).every((key) => allowed.has(key));
-  if (v.tool === "desktop" && (v.action === "permissions" || v.action === "permission-guide")) return Object.keys(v).every((key) => allowed.has(key));
+  if (v.tool === "desktop" && v.action === "permissions") return Object.keys(v).every((key) => allowed.has(key));
+  if (v.tool === "desktop" && v.action === "permission-guide") {
+    allowed.add("kind");
+    return (v.kind === undefined || v.kind === "accessibility" || v.kind === "screen")
+      && Object.keys(v).every((key) => allowed.has(key));
+  }
   allowed.add("sessionId");
   if (typeof v.sessionId !== "string" || !sessionPattern.test(v.sessionId)) return false;
   let valid = false;

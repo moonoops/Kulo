@@ -429,6 +429,57 @@ export class AmbientModelService {
     );
   }
 
+  /**
+   * Zero-tool, native-search-disabled multimodal JSON completion for opt-in Home Assistant camera triage.
+   * Only runs on models explicitly supporting image input; throws `assistant_vision_model_unavailable` otherwise.
+   */
+  async completeZeroToolVisionJson(input: {
+    systemPrompt: string;
+    userText: string;
+    imageBase64: string;
+    mimeType: "image/jpeg" | "image/png" | "image/webp";
+    maxTokens?: number;
+    signal?: AbortSignal;
+  }): Promise<string> {
+    if (this.#closed) throw new Error("ambient_model_closed");
+    const chosen = this.#host.defaultModel();
+    const model = this.#host.models.getModel(chosen.provider, chosen.modelId);
+    if (!model || !Array.isArray(model.input) || !model.input.includes("image")) {
+      throw Object.assign(new Error("当前默认模型不支持视觉图片识别"), { code: "assistant_vision_model_unavailable" });
+    }
+    const message = await this.#host.models.completeSimple(
+      model,
+      {
+        messages: [
+          { role: "system", content: input.systemPrompt, timestamp: Date.now() },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: this.#host.redact(input.userText) },
+              { type: "image", data: input.imageBase64, mimeType: input.mimeType },
+            ],
+            timestamp: Date.now(),
+          },
+        ],
+      },
+      {
+        signal: input.signal,
+        maxTokens: Math.min(input.maxTokens ?? 400, model.maxTokens || 400),
+        cacheRetention: "none",
+        disableNativeTools: true,
+      } as Parameters<Models["completeSimple"]>[2],
+    );
+    if (message.stopReason !== "stop" || message.content.some((part) => part.type === "toolCall")) {
+      throw new Error("assistant_vision_invalid_response");
+    }
+    return this.#host.redact(
+      message.content
+        .filter((part) => part.type === "text")
+        .map((part) => part.text)
+        .join("\n"),
+    );
+  }
+
   async close(): Promise<void> {
     this.#closed = true;
     await this.#stopManagedProcess();

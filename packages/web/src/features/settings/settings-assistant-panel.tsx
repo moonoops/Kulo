@@ -1,7 +1,7 @@
 import { translate as t, useI18n } from "../../kulo-i18n";
 import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Chip } from "@heroui/react";
-import { inspectSensitiveText, redactSecrets, redactSensitiveText, type CapabilitiesWorkspaceSnapshot, type ConnectionRecordView, type ConnectionWorkspaceSnapshot, type EnvNodeDescriptor, type KuloSettingsView, type SettingsAssistantAction, type SettingsAssistantSnapshot, type SetupInputRequest, type TicketCardView } from "@kulo/protocol";
+import { inspectSensitiveText, redactSecrets, redactSensitiveText, type CapabilitiesWorkspaceSnapshot, type ConnectionRecordView, type ConnectionWorkspaceSnapshot, type EnvNodeDescriptor, type KuloSettingsView, type MemoryServiceSnapshot, type SettingsAssistantAction, type SettingsAssistantSnapshot, type SetupInputRequest, type TicketCardView } from "@kulo/protocol";
 import { kuloRest } from "../../kulo-api";
 import { describeLocalizedKuloError } from "../../kulo-error";
 import { ConfirmDialog } from "../../components/confirm-dialog";
@@ -43,7 +43,7 @@ type ImagePanel = "draft" | "discovery" | "routing";
 
 export function SettingsAssistantPanel({
   module, agentName, settings, envs, tickets = [], onProjectTicket, onSettingsUpdated, snapshot, loaded, connected, error, controls, capabilityInputs = [], capabilityView, capabilitiesWorkspace, imageRequest, onImageRequestHandled, onCapabilityInputsChanged,
-  connections, connectionPreparing = false, onConnectionPrepare, onConnectionsRefresh,
+  connections, connectionPreparing = false, onConnectionPrepare, onConnectionsRefresh, memoryServiceSnapshot,
 }: {
   module: SettingsModuleId;
   agentName: string;
@@ -67,6 +67,7 @@ export function SettingsAssistantPanel({
   connectionPreparing?: boolean;
   onConnectionPrepare?: ConnectionPrepare;
   onConnectionsRefresh?: () => void;
+  memoryServiceSnapshot?: MemoryServiceSnapshot | null;
 }) {
   useI18n();
   const [localInfo, setLocalInfo] = useState<LocalInfo | null>(null);
@@ -397,6 +398,16 @@ export function SettingsAssistantPanel({
 
   return (
     <section className="kulo-settings-assistant" aria-label={t("设置对话", "Settings conversation")} data-conversation-ready={loaded || undefined}>
+      {module === "identity" && settings && (
+        <MemoryServiceDialogue
+          className="kulo-settings-assistant-pinned"
+          clientId={controls.clientId}
+          settings={settings}
+          connected={connected}
+          initialSnapshot={memoryServiceSnapshot}
+          refreshKey={`${settings.blocks.memory.revision}:${snapshot.live.busy}:${snapshot.actions.length}:${snapshot.messages.length}`}
+        />
+      )}
       <div ref={scrollRef} className="kulo-settings-assistant-scroll" onScroll={() => {
         const el = scrollRef.current;
         if (el) nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
@@ -469,7 +480,6 @@ export function SettingsAssistantPanel({
               onClose={() => { setAgentPanel(null); composerRef.current?.focus(); }}
             />
           )}
-          {module === "identity" && settings && <MemoryServiceDialogue clientId={controls.clientId} settings={settings} connected={connected} refreshKey={`${settings.blocks.memory.revision}:${snapshot.live.busy}:${snapshot.actions.length}:${snapshot.messages.length}`} />}
           {module === "connections" && connections && <ConnectionSetupInputs inputs={connections.inputs} connections={connections.connections} clientId={controls.clientId} connected={connected} available={connections.vault.available} localHost={connections.localHost} onChanged={() => {
             onConnectionsRefresh?.();
           }} applications={connections.applications} onCancelled={() => requestAnimationFrame(() => composerRef.current?.focus())} onCompleted={(connection) => {

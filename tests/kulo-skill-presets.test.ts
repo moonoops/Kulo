@@ -49,9 +49,9 @@ describe("bundled Skill applicability", () => {
     expect(await f.skills.read("desktop-automation", "references/windows.md", "worker", undefined, computerAll)).toContain("UI Automation");
     expect(await f.skills.read("desktop-automation", "PROVENANCE.json", "worker", undefined, computerAll)).toContain("agent-desktop");
 
-    // Without capabilities, only universal worker built-ins appear
+    // Without capabilities, universal computer worker built-ins and hidden diagram guide appear
     const offline = (await f.skills.catalog("worker", emptyRuntime)).map((skill) => skill.id);
-    expect(offline).toEqual(["interactive-html"]);
+    expect(offline).toEqual(["diagram-design", "interactive-html"]);
   });
 
   it("gates media, Android, customization, and Hindsight knowledge guides strictly on their runtime conditions", async () => {
@@ -66,11 +66,12 @@ describe("bundled Skill applicability", () => {
     expect(withVideo).toContain("video-generation");
     expect(withVideo).not.toContain("image-generation");
 
-    // Android Worker receives android-automation and hides computer-only interactive-html
+    // Android Worker receives android-automation and hides computer-only interactive-html and diagram-design
     const androidWorker = (await f.skills.catalog("worker", { capabilities: [], executionDomain: "android", androidAvailable: true })).map((s) => s.id);
     expect(androidWorker).toEqual(["android-automation"]);
-    expect(await f.skills.read("android-automation", "SKILL.md", "worker", undefined, { capabilities: [], executionDomain: "android", androidAvailable: true })).toContain("android_observe");
+    expect(await f.skills.read("android-automation", "SKILL.md", "worker", undefined, { capabilities: [], executionDomain: "android", androidAvailable: true })).toContain("android_screen");
     await expect(f.skills.read("interactive-html", "SKILL.md", "worker", undefined, { capabilities: [], executionDomain: "android", androidAvailable: true })).rejects.toMatchObject({ code: "skill_context_denied" });
+    await expect(f.skills.read("diagram-design", "SKILL.md", "worker", undefined, { capabilities: [], executionDomain: "android", androidAvailable: true })).rejects.toMatchObject({ code: "skill_context_denied" });
 
     // Kulo UI self-customization guide appears only when customizationEnabled is true
     const withoutCustom = (await f.skills.catalog("chat", emptyRuntime)).map((s) => s.id);

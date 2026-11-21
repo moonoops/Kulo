@@ -34,6 +34,8 @@ export interface CredentialSealingOptions {
   rememberSecrets?: (values: readonly string[]) => void;
   /** Must safely archive a requested credential before resolving; no SQLite transaction is held during this call. */
   processUserText?: (text: string, requestId: string) => Promise<unknown>;
+  /** Invoked after each durable storage commit succeeds. */
+  onCommit?: () => void;
 }
 
 class SettingsSecretSealer {
@@ -262,6 +264,11 @@ export function wrapRedactedStorage(storage: Storage, redact: (text: string) => 
       for (const [id, raw] of stagedRaw) {
         if (raw === null) rawDocuments.delete(id);
         else rawDocuments.set(id, raw);
+      }
+      try {
+        options.onCommit?.();
+      } catch {
+        // Ignore observer errors
       }
       return result;
     });

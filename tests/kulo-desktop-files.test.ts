@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { request as httpRequest } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HTML_ARTIFACT_BROWSER_CSP } from "@kulo/protocol";
+import { HTML_ARTIFACT_BROWSER_CSP, HTML_DIAGRAM_BROWSER_CSP } from "@kulo/protocol";
 import { createDesktopFileActions, isTrustedFileActionSender, type DesktopFileConnection } from "../packages/desktop/src/file-actions.js";
 import { shouldAuthorizeDesktopRequest } from "../packages/desktop/src/desktop-config.js";
 
@@ -113,6 +113,20 @@ describe("desktop chat document actions", () => {
     expect(f.openPath).not.toHaveBeenCalled();
     await f.service.close();
     await expect(fetch(url)).rejects.toThrow();
+  });
+
+  it("uses pinned HTML_DIAGRAM_BROWSER_CSP without allow-forms when opening diagram artifacts in a browser", async () => {
+    const f = await fixture("系统架构图.html", "text/html");
+    (f.metadata as { presentation?: string }).presentation = "diagram";
+    await f.service.openFile(id, "browser");
+    const url = f.openExternal.mock.calls[0]![0];
+    const response = await fetch(url);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-security-policy")).toBe(HTML_DIAGRAM_BROWSER_CSP);
+    const html = await response.text();
+    expect(html).toContain('sandbox="allow-scripts"');
+    expect(html).not.toContain("allow-forms");
+    expect(html).toContain("color-scheme:light dark");
   });
 
   it("rejects paths and executable documents instead of giving the renderer a generic native launcher", async () => {

@@ -3,7 +3,11 @@ import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { pipeline } from "node:stream/promises";
 import { URL } from "node:url";
-import { HTML_ARTIFACT_BROWSER_CSP, HTML_ARTIFACT_CSP, htmlArtifactBrowserDocument, htmlArtifactDocument, isHtmlArtifact } from "@kulo/protocol";
+import {
+  HTML_ARTIFACT_BROWSER_CSP, HTML_ARTIFACT_CSP,
+  HTML_DIAGRAM_BROWSER_CSP, HTML_DIAGRAM_CSP,
+  htmlArtifactBrowserDocument, htmlArtifactDocument, htmlDiagramBrowserDocument, isHtmlArtifact,
+} from "@kulo/protocol";
 import {
   MAX_UPLOAD_BYTES, MAX_VIDEO_UPLOAD_BYTES, MEDIA_UPLOAD_LIMITS,
   KuloUploadStore, UploadError, VISION_IMAGE_MIMES,
@@ -105,12 +109,19 @@ async function serveHtmlPreview(req: IncomingMessage, res: ServerResponse, loade
     if (!stat.isFile() || stat.size !== loaded.record.size) throw new UploadError("资源文件不可用", 500);
     const document = await handle.readFile("utf8");
     const standalone = browser || req.headers["sec-fetch-dest"] === "document";
-    const bytes = Buffer.from(standalone ? htmlArtifactBrowserDocument(document, loaded.record.name) : htmlArtifactDocument(document));
+    const diagram = loaded.record.presentation === "diagram";
+    const bytes = Buffer.from(
+      diagram
+        ? (standalone ? htmlDiagramBrowserDocument(document, loaded.record.name) : document)
+        : (standalone ? htmlArtifactBrowserDocument(document, loaded.record.name) : htmlArtifactDocument(document)),
+    );
     res.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
       "content-length": bytes.length,
       "content-disposition": `inline; filename*=UTF-8''${encodedFilename(loaded.record.name)}`,
-      "content-security-policy": standalone ? HTML_ARTIFACT_BROWSER_CSP : HTML_ARTIFACT_CSP,
+      "content-security-policy": diagram
+        ? (standalone ? HTML_DIAGRAM_BROWSER_CSP : HTML_DIAGRAM_CSP)
+        : (standalone ? HTML_ARTIFACT_BROWSER_CSP : HTML_ARTIFACT_CSP),
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
       "cache-control": "private, no-store",
@@ -197,6 +208,7 @@ export function createMediaHttpHandler(options: MediaHttpOptions): MediaHttpHand
         if (uploadId !== undefined && (typeof uploadId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(uploadId))) throw new UploadError("无效的上传标识", 400);
         const idempotencyKey = uploadId === undefined ? undefined : `upload:${JSON.stringify([principal, uploadId])}`;
         const presentation = url.searchParams.get("presentation") ?? undefined;
+        if (presentation !== undefined && presentation !== "voice") throw new UploadError("无效的附件展示类型", 400);
         const rawDuration = url.searchParams.get("recordedDuration");
         const recordedDuration = rawDuration === null ? undefined : rawDuration.trim() ? Number(rawDuration) : NaN;
         const voice: UploadPresentationInput = { presentation: presentation as "voice" | undefined, recordedDuration };

@@ -568,7 +568,7 @@ describe("Batch 1b — Live Hub E2E Routing, Cross-Device Guard, Phone Attachmen
       capabilities: ["android-native-v1"],
       connectedAt: Date.now(),
       lastSeenAt: Date.now(),
-      android: { version: 1, catalogVersion: 1, enabled: true, paused: false, revision: 1, grants: ["device"], capabilities: [] },
+      android: { version: 1, catalogVersion: 3, enabled: true, paused: false, revision: 1, grants: ["device"], capabilities: [] },
     };
     const origGet = hub.envManager.getEnvDescriptor.bind(hub.envManager);
     const origList = hub.envManager.listEnvs.bind(hub.envManager);

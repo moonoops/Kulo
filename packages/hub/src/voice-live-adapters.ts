@@ -2,12 +2,23 @@ import { randomUUID } from "node:crypto";
 import WebSocket, { type ClientOptions, type RawData } from "ws";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { resolveHttpProxyUrlForTarget } from "@earendil-works/pi-ai/utils/node-http-proxy";
-import type { VoiceCallEvent, VoiceCallState, VoiceLiveProvider } from "@kulo/protocol";
+import { redactSecrets, redactSensitiveText, type VoiceCallEvent, type VoiceCallState, type VoiceLiveProvider } from "@kulo/protocol";
 import { VOICE_FALLBACK_INSTRUCTIONS } from "./prompts.js";
 
 const MAX_AUDIO_BYTES = 128 * 1024;
 const MAX_BUFFERED_BYTES = 1024 * 1024;
 const MAX_CONTEXT_BYTES = 32 * 1024;
+const MAX_HISTORY_ITEMS = 24;
+const MAX_HISTORY_ITEM_CHARS = 4_000;
+const MAX_HISTORY_BYTES = 64 * 1024;
+// OpenAI GPT-Live enforces an 8,192 rendered-token default cap on session.input
+// and a 16,384 client-supplied token cap on session.instructions. Keep a generous
+// conservative margin so CJK, Markdown, paths, and per-message framing never overflow.
+const OPENAI_MAX_INPUT_TOKENS = 6_000;
+const OPENAI_MAX_INPUT_ITEM_TOKENS = 1_500;
+const OPENAI_INPUT_MESSAGE_OVERHEAD_TOKENS = 16;
+const OPENAI_MAX_INPUT_BYTES = 32 * 1024;
+const OPENAI_MAX_INSTRUCTIONS_TOKENS = 12_000;
 const DELEGATE_TOOL = "delegate_to_kulo";
 
 export class VoiceLiveError extends Error {
@@ -84,6 +95,42 @@ function contextChunks(value: string): string[] {
   if (chunk) chunks.push(chunk);
   return chunks;
 }
+function charOpenAiTokenWeight(character: string): number {
+  const code = character.codePointAt(0)!;
+  if (code <= 0x7f) {
+    return (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a) || code === 0x20 ? 0.5 : 1;
+  }
+  if ((code >= 0x3000 && code <= 0x9fff) || (code >= 0xf900 && code <= 0xfaff) || (code >= 0xff00 && code <= 0xffef)) {
+    return 2;
+  }
+  return Buffer.byteLength(character);
+}
+function estimateOpenAiTokens(text: string): number {
+  let weight = 0;
+  for (const character of text) weight += charOpenAiTokenWeight(character);
+  return Math.ceil(weight);
+}
+function truncateCodePoints(text: string, maxChars: number, maxOpenAiTokens?: number, suffix = "..."): string {
+  const withinChars = text.length <= maxChars;
+  const withinTokens = maxOpenAiTokens === undefined || estimateOpenAiTokens(text) <= maxOpenAiTokens;
+  if (withinChars && withinTokens) return text;
+  const suffixChars = suffix.length;
+  const suffixTokens = maxOpenAiTokens === undefined ? 0 : estimateOpenAiTokens(suffix);
+  const charBudget = Math.max(0, maxChars - suffixChars);
+  const tokenBudget = maxOpenAiTokens === undefined ? undefined : Math.max(0, maxOpenAiTokens - suffixTokens);
+  let result = "";
+  let chars = 0;
+  let weight = 0;
+  for (const character of text) {
+    const nextChars = chars + character.length;
+    const nextWeight = tokenBudget === undefined ? 0 : weight + charOpenAiTokenWeight(character);
+    if (nextChars > charBudget || (tokenBudget !== undefined && Math.ceil(nextWeight) > tokenBudget)) break;
+    result += character;
+    chars = nextChars;
+    weight = nextWeight;
+  }
+  return result ? `${result}${suffix}` : suffix.slice(0, maxChars);
+}
 function safeFailure(provider: VoiceLiveProvider, status?: number, reason = ""): VoiceLiveError {
   if (provider === "vertex" && /(?:project|location).*(?:required|missing|must|invalid)|(?:required|missing).*(?:project|location)/i.test(reason)) return new VoiceLiveError("voice_vertex_resource_required", "Vertex Live 要求额外的资源参数，当前仅 API Key 的连接未通过。", status);
   if (provider === "vertex" && /express|api.?key.{0,40}(?:not supported|unsupported)|(?:not supported|unsupported).{0,40}api.?key/i.test(reason)) return new VoiceLiveError("voice_vertex_key_unsupported", "该 Vertex API Key 渠道不支持当前 Live 会话。", status);
@@ -91,6 +138,7 @@ function safeFailure(provider: VoiceLiveProvider, status?: number, reason = ""):
   if (status === 429 || /resource.?exhausted|quota exceeded|rate limit/i.test(reason)) return new VoiceLiveError("voice_live_rate_limited", "实时语音服务额度不足或请求过多，请稍后重试。", status);
   if (status !== undefined && status >= 500) return new VoiceLiveError("voice_live_service_error", "实时语音服务暂时不可用，请稍后重试。", status);
   if (status === 404 || /model.{0,80}(?:not found|not supported|unsupported|unavailable)|(?:not found|unsupported).{0,80}model/i.test(reason)) return new VoiceLiveError("voice_live_model_unavailable", "所选 Live 模型在当前渠道不可用。", status);
+  if (/(?:exceed|exceeds|limit|too long|max(?:imum)?).{0,60}(?:token|context|input|instruction|length)|(?:token|context|input|instruction).{0,60}(?:exceed|exceeds|limit|too long|maximum)/i.test(reason)) return new VoiceLiveError("voice_live_context_too_large", "通话上下文超出实时语音模型上限，请重试或开启新对话。", status);
   if (provider === "vertex") return new VoiceLiveError("voice_vertex_live_unavailable", "Vertex API Key 未能建立 Live 会话，请检查模型与渠道支持。", status);
   return new VoiceLiveError("voice_live_unavailable", "实时语音连接失败，请检查模型、音色与服务权限。", status);
 }
@@ -100,17 +148,39 @@ function supportsAsyncFunction(modelId: string): boolean {
 function history(input: VoiceLiveOpenInput): Array<{ role: "user" | "assistant"; text: string }> {
   const items = input.history ?? [];
   if (!Array.isArray(items) || items.length > 100 || items.some((item) => !item || !["user", "assistant"].includes(item.role) || typeof item.text !== "string")) throw new VoiceLiveError("voice_live_invalid_context", "通话历史格式无效。");
-  const bounded = items.slice(-24).map((item) => ({ role: item.role, text: item.text.slice(0, 4000) }));
-  if (bounded.reduce((sum, item) => sum + Buffer.byteLength(item.text), 0) > 64 * 1024) throw new VoiceLiveError("voice_live_invalid_context", "通话历史过长，请先精简上下文。");
-  return bounded;
+  const isOpenAi = input.provider === "openai";
+  const maxBytes = isOpenAi ? OPENAI_MAX_INPUT_BYTES : MAX_HISTORY_BYTES;
+  const bounded: Array<{ role: "user" | "assistant"; text: string }> = [];
+  let usedBytes = 0;
+  let usedTokens = 0;
+  for (let index = items.length - 1; index >= 0 && bounded.length < MAX_HISTORY_ITEMS; index--) {
+    const item = items[index]!;
+    const trimmed = item.text.trim();
+    if (!trimmed) continue;
+    const text = truncateCodePoints(trimmed, MAX_HISTORY_ITEM_CHARS, isOpenAi ? OPENAI_MAX_INPUT_ITEM_TOKENS : undefined);
+    const bytes = Buffer.byteLength(text);
+    const tokens = isOpenAi ? estimateOpenAiTokens(text) + OPENAI_INPUT_MESSAGE_OVERHEAD_TOKENS : 0;
+    if (usedBytes + bytes > maxBytes || (isOpenAi && usedTokens + tokens > OPENAI_MAX_INPUT_TOKENS)) break;
+    bounded.push({ role: item.role, text });
+    usedBytes += bytes;
+    usedTokens += tokens;
+  }
+  return bounded.reverse();
 }
 function instructions(input: VoiceLiveOpenInput): string {
   const base = input.instructions?.trim() ?? VOICE_FALLBACK_INSTRUCTIONS;
   if (Buffer.byteLength(base) > 48 * 1024) throw new VoiceLiveError("voice_live_invalid_context", "通话指令过长。");
+  const legacySpawnThinking = input.provider === "openai" && /^gpt-live-1(?:$|-)/i.test(input.modelId.trim());
   const policy = input.provider === "openai"
-    ? "Delegation policy:\nBackend tools:\n- Kulo: retrieve personal or project memories and earlier conversations, search, use configured models and tools, create reports or files, and manage existing tasks.\nGenerate <|SpawnThinking|> when:\n- The user requests any backend capability, careful reasoning, or a correction to a running task.\nDo not generate <|SpawnThinking|> when:\n- A short conversational reply or a clarification is sufficient.\nGenerate <|SpawnThinking|> before answering anything that depends on backend work."
+    ? legacySpawnThinking
+      ? "Delegation policy:\nBackend tools:\n- Kulo: retrieve personal or project memories and earlier conversations, search, use configured models and tools, create reports or files, and manage existing tasks.\nGenerate <|SpawnThinking|> when:\n- The user requests any backend capability, careful reasoning, or a correction to a running task.\nDo not generate <|SpawnThinking|> when:\n- A short conversational reply or a clarification is sufficient.\nGenerate <|SpawnThinking|> before answering anything that depends on backend work."
+      : "Delegation policy:\nBackend tools:\n- Kulo: retrieve personal or project memories and earlier conversations, search, use configured models and tools, create reports or files, and manage existing tasks.\nDelegate to the backend when:\n- The user requests any backend capability, careful reasoning, or a correction to a running task.\nDo not delegate when:\n- A short conversational reply or a clarification is sufficient.\nDelegate to the backend before answering anything that depends on backend work."
     : `Use ${DELEGATE_TOOL} to retrieve personal or project memories and earlier conversations, or for searches, reports, files, configured models, tools, and corrections to existing tasks. Continue conversing while Kulo works.`;
-  return `${base}\n\n${policy}\nKeep spoken replies brief. Stop speaking when interrupted. Interruptions and hanging up do not cancel backend tasks. Report an action as complete only after Kulo returns a verified result.`;
+  const suffix = `\n\n${policy}\nKeep spoken replies brief. Stop speaking when interrupted. Interruptions and hanging up do not cancel backend tasks. Report an action as complete only after Kulo returns a verified result.`;
+  const boundedBase = input.provider === "openai"
+    ? truncateCodePoints(base, 48 * 1024, Math.max(512, OPENAI_MAX_INSTRUCTIONS_TOKENS - estimateOpenAiTokens(suffix)), "\n[Instructions truncated]")
+    : base;
+  return `${boundedBase}${suffix}`;
 }
 
 class LiveConnection implements VoiceLiveConnection {
@@ -154,6 +224,18 @@ class LiveConnection implements VoiceLiveConnection {
     this.closed = new Promise((resolve) => { this.#resolveClosed = resolve; });
   }
   #event(event: VoiceCallEvent): void { this.#input.onEvent(event); }
+  #logFailure(phase: string, details: Record<string, unknown>, rawReason = ""): void {
+    const safeReason = rawReason
+      ? redactSecrets(redactSensitiveText(rawReason, [this.#config.apiKey])).replace(/\s+/g, " ").trim().slice(0, 240)
+      : "";
+    console.warn("[KuloVoiceLive]", JSON.stringify({
+      provider: this.#config.provider,
+      modelId: this.#config.modelId,
+      phase,
+      ...details,
+      ...(safeReason ? { reason: safeReason } : {}),
+    }));
+  }
   #setState(state: VoiceCallState): void {
     if (this.#state !== state) { this.#state = state; this.#event({ type: "state", state }); }
   }
@@ -250,18 +332,30 @@ class LiveConnection implements VoiceLiveConnection {
               if (object(body) && object(body.error) && typeof body.error.message === "string") reason = body.error.message;
             } catch { /* A non-JSON error body does not change the HTTP failure. */ }
           }
+          this.#logFailure("http_upgrade", { status: response.statusCode }, reason);
           this.#fail(safeFailure(provider, response.statusCode, reason));
         });
-        response.on("error", () => { if (socket === this.#socket) this.#fail(safeFailure(provider, response.statusCode)); });
+        response.on("error", () => {
+          if (socket === this.#socket) {
+            this.#logFailure("http_upgrade_stream", { status: response.statusCode });
+            this.#fail(safeFailure(provider, response.statusCode));
+          }
+        });
         response.resume();
       });
       socket.on("error", () => {
-        if (socket === this.#socket && !this.#closing) this.#fail(new VoiceLiveError("voice_live_network_error", "实时语音网络连接中断，请重试。"));
+        if (socket === this.#socket && !this.#closing) {
+          this.#logFailure("socket_error", { ready: this.#ready });
+          this.#fail(new VoiceLiveError("voice_live_network_error", "实时语音网络连接中断，请重试。"));
+        }
       });
       socket.on("close", (code, reason) => {
         if (socket !== this.#socket || this.#ended) return;
-        if (!this.#closing) this.#fail(code === 1008 || code === 1007 ? safeFailure(provider, undefined, reason.toString()) : new VoiceLiveError("voice_live_disconnected", "实时语音连接已断开，可重新连接。"));
-        else this.#finish();
+        if (!this.#closing) {
+          const text = reason.toString();
+          this.#logFailure("socket_close", { code, ready: this.#ready }, text);
+          this.#fail(code === 1008 || code === 1007 ? safeFailure(provider, undefined, text) : new VoiceLiveError("voice_live_disconnected", "实时语音连接已断开，可重新连接。"));
+        } else this.#finish();
       });
     });
   }
@@ -385,7 +479,14 @@ class LiveConnection implements VoiceLiveConnection {
     } else if (message.type === "session.closed") { this.#closing = true; this.#socket?.close(1000); this.#finish(); }
     else if (message.type === "error") {
       const upstream = object(message.error) ? message.error : {};
-      const error = safeFailure(this.#config.provider, undefined, typeof upstream.message === "string" ? upstream.message : "");
+      const reason = typeof upstream.message === "string" ? upstream.message : "";
+      this.#logFailure("openai_error", {
+        ready: this.#ready,
+        ...(typeof upstream.type === "string" ? { errorType: upstream.type } : {}),
+        ...(typeof upstream.code === "string" ? { errorCode: upstream.code } : {}),
+        ...(typeof upstream.param === "string" ? { param: upstream.param } : {}),
+      }, reason);
+      const error = safeFailure(this.#config.provider, undefined, reason);
       if (!this.#ready) this.#fail(error);
       else { this.#interrupt(); this.#event({ type: "error", code: error.code, message: error.message }); }
     }
@@ -398,7 +499,13 @@ class LiveConnection implements VoiceLiveConnection {
     return candidates.slice(Math.max(0, first)).map((segment) => segment.text).join("");
   }
   #googleMessage(message: Json): void {
-    if (object(message.error)) { this.#fail(safeFailure(this.#config.provider, typeof message.error.code === "number" ? message.error.code : undefined, typeof message.error.message === "string" ? message.error.message : "")); return; }
+    if (object(message.error)) {
+      const code = typeof message.error.code === "number" ? message.error.code : undefined;
+      const reason = typeof message.error.message === "string" ? message.error.message : "";
+      this.#logFailure("google_error", { ready: this.#ready, ...(code !== undefined ? { code } : {}) }, reason);
+      this.#fail(safeFailure(this.#config.provider, code, reason));
+      return;
+    }
     if (object(message.sessionResumptionUpdate) && message.sessionResumptionUpdate.resumable === true && typeof message.sessionResumptionUpdate.newHandle === "string") this.#resumptionHandle = message.sessionResumptionUpdate.newHandle;
     if (object(message.serverContent)) {
       const content = message.serverContent;

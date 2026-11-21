@@ -102,7 +102,8 @@ import { AssistantSorter } from "./assistant-sorter.js";
 import { AssistantCoordinator } from "./assistant-coordinator.js";
 import { createAssistantToolsExtension } from "./tools-assistant.js";
 import { SparkMailService } from "./connectors/spark-mail-service.js";
-import { HomeAssistantService } from "./connectors/home-assistant.js";
+import { HomeAssistantService, sanitizeServiceData } from "./connectors/home-assistant.js";
+import { HaLanAudioRelay } from "./connectors/ha-lan-audio.js";
 import { LarkConnectorService } from "./connectors/lark-connector.js";
 import { ContextCompactionDoc, createContextCompactionController, validateBillionKernel, type BillionKernelRuntime } from "./context-compaction.js";
 import { type LoadedBillionContextPackage } from "./extension-packages.js";
@@ -286,6 +287,15 @@ import {
   toPublicSettingsView,
   type KuloDurableSettings,
 } from "./settings.js";
+import { isLoopbackHost } from "./mcp-presets.js";
+
+function isLoopbackEndpointUrl(rawUrl: string): boolean {
+  try {
+    return isLoopbackHost(new URL(rawUrl).hostname);
+  } catch {
+    return false;
+  }
+}
 
 
 import {
@@ -310,6 +320,8 @@ import {
   resolveTicketExecutionScope,
   toTicketCardView,
   transitionTicketStatus,
+  applyTopicPreview,
+  summarizeTopicPreview,
   type KuloDurableState,
 } from "./state.js";
 import {
@@ -332,6 +344,7 @@ import { EXECUTION_FILE_CHUNK_BYTES, writeExecutionFile } from "./execution-file
 import { ContentPublicationEntry, UiActionEntry, KuloUserEntry, KuloUiCards, UiCardError, type ContentPublicationData } from "./ui-cards.js";
 import { createContentToolsExtension } from "./tools-content.js";
 import { createAssetPublisher } from "./asset-publication.js";
+import { createDiagramPublisher } from "./diagram-publication.js";
 import { publishExecutionAsset } from "./content-assets.js";
 import { KuloProjects, KuloProjectsDoc, ProjectError, assertProjectBinding } from "./projects.js";
 import { createProjectToolsExtension, type ProjectController } from "./tools-projects.js";
@@ -838,7 +851,7 @@ export function extractDisplayMessages(entries: readonly EntryRecord[], options:
           } else if (block.type === "toolCall") {
             if (SILENT_UI_TOOLS.has(block.name)) continue;
             const rawArgs = JSON.stringify(options.includeToolResults ? redactCredentialData(block.arguments ?? {}, redactToolText) : block.arguments ?? {});
-            const summaryValue = options.includeToolResults ? ["command", "path", "file_path", "target_path", "query", "url", "action", "summary"]
+            const summaryValue = options.includeToolResults ? ["command", "path", "file_path", "target_path", "query", "url", "action", "summary", "title"]
               .map((key) => block.arguments?.[key]).find((value): value is string => typeof value === "string" && value.trim().length > 0) : undefined;
             const actionSummary = summaryValue === undefined ? undefined : redactToolText(summaryValue).trim().split(/[\r\n]/, 1)[0]!.slice(0, 140);
             const call = {
@@ -1087,8 +1100,10 @@ export class KuloHub implements OrchestratorController {
   readonly assistantSorter: AssistantSorter;
   readonly assistantCoordinator: AssistantCoordinator;
   readonly sparkMail: SparkMailService;
+  readonly haLanAudio: HaLanAudioRelay;
   readonly homeAssistant: HomeAssistantService;
   readonly larkConnector: LarkConnectorService;
+  #lanHttpEndpointProvider?: () => { lanReachable: boolean; port: number } | undefined;
   readonly connectionManager: KuloConnections;
   readonly connections: ConnectionToolController;
 
@@ -1146,6 +1161,7 @@ export class KuloHub implements OrchestratorController {
   readonly #listeners = new Set<HubEventListener>();
   readonly #topicCaches = new Map<string, WatchedTopicCache>();
   readonly #topicTitleCache = new Map<string, string>();
+  readonly #topicPreviewCache = new Map<string, { preview: string; at?: number }>();
   #queryService?: ConversationQueries;
   readonly #chatAdmissions = new Map<string, Promise<unknown>>();
   readonly #deliveryAdmissions = new Map<string, Promise<unknown>>();
@@ -1178,6 +1194,11 @@ export class KuloHub implements OrchestratorController {
   #closed = false;
   #closing?: Promise<void>;
   #androidHubId = "";
+  #onClusterDirty?: (kind: "sqlite" | "assistant" | "vault" | "files" | "uploads") => void;
+  #clusterCloseHook?: () => Promise<void>;
+  #clusterHostContext?: { localNodeId: string; legacyLocalNodeId?: string };
+  #handoverBarrierActive = false;
+  #handoverBarrierTimer: ReturnType<typeof setTimeout> | null = null;
 
   private constructor(params: {
     releaseProxy: () => Promise<void>;
@@ -1269,6 +1290,11 @@ export class KuloHub implements OrchestratorController {
     this.#androidNotifications = new KuloAndroidNotifications({ stateDir: this.config.stateDir, models: this.#models,
       agent: () => this.#resolveOrchestratorAgent(), hubId: () => this.#androidHubId,
       redact: text => this.connectionManager.redact(text) });
+    this.#androidNotifications.setOnWrite(() => this.#notifyClusterDirty("files"));
+    this.uploads.setOnWrite(() => this.#notifyClusterDirty("uploads"));
+    this.identityFiles.setOnWrite(() => this.#notifyClusterDirty("files"));
+    this.connectionManager.setOnPersist(() => this.#notifyClusterDirty("files"));
+    this.connectionManager.localVault?.setOnChange(() => this.#notifyClusterDirty("vault"));
     this.envManager.setAndroidNotificationClassifier((request, signal) => this.#androidNotifications.classify(request, signal));
     this.#topicTitles = new KuloTopicTitles({
       harness: this.harness,
@@ -1306,6 +1332,7 @@ export class KuloHub implements OrchestratorController {
     this.#contextCompaction = params.contextCompaction;
     this.history = new KuloConversationHistory({ harness: this.harness, stateDir: this.config.stateDir });
     this.assistantLedger = new AssistantLedger({ stateDir: this.config.stateDir });
+    this.assistantLedger.setOnWrite(() => this.#notifyClusterDirty("assistant"));
     const redactAssistantText = (text: string): string =>
       this.connectionManager.redact(redactSensitiveText(text));
     this.ambientModel = new AmbientModelService({
@@ -1335,20 +1362,40 @@ export class KuloHub implements OrchestratorController {
       },
       redact: redactAssistantText,
     });
+    this.haLanAudio = new HaLanAudioRelay();
     this.homeAssistant = new HomeAssistantService({
       vault: this.connectionManager.localVault,
+      ledger: this.assistantLedger,
+      stateDir: this.config.stateDir,
+      lanAudioRelay: this.haLanAudio,
       persistedConfig: async () => {
         const snap = await this.harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT);
-        return snap?.homeAssistant ?? { enabled: false };
+        const raw = snap?.homeAssistant ?? { enabled: false };
+        if (
+          raw.enabled &&
+          raw.baseUrl &&
+          isLoopbackEndpointUrl(raw.baseUrl) &&
+          this.#isLoopbackServicePausedForForeignHost((raw as { boundNodeId?: string }).boundNodeId)
+        ) {
+          return { ...raw, enabled: false };
+        }
+        return raw;
       },
       saveConfig: async (next) => {
         await this.harness.commit(async (tx) => {
           const doc = await tx.doc(AssistantDoc);
           ensureAssistantState(doc);
+          const isLoopback = Boolean(next.baseUrl && isLoopbackEndpointUrl(next.baseUrl));
+          const boundNodeId = isLoopback && this.#clusterHostContext && this.#clusterHostContext.localNodeId !== "local"
+            ? this.#clusterHostContext.localNodeId
+            : undefined;
           doc.homeAssistant = {
             enabled: next.enabled,
             ...(next.baseUrl ? { baseUrl: next.baseUrl } : {}),
-          };
+            ...(next.sentinel ? { sentinel: next.sentinel } : {}),
+            ...(next.announce ? { announce: next.announce } : {}),
+            ...(boundNodeId ? { boundNodeId } : {}),
+          } as typeof doc.homeAssistant;
           doc.revision += 1;
         }, BACKGROUND_CONTEXT);
       },
@@ -1356,7 +1403,23 @@ export class KuloHub implements OrchestratorController {
       onAlertEvent: (event) => {
         void this.#ingestInternalAssistantEvents("home-assistant", [event]).catch(() => {});
       },
+      onSituationResolved: (situationKey) => {
+        void this.assistantCoordinator.resolveSituationByKey(situationKey).catch(() => {});
+      },
+      synthesizeTts: async (text) => {
+        try {
+          const out = await this.voice.synthesize(text);
+          return { bytes: out.bytes, mimeType: out.mimeType };
+        } catch {
+          return undefined;
+        }
+      },
+      lanHttpEndpoint: () => this.#lanHttpEndpointProvider?.(),
+      completeVisionJson: (input) => this.ambientModel.completeZeroToolVisionJson(input),
     });
+    if (this.homeAssistant.sentinel) {
+      this.envManager.protectPaths([this.homeAssistant.sentinel.snapshotDir]);
+    }
     this.larkConnector = new LarkConnectorService({
       persistedConfig: async () => {
         const snap = await this.harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT);
@@ -1409,6 +1472,33 @@ export class KuloHub implements OrchestratorController {
       },
       onItemsChanged: (revision, items) => this.#emitAssistantItems(revision, items),
       onTopicsChanged: (topics) => this.#emitTopics(topics),
+      onTopicContentChanged: (topicId) => {
+        const cache = this.#topicCaches.get(topicId);
+        if (cache) this.#refreshTopicContent(cache);
+      },
+      materializeSnapshot: async (snapshotRef, conversationId) => {
+        const snap = this.homeAssistant.sentinel?.readTemporarySnapshot(snapshotRef);
+        if (!snap) return undefined;
+        const asset = this.uploads.saveUpload({
+          name: snap.fileName,
+          mimeType: snap.mimeType,
+          bytes: snap.bytes,
+          ownerId: "assistant:home-assistant",
+          idempotencyKey: `ha-snapshot:${snapshotRef}`,
+        });
+        this.uploads.bindAttachments([asset], `conversation:${conversationId}`, "assistant:home-assistant");
+        return asset;
+      },
+      onAlertSurfaced: (ev) => {
+        const critical = ev.sourceApp === "home-assistant" && /(?:告警|烟雾|燃气|漏水|报警|异常)/.test(`${ev.title} ${ev.summary}`);
+        const spokenText = ev.summary.includes(ev.title) ? ev.summary : `${ev.title}：${ev.summary}`;
+        void this.homeAssistant.announce({
+          text: spokenText,
+          urgency: ev.urgency,
+          critical,
+          situationId: ev.situationId,
+        }).catch(() => {});
+      },
       onMutedAppsChanged: (mutedApps) => {
         void this.harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT).then((snap) => {
           this.envManager.setConnectorConfig({
@@ -1436,12 +1526,29 @@ export class KuloHub implements OrchestratorController {
           const domain = typeof action.params.domain === "string" ? action.params.domain : "";
           const service = typeof action.params.service === "string" ? action.params.service : "";
           const entityId = typeof action.params.entityId === "string" ? action.params.entityId : undefined;
+          const serviceData = action.params.serviceData !== undefined ? sanitizeServiceData(action.params.serviceData) : undefined;
           await this.homeAssistant.callService({
             domain,
             service,
             ...(entityId ? { entityId } : {}),
+            ...(serviceData ? { serviceData } : {}),
             triggerSource: "user_confirmed_l2",
           });
+          return { ok: true };
+        }
+        if (action.kind === "ha_upsert_automation") {
+          const configId = typeof action.params.configId === "string" ? action.params.configId : "";
+          const config = action.params.config && typeof action.params.config === "object" && !Array.isArray(action.params.config)
+            ? (action.params.config as Record<string, unknown>)
+            : null;
+          if (!configId || !config) return { ok: false, error: "自动化配置参数缺失。" };
+          await this.homeAssistant.upsertAutomation({ configId, config });
+          return { ok: true };
+        }
+        if (action.kind === "ha_delete_automation") {
+          const configId = typeof action.params.configId === "string" ? action.params.configId : "";
+          if (!configId) return { ok: false, error: "缺少待删除的自动化 ID。" };
+          await this.homeAssistant.deleteAutomation(configId);
           return { ok: true };
         }
         if (action.kind === "lark_send_reply") {
@@ -1498,7 +1605,7 @@ export class KuloHub implements OrchestratorController {
         return this.#providerManager?.resolveProbeApiKey(connectionId, baseUrl) ?? this.#providerManager?.resolveServiceApiKey(connectionId, modelId, baseUrl);
       },
     });
-    this.skills = new KuloSkills({ harness: this.harness, stateDir: this.config.stateDir, onChanged: () => this.#broadcastCapabilities(),
+    this.skills = new KuloSkills({ harness: this.harness, stateDir: this.config.stateDir, onChanged: () => { this.#notifyClusterDirty("files"); return this.#broadcastCapabilities(); },
       resolveLocalSource: (source) => stageProjectSkillSource({ stateDir: this.config.stateDir, projects: this.projects, envManager: this.envManager }, source) });
     this.capabilities = new KuloCapabilities({ harness: this.harness, credentials: params.credentialStore,
       resolveProviderApiKey: (providerId, baseUrl) => this.#providerManager?.resolveProbeApiKey(providerId, baseUrl) ?? Promise.resolve(undefined),
@@ -1985,6 +2092,7 @@ export class KuloHub implements OrchestratorController {
 
     const envManager = new EnvManager({
       enableLocal: config.enableLocalEnv,
+      ...(config.localEnvId ? { localEnvId: config.localEnvId } : {}),
       localRootDir: mainWorkspaceDir,
       localName: config.localEnvName,
       authToken: config.authToken,
@@ -1993,6 +2101,7 @@ export class KuloHub implements OrchestratorController {
       getProtectedPaths: () => [
         config.stateDir,
         config.identityDir,
+        ...(config.extraProtectedPaths ?? []),
         ...protectedRuntime,
         ...(bootSettings?.identity.directory ? [bootSettings.identity.directory] : []),
         path.resolve(".env"),
@@ -2034,7 +2143,10 @@ export class KuloHub implements OrchestratorController {
     });
 
     const getLiveRoles = () => bootSettings?.roles ?? config.roles;
-    const getLiveMemory = () => bootSettings?.memory ?? config.memory;
+    const getLiveMemory = () => {
+      const mem = bootSettings?.memory ?? config.memory;
+      return hubRef ? hubRef.#effectiveMemoryConfig(mem) : mem;
+    };
     const getLiveIdentityDir = () =>
       bootSettings ? resolveEffectiveIdentityDir(bootSettings, defaultIdentityDir) : defaultIdentityDir;
     const getLiveIdentityState = () => ({
@@ -2056,7 +2168,10 @@ export class KuloHub implements OrchestratorController {
       init.storage ??
       (await openNodeSqliteStorage(path.join(config.stateDir, "kulo.sqlite")));
     closePartialStorage = () => rawStorage.close(BACKGROUND_CONTEXT);
-    const storage = wrapRedactedStorage(rawStorage, redact, sealing);
+    const storage = wrapRedactedStorage(rawStorage, redact, {
+      ...sealing,
+      onCommit: () => { if (hubRef) hubRef.#notifyClusterDirty("sqlite"); },
+    });
 
     const images = await createNodePhotonImages();
     const codingToolsExt = createCodingTools({ images });
@@ -2094,6 +2209,7 @@ export class KuloHub implements OrchestratorController {
     const homeSensitiveDirs = [".ssh", ".gnupg", ".kube", ".aws", ".claude", ".codex", ".gemini", ".antigravity", ".grok", ".cursor", ".opencode", ".kiro", ".copilot", ".dsh"].map((name) =>
       safeCanonical(path.join(homeDir, name)),
     );
+    const extraProtectedCanonical = (config.extraProtectedPaths ?? []).map((entry) => safeCanonical(path.resolve(entry)));
     const isProtectedOrchestratorPath = (candidatePath: string): string | undefined => {
       const canonicalCandidate = safeCanonical(candidatePath);
       if (isApplicationPrivatePath(candidatePath) || isApplicationPrivatePath(canonicalCandidate)) {
@@ -2108,12 +2224,13 @@ export class KuloHub implements OrchestratorController {
         return "主脑沙箱禁止直接读写私有身份目录；请使用 kulo_identity_read、kulo_identity_propose 或 kulo_relationship_update。";
       }
       if (
-        isInsideLocalOrPosix(canonicalCandidate, resolvedStateDir) &&
+        (isInsideLocalOrPosix(canonicalCandidate, resolvedStateDir) &&
         !(
           resolvedMainWorkspace !== resolvedStateDir &&
           isInsideLocalOrPosix(resolvedMainWorkspace, resolvedStateDir) &&
           isInsideLocalOrPosix(canonicalCandidate, resolvedMainWorkspace)
-        )
+        )) ||
+        extraProtectedCanonical.some((dir) => isInsideLocalOrPosix(canonicalCandidate, dir))
       ) {
         return "主脑沙箱禁止直接访问 Kulo 状态库或凭据目录。";
       }
@@ -2167,15 +2284,17 @@ export class KuloHub implements OrchestratorController {
             }
           }
           const authorizedWorkspaceDir = authorizedProject?.workspaceDir ?? api.env?.cwd ?? mainWorkspaceDir;
+          const localHostId = envManager.localEnvId;
           const targetEnvId = authorizedProject?.deviceId
             ?? (api.env?.id === "node:local"
-              ? "local"
+              ? localHostId
               : api.env?.id?.startsWith("pi-env:")
                 ? api.env.id.slice("pi-env:".length)
-                : "local");
+                : localHostId);
+          const targetIsLocalHost = api.env?.id === "node:local" || envManager.isLocalEnv(targetEnvId);
 
           const checkActiveWriteLock = async (targetPath: string): Promise<string | undefined> => {
-            const normalizedScopePath = targetEnvId === "local" ? safeCanonical(targetPath) : targetPath;
+            const normalizedScopePath = targetIsLocalHost ? safeCanonical(targetPath) : targetPath;
             const writeProbe = {
               envId: targetEnvId,
               workspaceDir: normalizedScopePath,
@@ -2187,7 +2306,7 @@ export class KuloHub implements OrchestratorController {
                 !t.readOnly &&
                 ticketsShareWriteScope(
                   writeProbe,
-                  targetEnvId === "local" && t.envId === "local" && t.workspaceDir
+                  targetIsLocalHost && envManager.isLocalEnv(t.envId) && t.workspaceDir
                     ? { ...t, workspaceDir: safeCanonical(t.workspaceDir) }
                     : t,
                 ),
@@ -2213,7 +2332,7 @@ export class KuloHub implements OrchestratorController {
               absolute = path.resolve(authorizedWorkspaceDir, rawPath);
             }
 
-            if (targetEnvId === "local") {
+            if (targetIsLocalHost) {
               const blockedReason = isProtectedOrchestratorPath(absolute);
               if (blockedReason) {
                 return blockResult(blockedReason);
@@ -2285,6 +2404,7 @@ export class KuloHub implements OrchestratorController {
 
     const identityFiles = new KuloIdentityFiles(getLiveIdentityState, {
       getLanguage: getLiveLanguage,
+      managedDirectory: defaultIdentityDir,
     });
 
     const connections: ConnectionToolController = {
@@ -2421,6 +2541,7 @@ export class KuloHub implements OrchestratorController {
       hostActions,
       uploads,
       search: () => hubRef!.search,
+      getLocalEnvId: () => envManager.localEnvId,
       publishAsset: (input, api, context) => contentExt.publishAsset(input, api, context),
       onStateChanged: notifyTicketsChanged,
       getIdentityDir: getLiveIdentityDir,
@@ -2623,6 +2744,11 @@ export class KuloHub implements OrchestratorController {
       protectedPaths: () => [config.stateDir, getLiveIdentityDir()],
       redact,
     });
+    const publishDiagram = createDiagramPublisher({
+      cards: () => hubRef!.uiCards,
+      uploads,
+      redact,
+    });
     const contentExt = createContentToolsExtension({
       get: () => hubRef!.uiCards,
       scope: async (api) => {
@@ -2640,6 +2766,7 @@ export class KuloHub implements OrchestratorController {
         throw new UiCardError("content_scope_denied", "请由主对话发布交互卡片。", 403);
       },
       publishAsset,
+      publishDiagram,
       inspectAsset: publishAsset.inspectAsset,
     });
 
@@ -3625,11 +3752,14 @@ export class KuloHub implements OrchestratorController {
     if (!event.final || !event.text.trim() || this.#closed) return;
     const cache = await this.#voiceTopic(topicId);
     const text = event.role === "user" ? (await this.connectionManager.processText(event.text)).text : this.connectionManager.redact(event.text);
+    const createdAt = Date.now();
     await cache.conversation.submit({ type: "write", entry: { kind: VoiceTranscriptEntry.kind,
-      data: { callId, role: event.role, text, createdAt: Date.now() },
-      model: [{ role: "user", content: `[KULO_VOICE_CONTEXT: ${event.role === "user" ? "用户" : "Kulo"}在通话中说]\n${text}`, timestamp: Date.now() }] },
+      data: { callId, role: event.role, text, createdAt },
+      model: [{ role: "user", content: `[KULO_VOICE_CONTEXT: ${event.role === "user" ? "用户" : "Kulo"}在通话中说]\n${text}`, timestamp: createdAt }] },
       ...(event.id ? { requestId: `voice-transcript:${callId}:${event.role}:${event.id}` } : {}) }, BACKGROUND_CONTEXT);
     this.#refreshTopicContent(cache);
+    const preview = summarizeTopicPreview([{ role: event.role, text, createdAt }]);
+    if (preview) this.#recordTopicActivity(cache.topicId, preview);
   }
 
   async transcribeVoiceAsset(assetId: string, options: { topicId?: string; principalId: string }, context: Context = BACKGROUND_CONTEXT): Promise<ChatAttachment> {
@@ -3731,9 +3861,11 @@ export class KuloHub implements OrchestratorController {
         this.uploads.bindAttachments([asset.id], `conversation:${id}`, loaded.record.ownerId);
       }
       this.uploads.bindAttachments([asset.id], `ticket:${ticket.id}`, loaded.record.ownerId);
-      await this.#stageWorkerArtifact(this.uploads.toChatAttachment(loaded.record), {
-        conversationId: scope.conversationId, topicId: ticket.originTopicId ?? "root", ticketId: ticket.id, runEpoch: ticket.runEpoch, envId: scope.deviceId,
-      }, `android-result:${asset.id}`);
+      if (data.ephemeralObservation !== true) {
+        await this.#stageWorkerArtifact(this.uploads.toChatAttachment(loaded.record), {
+          conversationId: scope.conversationId, topicId: ticket.originTopicId ?? "root", ticketId: ticket.id, runEpoch: ticket.runEpoch, envId: scope.deviceId,
+        }, `android-result:${asset.id}`);
+      }
       if (loaded.record.kind === "image" && scope.supportsImages) {
         if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(loaded.record.mimeType)) throw new Error("手机图片格式不受支持。");
         output.push({ type: "image", mimeType: loaded.record.mimeType, data: fs.readFileSync(loaded.filePath).toString("base64") });
@@ -3949,7 +4081,11 @@ export class KuloHub implements OrchestratorController {
       notices.notices[noticeKey] = true;
       if (targetConvId === undefined || job.source.ticketId && (!ticket || ["stopped", "closed"].includes(ticket.status))) return;
       if (!ticket) {
-        await tx.appendEntry(ContentPublicationEntry, targetConvId as ConversationId, { data: { parts: [{ partId: `media-notice:${noticeKey}`, type: "markdown", text: message }], fallbackText: message, createdAt: Date.now() } as unknown as ContentPublicationData & JsonObject });
+        const now = Date.now();
+        await tx.appendEntry(ContentPublicationEntry, targetConvId as ConversationId, { data: { parts: [{ partId: `media-notice:${noticeKey}`, type: "markdown", text: message }], fallbackText: message, createdAt: now } as unknown as ContentPublicationData & JsonObject });
+        if (settingsConvId === null && topic && !topic.deletedAt) {
+          applyTopicPreview(topic, summarizeTopicPreview([{ role: "assistant", text: message, createdAt: now }]), now);
+        }
       } else if (needsUser && recipient?.id === targetConvId) {
         await submitAutomaticChatInput(tx, recipient, { type: "input", whenBusy: "followUp", requestId: `kulo:media-review:${noticeKey}`,
           content: `[KULO_WORKER_RELAY]\nBackground media job requires coordinator attention: ${message}\nVerify the actual issue first before deciding whether to inform the user; this notice grants no extra execution permissions.`,
@@ -4502,7 +4638,7 @@ export class KuloHub implements OrchestratorController {
   async listTopics(context: Context = BACKGROUND_CONTEXT): Promise<TopicSummary[]> {
     const state = await this.harness.snapshot(KuloStateDoc, context);
     if (!state) return [];
-    return listSortedTopics(state);
+    return this.#enrichTopicsWithPreviews(listSortedTopics(state));
   }
 
   async archiveInactiveTopics(context: Context = BACKGROUND_CONTEXT): Promise<TopicSummary[]> {
@@ -5501,8 +5637,11 @@ export class KuloHub implements OrchestratorController {
     return toTicketCardView(ticket, this.#liveSettings.roles);
   }
 
-  async deliverClientMessage(message: ReliableClientMessage, principalId = "local", context: Context = BACKGROUND_CONTEXT,
+  async deliverClientMessage(message: ReliableClientMessage, principalId = this.envManager.localEnvId, context: Context = BACKGROUND_CONTEXT,
     source?: ChatMessageSource): Promise<DeliveryAck & { deduplicated?: boolean }> {
+    if (this.#handoverBarrierActive && message.type !== "chat.abort") {
+      throw new ProjectError(503, "cluster_handover_in_progress", "主机正在切换，请稍候。");
+    }
     validateReliableClientMessage(message);
     const intent = clientDeliveryIntent(message, principalId);
     let fallback: DeliveryAck;
@@ -5613,7 +5752,7 @@ export class KuloHub implements OrchestratorController {
   ) {
     assertValidReplyReference(options.replyTo);
     const key = options.topicId || "root";
-    const principalId = options.principalId ?? "local";
+    const principalId = options.principalId ?? this.envManager.localEnvId;
     const receivedAt = Date.now();
     const intent = options.deliveryIntent ?? clientDeliveryIntent({ type: "chat.send", topicId: key, requestId: options.requestId,
       content, attachments: options.attachments, replyTo: options.replyTo, whenBusy: options.whenBusy, targetDeviceId: options.targetDeviceId,
@@ -5739,7 +5878,7 @@ export class KuloHub implements OrchestratorController {
     })).text;
     // Pi's current message contract accepts text and images; an audio modality label alone does not add an audio transport.
     for (const { record } of this.uploads.resolveAttachments(options.attachments)) {
-      if (record.kind === "audio") await this.transcribeVoiceAsset(record.id, { topicId: targetTopicId, principalId: options.principalId || "local" }, context);
+      if (record.kind === "audio") await this.transcribeVoiceAsset(record.id, { topicId: targetTopicId, principalId: options.principalId || this.envManager.localEnvId }, context);
     }
     const replyTo = options.replyTo ? { messageId: options.replyTo.messageId, role: options.replyTo.role,
       text: this.connectionManager.redact(options.replyTo.text) } : undefined;
@@ -5803,6 +5942,10 @@ export class KuloHub implements OrchestratorController {
       agentDispatchIntent: capturedIntent,
     }, replyTo);
 
+    const userPreview = draft.voiceDelegation
+      ? undefined
+      : summarizeTopicPreview([{ role: "user", text: this.connectionManager.redact(content), createdAt: draft.receivedAt }]);
+
     // Keep an immediate fallback while the first completed reply supplies context for a generated title.
     const { allTopics, pendingTitle, submissionId } = await this.harness.commit(async (tx) => {
       const state = await tx.doc(KuloStateDoc);
@@ -5816,7 +5959,9 @@ export class KuloHub implements OrchestratorController {
       ensureDefaultRootTopic(state, this.#liveSettings.presentation.agentName);
       const t = state.topics?.[cache.topicId];
       if (t) {
-        t.updatedAt = Date.now();
+        const now = Date.now();
+        t.updatedAt = now;
+        applyTopicPreview(t, userPreview, now);
         if (t.draft) {
           t.title = deriveAutoTopicTitle(
             content,
@@ -6059,7 +6204,8 @@ export class KuloHub implements OrchestratorController {
     const fixedTarget = fixedTargetId ? this.envManager.getEnvDescriptor(fixedTargetId) : undefined;
     const proposedEnv = params.envId?.trim() || undefined;
     const envs = this.envManager.listEnvs();
-    const localEnv = this.envManager.getEnvDescriptor("local");
+    const localEnvId = this.envManager.localEnvId;
+    const localEnv = this.envManager.getEnvDescriptor(localEnvId);
     const localReady = Boolean(localEnv?.online && hasWorkerIsolation(localEnv));
     const priorUserTurns = modelDispatch && !recoveryTicket
       ? await this.#recentPriorUserTurns(
@@ -6127,7 +6273,7 @@ export class KuloHub implements OrchestratorController {
     }
     const boundEnv = project?.deviceId ?? fixedTargetId ?? recoveryTicket?.envId ?? namedEnv;
     const sourceEnv = !boundEnv && sender.source?.kind === executionDomain &&
-      (sender.source.deviceId !== "local" || this.envManager.getEnvDescriptor("local")) ? sender.source.deviceId : undefined;
+      (!this.envManager.isLocalEnv(sender.source.deviceId) || this.envManager.getEnvDescriptor(localEnvId)) ? sender.source.deviceId : undefined;
     const sourceRootDir = sourceEnv ? this.envManager.getEnvDescriptor(sourceEnv)?.rootDir : undefined;
     const senderLocalSignals = Boolean(
       sourceEnv &&
@@ -6157,7 +6303,7 @@ export class KuloHub implements OrchestratorController {
           : proposedRole?.external
             ? proposedRole.external.envId
             : executionDomain === "computer" && params.targetScope === "hub_local" && !senderLocalSignals && localReady
-              ? "local"
+              ? localEnvId
               : sourceEnv
     );
     const requestedRole = params.role;
@@ -6285,7 +6431,7 @@ export class KuloHub implements OrchestratorController {
       }
     }
     if (!project && params.workspaceDir?.trim()) {
-      const requested = { envId: targetEnvId, workspaceDir: targetEnvId === "local" ? canonicalExecutionPath(params.workspaceDir) : params.workspaceDir } as TicketRecord;
+      const requested = { envId: targetEnvId, workspaceDir: this.envManager.isLocalEnv(targetEnvId) ? canonicalExecutionPath(params.workspaceDir) : params.workspaceDir } as TicketRecord;
       const overlap = (await this.projects.list(context)).find((p) => ticketsShareWriteScope(requested, { envId: p.deviceId, workspaceDir: p.workspaceDir } as TicketRecord));
       if (overlap) throw new ProjectError(400, "project_required", `该目录属于项目 ${overlap.name}，请使用 project_id 派单。`, { projectId: overlap.id });
     }
@@ -7790,7 +7936,7 @@ export class KuloHub implements OrchestratorController {
       text: this.connectionManager.redact(params.replyTo.text) } : undefined;
     const modelPrompt = replyContext(prompt, replyTo);
     for (const { record } of this.uploads.resolveAttachments(params.attachments)) {
-      if (record.kind === "audio") await this.transcribeVoiceAsset(record.id, { topicId: ticket.originTopicId ?? "root", principalId: params.principalId || "local" }, context);
+      if (record.kind === "audio") await this.transcribeVoiceAsset(record.id, { topicId: ticket.originTopicId ?? "root", principalId: params.principalId || this.envManager.localEnvId }, context);
     }
     const prepared = this.uploads.buildMultimodalContent(`【主控补充引导】\n${modelPrompt}`, params.attachments);
     let created = false;
@@ -8674,8 +8820,19 @@ export class KuloHub implements OrchestratorController {
     return this.sparkMail.status({ force: true });
   }
 
+  setLanHttpEndpoint(provider: (() => { lanReachable: boolean; port: number } | undefined) | undefined): void {
+    this.#lanHttpEndpointProvider = provider;
+  }
+
   async configureAssistantHomeAssistant(
-    input: { enabled?: boolean; baseUrl?: string; token?: string; clearToken?: boolean },
+    input: {
+      enabled?: boolean;
+      baseUrl?: string;
+      token?: string;
+      clearToken?: boolean;
+      sentinel?: Partial<import("@kulo/protocol").HomeAssistantSentinelConfig>;
+      announce?: Partial<import("@kulo/protocol").HomeAssistantAnnounceConfig>;
+    },
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<import("@kulo/protocol").HomeAssistantSnapshot> {
     const snap = await this.homeAssistant.configure(input);
@@ -8722,7 +8879,7 @@ export class KuloHub implements OrchestratorController {
       cursorAfter: String(Date.now()),
       events,
     };
-    const { inserted } = await this.assistantLedger.ingestBatch("local", batch, redact);
+    const { inserted } = await this.assistantLedger.ingestBatch(this.envManager.localEnvId, batch, redact);
     if (inserted.length > 0) {
       this.assistantSorter.enqueue(inserted);
       await this.#refreshAssistantActiveFlag(BACKGROUND_CONTEXT);
@@ -9276,22 +9433,144 @@ export class KuloHub implements OrchestratorController {
     return this.#providerManager?.cancelOAuthSession(sessionId) ?? null;
   }
 
+  setOnClusterDirty(hook: ((kind: "sqlite" | "assistant" | "vault" | "files" | "uploads") => void) | undefined): void {
+    this.#onClusterDirty = hook;
+  }
+
+  setClusterCloseHook(hook: (() => Promise<void>) | undefined): void {
+    this.#clusterCloseHook = hook;
+  }
+
+  setClusterHostContext(ctx: { localNodeId: string; legacyLocalNodeId?: string } | undefined): void {
+    this.#clusterHostContext = ctx;
+    this.connectionManager.setClusterHostContext(ctx);
+  }
+
+  get isHandoverBarrierActive(): boolean {
+    return this.#handoverBarrierActive;
+  }
+
+  #isLoopbackServicePausedForForeignHost(boundNodeId?: string): boolean {
+    const ctx = this.#clusterHostContext;
+    if (!ctx || ctx.localNodeId === "local") return false;
+    const ownerNodeId = boundNodeId ?? ctx.legacyLocalNodeId;
+    return Boolean(ownerNodeId && ownerNodeId !== ctx.localNodeId);
+  }
+
+  #effectiveMemoryConfig(memory: KuloDurableSettings["memory"]): KuloDurableSettings["memory"] {
+    if (
+      memory.enabled &&
+      isLoopbackEndpointUrl(memory.endpoint) &&
+      this.#isLoopbackServicePausedForForeignHost((memory as { boundNodeId?: string }).boundNodeId)
+    ) {
+      return { ...memory, enabled: false };
+    }
+    return memory;
+  }
+
+  async inspectActiveWorkForHandover(): Promise<{
+    busy: boolean;
+    activeTurns: number;
+    activeTickets: number;
+    activeVoiceCalls: number;
+    activeSettingsTurns: number;
+    activeMediaJobs: number;
+  }> {
+    let activeTurns = 0;
+    for (const cache of this.#topicCaches.values()) {
+      if (cache.live.busy) activeTurns += 1;
+    }
+    const board = await this.getBoardSnapshot();
+    const activeTickets = board.tickets.filter((t) => ["running", "queued", "pausing"].includes(t.status)).length;
+    const activeVoiceCalls = this.voiceCalls.hasActiveCalls() ? 1 : 0;
+    const settingsSnap = await this.settingsAssistant.getSnapshot().catch(() => null);
+    const activeSettingsTurns = settingsSnap?.live?.busy ? 1 : 0;
+    const mediaList = await this.mediaJobs.list().catch(() => []);
+    const activeMediaJobs = mediaList.filter((j) => j.status === "queued" || j.status === "running").length;
+    return {
+      busy: activeTurns + activeTickets + activeVoiceCalls + activeSettingsTurns + activeMediaJobs > 0,
+      activeTurns,
+      activeTickets,
+      activeVoiceCalls,
+      activeSettingsTurns,
+      activeMediaJobs,
+    };
+  }
+
+  async abortActiveWorkForHandover(timeoutMs = 10_000): Promise<void> {
+    const localId = this.envManager.localEnvId;
+    for (const [topicId, cache] of this.#topicCaches) {
+      if (cache.live.busy) {
+        await this.deliverClientMessage({ type: "chat.abort", topicId }, localId).catch(() => undefined);
+      }
+    }
+    const board = await this.getBoardSnapshot();
+    for (const ticket of board.tickets) {
+      if (["running", "queued", "pausing"].includes(ticket.status)) {
+        await this.stopTicket(ticket.id, "正在切换主机").catch(() => undefined);
+      }
+    }
+    await this.settingsAssistant.abort().catch(() => undefined);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const status = await this.inspectActiveWorkForHandover();
+      if (!status.busy) return;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  }
+
+  beginHandoverBarrier(maxDurationMs = 15_000): void {
+    this.#handoverBarrierActive = true;
+    if (this.#handoverBarrierTimer) clearTimeout(this.#handoverBarrierTimer);
+    this.#handoverBarrierTimer = setTimeout(() => {
+      this.#handoverBarrierActive = false;
+      this.#handoverBarrierTimer = null;
+    }, maxDurationMs);
+    this.#handoverBarrierTimer.unref?.();
+  }
+
+  releaseHandoverBarrier(): void {
+    this.#handoverBarrierActive = false;
+    if (this.#handoverBarrierTimer) {
+      clearTimeout(this.#handoverBarrierTimer);
+      this.#handoverBarrierTimer = null;
+    }
+  }
+
+  getEffectiveIdentityDir(): string {
+    return resolveEffectiveIdentityDir(this.#liveSettings, this.#defaultIdentityDir);
+  }
+
+  get defaultIdentityDir(): string {
+    return this.#defaultIdentityDir;
+  }
+
+  #notifyClusterDirty(kind: "sqlite" | "assistant" | "vault" | "files" | "uploads"): void {
+    try {
+      this.#onClusterDirty?.(kind);
+    } catch {
+      // Ignore sync observer failures
+    }
+  }
+
   close(context: Context = BACKGROUND_CONTEXT): Promise<void> {
     return this.#closing ??= this.#finishClose(context);
   }
 
   async #finishClose(context: Context): Promise<void> {
     this.#closed = true;
+    this.releaseHandoverBarrier();
+    const errors: unknown[] = [];
+    const finish = async (work: () => unknown) => {
+      try { await work(); } catch (error) { errors.push(error); }
+    };
+    await finish(() => this.#clusterCloseHook?.());
     for (const id of [...this.#inlineDispatchWaiters.keys()]) {
       this.#notifyInlineWaiters(id);
     }
     for (const topicId of [...this.#orchestratorBrowserSessions.keys()]) {
       await this.#closeOrchestratorBrowserSession(topicId, true);
     }
-    const errors: unknown[] = [];
-    const finish = async (work: () => unknown) => {
-      try { await work(); } catch (error) { errors.push(error); }
-    };
     await finish(() => this.#ticketBoard.close());
     if (this.#cleanupRetryTimer) {
       clearTimeout(this.#cleanupRetryTimer);
@@ -9317,6 +9596,7 @@ export class KuloHub implements OrchestratorController {
     await finish(() => this.envManager.setConnectorHandlers(undefined));
     await finish(() => this.larkConnector.close());
     await finish(() => this.homeAssistant.close());
+    this.haLanAudio.clear();
     await finish(() => this.assistantSorter.close());
     await finish(() => this.assistantCoordinator.close());
     await finish(() => this.ambientModel.close());
@@ -10198,9 +10478,13 @@ export class KuloHub implements OrchestratorController {
     if (this.#closed || this.#topicCaches.get(cache.topicId) !== cache) return;
     const messages = this.#projectTopicMessages(value, Number(cache.conversation.id));
     cache.messages = messages;
+    const latestPreview = summarizeTopicPreview(messages);
+    if (latestPreview) this.#topicPreviewCache.set(cache.topicId, latestPreview);
     const wasBusy = cache.live.busy;
     cache.live = redactCredentialData(this.#projectTopicLiveState(value, Number(cache.conversation.id)), (text) => this.connectionManager.redact(text));
-    if (wasBusy && !cache.live.busy && cache.topicId !== "root") this.#recordTopicActivity(cache.topicId);
+    if (wasBusy && !cache.live.busy) {
+      this.#recordTopicActivity(cache.topicId, latestPreview);
+    }
     const notification = detectMainSessionNotification({
       topicId: cache.topicId,
       topicTitle: cache.topicId === "root" ? undefined : this.#topicTitleCache.get(cache.topicId),
@@ -10219,7 +10503,7 @@ export class KuloHub implements OrchestratorController {
     }
   }
 
-  #recordTopicActivity(topicId: string): void {
+  #recordTopicActivity(topicId: string, latestPreview?: { preview: string; at?: number }): void {
     const at = Date.now();
     const previous = this.#topicActivityUpdates.get(topicId);
     const update = (async () => {
@@ -10227,9 +10511,19 @@ export class KuloHub implements OrchestratorController {
       const topics = await this.harness.commit(async (tx) => {
         const state = await tx.doc(KuloStateDoc);
         const topic = state.topics?.[topicId];
-        if (!topic || topic.deletedAt || topic.master || topic.id === "root") return undefined;
-        topic.updatedAt = Math.max(topic.updatedAt, at);
-        return listSortedTopics(state);
+        if (!topic || topic.deletedAt) return undefined;
+        let changed = false;
+        if (!topic.master && topic.id !== "root") {
+          const nextUpdatedAt = Math.max(topic.updatedAt, at);
+          if (nextUpdatedAt !== topic.updatedAt) {
+            topic.updatedAt = nextUpdatedAt;
+            changed = true;
+          }
+        }
+        if (applyTopicPreview(topic, latestPreview, at)) {
+          changed = true;
+        }
+        return changed ? listSortedTopics(state) : undefined;
       }, BACKGROUND_CONTEXT);
       if (topics) this.#emitTopics(topics);
     })().catch((error) => {
@@ -10726,7 +11020,7 @@ export class KuloHub implements OrchestratorController {
       const sourceId = message.source?.deviceId;
       if (explicitTarget) {
         envId = explicitTarget;
-      } else if (sourceId && !(sourceId === "local" && !this.envManager.getEnvDescriptor("local"))) {
+      } else if (sourceId && !(this.envManager.isLocalEnv(sourceId) && !this.envManager.getEnvDescriptor(this.envManager.localEnvId))) {
         envId = sourceId;
       } else {
         envId = this.envManager.pickDefaultEnvId();
@@ -10836,8 +11130,9 @@ export class KuloHub implements OrchestratorController {
     if (inputs.some((input) => chatRoutingData(input).source?.deviceId !== message.source?.deviceId) && !message.targetDeviceId) {
       throw new ProjectError(409, "source_device_ambiguous", "本轮有来自不同设备的消息，请用 kulo_dispatch 并填写对应的 source_request_id。");
     }
+    const localEnvId = this.envManager.localEnvId;
     const envTargetId = environment === "node:local"
-      ? "local"
+      ? localEnvId
       : environment?.startsWith("pi-env:")
         ? environment.slice("pi-env:".length)
         : undefined;
@@ -10857,8 +11152,9 @@ export class KuloHub implements OrchestratorController {
       })?.envId;
     }
     const sourceId = message.source?.deviceId;
-    const target = explicitTarget || contextualTarget || (sourceId === "local" && !this.envManager.getEnvDescriptor("local") ? undefined : sourceId);
-    if (target && environment !== (target === "local" ? "node:local" : `pi-env:${target}`)) {
+    const target = explicitTarget || contextualTarget || (sourceId && this.envManager.isLocalEnv(sourceId) && !this.envManager.getEnvDescriptor(localEnvId) ? undefined : sourceId);
+    const expectedEnv = target && this.envManager.isLocalEnv(target) ? "node:local" : target ? `pi-env:${target}` : undefined;
+    if (target && environment !== expectedEnv) {
       throw new ProjectError(409, "read_device_mismatch", "请用 kulo_dispatch 在这条消息对应的设备上读取文件。");
     }
   }
@@ -11060,6 +11356,7 @@ export class KuloHub implements OrchestratorController {
   #startWatchdog(): void {
     if (this.#watchdogTimer || this.#closed) return;
     this.#watchdogTimer = setInterval(() => {
+      if (this.#handoverBarrierActive) return;
       void this.#runWatchdogCheck();
     }, this.#watchdogCheckIntervalMs);
     this.#watchdogTimer.unref?.();
@@ -11068,6 +11365,7 @@ export class KuloHub implements OrchestratorController {
   #startTopicAutoArchive(): void {
     if (this.#topicAutoArchiveTimer || this.#closed) return;
     this.#topicAutoArchiveTimer = setInterval(() => {
+      if (this.#handoverBarrierActive) return;
       void this.archiveInactiveTopics().catch((error) => {
         console.warn("[KuloTopicArchive] Automatic archive check failed", error);
       });
@@ -11272,13 +11570,27 @@ export class KuloHub implements OrchestratorController {
     }
   }
 
+  #enrichTopicsWithPreviews(topics: TopicSummary[]): TopicSummary[] {
+    return topics.map((topic) => {
+      const cached = this.#topicPreviewCache.get(topic.id);
+      if (!cached) return topic;
+      if (topic.lastMessagePreview && (topic.lastMessageAt ?? 0) >= (cached.at ?? 0)) return topic;
+      return {
+        ...topic,
+        lastMessagePreview: cached.preview,
+        ...(cached.at ? { lastMessageAt: cached.at } : {}),
+      };
+    });
+  }
+
   #emitTopics(topics: TopicSummary[]): void {
+    const enriched = this.#enrichTopicsWithPreviews(topics);
     this.#topicTitleCache.clear();
-    for (const topic of topics) {
+    for (const topic of enriched) {
       if (!topic.deletedAt && topic.title) this.#topicTitleCache.set(topic.id, topic.title);
     }
     for (const listener of this.#listeners) {
-      listener.onTopics?.(topics);
+      listener.onTopics?.(enriched);
     }
   }
 

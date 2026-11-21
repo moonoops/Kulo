@@ -83,8 +83,9 @@ function ResolvedAssets({ parts, conversationKey, onPreviewImage, role }: {
   }, [missingKey, attempt]);
   const assets = parts.flatMap((part) => { const asset = part.asset ?? resolved.get(part.assetId); return asset ? [asset] : []; });
   const unavailable = parts.filter((part) => !part.asset && !resolved.has(part.assetId));
+  const fallbackByAsset = new Map(parts.filter((part) => part.fallbackText).map((part) => [part.assetId, part.fallbackText!]));
   return <>
-    {parts[0]?.type === "image" ? <AssetImageGallery assets={assets} onPreviewImage={onPreviewImage} /> : assets.map((asset) => role === "user" && asset.kind === "audio" && asset.presentation === "voice" ? <VoiceMessage key={asset.id} asset={asset} conversationKey={conversationKey} /> : <MediaMessage key={asset.id} asset={asset} conversationKey={conversationKey} onPreviewImage={onPreviewImage} defaultExpanded />)}
+    {parts[0]?.type === "image" ? <AssetImageGallery assets={assets} onPreviewImage={onPreviewImage} /> : assets.map((asset) => role === "user" && asset.kind === "audio" && asset.presentation === "voice" ? <VoiceMessage key={asset.id} asset={asset} conversationKey={conversationKey} /> : <MediaMessage key={asset.id} asset={asset} conversationKey={conversationKey} onPreviewImage={onPreviewImage} defaultExpanded fallbackText={fallbackByAsset.get(asset.id)} />)}
     {unavailable.map((part) => <div key={part.partId} className="kulo-chat-unavailable-part" role="status"><span>{failures.has(part.assetId) ? tr("附件不可用", "Attachment unavailable") : tr("正在加载附件", "Loading attachment")}</span>{failures.has(part.assetId) && <Button size="sm" variant="secondary" onPress={() => setAttempt((value) => value + 1)}>{tr("重试", "Retry")}</Button>}</div>)}
     {parts.some((part) => part.caption) && <p className="kulo-chat-media-caption">{parts.map((part) => part.caption).filter(Boolean).join("\n")}</p>}
   </>;

@@ -7,7 +7,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-durable";
 import type { SkillAudience, SkillRecord, SkillSnapshot } from "@kulo/protocol";
 import { installSkillSource, parseSkillSource, SkillSourceError, type SkillSourceSpec } from "./skill-sources.js";
-import { isSkillApplicable, loadSkillPresets, type SkillPreset } from "./skill-presets.js";
+import { COMPUTER_ONLY_BUILTINS, isSkillApplicable, loadSkillPresets, type SkillPreset } from "./skill-presets.js";
 import type { SkillRuntimeContext } from "./skill-runtime.js";
 
 const AUDIENCES: SkillAudience[] = ["settings", "chat", "worker"];
@@ -525,7 +525,7 @@ export class KuloSkills {
       return preset ? [preset.condition] : [];
     });
     const checksAndroidDomain = audience === "worker" && entries.some((entry) =>
-      entry && !entry.removed && entry.record.enabled && entry.record.source === "builtin" && entry.record.id === "interactive-html");
+      entry && !entry.removed && entry.record.enabled && entry.record.source === "builtin" && COMPUTER_ONLY_BUILTINS.has(entry.record.id));
     return {
       targetDevice: conditions.some((condition) => !!condition.capability || !!condition.platform),
       reactWorkspace: conditions.some((condition) => condition.projectFramework === "react"),

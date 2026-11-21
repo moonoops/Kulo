@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HindsightLocalService, type HindsightProcessRunner } from "../packages/hub/src/hindsight-service.js";
+import { diagnoseHindsightStartupFailure, HindsightLocalService, type HindsightProcessRunner } from "../packages/hub/src/hindsight-service.js";
 import { buildAugmentedHostPath, findHostExecutable } from "../packages/hub/src/host-path.js";
 
 const directories: string[] = [];
@@ -425,5 +425,118 @@ describe("Kulo-owned Hindsight local service", () => {
     expect(segments.indexOf(localBin)).toBeLessThan(segments.indexOf("/usr/bin"));
 
     expect(findHostExecutable("uv", { basePath: `${firstBin}:/usr/bin:/bin`, homeDir: fakeHome, platform: "darwin" })).toBe(uvExe);
+  });
+
+  it("normalizes bare BGE ONNX repos to verified ONNX exports and applies CLS pooling without E5 prefixes", async () => {
+    const f = await fixture();
+    const connection = await f.service.deploy({
+      commandId: "onnx-alias-install",
+      model: { provider: "ollama", model: "llama3.2" },
+      embeddings: { provider: "onnx", model: "BAAI/bge-small-zh-v1.5", dimensions: 512 },
+      reranker: { provider: "onnx", model: "BAAI/bge-reranker-v2-m3" },
+    });
+    expect(connection.embeddings).toEqual({ provider: "onnx", model: "Xenova/bge-small-zh-v1.5", dimensions: 512 });
+    expect(connection.reranker).toEqual({ provider: "onnx", model: "onnx-community/bge-reranker-v2-m3-ONNX" });
+
+    const runtime = JSON.parse(await fs.readFile(path.join(f.root, "runtime.json"), "utf8")) as { env: Record<string, string> };
+    expect(runtime.env.HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_ID).toBe("Xenova/bge-small-zh-v1.5");
+    expect(runtime.env.HINDSIGHT_API_EMBEDDINGS_ONNX_POOLING).toBe("cls");
+    expect(runtime.env.HINDSIGHT_API_EMBEDDINGS_ONNX_QUERY_PREFIX).toBe("");
+    expect(runtime.env.HINDSIGHT_API_EMBEDDINGS_ONNX_PASSAGE_PREFIX).toBe("");
+    expect(runtime.env.HINDSIGHT_API_RERANKER_ONNX_MODEL_ID).toBe("onnx-community/bge-reranker-v2-m3-ONNX");
+
+    // Switching back to multilingual-e5 clears BGE pooling/prefix overrides cleanly.
+    await f.service.configure({
+      commandId: "switch-back-e5",
+      model: { provider: "ollama", model: "llama3.2" },
+      embeddings: { provider: "onnx", model: "intfloat/multilingual-e5-small", dimensions: 384 },
+      reranker: { provider: "onnx", model: "hindsight-ai/hs-rerank-1" },
+    });
+    const runtimeAfter = JSON.parse(await fs.readFile(path.join(f.root, "runtime.json"), "utf8")) as { env: Record<string, string> };
+    expect(runtimeAfter.env.HINDSIGHT_API_EMBEDDINGS_ONNX_POOLING).toBeUndefined();
+    expect(runtimeAfter.env.HINDSIGHT_API_EMBEDDINGS_ONNX_QUERY_PREFIX).toBeUndefined();
+    expect(runtimeAfter.env.HINDSIGHT_API_EMBEDDINGS_ONNX_PASSAGE_PREFIX).toBeUndefined();
+  });
+
+  it("fails fast on fatal startup crashes in service.log, stops the crash-looping daemon, and allows retrying the same commandId", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "kulo-startup-crash-")); directories.push(directory);
+    const stateDir = path.join(directory, "state"), homeDir = path.join(directory, "user");
+    const root = path.join(stateDir, "managed-hindsight");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    let registered = false, crashOnStart = true, now = 0, marker = "";
+
+    const run: HindsightProcessRunner = async (command, args) => {
+      calls.push({ command, args });
+      if (command === "uv" && args[0] === "pip") {
+        await fs.mkdir(path.join(root, "venv", "bin"), { recursive: true });
+        await fs.writeFile(path.join(root, "venv", "bin", "python"), "test executable");
+      }
+      if (command === "launchctl" && args[0] === "bootstrap") {
+        registered = true;
+        if (crashOnStart) {
+          await fs.appendFile(
+            path.join(root, "service.log"),
+            "onnxruntime.capi.onnxruntime_pybind11_state.NoSuchFile: [ONNXRuntimeError] : 3 : NO_SUCHFILE : Load model /secret/path/onnx/model.onnx failed\n2026-11-21 14:19:06,628 - ERROR - uvicorn.error - Application startup failed. Exiting.\n",
+          );
+        }
+      }
+      if (command === "launchctl" && args[0] === "bootout") registered = false;
+      if (command === "launchctl" && args[0] === "print") return { code: registered ? 0 : 113 };
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const fakeFetch: typeof fetch = async (input, init) => {
+      if (!registered || crashOnStart) throw new Error("connection refused");
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+      const runtime = JSON.parse(await fs.readFile(path.join(root, "runtime.json"), "utf8")) as { env: Record<string, string> };
+      const token = new Headers(init?.headers).get("authorization")!.slice(7);
+      const send = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+      if (url.pathname === "/v1/kulo/access") return send({ policyVersion: 1 });
+      if (token === runtime.env.KULO_HINDSIGHT_WORKER_API_KEY && url.pathname.includes("/kulo-core/")) return send({}, 403);
+      if (token === runtime.env.KULO_HINDSIGHT_ROUTER_API_KEY && method === "POST" && url.pathname.endsWith("/memories")) return send({}, 403);
+      if (url.pathname.endsWith("/config")) return send({});
+      if (method === "POST" && url.pathname.endsWith("/memories")) {
+        marker = body.items[0].document_id;
+        return send({ operation_id: body.operation_id });
+      }
+      if (url.pathname.includes("/operations/")) return send({ status: "completed" });
+      if (url.pathname.endsWith("/memories/recall")) return send({ results: [{ text: marker }] });
+      if (url.pathname.endsWith("/reflect")) return send({ text: marker });
+      if (method === "DELETE") return send({ status: "deleted" });
+      return send({}, 404);
+    };
+
+    const service = new HindsightLocalService({
+      stateDir, homeDir, platform: "darwin", deviceName: "Test Mac",
+      run, fetch: fakeFetch, now: () => now, sleep: async (ms) => { now += ms; },
+      readinessTimeoutMs: 600_000, verificationTimeoutMs: 5000,
+    });
+
+    await expect(service.deploy({
+      commandId: "retryable-cmd",
+      model: { provider: "ollama", model: "llama3.2" },
+      reranker: { provider: "onnx", model: "custom/missing-onnx-repo" },
+    })).rejects.toThrow("缺少 onnx/model.onnx");
+    // Failed immediately without waiting for the 10-minute readiness timeout, and stopped launchd so it cannot crash-loop.
+    expect(now).toBeLessThan(10_000);
+    expect(registered).toBe(false);
+    expect(calls.filter((c) => c.command === "launchctl" && c.args[0] === "bootout").length).toBeGreaterThanOrEqual(2);
+    expect(await service.inspect()).toMatchObject({ phase: "failed", running: false });
+
+    // Retrying the same failed commandId ignores earlier log lines, updates manifest models, and succeeds.
+    crashOnStart = false;
+    const recovered = await service.deploy({
+      commandId: "retryable-cmd",
+      model: { provider: "ollama", model: "llama3.2" },
+      reranker: { provider: "onnx", model: "BAAI/bge-reranker-v2-m3" },
+    });
+    expect(recovered).toMatchObject({
+      phase: "ready",
+      running: true,
+      reranker: { provider: "onnx", model: "onnx-community/bge-reranker-v2-m3-ONNX" },
+    });
+    expect(diagnoseHindsightStartupFailure("Application startup failed. Exiting.")).toBeUndefined();
+    expect(diagnoseHindsightStartupFailure("Application startup failed. Exiting.\nApplication startup failed. Exiting.")).toContain("启动失败并提前退出");
   });
 });

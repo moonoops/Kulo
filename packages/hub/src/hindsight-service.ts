@@ -49,11 +49,59 @@ export const DEFAULT_LOCAL_RERANKER: HindsightRerankerModel = {
   provider: "onnx",
   model: "hindsight-ai/hs-rerank-1",
 };
+/** Map bare PyTorch HF repos that lack onnx/model.onnx to verified ONNX-exported repos. */
+export const ONNX_EMBEDDINGS_MODEL_ALIASES: Readonly<Record<string, string>> = {
+  "BAAI/bge-small-zh-v1.5": "Xenova/bge-small-zh-v1.5",
+};
+export const ONNX_RERANKER_MODEL_ALIASES: Readonly<Record<string, string>> = {
+  "BAAI/bge-reranker-v2-m3": "onnx-community/bge-reranker-v2-m3-ONNX",
+};
+export function normalizeOnnxEmbeddingsModel(model: string): string {
+  return ONNX_EMBEDDINGS_MODEL_ALIASES[model] ?? model;
+}
+export function normalizeOnnxRerankerModel(model: string): string {
+  return ONNX_RERANKER_MODEL_ALIASES[model] ?? model;
+}
+const STARTUP_FAILED_MARKER = "Application startup failed. Exiting.";
+/** Classify fatal Hindsight startup errors from new service.log bytes into secret-free diagnostics. */
+export function diagnoseHindsightStartupFailure(logSlice: string): string | undefined {
+  if (!logSlice) return undefined;
+  const failures = logSlice.split(STARTUP_FAILED_MARKER).length - 1;
+  if (failures <= 0) return undefined;
+  if (/NO_SUCHFILE|NoSuchFile/i.test(logSlice) && /\.onnx\b/i.test(logSlice)) {
+    return "所选本机 ONNX 模型仓库缺少 onnx/model.onnx 文件，请更换支持 ONNX 导出的模型后重试。";
+  }
+  if (/Configured ONNX embedding dimension/i.test(logSlice)) {
+    return "向量模型维度与所选 ONNX 模型实际输出维度不一致，请留空自动检测或更正维度后重试。";
+  }
+  if (/ONNX reranker .* expected 1 or 2/i.test(logSlice)) {
+    return "所选本机 ONNX 重排模型输出格式不受支持，请更换其他重排模型后重试。";
+  }
+  if (/RepositoryNotFoundError|EntryNotFoundError|GatedRepoError|LocalEntryNotFoundError/i.test(logSlice)) {
+    return "无法下载所选本机 ONNX 模型（仓库不存在、需要授权或网络不可达），请检查模型名称与网络后重试。";
+  }
+  if (/Address already in use|Errno (?:48|98)\b/i.test(logSlice)) {
+    return "Hindsight 本机服务监听端口已被占用，请重试部署。";
+  }
+  if (/ModuleNotFoundError|ImportError/i.test(logSlice)) {
+    return "Hindsight 运行环境缺少依赖组件，请卸载（可保留数据）后重新部署。";
+  }
+  if (/Kulo memory bridge|KULO_HINDSIGHT_MODEL_PROVIDER_ID/i.test(logSlice)) {
+    return "Hindsight 无法连接 Kulo 模型桥接服务，请检查所选理解模型后重试。";
+  }
+  if (failures >= 2) {
+    return "Hindsight 启动失败并提前退出，请检查所选模型配置与托管服务日志后重试。";
+  }
+  return undefined;
+}
 const EMBEDDINGS_ENV_KEYS = [
   "HINDSIGHT_API_EMBEDDINGS_PROVIDER",
   "HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_ID",
   "HINDSIGHT_API_EMBEDDINGS_ONNX_DIMENSIONS",
   "HINDSIGHT_API_EMBEDDINGS_ONNX_THREADS",
+  "HINDSIGHT_API_EMBEDDINGS_ONNX_POOLING",
+  "HINDSIGHT_API_EMBEDDINGS_ONNX_QUERY_PREFIX",
+  "HINDSIGHT_API_EMBEDDINGS_ONNX_PASSAGE_PREFIX",
   "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
   "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL",
   "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL",
@@ -208,7 +256,8 @@ function embeddingsConfig(raw?: HindsightEmbeddingsModel): HindsightEmbeddingsMo
   if (raw.provider === "tei" && !baseUrl) throw new HindsightServiceError("TEI 向量服务必须填写服务地址。");
   const dimensions = raw.dimensions !== undefined ? Math.trunc(raw.dimensions) : undefined;
   if (dimensions !== undefined && (!Number.isSafeInteger(dimensions) || dimensions < 32 || dimensions > 8192)) throw new HindsightServiceError("向量维度必须在 32 到 8192 之间。");
-  const resolvedModel = model ?? (raw.provider === "onnx" ? DEFAULT_LOCAL_EMBEDDINGS.model : raw.provider === "openai" ? "text-embedding-3-small" : raw.provider === "google" ? "gemini-embedding-001" : raw.provider === "cohere" ? "embed-multilingual-v3.0" : undefined);
+  const rawResolvedModel = model ?? (raw.provider === "onnx" ? DEFAULT_LOCAL_EMBEDDINGS.model : raw.provider === "openai" ? "text-embedding-3-small" : raw.provider === "google" ? "gemini-embedding-001" : raw.provider === "cohere" ? "embed-multilingual-v3.0" : undefined);
+  const resolvedModel = raw.provider === "onnx" && rawResolvedModel ? normalizeOnnxEmbeddingsModel(rawResolvedModel) : rawResolvedModel;
   const resolvedDims = dimensions ?? (raw.provider === "onnx" && resolvedModel === DEFAULT_LOCAL_EMBEDDINGS.model ? DEFAULT_LOCAL_EMBEDDINGS.dimensions : undefined);
   return {
     provider: raw.provider,
@@ -225,7 +274,8 @@ function rerankerConfig(raw?: HindsightRerankerModel): HindsightRerankerModel {
   if (model && (model.length > 200 || /[\x00-\x1f]/.test(model))) throw new HindsightServiceError("重排模型名称无效。");
   const baseUrl = raw.baseUrl?.trim() ? cleanServiceUrl(raw.baseUrl, "重排服务地址") : undefined;
   if (raw.provider === "tei" && !baseUrl) throw new HindsightServiceError("TEI 重排服务必须填写服务地址。");
-  const resolvedModel = model ?? (raw.provider === "onnx" ? DEFAULT_LOCAL_RERANKER.model : raw.provider === "cohere" ? "rerank-multilingual-v3.0" : raw.provider === "siliconflow" ? "BAAI/bge-reranker-v2-m3" : raw.provider === "alibaba" ? "qwen3-rerank" : raw.provider === "zeroentropy" ? "zerank-2" : undefined);
+  const rawResolvedModel = model ?? (raw.provider === "onnx" ? DEFAULT_LOCAL_RERANKER.model : raw.provider === "cohere" ? "rerank-multilingual-v3.0" : raw.provider === "siliconflow" ? "BAAI/bge-reranker-v2-m3" : raw.provider === "alibaba" ? "qwen3-rerank" : raw.provider === "zeroentropy" ? "zerank-2" : undefined);
+  const resolvedModel = raw.provider === "onnx" && rawResolvedModel ? normalizeOnnxRerankerModel(rawResolvedModel) : rawResolvedModel;
   return {
     provider: raw.provider,
     ...(resolvedModel ? { model: resolvedModel } : {}),
@@ -428,7 +478,29 @@ export class HindsightLocalService {
     if (!response.ok) { await response.body?.cancel(); throw new HindsightServiceError(`Hindsight 验证失败（HTTP ${response.status}）。`); }
     return await response.json() as Record<string, unknown>;
   }
-  async #ready(manifest: Manifest, runtime: RuntimeFile) {
+  async #serviceLogSize(): Promise<number> {
+    try { return (await fs.stat(path.join(this.root, "service.log"))).size; }
+    catch { return 0; }
+  }
+  async #readStartupLogSince(offset: number): Promise<string> {
+    const file = path.join(this.root, "service.log");
+    let handle: fs.FileHandle | undefined;
+    try {
+      handle = await fs.open(file, "r");
+      const info = await handle.stat();
+      const start = info.size < offset ? 0 : offset;
+      const length = Math.min(info.size - start, 65_536);
+      if (length <= 0) return "";
+      const buffer = Buffer.alloc(length);
+      const { bytesRead } = await handle.read(buffer, 0, length, info.size - length);
+      return buffer.subarray(0, bytesRead).toString("utf8");
+    } catch {
+      return "";
+    } finally {
+      await handle?.close().catch(() => {});
+    }
+  }
+  async #ready(manifest: Manifest, runtime: RuntimeFile, logOffset?: number) {
     const start = (this.#options.now ?? Date.now)();
     const timeout = this.#options.readinessTimeoutMs ?? 600_000;
     while ((this.#options.now ?? Date.now)() - start < timeout) {
@@ -437,6 +509,10 @@ export class HindsightLocalService {
         if (response.ok) { const value = await response.json() as { policyVersion?: number }; if (value.policyVersion === 1) return; }
         else await response.body?.cancel();
       } catch { /* Model download and database initialization precede HTTP readiness. */ }
+      if (logOffset !== undefined) {
+        const diagnosis = diagnoseHindsightStartupFailure(await this.#readStartupLogSince(logOffset));
+        if (diagnosis) throw new HindsightServiceError(diagnosis);
+      }
       await this.#sleep(1000);
     }
     throw new HindsightServiceError("Hindsight 未在时限内启动，请检查托管服务日志后重试。");
@@ -536,9 +612,15 @@ export class HindsightLocalService {
     for (const key of EMBEDDINGS_ENV_KEYS) delete target[key];
     target.HINDSIGHT_API_EMBEDDINGS_PROVIDER = embeddings.provider;
     if (embeddings.provider === "onnx") {
-      target.HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_ID = embeddings.model || DEFAULT_LOCAL_EMBEDDINGS.model!;
+      const modelId = normalizeOnnxEmbeddingsModel(embeddings.model || DEFAULT_LOCAL_EMBEDDINGS.model!);
+      target.HINDSIGHT_API_EMBEDDINGS_ONNX_MODEL_ID = modelId;
       if (embeddings.dimensions !== undefined) target.HINDSIGHT_API_EMBEDDINGS_ONNX_DIMENSIONS = String(embeddings.dimensions);
       target.HINDSIGHT_API_EMBEDDINGS_ONNX_THREADS = "2";
+      if (/\/bge-/i.test(modelId)) {
+        target.HINDSIGHT_API_EMBEDDINGS_ONNX_POOLING = "cls";
+        target.HINDSIGHT_API_EMBEDDINGS_ONNX_QUERY_PREFIX = "";
+        target.HINDSIGHT_API_EMBEDDINGS_ONNX_PASSAGE_PREFIX = "";
+      }
       return;
     }
     if (embeddings.provider === "tei") {
@@ -578,7 +660,7 @@ export class HindsightLocalService {
     target.HINDSIGHT_API_RERANKER_PROVIDER = reranker.provider;
     if (reranker.provider === "rrf") return;
     if (reranker.provider === "onnx") {
-      target.HINDSIGHT_API_RERANKER_ONNX_MODEL_ID = reranker.model || DEFAULT_LOCAL_RERANKER.model!;
+      target.HINDSIGHT_API_RERANKER_ONNX_MODEL_ID = normalizeOnnxRerankerModel(reranker.model || DEFAULT_LOCAL_RERANKER.model!);
       target.HINDSIGHT_API_RERANKER_ONNX_THREADS = "2";
       return;
     }
@@ -653,7 +735,7 @@ export class HindsightLocalService {
         manifest = { ...manifest, model, embeddings, reranker, phase: "installing", commandId: command.commandId, serviceSetupStarted: false };
         delete manifest.verificationId;
         await this.#saveManifest(manifest);
-      } else if (manifest.phase === "failed" && manifest.commandId !== command.commandId) {
+      } else if (manifest.phase === "failed") {
         await this.#stop(manifest);
         manifest = { ...manifest, model, embeddings, reranker, phase: "installing", commandId: command.commandId };
         delete manifest.verificationId;
@@ -697,9 +779,13 @@ export class HindsightLocalService {
         await this.#installUnit(manifest);
         manifest.phase = "verifying"; await this.#saveManifest(manifest);
         await command.onProgress?.("启动并验证长期记忆");
+        const logOffset = await this.#serviceLogSize();
         await this.#start(manifest);
-        return await this.#verify(manifest);
+        return await this.#verify(manifest, logOffset);
       } catch (error) {
+        if (manifest.serviceSetupStarted) {
+          await this.#stop(manifest).catch(() => {});
+        }
         manifest.phase = "failed"; await this.#saveManifest(manifest);
         throw error;
       }
@@ -723,7 +809,8 @@ export class HindsightLocalService {
         await this.#write(this.#runtimePath, JSON.stringify(backup.runtime));
         await this.#saveManifest(backup.manifest);
         manifest = backup.manifest;
-        await this.#start(manifest); await this.#ready(manifest, backup.runtime);
+        const restoreLogOffset = await this.#serviceLogSize();
+        await this.#start(manifest); await this.#ready(manifest, backup.runtime, restoreLogOffset);
         await fs.unlink(backupPath);
       }
       const before = await this.#runtime();
@@ -754,23 +841,29 @@ export class HindsightLocalService {
       await this.#write(backupPath, JSON.stringify({ owner: OWNER, commandId: command.commandId, manifest, runtime: before }));
       await this.#write(this.#runtimePath, JSON.stringify(after));
       try {
+        const logOffset = await this.#serviceLogSize();
         await this.#start(manifest);
         const candidate = { ...manifest, model, embeddings, reranker, commandId: command.commandId, phase: "verifying" as const };
-        const connection = await this.#verify(candidate);
+        const connection = await this.#verify(candidate, logOffset);
         await fs.unlink(backupPath);
         return connection;
       } catch (error) {
         await this.#write(this.#runtimePath, JSON.stringify(before));
-        try { await this.#start(manifest); await this.#ready(manifest, before); await this.#saveManifest(manifest); await fs.unlink(backupPath); }
-        catch { manifest.phase = "failed"; await this.#saveManifest(manifest); throw new HindsightServiceError("新模型验证失败，旧配置已恢复，但服务恢复失败，请重试检查。"); }
+        try {
+          const rollbackLogOffset = await this.#serviceLogSize();
+          await this.#start(manifest); await this.#ready(manifest, before, rollbackLogOffset); await this.#saveManifest(manifest); await fs.unlink(backupPath);
+        } catch {
+          if (manifest.serviceSetupStarted) await this.#stop(manifest).catch(() => {});
+          manifest.phase = "failed"; await this.#saveManifest(manifest); throw new HindsightServiceError("新模型验证失败，旧配置已恢复，但服务恢复失败，请重试检查。");
+        }
         throw error;
       }
     });
   }
-  async #verify(manifest: Manifest): Promise<LocalHindsightConnection> {
+  async #verify(manifest: Manifest, logOffset?: number): Promise<LocalHindsightConnection> {
     const runtime = await this.#runtime();
     const router = runtime.env.KULO_HINDSIGHT_ROUTER_API_KEY!, worker = runtime.env.KULO_HINDSIGHT_WORKER_API_KEY!, manager = runtime.env.KULO_HINDSIGHT_MANAGEMENT_API_KEY!;
-    await this.#ready(manifest, runtime);
+    await this.#ready(manifest, runtime, logOffset);
     for (const [token, bank, method] of [[worker, "kulo-core", "GET"], [router, "kulo-shared", "POST"]] as const) {
       const response = await this.#request(manifest, token, `/v1/default/banks/${bank}/${method === "GET" ? "documents?limit=1" : "memories"}`, method, method === "POST" ? {} : undefined);
       await response.body?.cancel();

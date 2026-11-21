@@ -15,6 +15,7 @@ import { ConnectionsModule, applicationStatusLabel, connectionAddress, connectio
 import { ConnectionIcon } from "./connection-icon";
 import { AddAppModal } from "./mcp-add-modal";
 import { McpOAuthModal } from "./mcp-oauth-modal";
+import { HomeAssistantConfigModal } from "./home-assistant-config-modal";
 import { checkConnectionFollowup, connectionFollowupResult } from "./connection-followup";
 import { kuloRest } from "../../kulo-api";
 import { getSettingsAssistantShortcuts } from "./settings-assistant-actions";
@@ -508,6 +509,34 @@ describe("ambient awareness controls inside connections", () => {
     expect(fullEcosystemHtml).toContain("已连接 · 18 设备");
     expect(fullEcosystemHtml).toContain("飞书 (lark-cli)");
     expect(fullEcosystemHtml).toContain("已连接 · 2 个组织");
+    expect(fullEcosystemHtml).toContain('aria-label="管理米家 / Home Assistant"');
+
+    // Minimal HomeAssistantConfigModal mounts cleanly without throwing (Portal renders in browser DOM).
+    expect(() =>
+      renderToStaticMarkup(
+        <HomeAssistantConfigModal
+          open
+          connected
+          localHost
+          snapshot={{
+            enabled: false,
+            connected: false,
+            hasToken: true,
+            baseUrl: "http://127.0.0.1:8123",
+            migration: {
+              dockerAvailable: true,
+              orbStackAvailable: true,
+              containerRunning: false,
+              port8123Reachable: false,
+              configDir: "/Users/test/.kulo-homeassistant",
+              steps: [],
+            },
+          }}
+          onRequestGuide={() => {}}
+          onClose={() => {}}
+        />,
+      ),
+    ).not.toThrow();
   });
 });
 

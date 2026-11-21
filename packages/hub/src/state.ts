@@ -581,3 +581,38 @@ export function listSortedTopics(state: Readonly<KuloDurableState>): TopicSummar
       return b.updatedAt - a.updatedAt || b.createdAt - a.createdAt;
     });
 }
+
+export function summarizeTopicPreview(
+  messages: ReadonlyArray<{ role?: string; text?: string; createdAt?: number }>,
+  maxLength = 140,
+): { preview: string; at?: number } | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const item = messages[i];
+    if (!item || (item.role !== "assistant" && item.role !== "user" && item.role !== "dispatch")) continue;
+    const cleaned = (item.text ?? "")
+      .replace(/```[\s\S]*?```/g, " [code] ")
+      .replace(/[#>*_`~]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!cleaned) continue;
+    const preview = cleaned.length > maxLength ? `${cleaned.slice(0, maxLength - 1).trimEnd()}…` : cleaned;
+    return {
+      preview,
+      ...(typeof item.createdAt === "number" && item.createdAt > 0 ? { at: item.createdAt } : {}),
+    };
+  }
+  return undefined;
+}
+
+export function applyTopicPreview(
+  topic: TopicSummary,
+  latestPreview: { preview: string; at?: number } | undefined,
+  fallbackAt: number,
+): boolean {
+  if (!latestPreview) return false;
+  const previewAt = latestPreview.at ?? fallbackAt;
+  if (topic.lastMessagePreview === latestPreview.preview && (topic.lastMessageAt ?? 0) >= previewAt) return false;
+  topic.lastMessagePreview = latestPreview.preview;
+  topic.lastMessageAt = Math.max(topic.lastMessageAt ?? 0, previewAt);
+  return true;
+}

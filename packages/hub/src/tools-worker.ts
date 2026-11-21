@@ -149,6 +149,7 @@ export function createWorkerExtension(options: {
   getLanguage?: () => KuloLanguage | undefined;
   getMaxSubagentsPerTicket?: () => number;
   getMediaCapabilities?: () => Promise<CapabilitySnapshot>;
+  getLocalEnvId?: () => string;
   mediaJob?: (id: string, conversationId: number) => Promise<{ id: string; status: string; error?: string }>;
   runSubagents?: (
     req: RunSubagentsRequest,
@@ -595,6 +596,7 @@ export function createWorkerExtension(options: {
       },
       getMaxSubagentsPerTicket: options.getMaxSubagentsPerTicket ?? (() => 4),
       getMediaCapabilities: options.getMediaCapabilities,
+      getLocalEnvId: options.getLocalEnvId,
       shellTimeoutSeconds: DEFAULT_WORKER_SHELL_TIMEOUT_SECONDS,
     }),
     tools: [

@@ -8,6 +8,7 @@ import { kuloRest, type AssistantWorkspaceView } from "../../kulo-api";
 import { ConnectionIcon } from "./connection-icon";
 import { AddAppModal } from "./mcp-add-modal";
 import { McpOAuthModal } from "./mcp-oauth-modal";
+import { HomeAssistantConfigModal } from "./home-assistant-config-modal";
 import { SettingsList, SettingsSection } from "./settings-layout";
 import type { SettingsAssistantEntryIntent } from "./settings-assistant-actions";
 import "./connections-module.css";
@@ -87,15 +88,17 @@ function shortMutedAppLabel(appId: string): string {
 function AssistantAwarenessSection({
   assistant,
   connected,
+  localEnvId,
   onUpdated,
   onRequestAcceleration,
-  onRequestAssistantPrompt,
+  onOpenHomeAssistant,
 }: {
   assistant: AssistantWorkspaceView;
   connected: boolean;
+  localEnvId?: string;
   onUpdated?: (next: AssistantWorkspaceView) => void;
   onRequestAcceleration?: () => void;
-  onRequestAssistantPrompt?: (prompt: string) => void;
+  onOpenHomeAssistant?: () => void;
 }) {
   useI18n();
   const [busyNotif, setBusyNotif] = useState(false);
@@ -106,11 +109,12 @@ function AssistantAwarenessSection({
   const [openingSettings, setOpeningSettings] = useState(false);
   const [sectionError, setSectionError] = useState<string | null>(null);
 
+  const isLocalSource = (envId: string) => envId === "local" || Boolean(localEnvId && envId === localEnvId);
   const macSources = assistant.sources.filter((source) => source.platform === "darwin");
   const grantedSources = macSources.filter((source) => source.permission === "granted");
   const fdaSources = macSources.filter((source) => source.permission === "full_disk_access_required");
-  const localNeedsFda = fdaSources.some((source) => source.envId === "local");
-  const remoteFdaNames = fdaSources.filter((source) => source.envId !== "local").map((source) => source.envName || source.envId);
+  const localNeedsFda = fdaSources.some((source) => isLocalSource(source.envId));
+  const remoteFdaNames = fdaSources.filter((source) => !isLocalSource(source.envId)).map((source) => source.envName || source.envId);
   const errorSource = macSources.find((source) => source.permission === "unsupported_schema" || source.permission === "error");
 
   const notifStatus: { color: "success" | "warning" | "danger" | "default"; label: string } = !assistant.enabled
@@ -325,20 +329,15 @@ function AssistantAwarenessSection({
               <span className="text-sm font-normal text-foreground">{t("米家 / Home Assistant", "Mi Home / Home Assistant")}</span>
               <Chip size="sm" variant="soft" color={haStatus.color}>{haStatus.label}</Chip>
             </div>
-            {onRequestAssistantPrompt && (
+            {onOpenHomeAssistant && (
               <Button
                 size="sm"
                 variant="secondary"
+                aria-label={ha.connected ? t("管理米家 / Home Assistant", "Manage Mi Home / Home Assistant") : t("连接米家 / Home Assistant", "Configure Mi Home / Home Assistant")}
                 isDisabled={!connected}
-                onPress={() =>
-                  onRequestAssistantPrompt(
-                    ha.connected
-                      ? t("查看当前 Home Assistant 设备实体状态与清洗结果。", "Inspect current Home Assistant entities and cleaned devices.")
-                      : t("请引导我无损将米家接入 Home Assistant（OrbStack/Docker + 小米官方集成），并帮我完成 Kulo 局域网连接。", "Guide me through lossless Mi Home to Home Assistant setup (OrbStack/Docker + official Xiaomi Home) and connect it to Kulo over LAN."),
-                  )
-                }
+                onPress={onOpenHomeAssistant}
               >
-                {ha.connected ? t("管理", "Manage") : t("迁移与接入", "Setup")}
+                {ha.connected ? t("管理", "Manage") : t("连接", "Connect")}
               </Button>
             )}
           </div>
@@ -445,12 +444,13 @@ type AppTableRow =
   | { id: string; rowKind: "application"; application: ConnectionApplicationView }
   | { id: string; rowKind: "mcp"; connection: ConnectionRecordView };
 
-export function ConnectionsModule({ clientId, snapshot, loading, error, connected, preparing = false, onPrepare, onRefresh, entryIntent, onIntentHandled, assistant, onAssistantUpdated, onRequestAssistantAcceleration, onRequestAssistantPrompt }: {
+export function ConnectionsModule({ clientId, snapshot, loading, error, connected, localEnvId, preparing = false, onPrepare, onRefresh, entryIntent, onIntentHandled, assistant, onAssistantUpdated, onRequestAssistantAcceleration, onRequestAssistantPrompt }: {
   clientId?: string;
   snapshot: ConnectionWorkspaceSnapshot | null;
   loading: boolean;
   error: string | null;
   connected: boolean;
+  localEnvId?: string;
   preparing?: boolean;
   onPrepare: ConnectionPrepare;
   onRefresh: () => void;
@@ -467,6 +467,7 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
   const [testingId, setTestingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [haModalOpen, setHaModalOpen] = useState(false);
   const [oauthTarget, setOauthTarget] = useState<{ connection: ConnectionRecordView; forceReauth: boolean } | null>(null);
   const [remove, setRemove] = useState<{ id: string; name: string; category: ConnectionCategory } | null>(null);
   const rootRef = useRef<HTMLElement>(null);
@@ -703,9 +704,13 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
           <AssistantAwarenessSection
             assistant={assistant}
             connected={connected}
+            localEnvId={localEnvId}
             onUpdated={onAssistantUpdated}
             onRequestAcceleration={onRequestAssistantAcceleration}
-            onRequestAssistantPrompt={onRequestAssistantPrompt}
+            onOpenHomeAssistant={() => {
+              captureFocus();
+              setHaModalOpen(true);
+            }}
           />
         )}
         </div>
@@ -748,6 +753,30 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
         onCompleted={() => onRefresh()}
         onClose={() => {
           setOauthTarget(null);
+          restoreFocus();
+        }}
+      />
+    )}
+    {haModalOpen && assistant?.homeAssistant && (
+      <HomeAssistantConfigModal
+        open={haModalOpen}
+        snapshot={assistant.homeAssistant}
+        connected={connected}
+        localHost={Boolean(assistant.localHost ?? snapshot?.localHost)}
+        onUpdated={onAssistantUpdated}
+        onRequestGuide={
+          onRequestAssistantPrompt
+            ? () =>
+                onRequestAssistantPrompt(
+                  t(
+                    "请引导我一步步将米家无损接入 Home Assistant，并说明如何在 Home Assistant 生成长期访问令牌。",
+                    "Guide me step-by-step to connect Mi Home to Home Assistant and generate a long-lived access token.",
+                  ),
+                )
+            : undefined
+        }
+        onClose={() => {
+          setHaModalOpen(false);
           restoreFocus();
         }}
       />

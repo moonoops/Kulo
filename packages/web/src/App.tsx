@@ -110,6 +110,8 @@ import { transcribeVoiceRecording } from "./features/chat/voice-transcription";
 import type { TranscribeVoice } from "./features/chat/voice-recorder";
 import { VoiceProvider, useVoiceWorkspace } from "./features/voice/voice-context";
 import { VoiceCallErrorBanner } from "./features/voice/voice-call-error-banner";
+import { useClusterFailover } from "./features/cluster/use-cluster-failover";
+import { ClusterStatusBanner } from "./features/cluster/cluster-status-banner";
 import { hasSidebarVoiceCall } from "./features/voice/voice-call-panel";
 import { VoiceIcon } from "./features/voice/voice-icons";
 import {
@@ -203,6 +205,7 @@ function AppShell() {
     ticketSnapshotVersion,
     slots,
     envs,
+    cluster,
     terminalEntries,
     settings,
     setSettings,
@@ -224,6 +227,11 @@ function AppShell() {
     sendWsWithAck,
     subscribeNotification,
   } = useKuloHubConnection();
+  const clusterFailover = useClusterFailover({
+    connected,
+    cluster,
+    onRoleChanged: refreshSnapshot,
+  });
   const [messageWindow, setMessageWindow] = useState<ConversationMessageWindow>();
   const [messageWindowLoading, setMessageWindowLoading] = useState(false);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
@@ -1795,6 +1803,7 @@ function AppShell() {
 
   const centerNode = (
     <>
+      <ClusterStatusBanner controller={clusterFailover} />
       <VoiceCallErrorBanner
         connected={connected}
         onOpenCall={openCallPanel}
@@ -1885,6 +1894,10 @@ function AppShell() {
           topicId={activeTopicId}
           module={settingsModule}
           recentWorkSource={{ tickets, topics, projects }}
+          clusterStatus={clusterFailover.status}
+          suppressHubOfflineAlert={clusterFailover.hasFailoverOffer}
+          onPromoteCandidate={clusterFailover.requestPromote}
+          onRequestHandover={clusterFailover.requestHandover}
           tickets={tickets}
           ticketsLoaded={schedulesLoaded}
           topics={topics}

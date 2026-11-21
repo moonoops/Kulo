@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { defineExtension, defineTool, type JsonObject, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
-import type { Context } from "@earendil-works/chord/context";
+import { defineExtension, defineTool, GenerationTask, hook, type JsonObject, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
+import type { Message } from "@earendil-works/pi-ai";
 import { compile, equal, unsafe, type Schema } from "@earendil-works/pi-schema";
 import { ANDROID_TOOL_CATALOG, androidOperationPolicy, isAndroidArgs, isAndroidRequest, isAndroidResult,
   type AndroidAction, type AndroidRequest, type AndroidResult, type AndroidToolDefinition } from "@kulo/protocol";
@@ -53,26 +53,114 @@ function output(result: AndroidResult, deviceId: string): NonNullable<ToolExecut
     data: JSON.stringify(result.data ?? null).slice(0, 56_000) }) }];
 }
 
+const SCREEN_BEARING_TOOLS = new Set([
+  "android_screen", "android_tap", "android_type", "android_scroll", "android_key",
+  "android_tap_xy", "android_open", "android_collect", "android_wait_for", "android_gesture",
+]);
+
+const KEEP_RECENT_SCREENS = 2;
+
+function foldScreenTextField(target: Record<string, unknown>): boolean {
+  let changed = false;
+  if (typeof target.text === "string" && target.text.length > 160) {
+    const screenId = typeof target.screen === "string" ? target.screen : "?";
+    const pkg = typeof target.packageName === "string" ? target.packageName : "";
+    const verdict = typeof target.verdict === "string" && target.verdict ? ` | ${target.verdict}` : "";
+    target.text = `[folded screen ${screenId}${pkg ? ` (${pkg})` : ""}${verdict}; ${target.text.length} chars omitted]`;
+    changed = true;
+  }
+  if (typeof target.currentScreen === "string" && target.currentScreen.length > 160) {
+    const screenId = typeof target.screen === "string" ? target.screen : "?";
+    target.currentScreen = `[folded recovery screen ${screenId}; ${target.currentScreen.length} chars omitted]`;
+    changed = true;
+  }
+  return changed;
+}
+
+/**
+ * Folds older Android screen observations (beyond the latest 2) and drops older ephemeral
+ * observation images before each LLM generation request without mutating committed history.
+ */
+export function foldAndroidScreenMessages(messages: readonly Message[]): readonly Message[] | undefined {
+  const screenIndices: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i] as { role?: string; toolName?: string };
+    if (msg.role === "toolResult" && typeof msg.toolName === "string" && SCREEN_BEARING_TOOLS.has(msg.toolName)) {
+      screenIndices.push(i);
+    }
+  }
+  if (screenIndices.length <= KEEP_RECENT_SCREENS) return undefined;
+  const foldSet = new Set(screenIndices.slice(0, screenIndices.length - KEEP_RECENT_SCREENS));
+  let anyChanged = false;
+  const next = messages.map((message, index) => {
+    if (!foldSet.has(index)) return message;
+    const rawMsg = message as unknown as Record<string, unknown>;
+    if (!Array.isArray(rawMsg.content)) return message;
+    let msgChanged = false;
+    const nextContent: Array<Record<string, unknown>> = [];
+    for (const entry of rawMsg.content) {
+      if (!entry || typeof entry !== "object") {
+        nextContent.push(entry as Record<string, unknown>);
+        continue;
+      }
+      const block = entry as Record<string, unknown>;
+      if (block.type === "image") {
+        msgChanged = true;
+        continue;
+      }
+      if (block.type === "text" && typeof block.text === "string") {
+        try {
+          const parsed = JSON.parse(block.text) as Record<string, unknown>;
+          if (parsed && typeof parsed === "object" && parsed.data && typeof parsed.data === "object" && !Array.isArray(parsed.data)) {
+            const data = { ...(parsed.data as Record<string, unknown>) };
+            let dataChanged = foldScreenTextField(data);
+            if (data.afterScreen && typeof data.afterScreen === "object" && !Array.isArray(data.afterScreen)) {
+              const after = { ...(data.afterScreen as Record<string, unknown>) };
+              if (foldScreenTextField(after)) { data.afterScreen = after; dataChanged = true; }
+            }
+            if (data.screen && typeof data.screen === "object" && !Array.isArray(data.screen)) {
+              const nested = { ...(data.screen as Record<string, unknown>) };
+              if (foldScreenTextField(nested)) { data.screen = nested; dataChanged = true; }
+            }
+            if (dataChanged) {
+              msgChanged = true;
+              nextContent.push({ ...block, text: JSON.stringify({ ...parsed, data }) });
+              continue;
+            }
+          }
+        } catch {
+          // Non-JSON text block; keep verbatim
+        }
+      }
+      nextContent.push(block);
+    }
+    if (!msgChanged) return message;
+    anyChanged = true;
+    return { ...rawMsg, content: nextContent.length > 0 ? nextContent : [{ type: "text", text: "[folded android screen]" }] } as unknown as Message;
+  });
+  return anyChanged ? next : undefined;
+}
+
 const ANDROID_SEARCH_KEYWORDS: Partial<Record<AndroidAction, string>> = {
-  find_apps: "search app package 搜索应用 查找软件包",
+  screen: "read screen observe screenshot image ui 读取屏幕 观察界面 截屏 截图",
+  tap: "click press button element long press 点击 按钮 长按 轻触",
+  type: "input text keyboard search submit 输入文字 打字 填表 搜索 提交",
+  scroll: "swipe scroll list page up down left right 滑动 滚动 翻页 列表",
+  key: "back home recents notifications quick settings 返回 桌面 最近任务 通知栏",
+  tap_xy: "coordinate click touch canvas game 坐标点击 自绘界面",
+  open: "launch start app url virtual display 打开应用 启动软件 微信 网址 虚拟屏",
+  intent: "alarm timer calendar dial sms share navigate settings 闹钟 计时器 日历 拨号 短信草稿 分享 导航 系统设置",
+  collect: "scrape paginate list items scroll collect 采集列表 连续翻页 抓取",
+  handoff: "user takeover login captcha otp payment permission 人工接管 登录 验证码 支付 权限",
+  apps: "search list installed launcher apps 搜索应用 应用列表 包名",
+  wait_for: "wait ui text package appear disappear 等待页面 元素加载",
+  gesture: "pinch zoom multi-touch multi-pointer 多指手势 缩放",
+  virtual_screen: "virtual display background screen present move_to_main stop 虚拟屏 后台屏幕 预览 移回主屏",
   app_info: "installed apps permissions 已装应用 权限详情",
   app_exit_info: "crash anr exit reason 闪退 崩溃记录",
   network_usage: "data traffic wifi mobile 流量统计 网络消耗",
   privacy_usage: "camera mic location access 隐私访问记录 权限使用",
   battery_usage: "power drain charging 耗电排行 电池状态",
-  node_action: "accessibility node click scroll 无障碍节点操作 点击滑动",
-  global_action: "home recents notifications lockscreen 桌面 最近任务 下拉通知栏 锁屏",
-  open_settings: "system settings page 打开系统设置界面",
-  screenshot: "capture screen image 截屏 截图 屏幕画面",
-  sequence: "batch ui steps 连贯动作 批量操作",
-  tap: "click coordinate touch 点击坐标 轻触屏幕",
-  swipe: "scroll drag fling 滑动 翻页 拖拽",
-  gesture: "pinch zoom multi-touch 手势 缩放 长按",
-  verification: "otp sms code captcha 验证码 短信验证",
-  input_text: "type text keyboard 输入文字 打字 粘贴文本",
-  back: "navigate back 返回上一页 后退键",
-  open_app: "launch start app 打开应用 启动软件 微信",
-  wait_for: "wait ui condition 等待元素 页面加载",
   settings_get: "read system setting brightness volume 读取音量亮度系统开关",
   settings_set: "change brightness volume dnd 调节音量 屏幕亮度 勿扰模式",
   settings_restore: "revert system setting 恢复原系统设置",
@@ -114,8 +202,7 @@ const ANDROID_SEARCH_KEYWORDS: Partial<Record<AndroidAction, string>> = {
   device_data: "sms call log clipboard alarm media 短信 通话记录 剪贴板 闹钟 相册媒体",
   nfc: "read write nfc tag NFC读卡写标签",
   nfc_emulation: "hce card emulation NFC门禁卡模拟",
-  device_shortcut: "torch flashlightringer 快捷开关 手电筒 响铃静音",
-  virtual_screen: "virtual display background screen 虚拟屏幕 后台显示",
+  device_shortcut: "torch flashlight ringer 快捷开关 手电筒 响铃静音",
   notification_rules: "auto notification filter 通知过滤规则 自动监听",
   notification_channels: "app notification channels 应用通知渠道",
   notify: "send local phone alert 发送手机本地提醒通知",
@@ -158,9 +245,9 @@ export function createAndroidTools(options: AndroidToolsOptions) {
           const agent = await api.agent(context);
           return supportsImages = Boolean(agent.model && api.models.getModel(agent.model.provider, agent.model.modelId)?.input.includes("image"));
         };
-        if (definition.action === "screenshot") {
+        if (definition.action === "screen" && args.image === true) {
           if (!await modelSupportsImages()) {
-            throw new Error("当前模型不支持图片，请使用语义观察或选择支持图片的模型。");
+            throw new Error("当前模型不支持图片，请省略 image 或传 image=false 使用紧凑语义文本观察屏幕，或选择支持图片的模型。");
           }
         }
         const candidate: AndroidRequest = { version: 1, hubId: options.hubId(), deviceId, ticketId: scope.ticketId,
@@ -194,5 +281,16 @@ export function createAndroidTools(options: AndroidToolsOptions) {
 }
 
 export function createAndroidToolsExtension(options: AndroidToolsOptions) {
-  return defineExtension({ name: "kulo-android", tools: createAndroidTools(options) });
+  return defineExtension({
+    name: "kulo-android",
+    tools: createAndroidTools(options),
+    hooks: [
+      hook(GenerationTask, {
+        beforeRequest: (request) => {
+          const folded = foldAndroidScreenMessages(request.messages);
+          return folded ? { messages: folded } : undefined;
+        },
+      }),
+    ],
+  });
 }

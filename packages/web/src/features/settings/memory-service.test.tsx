@@ -434,8 +434,19 @@ describe("memory service approval and private input", () => {
     expect(deployPrompt).toContain("gemini-3.8-flash");
     expect(deployPrompt).toContain("BAAI/bge-m3");
     expect(deployPrompt).toContain("dimensions: 1024");
-    expect(deployPrompt).toContain("BAAI/bge-reranker-v2-m3");
+    expect(deployPrompt).toContain("onnx-community/bge-reranker-v2-m3-ONNX");
     expect(deployPrompt).toContain("待我确认后执行");
+
+    const normalizedSavedDraft = initialMemoryModelsDraft(
+      {
+        embeddings: { provider: "onnx", model: "BAAI/bge-small-zh-v1.5", dimensions: 512 },
+        reranker: { provider: "onnx", model: "BAAI/bge-reranker-v2-m3" },
+      },
+      settings,
+      catalog,
+    );
+    expect(normalizedSavedDraft.embeddingsModel).toBe("Xenova/bge-small-zh-v1.5");
+    expect(normalizedSavedDraft.rerankerModel).toBe("onnx-community/bge-reranker-v2-m3-ONNX");
 
     const resumePrompt = buildMemoryServicePrefillPrompt({
       operation: "deploy",
@@ -474,10 +485,11 @@ describe("memory service approval and private input", () => {
   });
 
   it("allows dismissing failed job cards and hides cancelled or historical dialogue jobs", async () => {
-    const failedJob: MemoryServiceJob = { ...job, id: "failed-job", status: "failed", stage: "未完成", error: "本机未检测到 uv" };
+    const failedJob: MemoryServiceJob = { ...job, id: "failed-job", status: "failed", stage: "未完成", changes: ["主脑 Mac", "理解模型：openai / configured-model"], error: "本机未检测到 uv" };
     const cardHtml = renderToStaticMarkup(<MemoryServiceJobCard job={failedJob} inputs={[]} clientId="tab-a" connected onChanged={() => {}} />);
     expect(cardHtml).toContain("重试");
     expect(cardHtml).toContain("关闭");
+    expect(cardHtml.match(/主脑 Mac/g)).toHaveLength(1);
 
     const decide = vi.spyOn(kuloRest, "decideMemoryService").mockResolvedValue(snapshot);
     await decideMemoryServiceJob(failedJob, "tab-a", "reject");

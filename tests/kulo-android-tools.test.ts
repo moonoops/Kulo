@@ -1,9 +1,10 @@
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { createToolSearchTool } from "@earendil-works/pi-durable/tool-search";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
+import type { Message } from "@earendil-works/pi-ai";
 import { ANDROID_INITIAL_TOOLS, ANDROID_TOOL_CATALOG, type AndroidResult } from "@kulo/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { androidOperationId, createAndroidTools, type AndroidToolScope } from "../packages/hub/src/tools-android.js";
+import { androidOperationId, createAndroidTools, foldAndroidScreenMessages, type AndroidToolScope } from "../packages/hub/src/tools-android.js";
 
 function fixture() {
   let now = Date.now();
@@ -12,7 +13,7 @@ function fixture() {
   const memo = new Map<string, unknown>();
   const execute = vi.fn(async (_id, request): Promise<AndroidResult> => ({ version: 1, action: request.action,
     operationId: request.operationId, ticketId: request.ticketId, runEpoch: request.runEpoch, status: "completed", data: { ok: true } }));
-  const assets = vi.fn(async () => [{ type: "image" as const, mimeType: "image/png", data: "test-image" }]);
+  const assets = vi.fn(async () => [{ type: "image" as const, mimeType: "image/jpeg", data: "test-image" }]);
   const tools = createAndroidTools({ hubId: () => "hub-a", scope: async () => scope, execute, resolveAssets: assets });
   const api = { taskId: 20, callId: "call-one", conversationId: 7,
     now: () => now, memo: async (key, candidate) => { if (!memo.has(key)) memo.set(key, structuredClone(candidate)); return structuredClone(memo.get(key)); },
@@ -23,18 +24,18 @@ function fixture() {
   return { scope, memo, execute, assets, tools, api, tool, advance: (duration: number) => { now += duration; } };
 }
 
-describe("native Android model tools", () => {
-  it("uses the retained capability schemas and Pi's native deferred discovery", async () => {
+describe("native Android model tools (v3)", () => {
+  it("uses the Catalog v3 schemas and Pi's native deferred discovery", async () => {
     const f = fixture();
-    expect(f.tools).toHaveLength(68);
+    expect(f.tools).toHaveLength(66);
     expect(f.tools.filter((tool) => !tool.deferred).map((tool) => tool.name)).toEqual(ANDROID_INITIAL_TOOLS);
     for (const definition of ANDROID_TOOL_CATALOG) {
       const tool = f.tools.find((item) => item.name === definition.name)!;
       expect(tool.parameters).toMatchObject({ additionalProperties: false, properties: definition.parameters.properties });
       expect(tool.replay).toBe(definition.mutating ? "unsafe" : "safe");
     }
-    const found = await createToolSearchTool().execute({ query: "android_input_text", limit: 1 }, f.api, BACKGROUND_CONTEXT);
-    expect(found.control?.addTools).toEqual(["android_input_text"]);
+    const found = await createToolSearchTool().execute({ query: "android_type", limit: 1 }, f.api, BACKGROUND_CONTEXT);
+    expect(found.control?.addTools).toEqual(["android_type"]);
     expect(found.output?.[0]).toMatchObject({ type: "text" });
     expect(f.execute).not.toHaveBeenCalled();
   });
@@ -66,7 +67,7 @@ describe("native Android model tools", () => {
   it("keeps role, active epoch, and strict argument validation as execution boundaries", async () => {
     const f = fixture();
     f.scope.readOnly = true;
-    await expect(f.tool("tap").execute({ snapshotId: "snap", x: 2, y: 2 }, f.api, BACKGROUND_CONTEXT)).rejects.toThrow("只读");
+    await expect(f.tool("tap").execute({ screen: "s1", id: 2 }, f.api, BACKGROUND_CONTEXT)).rejects.toThrow("只读");
     await expect(f.tool("system_info").execute({ shell: "whoami" }, f.api, BACKGROUND_CONTEXT)).rejects.toThrow("参数无效");
     vi.mocked(f.scope.assertActive).mockRejectedValueOnce(new Error("stale epoch"));
     await expect(f.tool("system_info").execute({}, f.api, BACKGROUND_CONTEXT)).rejects.toThrow("stale epoch");
@@ -75,20 +76,25 @@ describe("native Android model tools", () => {
     expect(f.execute).not.toHaveBeenCalled();
   });
 
-  it("never captures a screenshot for a text-only model", async () => {
+  it("allows text-only screen observation on text-only models, but rejects image=true", async () => {
     const f = fixture();
     vi.spyOn(f.api.models, "getModel").mockReturnValue({ input: ["text"] } as never);
-    await expect(f.tool("screenshot").execute({}, f.api, BACKGROUND_CONTEXT)).rejects.toThrow("不支持图片");
+    await expect(f.tool("screen").execute({ image: true }, f.api, BACKGROUND_CONTEXT)).rejects.toThrow("不支持图片");
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.memo.size).toBe(0);
+
+    // Text-only screen() still succeeds cleanly on text-only models!
+    const textResult = await f.tool("screen").execute({}, f.api, BACKGROUND_CONTEXT);
+    expect(textResult.isError).toBeUndefined();
+    expect(f.execute).toHaveBeenCalledOnce();
   });
 
   it("passes the actual selected asset owner and rejects mismatching receipts", async () => {
     const f = fixture();
     f.scope.deviceIds = ["phone", "phone-two"];
-    const result = await f.tool("screenshot").execute({ device_id: "phone-two" }, f.api, BACKGROUND_CONTEXT);
+    const result = await f.tool("screen").execute({ device_id: "phone-two", image: true }, f.api, BACKGROUND_CONTEXT);
     expect(f.assets).toHaveBeenCalledWith(expect.objectContaining({ deviceId: "phone-two", deviceIds: ["phone", "phone-two"] }), expect.objectContaining({ status: "completed" }));
-    expect(result.output?.[1]).toMatchObject({ type: "image", mimeType: "image/png" });
+    expect(result.output?.[1]).toMatchObject({ type: "image", mimeType: "image/jpeg" });
     const other = fixture();
     other.execute.mockImplementationOnce(async (_id, req) => ({ version: 1, action: req.action, operationId: req.operationId,
       ticketId: "wrong-ticket", runEpoch: req.runEpoch, status: "completed" }));
@@ -112,10 +118,47 @@ describe("native Android model tools", () => {
       vi.mocked(f.scope.assertActive).mockRejectedValueOnce(new Error("task stopped during asset resolution"));
       return [];
     });
-    await expect(f.tool("screenshot").execute({}, f.api, BACKGROUND_CONTEXT)).rejects.toThrow("task stopped");
+    await expect(f.tool("screen").execute({ image: true }, f.api, BACKGROUND_CONTEXT)).rejects.toThrow("task stopped");
   });
 
-  it.each(["sensor", "bluetooth", "nfc", "audio_transcribe", "browser_open", "compute_run", "virtual_screen", "notification_rules", "notification_channels", "notify"])("discovers %s through native Pi deferred loading", async (action) => {
+  it("folds older Android screen text and strips older ephemeral images while keeping the latest 2 verbatim", () => {
+    const makeScreenResult = (id: string, body: string, withImage = false) => ({
+      role: "toolResult",
+      toolCallId: `call_${id}`,
+      toolName: "android_screen",
+      isError: false,
+      timestamp: Date.now(),
+      content: [
+        { type: "text", text: JSON.stringify({ status: "completed", data: { screen: id, packageName: "com.shop", text: body } }) },
+        ...(withImage ? [{ type: "image", mimeType: "image/jpeg", data: "BASE64DATA" }] : []),
+      ],
+    }) as unknown as Message;
+
+    const longBody = "X".repeat(300);
+    const messages: Message[] = [
+      makeScreenResult("s1", longBody, true),
+      makeScreenResult("s2", longBody, true),
+      makeScreenResult("s3", longBody, true),
+      makeScreenResult("s4", longBody, false),
+    ];
+
+    const folded = foldAndroidScreenMessages(messages);
+    expect(folded).toBeDefined();
+    // s1 and s2 folded & images dropped
+    for (const idx of [0, 1]) {
+      const m = folded![idx] as unknown as { content: Array<{ type: string; text?: string }> };
+      expect(m.content.some((b) => b.type === "image")).toBe(false);
+      expect(m.content[0]?.text).toContain("[folded screen s" + (idx + 1));
+    }
+    // s3 and s4 kept completely verbatim (including s3's image!)
+    expect((folded![2] as unknown as { content: Array<{ type: string; text?: string }> }).content.some((b) => b.type === "image")).toBe(true);
+    expect((folded![2] as unknown as { content: Array<{ type: string; text?: string }> }).content[0]?.text).toContain(longBody);
+    expect((folded![3] as unknown as { content: Array<{ type: string; text?: string }> }).content[0]?.text).toContain(longBody);
+    // Original messages not mutated
+    expect((messages[0] as unknown as { content: Array<{ type: string }> }).content.some((b) => b.type === "image")).toBe(true);
+  });
+
+  it.each(["tap", "type", "scroll", "intent", "collect", "handoff", "sensor", "bluetooth", "nfc", "audio_transcribe", "browser_open", "compute_run", "virtual_screen", "notification_rules", "notification_channels", "notify"])("discovers %s through native Pi deferred loading", async (action) => {
     const f = fixture();
     expect(f.tools.find(tool => tool.name === `android_${action}`)?.deferred).toBe(true);
     const found = await createToolSearchTool().execute({ query: `android_${action}`, limit: 1 }, f.api, BACKGROUND_CONTEXT);

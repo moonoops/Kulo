@@ -7,10 +7,13 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { KULO_VERSION, type DevicePeerConfig } from "@kulo/protocol";
 import {
-  activateStagedPeer, claimKuloRuntime, DeviceRoleTransitions, discoverDevicePeer, discoverKuloRuntime, LocalInstanceInUseError, KuloEnvAgent,
+  activateStagedPeer, claimKuloRuntime, DeviceRoleTransitions, discoverDevicePeer, discoverKuloRuntime, getPeerConfigPath, LocalInstanceInUseError, KuloEnvAgent,
   normalizePeerHubUrl, readPeerConfig, stageDevicePeer, startDevicePeer, type DevicePeerRuntime, type LocalInstanceOwner,
 } from "@kulo/env";
-import { findRunningHub, HubStateInUseError, KuloHub, loadDotEnv, resolveHubStateDir, startKuloHubServer, type KuloHubServer } from "@kulo/hub";
+import {
+  createStandbyHostBridge, findRunningHub, getClusterProtectedPaths, HubStateInUseError, KuloHub, loadDotEnv,
+  recoverInterruptedClusterTransition, resolveClusterPaths, resolveHubStateDir, runPreStartFence, startKuloHubServer, type KuloHubServer,
+} from "@kulo/hub";
 import { runTuiChatClient } from "./tui-chat.js";
 import { confirmRunningPeer, findRunningDevicePeer, joinRunningHub, resolveChatConnection, runJoinedDeviceCommand } from "./device-launch.js";
 
@@ -114,6 +117,13 @@ async function main(runtime: { owner?: LocalInstanceOwner }): Promise<void> {
     const portStr = getFlag(rest, "--port");
     const stateDir = getFlag(rest, "--state-dir");
     const directory = resolveHubStateDir(stateDir);
+    const peerConfigPath = getPeerConfigPath();
+    const clusterPaths = resolveClusterPaths(path.dirname(directory), {
+      hubStateDir: directory,
+      peerConfigPath,
+    });
+    const clusterProtectedPaths = getClusterProtectedPaths(clusterPaths);
+    await recoverInterruptedClusterTransition(clusterPaths);
     const claimRuntime = () => runtime.owner ??= claimKuloRuntime(directory);
     const noLocalEnv = hasFlag(rest, "--no-local-env");
     const noTui = subcommand !== "dev" || hasFlag(rest, "--no-tui") || !process.stdin.isTTY;
@@ -140,6 +150,7 @@ async function main(runtime: { owner?: LocalInstanceOwner }): Promise<void> {
           ...(boundPort !== undefined ? { port: boundPort } : {}),
           ...(stateDir ? { stateDir: path.resolve(stateDir) } : {}),
           enableLocalEnv: !noLocalEnv,
+          extraProtectedPaths: clusterProtectedPaths,
         },
       });
       activeHub = nextHub;
@@ -150,6 +161,7 @@ async function main(runtime: { owner?: LocalInstanceOwner }): Promise<void> {
           runtimeOwner: runtime.owner,
           ...(boundPort !== undefined ? { port: boundPort } : {}),
           ...(allowRoleSwitch ? { roleTransitions: roles } : {}),
+          clusterPaths,
         });
       } catch (error) {
         await nextHub.close();
@@ -170,6 +182,8 @@ async function main(runtime: { owner?: LocalInstanceOwner }): Promise<void> {
         runtimeOwner: runtime.owner,
         port: boundPort, authToken: localToken,
         webDistDir: cliWebDistDir,
+        protectedPaths: [directory, ...clusterProtectedPaths],
+        standbyHost: createStandbyHostBridge({ paths: clusterPaths }),
         ...(allowRoleSwitch ? { roleTransitions: roles } : {}),
         onLog: (message) => console.log(message),
       });
@@ -253,6 +267,15 @@ async function main(runtime: { owner?: LocalInstanceOwner }): Promise<void> {
     });
     if (joined) {
       if (!activePeer && !activeHub) runtime.owner?.close();
+      return;
+    }
+    const fence = await runPreStartFence(clusterPaths, { defaultRootDir: process.cwd() });
+    if (fence.action === "start_peer") {
+      const peer = await startCliPeer(fence.peerConfig);
+      localToken = peer.authToken;
+      registerDeviceShutdown(closeRuntime);
+      console.log(`已检测到更新的主机（${fence.activePrimaryUrl}），本机自动切为备用主机同步。Web 控制台：${peer.url}`);
+      if (subcommand === "open" && !hasFlag(rest, "--no-open")) await openBrowser(peer.url);
       return;
     }
     const { hub, server } = await startCliHub();

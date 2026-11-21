@@ -13,6 +13,7 @@ import type {
   AgentExpressionState,
   ChatAttachment,
   ChatDisplayItem,
+  ClusterClientSummary,
   ConversationSearchInput,
   ConversationSearchPage,
   ConversationMessageWindow,
@@ -32,6 +33,7 @@ import type {
   ResolveModelMetadataResponse,
   EnvNodeDescriptor,
   HindsightProbeResult,
+  HomeAssistantMigrationAdvice,
   HubToClientMessage,
   LiveStreamState,
   MainSessionNotificationEvent,
@@ -319,8 +321,25 @@ export const kuloRest = {
     }>("/api/assistant/background-model", { method: "POST", body }),
   configureAssistantSpark: (body: { enabled: boolean }) =>
     apiRequest<AssistantWorkspaceView>("/api/assistant/spark", { method: "POST", body }),
-  configureAssistantHomeAssistant: (body: { enabled?: boolean; baseUrl?: string; token?: string; clearToken?: boolean }) =>
+  configureAssistantHomeAssistant: (body: {
+    enabled?: boolean;
+    baseUrl?: string;
+    token?: string;
+    clearToken?: boolean;
+  }) =>
     apiRequest<AssistantWorkspaceView>("/api/assistant/home-assistant", { method: "POST", body }),
+  getHomeAssistantMigration: (signal?: AbortSignal) =>
+    apiRequest<HomeAssistantMigrationAdvice>("/api/assistant/home-assistant/migration", { signal }),
+  deployLocalHomeAssistant: (body: { confirmed: boolean; installXiaomiHome?: boolean }) =>
+    apiRequest<{
+      requiresConfirmation?: boolean;
+      advice: HomeAssistantMigrationAdvice;
+      started?: boolean;
+      xiaomiHomeInstalled?: boolean;
+      url?: string;
+      snapshot: AssistantWorkspaceSnapshot;
+      localHost?: boolean;
+    }>("/api/assistant/home-assistant", { method: "POST", body: { deployLocal: true, ...body } }),
   configureAssistantLark: (body: { enabled?: boolean; selectedProfiles?: string[]; syncNow?: boolean }) =>
     apiRequest<AssistantWorkspaceView>("/api/assistant/lark", { method: "POST", body }),
   getCapabilitiesWorkspace: (clientId: string, signal?: AbortSignal) =>
@@ -759,6 +778,8 @@ export function useKuloHubConnection() {
     queuedCount: 0,
   });
   const [envs, setEnvs] = useState<EnvNodeDescriptor[]>([]);
+  const [cluster, setCluster] = useState<ClusterClientSummary | null>(null);
+  const clusterPrimaryKeyRef = useRef<string | null>(null);
   const [expression, setExpression] = useState<AgentExpressionState | null>(null);
   const [settings, setSettings] = useState<KuloSettingsView | null>(null);
   useEffect(() => {
@@ -1160,6 +1181,14 @@ export function useKuloHubConnection() {
               versionedSelections = msg.selectionVersion !== undefined;
               readySocketRef.current = ws;
               setSubscriptionsReady(true);
+              const nextCluster = msg.cluster ?? null;
+              setCluster(nextCluster);
+              const nextClusterKey = nextCluster ? `${nextCluster.hubId}:${nextCluster.primaryNodeId}:${nextCluster.epoch}` : null;
+              if (nextClusterKey && clusterPrimaryKeyRef.current && clusterPrimaryKeyRef.current !== nextClusterKey) {
+                mediaSession = undefined;
+                void ensureMediaSession(true).catch(() => {});
+              }
+              clusterPrimaryKeyRef.current = nextClusterKey;
               if (msg.deliveryIdentity) {
                 const identity = msg.deliveryIdentity;
                 if (typeof identity.hubId !== "string" || !identity.hubId || typeof identity.principalId !== "string" || !identity.principalId) throw new Error(t("中枢返回了无效的交付身份", "The Hub returned an invalid delivery identity"));
@@ -1565,6 +1594,7 @@ export function useKuloHubConnection() {
     ticketSnapshotVersion,
     slots,
     envs,
+    cluster,
     expression,
     settings,
     setSettings,

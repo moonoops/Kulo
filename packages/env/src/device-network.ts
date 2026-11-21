@@ -27,8 +27,10 @@ function tailscaleV4(address: string): boolean {
   return parts.length === 4 && parts[0] === 100 && parts[1]! >= 64 && parts[1]! <= 127;
 }
 
-function isTailscale(network: DeviceNetworkInterface): boolean {
-  return !!network.tailscale || /^tailscale(?:\b|\d)/i.test(network.name) || network.addresses.some((entry) => tailscaleV6(entry.address));
+function isTailscale(network: DeviceNetworkInterface, confirmedTailscaleIps?: ReadonlySet<string>): boolean {
+  return !!network.tailscale ||
+    /^tailscale(?:\b|\d)/i.test(network.name) ||
+    network.addresses.some((entry) => tailscaleV6(entry.address) || Boolean(confirmedTailscaleIps?.has(normalizeDeviceIp(entry.address) ?? "")));
 }
 
 function ipv6Network(address: string, prefixLength: number): string {
@@ -44,11 +46,11 @@ function ipv6Network(address: string, prefixLength: number): string {
   }).join(":") + `/${prefixLength}`;
 }
 
-export function selectDeviceNetworkIps(networks: DeviceNetworkInterface[]): string[] {
+export function selectDeviceNetworkIps(networks: DeviceNetworkInterface[], confirmedTailscaleIps?: ReadonlySet<string>): string[] {
   const ips = new Set<string>();
   for (const network of networks) {
     if (!network.active) continue;
-    const tail = isTailscale(network);
+    const tail = isTailscale(network, confirmedTailscaleIps);
     if (!network.lan && !tail) continue;
     const ipv6 = new Map<string, { address: string; priority: number }>();
     for (const entry of network.addresses) {
@@ -155,16 +157,42 @@ function unavailableCommand(error: unknown): boolean {
   return ["ENOENT", "EACCES", "EPERM", "ETIMEDOUT", "ENOBUFS"].includes(failure.code ?? "") || typeof failure.status === "number" || failure.signal === "SIGTERM";
 }
 
+function discoverSystemTailscaleIps(platform: string, run: (file: string, args: string[]) => string): Set<string> | undefined {
+  const commands = platform === "darwin"
+    ? ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "tailscale"]
+    : ["tailscale"];
+  for (const command of commands) {
+    try {
+      const output = run(command, ["status", "--json"]);
+      const parsed = JSON.parse(output) as { BackendState?: unknown; TailscaleIPs?: unknown };
+      if (parsed?.BackendState !== "Running" || !Array.isArray(parsed.TailscaleIPs)) return undefined;
+      const result = new Set<string>();
+      for (const raw of parsed.TailscaleIPs) {
+        if (typeof raw !== "string") continue;
+        const normalized = normalizeDeviceIp(raw);
+        if (normalized && (tailscaleV4(normalized) || tailscaleV6(normalized))) result.add(normalized);
+      }
+      return result.size > 0 ? result : undefined;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
 export function createDeviceIpCollector(options: {
   platform?: string;
   interfaces?: () => NodeJS.Dict<os.NetworkInterfaceInfo[]>;
   run?: (file: string, args: string[]) => string;
   now?: () => number;
+  discoverTailscale?: () => ReadonlySet<string> | undefined;
 } = {}): () => string[] {
   const platform = options.platform ?? os.platform();
   const interfaces = options.interfaces ?? os.networkInterfaces;
   const run = options.run ?? runNetworkCommand;
   const now = options.now ?? Date.now;
+  // Default discovery only runs when using the real system runner (never consumes mocked `run` calls in tests).
+  const discoverTailscale = options.discoverTailscale ?? (options.run ? () => undefined : () => discoverSystemTailscaleIps(platform, runNetworkCommand));
   let cache: { key: string; expiresAt: number; ips: string[] } | undefined;
   return () => {
     const snapshot = interfaces();
@@ -182,7 +210,10 @@ export function createDeviceIpCollector(options: {
       // Minimal Linux images and restricted hosts may not expose native metadata tools.
       networks = fallbackNetworkInterfaces(platform, snapshot);
     }
-    const ips = selectDeviceNetworkIps(networks);
+    const confirmedTailscale = networks.some((entry) => /^utun\d+$/i.test(entry.name) && entry.active && !isTailscale(entry) && entry.addresses.some((addr) => !addr.unusable && tailscaleV4(addr.address)))
+      ? discoverTailscale()
+      : undefined;
+    const ips = selectDeviceNetworkIps(networks, confirmedTailscale);
     cache = { key, expiresAt: time + 15_000, ips };
     return [...ips];
   };
