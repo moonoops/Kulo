@@ -113,6 +113,8 @@ import {
   inferModelPurpose,
   resolveRolePresetFromPool,
   EXTERNAL_AGENT_KINDS,
+  isPersonalExternalAgentKind,
+  isSupportedExternalAgentKind,
   getMessageParts,
   getUiSpecFields,
   redactSensitiveText,
@@ -1158,6 +1160,7 @@ export class KuloHub implements OrchestratorController {
   readonly #orchestratorBrowserIdleMs: number;
   readonly #lastWatchdogAlertAt = new Map<string, number>();
   readonly #watchdogCheckIntervalMs: number;
+  readonly #verifyClientReceipts = new Map<string, import("@kulo/protocol").ExternalAgentVerifyClientResult>();
   readonly #watchdogStallMsOverride?: number;
   readonly deviceJoinStaging: DeviceJoinStaging;
   #deviceController: HubDeviceController | undefined;
@@ -1617,7 +1620,7 @@ export class KuloHub implements OrchestratorController {
         return Object.values(this.#liveSettings.roles).filter((role) => role.enabled !== false && role.id !== ticket.role).map((role) => ({
           id: role.id, label: role.label, whenToUse: role.whenToUse, readOnly: !role.external && Boolean(role.readOnly),
           ...(role.external ? { envId: role.external.envId } : {}),
-          available: !role.external || Boolean(role.external.verifiedAt && !["grok-bot", "dots", "muse"].includes(role.external.kind)),
+          available: !role.external || Boolean(role.external.verifiedAt && isSupportedExternalAgentKind(role.external.kind)),
         }));
       },
       report: async (scope, report, files) => {
@@ -1689,7 +1692,7 @@ export class KuloHub implements OrchestratorController {
       },
       connectionsList: async (scope) => {
         const ticket = this.#externalAgentScope(scope, await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT));
-        return this.#connectionList({
+        const list = await this.#connectionList({
           kind: "worker",
           conversationId: ticket.workerConversationId,
           ticketId: ticket.id,
@@ -1697,6 +1700,11 @@ export class KuloHub implements OrchestratorController {
           readOnly: Boolean(ticket.readOnly || ticket.externalExecution?.workspaceMode === "read_only"),
           isSubagent: false,
         }, BACKGROUND_CONTEXT);
+        const granted = new Set(list.grantedConnectionIds);
+        return {
+          ...list,
+          connections: list.connections.filter((entry) => granted.has(entry.id)),
+        };
       },
       connectionUse: async (scope, input) => {
         const ticket = this.#externalAgentScope(scope, await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT));
@@ -2083,7 +2091,7 @@ export class KuloHub implements OrchestratorController {
     const resolvedStateDir = safeCanonical(config.stateDir);
     const resolvedMainWorkspace = safeCanonical(mainWorkspaceDir);
     const homeDir = os.homedir();
-    const homeSensitiveDirs = [".ssh", ".gnupg", ".kube", ".aws", ".claude", ".codex", ".gemini"].map((name) =>
+    const homeSensitiveDirs = [".ssh", ".gnupg", ".kube", ".aws", ".claude", ".codex", ".gemini", ".antigravity", ".grok", ".cursor", ".opencode", ".kiro", ".copilot", ".dsh"].map((name) =>
       safeCanonical(path.join(homeDir, name)),
     );
     const isProtectedOrchestratorPath = (candidatePath: string): string | undefined => {
@@ -3334,8 +3342,18 @@ export class KuloHub implements OrchestratorController {
   async #connectionList(caller: ConnectionCaller, context: Context) {
     const { state, scope } = await this.#assertConnectionCaller(caller, context);
     const snapshot = await this.connectionManager.snapshot();
+    const connections = snapshot.connections.map((entry) => {
+      if (entry.kind !== "mcp") return entry;
+      const { mcpTools, ...rest } = entry;
+      const tools = mcpTools ?? [];
+      return {
+        ...rest,
+        toolCount: tools.length,
+        sampleTools: tools.slice(0, 12).map((t) => ({ name: t.name, readOnly: t.readOnly })),
+      };
+    });
     return {
-      connections: snapshot.connections,
+      connections,
       applications: snapshot.applications,
       grantedConnectionIds: scope?.ticket.connectionIds ?? [],
       requests: snapshot.requests.filter((request) => caller.kind === "worker" ? request.ticketId === caller.ticketId :
@@ -4841,21 +4859,34 @@ export class KuloHub implements OrchestratorController {
     if (!response.detection.installed || response.detection.error) {
       throw new SettingsUpdateError(409, this.connectionManager.redact(response.detection.error || "未能读取客户端原生模型列表。"));
     }
+    const now = Date.now();
     const { nextDoc, updated } = await this.harness.commit(async (tx) => {
       const doc = await tx.doc(KuloSettingsDoc);
       syncExternalClientsInSettings(doc);
       const current = doc.externalClients?.[cleanId];
       if (!current) throw new SettingsUpdateError(400, "外部客户端已移除。");
-      const refreshed: import("@kulo/protocol").ExternalClientConnection = {
-        ...current,
-        ...(response.detection.executable ? { executable: response.detection.executable } : {}),
+      if (
+        current.kind !== existing.kind ||
+        current.envId !== existing.envId ||
+        current.executable !== existing.executable ||
+        JSON.stringify(current.acpArgs ?? []) !== JSON.stringify(existing.acpArgs ?? []) ||
+        current.agentRef !== existing.agentRef ||
+        current.cdpUrl !== existing.cdpUrl
+      ) {
+        throw new SettingsUpdateError(409, "外部客户端配置在刷新期间已变动，请重试。");
+      }
+      const patch: Partial<import("@kulo/protocol").ExternalClientConnection> = {
         ...(response.detection.version ? { version: response.detection.version } : {}),
         capabilities: cloneJson(response.detection.capabilities),
         models: cloneJson(response.detection.models),
-        updatedAt: Date.now(),
+        updatedAt: now,
       };
-      doc.externalClients![cleanId] = refreshed;
-      for (const role of Object.values(doc.roles)) {
+      const refreshed: import("@kulo/protocol").ExternalClientConnection = {
+        ...current,
+        ...patch,
+      };
+      const nextRoles = cloneJson(doc.roles);
+      for (const role of Object.values(nextRoles)) {
         if (!role.external) continue;
         const roleClientId = role.externalClientId?.trim() || externalClientConnectionId(role.external);
         if (roleClientId === cleanId) {
@@ -4863,14 +4894,160 @@ export class KuloHub implements OrchestratorController {
           role.external = bindingFromExternalClient(refreshed);
         }
       }
-      doc.globalRevision += 1;
-      doc.revisions.roles += 1;
-      return { nextDoc: cloneJson(doc) as KuloDurableSettings, updated: cloneJson(refreshed) };
+      applySettingsBlockUpdate(doc, "roles", doc.revisions.roles, nextRoles, {
+        externalAgents: true,
+        clientModels: { [cleanId]: cloneJson(response.detection.models) },
+        clientPatches: { [cleanId]: patch },
+        summaryOverride: `刷新外部客户端模型列表（${refreshed.kind}）`,
+      });
+      return {
+        nextDoc: cloneJson(doc) as KuloDurableSettings,
+        updated: cloneJson(doc.externalClients?.[cleanId] ?? refreshed),
+      };
     }, context);
     await this.#applyLiveSettings(nextDoc, context);
     const view = this.getSettingsView();
     this.#emitSettings(view);
     return { settings: view, client: updated };
+  }
+
+  async verifyExternalClient(
+    clientId: string,
+    options: { commandId?: string; expectedRevision?: number } = {},
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<import("@kulo/protocol").ExternalAgentVerifyClientResult> {
+    const cleanId = typeof clientId === "string" ? clientId.trim() : "";
+    if (!cleanId || cleanId.length > 200) throw new SettingsUpdateError(400, "外部客户端标识无效。");
+    const commandId = typeof options.commandId === "string" && options.commandId.trim()
+      ? options.commandId.trim().slice(0, 180)
+      : `verify-client-${randomUUID()}`;
+    const receiptKey = `${cleanId}:${commandId}`;
+    const cached = this.#verifyClientReceipts.get(receiptKey);
+    if (cached) return cloneJson(cached);
+
+    const snapshot = await this.harness.snapshot(KuloSettingsDoc, context);
+    const existing = snapshot?.externalClients?.[cleanId];
+    if (!existing) throw new SettingsUpdateError(400, "外部客户端尚未连接。");
+    if (!isSupportedExternalAgentKind(existing.kind)) {
+      throw new SettingsUpdateError(409, "当前客户端类型尚不支持稳定收发通信验证。");
+    }
+    if (options.expectedRevision !== undefined && snapshot && snapshot.revisions.roles !== options.expectedRevision) {
+      throw new SettingsUpdateError(409, "智能体配置已变动，请刷新后重试验证。");
+    }
+    const env = this.envManager.getEnvDescriptor(existing.envId);
+    if (!env?.online) throw new SettingsUpdateError(409, "客户端绑定的设备当前离线，请连接设备后验证。");
+
+    const binding = bindingFromExternalClient(existing);
+    const probeResponse = await this.envManager.requestExternalAgent(existing.envId, {
+      operation: "probe",
+      binding,
+    });
+    if (probeResponse.type !== "detection" || probeResponse.detection.kind !== existing.kind) {
+      throw new SettingsUpdateError(409, "设备返回的客户端协议检测结果无效。");
+    }
+    const detection = cloneJson(probeResponse.detection);
+    if (!detection.installed || detection.error) {
+      throw new SettingsUpdateError(409, this.connectionManager.redact(detection.error || "客户端协议检测未通过。"));
+    }
+    if (detection.authenticated === false) {
+      throw new SettingsUpdateError(409, "本地客户端尚未完成登录，请先在原客户端登录后再验证连接。");
+    }
+
+    const nonce = `KULO_AGENT_VERIFY_${createHash("sha256").update(`verify-client:${cleanId}:${commandId}`).digest("hex").slice(0, 24)}`;
+    const tempDraft: AgentConfigurationDraft = {
+      id: `agent-client-verify-${createHash("sha256").update(cleanId).digest("hex").slice(0, 16)}`,
+      revision: Math.max(1, snapshot?.revisions.roles ?? 1),
+      clientId: "external-client-verify",
+      settingsRevision: snapshot?.revisions.roles ?? 1,
+      binding: {
+        ...binding,
+        ...(detection.version ? { version: detection.version } : {}),
+        capabilities: detection.capabilities,
+      },
+      label: existing.label ?? existing.kind,
+      whenToUse: "Verification roundtrip",
+      prompt: "Verification roundtrip",
+      readOnly: false,
+      allowSubagents: false,
+      detection,
+      updatedAt: Date.now(),
+    };
+    const evidence = await this.#verifyExternalAgent(tempDraft, nonce);
+    const verifiedAt = Date.now();
+    const { nextDoc, enabledRoleIds } = await this.harness.commit(async (tx) => {
+      const doc = await tx.doc(KuloSettingsDoc);
+      syncExternalClientsInSettings(doc);
+      const current = doc.externalClients?.[cleanId];
+      if (!current) throw new SettingsUpdateError(400, "外部客户端已移除。");
+      if (
+        current.kind !== existing.kind ||
+        current.envId !== existing.envId ||
+        current.executable !== existing.executable ||
+        JSON.stringify(current.acpArgs ?? []) !== JSON.stringify(existing.acpArgs ?? []) ||
+        current.agentRef !== existing.agentRef ||
+        current.cdpUrl !== existing.cdpUrl
+      ) {
+        throw new SettingsUpdateError(409, "外部客户端配置在验证期间已变动，请重试。");
+      }
+      const wasVerified = Boolean(current.verifiedAt);
+      const version = evidence.version ?? detection.version ?? current.version;
+      const patch: Partial<import("@kulo/protocol").ExternalClientConnection> = {
+        ...(version ? { version } : {}),
+        verifiedAt,
+        capabilities: cloneJson(detection.capabilities),
+        models: cloneJson(detection.models),
+        updatedAt: verifiedAt,
+      };
+      const verifiedClient: import("@kulo/protocol").ExternalClientConnection = {
+        ...current,
+        ...patch,
+      };
+      const nextRoles = cloneJson(doc.roles);
+      const enabledIds: string[] = [];
+      for (const role of Object.values(nextRoles)) {
+        if (!role.external) continue;
+        const roleClientId = role.externalClientId?.trim() || externalClientConnectionId(role.external);
+        if (roleClientId === cleanId) {
+          role.externalClientId = cleanId;
+          role.external = bindingFromExternalClient(verifiedClient);
+          if (!wasVerified && role.enabled === false) {
+            role.enabled = true;
+            enabledIds.push(role.id);
+          }
+        }
+      }
+      applySettingsBlockUpdate(
+        doc,
+        "roles",
+        options.expectedRevision ?? doc.revisions.roles,
+        nextRoles,
+        {
+          externalAgents: true,
+          clientModels: { [cleanId]: cloneJson(detection.models) },
+          clientPatches: { [cleanId]: patch },
+          summaryOverride: `完成外部客户端连接验证（${verifiedClient.kind}）`,
+        },
+      );
+      return { nextDoc: cloneJson(doc) as KuloDurableSettings, enabledRoleIds: enabledIds };
+    }, context);
+    await this.#applyLiveSettings(nextDoc, context);
+    const view = this.getSettingsView();
+    this.#emitSettings(view);
+    const result: import("@kulo/protocol").ExternalAgentVerifyClientResult = {
+      clientId: cleanId,
+      verifiedAt,
+      verificationLevel: "roundtrip",
+      ...(evidence.version ?? detection.version ? { version: evidence.version ?? detection.version } : {}),
+      modelsCount: detection.models.length,
+      enabledRoleIds,
+      settings: view,
+    };
+    this.#verifyClientReceipts.set(receiptKey, cloneJson(result));
+    if (this.#verifyClientReceipts.size > 128) {
+      const firstKey = this.#verifyClientReceipts.keys().next().value;
+      if (firstKey !== undefined) this.#verifyClientReceipts.delete(firstKey);
+    }
+    return result;
   }
 
   async removeExternalClient(
@@ -5897,6 +6074,7 @@ export class KuloHub implements OrchestratorController {
       priorUserTurns,
       envs,
       proposedEnvId: proposedEnv,
+      targetScope: params.targetScope,
       isRecovery: Boolean(recoveryTicket),
     });
     const namedEnv = namedEnvResolution?.envId;
@@ -5924,6 +6102,29 @@ export class KuloHub implements OrchestratorController {
     const projectId = executionDomain === "android" ? undefined : requestedProject;
     let project = projectId ? await this.projects.get(projectId, context) : undefined;
     if (project && namedEnvResolution?.source === "current" && namedEnv !== project.deviceId) throw new ProjectError(409, "project_binding_conflict", "消息中指定的设备与项目所属设备不同，请核对实际目标。");
+    if (!project && modelDispatch && !recoveryTicket && fixedTargetId && fixedTarget?.executionKind !== "native-device") {
+      if (proposedEnv && proposedEnv !== fixedTargetId) {
+        const lockedName = fixedTarget?.name ?? fixedTargetId;
+        throw new ProjectError(
+          409,
+          "target_device_conflict",
+          `当前会话已锁定执行设备「${lockedName}」(${fixedTargetId})，不能改派到 ${proposedEnv}；请先切换或解除会话目标设备。`,
+        );
+      }
+      if (
+        !proposedEnv &&
+        params.targetScope === "sender_device" &&
+        sender.source?.kind === "computer" &&
+        sender.source.deviceId !== fixedTargetId
+      ) {
+        const lockedName = fixedTarget?.name ?? fixedTargetId;
+        throw new ProjectError(
+          409,
+          "target_device_conflict",
+          `当前会话已锁定执行设备「${lockedName}」(${fixedTargetId})，不能按发信设备改派到「${sender.source.name}」；请先切换或解除会话目标设备。`,
+        );
+      }
+    }
     const boundEnv = project?.deviceId ?? fixedTargetId ?? recoveryTicket?.envId ?? namedEnv;
     const sourceEnv = !boundEnv && sender.source?.kind === executionDomain &&
       (sender.source.deviceId !== "local" || this.envManager.getEnvDescriptor("local")) ? sender.source.deviceId : undefined;
@@ -5939,20 +6140,30 @@ export class KuloHub implements OrchestratorController {
       }),
     );
     // Scope default Agent selection to the Hub-verified target, never to a model guess.
+    const proposedRole = params.role && Object.hasOwn(activeRoles, params.role) ? activeRoles[params.role] : undefined;
+    if (!namedAgent && proposedRole?.external) {
+      if (boundEnv && !project && proposedRole.external.envId !== boundEnv) {
+        throw new ProjectError(409, "agent_device_conflict", `指定的外部 Agent「${proposedRole.label}」绑定在设备 ${proposedRole.external.envId}，与当前目标设备 ${boundEnv} 不一致。`);
+      }
+      if (sourceEnv && (params.targetScope === "sender_device" || senderLocalSignals) && proposedRole.external.envId !== sourceEnv) {
+        throw new ProjectError(409, "agent_device_conflict", `该任务涉及发信设备「${sender.source?.name}」本地环境，不能改派到绑定其他设备的外部 Agent「${proposedRole.label}」。`);
+      }
+    }
     const routingEnv = boundEnv ?? (
       params.originToolTaskId === undefined
         ? proposedEnv
         : namedAgent
           ? undefined
-          : executionDomain === "computer" && params.targetScope === "hub_local" && !senderLocalSignals && localReady
-            ? "local"
-            : sourceEnv
+          : proposedRole?.external
+            ? proposedRole.external.envId
+            : executionDomain === "computer" && params.targetScope === "hub_local" && !senderLocalSignals && localReady
+              ? "local"
+              : sourceEnv
     );
-    const proposedRole = params.role && Object.hasOwn(activeRoles, params.role) ? activeRoles[params.role] : undefined;
-    const requestedRole = sourceEnv && !namedAgent && proposedRole?.external && proposedRole.external.envId !== sourceEnv
-      ? undefined : params.role;
+    const requestedRole = params.role;
     const selectionRoles = androidDeviceIds.length || executionDomain === "android" ? Object.fromEntries(Object.entries(activeRoles).map(([id, role]) => [id, role.external ? { ...role, dispatchPolicy: undefined } : role])) : activeRoles;
     const routing = resolveAgentDispatch({ roles: selectionRoles, ...dispatchSource, requestedRole, taskKind: params.taskKind,
+      workspaceMode: params.workspaceMode,
       projectId: project?.id, envId: routingEnv,
       trustedManual: params.originToolTaskId === undefined });
     const roleId = routing.role;
@@ -5963,7 +6174,7 @@ export class KuloHub implements OrchestratorController {
       chatRoutingData(input).source?.deviceId !== sender.source?.deviceId)) {
       throw new ProjectError(409, "source_device_ambiguous", "本轮有来自不同设备的消息，请为本次任务填写对应的 source_request_id。");
     }
-    if (externalBinding && (!externalBinding.verifiedAt || ["dots", "muse", "grok-bot"].includes(externalBinding.kind))) {
+    if (externalBinding && (!externalBinding.verifiedAt || isPersonalExternalAgentKind(externalBinding.kind))) {
       throw new ProjectError(409, "external_agent_unverified", `指定的外部 Agent「${rolePreset.label}」尚未完成稳定任务通信验证，请在智能体设置页继续配置。`);
     }
     if (externalBinding && proposedEnv && proposedEnv !== externalBinding.envId) throw new ProjectError(400, "agent_device_conflict", `指定的 Agent「${rolePreset.label}」已绑定其他执行设备，请明确选择同设备的 Agent。`);
@@ -5995,7 +6206,7 @@ export class KuloHub implements OrchestratorController {
       if (resolved.conflictWithSource) {
         throw new ProjectError(409, "source_device_conflict", `该消息默认在「${sender.source?.name}」上处理。请省略 env_id，或根据用户明确指定的设备重新派单。`);
       }
-      if (!boundEnv && !proposedEnv && sourceEnv && resolved.envId === sourceEnv && !hasExplicitSenderReference(sender.text)) {
+      if (!boundEnv && (!proposedEnv || proposedEnv === sourceEnv) && sourceEnv && resolved.envId === sourceEnv && !hasExplicitSenderReference(sender.text)) {
         const briefTargets = [
           ...new Set(
             namedDispatchDevices(`${params.goal}\n${params.scope}`, envs)
@@ -6107,8 +6318,24 @@ export class KuloHub implements OrchestratorController {
       : requestedReadOnly
         ? "read_only"
         : params.workspaceMode ?? "staged";
-    const nativeThinking = rolePreset?.thinkingLevel && rolePreset.thinkingLevel !== "auto"
-      ? rolePreset.thinkingLevel : params.thinkingLevel;
+    let nativeThinking: string | undefined;
+    if (externalBinding) {
+      if (rolePreset?.thinkingLevel && rolePreset.thinkingLevel !== "auto") {
+        nativeThinking = rolePreset.thinkingLevel;
+      } else if (params.thinkingLevel) {
+        const clientId = rolePreset.externalClientId?.trim() || externalClientConnectionId(externalBinding);
+        const clientModels = this.#liveSettings.externalClients?.[clientId]?.models ?? [];
+        const targetModel = rolePreset.modelId
+          ? clientModels.find((m) => m.id === rolePreset.modelId)
+          : clientModels.find((m) => m.isDefault) ?? clientModels[0];
+        const efforts = targetModel?.efforts ?? [];
+        if (efforts.includes(params.thinkingLevel)) {
+          nativeThinking = params.thinkingLevel;
+        } else if (params.thinkingLevel === "off" && efforts.includes("none")) {
+          nativeThinking = "none";
+        }
+      }
+    }
     const providerOverride = !externalBinding && params.providerOverride?.trim() ? params.providerOverride.trim() : undefined;
     const modelOverride = !externalBinding && params.modelOverride?.trim() ? params.modelOverride.trim() : undefined;
     const workerProviderOpt =
@@ -6151,6 +6378,7 @@ export class KuloHub implements OrchestratorController {
       const currentRoles = settings.roles;
       const currentSelection = androidDeviceIds.length || executionDomain === "android" ? Object.fromEntries(Object.entries(currentRoles).map(([id, role]) => [id, role.external ? { ...role, dispatchPolicy: undefined } : role])) : currentRoles;
       const currentRouting = resolveAgentDispatch({ roles: currentSelection, ...dispatchSource, requestedRole, taskKind: params.taskKind,
+        workspaceMode: params.workspaceMode,
         projectId: project?.id, envId: routingEnv,
         trustedManual: params.originToolTaskId === undefined });
       if (currentRouting.role !== roleId || !isDeepStrictEqual(currentRoles[roleId], rolePreset)) throw new ProjectError(409, "agent_configuration_changed", "派单期间智能体或默认承接范围已改变，请读取最新配置后重新指派。");
@@ -6479,8 +6707,35 @@ export class KuloHub implements OrchestratorController {
     };
   }
 
+  async #readEntryAgentIntent(
+    conversation: Awaited<ReturnType<Harness["conversation"]>>,
+    sourceEntryId: number,
+    context: Context,
+  ): Promise<AgentDispatchIntent | undefined> {
+    if (!conversation || !Number.isSafeInteger(sourceEntryId) || sourceEntryId < 1) return undefined;
+    const page = await conversation.entries(
+      { minEntryId: sourceEntryId as EntryId, maxEntryId: sourceEntryId as EntryId },
+      1,
+      undefined,
+      context,
+    );
+    const entry = page.items.find((item) => Number(item.id) === sourceEntryId);
+    if (!entry) return undefined;
+    const data = entry.data as Record<string, unknown> | undefined;
+    if (data && Object.hasOwn(data, "agentDispatchIntent")) {
+      return capturedAgentIntent(data.agentDispatchIntent);
+    }
+    const message = entry.model?.find((item) => item.role === "user");
+    const text = typeof data?.text === "string"
+      ? data.text
+      : message?.role === "user"
+        ? parseUserEntryContent(message.content).text
+        : "";
+    return text ? extractAgentDispatchIntent(text, this.#liveSettings.roles, this.envManager.listEnvs()) : undefined;
+  }
+
   async #agentDispatchSource(conversationId: number | undefined, toolTaskId: number | undefined, context: Context, selectedInput?: EntryId): Promise<{
-    intent?: AgentDispatchIntent; entryId?: number; inheritedAssignment?: AgentAssignment; input?: EntryRecord; continuing?: boolean;
+    intent?: AgentDispatchIntent; entryId?: number; inheritedAssignment?: AgentAssignment; relaySettledReady?: boolean; input?: EntryRecord; continuing?: boolean;
   }> {
     if (conversationId === undefined) return {};
     const conversation = await this.harness.conversation(conversationId as ConversationId, context);
@@ -6510,8 +6765,24 @@ export class KuloHub implements OrchestratorController {
           let ticket = state?.tickets[entry.data.ticketId];
           const ancestors = new Set<string>();
           while (ticket?.parentTicketId && !ancestors.has(ticket.id)) { ancestors.add(ticket.id); ticket = state?.tickets[ticket.parentTicketId] ?? ticket; if (ancestors.has(ticket.id)) break; }
-          return { entryId: Number(entry.id), input, continuing, ...(ticket?.agentAssignment ? { inheritedAssignment: cloneJson(ticket.agentAssignment) }
-            : ticket?.externalExecution ? { inheritedAssignment: { agentId: ticket.role, source: "manual" as const } } : {}) };
+          const relaySettledReady = WorkerRelayEntry.is(entry) && entry.data.state === "ready";
+          const assignment = ticket?.agentAssignment;
+          if (relaySettledReady && assignment?.source === "explicit" && assignment.sourceEntryId !== undefined) {
+            const originIntent = await this.#readEntryAgentIntent(conversation, assignment.sourceEntryId, context);
+            if (originIntent && originIntent.targets.length > 1) {
+              return { entryId: Number(entry.id), intent: originIntent, input, continuing, relaySettledReady: true };
+            }
+          }
+          const shouldInherit = Boolean(
+            assignment && (assignment.source === "explicit" || assignment.source === "manual"),
+          );
+          return {
+            entryId: Number(entry.id),
+            input,
+            continuing,
+            ...(relaySettledReady ? { relaySettledReady: true } : {}),
+            ...(shouldInherit && assignment ? { inheritedAssignment: cloneJson(assignment) } : {}),
+          };
         }
         input ??= entry;
         const data = entry.data as Record<string, unknown> | undefined;
@@ -6548,10 +6819,11 @@ export class KuloHub implements OrchestratorController {
     if (ticket.externalExecution) {
       const old = ticket.externalExecution;
       if (!role.external || role.external.kind !== old.binding.kind || role.external.envId !== old.binding.envId ||
-          role.external.executable !== old.binding.executable || role.modelId !== old.modelId) {
+          role.external.executable !== old.binding.executable || role.external.agentRef !== old.binding.agentRef ||
+          JSON.stringify(role.external.acpArgs ?? []) !== JSON.stringify(old.binding.acpArgs ?? []) || role.modelId !== old.modelId) {
         return `任务指定的 Agent「${role.label}」配置已改变，请核对后重新指派。`;
       }
-      if (!role.external.verifiedAt || ["dots", "muse", "grok-bot"].includes(role.external.kind)) return `任务指定的 Agent「${role.label}」尚未完成可用性验证，请先在智能体设置页完成验证。`;
+      if (!role.external.verifiedAt || isPersonalExternalAgentKind(role.external.kind)) return `任务指定的 Agent「${role.label}」尚未完成可用性验证，请先在智能体设置页完成验证。`;
     }
   }
 
@@ -7311,7 +7583,7 @@ export class KuloHub implements OrchestratorController {
     const env = this.envManager.getEnvDescriptor(draft.binding.envId);
     if (!env?.online || !env.rootDir) throw new Error("连接测试需要在线的电脑执行设备。");
     const pathApi = env.platform === "win32" ? path.win32 : path.posix;
-    const id = `agent-setup-${createHash("sha256").update(`${draft.id}:${draft.revision}`).digest("hex").slice(0, 24)}`;
+    const id = `agent-setup-${createHash("sha256").update(`${draft.id}:${draft.revision}:${nonce}`).digest("hex").slice(0, 24)}`;
     const requestId = `${id}:verify`;
     let response = await this.envManager.requestExternalAgent(env.id, { operation: "run", binding: draft.binding, taskId: id,
       runEpoch: draft.revision, requestId, prompt: `Authorized external client connectivity check. Reply with the exact verification token below only—do not call tools or read/modify any files:\n${nonce}`,
@@ -7319,6 +7591,13 @@ export class KuloHub implements OrchestratorController {
       ...(draft.thinkingLevel ? { thinkingLevel: draft.thinkingLevel } : {}), readOnly: false, allowSubagents: false, timeoutMs: 60_000 });
     if (response.type !== "run") throw new Error("客户端没有返回测试执行标识。");
     const deadline = Date.now() + 60_000;
+    const matchesNonce = (rawText: string): boolean => {
+      let cleaned = rawText.trim();
+      const fenced = /^```(?:[a-zA-Z0-9_-]+)?\s*\n?([\s\S]*?)\n?```$/.exec(cleaned);
+      if (fenced) cleaned = fenced[1]!.trim();
+      cleaned = cleaned.replace(/^(?:\*\*|__|`|["'「『“‘])+/, "").replace(/(?:\*\*|__|`|["'」』”’.,!。！])+$/, "").trim();
+      return cleaned === nonce;
+    };
     try {
       while (["starting", "running", "waiting"].includes(response.run.state) && Date.now() < deadline) {
         if (response.run.permissions.length) throw new Error("通信测试请求了额外工具授权，未自动批准。");
@@ -7326,10 +7605,12 @@ export class KuloHub implements OrchestratorController {
         response = await this.envManager.requestExternalAgent(env.id, { operation: "inspect", runId: requestId });
         if (response.type !== "run") throw new Error("测试执行状态无效。");
       }
-      if (response.run.state !== "completed" || response.run.text.trim() !== nonce) throw new Error(this.connectionManager.redact(response.run.error || "客户端尚未确认正确的测试回复，请核对原会话。"));
+      if (response.run.state !== "completed" || !matchesNonce(response.run.text)) throw new Error(this.connectionManager.redact(response.run.error || "客户端尚未确认正确的测试回复，请核对原会话。"));
       return { sessionId: response.run.sessionId, version: draft.detection?.version };
     } finally {
-      await this.envManager.requestExternalAgent(env.id, { operation: "close", runId: requestId });
+      try {
+        await this.envManager.requestExternalAgent(env.id, { operation: "close", runId: requestId, discardStaged: true });
+      } catch { /* ignore cleanup error on close */ }
     }
   }
 
@@ -8657,11 +8938,38 @@ export class KuloHub implements OrchestratorController {
       const { run, error } = await this.#externalAgentRunView(ticket);
       const text = this.connectionManager.redact(run?.text || ticket.latestReport?.deliverable || ticket.latestReport?.summary || "");
       const transcript: ChatDisplayItem[] = [{ id: -1, role: "user", text: [ticket.goal, ticket.scope, ticket.acceptance].filter(Boolean).join("\n\n"), createdAt: ticket.createdAt }];
+      const eventMap = new Map<number, import("@kulo/protocol").ExternalAgentRuntimeEvent>();
+      for (const ev of ticket.externalExecution.recentEvents ?? []) eventMap.set(ev.sequence, ev);
+      for (const ev of run?.events ?? []) {
+        if (ev.type !== "message") eventMap.set(ev.sequence, ev);
+      }
+      const timeline = [...eventMap.values()].sort((a, b) => a.sequence - b.sequence).slice(-30);
+      let nextSyntheticId = -10;
+      for (const ev of timeline) {
+        const prefix = ev.type === "tool" ? "[工具] " : ev.type === "error" ? "[错误] " : ev.type === "permission" ? "[授权] " : "";
+        transcript.push({
+          id: nextSyntheticId--,
+          role: "system_note",
+          text: `${prefix}${this.connectionManager.redact(ev.text).slice(0, 500)}`,
+          createdAt: ev.at,
+        });
+      }
       if (text) transcript.push({ id: -2, role: "assistant", text, createdAt: ticket.latestReport?.at ?? ticket.updatedAt });
-      for (const permission of run?.permissions ?? ticket.externalExecution.pendingPermissions ?? []) transcript.push({ id: -3 - transcript.length, role: "system_note", text: this.connectionManager.redact(permission.title) });
+      const activePermissions = run?.permissions ?? ticket.externalExecution.pendingPermissions ?? [];
+      for (const permission of activePermissions) {
+        transcript.push({ id: nextSyntheticId--, role: "system_note", text: `[待授权] ${this.connectionManager.redact(permission.title)}` });
+      }
+      const isBusy = ticket.status === "running" && (!run || ["starting", "running", "waiting"].includes(run.state));
+      const latestToolEvent = isBusy ? [...timeline].reverse().find((ev) => ev.type === "tool") : undefined;
+      const activeTools: LiveStreamState["activeTools"] = [
+        ...activePermissions.map((permission) => ({ callId: permission.id, name: this.connectionManager.redact(permission.title).slice(0, 120), outputTail: "等待授权" })),
+        ...(latestToolEvent && activePermissions.length === 0
+          ? [{ callId: `ext-tool-${latestToolEvent.sequence}`, name: this.connectionManager.redact(latestToolEvent.text).slice(0, 120) }]
+          : []),
+      ];
       return { ticket: cloneJson(ticket), transcript, live: {
-        busy: ticket.status === "running" && (!run || ["starting", "running", "waiting"].includes(run.state)),
-        ...(ticket.status === "running" && text ? { streamingText: text } : {}), activeTools: [], queuedCount: ticket.resumePrompt ? 1 : 0,
+        busy: isBusy,
+        ...(isBusy && text ? { streamingText: text } : {}), activeTools, queuedCount: ticket.resumePrompt ? 1 : 0,
         ...(error ? { runFailure: { reason: "external_status_unavailable", detail: error } } : {}),
       } };
     }
@@ -9004,7 +9312,7 @@ export class KuloHub implements OrchestratorController {
     await finish(() => this.#customizationInstance?.close());
     await finish(() => this.voiceCalls.close());
     await finish(() => this.voice.close());
-    await finish(() => this.connectionManager.close());
+    await finish(() => this.connectionManager.closeAsync());
     await finish(() => this.envManager.setAndroidNotificationClassifier(undefined));
     await finish(() => this.envManager.setConnectorHandlers(undefined));
     await finish(() => this.larkConnector.close());

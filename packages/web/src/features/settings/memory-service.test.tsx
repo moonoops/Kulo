@@ -2,10 +2,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultRolePresets, type MemoryServiceJob, type MemoryServiceSecretInput, type MemoryServiceSnapshot, type ProviderCatalogItem, type KuloSettingsView } from "@kulo/protocol";
 import { kuloRest } from "../../kulo-api";
-import { createMemoryServiceRequest, decideMemoryServiceJob, initialMemoryServiceDraft, MemoryServiceForm, MemoryServiceJobCard, submitMemoryServiceSecret, type MemoryServiceDraft } from "./memory-service-dialogue";
+import { createMemoryServiceRequest, decideMemoryServiceJob, initialMemoryServiceDraft, MemoryServiceForm, MemoryServiceJobCard, submitMemoryServiceSecret, visibleMemoryDialogueJobs, type MemoryServiceDraft } from "./memory-service-dialogue";
 import { acknowledgeMemoryEnabled, createMemoryConnectionRequest, memoryConnectionDirty, memoryConnectionEditor, MemoryConnectionForm, reconcileMemoryConnection, setSavedMemoryEnabled, setSavedMemoryKnowledgeGuidance } from "./memory-service-panel";
-import { isMemoryDialogueOperation } from "./memory-service-events";
-import { buildMemoryModelsPayload, initialMemoryModelsDraft, kuloMemoryConnections } from "./memory-service-models";
+import { isMemoryDialogueOperation, requestMemoryAssistantPrefill, takeMemoryAssistantPrefill } from "./memory-service-events";
+import { buildMemoryModelsPayload, buildMemoryServicePrefillPrompt, initialMemoryModelsDraft, kuloMemoryConnections } from "./memory-service-models";
 
 const connection = { enabled: false, endpoint: "http://127.0.0.1:8888", endpoints: [], caCertPem: "", routerApiKeyEnv: "", workerApiKeyEnv: "", authFile: "", autoAttachTopLevelRouters: false, banks: { private: "kulo-core", shared: "kulo-shared" } };
 const settings: KuloSettingsView = {
@@ -406,5 +406,90 @@ describe("memory service approval and private input", () => {
     expect(form).toContain("向量模型（Embedding）");
     expect(form).toContain("重排模型（Rerank）");
     for (const field of ["Hindsight 地址", "隐私记忆库名", "共享记忆库名", "公开目录密钥"]) expect(form).not.toContain(field);
+  });
+
+  it("builds an editable right-assistant prefill prompt without stacking left-side job cards", () => {
+    const catalog: ProviderCatalogItem[] = [
+      { id: "api-vertex", name: "Google Vertex AI", builtin: false, supportsApiKey: true, supportsOAuth: false, authType: "api_key", authenticated: true, baseUrl: "https://aiplatform.googleapis.com", api: "google-vertex", models: [{ id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", reasoning: true, vision: true, modalities: ["text"], contextWindow: 1000000, maxTokens: 65536, supportedThinkingLevels: ["off", "low", "medium", "high"] }] },
+    ];
+    const connections = kuloMemoryConnections(settings, catalog);
+    const modelDraft = {
+      ...initialMemoryModelsDraft(undefined, settings, catalog),
+      embeddingsProvider: "onnx" as const,
+      embeddingsModel: "BAAI/bge-m3",
+      embeddingsDimensions: "1024",
+      rerankerProvider: "onnx" as const,
+      rerankerModel: "BAAI/bge-reranker-v2-m3",
+    };
+
+    const deployPrompt = buildMemoryServicePrefillPrompt({
+      operation: "deploy",
+      deviceName: "Macmini.local",
+      draft: modelDraft,
+      connections,
+    });
+    expect(deployPrompt).toContain("Macmini.local");
+    expect(deployPrompt).toContain("Google Vertex AI");
+    expect(deployPrompt).toContain("provider: kulo, connectionId: api-vertex");
+    expect(deployPrompt).toContain("gemini-3.8-flash");
+    expect(deployPrompt).toContain("BAAI/bge-m3");
+    expect(deployPrompt).toContain("dimensions: 1024");
+    expect(deployPrompt).toContain("BAAI/bge-reranker-v2-m3");
+    expect(deployPrompt).toContain("待我确认后执行");
+
+    const resumePrompt = buildMemoryServicePrefillPrompt({
+      operation: "deploy",
+      resume: true,
+      deviceName: "Macmini.local",
+      draft: modelDraft,
+      connections,
+    });
+    expect(resumePrompt).toContain("恢复");
+
+    const configurePrompt = buildMemoryServicePrefillPrompt({
+      operation: "configure",
+      deviceName: "Macmini.local",
+      draft: { ...modelDraft, rerankerProvider: "rrf", rerankerModel: "" },
+      connections,
+    });
+    expect(configurePrompt).toContain("更新");
+    expect(configurePrompt).toContain("provider: rrf");
+
+    // Pending prefill queues safely until consumed by the right assistant panel.
+    requestMemoryAssistantPrefill(deployPrompt);
+    expect(takeMemoryAssistantPrefill()).toBe(deployPrompt);
+    expect(takeMemoryAssistantPrefill()).toBeNull();
+
+    // Left MemoryConnectionForm must never render stacked MemoryServiceJobCards even if jobs exist in snapshot.
+    const withPendingJobs: MemoryServiceSnapshot = {
+      ...snapshot,
+      jobs: [
+        { ...job, id: "failed-1", status: "failed", error: "本机未检测到 uv" },
+        { ...job, id: "confirm-2", status: "awaiting-confirmation" },
+      ],
+    };
+    const leftHtml = connectionForm(settings, withPendingJobs);
+    expect(leftHtml).not.toContain("确认部署");
+    expect(leftHtml).not.toContain("本机未检测到 uv");
+  });
+
+  it("allows dismissing failed job cards and hides cancelled or historical dialogue jobs", async () => {
+    const failedJob: MemoryServiceJob = { ...job, id: "failed-job", status: "failed", stage: "未完成", error: "本机未检测到 uv" };
+    const cardHtml = renderToStaticMarkup(<MemoryServiceJobCard job={failedJob} inputs={[]} clientId="tab-a" connected onChanged={() => {}} />);
+    expect(cardHtml).toContain("重试");
+    expect(cardHtml).toContain("关闭");
+
+    const decide = vi.spyOn(kuloRest, "decideMemoryService").mockResolvedValue(snapshot);
+    await decideMemoryServiceJob(failedJob, "tab-a", "reject");
+    expect(decide).toHaveBeenCalledExactlyOnceWith("failed-job", { clientId: "tab-a", decision: "reject" });
+
+    const cancelled: MemoryServiceJob = { ...job, id: "j-rejected", status: "rejected" };
+    const oldSuccess: MemoryServiceJob = { ...job, id: "j-old-ok", status: "succeeded" };
+    const currentSuccess: MemoryServiceJob = { ...job, id: "j-live-ok", status: "succeeded" };
+    const activeConfirm: MemoryServiceJob = { ...job, id: "j-confirm", status: "awaiting-confirmation" };
+
+    expect(visibleMemoryDialogueJobs([cancelled, oldSuccess], "tab-a")).toEqual([]);
+    expect(visibleMemoryDialogueJobs([cancelled, oldSuccess, currentSuccess], "tab-a", new Set(["j-live-ok"])).map((j) => j.id)).toEqual(["j-live-ok"]);
+    expect(visibleMemoryDialogueJobs([cancelled, currentSuccess, activeConfirm], "tab-a", new Set(["j-live-ok", "j-confirm"])).map((j) => j.id)).toEqual(["j-confirm"]);
   });
 });

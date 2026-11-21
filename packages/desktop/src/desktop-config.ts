@@ -2,10 +2,45 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import type { BrowserWindowConstructorOptions } from "electron";
 
 export const DESKTOP_APP_NAME = "Kulo Dev";
 export const DESKTOP_BUNDLE_ID = "io.kulo.desktop.dev";
+export const DESKTOP_RELEASE_APP_NAME = "Kulo";
+export const DESKTOP_RELEASE_BUNDLE_ID = "io.kulo.desktop";
+
+export type DesktopAppChannel = "dev" | "release";
+
+export interface DesktopAppIdentity {
+  channel: DesktopAppChannel;
+  appName: string;
+  bundleId: string;
+  sessionPartition: string;
+}
+
+export function resolveDesktopAppIdentity(packageJsonPath?: string): DesktopAppIdentity {
+  const manifestPath = packageJsonPath ?? fileURLToPath(new URL("../package.json", import.meta.url));
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { productName?: unknown; kuloChannel?: unknown };
+    if (manifest.kuloChannel === "release" || manifest.productName === DESKTOP_RELEASE_APP_NAME) {
+      return {
+        channel: "release",
+        appName: DESKTOP_RELEASE_APP_NAME,
+        bundleId: DESKTOP_RELEASE_BUNDLE_ID,
+        sessionPartition: "persist:kulo",
+      };
+    }
+  } catch {
+    // Fall back to the default dev identity if package metadata is unavailable.
+  }
+  return {
+    channel: "dev",
+    appName: DESKTOP_APP_NAME,
+    bundleId: DESKTOP_BUNDLE_ID,
+    sessionPartition: "persist:kulo-dev",
+  };
+}
 
 export function resolveDesktopDataDirectory(args: readonly string[], defaultDirectory: string): string {
   const values = args.filter((arg) => arg.startsWith("--kulo-data-dir="));

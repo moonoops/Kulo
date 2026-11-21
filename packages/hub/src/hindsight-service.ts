@@ -12,6 +12,7 @@ import type {
   HindsightRerankerModel,
   HindsightRerankerProvider,
 } from "@kulo/protocol";
+import { buildAugmentedHostPath } from "./host-path.js";
 import { MEMORY_LLM_BRIDGE_FILENAME } from "./memory-llm-bridge.js";
 import { HINDSIGHT_RETAIN_MISSIONS } from "./prompts.js";
 
@@ -89,6 +90,9 @@ export class HindsightServiceError extends Error {
   constructor(message: string) { super(message); this.name = "HindsightServiceError"; }
 }
 class MissingManagedMetadataError extends HindsightServiceError {}
+class HindsightSpawnError extends HindsightServiceError {
+  constructor(message: string, readonly code?: string) { super(message); this.name = "HindsightSpawnError"; }
+}
 
 export interface LocalHindsightModel {
   provider: HindsightModelProvider;
@@ -242,7 +246,7 @@ async function runProcess(command: string, args: string[], options: HindsightPro
     const timer = setTimeout(() => { kill("SIGTERM"); killTimer = setTimeout(() => kill("SIGKILL"), 5000); }, options.timeoutMs);
     child.stdout.on("data", (chunk) => { stdout = (stdout + String(chunk)).slice(-16_384); });
     child.stderr.on("data", (chunk) => { stderr = (stderr + String(chunk)).slice(-16_384); });
-    child.once("error", () => { clearTimeout(timer); clearTimeout(killTimer); reject(new HindsightServiceError("无法启动 Hindsight 安装或服务管理工具。")); });
+    child.once("error", (error: NodeJS.ErrnoException) => { clearTimeout(timer); clearTimeout(killTimer); reject(new HindsightSpawnError("无法启动 Hindsight 安装或服务管理工具。", error.code)); });
     child.once("close", (code) => { clearTimeout(timer); clearTimeout(killTimer); resolve({ code: code ?? -1, stdout, stderr }); });
   });
 }
@@ -323,21 +327,43 @@ export class HindsightLocalService {
     return value;
   }
   #environment(build = false): NodeJS.ProcessEnv {
-    const result: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", HOME: path.join(this.root, "home"), UV_CACHE_DIR: path.join(this.root, "cache", "uv"), UV_PYTHON_INSTALL_DIR: path.join(this.root, "python"), LANG: "en_US.UTF-8" };
+    const hostHome = this.#options.homeDir ?? (process.env.HOME || os.homedir());
+    const cargoHome = build ? (process.env.CARGO_HOME || path.join(hostHome, ".cargo")) : undefined;
+    const result: NodeJS.ProcessEnv = {
+      PATH: buildAugmentedHostPath({
+        basePath: process.env.PATH,
+        homeDir: hostHome,
+        platform: this.#platform as NodeJS.Platform,
+        ...(cargoHome ? { extraDirs: [path.join(cargoHome, "bin")] } : {}),
+      }),
+      HOME: path.join(this.root, "home"),
+      UV_CACHE_DIR: path.join(this.root, "cache", "uv"),
+      UV_PYTHON_INSTALL_DIR: path.join(this.root, "python"),
+      LANG: "en_US.UTF-8",
+    };
     for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "TMPDIR"]) if (process.env[key]) result[key] = process.env[key];
     if (build) {
-      const hostHome = process.env.HOME || os.homedir();
       result.RUSTUP_HOME = process.env.RUSTUP_HOME || path.join(hostHome, ".rustup");
-      result.CARGO_HOME = process.env.CARGO_HOME || path.join(hostHome, ".cargo");
+      result.CARGO_HOME = cargoHome;
     }
     return result;
   }
   async #command(command: string, args: string[], timeoutMs = 60_000, allowed = [0]) {
+    const base = path.basename(command);
     let value: Awaited<ReturnType<HindsightProcessRunner>>;
-    try { value = await this.#run(command, args, { cwd: this.root, env: this.#environment(["uv", "rustc", "cargo"].includes(path.basename(command))), timeoutMs }); }
-    catch { throw new HindsightServiceError(`无法运行 ${path.basename(command)}，请检查本机安装环境。`); }
+    try { value = await this.#run(command, args, { cwd: this.root, env: this.#environment(["uv", "rustc", "cargo"].includes(base)), timeoutMs }); }
+    catch (error) {
+      const code = (error as { code?: unknown } | null)?.code;
+      if (base === "uv") {
+        if (code === "ENOENT") {
+          throw new HindsightServiceError("本机未检测到 uv（Python 环境管理工具），无法自动部署 Hindsight。请先在本机安装 uv（例如执行 brew install uv 或官方安装脚本）后重试。");
+        }
+        throw new HindsightServiceError("无法启动 uv（Python 环境管理工具），请检查本机 uv 安装及执行权限后重试。");
+      }
+      throw new HindsightServiceError(`无法运行 ${base}，请检查本机安装环境。`);
+    }
     // Third-party installers may include URLs/headers in their output. It never becomes an error payload.
-    if (!allowed.includes(value.code)) throw new HindsightServiceError(`Hindsight ${path.basename(command)} 操作未完成（退出码 ${value.code}）。`);
+    if (!allowed.includes(value.code)) throw new HindsightServiceError(`Hindsight ${base} 操作未完成（退出码 ${value.code}）。`);
     return value;
   }
   #unitPath(manifest: Manifest) {

@@ -65,7 +65,7 @@ const WEB_TEST_FILES = [
   "tests/kulo-navigation-motion.test.ts",
 ] as const;
 
-const EXCLUDED = new Set([".git", ".agents", "node_modules", "dist", "output", ".kulo-state", ".kulo", ".pnpm-store", ".playwright-cli", ".playwright-mcp", ".codex", ".claude", ".gemini",
+const EXCLUDED = new Set([".git", ".agents", "node_modules", "dist", "output", ".kulo-state", ".kulo", ".pnpm-store", ".playwright-cli", ".playwright-mcp", ".codex", ".claude", ".gemini", ".antigravity", ".grok", ".cursor", ".opencode", ".kiro", ".copilot", ".dsh",
   ".venv", "venv", "__pycache__", ".cache", ".pytest_cache", ".mypy_cache", ".ruff_cache", "coverage", ".next", ".turbo"]);
 const MAX_SOURCE_BYTES = 256 * 1024 * 1024;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;

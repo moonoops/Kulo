@@ -466,8 +466,8 @@ describe("External task MCP through the real Hub collaboration host", () => {
   it("dispatches a scoped child, persists its ownership and makes concurrent request retries idempotent", async () => {
     let finishParent = false;
     const f = await fixture({ roles: {
-      codex: role("codex", { allowSubagents: true }),
-      "claude-code": role("claude-code"),
+      codex: role("codex", { readOnly: false, allowSubagents: true }),
+      "claude-code": role("claude-code", { readOnly: false }),
       "remote-helper": role("dsh", { id: "remote-helper", external: { kind: "dsh", envId: "computer-b", verifiedAt: 1_700_000_000_000 } }),
       "writable-helper": role("dsh", { id: "writable-helper", readOnly: false }),
     }, inspect: run => run.kind === "codex" && !finishParent ? run : completedRun(run) });
@@ -566,7 +566,7 @@ describe("External task MCP through the real Hub collaboration host", () => {
     expect(after.tickets[result.id]).toMatchObject({ status: "running", parentTicketId: parent.id, projectId: project.id, readOnly: false });
     expect(after.slots.writeHolders).not.toContain(parent.id);
     expect(after.slots.holders).toEqual([result.id]);
-    expect(f.runCalls()[1]?.[1]).toMatchObject({ taskId: result.id, cwd: parentRun.cwd, readOnly: false, projectId: project.id });
+    expect(f.runCalls()[1]?.[1]).toMatchObject({ taskId: result.id, cwd: parentRun.cwd, readOnly: true, workspaceMode: "read_only", projectId: project.id });
     finishChild = true;
     await f.settled(result.id);
     expect((await f.hub.getBoardSnapshot()).slots.used).toBe(0);

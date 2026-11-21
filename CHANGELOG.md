@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.1.3 (2026-11-21)
+
+新增个人助理感知闭环与多生态连接器、标准 MCP 与外部 ACP 智能体接入重构、主机动作与分布式设备路由增强，以及 macOS 桌面端正式版/开发版双通道证书签名与常驻体验升级（`v0.1.3`）。
+
+### Personal Assistant Perception & Connectors
+
+- **个人助理感知闭环与主动简报（`@kulo/hub`、`@kulo/env`、`@kulo/protocol`、`@kulo/web`）**
+  - 新增连接器安全护栏、macOS 通知中心只读采集、SQLite 事件与摘要账本、环境模型（oMLX / 云端）分拣器、右栏置顶助理卡片与主动话题推送。
+  - 新增 **Spark Mail CLI** 连接器（本地/远端 Env 双路 RPC 与幂等 L2 确认卡片）、**Home Assistant** 局域网状态镜像与高危物理操作硬红线、**飞书 / Lark（`lark-cli`）** 双组织桥接，以及移动端 HTTP/SSE 实时同步网关。
+  - 「设置 → 连接」新增极简实时感知控制与独立 **MCP 服务连接**（基于 `@earendil-works/pi-mcp`，支持预设与自定义 HTTP/stdio、OAuth / Bearer 鉴权与动态工具挂载）。
+
+### External Agents (ACP) & Device Routing
+
+- **外部智能体 ACP 统一接入与注册表（`@kulo/env`、`@kulo/hub`、`@kulo/protocol`、`@kulo/web`）**
+  - 重构外部智能体驱动架构，统一支持 ACP 协议家族（Claude Code、Codex、Cursor、Gemini CLI、GitHub Copilot、OpenCode、Kiro、Grok 及在线 ACP Registry 模板），完善连接探测、模型选择与只读/工作区安全约束。
+- **主机动作、内置 Billion Context 与分布式设备路由（`@kulo/hub`、`@kulo/env`、`@kulo/web`）**
+  - 内置 Billion Context 长上下文压缩内核，增强跨设备路由、Env 休眠唤醒恢复、电脑操作（`agent-browser` / `agent-desktop`）实时预览与跨端设备身份展示。
+  - 长期记忆新增本地 / 云端 LLM 桥接与 Hindsight 服务诊断能力。
+
+### macOS Desktop & Release Signing
+
+- **macOS 桌面端常驻与窗口体验升级（`@kulo/desktop`、`@kulo/web`）**
+  - 新增菜单栏托盘图标（深浅色未读角标）、后台运行与通知偏好、窗口尺寸/位置持久化恢复，以及按会话聚合的系统通知与 Dock 角标同步。
+- **正式版 / 开发版双通道打包与 Developer ID 签名（`@kulo/desktop`）**
+  - `packages/desktop/scripts/package.mjs` 支持 `release`（`Kulo.app` / `io.kulo.desktop`）与 `dev`（`Kulo Dev.app` / `io.kulo.desktop.dev`）双通道独立构建，并自动选用本机证书（优先 `Developer ID Application`）签名以跨升级保留系统权限。
+
 ## v0.1.2 (2026-11-19)
 
 项目全面更名为 **Kulo**，同步默认智能体名称为 **Kulo**，并带来模型元数据自动同步、多草稿模型校准、可调宽设置工作台与语音通话错误提示改进（`v0.1.2`）。

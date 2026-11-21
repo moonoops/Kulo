@@ -137,6 +137,10 @@ const SENSITIVE_CONFIG_SUBDIRS: readonly string[] = [
   "yarn",
   "cursor",
   "zed",
+  "opencode",
+  "github-copilot",
+  "kiro",
+  "grok",
 ];
 
 export function defaultProtectedPaths(homeDir = os.homedir()): string[] {
@@ -146,6 +150,14 @@ export function defaultProtectedPaths(homeDir = os.homedir()): string[] {
     path.join(homeDir, ".kube"),
     path.join(homeDir, ".claude"),
     path.join(homeDir, ".codex"),
+    path.join(homeDir, ".gemini"),
+    path.join(homeDir, ".antigravity"),
+    path.join(homeDir, ".grok"),
+    path.join(homeDir, ".cursor"),
+    path.join(homeDir, ".opencode"),
+    path.join(homeDir, ".local", "share", "opencode"),
+    path.join(homeDir, ".kiro"),
+    path.join(homeDir, ".copilot"),
     ...SENSITIVE_CONFIG_SUBDIRS.map((entry) => path.join(homeDir, ".config", entry)),
     path.join(homeDir, ".dsh"),
     path.join(homeDir, ".aws"),
@@ -480,7 +492,7 @@ export function createWorkerSandbox(options: WorkerSandboxOptions): WorkerSandbo
   for (const directory of runtimePaths) {
     if (directory === path.parse(directory).root || directory === canonicalExecutionPath(os.homedir()) ||
         protectedPaths.some((entry) => inside(directory, canonicalExecutionPath(entry))) ||
-        [".claude", ".gemini", ".dsh", ".codex"].some((name) => inside(directory, canonicalExecutionPath(path.join(os.homedir(), name))))) {
+        [".claude", ".gemini", ".antigravity", ".dsh", ".codex", ".grok", ".cursor", ".opencode", ".kiro", ".copilot"].some((name) => inside(directory, canonicalExecutionPath(path.join(os.homedir(), name))))) {
       throw new Error("Agent runtime code cannot expose private account or application directories");
     }
   }

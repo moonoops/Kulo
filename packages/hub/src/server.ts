@@ -44,6 +44,8 @@ import { ConversationQueryError, decodeConversationTopicId } from "./conversatio
 import { SkillError } from "./skills.js";
 import { CapabilityError } from "./capabilities.js";
 import { AgentConfigurationError } from "./agent-configuration.js";
+import { fetchAcpRegistryTemplates } from "./acp-registry.js";
+import { isNonPublicMcpUrl } from "./mcp-presets.js";
 import type { KuloHub } from "./hub.js";
 import { topicActivity } from "./topic-activity.js";
 import { SettingsUpdateError } from "./settings.js";
@@ -1313,6 +1315,34 @@ export async function startKuloHubServer(
 
         if (pathname === "/api/connections" || pathname.startsWith("/api/connections/")) {
           res.setHeader("cache-control", "no-store");
+          const assertSameOrigin = () => {
+            if (req.headers["sec-fetch-site"] === "cross-site" || req.headers.origin && req.headers.origin !== requestOrigin(req)) {
+              throw Object.assign(new Error("请在 Kulo 中执行此连接管理操作。"), { status: 403, code: "connection_origin_required" });
+            }
+          };
+          const requiresLocalHostForMcp = (
+            payload: Record<string, unknown>,
+            existing?: { kind?: unknown; mcpTransport?: unknown; url?: unknown },
+          ): boolean => {
+            const kind = payload.kind ?? existing?.kind;
+            if (kind !== "mcp") return false;
+            const transport = payload.mcpTransport ?? (payload.mcpCommand !== undefined ? "stdio" : existing?.mcpTransport ?? "http");
+            if (transport === "stdio" || existing?.mcpTransport === "stdio") return true;
+            const candidateUrl = typeof payload.url === "string" ? payload.url : typeof existing?.url === "string" ? existing.url : undefined;
+            if (candidateUrl && isNonPublicMcpUrl(candidateUrl)) return true;
+            if (typeof existing?.url === "string" && isNonPublicMcpUrl(existing.url)) return true;
+            return false;
+          };
+          const assertLocalMcpAccess = (
+            payload: Record<string, unknown>,
+            existing?: { kind?: unknown; mcpTransport?: unknown; url?: unknown },
+          ) => {
+            if (!requiresLocalHostForMcp(payload, existing)) return;
+            assertSameOrigin();
+            if (!hasLocalDeviceControl(req, parsedUrl)) {
+              throw Object.assign(new Error("本机命令（Stdio）或内网/环回地址的 MCP 连接仅可在主脑本机配置。"), { status: 403, code: "connection_mcp_local_host_required" });
+            }
+          };
           if (pathname === "/api/connections" && req.method === "GET") {
             const clientId = parsedUrl.searchParams.get("clientId") ?? undefined;
             if (clientId && (clientId.length > 160 || /[\x00-\x20\x7f]/.test(clientId))) throw Object.assign(new Error("窗口标识无效。"), { status: 400 });
@@ -1320,11 +1350,17 @@ export async function startKuloHubServer(
             return;
           }
           if (pathname === "/api/connections" && req.method === "POST") {
-            sendJson(res, 201, { connection: await hub.connectionManager.save(await readJsonObject(req, 5 * 1024 * 1024) as unknown as ConnectionSaveRequest) });
+            const body = await readJsonObject(req, 5 * 1024 * 1024);
+            const existing = typeof body.id === "string" ? hub.connectionManager.getConnectionRecord(body.id) : undefined;
+            assertLocalMcpAccess(body, existing);
+            sendJson(res, 201, { connection: await hub.connectionManager.save(body as unknown as ConnectionSaveRequest) });
             return;
           }
           if (pathname === "/api/connections/prepare" && req.method === "POST") {
-            sendJson(res, 201, await hub.connectionManager.prepare(await readJsonObject(req) as unknown as ConnectionPrepareRequest));
+            const body = await readJsonObject(req);
+            const existing = typeof body.connectionId === "string" ? hub.connectionManager.getConnectionRecord(body.connectionId) : undefined;
+            assertLocalMcpAccess(body, existing);
+            sendJson(res, 201, await hub.connectionManager.prepare(body as unknown as ConnectionPrepareRequest));
             return;
           }
           if (pathname === "/api/connections/permission-settings") {
@@ -1348,13 +1384,58 @@ export async function startKuloHubServer(
             sendJson(res, 200, { ok: true });
             return;
           }
+          const oauthSession = /^\/api\/connections\/oauth\/([^/]+)(?:\/(complete|cancel))?$/.exec(pathname);
+          if (oauthSession) {
+            assertSameOrigin();
+            const sessionId = decodeURIComponent(oauthSession[1]!);
+            const principalId = currentDevice(req, parsedUrl);
+            if (!oauthSession[2] && req.method === "GET") {
+              const clientId = parsedUrl.searchParams.get("clientId") ?? undefined;
+              sendJson(res, 200, { session: hub.connectionManager.mcpOAuth.get(sessionId, { clientId, principalId }) });
+              return;
+            }
+            if (oauthSession[2] === "complete" && req.method === "POST") {
+              const body = await readJsonObject(req, 16_384);
+              const clientId = typeof body.clientId === "string" ? body.clientId : undefined;
+              const redirectUrl = typeof body.redirectUrl === "string" ? body.redirectUrl : "";
+              if (!redirectUrl.trim()) throw Object.assign(new Error("请粘贴浏览器跳转后的回调地址。"), { status: 400, code: "connection_oauth_invalid_redirect" });
+              sendJson(res, 200, { session: await hub.connectionManager.mcpOAuth.complete(sessionId, { clientId, principalId }, redirectUrl.trim()) });
+              return;
+            }
+            if (oauthSession[2] === "cancel" && req.method === "POST") {
+              const body = await readJsonObject(req, 4_096);
+              const clientId = typeof body.clientId === "string" ? body.clientId : undefined;
+              sendJson(res, 200, { session: await hub.connectionManager.mcpOAuth.cancel(sessionId, { clientId, principalId }) });
+              return;
+            }
+          }
+          const oauthStart = /^\/api\/connections\/([^/]+)\/oauth\/start$/.exec(pathname);
+          if (oauthStart && req.method === "POST") {
+            assertSameOrigin();
+            const id = decodeURIComponent(oauthStart[1]!);
+            const body = await readJsonObject(req, 4_096);
+            const clientId = typeof body.clientId === "string" && body.clientId.length <= 160 ? body.clientId : undefined;
+            const principalId = currentDevice(req, parsedUrl);
+            sendJson(res, 200, {
+              session: await hub.connectionManager.mcpOAuth.start({
+                connectionId: id,
+                owner: { clientId, principalId },
+                forceReauth: body.forceReauth === true,
+              }),
+            });
+            return;
+          }
           const input = /^\/api\/connections\/inputs\/([^/]+)\/(submit|cancel)$/.exec(pathname);
           if (input && req.method === "POST") {
             const body = await readJsonObject(req, 5 * 1024 * 1024);
             if (typeof body.clientId !== "string" || !body.clientId || body.clientId.length > 160) throw Object.assign(new Error("窗口标识无效。"), { status: 400 });
             const id = decodeURIComponent(input[1]!);
-            if (input[2] === "submit") sendJson(res, 200, { connection: await hub.connectionManager.submitInput(id, body.clientId, body as unknown as ConnectionSaveRequest) });
-            else { await hub.connectionManager.cancelInput(id, body.clientId); sendJson(res, 200, { ok: true }); }
+            if (input[2] === "submit") {
+              const pendingInput = hub.connectionManager.getPendingInput(id);
+              const existingRecord = pendingInput?.connectionId ? hub.connectionManager.getConnectionRecord(pendingInput.connectionId) : undefined;
+              assertLocalMcpAccess(body, existingRecord ?? pendingInput);
+              sendJson(res, 200, { connection: await hub.connectionManager.submitInput(id, body.clientId, body as unknown as ConnectionSaveRequest) });
+            } else { await hub.connectionManager.cancelInput(id, body.clientId); sendJson(res, 200, { ok: true }); }
             return;
           }
           const connection = /^\/api\/connections\/([^/]+)(?:\/(test|trust))?$/.exec(pathname);
@@ -1935,10 +2016,17 @@ export async function startKuloHubServer(
           return;
         }
 
+        if (req.method === "GET" && pathname === "/api/external-clients/acp-registry") {
+          const forceRefresh = parsedUrl.searchParams.get("refresh") === "1";
+          res.setHeader("cache-control", "no-store");
+          sendJson(res, 200, await fetchAcpRegistryTemplates({ forceRefresh }));
+          return;
+        }
+
         if (req.method === "POST" && pathname === "/api/external-clients/connect") {
           const body = await readJsonObject(req);
           res.setHeader("cache-control", "no-store");
-          sendJson(res, 200, await hub.agentConfiguration.quickConnect(body as never));
+          sendJson(res, 200, await hub.agentConfiguration.quickConnect(body as never, undefined, { allowCustomAcpCommand: true }));
           return;
         }
 
@@ -1949,6 +2037,28 @@ export async function startKuloHubServer(
             return;
           }
           const out = await hub.refreshExternalClientModels(decodeURIComponent(encoded));
+          sendJson(res, 200, out);
+          return;
+        }
+
+        if (req.method === "POST" && pathname.startsWith("/api/external-clients/") && pathname.endsWith("/verify")) {
+          const encoded = pathname.slice("/api/external-clients/".length, -"/verify".length);
+          if (!encoded || encoded.includes("/")) {
+            sendJson(res, 404, { error: "Invalid external client path" });
+            return;
+          }
+          const body = await readJsonObject(req);
+          const expectedRevision = typeof body.expectedRevision === "number" && Number.isSafeInteger(body.expectedRevision)
+            ? body.expectedRevision
+            : undefined;
+          const commandId = typeof body.commandId === "string" && body.commandId.trim()
+            ? body.commandId.trim()
+            : undefined;
+          res.setHeader("cache-control", "no-store");
+          const out = await hub.verifyExternalClient(decodeURIComponent(encoded), {
+            ...(commandId ? { commandId } : {}),
+            ...(expectedRevision !== undefined ? { expectedRevision } : {}),
+          });
           sendJson(res, 200, out);
           return;
         }

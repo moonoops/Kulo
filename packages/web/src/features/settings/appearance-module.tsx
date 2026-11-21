@@ -58,8 +58,8 @@ export function AppearanceModule({
     setNotificationActionError(null);
     try {
       const payload = {
-        title: t("测试通知", "Test notification"),
-        body: t("Kulo 通知已就绪", "Kulo notifications are ready"),
+        title: "Kulo",
+        body: t("系统通知已就绪", "System notifications are ready"),
       };
       if (notifications.isDesktop) {
         const notify = typeof window === "undefined" ? undefined : window.kuloDesktop?.notify;
@@ -248,7 +248,7 @@ export function AppearanceModule({
           </Switch>
           <Switch
             className="w-full"
-            aria-label={t("任务栏红点", "Taskbar badge")}
+            aria-label={t("应用角标", "App badge")}
             isSelected={notifications.preferences.badge}
             isDisabled={notificationControlsDisabled}
             isReadOnly={notifications.saving}
@@ -258,7 +258,7 @@ export function AppearanceModule({
             }}
           >
             <Switch.Content className="kulo-settings-row kulo-settings-row--toggle">
-              <Label>{t("任务栏红点", "Taskbar badge")}</Label>
+              <Label>{t("应用角标", "App badge")}</Label>
               <Switch.Control><Switch.Thumb /></Switch.Control>
             </Switch.Content>
           </Switch>

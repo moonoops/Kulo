@@ -374,18 +374,25 @@ export function ticketsShareWriteScope(a: Readonly<TicketRecord>, b: Readonly<Ti
   return contains(left.value, right.value) || contains(right.value, left.value);
 }
 
+function isTicketWriteExempt(ticket: Readonly<TicketRecord>): boolean {
+  return Boolean(
+    ticket.readOnly ||
+      (ticket.externalExecution && ticket.projectId && ticket.externalExecution.workspaceMode === "read_only"),
+  );
+}
+
 function ensureWriteHolders(state: KuloDurableState): string[] {
   const holders = ensureHolders(state);
   state.slots.writeHolders ??= [];
   for (const id of holders) {
-    if (state.tickets[id]?.readOnly !== true && !state.slots.writeHolders.includes(id)) {
+    if (state.tickets[id] && !isTicketWriteExempt(state.tickets[id]!) && !state.slots.writeHolders.includes(id)) {
       state.slots.writeHolders.push(id);
     }
   }
   for (const ticket of Object.values(state.tickets)) {
     if (
       (ticket.cleanupPending || hasPendingWorkspaceApply(ticket)) &&
-      ticket.readOnly !== true &&
+      !isTicketWriteExempt(ticket) &&
       !state.slots.writeHolders.includes(ticket.id)
     ) {
       state.slots.writeHolders.push(ticket.id);
@@ -396,7 +403,7 @@ function ensureWriteHolders(state: KuloDurableState): string[] {
 }
 
 function canClaimWrite(state: KuloDurableState, ticket: Readonly<TicketRecord>): boolean {
-  if (ticket.readOnly) return true;
+  if (isTicketWriteExempt(ticket)) return true;
   return !ensureWriteHolders(state).some((id) =>
     id !== ticket.id && ticketsShareWriteScope(ticket, state.tickets[id]!),
   );
@@ -419,6 +426,7 @@ export function tryClaimSlot(
   options: { isRunnable?: (ticket: Readonly<TicketRecord>) => boolean } = {},
 ): boolean {
   const holders = ensureHolders(state);
+  ensureWriteHolders(state);
   if (holders.includes(ticketId)) {
     return true;
   }
@@ -441,7 +449,7 @@ export function tryClaimSlot(
         options.isRunnable?.(t) !== false &&
         canClaimWrite(state, t)
       ) {
-        if (!t.readOnly && !self.readOnly && ticketsShareWriteScope(t, self)) return false;
+        if (!isTicketWriteExempt(t) && !isTicketWriteExempt(self) && ticketsShareWriteScope(t, self)) return false;
         olderQueued++;
       }
     }
@@ -451,7 +459,7 @@ export function tryClaimSlot(
   }
 
   holders.push(ticketId);
-  if (self && !self.readOnly) {
+  if (self && !isTicketWriteExempt(self)) {
     const writeHolders = ensureWriteHolders(state);
     if (!writeHolders.includes(ticketId)) writeHolders.push(ticketId);
   }

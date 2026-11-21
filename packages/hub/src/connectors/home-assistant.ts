@@ -13,6 +13,7 @@ import type {
   RawConnectorEvent,
 } from "@kulo/protocol";
 import type { LocalConnectionVault } from "../connection-vault.js";
+import { buildAugmentedHostPath, findHostExecutable } from "../host-path.js";
 
 const HA_VAULT_KEY = "kulo-home-assistant-token";
 const MAX_HTTP_BYTES = 2 * 1024 * 1024;
@@ -325,17 +326,7 @@ function directLanRequest(
 }
 
 function findBinary(name: string): string | undefined {
-  const dirs = ["/opt/homebrew/bin", "/usr/local/bin", path.join(os.homedir(), ".orbstack/bin"), ...(process.env.PATH ?? "").split(path.delimiter)];
-  for (const dir of dirs.filter(Boolean)) {
-    const candidate = path.join(dir, name);
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      // continue
-    }
-  }
-  return undefined;
+  return findHostExecutable(name, { extraDirs: [path.join(os.homedir(), ".orbstack/bin")] });
 }
 
 function probePort8123(): Promise<boolean> {
@@ -356,7 +347,7 @@ function defaultRunCommand(cmd: string, args: string[]): Promise<{ ok: boolean; 
   return new Promise((resolve) => {
     const child = spawn(cmd, args, {
       env: {
-        PATH: `/opt/homebrew/bin:/usr/local/bin:${path.join(os.homedir(), ".orbstack/bin")}:/usr/bin:/bin`,
+        PATH: buildAugmentedHostPath({ extraDirs: [path.join(os.homedir(), ".orbstack/bin")] }),
         HOME: os.homedir(),
         TMPDIR: os.tmpdir(),
       },

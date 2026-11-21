@@ -11,6 +11,20 @@ export interface RenderedDesktopNotificationPayload extends DesktopNotificationP
   silent: boolean;
 }
 
+export function normalizeDesktopBadgeCount(raw: unknown): number | null {
+  if (typeof raw === "boolean") return raw ? 1 : 0;
+  if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) {
+    return Math.min(9999, Math.floor(raw));
+  }
+  return null;
+}
+
+export function formatDockBadgeText(count: number): string {
+  const normalized = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+  if (normalized <= 0) return "";
+  return normalized > 99 ? "99+" : String(normalized);
+}
+
 function sanitizeText(value: unknown, maxLength: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const cleaned = value.replace(/[\x00-\x1f\x7f]+/g, " ").trim();

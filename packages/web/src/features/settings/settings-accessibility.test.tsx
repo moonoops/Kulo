@@ -36,7 +36,7 @@ describe("settings controls and layout", () => {
     expect(html).toContain('aria-label="通知偏好"');
     expect(html).toContain('aria-label="系统通知"');
     expect(html).toContain('aria-label="提示音"');
-    expect(html).toContain('aria-label="任务栏红点"');
+    expect(html).toContain('aria-label="应用角标"');
     expect(html).not.toContain("grid-cols-4");
     expect(html).not.toContain('type="range"');
     expect(html).not.toContain("对话字号预览");

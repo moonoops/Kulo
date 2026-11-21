@@ -18,7 +18,7 @@ export interface DesktopFileBridge {
   ready?(): Promise<void>;
   onCommand?(listener: (command: AppShortcutCommand) => void): () => void;
   notify?(payload: DesktopNotificationBridgePayload): Promise<boolean | void>;
-  setBadge?(active: boolean): Promise<void>;
+  setBadge?(count: number | boolean): Promise<void>;
   onNotificationOpen?(listener: (target: { topicId: string }) => void): () => void;
   preferences?: DesktopPreferencesBridge;
   systemPermissions?: DesktopSystemPermissionBridge;

@@ -30,7 +30,7 @@ function previewStatusLabel(
   return selected.tool === "browser" ? t("实时画面", "Live view") : t("操作截图", "Action snapshot");
 }
 
-function resolveCardSession(
+export function resolveCardPreviewSession(
   state: ComputerPreviewState,
   ticketId: string,
   ticketSessions: readonly ComputerPreviewSessionView[],
@@ -101,10 +101,73 @@ function PreviewViewport({
   );
 }
 
-/** Embedded live computer/browser preview rendered inside its owning Worker task card. */
+/** Compact expand/collapse and stop controls aligned in the task card's title row. */
+export function TaskCardPreviewControls({
+  ticketId,
+  ticketTitle,
+  bodyId,
+  state,
+  client,
+  connected,
+  onStop,
+}: {
+  ticketId: string;
+  ticketTitle: string;
+  bodyId: string;
+  state: ComputerPreviewState;
+  client: ComputerPreviewActions;
+  connected: boolean;
+  onStop: (ticketId: string) => Promise<unknown>;
+}) {
+  const { t } = useI18n();
+  const isExpanded = isTicketPreviewExpanded(state, ticketId);
+  const stop = state.stops[ticketId];
+  const stopped = Boolean(stop?.pending || stop?.accepted);
+
+  return (
+    <div className="kulo-task-preview-controls">
+      <Tooltip delay={350}>
+        <Button
+          type="button"
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          aria-controls={bodyId}
+          aria-expanded={isExpanded}
+          aria-label={isExpanded
+            ? t(`收起操作预览：${ticketTitle}`, `Collapse operation preview: ${ticketTitle}`)
+            : t(`展开操作预览：${ticketTitle}`, `Expand operation preview: ${ticketTitle}`)}
+          onPress={() => (isExpanded ? client.collapseTicket(ticketId) : client.expandTicket(ticketId))}
+        >
+          <KuloIcon name={isExpanded ? "chevron-up" : "chevron-down"} size={16} />
+        </Button>
+        <Tooltip.Content placement="top">{isExpanded ? t("收起画面", "Collapse view") : t("展开画面", "Expand view")}</Tooltip.Content>
+      </Tooltip>
+      <Tooltip delay={350}>
+        <Button
+          type="button"
+          isIconOnly
+          size="sm"
+          variant="danger-soft"
+          isDisabled={!connected || stopped}
+          isPending={Boolean(stop?.pending)}
+          aria-label={t(`停止任务：${ticketTitle}`, `Stop task: ${ticketTitle}`)}
+          onPress={() => { void client.stopTask(onStop, ticketId); }}
+        >
+          {stop?.pending ? <Spinner size="sm" color="current" /> : <KuloIcon name="stop" size={14} />}
+        </Button>
+        <Tooltip.Content placement="top">{stopped ? t("停止中", "Stopping") : t("停止任务", "Stop task")}</Tooltip.Content>
+      </Tooltip>
+    </div>
+  );
+}
+
+/** Embedded live computer/browser preview viewport rendered inside its owning Worker task card. */
 export function TaskCardComputerPreview({
   ticketId,
   ticketTitle,
+  bodyId: externalBodyId,
+  showInlineControls = false,
   sessions,
   state,
   client,
@@ -113,6 +176,8 @@ export function TaskCardComputerPreview({
 }: {
   ticketId: string;
   ticketTitle: string;
+  bodyId?: string;
+  showInlineControls?: boolean;
   sessions: readonly ComputerPreviewSessionView[];
   state: ComputerPreviewState;
   client: ComputerPreviewActions;
@@ -120,24 +185,16 @@ export function TaskCardComputerPreview({
   onStop: (ticketId: string) => Promise<unknown>;
 }) {
   const { t } = useI18n();
-  const bodyId = useId();
-  const selected = resolveCardSession(state, ticketId, sessions);
+  const generatedBodyId = useId();
+  const bodyId = externalBodyId ?? generatedBodyId;
+  const selected = resolveCardPreviewSession(state, ticketId, sessions);
   if (!selected) return null;
 
   const isExpanded = isTicketPreviewExpanded(state, ticketId);
   const display = state.displays[selected.id];
   const stop = state.stops[ticketId];
   const reconnecting = state.connection !== "connected";
-  const stopped = Boolean(stop?.pending || stop?.accepted);
   const previewError = state.error === "invalid_preview" ? t("预览数据无效", "Invalid preview data") : state.error;
-  const status = previewStatusLabel(t, selected, display, reconnecting);
-  const degraded = reconnecting || display?.state === "unavailable" || display?.state === "closed";
-  const metaText = degraded
-    ? `${selected.deviceName} · ${status}`
-    : selected.app
-      ? `${selected.app} · ${selected.deviceName}`
-      : `${selected.deviceName} · ${status}`;
-  const fullMeta = [selected.deviceName, selected.app, status].filter(Boolean).join(" · ");
   const showFeedback = Boolean(
     previewError
       || reconnecting
@@ -151,12 +208,31 @@ export function TaskCardComputerPreview({
       aria-label={t(`设备操作预览：${ticketTitle}`, `Device operation preview: ${ticketTitle}`)}
       data-expanded={isExpanded || undefined}
     >
-      <div className="kulo-task-preview-bar">
-        <div className="kulo-task-preview-meta" title={fullMeta}>
-          <KuloIcon name={selected.tool === "browser" ? "video" : "image"} size={14} className="text-muted" />
-          <span className="kulo-task-preview-label text-xs text-muted">{metaText}</span>
+      {showInlineControls && (
+        <div className="kulo-task-preview-orphan-head">
+          <strong className="kulo-task-title" title={ticketTitle}>{ticketTitle}</strong>
+          <TaskCardPreviewControls
+            ticketId={ticketId}
+            ticketTitle={ticketTitle}
+            bodyId={bodyId}
+            state={state}
+            client={client}
+            connected={connected}
+            onStop={onStop}
+          />
         </div>
-        <div className="kulo-task-preview-controls">
+      )}
+
+      <div id={bodyId} hidden={!isExpanded} className="kulo-task-preview-body">
+        <div className="kulo-task-preview-viewport-frame">
+          <PreviewViewport
+            selected={selected}
+            display={display}
+            reconnecting={reconnecting}
+            client={client}
+            zoomable
+            className="kulo-task-preview-viewport"
+          />
           {isExpanded && (
             <Tooltip delay={350}>
               <Button
@@ -164,6 +240,7 @@ export function TaskCardComputerPreview({
                 isIconOnly
                 size="sm"
                 variant="ghost"
+                className="kulo-task-preview-zoom-button"
                 aria-label={t(`放大操作预览：${ticketTitle}`, `Enlarge operation preview: ${ticketTitle}`)}
                 onPress={() => client.openModal(selected.id)}
               >
@@ -172,68 +249,7 @@ export function TaskCardComputerPreview({
               <Tooltip.Content placement="top">{t("放大", "Enlarge")}</Tooltip.Content>
             </Tooltip>
           )}
-          <Tooltip delay={350}>
-            <Button
-              type="button"
-              isIconOnly
-              size="sm"
-              variant="ghost"
-              aria-controls={bodyId}
-              aria-expanded={isExpanded}
-              aria-label={isExpanded
-                ? t(`收起操作预览：${ticketTitle}`, `Collapse operation preview: ${ticketTitle}`)
-                : t(`展开操作预览：${ticketTitle}`, `Expand operation preview: ${ticketTitle}`)}
-              onPress={() => (isExpanded ? client.collapseTicket(ticketId) : client.expandTicket(ticketId))}
-            >
-              <KuloIcon name={isExpanded ? "chevron-up" : "chevron-down"} size={16} />
-            </Button>
-            <Tooltip.Content placement="top">{isExpanded ? t("收起画面", "Collapse view") : t("展开画面", "Expand view")}</Tooltip.Content>
-          </Tooltip>
-          <Tooltip delay={350}>
-            <Button
-              type="button"
-              isIconOnly
-              size="sm"
-              variant="danger-soft"
-              isDisabled={!connected || stopped}
-              isPending={Boolean(stop?.pending)}
-              aria-label={t(`停止任务：${ticketTitle}`, `Stop task: ${ticketTitle}`)}
-              onPress={() => { void client.stopTask(onStop, ticketId); }}
-            >
-              {stop?.pending ? <Spinner size="sm" color="current" /> : <KuloIcon name="stop" size={14} />}
-            </Button>
-            <Tooltip.Content placement="top">{stopped ? t("停止中", "Stopping") : t("停止任务", "Stop task")}</Tooltip.Content>
-          </Tooltip>
         </div>
-      </div>
-
-      <div id={bodyId} hidden={!isExpanded} className="kulo-task-preview-body">
-        {sessions.length > 1 && (
-          <div className="kulo-computer-preview-sessions scrollbar" aria-label={t("操作会话", "Operation sessions")}>
-            {sessions.map((item) => (
-              <Button
-                key={item.id}
-                type="button"
-                size="sm"
-                variant={item.id === selected.id ? "secondary" : "ghost"}
-                className="shrink-0"
-                aria-pressed={item.id === selected.id}
-                aria-label={t(`查看操作：${item.app ?? item.title} · ${item.deviceName}`, `View operation: ${item.app ?? item.title} · ${item.deviceName}`)}
-                onPress={() => client.select(item.id)}
-              >
-                {item.app ?? (item.tool === "browser" ? t("浏览器", "Browser") : t("桌面", "Desktop"))}
-              </Button>
-            ))}
-          </div>
-        )}
-        <PreviewViewport
-          selected={selected}
-          display={display}
-          reconnecting={reconnecting}
-          client={client}
-          zoomable
-          className="kulo-task-preview-viewport"
-        />
         {showFeedback && (
           <div className="kulo-computer-preview-feedback">
             {previewError && <span className="text-xs text-danger" role="alert">{previewError}</span>}
@@ -283,28 +299,61 @@ export function OrphanComputerPreviewCard({
   connected: boolean;
   onStop: (ticketId: string) => Promise<unknown>;
 }) {
-  const title = sessions[0]?.title ?? "";
-  if (!title) return null;
+  const { t } = useI18n();
+  const selected = resolveCardPreviewSession(state, ticketId, sessions);
+  const title = selected?.title ?? sessions[0]?.title ?? "";
+  if (!title || !selected) return null;
   return (
     <div className="kulo-task-space">
-      <Card variant="secondary" className="kulo-task-card" data-state="running">
+      <Card variant="secondary" className="kulo-task-card" data-state="running" data-has-preview="true">
         <Card.Content className="kulo-task-card-content">
-          <div className="kulo-task-preview-orphan-head">
-            <strong className="kulo-task-title" title={title}>{title}</strong>
-          </div>
           <TaskCardComputerPreview
             ticketId={ticketId}
             ticketTitle={title}
+            showInlineControls
             sessions={sessions}
             state={state}
             client={client}
             connected={connected}
             onStop={onStop}
           />
+          <div className="kulo-task-card-foot kulo-task-card-preview-foot">
+            <span className="kulo-task-card-status-group">
+              <span className="kulo-task-status" data-tone="run" title={t("运行中", "Running")}>
+                <span className="kulo-task-run-dot" aria-hidden="true" />
+                <span className="kulo-task-status-label">{t("运行中", "Running")}</span>
+              </span>
+              {selected.deviceName && (
+                <>
+                  <span className="kulo-task-device-sep" aria-hidden="true">·</span>
+                  <span className="kulo-task-device-name" title={selected.deviceName}>{selected.deviceName}</span>
+                </>
+              )}
+            </span>
+          </div>
         </Card.Content>
       </Card>
     </div>
   );
+}
+
+export function formatModalSessionLabels(
+  sessions: readonly ComputerPreviewSessionView[],
+  t: (zh: string, en: string) => string,
+): Map<string, string> {
+  const baseLabel = (item: ComputerPreviewSessionView) =>
+    item.app ?? (item.tool === "browser" ? t("浏览器", "Browser") : item.title);
+  const counts = new Map<string, number>();
+  for (const item of sessions) {
+    const label = baseLabel(item);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  const labels = new Map<string, string>();
+  for (const item of sessions) {
+    const base = baseLabel(item);
+    labels.set(item.id, (counts.get(base) ?? 0) > 1 ? `${base} · ${item.deviceName}` : base);
+  }
+  return labels;
 }
 
 /** Centered enlarged live preview modal opened from a Worker card or the collapsed-rail titlebar button. */
@@ -350,24 +399,27 @@ export function ComputerPreviewModal({
               </Modal.Header>
 
               <Modal.Body className="kulo-computer-preview-modal-body">
-                {state.sessions.length > 1 && (
-                  <div className="kulo-computer-preview-sessions scrollbar" aria-label={t("操作会话", "Operation sessions")}>
-                    {state.sessions.map((item) => (
-                      <Button
-                        key={item.id}
-                        type="button"
-                        size="sm"
-                        variant={item.id === selected.id ? "secondary" : "ghost"}
-                        className="shrink-0"
-                        aria-pressed={item.id === selected.id}
-                        aria-label={t(`查看操作：${item.app ?? item.title} · ${item.deviceName}`, `View operation: ${item.app ?? item.title} · ${item.deviceName}`)}
-                        onPress={() => client.select(item.id)}
-                      >
-                        {item.app ?? item.title}
-                      </Button>
-                    ))}
-                  </div>
-                )}
+                {state.sessions.length > 1 && (() => {
+                  const labels = formatModalSessionLabels(state.sessions, t);
+                  return (
+                    <div className="kulo-computer-preview-sessions scrollbar" aria-label={t("操作会话", "Operation sessions")}>
+                      {state.sessions.map((item) => (
+                        <Button
+                          key={item.id}
+                          type="button"
+                          size="sm"
+                          variant={item.id === selected.id ? "secondary" : "ghost"}
+                          className="shrink-0"
+                          aria-pressed={item.id === selected.id}
+                          aria-label={t(`查看操作：${item.app ?? item.title} · ${item.deviceName}`, `View operation: ${item.app ?? item.title} · ${item.deviceName}`)}
+                          onPress={() => client.select(item.id)}
+                        >
+                          {labels.get(item.id)}
+                        </Button>
+                      ))}
+                    </div>
+                  );
+                })()}
 
                 <PreviewViewport
                   selected={selected}

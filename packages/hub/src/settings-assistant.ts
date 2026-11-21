@@ -16,6 +16,7 @@ import type {
 } from "@kulo/protocol";
 import { DEFAULT_APPEARANCE_CUSTOMIZATION, isConversationModel, redactSensitiveText, validateAppearanceCustomization } from "@kulo/protocol";
 import type { KuloConnections } from "./connections.js";
+import { isNonPublicMcpUrl } from "./mcp-presets.js";
 import { validateConfigurationModel } from "./model-configuration.js";
 import { supportsNativeWebSearch } from "./model-native-tools.js";
 import { KuloSettingsDoc, applySettingsBlockUpdate, sanitizeCustomModelList, type KuloDurableSettings } from "./settings.js";
@@ -1057,6 +1058,17 @@ export class SettingsAssistant implements DeviceAssistantHost {
     const current = this.#contexts.get(context.clientId);
     if (!current) throw new Error("设置窗口已断开。");
     if (current.hasUnsavedChanges) throw new Error("请先保存或放弃页面中的未保存修改。");
+    const existing = input.connectionId ? this.#host.connections.getConnectionRecord(input.connectionId) : undefined;
+    const isMcp = input.kind === "mcp" || Boolean(input.mcpPresetId) || existing?.kind === "mcp";
+    if (isMcp) {
+      if (input.mcpTransport === "stdio" || input.mcpCommand !== undefined || input.mcpArgs !== undefined || input.mcpCwd !== undefined || existing?.mcpTransport === "stdio") {
+        throw new Error("本机 Stdio MCP 命令必须由用户在本机页面手动填写，不能由助手预填。");
+      }
+      const targetUrl = input.url ?? existing?.url;
+      if (targetUrl && (!targetUrl.startsWith("https://") || isNonPublicMcpUrl(targetUrl))) {
+        throw new Error("助手只能预填公开的 HTTPS MCP 地址，环回或内网地址请由用户在本机页面手动配置。");
+      }
+    }
     if (current.module !== "connections") await this.clientAction("navigate", { module: "connections" }, `connection-page:${commandId}`);
     return this.#host.connections.prepare({ ...input, clientId: context.clientId });
   }
@@ -2194,9 +2206,9 @@ export function createSettingsAssistantExtension(get: () => SettingsAssistant) {
     name: "kulo-settings-assistant",
     sections: [section("kulo_settings", async () => buildSettingsAssistantPrompt(await get().promptTurn()), { tag: false })],
     tools: [
-      defineTool({ name: "kulo_connection_prepare", description: "Open a secret/authorization form in the right-hand Settings chat for preset apps (`category='app'`, `app_id`), website/server logins (`category='credential'`), or user notes (`category='information'`). Accepts public metadata and field labels only—never secret values. 关键词：准备连接表单 录入密码密钥 新增SSH服务器账号", parameters: obj({ kind: opt(oneOf(["ssh", "account", "api-key", "custom", "app"])), category: opt(oneOf(["app", "credential", "information"])), app_id: opt(oneOf(["messages", "mail", "github", "figma"])), connection_id: opt(str()), name: opt(str()), host: opt(str()), port: opt(num()), username: opt(str()), url: opt(str()), auth_type: opt(oneOf(["bearer", "basic", "header"])), header_name: opt(str()), type_label: opt(str()), instructions: opt(str()), credential_fields: opt(arr(obj({ key: str(), label: str() }))) }), deferred: true, replay: "safe", execute: async (args, api) => {
-        publicConnectionArguments(args, ["kind", "category", "app_id", "connection_id", "name", "host", "port", "username", "url", "auth_type", "header_name", "type_label", "instructions", "credential_fields"]);
-        return result(await get().prepareConnection({ kind: args.kind, category: args.category, appId: args.app_id, connectionId: args.connection_id, name: args.name, host: args.host, port: args.port, username: args.username, url: args.url, authType: args.auth_type, headerName: args.header_name, typeLabel: args.type_label, instructions: args.instructions, credentialFields: args.credential_fields }, api.callId));
+      defineTool({ name: "kulo_connection_prepare", description: "Open a secret/authorization form in the right-hand Settings chat for preset apps (`category='app'`, `app_id`), remote official/custom MCP apps (`kind='mcp'`, `mcp_preset_id` or public HTTPS `url`), website/server logins (`category='credential'`), or user notes (`category='information'`). Accepts public metadata and field labels only—never secret values, local stdio commands, or loopback/private URLs. 关键词：准备连接表单 录入密码密钥 新增SSH服务器账号 连接MCP应用", parameters: obj({ kind: opt(oneOf(["ssh", "account", "api-key", "custom", "app", "mcp"])), category: opt(oneOf(["app", "credential", "information"])), app_id: opt(oneOf(["messages", "mail", "github", "figma"])), mcp_preset_id: opt(str()), mcp_auth_mode: opt(oneOf(["oauth", "bearer", "header", "none"])), connection_id: opt(str()), name: opt(str()), host: opt(str()), port: opt(num()), username: opt(str()), url: opt(str()), auth_type: opt(oneOf(["bearer", "basic", "header"])), header_name: opt(str()), type_label: opt(str()), instructions: opt(str()), credential_fields: opt(arr(obj({ key: str(), label: str() }))) }), deferred: true, replay: "safe", execute: async (args, api) => {
+        publicConnectionArguments(args, ["kind", "category", "app_id", "mcp_preset_id", "mcp_auth_mode", "connection_id", "name", "host", "port", "username", "url", "auth_type", "header_name", "type_label", "instructions", "credential_fields"]);
+        return result(await get().prepareConnection({ kind: args.kind, category: args.category, appId: args.app_id, mcpPresetId: args.mcp_preset_id, mcpAuthMode: args.mcp_auth_mode, connectionId: args.connection_id, name: args.name, host: args.host, port: args.port, username: args.username, url: args.url, authType: args.auth_type, headerName: args.header_name, typeLabel: args.type_label, instructions: args.instructions, credentialFields: args.credential_fields }, api.callId));
       } }),
       defineTool({ name: "kulo_settings_remove_connection", description: "Propose removing a custom model connection via a user confirmation card (not applied until confirmed). 关键词：移除模型连接 删除自定义供应商连接", parameters: obj({ provider_id: str() }), deferred: true, execute: async (args, api) => result(await get().removeConnection(args.provider_id, api.callId)) }),
     ],

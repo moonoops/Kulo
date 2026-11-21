@@ -1,11 +1,13 @@
 import { translate as t, useI18n } from "../../kulo-i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Alert, Button, Chip, Dropdown, Label, Spinner, Switch, Table, Tabs } from "@heroui/react";
+import { Alert, Button, Chip, Label, Spinner, Switch, Table, Tabs } from "@heroui/react";
 import { redactSensitiveText, type ConnectionApplicationView, type ConnectionCategory, type ConnectionPrepareRequest, type ConnectionRecordView, type ConnectionWorkspaceSnapshot } from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { KuloIcon } from "../../kulo-icon";
 import { kuloRest, type AssistantWorkspaceView } from "../../kulo-api";
 import { ConnectionIcon } from "./connection-icon";
+import { AddAppModal } from "./mcp-add-modal";
+import { McpOAuthModal } from "./mcp-oauth-modal";
 import { SettingsList, SettingsSection } from "./settings-layout";
 import type { SettingsAssistantEntryIntent } from "./settings-assistant-actions";
 import "./connections-module.css";
@@ -21,8 +23,34 @@ export function connectionStatusLabel(connection: ConnectionRecordView): string 
   }
 }
 
+export function mcpConnectionStatus(connection: ConnectionRecordView): { color: "success" | "warning" | "danger" | "default"; label: string } {
+  if (connection.status === "verified") {
+    return {
+      color: "success",
+      label: connection.mcpTools?.length
+        ? t(`已连接 · ${connection.mcpTools.length} 项工具`, `Connected · ${connection.mcpTools.length} tools`)
+        : t("已连接", "Connected"),
+    };
+  }
+  if (connection.mcpTransport === "http" && connection.mcpAuthMode === "oauth" && !connection.mcpOAuthAuthorized) {
+    return connection.status === "error"
+      ? { color: "danger", label: t("需要重新授权", "Re-authorization required") }
+      : { color: "warning", label: t("待授权", "Sign in required") };
+  }
+  if (connection.status === "error") {
+    return { color: "danger", label: t("需要处理", "Needs attention") };
+  }
+  return { color: "default", label: t("已保存", "Saved") };
+}
+
 export function connectionAddress(connection: ConnectionRecordView): string {
   if (connection.kind === "ssh") return connection.host ? `${connection.host}${connection.port && connection.port !== 22 ? `:${connection.port}` : ""}` : "";
+  if (connection.kind === "mcp") {
+    if (connection.mcpTransport === "stdio") return connection.mcpCommand ?? "";
+    let site = connection.url ?? "";
+    if (site) { try { site = new URL(site).host; } catch { /* Preserve incomplete metadata for editing. */ } }
+    return site;
+  }
   if (connection.kind === "custom" || connection.category === "information") return "";
   let site = connection.url ?? "";
   if (site) { try { site = new URL(site).host; } catch { /* Preserve incomplete metadata for editing. */ } }
@@ -30,7 +58,7 @@ export function connectionAddress(connection: ConnectionRecordView): string {
 }
 
 export function connectionCategory(connection: ConnectionRecordView): ConnectionCategory {
-  return connection.category ?? (connection.kind === "app" ? "app" : "credential");
+  return connection.category ?? (connection.kind === "app" || connection.kind === "mcp" ? "app" : "credential");
 }
 
 export function applicationStatusLabel(application: ConnectionApplicationView): string {
@@ -413,7 +441,12 @@ function AssistantAwarenessSection({
   );
 }
 
-export function ConnectionsModule({ snapshot, loading, error, connected, preparing = false, onPrepare, onRefresh, entryIntent, onIntentHandled, assistant, onAssistantUpdated, onRequestAssistantAcceleration, onRequestAssistantPrompt }: {
+type AppTableRow =
+  | { id: string; rowKind: "application"; application: ConnectionApplicationView }
+  | { id: string; rowKind: "mcp"; connection: ConnectionRecordView };
+
+export function ConnectionsModule({ clientId, snapshot, loading, error, connected, preparing = false, onPrepare, onRefresh, entryIntent, onIntentHandled, assistant, onAssistantUpdated, onRequestAssistantAcceleration, onRequestAssistantPrompt }: {
+  clientId?: string;
   snapshot: ConnectionWorkspaceSnapshot | null;
   loading: boolean;
   error: string | null;
@@ -431,7 +464,10 @@ export function ConnectionsModule({ snapshot, loading, error, connected, prepari
   useI18n();
   const [view, setView] = useState<ConnectionCategory>("app");
   const [busy, setBusy] = useState<string | null>(null);
+  const [testingId, setTestingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [oauthTarget, setOauthTarget] = useState<{ connection: ConnectionRecordView; forceReauth: boolean } | null>(null);
   const [remove, setRemove] = useState<{ id: string; name: string; category: ConnectionCategory } | null>(null);
   const rootRef = useRef<HTMLElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
@@ -447,10 +483,23 @@ export function ConnectionsModule({ snapshot, loading, error, connected, prepari
     try { await onPrepare(fields); }
     catch (cause) { setActionError(redactSensitiveText(cause instanceof Error ? cause.message : t("打开连接表单失败", "Failed to open connection form"))); }
   };
+  const captureFocus = () => {
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  };
   const openRemove = (item: { id: string; name: string; category: ConnectionCategory }) => {
     setActionError(null);
-    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    captureFocus();
     setRemove(item);
+  };
+  const openAddModal = () => {
+    setActionError(null);
+    captureFocus();
+    setAddOpen(true);
+  };
+  const openOAuthModal = (connection: ConnectionRecordView, forceReauth = false) => {
+    setActionError(null);
+    captureFocus();
+    setOauthTarget({ connection, forceReauth });
   };
   const restoreFocus = (removed = false) => requestAnimationFrame(() => {
     if (!removed && returnFocusRef.current?.isConnected) returnFocusRef.current.focus();
@@ -463,9 +512,28 @@ export function ConnectionsModule({ snapshot, loading, error, connected, prepari
     catch (cause) { setActionError(redactSensitiveText(cause instanceof Error ? cause.message : remove.category === "app" ? t("取消连接失败", "Failed to disconnect") : t("移除失败", "Failed to remove"))); }
     finally { setBusy(null); }
   };
+  const runMcpTest = async (connection: ConnectionRecordView) => {
+    if (!connected || busy || testingId) return;
+    setTestingId(connection.id);
+    setActionError(null);
+    try {
+      await kuloRest.testConnection(connection.id);
+      onRefresh();
+    } catch (cause) {
+      setActionError(redactSensitiveText(cause instanceof Error ? cause.message : t("连接测试失败", "Connection test failed")));
+      onRefresh();
+    } finally {
+      setTestingId(null);
+    }
+  };
   const unavailable = Boolean(snapshot && !snapshot.vault.available);
   const disabled = !connected || preparing || busy !== null;
   const applications = snapshot?.applications ?? [];
+  const mcpConnections = snapshot?.connections.filter((connection) => connection.kind === "mcp") ?? [];
+  const appRows: AppTableRow[] = [
+    ...applications.map((application) => ({ id: application.id, rowKind: "application" as const, application })),
+    ...mcpConnections.map((connection) => ({ id: `mcp:${connection.id}`, rowKind: "mcp" as const, connection })),
+  ];
   const renderRecords = (category: "credential" | "information") => {
     const records = snapshot?.connections.filter((connection) => connectionCategory(connection) === category) ?? [];
     return <Table variant="secondary" className="kulo-settings-table">
@@ -518,7 +586,7 @@ export function ConnectionsModule({ snapshot, loading, error, connected, prepari
       </Tabs.ListContainer>
       <Tabs.Panel id="app" shouldForceMount className="data-[inert=true]:hidden">
         <div className="flex min-w-0 flex-col gap-6">
-        <ConnectionGroup title={t("应用", "Apps")} action={<Dropdown><Button size="sm" variant="secondary" aria-label={t("添加应用", "Add app")} isDisabled={disabled || !applications.length}><KuloIcon name="add" size={16} />{t("添加", "Add")}</Button><Dropdown.Popover placement="bottom end"><Dropdown.Menu aria-label={t("选择应用", "Choose an app")} onAction={(key) => { const application = applications.find((item) => item.id === key); if (application) void prepare({ category: "app", appId: application.id, ...(application.connectionId ? { connectionId: application.connectionId } : {}) }); }}>{applications.map((application) => <Dropdown.Item key={application.id} id={application.id} textValue={application.name} isDisabled={application.status === "unavailable"}><Label>{application.name}</Label></Dropdown.Item>)}</Dropdown.Menu></Dropdown.Popover></Dropdown>}>
+        <ConnectionGroup title={t("应用", "Apps")} action={<Button size="sm" variant="secondary" aria-label={t("添加应用", "Add app")} isDisabled={disabled} onPress={openAddModal}><KuloIcon name="add" size={16} />{t("添加", "Add")}</Button>}>
           <Table variant="secondary" className="kulo-settings-table">
             <Table.ScrollContainer className="kulo-settings-table-scroll">
               <Table.Content aria-label={t("应用列表", "Apps")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content">
@@ -527,32 +595,101 @@ export function ConnectionsModule({ snapshot, loading, error, connected, prepari
                   <Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-meta">{t("状态", "Status")}</Table.Column>
                   <Table.Column id="actions" className="kulo-settings-table-column kulo-settings-table-actions">{t("操作", "Actions")}</Table.Column>
                 </Table.Header>
-                <Table.Body items={applications} renderEmptyState={() => <div className="kulo-table-empty-state">{t("暂无可连接应用", "No apps available")}</div>}>
-                  {(application) => {
-                    const isConnected = application.status === "connected";
-                    const actionLabel = isConnected ? t("取消连接", "Disconnect") : application.status === "needs_attention" ? t("重新连接", "Reconnect") : t("连接", "Connect");
-                    return <Table.Row id={application.id} textValue={application.name}>
+                <Table.Body items={appRows} renderEmptyState={() => <div className="kulo-table-empty-state">{t("暂无可连接应用", "No apps available")}</div>}>
+                  {(row) => {
+                    if (row.rowKind === "application") {
+                      const { application } = row;
+                      const isConnected = application.status === "connected";
+                      const actionLabel = isConnected ? t("取消连接", "Disconnect") : application.status === "needs_attention" ? t("重新连接", "Reconnect") : t("连接", "Connect");
+                      return <Table.Row id={row.id} textValue={application.name}>
+                        <Table.Cell className="kulo-settings-table-cell kulo-settings-table-primary">
+                          <div className="kulo-connection-name">
+                            <ConnectionIcon appId={application.id} />
+                            <div className="kulo-connection-copy"><span className="kulo-item-title">{application.name}</span><span className="kulo-item-description">{application.description}</span></div>
+                          </div>
+                        </Table.Cell>
+                        <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta">
+                          <div className="flex flex-col items-start gap-1">
+                            <Chip size="sm" variant="soft" color={isConnected ? "success" : application.status === "needs_attention" ? "danger" : "default"}>{applicationStatusLabel(application)}</Chip>
+                            {application.error && <p className="whitespace-normal break-words text-xs text-danger">{redactSensitiveText(application.error)}</p>}
+                          </div>
+                        </Table.Cell>
+                        <Table.Cell className="kulo-settings-table-cell kulo-settings-table-actions">
+                          <div className="kulo-settings-table-action-group">
+                            <Button size="sm" variant="ghost" aria-label={`${actionLabel}${application.name}`} isPending={busy === application.connectionId}
+                              isDisabled={disabled || (isConnected ? !application.connectionId : unavailable && application.authentication !== "macos" || application.status === "unavailable")}
+                              onPress={() => {
+                                if (isConnected) {
+                                  if (application.connectionId) openRemove({ id: application.connectionId, name: application.name, category: "app" });
+                                } else void prepare({ category: "app", appId: application.id, ...(application.connectionId ? { connectionId: application.connectionId } : {}) });
+                              }}>{actionLabel}</Button>
+                          </div>
+                        </Table.Cell>
+                      </Table.Row>;
+                    }
+                    const { connection } = row;
+                    const status = mcpConnectionStatus(connection);
+                    const needsOAuth = connection.mcpTransport === "http" && connection.mcpAuthMode === "oauth" && (!connection.mcpOAuthAuthorized || connection.status === "error");
+                    const subtitle = connection.mcpServerName && connection.mcpServerName !== connection.name
+                      ? connection.mcpServerName
+                      : connectionAddress(connection);
+                    return <Table.Row id={row.id} textValue={connection.name}>
                       <Table.Cell className="kulo-settings-table-cell kulo-settings-table-primary">
                         <div className="kulo-connection-name">
-                          <ConnectionIcon appId={application.id} />
-                          <div className="kulo-connection-copy"><span className="kulo-item-title">{application.name}</span><span className="kulo-item-description">{application.description}</span></div>
+                          <ConnectionIcon kind="mcp" mcpPresetId={connection.mcpPresetId} mcpTransport={connection.mcpTransport} />
+                          <div className="kulo-connection-copy">
+                            <span className="kulo-item-title">{connection.name}</span>
+                            {subtitle && <span className="kulo-item-description">{subtitle}</span>}
+                          </div>
                         </div>
                       </Table.Cell>
                       <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta">
                         <div className="flex flex-col items-start gap-1">
-                          <Chip size="sm" variant="soft" color={isConnected ? "success" : application.status === "needs_attention" ? "danger" : "default"}>{applicationStatusLabel(application)}</Chip>
-                          {application.error && <p className="whitespace-normal break-words text-xs text-danger">{redactSensitiveText(application.error)}</p>}
+                          <Chip size="sm" variant="soft" color={status.color}>{status.label}</Chip>
+                          {connection.error && <p className="whitespace-normal break-words text-xs text-danger">{redactSensitiveText(connection.error)}</p>}
                         </div>
                       </Table.Cell>
                       <Table.Cell className="kulo-settings-table-cell kulo-settings-table-actions">
                         <div className="kulo-settings-table-action-group">
-                          <Button size="sm" variant="ghost" aria-label={`${actionLabel}${application.name}`} isPending={busy === application.connectionId}
-                            isDisabled={disabled || (isConnected ? !application.connectionId : unavailable && application.authentication !== "macos" || application.status === "unavailable")}
-                            onPress={() => {
-                              if (isConnected) {
-                                if (application.connectionId) openRemove({ id: application.connectionId, name: application.name, category: "app" });
-                              } else void prepare({ category: "app", appId: application.id, ...(application.connectionId ? { connectionId: application.connectionId } : {}) });
-                            }}>{actionLabel}</Button>
+                          {needsOAuth && (
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              aria-label={connection.status === "error" ? t(`重新授权${connection.name}`, `Re-authorize ${connection.name}`) : t(`授权登录${connection.name}`, `Sign in to ${connection.name}`)}
+                              isDisabled={disabled || unavailable}
+                              onPress={() => openOAuthModal(connection, connection.status === "error")}
+                            >
+                              {connection.status === "error" ? t("重新授权", "Re-authorize") : t("授权登录", "Sign in")}
+                            </Button>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            aria-label={t(`测试${connection.name}`, `Test ${connection.name}`)}
+                            isPending={testingId === connection.id}
+                            isDisabled={disabled || unavailable || testingId !== null || (connection.mcpTransport === "http" && connection.mcpAuthMode === "oauth" && !connection.mcpOAuthAuthorized)}
+                            onPress={() => void runMcpTest(connection)}
+                          >
+                            {t("测试", "Test")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            aria-label={t(`编辑${connection.name}`, `Edit ${connection.name}`)}
+                            isDisabled={disabled || (connection.mcpTransport === "stdio" && !snapshot.localHost)}
+                            onPress={() => void prepare({ connectionId: connection.id })}
+                          >
+                            {t("编辑", "Edit")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            aria-label={t(`取消连接${connection.name}`, `Disconnect ${connection.name}`)}
+                            isDisabled={!connected || busy !== null}
+                            onPress={() => openRemove({ id: connection.id, name: connection.name, category: "app" })}
+                          >
+                            {t("取消连接", "Disconnect")}
+                          </Button>
                         </div>
                       </Table.Cell>
                     </Table.Row>;
@@ -580,6 +717,41 @@ export function ConnectionsModule({ snapshot, loading, error, connected, prepari
         <ConnectionGroup title={t("其他", "Other")} action={<Button size="sm" variant="secondary" aria-label={t("记住其他信息", "Save other information")} isDisabled={disabled} onPress={() => void prepare({ category: "information", kind: "custom" })}><KuloIcon name="add" size={16} />{t("添加", "Add")}</Button>}>{renderRecords("information")}</ConnectionGroup>
       </Tabs.Panel>
     </Tabs>}
+    {addOpen && snapshot && (
+      <AddAppModal
+        open={addOpen}
+        applications={applications}
+        presets={snapshot.mcpPresets ?? []}
+        existingConnections={snapshot.connections}
+        connected={connected}
+        vaultAvailable={snapshot.vault.available}
+        localHost={Boolean(snapshot.localHost)}
+        onSelectApplication={(application) => {
+          void prepare({ category: "app", appId: application.id, ...(application.connectionId ? { connectionId: application.connectionId } : {}) });
+        }}
+        onSavedMcp={() => onRefresh()}
+        onStartOAuth={(connection) => {
+          setOauthTarget({ connection, forceReauth: false });
+        }}
+        onClose={() => {
+          setAddOpen(false);
+          restoreFocus();
+        }}
+      />
+    )}
+    {oauthTarget && (
+      <McpOAuthModal
+        open={oauthTarget !== null}
+        connection={oauthTarget.connection}
+        clientId={clientId}
+        forceReauth={oauthTarget.forceReauth}
+        onCompleted={() => onRefresh()}
+        onClose={() => {
+          setOauthTarget(null);
+          restoreFocus();
+        }}
+      />
+    )}
     {remove && <ConfirmDialog open title={remove.category === "app" ? t(`取消与「${remove.name}」的连接？`, `Disconnect from “${remove.name}”?`) : t(`移除「${remove.name}」？`, `Remove “${remove.name}”?`)} description={<div className="space-y-2"><p>{remove.category === "information" ? t("将移除本地保存的信息。", "Locally saved information will be removed.") : t("将清除本地授权记录和凭据，并撤销任务使用权限。", "Local access records and credentials will be deleted, and task access will be revoked.")}</p>{actionError && <p role="alert" className="text-danger">{actionError}</p>}</div>} confirmLabel={remove.category === "app" ? t("取消连接", "Disconnect") : t("移除", "Remove")} isPending={busy !== null} onConfirm={() => void disconnect()} onCancel={() => { setRemove(null); restoreFocus(); }} />}
   </section>;
 }

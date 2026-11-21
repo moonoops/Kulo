@@ -20,6 +20,9 @@ importers:
       '@earendil-works/pi-env':
         specifier: 1.5.2
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@modelcontextprotocol/sdk@1.32.2(zod@4.6.7))(@smithy/signature-v4@5.7.5)(esbuild@0.28.2)(undici@8.12.4)(ws@8.22.2)(zod@4.6.7)
+      '@earendil-works/pi-mcp':
+        specifier: 1.6.0
+        version: 1.6.0
       '@earendil-works/pi-schema':
         specifier: 1.5.2
         version: 1.5.2
@@ -150,6 +153,9 @@ importers:
       '@earendil-works/pi-env':
         specifier: 1.5.2
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@modelcontextprotocol/sdk@1.32.2(zod@4.6.7))(@smithy/signature-v4@5.7.5)(esbuild@0.28.2)(undici@8.12.4)(ws@8.22.2)(zod@4.6.7)
+      '@earendil-works/pi-mcp':
+        specifier: 1.6.0
+        version: 1.6.0
       '@earendil-works/pi-schema':
         specifier: 1.5.2
         version: 1.5.2
@@ -630,6 +636,10 @@ packages:
 
   '@earendil-works/pi-env@1.5.2':
     resolution: {integrity: sha512-yw9dPqPHHP567m7+TDAmuzWC9AU1I3aV3FFdNQlo+UXASYGEIW4QgbYXNTka6Y/Z4+KcifSdgDSiMiTM3ZXBfg==}
+    engines: {node: '>=22.19.0'}
+
+  '@earendil-works/pi-mcp@1.6.0':
+    resolution: {integrity: sha512-dhqAR6MP8Fp3b8LEcBFOyxMZpGSozUAdzF0Dbl7OvojsjZrQsDV3ZKn85WRbwjHb4WjQUCVBsIZXwoyQxXeunw==}
     engines: {node: '>=22.19.0'}
 
   '@earendil-works/pi-schema@1.5.2':
@@ -4412,6 +4422,10 @@ snapshots:
       - utf-8-validate
       - ws
       - zod
+
+  '@earendil-works/pi-mcp@1.6.0':
+    dependencies:
+      cross-spawn: 7.0.6
 
   '@earendil-works/pi-schema@1.5.2': {}
 

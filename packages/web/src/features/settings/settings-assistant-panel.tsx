@@ -22,6 +22,7 @@ import type { SettingsAssistantControls } from "./use-settings-assistant";
 import type { CapabilityView, ImageAssistantRequest } from "./capability-views";
 import { CapabilitySetupInputs } from "./capability-setup-inputs";
 import { MemoryServiceDialogue } from "./memory-service-dialogue";
+import { MEMORY_ASSISTANT_PREFILL_EVENT, takeMemoryAssistantPrefill } from "./memory-service-events";
 import { ConnectionSetupInputs } from "./connection-setup-inputs";
 import type { ConnectionPrepare } from "./connections-module";
 import { ConnectionFollowup } from "./connection-followup";
@@ -41,7 +42,7 @@ type ImageShortcutAction = Extract<SettingsAssistantShortcut, { kind: "image" }>
 type ImagePanel = "draft" | "discovery" | "routing";
 
 export function SettingsAssistantPanel({
-  module, agentName, settings, envs, tickets = [], onProjectTicket, snapshot, loaded, connected, error, controls, capabilityInputs = [], capabilityView, capabilitiesWorkspace, imageRequest, onImageRequestHandled, onCapabilityInputsChanged,
+  module, agentName, settings, envs, tickets = [], onProjectTicket, onSettingsUpdated, snapshot, loaded, connected, error, controls, capabilityInputs = [], capabilityView, capabilitiesWorkspace, imageRequest, onImageRequestHandled, onCapabilityInputsChanged,
   connections, connectionPreparing = false, onConnectionPrepare, onConnectionsRefresh,
 }: {
   module: SettingsModuleId;
@@ -50,6 +51,7 @@ export function SettingsAssistantPanel({
   envs: EnvNodeDescriptor[];
   tickets?: TicketCardView[];
   onProjectTicket?: (ticketId: string, title?: string) => void;
+  onSettingsUpdated?: (next: KuloSettingsView) => void;
   snapshot: SettingsAssistantSnapshot;
   loaded: boolean;
   connected: boolean;
@@ -153,9 +155,34 @@ export function SettingsAssistantPanel({
 
   useEffect(() => {
     if (!controls.focusRequest || nativeConnectionInput) return;
-    const timer = setTimeout(() => composerRef.current?.focus(), 0);
+    const timer = setTimeout(() => {
+      const input = composerRef.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }, 0);
     return () => clearTimeout(timer);
   }, [controls.focusRequest, nativeConnectionInput]);
+
+  const setDraftRef = useRef(controls.setDraft);
+  setDraftRef.current = controls.setDraft;
+  useEffect(() => {
+    if (module !== "identity") return;
+    const receive = () => {
+      const draft = takeMemoryAssistantPrefill();
+      if (draft === null) return;
+      setDraftRef.current(draft);
+      requestAnimationFrame(() => {
+        const input = composerRef.current;
+        if (!input) return;
+        input.focus();
+        input.setSelectionRange(draft.length, draft.length);
+      });
+    };
+    window.addEventListener(MEMORY_ASSISTANT_PREFILL_EVENT, receive);
+    receive();
+    return () => window.removeEventListener(MEMORY_ASSISTANT_PREFILL_EVENT, receive);
+  }, [module]);
 
   useEffect(() => {
     if (pendingConnectionInput) { setApplicationPicker(false); setConnectionFollowup(null); setLocalInfo(null); }
@@ -438,6 +465,7 @@ export function SettingsAssistantPanel({
               connected={connected}
               disabled={controls.switchingConversation}
               envs={envs}
+              onConnected={(result) => onSettingsUpdated?.(result.settings)}
               onClose={() => { setAgentPanel(null); composerRef.current?.focus(); }}
             />
           )}
@@ -447,7 +475,11 @@ export function SettingsAssistantPanel({
           }} applications={connections.applications} onCancelled={() => requestAnimationFrame(() => composerRef.current?.focus())} onCompleted={(connection) => {
             setApplicationPicker(false);
             if (connection.kind === "ssh") { setLocalInfo(null); setConnectionFollowup(connection); }
-            else { setConnectionFollowup(null); setLocalInfo({ title: t("连接已保存", "Connection saved"), text: t(`「${connection.name}」${connection.kind === "app" && connection.status === "verified" ? "已连接" : "已保存"}。`, `“${connection.name}” ${connection.kind === "app" && connection.status === "verified" ? "connected" : "saved"}.`) }); requestAnimationFrame(() => composerRef.current?.focus()); }
+            else if (connection.kind === "mcp" && connection.mcpTransport === "http" && connection.mcpAuthMode === "oauth" && !connection.mcpOAuthAuthorized) {
+              setConnectionFollowup(null);
+              setLocalInfo({ title: t("连接已保存", "Connection saved"), text: t(`「${connection.name}」已保存，请在左侧点击「授权登录」完成授权。`, `“${connection.name}” saved. Click Sign in on the left to authorize.`) });
+              requestAnimationFrame(() => composerRef.current?.focus());
+            } else { setConnectionFollowup(null); setLocalInfo({ title: t("连接已保存", "Connection saved"), text: t(`「${connection.name}」${(connection.kind === "app" || connection.kind === "mcp") && connection.status === "verified" ? "已连接" : "已保存"}。`, `“${connection.name}” ${(connection.kind === "app" || connection.kind === "mcp") && connection.status === "verified" ? "connected" : "saved"}.`) }); requestAnimationFrame(() => composerRef.current?.focus()); }
           }} />}
           {module === "connections" && applicationPicker && <Card variant="secondary" className="min-w-0 gap-3 rounded-2xl p-3" aria-label={t("选择预置应用", "Choose a built-in app")}><Card.Header><Card.Title className="text-sm">{t("连接预置应用", "Connect built-in app")}</Card.Title></Card.Header><Card.Content className="flex flex-col gap-2">{connections?.applications?.map((application) => <Button key={application.id} variant="ghost" className="h-auto justify-start gap-3 p-2" isDisabled={!connected || connectionPreparing || application.status === "unavailable" || !connections.vault.available && application.authentication !== "macos"} onPress={() => {
             void onConnectionPrepare?.({ category: "app", appId: application.id, ...(application.connectionId ? { connectionId: application.connectionId } : {}) }).then(() => { setApplicationPicker(false); setConnectionFollowup(null); }).catch((cause) => setLocalInfo({ title: t("未打开连接表单", "Connection form did not open"), text: redactSensitiveText(cause instanceof Error ? cause.message : t("打开连接表单失败", "Failed to open connection form")), error: true }));

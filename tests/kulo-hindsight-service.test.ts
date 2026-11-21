@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HindsightLocalService, type HindsightProcessRunner } from "../packages/hub/src/hindsight-service.js";
+import { buildAugmentedHostPath, findHostExecutable } from "../packages/hub/src/host-path.js";
 
 const directories: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true }))); });
@@ -362,5 +363,67 @@ describe("Kulo-owned Hindsight local service", () => {
     const retained = JSON.parse(await fs.readFile(path.join(f.root, "runtime.json"), "utf8")) as { env: Record<string, string> };
     expect(retained.env.HINDSIGHT_API_EMBEDDINGS_GEMINI_API_KEY).toBeUndefined();
     expect(retained.env.HINDSIGHT_API_RERANKER_COHERE_API_KEY).toBeUndefined();
+  });
+
+  it("augments minimal GUI/launchd PATH with Homebrew, ~/.local/bin, and ~/.cargo/bin for uv while reporting clear ENOENT diagnostics", async () => {
+    vi.stubEnv("PATH", "/usr/bin:/bin");
+    vi.stubEnv("CARGO_HOME", "/test-host/custom-cargo");
+    const f = await fixture();
+    await f.deploy();
+    const uvCalls = f.calls.filter((call) => call.command === "uv");
+    expect(uvCalls.length).toBeGreaterThanOrEqual(3);
+    for (const call of uvCalls) {
+      const dirs = (call.env.PATH ?? "").split(":");
+      expect(dirs).toContain("/opt/homebrew/bin");
+      expect(dirs).toContain("/usr/local/bin");
+      expect(dirs).toContain(path.posix.join(f.homeDir, ".local", "bin"));
+      expect(dirs).toContain(path.posix.join(f.homeDir, ".cargo", "bin"));
+      expect(dirs).toContain("/test-host/custom-cargo/bin");
+      expect(dirs).toContain("/usr/bin");
+    }
+    const plist = await fs.readFile(path.join(f.homeDir, "Library", "LaunchAgents", (await fs.readdir(path.join(f.homeDir, "Library", "LaunchAgents")))[0]!), "utf8");
+    expect(plist).not.toContain("/test-host/custom-cargo");
+
+    // Missing uv (ENOENT) produces an actionable installation message instead of a generic failure.
+    const missingDir = await fs.mkdtemp(path.join(os.tmpdir(), "kulo-missing-uv-")); directories.push(missingDir);
+    const missingService = new HindsightLocalService({
+      stateDir: path.join(missingDir, "state"),
+      homeDir: path.join(missingDir, "user"),
+      platform: "darwin",
+      deviceName: "Test Mac",
+      run: async () => { throw Object.assign(new Error("spawn uv ENOENT"), { code: "ENOENT" }); },
+    });
+    await expect(missingService.deploy({ commandId: "missing-uv", model: { provider: "ollama", model: "llama3.2" } }))
+      .rejects.toThrow(/未检测到 uv.*brew install uv/);
+
+    const deniedService = new HindsightLocalService({
+      stateDir: path.join(missingDir, "state-eacces"),
+      homeDir: path.join(missingDir, "user"),
+      platform: "darwin",
+      deviceName: "Test Mac",
+      run: async () => { throw Object.assign(new Error("spawn uv EACCES"), { code: "EACCES" }); },
+    });
+    await expect(deniedService.deploy({ commandId: "denied-uv", model: { provider: "ollama", model: "llama3.2" } }))
+      .rejects.toThrow(/无法启动 uv.*执行权限/);
+  });
+
+  it("discovers executables in augmented user directories and ignores directories sharing the binary name", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "kulo-host-path-")); directories.push(dir);
+    const fakeHome = path.join(dir, "home");
+    const firstBin = path.join(dir, "first-bin");
+    const localBin = path.join(fakeHome, ".local", "bin");
+    await fs.mkdir(path.join(firstBin, "uv"), { recursive: true }); // directory named "uv" must not match
+    await fs.mkdir(localBin, { recursive: true });
+    const uvExe = path.join(localBin, "uv");
+    await fs.writeFile(uvExe, "#!/bin/sh\necho uv 0.99\n", { mode: 0o755 });
+
+    const augmented = buildAugmentedHostPath({ basePath: `${firstBin}:/usr/bin:/bin`, homeDir: fakeHome, platform: "darwin" });
+    const segments = augmented.split(":");
+    expect(segments.indexOf(firstBin)).toBe(0);
+    expect(segments).toContain("/opt/homebrew/bin");
+    expect(segments).toContain(localBin);
+    expect(segments.indexOf(localBin)).toBeLessThan(segments.indexOf("/usr/bin"));
+
+    expect(findHostExecutable("uv", { basePath: `${firstBin}:/usr/bin:/bin`, homeDir: fakeHome, platform: "darwin" })).toBe(uvExe);
   });
 });

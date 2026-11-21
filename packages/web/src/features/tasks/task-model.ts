@@ -39,7 +39,6 @@ export function taskStatusLabel(ticket: Pick<TicketCardView, "status" | "waiting
   if (taskIsRecovering(ticket)) return t("恢复中", "Recovering");
   if (ticket.status === "failed" && ticket.recovery?.state === "exhausted") return t("需处理", "Needs attention");
   if (ticket.status === "ready" && ticket.pendingWorkspaceApply) return t("待合入", "Pending merge");
-  if (ticket.status === "ready" && ticket.externalAgentKind) return t("已返回", "Result returned");
   return ticket.status === "waiting" ? ticketWaitLabel(ticket.waiting) : ticketStatusLabel(ticket.status);
 }
 

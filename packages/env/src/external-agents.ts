@@ -3,11 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { EXTERNAL_AGENT_KINDS, redactSensitiveText, type ExternalAgentBinding, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentPendingReportFile, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentRun, type ExternalAgentUncertainReason, type ExternalWorkspaceMode, type ReadOnlyViolationSummary, type StagedWorkspaceDiffSummary, type WorkerExecutionPhase } from "@kulo/protocol";
+import { EXTERNAL_AGENT_KINDS, isPersonalExternalAgentKind, redactSensitiveText, validateCustomAcpArgs, type ExternalAgentBinding, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentPendingReportFile, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentRun, type ExternalAgentUncertainReason, type ExternalWorkspaceMode, type ReadOnlyViolationSummary, type StagedWorkspaceDiffSummary, type WorkerExecutionPhase } from "@kulo/protocol";
 import { canonicalExecutionPath } from "./isolation.js";
 import { cleanupRecordedExecutions, hasOrphanedExecution } from "./worker-supervisor.js";
 import { ProjectDirectoryRegistry } from "./project-directories.js";
-import { connectAcp, connectCodex, createExternalPipeFactory, externalCapabilities, resolveExternalExecutable, type ExternalDriver, type ExternalDriverContext } from "./external-agent-drivers.js";
+import { getAcpFlavor } from "./external-agent-acp.js";
+import { augmentedNativePath, connectAcp, connectCodex, createExternalPipeFactory, externalCapabilities, primeLoginShellPath, resolveExternalExecutable, type ExternalDriver, type ExternalDriverContext } from "./external-agent-drivers.js";
 import { connectGrok, detectGrok } from "./external-agent-grok.js";
 import { connectClaude } from "./external-agent-claude.js";
 import { startExternalAgentMcp, type ExternalAgentMcpInvocation, type ExternalAgentMcpServer } from "./external-agent-mcp.js";
@@ -22,7 +23,7 @@ type DirectReadOnlySnapshot =
   | { kind: "skipped" };
 interface StoredStagedTask {version:1;taskId:string;projectId?:string;sourceDir:string;stagedDir:string;scratchNotesDir:string;workspaceMode:ExternalWorkspaceMode;baseline:WorkspaceManifest;appliedAt?:number}
 interface StoredRun {version:1;managedProcesses?:boolean;fingerprint:string;cwd:string;executionCwd?:string;workspaceMode?:ExternalWorkspaceMode;scratchNotesDir?:string;executable:string;projectId?:string;directoryId?:string;grantRevision?:number;readOnly:boolean;pendingReports?:ExternalAgentPendingReport[];run:ExternalAgentRun}
-interface LiveRun {stored:StoredRun;deadline?:number;driver?:ExternalDriver;mcp?:ExternalAgentMcpServer;submitted:boolean;launched?:boolean;readOnlyBeforeSnapshot?:DirectReadOnlySnapshot;cleanups?:Array<()=>Promise<boolean>>;terminalWaiters?:Set<()=>void>;timer?:NodeJS.Timeout;permissions:Map<string,{choices:Set<string>;resolve:(value:string)=>void}>}
+interface LiveRun {stored:StoredRun;deadline?:number;lastHeartbeatAt?:number;driver?:ExternalDriver;mcp?:ExternalAgentMcpServer;submitted:boolean;launched?:boolean;readOnlyBeforeSnapshot?:DirectReadOnlySnapshot;cleanups?:Array<()=>Promise<boolean>>;terminalWaiters?:Set<()=>void>;timer?:NodeJS.Timeout;permissions:Map<string,{choices:Set<string>;resolve:(value:string)=>void}>}
 const WORKER_PHASES = new Set<WorkerExecutionPhase>(["starting", "investigating", "editing", "verifying", "responding", "waiting_permission"]);
 const UNCERTAIN_REASONS = new Set<ExternalAgentUncertainReason>(["timeout", "disconnect", "env_restart", "closed"]);
 const READ_ONLY_SNAPSHOT_MAX_FILES = 10_000;
@@ -31,7 +32,14 @@ const READ_ONLY_IGNORED_SUFFIXES = [".tsbuildinfo", ".pyc", ".pyo"];
 function object(value:unknown):value is Record<string,unknown>{return !!value&&typeof value==="object"&&!Array.isArray(value);}
 function id(value:unknown):value is string{return typeof value==="string"&&/^[a-zA-Z0-9:_.-]{1,200}$/.test(value)&&!["__proto__","constructor","prototype"].includes(value);}
 function optionalString(value:unknown,max=8192):boolean{return value===undefined||typeof value==="string"&&value.length>0&&value.length<=max&&!/[\x00]/.test(value);}
-function binding(value:unknown):value is ExternalAgentBinding{return object(value)&&EXTERNAL_AGENT_KINDS.includes(value.kind as ExternalAgentKind)&&id(value.envId)&&optionalString(value.executable)&&optionalString(value.agentRef)&&optionalString(value.cdpUrl);}
+function binding(value:unknown):value is ExternalAgentBinding{
+  if(!object(value)||!EXTERNAL_AGENT_KINDS.includes(value.kind as ExternalAgentKind)||!id(value.envId)||!optionalString(value.executable)||!optionalString(value.agentRef)||!optionalString(value.cdpUrl))return false;
+  if(value.acpArgs!==undefined){
+    if(value.kind!=="acp")return false;
+    if(!validateCustomAcpArgs(value.acpArgs).ok)return false;
+  }
+  return true;
+}
 function validPathList(value:unknown,maxItems=5000,maxLen=4096):boolean{
   return Array.isArray(value)&&value.length<=maxItems&&value.every(item=>typeof item==="string"&&item.length>0&&item.length<=maxLen);
 }
@@ -182,7 +190,7 @@ export function isExternalAgentRequest(value:unknown):value is ExternalAgentRequ
 export function isExternalAgentResponse(value:unknown):value is ExternalAgentResponse{
   if(!object(value))return false;
   if(value.type==="detection"){
-    const detection=value.detection;if(!object(detection)||!EXTERNAL_AGENT_KINDS.includes(detection.kind as ExternalAgentKind)||typeof detection.installed!=="boolean"||detection.authenticated!==null&&typeof detection.authenticated!=="boolean"||!Array.isArray(detection.models)||detection.models.length>1000||!optionalString(detection.executable)||!optionalString(detection.version,200)||!optionalString(detection.error,4000))return false;
+    const detection=value.detection;if(!object(detection)||!EXTERNAL_AGENT_KINDS.includes(detection.kind as ExternalAgentKind)||typeof detection.installed!=="boolean"||(detection.desktopAppInstalled!==undefined&&typeof detection.desktopAppInstalled!=="boolean")||detection.authenticated!==null&&typeof detection.authenticated!=="boolean"||!Array.isArray(detection.models)||detection.models.length>1000||!optionalString(detection.executable)||!optionalString(detection.version,200)||!optionalString(detection.error,4000))return false;
     const capabilities=detection.capabilities;if(!object(capabilities)||!["resume","cancel","models","permissions","collaboration"].every(key=>typeof capabilities[key]==="boolean")||!["native","observed","none"].includes(String(capabilities.terminalEvidence)))return false;
     return detection.models.every(model=>object(model)&&typeof model.id==="string"&&model.id.length>0&&model.id.length<=4096&&typeof model.name==="string"&&model.name.length<=4096&&(model.isDefault===undefined||typeof model.isDefault==="boolean")&&(model.efforts===undefined||Array.isArray(model.efforts)&&model.efforts.length<=32&&model.efforts.every(effort=>typeof effort==="string"&&effort.length>0&&effort.length<=64)));
   }
@@ -204,11 +212,66 @@ function terminal(state:ExternalAgentRun["state"]):boolean{return["completed","f
 function hash(value:string):string{return createHash("sha256").update(value).digest("hex");}
 async function executableOutput(executable:string,args:string[],timeout=10_000):Promise<string>{
   return new Promise((resolve,reject)=>{
-    const child=spawn(executable,args,{env:{HOME:os.homedir(),PATH:process.env.PATH},stdio:["ignore","pipe","pipe"],windowsHide:true});let output="";
+    const child=spawn(executable,args,{env:{HOME:os.homedir(),PATH:augmentedNativePath(process.env.PATH??"")},stdio:["ignore","pipe","pipe"],windowsHide:true});let output="";
     const collect=(data:Buffer)=>{output+=data.toString("utf8");if(output.length>64_000){child.kill();reject(new Error("Agent information response exceeds its limit"));}};
     child.stdout.on("data",collect);child.stderr.on("data",collect);
     const timer=setTimeout(()=>{child.kill();reject(new Error("Local agent information request timed out"));},timeout);timer.unref();
     child.once("error",error=>{clearTimeout(timer);reject(error);});child.once("exit",code=>{clearTimeout(timer);if(code===0)resolve(output.trim());else reject(new Error(`Local agent information request failed (${code??"signal"})`));});
+  });
+}
+function detectMacDesktopApp(appBundleName:string):{installed:boolean;version?:string}{
+  if(process.platform!=="darwin")return{installed:false};
+  const candidates=[
+    path.join("/Applications",appBundleName),
+    path.join(os.homedir(),"Applications",appBundleName),
+  ];
+  for(const bundle of candidates){
+    try{
+      if(!fs.statSync(bundle).isDirectory())continue;
+      const plistPath=path.join(bundle,"Contents","Info.plist");
+      let version:string|undefined;
+      try{
+        const raw=fs.readFileSync(plistPath,"utf8");
+        const match=raw.match(/<key>CFBundleShortVersionString<\/key>\s*<string>([^<]{1,64})<\/string>/);
+        const parsed=match?.[1]?.trim();
+        if(parsed&&!/[\x00-\x1f\x7f]/.test(parsed))version=parsed;
+      }catch{/* binary or unreadable plist: still report installed */}
+      return{installed:true,...(version?{version}:{})};
+    }catch{/* not present */}
+  }
+  return{installed:false};
+}
+function hasClaudeExternalAuthConfig():boolean{
+  if(process.env.ANTHROPIC_API_KEY||process.env.ANTHROPIC_AUTH_TOKEN||process.env.CLAUDE_CODE_USE_BEDROCK||process.env.CLAUDE_CODE_USE_VERTEX||process.env.CLAUDE_CODE_USE_FOUNDRY)return true;
+  try{
+    const settingsFile=path.join(os.homedir(),".claude","settings.json");
+    if(!fs.existsSync(settingsFile))return false;
+    const raw=JSON.parse(fs.readFileSync(settingsFile,"utf8")) as Record<string,unknown>;
+    if(typeof raw.apiKeyHelper==="string"&&raw.apiKeyHelper.trim().length>0)return true;
+    const envBlock=raw.env&&typeof raw.env==="object"&&!Array.isArray(raw.env)?raw.env as Record<string,unknown>:undefined;
+    if(envBlock&&(envBlock.ANTHROPIC_API_KEY||envBlock.ANTHROPIC_AUTH_TOKEN||envBlock.CLAUDE_CODE_USE_BEDROCK||envBlock.CLAUDE_CODE_USE_VERTEX||envBlock.CLAUDE_CODE_USE_FOUNDRY))return true;
+  }catch{/* ignore unreadable settings */}
+  return false;
+}
+async function detectClaudeAuthenticated(executable:string):Promise<boolean|null>{
+  return new Promise(resolve=>{
+    let stdout="";
+    let settled=false;
+    const finish=(value:boolean|null)=>{if(settled)return;settled=true;clearTimeout(timer);resolve(value);};
+    const child=spawn(executable,["auth","status","--json"],{env:{HOME:os.homedir(),PATH:augmentedNativePath(process.env.PATH??"")},stdio:["ignore","pipe","ignore"],windowsHide:true});
+    const timer=setTimeout(()=>{try{child.kill();}catch{/* ignore */}finish(null);},5_000);timer.unref();
+    child.stdout.on("data",(data:Buffer)=>{stdout+=data.toString("utf8");if(stdout.length>32_000){try{child.kill();}catch{/* ignore */}finish(null);}});
+    child.once("error",()=>finish(null));
+    child.once("exit",()=>{
+      try{
+        const parsed=JSON.parse(stdout.trim()) as Record<string,unknown>;
+        if(typeof parsed.loggedIn==="boolean"){
+          if(parsed.loggedIn)return finish(true);
+          return finish(hasClaudeExternalAuthConfig()?null:false);
+        }
+      }catch{/* older claude CLI or non-JSON output */}
+      finish(null);
+    });
   });
 }
 export interface ExternalAgentServiceOptions {
@@ -247,6 +310,7 @@ export class ExternalAgentService {
     }
   }
   async recover():Promise<void>{return this.#recovery??=(async()=>{
+    await primeLoginShellPath();
     const control=path.join(this.#options.projectRegistry.privateDirectory,"external-executions");
     for(const stored of this.#runs.values())if(stored.managedProcesses&&stored.run.quiescent!==true){
       const dirs=[...new Set([stored.cwd,...(stored.executionCwd?[stored.executionCwd]:[])])];
@@ -285,6 +349,13 @@ export class ExternalAgentService {
       if(request.discardStaged&&stored.run.quiescent===true){
         const staged=this.#staged.get(stored.run.taskId);
         if(staged&&!staged.appliedAt&&fs.existsSync(staged.stagedDir)){fs.rmSync(staged.stagedDir,{recursive:true,force:true});}
+        if(stored.run.taskId.startsWith("agent-setup-")){
+          const tableRoot=canonicalExecutionPath(path.join(this.#options.rootDir,"table"));
+          const runCwd=canonicalExecutionPath(stored.cwd);
+          if(runCwd!==tableRoot&&within(runCwd,tableRoot)&&fs.existsSync(runCwd)){
+            try{fs.rmSync(runCwd,{recursive:true,force:true});}catch{/* ignore cleanup race */}
+          }
+        }
       }
     }
     if(request.operation==="inspect"&&request.ackReportIds?.length&&stored.pendingReports?.length){
@@ -309,12 +380,16 @@ export class ExternalAgentService {
     return{type:"run",run:this.#snapshot(stored,request.operation==="inspect"?request.afterSequence:undefined,request.operation==="inspect"?request.compact:undefined)};
   }
   #bindingEnv(value:ExternalAgentBinding):void{if(value.envId!==this.#options.envId)throw new Error("External agent binding belongs to another device");}
-  #protected():string[]{return [...this.#options.projectRegistry.protectedPaths(),path.join(os.homedir(),".claude"),path.join(os.homedir(),".gemini"),path.join(os.homedir(),".antigravity")].map(canonicalExecutionPath);}
+  #protected():string[]{return this.#options.projectRegistry.protectedPaths().map(canonicalExecutionPath);}
+  #overlapsProtected(candidate:string):boolean{
+    const managedRoot=canonicalExecutionPath(this.#options.rootDir);
+    return this.#protected().some(protectedPath=>within(candidate,protectedPath)&&!(protectedPath!==managedRoot&&within(managedRoot,protectedPath)&&within(candidate,managedRoot)));
+  }
   #workspace(request:RunRequest):string{
     const actual=canonicalExecutionPath(request.cwd);
     if(request.projectId){const grant=this.#options.projectRegistry.validate(request.projectId,actual,request.grantRevision);if(request.directoryId&&grant.directoryId!==request.directoryId)throw new Error("External agent directory grant changed");}
     else{if(!within(actual,canonicalExecutionPath(this.#options.rootDir)))throw new Error("External agent workspace requires a current project directory grant");this.#options.projectRegistry.assertUnregistered(actual);}
-    if(actual===path.parse(actual).root||actual===canonicalExecutionPath(os.homedir())||this.#protected().some(protectedPath=>within(actual,protectedPath)))throw new Error("External agent workspace overlaps protected data");
+    if(actual===path.parse(actual).root||actual===canonicalExecutionPath(os.homedir())||this.#overlapsProtected(actual))throw new Error("External agent workspace overlaps protected data");
     // Create only a validated Env child or granted project child, then verify its physical destination again.
     if(!fs.existsSync(actual))fs.mkdirSync(actual,{recursive:true,mode:0o700});
     if(canonicalExecutionPath(request.cwd)!==actual||!fs.statSync(actual).isDirectory())throw new Error("External agent workspace changed during preparation");
@@ -380,8 +455,20 @@ export class ExternalAgentService {
     const fingerprint=hash(JSON.stringify({...request,binding:{...request.binding,verifiedAt:undefined,capabilities:undefined},cwd,executable}));
     if(existing){if(existing.fingerprint!==fingerprint)throw new Error("External agent request ID was reused with a different task");return this.#snapshot(existing);}
     if([...this.#runs.values()].some(item=>item.run.taskId===request.taskId&&item.run.runEpoch===request.runEpoch))throw new Error("This task epoch already has an external execution receipt; inspect it before dispatching again");
-    if([...this.#runs.values()].some(stored=>stored.run.quiescent!==true&&(within(cwd,stored.cwd)||within(stored.cwd,cwd))))throw new Error("Previous external execution cleanup is pending for this workspace");
-    if([...this.#live.values()].some(item=>!terminal(item.stored.run.state)&&(within(cwd,item.stored.cwd)||within(item.stored.cwd,cwd))))throw new Error("Another external task owns write access to this workspace");
+    const requestIsolatedReadOnly=Boolean(request.projectId)&&request.workspaceMode==="read_only"&&request.runEpoch>0;
+    const isIsolatedReadOnly=(entry:StoredRun)=>entry.workspaceMode==="read_only"&&Boolean(entry.executionCwd)&&entry.executionCwd!==entry.cwd;
+    if([...this.#runs.values()].some(stored=>{
+      if(stored.run.quiescent===true)return false;
+      if(!(within(cwd,stored.cwd)||within(stored.cwd,cwd)))return false;
+      if(requestIsolatedReadOnly&&isIsolatedReadOnly(stored)&&stored.run.taskId!==request.taskId)return false;
+      return true;
+    }))throw new Error("Previous external execution cleanup is pending for this workspace");
+    if([...this.#live.values()].some(item=>{
+      if(terminal(item.stored.run.state))return false;
+      if(!(within(cwd,item.stored.cwd)||within(item.stored.cwd,cwd)))return false;
+      if(requestIsolatedReadOnly&&isIsolatedReadOnly(item.stored)&&item.stored.run.taskId!==request.taskId)return false;
+      return true;
+    }))throw new Error("Another external task owns write access to this workspace");
     if(request.sessionId&&!startupError&&!this.#ownedSession(request,cwd,executable))throw new Error("Native session does not belong to this Kulo task and workspace");
     const prepared=startupError?{executionCwd:cwd}:this.#prepareExecutionWorkspace(request,cwd);
     const readOnlyBeforeSnapshot=!startupError&&request.readOnly&&prepared.executionCwd===cwd?captureDirectReadOnlySnapshot(cwd,prepared.scratchNotesDir):undefined;
@@ -441,7 +528,7 @@ export class ExternalAgentService {
       return pipe;
     },
     registerCleanup:cleanup=>{(live.cleanups??=[]).push(cleanup);},
-    event:(type,value)=>this.#event(live,type,value),session:sessionId=>{if(typeof sessionId!=="string"||!sessionId||sessionId.length>512)throw new Error("Invalid native agent session ID");live.stored.run.sessionId=sessionId;this.#persist(live.stored);},
+    event:(type,value)=>this.#event(live,type,value),activity:label=>this.#activity(live,label),session:sessionId=>{if(typeof sessionId!=="string"||!sessionId||sessionId.length>512)throw new Error("Invalid native agent session ID");live.stored.run.sessionId=sessionId;this.#persist(live.stored);},
     submitted:()=>{if(terminal(live.stored.run.state)||Date.now()>=(live.deadline??Infinity))throw new Error("External agent run has expired");live.submitted=true;live.stored.run.state="running";if(!live.stored.run.phase||live.stored.run.phase==="starting")live.stored.run.phase="investigating";this.#event(live,"state","Task accepted by local agent protocol");},complete:(state,error)=>this.#finish(live,state,error,state==="uncertain"?"disconnect":undefined),
     permission:async(permissionId,title,choices)=>{
       if(terminal(live.stored.run.state))throw new Error("External agent permission scope expired");
@@ -455,6 +542,13 @@ export class ExternalAgentService {
     for(const secret of this.#ephemeralSecrets)safe=safe.split(secret).join("[REDACTED]");
     for(const [name,secret] of Object.entries(process.env))if(secret&&secret.length>=4&&/(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|AUTHORIZATION)/i.test(name))safe=safe.split(secret).join("[REDACTED]");
     return safe;
+  }
+  #activity(live:LiveRun,label?:string):void{
+    if(terminal(live.stored.run.state))return;
+    const now=Date.now();
+    if(now-(live.lastHeartbeatAt??0)<10_000)return;
+    live.lastHeartbeatAt=now;
+    this.#event(live,"state",label||"Working...");
   }
   #event(live:LiveRun,type:ExternalAgentRun["events"][number]["type"],value:string):void{
     if(terminal(live.stored.run.state))return;const text=this.#redact(value).slice(0,16_000);if(!text)return;
@@ -556,7 +650,7 @@ export class ExternalAgentService {
         const candidate=path.isAbsolute(rawPath)?rawPath:path.resolve(baseRoot,rawPath);
         const canonicalCandidate=canonicalExecutionPath(candidate);
         const allowed=within(canonicalCandidate,baseRoot)||(scratchRoot?within(canonicalCandidate,scratchRoot):false);
-        if(!allowed||this.#protected().some(protectedPath=>within(canonicalCandidate,protectedPath))){
+        if(!allowed||this.#overlapsProtected(canonicalCandidate)){
           throw new Error(`Offline report file escapes authorized task workspace: ${rawPath}`);
         }
         const stat=fs.lstatSync(canonicalCandidate);
@@ -617,21 +711,46 @@ export class ExternalAgentService {
     return structuredClone({...stored.run,events:filteredEvents});
   }
   async #detect(kind:ExternalAgentKind,requested?:string):Promise<ExternalAgentDetection>{
-    if(["dots","muse","grok-bot"].includes(kind))return{kind,installed:false,authenticated:null,models:[],capabilities:externalCapabilities(kind),error:kind==="grok-bot"?"Experimental: specify an existing local CDP endpoint and a dedicated Bot":"Reserved local adapter"};
-    const executable=resolveExternalExecutable(kind,requested);if(!executable)return{kind,installed:false,authenticated:null,models:[],capabilities:externalCapabilities(kind),error:"Local client executable was not found"};
-    let version:string|undefined;try{version=this.#redact(await executableOutput(executable,["--version"])).slice(0,200);}catch{/* Protocol probe reports executable readiness separately. */}
-    return{kind,installed:true,executable,version,authenticated:null,models:[],capabilities:externalCapabilities(kind)};
+    await primeLoginShellPath();
+    if(isPersonalExternalAgentKind(kind)){
+      if(kind==="grok-bot"){
+        const appInfo=detectMacDesktopApp("Grok Bot.app");
+        return{kind,installed:false,...(appInfo.installed?{desktopAppInstalled:true}:{}),...(appInfo.version?{version:appInfo.version}:{}),authenticated:null,models:[],capabilities:externalCapabilities(kind),error:"Experimental: specify an existing local CDP endpoint and a dedicated Bot"};
+      }
+      return{kind,installed:false,authenticated:null,models:[],capabilities:externalCapabilities(kind),error:"Reserved local adapter"};
+    }
+    let executable:string|undefined;
+    try{
+      executable=resolveExternalExecutable(kind,requested);
+    }catch(error){
+      return{kind,installed:false,authenticated:null,models:[],capabilities:externalCapabilities(kind),error:this.#redact(error instanceof Error?error.message:"Local client executable is unavailable")};
+    }
+    if(!executable)return{kind,installed:false,authenticated:null,models:[],capabilities:externalCapabilities(kind),error:kind==="acp"?"Custom ACP client requires an absolute native executable path":"Local client executable was not found"};
+    const flavor=getAcpFlavor(kind);
+    let version:string|undefined;
+    try{version=this.#redact(await executableOutput(executable,[...(flavor?.versionArgs??["--version"])])).slice(0,200);}catch{/* Protocol probe reports executable readiness separately. */}
+    const authenticated=kind==="claude-code"
+      ? await detectClaudeAuthenticated(executable)
+      : flavor?.detectAuth
+        ? await flavor.detectAuth(executable,augmentedNativePath(process.env.PATH??""))
+        : null;
+    return{kind,installed:true,executable,version,authenticated,models:[],capabilities:externalCapabilities(kind)};
   }
   async #probe(value:ExternalAgentBinding,modelId?:string):Promise<ExternalAgentDetection>{
     if(value.kind==="grok-bot")return detectGrok(value);
-    const detection=await this.#detect(value.kind,value.executable);if(!detection.installed)return detection;
+    if(value.kind==="acp"&&value.acpArgs!==undefined){
+      const validated=validateCustomAcpArgs(value.acpArgs);
+      if(!validated.ok)return{kind:value.kind,installed:false,authenticated:null,models:[],capabilities:externalCapabilities(value.kind),error:validated.error};
+    }
+    const detection=await this.#detect(value.kind,value.executable);
+    if(!detection.installed||detection.authenticated===false)return detection;
     const cwd=path.join(this.#options.rootDir,"external-agent-check");fs.mkdirSync(cwd,{recursive:true,mode:0o700});
     const request:RunRequest={operation:"run",binding:value,taskId:`probe:${randomUUID()}`,runEpoch:0,requestId:`probe:${randomUUID()}`,prompt:"",cwd,readOnly:true,allowSubagents:false,timeoutMs:30_000,modelId};this.#workspace(request);
     const stored:StoredRun={version:1,fingerprint:"probe",cwd,executable:detection.executable!,readOnly:true,run:{id:request.requestId,taskId:request.taskId,runEpoch:0,kind:value.kind,state:"starting",text:"",events:[],permissions:[],nextSequence:1,quiescent:false}};
     const live:LiveRun={stored,submitted:false,permissions:new Map()};const context=this.#context(live,request);
     // No prompt and no provider request: successful initialize is connectivity, not an authentication claim.
     let driver:ExternalDriver|undefined;try{
-      const result=value.kind==="codex"?await connectCodex(context,true):value.kind==="claude-code"?await connectClaude(context,true):await connectAcp(context,true);driver=result.driver;detection.models=result.models;detection.authenticated="authenticated" in result&&typeof result.authenticated==="boolean"?result.authenticated:null;
+      const result=value.kind==="codex"?await connectCodex(context,true):value.kind==="claude-code"?await connectClaude(context,true):await connectAcp(context,true);driver=result.driver;detection.models=result.models;detection.authenticated="authenticated" in result&&typeof result.authenticated==="boolean"?result.authenticated:detection.authenticated;
     }catch(error){detection.error=this.#redact(error instanceof Error?error.message:"Local agent protocol probe failed");}finally{driver?.close();const cleanup=await Promise.all((live.cleanups??[]).map(close=>close().catch(()=>false)));if(cleanup.some(value=>!value))detection.error=detection.error??"Local protocol process cleanup is pending";}
     return detection;
   }

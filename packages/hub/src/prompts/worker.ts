@@ -1,4 +1,5 @@
 import {
+  isPersonalExternalAgentKind,
   localizeDefaultRolePreset,
   resolveRolePresetFromPool,
   type CapabilitySnapshot,
@@ -446,5 +447,41 @@ export function formatExternalAgentHandoffPrompt(params: {
     .join("\n\n");
 }
 
+export function formatExternalAgentFollowUpPrompt(params: {
+  ticket: TicketRecord;
+  followUp: string;
+  materialized?: ReadonlyArray<{ name: string; mimeType: string; path: string }>;
+}): string {
+  const { ticket, followUp, materialized = [] } = params;
+  return [
+    `[Follow-up on Ticket ${ticket.id}: ${ticket.title}]`,
+    followUp,
+    materialized.length > 0
+      ? `New Reference Attachments:\n${materialized.map((item) => `- ${item.name} (${item.mimeType}): ${item.path}`).join("\n")}`
+      : "",
+    "Continue within your existing native session and authorized workspace scope, verify any changes with real checks, and report concrete results via kulo_task_report or your final response.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 export const DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT =
   "Follow repository conventions, verify changes with real checks, report actual outcomes and file paths, and hand back to Kulo if scope expansion or cross-agent collaboration is needed.";
+
+export function defaultExternalAgentRolePrompt(language?: KuloLanguage): string {
+  return language === "en"
+    ? DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT
+    : "遵循仓库既有约定与任务边界，完成改动后执行真实检查验证，向主 Agent 汇报具体结论、改动路径与验证证据；若需扩大范围或跨智能体协作，及时交回主 Agent 决策。";
+}
+
+export function defaultExternalAgentWhenToUse(kind: string, language?: KuloLanguage): string {
+  const personal = isPersonalExternalAgentKind(kind);
+  if (language === "en") {
+    return personal
+      ? "Tasks explicitly assigned to this agent by the user."
+      : "Code implementation, refactoring, debugging, and verification delegated and reviewed by the coordinator.";
+  }
+  return personal
+    ? "仅在用户明确点名该智能体时委派执行。"
+    : "复杂代码实现、重构排障与终端验证，由主 Agent 拆解派发并在交卷后验收。";
+}

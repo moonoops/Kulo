@@ -42,18 +42,28 @@ export class PermissionStatusLoader {
 
   async refresh(): Promise<PermissionStatusSnapshot> {
     if (this.#disposed) return this.#state;
+    await Promise.all([this.refreshMicrophone(), this.refreshDesktop()]);
+    return this.#state;
+  }
+
+  async refreshDesktop(): Promise<void> {
+    if (this.#disposed) return;
     const generation = ++this.#generation;
     this.#controller?.abort();
     const controller = this.#controller = new AbortController();
     const target = this.#target;
     this.#publish({ desktopChecking: Boolean(target?.available), desktopError: target?.error ?? null });
+    if (!target?.available) return;
     const active = () => !this.#disposed && generation === this.#generation;
     const message = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
-    await Promise.all([
-      this.refreshMicrophone(),
-      target?.available ? this.readDesktop(target.envId, controller.signal).then((desktop) => { if (active()) this.#publish({ desktop }); }, (cause: unknown) => { if (active()) this.#publish({ desktop: null, desktopError: message(cause) }); }).finally(() => { if (active()) this.#publish({ desktopChecking: false }); }) : Promise.resolve(),
-    ]);
-    return this.#state;
+    try {
+      const desktop = await this.readDesktop(target.envId, controller.signal);
+      if (active()) this.#publish({ desktop });
+    } catch (cause) {
+      if (active()) this.#publish({ desktop: null, desktopError: message(cause) });
+    } finally {
+      if (active()) this.#publish({ desktopChecking: false });
+    }
   }
 
   async refreshMicrophone(): Promise<void> {

@@ -5,6 +5,7 @@ import type { MemoryServiceJob, MemoryServicePrepareRequest, MemoryServiceSnapsh
 import { SettingsAssistantDoc, type SettingsAssistant } from "./settings-assistant.js";
 import { isActiveSettingsConversation, isMainOrchestratorApi } from "./settings-doc.js";
 import { resolveDeferredAddTools } from "./tool-surface.js";
+import { findHostExecutable } from "./host-path.js";
 import type { KuloMemoryService } from "./memory-service.js";
 import { MEMORY_SETUP_GUIDE } from "./prompts.js";
 
@@ -76,6 +77,9 @@ export function createMemorySetupExtension(get: () => MemorySetupHost) {
           return {
             ...output({
               ...snapshot,
+              localEnvironment: {
+                uvAvailable: Boolean(findHostExecutable("uv")),
+              },
               kuloConnections,
               apiConnections: kuloConnections.filter((provider) => provider.authType === "api_key"),
             }),

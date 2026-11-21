@@ -30,17 +30,26 @@ export function useKuloNotifications({
   const onOpenTopicRef = useRef(onOpenTopic);
   onOpenTopicRef.current = onOpenTopic;
   const browserBadgeRef = useRef<ReturnType<typeof createBrowserBadgeController> | null>(null);
+  const unreadCountRef = useRef(0);
+  const countedEventIdsRef = useRef(new Set<string>());
 
   useEffect(() => {
     const browserBadge = isDesktop ? null : createBrowserBadgeController();
     browserBadgeRef.current = browserBadge;
 
-    const clearBadge = () => {
+    const pushBadgeCount = (nextCount: number) => {
       if (isDesktop) {
-        void window.kuloDesktop?.setBadge?.(false).catch(() => {});
+        void window.kuloDesktop?.setBadge?.(nextCount).catch((error: unknown) => {
+          if (nextCount > 0) console.warn("[KuloNotify] Desktop badge update failed", error);
+        });
       } else {
-        browserBadge?.set(false);
+        browserBadge?.set(nextCount);
       }
+    };
+
+    const clearBadge = () => {
+      unreadCountRef.current = 0;
+      pushBadgeCount(0);
     };
 
     const onWindowActive = () => {
@@ -63,12 +72,15 @@ export function useKuloNotifications({
       });
 
       if (currentPrefs.badge) {
-        if (isDesktop) {
-          void window.kuloDesktop?.setBadge?.(true).catch((error: unknown) => {
-            console.warn("[KuloNotify] Desktop badge update failed", error);
-          });
-        } else {
-          browserBadge?.set(true);
+        const seen = countedEventIdsRef.current;
+        if (!seen.has(event.id)) {
+          seen.add(event.id);
+          if (seen.size > 200) {
+            const oldest = seen.values().next().value;
+            if (oldest !== undefined) seen.delete(oldest);
+          }
+          unreadCountRef.current += 1;
+          pushBadgeCount(unreadCountRef.current);
         }
       }
 
@@ -96,15 +108,17 @@ export function useKuloNotifications({
       document.removeEventListener("visibilitychange", onWindowActive);
       browserBadge?.dispose();
       browserBadgeRef.current = null;
+      unreadCountRef.current = 0;
     };
   }, [isDesktop, subscribeNotification]);
 
   useEffect(() => {
     if (!preferences.badge) {
+      unreadCountRef.current = 0;
       if (isDesktop) {
-        void window.kuloDesktop?.setBadge?.(false).catch(() => {});
+        void window.kuloDesktop?.setBadge?.(0).catch(() => {});
       } else {
-        browserBadgeRef.current?.set(false);
+        browserBadgeRef.current?.set(0);
       }
     }
   }, [isDesktop, preferences.badge]);

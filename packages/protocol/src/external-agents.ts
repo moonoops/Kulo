@@ -1,5 +1,145 @@
-export const EXTERNAL_AGENT_KINDS = ["codex", "claude-code", "antigravity", "dsh", "grok-bot", "dots", "muse"] as const;
+export const AUTO_SCAN_EXTERNAL_AGENT_KINDS = [
+  "codex",
+  "claude-code",
+  "antigravity",
+  "grok",
+  "cursor",
+  "opencode",
+  "gemini-cli",
+  "kiro",
+  "copilot",
+  "dsh",
+] as const;
+
+export const SUPPORTED_EXTERNAL_AGENT_KINDS = [
+  ...AUTO_SCAN_EXTERNAL_AGENT_KINDS,
+  "acp",
+] as const;
+
+export const PERSONAL_EXTERNAL_AGENT_KINDS = [
+  "grok-bot",
+  "dots",
+  "muse",
+] as const;
+
+export const EXTERNAL_AGENT_KINDS = [
+  ...SUPPORTED_EXTERNAL_AGENT_KINDS,
+  ...PERSONAL_EXTERNAL_AGENT_KINDS,
+] as const;
 export type ExternalAgentKind = typeof EXTERNAL_AGENT_KINDS[number];
+
+export const ASSISTANT_CONFIGURABLE_EXTERNAL_AGENT_KINDS = [
+  ...AUTO_SCAN_EXTERNAL_AGENT_KINDS,
+  ...PERSONAL_EXTERNAL_AGENT_KINDS,
+] as const;
+
+export function isSupportedExternalAgentKind(kind: unknown): kind is typeof SUPPORTED_EXTERNAL_AGENT_KINDS[number] {
+  return typeof kind === "string" && (SUPPORTED_EXTERNAL_AGENT_KINDS as readonly string[]).includes(kind);
+}
+
+export function isAutoScanExternalAgentKind(kind: unknown): kind is typeof AUTO_SCAN_EXTERNAL_AGENT_KINDS[number] {
+  return typeof kind === "string" && (AUTO_SCAN_EXTERNAL_AGENT_KINDS as readonly string[]).includes(kind);
+}
+
+export function isPersonalExternalAgentKind(kind: unknown): kind is typeof PERSONAL_EXTERNAL_AGENT_KINDS[number] {
+  return typeof kind === "string" && (PERSONAL_EXTERNAL_AGENT_KINDS as readonly string[]).includes(kind);
+}
+
+export const CUSTOM_ACP_MAX_ARGS = 16;
+export const CUSTOM_ACP_MAX_ARG_LENGTH = 256;
+
+const BLOCKED_CUSTOM_ACP_EXECUTABLES = new Set([
+  "sh",
+  "bash",
+  "zsh",
+  "fish",
+  "dash",
+  "ksh",
+  "csh",
+  "tcsh",
+  "env",
+  "sudo",
+  "nohup",
+  "xargs",
+  "open",
+  "launchctl",
+  "osascript",
+  "cmd",
+  "powershell",
+  "pwsh",
+  "awk",
+  "gawk",
+  "sed",
+  "expect",
+  "deno",
+  "bun",
+  "bunx",
+  "npx",
+  "pnpx",
+  "dlx",
+  "uvx",
+  "pipx",
+  "corepack",
+  "tsx",
+  "ts-node",
+]);
+
+const BLOCKED_CUSTOM_ACP_RUNTIME_PATTERN = /^(?:node|nodejs|python|pypy|perl|ruby|php)(?:\d+(?:\.\d+)*)?$/i;
+
+export function isBlockedCustomAcpExecutableName(filePath: string): boolean {
+  const normalized = filePath.trim().replace(/[\\/]+$/, "");
+  if (!normalized) return true;
+  const lastSlash = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  const base = (lastSlash >= 0 ? normalized.slice(lastSlash + 1) : normalized)
+    .replace(/\.(?:exe|cmd|bat|com)$/i, "")
+    .toLowerCase();
+  if (!base) return true;
+  return BLOCKED_CUSTOM_ACP_EXECUTABLES.has(base) || BLOCKED_CUSTOM_ACP_RUNTIME_PATTERN.test(base);
+}
+
+export function isValidCustomAcpAgentRef(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) &&
+    !["constructor", "prototype", "__proto__"].includes(value)
+  );
+}
+
+export function validateCustomAcpArgs(
+  value: unknown,
+): { ok: true; value: string[] } | { ok: false; error: string } {
+  if (!Array.isArray(value)) {
+    return { ok: false, error: "自定义 ACP 启动参数必须是字符串数组。" };
+  }
+  if (value.length > CUSTOM_ACP_MAX_ARGS) {
+    return { ok: false, error: `自定义 ACP 启动参数最多允许 ${CUSTOM_ACP_MAX_ARGS} 项。` };
+  }
+  const normalized: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      return { ok: false, error: "自定义 ACP 启动参数必须全部为字符串。" };
+    }
+    if (/[\x00-\x1f\x7f]/.test(item)) {
+      return { ok: false, error: "自定义 ACP 启动参数不能包含控制字符。" };
+    }
+    const trimmed = item.trim();
+    if (!trimmed || trimmed.length > CUSTOM_ACP_MAX_ARG_LENGTH) {
+      return { ok: false, error: `每项自定义 ACP 启动参数不能为空且不能超过 ${CUSTOM_ACP_MAX_ARG_LENGTH} 字符。` };
+    }
+    normalized.push(trimmed);
+  }
+  return { ok: true, value: normalized };
+}
+
+export interface AcpRegistryTemplate {
+  id: string;
+  name: string;
+  version: string;
+  description?: string;
+  suggestedArgs: string[];
+  suggestedBinary?: string;
+  requiresLocalInstall: boolean;
+}
 
 export const EXTERNAL_AGENT_MCP_TOOL_NAMES = [
   "kulo_task_context",
@@ -46,6 +186,7 @@ export interface ExternalAgentBinding {
   kind: ExternalAgentKind;
   envId: string;
   executable?: string;
+  acpArgs?: string[];
   agentRef?: string;
   cdpUrl?: string;
   experimental?: boolean;
@@ -75,6 +216,7 @@ export interface ExternalClientConnection {
   envId: string;
   label?: string;
   executable?: string;
+  acpArgs?: string[];
   agentRef?: string;
   cdpUrl?: string;
   experimental?: boolean;
@@ -91,9 +233,18 @@ export function externalClientConnectionId(binding: Pick<ExternalAgentBinding, "
   return raw.replace(/[^A-Za-z0-9._:-]/g, "_").slice(0, 180);
 }
 
+export function isBundledClaudeSdkExecutable(filePath?: string): boolean {
+  if (!filePath) return false;
+  const normalized = filePath.replace(/\\/g, "/");
+  if (/(?:^|\/)@anthropic-ai[+/]claude-agent-sdk(?:-[^/]+)?(?:\/|$)/.test(normalized)) return true;
+  if (/\.app\/Contents\/(?:Resources|Frameworks)\/.*claude-agent-sdk/.test(normalized)) return true;
+  return false;
+}
+
 export interface ExternalAgentDetection {
   kind: ExternalAgentKind;
   installed: boolean;
+  desktopAppInstalled?: boolean;
   executable?: string;
   version?: string;
   authenticated: boolean | null;
@@ -241,6 +392,8 @@ export interface ExternalAgentScanCandidate {
   envName: string;
   online: boolean;
   installed: boolean;
+  desktopAppInstalled?: boolean;
+  authenticated?: boolean | null;
   alreadyConnected: boolean;
   connectedClientId?: string;
   connectedVerified?: boolean;
@@ -261,6 +414,7 @@ export interface ExternalAgentQuickConnectRequest {
   commandId: string;
   runTest?: boolean;
   executable?: string;
+  acpArgs?: string[];
   agentRef?: string;
   cdpUrl?: string;
   experimental?: boolean;
@@ -286,6 +440,16 @@ export interface ExternalAgentQuickConnectResult {
   settings: import("./domain.js").KuloSettingsView;
 }
 
+export interface ExternalAgentVerifyClientResult {
+  clientId: string;
+  verifiedAt: number;
+  verificationLevel: "roundtrip";
+  version?: string;
+  modelsCount: number;
+  enabledRoleIds: string[];
+  settings: import("./domain.js").KuloSettingsView;
+}
+
 export interface ExternalTicketExecution {
   binding: ExternalAgentBinding;
   modelId?: string;
@@ -301,6 +465,7 @@ export interface ExternalTicketExecution {
   lastSequence?: number;
   phase?: WorkerExecutionPhase;
   touchedFiles?: string[];
+  recentEvents?: ExternalAgentRuntimeEvent[];
   uncertainReason?: ExternalAgentUncertainReason;
   readOnlyViolation?: ReadOnlyViolationSummary;
   explicitReadyReport?: import("./domain.js").WorkerReportRecord & { runEpoch: number; version: number };

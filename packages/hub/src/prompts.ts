@@ -5,10 +5,13 @@ export {
   formatMediaRoutingSummary,
 } from "./prompts/orchestrator.js";
 export {
-   DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT,
+  DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT,
   composeSubagentInstructions,
   composeWorkerInstructions,
   createWorkerSections,
+  defaultExternalAgentRolePrompt,
+  defaultExternalAgentWhenToUse,
+  formatExternalAgentFollowUpPrompt,
   formatExternalAgentHandoffPrompt,
   formatWorkerInitialPrompt,
   type ComposeWorkerOptions,

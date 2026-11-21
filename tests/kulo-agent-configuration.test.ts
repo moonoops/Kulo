@@ -52,7 +52,7 @@ async function fixture() {
 describe("external agent configuration", () => {
   it("keeps separate durable drafts and defaults collaboration off and native model unset", async () => {
     const f = await fixture(); const draft = await f.prepare();
-    expect(draft).toMatchObject({ label: "Codex · Work Mac", allowSubagents: false, binding: { kind: "codex", envId: "local" } });
+    expect(draft).toMatchObject({ label: "Codex", allowSubagents: false, binding: { kind: "codex", envId: "local" } });
     expect(draft.modelId).toBeUndefined();
     expect(draft.thinkingLevel).toBeUndefined();
     expect(draft.dispatchPolicy).toBeUndefined();
@@ -236,7 +236,7 @@ describe("external agent configuration", () => {
     const input = { clientId: draft.clientId, expectedRevision: draft.revision, commandId: "recover-save" };
     await expect(f.service.save(input)).rejects.toThrow("apply failed");
     const resumed = new KuloAgentConfiguration(f.options); const result = await resumed.save(input);
-    expect(result.agentId).toMatch(/^external-/); expect(f.state.committed).toBe(1); expect(Object.values(f.state.settings.blocks.roles.value)).toHaveLength(1);
+    expect(result.agentId).toMatch(/^[a-z][a-z0-9_-]{0,39}$/); expect(f.state.committed).toBe(1); expect(Object.values(f.state.settings.blocks.roles.value)).toHaveLength(1);
   });
 
   it("refuses concurrent settings changes and offline execution devices", async () => {

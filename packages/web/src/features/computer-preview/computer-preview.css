@@ -1,31 +1,7 @@
 @reference "../../kulo.css";
 
 .kulo-task-preview {
-  border-top: 1px solid color-mix(in oklab, var(--border) 75%, transparent);
-}
-
-.kulo-task-preview-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--kulo-space-1);
-  min-width: 0;
-  padding: var(--kulo-space-1) var(--kulo-space-2) var(--kulo-space-1) var(--kulo-list-padding-inline);
-}
-
-.kulo-task-preview-meta {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.kulo-task-preview-label {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  display: block;
 }
 
 .kulo-task-preview-controls {
@@ -39,7 +15,12 @@
   display: flex;
   flex-direction: column;
   gap: var(--kulo-space-2);
-  padding: var(--kulo-space-1) var(--kulo-space-3) var(--kulo-space-3);
+  padding: 0 var(--kulo-space-3) var(--kulo-space-2);
+}
+
+.kulo-task-preview-viewport-frame {
+  position: relative;
+  width: 100%;
 }
 
 .kulo-task-preview-viewport {
@@ -64,8 +45,24 @@
   border-color: color-mix(in oklab, var(--foreground) 28%, var(--border));
 }
 
+.kulo-task-preview-zoom-button {
+  position: absolute;
+  top: var(--kulo-space-2);
+  inset-inline-end: var(--kulo-space-2);
+  z-index: 2;
+  backdrop-filter: blur(8px);
+}
+
 .kulo-task-preview-orphan-head {
-  padding: var(--kulo-list-padding-block) var(--kulo-list-padding-inline);
+  display: flex;
+  align-items: center;
+  gap: var(--kulo-space-1);
+  min-width: 0;
+  padding: var(--kulo-space-2) var(--kulo-space-2) var(--kulo-space-2) var(--kulo-list-padding-inline);
+}
+
+.kulo-task-preview-orphan-head > .kulo-task-title {
+  flex: 1;
 }
 
 .kulo-computer-preview-sessions {

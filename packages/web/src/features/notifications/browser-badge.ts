@@ -1,19 +1,29 @@
-const TITLE_PREFIX = "• ";
+const TITLE_BADGE_PREFIX = /^(?:\((?:\d+|99\+)\)|•)\s+/;
 const NOTIFICATION_CHANNEL_NAME = "kulo:notifications";
 const MAX_CLAIMED_EVENTS = 200;
 
 export interface BrowserBadgeController {
-  set(active: boolean): void;
+  set(count: number | boolean): void;
+  getCount(): number;
   isActive(): boolean;
   dispose(): void;
 }
 
 function stripTitlePrefix(title: string): string {
-  return title.startsWith(TITLE_PREFIX) ? title.slice(TITLE_PREFIX.length) : title;
+  return title.replace(TITLE_BADGE_PREFIX, "");
+}
+
+function normalizeBadgeCount(value: number | boolean): number {
+  if (typeof value === "boolean") return value ? 1 : 0;
+  return Number.isFinite(value) && value > 0 ? Math.min(9999, Math.floor(value)) : 0;
+}
+
+function formatBadgeCount(count: number): string {
+  return count > 99 ? "99+" : String(count);
 }
 
 export function createBrowserBadgeController(): BrowserBadgeController {
-  let active = false;
+  let count = 0;
   let originalFaviconHref: string | null = null;
   let badgedFaviconHref: string | null = null;
   let faviconRenderInFlight = false;
@@ -68,7 +78,7 @@ export function createBrowserBadgeController(): BrowserBadgeController {
         ctx.arc(cx, cy, 5.5, 0, Math.PI * 2);
         ctx.fill();
         badgedFaviconHref = canvas.toDataURL("image/png");
-        if (active) {
+        if (count > 0) {
           const currentLink = findIconLink();
           if (currentLink) currentLink.setAttribute("href", badgedFaviconHref);
         }
@@ -82,27 +92,30 @@ export function createBrowserBadgeController(): BrowserBadgeController {
     img.src = originalFaviconHref;
   };
 
-  const applyTitle = (showBadge: boolean) => {
+  const applyTitle = (badgeCount: number) => {
     if (typeof document === "undefined") return;
     const base = stripTitlePrefix(document.title || "Kulo");
-    const next = showBadge ? `${TITLE_PREFIX}${base}` : base;
+    const next = badgeCount > 0 ? `(${formatBadgeCount(badgeCount)}) ${base}` : base;
     if (document.title !== next) document.title = next;
   };
 
   return {
-    set(next: boolean): void {
-      const normalized = Boolean(next);
-      if (normalized === active) return;
-      active = normalized;
-      applyTitle(active);
-      applyFavicon(active);
+    set(next: number | boolean): void {
+      const normalized = normalizeBadgeCount(next);
+      if (normalized === count) return;
+      count = normalized;
+      applyTitle(count);
+      applyFavicon(count > 0);
+    },
+    getCount(): number {
+      return count;
     },
     isActive(): boolean {
-      return active;
+      return count > 0;
     },
     dispose(): void {
-      active = false;
-      applyTitle(false);
+      count = 0;
+      applyTitle(0);
       applyFavicon(false);
     },
   };

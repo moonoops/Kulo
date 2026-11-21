@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { buildAugmentedHostPath } from "./host-path.js";
 
 export type UploadKind = "image" | "audio" | "video" | "file";
 
@@ -112,6 +113,7 @@ export async function probeMediaFile(filePath: string, basic: MediaMetadata): Pr
   const result = await new Promise<string | null>((resolve) => {
     execFile("ffprobe", ["-v", "error", "-protocol_whitelist", "file,pipe", "-max_alloc", "16777216", "-analyzeduration", "1000000", "-probesize", "1048576", "-show_entries", "stream=codec_type,codec_name,width,height,duration:stream_disposition=attached_pic:format=duration", "-of", "json", filePath], {
       timeout: 3000, maxBuffer: 256 * 1024, windowsHide: true, encoding: "utf8",
+      env: { ...process.env, PATH: buildAugmentedHostPath() },
     }, (error, stdout) => resolve(error ? null : stdout));
   });
   if (result === null) return basic;

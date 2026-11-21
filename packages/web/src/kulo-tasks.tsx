@@ -66,7 +66,7 @@ export function relativeTime(ts: number): string {
 export function TaskStatus({ status, waiting, cleanupPending, recovery, externalAgentKind, pendingWorkspaceApply }: Pick<TicketCardView, "status" | "waiting" | "cleanupPending" | "recovery" | "externalAgentKind" | "pendingWorkspaceApply">) {
   const { t } = useI18n();
   const recovering = taskIsRecovering({ status, recovery });
-  const tone = cleanupPending || pendingWorkspaceApply || status === "waiting" && waiting?.reason === "user" ? "ask" : recovering ? "run" : status === "ready" && externalAgentKind ? "wait" : ticketTone(status);
+  const tone = cleanupPending || pendingWorkspaceApply || status === "waiting" && waiting?.reason === "user" ? "ask" : recovering ? "run" : ticketTone(status);
   return (
     <Chip
       size="sm"

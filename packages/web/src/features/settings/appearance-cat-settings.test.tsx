@@ -44,7 +44,7 @@ describe("Kulo appearance settings", () => {
     expect(controls.get("动态")?.isSelected).toBe(true);
     expect(controls.get("系统通知")?.isSelected).toBe(true);
     expect(controls.get("提示音")?.isSelected).toBe(false);
-    expect(controls.get("任务栏红点")?.isSelected).toBe(true);
+    expect(controls.get("应用角标")?.isSelected).toBe(true);
     expect(html.match(/role="switch"/g)).toHaveLength(5);
   });
 

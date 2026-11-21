@@ -33,8 +33,9 @@ import {
 import { AgentPresetFields } from "./agent-preset-fields";
 import { useProviderCatalog } from "./use-provider-catalog";
 import { SettingsList, SettingsSaveBar, SettingsSection } from "./settings-layout";
-import { EXTERNAL_CLIENT_NAMES, ExternalAgentsList } from "./external-agents-list";
-import { externalAgentPresets, internalAgentPresets, roleExternalClientId } from "./external-agents-view";
+import { externalClientDisplayName, ExternalAgentsList } from "./external-agents-list";
+import { ExternalAgentConnectModal } from "./external-agent-connect-card";
+import { deriveExternalClients, externalAgentPresets, internalAgentPresets, roleExternalClientId } from "./external-agents-view";
 import { commitRoleMutation, rebaseRoleDrafts, type RoleMutation } from "./worker-role-settings";
 import { useSettingsPending } from "./settings-save-activity";
 
@@ -78,6 +79,10 @@ export function WorkersModule({
 
   const [busy, setBusy] = useState(false);
   const [refreshingClientId, setRefreshingClientId] = useState<string | null>(null);
+  const [verifyingClientId, setVerifyingClientId] = useState<string | null>(null);
+  const [connectModalOpen, setConnectModalOpen] = useState(false);
+  const [connectClientId] = useState(() => `workers-modal-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`);
+  const connectTriggerRef = useRef<HTMLButtonElement>(null);
   const savingRef = useRef(false);
   const latestRolesBlock = useRef(rolesBlock);
   if (rolesBlock.revision >= latestRolesBlock.current.revision) latestRolesBlock.current = rolesBlock;
@@ -93,6 +98,7 @@ export function WorkersModule({
   const localizedBaseRoles = useMemo(() => localizeRolePresets(baseRoles, language), [baseRoles, language]);
   const internalRoles = useMemo(() => internalAgentPresets(roles), [roles]);
   const savedInternalRoles = useMemo(() => internalAgentPresets(baseRoles), [baseRoles]);
+  const hasExternalClients = useMemo(() => deriveExternalClients(roles, settings.externalClients).length > 0, [roles, settings.externalClients]);
   const atDefaults = useMemo(() => areInternalRolesAtDefaults(internalRoles), [internalRoles]);
   const dirty = JSON.stringify(roles) !== JSON.stringify(localizedBaseRoles);
   const creatingDirty =
@@ -263,6 +269,49 @@ export function WorkersModule({
     }
   };
 
+  const handleVerifyClient = async (clientId: string) => {
+    if (savingRef.current || conflict) return;
+    savingRef.current = true;
+    setBusy(true);
+    setVerifyingClientId(clientId);
+    setError(undefined);
+    try {
+      const res = await kuloRest.verifyExternalClient(clientId, { expectedRevision: baseRevision });
+      if (res.settings.blocks.roles.revision >= latestRolesBlock.current.revision) {
+        const incoming = res.settings.blocks.roles.value;
+        latestRolesBlock.current = res.settings.blocks.roles;
+        setRoles((current) => rebaseRoleDrafts(localizedBaseRoles, current, localizeRolePresets(incoming, language)));
+        setBaseRoles(incoming);
+        setBaseRevision(res.settings.blocks.roles.revision);
+        setConflict(false);
+        onSettingsUpdated(res.settings);
+      }
+      toast.success(t("外部客户端连接验证通过", "External client connection verified"));
+    } catch (err) {
+      if (err instanceof KuloApiError && err.status === 409) {
+        const latest = await kuloRest.getSettings().catch(() => undefined);
+        if (latest && latest.blocks.roles.revision !== baseRevision) setConflict(true);
+      }
+      setError(err instanceof Error ? err.message : t("验证外部客户端连接失败", "Failed to verify external client connection"));
+    } finally {
+      savingRef.current = false;
+      setBusy(false);
+      setVerifyingClientId(null);
+    }
+  };
+
+  const handleClientConnected = (nextSettings: KuloSettingsView) => {
+    if (nextSettings.blocks.roles.revision >= latestRolesBlock.current.revision) {
+      const incoming = nextSettings.blocks.roles.value;
+      latestRolesBlock.current = nextSettings.blocks.roles;
+      setRoles((current) => rebaseRoleDrafts(localizedBaseRoles, current, localizeRolePresets(incoming, language)));
+      setBaseRoles(incoming);
+      setBaseRevision(nextSettings.blocks.roles.revision);
+      setConflict(false);
+      onSettingsUpdated(nextSettings);
+    }
+  };
+
   const handleResetDefaults = async () => {
     const res = await persistMutation({ kind: "restore", language });
     if (res.ok) {
@@ -389,7 +438,7 @@ export function WorkersModule({
 
   return (
     <div className="kulo-settings-form" aria-busy={busy}>
-      <div inert={busy || undefined}>
+      <div inert={busy || undefined} className="flex min-w-0 flex-col gap-6">
       <SettingsSection
         title={t("智能体列表", "Agents")}
         action={
@@ -541,32 +590,66 @@ export function WorkersModule({
         </SettingsList>
       </SettingsSection>
 
-      <ExternalAgentsList
-        agents={Object.values(roles)}
-        savedRoles={baseRoles}
-        externalClients={settings.externalClients}
-        envs={envs}
-        projects={projects}
-        openRole={openRole}
-        onOpenRoleChange={setOpenRole}
-        onRoleChange={(roleId, next) => setRoles((previous) => ({ ...previous, [roleId]: next }))}
-        onToggleEnabled={(roleId, next) => { void persistMutation({ kind: "enabled", id: roleId, enabled: next }); }}
-        onToggleRowRef={(id, node) => {
-          if (node) toggleRowRefs.current.set(id, node);
-          else toggleRowRefs.current.delete(id);
-        }}
-        onCreateRole={(created) => persistMutation({ kind: "create", role: created })}
-        onCreatingDirtyChange={setExternalCreatingDirty}
-        resetSignal={externalResetSignal}
-        onDeleteRole={(target) => setDeleteRoleTarget(target)}
-        onRefreshClient={(clientId) => { void handleRefreshClient(clientId); }}
-        onRemoveClient={(client) => setRemoveClientTarget(client)}
-        refreshingClientId={refreshingClientId}
-        activeToggleId={activeMutation?.kind === "enabled" ? activeMutation.id : null}
-        creatingBusy={activeMutation?.kind === "create"}
-        busy={busy}
-        conflict={conflict}
-      />
+      {hasExternalClients ? (
+        <>
+          <ExternalAgentsList
+            agents={Object.values(roles)}
+            savedRoles={baseRoles}
+            externalClients={settings.externalClients}
+            envs={envs}
+            projects={projects}
+            openRole={openRole}
+            onOpenRoleChange={setOpenRole}
+            onRoleChange={(roleId, next) => setRoles((previous) => ({ ...previous, [roleId]: next }))}
+            onToggleEnabled={(roleId, next) => { void persistMutation({ kind: "enabled", id: roleId, enabled: next }); }}
+            onToggleRowRef={(id, node) => {
+              if (node) toggleRowRefs.current.set(id, node);
+              else toggleRowRefs.current.delete(id);
+            }}
+            onCreateRole={(created) => persistMutation({ kind: "create", role: created })}
+            onCreatingDirtyChange={setExternalCreatingDirty}
+            resetSignal={externalResetSignal}
+            onDeleteRole={(target) => setDeleteRoleTarget(target)}
+            onRefreshClient={(clientId) => { void handleRefreshClient(clientId); }}
+            onVerifyClient={(clientId) => { void handleVerifyClient(clientId); }}
+            onRemoveClient={(client) => setRemoveClientTarget(client)}
+            refreshingClientId={refreshingClientId}
+            verifyingClientId={verifyingClientId}
+            activeToggleId={activeMutation?.kind === "enabled" ? activeMutation.id : null}
+            creatingBusy={activeMutation?.kind === "create"}
+            busy={busy}
+            conflict={conflict}
+          />
+          <div className="flex items-center justify-start">
+            <Button
+              ref={connectTriggerRef}
+              size="sm"
+              variant="secondary"
+              isDisabled={busy || conflict}
+              onPress={() => setConnectModalOpen(true)}
+            >
+              <KuloIcon name="add" size={16} />
+              {t("连接客户端", "Connect client")}
+            </Button>
+          </div>
+        </>
+      ) : (
+        <SettingsSection
+          title={t("外部客户端", "External clients")}
+          action={
+            <Button
+              ref={connectTriggerRef}
+              size="sm"
+              variant="secondary"
+              isDisabled={busy || conflict}
+              onPress={() => setConnectModalOpen(true)}
+            >
+              <KuloIcon name="add" size={16} />
+              {t("连接客户端", "Connect client")}
+            </Button>
+          }
+        />
+      )}
 
       <form className="kulo-form-stack" aria-label={t("智能体配置", "Agent settings")} onSubmit={(event) => void saveAll(event)}>
         {conflict && (
@@ -595,7 +678,7 @@ export function WorkersModule({
         <SettingsSaveBar
           dirty={dirty}
           busy={busy}
-          saving={busy && !activeMutation && !refreshingClientId}
+          saving={busy && !activeMutation && !refreshingClientId && !verifyingClientId}
           disabled={conflict}
           scopeLabel={t("智能体配置", "Agent settings")}
           stateLabel={t("智能体配置未保存", "Agent settings not saved")}
@@ -604,6 +687,19 @@ export function WorkersModule({
         />
       </form>
       </div>
+
+      <ExternalAgentConnectModal
+        open={connectModalOpen}
+        clientId={connectClientId}
+        connected={!conflict}
+        disabled={busy}
+        envs={envs ?? []}
+        onClose={() => {
+          setConnectModalOpen(false);
+          requestAnimationFrame(() => connectTriggerRef.current?.focus({ preventScroll: true }));
+        }}
+        onConnected={(result) => handleClientConnected(result.settings)}
+      />
 
       <ConfirmDialog
         open={Boolean(deleteRoleTarget)}
@@ -625,7 +721,7 @@ export function WorkersModule({
         title={t("移除外部客户端连接？", "Remove external client connection?")}
         description={
           removeClientTarget
-            ? t("移除「", "Remove “") + `${EXTERNAL_CLIENT_NAMES[removeClientTarget.kind]} · ${envs?.find((e) => e.id === removeClientTarget.envId)?.name ?? removeClientTarget.envId}` + t("」及其关联的外部智能体配置？原客户端本身与账号不会被卸载。", "” and its associated external agents? The local client and account will not be uninstalled.")
+            ? t("移除「", "Remove “") + `${externalClientDisplayName(removeClientTarget)} · ${envs?.find((e) => e.id === removeClientTarget.envId)?.name ?? removeClientTarget.envId}` + t("」及其关联的外部智能体配置？原客户端本身与账号不会被卸载。", "” and its associated external agents? The local client and account will not be uninstalled.")
             : undefined
         }
         confirmLabel={t("移除连接", "Remove connection")}

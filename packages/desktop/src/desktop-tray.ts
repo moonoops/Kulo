@@ -63,7 +63,7 @@ export interface DesktopTrayControllerOptions {
 
 export interface DesktopTrayController {
   sync(enabled: boolean): void;
-  setBadge(active: boolean): void;
+  setBadge(count: number | boolean): void;
   refreshTheme(): void;
   isActive(): boolean;
   dispose(): void;
@@ -72,7 +72,7 @@ export interface DesktopTrayController {
 export function createDesktopTrayController(options: DesktopTrayControllerOptions): DesktopTrayController {
   let tray: ManagedTray | undefined;
   let disposed = false;
-  let badgeActive = false;
+  let badgeCount = 0;
 
   const destroyTray = () => {
     const current = tray;
@@ -94,7 +94,9 @@ export function createDesktopTrayController(options: DesktopTrayControllerOption
   };
 
   const applyBadgeVisual = (target: ManagedTray) => {
-    target.setToolTip(badgeActive ? `${options.appName} · 有新回复` : options.appName);
+    const badgeActive = badgeCount > 0;
+    const badgeLabel = badgeCount > 99 ? "99+" : String(badgeCount);
+    target.setToolTip(badgeActive ? `${options.appName} · ${badgeLabel} 条未读` : options.appName);
     if (!options.resolveIcon || !target.setImage) return;
     try {
       target.setImage(options.resolveIcon(badgeActive));
@@ -127,17 +129,19 @@ export function createDesktopTrayController(options: DesktopTrayControllerOption
         options.onLog?.(`创建任务栏常驻图标失败：${error instanceof Error ? error.message : "未知错误"}`);
       }
     },
-    setBadge(active: boolean): void {
+    setBadge(value: number | boolean): void {
       if (disposed) return;
-      const next = Boolean(active);
-      if (next === badgeActive) return;
-      badgeActive = next;
+      const next = typeof value === "boolean"
+        ? (value ? 1 : 0)
+        : (Number.isFinite(value) && value > 0 ? Math.min(9999, Math.floor(value)) : 0);
+      if (next === badgeCount) return;
+      badgeCount = next;
       if (tray && !tray.isDestroyed()) {
         applyBadgeVisual(tray);
       }
     },
     refreshTheme(): void {
-      if (disposed || !badgeActive) return;
+      if (disposed || badgeCount <= 0) return;
       if (tray && !tray.isDestroyed()) {
         applyBadgeVisual(tray);
       }
@@ -147,7 +151,7 @@ export function createDesktopTrayController(options: DesktopTrayControllerOption
     },
     dispose(): void {
       disposed = true;
-      badgeActive = false;
+      badgeCount = 0;
       destroyTray();
     },
   };

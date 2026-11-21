@@ -9,9 +9,12 @@ import { SettingsList, SettingsSection } from "./settings-layout";
 import { authorizeMicrophone, desktopSystemPermissionBridge, guideDesktopPermissions, type SystemPermissionEntry } from "../system-permissions/system-permissions";
 import { PermissionStatusLoader, type PermissionStatusSnapshot } from "../system-permissions/permission-status-loader";
 
-const KINDS: readonly SystemPermissionKind[] = ["microphone", "accessibility", "screen"];
+const CLIENT_TARGET_ID = "__kulo_current_client__";
+const CLIENT_KINDS: readonly SystemPermissionKind[] = ["microphone"];
+const DESKTOP_KINDS: readonly SystemPermissionKind[] = ["accessibility", "screen"];
+const ALL_KINDS: readonly SystemPermissionKind[] = ["microphone", "accessibility", "screen"];
 type GuideStep = "choose" | "microphone" | "desktop" | "summary";
-type GuideState = { selected: SystemPermissionKind[]; step: GuideStep };
+type GuideState = { available: readonly SystemPermissionKind[]; selected: SystemPermissionKind[]; step: GuideStep };
 
 function PermissionAction({ cellId, label, disabled, onPress, children }: {
   cellId: Key;
@@ -38,7 +41,14 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
   onEntryHandled?: (id: string) => void;
 }) {
   const { t } = useI18n();
-  const [envId, setEnvId] = useState(() => entry?.envId ?? (currentDeviceId && envs.find((env) => env.id === currentDeviceId)?.id) ?? envs.find((env) => env.kind === "local")?.id ?? envs[0]?.id ?? "");
+  const [selectedId, setSelectedId] = useState(() => {
+    const known = currentDeviceId ?? (desktopSystemPermissionBridge() ? "local" : undefined);
+    const knownTarget = known && envs.some((device) => device.id === known) ? known : CLIENT_TARGET_ID;
+    if (entry?.kind === "microphone") return knownTarget;
+    if (entry?.envId) return entry.envId;
+    if (entry) return known && envs.some((device) => device.id === known) ? known : envs[0]?.id ?? CLIENT_TARGET_ID;
+    return knownTarget;
+  });
   const [deviceView, setDeviceView] = useState<DeviceInterconnectionView>();
   const [loader] = useState(() => new PermissionStatusLoader());
   const state = useSyncExternalStore(loader.subscribe, loader.getSnapshot, loader.getSnapshot);
@@ -50,17 +60,27 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
   const checkButton = useRef<HTMLButtonElement>(null);
   const mounted = useRef(true);
   const handledEntry = useRef<string | null>(null);
-  const userSelectedEnv = useRef(false);
-  const env = envs.find((device) => device.id === envId);
+  const userSelectedTarget = useRef(false);
+
   const resolvedCurrentDeviceId = currentDeviceId
     ?? (deviceView ? (deviceView.currentDeviceKnown === true ? deviceView.currentDeviceId : undefined)
       : desktopSystemPermissionBridge() ? "local" : undefined);
+  const currentClientEnv = resolvedCurrentDeviceId ? envs.find((device) => device.id === resolvedCurrentDeviceId) : undefined;
+  const clientTargetId = currentClientEnv?.id ?? CLIENT_TARGET_ID;
+  const isClientOnly = selectedId === CLIENT_TARGET_ID;
+  const env = isClientOnly ? undefined : envs.find((device) => device.id === selectedId);
+  const showsMicrophone = isClientOnly || Boolean(env && resolvedCurrentDeviceId && env.id === resolvedCurrentDeviceId);
+  const showsDesktop = !isClientOnly;
+  const visibleKinds: readonly SystemPermissionKind[] = showsMicrophone && showsDesktop
+    ? ALL_KINDS
+    : showsMicrophone ? CLIENT_KINDS : DESKTOP_KINDS;
   const envKey = envs.map((device) => `${device.id}:${device.name}:${device.online}`).join("|");
-  const desktopError = !env ? t("暂无执行设备", "No execution device")
-    : !connected ? t("与中枢连接已断开", "Disconnected from the hub")
-      : !env.online ? t("设备离线", "Device is offline")
-        : env.platform !== "darwin" ? t("此设备不支持 macOS 系统权限检查", "This device does not support macOS permission checks")
-          : !env.capabilities.includes("agent-desktop") ? t("此设备未启用桌面操作", "Desktop control is not enabled on this device") : null;
+  const desktopError = !showsDesktop ? null
+    : !env ? t("暂无执行设备", "No execution device")
+      : !connected ? t("与中枢连接已断开", "Disconnected from the hub")
+        : !env.online ? t("设备离线", "Device is offline")
+          : env.platform !== "darwin" ? t("此设备不支持 macOS 系统权限检查", "This device does not support macOS permission checks")
+            : !env.capabilities.includes("agent-desktop") ? t("此设备未启用桌面操作", "Desktop control is not enabled on this device") : null;
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; loader.dispose(); }; }, [loader]);
   useEffect(() => {
@@ -72,16 +92,30 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
     return () => controller.abort();
   }, [connected, currentDeviceId, envKey]);
   useEffect(() => {
-    if (entry?.envId || userSelectedEnv.current || !resolvedCurrentDeviceId) return;
-    if (envs.some((device) => device.id === resolvedCurrentDeviceId) && envId !== resolvedCurrentDeviceId) setEnvId(resolvedCurrentDeviceId);
-  }, [entry?.envId, resolvedCurrentDeviceId, envs, envId]);
-  useEffect(() => { loader.configure(envId, !desktopError, desktopError); }, [loader, envId, desktopError]);
+    if (currentClientEnv && selectedId === CLIENT_TARGET_ID) {
+      setSelectedId(currentClientEnv.id);
+      return;
+    }
+    if (selectedId !== CLIENT_TARGET_ID && !envs.some((device) => device.id === selectedId)) {
+      setSelectedId(clientTargetId);
+      return;
+    }
+    if (!entry?.envId && !userSelectedTarget.current && currentClientEnv && selectedId !== currentClientEnv.id) {
+      setSelectedId(currentClientEnv.id);
+    }
+  }, [entry?.envId, currentClientEnv, clientTargetId, envs, selectedId]);
+  useEffect(() => { loader.configure(env?.id ?? "", showsDesktop && !desktopError, desktopError); }, [loader, env?.id, showsDesktop, desktopError]);
   useEffect(() => {
-    const check = () => { if (document.visibilityState !== "hidden") void loader.refresh(); };
+    const check = () => {
+      if (document.visibilityState === "hidden") return;
+      if (showsMicrophone && showsDesktop) void loader.refresh();
+      else if (showsMicrophone) void loader.refreshMicrophone();
+      else void loader.refreshDesktop();
+    };
     window.addEventListener("focus", check);
     document.addEventListener("visibilitychange", check);
     return () => { window.removeEventListener("focus", check); document.removeEventListener("visibilitychange", check); };
-  }, [loader]);
+  }, [loader, showsMicrophone, showsDesktop]);
 
   const rawDeviceName = (id: string, fallback: string) => deviceView?.devices.find((device) => device.id === id)?.name ?? fallback;
   const isCurrentDevice = (id: string) => Boolean(resolvedCurrentDeviceId && id === resolvedCurrentDeviceId);
@@ -89,18 +123,15 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
     envs.map((device) => ({ ...device, name: rawDeviceName(device.id, device.name) })),
     { currentDeviceId: resolvedCurrentDeviceId },
   );
-  const selectedEnv = orderedEnvs.find((device) => device.id === envId);
-  const currentClientDevice = resolvedCurrentDeviceId
-    ? (deviceView?.devices.find((device) => device.id === resolvedCurrentDeviceId) ?? orderedEnvs.find((device) => device.id === resolvedCurrentDeviceId))
-    : undefined;
+  const selectedEnv = isClientOnly ? undefined : orderedEnvs.find((device) => device.id === selectedId);
   const envDisplayName = selectedEnv ? formatDeviceLabel(selectedEnv.name, isCurrentDevice(selectedEnv.id)) : undefined;
   const permission = (kind: SystemPermissionKind, snapshot: PermissionStatusSnapshot = state): SystemPermissionStatus | undefined =>
     kind === "microphone" ? snapshot.microphone ?? undefined : snapshot.desktop?.permissions.find((item) => item.kind === kind);
   const label = (kind: SystemPermissionKind) => kind === "microphone" ? t("麦克风", "Microphone") : kind === "accessibility" ? t("辅助功能", "Accessibility") : t("屏幕录制", "Screen recording");
+  const description = (kind: SystemPermissionKind) => kind === "microphone"
+    ? t("语音输入、通话", "Voice input and calls")
+    : kind === "accessibility" ? t("读取和操作应用", "Read and control apps") : t("桌面窗口预览", "Desktop window previews");
   const statusLabel = (status: SystemPermissionState | undefined) => ({ granted: t("已授权", "Allowed"), "not-determined": t("未申请", "Not requested"), denied: t("未授权", "Not allowed"), restricted: t("受系统限制", "Restricted"), unknown: t("待确认", "Unknown"), unsupported: t("不支持", "Unsupported") })[status ?? "unknown"];
-  const scope = (kind: SystemPermissionKind) => kind === "microphone"
-    ? (currentClientDevice ? <DeviceName name={rawDeviceName(currentClientDevice.id, currentClientDevice.name)} isCurrent={isCurrentDevice(currentClientDevice.id)} /> : t("当前客户端", "This client"))
-    : (selectedEnv ? <DeviceName name={selectedEnv.name} isCurrent={isCurrentDevice(selectedEnv.id)} /> : t("未选择设备", "No device selected"));
   const canRequest = (kind: SystemPermissionKind) => permissionCanBeRequested(permission(kind)?.state) && (kind === "microphone" ? !state.microphoneError : !state.desktopError && !desktopError);
   const statusChip = (status: SystemPermissionState | undefined) => <Chip size="sm" variant="soft" color={status === "granted" ? "success" : status === "restricted" || status === "denied" ? "warning" : "default"}><Chip.Label>{statusLabel(status)}</Chip.Label></Chip>;
 
@@ -108,22 +139,47 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
     opener.current = trigger instanceof HTMLElement ? trigger : document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setGuideError(null);
     setDesktopGuideStarted(false);
-    setGuide({ selected: selected ?? KINDS.filter((kind) => {
+    const available = visibleKinds;
+    const nextSelected = selected ?? available.filter((kind) => {
       const current = kind === "microphone" ? state.microphone : state.desktop?.permissions.find((item) => item.kind === kind);
       return permissionCanBeRequested(current?.state) && (kind === "microphone" ? !state.microphoneError : !state.desktopError && !desktopError);
-    }), step: "choose" });
-  }, [state, desktopError]);
+    });
+    const step: GuideStep = selected
+      ? (selected.includes("microphone") ? "microphone" : "desktop")
+      : available.length === 1 ? (available[0] === "microphone" ? "microphone" : "desktop") : "choose";
+    setGuide({ available, selected: nextSelected, step });
+  }, [visibleKinds, state, desktopError]);
 
   useEffect(() => {
     if (!entry || handledEntry.current === entry.id) return;
-    if (entry.envId && envId !== entry.envId) { setEnvId(entry.envId); return; }
-    if (state.microphoneChecking || !state.microphone && !state.microphoneError) return;
-    if (entry.kind !== "microphone" && state.desktopChecking) return;
-    if (entry.kind !== "microphone" && !state.desktop && !state.desktopError) return;
+    if (entry.kind === "microphone") {
+      if (selectedId !== clientTargetId) {
+        userSelectedTarget.current = true;
+        setSelectedId(clientTargetId);
+        return;
+      }
+      if (state.microphoneChecking || !state.microphone && !state.microphoneError) return;
+      handledEntry.current = entry.id;
+      openGuide(["microphone"]);
+      onEntryHandled?.(entry.id);
+      return;
+    }
+    const desktopTargetId = entry.envId ?? (isClientOnly ? orderedEnvs[0]?.id : selectedId);
+    if (desktopTargetId && selectedId !== desktopTargetId) {
+      userSelectedTarget.current = true;
+      setSelectedId(desktopTargetId);
+      return;
+    }
+    if (!desktopTargetId) {
+      handledEntry.current = entry.id;
+      onEntryHandled?.(entry.id);
+      return;
+    }
+    if (state.desktopChecking || !state.desktop && !state.desktopError) return;
     handledEntry.current = entry.id;
     openGuide([entry.kind]);
     onEntryHandled?.(entry.id);
-  }, [entry, envId, state, openGuide, onEntryHandled]);
+  }, [entry, selectedId, clientTargetId, isClientOnly, orderedEnvs, state, openGuide, onEntryHandled]);
 
   const closeGuide = () => {
     setGuide(null);
@@ -135,8 +191,11 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
       else checkButton.current?.focus();
     });
   };
-  const nextStep = (current: GuideState): GuideState => ({ ...current, step: current.step === "choose" && current.selected.includes("microphone") ? "microphone"
-    : current.step !== "desktop" && current.selected.some((kind) => kind !== "microphone") ? "desktop" : "summary" });
+  const nextStep = (current: GuideState): GuideState => ({
+    ...current,
+    step: current.step === "choose" && current.selected.includes("microphone") ? "microphone"
+      : current.step !== "desktop" && current.selected.some((kind) => kind !== "microphone") ? "desktop" : "summary",
+  });
 
   useEffect(() => {
     if (!guide || busy || guide.step === "microphone" && state.microphoneChecking || guide.step === "desktop" && state.desktopChecking) return;
@@ -154,38 +213,51 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
     try {
       if (kind === "microphone") await authorizeMicrophone();
       else {
-        if (desktopError) throw new Error(desktopError);
-        await guideDesktopPermissions(envId, guide.selected.includes("accessibility") ? "accessibility" : "screen");
+        if (!env || desktopError) throw new Error(desktopError ?? t("暂无执行设备", "No execution device"));
+        await guideDesktopPermissions(env.id, guide.selected.includes("accessibility") ? "accessibility" : "screen");
         if (mounted.current) setDesktopGuideStarted(true);
       }
-      if (kind === "microphone") await loader.refreshMicrophone(); else await loader.refresh();
+      if (kind === "microphone") await loader.refreshMicrophone(); else await loader.refreshDesktop();
     } catch (cause) {
       if (mounted.current) setGuideError(cause instanceof Error ? cause.message : t("授权未完成，请重试", "Authorization did not complete. Try again"));
-      if (kind === "microphone") await loader.refreshMicrophone(); else await loader.refresh();
+      if (kind === "microphone") await loader.refreshMicrophone(); else await loader.refreshDesktop();
     } finally { if (mounted.current) setBusy(null); }
+  };
+  const refreshVisible = () => {
+    if (showsMicrophone && showsDesktop) return loader.refresh();
+    if (showsMicrophone) return loader.refreshMicrophone();
+    return loader.refreshDesktop();
   };
   const checkGuide = async () => {
     if (busy) return;
     setBusy("check");
     setGuideError(null);
-    try { if (guide?.step === "microphone") await loader.refreshMicrophone(); else await loader.refresh(); } finally { if (mounted.current) setBusy(null); }
+    try {
+      if (guide?.step === "microphone") await loader.refreshMicrophone();
+      else if (guide?.step === "desktop") await loader.refreshDesktop();
+      else await refreshVisible();
+    } finally { if (mounted.current) setBusy(null); }
   };
 
   const micDeniedInBrowser = state.microphone?.state === "denied" && !desktopSystemPermissionBridge();
+  const checkingVisible = (showsMicrophone && state.microphoneChecking) || (showsDesktop && state.desktopChecking);
   const guideKinds = guide?.step === "microphone" ? ["microphone" as const] : guide?.step === "desktop" ? guide.selected.filter((kind) => kind !== "microphone") : guide?.selected ?? [];
-  const guideChecking = guide?.step === "microphone" ? state.microphoneChecking : guide?.step === "desktop" ? state.desktopChecking : state.checking;
+  const guideChecking = guide?.step === "microphone" ? state.microphoneChecking : guide?.step === "desktop" ? state.desktopChecking : checkingVisible;
   const complete = Boolean(guide?.selected.length && guide.selected.every((kind) => permission(kind)?.state === "granted"));
+  const hasMoreSteps = guide?.step === "microphone" && guide.selected.some((kind) => kind !== "microphone");
 
   return <section className="flex min-w-0 flex-col gap-6" aria-label={t("系统权限", "System permissions")}>
     <SettingsSection title={t("权限状态", "Permission status")} action={<div className="kulo-settings-actions">
-      <Button ref={checkButton} variant="secondary" isPending={state.checking} onPress={() => void loader.refresh()}>{t("检查权限", "Check permissions")}</Button>
-      <Button variant="primary" isDisabled={!KINDS.some(canRequest)} onPress={(event) => openGuide(undefined, event.target)}>{t("开始授权", "Set up permissions")}</Button>
+      <Button ref={checkButton} variant="secondary" isPending={checkingVisible} isDisabled={!showsMicrophone && Boolean(desktopError)} onPress={() => void refreshVisible()}>{t("检查权限", "Check permissions")}</Button>
+      <Button variant="primary" isDisabled={!visibleKinds.some(canRequest)} onPress={(event) => openGuide(undefined, event.target)}>{t("开始授权", "Set up permissions")}</Button>
     </div>}>
-      {orderedEnvs.length > 0 && <SettingsList label={t("执行设备", "Execution device")}><Select variant="secondary" className="kulo-settings-row" value={envId || null} onChange={(value) => { if (typeof value === "string") { userSelectedEnv.current = true; setEnvId(value); } }} isDisabled={Boolean(guide)}>
-        <Label>{t("桌面执行设备", "Desktop execution device")}</Label>
+      {orderedEnvs.length > 0 && <SettingsList label={t("设备", "Device")}><Select variant="secondary" className="kulo-settings-row" value={selectedId} onChange={(value) => { if (typeof value === "string") { userSelectedTarget.current = true; setSelectedId(value); } }} isDisabled={Boolean(guide)}>
+        <Label>{t("设备", "Device")}</Label>
         <Select.Trigger>
           <Select.Value className="min-w-0">
-            {selectedEnv ? (
+            {isClientOnly ? (
+              <span className="truncate">{t("当前客户端", "This client")}</span>
+            ) : selectedEnv ? (
               <span className="flex min-w-0 items-center justify-between gap-2">
                 <DeviceName name={selectedEnv.name} isCurrent={isCurrentDevice(selectedEnv.id)} singleLine />
                 <DevicePresence online={selectedEnv.online} showOnlineText={false} />
@@ -194,33 +266,40 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
           </Select.Value>
           <Select.Indicator />
         </Select.Trigger>
-        <Select.Popover><ListBox>{orderedEnvs.map((device) => {
-          const current = isCurrentDevice(device.id);
-          const itemLabel = formatDeviceLabel(device.name, current);
-          return <ListBox.Item key={device.id} id={device.id} textValue={itemLabel}>
-            <Label className="min-w-0 flex-1 whitespace-normal break-words"><DeviceName name={device.name} isCurrent={current} /></Label>
-            <DevicePresence online={device.online} className="ml-auto" />
+        <Select.Popover><ListBox>
+          {!currentClientEnv && <ListBox.Item key={CLIENT_TARGET_ID} id={CLIENT_TARGET_ID} textValue={t("当前客户端", "This client")}>
+            <Label className="min-w-0 flex-1 whitespace-normal break-words">{t("当前客户端", "This client")}</Label>
             <ListBox.ItemIndicator />
-          </ListBox.Item>;
-        })}</ListBox></Select.Popover>
+          </ListBox.Item>}
+          {orderedEnvs.map((device) => {
+            const current = isCurrentDevice(device.id);
+            const itemLabel = formatDeviceLabel(device.name, current);
+            return <ListBox.Item key={device.id} id={device.id} textValue={itemLabel}>
+              <Label className="min-w-0 flex-1 whitespace-normal break-words"><DeviceName name={device.name} isCurrent={current} /></Label>
+              <DevicePresence online={device.online} className="ml-auto" />
+              <ListBox.ItemIndicator />
+            </ListBox.Item>;
+          })}
+        </ListBox></Select.Popover>
       </Select></SettingsList>}
-      {state.microphoneError && <Alert status="danger" role="alert"><Alert.Content>{state.microphoneError}</Alert.Content></Alert>}
-      {state.desktopError && <Alert status={desktopError ? "warning" : "danger"} role={desktopError ? "status" : "alert"}><Alert.Content>{state.desktopError}</Alert.Content></Alert>}
+      {showsMicrophone && state.microphoneError && <Alert status="danger" role="alert"><Alert.Content>{state.microphoneError}</Alert.Content></Alert>}
+      {showsDesktop && state.desktopError && <Alert status={desktopError ? "warning" : "danger"} role={desktopError ? "status" : "alert"}><Alert.Content>{state.desktopError}</Alert.Content></Alert>}
       <Table variant="secondary" className="kulo-settings-table">
         <Table.ScrollContainer className="kulo-settings-table-scroll">
           <Table.Content aria-label={t("系统权限列表", "System permission list")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content">
             <Table.Header>
-              <Table.Column id="permission" isRowHeader className="kulo-settings-table-column">{t("权限", "Permission")}</Table.Column>
-              <Table.Column id="device" className="kulo-settings-table-column kulo-settings-table-detail">{t("设备", "Device")}</Table.Column>
+              <Table.Column id="permission" isRowHeader className="kulo-settings-table-column kulo-settings-table-primary">{t("权限", "Permission")}</Table.Column>
               <Table.Column id="status" className="kulo-settings-table-column kulo-settings-table-meta">{t("状态", "Status")}</Table.Column>
               <Table.Column id="action" className="kulo-settings-table-column kulo-settings-table-actions">{t("操作", "Actions")}</Table.Column>
             </Table.Header>
-            <Table.Body>{KINDS.map((kind) => {
+            <Table.Body>{visibleKinds.map((kind) => {
               const current = permission(kind);
               const displayState = current?.state ?? (kind !== "microphone" && env && env.platform !== "darwin" ? "unsupported" : undefined);
               return <Table.Row key={kind} id={kind}>
-                <Table.Cell className="kulo-settings-table-cell whitespace-nowrap"><span className="kulo-item-title">{label(kind)}</span><div className="kulo-item-description">{kind === "microphone" ? t("语音输入、通话", "Voice input and calls") : kind === "accessibility" ? t("读取和操作应用", "Read and control apps") : t("桌面窗口预览", "Desktop window previews")}</div></Table.Cell>
-                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-detail break-words">{scope(kind)}</Table.Cell>
+                <Table.Cell className="kulo-settings-table-cell kulo-settings-table-primary">
+                  <span className="kulo-item-title">{label(kind)}</span>
+                  <div className="kulo-item-description">{description(kind)}</div>
+                </Table.Cell>
                 <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta">{statusChip(displayState)}{current?.detail && <div className="kulo-item-description mt-2 max-w-56 whitespace-normal">{current.detail}</div>}</Table.Cell>
                 <Table.Cell focusMode="child" className="kulo-settings-table-cell kulo-settings-table-actions">{({ id }) => <PermissionAction cellId={id!} label={t(`设置${label(kind)}权限`, `Set up ${label(kind)} permission`)} disabled={!canRequest(kind) || (kind === "microphone" ? state.microphoneChecking : state.desktopChecking)} onPress={(trigger) => openGuide([kind], trigger)}>{current?.state === "granted" ? t("已授权", "Allowed") : current?.state === "denied" ? t("前往设置", "Open settings") : t("授权", "Allow")}</PermissionAction>}</Table.Cell>
               </Table.Row>;
@@ -234,8 +313,8 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
         <Modal.Container placement="center" size="sm" scroll="inside"><Modal.Dialog aria-label={t("权限授权引导", "Permission setup")}>
           <Modal.Header><Modal.Heading>{guide?.step === "choose" ? t("选择权限", "Choose permissions") : guide?.step === "microphone" ? t("麦克风", "Microphone") : guide?.step === "desktop" ? t("桌面权限", "Desktop permissions") : t("授权结果", "Permission results")}</Modal.Heading><Modal.CloseTrigger aria-label={t("关闭", "Close")} isDisabled={Boolean(busy)} /></Modal.Header>
           <Modal.Body className="flex min-w-0 flex-col gap-4">
-            {guide?.step === "choose" ? KINDS.map((kind) => <Checkbox key={kind} variant="secondary" isSelected={guide.selected.includes(kind)} isDisabled={!canRequest(kind)} onChange={(checked) => setGuide({ ...guide, selected: checked ? [...guide.selected, kind] : guide.selected.filter((item) => item !== kind) })}>
-              <Checkbox.Content className="gap-2"><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control><span>{label(kind)}<span className="ml-2 text-xs text-muted">{scope(kind)}</span></span></Checkbox.Content>
+            {guide?.step === "choose" ? guide.available.map((kind) => <Checkbox key={kind} variant="secondary" isSelected={guide.selected.includes(kind)} isDisabled={!canRequest(kind)} onChange={(checked) => setGuide({ ...guide, selected: checked ? [...guide.selected, kind] : guide.selected.filter((item) => item !== kind) })}>
+              <Checkbox.Content className="gap-2"><Checkbox.Control><Checkbox.Indicator /></Checkbox.Control><span>{label(kind)}</span></Checkbox.Content>
             </Checkbox>) : <>
               {guide?.step === "microphone" && <p className="text-sm text-muted">{micDeniedInBrowser ? t("在浏览器的网站设置中允许麦克风，然后返回检查。", "Allow the microphone in your browser's site settings, then return to check.") : state.microphone?.state === "denied" ? t("在系统设置中允许麦克风；如系统要求，重启 Kulo 后再检查。", "Allow the microphone in System Settings. Restart Kulo if requested, then check again.") : t("用于当前客户端的语音输入和通话。", "For voice input and calls on this client.")}</p>}
               {guide?.step === "desktop" && <p className="text-sm text-muted">{desktopGuideStarted ? t(`在「${envDisplayName ?? ""}」完成系统授权后，返回检查。`, `Complete authorization on “${envDisplayName ?? ""}”, then return to check.`) : t(`在「${envDisplayName ?? ""}」引导辅助功能与屏幕录制授权。`, `Set up Accessibility and Screen Recording on “${envDisplayName ?? ""}”.`)}</p>}
@@ -248,8 +327,8 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
           </Modal.Body>
           <Modal.Footer>
             {guide?.step === "choose" ? <><Button variant="tertiary" onPress={closeGuide}>{t("取消", "Cancel")}</Button><Button variant="primary" isDisabled={!guide.selected.length} onPress={() => { setGuide(nextStep(guide)); setGuideError(null); }}>{t("继续", "Continue")}</Button></>
-              : guide?.step === "summary" ? <><Button variant="secondary" isPending={busy === "check" || state.checking} isDisabled={Boolean(busy && busy !== "check")} onPress={() => void checkGuide()}>{t("重新检查", "Check again")}</Button><Button variant="primary" isDisabled={Boolean(busy)} onPress={closeGuide}>{t("完成", "Done")}</Button></>
-                : <><Button variant="tertiary" isDisabled={Boolean(busy)} onPress={() => { if (guide) setGuide(nextStep(guide)); setGuideError(null); }}>{t("跳过", "Skip")}</Button>
+              : guide?.step === "summary" ? <><Button variant="secondary" isPending={busy === "check" || guideChecking} isDisabled={Boolean(busy && busy !== "check")} onPress={() => void checkGuide()}>{t("重新检查", "Check again")}</Button><Button variant="primary" isDisabled={Boolean(busy)} onPress={closeGuide}>{t("完成", "Done")}</Button></>
+                : <><Button variant="tertiary" isDisabled={Boolean(busy)} onPress={() => { if (hasMoreSteps && guide) { setGuide(nextStep(guide)); setGuideError(null); } else closeGuide(); }}>{hasMoreSteps ? t("跳过", "Skip") : t("取消", "Cancel")}</Button>
                   <Button variant="secondary" isPending={busy === "check" || guideChecking} isDisabled={Boolean(busy && busy !== "check")} onPress={() => void checkGuide()}>{t("重新检查", "Check again")}</Button>
                   {!(guide?.step === "microphone" && micDeniedInBrowser) && <Button variant="primary" isPending={busy === guide?.step} isDisabled={Boolean(busy) || guideChecking || (guide?.step === "microphone" ? !canRequest("microphone") : Boolean(desktopError))} onPress={() => void run(guide?.step === "microphone" ? "microphone" : "desktop")}>{guide?.step === "microphone" ? state.microphone?.state === "denied" ? t("打开系统设置", "Open System Settings") : t("授权麦克风", "Allow microphone") : desktopGuideStarted ? t("打开授权引导", "Open setup guide") : t("开始桌面授权", "Set up desktop permissions")}</Button>}</>}
           </Modal.Footer>

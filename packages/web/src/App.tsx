@@ -323,10 +323,20 @@ function AppShell() {
       setSettingsRightCollapsed(false);
       if (sizeClass !== "expanded") setSheet("right");
     };
+    const openMemoryPrefill = () => {
+      setSettingsFocusRequest((value) => value + 1);
+      setSettingsRightCollapsed(false);
+      if (sizeClass !== "expanded") setSheet("right");
+    };
     const showMemoryForm = () => { if (sizeClass !== "expanded") setSheet(undefined); };
     window.addEventListener("kulo:memory-service-intent", openMemoryDialogue);
+    window.addEventListener("kulo:memory-assistant-prefill", openMemoryPrefill);
     window.addEventListener("kulo:memory-connection-focus", showMemoryForm);
-    return () => { window.removeEventListener("kulo:memory-service-intent", openMemoryDialogue); window.removeEventListener("kulo:memory-connection-focus", showMemoryForm); };
+    return () => {
+      window.removeEventListener("kulo:memory-service-intent", openMemoryDialogue);
+      window.removeEventListener("kulo:memory-assistant-prefill", openMemoryPrefill);
+      window.removeEventListener("kulo:memory-connection-focus", showMemoryForm);
+    };
   }, [sizeClass]);
   const [settingsDirty, setSettingsDirty] = useState(false);
   const acceptSavedSettings = useCallback((next: NonNullable<typeof settings>) => {
@@ -2174,6 +2184,7 @@ function AppShell() {
         envs={envs}
         tickets={tickets}
         onProjectTicket={projectTask}
+        onSettingsUpdated={acceptSavedSettings}
         assistant={settingsAssistant}
         assistantLoaded={settingsAssistantLoaded}
         assistantError={settingsAssistantError}

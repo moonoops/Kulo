@@ -14,6 +14,20 @@ const desktopRoot = fileURLToPath(new URL("../", import.meta.url));
 const workspaceRoot = fileURLToPath(new URL("../../../", import.meta.url));
 export const APP_NAME = "Kulo Dev";
 export const APP_ID = "io.kulo.desktop.dev";
+export const RELEASE_APP_NAME = "Kulo";
+export const RELEASE_APP_ID = "io.kulo.desktop";
+
+export function resolveDesktopChannel(options = {}) {
+  const raw = options.channel ?? process.env.KULO_DESKTOP_CHANNEL ?? "dev";
+  const channel = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (!channel || channel === "dev") {
+    return { channel: "dev", appName: APP_NAME, appId: APP_ID };
+  }
+  if (channel === "release") {
+    return { channel: "release", appName: RELEASE_APP_NAME, appId: RELEASE_APP_ID };
+  }
+  throw new Error(`无效的桌面发布通道：${String(raw)}（仅支持 dev 或 release）。`);
+}
 
 export async function readUpdateTrustFile(filename) {
   if (!path.isAbsolute(filename)) throw new Error("更新信任文件必须使用绝对路径。");
@@ -455,9 +469,10 @@ export async function resolveMacSignIdentity(options = {}) {
 export async function signMacAppBundle(bundle, options = {}) {
   const resolved = await resolveMacSignIdentity(options);
   const exec = options.run ?? run;
+  const appId = options.appId ?? APP_ID;
   const argsFor = (identity, useTimestamp) => (
     identity === "-"
-      ? ["--force", "--deep", "--sign", "-", "--preserve-metadata=entitlements", "--identifier", APP_ID, bundle]
+      ? ["--force", "--deep", "--sign", "-", "--preserve-metadata=entitlements", "--identifier", appId, bundle]
       : [
           "--force",
           "--deep",
@@ -489,13 +504,16 @@ export async function signMacAppBundle(bundle, options = {}) {
   }
 }
 
-export async function verifyMacApp(bundle) {
+export async function verifyMacApp(bundle, options = {}) {
+  const target = options.appName && options.appId
+    ? { appName: options.appName, appId: options.appId }
+    : resolveDesktopChannel({ channel: options.channel });
   const resources = path.join(bundle, "Contents/Resources");
   const app = path.join(resources, "app");
   const node = path.join(resources, "runtime/node");
   const { stdout: identifier } = await run("/usr/bin/plutil", ["-extract", "CFBundleIdentifier", "raw", "-o", "-", path.join(bundle, "Contents/Info.plist")]);
-  if (identifier.trim() !== APP_ID) throw new Error("安装包应用标识不匹配。");
-  await assertRegularFile(path.join(bundle, `Contents/MacOS/${APP_NAME}`));
+  if (identifier.trim() !== target.appId) throw new Error("安装包应用标识不匹配。");
+  await assertRegularFile(path.join(bundle, `Contents/MacOS/${target.appName}`));
   await assertRegularFile(path.join(app, "dist/main.js"));
   await assertRegularFile(path.join(app, "assets/kulo-icon.png"));
   await assertRegularFile(path.join(app, "assets/kulo-trayTemplate.png"));
@@ -528,6 +546,7 @@ export async function verifyMacApp(bundle) {
 
 export async function packageMacApp(options = {}) {
   if (process.platform !== "darwin") throw new Error("当前桌面打包仅支持在 macOS 上生成本机开发版。");
+  const { channel, appName, appId } = resolveDesktopChannel({ channel: options.channel });
   const { ensureElectron } = await import("./ensure-electron.mjs");
   await ensureElectron();
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "kulo-desktop-package-"));
@@ -562,7 +581,7 @@ export async function packageMacApp(options = {}) {
       checks: ["closed-dependencies"],
     };
     await fs.writeFile(path.join(runtime, "bundle.json"), `${JSON.stringify({
-      appId: APP_ID, appVersion: manifest.version, electronVersion,
+      appId, channel, appVersion: manifest.version, electronVersion,
       nodeVersion: process.versions.node, platform: process.platform, arch: process.arch,
       ...identity,
       builtAt: new Date().toISOString(),
@@ -570,8 +589,8 @@ export async function packageMacApp(options = {}) {
     const { packager } = await import("@electron/packager");
     const bundles = await packager({
       dir: app,
-      name: APP_NAME,
-      appBundleId: APP_ID,
+      name: appName,
+      appBundleId: appId,
       appVersion: manifest.version,
       appCategoryType: "public.app-category.productivity",
       icon: path.join(desktopRoot, "assets/kulo.icns"),
@@ -594,7 +613,7 @@ export async function packageMacApp(options = {}) {
       }],
       darwinDarkModeSupport: true,
       extendInfo: {
-        CFBundleDisplayName: APP_NAME,
+        CFBundleDisplayName: appName,
         LSMinimumSystemVersion: "14.0",
         NSMicrophoneUsageDescription: "Kulo 使用麦克风进行语音输入和通话。",
         NSLocalNetworkUsageDescription: "Kulo 按任务访问和诊断同一局域网内的设备与本地服务。",
@@ -603,13 +622,19 @@ export async function packageMacApp(options = {}) {
       extraResource: [runtime],
     });
     if (bundles.length !== 1 || !bundles[0]) throw new Error("没有生成唯一的 macOS 应用。");
-    const bundle = path.join(bundles[0], `${APP_NAME}.app`);
-    // Packager strips fields from package.json; hash the final payload before signing it.
+    const bundle = path.join(bundles[0], `${appName}.app`);
+    // Packager strips fields from package.json; stamp channel identity and hash the final payload before signing it.
     const finalResources = path.join(bundle, "Contents/Resources");
-    await finalizePackagedRelease(path.join(finalResources, "app"), path.join(finalResources, "runtime"), releaseOptions);
-    const signed = await signMacAppBundle(bundle, { signIdentity: options.signIdentity });
-    await verifyMacApp(bundle);
-    console.log(`已构建：${bundle}（签名：${signed.label}）`);
+    const finalApp = path.join(finalResources, "app");
+    const finalManifestPath = path.join(finalApp, "package.json");
+    const finalManifest = JSON.parse(await fs.readFile(finalManifestPath, "utf8"));
+    finalManifest.productName = appName;
+    finalManifest.kuloChannel = channel;
+    await fs.writeFile(finalManifestPath, `${JSON.stringify(finalManifest, null, 2)}\n`);
+    await finalizePackagedRelease(finalApp, path.join(finalResources, "runtime"), releaseOptions);
+    const signed = await signMacAppBundle(bundle, { signIdentity: options.signIdentity, appId });
+    await verifyMacApp(bundle, { channel });
+    console.log(`已构建：${bundle}（通道：${channel}，签名：${signed.label}）`);
     if (signed.identity === "-") {
       console.warn("提示：当前使用 ad-hoc 临时签名，每次重新安装后 macOS 辅助功能/录屏等系统权限需要重新授权；配置本机签名证书或 KULO_MAC_SIGN_IDENTITY 可保留权限。");
     }
@@ -619,9 +644,18 @@ export async function packageMacApp(options = {}) {
   }
 }
 
+function parseCliChannel(argv) {
+  const explicit = argv.find((arg) => arg.startsWith("--channel="));
+  if (explicit) return explicit.slice("--channel=".length);
+  if (argv.includes("--release")) return "release";
+  if (argv.includes("--dev")) return "dev";
+  return undefined;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  packageMacApp().catch((error) => {
-    console.error(error instanceof Error ? error.message : "Kulo Dev 打包失败。");
+  const channel = parseCliChannel(process.argv.slice(2));
+  packageMacApp({ channel }).catch((error) => {
+    console.error(error instanceof Error ? error.message : "Kulo 桌面打包失败。");
     process.exitCode = 1;
   });
 }

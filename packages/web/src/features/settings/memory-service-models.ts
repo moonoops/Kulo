@@ -364,6 +364,84 @@ export function formatRerankerModelLabel(reranker: HindsightRerankerModel): stri
   return `${reranker.provider === "onnx" ? t("本机 ONNX", "Local ONNX") : reranker.provider} / ${model}`;
 }
 
+export function buildMemoryServicePrefillPrompt(input: {
+  operation: "deploy" | "configure";
+  resume?: boolean;
+  deviceName?: string;
+  draft: MemoryModelsDraft;
+  connections: MemoryKuloConnectionOption[];
+}): string {
+  const { model, embeddings, reranker } = buildMemoryModelsPayload(input.draft);
+  const host = input.deviceName?.trim();
+
+  const understandingLine = (() => {
+    if (model.provider === "kulo") {
+      const match = input.connections.find((item) => item.id === model.connectionId);
+      const label = match?.label && match.label !== model.connectionId ? `${match.label} ` : "";
+      return `${label}(provider: kulo, connectionId: ${model.connectionId}) / ${model.model}`;
+    }
+    const extras = [
+      ...(model.baseUrl ? [`baseUrl: ${model.baseUrl}`] : []),
+      ...(model.connectionId ? [`connectionId: ${model.connectionId}`] : []),
+    ];
+    return `${model.provider} / ${model.model}${extras.length ? ` (${extras.join(", ")})` : ""}`;
+  })();
+
+  const embeddingsLine = (() => {
+    if (embeddings.provider === "tei") {
+      return `TEI (provider: tei, baseUrl: ${embeddings.baseUrl})`;
+    }
+    const name = embeddings.model || defaultEmbeddingsModelFor(embeddings.provider);
+    const extras = [
+      `provider: ${embeddings.provider}`,
+      ...(embeddings.dimensions !== undefined ? [`dimensions: ${embeddings.dimensions}`] : []),
+      ...(embeddings.baseUrl ? [`baseUrl: ${embeddings.baseUrl}`] : []),
+      ...(embeddings.connectionId ? [`connectionId: ${embeddings.connectionId}`] : []),
+    ];
+    const prefix = embeddings.provider === "onnx" ? `${t("本机 ONNX", "Local ONNX")} ` : "";
+    return `${prefix}(${extras.join(", ")}) / ${name}`;
+  })();
+
+  const rerankerLine = (() => {
+    if (reranker.provider === "rrf") {
+      return t("关闭重排 (provider: rrf)", "Disabled (provider: rrf)");
+    }
+    if (reranker.provider === "tei") {
+      return `TEI (provider: tei, baseUrl: ${reranker.baseUrl})`;
+    }
+    const name = reranker.model || defaultRerankerModelFor(reranker.provider);
+    const extras = [
+      `provider: ${reranker.provider}`,
+      ...(reranker.baseUrl ? [`baseUrl: ${reranker.baseUrl}`] : []),
+      ...(reranker.connectionId ? [`connectionId: ${reranker.connectionId}`] : []),
+    ];
+    const prefix = reranker.provider === "onnx" ? `${t("本机 ONNX", "Local ONNX")} ` : "";
+    return `${prefix}(${extras.join(", ")}) / ${name}`;
+  })();
+
+  const header = input.operation === "configure"
+    ? t(
+        `请更新本机${host ? `（${host}）` : ""} Hindsight 的模型配置（待我确认后执行）：`,
+        `Update the local Hindsight model settings${host ? ` on ${host}` : ""} (wait for my confirmation before applying):`,
+      )
+    : input.resume
+      ? t(
+          `请恢复在本机${host ? `（${host}）` : ""}部署 Hindsight 记忆服务，先检查本机环境，再按以下配置准备部署（待我确认后执行）：`,
+          `Resume deploying local Hindsight${host ? ` on ${host}` : ""}. Check the local environment first, then prepare deployment with these settings (wait for my confirmation before running):`,
+        )
+      : t(
+          `请在本机${host ? `（${host}）` : ""}部署 Hindsight 记忆服务，先检查本机环境，再按以下配置准备部署（待我确认后执行）：`,
+          `Deploy local Hindsight${host ? ` on ${host}` : ""}. Check the local environment first, then prepare deployment with these settings (wait for my confirmation before running):`,
+        );
+
+  return [
+    header,
+    t(`- 理解模型：${understandingLine}`, `- Understanding model: ${understandingLine}`),
+    t(`- 向量模型：${embeddingsLine}`, `- Embedding model: ${embeddingsLine}`),
+    t(`- 重排模型：${rerankerLine}`, `- Rerank model: ${rerankerLine}`),
+  ].join("\n");
+}
+
 export function memoryModelsEqual(a: MemoryModelsDraft, b: MemoryModelsDraft): boolean {
   return a.provider === b.provider
     && a.connectionId === b.connectionId

@@ -79,8 +79,48 @@ describe("main-session notification detection", () => {
       id: "evt-reply-1",
       kind: "reply_completed",
       topicId: "root",
+      summary: "全部修改已完成。",
       createdAt: 1234,
     });
+  });
+
+  it("extracts concise single-line summaries from markdown replies, strips filler openings, and redacts secrets", () => {
+    const baseline = createTopicNotificationBaseline([], idle);
+    const messages = [
+      assistantMsg(10, "好的，**MacMini** 这边的实测也全部通过了：\n\n- 浏览器自动化：打开 `bilibili.com` 成功\n- 密钥 sk-secret-999", { responseId: 10 }),
+    ];
+    const result = detectMainSessionNotification({
+      topicId: "root",
+      previous: baseline,
+      messages,
+      live: idle,
+      now: 2000,
+      createId: () => "evt-md",
+      redact: (text) => text.replaceAll("sk-secret-999", "[REDACTED]"),
+    });
+    expect(result.event).toEqual({
+      id: "evt-md",
+      kind: "reply_completed",
+      topicId: "root",
+      summary: "MacMini 这边的实测也全部通过了",
+      createdAt: 2000,
+    });
+
+    const attachmentOnly = detectMainSessionNotification({
+      topicId: "root",
+      previous: result.next,
+      messages: [
+        ...messages,
+        assistantMsg(11, "", {
+          responseId: 11,
+          attachments: [{ id: "att-1", name: "report.pdf", kind: "file", mimeType: "application/pdf", size: 100 }],
+        }),
+      ],
+      live: idle,
+      now: 2001,
+      createId: () => "evt-att",
+    });
+    expect(attachmentOnly.event?.summary).toBe("已发送 report.pdf");
   });
 
   it("does NOT notify when the main agent only dispatches a worker or finishes silently without replying to the user", () => {
@@ -136,6 +176,7 @@ describe("main-session notification detection", () => {
       kind: "reply_completed",
       topicId: "topic_work",
       topicTitle: "重构登录模块",
+      summary: "登录模块重构已完成并通过全部测试。",
       createdAt: 5678,
     });
   });
@@ -196,8 +237,10 @@ describe("main-session notification detection", () => {
       id: "evt-fail",
       kind: "run_failed",
       topicId: "root",
+      summary: expect.any(String),
       createdAt: 9999,
     });
+    expect(failed.event?.summary?.length).toBeGreaterThan(0);
 
     // Same failure stays deduplicated
     const repeated = detectMainSessionNotification({

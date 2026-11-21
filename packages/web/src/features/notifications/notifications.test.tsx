@@ -70,17 +70,31 @@ describe("main-session notification formatting", () => {
     { id: "topic_1", conversationId: 2, title: "重构通知方案", createdAt: 1, updatedAt: 2 },
   ];
 
-  it("formats reply_completed, attention_required, and run_failed in both Chinese and English", () => {
+  it("formats reply_completed, attention_required, and run_failed as concise two-line macOS notifications", () => {
     expect(formatMainSessionNotification({
       id: "e1",
       kind: "reply_completed",
       topicId: "root",
+      summary: "MacMini 浏览器与桌面测试已通过",
       createdAt: 1,
     }, { topics, agentName: "Kulo" })).toEqual({
-      title: "回复已完成",
-      body: "Kulo · 主会话",
+      title: "Kulo",
+      body: "MacMini 浏览器与桌面测试已通过",
       topicId: "root",
       eventId: "e1",
+      dedupeKey: "topic:root",
+    });
+
+    expect(formatMainSessionNotification({
+      id: "e1b",
+      kind: "reply_completed",
+      topicId: "root",
+      createdAt: 1,
+    }, { topics, agentName: "Kulo" })).toEqual({
+      title: "Kulo",
+      body: "任务已完成",
+      topicId: "root",
+      eventId: "e1b",
       dedupeKey: "topic:root",
     });
 
@@ -91,8 +105,8 @@ describe("main-session notification formatting", () => {
       summary: "确认执行命令",
       createdAt: 2,
     }, { topics, agentName: "Kulo" })).toEqual({
-      title: "需要确认",
-      body: "重构通知方案 · 确认执行命令",
+      title: "Kulo",
+      body: "需要确认：确认执行命令",
       topicId: "topic_1",
       eventId: "e2",
       dedupeKey: "topic:topic_1",
@@ -104,10 +118,11 @@ describe("main-session notification formatting", () => {
       kind: "run_failed",
       topicId: "topic_1",
       topicTitle: "Notification design",
+      summary: "Rate limit exceeded",
       createdAt: 3,
     }, { topics, agentName: "Kulo" })).toEqual({
-      title: "Run failed",
-      body: "Notification design",
+      title: "Kulo",
+      body: "Run failed: Rate limit exceeded",
       topicId: "topic_1",
       eventId: "e3",
       dedupeKey: "topic:topic_1",
@@ -115,8 +130,8 @@ describe("main-session notification formatting", () => {
   });
 });
 
-describe("browser red-dot badge controller", () => {
-  it("adds and clears a pure red-dot prefix on document.title", () => {
+describe("browser numeric badge controller", () => {
+  it("updates and clears a numeric unread count prefix on document.title", () => {
     const fakeDocument = {
       title: "Kulo",
       querySelector: () => null,
@@ -125,16 +140,27 @@ describe("browser red-dot badge controller", () => {
 
     const badge = createBrowserBadgeController();
     expect(badge.isActive()).toBe(false);
+    expect(badge.getCount()).toBe(0);
 
-    badge.set(true);
+    badge.set(1);
     expect(badge.isActive()).toBe(true);
-    expect(fakeDocument.title).toBe("• Kulo");
+    expect(badge.getCount()).toBe(1);
+    expect(fakeDocument.title).toBe("(1) Kulo");
 
-    badge.set(false);
+    badge.set(5);
+    expect(badge.getCount()).toBe(5);
+    expect(fakeDocument.title).toBe("(5) Kulo");
+
+    badge.set(120);
+    expect(fakeDocument.title).toBe("(99+) Kulo");
+
+    badge.set(0);
     expect(badge.isActive()).toBe(false);
+    expect(badge.getCount()).toBe(0);
     expect(fakeDocument.title).toBe("Kulo");
 
     badge.set(true);
+    expect(fakeDocument.title).toBe("(1) Kulo");
     badge.dispose();
     expect(fakeDocument.title).toBe("Kulo");
   });
@@ -150,7 +176,7 @@ describe("General settings notifications section", () => {
     const htmlOff = renderToStaticMarkup(<AppearanceModule />);
     expect(htmlOff).toContain('aria-label="系统通知"');
     expect(htmlOff).toContain('aria-label="提示音"');
-    expect(htmlOff).toContain('aria-label="任务栏红点"');
+    expect(htmlOff).toContain('aria-label="应用角标"');
     expect(htmlOff).not.toContain("系统通知设置");
 
     store.set(NOTIFICATION_PREFERENCES_STORAGE_KEY, JSON.stringify({ enabled: true, sound: false, badge: true }));

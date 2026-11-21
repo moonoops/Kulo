@@ -6,6 +6,7 @@ import { randomBytes } from "node:crypto";
 import { createInterface } from "node:readline";
 import type { MobileConnectionCandidate } from "@kulo/protocol";
 import { DeviceConnectionError } from "./devices.js";
+import { buildAugmentedHostPath } from "./host-path.js";
 
 export interface MobileConnectorStatus {
   hubId: string;
@@ -42,7 +43,7 @@ export async function discoverSystemTailscale(): Promise<{ known: boolean; origi
     ? ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "tailscale"] : ["tailscale"];
   for (const command of commands) {
     const result = await new Promise<string | undefined>((resolve) => {
-      execFile(command, ["status", "--json"], { timeout: 3_000, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+      execFile(command, ["status", "--json"], { timeout: 3_000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, env: { ...process.env, PATH: buildAugmentedHostPath() } },
         (error, stdout) => resolve(error ? undefined : stdout));
     });
     if (!result) continue;

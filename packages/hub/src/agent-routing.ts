@@ -1,5 +1,5 @@
 import {
-  AGENT_TASK_KINDS, EXTERNAL_AGENT_KINDS, LEGACY_ROLE_ALIASES, redactSensitiveText,
+  AGENT_TASK_KINDS, EXTERNAL_AGENT_KINDS, LEGACY_ROLE_ALIASES, SUPPORTED_EXTERNAL_AGENT_KINDS, redactSensitiveText,
   type AgentAssignment, type AgentDispatchIntent, type AgentDispatchPolicy, type AgentRoutingTarget, type AgentTaskKind,
   type EnvNodeDescriptor, type ExternalAgentKind, type RolePreset,
 } from "@kulo/protocol";
@@ -16,7 +16,7 @@ function record(value: unknown): value is Record<string, unknown> { return value
 const canonical = (value: string) => value.normalize("NFKC").trim().toLocaleLowerCase("en-US");
 const display = (role: RolePreset) => `${role.label} (${role.id})`;
 const ownRole = (roles: Roles, id: string): RolePreset | undefined => Object.hasOwn(roles, id) ? roles[id] : undefined;
-const STABLE_KINDS: readonly ExternalAgentKind[] = ["codex", "claude-code", "antigravity", "dsh"];
+const STABLE_KINDS: readonly ExternalAgentKind[] = SUPPORTED_EXTERNAL_AGENT_KINDS;
 function validName(value: unknown): value is string {
   return typeof value === "string" && Boolean(value.trim()) && value.length <= 200 &&
     !/[\u0000-\u001f\u007f-\u009f\u061c\u200b\u200c\u200e\u200f\u202a-\u202e\u2060-\u206f\ufeff]/u.test(value) && !/\p{Cs}/u.test(value);
@@ -65,7 +65,14 @@ const PLATFORM_ALIASES: Readonly<Record<ExternalAgentKind, readonly string[]>> =
   codex: ["OpenAI Codex", "Codex CLI", "Codex客户端", "Codex"],
   "claude-code": ["Claude Code CLI", "Claude Code", "ClaudeCode", "claude-code", "Claude", "克劳德代码"],
   antigravity: ["Antigravity", "Anti Gravity", "反重力智能体", "反重力", "agy"],
+  grok: ["Grok Build", "Grok CLI", "GrokCode", "Grok"],
+  cursor: ["Cursor Agent", "Cursor CLI", "cursor-agent"],
+  opencode: ["OpenCode", "Open Code"],
+  "gemini-cli": ["Gemini CLI", "gemini-cli"],
+  kiro: ["Kiro CLI", "Kiro"],
+  copilot: ["GitHub Copilot CLI", "Copilot CLI", "GitHub Copilot", "Copilot"],
   dsh: ["DeepSeek Harness", "DeepSeekHarness", "DeepSeek-Harness", "DSH"],
+  acp: [],
   "grok-bot": ["Grok Bot", "GrokBot", "Grok机器人", "Grok 机器人"],
   dots: ["GPT Dots", "GPTDots", "Dots"],
   muse: ["Muse Agent", "Muse"],
@@ -106,13 +113,13 @@ function unquotedText(text: string, names: readonly { text: string }[]): string 
 }
 
 const DEVICE_MODEL_PATTERNS: readonly { pattern: RegExp; variants: readonly string[] }[] = [
-  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*mini(?:[^a-z0-9]|$)/i, variants: ["Macmini", "Mac mini", "Mac-mini"] },
-  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*studio(?:[^a-z0-9]|$)/i, variants: ["MacStudio", "Mac Studio", "Mac-Studio"] },
-  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*pro(?:[^a-z0-9]|$)/i, variants: ["MacPro", "Mac Pro", "Mac-Pro"] },
-  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*book\s*[-_]?\s*pro(?:[^a-z0-9]|$)/i, variants: ["MacBookPro", "MacBook Pro", "MacBook-Pro", "MacBook"] },
-  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*book\s*[-_]?\s*air(?:[^a-z0-9]|$)/i, variants: ["MacBookAir", "MacBook Air", "MacBook-Air", "MacBook"] },
-  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*book(?:[^a-z0-9]|$)/i, variants: ["MacBook"] },
-  { pattern: /(?:^|[^a-z0-9])imac(?:[^a-z0-9]|$)/i, variants: ["iMac"] },
+  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*mini(?=\d|[^a-z0-9]|$)/i, variants: ["Macmini", "Mac mini", "Mac-mini"] },
+  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*studio(?=\d|[^a-z0-9]|$)/i, variants: ["MacStudio", "Mac Studio", "Mac-Studio"] },
+  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*pro(?=\d|[^a-z0-9]|$)/i, variants: ["MacPro", "Mac Pro", "Mac-Pro"] },
+  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*book\s*[-_]?\s*pro(?=\d|[^a-z0-9]|$)/i, variants: ["MacBookPro", "MacBook Pro", "MacBook-Pro", "MacBook"] },
+  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*book\s*[-_]?\s*air(?=\d|[^a-z0-9]|$)/i, variants: ["MacBookAir", "MacBook Air", "MacBook-Air", "MacBook"] },
+  { pattern: /(?:^|[^a-z0-9])mac\s*[-_]?\s*book(?=\d|[^a-z0-9]|$)/i, variants: ["MacBook"] },
+  { pattern: /(?:^|[^a-z0-9])imac(?=\d|[^a-z0-9]|$)/i, variants: ["iMac"] },
 ];
 
 function expandDeviceNameVariants(raw: string): string[] {
@@ -121,6 +128,8 @@ function expandDeviceNameVariants(raw: string): string[] {
   const seeds = new Set<string>([normalized]);
   const wrappedLocal = /^Local\s*\(([^()]+)\)$/i.exec(normalized)?.[1]?.trim();
   if (wrappedLocal && validName(wrappedLocal)) seeds.add(wrappedLocal);
+  const withoutParens = normalized.replace(/\s*\([^()]*\)\s*$/, "").trim();
+  if (withoutParens && withoutParens !== normalized && validName(withoutParens)) seeds.add(withoutParens);
   for (const seed of [...seeds]) {
     const stripped = seed.replace(/\.(?:local|lan|home\.arpa)\.?$/i, "").trim();
     if (stripped && stripped !== seed && validName(stripped)) seeds.add(stripped);
@@ -147,15 +156,31 @@ function expandDeviceNameVariants(raw: string): string[] {
   return [...results];
 }
 
+function matchedModelVariants(raw: string): Set<string> {
+  const found = new Set<string>();
+  const normalized = raw.normalize("NFKC").trim();
+  if (!validName(normalized)) return found;
+  for (const model of DEVICE_MODEL_PATTERNS) {
+    if (model.pattern.test(normalized)) {
+      for (const variant of model.variants) found.add(canonical(variant));
+    }
+  }
+  return found;
+}
+
 function deviceAliases(envs: readonly EnvNodeDescriptor[]): Alias[] {
   const aliases = new Map<string, Alias>();
-  const register = (name: string, deviceId: string) => {
+  const primaryKeys = new Set<string>();
+  const register = (name: string, deviceId: string, primary: boolean) => {
     if (!validName(name)) return;
     const key = canonical(name);
+    if (!primary && primaryKeys.has(key)) return;
     const alias = aliases.get(key) ?? { text: name.normalize("NFKC"), ids: [] };
     if (!alias.ids.includes(deviceId)) alias.ids.push(deviceId);
     aliases.set(key, alias);
+    if (primary) primaryKeys.add(key);
   };
+  // Pass 1: Explicit device names, hostnames, IDs, and Hub aliases always take precedence.
   for (const device of envs) {
     const rawNames: string[] = [];
     if (device.name && !(device.id === "local" && canonical(device.name) === "local")) rawNames.push(device.name);
@@ -165,8 +190,30 @@ function deviceAliases(envs: readonly EnvNodeDescriptor[]): Alias[] {
     for (const raw of rawNames) {
       for (const variant of expandDeviceNameVariants(raw)) {
         if (device.id === "local" && canonical(variant) === "local") continue;
-        register(variant, device.id);
+        register(variant, device.id, true);
       }
+    }
+  }
+  // Pass 2: Hardware model fallback aliases fill gaps when a device has a custom or mistyped hostname,
+  // without overriding or polluting aliases already claimed by an explicitly named device.
+  for (const device of envs) {
+    if (!device.info?.model) continue;
+    const explicitSeeds: string[] = [];
+    if (device.name && !(device.id === "local" && canonical(device.name) === "local")) explicitSeeds.push(device.name);
+    if (device.info.hostname) explicitSeeds.push(device.info.hostname);
+    const explicitFamilies = new Set<string>();
+    for (const seed of explicitSeeds) {
+      for (const variant of matchedModelVariants(seed)) explicitFamilies.add(variant);
+    }
+    const modelFamilies = matchedModelVariants(device.info.model);
+    const conflictsWithExplicitName =
+      explicitFamilies.size > 0 &&
+      modelFamilies.size > 0 &&
+      ![...modelFamilies].some((variant) => explicitFamilies.has(variant));
+    if (conflictsWithExplicitName) continue;
+    for (const variant of expandDeviceNameVariants(device.info.model)) {
+      if (device.id === "local" && canonical(variant) === "local") continue;
+      register(variant, device.id, false);
     }
   }
   return [...aliases.values()].sort((a, b) => b.text.length - a.text.length);
@@ -241,7 +288,7 @@ export function extractAgentDispatchIntent(text: string, roles: Roles, envs: rea
     if (/(?:不要|别|不用|无需|不必|不能|不得|不想|不让|不是|不一定|不打算|未批准|不批准|不同意|请勿|禁止|避免|不(?:再)?(?:使用|用|让|交给|交由|指派|委派|换成|换用|改成))|\b(?:not|never|avoid|without|neither|don't)\b/i.test(requestClause)) continue;
     if (/(?:介绍|讲解|解释|比较|对比|区别|使用方法|如何使用|怎么使用|怎么用|如何用|怎么让|如何让|假设|如果|假如|是否|你觉得|翻译|改写|复述|转述|写道|写着|提到|看到|引用|原话|据说|说过|他说|文档中|示例|例如|配置|连接|安装|接入|讨论(?:一下|是否|如何|怎么|让|用))|\b(?:introduce|explain|compare|comparison|difference|whether|suppose|how|why|when|tutorial|example|translate|quote|mentioned|says)\b/i.test(requestClause)) continue;
     if (/(?:哪个好|哪个更|更好用|有什么区别|会怎样|怎么样)|\b(?:which\s+(?:one\s+)?(?:is|would)|better\s+than)\b/i.test(sentence)) continue;
-    if (/^\s*(?:模型|API\b|接口|SDK\b|model\b|的\s*(?:模型|API\b|接口|SDK\b|model\b|教程|介绍|说明|配置))|^\s*(?:了(?:吗|么|没)|用过)/i.test(after)) continue;
+    if (/^\s*(?:模型|API\b|接口|SDK\b|model\b|pagination\b|pointer\b|position\b|style\b|分页|指针|光标|游标|的\s*(?:模型|API\b|接口|SDK\b|model\b|教程|介绍|说明|配置))|^\s*(?:了(?:吗|么|没)|用过)/i.test(after)) continue;
     const verbs = [...before.matchAll(/让|叫|请|使用|用|交给|交由|交予|换成|换用|改成|指派(?:给)?|委派(?:给)?|派给|指定(?:给)?|\b(?:use|using|ask|have|let|assign|delegate|send|hand)\b/gi)];
     const verb = verbs.at(-1);
     const between = verb ? before.slice(verb.index + verb[0].length) : "";
@@ -267,8 +314,14 @@ export function extractAgentDispatchIntent(text: string, roles: Roles, envs: rea
       ids = Object.values(roles).filter(role => role.external?.kind === match.alias.kind).map(role => role.id);
       if (namedEnv) ids = ids.filter(id => roles[id]?.external?.envId === namedEnv);
     }
-    const target: AgentRoutingTarget = { name: match.alias.text, ...(ids.length === 1 ? { agentId: ids[0] } : {}), ...(match.alias.kind ? { kind: match.alias.kind } : {}), ...(namedEnv ? { envId: namedEnv } : {}) };
-    const keyFor = (item: AgentRoutingTarget) => `${item.agentId ? `id:${item.agentId}` : `${item.kind ?? "name"}:${canonical(item.name)}`}:${item.envId ?? ""}`;
+    const target: AgentRoutingTarget = {
+      name: match.alias.text,
+      ...(match.alias.internal ? { internal: true } : {}),
+      ...(ids.length === 1 ? { agentId: ids[0] } : {}),
+      ...(match.alias.kind ? { kind: match.alias.kind } : {}),
+      ...(namedEnv ? { envId: namedEnv } : {}),
+    };
+    const keyFor = (item: AgentRoutingTarget) => `${item.internal ? "internal" : item.agentId ? `id:${item.agentId}` : `${item.kind ?? "name"}:${canonical(item.name)}`}:${item.envId ?? ""}`;
     if (!targets.some(item => keyFor(item) === keyFor(target))) {
       if (targets.length >= 16) fail("agent_intent_too_many_targets", "一次最多点名 16 个智能体，请缩小本次任务范围。", 400);
       targets.push(target);
@@ -281,6 +334,8 @@ export interface ResolveAgentDispatchInput {
   roles: Roles;
   intent?: AgentDispatchIntent;
   inheritedAssignment?: AgentAssignment;
+  relaySettledReady?: boolean;
+  workspaceMode?: "staged" | "direct" | "read_only";
   requestedRole?: string;
   taskKind?: AgentTaskKind;
   projectId?: string;
@@ -299,6 +354,11 @@ function requested(roles: Roles, value: string | undefined): RolePreset | undefi
   const id = value.trim(); return ownRole(roles, id) ?? (Object.hasOwn(LEGACY_ROLE_ALIASES, id) ? ownRole(roles, LEGACY_ROLE_ALIASES[id]!) : undefined);
 }
 function targetCandidates(roles: Roles, target: AgentRoutingTarget, envId?: string): RolePreset[] {
+  if (target.internal) {
+    const internalRoles = Object.values(roles).filter(role => !role.external);
+    const enabledInternal = internalRoles.filter(role => role.enabled !== false);
+    return enabledInternal.length ? enabledInternal : internalRoles;
+  }
   if (target.agentId) { const role = ownRole(roles, target.agentId); return role ? [role] : []; }
   const scope = target.envId ?? envId;
   const candidates = target.kind ? Object.values(roles).filter(role => role.external?.kind === target.kind) :
@@ -317,7 +377,7 @@ export function resolveAgentDispatch(input: ResolveAgentDispatchInput): Resolved
   if (input.taskKind !== undefined && !(AGENT_TASK_KINDS as readonly string[]).includes(input.taskKind)) fail("invalid_agent_task_kind", "智能体任务类型无效。", 400);
   if (input.intent !== undefined && (input.intent.version !== 1 || !Array.isArray(input.intent.targets) || !input.intent.targets.length || input.intent.targets.length > 16 ||
       input.intent.targets.some(target => !record(target) || !validName(target.name) ||
-        target.agentId !== undefined && !validName(target.agentId) || target.envId !== undefined && !validName(target.envId) || target.kind !== undefined && !(EXTERNAL_AGENT_KINDS as readonly unknown[]).includes(target.kind)))) {
+        target.agentId !== undefined && !validName(target.agentId) || target.envId !== undefined && !validName(target.envId) || target.kind !== undefined && !(EXTERNAL_AGENT_KINDS as readonly unknown[]).includes(target.kind) || target.internal !== undefined && typeof target.internal !== "boolean"))) {
     fail("invalid_agent_dispatch_intent", "智能体点名记录无效，请重新指定智能体。", 400);
   }
   if (input.intent) {
@@ -333,22 +393,40 @@ export function resolveAgentDispatch(input: ResolveAgentDispatchInput): Resolved
     }
     if (!candidates.length) fail("agent_not_configured", `${target.name}${target.envId ? ` 在设备 ${target.envId} 上` : ""} 尚未配置或已移除，请先连接该智能体；本任务不会改派其他智能体。`);
     if (candidates.length > 1) {
-      const clientScopes = new Set(candidates.map(role => role.external ? `${role.externalClientId ?? `${role.external.kind}:${role.external.envId}`}` : `internal:${role.id}`));
-      if (clientScopes.size === 1 && requestedPreset && candidates.some(role => role.id === requestedPreset.id)) {
-        candidates = [requestedPreset];
+      if (target.internal) {
+        const chosen = (requestedPreset && !requestedPreset.external && candidates.some(role => role.id === requestedPreset.id) ? requestedPreset : undefined)
+          ?? candidates.find(role => role.id === "coder")
+          ?? candidates.find(role => role.id === "engineer")
+          ?? candidates[0]!;
+        candidates = [chosen];
+      } else {
+        const clientScopes = new Set(candidates.map(role => role.external ? `${role.externalClientId ?? `${role.external.kind}:${role.external.envId}`}` : `internal:${role.id}`));
+        if (clientScopes.size === 1 && requestedPreset && candidates.some(role => role.id === requestedPreset.id)) {
+          candidates = [requestedPreset];
+        }
       }
     }
     if (candidates.length !== 1) fail("agent_selection_ambiguous", `${target.name} 对应多个已配置智能体（${candidates.map(display).join("、")}），请指定具体名称或设备。`);
     const selected = candidates[0]!;
     if (target.envId && selected.external && selected.external.envId !== target.envId) fail("agent_device_conflict", `${display(selected)} 绑定设备 ${selected.external.envId}，与点名设备 ${target.envId} 不一致。`);
-    if (INTERNAL_ALIASES.some(name => canonical(name) === canonical(target.name)) && selected.external) fail("agent_not_configured", "内置 Worker 未配置为内置智能体，请检查开发者角色。");
+    if ((target.internal || INTERNAL_ALIASES.some(name => canonical(name) === canonical(target.name))) && selected.external) fail("agent_not_configured", "内置 Worker 未配置为内置智能体，请检查开发者角色。");
     return finish(selected, "explicit", input.taskKind ?? requestedKind ?? (!selected.external ? BUILTIN_TASK_KINDS[selected.id] : undefined), target.name);
   }
   if (input.inheritedAssignment && (input.inheritedAssignment.source === "explicit" || input.inheritedAssignment.source === "manual")) {
     const inherited = input.inheritedAssignment;
-    const selected = ownRole(roles, inherited.agentId);
-    if (!selected) fail("agent_not_configured", `${inherited.requestedName ?? inherited.agentId} 的原任务绑定已移除，请重新指定智能体；不会自动改派。`);
-    return finish(selected, inherited.source, input.taskKind ?? inherited.taskKind, inherited.requestedName);
+    const allowPostReadyVerification = Boolean(
+      input.relaySettledReady &&
+      requestedPreset &&
+      requestedPreset.id !== inherited.agentId &&
+      requestedPreset.id !== "coder" &&
+      requestedPreset.id !== "engineer" &&
+      (requestedPreset.readOnly || input.workspaceMode === "read_only"),
+    );
+    if (!allowPostReadyVerification) {
+      const selected = ownRole(roles, inherited.agentId);
+      if (!selected) fail("agent_not_configured", `${inherited.requestedName ?? inherited.agentId} 的原任务绑定已移除，请重新指定智能体；不会自动改派。`);
+      return finish(selected, inherited.source, input.taskKind ?? inherited.taskKind, inherited.requestedName);
+    }
   }
   const selected = requestedPreset;
   if (input.requestedRole?.trim() && !selected) fail("agent_not_configured", `${input.requestedRole.trim()} 未配置，不能创建无角色定义的 Worker。`);

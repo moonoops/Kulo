@@ -98,7 +98,7 @@ export function createHindsightTools(options: {
   const bankParam = opt(
     oneOf(options.defaultBank === "shared" ? ["shared"] : ["private", "shared"], {
       description:
-        "Target Hindsight bank: 'private' (Kulo's personal memory, Router only) or 'shared' (project-wide shared knowledge; Router read-only, Worker read/write).",
+        "Target Hindsight bank: 'private' (your private personal memory, main assistant only) or 'shared' (project-wide shared knowledge; main assistant read-only, Worker read/write).",
     }),
   );
 
@@ -385,7 +385,7 @@ export function createHindsightTools(options: {
   const createMentalModelTool = defineTool({
     name: "hindsight_create_mental_model",
     description:
-      "Create a living Mental Model (`POST /mental-models`) in Kulo's private bank (`kulo-core`, Router only). 关键词：创建心智模型 新建长期认知综述",
+      "Create a living Mental Model (`POST /mental-models`) in your private memory bank (`kulo-core`, main assistant only). 关键词：创建心智模型 新建长期认知综述",
     deferred: true,
     outputLimits: { maxBytes: 6_000, maxLines: 100 },
     parameters: obj({
@@ -403,7 +403,7 @@ export function createHindsightTools(options: {
   const refreshMentalModelTool = defineTool({
     name: "hindsight_refresh_mental_model",
     description:
-      "Trigger a refresh (`POST /mental-models/{id}/refresh`) of a Mental Model in Kulo's private bank (Router only). 关键词：刷新心智模型 重建认知综述",
+      "Trigger a refresh (`POST /mental-models/{id}/refresh`) of a Mental Model in your private memory bank (main assistant only). 关键词：刷新心智模型 重建认知综述",
     deferred: true,
     outputLimits: { maxBytes: 4_000, maxLines: 80 },
     parameters: obj({
@@ -417,7 +417,7 @@ export function createHindsightTools(options: {
   const invalidateMemoryTool = defineTool({
     name: "hindsight_invalidate_memory",
     description:
-      "Explicitly invalidate an obsolete or erroneous memory unit (`PATCH /memories/{memory_id}`, `state='invalidated'`) in Kulo's private bank with a required `reason` (Router only). 关键词：作废旧记忆 标记记忆失效 删除错误记忆",
+      "Explicitly invalidate an obsolete or erroneous memory unit (`PATCH /memories/{memory_id}`, `state='invalidated'`) in your private memory bank with a required `reason` (main assistant only). 关键词：作废旧记忆 标记记忆失效 删除错误记忆",
     deferred: true,
     outputLimits: { maxBytes: 4_000, maxLines: 80 },
     parameters: obj({

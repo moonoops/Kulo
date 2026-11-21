@@ -1,11 +1,17 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { defaultRolePresets, type EnvNodeDescriptor, type ExternalAgentScanResult, type ExternalClientConnection, type RolePreset } from "@kulo/protocol";
+import { defaultRolePresets, type EnvNodeDescriptor, type ExternalAgentScanResult, type ExternalClientConnection, type KuloSettingsView, type RolePreset } from "@kulo/protocol";
 import { ExternalAgentsList } from "./external-agents-list";
-import { ExternalAgentConnectCard, partitionExternalAgentScan } from "./external-agent-connect-card";
+import {
+  ExternalAgentConnectCard,
+  formatMissingExternalAgentLabels,
+  parseAcpArgsInput,
+  partitionExternalAgentScan,
+} from "./external-agent-connect-card";
 import { deriveExternalClients, internalAgentPresets, withExternalAgentPresets } from "./external-agents-view";
 import { advanceSettingsAssistantPageScope } from "./settings-assistant-page-scope";
 import { getSettingsAssistantShortcuts } from "./settings-assistant-actions";
+import { WorkersModule } from "./workers-module";
 
 const external: RolePreset = {
   id: "codex-architect", label: "Codex 架构师", whenToUse: "负责复杂架构拆解与设计", prompt: "遵循项目规范给出架构方案。", enabled: true,
@@ -156,6 +162,139 @@ describe("external agents in settings", () => {
     expect(merged[external.id]).toBe(external);
     expect(merged[externalTester.id]).toBe(externalTester);
     expect(merged.coder?.label).toBe("新的开发者");
+  });
+
+  it("shows unauthenticated login hints, pending-verify actions, custom path toggle, and left-panel connect entry (U1, U3)", () => {
+    const scan: ExternalAgentScanResult = {
+      scannedAt: 1,
+      devices: [{ id: "mac", name: "MacBook", online: true }],
+      candidates: [
+        { kind: "claude-code", label: "Claude Code", status: "supported", envId: "mac", envName: "MacBook", online: true, installed: true, authenticated: false, alreadyConnected: false, version: "2.1.0" },
+        { kind: "antigravity", label: "Antigravity", status: "supported", envId: "mac", envName: "MacBook", online: true, installed: true, authenticated: null, alreadyConnected: true, connectedClientId: "antigravity:mac", connectedVerified: false, version: "1.5.5" },
+      ],
+    };
+    const partitioned = partitionExternalAgentScan(scan);
+    expect(partitioned.connectable.map((c) => c.kind)).toEqual(["antigravity"]);
+
+    const cardHtml = renderToStaticMarkup(
+      <ExternalAgentConnectCard mode="client" clientId="tab-u3" connected envs={[device]} initialScan={scan} onClose={vi.fn()} />,
+    );
+    expect(cardHtml).toContain("未登录");
+    expect(cardHtml).toContain("claude auth login");
+    expect(cardHtml).toContain("验证并启用");
+    expect(cardHtml).toContain("手动指定客户端路径");
+
+    const unverifiedClient: ExternalClientConnection = { ...codexClient, verifiedAt: undefined };
+    const unverifiedRole: RolePreset = { ...external, enabled: false, external: { ...external.external!, verifiedAt: undefined } };
+    const listHtml = renderToStaticMarkup(
+      <ExternalAgentsList
+        agents={[unverifiedRole]}
+        externalClients={{ [unverifiedClient.id]: unverifiedClient }}
+        envs={[device]}
+        onVerifyClient={vi.fn()}
+        onRemoveClient={vi.fn()}
+      />,
+    );
+    expect(listHtml).toContain("验证连接");
+
+    const emptySettings = {
+      globalRevision: 1,
+      blocks: {
+        presentation: { revision: 1, value: { agentName: "Kulo", language: "zh-CN" } },
+        executor: { revision: 1, value: { maxConcurrentWorkers: 2, maxSubagentsPerTicket: 4, paused: false, watchdogMinutes: 5, completedTaskDisplayHours: 3, autoArchiveEnabled: true, autoArchiveDays: 7 } },
+        roles: { revision: 1, value: defaultRolePresets() },
+        model: { revision: 1, value: { baseUrl: "https://api.openai.com/v1", apiMode: "openai-completions", defaultModel: "gpt-5", thinkingLevel: "medium", contextWindow: 128000, compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000, backgroundTokens: 64000 }, customProviders: [], gatewayDisabled: true }, hasApiKey: false },
+        identity: { revision: 1, value: { directory: "" }, effectiveDirectory: "/tmp/identity", directoryRevision: 1 },
+        memory: { revision: 1, value: { enabled: false, accessMode: "kulo", endpoint: "http://127.0.0.1:8888", endpoints: [], caCertPem: "", routerApiKeyEnv: "", workerApiKeyEnv: "", sharedReadApiKeyEnv: "", authFile: "", autoAttachTopLevelRouters: true, banks: { private: "kulo-core", shared: "kulo-shared" } }, hasRouterApiKey: false, hasWorkerApiKey: false, hasSharedReadApiKey: false },
+      },
+      history: [],
+    } as unknown as KuloSettingsView;
+    const workersHtml = renderToStaticMarkup(
+      <WorkersModule settings={emptySettings} envs={[device]} onSettingsUpdated={vi.fn()} />,
+    );
+    expect(workersHtml).toContain("外部客户端");
+    expect(workersHtml).toContain("连接客户端");
+  });
+
+  it("prioritizes currentDeviceId over remote hub local, collapses >3 missing labels, shows Grok Bot desktopAppInstalled chip, and distinguishes custom ACP clients", () => {
+    const scan: ExternalAgentScanResult = {
+      scannedAt: 1,
+      devices: [
+        { id: "local", name: "MacMini", online: true },
+        { id: "macbook", name: "Macbook", online: true },
+      ],
+      candidates: [
+        { kind: "codex", label: "Codex", status: "supported", envId: "local", envName: "MacMini", online: true, installed: true, alreadyConnected: false, version: "0.171.0" },
+        { kind: "grok", label: "Grok Build", status: "supported", envId: "macbook", envName: "Macbook", online: true, installed: true, authenticated: false, alreadyConnected: false, version: "1.0.92" },
+        { kind: "cursor", label: "Cursor Agent", status: "supported", envId: "macbook", envName: "Macbook", online: true, installed: false, alreadyConnected: false },
+        { kind: "opencode", label: "OpenCode", status: "supported", envId: "macbook", envName: "Macbook", online: true, installed: false, alreadyConnected: false },
+        { kind: "gemini-cli", label: "Gemini CLI", status: "supported", envId: "macbook", envName: "Macbook", online: true, installed: false, alreadyConnected: false },
+        { kind: "kiro", label: "Kiro CLI", status: "supported", envId: "macbook", envName: "Macbook", online: true, installed: false, alreadyConnected: false },
+      ],
+    };
+    const partitioned = partitionExternalAgentScan(scan, "macbook");
+    expect(partitioned.onlineDevices.map((item) => item.id)).toEqual(["macbook", "local"]);
+    expect(partitioned.installed.map((item) => item.kind)).toEqual(["grok", "codex"]);
+    expect(partitioned.missingLabels).toEqual(["Cursor Agent", "OpenCode", "Gemini CLI", "Kiro CLI"]);
+    expect(formatMissingExternalAgentLabels(partitioned.missingLabels, (zh) => zh)).toBe("Cursor Agent · OpenCode · Gemini CLI 等 4 项");
+
+    const clientHtml = renderToStaticMarkup(
+      <ExternalAgentConnectCard
+        mode="client"
+        clientId="tab-b"
+        connected
+        currentDeviceId="macbook"
+        envs={[
+          { id: "local", name: "MacMini", online: true } as EnvNodeDescriptor,
+          { id: "macbook", name: "Macbook", online: true } as EnvNodeDescriptor,
+        ]}
+        initialScan={scan}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(clientHtml).toContain("grok login");
+    expect(clientHtml).toContain("等 4 项");
+
+    const personalScan: ExternalAgentScanResult = {
+      scannedAt: 1,
+      devices: [{ id: "macbook", name: "Macbook", online: true }],
+      candidates: [
+        { kind: "grok-bot", label: "Grok Bot", status: "experimental", envId: "macbook", envName: "Macbook", online: true, installed: false, desktopAppInstalled: true, version: "1.1.0", alreadyConnected: false },
+      ],
+    };
+    const personalHtml = renderToStaticMarkup(
+      <ExternalAgentConnectCard
+        mode="personal"
+        clientId="tab-p"
+        connected
+        currentDeviceId="macbook"
+        envs={[{ id: "macbook", name: "Macbook", online: true } as EnvNodeDescriptor]}
+        initialScan={personalScan}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(personalHtml).toContain("已安装 1.1.0");
+
+    const kimiRole: RolePreset = {
+      id: "kimi-code",
+      label: "Kimi Code",
+      whenToUse: "代码任务",
+      prompt: "执行任务",
+      enabled: true,
+      externalClientId: "acp:macbook:kimi-code",
+      external: { kind: "acp", envId: "macbook", agentRef: "kimi-code", executable: "/usr/local/bin/kimi-code", acpArgs: ["acp"], verifiedAt: 10 },
+    };
+    const derived = deriveExternalClients({ [kimiRole.id]: kimiRole });
+    expect(derived[0]).toMatchObject({ id: "acp:macbook:kimi-code", label: "Kimi Code", acpArgs: ["acp"] });
+
+    const acpListHtml = renderToStaticMarkup(
+      <ExternalAgentsList
+        agents={[kimiRole]}
+        envs={[{ id: "macbook", name: "Macbook", online: true } as EnvNodeDescriptor]}
+      />,
+    );
+    expect(acpListHtml).toContain("Kimi Code · Macbook");
+    expect(parseAcpArgsInput('acp --profile "my profile" --fast')).toEqual(["acp", "--profile", "my profile", "--fast"]);
   });
 });
 

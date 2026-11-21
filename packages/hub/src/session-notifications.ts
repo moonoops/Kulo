@@ -14,12 +14,122 @@ export interface TopicNotificationBaseline {
   pendingCardIds: Set<string>;
 }
 
-function sanitizeSummary(raw: string | undefined, redact?: (text: string) => string, maxLength = 160): string | undefined {
+const MAX_NOTIFICATION_DISPLAY_WIDTH = 64;
+
+function truncateDisplayWidth(text: string, maxUnits = MAX_NOTIFICATION_DISPLAY_WIDTH): string {
+  let units = 0;
+  let result = "";
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    const width = code >= 0x1100 && (
+      (code <= 0x115f) ||
+      (code >= 0x2e80 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe10 && code <= 0xfe6f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      code >= 0x20000
+    ) ? 2 : 1;
+    if (units + width > maxUnits) {
+      return `${result.trimEnd()}…`;
+    }
+    result += ch;
+    units += width;
+  }
+  return result;
+}
+
+function sanitizeSummary(raw: string | undefined, redact?: (text: string) => string, maxUnits = MAX_NOTIFICATION_DISPLAY_WIDTH): string | undefined {
   if (!raw) return undefined;
   const source = redact ? redact(raw) : raw;
-  const cleaned = source.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
+  const cleaned = source.replace(/[\x00-\x1f\x7f]+/g, " ").replace(/\s+/g, " ").trim();
   if (!cleaned) return undefined;
-  return cleaned.length <= maxLength ? cleaned : `${cleaned.slice(0, maxLength - 1)}…`;
+  return truncateDisplayWidth(cleaned, maxUnits);
+}
+
+function stripMarkdownLine(line: string): string {
+  return line
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^\s*(?:#{1,6}\s+|>\s+|(?:[-*•·+]|\d+[.)、])\s+)+/, "")
+    .replace(/(\*\*|__|~~|\*)/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractConciseReplyText(raw: string, redact?: (text: string) => string): string | undefined {
+  const redacted = redact ? redact(raw) : raw;
+  const withoutCodeFences = redacted.replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g, "\n");
+  const lines = withoutCodeFences
+    .split(/\r?\n/)
+    .map(stripMarkdownLine)
+    .filter((line) => line.length > 0 && !/^[-_=|:：—·\s]+$/.test(line));
+  if (!lines.length) return undefined;
+
+  let chosen = "";
+  for (const line of lines) {
+    const trimmedFiller = line.replace(
+      /^(?:(?:好的|好哒|明白|收到|嗯|行|没问题|ok|okay|sure|got it|alright)[，,。！!：:\s]*)+/i,
+      "",
+    ).trim();
+    if (trimmedFiller) {
+      chosen = trimmedFiller;
+      break;
+    }
+  }
+  if (!chosen) chosen = lines[0]!;
+
+  // Prefer the first self-contained sentence; append the next short clause if the first is too brief.
+  const sentences = chosen
+    .split(/(?<=[。！？!?])(?:\s+|$)|(?<=\.)\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  let headline = sentences[0] ?? chosen;
+  if (headline.length < 6 && sentences[1]) {
+    headline = `${headline} ${sentences[1]}`.trim();
+  }
+  headline = headline.replace(/[：:]\s*$/, "").trim();
+  if (!headline) return undefined;
+  return sanitizeSummary(headline, undefined, MAX_NOTIFICATION_DISPLAY_WIDTH);
+}
+
+function extractReplySummary(
+  newVisibleItems: readonly ChatDisplayItem[],
+  allMessages: readonly ChatDisplayItem[],
+  redact?: (text: string) => string,
+): string | undefined {
+  for (let index = newVisibleItems.length - 1; index >= 0; index -= 1) {
+    const item = newVisibleItems[index]!;
+    const partTexts = getMessageParts(item)
+      .filter((part): part is Extract<typeof part, { type: "markdown" }> => part.type === "markdown")
+      .map((part) => part.text)
+      .filter((text) => text.trim().length > 0);
+    const rawText = item.text.trim() || partTexts.join("\n");
+    if (rawText) {
+      const summary = extractConciseReplyText(rawText, redact);
+      if (summary) return summary;
+    }
+    if (item.attachments?.length) {
+      const firstName = sanitizeSummary(item.attachments[0]!.name, redact, 40);
+      if (firstName) {
+        return item.attachments.length === 1
+          ? `已发送 ${firstName}`
+          : `已发送 ${firstName} 等 ${item.attachments.length} 个文件`;
+      }
+    }
+  }
+  // Fallback to the latest dispatched ticket title in the conversation if the reply was code-only.
+  for (let index = allMessages.length - 1; index >= 0; index -= 1) {
+    const entry = allMessages[index]!;
+    if (entry.role === "dispatch" && entry.dispatch?.title) {
+      const title = sanitizeSummary(entry.dispatch.title, redact, 48);
+      if (title) return `已完成：${title}`;
+    }
+  }
+  return undefined;
 }
 
 export function isUserFacingAssistantMessage(item: ChatDisplayItem): boolean {
@@ -128,7 +238,7 @@ export function detectMainSessionNotification(input: {
 
   if (newPendingCards.length > 0) {
     const latestCard = newPendingCards[newPendingCards.length - 1]!;
-    const cardSummary = sanitizeSummary(latestCard.title, redact, 160);
+    const cardSummary = sanitizeSummary(latestCard.title, redact, MAX_NOTIFICATION_DISPLAY_WIDTH);
     return {
       next,
       event: {
@@ -143,6 +253,10 @@ export function detectMainSessionNotification(input: {
   }
 
   if (hasNewFailure) {
+    const described = live.runFailure
+      ? describeKuloError({ reason: live.runFailure.reason, detail: live.runFailure.detail })
+      : undefined;
+    const failureSummary = sanitizeSummary(described?.title, redact, MAX_NOTIFICATION_DISPLAY_WIDTH);
     return {
       next,
       event: {
@@ -150,12 +264,14 @@ export function detectMainSessionNotification(input: {
         kind: "run_failed",
         topicId,
         ...(cleanTopicTitle ? { topicTitle: cleanTopicTitle } : {}),
+        ...(failureSummary ? { summary: failureSummary } : {}),
         createdAt,
       },
     };
   }
 
   if (newVisibleItems.length > 0 && !isPureDispatchTurn(messages, newVisibleItems)) {
+    const replySummary = extractReplySummary(newVisibleItems, messages, redact);
     return {
       next,
       event: {
@@ -163,6 +279,7 @@ export function detectMainSessionNotification(input: {
         kind: "reply_completed",
         topicId,
         ...(cleanTopicTitle ? { topicTitle: cleanTopicTitle } : {}),
+        ...(replySummary ? { summary: replySummary } : {}),
         createdAt,
       },
     };

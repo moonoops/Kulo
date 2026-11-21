@@ -17,7 +17,7 @@ export function SettingsSection({
   title: string;
   status?: ReactNode;
   action?: ReactNode;
-  children: ReactNode;
+  children?: ReactNode;
   className?: string;
 }) {
   const headingId = useId();

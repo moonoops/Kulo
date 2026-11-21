@@ -6,11 +6,16 @@ import {
   inspectSensitiveText, redactDeviceInvitationText, redactSensitiveText, SENSITIVE_TEXT_REDACTION,
   type ConnectionAccessRequest, type ConnectionApplicationId, type ConnectionApplicationView, type ConnectionCategory, type ConnectionCredentialField, type ConnectionDescribeRequest, type ConnectionFields, type ConnectionKind, type ConnectionPrepareRequest,
   type ConnectionRecordView, type ConnectionSaveRequest, type ConnectionSecrets, type ConnectionSetupInput,
-  type ConnectionUseOperation, type ConnectionUseResult, type ConnectionWorkspaceSnapshot,
+  type ConnectionUseOperation, type ConnectionUseResult, type ConnectionWorkspaceSnapshot, type McpAuthMode, type McpTransportKind,
 } from "@kulo/protocol";
 import { LocalConnectionVault } from "./connection-vault.js";
 import { LocalConnectionExecutor, type ConnectionExecutionBackend, type ConnectionHostScan } from "./connection-execution.js";
 import { CONNECTION_APPLICATIONS, getConnectionApplication, LocalConnectionApplications, type ConnectionApplicationBackend } from "./connection-applications.js";
+import { closeMcpHttpAgents } from "./mcp-fetch.js";
+import { McpConnectionPool, type McpDiscoverySnapshot, type McpTransportFactoryContext } from "./mcp-connections.js";
+import { McpOAuthRefreshLockManager, McpOAuthSessionManager, extractMcpOAuthSecrets, mcpOAuthVaultRef, parseMcpOAuthVaultEntry } from "./mcp-oauth.js";
+import { MCP_PRESET_CATALOG, getMcpPreset, isCloudMetadataIp, isLoopbackHost, isValidMcpEnvKey, stripBrackets } from "./mcp-presets.js";
+import type { McpTransport } from "@earendil-works/pi-mcp";
 
 export interface ConnectionVault {
   get(ref: string): Promise<Record<string, string> | undefined>;
@@ -31,10 +36,11 @@ interface ConnectionDocument {
 export interface ConnectionTestResult { connection: ConnectionRecordView; fingerprint?: string; requiresTrust?: boolean }
 export interface ConnectionTextReceipt { text: string; connectionIds: string[]; saved: boolean }
 const SECRET_FIELDS = ["password", "privateKey", "passphrase", "apiKey"] as const;
-const KNOWN_KINDS: ConnectionKind[] = ["ssh", "account", "api-key", "custom", "app"];
+const KNOWN_KINDS: ConnectionKind[] = ["ssh", "account", "api-key", "custom", "app", "mcp"];
 const MAX_RECORDS = 256;
 const MAX_INPUT_AGE = 30 * 60_000;
 const MAX_CREDENTIAL_FIELDS = 32;
+const MAX_MCP_ARGS = 64;
 const RESERVED_FIELD_KEYS = new Set(["__binding", "__proto__", "constructor", "prototype", "toString", "valueOf", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString"]);
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 function fail(message: string, code = "invalid_connection", status = 400): never { throw Object.assign(new Error(message), { code, status }); }
@@ -48,6 +54,18 @@ function textField(value: unknown, label: string, max: number): string | undefin
   return value.trim() || undefined;
 }
 function credentialKey(value: unknown): value is string { return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value) && !RESERVED_FIELD_KEYS.has(value); }
+function allowedSecretKeyFor(kind: ConnectionKind, key: string, mcpTransport?: McpTransportKind, mcpAuthMode?: McpAuthMode): boolean {
+  if (!credentialKey(key)) return false;
+  if (kind === "custom") return true;
+  if (kind === "mcp") {
+    if (mcpTransport === "stdio") return isValidMcpEnvKey(key);
+    const mode = mcpAuthMode ?? "oauth";
+    if (mode === "oauth") return key === "clientSecret";
+    if (mode === "bearer" || mode === "header") return key === "apiKey";
+    return false;
+  }
+  return SECRET_FIELDS.includes(key as typeof SECRET_FIELDS[number]);
+}
 function credentialSchema(value: unknown): ConnectionCredentialField[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.length > MAX_CREDENTIAL_FIELDS) fail("凭据字段定义无效（最多 32 项）。");
@@ -66,8 +84,37 @@ function instructionsField(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length > 8_000 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)) fail("使用说明无效（最多 8000 字）。");
   return value.trim() || undefined;
 }
-function fieldLabel(key: string): string { return ({ password: "密码", privateKey: "私钥", passphrase: "私钥口令", apiKey: "API Key" } as Record<string, string>)[key] ?? key; }
-function normalizeFields(input: ConnectionFields): ConnectionFields {
+function fieldLabel(key: string): string { return ({ password: "密码", privateKey: "私钥", passphrase: "私钥口令", apiKey: "API Key", clientSecret: "Client Secret" } as Record<string, string>)[key] ?? key; }
+function normalizeMcpCommand(value: unknown): string {
+  const command = textField(value, "启动命令", 512);
+  if (!command) fail("请填写本机 MCP 启动命令。");
+  if (command.startsWith("./") || command.startsWith("../") || command.includes("..")) fail("启动命令不能使用相对路径。");
+  if ((command.includes("/") || command.includes("\\")) && !path.isAbsolute(command)) fail("启动命令须为可执行文件名或绝对路径。");
+  if (!path.isAbsolute(command) && !/^[A-Za-z0-9._-]+$/.test(command)) fail("启动命令名称包含不支持的字符。");
+  return command;
+}
+function normalizeMcpArgs(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > MAX_MCP_ARGS) fail("MCP 启动参数无效（最多 64 项）。");
+  return value.map((item) => {
+    if (typeof item !== "string" || item.length > 1_024 || /[\x00\r\n]/.test(item)) fail("MCP 启动参数包含无效字符或过长。");
+    return item;
+  });
+}
+function normalizeMcpCwd(value: unknown, stateDir?: string): string | undefined {
+  const cwd = textField(value, "工作目录", 1_024);
+  if (!cwd) return undefined;
+  if (!path.isAbsolute(cwd)) fail("MCP 工作目录必须为绝对路径。");
+  if (stateDir) {
+    const resolvedState = path.resolve(stateDir);
+    const resolvedCwd = path.resolve(cwd);
+    if (resolvedCwd === resolvedState || resolvedCwd.startsWith(`${resolvedState}${path.sep}`)) {
+      fail("MCP 工作目录不能指向应用受保护数据目录。");
+    }
+  }
+  return cwd;
+}
+function normalizeFields(input: ConnectionFields, stateDir?: string): ConnectionFields {
   if (!input || typeof input !== "object" || !KNOWN_KINDS.includes(input.kind)) fail("请选择连接类型。");
   if (input.kind === "app") {
     const app = getConnectionApplication(input.appId);
@@ -77,6 +124,79 @@ function normalizeFields(input: ConnectionFields): ConnectionFields {
     return { name: app.name, kind: "app", category: "app", appId: app.id,
       ...(input.username ? { username: textField(input.username, "应用账号", 256) } : {}),
       instructions: app.instructions.join("\n"), credentialFields: app.authentication === "token" ? [{ key: "apiKey", label: "访问令牌" }] : [] };
+  }
+  if (input.kind === "mcp") {
+    if (input.appId !== undefined) fail("MCP 连接不能指定固定应用标识。");
+    if (input.category !== undefined && input.category !== "app") fail("MCP 连接归属应用分类。");
+    const name = textField(input.name, "连接名称", 120);
+    if (!name) fail("请填写连接名称。");
+    const transport: McpTransportKind = input.mcpTransport ?? (input.mcpCommand ? "stdio" : "http");
+    if (transport !== "http" && transport !== "stdio") fail("MCP 传输方式无效。");
+    const instructions = instructionsField(input.instructions);
+    if (transport === "http") {
+      if (input.mcpCommand !== undefined || input.mcpArgs !== undefined || input.mcpCwd !== undefined) fail("远程 HTTP MCP 不能包含本地命令行参数。");
+      const preset = input.mcpPresetId ? getMcpPreset(input.mcpPresetId) : undefined;
+      const rawUrl = textField(input.url ?? preset?.url, "MCP 服务地址", 2_048);
+      if (!rawUrl) fail("请填写 MCP 服务地址。");
+      let url: URL;
+      try { url = new URL(rawUrl); } catch { fail("请输入有效的 MCP 服务地址。"); }
+      if (url.username || url.password || url.search || url.hash) fail("MCP 服务地址不能包含账号、密码或查询参数。");
+      const host = stripBrackets(url.hostname);
+      if (!host || isCloudMetadataIp(host)) fail("MCP 服务地址无效或受安全策略阻止。");
+      if (url.protocol === "http:") {
+        if (!isLoopbackHost(host)) fail("远程 MCP 服务地址必须使用 HTTPS。");
+      } else if (url.protocol !== "https:") {
+        fail("远程 MCP 服务地址必须使用 HTTPS。");
+      }
+      const authMode: McpAuthMode = input.mcpAuthMode ?? preset?.authMode ?? "oauth";
+      if (!["oauth", "bearer", "header", "none"].includes(authMode)) fail("MCP 认证方式无效。");
+      let headerName: string | undefined;
+      if (authMode === "header") {
+        const header = textField(input.headerName ?? preset?.headerName, "认证请求头", 80) ?? "X-API-Key";
+        if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(header) || /^(host|cookie|set-cookie|proxy-authorization|connection|content-length|transfer-encoding)$/i.test(header)) fail("认证请求头无效。");
+        headerName = header;
+      }
+      const mcpOAuthClientId = authMode === "oauth" ? textField(input.mcpOAuthClientId, "OAuth Client ID", 256) : undefined;
+      const mcpOAuthScope = authMode === "oauth" ? textField(input.mcpOAuthScope, "OAuth Scope", 512) : undefined;
+      let mcpOAuthCallbackPort: number | undefined;
+      if (authMode === "oauth" && input.mcpOAuthCallbackPort !== undefined) {
+        if (!Number.isInteger(input.mcpOAuthCallbackPort) || input.mcpOAuthCallbackPort < 1024 || input.mcpOAuthCallbackPort > 65_535) fail("OAuth 回调端口必须在 1024 到 65535 之间。");
+        mcpOAuthCallbackPort = input.mcpOAuthCallbackPort;
+      }
+      const schema = credentialSchema(input.credentialFields);
+      if (schema?.some((field) => !allowedSecretKeyFor("mcp", field.key, "http", authMode))) fail("此 MCP 认证方式不支持该凭据字段。");
+      const credentialFields: ConnectionCredentialField[] =
+        authMode === "bearer" || authMode === "header"
+          ? [{ key: "apiKey", label: "访问令牌" }]
+          : authMode === "oauth" && mcpOAuthClientId
+            ? [{ key: "clientSecret", label: "Client Secret" }]
+            : [];
+      return {
+        name, kind: "mcp", category: "app", mcpTransport: "http", url: url.href, mcpAuthMode: authMode,
+        ...(preset ? { mcpPresetId: preset.id } : {}),
+        ...(headerName ? { headerName } : {}),
+        ...(mcpOAuthClientId ? { mcpOAuthClientId } : {}),
+        ...(mcpOAuthScope ? { mcpOAuthScope } : {}),
+        ...(mcpOAuthCallbackPort !== undefined ? { mcpOAuthCallbackPort } : {}),
+        ...(instructions ? { instructions } : {}),
+        credentialFields,
+      };
+    }
+    if (input.url !== undefined || input.mcpAuthMode !== undefined || input.headerName !== undefined || input.mcpPresetId !== undefined || input.mcpOAuthClientId !== undefined || input.mcpOAuthScope !== undefined || input.mcpOAuthCallbackPort !== undefined) {
+      fail("本机 Stdio MCP 不能包含远程 HTTP 或 OAuth 字段。");
+    }
+    const mcpCommand = normalizeMcpCommand(input.mcpCommand);
+    const mcpArgs = normalizeMcpArgs(input.mcpArgs);
+    const mcpCwd = normalizeMcpCwd(input.mcpCwd, stateDir);
+    const schema = credentialSchema(input.credentialFields) ?? [];
+    if (schema.some((field) => !isValidMcpEnvKey(field.key))) fail("本机 MCP 环境变量名须为大写字母/数字/下划线且不得覆盖受保护系统变量。");
+    return {
+      name, kind: "mcp", category: "app", mcpTransport: "stdio", mcpCommand,
+      ...(mcpArgs?.length ? { mcpArgs } : {}),
+      ...(mcpCwd ? { mcpCwd } : {}),
+      ...(instructions ? { instructions } : {}),
+      credentialFields: schema,
+    };
   }
   if (input.appId !== undefined || input.category === "app") fail("请从预置应用入口连接应用。");
   const category: ConnectionCategory = input.category ?? "credential";
@@ -118,6 +238,13 @@ function normalizeFields(input: ConnectionFields): ConnectionFields {
 }
 function binding(fields: ConnectionFields): string {
   if (fields.kind === "app") return JSON.stringify(["app", fields.appId, "app"]);
+  if (fields.kind === "mcp") {
+    if (fields.mcpTransport === "stdio") {
+      return JSON.stringify(["mcp", "stdio", fields.mcpCommand ?? "", fields.mcpArgs ?? [], fields.mcpCwd ?? ""]);
+    }
+    const u = fields.url ? new URL(fields.url) : undefined;
+    return JSON.stringify(["mcp", "http", u ? `${u.origin}${u.pathname}` : "", fields.mcpAuthMode ?? "oauth", fields.headerName?.toLowerCase() ?? "", fields.mcpOAuthClientId ?? ""]);
+  }
   if (fields.kind === "custom") return JSON.stringify(["custom", fields.url ? new URL(fields.url).origin : "", fields.username ?? ""]);
   return JSON.stringify(fields.kind === "ssh"
     ? [fields.kind, fields.host ?? "", fields.port ?? 22, fields.username ?? ""]
@@ -126,21 +253,28 @@ function binding(fields: ConnectionFields): string {
 function completesIdentity(previous: ConnectionFields, next: ConnectionFields): boolean {
   if (previous.kind !== next.kind) return false;
   if (previous.kind === "app") return previous.appId === next.appId && previous.category === next.category;
+  if (previous.kind === "mcp") return binding(previous) === binding(next);
   if (previous.kind === "ssh") return (!previous.host || previous.host === next.host) && (!previous.username || previous.username === next.username) && (!previous.host || (previous.port ?? 22) === (next.port ?? 22));
   return (!previous.url || Boolean(next.url) && new URL(previous.url).origin === new URL(next.url!).origin) && (!previous.username || previous.username === next.username) &&
     previous.authType === next.authType && previous.headerName === next.headerName;
 }
-function usable(record: ConnectionFields, fields: ConnectionSecrets): boolean {
+function usable(record: ConnectionFields, fields: ConnectionSecrets, mcpOAuthAuthorized = false): boolean {
   if (record.kind === "app") return getConnectionApplication(record.appId).authentication === "macos" || Boolean(fields.apiKey);
+  if (record.kind === "mcp") {
+    if (record.mcpTransport === "stdio") return Boolean(record.mcpCommand);
+    if ((record.mcpAuthMode ?? "oauth") === "none") return Boolean(record.url);
+    if ((record.mcpAuthMode ?? "oauth") === "oauth") return Boolean(record.url && mcpOAuthAuthorized);
+    return Boolean(record.url && fields.apiKey);
+  }
   if (record.kind === "custom") return Object.values(fields).some((value) => typeof value === "string" && value.length > 0);
   return record.kind === "ssh" ? Boolean(record.host && record.username && (fields.password || fields.privateKey))
     : record.kind === "account" || record.authType === "basic" ? Boolean(record.url && record.username && fields.password)
       : Boolean(record.url && fields.apiKey);
 }
-function normalizedSecrets(value: unknown, kind: ConnectionKind): Record<string, string> {
+function normalizedSecrets(value: unknown, kind: ConnectionKind, mcpTransport?: McpTransportKind, mcpAuthMode?: McpAuthMode): Record<string, string> {
   if (value === undefined) return {};
   if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.keys(value).length > MAX_CREDENTIAL_FIELDS ||
-    Object.keys(value).some((key) => !credentialKey(key) || kind !== "custom" && !SECRET_FIELDS.includes(key as typeof SECRET_FIELDS[number]))) fail("凭据字段无效。");
+    Object.keys(value).some((key) => !allowedSecretKeyFor(kind, key, mcpTransport, mcpAuthMode))) fail("凭据字段无效。");
   const output: Record<string, string> = {};
   for (const key of Object.keys(value)) {
     const field = (value as ConnectionSecrets)[key];
@@ -171,12 +305,16 @@ function informationRequest(text: string): { name: string; value: string } | und
 
 /** Public records contain descriptions and opaque references; only the vault contains authentication material. */
 export class KuloConnections {
+  readonly #stateDir: string;
   readonly #file: string;
   readonly #vault: ConnectionVault;
   readonly #executor: ConnectionExecutionBackend;
   readonly #applications: ConnectionApplicationBackend;
   readonly #platform: NodeJS.Platform;
   readonly #onChanged?: () => void | Promise<void>;
+  readonly #mcpLocks: McpOAuthRefreshLockManager;
+  readonly #mcpPool: McpConnectionPool;
+  readonly mcpOAuth: McpOAuthSessionManager;
   #doc: ConnectionDocument;
   #chain: Promise<unknown> = Promise.resolve();
   readonly #known = new Set<string>();
@@ -186,17 +324,30 @@ export class KuloConnections {
   readonly #active = new Map<AbortController, { ticketId: string; connectionId: string }>();
   readonly #updating = new Set<string>();
   readonly #readableInformation = new Set<string>();
+  readonly #mcpOAuthAuthorized = new Set<string>();
   readonly #applicationProbes = new Map<string, { revision: number; at: number; connected: boolean; error?: string }>();
   #vaultState: { available: boolean; error?: string } = { available: true };
   #initialized = false;
   #closed = false;
-  constructor(options: { stateDir: string; vault?: ConnectionVault; executor?: ConnectionExecutionBackend; applications?: ConnectionApplicationBackend; platform?: NodeJS.Platform; onChanged?: () => void | Promise<void> }) {
+  constructor(options: {
+    stateDir: string;
+    vault?: ConnectionVault;
+    executor?: ConnectionExecutionBackend;
+    applications?: ConnectionApplicationBackend;
+    platform?: NodeJS.Platform;
+    onChanged?: () => void | Promise<void>;
+    mcpBaseFetch?: typeof fetch;
+    mcpTransportFactory?: (ctx: McpTransportFactoryContext) => McpTransport | Promise<McpTransport>;
+    mcpIdleMs?: number;
+  }) {
+    this.#stateDir = options.stateDir;
     this.#file = path.join(options.stateDir, "connections.json");
     this.#vault = options.vault ?? new LocalConnectionVault({ stateDir: options.stateDir });
     this.#platform = options.platform ?? process.platform;
     this.#applications = options.applications ?? new LocalConnectionApplications({ stateDir: options.stateDir, platform: this.#platform });
     this.#executor = options.executor ?? new LocalConnectionExecutor({ stateDir: options.stateDir, applications: this.#applications });
     this.#onChanged = options.onChanged;
+    this.#mcpLocks = new McpOAuthRefreshLockManager(options.stateDir);
     this.#doc = { version: 1, connections: {}, inputs: {}, imports: {}, requests: {} };
     if (fs.existsSync(this.#file)) {
       if (fs.lstatSync(this.#file).isSymbolicLink() || !fs.statSync(this.#file).isFile()) fail("连接记录路径无效。", "connection_storage_corrupt", 500);
@@ -206,12 +357,75 @@ export class KuloConnections {
       if (parsed.version !== 1 || !parsed.connections || !parsed.inputs || !parsed.imports || Object.keys(parsed.connections).length > MAX_RECORDS) fail("连接记录格式无效。", "connection_storage_corrupt", 500);
       for (const [id, record] of Object.entries(parsed.connections)) {
         if (identifier(id) !== record.id || !Number.isSafeInteger(record.revision) || record.revision < 1 || !Array.isArray(record.secretFields) || record.secretFields.length > MAX_CREDENTIAL_FIELDS ||
-          new Set(record.secretFields).size !== record.secretFields.length || record.secretFields.some((key) => !credentialKey(key) || record.kind !== "custom" && !SECRET_FIELDS.some((field) => field === key))) fail("连接记录格式无效。", "connection_storage_corrupt", 500);
-        normalizeFields(record);
+          new Set(record.secretFields).size !== record.secretFields.length ||
+          record.secretFields.some((key) => !allowedSecretKeyFor(record.kind, key, record.mcpTransport, record.mcpAuthMode))) fail("连接记录格式无效。", "connection_storage_corrupt", 500);
+        normalizeFields(record, this.#stateDir);
       }
       this.#doc = { ...parsed, requests: parsed.requests ?? {} };
       for (const request of Object.values(this.#doc.requests)) this.#requests.set(request.id, request);
     }
+    this.#mcpPool = new McpConnectionPool({
+      vault: this.#vault,
+      locks: this.#mcpLocks,
+      getBinding: (id) => {
+        const record = this.#doc.connections[id];
+        return record ? binding(record) : undefined;
+      },
+      redact: (text) => this.redact(text),
+      onSecrets: (values) => this.rememberSecrets(values),
+      onAuthorizedChange: (id, authorized) => {
+        if (authorized) this.#mcpOAuthAuthorized.add(id);
+        else this.#mcpOAuthAuthorized.delete(id);
+      },
+      onDiscoveryUpdated: (id, expectedRevision, discovery) => this.#updateMcpDiscoveryCache(id, expectedRevision, discovery),
+      ...(options.mcpIdleMs !== undefined ? { idleMs: options.mcpIdleMs } : {}),
+      ...(options.mcpBaseFetch ? { baseFetch: options.mcpBaseFetch } : {}),
+      ...(options.mcpTransportFactory ? { transportFactory: options.mcpTransportFactory } : {}),
+    });
+    this.mcpOAuth = new McpOAuthSessionManager({
+      getRecord: (id) => {
+        const record = this.#doc.connections[id];
+        return record ? this.#view(record) : undefined;
+      },
+      getBinding: (id) => {
+        const record = this.#doc.connections[id];
+        return record ? binding(record) : undefined;
+      },
+      getClientSecret: async (id) => {
+        const record = this.#doc.connections[id];
+        if (!record?.credentialRef) return undefined;
+        const fields = await this.#vault.get(record.credentialRef);
+        if (!fields || fields.__binding !== binding(record)) return undefined;
+        return fields.clientSecret || undefined;
+      },
+      getChallenge: (id) => this.#mcpPool.getChallenge(id),
+      clearChallenge: (id) => this.#mcpPool.clearChallenge(id),
+      vault: this.#vault,
+      locks: this.#mcpLocks,
+      onSecrets: (values) => this.rememberSecrets(values),
+      onAuthorizedChange: (id, authorized) => {
+        if (authorized) this.#mcpOAuthAuthorized.add(id);
+        else this.#mcpOAuthAuthorized.delete(id);
+      },
+      onCompletedProbe: async (id, expectedRevision, signal) => {
+        await this.#mcpPool.invalidate(id);
+        const current = this.#doc.connections[id];
+        if (!current || current.revision !== expectedRevision) return undefined;
+        const secrets = current.credentialRef ? await this.#secrets(current) : {};
+        const discovery = await this.#mcpPool.test(this.#view(current), secrets, binding(current), signal);
+        return this.#markMcpVerified(id, expectedRevision, discovery);
+      },
+      redact: (text) => this.redact(text),
+      ...(options.mcpBaseFetch ? { baseFetch: options.mcpBaseFetch } : {}),
+    });
+  }
+  getConnectionRecord(id: string): ConnectionRecordView | undefined {
+    const record = this.#doc.connections[id];
+    return record ? this.#view(record) : undefined;
+  }
+  getPendingInput(id: string): ConnectionSetupInput | undefined {
+    const input = this.#doc.inputs[id];
+    return input ? clone(input) : undefined;
   }
   #serialize<T>(work: () => Promise<T>): Promise<T> {
     const run = this.#chain.then(work, work);
@@ -230,12 +444,18 @@ export class KuloConnections {
   }
   async #changed(): Promise<void> { await this.#onChanged?.(); }
   #view(record: StoredConnection): ConnectionRecordView {
-    const fields = normalizeFields(record);
+    const fields = normalizeFields(record, this.#stateDir);
     return clone({ ...fields, id: record.id, revision: record.revision, status: record.status, hasCredential: record.hasCredential,
       secretFields: record.secretFields, createdAt: record.createdAt, updatedAt: record.updatedAt,
       ...(record.error ? { error: this.redact(record.error) } : {}), ...(record.hostFingerprint ? { hostFingerprint: record.hostFingerprint } : {}),
       ...(record.source ? { source: record.source } : {}),
-      ...(record.kind === "custom" && record.category === "information" ? { canReadInformation: this.#readableInformation.has(record.id) } : {}) });
+      ...(record.kind === "custom" && record.category === "information" ? { canReadInformation: this.#readableInformation.has(record.id) } : {}),
+      ...(record.kind === "mcp" ? {
+        ...(record.mcpTools ? { mcpTools: record.mcpTools } : {}),
+        ...(record.mcpToolsUpdatedAt !== undefined ? { mcpToolsUpdatedAt: record.mcpToolsUpdatedAt } : {}),
+        ...(record.mcpServerName ? { mcpServerName: record.mcpServerName } : {}),
+        ...(record.mcpTransport === "http" && (record.mcpAuthMode ?? "oauth") === "oauth" ? { mcpOAuthAuthorized: this.#mcpOAuthAuthorized.has(record.id) } : {}),
+      } : {}) });
   }
   #record(id: string): StoredConnection {
     const record = this.#doc.connections[identifier(id)];
@@ -254,6 +474,18 @@ export class KuloConnections {
       const record = Object.values(this.#doc.connections).find((item) => item.credentialRef === ref);
       if (record?.kind === "custom" && record.category === "information" && fields.__informationReadable === "1") { this.#readableInformation.add(record.id); this.#rememberActualSecrets(fields); }
       else this.#remember(fields);
+      return;
+    }
+    if (ref.startsWith("mcp-oauth:")) {
+      const connectionId = ref.slice("mcp-oauth:".length);
+      const record = this.#doc.connections[connectionId];
+      const parsed = parseMcpOAuthVaultEntry(fields);
+      if (parsed) {
+        this.rememberSecrets(extractMcpOAuthSecrets(parsed));
+        if (record && record.kind === "mcp" && fields.__binding === binding(record) && parsed.tokens?.access_token) {
+          this.#mcpOAuthAuthorized.add(connectionId);
+        }
+      }
       return;
     }
     if (ref.startsWith("durable-secret:")) { if (fields.value) this.rememberSecrets([fields.value]); return; }
@@ -286,7 +518,7 @@ export class KuloConnections {
   async initialize(): Promise<void> {
     if (this.#initialized) return;
     this.#vaultState = await this.#vault.ready();
-    if (Object.values(this.#doc.connections).some((record) => record.hasCredential) || this.#vault.refs && (await this.#vault.refs()).length > 0) {
+    if (Object.values(this.#doc.connections).some((record) => record.hasCredential || record.kind === "mcp") || this.#vault.refs && (await this.#vault.refs()).length > 0) {
       if (!this.#vaultState.available) fail(this.#vaultState.error ?? "本地凭据库无法解锁。", "connection_vault_unavailable", 503);
       try { for (const { ref, fields } of await this.#vault.entries()) this.#rememberStoredEntry(ref, fields); }
       catch { fail("本地凭据库无法解锁，请检查系统密钥库。", "connection_vault_unavailable", 503); }
@@ -329,7 +561,56 @@ export class KuloConnections {
         return application?.status === "needs_attention" || application?.status === "unavailable" ? { ...view, status: "error" as const, error: application.error } : view;
       }).sort((a, b) => b.updatedAt - a.updatedAt),
       inputs: clientId ? Object.values(this.#doc.inputs).filter((input) => input.clientId === clientId && Date.now() - input.createdAt < MAX_INPUT_AGE).map(clone) : [],
-      requests: [...this.#requests.values()].map(clone), vault, applications };
+      requests: [...this.#requests.values()].map(clone), vault, applications, mcpPresets: clone([...MCP_PRESET_CATALOG]) };
+  }
+  async #updateMcpDiscoveryCache(id: string, expectedRevision: number, discovery: McpDiscoverySnapshot): Promise<void> {
+    await this.#serialize(async () => {
+      if (this.#closed) return;
+      const current = this.#doc.connections[id];
+      if (!current || current.kind !== "mcp" || current.revision !== expectedRevision) return;
+      const updated: StoredConnection = {
+        ...current,
+        ...(discovery.serverName ? { mcpServerName: discovery.serverName } : {}),
+        mcpTools: discovery.tools,
+        mcpToolsUpdatedAt: discovery.updatedAt,
+      };
+      this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: updated } });
+    });
+  }
+  async #markMcpVerified(id: string, expectedRevision: number, discovery: McpDiscoverySnapshot): Promise<ConnectionRecordView | undefined> {
+    return this.#serialize(async () => {
+      if (this.#closed) return undefined;
+      const current = this.#doc.connections[id];
+      if (!current || current.kind !== "mcp" || current.revision !== expectedRevision) return undefined;
+      const updated: StoredConnection = {
+        ...current,
+        status: "verified",
+        error: undefined,
+        ...(discovery.serverName ? { mcpServerName: discovery.serverName } : {}),
+        mcpTools: discovery.tools,
+        mcpToolsUpdatedAt: discovery.updatedAt,
+        updatedAt: Date.now(),
+      };
+      this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: updated } });
+      await this.#changed();
+      return this.#view(updated);
+    });
+  }
+  async #markMcpError(id: string, expectedRevision: number, message: string): Promise<ConnectionRecordView | undefined> {
+    return this.#serialize(async () => {
+      if (this.#closed) return undefined;
+      const current = this.#doc.connections[id];
+      if (!current || current.kind !== "mcp" || current.revision !== expectedRevision) return undefined;
+      const updated: StoredConnection = {
+        ...current,
+        status: "error",
+        error: this.redact(message).slice(0, 500),
+        updatedAt: Date.now(),
+      };
+      this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: updated } });
+      await this.#changed();
+      return this.#view(updated);
+    });
   }
   async save(request: ConnectionSaveRequest, source: "form" | "chat" = "form"): Promise<ConnectionRecordView> {
     return this.#serialize(async () => {
@@ -344,14 +625,23 @@ export class KuloConnections {
     const previous = request.id ? this.#record(request.id) : undefined;
     if (previous && request.expectedRevision !== previous.revision) fail("连接已被修改，请刷新后重试。", "connection_conflict", 409);
     if (previous && (previous.kind === "app" || request.kind === "app") && (previous.kind !== request.kind || previous.appId !== request.appId)) fail("应用连接不能更换应用，请使用对应应用入口。", "connection_application_identity_changed", 409);
-    const supplied = normalizedSecrets(request.secrets, request.kind);
+    const draft = { ...request };
+    if (request.kind === "mcp") {
+      if (draft.category === undefined) draft.category = "app";
+      if (draft.mcpTransport === undefined && previous?.kind === "mcp") draft.mcpTransport = previous.mcpTransport;
+      if (draft.mcpAuthMode === undefined && previous?.kind === "mcp" && draft.mcpTransport === "http") draft.mcpAuthMode = previous.mcpAuthMode;
+      if (draft.mcpPresetId === undefined && previous?.kind === "mcp" && draft.mcpTransport === "http" && draft.url === previous.url) draft.mcpPresetId = previous.mcpPresetId;
+      if (draft.credentialFields === undefined && previous?.kind === "mcp" && draft.mcpTransport === "stdio") draft.credentialFields = previous.credentialFields;
+    }
+    const effectiveMcpTransport = request.kind === "mcp" ? (draft.mcpTransport ?? (draft.mcpCommand ? "stdio" : "http")) : undefined;
+    const effectiveMcpAuthMode = request.kind === "mcp" && effectiveMcpTransport === "http" ? (draft.mcpAuthMode ?? (draft.mcpPresetId ? getMcpPreset(draft.mcpPresetId).authMode : "oauth")) : undefined;
+    const supplied = normalizedSecrets(request.secrets, request.kind, effectiveMcpTransport, effectiveMcpAuthMode);
     const oldBinding = previous ? binding(previous) : undefined;
     const stored = previous?.credentialRef ? await this.#vault.get(previous.credentialRef) : undefined;
     if (stored && stored.__binding !== oldBinding) fail("凭据与连接地址不匹配，请重新填写。", "connection_credential_mismatch", 409);
     const priorReadable = previous?.kind === "custom" && previous.category === "information" && stored?.__informationReadable === "1";
     const valueChanged = Object.entries(supplied).some(([key, value]) => (value || undefined) !== (stored?.[key] || undefined));
     if (stored) { if (priorReadable) this.#rememberActualSecrets(stored); else this.#remember(stored); }
-    const draft = { ...request };
     if (request.kind === "custom") {
       if (draft.category === undefined) draft.category = previous?.category ?? "credential";
       if (draft.typeLabel === undefined) draft.typeLabel = previous?.typeLabel;
@@ -361,8 +651,8 @@ export class KuloConnections {
         const seen = new Set(schema.map((field) => field.key));
         draft.credentialFields = [...schema, ...Object.keys(supplied).filter((key) => !seen.has(key)).map((key) => ({ key, label: fieldLabel(key) }))];
       }
-    } else if (draft.credentialFields === undefined && previous?.credentialFields) draft.credentialFields = previous.credentialFields;
-    const fields = normalizeFields(draft);
+    } else if (request.kind !== "mcp" && draft.credentialFields === undefined && previous?.credentialFields) draft.credentialFields = previous.credentialFields;
+    const fields = normalizeFields(draft, this.#stateDir);
     if (fields.kind === "app") {
       const app = getConnectionApplication(fields.appId);
       if (app.authentication === "macos" && this.#platform !== "darwin") fail("此应用需要在 Mac 上连接。", "connection_application_unavailable", 503);
@@ -370,14 +660,14 @@ export class KuloConnections {
       if (Object.values(this.#doc.connections).some((item) => item.kind === "app" && item.appId === fields.appId && item.id !== previous?.id)) fail("此应用已有连接，请编辑现有连接。", "connection_application_exists", 409);
     }
     const schemaKeys = new Set(fields.credentialFields?.map((field) => field.key));
-    if (fields.kind === "custom" && Object.keys(supplied).some((key) => !schemaKeys.has(key))) fail("凭据字段与卡片定义不匹配。");
+    if ((fields.kind === "custom" || fields.kind === "mcp") && Object.keys(supplied).some((key) => !schemaKeys.has(key))) fail("凭据字段与卡片定义不匹配。");
     if (!previous && Object.keys(this.#doc.connections).length >= MAX_RECORDS) fail("连接数量已达到上限。");
     const id = previous?.id ?? `connection-${randomUUID()}`;
     const newBinding = binding(fields);
     const sameIdentity = oldBinding === newBinding;
     let secrets: Record<string, string> = {};
     if (previous?.credentialRef && (sameIdentity || previous.status === "incomplete" && completesIdentity(previous, fields))) {
-      secrets = Object.fromEntries(Object.entries(stored ?? {}).filter(([key, value]) => credentialKey(key) && value && (fields.kind === "custom" ? schemaKeys.has(key) : SECRET_FIELDS.some((field) => field === key))));
+      secrets = Object.fromEntries(Object.entries(stored ?? {}).filter(([key, value]) => credentialKey(key) && value && (fields.kind === "custom" || fields.kind === "mcp" ? schemaKeys.has(key) : SECRET_FIELDS.some((field) => field === key))));
     }
     for (const [key, value] of Object.entries(supplied)) { if (value) secrets[key] = value; else delete secrets[key]; }
     if (fields.kind === "ssh") {
@@ -398,9 +688,10 @@ export class KuloConnections {
     if (!informationReadable) this.#remember(secrets);
     // Public card descriptions may not become a second copy of an encrypted value.
     const metadataHasSecret = (value: string) => this.#metadataHasSecret(value) || informationReadable && redactSensitiveText(value, Object.values(secrets).filter((secret) => secret.length >= 4 || secret === value)) !== value;
-    for (const key of ["name", "username", "host", "url", "headerName", "typeLabel", "instructions"] as const) if (fields[key] && metadataHasSecret(fields[key]!)) fail("连接资料中包含凭据，请把秘密值放入专用输入框。");
+    for (const key of ["name", "username", "host", "url", "headerName", "typeLabel", "instructions", "mcpCommand", "mcpCwd", "mcpOAuthClientId", "mcpOAuthScope"] as const) if (fields[key] && metadataHasSecret(fields[key]!)) fail("连接资料中包含凭据，请把秘密值放入专用输入框。");
+    for (const arg of fields.mcpArgs ?? []) if (arg && metadataHasSecret(arg)) fail("MCP 启动参数中包含凭据，请通过环境变量凭据字段安全录入。");
     for (const field of fields.credentialFields ?? []) if (metadataHasSecret(field.key) || metadataHasSecret(field.label)) fail("字段名称中包含凭据，请使用普通名称。");
-    const secretFields = fields.kind === "custom" ? [...schemaKeys].filter((key) => Boolean(secrets[key])) : SECRET_FIELDS.filter((key) => Boolean(secrets[key]));
+    const secretFields = fields.kind === "custom" || fields.kind === "mcp" ? [...schemaKeys].filter((key) => Boolean(secrets[key])) : SECRET_FIELDS.filter((key) => Boolean(secrets[key]));
     if (fields.kind === "app") {
       const app = getConnectionApplication(fields.appId);
       if (app.authentication === "token" && !secrets.apiKey) fail("请填写应用访问令牌。", "connection_credential_missing", 409);
@@ -413,19 +704,42 @@ export class KuloConnections {
       }
     }
     const ref = `connection:${id}`;
+    const oauthRef = mcpOAuthVaultRef(id);
+    const dropMcpOAuth = Boolean(previous?.kind === "mcp" && (!sameIdentity || fields.kind !== "mcp" || fields.mcpTransport !== "http" || fields.mcpAuthMode !== "oauth"));
+    let previousOAuth: Record<string, string> | undefined;
     options.signal?.throwIfAborted();
     this.#updating.add(id);
-    let vaultChanged = false, committed = false;
+    let vaultChanged = false, oauthVaultChanged = false, committed = false;
     try {
       if (previous) this.#revokeConnection(id, options.inputId ? `connection-input:${options.inputId}` : undefined);
+      if (previous?.kind === "mcp") {
+        await this.mcpOAuth.cancelForConnection(id);
+        await this.#mcpPool.invalidate(id);
+      }
+      if (dropMcpOAuth) {
+        await this.#mcpLocks.withLock(id, async () => {
+          previousOAuth = await this.#vault.get(oauthRef);
+          if (previousOAuth) {
+            await this.#vault.delete(oauthRef);
+            oauthVaultChanged = true;
+          }
+          this.#mcpOAuthAuthorized.delete(id);
+        });
+      }
       if (secretFields.length) { vaultChanged = Boolean(previous?.credentialRef); await this.#vault.set(ref, { ...secrets, __binding: newBinding, ...(informationReadable ? { __informationReadable: "1" } : {}) }); vaultChanged = true; }
       else if (previous?.credentialRef) { vaultChanged = true; await this.#vault.delete(previous.credentialRef); }
       this.#assertOpen(); options.signal?.throwIfAborted();
       const now = Date.now();
+      const keepMcpMeta = fields.kind === "mcp" && sameIdentity && previous?.kind === "mcp";
+      const oauthAuthorized = fields.kind === "mcp" && sameIdentity && this.#mcpOAuthAuthorized.has(id);
       const record: StoredConnection = { ...fields, id, revision: (previous?.revision ?? 0) + 1,
-        status: fields.kind === "app" ? "verified" : usable(fields, secrets) ? "saved" : "incomplete", hasCredential: secretFields.length > 0, secretFields,
+        status: fields.kind === "app" ? "verified" : usable(fields, secrets, oauthAuthorized) ? (keepMcpMeta && previous.status === "verified" ? "verified" : "saved") : "incomplete",
+        hasCredential: secretFields.length > 0, secretFields,
         createdAt: previous?.createdAt ?? now, updatedAt: now, source: previous?.source ?? source,
         ...(secretFields.length ? { credentialRef: ref } : {}),
+        ...(keepMcpMeta && previous.mcpTools ? { mcpTools: previous.mcpTools } : {}),
+        ...(keepMcpMeta && previous.mcpToolsUpdatedAt !== undefined ? { mcpToolsUpdatedAt: previous.mcpToolsUpdatedAt } : {}),
+        ...(keepMcpMeta && previous.mcpServerName ? { mcpServerName: previous.mcpServerName } : {}),
         ...(sameIdentity && previous?.trustedHostFingerprint ? { trustedHostFingerprint: previous.trustedHostFingerprint, hostFingerprint: previous.hostFingerprint } : {}) };
       this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: record } });
       committed = true;
@@ -434,9 +748,17 @@ export class KuloConnections {
       this.#scans.delete(id);
       return this.#view(record);
     } catch (error) {
-      if (vaultChanged && !committed) {
-        try { if (previous?.credentialRef && stored) await this.#vault.set(previous.credentialRef, stored); else await this.#vault.delete(ref); }
-        catch { this.close(); fail("未能安全更新凭据，连接服务已停止，请检查本地存储。", "connection_storage_failed", 503); }
+      if ((vaultChanged || oauthVaultChanged) && !committed) {
+        try {
+          if (vaultChanged) {
+            if (previous?.credentialRef && stored) await this.#vault.set(previous.credentialRef, stored); else await this.#vault.delete(ref);
+          }
+          if (oauthVaultChanged && previousOAuth) {
+            await this.#vault.set(oauthRef, previousOAuth);
+            const restored = parseMcpOAuthVaultEntry(previousOAuth);
+            if (restored?.tokens?.access_token) this.#mcpOAuthAuthorized.add(id);
+          }
+        } catch { this.close(); fail("未能安全更新凭据，连接服务已停止，请检查本地存储。", "connection_storage_failed", 503); }
       }
       throw error;
     } finally { this.#updating.delete(id); }
@@ -447,7 +769,10 @@ export class KuloConnections {
       const previous = this.#record(request.id);
       if (request.expectedRevision !== previous.revision) fail("连接已被修改，请刷新后重试。", "connection_conflict", 409);
       if (previous.kind === "app") fail("预置应用请通过对应应用入口管理。", "connection_application_identity_changed", 409);
-      if (request.category !== undefined && (request.category !== "credential" && request.category !== "information" || request.category === "information" && previous.kind !== "custom")) fail("此连接类型不支持该分类。");
+      if (previous.kind === "mcp") {
+        if (request.category !== undefined && request.category !== "app") fail("MCP 连接不能修改分类。");
+        if (request.credentialFields !== undefined && previous.mcpTransport === "http") fail("远程 MCP 连接不能修改凭据字段定义。");
+      } else if (request.category !== undefined && (request.category !== "credential" && request.category !== "information" || request.category === "information" && previous.kind !== "custom")) fail("此连接类型不支持该分类。");
       const schema = request.credentialFields !== undefined ? credentialSchema(request.credentialFields)! : undefined;
       const existingSchema = previous.credentialFields ?? previous.secretFields.map((key) => ({ key, label: fieldLabel(key) }));
       const existingKeys = new Set(existingSchema.map((field) => field.key));
@@ -461,9 +786,17 @@ export class KuloConnections {
     });
   }
   async remove(id: string): Promise<void> {
+    await this.mcpOAuth.cancelForConnection(id);
+    await this.#mcpPool.invalidate(id);
     await this.#serialize(async () => {
       const record = this.#record(id);
       this.#revokeConnection(id);
+      if (record.kind === "mcp") {
+        await this.#mcpLocks.withLock(id, async () => {
+          await this.#vault.delete(mcpOAuthVaultRef(id));
+          this.#mcpOAuthAuthorized.delete(id);
+        });
+      }
       if (record.credentialRef) await this.#vault.delete(record.credentialRef);
       const next = clone(this.#doc);
       delete next.connections[id];
@@ -484,8 +817,26 @@ export class KuloConnections {
       if (appId && (request.kind !== undefined && request.kind !== "app" || request.category !== undefined && request.category !== "app" || existing && existing.appId !== appId)) fail("请使用对应的预置应用入口。");
       const target = existing ?? (appId ? Object.values(this.#doc.connections).find((record) => record.kind === "app" && record.appId === appId) : undefined);
       const app = appId ? getConnectionApplication(appId) : undefined;
-      const fields = normalizeFields({ ...target, ...request, name: app?.name ?? request.name ?? target?.name ?? "新连接", kind: app ? "app" : request.kind ?? target?.kind ?? "ssh", ...(app ? { appId: app.id, category: "app" } : {}) });
-      for (const key of ["name", "username", "host", "url", "headerName", "typeLabel", "instructions"] as const) if (fields[key] && this.#metadataHasSecret(fields[key]!)) fail("请通过保密输入框填写凭据。");
+      const preset = !app && (request.kind === "mcp" || target?.kind === "mcp" || request.mcpPresetId) && (request.mcpPresetId ?? target?.mcpPresetId)
+        ? getMcpPreset(request.mcpPresetId ?? target?.mcpPresetId) : undefined;
+      const kind: ConnectionKind = app ? "app" : preset ? "mcp" : request.kind ?? target?.kind ?? "ssh";
+      const merged: ConnectionFields = {
+        ...target,
+        ...request,
+        name: app?.name ?? request.name ?? target?.name ?? preset?.name ?? "新连接",
+        kind,
+        ...(app ? { appId: app.id, category: "app" } : {}),
+        ...(kind === "mcp" ? {
+          category: "app",
+          mcpTransport: request.mcpTransport ?? target?.mcpTransport ?? preset?.transport ?? "http",
+          ...(preset && !(request.url ?? target?.url) ? { url: preset.url } : {}),
+          ...(preset && !(request.mcpAuthMode ?? target?.mcpAuthMode) ? { mcpAuthMode: preset.authMode } : {}),
+          ...(preset?.headerName && !(request.headerName ?? target?.headerName) ? { headerName: preset.headerName } : {}),
+        } : {}),
+      };
+      const fields = normalizeFields(merged, this.#stateDir);
+      for (const key of ["name", "username", "host", "url", "headerName", "typeLabel", "instructions", "mcpCommand", "mcpCwd", "mcpOAuthClientId", "mcpOAuthScope"] as const) if (fields[key] && this.#metadataHasSecret(fields[key]!)) fail("请通过保密输入框填写凭据。");
+      for (const arg of fields.mcpArgs ?? []) if (arg && this.#metadataHasSecret(arg)) fail("启动参数不能包含凭据。");
       for (const field of fields.credentialFields ?? []) if (this.#metadataHasSecret(field.key) || this.#metadataHasSecret(field.label)) fail("字段名称中包含凭据，请使用普通名称。");
       const input: ConnectionSetupInput = { ...fields, id: `connection-input-${randomUUID()}`, clientId,
         ...(target ? { connectionId: target.id, expectedRevision: target.revision } : {}), status: "pending", createdAt: Date.now() };
@@ -626,7 +977,7 @@ export class KuloConnections {
     for (const id of ids) { grant.ids.add(id); grant.revisions.set(id, versions.get(id)!); }
     this.#grants.set(ticketId, grant);
   }
-  hasGrant(ticketId: string, runEpoch: number, connectionId: string): boolean { const grant = this.#grants.get(ticketId); return !this.#updating.has(connectionId) && grant?.runEpoch === runEpoch && grant.ids.has(connectionId) && grant.revisions.get(connectionId) === this.#doc.connections[connectionId]?.revision; }
+  hasGrant(ticketId: string, runEpoch: number, connectionId: string): boolean { const grant = this.#grants.get(ticketId); return Boolean(!this.#updating.has(connectionId) && grant && grant.runEpoch === runEpoch && grant.ids.has(connectionId) && grant.revisions.get(connectionId) === this.#doc.connections[connectionId]?.revision); }
   revoke(ticketId: string): void {
     this.#grants.delete(ticketId);
     for (const [controller, active] of this.#active) if (active.ticketId === ticketId) controller.abort();
@@ -679,6 +1030,7 @@ export class KuloConnections {
   }
   async #secrets(record: StoredConnection, information = false): Promise<ConnectionSecrets> {
     if (record.kind === "app" && getConnectionApplication(record.appId).authentication === "macos" && !record.credentialRef) return {};
+    if (record.kind === "mcp" && !record.credentialRef && (record.mcpTransport === "stdio" || (record.mcpAuthMode ?? "oauth") === "none" || (record.mcpAuthMode ?? "oauth") === "oauth")) return {};
     if (!record.credentialRef) fail("连接凭据尚未填写。", "connection_credential_missing", 409);
     const fields = await this.#vault.get(record.credentialRef);
     if (!fields || fields.__binding !== binding(record)) fail("凭据与当前连接不匹配，请重新填写。", "connection_credential_mismatch", 409);
@@ -713,8 +1065,13 @@ export class KuloConnections {
       if (!action) fail("此应用不支持该操作。", "connection_application_action_invalid", 400);
       if (record.status !== "verified" || this.#applicationProbes.get(record.id)?.connected === false) fail("请先连接并完成此应用的授权。", "connection_application_not_ready", 409);
       if (options.readOnly && !action.readOnly) fail("只读任务不能执行此应用的写入操作。", "connection_read_only", 403);
+    } else if (record.kind === "mcp") {
+      if (operation.kind !== "mcp") fail("MCP 连接请使用 operation='mcp' 执行 list_tools 或 call_tool。", "connection_mcp_operation_invalid", 400);
+      if (record.mcpTransport === "http" && (record.mcpAuthMode ?? "oauth") === "oauth" && !this.#mcpOAuthAuthorized.has(record.id)) {
+        fail("请先在连接设置中完成此 MCP 应用的 OAuth 授权登录。", "connection_mcp_auth_required", 401);
+      }
     } else {
-      if (operation.kind === "app") fail("此连接不能执行预置应用操作。", "connection_application_action_invalid", 400);
+      if (operation.kind === "app" || operation.kind === "mcp") fail("此连接不支持该应用操作。", "connection_application_action_invalid", 400);
       if (options.readOnly && (operation.kind === "ssh" || operation.kind === "http" && !["GET", "HEAD"].includes(operation.method ?? "GET"))) fail("只读任务不能执行此连接操作。", "connection_read_only", 403);
     }
     if (record.kind === "ssh" && !record.trustedHostFingerprint) fail("请先在连接授权页确认服务器指纹。", "connection_host_untrusted", 409);
@@ -739,6 +1096,11 @@ export class KuloConnections {
         const labels = new Map(record.credentialFields?.map((field) => [field.key, field.label]));
         return { kind: "information", output: JSON.stringify({ name: record.name, fields: record.secretFields.map((key) => ({ label: labels.get(key) ?? key, value: this.redact(secrets[key] ?? "") })) }) };
       }
+      if (record.kind === "mcp" && operation.kind === "mcp") {
+        const result = await this.#mcpPool.execute(this.#view(record), secrets, binding(record), operation, { readOnly: options.readOnly, signal });
+        if (!this.hasGrant(ticketId, runEpoch, connectionId) || signal.aborted) fail("任务连接权限已撤销。", "connection_access_revoked", 403);
+        return { ...result, output: this.redact(result.output) };
+      }
       const result = await this.#executor.execute(this.#view(record), secrets, operation, signal);
       if (!this.hasGrant(ticketId, runEpoch, connectionId) || signal.aborted) fail("任务连接权限已撤销。", "connection_access_revoked", 403);
       return { ...result, output: this.redact(result.output) };
@@ -746,6 +1108,10 @@ export class KuloConnections {
       const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
       const inputOrResourceError = typeof code === "string" && /(?:invalid_input|invalid_parameters|action_unsupported|resource_unavailable|target_unavailable|mailbox_unavailable|send_rejected|rate_limited)$/.test(code);
       if (record.kind === "app" && !inputOrResourceError && !signal.aborted && !this.#closed && this.hasGrant(ticketId, runEpoch, connectionId)) await this.#applicationFailed(record, typeof code === "string" && code.startsWith("connection_") && error instanceof Error ? error.message : undefined);
+      if (record.kind === "mcp" && code === "connection_mcp_auth_required" && !signal.aborted && !this.#closed) {
+        this.#mcpOAuthAuthorized.delete(record.id);
+        await this.#markMcpError(record.id, record.revision, "授权已过期或权限不足，请重新登录授权。");
+      }
       if (error && typeof error === "object" && "code" in error && typeof error.code === "string" && error.code.startsWith("connection_")) throw Object.assign(new Error(this.redact(error instanceof Error ? error.message : "连接操作失败。")), { code: error.code, status: "status" in error ? error.status : 400 });
       fail("连接操作未完成，请检查连接与授权状态。", "connection_execution_failed", 502);
     } finally { this.#active.delete(controller); }
@@ -782,6 +1148,24 @@ export class KuloConnections {
         await this.#changed();
         return { connection: this.#view(updated) };
       });
+    }
+    if (record.kind === "mcp") {
+      try {
+        const secrets = await this.#secrets(record);
+        signal.throwIfAborted();
+        const discovery = await this.#mcpPool.test(this.#view(record), secrets, binding(record), signal);
+        signal.throwIfAborted();
+        const updated = await this.#markMcpVerified(id, record.revision, discovery);
+        if (!updated) fail("连接已被修改，请重新测试。", "connection_conflict", 409);
+        return { connection: updated };
+      } catch (error) {
+        if (signal.aborted) throw error;
+        const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+        if (code === "connection_mcp_auth_required") this.#mcpOAuthAuthorized.delete(record.id);
+        const message = error instanceof Error ? error.message : "MCP 连接测试未通过，请检查地址、网络和授权状态。";
+        const updated = await this.#markMcpError(id, record.revision, message);
+        return { connection: updated ?? this.#view(this.#record(id)) };
+      }
     }
     if (!record.hasCredential || record.status === "incomplete" && (!record.host && !record.url || !record.username && record.kind !== "api-key")) fail("请先补全连接信息和凭据。", "connection_incomplete", 409);
     const revision = record.revision;
@@ -828,5 +1212,19 @@ export class KuloConnections {
       return this.#view(updated);
     });
   }
-  close(): void { this.#closed = true; for (const controller of this.#active.keys()) controller.abort(); this.#grants.clear(); this.#requests.clear(); this.#scans.clear(); }
+  async closeAsync(): Promise<void> {
+    await this.mcpOAuth.close().catch(() => undefined);
+    await this.#mcpPool.close().catch(() => undefined);
+    await closeMcpHttpAgents().catch(() => undefined);
+    this.close();
+  }
+  close(): void {
+    this.#closed = true;
+    for (const controller of this.#active.keys()) controller.abort();
+    void this.mcpOAuth.close().catch(() => undefined);
+    void this.#mcpPool.close().catch(() => undefined);
+    this.#grants.clear();
+    this.#requests.clear();
+    this.#scans.clear();
+  }
 }

@@ -4,6 +4,7 @@ import type { TicketCardView } from "@kulo/protocol";
 import { KuloTaskRail } from "../tasks/task-rail";
 import {
   ComputerPreviewModal,
+  formatModalSessionLabels,
   TaskCardComputerPreview,
   type ComputerPreviewActions,
 } from "./computer-preview";
@@ -56,6 +57,7 @@ const renderCardPreview = (value: ComputerPreviewState, sessions = value.session
     <TaskCardComputerPreview
       ticketId="ticket-1"
       ticketTitle="更新文档"
+      showInlineControls
       sessions={sessions}
       state={value}
       client={client}
@@ -79,15 +81,24 @@ const ticket = (id: string, title: string): TicketCardView => ({
 });
 
 describe("embedded task card operation preview", () => {
-  it("renders a non-modal embedded preview without repeating the task title or announcing frames", () => {
-    const html = renderCardPreview(state);
+  it("renders a compact embedded preview with overlaid fullscreen zoom and no secondary header or inline session switcher", () => {
+    const secondOnT1 = {
+      ...desktopSession,
+      id: "browser-1b",
+      tool: "browser" as const,
+      app: undefined,
+    };
+    const html = renderCardPreview(state, [desktopSession, secondOnT1]);
     expect(html).toContain('aria-label="设备操作预览：更新文档"');
     expect(html).toContain('aria-label="停止任务：更新文档"');
     expect(html).toContain('aria-label="放大操作预览：更新文档"');
     expect(html).toContain('aria-label="收起操作预览：更新文档"');
+    expect(html).toContain("kulo-task-preview-viewport-frame");
+    expect(html).toContain("kulo-task-preview-zoom-button");
     expect(html).toContain('alt="应用窗口截图"');
-    expect(html).toContain("TextEdit · Mac");
-    expect(html).not.toContain(">更新文档<");
+    expect(html).not.toContain("kulo-task-preview-bar");
+    expect(html).not.toContain("kulo-computer-preview-sessions");
+    expect(html).not.toContain("操作截图");
     expect(html).not.toMatch(/role="dialog"|aria-modal|autofocus|aria-live/);
   });
 
@@ -130,7 +141,7 @@ describe("embedded task card operation preview", () => {
     expect(browser).not.toContain("检查权限");
   });
 
-  it("embeds previews into their matching Worker cards in KuloTaskRail with mutual exclusion and no nested buttons", () => {
+  it("embeds previews directly between the card title bar and status footer without nested buttons or redundant archive controls", () => {
     const multiState: ComputerPreviewState = {
       ...EMPTY_PREVIEW_STATE,
       connection: "connected",
@@ -155,7 +166,13 @@ describe("embedded task card operation preview", () => {
     expect(html).toContain('aria-label="设备操作预览：更新文档"');
     expect(html).toContain('aria-label="收起操作预览：搜索 B 站视频"');
     expect(html).toContain('aria-label="展开操作预览：更新文档"');
-    expect(html).toContain("Macmini · 实时画面");
+    expect(html).toContain('aria-label="放大操作预览：搜索 B 站视频"');
+    expect(html).not.toContain('aria-label="归档任务：搜索 B 站视频"');
+    expect(html).not.toContain("Macmini · 实时画面");
+    expect(html).toContain('class="kulo-task-device-name" title="Macmini">Macmini<');
+    // Order: title row -> preview viewport -> status & duration footer
+    expect(html.indexOf("kulo-task-card-head")).toBeLessThan(html.indexOf("kulo-task-preview-viewport-frame"));
+    expect(html.indexOf("kulo-task-preview-viewport-frame")).toBeLessThan(html.indexOf("kulo-task-card-preview-foot"));
     for (const button of html.match(/<button\b[\s\S]*?<\/button>/g) ?? []) {
       expect(button.match(/<button\b/g)).toHaveLength(1);
     }
@@ -175,10 +192,22 @@ describe("embedded task card operation preview", () => {
     expect(html).not.toContain("暂无后台任务");
   });
 
-  it("renders ComputerPreviewModal when closed without stray dialog content", () => {
+  it("renders ComputerPreviewModal when closed without stray dialog content and disambiguates duplicate modal session labels", () => {
     const closed = renderToStaticMarkup(
       <ComputerPreviewModal state={state} client={client} connected onStop={async () => {}} />,
     );
     expect(closed).not.toContain("关闭放大预览");
+
+    const labels = formatModalSessionLabels(
+      [
+        { ...browserSession, id: "browser-mbp", deviceName: "MacBook Pro" },
+        { ...desktopSession, id: "calc-mbp", deviceName: "MacBook Pro", app: "Calculator" },
+        { ...desktopSession, id: "calc-mini", ticketId: "ticket-2", deviceName: "MacMini", app: "Calculator" },
+      ],
+      (zh) => zh,
+    );
+    expect(labels.get("browser-mbp")).toBe("浏览器");
+    expect(labels.get("calc-mbp")).toBe("Calculator · MacBook Pro");
+    expect(labels.get("calc-mini")).toBe("Calculator · MacMini");
   });
 });

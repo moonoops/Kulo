@@ -243,6 +243,49 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
             paramsObj = parsed as Record<string, unknown>;
           }
           operation = { kind: "app", action, ...(paramsObj ? { params: paramsObj } : {}) };
+        } else if (opKind === "mcp") {
+          const action = publicText(args.action, "MCP 操作", 32)!;
+          if (action !== "list_tools" && action !== "call_tool") fail("invalid_task_tool_arguments", "MCP 操作仅支持 list_tools 或 call_tool。");
+          let paramsObj: Record<string, unknown> = {};
+          if (args.params_json !== undefined) {
+            const raw = publicText(args.params_json, "MCP 参数", 65536)!;
+            let parsed: unknown;
+            try { parsed = JSON.parse(raw); } catch { fail("invalid_task_tool_arguments", "MCP 参数必须是合法 JSON 对象。"); }
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) fail("invalid_task_tool_arguments", "MCP 参数必须是 JSON 对象。");
+            const pending: unknown[] = [parsed];
+            while (pending.length) {
+              const node = pending.pop();
+              if (!node || typeof node !== "object") continue;
+              for (const [k, v] of Object.entries(node)) {
+                if (k === "__proto__" || k === "prototype" || k === "constructor") fail("invalid_task_tool_arguments", "MCP 参数包含不允许的字段。");
+                pending.push(v);
+              }
+            }
+            paramsObj = parsed as Record<string, unknown>;
+          }
+          if (action === "list_tools") {
+            if (Object.keys(paramsObj).some((k) => !["query", "refresh", "limit"].includes(k))) fail("invalid_task_tool_arguments", "list_tools 仅支持 query、refresh、limit。");
+            if (paramsObj.query !== undefined && (typeof paramsObj.query !== "string" || paramsObj.query.length > 256)) fail("invalid_task_tool_arguments", "query 无效。");
+            if (paramsObj.refresh !== undefined && typeof paramsObj.refresh !== "boolean") fail("invalid_task_tool_arguments", "refresh 无效。");
+            if (paramsObj.limit !== undefined && (typeof paramsObj.limit !== "number" || !Number.isSafeInteger(paramsObj.limit) || paramsObj.limit < 1 || paramsObj.limit > 30)) fail("invalid_task_tool_arguments", "limit 无效。");
+            operation = {
+              kind: "mcp",
+              action: "list_tools",
+              ...(paramsObj.query !== undefined ? { query: paramsObj.query } : {}),
+              ...(paramsObj.refresh !== undefined ? { refresh: paramsObj.refresh } : {}),
+              ...(paramsObj.limit !== undefined ? { limit: paramsObj.limit } : {}),
+            };
+          } else {
+            if (Object.keys(paramsObj).some((k) => k !== "tool" && k !== "arguments")) fail("invalid_task_tool_arguments", "call_tool 仅支持 tool 与 arguments。");
+            if (typeof paramsObj.tool !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(paramsObj.tool)) fail("invalid_task_tool_arguments", "MCP 工具名无效。");
+            if (paramsObj.arguments !== undefined && (!paramsObj.arguments || typeof paramsObj.arguments !== "object" || Array.isArray(paramsObj.arguments))) fail("invalid_task_tool_arguments", "MCP 工具 arguments 必须是 JSON 对象。");
+            operation = {
+              kind: "mcp",
+              action: "call_tool",
+              tool: paramsObj.tool,
+              ...(paramsObj.arguments !== undefined ? { arguments: paramsObj.arguments as Record<string, unknown> } : {}),
+            };
+          }
         } else if (opKind === "information") {
           if (args.action !== "read") fail("invalid_task_tool_arguments", "普通资料仅支持 action=read。");
           operation = { kind: "information", action: "read" };

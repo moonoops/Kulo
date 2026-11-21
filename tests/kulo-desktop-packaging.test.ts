@@ -5,7 +5,8 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createReleaseManifest, readReleaseIdentity, readReleaseManifest, verifyRelease, writeReleaseManifest } from "@kulo/recovery";
-import { assertClosedLinks, finalizePackagedRelease, parseCodeSigningIdentities, prepareMacAgentClis, prepareRecoveryRuntime, preserveConnectorBroker, repairDeployedSelfLink, resolveMacSignIdentity, signMacAppBundle, verifyRecoveryCleanupRuntime, withPreservedWorkspaceState } from "../packages/desktop/scripts/package.mjs";
+import { assertClosedLinks, finalizePackagedRelease, parseCodeSigningIdentities, prepareMacAgentClis, prepareRecoveryRuntime, preserveConnectorBroker, repairDeployedSelfLink, resolveDesktopChannel, resolveMacSignIdentity, signMacAppBundle, verifyRecoveryCleanupRuntime, withPreservedWorkspaceState } from "../packages/desktop/scripts/package.mjs";
+import { resolveDesktopAppIdentity } from "../packages/desktop/src/desktop-config.js";
 
 const temporary: string[] = [];
 const desktopRoot = fileURLToPath(new URL("../packages/desktop/", import.meta.url)).replace(/\/$/, "");
@@ -406,5 +407,37 @@ describe("macOS app bundle code signing", () => {
       signIdentity: "Developer ID Application: Example Corp (TEAM123456)",
       run: lockedExec,
     })).rejects.toThrow("errSecInteractionNotAllowed");
+
+    // Release channel ad-hoc signing uses the release bundle identifier.
+    const releaseCalls: Array<{ file: string; args: string[] }> = [];
+    await signMacAppBundle("/tmp/Kulo.app", {
+      signIdentity: "adhoc",
+      appId: "io.kulo.desktop",
+      run: vi.fn(async (file: string, args: string[]) => {
+        releaseCalls.push({ file, args });
+        return { stdout: "", stderr: "" };
+      }),
+    });
+    expect(releaseCalls[0]?.args).toEqual(["--force", "--deep", "--sign", "-", "--preserve-metadata=entitlements", "--identifier", "io.kulo.desktop", "/tmp/Kulo.app"]);
+  });
+
+  it("resolves dev and release desktop packaging channels and runtime identities cleanly", async () => {
+    expect(resolveDesktopChannel({})).toEqual({ channel: "dev", appName: "Kulo Dev", appId: "io.kulo.desktop.dev" });
+    expect(resolveDesktopChannel({ channel: "dev" })).toEqual({ channel: "dev", appName: "Kulo Dev", appId: "io.kulo.desktop.dev" });
+    expect(resolveDesktopChannel({ channel: "release" })).toEqual({ channel: "release", appName: "Kulo", appId: "io.kulo.desktop" });
+    expect(() => resolveDesktopChannel({ channel: "beta" })).toThrow("无效的桌面发布通道");
+
+    const dir = await fixture();
+    const devManifest = path.join(dir, "dev-package.json");
+    const releaseManifest = path.join(dir, "release-package.json");
+    await fs.writeFile(devManifest, JSON.stringify({ productName: "Kulo Dev", kuloChannel: "dev" }));
+    await fs.writeFile(releaseManifest, JSON.stringify({ productName: "Kulo", kuloChannel: "release" }));
+
+    expect(resolveDesktopAppIdentity(devManifest)).toEqual({
+      channel: "dev", appName: "Kulo Dev", bundleId: "io.kulo.desktop.dev", sessionPartition: "persist:kulo-dev",
+    });
+    expect(resolveDesktopAppIdentity(releaseManifest)).toEqual({
+      channel: "release", appName: "Kulo", bundleId: "io.kulo.desktop", sessionPartition: "persist:kulo",
+    });
   });
 });

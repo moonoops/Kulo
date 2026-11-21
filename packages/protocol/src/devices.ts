@@ -8,6 +8,7 @@ export interface DeviceSystemInfo {
   cpu: string;
   memoryBytes: number;
   ips: string[];
+  model?: string;
 }
 
 export function isDeviceSystemInfo(value: unknown): value is DeviceSystemInfo {
@@ -15,6 +16,7 @@ export function isDeviceSystemInfo(value: unknown): value is DeviceSystemInfo {
   const info = value as DeviceSystemInfo;
   return (["hostname", "platform", "arch", "release", "cpu"] as const).every((key) =>
     typeof info[key] === "string" && info[key].length <= 256 && !/[\x00-\x1f]/.test(info[key])) &&
+    (info.model === undefined || (typeof info.model === "string" && info.model.length <= 256 && !/[\x00-\x1f]/.test(info.model))) &&
     Number.isSafeInteger(info.memoryBytes) && info.memoryBytes >= 0 && Array.isArray(info.ips) && info.ips.length <= 128 &&
     info.ips.every((ip) => typeof ip === "string" && ip.length <= 100 && !/[\x00-\x20]/.test(ip));
 }

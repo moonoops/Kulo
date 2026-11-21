@@ -11,7 +11,10 @@ import {
   safeConnectionInputError,
   visibleConnectionInputs,
 } from "./connection-setup-inputs";
-import { ConnectionsModule, applicationStatusLabel, connectionAddress, connectionCategory, connectionStatusLabel } from "./connections-module";
+import { ConnectionsModule, applicationStatusLabel, connectionAddress, connectionCategory, connectionStatusLabel, mcpConnectionStatus } from "./connections-module";
+import { ConnectionIcon } from "./connection-icon";
+import { AddAppModal } from "./mcp-add-modal";
+import { McpOAuthModal } from "./mcp-oauth-modal";
 import { checkConnectionFollowup, connectionFollowupResult } from "./connection-followup";
 import { kuloRest } from "../../kulo-api";
 import { getSettingsAssistantShortcuts } from "./settings-assistant-actions";
@@ -505,5 +508,209 @@ describe("ambient awareness controls inside connections", () => {
     expect(fullEcosystemHtml).toContain("已连接 · 18 设备");
     expect(fullEcosystemHtml).toContain("飞书 (lark-cli)");
     expect(fullEcosystemHtml).toContain("已连接 · 2 个组织");
+  });
+});
+
+describe("MCP app connections UI", () => {
+  const mcpLinear: ConnectionRecordView = {
+    id: "mcp-linear",
+    name: "Linear",
+    kind: "mcp",
+    category: "app",
+    mcpTransport: "http",
+    mcpPresetId: "linear",
+    url: "https://mcp.linear.app/mcp",
+    mcpAuthMode: "oauth",
+    mcpOAuthAuthorized: true,
+    mcpServerName: "Linear MCP",
+    mcpTools: [
+      { name: "list_issues", readOnly: true },
+      { name: "create_issue", readOnly: false },
+    ],
+    status: "verified",
+    hasCredential: true,
+    secretFields: [],
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 2,
+  };
+
+  const mcpPendingOAuth: ConnectionRecordView = {
+    ...mcpLinear,
+    id: "mcp-notion",
+    name: "Notion",
+    mcpPresetId: "notion",
+    url: "https://mcp.notion.com/mcp",
+    mcpServerName: undefined,
+    mcpTools: undefined,
+    mcpOAuthAuthorized: false,
+    status: "saved",
+    hasCredential: false,
+  };
+
+  it("renders MCP connections inside the single Apps table without leaking into Credentials", () => {
+    expect(connectionCategory({ ...mcpLinear, category: undefined })).toBe("app");
+    expect(connectionAddress(mcpLinear)).toBe("mcp.linear.app");
+    expect(mcpConnectionStatus(mcpLinear)).toEqual({ color: "success", label: "已连接 · 2 项工具" });
+    expect(mcpConnectionStatus(mcpPendingOAuth)).toEqual({ color: "warning", label: "待授权" });
+
+    const html = renderToStaticMarkup(
+      <ConnectionsModule
+        snapshot={{
+          ...snapshot,
+          connections: [mcpLinear, mcpPendingOAuth],
+          applications: [nativeApplication],
+          localHost: true,
+        }}
+        loading={false}
+        error={null}
+        connected
+        onPrepare={async () => {}}
+        onRefresh={() => {}}
+      />,
+    );
+
+    expect(html.match(/<table\b/g)).toHaveLength(3);
+    expect(html.match(/<h2 class="kulo-section-title">/g)).toHaveLength(3);
+    expect(html.match(/role="columnheader"/g)).toHaveLength(9);
+    expect(html).toContain("已连接 · 2 项工具");
+    expect(html).toContain("待授权");
+    expect(html).toContain('aria-label="授权登录Notion"');
+    expect(html).toContain('aria-label="测试Linear"');
+    expect(html).toContain('aria-label="编辑Linear"');
+    expect(html).toContain('aria-label="取消连接Linear"');
+    expect(html).toContain("尚未添加凭据");
+  });
+
+  it("validates, clears, and redacts HTTP and Stdio MCP drafts in ConnectionSetupForm", () => {
+    const httpInput: ConnectionSetupInput = {
+      id: "mcp-input-http",
+      clientId: "tab-a",
+      kind: "mcp",
+      category: "app",
+      mcpTransport: "http",
+      mcpAuthMode: "oauth",
+      name: "Linear",
+      url: "https://mcp.linear.app/mcp",
+      status: "pending",
+      createdAt: 1,
+    };
+    const draft = createConnectionDraft(httpInput);
+    const req = connectionSaveRequest({ ...draft, mcpOAuthClientId: "cid-1", clientSecret: "secret-oauth-999" }, httpInput);
+    expect(req).toMatchObject({
+      name: "Linear",
+      kind: "mcp",
+      category: "app",
+      mcpTransport: "http",
+      url: "https://mcp.linear.app/mcp",
+      mcpAuthMode: "oauth",
+      mcpOAuthClientId: "cid-1",
+      secrets: { clientSecret: "secret-oauth-999" },
+    });
+    expect(() => connectionSaveRequest({ ...draft, url: "http://mcp.linear.app/mcp" }, httpInput)).toThrow("HTTPS");
+    expect(clearConnectionDraftSecrets({ ...draft, clientSecret: "secret-oauth-999" }).clientSecret).toBe("");
+    expect(safeConnectionInputError(new Error("failed secret-oauth-999"), { ...draft, clientSecret: "secret-oauth-999" })).not.toContain("secret-oauth-999");
+
+    const stdioInput: ConnectionSetupInput = {
+      id: "mcp-input-stdio",
+      clientId: "tab-a",
+      kind: "mcp",
+      category: "app",
+      mcpTransport: "stdio",
+      name: "Local FS",
+      mcpCommand: "npx",
+      mcpArgs: ["-y", "@modelcontextprotocol/server-filesystem"],
+      status: "pending",
+      createdAt: 1,
+    };
+    const stdioDraft = createConnectionDraft(stdioInput);
+    stdioDraft.credentialFields = [{ key: "env_1", label: "CUSTOM_TOKEN", value: "tok-stdio-123" }];
+    const stdioReq = connectionSaveRequest(stdioDraft, stdioInput);
+    expect(stdioReq).toMatchObject({
+      kind: "mcp",
+      mcpTransport: "stdio",
+      mcpCommand: "npx",
+      mcpArgs: ["-y", "@modelcontextprotocol/server-filesystem"],
+      credentialFields: [{ key: "CUSTOM_TOKEN", label: "CUSTOM_TOKEN" }],
+      secrets: { CUSTOM_TOKEN: "tok-stdio-123" },
+    });
+    expect(() =>
+      connectionSaveRequest({ ...stdioDraft, credentialFields: [{ key: "env_1", label: "NODE_OPTIONS", value: "bad" }] }, stdioInput),
+    ).toThrow("环境变量名");
+
+    const formHtml = renderToStaticMarkup(
+      <ConnectionSetupForm input={httpInput} clientId="tab-a" connected available localHost onChanged={() => {}} />,
+    );
+    expect(formHtml).toContain("连接 MCP 应用");
+    expect(formHtml).toContain("服务地址");
+  });
+
+  it("renders AddAppModal and McpOAuthModal cleanly without throwing", () => {
+    expect(() =>
+      renderToStaticMarkup(
+        <AddAppModal
+          open
+          applications={[nativeApplication]}
+          presets={[
+            {
+              id: "linear",
+              name: "Linear",
+              description: "议题、项目与迭代管理",
+              transport: "http",
+              url: "https://mcp.linear.app/mcp",
+              authMode: "oauth",
+              supportedAuthModes: ["oauth", "bearer"],
+              category: "engineering",
+            },
+          ]}
+          existingConnections={[]}
+          connected
+          vaultAvailable
+          localHost
+          onSelectApplication={() => {}}
+          onSavedMcp={() => {}}
+          onStartOAuth={() => {}}
+          onClose={() => {}}
+        />,
+      ),
+    ).not.toThrow();
+
+    expect(() =>
+      renderToStaticMarkup(
+        <McpOAuthModal
+          open
+          connection={mcpPendingOAuth}
+          clientId="tab-a"
+          onCompleted={() => {}}
+          onClose={() => {}}
+        />,
+      ),
+    ).not.toThrow();
+  });
+
+  it("renders official brand SVGs for every curated MCP preset and the official MCP mark for custom HTTP servers", () => {
+    const presets: Array<[string, string]> = [
+      ["linear", "linear"],
+      ["notion", "notion"],
+      ["atlassian", "atlassian"],
+      ["sentry", "sentry"],
+      ["supabase", "supabase"],
+      ["vercel", "vercel"],
+      ["cloudflare", "cloudflare"],
+      ["stripe", "stripe"],
+      ["context7", "context7"],
+      ["github-mcp", "github"],
+      ["figma-mcp", "figma"],
+      ["slack", "slack"],
+    ];
+    for (const [presetId, brandClass] of presets) {
+      const html = renderToStaticMarkup(<ConnectionIcon kind="mcp" mcpPresetId={presetId} mcpTransport="http" />);
+      expect(html).toContain(`kulo-connection-icon--${brandClass}`);
+      expect(html).toContain("<svg");
+      expect(html).not.toContain("mc-icon");
+    }
+    const customHttpHtml = renderToStaticMarkup(<ConnectionIcon kind="mcp" mcpTransport="http" />);
+    expect(customHttpHtml).toContain("<svg");
+    expect(customHttpHtml).not.toContain("mc-icon");
   });
 });

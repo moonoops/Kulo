@@ -80,6 +80,7 @@ import type {
   ConnectionSetupInput,
   ConnectionSaveRequest,
   ConnectionRecordView,
+  McpOAuthSessionView,
   NativeAppPermissionKind,
   SearchSnapshot,
   SearchPlanInput,
@@ -275,6 +276,8 @@ export const kuloRest = {
   ensureMediaSession,
   getConnectionsWorkspace: (clientId: string, signal?: AbortSignal) =>
     apiRequest<ConnectionWorkspaceSnapshot>(`/api/connections?${new URLSearchParams({ clientId })}`, { signal }),
+  saveConnection: (body: ConnectionSaveRequest) =>
+    apiRequest<{ connection: ConnectionRecordView }>("/api/connections", { method: "POST", body }),
   prepareConnection: (body: ConnectionPrepareRequest) =>
     apiRequest<ConnectionSetupInput>("/api/connections/prepare", { method: "POST", body }),
   submitConnectionInput: (id: string, body: ConnectionSaveRequest & { clientId: string }) =>
@@ -287,6 +290,14 @@ export const kuloRest = {
     apiRequest<{ connection: ConnectionRecordView; fingerprint?: string; requiresTrust?: boolean }>(`/api/connections/${encodeURIComponent(id)}/test`, { method: "POST" }),
   trustConnection: (id: string, fingerprint: string) =>
     apiRequest<{ connection: ConnectionRecordView }>(`/api/connections/${encodeURIComponent(id)}/trust`, { method: "POST", body: { fingerprint } }),
+  startConnectionOAuth: (connectionId: string, body: { clientId?: string; forceReauth?: boolean } = {}) =>
+    apiRequest<{ session: McpOAuthSessionView }>(`/api/connections/${encodeURIComponent(connectionId)}/oauth/start`, { method: "POST", body }),
+  getConnectionOAuth: (sessionId: string, clientId?: string) =>
+    apiRequest<{ session: McpOAuthSessionView }>(`/api/connections/oauth/${encodeURIComponent(sessionId)}${clientId ? `?${new URLSearchParams({ clientId })}` : ""}`),
+  completeConnectionOAuth: (sessionId: string, body: { clientId?: string; redirectUrl: string }) =>
+    apiRequest<{ session: McpOAuthSessionView }>(`/api/connections/oauth/${encodeURIComponent(sessionId)}/complete`, { method: "POST", body }),
+  cancelConnectionOAuth: (sessionId: string, clientId?: string) =>
+    apiRequest<{ session: McpOAuthSessionView }>(`/api/connections/oauth/${encodeURIComponent(sessionId)}/cancel`, { method: "POST", body: { ...(clientId ? { clientId } : {}) } }),
   openConnectionPermissionSettings: (kind: NativeAppPermissionKind) =>
     apiRequest<{ ok: true }>("/api/connections/permission-settings", { method: "POST", body: { kind } }),
   getAssistantWorkspace: (signal?: AbortSignal) =>
@@ -439,12 +450,25 @@ export const kuloRest = {
   getSettings: () => apiRequest<KuloSettingsView>("/api/settings"),
   scanExternalAgents: (body: { envId?: string; kinds?: ExternalAgentKind[] } = {}, options?: { signal?: AbortSignal }) =>
     apiRequest<ExternalAgentScanResult>("/api/external-clients/scan", { method: "POST", body, signal: options?.signal }),
+  getAcpRegistryTemplates: (options?: { refresh?: boolean; signal?: AbortSignal }) =>
+    apiRequest<{ templates: import("@kulo/protocol").AcpRegistryTemplate[]; fetchedAt: number }>(
+      `/api/external-clients/acp-registry${options?.refresh ? "?refresh=1" : ""}`,
+      { method: "GET", signal: options?.signal },
+    ),
   connectExternalAgent: (body: ExternalAgentQuickConnectRequest & { clientId: string }) =>
     apiRequest<ExternalAgentQuickConnectResult>("/api/external-clients/connect", { method: "POST", body }),
   refreshExternalClient: (clientId: string) =>
     apiRequest<{ settings: KuloSettingsView; client: import("@kulo/protocol").ExternalClientConnection }>(
       `/api/external-clients/${encodeURIComponent(clientId)}/refresh`,
       { method: "POST" },
+    ),
+  verifyExternalClient: (
+    clientId: string,
+    body: { commandId?: string; expectedRevision?: number } = {},
+  ) =>
+    apiRequest<import("@kulo/protocol").ExternalAgentVerifyClientResult>(
+      `/api/external-clients/${encodeURIComponent(clientId)}/verify`,
+      { method: "POST", body },
     ),
   removeExternalClient: (clientId: string, expectedRevision?: number) =>
     apiRequest<{ settings: KuloSettingsView }>(

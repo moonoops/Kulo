@@ -157,8 +157,18 @@
     border-radius: var(--kulo-control-radius);
   }
 
+  .kulo-ui .kulo-task-preview-zoom-button {
+    --button-bg: color-mix(in oklab, var(--background) 80%, transparent);
+    --button-bg-hover: color-mix(in oklab, var(--background) 94%, transparent);
+    --button-bg-pressed: var(--background);
+    --button-fg: var(--foreground);
+    border: 1px solid color-mix(in oklab, var(--foreground) 20%, transparent);
+    --tw-shadow: 0 1px 4px color-mix(in oklab, var(--foreground) 14%, transparent);
+    box-shadow: var(--tw-inset-shadow, 0 0 transparent), var(--tw-inset-ring-shadow, 0 0 transparent), var(--tw-ring-offset-shadow, 0 0 transparent), var(--tw-ring-shadow, 0 0 transparent), var(--tw-shadow);
+  }
+
   /* Row- and card-owned hover surfaces stay continuous across composite triggers. */
-  .kulo-ui :is(.kulo-topic-select, .kulo-topic-actions, .kulo-project-action, .kulo-agent-profile-overview, .kulo-cat-picker-trigger) {
+  .kulo-ui :is(.kulo-topic-select, .kulo-topic-actions, .kulo-project-action, .kulo-agent-profile-overview, .kulo-cat-picker-trigger, .kulo-task-card-button) {
     --button-bg: transparent;
     --button-bg-hover: transparent;
     --button-bg-pressed: transparent;

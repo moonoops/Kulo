@@ -8,9 +8,8 @@ import { safeSetupInputError } from "./capability-setup-inputs";
 import { SettingsList, SettingsSaveBar, SettingsSection } from "./settings-layout";
 import { MemoryServerList } from "./memory-server-list";
 import { MemoryModelFields } from "./memory-model-fields";
-import { MemoryServiceJobCard } from "./memory-service-dialogue";
 import {
-  buildMemoryModelsPayload,
+  buildMemoryServicePrefillPrompt,
   formatEmbeddingsModelLabel,
   formatRerankerModelLabel,
   formatUnderstandingModelLabel,
@@ -19,7 +18,13 @@ import {
   memoryModelsEqual,
   type MemoryModelsDraft,
 } from "./memory-service-models";
-import { MEMORY_CONNECTION_FOCUS_EVENT, MEMORY_SERVICE_CHANGED_EVENT, publishMemoryService, requestMemoryService } from "./memory-service-events";
+import {
+  MEMORY_CONNECTION_FOCUS_EVENT,
+  MEMORY_SERVICE_CHANGED_EVENT,
+  publishMemoryService,
+  requestMemoryAssistantPrefill,
+  requestMemoryService,
+} from "./memory-service-events";
 import { useSettingsPending } from "./settings-save-activity";
 
 type MemoryBlock = KuloSettingsView["blocks"]["memory"];
@@ -115,7 +120,7 @@ export function MemoryConnectionForm({
   modelsDraft,
   modelsError,
   modelsBusy = false,
-  panelClientId,
+  activeStage,
   pending,
   loading = false,
   connected = true,
@@ -127,7 +132,6 @@ export function MemoryConnectionForm({
   onLocalDeploy,
   onLocalConfigure,
   onLocalUninstall,
-  onJobChanged,
   onEnabledChange,
   onEnabledRetry,
   onKnowledgeGuidanceChange,
@@ -144,7 +148,7 @@ export function MemoryConnectionForm({
   modelsDraft?: MemoryModelsDraft;
   modelsError?: string;
   modelsBusy?: boolean;
-  panelClientId?: string;
+  activeStage?: string;
   savedMemory?: MemoryBlock;
   pending?: MemoryConnectionAction;
   loading?: boolean;
@@ -157,7 +161,6 @@ export function MemoryConnectionForm({
   onLocalDeploy?: () => void;
   onLocalConfigure?: () => void;
   onLocalUninstall?: () => void;
-  onJobChanged?: (snapshot: MemoryServiceSnapshot) => void;
   onSave: (event: FormEvent<HTMLFormElement>) => void;
   onEnabledChange: (enabled: boolean) => void;
   onEnabledRetry?: () => void;
@@ -185,10 +188,6 @@ export function MemoryConnectionForm({
   const effectiveModelsDraft = useMemo(
     () => modelsDraft ?? initialMemoryModelsDraft(snapshot ?? undefined, settings, providers),
     [modelsDraft, snapshot, settings, providers],
-  );
-  const panelJobs = useMemo(
-    () => (panelClientId ? (snapshot?.jobs ?? []).filter((job) => job.clientId === panelClientId && ["awaiting-input", "awaiting-confirmation", "running", "failed"].includes(job.status)).slice(-4) : []),
-    [panelClientId, snapshot?.jobs],
   );
   useEffect(() => {
     if (!pending && restoreEnabledFocus.current) {
@@ -272,14 +271,12 @@ export function MemoryConnectionForm({
         onChange={(next) => onModelsChange?.(next)}
       />
       {modelsError && <Alert status="danger" role="alert" className="mt-4 rounded-2xl p-3"><Alert.Content className="flex-1 break-words text-sm">{modelsError}</Alert.Content></Alert>}
-      <div className="mt-4 flex flex-wrap gap-2">
-        {(!snapshot?.installed || snapshot.phase === "failed") && <Button type="button" variant="secondary" isPending={modelsBusy} isDisabled={disabled || modelsBusy} onPress={() => onLocalDeploy ? onLocalDeploy() : requestMemoryService("deploy")}>{snapshot?.phase === "failed" ? t("恢复部署", "Resume deployment") : t("在本机配置 Hindsight", "Set up Hindsight locally")}</Button>}
-        {snapshot?.installed && snapshot.phase !== "failed" && <Button type="button" variant="secondary" isPending={modelsBusy} isDisabled={disabled || modelsBusy} onPress={() => onLocalConfigure ? onLocalConfigure() : requestMemoryService("configure")}>{t("配置本机模型", "Configure local model")}</Button>}
-        {snapshot?.installed && <Button type="button" variant="danger" isDisabled={disabled || modelsBusy} onPress={() => onLocalUninstall ? onLocalUninstall() : requestMemoryService("uninstall")}>{t("卸载本机服务", "Uninstall local service")}</Button>}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {(!snapshot?.installed || snapshot.phase === "failed") && <Button type="button" variant="secondary" isDisabled={disabled || modelsBusy} onPress={() => onLocalDeploy ? onLocalDeploy() : requestMemoryService("deploy")}>{snapshot?.phase === "failed" ? t("恢复部署", "Resume deployment") : t("在本机配置 Hindsight", "Set up Hindsight locally")}</Button>}
+        {snapshot?.installed && snapshot.phase !== "failed" && <Button type="button" variant="secondary" isDisabled={disabled || modelsBusy} onPress={() => onLocalConfigure ? onLocalConfigure() : requestMemoryService("configure")}>{t("配置本机模型", "Configure local model")}</Button>}
+        {snapshot?.installed && <Button type="button" variant="danger" isPending={modelsBusy} isDisabled={disabled || modelsBusy} onPress={() => onLocalUninstall ? onLocalUninstall() : requestMemoryService("uninstall")}>{t("卸载本机服务", "Uninstall local service")}</Button>}
+        {activeStage && <div className="flex items-center gap-2 text-xs text-muted" role="status"><Spinner size="sm" aria-label={t("记忆服务处理中", "Memory service is processing")} /><span>{activeStage}</span></div>}
       </div>
-      {panelClientId && panelJobs.length > 0 && <div className="mt-4 flex min-w-0 flex-col gap-3">
-        {panelJobs.map((job) => <MemoryServiceJobCard key={job.id} job={job} inputs={snapshot?.inputs ?? []} clientId={panelClientId} connected={connected} onChanged={(next) => onJobChanged?.(next)} />)}
-      </div>}
     </SettingsSection>
     </div>
   </div>;
@@ -303,6 +300,9 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
   const [modelsError, setModelsError] = useState<string>();
   const [uninstallOpen, setUninstallOpen] = useState(false);
   const [uninstallDeleteData, setUninstallDeleteData] = useState(false);
+  const [activeUninstallJobId, setActiveUninstallJobId] = useState<string | null>(null);
+  const activeUninstallJobIdRef = useRef<string | null>(null);
+  activeUninstallJobIdRef.current = activeUninstallJobId;
   const [loading, setLoading] = useState(false);
   const [pending, setPending] = useState<MemoryConnectionAction>();
   const pendingRef = useRef(false);
@@ -316,6 +316,7 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
   const [refresh, setRefresh] = useState(0);
   const formRef = useRef<HTMLDivElement>(null);
   const lastSucceededJobRef = useRef<string | undefined>(undefined);
+  const lastSyncedRevisionRef = useRef(settings.blocks.memory.revision);
   const dirty = memoryConnectionDirty(editor);
   const modelsDirty = !memoryModelsEqual(modelsDraft, modelsBase);
   modelsDirtyRef.current = modelsDirty;
@@ -346,16 +347,31 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
     setSnapshot((current) => current && current.revision > next.revision ? current : next);
     setLoadError(undefined);
     syncModelsFrom(next, nextProviders);
-    const succeeded = next.jobs.findLast((job) => job.clientId === panelClientId && job.status === "succeeded");
-    if (succeeded && succeeded.id !== lastSucceededJobRef.current) {
-      lastSucceededJobRef.current = succeeded.id;
+    const uninstallId = activeUninstallJobIdRef.current;
+    if (uninstallId) {
+      const uninstallJob = next.jobs.find((job) => job.id === uninstallId);
+      if (!uninstallJob || uninstallJob.status === "succeeded" || uninstallJob.status === "rejected") {
+        activeUninstallJobIdRef.current = null;
+        setActiveUninstallJobId(null);
+      } else if (uninstallJob.status === "failed") {
+        activeUninstallJobIdRef.current = null;
+        setActiveUninstallJobId(null);
+        setModelsError(redactSecrets(uninstallJob.error ?? t("卸载未完成，请重试。", "Uninstall did not finish. Try again.")));
+      }
+    }
+    const succeeded = next.jobs.findLast((job) => job.status === "succeeded");
+    const hasNewSucceeded = Boolean(succeeded && succeeded.id !== lastSucceededJobRef.current);
+    const hasNewRevision = next.revision > Math.max(savedMemoryRef.current.revision, lastSyncedRevisionRef.current);
+    if (hasNewSucceeded || hasNewRevision) {
+      if (succeeded) lastSucceededJobRef.current = succeeded.id;
+      lastSyncedRevisionRef.current = Math.max(lastSyncedRevisionRef.current, next.revision);
       void kuloRest.getSettings().then((latest) => {
         rememberMemory(latest.blocks.memory);
         setEditor((current) => reconcileMemoryConnection(current, latest.blocks.memory));
         onSettingsUpdatedRef.current(latest);
       }).catch(() => {});
     }
-  }, [panelClientId, rememberMemory, syncModelsFrom]);
+  }, [rememberMemory, syncModelsFrom]);
 
   useEffect(() => {
     if (!connected) return;
@@ -379,7 +395,10 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
     return () => { alive = false; };
   }, [connected, settings.blocks.memory.revision, settings.blocks.model.revision, refresh, panelClientId, applyPanelSnapshot]);
 
-  const hasPanelPendingWork = snapshot?.jobs.some((job) => job.clientId === panelClientId && (job.status === "running" || job.status === "awaiting-input")) ?? false;
+  const activeUninstallJob = activeUninstallJobId
+    ? snapshot?.jobs.find((job) => job.id === activeUninstallJobId && job.status === "running")
+    : undefined;
+  const hasPanelPendingWork = Boolean(activeUninstallJob) || (snapshot?.jobs.some((job) => job.clientId === panelClientId && job.status === "running") ?? false);
   useEffect(() => {
     if (!connected || !hasPanelPendingWork) return;
     let alive = true;
@@ -394,15 +413,13 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
   useEffect(() => {
     const changed = (event: Event) => {
       const next = (event as CustomEvent<MemoryServiceSnapshot>).detail;
-      setSnapshot((current) => current && current.revision > next.revision ? current : next);
-      setLoadError(undefined);
-      syncModelsFrom(next);
+      applyPanelSnapshot(next);
     };
     const focus = () => { requestAnimationFrame(() => { formRef.current?.scrollIntoView({ block: "start" }); formRef.current?.querySelector<HTMLInputElement>('input[type="url"]')?.focus(); }); };
     window.addEventListener(MEMORY_SERVICE_CHANGED_EVENT, changed);
     window.addEventListener(MEMORY_CONNECTION_FOCUS_EVENT, focus);
     return () => { window.removeEventListener(MEMORY_SERVICE_CHANGED_EVENT, changed); window.removeEventListener(MEMORY_CONNECTION_FOCUS_EVENT, focus); };
-  }, [syncModelsFrom]);
+  }, [applyPanelSnapshot]);
 
   const reset = (next?: KuloSettingsView) => { if (next) { rememberMemory(next.blocks.memory); setEnabledError(undefined); setEnabledRetry(undefined); } setEditor(memoryConnectionEditor(next?.blocks.memory ?? savedMemoryRef.current)); setError(undefined); setProbe(undefined); };
   const syncEnabled = async () => {
@@ -500,38 +517,46 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
       setProbe(undefined);
     } finally { pendingRef.current = false; setPending(undefined); }
   };
-  const prepareLocalOperation = async (operation: "deploy" | "configure" | "uninstall", deleteData?: boolean) => {
+  const prefillLocalOperation = (operation: "deploy" | "configure") => {
+    if (modelsBusy || !connected) return;
+    setModelsError(undefined);
+    try {
+      const prompt = buildMemoryServicePrefillPrompt({
+        operation,
+        resume: operation === "deploy" && snapshot?.phase === "failed",
+        deviceName: snapshot?.deviceName,
+        draft: modelsDraft,
+        connections: kuloMemoryConnections(settings, providers),
+      });
+      requestMemoryAssistantPrefill(prompt);
+    } catch (cause) {
+      setModelsError(redactSecrets(cause instanceof Error ? cause.message : t("请检查本机模型配置。", "Check the local model settings.")));
+    }
+  };
+  const uninstallLocalService = async (deleteData: boolean) => {
     if (modelsBusy || !connected) return;
     setModelsBusy(true);
     setModelsError(undefined);
     try {
       const current = snapshot ?? await kuloRest.getMemoryService(panelClientId);
-      const request = operation === "uninstall"
-        ? {
-            commandId: newPanelId("memory"),
-            clientId: panelClientId,
-            expectedRevision: current.revision,
-            operation: "uninstall" as const,
-            deleteData: Boolean(deleteData),
-          }
-        : {
-            commandId: newPanelId("memory"),
-            clientId: panelClientId,
-            expectedRevision: current.revision,
-            operation,
-            ...buildMemoryModelsPayload(modelsDraft),
-          };
-      const next = await kuloRest.prepareMemoryService(request);
-      if (operation === "uninstall") {
-        setUninstallOpen(false);
-        setUninstallDeleteData(false);
-        const created = next.jobs.find((job) => job.id === request.commandId);
-        if (created && created.status === "awaiting-confirmation") {
-          const decided = await kuloRest.decideMemoryService(created.id, { clientId: panelClientId, decision: "confirm" });
-          applyPanelSnapshot(decided);
-          publishMemoryService(decided);
-          return;
-        }
+      const commandId = newPanelId("memory");
+      const next = await kuloRest.prepareMemoryService({
+        commandId,
+        clientId: panelClientId,
+        expectedRevision: current.revision,
+        operation: "uninstall",
+        deleteData,
+      });
+      setUninstallOpen(false);
+      setUninstallDeleteData(false);
+      const created = next.jobs.find((job) => job.id === commandId);
+      if (created && created.status === "awaiting-confirmation") {
+        activeUninstallJobIdRef.current = created.id;
+        setActiveUninstallJobId(created.id);
+        const decided = await kuloRest.decideMemoryService(created.id, { clientId: panelClientId, decision: "confirm" });
+        applyPanelSnapshot(decided);
+        publishMemoryService(decided);
+        return;
       }
       applyPanelSnapshot(next);
       publishMemoryService(next);
@@ -540,10 +565,6 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
     } finally {
       setModelsBusy(false);
     }
-  };
-  const handleJobChanged = (next: MemoryServiceSnapshot) => {
-    applyPanelSnapshot(next);
-    publishMemoryService(next);
   };
 
   return <div ref={formRef}>
@@ -556,7 +577,7 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
       modelsDraft={modelsDraft}
       modelsError={modelsError}
       modelsBusy={modelsBusy}
-      panelClientId={panelClientId}
+      activeStage={activeUninstallJob?.stage}
       pending={pending}
       loading={loading}
       connected={connected}
@@ -568,10 +589,9 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
       onKnowledgeGuidanceChange={(enabled) => void toggleKnowledgeGuidance(enabled)}
       onChange={(draft) => { setEditor((current) => ({ ...current, draft })); setError(undefined); setProbe(undefined); }}
       onModelsChange={(next) => { setModelsDraft(next); setModelsError(undefined); }}
-      onLocalDeploy={() => void prepareLocalOperation("deploy")}
-      onLocalConfigure={() => void prepareLocalOperation("configure")}
+      onLocalDeploy={() => prefillLocalOperation("deploy")}
+      onLocalConfigure={() => prefillLocalOperation("configure")}
       onLocalUninstall={() => { setUninstallDeleteData(false); setUninstallOpen(true); }}
-      onJobChanged={handleJobChanged}
       onSave={(event) => { event.preventDefault(); void submit(false); }}
       onProbe={() => void submit(true)}
       onDiscard={() => reset()}
@@ -595,7 +615,7 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
       confirmLabel={uninstallDeleteData ? t("卸载并删除数据", "Uninstall and delete data") : t("卸载并保留数据", "Uninstall and keep data")}
       isPending={modelsBusy}
       onCancel={() => { if (!modelsBusy) setUninstallOpen(false); }}
-      onConfirm={() => void prepareLocalOperation("uninstall", uninstallDeleteData)}
+      onConfirm={() => void uninstallLocalService(uninstallDeleteData)}
     />
   </div>;
 }

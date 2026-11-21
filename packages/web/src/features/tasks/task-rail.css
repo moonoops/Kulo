@@ -17,20 +17,29 @@
 .kulo-task-list { position: relative; }
 .kulo-task-row { position: relative; min-width: 0; }
 .kulo-task-space { padding-bottom: var(--kulo-space-3); }
-.kulo-task-card { --task-age: 0; display: block; gap: 0; padding: 0; border-radius: 16px; box-shadow: none; background: var(--surface-secondary); transition: background-color 180ms ease-out; }
+.kulo-task-card { --task-age: 0; display: block; gap: 0; padding: 0; overflow: hidden; border-radius: 16px; box-shadow: none; background: var(--surface-secondary); transition: background-color 180ms ease-out; }
 .kulo-task-card[data-state="ready"] { background: color-mix(in oklab, var(--surface-secondary) calc(78% - var(--task-age) * 58%), var(--background)); }
 .kulo-task-card[data-attention="true"] { background: color-mix(in oklab, var(--warning) 8%, var(--surface-secondary)); }
 .kulo-task-card[data-state="failed"] { background: color-mix(in oklab, var(--danger) 8%, var(--surface-secondary)); }
+.kulo-task-card:has(.kulo-task-card-button[data-hovered="true"]) { background: color-mix(in oklab, var(--foreground) 4%, var(--surface-secondary)); }
+.kulo-task-card[data-state="ready"]:has(.kulo-task-card-button[data-hovered="true"]) { background: color-mix(in oklab, var(--foreground) 4%, color-mix(in oklab, var(--surface-secondary) calc(78% - var(--task-age) * 58%), var(--background))); }
+.kulo-task-card[data-attention="true"]:has(.kulo-task-card-button[data-hovered="true"]) { background: color-mix(in oklab, var(--warning) 11%, var(--surface-secondary)); }
+.kulo-task-card[data-state="failed"]:has(.kulo-task-card-button[data-hovered="true"]) { background: color-mix(in oklab, var(--danger) 11%, var(--surface-secondary)); }
 .kulo-task-card[data-selected="true"] { outline: 1px solid color-mix(in oklab, var(--foreground) 22%, transparent); outline-offset: -1px; }
 .kulo-task-card-content { display: block; padding: 0; }
 .kulo-task-card-main { display: flex; align-items: center; min-width: 0; }
-.kulo-task-card-button { display: flex; flex: 1; height: auto; min-width: 0; flex-direction: column; align-items: stretch; justify-content: start; gap: var(--kulo-space-2); padding: var(--kulo-list-padding-block) var(--kulo-list-padding-inline); text-align: left; white-space: normal; border-radius: 16px; background: transparent; }
+.kulo-task-card-head { display: flex; align-items: center; gap: var(--kulo-space-1); min-width: 0; padding: var(--kulo-space-2) var(--kulo-space-2) var(--kulo-space-2) var(--kulo-list-padding-inline); }
+.kulo-task-card-button { display: flex; flex: 1; height: auto; min-width: 0; flex-direction: column; align-items: stretch; justify-content: start; gap: var(--kulo-space-2); padding: var(--kulo-list-padding-block) var(--kulo-list-padding-inline); text-align: left; white-space: normal; }
+.kulo-task-card-head .kulo-task-card-button { justify-content: center; gap: 0; padding: var(--kulo-space-1) var(--kulo-space-1) var(--kulo-space-1) 0; }
 .kulo-task-card-main:has(.kulo-task-archive-button) .kulo-task-card-button { padding-inline-end: var(--kulo-space-2); }
 .kulo-task-archive-button { flex: none; margin-inline-end: var(--kulo-space-2); }
 .kulo-task-clear-all { flex: none; }
-.kulo-task-card-button[data-hovered="true"] { background: color-mix(in oklab, var(--foreground) 4%, transparent); }
 .kulo-task-title { display: block; width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--kulo-text-body); line-height: var(--kulo-leading-body); font-weight: 600; color: var(--foreground); }
 .kulo-task-card-foot { display: flex; width: 100%; min-width: 0; align-items: center; justify-content: space-between; gap: var(--kulo-control-gap); color: var(--muted); font-size: var(--kulo-text-caption); line-height: var(--kulo-leading-caption); font-weight: 400; }
+.kulo-task-card-preview-foot { padding: var(--kulo-space-1) var(--kulo-list-padding-inline) var(--kulo-list-padding-block); }
+.kulo-task-card-status-group { display: inline-flex; flex: 1; min-width: 0; align-items: center; gap: var(--kulo-space-1); }
+.kulo-task-device-sep { flex: none; color: var(--muted); }
+.kulo-task-device-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .kulo-task-status { display: inline-flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: var(--kulo-space-1); font-size: var(--kulo-text-caption); line-height: var(--kulo-leading-caption); font-weight: 400; color: var(--muted); white-space: nowrap; }
 .kulo-task-status-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kulo-task-status[data-tone="run"] { color: color-mix(in oklab, var(--accent-soft-foreground) 50%, var(--muted)); }

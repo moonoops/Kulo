@@ -54,6 +54,21 @@ describe("permission status refresh", () => {
     loader.dispose();
   });
 
+  it("refreshes desktop permissions independently without re-querying client microphone", async () => {
+    const mic = vi.fn().mockResolvedValue(microphone);
+    const load = vi.fn().mockResolvedValueOnce(snapshot("denied")).mockResolvedValueOnce(snapshot("granted"));
+    const loader = new PermissionStatusLoader(mic, load);
+    loader.configure("remote", true, null);
+    await settle();
+    expect(mic).toHaveBeenCalledOnce();
+    expect(load).toHaveBeenCalledOnce();
+    await loader.refreshDesktop();
+    expect(mic).toHaveBeenCalledOnce();
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(loader.getSnapshot()).toMatchObject({ microphone, desktop: snapshot("granted"), checking: false });
+    loader.dispose();
+  });
+
   it("accepts only the newest focus/manual refresh and clears obsolete granted state after a query failure", async () => {
     const stale = deferred<DesktopSystemPermissions>();
     const load = vi.fn().mockResolvedValueOnce(snapshot("granted")).mockReturnValueOnce(stale.promise).mockRejectedValueOnce(new Error("connection lost"));

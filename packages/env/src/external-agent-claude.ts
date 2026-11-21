@@ -4,6 +4,8 @@ import type { Options, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ExternalAgentModelInfo } from "@kulo/protocol";
 import { managedNativeProcess, nativeAgentEnvironment, type ExternalDriver, type ExternalDriverContext } from "./external-agent-drivers.js";
 
+const CLAUDE_READ_ONLY_DISALLOWED_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"] as const;
+
 export function claudeThinkingOptions(level?:string):Pick<Options,"effort"|"thinking">{
   if(level===undefined)return{};
   if(level==="none"||level==="disabled")return{thinking:{type:"disabled"}};
@@ -12,12 +14,17 @@ export function claudeThinkingOptions(level?:string):Pick<Options,"effort"|"thin
   throw new Error("Selected thinking level is not supported by Claude Code");
 }
 export function nativeClaudeOptions(ctx:ExternalDriverContext):Options{
+  const isIsolatedReadOnly=ctx.workspaceMode==="read_only";
   return{
     cwd:ctx.cwd,...(ctx.modelId?{model:ctx.modelId}:{}),...(ctx.sessionId?{resume:ctx.sessionId}:{}),
     settingSources:["user","project","local"],pathToClaudeCodeExecutable:ctx.executable,includePartialMessages:true,env:nativeAgentEnvironment(),
     systemPrompt:{type:"preset",preset:"claude_code"},...claudeThinkingOptions(ctx.thinkingLevel),
+    ...(isIsolatedReadOnly?{disallowedTools:[...CLAUDE_READ_ONLY_DISALLOWED_TOOLS]}:{}),
     ...(ctx.servers.length?{mcpServers:Object.fromEntries(ctx.servers.map(server=>[`kulo-${randomUUID()}-${server.name}`,{type:"http" as const,url:server.url,headers:Object.fromEntries((server.headers??[]).map(row=>[row.name,row.value]))}]))}:{}),
     canUseTool:async(name,input,request)=>{
+      if(isIsolatedReadOnly&&(CLAUDE_READ_ONLY_DISALLOWED_TOOLS as readonly string[]).includes(name)){
+        return{behavior:"deny",message:"Write tools are disabled in read-only mode"};
+      }
       const suggestions=request.suggestions??[];
       const choices=[{id:"allow",label:"Allow once"},...(suggestions.length?[{id:"allow-suggested",label:"Allow with client's suggested permissions"}]:[]),{id:"deny",label:"Reject"}];
       const choice=await ctx.permission(`claude:${request.toolUseID}`,`${name}: ${JSON.stringify(input)}`,choices);
@@ -58,11 +65,36 @@ export async function connectClaude(ctx:ExternalDriverContext,probe=false):Promi
     if(!probe){
       started=true;ctx.submitted();release(true);
       void(async()=>{
-        let resultSeen=false;let streamed=false;
+        let resultSeen=false;let streamed=false;const seenToolIds=new Set<string>();
         try{for await(const message of agent){
           if("session_id" in message&&typeof message.session_id==="string")ctx.session(message.session_id);
-          if(message.type==="stream_event"&&message.event.type==="content_block_delta"&&message.event.delta.type==="text_delta"){streamed=true;ctx.event("message",message.event.delta.text);}
-          if(message.type==="assistant"&&!streamed){for(const block of message.message.content){if(block.type==="text")ctx.event("message",block.text);}}
+          if(message.type==="stream_event"){
+            const ev=message.event;
+            if(ev.type==="content_block_start"&&ev.content_block.type==="tool_use"){
+              if(typeof ev.content_block.id==="string")seenToolIds.add(ev.content_block.id);
+              ctx.event("tool",ev.content_block.name||"tool_use");
+            }else if(ev.type==="content_block_delta"){
+              if(ev.delta.type==="text_delta"){streamed=true;ctx.event("message",ev.delta.text);}
+              else if(ev.delta.type==="thinking_delta"||ev.delta.type==="input_json_delta"){ctx.activity?.("Thinking...");}
+            }
+          }
+          if(message.type==="tool_progress"){
+            ctx.activity?.("Running tool...");
+          }
+          if(message.type==="assistant"){
+            for(const block of message.message.content){
+              if(block.type==="text"&&!streamed)ctx.event("message",block.text);
+              if(block.type==="tool_use"){
+                const inputObj=block.input&&typeof block.input==="object"&&!Array.isArray(block.input)?block.input as Record<string,unknown>:undefined;
+                const detail=typeof inputObj?.file_path==="string"?inputObj.file_path:typeof inputObj?.path==="string"?inputObj.path:typeof inputObj?.command==="string"?inputObj.command.slice(0,160):"";
+                const alreadySeen=typeof block.id==="string"&&seenToolIds.has(block.id);
+                if(!alreadySeen||detail){
+                  if(typeof block.id==="string")seenToolIds.add(block.id);
+                  ctx.event("tool",detail?`${block.name} ${detail}`:block.name);
+                }
+              }
+            }
+          }
           if(message.type==="result"){
             resultSeen=true;
             if(message.subtype==="success"&&!message.is_error)ctx.complete(cancelRequested&&message.stop_reason!=="end_turn"?"cancelled":"completed");

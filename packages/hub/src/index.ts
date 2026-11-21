@@ -89,6 +89,36 @@ export {
   type StoredUploadRecord,
 } from "./uploads.js";
 export { KuloConnections, type ConnectionVault, type ConnectionTextReceipt, type ConnectionTestResult } from "./connections.js";
+export {
+  MCP_PRESET_CATALOG,
+  findMcpPreset,
+  isBlockedMcpEnvKey,
+  isCloudMetadataIp,
+  isLoopbackHost,
+  isNonPublicMcpUrl,
+  isPrivateOrReservedIp,
+  isValidMcpEnvKey,
+} from "./mcp-presets.js";
+export { createMcpFetch, validateMcpTargetUrl, closeMcpHttpAgents, type McpFetchOptions } from "./mcp-fetch.js";
+export {
+  McpOAuthRefreshLockManager,
+  McpOAuthSessionManager,
+  createKuloMcpAuthProvider,
+  createVaultMcpOAuthStore,
+  extractMcpOAuthSecrets,
+  mcpOAuthVaultRef,
+  parseMcpOAuthVaultEntry,
+  serializeMcpOAuthVaultEntry,
+  type KuloMcpAuthProvider,
+} from "./mcp-oauth.js";
+export {
+  McpConnectionPool,
+  buildMcpStdioEnv,
+  sanitizeMcpCallContent,
+  type McpConnectionPoolOptions,
+  type McpDiscoverySnapshot,
+  type McpTransportFactoryContext,
+} from "./mcp-connections.js";
 export { AssistantDoc, ensureAssistantState, upsertAssistantCardInDoc, dismissAssistantItemInDoc } from "./assistant-state.js";
 export { AssistantLedger, type StoredAssistantEvent, type StoredAssistantDigest } from "./assistant-ledger.js";
 export { AmbientModelService, loopbackJsonPost } from "./ambient-model-service.js";

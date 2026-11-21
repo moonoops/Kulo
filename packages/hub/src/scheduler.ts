@@ -7,9 +7,10 @@ import {
 } from "@earendil-works/pi-durable";
 import type { EnvManager } from "@kulo/env";
 import type { Context } from "@earendil-works/chord/context";
-import { describeKuloError, type ExternalAgentPendingReport, type ExternalAgentUncertainReason, type StagedWorkspaceDiffSummary, type TicketRecord, type TicketWait, type WorkerReportRecord } from "@kulo/protocol";
+import { describeKuloError, isSupportedExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentRuntimeEvent, type ExternalAgentUncertainReason, type StagedWorkspaceDiffSummary, type TicketRecord, type TicketWait, type WorkerExecutionPhase, type WorkerReportRecord } from "@kulo/protocol";
 import { spillOversizedReport } from "./report-overflow.js";
 import {
+  formatExternalAgentFollowUpPrompt,
   formatExternalAgentHandoffPrompt,
   formatExternalPermissionMessage,
   formatStagedDiffRelayLines,
@@ -250,30 +251,44 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
         if (ticket.externalExecution) {
           const external = ticket.externalExecution;
           const runId = `kulo:external:${ticket.id}:${task.input.runEpoch}`;
+          const followUpText = task.input.promptOverride ?? ticket.resumePrompt;
+          const isResumingNativeSession = Boolean(
+            task.input.runEpoch > 1 &&
+              external.sessionId &&
+              external.binding.capabilities?.resume !== false &&
+              isSupportedExternalAgentKind(external.binding.kind) &&
+              followUpText?.trim(),
+          );
           const attachmentIds = [...new Set([
             ...(task.input.attachmentIds ?? []),
-            ...(task.input.runEpoch === 1 ? (ticket.inputAttachmentIds ?? []) : []),
+            ...(!isResumingNativeSession ? (ticket.inputAttachmentIds ?? []) : []),
             ...(ticket.resumeAttachmentIds ?? []),
           ])];
           let materialized: Array<{ id: string; name: string; mimeType: string; path: string }> = [];
           if (attachmentIds.length > 0 && deps.materializeExternalAttachments) {
             materialized = await deps.materializeExternalAttachments(ticket, attachmentIds, context);
           }
-          const projectMeta = ticket.projectId && deps.getProjectMeta
+          const projectMeta = !isResumingNativeSession && ticket.projectId && deps.getProjectMeta
             ? await deps.getProjectMeta(ticket.projectId, context).catch(() => undefined)
             : undefined;
-          const recalledMemory = task.input.runEpoch === 1 && deps.recallExternalMemory
+          const recalledMemory = !isResumingNativeSession && deps.recallExternalMemory
             ? await deps.recallExternalMemory(ticket, context).catch(() => undefined)
             : undefined;
-          const prompt = formatExternalAgentHandoffPrompt({
-            ticket,
-            instructions: external.instructions,
-            workspaceMode: external.workspaceMode === "read_only" || external.workspaceMode === "direct" ? external.workspaceMode : "staged",
-            projectName: projectMeta?.name,
-            recalledMemory,
-            materialized,
-            followUp: task.input.promptOverride ?? ticket.resumePrompt,
-          });
+          const prompt = isResumingNativeSession
+            ? formatExternalAgentFollowUpPrompt({
+                ticket,
+                followUp: followUpText!.trim(),
+                materialized,
+              })
+            : formatExternalAgentHandoffPrompt({
+                ticket,
+                instructions: external.instructions,
+                workspaceMode: external.workspaceMode === "read_only" || external.workspaceMode === "direct" ? external.workspaceMode : "staged",
+                projectName: projectMeta?.name,
+                recalledMemory,
+                materialized,
+                followUp: followUpText,
+              });
           await runtime.commit(async (tx) => {
             const current = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
             if (!current || current.runEpoch !== task.input.runEpoch || current.status === "stopped" || current.status === "closed") return { status: "terminal", outcome: { status: "aborted" } };
@@ -291,7 +306,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
               ...(external.modelId ? { modelId: external.modelId } : {}),
               ...(external.thinkingLevel ? { thinkingLevel: external.thinkingLevel } : {}),
               ...(external.sessionId ? { sessionId: external.sessionId } : {}),
-              readOnly: Boolean(ticket.readOnly), allowSubagents: Boolean(external.allowSubagents), taskTools: true,
+              readOnly: Boolean(ticket.readOnly || external.workspaceMode === "read_only"), allowSubagents: Boolean(external.allowSubagents), taskTools: true,
               ...(deps.hasTicketConnections?.(ticket) ? { hasConnections: true } : {}),
               ...(deps.isExternalMemoryEnabled?.() ? { memoryEnabled: true } : {}),
               projectId: ticket.projectId, directoryId: ticket.directoryId, grantRevision: ticket.grantRevision, timeoutMs: 30 * 60_000 });
@@ -560,9 +575,12 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           }
           const redact = (value: string) => deps.redact?.(value) ?? value;
           const origin = run.permissions.length ? await runtime.conversation((activeTicket.originConversationId ?? ROOT_CONVERSATION_ID) as never, context) : undefined;
+          const activeExplicitReady =
+            activeTicket.externalExecution?.explicitReadyReport?.runEpoch === task.input.runEpoch
+              ? activeTicket.externalExecution.explicitReadyReport
+              : undefined;
           const fallbackNaturalReport =
-            run.state === "completed" &&
-            activeTicket.externalExecution?.explicitReadyReport?.runEpoch !== task.input.runEpoch
+            run.state === "completed" && !activeExplicitReady
               ? spillOversizedReport({
                   uploads: deps.uploads,
                   ticketId: activeTicket.id,
@@ -578,6 +596,40 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                   },
                 })
               : undefined;
+          const backfilledExplicitReady =
+            run.state === "completed" &&
+            activeExplicitReady &&
+            !activeExplicitReady.deliverable &&
+            !activeExplicitReady.overflowAsset &&
+            run.text.trim().length > 0
+              ? spillOversizedReport({
+                  uploads: deps.uploads,
+                  ticketId: activeTicket.id,
+                  runEpoch: task.input.runEpoch,
+                  version: activeExplicitReady.version,
+                  ownerConversationId: activeTicket.workerConversationId,
+                  originConversationId: activeTicket.originConversationId,
+                  report: {
+                    state: activeExplicitReady.state,
+                    summary: activeExplicitReady.summary,
+                    deliverable: redact(run.text),
+                    ...(activeExplicitReady.attachments ? { attachments: activeExplicitReady.attachments } : {}),
+                    at: activeExplicitReady.at,
+                  },
+                })
+              : undefined;
+          const phaseLabel = (phase?: WorkerExecutionPhase): string => {
+            switch (phase) {
+              case "investigating": return "正在排查分析…";
+              case "editing": return "正在编辑修改…";
+              case "verifying": return "正在运行验证…";
+              case "responding": return "正在整理回复…";
+              case "waiting_permission": return "等待客户端授权…";
+              default: return "客户端正在执行。";
+            }
+          };
+          const isHeartbeatStateEvent = (ev: ExternalAgentRuntimeEvent) =>
+            ev.type === "state" && /^(?:Thinking|Reasoning|Executing|Working|Running tool)\.\.\.$/.test(ev.text);
           await runtime.commit(async (tx) => {
             const live = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
             if (!live || live.runEpoch !== task.input.runEpoch) return { status: "terminal", outcome: { status: "aborted" } };
@@ -595,6 +647,22 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                 live.externalExecution!.lastActivityAt ?? 0,
                 ...run.events.map((event) => event.at),
               );
+              const nonMessage = run.events.filter((ev) => ev.type !== "message");
+              if (nonMessage.length > 0) {
+                const merged = [...(live.externalExecution!.recentEvents ?? [])];
+                const seenSeq = new Set(merged.map((ev) => ev.sequence));
+                for (const ev of nonMessage) {
+                  if (seenSeq.has(ev.sequence)) continue;
+                  const last = merged.at(-1);
+                  if (last && isHeartbeatStateEvent(ev) && isHeartbeatStateEvent(last) && last.text === ev.text) {
+                    merged[merged.length - 1] = { sequence: ev.sequence, at: ev.at, type: ev.type, text: redact(ev.text).slice(0, 500) };
+                  } else {
+                    merged.push({ sequence: ev.sequence, at: ev.at, type: ev.type, text: redact(ev.text).slice(0, 500) });
+                  }
+                  seenSeq.add(ev.sequence);
+                }
+                live.externalExecution!.recentEvents = merged.slice(-30);
+              }
             }
             if (origin) for (const permission of run.permissions) {
               const notified = live.externalExecution!.notifiedPermissions ?? [];
@@ -617,8 +685,16 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                 ? live.externalExecution.explicitReadyReport
                 : undefined;
             if ((run.events.length || run.permissions.length) && !explicitReady && (!live.latestReport || live.latestReport.state === "progress")) {
+              const latestTool = [...(live.externalExecution!.recentEvents ?? [])].reverse().find((ev) => ev.type === "tool");
               live.updatedAt = runtime.now();
-              live.latestReport = { state: "progress", summary: redact(run.permissions[0]?.title ?? (run.text.slice(-1200) || "客户端正在执行。")), at: runtime.now() };
+              live.latestReport = {
+                state: "progress",
+                summary: redact(
+                  run.permissions[0]?.title ??
+                    (run.text.trim() ? run.text.slice(-1200) : latestTool?.text ?? phaseLabel(run.phase ?? live.externalExecution!.phase)),
+                ),
+                at: runtime.now(),
+              };
             }
             if (["completed", "failed", "cancelled", "uncertain"].includes(run.state)) {
               if (live.externalExecution!.interruptPending && live.wakePending && live.resumePrompt) {
@@ -638,7 +714,10 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                   live.latestReport = withViolation(live.latestReport);
                 } else if (explicitReady) {
                   const { runEpoch: _re, version: _ver, ...preserved } = explicitReady;
-                  live.latestReport = withViolation(preserved);
+                  const resolved = !preserved.deliverable && !preserved.overflowAsset && backfilledExplicitReady
+                    ? { ...preserved, ...(backfilledExplicitReady.deliverable ? { deliverable: backfilledExplicitReady.deliverable } : {}), ...(backfilledExplicitReady.overflowAsset ? { overflowAsset: backfilledExplicitReady.overflowAsset } : {}) }
+                    : preserved;
+                  live.latestReport = withViolation(resolved);
                 } else {
                   live.latestReport = withViolation(
                     fallbackNaturalReport ?? {
@@ -731,6 +810,11 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
         const cleanup = await deps.prepareTicketRelease?.(pending, context);
         let builtInStagedDiff: StagedWorkspaceDiffSummary | undefined;
         let builtInZeroDiffDiscarded = false;
+        let externalZeroDiffDiscarded = false;
+        const willSettleReady =
+          !pending.waiting &&
+          !task.state.checkpoint.unansweredReason &&
+          (!pending.latestReport || pending.latestReport.state === "ready" || pending.latestReport.state === "progress");
         const canInspectBuiltInStaged = Boolean(
           !pending.externalExecution &&
             pending.workspaceStaging?.mode === "staged" &&
@@ -749,14 +833,28 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
         );
         if (canInspectBuiltInStaged && deps.inspectBuiltInStagedDiff) {
           builtInStagedDiff = await deps.inspectBuiltInStagedDiff(pending, context).catch(() => undefined);
-          const willSettleReady =
-            !pending.waiting &&
-            !task.state.checkpoint.unansweredReason &&
-            (!pending.latestReport || pending.latestReport.state === "ready" || pending.latestReport.state === "progress");
           if (builtInStagedDiff && !builtInStagedDiff.hasChanges && willSettleReady && !cleanup?.cleanupPending && deps.discardBuiltInStagedWorkspace) {
             await deps.discardBuiltInStagedWorkspace(pending, context).catch(() => {});
             builtInZeroDiffDiscarded = true;
           }
+        }
+        if (
+          pending.externalExecution?.workspaceMode === "staged" &&
+          pending.externalExecution.stagedCwd &&
+          !pending.externalExecution.stagedAppliedAt &&
+          pending.externalExecution.stagedDiff?.hasChanges === false &&
+          pending.externalExecution.runId &&
+          willSettleReady &&
+          !cleanup?.cleanupPending &&
+          pending.status !== "stopped" &&
+          pending.status !== "closed"
+        ) {
+          await deps.envManager.requestExternalAgent(pending.envId, {
+            operation: "close",
+            runId: pending.externalExecution.runId,
+            discardStaged: true,
+          }).catch(() => {});
+          externalZeroDiffDiscarded = true;
         }
         const evidenceEntries = pending.workerConversationId
           ? (await runtime.context(pending.workerConversationId as never, context)).entries : [];
@@ -887,6 +985,9 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             } else if (builtInStagedDiff) {
               ticket.workspaceStaging.stagedDiff = JSON.parse(JSON.stringify(builtInStagedDiff)) as StagedWorkspaceDiffSummary;
             }
+          }
+          if (externalZeroDiffDiscarded && finalReport.state === "ready" && ticket.externalExecution?.workspaceMode === "staged" && !ticket.externalExecution.stagedAppliedAt) {
+            delete ticket.externalExecution.stagedCwd;
           }
           transitionTicketStatus(ticket, finalReport.state === "blocked" ? "waiting" : finalReport.state === "progress" ? "ready" : finalReport.state, now);
           if (finalReport.state === "blocked") {

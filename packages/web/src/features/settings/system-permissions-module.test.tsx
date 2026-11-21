@@ -15,26 +15,31 @@ describe("system permission settings", () => {
     expect(settingsModuleTitle("permissions", "en")).toBe("System permissions");
   });
 
-  it("keeps all three permissions and execution-device scope in a scrollable settings table", () => {
+  it("shows only microphone for an unmatched browser client and exposes remote devices in the selector", () => {
+    vi.spyOn(Select, "Popover").mockImplementation(({ children }) => <>{children}</>);
     const html = renderToStaticMarkup(<SystemPermissionsModule envs={[env]} />);
-    expect(html).toContain("麦克风");
-    expect(html).toContain("辅助功能");
-    expect(html).toContain("屏幕录制");
+    const tableSlice = html.slice(html.indexOf('aria-label="系统权限列表"'));
+
     expect(html).toContain("当前客户端");
     expect(html).toContain("办公室 Mac");
     expect(html).toContain("kulo-settings-table-scroll");
-    expect(html).toContain('aria-label="系统权限列表"');
     expect(html).toContain("检查权限");
     expect(html).toContain("开始授权");
     expect(html).not.toContain("未保存");
+
+    expect(tableSlice).toContain("麦克风");
+    expect(tableSlice).not.toContain("辅助功能");
+    expect(tableSlice).not.toContain("屏幕录制");
   });
 
-  it("uses a consistent leading local device tag, current-first order, and status dots across selector and permission rows", () => {
+  it("shows all three permissions for the local device with leading local tag, current-first order, and status dots", () => {
     vi.spyOn(Select, "Popover").mockImplementation(({ children }) => <>{children}</>);
     const local: EnvNodeDescriptor = { id: "local", name: "MacBook-Pro.local", kind: "local", online: true, platform: "darwin", arch: "arm64", rootDir: "/workspace", capabilities: ["agent-desktop"], connectedAt: 1, lastSeenAt: 1 };
     const offlinePeer: EnvNodeDescriptor = { ...env, id: "offline", name: "离线工作站", online: false };
     const html = renderToStaticMarkup(<SystemPermissionsModule envs={[offlinePeer, env, local]} currentDeviceId="local" />);
-    expect(html.split('<span class="kulo-device-local-tag">本机</span>').length - 1).toBeGreaterThanOrEqual(4);
+    const tableSlice = html.slice(html.indexOf('aria-label="系统权限列表"'));
+
+    expect(html.split('<span class="kulo-device-local-tag">本机</span>').length - 1).toBeGreaterThanOrEqual(2);
     expect(html.indexOf("kulo-device-local-tag")).toBeLessThan(html.indexOf("MacBook-Pro.local"));
     expect(html).not.toContain("（本机）");
     expect(html).not.toContain("当前客户端");
@@ -44,6 +49,24 @@ describe("system permission settings", () => {
     const listboxSlice = html.slice(html.indexOf('role="listbox"'));
     expect(listboxSlice.indexOf("MacBook-Pro.local")).toBeLessThan(listboxSlice.indexOf("办公室 Mac"));
     expect(listboxSlice.indexOf("办公室 Mac")).toBeLessThan(listboxSlice.indexOf("离线工作站"));
+
+    expect(tableSlice).toContain("麦克风");
+    expect(tableSlice).toContain("辅助功能");
+    expect(tableSlice).toContain("屏幕录制");
+  });
+
+  it("hides microphone when a remote execution device is selected", () => {
+    const local: EnvNodeDescriptor = { id: "local", name: "MacBook", kind: "local", online: true, platform: "darwin", arch: "arm64", rootDir: "/workspace", capabilities: ["agent-desktop"], connectedAt: 1, lastSeenAt: 1 };
+    const remote: EnvNodeDescriptor = { ...env, id: "macmini", name: "MacMini" };
+    const html = renderToStaticMarkup(<SystemPermissionsModule envs={[local, remote]} currentDeviceId="local" entry={{ id: "e1", kind: "accessibility", envId: "macmini" }} />);
+    const triggerMatch = html.match(/<button\b[^>]*data-slot="select-trigger"[^>]*>[\s\S]*?<\/button>/)?.[0] ?? "";
+    const tableSlice = html.slice(html.indexOf('aria-label="系统权限列表"'));
+
+    expect(triggerMatch).toContain("MacMini");
+    expect(triggerMatch).not.toContain("MacBook");
+    expect(tableSlice).not.toContain("麦克风");
+    expect(tableSlice).toContain("辅助功能");
+    expect(tableSlice).toContain("屏幕录制");
   });
 
   it("allows recovery only for known requestable states", () => {

@@ -4,7 +4,7 @@ import type { DispatchCardMeta, TicketCardView } from "@kulo/protocol";
 import { TaskDispatchCard, TaskStatus } from "./kulo-tasks";
 
 describe("task dispatch chat cards", () => {
-  it("shows the returned external result in the inline card", () => {
+  it("shows completed external tasks uniformly while keeping unreviewed reports private and pending merges distinct", () => {
     const dispatch: DispatchCardMeta = { actionLabel: "派发任务", ticketId: "T-native", title: "检查修改" };
     const native: TicketCardView = {
       id: dispatch.ticketId, title: dispatch.title, role: "external-codex", roleLabel: "Codex", status: "ready", externalAgentKind: "codex",
@@ -12,13 +12,12 @@ describe("task dispatch chat cards", () => {
       latestReport: { state: "ready", summary: "NATIVE_UNREVIEWED_CLAIM", at: 2 },
     };
     const html = renderToStaticMarkup(<TaskDispatchCard dispatch={dispatch} liveTicket={native} onProject={() => {}} />);
-    expect(html).toContain("已返回");
+    expect(html).toContain("已完成");
     expect(html).not.toContain("待验收");
-    expect(html).not.toContain("已完成");
+    expect(html).not.toContain("已返回");
     expect(html).not.toContain("NATIVE_UNREVIEWED_CLAIM");
     const status = renderToStaticMarkup(<TaskStatus {...native} />);
-    expect(status).toContain("已返回");
-    expect(status).not.toContain("chip--success");
+    expect(status).toContain("已完成");
     expect(renderToStaticMarkup(<TaskStatus status="ready" />)).toContain("已完成");
     const pendingStatus = renderToStaticMarkup(<TaskStatus status="ready" pendingWorkspaceApply />);
     expect(pendingStatus).toContain("待合入");

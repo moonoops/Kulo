@@ -11,14 +11,13 @@ const card: TicketCardView = {
 };
 
 describe("background task rail", () => {
-  it("shows returned native results with a neutral status icon", () => {
+  it("shows completed external agent tasks with unified done tone when no merge is pending", () => {
     const html = renderToStaticMarkup(<KuloTaskRail completedTaskDisplayHours={null}
       tickets={[{ ...card, status: "ready", externalAgentKind: "claude-code", completedAt: 1 }]} onProject={() => {}} />);
-    expect(html).toContain("已返回");
+    expect(html).toContain("已完成");
     expect(html).not.toContain("待验收");
-    expect(html).toContain('data-tone="wait"');
-    expect(html).not.toContain("已完成");
-    expect(html).not.toContain('data-tone="done"');
+    expect(html).not.toContain("已返回");
+    expect(html).toContain('data-tone="done"');
   });
 
   it("keeps pending-merge staged tasks visible with attention tone and discard-close unlock control", () => {

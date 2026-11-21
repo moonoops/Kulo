@@ -1,12 +1,12 @@
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT } from "./prompts.js";
+import { defaultExternalAgentRolePrompt, defaultExternalAgentWhenToUse } from "./prompts.js";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-durable";
-import { EXTERNAL_AGENT_KINDS, externalClientConnectionId, redactSensitiveText, type AgentConfigurationDraft, type AgentConfigurationWorkspace, type AgentDispatchPolicy, type EnvNodeDescriptor, type ExternalAgentBinding, type ExternalAgentCatalogItem, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentQuickConnectRequest, type ExternalAgentQuickConnectResult, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentScanCandidate, type ExternalAgentScanResult, type KuloSettingsView, type RolePreset } from "@kulo/protocol";
+import { AUTO_SCAN_EXTERNAL_AGENT_KINDS, EXTERNAL_AGENT_KINDS, LEGACY_ROLE_ALIASES, externalClientConnectionId, isBlockedCustomAcpExecutableName, isValidCustomAcpAgentRef, redactSensitiveText, validateCustomAcpArgs, type AgentConfigurationDraft, type AgentConfigurationWorkspace, type AgentDispatchPolicy, type EnvNodeDescriptor, type ExternalAgentBinding, type ExternalAgentCatalogItem, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentQuickConnectRequest, type ExternalAgentQuickConnectResult, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentScanCandidate, type ExternalAgentScanResult, type KuloSettingsView, type RolePreset } from "@kulo/protocol";
 import { assertAgentDefaultScopes, normalizeAgentDispatchPolicy } from "./agent-routing.js";
 
 export interface AgentConfigurationCommit {
@@ -49,14 +49,21 @@ export interface AgentConfigurationOptions {
   redact?: (text: string) => string;
   onChanged?: () => void | Promise<void>;
 }
-export type AgentConfigurationPatch = Partial<Pick<AgentConfigurationDraft, "label" | "whenToUse" | "prompt" | "modelId" | "thinkingLevel" | "readOnly" | "allowSubagents">> & { kind?: ExternalAgentKind; envId?: string; executable?: string; agentRef?: string; cdpUrl?: string; experimental?: boolean; dispatchPolicy?: Partial<AgentDispatchPolicy> };
+export type AgentConfigurationPatch = Partial<Pick<AgentConfigurationDraft, "label" | "whenToUse" | "prompt" | "modelId" | "thinkingLevel" | "readOnly" | "allowSubagents">> & { kind?: ExternalAgentKind; envId?: string; executable?: string; acpArgs?: string[]; agentRef?: string; cdpUrl?: string; experimental?: boolean; dispatchPolicy?: Partial<AgentDispatchPolicy> };
 type Guard = () => Promise<unknown>;
 
 export const EXTERNAL_AGENT_CATALOG: readonly ExternalAgentCatalogItem[] = [
-  { kind: "codex", label: "Codex", status: "supported", guide: "references/codex.md", instructions: "连接所选设备的 Codex App Server；登录在原客户端完成。" },
+  { kind: "codex", label: "Codex", status: "supported", guide: "references/codex.md", instructions: "连接所选设备的 Codex App Server（自动探测 PATH 与 ChatGPT.app 内置 codex-cli）；登录在原客户端完成。" },
   { kind: "claude-code", label: "Claude Code", status: "supported", guide: "references/claude-code.md", instructions: "通过原生 SDK/CLI 会话连接已安装的 Claude Code。" },
   { kind: "antigravity", label: "Antigravity", status: "supported", guide: "references/antigravity.md", instructions: "连接 Antigravity CLI 的 agy acp 标准输入输出服务。" },
+  { kind: "grok", label: "Grok Build", status: "supported", guide: "references/grok.md", instructions: "连接 Grok Build CLI 的 grok agent stdio 原生 ACP 服务；登录在原客户端执行 grok login 完成。" },
+  { kind: "cursor", label: "Cursor Agent", status: "supported", guide: "references/cursor.md", instructions: "连接 Cursor Agent CLI 的 cursor-agent acp 标准输入输出服务。" },
+  { kind: "opencode", label: "OpenCode", status: "supported", guide: "references/opencode.md", instructions: "连接 OpenCode CLI 的 opencode acp 标准输入输出服务。" },
+  { kind: "gemini-cli", label: "Gemini CLI", status: "supported", guide: "references/gemini-cli.md", instructions: "连接 Gemini CLI 的 gemini --acp 标准输入输出服务。" },
+  { kind: "kiro", label: "Kiro CLI", status: "supported", guide: "references/kiro.md", instructions: "连接 Kiro CLI V3 引擎的 kiro-cli acp --agent-engine=v3 --auth-method=cli 服务。" },
+  { kind: "copilot", label: "GitHub Copilot", status: "supported", guide: "references/copilot.md", instructions: "连接 GitHub Copilot CLI 的 copilot --acp 标准输入输出服务。" },
   { kind: "dsh", label: "DeepSeek Harness", status: "supported", guide: "references/dsh.md", instructions: "连接 dsh --profile acp；协议初始化不代表模型凭据可用。" },
+  { kind: "acp", label: "自定义 ACP", status: "supported", guide: "references/acp.md", instructions: "仅在设置界面手动配置本地已安装的 ACP 兼容可执行文件与参数；不通过对话工具接收任意启动命令。" },
   { kind: "grok-bot", label: "Grok Bot", status: "experimental", guide: "references/grok-bot.md", instructions: "实验性本地客户端桥接；需要明确选择 Bot，不自动开启调试或重启客户端。" },
   { kind: "dots", label: "ChatGPT Dots", status: "reserved", guide: "references/dots.md", instructions: "预留接入指导；尚无已验证的本地客户端控制驱动。" },
   { kind: "muse", label: "Meta Muse", status: "reserved", guide: "references/muse.md", instructions: "预留个人 Muse 接入指导，与 Muse Code 分开；尚无已验证的本地客户端控制驱动。" },
@@ -87,6 +94,46 @@ function revision(draft: AgentConfigurationDraft | undefined, expected: number):
   if (!Number.isSafeInteger(expected) || expected < 1) fail(400, "invalid_agent_configuration_revision", "智能体草稿版本无效。");
   if (!draft || draft.revision !== expected) fail(409, "agent_configuration_conflict", "智能体草稿已更新，请读取最新草稿后继续。");
 }
+const RESERVED_EXTERNAL_ROLE_IDS = new Set([
+  "coder",
+  "checker",
+  "scout",
+  "writer",
+  "architect",
+  "designer",
+  ...Object.keys(LEGACY_ROLE_ALIASES),
+]);
+
+function suggestExternalRoleId(
+  clientKind: ExternalAgentKind,
+  envId: string,
+  existingRoles: Readonly<Record<string, RolePreset>>,
+  agentRef?: string,
+): string {
+  const seed = clientKind === "cursor"
+    ? "cursor-agent"
+    : clientKind === "acp" && agentRef?.trim()
+      ? agentRef.trim()
+      : clientKind;
+  const base = seed.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^[^a-z]+/, "") || "agent";
+  const canUse = (candidate: string) =>
+    /^[a-z][a-z0-9_-]{0,39}$/.test(candidate) &&
+    !RESERVED_EXTERNAL_ROLE_IDS.has(candidate) &&
+    !Object.hasOwn(existingRoles, candidate);
+  if (canUse(base)) return base;
+  const envSlug = envId.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 16);
+  if (envSlug) {
+    const withEnv = `${base.slice(0, Math.max(1, 39 - envSlug.length))}-${envSlug}`;
+    if (canUse(withEnv)) return withEnv;
+  }
+  for (let i = 2; i < 1000; i++) {
+    const suffix = `-${i}`;
+    const candidate = `${base.slice(0, Math.max(1, 40 - suffix.length))}${suffix}`;
+    if (canUse(candidate)) return candidate;
+  }
+  return `external-${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+}
+
 function catalog(clientKind: ExternalAgentKind): ExternalAgentCatalogItem { return EXTERNAL_AGENT_CATALOG.find((entry) => entry.kind === clientKind)!; }
 function assertAvailable(clientKind: ExternalAgentKind, experimental?: boolean): void {
   const item = catalog(clientKind);
@@ -152,7 +199,7 @@ export class KuloAgentConfiguration {
     const scopedDevices = envId ? allDevices.filter((env) => env.id === envId) : allDevices;
     const targetKinds = options.kinds?.length
       ? [...new Set(options.kinds.map((entry) => kind(entry)))]
-      : EXTERNAL_AGENT_CATALOG.filter((item) => item.status === "supported").map((item) => item.kind);
+      : [...AUTO_SCAN_EXTERNAL_AGENT_KINDS];
     const settingsView = this.#options.settings();
     const connectedMap = new Map<string, { clientId: string; verified: boolean }>();
     for (const client of Object.values(settingsView.externalClients ?? {})) {
@@ -189,6 +236,8 @@ export class KuloAgentConfiguration {
             return {
               kind: clientKind, label: item.label, status: item.status, envId: device.id, envName: device.name, online: true,
               installed: Boolean(detection.installed),
+              ...(detection.desktopAppInstalled ? { desktopAppInstalled: true } : {}),
+              authenticated: detection.authenticated,
               alreadyConnected: Boolean(existing),
               ...(existing ? { connectedClientId: existing.clientId, connectedVerified: existing.verified } : {}),
               ...(detection.executable ? { executable: detection.executable } : {}),
@@ -219,9 +268,9 @@ export class KuloAgentConfiguration {
       candidates: resolved.map((entry) => entry.candidate),
     });
   }
-  async quickConnect(input: ExternalAgentQuickConnectRequest & { clientId: string }, guard?: Guard): Promise<ExternalAgentQuickConnectResult> {
+  async quickConnect(input: ExternalAgentQuickConnectRequest & { clientId: string }, guard?: Guard, options?: { allowCustomAcpCommand?: boolean }): Promise<ExternalAgentQuickConnectResult> {
     if (!input || typeof input !== "object" || Array.isArray(input)) fail(400, "invalid_agent_configuration", "智能体连接参数无效。");
-    const allowed = ["clientId", "kind", "envId", "commandId", "runTest", "executable", "agentRef", "cdpUrl", "experimental", "label", "whenToUse", "prompt", "modelId", "thinkingLevel", "allowSubagents", "dispatchPolicy"];
+    const allowed = ["clientId", "kind", "envId", "commandId", "runTest", "executable", "acpArgs", "agentRef", "cdpUrl", "experimental", "label", "whenToUse", "prompt", "modelId", "thinkingLevel", "allowSubagents", "dispatchPolicy"];
     if (Object.keys(input).some((key) => !allowed.includes(key))) fail(400, "invalid_agent_configuration_field", "智能体配置不接收凭据、环境变量或任意启动命令。");
     this.#public(input);
     const clientId = identifier(input.clientId);
@@ -235,6 +284,12 @@ export class KuloAgentConfiguration {
     if (clientKind === "grok-bot" && input.runTest === true) {
       fail(409, "agent_roundtrip_unsupported", "Grok Bot 当前仅支持实验性协议检测，尚未提供稳定的真实收发校验，配置保存后保持停用。");
     }
+    if (clientKind === "acp" && options?.allowCustomAcpCommand !== true) {
+      fail(403, "custom_acp_ui_only", "自定义 ACP 客户端只能在设置界面直接配置，不支持通过对话工具传入任意启动命令。");
+    }
+    if (clientKind !== "acp" && input.acpArgs !== undefined) {
+      fail(400, "invalid_agent_configuration_field", "仅自定义 ACP 客户端支持配置启动参数。");
+    }
     const label = input.label !== undefined ? publicText(input.label, "label", 120) : "";
     const whenToUse = input.whenToUse !== undefined ? publicText(input.whenToUse, "whenToUse", 2000, true) : "";
     const prompt = input.prompt !== undefined ? publicText(input.prompt, "prompt", 16_000, true) : "";
@@ -245,6 +300,21 @@ export class KuloAgentConfiguration {
       fail(400, "invalid_agent_executable", "客户端路径必须为设备上的绝对路径。");
     }
     const agentRef = input.agentRef !== undefined ? publicText(input.agentRef, "agentRef", 240) : "";
+    let acpArgs: string[] | undefined;
+    if (clientKind === "acp") {
+      if (!executable) fail(400, "invalid_agent_executable", "自定义 ACP 客户端必须指定设备上的绝对可执行文件路径。");
+      if (isBlockedCustomAcpExecutableName(executable)) {
+        fail(400, "invalid_agent_executable", "自定义 ACP 客户端路径不能是通用 Shell、脚本解释器或包拉取执行器。");
+      }
+      if (!isValidCustomAcpAgentRef(agentRef)) {
+        fail(400, "invalid_agent_configuration", "自定义 ACP 客户端必须提供有效标识（以字母或数字开头，最多 64 字符）。");
+      }
+      if (input.acpArgs !== undefined) {
+        const validated = validateCustomAcpArgs(input.acpArgs);
+        if (!validated.ok) fail(400, "invalid_agent_configuration", validated.error);
+        if (validated.value.length > 0) acpArgs = validated.value;
+      }
+    }
     let cdpUrl = "";
     if (input.cdpUrl !== undefined) {
       const rawUrl = publicText(input.cdpUrl, "本机调试地址", 2048);
@@ -280,6 +350,7 @@ export class KuloAgentConfiguration {
           kind: clientKind,
           envId,
           ...(executable ? { executable } : {}),
+          ...(acpArgs?.length ? { acpArgs } : {}),
           ...(agentRef ? { agentRef } : {}),
           ...(cdpUrl ? { cdpUrl } : {}),
           ...(input.experimental !== undefined ? { experimental: input.experimental } : {}),
@@ -294,15 +365,13 @@ export class KuloAgentConfiguration {
         if (!detection.installed) fail(409, "agent_not_installed", detection.error || `未在 ${device.name} 上检测到 ${item.label}。`);
         if (detection.error) fail(409, "agent_probe_failed", detection.error);
         if (detection.authenticated === false) fail(409, "agent_not_authenticated", `${item.label} 尚未在 ${device.name} 完成登录，请先在原客户端登录后重试。`);
-        if (detection.executable) binding.executable = detection.executable;
         if (detection.version) binding.version = detection.version;
         binding.capabilities = detection.capabilities;
 
-        const resolvedLabel = label || `${item.label} · ${device.name}`;
-        const resolvedWhenToUse = whenToUse || (clientKind === "grok-bot" || clientKind === "dots" || clientKind === "muse"
-          ? "Tasks explicitly assigned to this personal agent by the user."
-          : "Code implementation, debugging, and verification on this execution device.");
-        const resolvedPrompt = prompt || DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT;
+        const language = this.#options.settings().blocks?.presentation?.value?.language;
+        const resolvedLabel = label || (clientKind === "acp" && agentRef ? agentRef : item.label);
+        const resolvedWhenToUse = whenToUse || defaultExternalAgentWhenToUse(clientKind, language);
+        const resolvedPrompt = prompt || defaultExternalAgentRolePrompt(language);
         const shouldVerify = input.runTest !== false && item.status === "supported";
         verificationLevel = "protocol";
         if (shouldVerify) {
@@ -343,7 +412,7 @@ export class KuloAgentConfiguration {
         const existingUpgrade = !label
           ? Object.values(rolesBlock.value).find((role) => role.external && (role.externalClientId ?? externalClientConnectionId(role.external)) === externalClientId && !role.external.verifiedAt)
           : undefined;
-        const roleId = existingUpgrade?.id ?? `external-${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+        const roleId = existingUpgrade?.id ?? suggestExternalRoleId(clientKind, envId, rolesBlock.value, binding.agentRef);
         const policyDraft: AgentConfigurationDraft = {
           id: roleId,
           agentId: existingUpgrade?.id,
@@ -414,9 +483,12 @@ export class KuloAgentConfiguration {
       return clone(result);
     });
   }
-  async prepare(input: { clientId: string; kind: ExternalAgentKind; envId: string; agentId?: string; commandId?: string }, guard?: Guard) {
+  async prepare(input: { clientId: string; kind: ExternalAgentKind; envId: string; agentId?: string; commandId?: string }, guard?: Guard, options?: { allowCustomAcpCommand?: boolean }) {
     const clientId = identifier(input.clientId); const clientKind = kind(input.kind); const envId = identifier(input.envId);
     if (input.commandId) identifier(input.commandId);
+    if (clientKind === "acp" && !input.agentId && options?.allowCustomAcpCommand !== true) {
+      fail(403, "custom_acp_ui_only", "自定义 ACP 客户端只能在设置界面直接配置，不支持通过对话工具新建。");
+    }
     return this.#serial(async () => {
       await this.#guard(clientId, guard);
       const current = await this.#draft(clientId);
@@ -427,10 +499,14 @@ export class KuloAgentConfiguration {
       const roles = this.#options.settings().blocks.roles;
       const existing = input.agentId ? roles.value[identifier(input.agentId)] : undefined;
       if (input.agentId && !existing?.external) fail(400, "external_agent_not_found", "请选择已配置的外部智能体。");
+      if (clientKind === "acp" && existing?.external && existing.external.kind !== "acp" && options?.allowCustomAcpCommand !== true) {
+        fail(403, "custom_acp_ui_only", "自定义 ACP 客户端只能在设置界面直接配置，不支持通过对话工具切换类型。");
+      }
       const device = this.#options.envs().find((env) => env.id === envId && env.executionKind !== "native-device");
       if (!device) fail(400, "agent_device_not_found", "请选择已连接的电脑执行设备。");
       const item = catalog(clientKind);
-      const draft: AgentConfigurationDraft = { id: `agent-draft-${randomUUID()}`, revision: 1, clientId, settingsRevision: roles.revision, ...(existing ? { agentId: existing.id } : {}), binding: existing?.external ? { ...clone(existing.external), kind: clientKind, envId } : { kind: clientKind, envId }, label: existing?.label ?? `${item.label} · ${device.name}`, whenToUse: existing?.whenToUse ?? (clientKind === "grok-bot" || clientKind === "dots" || clientKind === "muse" ? "Tasks explicitly assigned to this personal agent by the user." : "Code implementation, debugging, and verification on this execution device."), prompt: existing?.prompt ?? DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT, ...(existing?.modelId ? { modelId: existing.modelId } : {}), readOnly: existing?.readOnly ?? false, allowSubagents: existing?.allowSubagents ?? false, updatedAt: Date.now() };
+      const language = this.#options.settings().blocks?.presentation?.value?.language;
+      const draft: AgentConfigurationDraft = { id: `agent-draft-${randomUUID()}`, revision: 1, clientId, settingsRevision: roles.revision, ...(existing ? { agentId: existing.id } : {}), binding: existing?.external ? { ...clone(existing.external), kind: clientKind, envId } : { kind: clientKind, envId }, label: existing?.label ?? item.label, whenToUse: existing?.whenToUse ?? defaultExternalAgentWhenToUse(clientKind, language), prompt: existing?.prompt ?? defaultExternalAgentRolePrompt(language), ...(existing?.modelId ? { modelId: existing.modelId } : {}), readOnly: existing?.readOnly ?? false, allowSubagents: existing?.allowSubagents ?? false, updatedAt: Date.now() };
       const thinkingLevel = existing?.thinkingLevel === undefined ? undefined : nativeThinkingLevel(existing.thinkingLevel);
       if (thinkingLevel) draft.thinkingLevel = thinkingLevel;
       if (existing?.dispatchPolicy) draft.dispatchPolicy = clone(existing.dispatchPolicy);
@@ -439,16 +515,24 @@ export class KuloAgentConfiguration {
       return this.#store(draft, guard);
     });
   }
-  async updateDraft(input: { clientId: string; expectedRevision: number; patch: AgentConfigurationPatch }, guard?: Guard) {
+  async updateDraft(input: { clientId: string; expectedRevision: number; patch: AgentConfigurationPatch }, guard?: Guard, options?: { allowCustomAcpCommand?: boolean }) {
     const clientId = identifier(input.clientId);
     if (!input.patch || typeof input.patch !== "object" || Array.isArray(input.patch)) fail(400, "invalid_agent_configuration", "智能体草稿变更无效。");
-    const allowed = ["label", "whenToUse", "prompt", "modelId", "thinkingLevel", "readOnly", "allowSubagents", "kind", "envId", "executable", "agentRef", "cdpUrl", "experimental", "dispatchPolicy"];
+    const allowed = ["label", "whenToUse", "prompt", "modelId", "thinkingLevel", "readOnly", "allowSubagents", "kind", "envId", "executable", "acpArgs", "agentRef", "cdpUrl", "experimental", "dispatchPolicy"];
     if (Object.keys(input.patch).some((key) => !allowed.includes(key))) fail(400, "invalid_agent_configuration_field", "智能体配置不接收凭据、环境变量或任意启动命令。");
     this.#public(input.patch);
     return this.#serial(async () => {
       await this.#guard(clientId, guard);
       const current = await this.#draft(clientId); revision(current, input.expectedRevision);
       const draft = clone(current); const patch = input.patch;
+      if (options?.allowCustomAcpCommand !== true) {
+        if (patch.kind === "acp" || patch.acpArgs !== undefined) {
+          fail(403, "custom_acp_ui_only", "自定义 ACP 客户端启动命令只能在设置界面直接配置。");
+        }
+        if (current.binding.kind === "acp" && (patch.executable !== undefined || patch.agentRef !== undefined || patch.kind !== undefined)) {
+          fail(403, "custom_acp_ui_only", "自定义 ACP 客户端的启动路径与标识只能在设置界面修改。");
+        }
+      }
       for (const key of ["label", "whenToUse", "prompt", "modelId"] as const) if (patch[key] !== undefined) draft[key] = publicText(patch[key], key, key === "prompt" ? 16_000 : key === "whenToUse" ? 2000 : key === "modelId" ? 512 : 120, key === "prompt" || key === "whenToUse");
       if (draft.modelId === "") delete draft.modelId;
       if (patch.thinkingLevel !== undefined) {
@@ -461,8 +545,17 @@ export class KuloAgentConfiguration {
       for (const key of ["executable", "agentRef"] as const) if (patch[key] !== undefined) {
         const value = publicText(patch[key], key, key === "executable" ? 2048 : 240);
         if (key === "executable" && value && !path.posix.isAbsolute(value) && !path.win32.isAbsolute(value)) fail(400, "invalid_agent_executable", "客户端路径必须为设备上的绝对路径。");
+        if (key === "executable" && value && draft.binding.kind === "acp" && isBlockedCustomAcpExecutableName(value)) fail(400, "invalid_agent_executable", "自定义 ACP 客户端路径不能是通用 Shell、脚本解释器或包拉取执行器。");
+        if (key === "agentRef" && draft.binding.kind === "acp" && value && !isValidCustomAcpAgentRef(value)) fail(400, "invalid_agent_configuration", "自定义 ACP 客户端标识格式无效。");
         if (value) draft.binding[key] = value; else delete draft.binding[key];
       }
+      if (patch.acpArgs !== undefined) {
+        if (draft.binding.kind !== "acp") fail(400, "invalid_agent_configuration_field", "仅自定义 ACP 客户端支持配置启动参数。");
+        const validated = validateCustomAcpArgs(patch.acpArgs);
+        if (!validated.ok) fail(400, "invalid_agent_configuration", validated.error);
+        if (validated.value.length > 0) draft.binding.acpArgs = validated.value; else delete draft.binding.acpArgs;
+      }
+      if (draft.binding.kind !== "acp") delete draft.binding.acpArgs;
       if (patch.cdpUrl !== undefined) {
         const value = publicText(patch.cdpUrl, "本机调试地址", 2048);
         if (value) {
@@ -492,12 +585,12 @@ export class KuloAgentConfiguration {
       await this.#guard(clientId, guard);
       if (response.type !== "detection" || response.detection.kind !== current.binding.kind) fail(502, "agent_probe_invalid", "执行设备返回的客户端检测结果无效。");
       const detection = clone(response.detection); this.#public(detection);
-      const draft: AgentConfigurationDraft = { ...current, detection, binding: { ...current.binding, ...(detection.executable ? { executable: detection.executable } : {}), ...(detection.version ? { version: detection.version } : {}), capabilities: detection.capabilities }, revision: current.revision + 1, updatedAt: Date.now() };
+      const draft: AgentConfigurationDraft = { ...current, detection, binding: { ...current.binding, ...(detection.version ? { version: detection.version } : {}), capabilities: detection.capabilities }, revision: current.revision + 1, updatedAt: Date.now() };
       // A fresh install check can retain prior task evidence for metadata-only edits.
-      const retainRoundtrip = current.verification?.level === "roundtrip" && detection.installed && !detection.error && detection.authenticated !== false && detection.version === current.verification.version && detection.executable === current.binding.executable;
+      const retainRoundtrip = current.verification?.level === "roundtrip" && detection.installed && !detection.error && detection.authenticated !== false && detection.version === current.verification.version && (!current.binding.executable || detection.executable === current.binding.executable);
       if (!retainRoundtrip) {
         delete draft.verification; delete draft.binding.verifiedAt;
-        if (operation === "probe" && detection.installed && !detection.error) draft.verification = { at: Date.now(), level: "protocol", version: detection.version };
+        if (operation === "probe" && detection.installed && !detection.error && detection.authenticated !== false) draft.verification = { at: Date.now(), level: "protocol", version: detection.version };
       }
       return this.#store(draft, guard);
     });
@@ -559,7 +652,7 @@ export class KuloAgentConfiguration {
         policy = await this.#validateDispatchPolicy(current, guard);
       }
       const externalClientId = externalClientConnectionId(current!.binding);
-      const role: RolePreset = committed?.role ?? { id: current!.agentId ?? `external-${randomUUID().replace(/-/g, "").slice(0, 24)}`, label: current!.label, whenToUse: current!.whenToUse, prompt: current!.prompt, readOnly: current!.readOnly, allowSubagents: current!.allowSubagents, ...(current!.modelId ? { modelId: current!.modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}), ...(policy ? { dispatchPolicy: clone(policy) } : {}), enabled: current!.verification?.level === "roundtrip" && catalog(current!.binding.kind).status === "supported", externalClientId, external: clone(current!.binding) };
+      const role: RolePreset = committed?.role ?? { id: current!.agentId ?? suggestExternalRoleId(current!.binding.kind, current!.binding.envId, this.#options.settings().blocks.roles.value, current!.binding.agentRef), label: current!.label, whenToUse: current!.whenToUse, prompt: current!.prompt, readOnly: current!.readOnly, allowSubagents: current!.allowSubagents, ...(current!.modelId ? { modelId: current!.modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}), ...(policy ? { dispatchPolicy: clone(policy) } : {}), enabled: current!.verification?.level === "roundtrip" && catalog(current!.binding.kind).status === "supported", externalClientId, external: clone(current!.binding) };
       if (!role.enabled && role.external) delete role.external.verifiedAt;
       const detectedModels = committed?.models ?? current!.detection?.models;
       const commit: AgentConfigurationCommit = committed ?? { fingerprint, clientId, draftId: current!.id, draftRevision: current!.revision, expectedRevision: current!.settingsRevision, role: clone(role), ...(detectedModels ? { models: clone(detectedModels) } : {}) };

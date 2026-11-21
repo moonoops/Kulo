@@ -13,6 +13,7 @@ export interface AgentRoutingTarget {
   agentId?: string;
   kind?: import("./external-agents.js").ExternalAgentKind;
   envId?: string;
+  internal?: boolean;
 }
 
 /** Captured from the actual user input; tool-generated task text cannot replace it. */

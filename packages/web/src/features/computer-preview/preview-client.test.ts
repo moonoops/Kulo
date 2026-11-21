@@ -186,4 +186,45 @@ describe("computer preview lifecycle", () => {
     expect(client.getSnapshot()).toMatchObject({ collapsed: false, expanded: false, activeTicketId: undefined, selectedId: undefined });
     client.close();
   });
+
+  it("auto-follows newly opened or newly active sessions within the same ticket while preserving modal manual inspection", () => {
+    const { client, socket } = setup();
+    const browserOnT1 = previewSessions[0]!;
+    const desktopOnT1: ComputerPreviewSessionView = {
+      id: "desktop-1b",
+      ticketId: "ticket-1",
+      tool: "desktop",
+      envId: "local",
+      deviceName: "Mac",
+      title: "检查页面",
+      app: "Calculator",
+    };
+
+    // Initial live frame on browser-1
+    frame(socket, "browser-1", 10);
+    expect(client.getSnapshot()).toMatchObject({ activeTicketId: "ticket-1", selectedId: "browser-1" });
+
+    // Worker opens Calculator on the same ticket -> card auto-follows the newly opened session
+    socket.emit({ type: "preview.sessions", sessions: [browserOnT1, desktopOnT1, previewSessions[1]!] });
+    expect(client.getSnapshot().selectedByTicket["ticket-1"]).toBe("desktop-1b");
+    expect(client.getSnapshot().selectedId).toBe("desktop-1b");
+
+    // Browser receives a newer frame later -> card auto-follows the active session
+    frame(socket, "browser-1", 20);
+    expect(client.getSnapshot().selectedByTicket["ticket-1"]).toBe("browser-1");
+    expect(client.getSnapshot().selectedId).toBe("browser-1");
+
+    // In enlarged modal, manual selection stays pinned even if another session receives a newer frame
+    client.openModal("desktop-1b");
+    frame(socket, "browser-1", 30);
+    expect(client.getSnapshot().selectedId).toBe("desktop-1b");
+    expect(client.getSnapshot().selectedByTicket["ticket-1"]).toBe("desktop-1b");
+
+    // After closing modal, subsequent live frames follow latest active session again
+    client.closeModal();
+    frame(socket, "browser-1", 40);
+    expect(client.getSnapshot().selectedId).toBe("browser-1");
+    expect(client.getSnapshot().selectedByTicket["ticket-1"]).toBe("browser-1");
+    client.close();
+  });
 });

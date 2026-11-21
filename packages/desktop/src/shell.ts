@@ -1,23 +1,26 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, powerMonitor, session, shell, systemPreferences, Tray } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, powerMonitor, screen, session, shell, systemPreferences, Tray } from "electron";
 import { RecoveryManager, readReleaseIdentity } from "@kulo/recovery";
 import { buildRuntimeEnvironment } from "./runtime-config.js";
 import { startNodeService, type NodeService } from "./child-service.js";
-import { DESKTOP_APP_NAME, desktopContentSecurityPolicy, desktopWindowChrome, externalHttpUrl, localHttpOrigin, parseDevelopmentMode, resolveDesktopDataDirectory, shouldAuthorizeDesktopRequest, type DevelopmentMode } from "./desktop-config.js";
+import { desktopContentSecurityPolicy, desktopWindowChrome, externalHttpUrl, localHttpOrigin, parseDevelopmentMode, resolveDesktopAppIdentity, resolveDesktopDataDirectory, shouldAuthorizeDesktopRequest, type DevelopmentMode } from "./desktop-config.js";
 import { createDesktopContextMenuTemplate, createDesktopMenuTemplate, createMainWindowCloseController, shouldRevealWindowForCommand, type DesktopAppCommand } from "./desktop-menu.js";
 import { configureDesktopPreferenceHandlers, createDesktopPreferencesStore, DESKTOP_PREFERENCES_CHANNELS } from "./desktop-preferences.js";
 import { createDesktopTrayController, loadDesktopTrayIcon } from "./desktop-tray.js";
 import { createDesktopFileActions, isTrustedFileActionSender, type DesktopFileConnection } from "./file-actions.js";
-import { createDesktopNotifications } from "./notifications.js";
+import { createDesktopNotifications, formatDockBadgeText, normalizeDesktopBadgeCount } from "./notifications.js";
 import { configureDesktopSystemPermissionHandlers, createDesktopSystemPermissions } from "./system-permissions.js";
 import { DesktopStartupReady } from "./startup-ready.js";
 import { configureDesktopUiFailureHandler } from "./ui-failure.js";
 import { writeDesktopLog } from "./desktop-log.js";
+import { createDesktopWindowStateStore } from "./window-state.js";
 
-app.setName(DESKTOP_APP_NAME);
-const dataDir = resolveDesktopDataDirectory(process.argv, path.join(app.getPath("appData"), DESKTOP_APP_NAME));
+const desktopIdentity = resolveDesktopAppIdentity();
+const desktopAppName = desktopIdentity.appName;
+app.setName(desktopAppName);
+const dataDir = resolveDesktopDataDirectory(process.argv, path.join(app.getPath("appData"), desktopAppName));
 fs.mkdirSync(path.join(dataDir, "chromium"), { recursive: true, mode: 0o700 });
 app.setPath("userData", dataDir);
 app.setPath("sessionData", path.join(dataDir, "chromium"));
@@ -53,7 +56,7 @@ function resolveTrayIcon(badgeActive: boolean) {
   return loadDesktopTrayIcon(badgePath, (file) => nativeImage.createFromPath(file), process.platform, { template: false });
 }
 const trayController = createDesktopTrayController({
-  appName: DESKTOP_APP_NAME,
+  appName: desktopAppName,
   platform: process.platform,
   createTray: () => new Tray(resolveTrayIcon(false)),
   resolveIcon: resolveTrayIcon,
@@ -69,7 +72,7 @@ const desktopPreferences = createDesktopPreferencesStore({
   onChange: (next) => {
     trayController.sync(next.backgroundRunning);
     if (!next.notifications.badge) {
-      applyBadge(false);
+      applyBadge(0);
     }
     if (!next.backgroundRunning && window && !window.isDestroyed() && !window.isVisible()) {
       focusWindow();
@@ -78,6 +81,11 @@ const desktopPreferences = createDesktopPreferencesStore({
       window.webContents.send(DESKTOP_PREFERENCES_CHANNELS.changed, next);
     }
   },
+  onLog: (message) => log(message),
+});
+
+const desktopWindowState = createDesktopWindowStateStore({
+  dataDir,
   onLog: (message) => log(message),
 });
 
@@ -106,14 +114,16 @@ function isWindowFocused(): boolean {
   return Boolean(window && !window.isDestroyed() && window.isVisible() && window.isFocused());
 }
 
-function applyBadge(active: boolean): void {
-  const effective = Boolean(active && desktopPreferences.get().notifications.badge && !isWindowFocused());
+function applyBadge(count: number): void {
+  const effectiveCount = desktopPreferences.get().notifications.badge && !isWindowFocused() && Number.isFinite(count) && count > 0
+    ? Math.min(9999, Math.floor(count))
+    : 0;
   if (process.platform === "darwin") {
-    app.dock?.setBadge(effective ? "•" : "");
+    app.dock?.setBadge(formatDockBadgeText(effectiveCount));
   } else if (typeof app.setBadgeCount === "function") {
-    app.setBadgeCount(effective ? 1 : 0);
+    app.setBadgeCount(effectiveCount);
   }
-  trayController.setBadge(effective);
+  trayController.setBadge(effectiveCount);
 }
 
 function dispatchNotificationOpen(topicId: string): void {
@@ -169,10 +179,11 @@ function configureFileActions(): void {
     authorize(event);
     return desktopNotifications.notify(payload);
   });
-  ipcMain.handle("kulo:badge-set", (event, active: unknown) => {
+  ipcMain.handle("kulo:badge-set", (event, value: unknown) => {
     authorize(event);
-    if (typeof active !== "boolean") throw new Error("任务栏红点参数无效。");
-    applyBadge(active);
+    const count = normalizeDesktopBadgeCount(value);
+    if (count === null) throw new Error("应用角标参数无效。");
+    applyBadge(count);
   });
 }
 
@@ -190,10 +201,10 @@ function focusWindow(): void {
   if (!window || window.isDestroyed()) return;
   closeController.handleFocusOrActivate();
   if (window.isMinimized()) window.restore();
-  window.show();
+  desktopWindowState.reveal(window);
   window.focus();
   app.focus({ steal: true });
-  applyBadge(false);
+  applyBadge(0);
 }
 
 function dispatchWindowCommand(command: DesktopAppCommand): void {
@@ -220,7 +231,7 @@ function trustedRenderer(origin: string | undefined): boolean {
 }
 
 function configureSession(): void {
-  const browserSession = session.fromPartition("persist:kulo-dev");
+  const browserSession = session.fromPartition(desktopIdentity.sessionPartition);
   browserSession.webRequest.onHeadersReceived((details, callback) => {
     const responseHeaders = { ...details.responseHeaders };
     if (contentSecurityPolicy && details.webContentsId === window?.webContents.id && trustedRenderer(details.url) && details.resourceType === "mainFrame") {
@@ -256,19 +267,25 @@ function configureSession(): void {
 
 function createWindow(): BrowserWindow {
   if (window && !window.isDestroyed()) return window;
+  const launch = desktopWindowState.resolveLaunchOptions(screen.getAllDisplays(), screen.getPrimaryDisplay());
   const created = new BrowserWindow({
-    title: DESKTOP_APP_NAME,
+    title: desktopAppName,
     ...desktopWindowChrome(process.platform),
-    width: 1380, height: 920, minWidth: 400, minHeight: 560,
+    ...(launch.x !== undefined && launch.y !== undefined ? { x: launch.x, y: launch.y } : {}),
+    width: launch.width,
+    height: launch.height,
+    minWidth: launch.minWidth,
+    minHeight: launch.minHeight,
     show: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#111111" : "#ffffff",
     webPreferences: {
-      partition: "persist:kulo-dev",
+      partition: desktopIdentity.sessionPartition,
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
       preload: fileURLToPath(new URL("./preload.cjs", import.meta.url)),
     },
   });
   window = created;
+  desktopWindowState.attach(created, launch);
   configureDesktopUiFailureHandler({
     contents: created.webContents, rendererOrigin: () => rendererOrigin,
     isBooting: () => booting, isQuitting: () => quitting,
@@ -325,7 +342,7 @@ function createWindow(): BrowserWindow {
         buttons: ["重新加载", "取消"],
         defaultId: 1,
         cancelId: 1,
-        title: DESKTOP_APP_NAME,
+        title: desktopAppName,
         message: "重新加载将丢失未保存的修改",
         detail: "当前设置存在尚未保存的草稿。是否放弃修改并重新加载界面？",
       }) === 0,
@@ -335,13 +352,13 @@ function createWindow(): BrowserWindow {
         buttons: ["放弃并退出", "取消"],
         defaultId: 1,
         cancelId: 1,
-        title: DESKTOP_APP_NAME,
+        title: desktopAppName,
         message: "关闭窗口将丢失未保存的修改",
         detail: "当前设置存在尚未保存的草稿。是否放弃修改并退出 Kulo？",
       }) === 0,
     );
   });
-  created.on("focus", () => applyBadge(false));
+  created.on("focus", () => applyBadge(0));
   created.on("close", (event) => closeController.handleClose(event, created, quitting, desktopPreferences.get().backgroundRunning));
   created.on("leave-full-screen", () => closeController.handleLeaveFullScreen(created, quitting));
   created.on("closed", () => {
@@ -357,7 +374,7 @@ function createWindow(): BrowserWindow {
 
 function updateMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(createDesktopMenuTemplate({
-    appName: DESKTOP_APP_NAME,
+    appName: desktopAppName,
     platform: process.platform,
     showUseInstalled: Boolean(app.isPackaged && development),
     onFocusWindow: focusWindow,
@@ -499,7 +516,7 @@ async function startServices(mode: DevelopmentMode | undefined): Promise<void> {
   if (service.child.exitCode !== null || service.child.signalCode !== null) throw new Error("后台服务在界面就绪前退出。");
   if (launchAttempt && recovery) await recovery.markReady(launchAttempt.attemptId);
   if (startupFailure) throw startupFailure;
-  created.setTitle(mode ? "Kulo Dev · 开发模式" : DESKTOP_APP_NAME);
+  created.setTitle(mode ? `${desktopAppName} · 开发模式` : desktopAppName);
   focusWindow();
   updateMenu();
   const status = { pid: process.pid, mode: mode ? "development" : "installed", hubOrigin: ready.url, rendererOrigin: uiOrigin,
@@ -507,7 +524,7 @@ async function startServices(mode: DevelopmentMode | undefined): Promise<void> {
   writePrivateJson(path.join(dataDir, "desktop-status.json"), status);
   if (mode) writePrivateJson(path.join(mode.controlDir, "ready.json"), status);
   booting = false;
-  log(`Kulo Dev 已启动（${status.mode}）。`);
+  log(`${desktopAppName} 已启动（${status.mode}）。`);
 }
 
 async function recover(message: string): Promise<void> {
@@ -524,7 +541,7 @@ async function recover(message: string): Promise<void> {
 async function showRecoveryDialog(): Promise<void> {
   if (recoveryDialog || quitting) return;
   recoveryDialog = true;
-  const result = await dialog.showMessageBox({ type: "error", title: DESKTOP_APP_NAME, message: "Kulo 暂时无法启动。",
+  const result = await dialog.showMessageBox({ type: "error", title: desktopAppName, message: "Kulo 暂时无法启动。",
     buttons: ["重试修复", "复制修复信息", "退出"], defaultId: 0, cancelId: 2 });
   recoveryDialog = false;
   if (result.response === 0) requestStart(development);
@@ -591,8 +608,10 @@ if (!lock) {
     event.preventDefault();
     if (quitting) return;
     quitting = true;
+    desktopWindowState.flush();
+    desktopWindowState.detach();
     desktopNotifications.dispose();
-    applyBadge(false);
+    applyBadge(0);
     trayController.dispose();
     controlWatcher?.close();
     controlWatcher = undefined;
@@ -614,7 +633,7 @@ if (!lock) {
       if (quitting || !runtime?.child.connected) return;
       runtime.child.send({ type: "system-resume" }, () => {});
     });
-    app.setAboutPanelOptions({ applicationName: DESKTOP_APP_NAME, applicationVersion: app.getVersion(), copyright: "Kulo" });
+    app.setAboutPanelOptions({ applicationName: desktopAppName, applicationVersion: app.getVersion(), copyright: "Kulo" });
     updateMenu();
     requestStart(parseDevelopmentMode(process.argv));
   }).catch((error: unknown) => {

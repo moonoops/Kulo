@@ -1,6 +1,6 @@
 {
   "name": "@kulo/hub",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
@@ -21,6 +21,7 @@
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-durable": "1.5.2",
     "@earendil-works/pi-env": "1.5.2",
+    "@earendil-works/pi-mcp": "1.6.0",
     "@earendil-works/pi-schema": "1.5.2",
     "@kulo/env": "workspace:*",
     "@kulo/protocol": "workspace:*",

@@ -7,7 +7,7 @@ import type { ConnectionPrepare } from "./connections-module";
 import type { CapabilityView, ImageAssistantRequest } from "./capability-views";
 
 export function KuloSettingsRail({
-  module, agentName, settings, envs, tickets, onProjectTicket, assistant, assistantLoaded, assistantError, connected, assistantControls, capabilitiesWorkspace, capabilityInputs, capabilityView, onCapabilityInputsChanged, imageRequest, onImageRequestHandled,
+  module, agentName, settings, envs, tickets, onProjectTicket, onSettingsUpdated, assistant, assistantLoaded, assistantError, connected, assistantControls, capabilitiesWorkspace, capabilityInputs, capabilityView, onCapabilityInputsChanged, imageRequest, onImageRequestHandled,
   connections, connectionPreparing, onConnectionPrepare, onConnectionsRefresh,
 }: {
   module: SettingsModuleId;
@@ -16,6 +16,7 @@ export function KuloSettingsRail({
   envs: EnvNodeDescriptor[];
   tickets?: TicketCardView[];
   onProjectTicket?: (ticketId: string, title?: string) => void;
+  onSettingsUpdated?: (next: KuloSettingsView) => void;
   assistant: SettingsAssistantSnapshot;
   assistantLoaded: boolean;
   assistantError: string | null;
@@ -42,6 +43,7 @@ export function KuloSettingsRail({
           envs={envs}
           tickets={tickets}
           onProjectTicket={onProjectTicket}
+          onSettingsUpdated={onSettingsUpdated}
           snapshot={assistant}
           loaded={assistantLoaded}
           error={assistantError}

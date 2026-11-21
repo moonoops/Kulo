@@ -1,5 +1,5 @@
 import { useI18n } from "../../kulo-i18n";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Button, Card, Dropdown, Label, Spinner, Tooltip } from "@heroui/react";
 import type { AssistantItemAction, AssistantItemView, ComputerPreviewSessionView, TicketCardView } from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
@@ -7,7 +7,9 @@ import { KuloIcon } from "../../kulo-icon";
 import { ContentPresence, useReducedContentMotion } from "../chat/use-content-motion";
 import {
   OrphanComputerPreviewCard,
+  resolveCardPreviewSession,
   TaskCardComputerPreview,
+  TaskCardPreviewControls,
   type ComputerPreviewBinding,
 } from "../computer-preview/computer-preview";
 import {
@@ -22,7 +24,7 @@ function RailStatus({ ticket }: { ticket: TicketCardView }) {
   const { t } = useI18n();
   const attention = taskNeedsAttention(ticket);
   const label = ticket.status === "blocked" || ticket.status === "waiting" && ticket.waiting?.reason === "user" ? t("待确认", "Needs confirmation") : taskStatusLabel(ticket);
-  const tone = ticket.cleanupPending || ticket.pendingWorkspaceApply ? "ask" : taskIsRecovering(ticket) ? "run" : ticket.status === "failed" ? "fail" : attention ? "ask" : ticket.status === "ready" ? ticket.externalAgentKind ? "wait" : "done" :
+  const tone = ticket.cleanupPending || ticket.pendingWorkspaceApply ? "ask" : taskIsRecovering(ticket) ? "run" : ticket.status === "failed" ? "fail" : attention ? "ask" : ticket.status === "ready" ? "done" :
     ticket.status === "running" || ticket.status === "pausing" ? "run" : "wait";
   return <span className="kulo-task-status" data-tone={tone} title={label}>
     {tone === "run" ? <span className="kulo-task-run-dot" aria-hidden="true" /> :
@@ -62,6 +64,7 @@ export function KuloTaskRail({
   computerPreview?: ComputerPreviewBinding;
 }) {
   const { t } = useI18n();
+  const railId = useId();
   const now = useTaskClock();
   const [hoveredId, setHoveredId] = useState<string>();
   const [focusedId, setFocusedId] = useState<string>();
@@ -461,6 +464,11 @@ export function KuloTaskRail({
             Math.min(1, Math.max(0, (now - completed) / (completedTaskDisplayHours * 3_600_000))) : 0;
           const cardBusy = clearingAll || archivingIds.has(ticket.id) || discardingId === ticket.id;
           const ticketPreviews = computerPreview ? previewsByTicket.get(ticket.id) : undefined;
+          const activePreview = Boolean(computerPreview && ticketPreviews && ticketPreviews.length > 0);
+          const selectedPreview = activePreview && computerPreview
+            ? resolveCardPreviewSession(computerPreview.state, ticket.id, ticketPreviews!)
+            : undefined;
+          const previewBodyId = `${railId}-preview-${ticket.id}`;
           return <div className="kulo-task-row" data-ticket-id={ticket.id} key={ticket.id}
             onPointerEnter={event => { if (event.pointerType !== "touch") setHoveredId(ticket.id); }}
             onPointerLeave={() => setHoveredId(current => current === ticket.id ? undefined : current)}
@@ -473,48 +481,80 @@ export function KuloTaskRail({
               <div className="kulo-task-space">
                 <Card variant="secondary" className={"kulo-task-card" + (row.enter ? " kulo-task-enter" : "")}
                   data-state={taskIsRecovering(ticket) ? "recovering" : ticket.status} data-attention={taskNeedsAttention(ticket) || undefined} data-selected={projectedTicketId === ticket.id || undefined}
-                  data-has-preview={Boolean(ticketPreviews?.length) || undefined}
+                  data-has-preview={activePreview || undefined}
                   style={{ "--task-age": age } as CSSProperties}>
                   <Card.Content className="kulo-task-card-content">
-                    <div className="kulo-task-card-main">
-                      <Button type="button" variant="ghost" className="kulo-task-card-button"
-                        aria-label={ticket.title + t("，查看任务详情", ", view task details")} aria-current={projectedTicketId === ticket.id ? "true" : undefined}
-                        onPress={() => onProject(ticket.id, ticket.title)}>
-                        <strong className="kulo-task-title" title={ticket.title}>{ticket.title}</strong>
-                        <span className="kulo-task-card-foot">
-                          <RailStatus ticket={ticket} />
-                          {durationLabel && <span className="kulo-task-time">{durationLabel}</span>}
-                        </span>
-                      </Button>
-                      {onArchive && (
-                        <Tooltip delay={350}>
-                          <Button
-                            type="button"
-                            isIconOnly
-                            size="sm"
-                            variant="ghost"
-                            className="kulo-task-archive-button"
-                            aria-label={t(`归档任务：${ticket.title}`, `Archive task: ${ticket.title}`)}
-                            isDisabled={!canQueueActions || cardBusy}
-                            isPending={archivingIds.has(ticket.id)}
-                            onPress={() => handleArchivePress(ticket)}
-                          >
-                            {archivingIds.has(ticket.id) ? <Spinner size="sm" color="current" /> : <KuloIcon name="archive" size={16} />}
+                    {activePreview && computerPreview && ticketPreviews ? (
+                      <>
+                        <div className="kulo-task-card-head">
+                          <Button type="button" variant="ghost" className="kulo-task-card-button"
+                            aria-label={ticket.title + t("，查看任务详情", ", view task details")} aria-current={projectedTicketId === ticket.id ? "true" : undefined}
+                            onPress={() => onProject(ticket.id, ticket.title)}>
+                            <strong className="kulo-task-title" title={ticket.title}>{ticket.title}</strong>
                           </Button>
-                          <Tooltip.Content placement="top">{t("归档", "Archive")}</Tooltip.Content>
-                        </Tooltip>
-                      )}
-                    </div>
-                    {computerPreview && ticketPreviews && ticketPreviews.length > 0 && (
-                      <TaskCardComputerPreview
-                        ticketId={ticket.id}
-                        ticketTitle={ticket.title}
-                        sessions={ticketPreviews}
-                        state={computerPreview.state}
-                        client={computerPreview.client}
-                        connected={connected}
-                        onStop={computerPreview.onStop}
-                      />
+                          <TaskCardPreviewControls
+                            ticketId={ticket.id}
+                            ticketTitle={ticket.title}
+                            bodyId={previewBodyId}
+                            state={computerPreview.state}
+                            client={computerPreview.client}
+                            connected={connected}
+                            onStop={computerPreview.onStop}
+                          />
+                        </div>
+                        <TaskCardComputerPreview
+                          ticketId={ticket.id}
+                          ticketTitle={ticket.title}
+                          bodyId={previewBodyId}
+                          sessions={ticketPreviews}
+                          state={computerPreview.state}
+                          client={computerPreview.client}
+                          connected={connected}
+                          onStop={computerPreview.onStop}
+                        />
+                        <div className="kulo-task-card-foot kulo-task-card-preview-foot">
+                          <span className="kulo-task-card-status-group">
+                            <RailStatus ticket={ticket} />
+                            {selectedPreview?.deviceName && (
+                              <>
+                                <span className="kulo-task-device-sep" aria-hidden="true">·</span>
+                                <span className="kulo-task-device-name" title={selectedPreview.deviceName}>{selectedPreview.deviceName}</span>
+                              </>
+                            )}
+                          </span>
+                          {durationLabel && <span className="kulo-task-time">{durationLabel}</span>}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="kulo-task-card-main">
+                        <Button type="button" variant="ghost" className="kulo-task-card-button"
+                          aria-label={ticket.title + t("，查看任务详情", ", view task details")} aria-current={projectedTicketId === ticket.id ? "true" : undefined}
+                          onPress={() => onProject(ticket.id, ticket.title)}>
+                          <strong className="kulo-task-title" title={ticket.title}>{ticket.title}</strong>
+                          <span className="kulo-task-card-foot">
+                            <RailStatus ticket={ticket} />
+                            {durationLabel && <span className="kulo-task-time">{durationLabel}</span>}
+                          </span>
+                        </Button>
+                        {onArchive && (
+                          <Tooltip delay={350}>
+                            <Button
+                              type="button"
+                              isIconOnly
+                              size="sm"
+                              variant="ghost"
+                              className="kulo-task-archive-button"
+                              aria-label={t(`归档任务：${ticket.title}`, `Archive task: ${ticket.title}`)}
+                              isDisabled={!canQueueActions || cardBusy}
+                              isPending={archivingIds.has(ticket.id)}
+                              onPress={() => handleArchivePress(ticket)}
+                            >
+                              {archivingIds.has(ticket.id) ? <Spinner size="sm" color="current" /> : <KuloIcon name="archive" size={16} />}
+                            </Button>
+                            <Tooltip.Content placement="top">{t("归档", "Archive")}</Tooltip.Content>
+                          </Tooltip>
+                        )}
+                      </div>
                     )}
                     {ticket.status === "failed" && onRetry && onIgnore && <div className="kulo-task-card-actions">
                       <TaskFailureActions ticket={ticket} connected={connected} canQueueActions={canQueueActions && !cardBusy}

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import type { ConnectorCallRequest, ConnectorCallResult } from "@kulo/protocol";
+import { augmentedNativePath } from "../external-agent-drivers.js";
 
 const MAX_OUTPUT_BYTES = 512 * 1024;
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -19,31 +20,25 @@ export interface SparkMailConnectorOptions {
 }
 
 export function findSparkExecutable(explicit?: string): string | undefined {
-  if (explicit) {
+  const isExecutableFile = (candidate: string) => {
     try {
-      fs.accessSync(explicit, fs.constants.X_OK);
-      return explicit;
+      if (!fs.statSync(candidate).isFile()) return false;
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return true;
     } catch {
-      return undefined;
+      return false;
     }
-  }
+  };
+  if (explicit) return isExecutableFile(explicit) ? explicit : undefined;
   const candidates = [
-    "/opt/homebrew/bin/spark",
-    "/usr/local/bin/spark",
-    path.join(os.homedir(), ".local/bin/spark"),
     "/Applications/Spark Desktop.app/Contents/Resources/spark",
-    ...(process.env.PATH ?? "")
+    ...augmentedNativePath(process.env.PATH ?? "")
       .split(path.delimiter)
       .filter(Boolean)
       .map((dir) => path.join(dir, "spark")),
   ];
   for (const candidate of candidates) {
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      // continue
-    }
+    if (isExecutableFile(candidate)) return candidate;
   }
   return undefined;
 }
@@ -51,7 +46,7 @@ export function findSparkExecutable(explicit?: string): string | undefined {
 function defaultExecRunner(exe: string, args: string[], timeoutMs: number): Promise<SparkExecResult> {
   return new Promise((resolve) => {
     const cleanEnv: NodeJS.ProcessEnv = {
-      PATH: `/opt/homebrew/bin:/usr/local/bin:${path.join(os.homedir(), ".local/bin")}:/usr/bin:/bin`,
+      PATH: augmentedNativePath(process.env.PATH ?? ""),
       HOME: os.homedir(),
       TMPDIR: os.tmpdir(),
       LANG: "en_US.UTF-8",

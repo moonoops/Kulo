@@ -9,9 +9,10 @@ const ticket = (id: string, changes: Partial<TicketCardView> = {}): TicketCardVi
 });
 
 describe("global background tasks", () => {
-  it("reports native results returned without inferring review or changing internal completions", () => {
+  it("aligns completed external and built-in tasks while preserving pending-merge attention", () => {
     const native = ticket("native", { status: "ready", externalAgentKind: "codex" });
-    expect(taskStatusLabel(native)).toBe("已返回");
+    expect(taskStatusLabel(native)).toBe("已完成");
+    expect(taskStatusLabel({ ...native, pendingWorkspaceApply: true })).toBe("待合入");
     expect(taskStatusLabel({ ...native, externalAgentKind: undefined })).toBe("已完成");
     expect(taskStatusLabel({ ...native, status: "running" })).toBe("运行中");
     expect(taskStatusLabel({ ...native, status: "closed" })).toBe("已关闭");

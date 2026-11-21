@@ -7,7 +7,8 @@ import WebSocket from "ws";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall, type TranscriptContext } from "@earendil-works/pi-ai";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import type { DeviceInvitation, DevicePeerConfig, EnvNodeDescriptor, HubToClientMessage, TicketRecord } from "@kulo/protocol";
+import { isDeviceSystemInfo, type DeviceInvitation, type DevicePeerConfig, type EnvNodeDescriptor, type HubToClientMessage, type TicketRecord } from "@kulo/protocol";
+import { parseMacHardwareModelOutput } from "../packages/env/src/device-info.js";
 import {
   KuloStateDoc,
   canSwitchEnvDuringRecovery,
@@ -106,6 +107,29 @@ describe("Batch 1b — R3 & R1.5 Pure Routing & Recovery Policy", () => {
       pickFallbackEnvId: () => "edge-c",
     });
     expect(fallback).toEqual({ envId: "laptop-a", envBinding: "sender_local", waitForSource: true });
+
+    // Explicit proposedEnvId === sourceEnvId must NEVER be silently downgraded to Hub local
+    const explicitSenderId = resolveComputerEnvBinding({
+      sourceEnvId: "laptop-a",
+      proposedEnvId: "laptop-a",
+      userMessage: "测试 browser use 和 computer use",
+      goal: "Run agent-browser and Calculator check",
+      scope: "browser and calculator",
+      localEnv: onlineLocal,
+      pickFallbackEnvId: () => "local",
+    });
+    expect(explicitSenderId).toEqual({ envId: "laptop-a", envBinding: "sender_local", waitForSource: true });
+
+    // Explicit sender ID contradicting target_scope='hub_local' surfaces conflict instead of silent reroute
+    const conflictingSenderId = resolveComputerEnvBinding({
+      sourceEnvId: "laptop-a",
+      proposedEnvId: "laptop-a",
+      targetScope: "hub_local",
+      userMessage: "帮我做一份调研",
+      localEnv: onlineLocal,
+      pickFallbackEnvId: () => "local",
+    });
+    expect(conflictingSenderId.conflictWithSource).toBe(true);
   });
 
   it("enforces R1.5 recovery lock across legacy tickets, manual agents, topic targets, deviceStateTouched, and cleanupPending", () => {
@@ -284,6 +308,73 @@ describe("Batch 1b — R3 & R1.5 Pure Routing & Recovery Policy", () => {
         proposedEnvId: "device-office",
       }),
     ).toBeUndefined();
+
+    // Explicit target_scope='sender_device' is never hijacked by a partial device name match in a multi-device prompt
+    expect(
+      resolveNamedOrContextualEnv({
+        currentText: "在 MacMini 和 Macbook 上测试一下浏览器自动化",
+        envs,
+        targetScope: "sender_device",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("parses macOS hardware models and derives device aliases even when hostname has a typo", () => {
+    expect(parseMacHardwareModelOutput({ ioregProduct: '"product-name" = <"MacBook Pro (16-inch, M5 Max)">' })).toBe("MacBook Pro (16-inch, M5 Max)");
+    expect(parseMacHardwareModelOutput({ systemProfiler: "  Model Name: Mac mini\n  Model Identifier: Mac14,3" })).toBe("Mac mini");
+    expect(parseMacHardwareModelOutput({ sysctlHwModel: "MacBookPro18,1\n" })).toBe("MacBookPro18,1");
+
+    expect(isDeviceSystemInfo({
+      hostname: "iKoomas-Macboom-Pro.local",
+      platform: "darwin",
+      arch: "arm64",
+      release: "24",
+      cpu: "Apple",
+      memoryBytes: 1024,
+      ips: [],
+      model: "MacBook Pro (16-inch, M5 Max)",
+    })).toBe(true);
+    expect(isDeviceSystemInfo({
+      hostname: "bad",
+      platform: "darwin",
+      arch: "arm64",
+      release: "24",
+      cpu: "Apple",
+      memoryBytes: 1024,
+      ips: [],
+      model: "bad\u0000model",
+    })).toBe(false);
+
+    const macMini: EnvNodeDescriptor = {
+      ...onlineLocal,
+      id: "local",
+      name: "Macmini.local",
+      info: { hostname: "Macmini.local", platform: "darwin", arch: "arm64", release: "24", cpu: "Apple", memoryBytes: 0, ips: [], model: "Macmini9,1" },
+    };
+    const macBookWithTypoHostname: EnvNodeDescriptor = {
+      ...onlineLocal,
+      id: "device-mbp",
+      kind: "reverse-ws",
+      name: "iKoomas-Macboom-Pro.local",
+      info: { hostname: "iKoomas-Macboom-Pro.local", platform: "darwin", arch: "arm64", release: "24", cpu: "Apple", memoryBytes: 0, ips: [], model: "MacBook Pro (16-inch, M5 Max)" },
+    };
+    expect(namedDispatchDevices("在 MacMini 和 Macbook 上测试一下浏览器自动化", [macMini, macBookWithTypoHostname])).toEqual([["local"], ["device-mbp"]]);
+    expect(namedDispatchDevices("在 MacBook Pro 上打开计算器", [macMini, macBookWithTypoHostname])).toEqual([["device-mbp"]]);
+
+    // Explicit device name always takes precedence over another machine's hardware model fallback
+    const renamedHostLaptop: EnvNodeDescriptor = {
+      ...onlineLocal,
+      id: "local",
+      name: "客厅主脑",
+      info: { hostname: "server.local", platform: "darwin", arch: "arm64", release: "24", cpu: "Apple", memoryBytes: 0, ips: [], model: "MacBook Pro (16-inch, M5 Max)" },
+    };
+    const explicitMacBook: EnvNodeDescriptor = {
+      ...onlineLocal,
+      id: "device-explicit-mb",
+      kind: "reverse-ws",
+      name: "Macbook",
+    };
+    expect(namedDispatchDevices("在 Macbook 上打开计算器", [renamedHostLaptop, explicitMacBook])).toEqual([["device-explicit-mb"]]);
   });
 
   it("checks worker-isolation capability properly", () => {
@@ -698,5 +789,187 @@ describe("Batch 1b — Live Hub E2E Routing, Cross-Device Guard, Phone Attachmen
     const snapAfterMismatch = await hub.harness.snapshot(KuloStateDoc, context);
     expect(Object.values(snapAfterMismatch?.tickets ?? {}).find((x) => x.commandId === "cmd-goal-mismatch")).toBeUndefined();
     expect(dispatchErrors.some((e) => e.includes("未传入目标 env_id"))).toBe(true);
+  });
+
+  it("never silently reroutes MacBook explicit env_id or sender_device dispatches to MacMini in multi-device turns or under locked topic targets", async () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kulo-multi-device-macbook-")));
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+    const provider = fauxProvider({ provider: "openai", models: [{ id: "multi-device-model" }] });
+    const models = createModels();
+    models.setProvider(provider.provider);
+    const actions = new Map<string, Array<{ name: string; args: Record<string, unknown> }>>();
+    const consumed = new Set<string>();
+    const dispatchErrors: string[] = [];
+
+    provider.setResponses(Array.from({ length: 40 }, () => async (request: TranscriptContext) => {
+      if (hasTool(request, "kulo_dispatch")) {
+        const lastTool = request.messages.at(-1);
+        if (lastTool?.role === "toolResult" && lastTool.toolName === "kulo_dispatch" && lastTool.isError) {
+          dispatchErrors.push(JSON.stringify(lastTool.content));
+          return fauxAssistantMessage("派单冲突已拦截。");
+        }
+        const lastUser = request.messages.filter((m) => m.role === "user").at(-1)?.content;
+        const input = typeof lastUser === "string" ? lastUser : JSON.stringify(lastUser ?? "");
+        for (const [marker, calls] of actions) {
+          if (input.includes(marker) && !consumed.has(marker)) {
+            consumed.add(marker);
+            return fauxAssistantMessage(calls.map((call) => fauxToolCall(call.name, call.args)), { stopReason: "toolUse" });
+          }
+        }
+      } else if (hasTool(request, "kulo_report")) {
+        return fauxAssistantMessage([fauxToolCall("kulo_report", { state: "ready", summary: "ok" })], { stopReason: "toolUse" });
+      }
+      return fauxAssistantMessage("已完成。");
+    }));
+
+    const hub = await openTestHub({
+      models,
+      config: {
+        stateDir: path.join(dir, "state"),
+        identityDir: path.join(dir, "identity"),
+        localEnvRoot: path.join(dir, "local"),
+        localEnvName: "Macmini.local",
+        authToken: HUB_TEST_ADMIN_TOKEN,
+        envTokens: {},
+        enableLocalEnv: true,
+        maxConcurrentWorkers: 4,
+        watchdogMinutes: 0,
+        memory: { enabled: false },
+        model: { defaultProvider: "openai", defaultModel: "multi-device-model", thinkingLevel: "off", baseUrl: "http://127.0.0.1:9/v1" },
+      },
+    });
+    cleanups.push(() => hub.close());
+
+    vi.spyOn(hub.envManager, "createWorkerExecutionEnv").mockImplementation((_id, cwd) => new NodeExecutionEnv({ cwd }));
+    vi.spyOn(hub.envManager, "releaseWorkerExecutionEnv").mockResolvedValue({ cleanupPending: false });
+
+    const server = await startKuloHubServer(hub, { host: "127.0.0.1", port: 0 });
+    cleanups.push(() => server.close());
+
+    const apiReq = (pathname: string, method: string, body: unknown, auth = true) =>
+      fetch(`${server.url}${pathname}`, {
+        method,
+        headers: { "content-type": "application/json", ...(auth ? { authorization: `Bearer ${HUB_TEST_ADMIN_TOKEN}` } : {}) },
+        body: JSON.stringify(body),
+      });
+    expect((await apiReq("/api/devices", "PATCH", { enabled: true })).status).toBe(200);
+
+    // Pair MacBook with the real typo hostname and NO hardware model (worst-case legacy peer)
+    const invite = await apiReq("/api/devices/invitations", "POST", { name: "iKoomas-Macboom-Pro.local", hubUrl: "https://hub.test" });
+    const invitation = (await invite.json()) as DeviceInvitation;
+    const token = /'([A-Za-z0-9_-]+)'$/.exec(invitation.command)![1]!;
+    const macbookRoot = path.join(dir, invitation.deviceId);
+    fs.mkdirSync(macbookRoot, { recursive: true });
+    const paired = await apiReq(
+      "/api/devices/pair",
+      "POST",
+      {
+        inviteToken: token,
+        rootDir: macbookRoot,
+        info: { hostname: "iKoomas-Macboom-Pro.local", platform: process.platform, arch: process.arch, release: "test", cpu: "test", memoryBytes: 0, ips: [] },
+      },
+      false,
+    );
+    const macbook = (await paired.json()) as DevicePeerConfig;
+
+    const envWs = new WebSocket(server.envWsUrl);
+    cleanups.push(() => { if (envWs.readyState !== WebSocket.CLOSED) envWs.terminate(); });
+    await once(envWs, "open");
+    const reg = once(envWs, "message");
+    envWs.send(JSON.stringify({
+      type: "env.register",
+      envId: macbook.deviceId,
+      token: macbook.envToken,
+      name: macbook.name,
+      platform: process.platform,
+      arch: process.arch,
+      rootDir: macbook.rootDir,
+      capabilities: ["fs", "worker-isolation"],
+    }));
+    await reg;
+
+    const chatWs = new WebSocket(server.clientWsUrl, { headers: { authorization: `Bearer ${macbook.clientToken}` } });
+    cleanups.push(() => { if (chatWs.readyState !== WebSocket.CLOSED) chatWs.terminate(); });
+    const msgs: HubToClientMessage[] = [];
+    chatWs.on("message", (raw) => msgs.push(JSON.parse(String(raw)) as HubToClientMessage));
+    await once(chatWs, "open");
+    await vi.waitFor(() => expect(msgs.some((m) => m.type === "hub.snapshot")).toBe(true), waitOptions);
+
+    const sendFromMacBook = async (requestId: string, content: string, extra: Record<string, unknown> = {}) => {
+      const start = msgs.length;
+      chatWs.send(JSON.stringify({ type: "chat.send", topicId: "root", requestId, content, ...extra }));
+      await vi.waitFor(() => expect(msgs.slice(start).some((m) => m.type === "hub.ack" && m.requestId === requestId)).toBe(true), waitOptions);
+    };
+    const waitIdle = async () => {
+      await vi.waitFor(async () => expect((await hub.getTopicView("root")).live.busy).toBe(false), waitOptions);
+    };
+
+    // Turn 1: User asks for BOTH MacMini and Macbook (without local-colloquial keywords).
+    // Even without hardware model metadata, explicit env_id=macbook AND target_scope='sender_device' both land on MacBook!
+    actions.set("[both-devices]", [
+      {
+        name: "kulo_dispatch",
+        args: {
+          command_id: "cmd-macmini-both",
+          title: "测试 MacMini 浏览器",
+          goal: "Run browser check on MacMini",
+          scope: "browser automation",
+          role: "scout",
+          env_id: "local",
+        },
+      },
+      {
+        name: "kulo_dispatch",
+        args: {
+          command_id: "cmd-macbook-explicit-id",
+          title: "测试 Macbook 浏览器",
+          goal: "Run browser check on Macbook",
+          scope: "browser automation",
+          role: "scout",
+          env_id: macbook.deviceId,
+        },
+      },
+      {
+        name: "kulo_dispatch",
+        args: {
+          command_id: "cmd-macbook-sender-scope",
+          title: "复测 Macbook 浏览器",
+          goal: "Run browser check on sender Macbook",
+          scope: "browser automation",
+          role: "scout",
+          target_scope: "sender_device",
+        },
+      },
+    ]);
+    await sendFromMacBook("req-both-1", "[both-devices] 在 MacMini 和 Macbook 上测试 browser use 和 computer use");
+    await vi.waitFor(async () => {
+      const snap = await hub.harness.snapshot(KuloStateDoc, context);
+      const tickets = Object.values(snap?.tickets ?? {});
+      expect(tickets.find((t) => t.commandId === "cmd-macmini-both")).toMatchObject({ status: "ready", envId: "local" });
+      expect(tickets.find((t) => t.commandId === "cmd-macbook-explicit-id")).toMatchObject({ status: "ready", envId: macbook.deviceId, envBinding: "sender_local" });
+      expect(tickets.find((t) => t.commandId === "cmd-macbook-sender-scope")).toMatchObject({ status: "ready", envId: macbook.deviceId, envBinding: "sender_local" });
+    }, waitOptions);
+    await waitIdle();
+
+    // Turn 2: When topic is locked to MacMini ('local'), explicit env_id=macbook fails loudly instead of silently landing on MacMini
+    actions.set("[locked-conflict]", [
+      {
+        name: "kulo_dispatch",
+        args: {
+          command_id: "cmd-locked-mismatch",
+          title: "越权派发测试",
+          goal: "Run browser check on Macbook",
+          scope: "browser automation",
+          role: "scout",
+          env_id: macbook.deviceId,
+        },
+      },
+    ]);
+    await sendFromMacBook("req-locked-2", "[locked-conflict] 跑一下浏览器检查", { targetDeviceId: "local" });
+    await waitIdle();
+    const snapLocked = await hub.harness.snapshot(KuloStateDoc, context);
+    expect(Object.values(snapLocked?.tickets ?? {}).find((t) => t.commandId === "cmd-locked-mismatch")).toBeUndefined();
+    expect(dispatchErrors.some((e) => e.includes("当前会话已锁定执行设备"))).toBe(true);
   });
 });

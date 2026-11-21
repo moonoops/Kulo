@@ -12,6 +12,7 @@ import type {
   AssistantBackgroundModelStatus,
 } from "@kulo/protocol";
 import type { AssistantBackgroundModelPersisted } from "./assistant-state.js";
+import { buildAugmentedHostPath, findHostExecutable } from "./host-path.js";
 
 const GIB = 1024 ** 3;
 const DEFAULT_OMLX_PORT = 18_741;
@@ -57,21 +58,7 @@ function readProcessStartFingerprint(pid: number): string | undefined {
 }
 
 function findExecutable(name: string): string | undefined {
-  const candidates = [
-    `/opt/homebrew/bin/${name}`,
-    `/usr/local/bin/${name}`,
-    path.join(os.homedir(), ".local", "bin", name),
-    ...(process.env.PATH ?? "").split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, name)),
-  ];
-  for (const candidate of candidates) {
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      // continue
-    }
-  }
-  return undefined;
+  return findHostExecutable(name);
 }
 
 function detectFreeDiskBytes(dir: string): number {
@@ -85,7 +72,7 @@ function detectFreeDiskBytes(dir: string): number {
 
 function cleanRuntimeEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
-    PATH: `/opt/homebrew/bin:/usr/local/bin:${path.join(os.homedir(), ".local", "bin")}:/usr/bin:/bin:/usr/sbin:/sbin`,
+    PATH: buildAugmentedHostPath(),
     HOME: os.homedir(),
     TMPDIR: os.tmpdir(),
     LANG: "en_US.UTF-8",

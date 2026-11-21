@@ -2,15 +2,16 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { app, clipboard, dialog } from "electron";
-import { DESKTOP_APP_NAME, resolveDesktopDataDirectory } from "./desktop-config.js";
+import { resolveDesktopAppIdentity, resolveDesktopDataDirectory } from "./desktop-config.js";
 
+const { appName: desktopAppName } = resolveDesktopAppIdentity();
 let dataDir: string | undefined;
-app.setName(DESKTOP_APP_NAME);
+app.setName(desktopAppName);
 void app.whenReady().then(() => {
   app.dock?.setIcon(fileURLToPath(new URL("../assets/kulo-icon.png", import.meta.url)));
 });
 try {
-  dataDir = resolveDesktopDataDirectory(process.argv, path.join(app.getPath("appData"), DESKTOP_APP_NAME));
+  dataDir = resolveDesktopDataDirectory(process.argv, path.join(app.getPath("appData"), desktopAppName));
   const sessionDir = path.join(dataDir, "chromium");
   app.setPath("userData", dataDir);
   fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
@@ -20,7 +21,7 @@ try {
   await import("./shell.js");
 } catch (error) {
   if (!dataDir) {
-    dialog.showErrorBox(DESKTOP_APP_NAME, "Kulo 数据目录参数无效。");
+    dialog.showErrorBox(desktopAppName, "Kulo 数据目录参数无效。");
     app.exit(1);
   }
   await app.whenReady();
@@ -47,7 +48,7 @@ try {
   }
   if (launcher) instructions += `\n独立救援入口：${launcher}`;
   const result = await dialog.showMessageBox({
-    type: "error", title: DESKTOP_APP_NAME, message: "Kulo 暂时无法启动。",
+    type: "error", title: desktopAppName, message: "Kulo 暂时无法启动。",
     buttons: ["复制修复信息", "退出"], defaultId: 0, cancelId: 1,
   });
   if (result.response === 0) clipboard.writeText(instructions);

@@ -133,6 +133,7 @@ export class LocalConnectionExecutor implements ConnectionExecutionBackend {
   async execute(connection: ConnectionRecordView, secrets: ConnectionSecrets, operation: ConnectionUseOperation, signal?: AbortSignal): Promise<ConnectionUseResult> {
     signal?.throwIfAborted();
     if (operation.kind === "information") fail("资料读取需要通过任务的连接授权。", "connection_application_operation_invalid");
+    if (operation.kind === "mcp" || connection.kind === "mcp") fail("MCP 连接须通过受管 MCP 连接池执行。", "connection_mcp_operation_invalid");
     if (connection.kind === "app") {
       if (!connection.appId || operation.kind !== "app") fail("请使用该应用提供的操作。", "connection_application_operation_invalid");
       return this.#applications.execute(connection.appId, secrets, operation, signal);

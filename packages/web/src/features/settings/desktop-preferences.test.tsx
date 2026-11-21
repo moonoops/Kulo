@@ -85,7 +85,7 @@ describe("desktop background running and notification settings UI", () => {
     expect(html).toContain("通知");
     expect(html).toContain("系统通知");
     expect(html).toContain("提示音");
-    expect(html).toContain("任务栏红点");
+    expect(html).toContain("应用角标");
   });
 
   it("renders desktop background running and notification controls in both Chinese and English", () => {
@@ -113,7 +113,7 @@ describe("desktop background running and notification settings UI", () => {
     expect(enHtml).toContain("Notifications");
     expect(enHtml).toContain("System notifications");
     expect(enHtml).toContain("Sound");
-    expect(enHtml).toContain("Taskbar badge");
+    expect(enHtml).toContain("App badge");
     expect(enHtml).toContain("System settings");
     expect(enHtml).toContain("Send test notification");
   });

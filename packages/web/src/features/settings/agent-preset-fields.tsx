@@ -10,7 +10,14 @@ const FALLBACK_EXTERNAL_EFFORTS: Record<string, string[]> = {
   "claude-code": ["adaptive", "low", "medium", "high", "max", "none"],
   codex: ["low", "medium", "high", "xhigh"],
   antigravity: ["low", "medium", "high"],
+  grok: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+  cursor: ["low", "medium", "high"],
+  opencode: ["low", "medium", "high"],
+  "gemini-cli": ["low", "medium", "high"],
+  kiro: ["low", "medium", "high"],
+  copilot: ["low", "medium", "high"],
   dsh: ["low", "medium", "high"],
+  acp: ["low", "medium", "high"],
 };
 
 export function externalEffortLabel(effort: string, t: (zh: string, en: string) => string): string {
@@ -101,7 +108,7 @@ export function AgentPresetFields({ value, onChange, groups = [], defaultModel, 
         </TextField>
         {isCreating && <TextField variant="primary" isRequired value={value.id} onChange={(id) => onChange({ ...value, id })} fullWidth className="kulo-form-field">
           <Label className="text-sm text-foreground">{t("智能体标识", "Agent ID")}</Label>
-          <Input placeholder={isExternal ? `${externalClient?.kind ?? "codex"}-architect` : "analyst"} maxLength={40} pattern={"[a-z][a-z0-9_\\-]{0,39}"} />
+          <Input placeholder={isExternal ? `${externalClient?.kind === "acp" ? (externalClient.agentRef ?? "acp") : (externalClient?.kind ?? "codex")}-architect` : "analyst"} maxLength={40} pattern={"[a-z][a-z0-9_\\-]{0,39}"} />
         </TextField>}
         {!isExternal && <div className="flex flex-col gap-1">
           <Switch isSelected={Boolean(value.readOnly)} onChange={(readOnly) => onChange({ ...value, readOnly })} className="w-full">

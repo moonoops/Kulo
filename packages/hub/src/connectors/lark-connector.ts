@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
 import { execFile } from "node:child_process";
 import type { LarkConnectorSnapshot, LarkProfileView, RawConnectorEvent } from "@kulo/protocol";
 import { isSensitiveNotificationPayload } from "@kulo/protocol";
+import { buildAugmentedHostPath, findHostExecutable } from "../host-path.js";
 
 const MAX_OUTPUT_BYTES = 512 * 1024;
 const SAFE_PROFILE_RE = /^[A-Za-z0-9._-]{1,64}$/;
@@ -30,30 +30,14 @@ export interface LarkConnectorServiceHost {
 export function findLarkCliExecutable(explicit?: string): string | undefined {
   if (explicit) {
     try {
+      if (!fs.statSync(explicit).isFile()) return undefined;
       fs.accessSync(explicit, fs.constants.X_OK);
       return explicit;
     } catch {
       return undefined;
     }
   }
-  const candidates = [
-    path.join(os.homedir(), ".local/bin/lark-cli"),
-    "/opt/homebrew/bin/lark-cli",
-    "/usr/local/bin/lark-cli",
-    ...(process.env.PATH ?? "")
-      .split(path.delimiter)
-      .filter(Boolean)
-      .map((dir) => path.join(dir, "lark-cli")),
-  ];
-  for (const candidate of candidates) {
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      // continue
-    }
-  }
-  return undefined;
+  return findHostExecutable("lark-cli");
 }
 
 function defaultLarkRunner(exe: string, args: string[], timeoutMs: number): Promise<LarkExecResult> {
@@ -63,7 +47,7 @@ function defaultLarkRunner(exe: string, args: string[], timeoutMs: number): Prom
       args,
       {
         env: {
-          PATH: `${path.join(os.homedir(), ".local/bin")}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
+          PATH: buildAugmentedHostPath(),
           HOME: os.homedir(),
           TMPDIR: os.tmpdir(),
           LANG: "en_US.UTF-8",

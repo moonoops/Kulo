@@ -380,6 +380,7 @@ export class KuloMemoryService {
       ...(raw.deleteData === undefined ? {} : { deleteData: raw.deleteData }),
     };
     const fingerprint = createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+    const superseded: StoredJob[] = [];
     await this.#serial(async () => {
       const state = await this.#options.harness.snapshot(MemoryServiceDoc, ctx);
       const prior = own(state?.jobs, id);
@@ -449,6 +450,19 @@ export class KuloMemoryService {
         ...(raw.deleteData === undefined ? {} : { deleteData: raw.deleteData }) };
       await this.#options.harness.commit(async (tx) => {
         const doc = await tx.doc(MemoryServiceDoc);
+        for (const existing of Object.values(doc.jobs)) {
+          if (existing.view.clientId !== clientId || existing.view.id === id) continue;
+          if (["awaiting-input", "awaiting-confirmation", "failed"].includes(existing.view.status)) {
+            superseded.push(clone(existing));
+            existing.view.status = "rejected";
+            existing.view.stage = "已取消";
+            existing.view.updatedAt = now;
+            delete existing.view.error;
+            for (const input of Object.values(doc.inputs)) {
+              if (input.jobId === existing.view.id && input.status === "pending") input.status = "cancelled";
+            }
+          }
+        }
         doc.jobs[id] = { view, fingerprint, expectedRevision: raw.expectedRevision, credentialRefs: {} };
         for (const field of required) {
           const inputId = `memory-input-${randomUUID()}`;
@@ -456,6 +470,7 @@ export class KuloMemoryService {
         }
       }, ctx);
     });
+    for (const old of superseded) await this.#cleanup(old);
     if (raw.operation === "check") await this.decide(id, clientId, "confirm");
     return this.snapshot(clientId);
   }
@@ -525,7 +540,8 @@ export class KuloMemoryService {
       await this.#options.harness.commit(async (tx) => {
         const state = await tx.doc(MemoryServiceDoc), job = state.jobs[id]!;
         if (decision === "reject") {
-          job.view.status = "rejected"; job.view.stage = "已取消";
+          job.view.status = "rejected"; job.view.stage = "已取消"; job.view.updatedAt = this.#now();
+          delete job.view.error;
           for (const input of Object.values(state.inputs)) if (input.jobId === id && input.status === "pending") input.status = "cancelled";
           return;
         }

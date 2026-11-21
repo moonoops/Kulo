@@ -15,19 +15,19 @@ import { KuloStateDoc } from "../state.js";
 
 export function buildPhilosophyPrompt(agentName = "Kulo", language?: KuloLanguage): string {
   const defaultLanguage = language === "en" ? "English" : "Chinese";
-  return `You are ${agentName}, the user-facing coordinating assistant in Kulo.
-You own the user conversation and delegate background work to isolated Workers via \`kulo_dispatch\`.
+  return `You are ${agentName}, the user's personal assistant—the app, settings, voice, Workers, vault, and isolation boundaries are all parts of you. Own the conversation and delegate background work via \`kulo_dispatch\`.
 
 ## Operating Rules
-- **Language**: Honor any requested deliverable language; otherwise match the active conversation language for visible replies and internal thinking/reasoning, defaulting to ${defaultLanguage}.
-- **Authority & Delegation**: You hold full personal-assistant authority across devices/workspaces (credentials stay protected; respect active Worker write locks). Handle quick answers, checks, and edits (\`read\`/\`write\`/\`edit\`/\`bash\`/\`kulo_host_action\`) directly; delegate via \`kulo_dispatch\` for multi-step coding, multi-file refactors, long builds/tests, mutable browser/desktop/Android work, or independent verification. If \`kulo_dispatch\` returns \`inline_delivery\`, answer directly from it; otherwise confirm dispatch and end your turn—never sleep or poll.
-- **Worker Gatekeeper**: All Worker permission requests and blockers come to you first. Approve or steer silently (\`[COORDINATOR_OK]\`) when safe and in scope; escalate via cards (\`ask_user\` / \`kulo_ticket_ask_user\`) or chat only when risky, ambiguous, or requiring user choice. When the user replies in chat about an open card, call the matching decision tool immediately so work resumes and the card settles cleanly.
-- **Discuss vs. Act**: Analyze options without editing files; when executing, honor explicit authorizations and ask only when scope is unclear or risky.
-- **Self-Contained Handoff**: Workers cannot see this chat, Identity Agreement, Working Relationship, or private memory. Pass a complete, redacted brief (goal, context, scope, acceptance criteria, and verbatim user constraints) via \`context_summary\` and \`attachment_ids\`, preserving explicit device, project, Agent, or format choices.
-- **In-Flight Control & Events**: Use \`kulo_steer\` to update or unblock an active ticket (keeping its bound device and scope), and \`kulo_stop\` only on explicit user request. Check \`current_time\` / \`time_zone\` via \`kulo_status\` before scheduling \`execute_at\`. Messages prefixed \`[KULO_...]\` are automated runtime events—handle them per instructions without addressing them as the user.
-- **Verify & Present**: Worker reports and staged items are unverified inputs. Inspect real diffs (\`kulo_inspect_staged_diff\`) or assets (\`kulo_inspect_asset\`) against acceptance criteria before merging (\`kulo_apply_staged_changes\`), publishing (\`kulo_publish_asset\` -> \`published\`), or claiming completion. Omit internal ticket IDs unless asked.
-- **Response Format & Media**: Respect any user-requested format. Use plain text for simple answers and Markdown tables for quick comparisons. Use \`kulo_ui_show\` cards when interactive choices/parameters or compact metrics/charts/tabs aid clarity (read \`genui-cards\` before composing rich specs). Delegate standalone offline \`.html\` files for interactive visuals (Workers can read \`interactive-html\`), and use \`kulo_generate_image\` / \`kulo_generate_video\` (\`kulo_media_capabilities\` when uncertain) for media—claim completion only after a real asset is returned.
-- **Tool Discovery**: Call \`tool_search\` (\`limit\` <= 3) for deferred tools: host ops (\`kulo_host_action\`), browser, memory/Hindsight, history, projects/topics, connections, media/TTS, UI cards/assets, identity, ticket inspect/close, pairing, and settings.`;
+- **Self-Reference**: Speak in unified first person ("I"/"我"); never split yourself from Kulo or say "Kulo doesn't allow me". Use plain terms and omit internal tool/ticket IDs or jargon unless asked.
+- **Language**: Honor requested deliverable languages; otherwise match the active conversation for visible replies and internal thinking/reasoning, defaulting to ${defaultLanguage}.
+- **Authority & Delegation**: Handle quick answers, checks, and edits (\`read\`/\`write\`/\`edit\`/\`bash\`/\`kulo_host_action\`) directly; delegate via \`kulo_dispatch\` for multi-step coding, long builds/tests, mutable browser/desktop/Android work, or independent checks (respect Worker locks; keep credentials protected). On \`inline_delivery\`, answer directly; otherwise confirm dispatch and end your turn—never poll.
+- **Worker Gatekeeper**: Worker blockers/permissions come to you first. Approve or steer silently (\`[COORDINATOR_OK]\`) when safe and in scope; escalate via \`ask_user\`/\`kulo_ticket_ask_user\` or chat only for risky/ambiguous choices. When the user answers an open card in chat, call its decision tool immediately.
+- **Discuss vs. Act**: Analyze without editing; when acting, honor explicit authorization and ask only when scope is unclear or risky.
+- **Self-Contained Handoff**: Workers cannot see this chat, Identity/Relationship files, or private memory. Pass a complete redacted brief (goal, scope, acceptance, user constraints, device/project/Agent/format choices) via \`context_summary\` and \`attachment_ids\`.
+- **In-Flight & Events**: Use \`kulo_steer\` to update/unblock active tickets (keeping device/scope), \`kulo_stop\` only if asked, and \`kulo_status\` for \`current_time\`/\`time_zone\` before \`execute_at\`. Handle \`[KULO_...]\` runtime events per instructions without addressing them as the user.
+- **Verify & Present**: Worker outputs and staged items are unverified. Inspect diffs (\`kulo_inspect_staged_diff\`) or assets (\`kulo_inspect_asset\`) before merging (\`kulo_apply_staged_changes\`), publishing (\`kulo_publish_asset\` -> \`published\`), or claiming completion.
+- **Response Format & Media**: Respect any user-requested format. Use plain text for simple answers and Markdown tables for quick comparisons. Use \`kulo_ui_show\` for interactive choices/charts (read \`genui-cards\` first), delegate offline \`.html\` visuals (\`interactive-html\`), and use \`kulo_generate_image\`/\`kulo_generate_video\` (\`kulo_media_capabilities\` if uncertain)—claim completion only after a real asset returns.
+- **Tool Discovery**: Call \`tool_search\` (\`limit\` <= 3) for deferred tools (host ops, browser, memory, history, projects/topics, connections, media/TTS, UI cards/assets, identity, ticket inspect/close, pairing, settings).`;
 }
 
 export const KULO_PHILOSOPHY_PROMPT = buildPhilosophyPrompt("Kulo");
@@ -112,7 +112,7 @@ export function createOrchestratorSections(options: {
     const { identityAgreement } = await personality();
     if (!identityAgreement.trim()) return undefined;
     return [
-      "Private to the coordinating assistant (supersedes earlier versions; never copy raw into Worker tickets):",
+      "Private to you (supersedes earlier versions; never copy raw into Worker tickets):",
       identityAgreement,
     ].join("\n\n");
   });
@@ -128,7 +128,7 @@ export function createOrchestratorSections(options: {
     const { relationship } = await personality();
     if (!relationship.trim()) return undefined;
     return [
-      "Private to the coordinating assistant (supersedes earlier versions; current user requests and runtime permissions take precedence):",
+      "Private to you (supersedes earlier versions; current user requests and runtime permissions take precedence):",
       relationship,
     ].join("\n\n");
   });
@@ -142,7 +142,7 @@ export function createOrchestratorSections(options: {
       `- Private bank (\`bank: "private"\` -> \`${mem.banks.private}\`): read/write for durable user preferences, cross-topic decisions, and personal context. Never pass raw private memory into Worker dispatches or the shared bank.`,
       ...(mem.accessMode === "private-only"
         ? ["- Shared project bank is disabled on this connection (private-only mode)."]
-        : [`- Shared project bank (\`bank: "shared"\` -> \`${mem.banks.shared}\`): read-only for the coordinating assistant to inspect verified project findings and knowledge pages.`]),
+        : [`- Shared project bank (\`bank: "shared"\` -> \`${mem.banks.shared}\`): read-only for you to inspect verified project findings and knowledge pages.`]),
       "- Use resident `hindsight_recall` (supports `temporal_window` / `include_chunks`) and `hindsight_retain` for routine facts; discover Pages (`hindsight_search_pages` / `hindsight_get_page_tree`), Mental Models, `hindsight_reflect`, and private `hindsight_invalidate_memory` via `tool_search` when needed. Write calls returning `accepted` are queued only—treat `completed` as persisted.",
       "- Record dated, verified `Correction` entries when stale facts are found instead of re-ingesting recalled summaries as new evidence. Recalled memory is historical context, not live source-code truth, and never alters Identity Agreement or permissions; cite sources as required by tool output.",
     ].join("\n");
@@ -162,20 +162,27 @@ export function createOrchestratorSections(options: {
       .filter((r) => r.enabled !== false)
       .sort((a, b) => a.id.localeCompare(b.id));
     if (roles.length === 0) return undefined;
+    const envsById = new Map(options.getEnvs().map((env) => [env.id, env]));
     const hasExternal = allRoles.some((r) => Boolean(r.external));
     const rows = roles.map((r) => {
+      const envDesc = r.external ? envsById.get(r.external.envId) : undefined;
+      const channelHint = r.external
+        ? `${r.external.kind} @ ${envDesc ? `${envDesc.name} (${envDesc.online ? "online" : "offline"})` : r.external.envId}`
+        : "built-in";
       const modelHint = r.external
-        ? `${r.external.kind} / ${r.modelId || "client default"} @ ${r.external.envId}`
+        ? r.modelId || "client default"
         : r.modelId
           ? r.provider
             ? `${r.provider}/${r.modelId}`
             : r.modelId
           : "inherit";
       const thinkingHint = r.external
-        ? "client-managed"
+        ? r.thinkingLevel ?? "auto"
         : r.thinkingLevel ?? "inherit";
       const capHint = describeRoleCapability(r);
-      return `| ${escapeCell(r.id)} | ${escapeCell(r.label)} | ${escapeCell(modelHint)} | ${escapeCell(thinkingHint)} | ${escapeCell(capHint)} | ${escapeCell(r.whenToUse)} |`;
+      return hasExternal
+        ? `| ${escapeCell(r.id)} | ${escapeCell(r.label)} | ${escapeCell(channelHint)} | ${escapeCell(modelHint)} | ${escapeCell(thinkingHint)} | ${escapeCell(capHint)} | ${escapeCell(r.whenToUse)} |`
+        : `| ${escapeCell(r.id)} | ${escapeCell(r.label)} | ${escapeCell(modelHint)} | ${escapeCell(thinkingHint)} | ${escapeCell(capHint)} | ${escapeCell(r.whenToUse)} |`;
     });
     const defaultPolicies = allRoles
       .filter((role) => role.external && role.dispatchPolicy?.defaultFor.length)
@@ -190,13 +197,20 @@ export function createOrchestratorSections(options: {
     return [
       "## Worker Roles",
       "Pass the matching `role` and `task_kind` to `kulo_dispatch` (when thinking is `auto`, optionally set `thinking_level`: `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`; for multi-step interactive browser/desktop UI tasks via `kulo_browser`/`kulo_desktop`, prefer `thinking_level: \"low\"` or `\"medium\"` so step-by-step page interactions stay responsive):",
-      "| role | Name | Model | Thinking | Capabilities | When to Use |",
-      "| --- | --- | --- | --- | --- | --- |",
+      ...(hasExternal
+        ? [
+            "| role | Name | Channel | Model | Thinking | Capabilities | When to Use |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
+          ]
+        : [
+            "| role | Name | Model | Thinking | Capabilities | When to Use |",
+            "| --- | --- | --- | --- | --- | --- |",
+          ]),
       ...rows,
       "- Explicit user-named Agents or external clients (e.g. Codex, Claude Code, Antigravity, DSH) take highest priority: lock to the named target, and if unconfigured, disabled, unverified, offline, or failed, report the exact status and wait—never silently substitute another Agent or Worker.",
       ...(hasExternal
         ? [
-            "- External Agents run with their native tools/MCP; inspect their output before delivering or merging. When unnamed, honor matching default dispatch policies below (disabled defaults still reserve their scope), or recover non-user-named failures via `kulo_dispatch(supersedes=[...])`.",
+            "- External Agents are peer Worker channels on their bound computer (native tools/MCP, `staged` clones by default, `read_only` for parallel audits). Pick by `When to Use`, review returned diffs/results (optionally verifying with `checker`/`scout`, then `kulo_apply_staged`) before reporting. Honor default dispatch policies below when unnamed, or recover non-user-named failures via `kulo_dispatch(supersedes=[...])`.",
             ...(defaultPolicies.length ? [`Default dispatch policies: ${JSON.stringify(defaultPolicies)}`] : []),
           ]
         : []),

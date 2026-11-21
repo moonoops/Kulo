@@ -449,4 +449,51 @@ describe("Hindsight setup confirmation and credential custody", () => {
     expect(f.local.deploy).toHaveBeenCalledOnce();
     expect(f.values.size).toBe(0);
   });
+
+  it("supersedes earlier unconfirmed or failed jobs for the same client without affecting other clients", async () => {
+    const f = await fixture({ resolveKey: false });
+    const first = await f.service.prepare({ ...f.request("deploy-1"), clientId: "browser-a" });
+    expect(first.jobs.find((j) => j.id === "deploy-1")?.status).toBe("awaiting-input");
+    await f.service.submitInput(first.inputs[0]!.id, "browser-a", { secret: MODEL });
+    expect(f.values.size).toBe(1);
+
+    // Another window prepares its own job; it must remain untouched.
+    await f.service.prepare({ ...f.request("deploy-other"), clientId: "browser-b" });
+
+    // Preparing a new job in browser-a supersedes deploy-1, cancels its pending inputs, and scrubs its temp credential.
+    const second = await f.service.prepare({
+      commandId: "deploy-2",
+      clientId: "browser-a",
+      expectedRevision: f.settings().revisions.memory,
+      operation: "deploy",
+      model: { provider: "ollama", model: "llama3.2" },
+    });
+    expect(second.jobs.find((j) => j.id === "deploy-1")?.status).toBe("rejected");
+    expect(second.jobs.find((j) => j.id === "deploy-2")?.status).toBe("awaiting-confirmation");
+    expect(f.values.size).toBe(0);
+    expect((await f.service.snapshot("browser-b")).jobs.find((j) => j.id === "deploy-other")?.status).toBe("awaiting-input");
+
+    // Failed job can be explicitly dismissed (rejected) OR superseded by a fresh prepare.
+    vi.mocked(f.local.deploy).mockRejectedValueOnce(new HindsightServiceError("本机未检测到 uv"));
+    await f.service.decide("deploy-2", "browser-a", "confirm");
+    await f.settle();
+    expect((await f.service.snapshot("browser-a")).jobs.find((j) => j.id === "deploy-2")?.status).toBe("failed");
+
+    const third = await f.service.prepare({
+      commandId: "deploy-3",
+      clientId: "browser-a",
+      expectedRevision: f.settings().revisions.memory,
+      operation: "deploy",
+      model: { provider: "ollama", model: "qwen2.5" },
+    });
+    expect(third.jobs.find((j) => j.id === "deploy-2")?.status).toBe("rejected");
+    expect(third.jobs.find((j) => j.id === "deploy-3")?.status).toBe("awaiting-confirmation");
+
+    vi.mocked(f.local.deploy).mockRejectedValueOnce(new HindsightServiceError("本机未检测到 uv"));
+    await f.service.decide("deploy-3", "browser-a", "confirm");
+    await f.settle();
+    const dismissed = await f.service.decide("deploy-3", "browser-a", "reject");
+    expect(dismissed.jobs.find((j) => j.id === "deploy-3")?.status).toBe("rejected");
+    expect(dismissed.jobs.find((j) => j.id === "deploy-3")?.error).toBeUndefined();
+  });
 });

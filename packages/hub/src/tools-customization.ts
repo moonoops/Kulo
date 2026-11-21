@@ -53,7 +53,7 @@ export function createCustomizationToolsExtension(host: CustomizationToolsHost) 
     tools: [
       defineTool({ name: "kulo_customization",
         description:
-          "Managed Kulo Web UI self-customization (use only when explicitly asked to modify Kulo's own UI source; use settings/appearance tools for ordinary preferences). Supports `packages/web/{src,public,test}`: read before writing a candidate, then `validate` to stage for next launch (executes directly by default; pass `ask_user: true` in `validate` only if you want user confirmation first; check `currentReleaseId`/`applicationState` via `status`; never overwrite runtime/credential/recovery paths via shell). `request` JSON: `prepare{summary}`, `read{session_id,path}`, `write{session_id,path,content,expected_revision}`, `validate{session_id,ask_user?}`/`cancel{session_id}`. 关键词：客户端自改 桌面端界面源码定制 构建预览验证",
+          "Managed Web UI self-customization (use only when explicitly asked to modify your own Web UI source; use settings/appearance tools for ordinary preferences). Supports `packages/web/{src,public,test}`: read before writing a candidate, then `validate` to stage for next launch (executes directly by default; pass `ask_user: true` in `validate` only if you want user confirmation first; check `currentReleaseId`/`applicationState` via `status`; never overwrite runtime/credential/recovery paths via shell). `request` JSON: `prepare{summary}`, `read{session_id,path}`, `write{session_id,path,content,expected_revision}`, `validate{session_id,ask_user?}`/`cancel{session_id}`. 关键词：客户端自改 桌面端界面源码定制 构建预览验证",
         parameters: obj({ action: oneOf(ACTIONS), request: opt(str()) }),
         deferred: true,
         execute: async ({ action, request }, api) => {

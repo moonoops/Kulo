@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Alert, Button, Chip, Disclosure, Dropdown, Label, Spinner, Switch } from "@heroui/react";
-import type { EnvNodeDescriptor, ExternalAgentKind, ExternalClientConnection, ProjectView, RolePreset } from "@kulo/protocol";
+import { isSupportedExternalAgentKind, type EnvNodeDescriptor, type ExternalAgentKind, type ExternalClientConnection, type ProjectView, type RolePreset } from "@kulo/protocol";
 import { RoleAvatar } from "../../components/role-avatar";
 import { KuloIcon } from "../../kulo-icon";
 import { useI18n } from "../../kulo-i18n";
@@ -12,19 +12,41 @@ export const EXTERNAL_CLIENT_NAMES: Record<ExternalAgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
   antigravity: "Antigravity",
+  grok: "Grok Build",
+  cursor: "Cursor Agent",
+  opencode: "OpenCode",
+  "gemini-cli": "Gemini CLI",
+  kiro: "Kiro CLI",
+  copilot: "GitHub Copilot",
   dsh: "DeepSeek Harness",
+  acp: "自定义 ACP",
   "grok-bot": "Grok Bot",
   dots: "ChatGPT Dots",
   muse: "Meta Muse",
 };
 
-function createDraftForClient(client: ExternalClientConnection): RolePreset {
+export function externalClientDisplayName(
+  client: Pick<ExternalClientConnection, "kind" | "label" | "agentRef">,
+): string {
+  if (client.kind === "acp") {
+    return client.label?.trim() || client.agentRef?.trim() || EXTERNAL_CLIENT_NAMES[client.kind];
+  }
+  return EXTERNAL_CLIENT_NAMES[client.kind];
+}
+
+function defaultExternalPersonaPrompt(language: string): string {
+  return language === "en"
+    ? "Follow repository conventions, verify changes with real checks, report actual outcomes and file paths, and hand back to Kulo if scope expansion or cross-agent collaboration is needed."
+    : "遵循仓库既有约定与任务边界，完成改动后执行真实检查验证，向主 Agent 汇报具体结论、改动路径与验证证据；若需扩大范围或跨智能体协作，及时交回主 Agent 决策。";
+}
+
+function createDraftForClient(client: ExternalClientConnection, language: string): RolePreset {
   return {
     id: "",
     label: "",
     whenToUse: "",
-    prompt: "",
-    enabled: Boolean(client.verifiedAt && !["grok-bot", "dots", "muse"].includes(client.kind)),
+    prompt: defaultExternalPersonaPrompt(language),
+    enabled: Boolean(client.verifiedAt && isSupportedExternalAgentKind(client.kind)),
     readOnly: false,
     allowSubagents: false,
     thinkingLevel: "auto",
@@ -33,6 +55,7 @@ function createDraftForClient(client: ExternalClientConnection): RolePreset {
       kind: client.kind,
       envId: client.envId,
       ...(client.executable ? { executable: client.executable } : {}),
+      ...(client.kind === "acp" && client.acpArgs?.length ? { acpArgs: [...client.acpArgs] } : {}),
       ...(client.agentRef ? { agentRef: client.agentRef } : {}),
       ...(client.cdpUrl ? { cdpUrl: client.cdpUrl } : {}),
       ...(client.experimental !== undefined ? { experimental: client.experimental } : {}),
@@ -58,8 +81,10 @@ export function ExternalAgentsList({
   resetSignal = 0,
   onDeleteRole,
   onRefreshClient,
+  onVerifyClient,
   onRemoveClient,
   refreshingClientId = null,
+  verifyingClientId = null,
   activeToggleId = null,
   creatingBusy = false,
   busy = false,
@@ -80,14 +105,16 @@ export function ExternalAgentsList({
   resetSignal?: number;
   onDeleteRole?: (role: RolePreset) => void;
   onRefreshClient?: (clientId: string) => void;
+  onVerifyClient?: (clientId: string) => void;
   onRemoveClient?: (client: ExternalClientConnection) => void;
   refreshingClientId?: string | null;
+  verifyingClientId?: string | null;
   activeToggleId?: string | null;
   creatingBusy?: boolean;
   busy?: boolean;
   conflict?: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const roleRecord = Object.fromEntries(agents.map((role) => [role.id, role]));
   const clients = deriveExternalClients(roleRecord, externalClients);
   const [creatingClientId, setCreatingClientId] = useState<string | null>(null);
@@ -99,7 +126,7 @@ export function ExternalAgentsList({
   const isDraftDirty = Boolean(
     creatingClient &&
       newRole &&
-      JSON.stringify(newRole) !== JSON.stringify(createDraftForClient(creatingClient)),
+      JSON.stringify(newRole) !== JSON.stringify(createDraftForClient(creatingClient, language)),
   );
 
   useEffect(() => {
@@ -121,7 +148,7 @@ export function ExternalAgentsList({
 
   const startCreating = (client: ExternalClientConnection) => {
     setCreatingClientId(client.id);
-    setNewRole(createDraftForClient(client));
+    setNewRole(createDraftForClient(client, language));
     setCreateError(undefined);
   };
 
@@ -147,7 +174,7 @@ export function ExternalAgentsList({
       return;
     }
     const created: RolePreset = {
-      ...createDraftForClient(client),
+      ...createDraftForClient(client, language),
       id: cleanId,
       label: newRole.label.trim(),
       whenToUse: newRole.whenToUse.trim(),
@@ -183,7 +210,7 @@ export function ExternalAgentsList({
           : client.verifiedAt
             ? t("连接已验证", "Connection verified")
             : t("待验证", "Unverified");
-      const sectionTitle = `${EXTERNAL_CLIENT_NAMES[client.kind]} · ${device?.name ?? client.envId}`;
+      const sectionTitle = `${externalClientDisplayName(client)} · ${device?.name ?? client.envId}`;
       const isCreatingHere = creatingClientId === client.id && newRole !== null;
 
       return (
@@ -194,6 +221,17 @@ export function ExternalAgentsList({
             <div className="flex flex-wrap items-center gap-2">
               {experimental && <Chip size="sm" variant="soft" color="warning">{t("实验", "Experimental")}</Chip>}
               <Chip size="sm" variant="soft">{statusLabel}</Chip>
+              {onVerifyClient && !client.verifiedAt && !reserved && !experimental && (
+                <Button
+                  size="sm"
+                  variant="primary"
+                  isDisabled={busy || conflict || device?.online === false}
+                  isPending={verifyingClientId === client.id}
+                  onPress={() => onVerifyClient(client.id)}
+                >
+                  {t("验证连接", "Verify")}
+                </Button>
+              )}
               {onRefreshClient && !reserved && !experimental && (
                 <Button
                   size="sm"
@@ -217,7 +255,7 @@ export function ExternalAgentsList({
                   {t("新建智能体", "New agent")}
                 </Button>
               )}
-              {onRemoveClient && (
+              {(onRemoveClient || (onVerifyClient && client.verifiedAt && !reserved && !experimental)) && (
                 <Dropdown>
                   <Button
                     isIconOnly
@@ -231,17 +269,29 @@ export function ExternalAgentsList({
                     <Dropdown.Menu
                       aria-label={sectionTitle + t("连接操作", " connection actions")}
                       onAction={(key) => {
-                        if (key === "disconnect") onRemoveClient(client);
+                        if (key === "verify") onVerifyClient?.(client.id);
+                        if (key === "disconnect") onRemoveClient?.(client);
                       }}
                     >
-                      <Dropdown.Item
-                        id="disconnect"
-                        textValue={t("移除连接", "Remove connection")}
-                        variant="danger"
-                        isDisabled={conflict || busy}
-                      >
-                        <Label>{t("移除连接", "Remove connection")}</Label>
-                      </Dropdown.Item>
+                      {onVerifyClient && client.verifiedAt && !reserved && !experimental ? (
+                        <Dropdown.Item
+                          id="verify"
+                          textValue={t("重新验证", "Re-verify")}
+                          isDisabled={conflict || busy || device?.online === false}
+                        >
+                          <Label>{t("重新验证", "Re-verify")}</Label>
+                        </Dropdown.Item>
+                      ) : null}
+                      {onRemoveClient ? (
+                        <Dropdown.Item
+                          id="disconnect"
+                          textValue={t("移除连接", "Remove connection")}
+                          variant="danger"
+                          isDisabled={conflict || busy}
+                        >
+                          <Label>{t("移除连接", "Remove connection")}</Label>
+                        </Dropdown.Item>
+                      ) : null}
                     </Dropdown.Menu>
                   </Dropdown.Popover>
                 </Dropdown>

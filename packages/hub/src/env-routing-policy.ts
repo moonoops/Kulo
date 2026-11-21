@@ -38,10 +38,11 @@ export function resolveNamedOrContextualEnv(input: {
   priorUserTurns?: readonly PriorUserDeviceTurn[];
   envs: readonly EnvNodeDescriptor[];
   proposedEnvId?: string;
+  targetScope?: DispatchTargetScope;
   isRecovery?: boolean;
 }): NamedOrContextualEnvResolution | undefined {
   if (input.isRecovery) return undefined;
-  const { currentText, priorUserTurns = [], envs, proposedEnvId } = input;
+  const { currentText, priorUserTurns = [], envs, proposedEnvId, targetScope } = input;
   const currentNamed = namedDispatchDevices(currentText, envs);
   const currentUnambiguous = [
     ...new Set(currentNamed.filter((ids) => ids.length === 1).map((ids) => ids[0]!)),
@@ -73,6 +74,12 @@ export function resolveNamedOrContextualEnv(input: {
         return undefined;
       }
     }
+    return undefined;
+  }
+
+  // Respect explicit target_scope='sender_device' rather than hijacking it via a partial text match
+  // (e.g. a multi-device message where only one device's name matched an alias).
+  if (targetScope === "sender_device") {
     return undefined;
   }
 
@@ -233,7 +240,22 @@ export function resolveComputerEnvBinding(input: ComputerEnvResolutionInput): Co
     const envId = proposedEnvId ?? externalBindingDeviceId ?? sourceEnvId ?? pickFallbackEnvId();
     return { envId, envBinding: "workspace_dir", waitForSource: Boolean(sourceEnvId && envId === sourceEnvId) };
   }
+  const localSignals = detectSenderLocalSignals({
+    userMessage,
+    goal,
+    scope,
+    senderRootDir: sourceRootDir,
+  });
+
   if (externalBindingDeviceId) {
+    if (sourceEnvId && (targetScope === "sender_device" || localSignals) && externalBindingDeviceId !== sourceEnvId) {
+      return {
+        envId: sourceEnvId,
+        envBinding: "sender_local",
+        waitForSource: true,
+        conflictWithSource: true,
+      };
+    }
     return {
       envId: externalBindingDeviceId,
       envBinding: "agent_bound",
@@ -242,18 +264,30 @@ export function resolveComputerEnvBinding(input: ComputerEnvResolutionInput): Co
   }
 
   // Tier 2 & 3: Ungrouped built-in computer tasks
-  const localSignals = detectSenderLocalSignals({
-    userMessage,
-    goal,
-    scope,
-    senderRootDir: sourceRootDir,
-  });
 
   if (sourceEnvId) {
     // Conservative rule: local-machine signals ALWAYS override model's target_scope='hub_local'
     const requiresSender = targetScope === "sender_device" || localSignals;
     if (requiresSender) {
       if (proposedEnvId && proposedEnvId !== sourceEnvId) {
+        return {
+          envId: sourceEnvId,
+          envBinding: "sender_local",
+          waitForSource: true,
+          conflictWithSource: true,
+        };
+      }
+      return {
+        envId: sourceEnvId,
+        envBinding: "sender_local",
+        waitForSource: true,
+      };
+    }
+
+    // Explicit sender device ID (equivalent to target_scope='sender_device') must never be silently
+    // downgraded to Hub local; reject only if target_scope explicitly contradicted it with 'hub_local'.
+    if (proposedEnvId === sourceEnvId) {
+      if (targetScope === "hub_local") {
         return {
           envId: sourceEnvId,
           envBinding: "sender_local",

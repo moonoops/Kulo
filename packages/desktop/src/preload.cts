@@ -78,8 +78,8 @@ if (process.isMainFrame) {
     saveFile: (assetId: string): Promise<"saved" | "canceled"> => fileAction("kulo:save-file", assetId),
     notify: (payload: DesktopNotificationPayload): Promise<boolean> =>
       ipcRenderer.invoke("kulo:notify", payload),
-    setBadge: (active: boolean): Promise<void> =>
-      ipcRenderer.invoke("kulo:badge-set", active),
+    setBadge: (count: number | boolean): Promise<void> =>
+      ipcRenderer.invoke("kulo:badge-set", count),
     onNotificationOpen: (listener: (target: { topicId: string }) => void): (() => void) => {
       if (typeof listener !== "function") return () => {};
       const wrapped = (_event: Electron.IpcRendererEvent, payload: unknown) => {

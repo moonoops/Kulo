@@ -66,8 +66,21 @@ export function createMemoryServiceRequest(draft: MemoryServiceDraft, clientId: 
 export async function decideMemoryServiceJob(job: MemoryServiceJob, clientId: string, decision: "confirm" | "reject"): Promise<MemoryServiceSnapshot> {
   if (job.clientId !== clientId) throw new Error(t("请在发起操作的窗口继续。", "Continue in the window where you started this operation."));
   if (decision === "confirm" && job.status !== "awaiting-confirmation" && job.status !== "failed") throw new Error(t("该操作尚未就绪，或已经处理。", "This operation is not ready or has already been handled."));
-  if (decision === "reject" && !["awaiting-input", "awaiting-confirmation"].includes(job.status)) throw new Error(t("该操作已经处理。", "This operation has already been handled."));
+  if (decision === "reject" && !["awaiting-input", "awaiting-confirmation", "failed"].includes(job.status)) throw new Error(t("该操作已经处理。", "This operation has already been handled."));
   return kuloRest.decideMemoryService(job.id, { clientId, decision });
+}
+
+export function visibleMemoryDialogueJobs(
+  jobs: readonly MemoryServiceJob[],
+  clientId: string,
+  sessionJobIds?: ReadonlySet<string>,
+): MemoryServiceJob[] {
+  const ownJobs = jobs.filter((job) => job.clientId === clientId && job.status !== "rejected");
+  const activeJobs = ownJobs.filter((job) => ["awaiting-input", "awaiting-confirmation", "running", "failed"].includes(job.status));
+  if (activeJobs.length > 0) return activeJobs.slice(-2);
+  if (!sessionJobIds || sessionJobIds.size === 0) return [];
+  const completed = ownJobs.filter((job) => job.status === "succeeded" && isMemoryDialogueOperation(job.operation) && sessionJobIds.has(job.id));
+  return completed.length > 0 ? [completed[completed.length - 1]!] : [];
 }
 
 export async function submitMemoryServiceSecret(input: MemoryServiceSecretInput, clientId: string, secret: string): Promise<MemoryServiceSnapshot> {
@@ -154,7 +167,7 @@ export function MemoryServiceJobCard({ job, inputs, clientId, connected, onChang
     </Card.Content>
     <Card.Footer className="flex-wrap justify-end gap-2">
       {!own && ["awaiting-input", "awaiting-confirmation"].includes(job.status) && <span className="text-xs text-muted">{t("等待原窗口确认", "Awaiting confirmation in the original window")}</span>}
-      {own && ["awaiting-input", "awaiting-confirmation"].includes(job.status) && <Button size="sm" variant="tertiary" isDisabled={!connected || busy} onPress={() => void run("reject")}>{t("取消", "Cancel")}</Button>}
+      {own && ["awaiting-input", "awaiting-confirmation", "failed"].includes(job.status) && <Button size="sm" variant="tertiary" isDisabled={!connected || busy} onPress={() => void run("reject")}>{job.status === "failed" ? t("关闭", "Dismiss") : t("取消", "Cancel")}</Button>}
       {own && job.status === "awaiting-confirmation" && <Button size="sm" variant={job.operation === "uninstall" ? "danger" : "primary"} isPending={busy} isDisabled={!connected || busy} onPress={() => job.operation === "uninstall" ? setConfirmUninstall(true) : void run("confirm")}>{job.operation === "deploy" ? t("确认部署", "Confirm deployment") : job.operation === "uninstall" ? t("卸载…", "Uninstall…") : t("确认", "Confirm")}</Button>}
       {own && job.status === "failed" && <Button size="sm" variant="secondary" isPending={busy} isDisabled={!connected || busy} onPress={() => void run("confirm")}>{t("重试", "Retry")}</Button>}
     </Card.Footer>
@@ -205,7 +218,18 @@ export function MemoryServiceDialogue({ clientId, settings, connected, refreshKe
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const alive = useRef(true);
-  const changed = useCallback((next: MemoryServiceSnapshot) => { if (alive.current) { setSnapshot(next); setError(undefined); publishMemoryService(next); } }, []);
+  const sessionJobIdsRef = useRef(new Set<string>());
+  const changed = useCallback((next: MemoryServiceSnapshot) => {
+    if (!alive.current) return;
+    for (const item of next.jobs) {
+      if (item.clientId === clientId && ["awaiting-input", "awaiting-confirmation", "running", "failed"].includes(item.status)) {
+        sessionJobIdsRef.current.add(item.id);
+      }
+    }
+    setSnapshot(next);
+    setError(undefined);
+    publishMemoryService(next);
+  }, [clientId]);
   const load = useCallback(async () => { const next = await kuloRest.getMemoryService(clientId); changed(next); return next; }, [clientId, changed]);
   const loadProviders = useCallback(async () => {
     try {
@@ -256,7 +280,7 @@ export function MemoryServiceDialogue({ clientId, settings, connected, refreshKe
     catch (cause) { if (alive.current) setError(redactSecrets(cause instanceof Error ? cause.message : t("准备操作失败", "Failed to prepare operation"))); }
     finally { if (alive.current) setBusy(false); }
   };
-  const jobs = (snapshot?.jobs ?? []).filter((job) => job.clientId === clientId && (isMemoryDialogueOperation(job.operation) || ["awaiting-input", "awaiting-confirmation", "running"].includes(job.status))).slice(-8);
+  const jobs = visibleMemoryDialogueJobs(snapshot?.jobs ?? [], clientId, sessionJobIdsRef.current);
   if (!draft && !jobs.length && !error && !busy) return null;
   return <div className="flex min-w-0 flex-col gap-3" aria-label={t("记忆服务配置对话", "Memory service setup conversation")}>
     {jobs.map((job) => <MemoryServiceJobCard key={job.id} job={job} inputs={snapshot?.inputs ?? []} clientId={clientId} connected={connected} onChanged={changed} />)}

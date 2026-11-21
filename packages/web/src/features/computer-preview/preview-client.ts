@@ -153,20 +153,30 @@ export class ComputerPreviewClient {
     if (v.type === "preview.sessions") {
       if (!Array.isArray(v.sessions) || v.sessions.length > 16 || !v.sessions.every(session) || new Set(v.sessions.map((item) => item.id)).size !== v.sessions.length) { this.#invalid(); return; }
       const sessions = v.sessions;
+      const previousIds = new Set(this.#state.sessions.map((item) => item.id));
       const displays: Record<string, PreviewDisplay> = {};
       const stops: Record<string, PreviewStopState> = {};
       const selectedByTicket: Record<string, string> = {};
+      const addedByTicket = new Map<string, string>();
       for (const item of sessions) {
         const previous = this.#state.sessions.find((entry) => entry.id === item.id);
         if (previous?.ticketId === item.ticketId && previous.tool === item.tool && previous.envId === item.envId && previous.app === item.app) displays[item.id] = this.#state.displays[item.id] ?? { state: "connecting" };
         else { this.#revoke(this.#state.displays[item.id]?.imageUrl); displays[item.id] = { state: "connecting" }; }
         if (this.#state.stops[item.ticketId]) stops[item.ticketId] = this.#state.stops[item.ticketId]!;
+        if (previousIds.size > 0 && !previousIds.has(item.id)) {
+          addedByTicket.set(item.ticketId, item.id);
+        }
         if (!selectedByTicket[item.ticketId]) {
           const previousChoice = this.#state.selectedByTicket[item.ticketId];
           selectedByTicket[item.ticketId] = previousChoice && sessions.some((entry) => entry.ticketId === item.ticketId && entry.id === previousChoice)
             ? previousChoice
             : item.id;
         }
+      }
+      // Follow newly opened sessions on the same ticket unless the user is inspecting another session in the modal.
+      for (const [ticketId, addedId] of addedByTicket) {
+        const modalInspectingTicket = this.#state.expanded && this.#state.selectedId && selectedByTicket[ticketId] === this.#state.selectedId;
+        if (!modalInspectingTicket) selectedByTicket[ticketId] = addedId;
       }
       for (const [id, display] of Object.entries(this.#state.displays)) if (!displays[id]) this.#revoke(display.imageUrl);
       const selectedStillExists = Boolean(this.#state.selectedId && sessions.some((item) => item.id === this.#state.selectedId));
@@ -177,9 +187,10 @@ export class ComputerPreviewClient {
           : sessions[0]!.ticketId;
       const selectedId = sessions.length === 0
         ? undefined
-        : selectedStillExists
+        : this.#state.expanded && selectedStillExists
           ? this.#state.selectedId
-          : (activeTicketId ? selectedByTicket[activeTicketId] : undefined) ?? sessions[0]!.id;
+          : (activeTicketId ? selectedByTicket[activeTicketId] : undefined)
+            ?? (selectedStillExists ? this.#state.selectedId : sessions[0]!.id);
       const collapsed = sessions.length === 0 ? false : this.#state.collapsed;
       const expanded = sessions.length === 0 ? false : this.#state.expanded && selectedStillExists;
       const visibilityChanged = this.#effectiveVisible(collapsed, expanded) !== this.#effectiveVisible(this.#state.collapsed, this.#state.expanded);
@@ -187,17 +198,35 @@ export class ComputerPreviewClient {
       if (visibilityChanged) this.#sendVisibility();
     } else if (v.type === "preview.update") {
       if (typeof v.id !== "string" || !isComputerPreviewUpdate(v.update)) { this.#invalid(); return; }
-      if (!this.#state.sessions.some((item) => item.id === v.id)) return;
+      const targetSession = this.#state.sessions.find((item) => item.id === v.id);
+      if (!targetSession) return;
       const update = v.update;
       const previous = this.#state.displays[v.id];
       let display: PreviewDisplay = { state: update.state, message: update.message, permissionRequired: update.permissionRequired };
+      let hasFreshFrame = false;
       if (update.state === "live" && update.frame) {
         if (previous?.capturedAt && update.frame.capturedAt < previous.capturedAt) return;
-        try { display = { ...display, imageUrl: (this.options.createImageUrl ?? previewFrameUrl)(update.frame), capturedAt: update.frame.capturedAt }; }
+        try {
+          display = { ...display, imageUrl: (this.options.createImageUrl ?? previewFrameUrl)(update.frame), capturedAt: update.frame.capturedAt };
+          hasFreshFrame = true;
+        }
         catch { display = { state: "unavailable", message: "invalid_frame" }; }
       } else if (update.state === "live" && previous?.imageUrl) display = { ...previous, state: "live", message: update.message };
       if (display.imageUrl !== previous?.imageUrl) this.#revoke(previous?.imageUrl);
-      this.#set({ ...this.#state, displays: { ...this.#state.displays, [v.id]: display } });
+      let selectedByTicket = this.#state.selectedByTicket;
+      let selectedId = this.#state.selectedId;
+      if (hasFreshFrame) {
+        const currentTicketSessionId = selectedByTicket[targetSession.ticketId];
+        const currentCapturedAt = currentTicketSessionId ? (this.#state.displays[currentTicketSessionId]?.capturedAt ?? 0) : 0;
+        const modalLocked = this.#state.expanded && this.#state.selectedId === currentTicketSessionId;
+        if (currentTicketSessionId !== targetSession.id && !modalLocked && (display.capturedAt ?? 0) >= currentCapturedAt) {
+          selectedByTicket = { ...selectedByTicket, [targetSession.ticketId]: targetSession.id };
+          if (!this.#state.expanded && this.#state.activeTicketId === targetSession.ticketId) {
+            selectedId = targetSession.id;
+          }
+        }
+      }
+      this.#set({ ...this.#state, displays: { ...this.#state.displays, [v.id]: display }, selectedByTicket, selectedId });
     } else if (v.type === "preview.error") {
       if (typeof v.message !== "string" || v.message.length > 2000) { this.#invalid(); return; }
       this.#set({ ...this.#state, error: v.message });

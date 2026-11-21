@@ -280,17 +280,21 @@ describe("desktop tray lifecycle, template icon and red-dot badge", () => {
     expect(created[0]!.setContextMenu).toHaveBeenCalledTimes(1);
     expect(created[0]!.on).not.toHaveBeenCalled();
 
-    // Activate red dot badge and respond to theme change
-    controller.setBadge(true);
+    // Activate numeric badge and respond to theme change
+    controller.setBadge(3);
     expect(created[0]!.setImage).toHaveBeenLastCalledWith("badge-light");
-    expect(created[0]!.setToolTip).toHaveBeenLastCalledWith("Kulo Dev · 有新回复");
+    expect(created[0]!.setToolTip).toHaveBeenLastCalledWith("Kulo Dev · 3 条未读");
 
     dark = true;
     controller.refreshTheme();
     expect(created[0]!.setImage).toHaveBeenLastCalledWith("badge-dark");
 
+    // Cap high unread counts cleanly in tooltip
+    controller.setBadge(120);
+    expect(created[0]!.setToolTip).toHaveBeenLastCalledWith("Kulo Dev · 99+ 条未读");
+
     // Clear badge back to monochrome template
-    controller.setBadge(false);
+    controller.setBadge(0);
     expect(created[0]!.setImage).toHaveBeenLastCalledWith("template");
     expect(created[0]!.setToolTip).toHaveBeenLastCalledWith("Kulo Dev");
 

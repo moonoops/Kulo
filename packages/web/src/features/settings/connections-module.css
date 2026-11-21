@@ -46,3 +46,13 @@
 .kulo-connection-icon--mail { background: #1888ef; color: white; }
 .kulo-connection-icon--github { background: var(--foreground); color: var(--background); }
 .kulo-connection-icon--figma { background: var(--surface-secondary); }
+.kulo-connection-icon--linear { background: #5e6ad2; color: white; }
+.kulo-connection-icon--notion { background: var(--surface-secondary); color: var(--foreground); }
+.kulo-connection-icon--atlassian { background: #0052cc; color: white; }
+.kulo-connection-icon--sentry { background: #362d59; color: white; }
+.kulo-connection-icon--supabase { background: #1c1c1c; color: #3fcf8e; }
+.kulo-connection-icon--vercel { background: var(--foreground); color: var(--background); }
+.kulo-connection-icon--cloudflare { background: var(--surface-secondary); }
+.kulo-connection-icon--stripe { background: #635bff; color: white; }
+.kulo-connection-icon--context7 { background: #059669; color: white; }
+.kulo-connection-icon--slack { background: var(--surface-secondary); }

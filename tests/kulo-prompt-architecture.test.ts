@@ -18,7 +18,14 @@ import {
   resolveRolePresetFromPool,
 } from "@kulo/protocol";
 import { resolveHubConfig } from "../packages/hub/src/config.js";
-import { DEFAULT_COMPACTION_FOCUS_INSTRUCTIONS } from "../packages/hub/src/prompts.js";
+import { KULO_IDENTITY_TEMPLATES, KULO_IDENTITY_TEMPLATES_ZH } from "../packages/hub/src/identity-files.js";
+import {
+  DEFAULT_COMPACTION_FOCUS_INSTRUCTIONS,
+  VOICE_FALLBACK_INSTRUCTIONS,
+  buildPhilosophyPrompt,
+  buildSettingsAssistantPrompt,
+  buildVoiceCallInstructions,
+} from "../packages/hub/src/prompts.js";
 import { buildRecentWorkSnapshot } from "../packages/hub/src/recent-work.js";
 import {
   hydrateSettingsFromConfig,
@@ -181,6 +188,28 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
     expect(schemaChars).toBeGreaterThan(3_000);
     expect(schemaChars).toBeLessThan(12_000);
     expect(sysChars + schemaChars).toBeLessThan(23_000);
+  });
+
+  it("enforces unified first-person self-reference across main chat, settings, voice, and default identity templates", () => {
+    const mainDefault = buildPhilosophyPrompt("Kulo", "zh-CN");
+    const mainRenamed = buildPhilosophyPrompt("小墨", "zh-CN");
+    const settingsConn = buildSettingsAssistantPrompt({ promptContext: "activeModule=connections", module: "connections" });
+    const voice = buildVoiceCallInstructions({
+      agentName: "Kulo",
+      personaSections: [],
+      recalledMemory: "none",
+    });
+
+    for (const surface of [mainDefault, mainRenamed, settingsConn, voice, VOICE_FALLBACK_INSTRUCTIONS]) {
+      expect(surface).not.toMatch(/assistant in Kulo|voice interface of Kulo|operating in Kulo's/i);
+      expect(surface).toMatch(/unified first person|unified first-person/i);
+    }
+    expect(mainDefault).toContain("You are Kulo, the user's personal assistant");
+    expect(mainDefault).toMatch(/never split yourself from Kulo/i);
+    expect(mainRenamed).toContain("You are 小墨, the user's personal assistant");
+    expect(settingsConn).toContain("kulo_assistant_read");
+    expect(KULO_IDENTITY_TEMPLATES_ZH["identity-agreement.md"]).toContain("统一身份表述");
+    expect(KULO_IDENTITY_TEMPLATES["identity-agreement.md"]).toContain("Unified self-reference");
   });
 
   it("prunes cross-audience tools on Workers/Subagents, places kulo_worker_mandate first, and respects legacy instructions", async () => {

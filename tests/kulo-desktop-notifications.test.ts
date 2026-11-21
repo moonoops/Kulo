@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDesktopNotifications, normalizeDesktopNotificationPayload } from "../packages/desktop/src/notifications.js";
+import {
+  createDesktopNotifications,
+  formatDockBadgeText,
+  normalizeDesktopBadgeCount,
+  normalizeDesktopNotificationPayload,
+} from "../packages/desktop/src/notifications.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -116,5 +121,22 @@ describe("desktop native notifications", () => {
     expect(shown[2]).toEqual({ title: "回复已完成", body: "话题 C", silent: false });
 
     controller.dispose();
+  });
+
+  it("normalizes numeric badge counts and formats macOS Dock badge labels with 99+ cap", () => {
+    expect(normalizeDesktopBadgeCount(0)).toBe(0);
+    expect(normalizeDesktopBadgeCount(3)).toBe(3);
+    expect(normalizeDesktopBadgeCount(12.8)).toBe(12);
+    expect(normalizeDesktopBadgeCount(true)).toBe(1);
+    expect(normalizeDesktopBadgeCount(false)).toBe(0);
+    expect(normalizeDesktopBadgeCount(-1)).toBeNull();
+    expect(normalizeDesktopBadgeCount(Number.NaN)).toBeNull();
+    expect(normalizeDesktopBadgeCount("3")).toBeNull();
+
+    expect(formatDockBadgeText(0)).toBe("");
+    expect(formatDockBadgeText(-5)).toBe("");
+    expect(formatDockBadgeText(1)).toBe("1");
+    expect(formatDockBadgeText(99)).toBe("99");
+    expect(formatDockBadgeText(100)).toBe("99+");
   });
 });
