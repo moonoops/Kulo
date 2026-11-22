@@ -113,23 +113,27 @@ export async function migrateLegacyLocalReferences(
 
     // 3. KuloSettingsDoc: external agent bindings (roles[*].external.envId, roles[*].externalClientId, model.externalAgentClients)
     const settingsDoc = await tx.doc(KuloSettingsDoc);
-    if (Array.isArray(settingsDoc.roles)) {
-      for (const role of settingsDoc.roles as Array<{
-        external?: { envId?: string };
-        externalClientId?: string;
-      }>) {
-        if (role.external?.envId === "local") {
-          role.external = { ...role.external, envId: target };
+    const roleEntries: Array<{
+      external?: { envId?: string };
+      externalClientId?: string;
+    }> = Array.isArray(settingsDoc.roles)
+      ? (settingsDoc.roles as Array<{ external?: { envId?: string }; externalClientId?: string }>)
+      : settingsDoc.roles && typeof settingsDoc.roles === "object"
+        ? (Object.values(settingsDoc.roles) as Array<{ external?: { envId?: string }; externalClientId?: string }>)
+        : [];
+    for (const role of roleEntries) {
+      if (!role || typeof role !== "object") continue;
+      if (role.external?.envId === "local") {
+        role.external = { ...role.external, envId: target };
+        result.settingsUpdated = true;
+        result.migrated = true;
+      }
+      if (typeof role.externalClientId === "string") {
+        const rewritten = rewriteExternalClientKey(role.externalClientId, target);
+        if (rewritten !== role.externalClientId) {
+          role.externalClientId = rewritten;
           result.settingsUpdated = true;
           result.migrated = true;
-        }
-        if (typeof role.externalClientId === "string") {
-          const rewritten = rewriteExternalClientKey(role.externalClientId, target);
-          if (rewritten !== role.externalClientId) {
-            role.externalClientId = rewritten;
-            result.settingsUpdated = true;
-            result.migrated = true;
-          }
         }
       }
     }

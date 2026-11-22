@@ -190,4 +190,43 @@ describe("legacy 'local' cluster migration and physical localEnvId invariants", 
     // RemoteExecutionEnv keeps id "node:local" while EnvManager exposes physical nodeId
     expect(hub.envManager.createExecutionEnv("node-macmini-01", localDesc!.rootDir).id).toBe("node:local");
   });
+
+  it("migrates Record<string, RolePreset> roles external.envId and externalClientId", async () => {
+    const stateDir = tempDir();
+    const hub = await openTestHub({
+      config: {
+        stateDir,
+        authToken: HUB_TEST_ADMIN_TOKEN,
+        enableLocalEnv: true,
+        memory: { enabled: false },
+      },
+    });
+    cleanups.push(() => hub.close());
+
+    await hub.harness.commit(async (tx) => {
+      const settings = await tx.doc(KuloSettingsDoc);
+      settings.roles = {
+        ...settings.roles,
+        ext_codex: {
+          id: "ext_codex",
+          label: "Codex",
+          whenToUse: "coding",
+          prompt: "",
+          externalClientId: "codex:local",
+          external: { kind: "codex", envId: "local", workspaceMode: "staged", permissionPolicy: "ask" } as never,
+        },
+      };
+    }, BACKGROUND_CONTEXT);
+
+    const targetNodeId = "node-macbook-99";
+    const res = await migrateLegacyLocalReferences(hub.harness, targetNodeId, BACKGROUND_CONTEXT);
+    expect(res.migrated).toBe(true);
+    expect(res.settingsUpdated).toBe(true);
+    const snap = await hub.harness.snapshot(KuloSettingsDoc, BACKGROUND_CONTEXT);
+    expect(snap?.roles.ext_codex?.external?.envId).toBe(targetNodeId);
+    expect(snap?.roles.ext_codex?.externalClientId).toBe(`codex:${targetNodeId}`);
+
+    const second = await migrateLegacyLocalReferences(hub.harness, targetNodeId, BACKGROUND_CONTEXT);
+    expect(second.migrated).toBe(false);
+  });
 });
