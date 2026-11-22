@@ -166,6 +166,7 @@ async function readJsonObject(req: http.IncomingMessage, maxBytes?: number): Pro
 }
 
 function sendJson(res: http.ServerResponse, status: number, payload: unknown): void {
+  if (res.headersSent || res.writableEnded || res.destroyed) { if (!res.writableEnded && !res.destroyed) res.end(); return; }
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
@@ -1740,13 +1741,9 @@ export async function startKuloHubServer(
             return;
           }
           if (pathname === "/api/assistant/stream" && req.method === "GET") {
-            res.writeHead(200, {
-              "content-type": "text/event-stream; charset=utf-8",
-              "cache-control": "no-cache, no-store, must-revalidate",
-              connection: "keep-alive",
-              "x-accel-buffering": "no",
-            });
             const initial = await hub.getAssistantItemsSnapshot();
+            if (closing || res.writableEnded || res.destroyed) return;
+            res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-store, must-revalidate", connection: "keep-alive", "x-accel-buffering": "no" });
             res.write(`event: assistant_items\ndata: ${JSON.stringify(initial)}\n\n`);
             const heartbeat = setInterval(() => {
               if (!res.writableEnded && !res.destroyed) {
@@ -3259,7 +3256,9 @@ export async function startKuloHubServer(
       });
     }
   };
-  const httpServer = http.createServer(handleHttp);
+  const httpServer = http.createServer((req, res) => {
+    void handleHttp(req, res).catch((err) => { console.error("[KuloHttp]", err instanceof Error ? err.message : String(err)); if (!res.writableEnded && !res.destroyed) res.end(); });
+  });
 
   const handleUpgrade = (req: http.IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => {
     const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);

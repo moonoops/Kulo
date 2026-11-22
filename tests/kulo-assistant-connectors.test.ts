@@ -3,7 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi-ai";
 import { buildSparkCliArgs, SparkMailConnector } from "@kulo/env";
@@ -911,6 +911,82 @@ describe("Phase 4: Lark dual-org bridge & Mobile HTTP/SSE sync gateway + L2 idem
       expect(joinedSse).toContain("回复客户报价邮件");
     } finally {
       await server.close();
+      await hub.close();
+    }
+  });
+
+  it("handles SSE initial snapshot failure cleanly without ERR_HTTP_HEADERS_SENT and closes active streams on server shutdown", async () => {
+    const stateDir = makeTempDir("sse-guard");
+    const faux = fauxProvider({ provider: "openai", models: [{ id: "faux-1" }] });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const hub = await openTestHub({
+      config: {
+        stateDir,
+        identityDir: path.join(stateDir, "identity"),
+        authToken: HUB_TEST_ADMIN_TOKEN,
+        enableLocalEnv: false,
+        memory: { enabled: false },
+        model: { defaultProvider: "openai", defaultModel: "faux-1", baseUrl: "http://127.0.0.1:9/v1" },
+      },
+      models,
+    });
+    const server = await startKuloHubServer(hub, { host: "127.0.0.1", port: 0 });
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => { rejections.push(reason); };
+    process.on("unhandledRejection", onRejection);
+
+    try {
+      // 1. Failing snapshot before writeHead must return clean JSON 500 with zero unhandledRejection.
+      const spy = vi.spyOn(hub, "getAssistantItemsSnapshot").mockRejectedValueOnce(new Error("snapshot boom"));
+      const failRes = await fetchWithHubAuth(`http://127.0.0.1:${server.port}/api/assistant/stream`);
+      expect(failRes.status).toBe(500);
+      const failBody = (await failRes.json()) as { error?: string };
+      expect(failBody.error).toContain("snapshot boom");
+      spy.mockRestore();
+
+      // 2. Live SSE receives subsequent broadcast events and terminates cleanly when server.close() runs.
+      const res = await fetchWithHubAuth(`http://127.0.0.1:${server.port}/api/assistant/stream`);
+      expect(res.status).toBe(200);
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      const first = await reader.read();
+      expect(decoder.decode(first.value)).toContain("event: assistant_items");
+
+      const chunks: string[] = [];
+      const drain = (async () => {
+        while (true) {
+          const next = await reader.read();
+          if (next.done) break;
+          chunks.push(decoder.decode(next.value, { stream: true }));
+        }
+      })();
+
+      await hub.assistantCoordinator.proposeDecisionCard({
+        situationKey: "sse-live:1",
+        sourceApp: "com.readdle.SparkDesktop",
+        sourceLabel: "Spark Mail",
+        title: "后续推送卡片",
+        summary: "验证 SSE 后续业务事件",
+        pendingAction: {
+          actionId: "act-sse-1",
+          kind: "spark_create_draft",
+          label: "确认存为草稿",
+          targetLabel: "client@example.com",
+          previewText: "验证内容",
+          driverId: "spark-mail",
+          operation: "create_draft",
+          params: { replyToThreadId: "thr-sse", body: "验证内容" },
+        },
+      });
+      await new Promise((r) => setTimeout(r, 80));
+      await server.close();
+      await drain;
+      expect(chunks.join("")).toContain("后续推送卡片");
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+      await server.close().catch(() => {});
       await hub.close();
     }
   });
