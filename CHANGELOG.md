@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.1.4 (2026-11-22)
+
+新增多主机热备集群与故障切换、Home Assistant 深度集成与内联图表渲染、安全边界与配额预算治理、电脑操作交互接管、Composio / MCP 扩展增强、客户端 Office 文档在线预览，以及双端实机验证收敛修复（`v0.1.4`）。
+
+### Multi-Host Cluster & Connectors
+
+- **多主机热备集群与实时同步（`@kulo/hub`、`@kulo/env`、`@kulo/protocol`、`@kulo/web`）**
+  - 支持主/备多主机集群拓扑、增量状态同步、故障接管与无损回切、预启动围栏（Pre-start Fence）及跨设备实时任务路由与同步。
+- **Home Assistant 深度集成、Composio 桥接与智能 MCP 接入（`@kulo/hub`、`@kulo/web`）**
+  - 深化 Home Assistant 状态监听与安防哨兵；新增 **Composio** 连接桥接与应用授权弹窗；新增 **MCP 智能粘贴解析器**（支持 `mcpServers` JSON / CLI 命令自动填充）。
+
+### Security Hardening, Quotas & Usage Governance
+
+- **全链路安全加固（`@kulo/protocol`、`@kulo/hub`、`@kulo/env`）**
+  - 新增外部不可信文本 XML / Harness 控制标记转义（`provenance.ts`）、POSIX Shell 安全底线分类器（`shell-safety-floor.ts`）、外部智能体环境变量密钥净化（`external-agent-env.ts`）与个人助理自回声抑制（`assistant-echo.ts`）。
+- **用量预算上限与外部智能体配额探测（`@kulo/protocol`、`@kulo/hub`、`@kulo/env`、`@kulo/web`）**
+  - 新增后台任务日/周 Token 与费用上限控制（Usage Caps）及侧栏用量统计 Popover；支持外部编码智能体（Codex 等）实时配额探测。
+
+### Chat Content, Office Preview & Computer Handoff
+
+- **内联图表、引用来源与客户端 Office 预览（`@kulo/web`、`@kulo/hub`）**
+  - 新增内联图表渲染与网页引用来源归属展示；支持客户端零依赖解析与内联/弹窗预览 `.docx`、`.xlsx`（多 Sheet 切换）、`.pptx`（幻灯片翻页）。
+- **电脑操作交互接管、记忆遗忘与语音播报清洗（`@kulo/hub`、`@kulo/web`）**
+  - 新增电脑实时预览交互接管（Computer Handoff）与坐标映射控制；新增记忆遗忘词条机制与服务端 TTS Markdown 朗读清洗器。
+
+### Stability & Dual-Host Verification Fixes
+
+- **Peer 集群状态与健康检查一致性（`@kulo/env`）**：修正未启用温备时 Peer `/api/devices/cluster-status` 误报 `enabled: true` 与 URL 回退的问题，并统一未鉴权 `GET /api/health` 响应行为。
+- **删除会话自动清理任务栏孤儿卡片（`@kulo/hub`）**：`deleteTopic` 原子关闭该会话下已结束且无待合入/待清理锁的关联任务并实时广播同步，避免 Task Rail 残留孤儿任务卡片。
+- **窄屏对话顶栏布局与桌面打包修复（`@kulo/web`、`@kulo/hub`）**：收紧 `< 640px` 设备选择触发器与顶栏间距并兼顾触控 44px 目标尺寸，确保窄屏下会话标题清晰可读；排除本地私有目录并将受管源码归档压缩上限提升至 64 MiB。
+
 ## v0.1.3 (2026-11-21)
 
 新增个人助理感知闭环与多生态连接器、标准 MCP 与外部 ACP 智能体接入重构、主机动作与分布式设备路由增强，以及 macOS 桌面端正式版/开发版双通道证书签名与常驻体验升级（`v0.1.3`）。

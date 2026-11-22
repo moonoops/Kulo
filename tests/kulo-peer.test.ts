@@ -14,7 +14,7 @@ import {
   savePeerConfig,
   startDevicePeer,
 } from "@kulo/env";
-import { decodeStreamChunk, encodeStreamChunk, type DevicePeerConfig } from "@kulo/protocol";
+import { decodeStreamChunk, encodeStreamChunk, KULO_VERSION, type ClusterLocalStatusView, type DevicePeerConfig } from "@kulo/protocol";
 import { findRunningDevicePeer } from "../packages/cli/src/device-launch";
 import { DevicePeerInUseError } from "@kulo/env";
 
@@ -633,5 +633,69 @@ describe("joined device local access", () => {
     });
     expect(switched.status).toBe(200);
     expect(await switched.json()).toMatchObject({ hub: "B" });
+  });
+
+  it("exposes unauthenticated /api/health and reports accurate cluster-status on standalone vs clustered peers", async () => {
+    const hub = await fakeHub();
+    const standalonePeer = await startDevicePeer(peerConfig(hub.url));
+    cleanup.push(() => standalonePeer.close());
+    await standalonePeer.ready;
+
+    // Unauthenticated /api/health matches Primary Hub liveness response while /api/topics remains protected.
+    const healthRes = await fetch(`${standalonePeer.url}/api/health`);
+    expect(healthRes.status).toBe(200);
+    expect(await healthRes.json()).toEqual({ ok: true, version: KULO_VERSION });
+    const unauthTopics = await fetch(`${standalonePeer.url}/api/topics`);
+    expect(unauthTopics.status).toBe(401);
+
+    // Standalone peer without cluster topology must report enabled: false and never leak hubUrl into hubId/primaryName.
+    const standaloneStatusRes = await fetch(`${standalonePeer.url}/api/devices/cluster-status`, {
+      headers: { authorization: `Bearer ${standalonePeer.authToken}` },
+    });
+    expect(standaloneStatusRes.status).toBe(200);
+    const standaloneStatus = (await standaloneStatusRes.json()) as ClusterLocalStatusView;
+    expect(standaloneStatus.enabled).toBe(false);
+    expect(standaloneStatus.role).toBe("peer");
+    expect(standaloneStatus.primaryOnline).toBe(true);
+    expect(standaloneStatus.hubId).toBeUndefined();
+    expect(standaloneStatus.primaryName).toBeUndefined();
+
+    // Peer with active cluster topology reports enabled: true and the real hubId / primaryName.
+    const clusteredConfig: DevicePeerConfig = {
+      ...peerConfig(hub.url),
+      deviceId: "peer-clustered",
+      cluster: {
+        version: 1,
+        hubId: "hub-real-uuid",
+        epoch: 3,
+        primaryNodeId: "local",
+        preferredPrimaryNodeId: "local",
+        updatedAt: Date.now(),
+        hubs: [
+          { nodeId: "local", name: "MacMini", role: "primary", priority: 0, online: true, urls: [hub.url] },
+          { nodeId: "peer-clustered", name: "MacBook", role: "standby", priority: 10, online: true, urls: [] },
+        ],
+      },
+    };
+    const clusteredPeer = await startDevicePeer(clusteredConfig);
+    cleanup.push(() => clusteredPeer.close());
+    await clusteredPeer.ready;
+
+    const clusteredStatusRes = await fetch(`${clusteredPeer.url}/api/devices/cluster-status`, {
+      headers: { authorization: `Bearer ${clusteredPeer.authToken}` },
+    });
+    expect(clusteredStatusRes.status).toBe(200);
+    const clusteredStatus = (await clusteredStatusRes.json()) as ClusterLocalStatusView;
+    expect(clusteredStatus).toMatchObject({
+      enabled: true,
+      hubId: "hub-real-uuid",
+      nodeId: "peer-clustered",
+      role: "peer",
+      epoch: 3,
+      primaryNodeId: "local",
+      preferredPrimaryNodeId: "local",
+      primaryOnline: true,
+      primaryName: "MacMini",
+    });
   });
 });

@@ -1265,8 +1265,15 @@
 }
 
 @media (max-width: 639px) {
+  .kulo-window-titlebar { --kulo-pane-gap: 6px; }
+  .kulo-workbench[data-layout="conversation"] .kulo-workbench-header { gap: 4px; padding-inline: 2px; }
   /* Keep small text preferences from triggering input zoom on mobile Safari. */
   .kulo-composer-input { font-size: max(var(--kulo-text-heading), var(--kulo-chat-font-size)); }
+}
+
+@media (pointer: coarse) {
+  .kulo-target-device-trigger { min-width: 44px; justify-content: center; }
+  .kulo-workbench:not([data-native-titlebar="true"]) { --kulo-window-control-width: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

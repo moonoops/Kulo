@@ -86,6 +86,7 @@ export {
   KuloStateDoc,
   WorkerRelayEntry,
   WorkerWatchdogEntry,
+  closeSettledTicketsForDeletedTopic,
   getActiveStagedCwd,
   getEffectiveWorkspaceDir,
   hasPendingWorkspaceApply,

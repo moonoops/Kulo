@@ -86,4 +86,14 @@ describe("ChatTargetDeviceMenu", () => {
     expect(selectedOffline).toContain('data-online="false"');
     expect(selectedOffline).toContain("离线");
   });
+
+  it("compacts the trigger label and chevron below sm while keeping the visible tooltip wrapper and coarse-target hook", () => {
+    const html = renderToStaticMarkup(
+      <ChatTargetDeviceMenu envs={[local, studioOnline]} currentDeviceId="device-studio" selectedDeviceId="device-studio" onSelect={vi.fn()} />,
+    );
+    expect(html).toContain("kulo-target-device-trigger");
+    expect(html).toContain('<span class="flex min-w-0 items-center gap-1.5" title="本机 · Alpha Studio · 在线">');
+    expect(html).toContain('class="hidden min-w-0 items-center sm:flex"');
+    expect(html).toContain('class="mc-icon hidden shrink-0 text-muted sm:inline"');
+  });
 });

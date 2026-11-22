@@ -337,6 +337,9 @@ import {
   toTicketCardView,
   transitionTicketStatus,
   applyTopicPreview,
+  closeSettledTicketsForDeletedTopic,
+  discardPendingTopicStagedTickets,
+  findBlockingTopicTickets,
   summarizeTopicPreview,
   type KuloDurableState,
 } from "./state.js";
@@ -5094,23 +5097,7 @@ export class KuloHub implements OrchestratorController {
         }
         t.archived = Boolean(patch.archived);
         if (t.archived) {
-          const now = Date.now();
-          for (const ticket of Object.values(state.tickets)) {
-            if ((ticket.originTopicId ?? "root") !== topicId) continue;
-            if (!hasPendingWorkspaceApply(ticket)) continue;
-            stagedToDiscard.push(cloneJson(ticket));
-            if (ticket.workspaceStaging && !ticket.workspaceStaging.appliedAt) {
-              ticket.workspaceStaging.discardedAt = now;
-              delete ticket.workspaceStaging.stagedCwd;
-              delete ticket.workspaceStaging.stagedDiff;
-            }
-            if (ticket.externalExecution && !ticket.externalExecution.stagedAppliedAt) {
-              delete ticket.externalExecution.stagedCwd;
-              delete ticket.externalExecution.stagedDiff;
-            }
-            releaseProjectWrite(state, ticket.id, { force: true });
-            ticket.updatedAt = now;
-          }
+          stagedToDiscard.push(...discardPendingTopicStagedTickets(state, topicId, Date.now()));
         }
       }
       t.updatedAt = Date.now();
@@ -5135,38 +5122,50 @@ export class KuloHub implements OrchestratorController {
     const snap = await this.harness.snapshot(KuloStateDoc, context);
     const topic = snap?.topics?.[topicId];
     if (!topic || topic.deletedAt) throw new ProjectError(404, "topic_not_found", "会话不存在或已删除。");
-    const active = Object.values(snap?.tickets ?? {}).filter((t) => t.originTopicId === topicId &&
-      (isTicketUnfinished(t) || hasPendingWorkspaceApply(t)));
+    const active = snap ? findBlockingTopicTickets(snap, topicId, topic.conversationId) : [];
     if (active.length && !options.stopTasks) {
       throw new ProjectError(409, "topic_tasks_running", "会话仍有进行中或待合入的任务，请停止或合并相关任务后删除。", { activeTickets: active.map((t) => t.id) });
     }
+    const stagedToDiscard: TicketRecord[] = [];
+    let ticketsChanged = false, hadUnfinished = false, targetConversationId: number | undefined;
     // The tombstone and cancel intents commit together before any asynchronous cleanup.
     await this.harness.commit(async (tx) => {
       const state = await tx.doc(KuloStateDoc);
       const target = state.topics?.[topicId];
       if (!target || target.master) throw new ProjectError(400, "default_topic", "默认主对话不可删除。");
-      const unfinished = Object.values(state.tickets).filter((t) => t.originTopicId === topicId &&
-        (isTicketUnfinished(t) || hasPendingWorkspaceApply(t)));
+      const unfinished = findBlockingTopicTickets(state, topicId, target.conversationId);
       if (unfinished.length && !options.stopTasks) throw new ProjectError(409, "topic_tasks_running", "会话仍有进行中或待合入的任务，请停止或合并相关任务后删除。");
       target.deletedAt = Date.now();
       target.deletionId = randomUUID();
       target.updatedAt = target.deletedAt;
+      targetConversationId = target.conversationId;
       const titleJob = state.topicTitles?.[topicId];
       if (titleJob?.status === "pending" || titleJob?.status === "failed") titleJob.status = "cancelled";
       const projects = await tx.doc(KuloProjectsDoc);
       projects.cancellations ??= {};
       for (const ticket of unfinished) {
         transitionTicketStatus(ticket, "stopped", target.deletedAt);
-        ticket.stoppedReason = "会话已删除";
-        ticket.updatedAt = target.deletedAt;
-        ticket.cleanupPending = true;
+        ticket.stoppedReason = "会话已删除"; ticket.updatedAt = target.deletedAt; ticket.cleanupPending = true;
         projects.cancellations[ticket.id] = { ...(ticket.projectId ? { projectId: ticket.projectId } : {}), reason: "会话已删除", requestedAt: target.deletedAt };
       }
+      const settled = closeSettledTicketsForDeletedTopic(state, topicId, target.deletedAt, target.conversationId);
+      stagedToDiscard.push(...settled.stagedToDiscard);
+      hadUnfinished = unfinished.length > 0;
+      if (hadUnfinished || settled.closedCount > 0) ticketsChanged = true;
     }, context);
     await this.projects.reconcileCancellations(context);
+    if (hadUnfinished) {
+      await this.harness.commit(async (tx) => {
+        const settled = closeSettledTicketsForDeletedTopic(await tx.doc(KuloStateDoc), topicId, Date.now(), targetConversationId);
+        stagedToDiscard.push(...settled.stagedToDiscard);
+        if (settled.closedCount > 0) ticketsChanged = true;
+      }, context);
+    }
+    if (stagedToDiscard.length > 0) await Promise.allSettled(stagedToDiscard.map((ticket) => this.#discardTicketStagedWorkspace(ticket)));
     await this.#closeOrchestratorBrowserSession(topicId);
     const cache = this.#topicCaches.get(topicId);
     if (cache) { await cache.conversation.abort(context, { background: true }); await cache.watch.stop(); this.#topicCaches.delete(topicId); }
+    if (ticketsChanged) await this.#broadcastTickets(context);
     const topics = await this.listTopics(context);
     this.#emitTopics(topics);
     return { deleted: topicId, topics };

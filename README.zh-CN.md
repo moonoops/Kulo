@@ -156,7 +156,7 @@ node packages/cli/dist/bin.js open
 
 ### 2. macOS 桌面应用（macOS 14+）
 
-- **直接安装（Apple Silicon）**：前往 [GitHub Releases](https://github.com/moonoops/Kulo/releases/latest) 下载 **`Kulo-v0.1.3-macOS-arm64.dmg`**，双击挂载后将 **`Kulo.app`** 拖入 **`Applications`** 即可。本版本使用 Developer ID Application 证书签名（暂未走 Apple 公证）；如首次打开遇到 macOS 安全提示，可右键选择「打开」或执行一次 `xattr -cr "/Applications/Kulo.app"` 后重新打开。
+- **直接安装（Apple Silicon）**：前往 [GitHub Releases](https://github.com/moonoops/Kulo/releases/latest) 下载 **`Kulo-v0.1.4-macOS-arm64.dmg`**，双击挂载后将 **`Kulo.app`** 拖入 **`Applications`** 即可。本版本使用 Developer ID Application 证书签名（暂未走 Apple 公证）；如首次打开遇到 macOS 安全提示，可右键选择「打开」或执行一次 `xattr -cr "/Applications/Kulo.app"` 后重新打开。
 - **从源码构建安装**：为当前机器架构构建并安装独立桌面版：
 
 ```sh

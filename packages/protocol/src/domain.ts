@@ -1,4 +1,4 @@
-export const KULO_VERSION = "0.1.3";
+export const KULO_VERSION = "0.1.4";
 
 export type TicketStatus =
   | "queued"

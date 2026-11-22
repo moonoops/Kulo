@@ -1777,7 +1777,7 @@ function AppShell() {
         )}
 
         {!settingsMode && !projectedTicketId && activeTopicTaskCount > 0 && (
-          <Chip size="sm" variant="soft" color="accent">
+          <Chip size="sm" variant="soft" color="accent" className="hidden sm:inline-flex">
             {t(`${activeTopicTaskCount} 个任务`, `${activeTopicTaskCount} ${activeTopicTaskCount === 1 ? "task" : "tasks"}`)}
           </Chip>
         )}
@@ -1796,7 +1796,7 @@ function AppShell() {
               onPress={() => computerPreview.client.openModal(primary.id)}
             >
               <KuloIcon name={primary.tool === "browser" ? "video" : "image"} size={14} />
-              <span>{count > 1 ? t(`实时画面 (${count})`, `Live view (${count})`) : t("实时画面", "Live view")}</span>
+              <span className="hidden sm:inline">{count > 1 ? t(`实时画面 (${count})`, `Live view (${count})`) : t("实时画面", "Live view")}</span>
             </Button>
           );
         })()}

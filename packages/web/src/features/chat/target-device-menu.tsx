@@ -70,22 +70,24 @@ export function ChatTargetDeviceMenu({
         size="sm"
         variant={selectedDeviceId ? "secondary" : "ghost"}
         isDisabled={disabled}
-        className="min-w-0 max-w-36 sm:max-w-56 shrink-0 gap-1.5 px-2"
+        className="kulo-target-device-trigger min-w-0 max-w-36 sm:max-w-56 shrink-0 gap-1.5 px-2"
         aria-label={t("执行设备", "Target device")}
       >
-        <KuloIcon name="devices" size={16} className="shrink-0 text-muted" />
-        {selectedDevice ? <>
-          <span className="flex min-w-0 items-center" title={triggerTitle}>
-            <DeviceName name={selectedDevice.name} isCurrent={isCurrent(selectedDevice.id)} singleLine />
-          </span>
-          <DevicePresence online={selectedDevice.online} showOnlineText={false} />
-        </> : selectedDeviceId ? <>
-          <span className="min-w-0 truncate" title={triggerTitle}>{selectedDeviceId}</span>
-          <DevicePresence online={false} showOnlineText={false} />
-        </> : (
-          <span className="min-w-0 truncate" title={triggerTitle}>{t("自动", "Auto")}</span>
-        )}
-        <KuloIcon name="chevron-down" size={14} className="shrink-0 text-muted" />
+        <span className="flex min-w-0 items-center gap-1.5" title={triggerTitle}>
+          <KuloIcon name="devices" size={16} className="shrink-0 text-muted" />
+          {selectedDevice ? <>
+            <span className="hidden min-w-0 items-center sm:flex">
+              <DeviceName name={selectedDevice.name} isCurrent={isCurrent(selectedDevice.id)} singleLine />
+            </span>
+            <DevicePresence online={selectedDevice.online} showOnlineText={false} />
+          </> : selectedDeviceId ? <>
+            <span className="hidden min-w-0 truncate sm:inline">{selectedDeviceId}</span>
+            <DevicePresence online={false} showOnlineText={false} />
+          </> : (
+            <span className="hidden min-w-0 truncate sm:inline">{t("自动", "Auto")}</span>
+          )}
+          <KuloIcon name="chevron-down" size={14} className="hidden shrink-0 text-muted sm:inline" />
+        </span>
       </Button>
       <Dropdown.Popover placement="bottom end" className="w-72 max-w-[calc(100vw-2rem)]">
         <Dropdown.Menu

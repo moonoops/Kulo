@@ -631,3 +631,101 @@ export function applyTopicPreview(
   topic.lastMessageAt = Math.max(topic.lastMessageAt ?? 0, previewAt);
   return true;
 }
+
+function clearTicketStagedPointers(ticket: TicketRecord, now: number): void {
+  if (ticket.workspaceStaging && !ticket.workspaceStaging.appliedAt) {
+    ticket.workspaceStaging.discardedAt = now;
+    delete ticket.workspaceStaging.stagedCwd;
+    delete ticket.workspaceStaging.stagedDiff;
+  }
+  if (ticket.externalExecution && !ticket.externalExecution.stagedAppliedAt) {
+    delete ticket.externalExecution.stagedCwd;
+    delete ticket.externalExecution.stagedDiff;
+  }
+}
+
+function cloneTicketRecord(ticket: TicketRecord): TicketRecord {
+  return JSON.parse(JSON.stringify(ticket)) as TicketRecord;
+}
+
+export function discardPendingTopicStagedTickets(
+  state: KuloDurableState,
+  topicId: string,
+  now: number,
+): TicketRecord[] {
+  const stagedToDiscard: TicketRecord[] = [];
+  for (const ticket of Object.values(state.tickets)) {
+    if ((ticket.originTopicId ?? "root") !== topicId) continue;
+    if (!hasPendingWorkspaceApply(ticket)) continue;
+    stagedToDiscard.push(cloneTicketRecord(ticket));
+    clearTicketStagedPointers(ticket, now);
+    releaseProjectWrite(state, ticket.id, { force: true });
+    ticket.updatedAt = now;
+  }
+  return stagedToDiscard;
+}
+
+export function matchesTopicTicket(ticket: TicketRecord, topicId: string, conversationId?: number): boolean {
+  return ticket.originTopicId === topicId || (conversationId !== undefined && ticket.originConversationId === conversationId);
+}
+
+export function findBlockingTopicTickets(
+  state: Readonly<KuloDurableState>,
+  topicId: string,
+  conversationId?: number,
+): TicketRecord[] {
+  return Object.values(state.tickets).filter(
+    (ticket) => matchesTopicTicket(ticket, topicId, conversationId) && (isTicketUnfinished(ticket) || hasPendingWorkspaceApply(ticket)),
+  );
+}
+
+export function closeSettledTicketsForDeletedTopic(
+  state: KuloDurableState,
+  topicId: string,
+  now: number,
+  conversationId?: number,
+): { closedCount: number; stagedToDiscard: TicketRecord[] } {
+  let closedCount = 0;
+  const stagedToDiscard: TicketRecord[] = [];
+  for (const ticket of Object.values(state.tickets)) {
+    if (!matchesTopicTicket(ticket, topicId, conversationId)) continue;
+    if (
+      ticket.status === "closed" ||
+      isTicketUnfinished(ticket) ||
+      ticket.cleanupPending ||
+      hasPendingWorkspaceApply(ticket)
+    ) {
+      continue;
+    }
+    if (getActiveStagedCwd(ticket)) {
+      stagedToDiscard.push(cloneTicketRecord(ticket));
+      clearTicketStagedPointers(ticket, now);
+    }
+    transitionTicketStatus(ticket, "closed", now);
+    ticket.waiting = undefined;
+    ticket.activeTaskId = undefined;
+    ticket.resumePrompt = undefined;
+    ticket.resumeAttachmentIds = undefined;
+    ticket.wakePending = undefined;
+    if (ticket.schedule) ticket.schedule.nextRunAt = null;
+    releaseProjectWrite(state, ticket.id);
+    const prior = ticket.recovery;
+    ticket.recovery = undefined;
+    if (prior && (prior.rootTicketId ?? ticket.id) === ticket.id) {
+      for (const related of Object.values(state.tickets)) {
+        if (related.recovery?.rootTicketId === ticket.id && related.recovery.startedAt === prior.startedAt) {
+          related.recovery = undefined;
+          related.autoRecoverySuppressed = true;
+        }
+      }
+    }
+    ticket.closure = {
+      kind: "obsolete",
+      reason: "会话已删除",
+      at: now,
+    };
+    ticket.updatedAt = now;
+    closedCount += 1;
+  }
+  return { closedCount, stagedToDiscard };
+}
