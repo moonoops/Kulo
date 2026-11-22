@@ -4,7 +4,11 @@ import { createHash, createPublicKey } from "node:crypto";
 import { RecoveryManager, readReleaseManifest, type RecoveryReleaseManifest } from "@kulo/recovery";
 import type { KuloHubConfig } from "./config.js";
 import { KuloCustomizationService } from "./customization.js";
-import { createLocalCustomizationRunner, type CustomizationSource } from "./customization-source.js";
+import {
+  createLocalCustomizationRunner,
+  MAX_ARCHIVE_COMPRESSED_BYTES,
+  type CustomizationSource,
+} from "./customization-source.js";
 import { proxyFetch } from "./http-transport.js";
 
 interface HostMetadata {
@@ -74,7 +78,7 @@ function readSourceArchive(root: string, manifest: RecoveryReleaseManifest): Cus
       value.commit !== undefined && (typeof value.commit !== "string" || !/^[a-f0-9]{40,64}$/.test(value.commit)) ||
       manifest.sourceCommit !== undefined && value.commit !== manifest.sourceCommit ||
       manifest.sourceTreeHash !== undefined && value.treeHash !== manifest.sourceTreeHash ||
-      !boundedInteger(value.compressedBytes, 16 * 1024 * 1024) || !boundedInteger(value.sourceBytes, 256 * 1024 * 1024) || !boundedInteger(value.fileCount, 20_000)) throw new Error("源码归档与当前版本不匹配。");
+      !boundedInteger(value.compressedBytes, MAX_ARCHIVE_COMPRESSED_BYTES) || !boundedInteger(value.sourceBytes, 256 * 1024 * 1024) || !boundedInteger(value.fileCount, 20_000)) throw new Error("源码归档与当前版本不匹配。");
   const archivePath = path.join(root, value.archiveFile);
   const stat = fs.lstatSync(archivePath);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== value.compressedBytes) throw new Error("源码归档文件不可用。");

@@ -463,6 +463,20 @@ describe("bounded source archives", () => {
     expect(fs.existsSync(path.join(work, "outside"))).toBe(false);
     await f.service.close();
   });
+
+  it("excludes local-only internal docs and AGENTS.md from source identity and archives", async () => {
+    const f = await fixture();
+    const before = await customizationSourceIdentity(f.source.directory);
+    await fsp.mkdir(path.join(f.source.directory, "docs"), { recursive: true });
+    await fsp.writeFile(path.join(f.source.directory, "docs/internal-plan.md"), "# Internal only\n");
+    await fsp.writeFile(path.join(f.source.directory, "AGENTS.md"), "# Local agent rules\n");
+    expect(await customizationSourceIdentity(f.source.directory)).toEqual(before);
+    const archive = path.join(f.root, "clean-source.gz");
+    await createCustomizationSourceArchive(f.source.directory, archive, { version: "0.1.0" });
+    const raw = JSON.parse(gunzipSync(await fsp.readFile(archive)).toString("utf8"));
+    expect(raw.files.some((file: { path: string }) => file.path === "AGENTS.md" || file.path.startsWith("docs/"))).toBe(false);
+    await f.service.close();
+  });
 });
 
 describe("trusted official feed transport", () => {

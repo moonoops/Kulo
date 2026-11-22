@@ -68,6 +68,7 @@ const WEB_TEST_FILES = [
 const EXCLUDED = new Set([".git", ".agents", "node_modules", "dist", "output", ".kulo-state", ".kulo", ".pnpm-store", ".playwright-cli", ".playwright-mcp", ".codex", ".claude", ".gemini", ".antigravity", ".grok", ".cursor", ".opencode", ".kiro", ".copilot", ".dsh",
   ".venv", "venv", "__pycache__", ".cache", ".pytest_cache", ".mypy_cache", ".ruff_cache", "coverage", ".next", ".turbo"]);
 const MAX_SOURCE_BYTES = 256 * 1024 * 1024;
+export const MAX_ARCHIVE_COMPRESSED_BYTES = 64 * 1024 * 1024;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const generatedNativePath = (relative: string) => /^packages\/hub\/native\/kulo-connector-[^/]+(?:\/|$)/.test(relative);
 
@@ -265,8 +266,8 @@ async function collectSource(root: string): Promise<Record<string, string>> {
       if (EXCLUDED.has(entry.name) || entry.name.startsWith(".") && entry.name !== ".gitignore" ||
           /\.(?:pem|key|p12|pfx|log|dmg|tsbuildinfo|sqlite(?:-shm|-wal)?)$/i.test(entry.name) ||
           /^(?:credentials?|auth|connection)\.json$/i.test(entry.name) ||
-          entry.name === ".DS_Store" || prefix === "docs" && entry.name === "assets" || generatedNativePath(relative)) continue;
-      if (!prefix && entry.isDirectory() && !["packages", "tests", "integrations", "docs", "scripts"].includes(entry.name)) continue;
+          entry.name === ".DS_Store" || !prefix && entry.name === "AGENTS.md" || generatedNativePath(relative)) continue;
+      if (!prefix && entry.isDirectory() && !["packages", "tests", "integrations", "scripts"].includes(entry.name)) continue;
       const file = path.join(directory, entry.name);
       if (entry.isSymbolicLink() || !entry.isFile() && !entry.isDirectory()) throw new CustomizationError("source_link_unsupported", "源码包含不受支持的链接或文件。");
       if (entry.isDirectory()) { await walk(file, relative); continue; }
@@ -308,7 +309,7 @@ export async function createCustomizationSourceArchive(sourceRoot: string, desti
   const body = Buffer.from(JSON.stringify({ formatVersion: 1, ...identity, files }));
   if (body.length > 256 * 1024 * 1024) throw new CustomizationError("customization_source_limit", "源码归档超过解压大小限制。");
   const compressed = gzipSync(body, { level: 6 });
-  if (compressed.length > 16 * 1024 * 1024) throw new CustomizationError("customization_source_limit", "源码归档超过压缩大小限制。");
+  if (compressed.length > MAX_ARCHIVE_COMPRESSED_BYTES) throw new CustomizationError("customization_source_limit", "源码归档超过压缩大小限制。");
   const metadata = { formatVersion: 1 as const, archiveFile: path.basename(destination),
     archiveHash: createHash("sha256").update(compressed).digest("hex"), version: options.version, ...identity,
     compressedBytes: compressed.length, sourceBytes, fileCount: files.length };
@@ -346,7 +347,7 @@ export async function prepareCustomizationSource(source: CustomizationSource, de
   if (sourceCommit && !/^[a-f0-9]{40,64}$/i.test(sourceCommit)) throw new CustomizationError("invalid_source_commit", "源码版本标识无效。", 400);
   if (source.archivePath && !commitOverride) {
     const archiveStat = await fsp.lstat(source.archivePath);
-    if (!archiveStat.isFile() || archiveStat.isSymbolicLink() || archiveStat.size > 16 * 1024 * 1024 || !source.archiveHash || !/^[a-f0-9]{64}$/.test(source.archiveHash)) {
+    if (!archiveStat.isFile() || archiveStat.isSymbolicLink() || archiveStat.size > MAX_ARCHIVE_COMPRESSED_BYTES || !source.archiveHash || !/^[a-f0-9]{64}$/.test(source.archiveHash)) {
       throw new CustomizationError("customization_source_invalid", "源码归档无效。");
     }
     const archive = await fsp.readFile(source.archivePath);
@@ -412,7 +413,7 @@ export async function prepareCustomizationSource(source: CustomizationSource, de
         const file = path.join(folder, entry.name), relative = prefix ? prefix + "/" + entry.name : entry.name;
         if (EXCLUDED.has(entry.name) || entry.name.startsWith(".") && entry.name !== ".gitignore" ||
             /\.(?:pem|key|p12|pfx)$/i.test(entry.name) || /^(?:credentials?|auth|connection)\.json$/i.test(entry.name) ||
-            prefix === "docs" && entry.name === "assets" || generatedNativePath(relative)) { await fsp.rm(file, { recursive: true, force: true }); continue; }
+            !prefix && (entry.name === "docs" || entry.name === "AGENTS.md") || generatedNativePath(relative)) { await fsp.rm(file, { recursive: true, force: true }); continue; }
         if (entry.isSymbolicLink() || !entry.isDirectory() && !entry.isFile()) throw new CustomizationError("source_link_unsupported", "源码包含不受支持的链接或文件。");
         if (entry.isDirectory()) await sanitize(file, relative);
       }
