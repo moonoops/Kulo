@@ -1,5 +1,5 @@
 import type { LiveContextState } from "./context-state.js";
-export const KULO_VERSION = "0.1.4";
+export const KULO_VERSION = "0.1.5";
 
 export type TicketStatus =
   | "queued"

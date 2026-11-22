@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.1.5 (2026-11-23)
+
+新增多智能体任务交接板与跨工单评审包、外部与内置智能体提示词及协议协同优化、长上下文守卫与工作记忆体系、Hub 架构模块化瘦身与反熵增守卫，以及 SSH 连接诊断、图像路由和 macOS 桌面打包权限持久化升级（`v0.1.5`）。
+
+### Multi-Agent Collaboration, External & Built-in Worker Alignment
+
+- **多智能体协作、任务交接板与只读评审包（`@kulo/hub`、`@kulo/protocol`、`@kulo/web`）**
+  - 新增主脑门控任务交接板（`kulo_task_board`）、跨工单只读评审包物化（`review_ticket_id`）、单子智能体超时与可写中断熔断（`subagent-runner.ts`），以及任务详情内的 Subagent 队友可视化与决策直接终止能力。
+- **外部智能体提示词与协议协同优化（`@kulo/hub`、`@kulo/env`、`@kulo/protocol`）**
+  - 统一固定 MCP 服务名 `kulo-task` 与 Codex 点分键增量注入（保留用户本机其他 MCP），支持结构化派发能力协商（`EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY`）、16K 优先级参考资料预算与 XML 转义边界、Codex `readOnly` 沙箱、安全原生多模态图片附件、排队续接精确核销与 `256 KiB` MCP 报文上限。
+- **内置 Worker / Subagent 模板精准对齐与权限收口（`@kulo/hub`）**
+  - 基于 `tools ∪ deferred` 实现前缀缓存安全的动态 `Tool Discovery` 并补齐 `kulo_computer_handoff` 引导；收紧 `kulo_computer_handoff` 与 `kulo_connection_request` 为仅顶层 `computer-worker` 并补齐运行时 Subagent 拦截；消除首轮重复文案与 Android 出厂代码角色错配；补齐 Subagent 跨设备隐私守卫与 Hindsight `beforeRequest` 1.5s 软超时空回执持久化。
+
+### Context Window Governance & Working Memory
+
+- **长会话上下文守卫、工具溢出治理与工作记忆（`@kulo/hub`、`@kulo/protocol`）**
+  - 新增上下文窗口守卫（`context-guard.ts`）、主脑工具输出溢出落盘（`orchestrator-tool-overflow.ts`）、结构化工作记忆（`working-memory.ts`）、压缩前记忆刷盘（`memory-flush.ts`）、空闲压缩（`idle-compaction.ts`）与私库持久化任务（`kulo.memory-private-retain`）。
+
+### Hub Modularity, SSH Hardening & Desktop Packaging
+
+- **Hub 架构瘦身与反熵增守卫（`@kulo/hub`、`@kulo/web`）**
+  - 将 `hub.ts` 核心职责拆解为独立领域服务与 `packages/hub/src/http/*` 纯路由插件，引入基于 AST 的运行时依赖环与单向门面守卫（`kulo-module-cycles.test.ts`）并全面收紧文件行数棘轮基线。
+- **SSH 连接加固、图像能力配置与桌面权限持久化（`@kulo/hub`、`@kulo/desktop`、`@kulo/web`）**
+  - 新增 SSH 局域网扫描/主机指纹变更诊断、CRLF 私钥归一化、known-hosts 集群同步与 SSH 跟进弹窗；增强图像模型能力配置与 Vertex/厂商适配器隔离；桌面端新增打包期 Mach-O UUID 稳定化补丁（`macho-uuid.mjs`）、更新托盘图标及话题右键菜单。
+
 ## v0.1.4 (2026-11-22)
 
 新增多主机热备集群与故障切换、Home Assistant 深度集成与内联图表渲染、安全边界与配额预算治理、电脑操作交互接管、Composio / MCP 扩展增强、客户端 Office 文档在线预览，以及双端实机验证收敛修复（`v0.1.4`）。

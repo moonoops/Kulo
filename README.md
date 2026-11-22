@@ -156,7 +156,7 @@ node packages/cli/dist/bin.js open
 
 ### 2. macOS desktop app (macOS 14+)
 
-- **Direct install (Apple Silicon)**: Download **`Kulo-v0.1.4-macOS-arm64.dmg`** from [GitHub Releases](https://github.com/moonoops/Kulo/releases/latest), open it, and drag **`Kulo.app`** into **`Applications`**. This release is signed with a Developer ID Application certificate (not yet Apple-notarized); if macOS Gatekeeper prompts on first launch, right-click **Open** or run `xattr -cr "/Applications/Kulo.app"` once.
+- **Direct install (Apple Silicon)**: Download **`Kulo-v0.1.5-macOS-arm64.dmg`** from [GitHub Releases](https://github.com/moonoops/Kulo/releases/latest), open it, and drag **`Kulo.app`** into **`Applications`**. This release is signed with a Developer ID Application certificate (not yet Apple-notarized); if macOS Gatekeeper prompts on first launch, right-click **Open** or run `xattr -cr "/Applications/Kulo.app"` once.
 - **Build from source**: Build and install the standalone desktop app for your machine's architecture:
 
 ```sh
