@@ -1,6 +1,6 @@
 /** Kulo SuperAgent shell with a single-column conversation (HeroUI v3). */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Alert, Button, Chip, Disclosure, Dropdown, Label, Spinner, toast } from "@heroui/react";
+import { Alert, Button, Chip, Disclosure, Spinner, toast } from "@heroui/react";
 import {
   parseStandaloneDeviceInvitation, redactDeviceInvitationText,
   type AssistantItemAction, type AssistantItemView, type ChatReplyReference,
@@ -15,6 +15,7 @@ import {
   WorkbenchShell,
   type WindowSizeClass,
 } from "./features/shell/workbench-shell";
+import { WorkbenchTitlebar } from "./features/shell/workbench-titlebar";
 import {
   readSettingsRailWidth,
   writeSettingsRailWidth,
@@ -37,14 +38,13 @@ import type { ConnectionPrepare } from "./features/settings/connections-module";
 import type { SettingsAssistantEntryIntent } from "./features/settings/settings-assistant-actions";
 import type { SystemPermissionEntry } from "./features/system-permissions/system-permissions";
 import {
-  KuloWsDisconnectedError,
   kuloRest,
   useKuloHubConnection,
   type TicketDetailSnapshot,
 } from "./kulo-api";
 import { useKuloAppearance } from "./kulo-appearance";
 import { getLanguage, hasStoredLanguage, setLanguage, useI18n, translate as t } from "./kulo-i18n";
-import { acceptSettingsSnapshot, settingsModuleTitle } from "./features/settings/settings-helpers";
+import { acceptSettingsSnapshot } from "./features/settings/settings-helpers";
 import {
   AttachmentLightbox,
   composerPlaceholder,
@@ -56,18 +56,18 @@ import { KuloIcon } from "./kulo-icon";
 import { ConnectedMessageContent } from "./features/chat/connected-message-content";
 import { liveResponseMessageId, mergeResponseMessages } from "./features/chat/response-messages";
 import { KuloLiveWaitRow } from "./features/chat/live-wait-row";
-import { chatDeliveryLabel, mergeChatSubmissions, splitChatTimeline, submissionKey, type ChatViewItem, type PendingSubmissionBackup, type SubmissionBackupInput } from "./features/chat/chat-submissions";
-import { blockerDraftKey, consumedOutboxReceipts, consumePersistedDraft, outboxSubmissions } from "./features/chat/outbox-submissions";
+import { chatDeliveryLabel, mergeChatSubmissions, splitChatTimeline, submissionKey, type ChatViewItem, type PendingSubmissionBackup } from "./features/chat/chat-submissions";
+import { blockerDraftKey, consumedOutboxReceipts, outboxSubmissions } from "./features/chat/outbox-submissions";
 import { newDeliveryId } from "./features/chat/reliable-intents";
 import { useChatDeviceJoin } from "./features/chat/use-chat-device-join";
-import { legacyInvitationCode, redactChatInvitation } from "./features/chat/device-invitation-outbox";
-import { consumeReplyDraft, restoreReplyDraft, type ReplyDrafts } from "./features/chat/reply-reference";
+import { useChatSubmission } from "./features/chat/use-chat-submission";
+import { legacyInvitationCode } from "./features/chat/device-invitation-outbox";
+import { restoreReplyDraft, type ReplyDrafts } from "./features/chat/reply-reference";
 import { ConversationOutline } from "./features/chat/conversation-outline";
 import { ConversationScene } from "./features/chat/conversation-scene";
 import { useKuloNotifications } from "./features/notifications/use-kulo-notifications";
 import { isTaskUnfinished } from "./features/tasks/task-model";
-import { ConversationFilesButton, ConversationSearchDialog, type ConversationDestination } from "./features/chat/conversation-library";
-import { ChatTargetDeviceMenu } from "./features/chat/target-device-menu";
+import { ConversationSearchDialog, type ConversationDestination } from "./features/chat/conversation-library";
 import { messageQuote } from "./features/chat/message-actions";
 import {
   hasBlockingOverlay,
@@ -82,8 +82,6 @@ import { mergeLocatedMessages, visibleMessageId } from "./features/chat/conversa
 import { cardAdjustmentDraft } from "./features/genui/card-value-summary";
 import { MessageMotion, messageMotionKey, responseMotionScopes, StreamingMessage, useLiveResponseEntryMotion, useMessageEntryMotion } from "./features/chat/message-motion";
 import { buildConversationTurns, conversationTurnId, isConversationTurn } from "./features/chat/conversation-outline-model";
-import { transcribeVoiceRecording } from "./features/chat/voice-transcription";
-import type { TranscribeVoice } from "./features/chat/voice-recorder";
 import { VoiceProvider, useVoiceWorkspace } from "./features/voice/voice-context";
 import { VoiceCallErrorBanner } from "./features/voice/voice-call-error-banner";
 import { useClusterFailover } from "./features/cluster/use-cluster-failover";
@@ -99,7 +97,6 @@ import {
 import {
   KuloTaskProjection,
   KuloTaskRail,
-  TaskStatus,
 } from "./kulo-tasks";
 
 function subscribeWindowSize(cb: () => void) {
@@ -250,8 +247,6 @@ function AppShell() {
     else { topicDrafts.leave(); selectPersistedTopic(topicId); }
   }, [topicDrafts, selectPersistedTopic]);
   const pendingSubmissions = useMemo(() => outboxSubmissions(outboxRecords), [outboxRecords]);
-  const submitFlightRef = useRef(false);
-  const submittedIntentRef = useRef<string | undefined>(undefined);
   const draftEditRevisionRef = useRef(0);
   const editingSubmissionRef = useRef(new Map<string, { id: string; sequence: number; scope: string }>());
   const firstDraftScopeRef = useRef<string | undefined>(undefined);
@@ -260,8 +255,6 @@ function AppShell() {
     const resolved = key.startsWith("topic:") && scope === deliveryScope ? composerDraftKey(topicDrafts.draftTopicId(key.slice(6))) : key;
     return scope && scope !== firstDraftScopeRef.current ? `scope:${scope}:${resolved}` : resolved;
   };
-  const [resumingQueuedTopic, setResumingQueuedTopic] = useState<string>();
-  const resumeFlightsRef = useRef(new Set<string>());
   const messages = useMemo(() => mergeChatSubmissions(serverMessages, viewingHistory ? [] : pendingSubmissions, activeTopicId), [serverMessages, pendingSubmissions, activeTopicId, viewingHistory]);
   const chatTimeline = useMemo(() => splitChatTimeline(messages), [messages]);
   const responseMessages = useMemo(() => mergeResponseMessages(chatTimeline.transcript), [chatTimeline.transcript]);
@@ -1074,181 +1067,52 @@ function AppShell() {
     [tickets],
   );
 
-  const dispatchSubmissionWithAck = async (input: SubmissionBackupInput | PendingSubmissionBackup) => {
-    const key = submissionKey(input);
-    const replacesFailed = "localMessageId" in input ? undefined : editingSubmissionRef.current.get(currentDraftKey);
-    const record = "localMessageId" in input ? await retryQueuedWs(key, input.outboxScope) : await enqueueWs(input.envelope, {
-      topicId: input.topicId, draftKey: input.draftKey, rawUserText: input.rawUserText, draftAttachments: input.draftAttachments,
-      ...(replacesFailed ? { replacesFailed } : {}),
-    }, deliveryScope);
-    if (replacesFailed) editingSubmissionRef.current.delete(currentDraftKey);
-    void waitForQueuedAck(record).catch((error: unknown) => {
-      if (error && typeof error === "object" && "isDisconnect" in error) return;
-      if (input.envelope.type === "ticket.steer") setActionError(error instanceof Error ? error.message : t("任务指令被中枢拒绝", "The hub rejected the task instruction"));
-    });
-    return record;
-  };
-
-  const resumeQueuedMessages = (topicId: string) => {
-    if (!outboxReady || resumeFlightsRef.current.has(topicId)) return;
-    resumeFlightsRef.current.add(topicId);
-    setResumingQueuedTopic(topicId);
-    void sendWsWithAck({ type: "chat.retry", topicId })
-      .catch((error) => setActionError(error instanceof Error ? error.message : t("继续处理失败", "Could not resume processing")))
-      .finally(() => {
-        resumeFlightsRef.current.delete(topicId);
-        setResumingQueuedTopic((current) => current === topicId ? undefined : current);
-      });
-  };
-
-  const submitMessage = async (overrideText?: string) => {
-    if (overrideText === undefined && deviceJoin) {
-      deviceJoin.submit();
-      return;
-    }
-    if (submitFlightRef.current) return;
-    setActionError(null);
-    clearError();
-    const sourceReply = overrideText === undefined ? currentReply : undefined;
-    const { content, replyTo } = redactChatInvitation(overrideText ?? currentDraft, sourceReply);
-    const raw = content.trim();
-    const isUploading =
-      overrideText === undefined &&
-      currentAttachments.some((a) => a.status === "uploading");
-    const readyDraftAttachments =
-      overrideText === undefined
-        ? currentAttachments.filter((a) => a.status === "ready" && Boolean(a.attachment))
-        : [];
-    const attachmentsToSend = readyDraftAttachments.map((a) => a.attachment!);
-
-    if (isUploading || (!raw && attachmentsToSend.length === 0)) return;
-    const intent = JSON.stringify([currentDraftKey, draftEditRevisionRef.current, overrideText === undefined ? null : raw, readyDraftAttachments.map((item) => item.localId), replyTo ?? null, selectedTargetDeviceId]);
-    if (submittedIntentRef.current === intent) return;
-    if (!outboxReady) {
-      setActionError(t("待发队列尚未就绪，输入草稿已保留", "The send queue is not ready. Your draft is saved."));
-      return;
-    }
-    if (!projectedTicketId) {
-      if (viewingHistory) setMessageWindow(undefined);
-      nearBottomRef.current = true;
-      setShowToBottom(false);
-    }
-    submitFlightRef.current = true;
-    const sourceDraftKey = currentDraftKey;
-    const sourceDraft = currentDraft;
-    const consumeDraft = () => {
-      submittedIntentRef.current = intent;
-      if (overrideText !== undefined) return;
-      setComposerDrafts((current) => consumePersistedDraft(current, sourceDraftKey, sourceDraft));
-      setReplyDrafts((current) => consumeReplyDraft(current, sourceDraftKey, sourceReply));
-      for (const item of readyDraftAttachments) removeAttachment(sourceDraftKey, item.localId);
-    };
-
-    try {
-
-    const targetTicket = projectedTicketId
-      ? ticketById.get(projectedTicketId) ?? (inspectedTicket?.ticket.id === projectedTicketId ? inspectedTicket.ticket : undefined)
-      : undefined;
-    const targetTopic = projectedTicketId && overrideText === undefined
-      ? targetTicket?.originTopicId ?? "root"
-      : topicDrafts.isLocal(activeTopicId) ? (await topicDrafts.ensure(activeTopicId)).id : activeTopicId;
-
-    if (projectedTicketId && overrideText === undefined) {
-      const card = targetTicket;
-      if (card?.status === "stopped" || card?.status === "closed") {
-        const composed = `[关于任务「${card.title}」]${raw ? `\n${raw}` : ""}`;
-        const reqId = newDeliveryId("web");
-        await dispatchSubmissionWithAck({
-          topicId: targetTopic,
-          draftKey: composerDraftKey(targetTopic),
-          envelope: {
-            type: "chat.send",
-            topicId: targetTopic,
-            content: composed,
-            ...(replyTo ? { replyTo } : {}),
-            ...(attachmentsToSend.length > 0 ? { attachments: attachmentsToSend } : {}),
-            requestId: reqId,
-            whenBusy: "steer",
-          },
-          rawUserText: composed,
-          draftAttachments: readyDraftAttachments,
-          state: "sending",
-        });
-        consumeDraft();
-        if (projectedTicketRef.current === projectedTicketId) {
-          closeProjection();
-          if (targetTopic !== activeTopicId) selectTopic(targetTopic);
-        }
-        return;
-      }
-
-      const cmdId = newDeliveryId("steer");
-      await dispatchSubmissionWithAck({
-        topicId: targetTopic,
-        draftKey: currentConversationDraftKey,
-        envelope: {
-          type: "ticket.steer",
-          ticketId: projectedTicketId,
-          text: raw,
-          ...(replyTo ? { replyTo } : {}),
-          ...(attachmentsToSend.length > 0 ? { attachments: attachmentsToSend } : {}),
-          commandId: cmdId,
-        },
-        rawUserText: raw,
-        draftAttachments: readyDraftAttachments,
-        state: "sending",
-      });
-      consumeDraft();
-      return;
-    }
-
-    const reqId = newDeliveryId("web");
-    const messageTargetDeviceId = !activeTopic?.projectId && (selectedTargetDeviceId !== "" || persistedTargetDeviceId !== "")
-      ? selectedTargetDeviceId
-      : undefined;
-    await dispatchSubmissionWithAck({
-      topicId: targetTopic,
-      draftKey: composerDraftKey(targetTopic),
-      envelope: {
-        type: "chat.send",
-        topicId: targetTopic,
-        content: raw,
-        ...(replyTo ? { replyTo } : {}),
-        ...(attachmentsToSend.length > 0 ? { attachments: attachmentsToSend } : {}),
-        ...(messageTargetDeviceId !== undefined ? { targetDeviceId: messageTargetDeviceId } : {}),
-        requestId: reqId,
-        whenBusy: "steer",
-      },
-      rawUserText: raw,
-      draftAttachments: readyDraftAttachments,
-      state: "sending",
-    });
-    if (targetTopic !== activeTopicId && Object.hasOwn(topicTargetOverrides, activeTopicId)) {
-      setTopicTargetOverrides((current) => {
-        const next = { ...current };
-        delete next[activeTopicId];
-        if (selectedTargetDeviceId) next[targetTopic] = selectedTargetDeviceId;
-        return next;
-      });
-    }
-    consumeDraft();
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : t("无法保存待发消息，草稿已保留", "Could not save the pending message. Your draft is saved."));
-    } finally {
-      requestAnimationFrame(() => { submitFlightRef.current = false; });
-    }
-  };
-
-  const transcribeVoice: TranscribeVoice = async (recording, options) => {
-    if (!connected) throw new KuloWsDisconnectedError(t("当前与中枢连接已断开，录音已保留", "Disconnected from the hub. Your recording is saved."));
-    const ticket = projectedTicketId
-      ? ticketById.get(projectedTicketId) ?? (inspectedTicket?.ticket.id === projectedTicketId ? inspectedTicket.ticket : undefined)
-      : undefined;
-    return transcribeVoiceRecording(recording, {
-      topicId: projectedTicketId ? ticket?.originTopicId ?? "root" : topicDrafts.isLocal(activeTopicId) ? undefined : activeTopicId,
-      clientId: settingsAssistantControls.clientId,
-    }, options);
-  };
+  const {
+    resumingQueuedTopic,
+    dispatchSubmissionWithAck,
+    resumeQueuedMessages,
+    submitMessage,
+    transcribeVoice,
+  } = useChatSubmission({
+    connected,
+    outboxReady,
+    deliveryScope,
+    activeTopicId,
+    activeTopic,
+    projectedTicketId,
+    projectedTicketRef,
+    ticketById,
+    inspectedTicket,
+    topicDrafts,
+    currentDraftKey,
+    currentConversationDraftKey,
+    currentDraft,
+    currentReply,
+    currentAttachments,
+    draftEditRevisionRef,
+    editingSubmissionRef,
+    selectedTargetDeviceId,
+    persistedTargetDeviceId,
+    topicTargetOverrides,
+    setTopicTargetOverrides,
+    viewingHistory,
+    clearMessageWindow: () => setMessageWindow(undefined),
+    nearBottomRef,
+    setShowToBottom,
+    setComposerDrafts,
+    setReplyDrafts,
+    removeAttachment,
+    setActionError,
+    clearError,
+    closeProjection,
+    selectTopic,
+    enqueueWs,
+    retryQueuedWs,
+    waitForQueuedAck,
+    sendWsWithAck,
+    deviceJoin,
+    clientId: settingsAssistantControls.clientId,
+  });
 
   const projectedCard = projectedTicketId
     ? ticketById.get(projectedTicketId)
@@ -1672,132 +1536,38 @@ function AppShell() {
   ) : null;
 
   const titlebarNode = (
-      <div className="kulo-workbench-header">
-        {projectedTicketId && !settingsMode && (
-          <Button size="sm"
-            isIconOnly
-            variant="ghost"
-            className="kulo-window-control"
-            aria-label={t("返回对话", "Back to chat")}
-            onPress={closeProjection}
-          >
-            <KuloIcon name="arrow-left" size={20} />
-          </Button>
-        )}
-
-        <div className={"min-w-0 flex-1" + (projectedTicketId && !settingsMode ? " kulo-task-heading" : "")}>
-        <h1 className="kulo-page-title">
-          {settingsMode
-            ? settingsModuleTitle(settingsModule, language)
-            : projectedTicketId
-              ? projectedCard?.title || projectedTitle || t("任务详情", "Task details")
-              : activeTopicTitle}
-        </h1>
-        {projectedTicketId && projectedCard && !settingsMode && (
-          <TaskStatus status={projectedCard.status} waiting={projectedCard.waiting} cleanupPending={projectedCard.cleanupPending} recovery={projectedCard.recovery} externalAgentKind={projectedCard.externalAgentKind} pendingWorkspaceApply={projectedCard.pendingWorkspaceApply} />
-        )}
-        </div>
-
-        {!settingsMode && !projectedTicketId && <>
-          {locatingMessage && <Spinner size="sm" aria-label={t("正在定位消息", "Locating message")} />}
-          {!activeTopic?.projectId && (
-            <ChatTargetDeviceMenu
-              envs={envs}
-              selectedDeviceId={selectedTargetDeviceId}
-              connected={connected}
-              disabled={!connected || live.busy}
-              onSelect={(deviceId) => {
-                setTopicTargetOverrides((current) => ({ ...current, [activeTopicId]: deviceId }));
-              }}
-            />
-          )}
-          <Button size="sm" isIconOnly variant="ghost" className="kulo-window-control" aria-label={t("搜索对话正文", "Search conversation messages")} onPress={() => openConversationSearch("all")}><KuloIcon name="search" size={18} /></Button>
-          <ConversationFilesButton topicId={activeTopicId} scopeKey={deliveryScope} revision={`${persistedMessages.at(-1)?.id ?? 0}:${persistedMessages.length}`} isLocal={Boolean(localTopics.selected)} onNavigate={navigateConversation} />
-        </>}
-
-        {!settingsMode && !projectedTicketId && activeTopic && !activeTopic.master && (
-          <Dropdown>
-            <Button size="sm" isIconOnly variant="ghost" className="kulo-window-control" aria-label={t("话题操作", "Topic actions")}>
-              <KuloIcon name="more-vert" size={20} />
-            </Button>
-            <Dropdown.Popover placement="bottom end">
-              <Dropdown.Menu
-                aria-label={t("话题操作", "Topic actions")}
-                onAction={(key) => {
-                  if (key === "pin") {
-                    void handlePatchTopic(activeTopic.id, {
-                      pinned: !activeTopic.pinned,
-                    });
-                  } else if (key === "archive") {
-                    void handlePatchTopic(activeTopic.id, {
-                      archived: !activeTopic.archived,
-                    });
-                  }
-                }}
-              >
-                <Dropdown.Item
-                  id="pin"
-                  textValue={activeTopic.pinned ? t("取消置顶", "Unpin") : t("置顶话题", "Pin topic")}
-                >
-                  <KuloIcon name="pin" size={16} />
-                  <Label>{activeTopic.pinned ? t("取消置顶", "Unpin") : t("置顶话题", "Pin topic")}</Label>
-                </Dropdown.Item>
-                {!activeTopic.master && (
-                  <Dropdown.Item
-                    id="archive"
-                    textValue={activeTopic.archived ? t("恢复话题", "Restore topic") : t("归档话题", "Archive topic")}
-                  >
-                    <KuloIcon
-                      name={activeTopic.archived ? "unarchive" : "archive"}
-                      size={16}
-                    />
-                    <Label>{activeTopic.archived ? t("恢复话题", "Restore topic") : t("归档话题", "Archive topic")}</Label>
-                  </Dropdown.Item>
-                )}
-              </Dropdown.Menu>
-            </Dropdown.Popover>
-          </Dropdown>
-        )}
-
-        {!settingsMode && !projectedTicketId && activeTopicTaskCount > 0 && (
-          rightExpanded ? (
-            <Chip size="sm" variant="soft" color="accent" className="hidden sm:inline-flex">
-              {t(`${activeTopicTaskCount} 个任务`, `${activeTopicTaskCount} ${activeTopicTaskCount === 1 ? "task" : "tasks"}`)}
-            </Chip>
-          ) : (
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              className="kulo-window-control shrink-0"
-              aria-label={t(`展开任务栏，当前话题有 ${activeTopicTaskCount} 个进行中任务`, `Open task panel, ${activeTopicTaskCount} active ${activeTopicTaskCount === 1 ? "task" : "tasks"} in this topic`)}
-              onPress={() => togglePanel("right")}
-            >
-              {t(`${activeTopicTaskCount} 个任务`, `${activeTopicTaskCount} ${activeTopicTaskCount === 1 ? "task" : "tasks"}`)}
-            </Button>
-          )
-        )}
-
-        {!settingsMode && !rightExpanded && computerPreview.state.sessions.length > 0 && (() => {
-          const primary = computerPreview.state.sessions.find((item) => item.id === computerPreview.state.selectedId)
-            ?? computerPreview.state.sessions[0]!;
-          const count = computerPreview.state.sessions.length;
-          return (
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              className="kulo-window-control kulo-preview-titlebar-trigger"
-              aria-label={t(`查看实时画面：${primary.title}`, `View live preview: ${primary.title}`)}
-              onPress={() => computerPreview.client.openModal(primary.id)}
-            >
-              <KuloIcon name={primary.tool === "browser" ? "video" : "image"} size={14} />
-              <span className="hidden sm:inline">{count > 1 ? t(`实时画面 (${count})`, `Live view (${count})`) : t("实时画面", "Live view")}</span>
-            </Button>
-          );
-        })()}
-
-      </div>
+    <WorkbenchTitlebar
+      settingsMode={settingsMode}
+      settingsModule={settingsModule}
+      language={language}
+      projectedTicketId={projectedTicketId}
+      projectedCard={projectedCard}
+      projectedTitle={projectedTitle}
+      onCloseProjection={closeProjection}
+      activeTopicId={activeTopicId}
+      activeTopicTitle={activeTopicTitle}
+      activeTopic={activeTopic}
+      locatingMessage={locatingMessage}
+      envs={envs}
+      selectedTargetDeviceId={selectedTargetDeviceId}
+      connected={connected}
+      liveBusy={live.busy}
+      onSelectTargetDevice={(deviceId) => {
+        setTopicTargetOverrides((current) => ({ ...current, [activeTopicId]: deviceId }));
+      }}
+      onOpenConversationSearch={() => openConversationSearch("all")}
+      deliveryScope={deliveryScope}
+      filesRevision={`${persistedMessages.at(-1)?.id ?? 0}:${persistedMessages.length}`}
+      isLocalTopic={Boolean(localTopics.selected)}
+      onNavigateConversation={navigateConversation}
+      onPatchTopic={handlePatchTopic}
+      activeTopicTaskCount={activeTopicTaskCount}
+      rightExpanded={rightExpanded}
+      onToggleRightPanel={() => togglePanel("right")}
+      previewSessions={computerPreview.state.sessions}
+      selectedPreviewId={computerPreview.state.selectedId}
+      onOpenPreviewModal={(sessionId) => computerPreview.client.openModal(sessionId)}
+    />
   );
 
   const centerNode = (
