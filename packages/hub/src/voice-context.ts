@@ -3,6 +3,7 @@ import type { ContextView, Conversation, Harness } from "@earendil-works/pi-dura
 import type { HindsightMemoryConfig } from "@kulo/protocol";
 import { executeHindsightTool } from "./hindsight.js";
 import { buildVoiceCallInstructions } from "./prompts.js";
+import { isContextSyncEntry, isContextSyncMessageText } from "./recent-work-sync.js";
 import { memoryCallerFromState } from "./tools-memory.js";
 import { WorkerRecoveryEntry, WorkerRelayEntry, WorkerWatchdogEntry, isRecoveryInputBoundary, type KuloDurableState } from "./state.js";
 import { VoiceTranscriptEntry } from "./voice-transcripts.js";
@@ -59,13 +60,13 @@ export function voiceHistory(view: ContextView, redact: (text: string) => string
       WorkerWatchdogEntry.is(entry) ||
       entry.kind === "kulo.voice.delegation" ||
       entry.kind === "kulo.memory-context" ||
-      entry.kind === "kulo.recent_work_update"
+      isContextSyncEntry(entry)
     ) continue;
     for (const message of contributions) {
       if (message.role !== "user" && message.role !== "assistant") continue;
       const rawText = typeof message.content === "string" ? message.content : message.content
         .filter((part) => part.type === "text").map((part) => part.text).join("\n");
-      if (message.role === "user" && rawText.startsWith("[KULO_RECENT_WORK_UPDATE]")) continue;
+      if (message.role === "user" && isContextSyncMessageText(rawText)) continue;
       const text = message.role === "user" ? stripInternalUserMetadata(rawText) : rawText;
       if (message.role === "assistant" && ["[RECOVERY_OK]", "[WATCHDOG_OK]", "[COORDINATOR_OK]"].includes(text.trim())) continue;
       if (text.trim()) history.push({ role: message.role, text });

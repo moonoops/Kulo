@@ -692,10 +692,11 @@ export function nonChatConfigToProviderModelItem(
   preset?: string,
 ): ProviderModelItem {
   const purpose = inferModelPurpose(cfg);
-  const protocolAdapter = cfg.protocolAdapter ?? defaultProtocolAdapterForModel(purpose, cfg.id, providerApi, preset);
+  const rawAdapter = cfg.protocolAdapter ?? defaultProtocolAdapterForModel(purpose, cfg.id, providerApi, preset);
+  const protocolAdapter = purpose === "image" && providerApi === "google-vertex" && rawAdapter === "gemini-image" ? "vertex-image" : rawAdapter;
   const defaultVoices = defaultVoicesForAdapter(protocolAdapter);
   const voices = cfg.voices?.length ? [...cfg.voices] : defaultVoices.length ? defaultVoices : undefined;
-  const imagePreset = purpose === "image" && (protocolAdapter === "openai-image" || protocolAdapter === "gemini-image")
+  const imagePreset = purpose === "image" && (protocolAdapter === "openai-image" || protocolAdapter === "gemini-image" || protocolAdapter === "vertex-image")
     ? getImageModelPreset(protocolAdapter, cfg.id)
     : undefined;
   const imageProfile = cfg.imageProfile ?? imagePreset?.profile;
@@ -727,18 +728,12 @@ export function serializeProviderCatalogItem(
   models: Models,
   opts: {
     builtin: boolean;
-    preset?: string;
-    isGateway?: boolean;
-    api?: CustomProviderApi;
-    customModels?: CustomModelConfig[];
-    authenticated: boolean;
-    authType?: "api_key" | "oauth";
-    authSource?: string;
-    credential?: Credential;
-    modelIds?: ReadonlySet<string>;
-    configuredModelIds?: ReadonlySet<string>;
-    supportsModelDiscovery?: boolean;
-    modelCatalogSource?: ProviderCatalogItem["modelCatalogSource"];
+    preset?: string; isGateway?: boolean; api?: CustomProviderApi;
+    vertexProject?: string; vertexLocation?: string;
+    customModels?: CustomModelConfig[]; authenticated: boolean;
+    authType?: "api_key" | "oauth"; authSource?: string; credential?: Credential;
+    modelIds?: ReadonlySet<string>; configuredModelIds?: ReadonlySet<string>;
+    supportsModelDiscovery?: boolean; modelCatalogSource?: ProviderCatalogItem["modelCatalogSource"];
   },
 ): ProviderCatalogItem {
   const customById = new Map((opts.customModels ?? []).map((cm) => [cm.id, cm]));
@@ -755,13 +750,11 @@ export function serializeProviderCatalogItem(
   const catalogModels = allowedItems.filter((model) => !opts.modelIds || opts.modelIds.has(model.id));
 
   return {
-    id: p.id,
-    name: p.name || p.id,
-    builtin: opts.builtin,
-    ...(opts.preset ? { preset: opts.preset } : {}),
-    ...(opts.isGateway ? { isGateway: true } : {}),
-    ...(p.baseUrl ? { baseUrl: p.baseUrl } : {}),
-    ...(opts.api ? { api: opts.api } : {}),
+    id: p.id, name: p.name || p.id, builtin: opts.builtin,
+    ...(opts.preset ? { preset: opts.preset } : {}), ...(opts.isGateway ? { isGateway: true } : {}),
+    ...(p.baseUrl ? { baseUrl: p.baseUrl } : {}), ...(opts.api ? { api: opts.api } : {}),
+    ...(opts.vertexProject ? { vertexProject: opts.vertexProject } : {}),
+    ...(opts.vertexLocation ? { vertexLocation: opts.vertexLocation } : {}),
     supportsApiKey: Boolean(p.auth.apiKey),
     supportsOAuth: Boolean(p.auth.oauth),
     supportsModelDiscovery: opts.supportsModelDiscovery ?? Boolean(p.refreshModels),
@@ -1164,19 +1157,12 @@ export class KuloProviderManager {
     const configuredIds = this.#configuredModelIds(p.id);
     const liveIds = this.#liveBuiltinModelIds.get(p.id);
     const api = customMeta?.api ?? (p.id === KULO_GATEWAY_PROVIDER_ID ? this.#latestModelConfig?.apiMode : undefined);
-
+    const vertexSource = customMeta ?? (p.id === KULO_GATEWAY_PROVIDER_ID ? this.#latestModelConfig : undefined);
     const result = serializeProviderCatalogItem(p, this.models, {
-      builtin,
-      preset: customMeta?.preset,
-      isGateway: p.id === KULO_GATEWAY_PROVIDER_ID,
-      api,
-      customModels,
-      authenticated,
-      authType,
-      authSource,
-      credential: stored,
-      modelIds: builtin && liveIds ? liveIds : configuredIds,
-      configuredModelIds: configuredIds,
+      builtin, preset: customMeta?.preset, isGateway: p.id === KULO_GATEWAY_PROVIDER_ID, api,
+      ...(api === "google-vertex" ? { vertexProject: vertexSource?.vertexProject, vertexLocation: vertexSource?.vertexLocation } : {}),
+      customModels, authenticated, authType, authSource, credential: stored,
+      modelIds: builtin && liveIds ? liveIds : configuredIds, configuredModelIds: configuredIds,
       supportsModelDiscovery: api ? supportsApiModelDiscovery(api) : Boolean(p.refreshModels),
       modelCatalogSource: api === "google-vertex" && isOfficialVertexBaseUrl(p.baseUrl ?? "") ? "official-documentation"
         : builtin ? liveIds ? "remote" : configuredIds.size ? "configured" : "preset" : "configured",

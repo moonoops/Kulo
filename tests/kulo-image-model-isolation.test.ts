@@ -205,4 +205,96 @@ describe("image model isolation", () => {
       await harness.close(BACKGROUND_CONTEXT);
     }
   });
+
+  it("auto-migrates google-vertex image models from legacy gemini-image to vertex-image with project routing and recovers dismissed legacy syncs", async () => {
+    const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+    const { createRegistry, Harness, MemoryStorage } = await import("@earendil-works/pi-durable");
+    const { KuloCapabilities, KuloCapabilitiesDoc } = await import("../packages/hub/src/capabilities");
+    const { FileCredentialStore } = await import("../packages/hub/src/providers");
+
+    // 1. Settings sanitization + provider catalog serialization normalize legacy gemini-image on google-vertex to vertex-image
+    const doc = settings();
+    applySettingsBlockUpdate(doc, "model", 1, {
+      customProviders: [{
+        id: "api-vertex", name: "Google Vertex AI", preset: "google-vertex", api: "google-vertex",
+        baseUrl: "https://aiplatform.googleapis.com", vertexProject: "demo-proj", vertexLocation: "global",
+        models: [
+          { id: "gemini-3.8-flash" },
+          { id: "gemini-nano-banana-2.1", purpose: "image", protocolAdapter: "gemini-image" },
+          { id: "gemini-3.1-flash-image-preview", purpose: "image", protocolAdapter: "gemini-image" },
+        ],
+      }],
+      defaultProvider: "api-vertex",
+      defaultModel: "gemini-3.8-flash",
+    });
+    expect(doc.model.customProviders![0]!.models.find((m) => m.id === "gemini-nano-banana-2.1")?.protocolAdapter).toBe("vertex-image");
+
+    const pm = manager();
+    pm.syncProviders(doc.model, {});
+    const vertexCatalog = await pm.getProviderCatalogItem("api-vertex");
+    expect(vertexCatalog).toMatchObject({ vertexProject: "demo-proj", vertexLocation: "global" });
+    expect(vertexCatalog.models.find((m) => m.id === "gemini-nano-banana-2.1")).toMatchObject({ purpose: "image", protocolAdapter: "vertex-image" });
+    expect(vertexCatalog.models.find((m) => m.id === "gemini-3.1-flash-image-preview")).toMatchObject({
+      purpose: "image", protocolAdapter: "vertex-image", imageProfile: { maxReferences: 14, supportsEdit: true },
+    });
+
+    // 2. Syncing replaces legacy broken /v1beta connection and lifts old dismissed signature tied to the broken connection
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "kulo-vertex-sync-"));
+    directories.push(stateDir);
+    const harness = await Harness.open(new MemoryStorage(), { models: createModels(), registry: createRegistry() }, BACKGROUND_CONTEXT);
+    try {
+      const caps = new KuloCapabilities({
+        harness,
+        credentials: new FileCredentialStore(path.join(stateDir, "credentials.json")),
+        resolveProviderApiKey: async (pid, url) => (pid === "api-vertex" && new URL(url).origin === "https://aiplatform.googleapis.com" ? "synthetic-vertex-key" : undefined),
+        envs: () => [],
+        browser: async () => { throw new Error("unused"); },
+      });
+      // Simulate pre-existing legacy synced capability + old broken connection + dismissed old signature
+      await caps.syncProviderImageModels([{
+        id: "api-vertex", name: "Google Vertex AI", baseUrl: "https://aiplatform.googleapis.com",
+        api: "google-vertex", preset: "google-vertex", vertexProject: "demo-proj", vertexLocation: "global",
+        models: [
+          { id: "gemini-nano-banana-2.1", purpose: "image", protocolAdapter: "gemini-image" },
+          { id: "gemini-3.1-flash-image-preview", purpose: "image", protocolAdapter: "gemini-image" },
+        ],
+      }]);
+      const synced = await caps.snapshot();
+      expect(synced.capabilities).toHaveLength(2);
+      expect(synced.connections).toHaveLength(1);
+      expect(synced.connections[0]).toMatchObject({
+        adapter: "vertex-image",
+        baseUrl: "https://aiplatform.googleapis.com/v1/projects/demo-proj/locations/global",
+        origin: "https://aiplatform.googleapis.com",
+        hasCredential: true,
+      });
+
+      // Now simulate an older dismissed record whose signature belonged to the old broken /v1beta connection
+      const bananaId = synced.capabilities.find((c) => c.modelId === "gemini-nano-banana-2.1")!.id;
+      await harness.commit(async (tx) => {
+        const state = await tx.doc(KuloCapabilitiesDoc);
+        delete state.capabilities[bananaId];
+        state.dismissedModelCapabilities = { [bananaId]: "legacy-v1beta-connection-signature" };
+        state.connections["media-model-old-v1beta"] = {
+          id: "media-model-old-v1beta", name: "Google Vertex AI", adapter: "gemini-image",
+          baseUrl: "https://aiplatform.googleapis.com/v1beta", origin: "https://aiplatform.googleapis.com",
+          credentialProviderId: "api-vertex", revision: 1,
+        };
+      }, BACKGROUND_CONTEXT);
+
+      await caps.syncProviderImageModels([{
+        id: "api-vertex", name: "Google Vertex AI", baseUrl: "https://aiplatform.googleapis.com",
+        api: "google-vertex", preset: "google-vertex", vertexProject: "demo-proj", vertexLocation: "global",
+        models: [
+          { id: "gemini-nano-banana-2.1", purpose: "image", protocolAdapter: "gemini-image" },
+          { id: "gemini-3.1-flash-image-preview", purpose: "image", protocolAdapter: "gemini-image" },
+        ],
+      }]);
+      const healed = await caps.snapshot();
+      expect(healed.capabilities.map((c) => c.modelId).sort()).toEqual(["gemini-3.1-flash-image-preview", "gemini-nano-banana-2.1"]);
+      expect(healed.connections.some((c) => c.id === "media-model-old-v1beta")).toBe(false);
+    } finally {
+      await harness.close(BACKGROUND_CONTEXT);
+    }
+  });
 });

@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { configure, type AgentChange, type Tx } from "@earendil-works/pi-durable";
-import type { EnvNodeDescriptor, ProjectRecord, RolePreset, TicketRecord } from "@kulo/protocol";
+import { isEffectiveExternalReadOnly, type EnvNodeDescriptor, type ProjectRecord, type RolePreset, type TicketRecord } from "@kulo/protocol";
 import {
   assertAgentDispatchAvailable,
   resolveAgentDispatch,
@@ -330,13 +330,11 @@ export async function admitDispatchInTx(
           externalExecution: {
             binding: cloneJson(externalBinding),
             ...(externalWorkspaceMode ? { workspaceMode: externalWorkspaceMode } : {}),
+            ...(requestedReadOnly ? { effectiveReadOnly: true } : {}),
             ...(rolePreset?.modelId?.trim() ? { modelId: rolePreset.modelId.trim() } : {}),
             ...(nativeThinking && nativeThinking !== "auto" ? { thinkingLevel: nativeThinking } : {}),
             ...(rolePreset?.serviceTier?.trim() ? { serviceTier: rolePreset.serviceTier.trim() } : {}),
-            instructions: [
-              rolePreset?.prompt?.trim(),
-              requestedReadOnly ? "Read-only assignment: inspect and analyze only; do not modify workspace files." : "",
-            ].filter(Boolean).join("\n\n"),
+            instructions: rolePreset?.prompt?.trim() ?? "",
             allowSubagents: Boolean(rolePreset?.allowSubagents),
           },
         }
@@ -381,7 +379,7 @@ export async function admitDispatchInTx(
     const childRole = liveRoles[roleId];
     if (
       !currentParent.externalExecution!.allowSubagents || !currentRole?.allowSubagents || currentRole.enabled === false ||
-      !childRole || childRole.enabled === false || (currentParent.readOnly && !isReadOnly) ||
+      !childRole || childRole.enabled === false || (currentParent.readOnly && !isReadOnly) || (isEffectiveExternalReadOnly(currentParent) && !requestedReadOnly) ||
       currentParent.projectId !== draft.projectId || currentParent.workspaceDir !== workspaceDir ||
       connectionIds.some((id) => !currentParent.connectionIds?.includes(id))
     ) {

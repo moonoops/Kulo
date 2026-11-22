@@ -1972,7 +1972,7 @@ describe("Kulo Phase 2 + GUI Integration Suite", () => {
             );
           }
           const combinedToolResults = extractToolTexts(ctx);
-          expect(combinedToolResults).toContain("续接队友");
+          expect(combinedToolResults).toContain("reused");
           expect(combinedToolResults).toContain("补充了空值边界校验");
           return fauxAssistantMessage(
             [

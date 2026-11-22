@@ -103,6 +103,10 @@ export class HubMediaDelivery {
       scopes.add(`conversation:${ticket.workerConversationId}`);
       if (ticket.originConversationId !== undefined) scopes.add(`conversation:${ticket.originConversationId}`);
     }
+    const loaded = this.#deps.uploads.getUpload(assetId);
+    if (loaded?.record.internalOnly) {
+      throw new Error("内部溢出资产不可作为媒体参考素材。");
+    }
     if (!this.#deps.uploads.canReadUpload(assetId, `agent:${source.conversationId}`, (scope) => scopes.has(scope))) {
       throw new Error("无权使用此参考素材。");
     }

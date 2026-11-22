@@ -183,6 +183,23 @@ export interface ConnectionUseResult {
   exitCode?: number;
   status?: number;
 }
+export type ConnectionTestErrorCode =
+  | "connection_local_network_blocked"
+  | "connection_host_scan_failed"
+  | "connection_host_mismatch"
+  | "connection_auth_failed"
+  | "connection_key_invalid"
+  | "connection_program_unavailable"
+  | "connection_cancelled"
+  | "connection_execution_failed";
+export interface ConnectionTestResult {
+  connection: ConnectionRecordView;
+  fingerprint?: string;
+  previousFingerprint?: string;
+  requiresTrust?: boolean;
+  hostMismatch?: boolean;
+  errorCode?: ConnectionTestErrorCode;
+}
 
 /** Case-insensitive blocklist of process-hijacking or runtime-overriding environment variables for stdio MCP servers. */
 export const MCP_BLOCKED_ENV_KEYS: ReadonlySet<string> = new Set<string>([

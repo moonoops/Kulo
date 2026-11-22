@@ -41,59 +41,75 @@ func render(size: Int, inset: CGFloat, radius: CGFloat, to file: URL) throws {
 }
 
 /// Draws the macOS menu bar cat icon in a normalized 22x22pt vector canvas.
+/// Uses compact ~15pt optical bounds with rounded mochi cheeks and a light 1.3pt stroke
+/// so it matches native macOS menu bar icons in weight and visual height.
 func drawTrayTemplateIcon(in ctx: CGContext, ink: CGColor = NSColor.black.cgColor) {
     let head = CGMutablePath()
-    head.move(to: CGPoint(x: 2.8, y: 10.6))
-    head.addLine(to: CGPoint(x: 3.3, y: 18.4))
-    head.addQuadCurve(to: CGPoint(x: 4.6, y: 18.8), control: CGPoint(x: 3.5, y: 19.3))
-    head.addLine(to: CGPoint(x: 8.3, y: 15.6))
-    head.addQuadCurve(to: CGPoint(x: 13.7, y: 15.6), control: CGPoint(x: 11.0, y: 16.4))
-    head.addLine(to: CGPoint(x: 17.4, y: 18.8))
-    head.addQuadCurve(to: CGPoint(x: 18.7, y: 18.4), control: CGPoint(x: 18.5, y: 19.3))
-    head.addLine(to: CGPoint(x: 19.2, y: 10.6))
+    // Soft arched forehead dome
+    head.move(to: CGPoint(x: 8.15, y: 15.15))
+    head.addQuadCurve(to: CGPoint(x: 13.85, y: 15.15), control: CGPoint(x: 11.0, y: 16.1))
+    // Right ear flowing smoothly into plump round cheek
+    head.addQuadCurve(to: CGPoint(x: 15.95, y: 17.2), control: CGPoint(x: 15.05, y: 16.45))
+    head.addQuadCurve(to: CGPoint(x: 17.35, y: 16.45), control: CGPoint(x: 17.05, y: 17.85))
     head.addCurve(
-        to: CGPoint(x: 11.0, y: 3.2),
-        control1: CGPoint(x: 20.0, y: 5.5),
-        control2: CGPoint(x: 16.2, y: 3.2)
+        to: CGPoint(x: 18.45, y: 9.45),
+        control1: CGPoint(x: 17.85, y: 14.35),
+        control2: CGPoint(x: 18.8, y: 11.85)
+    )
+    // Plump round lower cheeks & chin
+    head.addCurve(
+        to: CGPoint(x: 11.0, y: 4.1),
+        control1: CGPoint(x: 18.05, y: 6.15),
+        control2: CGPoint(x: 15.2, y: 4.1)
     )
     head.addCurve(
-        to: CGPoint(x: 2.8, y: 10.6),
-        control1: CGPoint(x: 5.8, y: 3.2),
-        control2: CGPoint(x: 2.0, y: 5.5)
+        to: CGPoint(x: 3.55, y: 9.45),
+        control1: CGPoint(x: 6.8, y: 4.1),
+        control2: CGPoint(x: 3.95, y: 6.15)
     )
+    // Left cheek flowing smoothly into soft rounded left ear
+    head.addCurve(
+        to: CGPoint(x: 4.65, y: 16.45),
+        control1: CGPoint(x: 3.2, y: 11.85),
+        control2: CGPoint(x: 4.15, y: 14.35)
+    )
+    head.addQuadCurve(to: CGPoint(x: 6.05, y: 17.2), control: CGPoint(x: 4.95, y: 17.85))
+    head.addQuadCurve(to: CGPoint(x: 8.15, y: 15.15), control: CGPoint(x: 6.95, y: 16.45))
     head.closeSubpath()
 
     ctx.setStrokeColor(ink)
-    ctx.setLineWidth(1.75)
+    ctx.setLineWidth(1.3)
     ctx.setLineJoin(.round)
     ctx.setLineCap(.round)
     ctx.addPath(head)
     ctx.strokePath()
 
+    // Soft rounded sunglasses meeting the inner cheek contour seamlessly.
     let glasses = CGMutablePath()
-    glasses.move(to: CGPoint(x: 1.9, y: 12.0))
-    glasses.addLine(to: CGPoint(x: 20.1, y: 12.0))
-    glasses.addLine(to: CGPoint(x: 19.8, y: 10.4))
+    glasses.move(to: CGPoint(x: 3.7, y: 11.2))
+    glasses.addQuadCurve(to: CGPoint(x: 10.05, y: 11.15), control: CGPoint(x: 7.0, y: 11.75))
+    glasses.addQuadCurve(to: CGPoint(x: 11.95, y: 11.15), control: CGPoint(x: 11.0, y: 11.25))
+    glasses.addQuadCurve(to: CGPoint(x: 18.3, y: 11.2), control: CGPoint(x: 15.0, y: 11.75))
     glasses.addCurve(
-        to: CGPoint(x: 15.5, y: 7.2),
-        control1: CGPoint(x: 19.3, y: 8.0),
-        control2: CGPoint(x: 17.7, y: 7.2)
+        to: CGPoint(x: 14.7, y: 8.0),
+        control1: CGPoint(x: 18.45, y: 9.35),
+        control2: CGPoint(x: 16.9, y: 8.0)
     )
     glasses.addCurve(
-        to: CGPoint(x: 12.0, y: 10.1),
-        control1: CGPoint(x: 13.4, y: 7.2),
-        control2: CGPoint(x: 12.4, y: 8.6)
+        to: CGPoint(x: 11.8, y: 10.1),
+        control1: CGPoint(x: 12.8, y: 8.0),
+        control2: CGPoint(x: 12.05, y: 9.05)
     )
-    glasses.addQuadCurve(to: CGPoint(x: 10.0, y: 10.1), control: CGPoint(x: 11.0, y: 10.6))
+    glasses.addQuadCurve(to: CGPoint(x: 10.2, y: 10.1), control: CGPoint(x: 11.0, y: 10.45))
     glasses.addCurve(
-        to: CGPoint(x: 6.5, y: 7.2),
-        control1: CGPoint(x: 9.6, y: 8.6),
-        control2: CGPoint(x: 8.6, y: 7.2)
+        to: CGPoint(x: 7.3, y: 8.0),
+        control1: CGPoint(x: 9.95, y: 9.05),
+        control2: CGPoint(x: 9.2, y: 8.0)
     )
     glasses.addCurve(
-        to: CGPoint(x: 2.2, y: 10.4),
-        control1: CGPoint(x: 4.3, y: 7.2),
-        control2: CGPoint(x: 2.7, y: 8.0)
+        to: CGPoint(x: 3.7, y: 11.2),
+        control1: CGPoint(x: 5.1, y: 8.0),
+        control2: CGPoint(x: 3.55, y: 9.35)
     )
     glasses.closeSubpath()
 
@@ -101,23 +117,14 @@ func drawTrayTemplateIcon(in ctx: CGContext, ink: CGColor = NSColor.black.cgColo
     ctx.addPath(glasses)
     ctx.fillPath()
 
-    // Cut out diagonal highlight on left lens so the shades stay legible at 22px.
-    ctx.saveGState()
-    ctx.setBlendMode(.clear)
+    // Small rounded ^ cat mouth.
+    ctx.setStrokeColor(ink)
     ctx.setLineWidth(1.15)
     ctx.setLineCap(.round)
-    ctx.move(to: CGPoint(x: 4.2, y: 8.9))
-    ctx.addLine(to: CGPoint(x: 5.7, y: 10.8))
-    ctx.strokePath()
-    ctx.restoreGState()
-
-    ctx.setStrokeColor(ink)
-    ctx.setLineWidth(1.3)
-    ctx.setLineCap(.round)
     ctx.setLineJoin(.round)
-    ctx.move(to: CGPoint(x: 9.9, y: 5.1))
-    ctx.addLine(to: CGPoint(x: 11.0, y: 6.0))
-    ctx.addLine(to: CGPoint(x: 12.1, y: 5.1))
+    ctx.move(to: CGPoint(x: 10.05, y: 6.1))
+    ctx.addLine(to: CGPoint(x: 11.0, y: 6.95))
+    ctx.addLine(to: CGPoint(x: 11.95, y: 6.1))
     ctx.strokePath()
 }
 
@@ -138,9 +145,9 @@ func renderTrayIcon(size: Int, to file: URL, ink: CGColor = NSColor.black.cgColo
     cg.scaleBy(x: scale, y: scale)
     drawTrayTemplateIcon(in: cg, ink: ink)
     if badge {
-        let dotCenter = CGPoint(x: 18.2, y: 17.8)
-        let cutoutRadius: CGFloat = 3.8
-        let dotRadius: CGFloat = 2.8
+        let dotCenter = CGPoint(x: 17.6, y: 17.4)
+        let cutoutRadius: CGFloat = 3.1
+        let dotRadius: CGFloat = 2.3
         cg.saveGState()
         cg.setBlendMode(.clear)
         cg.addArc(center: dotCenter, radius: cutoutRadius, startAngle: 0, endAngle: .pi * 2, clockwise: false)

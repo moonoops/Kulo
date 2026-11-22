@@ -1,23 +1,29 @@
 import fs from "node:fs";
 import path from "node:path";
 import net from "node:net";
-import { createHash, createPrivateKey, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   inspectSensitiveText, redactDeviceInvitationText, redactSensitiveText, SENSITIVE_TEXT_REDACTION,
-  type ConnectionAccessRequest, type ConnectionApplicationId, type ConnectionApplicationView, type ConnectionCategory, type ConnectionCredentialField, type ConnectionDescribeRequest, type ConnectionFields, type ConnectionKind, type ConnectionPrepareRequest,
+  type ConnectionAccessRequest, type ConnectionApplicationView, type ConnectionCategory, type ConnectionDescribeRequest, type ConnectionFields, type ConnectionKind, type ConnectionPrepareRequest,
   type ConnectionRecordView, type ConnectionSaveRequest, type ConnectionSecrets, type ConnectionSetupInput,
-  type ConnectionUseOperation, type ConnectionUseResult, type ConnectionWorkspaceSnapshot, type McpAuthMode, type McpTransportKind,
+  type ConnectionTestResult, type ConnectionUseOperation, type ConnectionUseResult, type ConnectionWorkspaceSnapshot,
 } from "@kulo/protocol";
 import { LocalConnectionVault } from "./connection-vault.js";
 import { LocalConnectionExecutor, type ConnectionExecutionBackend, type ConnectionHostScan } from "./connection-execution.js";
+import { classifySshExecutionFailure, classifySshScanFailure } from "./connection-ssh-diagnostics.js";
+import {
+  KNOWN_KINDS, MAX_CREDENTIAL_FIELDS, SECRET_FIELDS, allowedSecretKeyFor, credentialKey, credentialSchema,
+  fieldLabel, identifier, informationRequest, instructionsField, normalizedSecrets, textField,
+} from "./connection-validation.js";
 import { CONNECTION_APPLICATIONS, getConnectionApplication, LocalConnectionApplications, type ConnectionApplicationBackend } from "./connection-applications.js";
 import { closeMcpHttpAgents } from "./mcp-fetch.js";
 import { McpConnectionPool, type McpDiscoverySnapshot, type McpTransportFactoryContext } from "./mcp-connections.js";
 import { McpOAuthRefreshLockManager, McpOAuthSessionManager, extractMcpOAuthSecrets, mcpOAuthVaultRef, parseMcpOAuthVaultEntry } from "./mcp-oauth.js";
-import { MCP_PRESET_CATALOG, getMcpPreset, isLoopbackHost, isValidMcpEnvKey, normalizeMcpConnectionFields } from "./mcp-presets.js";
+import { MCP_PRESET_CATALOG, getMcpPreset, isLoopbackHost, normalizeMcpConnectionFields } from "./mcp-presets.js";
 import { COMPOSIO_PRESET_ID, composioBinding, createComposioSession } from "./composio-bridge.js";
 import type { McpTransport } from "@earendil-works/pi-mcp";
 
+export type { ConnectionTestResult };
 export interface ConnectionVault {
   get(ref: string): Promise<Record<string, string> | undefined>;
   set(ref: string, fields: Record<string, string>): Promise<void>;
@@ -39,57 +45,11 @@ interface ConnectionDocument {
   imports: Record<string, string[]>;
   requests: Record<string, ConnectionAccessRequest>;
 }
-export interface ConnectionTestResult { connection: ConnectionRecordView; fingerprint?: string; requiresTrust?: boolean }
 export interface ConnectionTextReceipt { text: string; connectionIds: string[]; saved: boolean }
-const SECRET_FIELDS = ["password", "privateKey", "passphrase", "apiKey"] as const;
-const KNOWN_KINDS: ConnectionKind[] = ["ssh", "account", "api-key", "custom", "app", "mcp"];
 const MAX_RECORDS = 256;
 const MAX_INPUT_AGE = 30 * 60_000;
-const MAX_CREDENTIAL_FIELDS = 32;
-const RESERVED_FIELD_KEYS = new Set(["__binding", "__proto__", "constructor", "prototype", "toString", "valueOf", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString"]);
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 function fail(message: string, code = "invalid_connection", status = 400): never { throw Object.assign(new Error(message), { code, status }); }
-function identifier(value: unknown): string {
-  if (typeof value !== "string" || !/^connection-[a-f0-9-]{16,64}$/.test(value)) fail("连接标识无效。");
-  return value;
-}
-function textField(value: unknown, label: string, max: number): string | undefined {
-  if (value === undefined || value === "") return undefined;
-  if (typeof value !== "string" || value.length > max || /[\x00-\x1f\x7f]/.test(value)) fail(`${label}无效。`);
-  return value.trim() || undefined;
-}
-function credentialKey(value: unknown): value is string { return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value) && !RESERVED_FIELD_KEYS.has(value); }
-function allowedSecretKeyFor(kind: ConnectionKind, key: string, mcpTransport?: McpTransportKind, mcpAuthMode?: McpAuthMode): boolean {
-  if (!credentialKey(key)) return false;
-  if (kind === "custom") return true;
-  if (kind === "mcp") {
-    if (mcpTransport === "stdio") return isValidMcpEnvKey(key);
-    const mode = mcpAuthMode ?? "oauth";
-    if (mode === "oauth") return key === "clientSecret";
-    if (mode === "bearer" || mode === "header") return key === "apiKey";
-    return false;
-  }
-  return SECRET_FIELDS.includes(key as typeof SECRET_FIELDS[number]);
-}
-function credentialSchema(value: unknown): ConnectionCredentialField[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.length > MAX_CREDENTIAL_FIELDS) fail("凭据字段定义无效（最多 32 项）。");
-  const seen = new Set<string>();
-  return value.map((field: unknown) => {
-    if (!field || typeof field !== "object" || Array.isArray(field) || Object.keys(field).some((key) => key !== "key" && key !== "label") ||
-      !("key" in field) || !credentialKey(field.key) || seen.has(field.key) || !("label" in field)) fail("凭据字段定义无效。");
-    const label = textField(field.label, "凭据字段名称", 120);
-    if (!label) fail("请填写凭据字段名称。");
-    seen.add(field.key);
-    return { key: field.key, label };
-  });
-}
-function instructionsField(value: unknown): string | undefined {
-  if (value === undefined || value === "") return undefined;
-  if (typeof value !== "string" || value.length > 8_000 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)) fail("使用说明无效（最多 8000 字）。");
-  return value.trim() || undefined;
-}
-function fieldLabel(key: string): string { return ({ password: "密码", privateKey: "私钥", passphrase: "私钥口令", apiKey: "API Key", clientSecret: "Client Secret" } as Record<string, string>)[key] ?? key; }
 function normalizeFields(input: ConnectionFields, stateDir?: string): ConnectionFields {
   if (!input || typeof input !== "object" || !KNOWN_KINDS.includes(input.kind)) fail("请选择连接类型。");
   if (input.kind === "app") {
@@ -178,37 +138,6 @@ function usable(record: ConnectionFields, fields: ConnectionSecrets, mcpOAuthAut
     : record.kind === "account" || record.authType === "basic" ? Boolean(record.url && record.username && fields.password)
       : Boolean(record.url && fields.apiKey);
 }
-function normalizedSecrets(value: unknown, kind: ConnectionKind, mcpTransport?: McpTransportKind, mcpAuthMode?: McpAuthMode): Record<string, string> {
-  if (value === undefined) return {};
-  if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.keys(value).length > MAX_CREDENTIAL_FIELDS ||
-    Object.keys(value).some((key) => !allowedSecretKeyFor(kind, key, mcpTransport, mcpAuthMode))) fail("凭据字段无效。");
-  const output: Record<string, string> = {};
-  for (const key of Object.keys(value)) {
-    const field = (value as ConnectionSecrets)[key];
-    if (field === undefined) continue;
-    if (typeof field !== "string" || field.includes("\0") || (kind === "custom" ? Buffer.byteLength(field, "utf8") > 256 * 1024 : field.length > (key === "privateKey" ? 65_536 : 16_384))) fail("凭据值无效或内容过长。");
-    if (kind !== "custom" && field && key !== "privateKey" && /[\r\n]/.test(field)) fail("凭据不能包含换行。");
-    if (kind !== "custom" && field && key === "privateKey") {
-      if (!/^-----BEGIN (?:OPENSSH |RSA |EC |ENCRYPTED )?PRIVATE KEY-----[\s\S]+-----END (?:OPENSSH |RSA |EC |ENCRYPTED )?PRIVATE KEY-----\s*$/.test(field)) fail("SSH 私钥格式无效。");
-      // OpenSSH's own parser validates its format at authentication time; Node cannot parse it.
-      if (!field.startsWith("-----BEGIN OPENSSH PRIVATE KEY-----")) {
-        try { createPrivateKey({ key: field, passphrase: (value as ConnectionSecrets).passphrase }); }
-        catch { fail("SSH 私钥或私钥口令无效。"); }
-      }
-    }
-    output[key] = field;
-  }
-  if (Buffer.byteLength(JSON.stringify(output), "utf8") > 768 * 1024) fail("凭据内容过长，请分条保存。");
-  return output;
-}
-function informationRequest(text: string): { name: string; value: string } | undefined {
-  const match = /^(?:(?:请|帮我|替我|麻烦你|请帮我)[\t ]*)?(?:记住|记一下|记录一下|记录下来)[\t ]*我的[\t ]*([^\r\n:：是为，,]{1,60})[\t ]*(?:[:：]|是|为|，|,)[\t ]*([\s\S]+)$/u.exec(text.trim());
-  if (!match) return undefined;
-  const name = match[1]!.trim(), value = match[2]!.trim();
-  if (!name || !value || /密码|口令|私钥|密钥|令牌|凭据|账号|帐号|验证码|证书|Cookie|Token|API|SSH|连接串|数据库|文件|代码|脚本|配置|设置|任务|要求|需求|命令|方案|程序/iu.test(name) ||
-    /(?:保存|写入|生成|修改|删除|创建|执行|运行|部署)[^\r\n。]{0,40}(?:文件|代码|脚本|配置|设置|项目|程序)|(?:文件|代码|脚本|配置|设置)[^\r\n。]{0,24}(?:保存|写入|修改|生成)/u.test(value)) return undefined;
-  return { name, value };
-}
 
 /** Public records contain descriptions and opaque references; only the vault contains authentication material. */
 export class KuloConnections {
@@ -255,7 +184,7 @@ export class KuloConnections {
     this.#vault = options.vault ?? new LocalConnectionVault({ stateDir: options.stateDir });
     this.#platform = options.platform ?? process.platform;
     this.#applications = options.applications ?? new LocalConnectionApplications({ stateDir: options.stateDir, platform: this.#platform });
-    this.#executor = options.executor ?? new LocalConnectionExecutor({ stateDir: options.stateDir, applications: this.#applications });
+    this.#executor = options.executor ?? new LocalConnectionExecutor({ stateDir: options.stateDir, applications: this.#applications, platform: this.#platform });
     this.#onChanged = options.onChanged;
     this.#mcpLocks = new McpOAuthRefreshLockManager(options.stateDir);
     this.#mcpBaseFetch = options.mcpBaseFetch;
@@ -719,6 +648,7 @@ export class KuloConnections {
         ...(sameIdentity && previous?.trustedHostFingerprint ? { trustedHostFingerprint: previous.trustedHostFingerprint, hostFingerprint: previous.hostFingerprint } : {}) };
       this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: record } });
       committed = true;
+      if (previous?.kind === "ssh" && !sameIdentity) this.#executor.clearTrustedHost?.(this.#view(previous));
       if (informationReadable) this.#readableInformation.add(id); else this.#readableInformation.delete(id);
       if (fields.kind === "app") this.#applicationProbes.set(id, { revision: record.revision, at: Date.now(), connected: true });
       this.#scans.delete(id);
@@ -779,6 +709,7 @@ export class KuloConnections {
       for (const [key, input] of Object.entries(next.inputs)) if (input.connectionId === id) delete next.inputs[key];
       for (const key of Object.keys(next.imports)) next.imports[key] = next.imports[key]!.filter((value) => value !== id);
       this.#persist(next);
+      if (record.kind === "ssh") this.#executor.clearTrustedHost?.(this.#view(record));
       this.#scans.delete(id);
       await this.#changed();
     });
@@ -1109,15 +1040,15 @@ export class KuloConnections {
       fail("连接操作未完成，请检查连接与授权状态。", "connection_execution_failed", 502);
     } finally { this.#active.delete(controller); }
   }
-  async test(id: string): Promise<ConnectionTestResult> {
+  async test(id: string, options: { rescan?: boolean } = {}): Promise<ConnectionTestResult> {
     this.#assertOpen();
     if (this.#record(id).kind === "custom") fail("此凭据已安全保存，尚未配置对应的连接测试。", "connection_adapter_unavailable", 409);
     const controller = new AbortController();
     this.#active.set(controller, { ticketId: `connection-test:${id}`, connectionId: id });
-    try { return await this.#test(id, AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)])); }
+    try { return await this.#test(id, AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]), options); }
     finally { this.#active.delete(controller); }
   }
-  async #test(id: string, signal: AbortSignal): Promise<ConnectionTestResult> {
+  async #test(id: string, signal: AbortSignal, options: { rescan?: boolean } = {}): Promise<ConnectionTestResult> {
     const record = this.#record(id);
     if (record.kind === "app") {
       try {
@@ -1163,43 +1094,105 @@ export class KuloConnections {
     }
     if (!record.hasCredential || record.status === "incomplete" && (!record.host && !record.url || !record.username && record.kind !== "api-key")) fail("请先补全连接信息和凭据。", "connection_incomplete", 409);
     const revision = record.revision;
-    if (record.kind === "ssh" && !record.trustedHostFingerprint) {
-      const scan = await this.#executor.scan(this.#view(record), signal);
+    const needsScan = record.kind === "ssh" && (
+      options.rescan === true ||
+      !record.trustedHostFingerprint ||
+      this.#executor.hasTrustedHost?.(this.#view(record), record.trustedHostFingerprint) === false
+    );
+    if (needsScan) {
+      let scan: ConnectionHostScan;
+      try { scan = await this.#executor.scan(this.#view(record), signal); }
+      catch (error) {
+        if (signal.aborted) throw error;
+        const classified = classifySshScanFailure({ error, host: record.host, platform: this.#platform });
+        return this.#serialize(async () => {
+          signal.throwIfAborted();
+          const current = this.#record(id);
+          if (current.revision !== revision) fail("连接已被修改，请重新测试。", "connection_conflict", 409);
+          const updated: StoredConnection = { ...current, status: "error", error: classified.message, updatedAt: Date.now() };
+          this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: updated } });
+          await this.#changed();
+          return { connection: this.#view(updated), errorCode: classified.code };
+        });
+      }
       return this.#serialize(async () => {
         signal.throwIfAborted();
         const current = this.#record(id);
         if (current.revision !== revision) fail("连接已被修改，请重新测试。", "connection_conflict", 409);
+        const hostMismatch = Boolean(current.trustedHostFingerprint && scan.fingerprint !== current.trustedHostFingerprint);
+        if (hostMismatch) this.#revokeConnection(id);
         this.#scans.set(id, { revision, value: scan, at: Date.now() });
-        const updated = { ...current, hostFingerprint: scan.fingerprint, status: "incomplete" as const, error: "请确认服务器指纹。" };
+        const updated: StoredConnection = {
+          ...current, hostFingerprint: scan.fingerprint, status: hostMismatch ? "error" : "incomplete",
+          error: hostMismatch ? "服务器指纹已变更，请核对后重新信任。" : "请确认服务器指纹。", updatedAt: Date.now(),
+        };
         this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: updated } });
         await this.#changed();
-        return { connection: this.#view(updated), fingerprint: scan.fingerprint, requiresTrust: true };
+        return {
+          connection: this.#view(updated), fingerprint: scan.fingerprint, requiresTrust: true,
+          ...(hostMismatch ? { hostMismatch: true, previousFingerprint: current.trustedHostFingerprint, errorCode: "connection_host_mismatch" as const } : {}),
+        };
       });
     }
     const secrets = await this.#secrets(record);
     signal.throwIfAborted();
     if (this.#record(id).revision !== revision) fail("连接已被修改，请重新测试。", "connection_conflict", 409);
     if (record.kind === "account") return { connection: this.#view(record) };
-    let result: ConnectionUseResult;
-    try { result = await this.#executor.execute(this.#view(record), secrets, record.kind === "ssh" ? { kind: "ssh", command: "exit 0", timeoutMs: 15_000 } : { kind: "http", path: new URL(record.url!).pathname, method: "GET" }, signal); }
-    catch { result = { kind: record.kind === "ssh" ? "ssh" : "http", output: "", exitCode: 1, status: 0 }; }
+    let exitCode: number | undefined, stderr: string | undefined, output = "", status: number | undefined, caught: unknown;
+    try {
+      if (record.kind === "ssh" && this.#executor.probeSsh) {
+        const probe = await this.#executor.probeSsh(this.#view(record), secrets, signal);
+        exitCode = probe.exitCode; stderr = probe.stderr; output = probe.output;
+      } else {
+        const result = await this.#executor.execute(this.#view(record), secrets, record.kind === "ssh" ? { kind: "ssh", command: "exit 0", timeoutMs: 15_000 } : { kind: "http", path: new URL(record.url!).pathname, method: "GET" }, signal);
+        exitCode = result.exitCode; output = result.output; status = result.status;
+      }
+    } catch (error) {
+      if (signal.aborted) throw error;
+      caught = error;
+    }
     return this.#serialize(async () => {
       signal.throwIfAborted();
       const current = this.#record(id);
       if (current.revision !== revision) fail("连接已被修改，请重新测试。", "connection_conflict", 409);
-      const ok = result.kind === "ssh" ? result.exitCode === 0 : Boolean(result.status && result.status >= 200 && result.status < 400);
-      const updated: StoredConnection = { ...current, status: ok ? "verified" : "error", updatedAt: Date.now(), ...(ok ? { error: undefined } : { error: "连接测试未通过，请检查地址、网络和凭据。" }) };
+      const ok = !caught && (record.kind === "ssh" ? exitCode === 0 : Boolean(status && status >= 200 && status < 400));
+      if (ok) {
+        const updated: StoredConnection = { ...current, status: "verified", error: undefined, updatedAt: Date.now() };
+        this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: updated } });
+        await this.#changed();
+        return { connection: this.#view(updated) };
+      }
+      if (record.kind === "ssh") {
+        const diag = classifySshExecutionFailure({
+          error: caught, exitCode, stderr, output, host: current.host,
+          authMethod: secrets.privateKey ? "private-key" : "password", platform: this.#platform,
+        });
+        if (diag.hostMismatch) this.#revokeConnection(id);
+        const updated: StoredConnection = { ...current, status: "error", error: diag.message, updatedAt: Date.now() };
+        this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: updated } });
+        await this.#changed();
+        return {
+          connection: this.#view(updated), errorCode: diag.code,
+          ...(diag.hostMismatch ? { hostMismatch: true, previousFingerprint: current.trustedHostFingerprint } : {}),
+        };
+      }
+      const updated: StoredConnection = { ...current, status: "error", error: "连接测试未通过，请检查地址、网络和凭据。", updatedAt: Date.now() };
       this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: updated } });
       await this.#changed();
-      return { connection: this.#view(updated) };
+      return { connection: this.#view(updated), errorCode: "connection_execution_failed" };
     });
   }
   async trust(id: string, fingerprint: string): Promise<ConnectionRecordView> {
     return this.#serialize(async () => {
       const record = this.#record(id), scan = this.#scans.get(id);
       if (record.kind !== "ssh" || !scan || Date.now() - scan.at > 5 * 60_000 || scan.revision !== record.revision || fingerprint !== scan.value.fingerprint) fail("指纹确认已过期或不匹配，请重新测试连接。", "connection_host_scan_expired", 409);
+      const identityChanged = Boolean(record.trustedHostFingerprint && record.trustedHostFingerprint !== fingerprint);
       await this.#executor.trust(this.#view(record), scan.value);
-      const updated: StoredConnection = { ...record, trustedHostFingerprint: fingerprint, hostFingerprint: fingerprint, status: "saved", error: undefined, updatedAt: Date.now() };
+      if (identityChanged) this.#revokeConnection(id);
+      const updated: StoredConnection = {
+        ...record, revision: identityChanged ? record.revision + 1 : record.revision,
+        trustedHostFingerprint: fingerprint, hostFingerprint: fingerprint, status: "saved", error: undefined, updatedAt: Date.now(),
+      };
       this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: updated } });
       this.#scans.delete(id);
       await this.#changed();

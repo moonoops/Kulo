@@ -103,8 +103,8 @@ describe("desktop background running and notification settings UI", () => {
     const zhHtml = renderToStaticMarkup(<AppearanceModule />);
     expect(zhHtml).toContain("桌面客户端");
     expect(zhHtml).toContain("后台运行");
-    expect(zhHtml).toContain("系统通知设置");
-    expect(zhHtml).toContain("发送测试通知");
+    expect(zhHtml).not.toContain("系统通知设置");
+    expect(zhHtml).not.toContain("发送测试通知");
 
     setLanguage("en");
     const enHtml = renderToStaticMarkup(<AppearanceModule />);
@@ -114,8 +114,8 @@ describe("desktop background running and notification settings UI", () => {
     expect(enHtml).toContain("System notifications");
     expect(enHtml).toContain("Sound");
     expect(enHtml).toContain("App badge");
-    expect(enHtml).toContain("System settings");
-    expect(enHtml).toContain("Send test notification");
+    expect(enHtml).not.toContain("System settings");
+    expect(enHtml).not.toContain("Send test notification");
   });
 
   it("loads preferences, toggles background and notifications immediately, retries failures, and syncs external changes", async () => {

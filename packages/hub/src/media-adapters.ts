@@ -1,5 +1,6 @@
 import type { CustomImageAdapter, ImageGenerationParameters, ImageJsonValue, MediaConnectionView, MediaJob } from "@kulo/protocol";
-import { getImageModelProfile, normalizeImageGenerationParameters } from "@kulo/protocol";
+import { cleanGoogleImageModelId, getImageModelProfile, isOfficialVertexBaseUrl, normalizeImageGenerationParameters } from "@kulo/protocol";
+import { isGoogleImageAdapter, isOfficialGoogleImageHost } from "./capability-helpers.js";
 import { MAX_UPLOAD_BYTES } from "./uploads.js";
 
 export class MediaAdapterError extends Error {
@@ -27,7 +28,7 @@ type ParameterJob = Pick<MediaJob, "adapter" | "format" | "aspectRatio" | "quali
 export function imageParameters(job: ParameterJob): ImageGenerationParameters {
   const value: ImageGenerationParameters = { ...job.parameters, format: job.format, count: job.count,
     ...(job.aspectRatio ? { aspectRatio: job.aspectRatio } : {}), ...(job.quality ? { quality: job.quality } : {}) };
-  if (job.adapter === "gemini-image" && value.quality && ["0.5K", "1K", "2K", "4K"].includes(value.quality)) { value.size = value.quality; delete value.quality; }
+  if (isGoogleImageAdapter(job.adapter) && value.quality && ["0.5K", "1K", "2K", "4K"].includes(value.quality)) { value.size = value.quality; delete value.quality; }
   return value;
 }
 export function validateImageParameters(job: ParameterJob): void {
@@ -38,7 +39,7 @@ export function validateImageParameters(job: ParameterJob): void {
   if (params.quality && !profile?.qualities?.includes(params.quality)) throw new MediaAdapterError("invalid_quality", "此模型不支持所选质量档位。");
   if (!profile) throw new MediaAdapterError("image_profile_required", "请先补充此模型的图像能力声明。");
   if (!profile.formats.includes(job.format)) throw new MediaAdapterError("unsupported_format", "此模型不支持所选输出格式。");
-  if (job.adapter === "gemini-image" && job.count !== 1 || job.format === "svg" && job.count !== 1) throw new MediaAdapterError("unsupported_count", "此生成类型每个作业只请求一个结果。");
+  if (isGoogleImageAdapter(job.adapter) && job.count !== 1 || job.format === "svg" && job.count !== 1) throw new MediaAdapterError("unsupported_count", "此生成类型每个作业只请求一个结果。");
   try { normalizeImageGenerationParameters(params, profile, job.adapter); }
   catch (cause) { throw new MediaAdapterError("invalid_image_parameters", cause instanceof Error ? cause.message : "图像生成参数无效。"); }
 }
@@ -46,9 +47,20 @@ export function validateImageParameters(job: ParameterJob): void {
 export function mediaEndpoint(connection: MediaConnectionView, suffix: string): URL {
   if (!connection.baseUrl || !connection.origin) throw new MediaAdapterError("missing_endpoint", "生成服务尚未配置接口地址。");
   const normalizedBase = connection.baseUrl.replace(/\/+$/, "");
-  const effectiveBase = connection.adapter === "gemini-image" && !normalizedBase.startsWith("https://generativelanguage.googleapis.com") && /\/v1$/i.test(normalizedBase)
-    ? normalizedBase.replace(/\/v1$/i, "/v1beta")
-    : normalizedBase;
+  let effectiveBase = normalizedBase;
+  if (connection.adapter === "gemini-image" && !isOfficialGoogleImageHost(normalizedBase) && /\/v1$/i.test(normalizedBase)) {
+    effectiveBase = normalizedBase.replace(/\/v1$/i, "/v1beta");
+  } else if (connection.adapter === "vertex-image") {
+    const parsed = new URL(normalizedBase);
+    const cleanPath = parsed.pathname.replace(/\/+$/, "");
+    if (isOfficialVertexBaseUrl(normalizedBase) && /\/v1beta$/i.test(cleanPath)) {
+      parsed.pathname = cleanPath.replace(/\/v1beta$/i, "/v1");
+      effectiveBase = parsed.toString().replace(/\/+$/, "");
+    } else if (!cleanPath.split("/").some((part) => /^v\d+(?:beta\d*)?$/.test(part))) {
+      parsed.pathname = `${cleanPath}/v1`;
+      effectiveBase = parsed.toString().replace(/\/+$/, "");
+    }
+  }
   const url = new URL(`${effectiveBase}/${suffix}`);
   if (url.origin !== connection.origin || url.username || url.password || url.search || url.hash) {
     throw new MediaAdapterError("endpoint_origin_mismatch", "生成接口与保存的凭证来源不一致。");
@@ -169,12 +181,12 @@ export async function generateImage(input: {
     // Select the protocol before submitting: retrying another protocol could charge twice.
     url = mediaEndpoint(connection, "interactions");
     headers["x-goog-api-key"] = apiKey;
-    if (url.hostname !== "generativelanguage.googleapis.com") headers.Authorization = `Bearer ${apiKey}`;
+    if (!isOfficialGoogleImageHost(url.toString())) headers.Authorization = `Bearer ${apiKey}`;
     headers["Api-Revision"] = "2026-05-20";
     headers["Content-Type"] = "application/json";
     body = JSON.stringify({
       ...parameters.custom,
-      model: job.modelId.replace(/^models\//, ""),
+      model: cleanGoogleImageModelId(job.modelId),
       input: [{ type: "text", text: job.prompt }, ...inputs.map((asset) => ({ type: "image", mime_type: asset.mimeType, data: asset.bytes.toString("base64") }))],
       background: false,
       ...(parameters.thinkingLevel ? { generation_config: { thinking_level: parameters.thinkingLevel } } : {}),
@@ -183,6 +195,40 @@ export async function generateImage(input: {
         type: "image", mime_type: MIMES[job.format], delivery: "inline",
         ...(parameters.aspectRatio && parameters.aspectRatio !== "auto" ? { aspect_ratio: parameters.aspectRatio } : {}),
         ...(parameters.size ? { image_size: parameters.size } : {}),
+      },
+    });
+  } else if (connection.adapter === "vertex-image") {
+    // Vertex AI generateContent natively supports API-key auth (Express & project-scoped) and imageOutputOptions.
+    // Select the protocol statically before submitting: never retry another paid protocol on failure.
+    const modelId = cleanGoogleImageModelId(job.modelId);
+    url = mediaEndpoint(connection, `publishers/google/models/${encodeURIComponent(modelId)}:generateContent`);
+    headers["x-goog-api-key"] = apiKey;
+    if (!isOfficialVertexBaseUrl(url.origin)) headers.Authorization = `Bearer ${apiKey}`;
+    headers["Content-Type"] = "application/json";
+    const wireSize = parameters.size === "0.5K" ? "512" : parameters.size === "1024px" ? "1K" : parameters.size;
+    const imageOutputOptions: Record<string, unknown> = {
+      mimeType: MIMES[job.format]!,
+      ...(parameters.outputCompression !== undefined && job.format === "jpeg" ? { compressionQuality: parameters.outputCompression } : {}),
+    };
+    const imageConfig: Record<string, unknown> = {
+      ...(parameters.aspectRatio && parameters.aspectRatio !== "auto" ? { aspectRatio: parameters.aspectRatio } : {}),
+      ...(wireSize ? { imageSize: wireSize } : {}),
+      imageOutputOptions,
+    };
+    body = JSON.stringify({
+      ...parameters.custom,
+      contents: [{
+        role: "user",
+        parts: [
+          { text: job.prompt },
+          ...inputs.map((asset) => ({ inlineData: { mimeType: asset.mimeType, data: asset.bytes.toString("base64") } })),
+        ],
+      }],
+      ...(parameters.grounding ? { tools: [{ googleSearch: {} }] } : {}),
+      generationConfig: {
+        responseModalities: ["TEXT", "IMAGE"],
+        imageConfig,
+        ...(parameters.thinkingLevel ? { thinkingConfig: { thinkingLevel: parameters.thinkingLevel.toUpperCase() } } : {}),
       },
     });
   } else throw new MediaAdapterError("invalid_adapter", "此服务不通过图片 API 调用。");
@@ -212,6 +258,31 @@ export async function generateImage(input: {
       if (typeof result.b64_json === "string") outputs.push({ ...metadata, bytes: decodeMediaBase64(result.b64_json) });
       else outputs.push({ ...metadata, url: safeResultUrl(result.url, connection.origin!) });
     }
+  } else if (connection.adapter === "vertex-image") {
+    const candidates = record.candidates;
+    if (!Array.isArray(candidates) || !candidates.length) {
+      throw new MediaAdapterError("invalid_response", "Vertex AI 未返回已完成的图片结果，需要核实原结果。", true);
+    }
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const content = (candidate as Record<string, unknown>).content;
+      const parts = content && typeof content === "object" ? (content as Record<string, unknown>).parts : undefined;
+      if (!Array.isArray(parts)) continue;
+      for (const part of parts) {
+        if (!part || typeof part !== "object") continue;
+        const entry = part as Record<string, unknown>;
+        if (entry.thought === true) continue;
+        const inline = entry.inlineData;
+        if (!inline || typeof inline !== "object") continue;
+        const inlineRecord = inline as Record<string, unknown>;
+        if (inlineRecord.mimeType !== MIMES[job.format]) {
+          throw new MediaAdapterError("unsupported_result", "Vertex AI 返回了未请求的媒体格式。", true);
+        }
+        outputs.push({ name: `generated-${outputs.length + 1}.${job.format}`, mimeType: MIMES[job.format]!, bytes: decodeMediaBase64(inlineRecord.data) });
+        if (outputs.length > job.count) throw new MediaAdapterError("invalid_response", "生成服务返回的图片数量超出请求。", true);
+      }
+    }
+    if (!outputs.length) throw new MediaAdapterError("no_image", "生成服务未返回图片，请检查模型或安全反馈。", true);
   } else {
     // REST returns steps/model_output/content; output_image is an SDK-only convenience.
     // https://aistudio.google.com/api-reference/interactions-api#Resource:Interaction

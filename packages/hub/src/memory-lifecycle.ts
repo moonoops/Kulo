@@ -3,15 +3,18 @@ import {
   defineDoc, defineEntry, defineExtension, defineTask, GenerationTask, hook, ToolTask,
   type Harness, type JsonObject,
 } from "@earendil-works/pi-durable";
-import type { Context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { HindsightMemoryConfig, TicketRecord, WorkerReportRecord } from "@kulo/protocol";
 import {
   executeHindsightTool, getHindsightOperation, HindsightAccessError, isSafeMemoryText,
   memoryDocumentId, memoryOperationId, retainHindsightDocument, resolveHindsightToken,
   type MemoryCallerContext,
 } from "./hindsight.js";
+import { matchesForgottenTerm } from "./memory-forget.js";
+import { PersonalityDoc } from "./personality.js";
 import { KuloStateDoc, resolveTicketExecutionScope } from "./state.js";
 import { memoryCallerFromState } from "./tools-memory.js";
+import { KuloWorkingMemoryDoc, isSuspiciousMemoryInstruction, type WorkingMemoryRecord } from "./working-memory.js";
 
 export interface MemoryWorklogReceipt {
   sourceId: string;
@@ -32,22 +35,55 @@ interface MemoryRecallReceipt {
   error?: string;
 }
 
+export interface MemoryPrivateRetainReceipt {
+  sourceId: string;
+  recordId: string;
+  conversationId: number;
+  bucketId: string;
+  operationId: string;
+  documentId: string;
+  title: string;
+  content: string;
+  timestamp: number;
+  taskId?: number;
+  status: "submitting" | "pending" | "processing" | "completed" | "failed" | "cancelled" | "revoked";
+  revokedAt?: number;
+  revocationReason?: string;
+  remoteInvalidated?: boolean;
+  error?: string;
+  updatedAt: number;
+}
+
 export interface MemoryLifecycleState {
   worklogs: Record<string, MemoryWorklogReceipt>;
   recalls: Record<string, MemoryRecallReceipt>;
+  privateRetains?: Record<string, MemoryPrivateRetainReceipt>;
 }
 
 export const MemoryLifecycleDoc = defineDoc<MemoryLifecycleState & JsonObject>({
   kind: "kulo.memory-lifecycle", version: 1, scope: "session",
-  initial: () => ({ worklogs: {}, recalls: {} }) as MemoryLifecycleState & JsonObject,
+  initial: () => ({ worklogs: {}, recalls: {}, privateRetains: {} }) as MemoryLifecycleState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
 
 export const MemoryContextEntry = defineEntry<{ sourceId: string; text: string }>("kulo.memory-context");
 
+export const MEMORY_PRIVATE_RETAIN_TASK_NAME = "kulo.memory-private-retain";
+
 interface WorklogInput {
   sourceId: string;
   caller: Omit<MemoryCallerContext, "isValidTicket">;
+  title: string;
+  content: string;
+  timestamp: number;
+  operationId: string;
+  connection: string;
+}
+
+interface PrivateRetainInput {
+  sourceId: string;
+  recordId: string;
+  conversationId: number;
   title: string;
   content: string;
   timestamp: number;
@@ -60,18 +96,25 @@ type WorklogState = { phase: "submit"; attempts: number } | { phase: "poll"; pol
 interface MemoryLifecycleHost {
   getHarness: () => Harness;
   getMemoryConfig: () => HindsightMemoryConfig;
+  recallTimeoutMs?: number;
   onChange?: () => void;
 }
 
-function connectionFingerprint(config: HindsightMemoryConfig): string {
+function connectionFingerprint(config: HindsightMemoryConfig, role: "worker" | "router" = "worker"): string {
   return createHash("sha256").update(JSON.stringify([config.endpoint, config.endpoints, config.banks,
-    config.accessMode ?? "kulo", resolveHindsightToken(config, "worker")])).digest("hex");
+    config.accessMode ?? "kulo", role, resolveHindsightToken(config, role)])).digest("hex");
 }
 
 function pruneReceipts(state: MemoryLifecycleState): void {
   const terminal = Object.entries(state.worklogs).filter(([, value]) => ["completed", "failed", "cancelled"].includes(value.status))
     .sort((a, b) => b[1].updatedAt - a[1].updatedAt);
   terminal.slice(256).forEach(([key]) => { delete state.worklogs[key]; });
+  if (state.privateRetains) {
+    const privateTerminal = Object.entries(state.privateRetains)
+      .filter(([, value]) => ["completed", "failed", "cancelled", "revoked"].includes(value.status) && (!value.revokedAt || value.remoteInvalidated))
+      .sort((a, b) => b[1].updatedAt - a[1].updatedAt);
+    privateTerminal.slice(256).forEach(([key]) => { delete state.privateRetains![key]; });
+  }
 }
 
 /** The durable task only submits and follows receipts; Hindsight owns extraction, retries and consolidation. */
@@ -276,8 +319,332 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
     host.onChange?.();
   };
 
+  const isPrivateRecordStillAuthorized = async (
+    input: PrivateRetainInput,
+    context: Context,
+  ): Promise<{ authorized: boolean; reason?: string }> => {
+    const harness = host.getHarness();
+    const [lifecycle, wmDoc, personalityDoc, state] = await Promise.all([
+      harness.snapshot(MemoryLifecycleDoc, context),
+      harness.snapshot(KuloWorkingMemoryDoc, context),
+      harness.snapshot(PersonalityDoc, context),
+      harness.snapshot(KuloStateDoc, context),
+    ]);
+    const receipt = lifecycle?.privateRetains?.[input.sourceId];
+    if (receipt?.revokedAt || receipt?.status === "revoked" || receipt?.status === "cancelled") {
+      return { authorized: false, reason: "REVOKED" };
+    }
+    const forgotten = personalityDoc?.forgottenTerms ?? [];
+    if (forgotten.some((term) => matchesForgottenTerm(input.content, term.term))) {
+      return { authorized: false, reason: "FORGOTTEN" };
+    }
+    const globalRecords = wmDoc?.buckets?.global ?? [];
+    const liveRec = globalRecords.find((r) => r.id === input.recordId);
+    if (!liveRec || liveRec.status !== "active") {
+      return { authorized: false, reason: "RECORD_INACTIVE" };
+    }
+    if (liveRec.provenance.topicId) {
+      const topic = state?.topics?.[liveRec.provenance.topicId];
+      if (!topic || topic.deletedAt !== undefined) {
+        return { authorized: false, reason: "TOPIC_DELETED" };
+      }
+    }
+    return { authorized: true };
+  };
+
+  /**
+   * Independent Stage 4 Durable Task (`kulo.memory-private-retain`):
+   * - Hard-locks host-derived `caller.role === "router"`, `bank = "private"`, router connection fingerprint.
+   * - Works in both `"kulo"` and `"private-only"` modes (never mixes with Worker `worklogTask`).
+   * - Retries strictly resend the immutable payload persisted on first enqueue.
+   */
+  const privateRetainTask = defineTask<PrivateRetainInput, WorklogState, null>({
+    name: MEMORY_PRIVATE_RETAIN_TASK_NAME,
+    version: 1,
+    initial: () => ({ phase: "submit", attempts: 0 }),
+    phases: {
+      submit: async (task, runtime, context) => {
+        const config = host.getMemoryConfig();
+        const auth = await isPrivateRecordStillAuthorized(task.input, context);
+        if (!auth.authorized) {
+          await runtime.commit(async (tx) => {
+            const doc = await tx.doc(MemoryLifecycleDoc);
+            const receipt = doc.privateRetains?.[task.input.sourceId];
+            if (receipt) {
+              receipt.status = "revoked";
+              receipt.revokedAt ??= runtime.now();
+              receipt.error = auth.reason ?? "REVOKED";
+              receipt.updatedAt = runtime.now();
+            }
+            return { status: "terminal", outcome: { status: "completed", result: null } };
+          }, context);
+          host.onChange?.();
+          return;
+        }
+        if (!config.enabled || connectionFingerprint(config, "router") !== task.input.connection) {
+          await runtime.commit(async (tx) => {
+            const doc = await tx.doc(MemoryLifecycleDoc);
+            const receipt = doc.privateRetains?.[task.input.sourceId];
+            if (receipt) {
+              receipt.status = "cancelled";
+              receipt.error = config.enabled ? "CONNECTION_CHANGED" : "DISABLED";
+              receipt.updatedAt = runtime.now();
+            }
+            return { status: "terminal", outcome: { status: "completed", result: null } };
+          }, context);
+          host.onChange?.();
+          return;
+        }
+        // Strictly host-derived router caller (never worker, never cross-topic project bank).
+        const caller: MemoryCallerContext = {
+          role: "router",
+          conversationId: String(task.input.conversationId),
+          sourceId: task.input.sourceId,
+        };
+        try {
+          const receipt = await retainHindsightDocument({
+            config,
+            caller,
+            bank: "private",
+            title: task.input.title,
+            content: task.input.content,
+            timestamp: task.input.timestamp,
+            operationId: task.input.operationId,
+            source: "document",
+            signal: runtime.signal,
+          });
+          await runtime.commit(async (tx) => {
+            const doc = await tx.doc(MemoryLifecycleDoc);
+            const saved = doc.privateRetains?.[task.input.sourceId];
+            if (saved) {
+              saved.status = receipt.status;
+              saved.updatedAt = runtime.now();
+              delete saved.error;
+            }
+            return receipt.status === "completed"
+              ? { status: "terminal", outcome: { status: "completed", result: null } }
+              : { status: "sleeping", until: runtime.now() + 1500, checkpoint: { phase: "poll" } };
+          }, context);
+        } catch (error) {
+          if (!(error instanceof HindsightAccessError)) throw error;
+          if (runtime.signal.aborted) throw error;
+          const retry = error.diagnostic.retryable && task.state.checkpoint.attempts < 4;
+          await runtime.commit(async (tx) => {
+            const doc = await tx.doc(MemoryLifecycleDoc);
+            const saved = doc.privateRetains?.[task.input.sourceId];
+            if (saved) {
+              saved.error = error.diagnostic.code;
+              saved.status = retry ? "submitting" : "failed";
+              saved.updatedAt = runtime.now();
+            }
+            return retry
+              ? {
+                  status: "sleeping",
+                  until: runtime.now() + 1000 * 2 ** task.state.checkpoint.attempts,
+                  checkpoint: { phase: "submit", attempts: task.state.checkpoint.attempts + 1 },
+                }
+              : { status: "terminal", outcome: { status: "completed", result: null } };
+          }, context);
+        }
+        host.onChange?.();
+      },
+      poll: async (task, runtime, context) => {
+        const config = host.getMemoryConfig();
+        const auth = await isPrivateRecordStillAuthorized(task.input, context);
+        if (!config.enabled || connectionFingerprint(config, "router") !== task.input.connection) {
+          await runtime.commit(async (tx) => {
+            const doc = await tx.doc(MemoryLifecycleDoc);
+            const saved = doc.privateRetains?.[task.input.sourceId];
+            if (saved) {
+              saved.status = "cancelled";
+              saved.error = config.enabled ? "CONNECTION_CHANGED" : "DISABLED";
+              saved.updatedAt = runtime.now();
+            }
+            return { status: "terminal", outcome: { status: "completed", result: null } };
+          }, context);
+          host.onChange?.();
+          return;
+        }
+        const caller: MemoryCallerContext = {
+          role: "router",
+          conversationId: String(task.input.conversationId),
+          sourceId: task.input.sourceId,
+        };
+        const polls = task.state.checkpoint.polls ?? 0;
+        const nextDelayMs = Math.min(15_000, 2_000 * 2 ** Math.min(polls, 3));
+        try {
+          const receipt = await getHindsightOperation(config, caller, "private", task.input.operationId, runtime.signal);
+          const terminal = ["completed", "failed", "cancelled", "not_found"].includes(receipt.status);
+          const nextStatus = !auth.authorized
+            ? "revoked"
+            : receipt.status === "not_found"
+              ? "failed"
+              : receipt.status;
+          const nextError = !auth.authorized
+            ? (auth.reason ?? "REVOKED")
+            : receipt.status === "failed"
+              ? "UPSTREAM_OPERATION_FAILED"
+              : receipt.status === "not_found"
+                ? "OPERATION_NOT_FOUND"
+                : undefined;
+          await runtime.commit(async (tx) => {
+            const doc = await tx.doc(MemoryLifecycleDoc);
+            const saved = doc.privateRetains?.[task.input.sourceId];
+            if (saved) {
+              saved.status = nextStatus;
+              saved.updatedAt = runtime.now();
+              if (nextError !== undefined) saved.error = nextError;
+              else delete saved.error;
+            }
+            if (terminal) pruneReceipts(doc);
+            return terminal
+              ? { status: "terminal", outcome: { status: "completed", result: null } }
+              : { status: "sleeping", until: runtime.now() + nextDelayMs, checkpoint: { phase: "poll", polls: polls + 1 } };
+          }, context);
+          host.onChange?.();
+        } catch (error) {
+          if (!(error instanceof HindsightAccessError)) throw error;
+          if (runtime.signal.aborted) throw error;
+          await runtime.commit(async (tx) => {
+            const doc = await tx.doc(MemoryLifecycleDoc);
+            const saved = doc.privateRetains?.[task.input.sourceId];
+            if (saved) {
+              saved.error = error.diagnostic.code;
+              saved.updatedAt = runtime.now();
+              if (!error.diagnostic.retryable) saved.status = "failed";
+            }
+            return error.diagnostic.retryable
+              ? { status: "sleeping", until: runtime.now() + 30_000, checkpoint: { phase: "poll", polls: polls + 1 } }
+              : { status: "terminal", outcome: { status: "completed", result: null } };
+          }, context);
+          host.onChange?.();
+        }
+      },
+    },
+    abort: async (task, runtime, context) => {
+      await runtime.commit(async (tx) => {
+        const doc = await tx.doc(MemoryLifecycleDoc);
+        const receipt = doc.privateRetains?.[task.input.sourceId];
+        if (receipt) {
+          receipt.status = "cancelled";
+          receipt.updatedAt = runtime.now();
+        }
+        return { status: "terminal", outcome: { status: "aborted" } };
+      }, context);
+      host.onChange?.();
+    },
+  });
+
+  /**
+   * Conditionally mirrors ONLY explicitly `global`-scoped `user_decision` working-memory facts
+   * into Hindsight `private` bank (`router` identity). Project and ordinary topic facts stay local!
+   */
+  const retainGlobalWorkingMemoryRecords = async (
+    records: readonly WorkingMemoryRecord[],
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<number> => {
+    const config = host.getMemoryConfig();
+    if (!config.enabled) return 0;
+    const eligible = records.filter(
+      (record) =>
+        record.status === "active" &&
+        record.bucketId === "global" &&
+        record.evidenceLevel === "user_decision" &&
+        (record.category === "decision" || record.category === "fact") &&
+        isSafeMemoryText(record.summary) &&
+        !isSuspiciousMemoryInstruction(record.summary),
+    );
+    if (eligible.length === 0) return 0;
+
+    const routerConn = connectionFingerprint(config, "router");
+    let enqueued = 0;
+    await host.getHarness().commit(async (tx) => {
+      const doc = await tx.doc(MemoryLifecycleDoc);
+      doc.privateRetains ??= {};
+      for (const record of eligible) {
+        const sourceId = `wm-private:${record.id}:${record.fingerprint}`;
+        if (doc.privateRetains[sourceId]) continue;
+        const title = `长期偏好与决定（${record.date}）`;
+        const content = `[${record.category}] ${record.summary}`;
+        const caller: MemoryCallerContext = {
+          role: "router",
+          conversationId: String(record.provenance.conversationId),
+          sourceId,
+        };
+        const operationId = memoryOperationId(sourceId);
+        const documentId = memoryDocumentId(caller, title);
+        const timestamp = record.updatedAt || Date.now();
+        const receipt: MemoryPrivateRetainReceipt = {
+          sourceId,
+          recordId: record.id,
+          conversationId: record.provenance.conversationId,
+          bucketId: record.bucketId,
+          operationId,
+          documentId,
+          title,
+          content,
+          timestamp,
+          status: "submitting",
+          updatedAt: Date.now(),
+        };
+        doc.privateRetains[sourceId] = receipt;
+        const taskId = await tx.createTask(
+          privateRetainTask,
+          {
+            sourceId,
+            recordId: record.id,
+            conversationId: record.provenance.conversationId,
+            title,
+            content,
+            timestamp,
+            operationId,
+            connection: routerConn,
+          },
+          {
+            ownership: { kind: "conversation" },
+            conversationId: record.provenance.conversationId as never,
+            background: true,
+          },
+        );
+        receipt.taskId = Number(taskId);
+        enqueued += 1;
+      }
+      if (enqueued > 0) pruneReceipts(doc);
+    }, context);
+    if (enqueued > 0) host.onChange?.();
+    return enqueued;
+  };
+
+  /**
+   * Marks matching `privateRetains` receipts as revoked on `kulo_memory_forget` so pending/offline
+   * submits cancel before sending and completed receipts record offline revocation status.
+   */
+  const revokePrivateRetainsForTerm = async (
+    term: string,
+    reason: string | undefined,
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<number> => {
+    let revoked = 0;
+    await host.getHarness().commit(async (tx) => {
+      const doc = await tx.doc(MemoryLifecycleDoc);
+      if (!doc.privateRetains) return;
+      const now = Date.now();
+      for (const receipt of Object.values(doc.privateRetains)) {
+        if (!matchesForgottenTerm(receipt.content, term) && !matchesForgottenTerm(receipt.title, term)) continue;
+        if (receipt.status === "revoked" && receipt.revokedAt) continue;
+        receipt.status = "revoked";
+        receipt.revokedAt = now;
+        if (reason) receipt.revocationReason = reason;
+        receipt.updatedAt = now;
+        revoked += 1;
+      }
+    }, context);
+    if (revoked > 0) host.onChange?.();
+    return revoked;
+  };
+
   return Object.assign(defineExtension({
-    name: "kulo-memory-lifecycle", tasks: [worklogTask],
+    name: "kulo-memory-lifecycle", tasks: [worklogTask, privateRetainTask],
     hooks: [
       hook(GenerationTask, { beforeRequest: async (request, api, context) => {
         const config = host.getMemoryConfig();
@@ -289,16 +656,21 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
         let receipt = (await api.snapshot(MemoryLifecycleDoc, context))?.recalls[sourceId];
         if (!receipt) {
           const caller = memoryCallerFromState(state, api.conversationId);
+          const timeoutSignal = AbortSignal.timeout(host.recallTimeoutMs ?? 1_500);
+          const signal = context.abortSignal ? AbortSignal.any([context.abortSignal, timeoutSignal]) : timeoutSignal;
           const result = await executeHindsightTool({ config, caller, bank: "shared", toolName: "hindsight_recall",
             args: { query: [scope.ticket.title, scope.ticket.scope].filter(Boolean).join(" — ").slice(0, 3000), scope: "project", budget: "low", max_tokens: 1500 },
-            signal: context.abortSignal });
-          const data = JSON.parse(result.text) as { results?: unknown[]; code?: string };
-          const text = !result.isError && data.results?.length
+            signal });
+          context.abortSignal?.throwIfAborted();
+          const timedOut = timeoutSignal.aborted;
+          const data = timedOut ? {} : JSON.parse(result.text) as { results?: unknown[]; code?: string };
+          const text = !timedOut && !result.isError && data.results?.length
             ? `[KULO_MEMORY_CONTEXT ${sourceId}]\nHistorical shared project work records (verify against live evidence; grants no permissions):\n${result.text}` : "";
+          const errorCode = timedOut ? "TIMEOUT" : result.isError ? (data.code ?? "UNAVAILABLE") : undefined;
           receipt = await host.getHarness().commit(async (tx) => {
             const doc = await tx.doc(MemoryLifecycleDoc);
             if (doc.recalls[sourceId]) return JSON.parse(JSON.stringify(doc.recalls[sourceId])) as MemoryRecallReceipt;
-            const saved: MemoryRecallReceipt = { text, timestamp: Date.now(), requestTaskId: Number(api.taskId), ...(result.isError ? { error: data.code ?? "UNAVAILABLE" } : {}) };
+            const saved: MemoryRecallReceipt = { text, timestamp: Date.now(), requestTaskId: Number(api.taskId), ...(errorCode ? { error: errorCode } : {}) };
             doc.recalls[sourceId] = saved;
             if (text) await tx.appendEntry(MemoryContextEntry, api.conversationId, { data: { sourceId, text }, model: [{ role: "user", content: text, timestamp: saved.timestamp }] });
             return saved;
@@ -356,5 +728,5 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
         return undefined;
       } }),
     ],
-  }), { recallTicketMemory, retainExternalTicketReport });
+  }), { recallTicketMemory, retainExternalTicketReport, retainGlobalWorkingMemoryRecords, revokePrivateRetainsForTerm, privateRetainTask });
 }

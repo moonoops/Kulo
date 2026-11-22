@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { EXTERNAL_AGENT_KINDS, isPersonalExternalAgentKind, isQuotaSupportedExternalAgentKind, redactSensitiveText, validateCustomAcpArgs, type ExternalAgentBinding, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentPendingReportFile, type ExternalAgentQuotaProbeResult, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentRun, type ExternalAgentUncertainReason, type ExternalWorkspaceMode, type ReadOnlyViolationSummary, type StagedWorkspaceDiffSummary, type WorkerExecutionPhase } from "@kulo/protocol";
+import { EXTERNAL_AGENT_QUOTA_CAPABILITY, EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY, isPersonalExternalAgentKind, isQuotaSupportedExternalAgentKind, redactSensitiveText, validateCustomAcpArgs, type ExternalAgentBinding, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentPendingReportFile, type ExternalAgentQuotaProbeResult, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentRun, type ExternalAgentUncertainReason, type ExternalWorkspaceMode, type WorkerExecutionPhase } from "@kulo/protocol";
 import { canonicalExecutionPath } from "./isolation.js";
 import { cleanupRecordedExecutions, hasOrphanedExecution } from "./worker-supervisor.js";
 import { ProjectDirectoryRegistry } from "./project-directories.js";
@@ -14,7 +14,15 @@ import { connectClaude, probeClaudeQuota } from "./external-agent-claude.js";
 import { startExternalAgentMcp, type ExternalAgentMcpInvocation, type ExternalAgentMcpServer } from "./external-agent-mcp.js";
 import { isValidQuotaProbeResult, mergeQuotaProbeResults, sanitizeQuotaError } from "./external-agent-quota.js";
 import type { ExternalAgentPipeFactory } from "./external-agent-rpc.js";
+import { isExternalAgentRequest, isExternalAgentResponse } from "./external-agent-validation.js";
 import { SAFE_HOST_GIT_ARGS, applyStagedChanges, cloneStagedWorkspace, computeStagedDiff, safeHostGitEnv, type WorkspaceManifest } from "./staged-workspace.js";
+
+export { isExternalAgentRequest, isExternalAgentResponse };
+export const EXTERNAL_AGENT_NODE_CAPABILITIES = [
+  "external-agents",
+  EXTERNAL_AGENT_QUOTA_CAPABILITY,
+  EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY,
+] as const;
 
 export type ExternalAgentToolHandler=(invocation:ExternalAgentMcpInvocation & {envId:string})=>Promise<unknown>;
 type RunRequest=Extract<ExternalAgentRequest,{operation:"run"}>;
@@ -25,39 +33,11 @@ type DirectReadOnlySnapshot =
 interface StoredStagedTask {version:1;taskId:string;projectId?:string;sourceDir:string;stagedDir:string;scratchNotesDir:string;workspaceMode:ExternalWorkspaceMode;baseline:WorkspaceManifest;appliedAt?:number}
 interface StoredRun {version:1;managedProcesses?:boolean;fingerprint:string;cwd:string;executionCwd?:string;workspaceMode?:ExternalWorkspaceMode;scratchNotesDir?:string;executable:string;projectId?:string;directoryId?:string;grantRevision?:number;readOnly:boolean;pendingReports?:ExternalAgentPendingReport[];run:ExternalAgentRun}
 interface LiveRun {stored:StoredRun;deadline?:number;lastHeartbeatAt?:number;driver?:ExternalDriver;mcp?:ExternalAgentMcpServer;submitted:boolean;launched?:boolean;readOnlyBeforeSnapshot?:DirectReadOnlySnapshot;cleanups?:Array<()=>Promise<boolean>>;terminalWaiters?:Set<()=>void>;timer?:NodeJS.Timeout;permissions:Map<string,{choices:Set<string>;resolve:(value:string)=>void}>}
-const WORKER_PHASES = new Set<WorkerExecutionPhase>(["starting", "investigating", "editing", "verifying", "responding", "waiting_permission"]);
-const UNCERTAIN_REASONS = new Set<ExternalAgentUncertainReason>(["timeout", "disconnect", "env_restart", "closed"]);
 const READ_ONLY_SNAPSHOT_MAX_FILES = 10_000;
 const READ_ONLY_IGNORED_DIRS = new Set([".git", ".kulo-env", "node_modules", ".DS_Store", "dist", "coverage", "target", ".next", ".nuxt", ".turbo", ".parcel-cache", ".vite", ".pytest_cache", ".mypy_cache", ".ruff_cache", "__pycache__", ".venv"]);
 const READ_ONLY_IGNORED_SUFFIXES = [".tsbuildinfo", ".pyc", ".pyo"];
 function object(value:unknown):value is Record<string,unknown>{return !!value&&typeof value==="object"&&!Array.isArray(value);}
 function id(value:unknown):value is string{return typeof value==="string"&&/^[a-zA-Z0-9:_.-]{1,200}$/.test(value)&&!["__proto__","constructor","prototype"].includes(value);}
-function optionalString(value:unknown,max=8192):boolean{return value===undefined||typeof value==="string"&&value.length>0&&value.length<=max&&!/[\x00]/.test(value);}
-function binding(value:unknown):value is ExternalAgentBinding{
-  if(!object(value)||!EXTERNAL_AGENT_KINDS.includes(value.kind as ExternalAgentKind)||!id(value.envId)||!optionalString(value.executable)||!optionalString(value.agentRef)||!optionalString(value.cdpUrl))return false;
-  if(value.acpArgs!==undefined){
-    if(value.kind!=="acp")return false;
-    if(!validateCustomAcpArgs(value.acpArgs).ok)return false;
-  }
-  return true;
-}
-function validPathList(value:unknown,maxItems=5000,maxLen=4096):boolean{
-  return Array.isArray(value)&&value.length<=maxItems&&value.every(item=>typeof item==="string"&&item.length>0&&item.length<=maxLen);
-}
-function validDiffSummary(value:unknown):value is StagedWorkspaceDiffSummary{
-  if(!object(value)||typeof value.hasChanges!=="boolean"||typeof value.truncated!=="boolean"||typeof value.unifiedPreview!=="string"||value.unifiedPreview.length>64_000)return false;
-  if(!["added","modified","deleted","conflictFiles"].every(key=>validPathList(value[key])))return false;
-  return ["emptyDirsAdded","emptyDirsDeleted","modeChanged","sensitivePaths"].every(key=>value[key]===undefined||validPathList(value[key]));
-}
-function validReadOnlyViolation(value:unknown):value is ReadOnlyViolationSummary{
-  return object(value)&&validPathList(value.mutatedPaths,50,4096)&&typeof value.totalCount==="number"&&Number.isSafeInteger(value.totalCount)&&value.totalCount>=1&&typeof value.discardedFromClone==="boolean";
-}
-function validPendingReportFile(value:unknown):value is ExternalAgentPendingReportFile{
-  return object(value)&&typeof value.originalPath==="string"&&value.originalPath.length>0&&value.originalPath.length<=4096&&typeof value.snapshotPath==="string"&&value.snapshotPath.length>0&&value.snapshotPath.length<=4096&&optionalString(value.name,240)&&optionalString(value.mimeType,120)&&optionalString(value.caption,500)&&typeof value.size==="number"&&Number.isSafeInteger(value.size)&&value.size>=0&&value.size<=25*1024*1024&&typeof value.sha256==="string"&&/^[a-f0-9]{64}$/.test(value.sha256);
-}
-function validPendingReport(value:unknown):value is ExternalAgentPendingReport{
-  return object(value)&&id(value.reportId)&&["progress","blocked","ready","failed"].includes(String(value.state))&&typeof value.summary==="string"&&value.summary.length>0&&value.summary.length<=4000&&(value.deliverable===undefined||typeof value.deliverable==="string"&&value.deliverable.length<=60_000)&&(value.question===undefined||typeof value.question==="string"&&value.question.length<=2000)&&(value.files===undefined||Array.isArray(value.files)&&value.files.length<=16&&value.files.every(validPendingReportFile))&&typeof value.at==="number"&&Number.isFinite(value.at);
-}
 function isIgnoredReadOnlyPath(relPosix:string,scratchRel?:string):boolean{
   if(scratchRel&&(relPosix===scratchRel||relPosix.startsWith(`${scratchRel}/`)))return true;
   const parts=relPosix.split("/");
@@ -170,48 +150,6 @@ function recordTouchedFiles(run:ExternalAgentRun,text:string,cwd:string):void{
     }
   }
   if(existing.size>0)run.touchedFiles=[...existing];
-}
-export function isExternalAgentRequest(value:unknown):value is ExternalAgentRequest{
-  if(!object(value))return false;
-  const fields:Record<string,string[]>={detect:["operation","kind","executable"],probe:["operation","binding","modelId"],quota:["operation","binding"],run:["operation","binding","taskId","runEpoch","requestId","prompt","cwd","workspaceMode","modelId","thinkingLevel","serviceTier","sessionId","readOnly","allowSubagents","taskTools","hasConnections","memoryEnabled","projectId","directoryId","grantRevision","timeoutMs","mcpServers"],inspect:["operation","runId","afterSequence","compact","ackReportIds"],diff:["operation","taskId","filePath"],apply:["operation","taskId","projectId","directoryId","grantRevision","paths","allowConflicts"],cancel:["operation","runId"],respond:["operation","runId","permissionId","choiceId"],close:["operation","runId","discardStaged"]};
-  const allowed=fields[String(value.operation)];if(!allowed||Object.keys(value).some(key=>!allowed.includes(key)))return false;
-  if(value.operation==="detect")return EXTERNAL_AGENT_KINDS.includes(value.kind as ExternalAgentKind)&&optionalString(value.executable);
-  if(value.operation==="probe")return binding(value.binding)&&optionalString(value.modelId,512);
-  if(value.operation==="quota")return binding(value.binding);
-  if(value.operation==="diff")return id(value.taskId)&&optionalString(value.filePath,4096);
-  if(value.operation==="apply")return id(value.taskId)&&id(value.projectId)&&(value.directoryId===undefined||id(value.directoryId))&&(value.grantRevision===undefined||Number.isSafeInteger(value.grantRevision)&&Number(value.grantRevision)>=1)&&(value.allowConflicts===undefined||typeof value.allowConflicts==="boolean")&&(value.paths===undefined||Array.isArray(value.paths)&&value.paths.length<=2000&&value.paths.every(p=>typeof p==="string"&&p.length>0&&p.length<=4096&&!/[\x00]/.test(p)));
-  if(["inspect","cancel","close"].includes(String(value.operation)))return id(value.runId)&&(value.afterSequence===undefined||Number.isSafeInteger(value.afterSequence)&&Number(value.afterSequence)>=0)&&(value.compact===undefined||typeof value.compact==="boolean")&&(value.ackReportIds===undefined||Array.isArray(value.ackReportIds)&&value.ackReportIds.length<=32&&value.ackReportIds.every(item=>id(item)))&&(value.discardStaged===undefined||typeof value.discardStaged==="boolean");
-  if(value.operation==="respond")return id(value.runId)&&id(value.permissionId)&&optionalString(value.choiceId,200)&&typeof value.choiceId==="string";
-  if(value.operation!=="run"||!binding(value.binding)||!id(value.taskId)||!id(value.requestId)||!Number.isSafeInteger(value.runEpoch)||Number(value.runEpoch)<0||typeof value.prompt!=="string"||value.prompt.length>256_000||typeof value.cwd!=="string"||!path.isAbsolute(value.cwd)||value.cwd.length>8192||/[\x00-\x1f\x7f]/.test(value.cwd)||typeof value.readOnly!=="boolean"||typeof value.allowSubagents!=="boolean"||!Number.isSafeInteger(value.timeoutMs)||Number(value.timeoutMs)<1000||Number(value.timeoutMs)>86_400_000)return false;
-  if(value.taskTools!==undefined&&typeof value.taskTools!=="boolean"||value.hasConnections!==undefined&&typeof value.hasConnections!=="boolean"||value.memoryEnabled!==undefined&&typeof value.memoryEnabled!=="boolean")return false;
-  if(value.workspaceMode!==undefined&&!["staged","direct","read_only"].includes(String(value.workspaceMode)))return false;
-  if(!optionalString(value.modelId,512)||!optionalString(value.thinkingLevel,512)||!optionalString(value.serviceTier,128)||!optionalString(value.sessionId,512)||value.projectId!==undefined&&!id(value.projectId)||value.directoryId!==undefined&&!id(value.directoryId)||value.grantRevision!==undefined&&(!Number.isSafeInteger(value.grantRevision)||Number(value.grantRevision)<1))return false;
-  // Only Env creates task-scoped MCP endpoints; arbitrary URLs/credentials are not accepted from control messages.
-  return value.mcpServers===undefined||Array.isArray(value.mcpServers)&&value.mcpServers.length===0;
-}
-export function isExternalAgentResponse(value:unknown):value is ExternalAgentResponse{
-  if(!object(value))return false;
-  if(value.type==="detection"){
-    const detection=value.detection;if(!object(detection)||!EXTERNAL_AGENT_KINDS.includes(detection.kind as ExternalAgentKind)||typeof detection.installed!=="boolean"||(detection.desktopAppInstalled!==undefined&&typeof detection.desktopAppInstalled!=="boolean")||detection.authenticated!==null&&typeof detection.authenticated!=="boolean"||!Array.isArray(detection.models)||detection.models.length>1000||!optionalString(detection.executable)||!optionalString(detection.version,200)||!optionalString(detection.error,4000))return false;
-    const capabilities=detection.capabilities;if(!object(capabilities)||!["resume","cancel","models","permissions","collaboration"].every(key=>typeof capabilities[key]==="boolean")||!["native","observed","none"].includes(String(capabilities.terminalEvidence)))return false;
-    return detection.models.every(model=>object(model)&&typeof model.id==="string"&&model.id.length>0&&model.id.length<=4096&&typeof model.name==="string"&&model.name.length<=4096&&(model.isDefault===undefined||typeof model.isDefault==="boolean")&&(model.defaultServiceTier===undefined||typeof model.defaultServiceTier==="string"&&model.defaultServiceTier.length>0&&model.defaultServiceTier.length<=128)&&(model.efforts===undefined||Array.isArray(model.efforts)&&model.efforts.length<=32&&model.efforts.every(effort=>typeof effort==="string"&&effort.length>0&&effort.length<=64))&&(model.serviceTiers===undefined||Array.isArray(model.serviceTiers)&&model.serviceTiers.length<=32&&model.serviceTiers.every(tier=>object(tier)&&typeof tier.id==="string"&&tier.id.length>0&&tier.id.length<=64&&(tier.name===undefined||typeof tier.name==="string"&&tier.name.length<=128)&&(tier.description===undefined||typeof tier.description==="string"&&tier.description.length<=512))));
-  }
-  if(value.type==="quota"){
-    if(Object.keys(value).some(key=>key!=="type"&&key!=="quota"))return false;
-    return isValidQuotaProbeResult(value.quota);
-  }
-  if(value.type==="diff"){
-    const d=value.diff;
-    return object(d)&&typeof d.diff==="string"&&d.diff.length<=256_000&&optionalString(d.filteredPath,4096)&&validDiffSummary(d);
-  }
-  if(value.type==="apply"){
-    const applied=value.applied;
-    return object(applied)&&typeof applied.cleanedUp==="boolean"&&["appliedAdded","appliedModified","appliedDeleted"].every(key=>Array.isArray(applied[key])&&(applied[key] as unknown[]).length<=5000&&(applied[key] as unknown[]).every(item=>typeof item==="string"&&item.length>0&&item.length<=4096));
-  }
-  if(value.type!=="run"||!object(value.run))return false;const run=value.run;
-  if(!id(run.id)||!id(run.taskId)||!Number.isSafeInteger(run.runEpoch)||Number(run.runEpoch)<0||!EXTERNAL_AGENT_KINDS.includes(run.kind as ExternalAgentKind)||!["starting","running","waiting","completed","failed","cancelled","uncertain"].includes(String(run.state))||typeof run.text!=="string"||run.text.length>256_000||!Array.isArray(run.events)||run.events.length>401||!Array.isArray(run.permissions)||run.permissions.length>64||!Number.isSafeInteger(run.nextSequence)||Number(run.nextSequence)<1||run.quiescent!==undefined&&typeof run.quiescent!=="boolean"||!optionalString(run.sessionId,512)||!optionalString(run.stagedCwd,8192)||!optionalString(run.scratchNotesDir,8192)||(run.stagedDiff!==undefined&&!validDiffSummary(run.stagedDiff))||(run.uncertainReason!==undefined&&!UNCERTAIN_REASONS.has(run.uncertainReason as ExternalAgentUncertainReason))||(run.phase!==undefined&&!WORKER_PHASES.has(run.phase as WorkerExecutionPhase))||(run.touchedFiles!==undefined&&!validPathList(run.touchedFiles,25,1024))||(run.readOnlyViolation!==undefined&&!validReadOnlyViolation(run.readOnlyViolation))||(run.pendingReports!==undefined&&(!Array.isArray(run.pendingReports)||run.pendingReports.length>16||!run.pendingReports.every(validPendingReport)))||(run.latestQuota!==undefined&&!isValidQuotaProbeResult(run.latestQuota))||!optionalString(run.error,4000))return false;
-  let previous=0;for(const event of run.events){if(!object(event)||!Number.isSafeInteger(event.sequence)||Number(event.sequence)<=previous||Number(event.sequence)>=Number(run.nextSequence)||!Number.isFinite(event.at)||!["message","tool","permission","state","error"].includes(String(event.type))||typeof event.text!=="string"||event.text.length>16_000)return false;previous=Number(event.sequence);}
-  return run.permissions.every(permission=>object(permission)&&id(permission.id)&&typeof permission.title==="string"&&permission.title.length<=4000&&Array.isArray(permission.choices)&&permission.choices.length>0&&permission.choices.length<=20&&permission.choices.every(choice=>object(choice)&&typeof choice.id==="string"&&choice.id.length>0&&choice.id.length<=200&&typeof choice.label==="string"&&choice.label.length<=500));
 }
 function within(candidate:string,root:string):boolean{const rel=path.relative(root,candidate);return rel===""||rel!==".."&&!rel.startsWith(`..${path.sep}`)&&!path.isAbsolute(rel);}
 function terminal(state:ExternalAgentRun["state"]):boolean{return["completed","failed","cancelled","uncertain"].includes(state);}
@@ -543,9 +481,14 @@ export class ExternalAgentService {
   async #grok(context:ExternalDriverContext):Promise<{driver:ExternalDriver}>{return {driver:await connectGrok(context)};}
   #context(live:LiveRun,request:RunRequest):ExternalDriverContext{
     const executionCwd=live.stored.executionCwd??live.stored.cwd;
+    const inputsDir=path.join(this.#options.projectRegistry.scratchRoot,request.taskId.replace(/[^A-Za-z0-9._-]/g,"_"),"inputs");
+    const fallbackReadOnlyNote=!request.developerInstructions&&request.readOnly&&!/Workspace Mode:\s*read_only|Read-only mode:/i.test(request.prompt)
+      ?"Read-only mode: inspect and analyze only; never modify files or perform write operations."
+      :"";
     return{
     binding:request.binding,executable:live.stored.executable,cwd:executionCwd,workspaceMode:live.stored.workspaceMode,scratchNotesDir:live.stored.scratchNotesDir,controlRoot:path.join(this.#options.projectRegistry.privateDirectory,"external-executions"),projectId:request.projectId,readOnly:request.readOnly,
-    prompt:[request.prompt,request.readOnly&&!/Workspace Mode:\s*read_only/i.test(request.prompt)?"Read-only mode: inspect and analyze only; never modify files or perform write operations.":"",live.mcp?"Use the attached `kulo-task` MCP tools to report progress/outcomes, request collaboration or decisions from Kulo, or query/update shared project memory.":""].filter(Boolean).join("\n\n"),
+    prompt:[request.prompt,fallbackReadOnlyNote].filter(Boolean).join("\n\n"),
+    developerInstructions:request.developerInstructions,attachments:request.attachments,inputsDir,overlapsProtected:candidate=>this.#overlapsProtected(candidate),
     modelId:request.modelId,thinkingLevel:request.thinkingLevel,serviceTier:request.serviceTier,sessionId:request.sessionId,timeoutMs:request.timeoutMs,servers:live.mcp?[live.mcp.server]:[],
     pipe:async spec=>{
       const factory=this.#options.pipeFactory??createExternalPipeFactory({controlRoot:path.join(this.#options.projectRegistry.privateDirectory,"external-executions"),projectId:request.projectId,kind:request.binding.kind});
@@ -657,7 +600,7 @@ export class ExternalAgentService {
   }
   #track(task:Promise<unknown>):void{this.#background.add(task);void task.then(()=>this.#background.delete(task),(error:unknown)=>{this.#background.delete(task);this.#backgroundError=error instanceof Error?error:new Error("External runtime cleanup failed");});}
   #persist(stored:StoredRun):void{if(stored.fingerprint==="probe")return;const file=path.join(this.rootDir,hash(stored.run.id)+".json");const temp=file+`.${randomUUID()}.tmp`;fs.writeFileSync(temp,JSON.stringify(stored),{mode:0o600});fs.renameSync(temp,file);}
-  #recordOfflineTaskReport(live:LiveRun,rawArgs:Record<string,unknown>):{recorded:true;queuedOffline:true;reportId:string;pendingNativeCompletion:true}{
+  #recordOfflineTaskReport(live:LiveRun,rawArgs:Record<string,unknown>):{recorded:true;queuedOffline:true;reportId:string;pendingNativeCompletion:true;instruction?:string}{
     const existing=live.stored.pendingReports??[];
     if(existing.length>=16)throw new Error("Offline report outbox limit reached");
     const state=String(rawArgs.state);
@@ -721,7 +664,13 @@ export class ExternalAgentService {
     };
     live.stored.pendingReports=[...existing,entry];
     this.#persist(live.stored);
-    return{recorded:true,queuedOffline:true,reportId,pendingNativeCompletion:true};
+    return{
+      recorded:true,
+      queuedOffline:true,
+      reportId,
+      pendingNativeCompletion:true,
+      ...(["ready","blocked","failed"].includes(state)?{instruction:"Report recorded. End your turn immediately with one brief sentence; do not repeat the full report or make further edits."}:{}),
+    };
   }
   #snapshot(stored:StoredRun,after?:number,compact?:boolean):ExternalAgentRun{
     const filteredEvents=stored.run.events.filter(event=>after===undefined||event.sequence>after);

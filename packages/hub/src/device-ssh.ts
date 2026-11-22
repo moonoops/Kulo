@@ -13,6 +13,7 @@ import {
   type SshTarget,
 } from "@earendil-works/pi-env";
 import type { DeviceSshRequest, DeviceSshScan } from "@kulo/protocol";
+import { isLocalNetworkHost } from "./connection-ssh-diagnostics.js";
 
 const SCAN_LIFETIME_MS = 5 * 60_000;
 const TUNNEL_READY = "KULO-TUNNEL-READY";
@@ -207,9 +208,17 @@ export class DeviceSshConnector {
     if (this.#scans.size >= 32) throw new Error("待确认的 SSH 连接过多，请稍后重试。");
     const target = this.#target(request);
     fs.mkdirSync(this.#options.stateDir, { recursive: true, mode: 0o700 });
-    const result = await scanHostKey(target);
+    const localNetHint = process.platform === "darwin" && isLocalNetworkHost(request.host)
+      ? "（访问局域网主机请同时检查 macOS「系统设置 → 隐私与安全性 → 本地网络」权限）"
+      : "";
+    let result: Awaited<ReturnType<typeof scanHostKey>>;
+    try {
+      result = await scanHostKey(target);
+    } catch (error) {
+      throw new Error(`${messageOf(error)}${localNetHint}`, { cause: error });
+    }
     this.#assertGeneration(generation);
-    if (!result.lines.length || !result.fingerprints.length) throw new Error("SSH 主机未返回可验证的指纹。");
+    if (!result.lines.length || !result.fingerprints.length) throw new Error(`SSH 主机未返回可验证的指纹。${localNetHint}`);
     const scanId = randomBytes(24).toString("hex");
     this.#scans.set(scanId, { request, target, lines: result.lines, expiresAt: Date.now() + SCAN_LIFETIME_MS });
     return { scanId, fingerprints: [...result.fingerprints] };

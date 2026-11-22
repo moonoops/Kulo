@@ -287,7 +287,7 @@ describe("Batch 2 — R4-A External Agent Offline kulo_task_report Outbox & Anti
               } else if (parsed.method === "config/read") {
                 queueMicrotask(() => emit({ jsonrpc: "2.0", id: parsed.id, result: { config: {} } }));
               } else if (parsed.method === "thread/start" || parsed.method === "thread/resume") {
-                const mcpServer = Object.values(parsed.params?.config?.mcp_servers ?? {})[0] as any;
+                const mcpServer = parsed.params?.config?.["mcp_servers.kulo-task"] as any;
                 if (mcpServer?.url) mcpUrl = mcpServer.url;
                 if (mcpServer?.http_headers?.Authorization) mcpAuth = mcpServer.http_headers.Authorization;
                 queueMicrotask(() => emit({ jsonrpc: "2.0", id: parsed.id, result: { thread: { id: "thread-outbox-1" } } }));

@@ -168,7 +168,7 @@ describe("Hub dispatch to local external Agent clients", () => {
     expect(envId).toBe("computer-a");
     expect(request).toMatchObject({
       binding: { kind, envId: "computer-a" }, modelId: `${kind}-native-model-not-in-pi`,
-      taskId: card.id, runEpoch: 1, cwd: ticket.workspaceDir, readOnly: false, allowSubagents: false,
+      taskId: card.id, runEpoch: 1, cwd: ticket.workspaceDir, readOnly: true, allowSubagents: false,
     });
     expect(request.prompt).toContain(`Execute with ${kind}`);
     expect(request.prompt).toContain("Read the authorized workspace");
@@ -218,9 +218,9 @@ describe("Hub dispatch to local external Agent clients", () => {
     await vi.waitFor(() => expect(f.runCalls()).toHaveLength(1), { timeout: 4000, interval: 20 });
     const request = f.runCalls()[0]![1];
     const state = (await f.hub.harness.snapshot(KuloStateDoc, context))!;
-    expect(state.tickets[card.id]).toMatchObject({ readOnly: false });
+    expect(state.tickets[card.id]).toMatchObject({ readOnly: false, externalExecution: { effectiveReadOnly: true } });
     expect(state.slots.writeHolders).toContain(card.id);
-    expect(request.readOnly).toBe(false);
+    expect(request.readOnly).toBe(true);
     expect(request.prompt).toMatch(/只读|read.only/i);
     expect(request.prompt).toContain("Read the authorized workspace");
     expect(request.prompt).not.toContain("kulo_task_exec");

@@ -13,11 +13,13 @@ import {
   type RolePreset,
 } from "@kulo/protocol";
 import { getIdentityTemplate, readIdentityContext } from "../identity-files.js";
+import { PersonalityDoc } from "../personality.js";
 import { KuloProjectsDoc } from "../projects.js";
 import { buildRecentWorkSnapshot } from "../recent-work.js";
 import { RECENT_WORK_DISABLED_TEXT, unwrapSectionTag } from "../recent-work-sync.js";
-import { SettingsAssistantDoc, isMainOrchestratorConversation } from "../settings-doc.js";
-import { KuloStateDoc } from "../state.js";
+import { SettingsAssistantDoc, isActiveSettingsConversation, isMainOrchestratorConversation } from "../settings-doc.js";
+import { KuloStateDoc, isOrchestratorConversation } from "../state.js";
+import { KuloWorkingMemoryDoc, buildWorkingMemorySnapshot } from "../working-memory.js";
 
 export function buildPhilosophyPrompt(agentName = "Kulo", language?: KuloLanguage): string {
   const defaultLanguage = language === "en" ? "English" : "Chinese";
@@ -33,7 +35,7 @@ export function buildPhilosophyPrompt(agentName = "Kulo", language?: KuloLanguag
 - **In-Flight & Events**: Use \`kulo_steer\` to update/unblock tickets, \`kulo_stop\` to cancel/end on user request (never \`kulo_steer\` to end; confirm \`ticket_stopped\` card effects concisely), and \`kulo_status\` before \`execute_at\`. Handle \`[KULO_...]\` events without addressing them as the user.
 - **Verify & Present**: Worker outputs and staged items are unverified. Inspect diffs (\`kulo_inspect_staged_diff\`) or assets (\`kulo_inspect_asset\`) before merging (\`kulo_apply_staged_changes\`), publishing (\`kulo_publish_asset\` -> \`published\`), or claiming completion.
 - **Response Format & Media**: Respect any user-requested format. Use plain text for simple answers and Markdown tables for quick comparisons. Proactively pair a takeaway with \`kulo_ui_diagram\` (\`diagram-design\`) for trends, comparisons, timelines, flows, or architectures (label phase schematics; never invent points). Use \`kulo_ui_show\` for interactive forms/choices/tables (\`genui-cards\`), delegate \`.html\` reports (\`interactive-html\`+\`diagram-design\`), and claim \`kulo_generate_image\`/\`kulo_generate_video\` (\`kulo_media_capabilities\`) only after a real asset returns.
-- **Tool Discovery**: Call \`tool_search\` (\`limit\` <= 3) for deferred tools (host ops, browser, memory, task boards, history, projects/topics, connections, media/TTS, UI cards/assets, identity, ticket inspect/close, pairing, settings).`;
+- **Tool Discovery**: Call \`kulo_history_search\` for old chat; \`tool_search\` (\`limit\` <= 3) for deferred tools (host ops, browser, memory, task boards, projects/topics, connections, media/TTS, UI cards/assets, identity, ticket inspect/close, pairing, settings).`;
 }
 
 export const KULO_PHILOSOPHY_PROMPT = buildPhilosophyPrompt("Kulo");
@@ -359,6 +361,46 @@ export function createOrchestratorSections(options: {
     return snapshot.enabled ? snapshot.content : undefined;
   });
 
+  const workingMemorySection = section("kulo_working_memory", async (input, context) => {
+    const [state, settingsDoc] = await Promise.all([
+      input.read.snapshot(KuloStateDoc, context),
+      input.read.snapshot(SettingsAssistantDoc, context),
+    ]);
+    if (
+      !isOrchestratorConversation(input.conversationId, state) ||
+      isActiveSettingsConversation(input.conversationId, settingsDoc)
+    ) {
+      return undefined;
+    }
+    const [wmDoc, projects, personalityDoc, settings] = await Promise.all([
+      input.read.snapshot(KuloWorkingMemoryDoc, context),
+      input.read.snapshot(KuloProjectsDoc, context),
+      input.read.snapshot(PersonalityDoc, context),
+      personality(),
+    ]);
+    const convKey = String(Number(input.conversationId));
+    const needsRefresh = Boolean(wmDoc?.cursors?.[convKey]?.needsBaselineRefresh);
+    if (options.freezeRecentWorkBaseline && typeof input.shown?.kulo_working_memory === "string" && !needsRefresh) {
+      const shownUnwrapped = unwrapSectionTag(input.shown.kulo_working_memory, "kulo_working_memory");
+      const pendingBaseline = options.isSystemBaselinePending
+        ? await options.isSystemBaselinePending(input.conversationId, context)
+        : false;
+      if (!pendingBaseline) {
+        return shownUnwrapped;
+      }
+    }
+    const snapshot = buildWorkingMemorySnapshot({
+      doc: wmDoc,
+      state,
+      projects,
+      settings: settingsDoc,
+      conversationId: Number(input.conversationId),
+      recentWorkEnabled: settings.recentWorkEnabled,
+      forgottenTerms: personalityDoc?.forgottenTerms,
+    });
+    return snapshot.recordCount > 0 ? snapshot.content : undefined;
+  });
+
   // Strict Static-First, Dynamic-Tail ordering for maximum provider prompt cache retention.
   return [
     identitySection,
@@ -370,5 +412,6 @@ export function createOrchestratorSections(options: {
     envSection,
     projectSection,
     recentWorkSection,
+    workingMemorySection,
   ];
 }

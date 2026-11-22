@@ -170,7 +170,7 @@
   }
 
   /* Row- and card-owned hover surfaces stay continuous across composite triggers. */
-  .kulo-ui :is(.kulo-topic-select, .kulo-topic-actions, .kulo-project-action, .kulo-agent-profile-overview, .kulo-cat-picker-trigger, .kulo-task-card-button) {
+  .kulo-ui :is(.kulo-topic-select, .kulo-project-action, .kulo-agent-profile-overview, .kulo-cat-picker-trigger, .kulo-task-card-button) {
     --button-bg: transparent;
     --button-bg-hover: transparent;
     --button-bg-pressed: transparent;
@@ -178,11 +178,28 @@
     color: inherit;
   }
 
+  .kulo-ui .kulo-topic-action {
+    border-radius: 6px;
+    --button-bg: transparent;
+    --button-bg-hover: var(--kulo-control-hover);
+    --button-bg-pressed: var(--kulo-control-pressed);
+    --button-fg: var(--muted);
+  }
+
+  .kulo-ui .kulo-topic-action:is(:hover, [data-hovered="true"], [data-focus-visible="true"], [aria-expanded="true"], [aria-pressed="true"]) {
+    --button-fg: var(--foreground);
+  }
+
+  .kulo-ui .kulo-topic-action[aria-pressed="true"] {
+    --button-bg: var(--kulo-control-hover);
+    --button-bg-hover: var(--kulo-control-pressed);
+  }
+
   .kulo-ui .kulo-navigation-surface {
     --button-bg: var(--surface);
   }
 
-  .kulo-ui :is(.kulo-topic-actions, .kulo-message-action, .kulo-task-archive-button, .kulo-task-clear-all) {
+  .kulo-ui :is(.kulo-message-action, .kulo-task-archive-button, .kulo-task-clear-all) {
     --button-fg: var(--muted);
   }
 

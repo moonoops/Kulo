@@ -45,7 +45,8 @@ export {
   type ParsedClusterAuthHeader,
 } from "./cluster-security.js";
 
-export { ExternalAgentService, isExternalAgentRequest, isExternalAgentResponse, type ClaudeAuthStatusProbe, type ExternalAgentServiceOptions, type ExternalAgentToolHandler } from "./external-agents.js";
+export { EXTERNAL_AGENT_NODE_CAPABILITIES, ExternalAgentService, isExternalAgentRequest, isExternalAgentResponse, type ClaudeAuthStatusProbe, type ExternalAgentServiceOptions, type ExternalAgentToolHandler } from "./external-agents.js";
+export { normalizeExternalImageMimeType, prependKuloInstructions, resolveSafeExternalImages, type ExternalImageMimeType, type ResolvedExternalImage } from "./external-agent-validation.js";
 export {
   clampQuotaPercent,
   formatQuotaCurrencyAmount,

@@ -252,6 +252,9 @@ export class TicketDispatchService {
       for (const id of inputAttachmentIds) {
         const loaded = uploads.getUpload(id);
         if (!loaded) throw new ProjectError(400, "attachment_not_found", `附件 '${id}' 不存在或已失效。`);
+        if (loaded.record.internalOnly) {
+          throw new ProjectError(403, "internal_overflow_asset_not_dispatchable", "内部工具溢出资产仅限当前对话主 Agent 审阅，不可转发给后台任务。");
+        }
         if (params.originToolTaskId !== undefined && !uploads.canReadUpload(id, `agent:${originConversationId}`, (scope) => allowedScopes.has(scope))) {
           throw new ProjectError(403, "attachment_forbidden", "当前对话无权将该附件传递给后台任务。");
         }

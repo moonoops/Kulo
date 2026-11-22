@@ -344,7 +344,7 @@ describe("durable project worker scheduling", () => {
     harness.resume();
     await until(async () => (await harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))?.tickets.T1?.status === "ready");
     await replacement;
-    expect(admitted).toEqual([{ text: "original objective\n\n【排队期间补充要求】\nqueued instruction", attachments: ["original-attachment", "queued-attachment"] }]);
+    expect(admitted).toEqual([{ text: "original objective\n\n<follow_up>\nqueued instruction\n</follow_up>", attachments: ["original-attachment", "queued-attachment"] }]);
     const current = (await harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))!.tickets.T1!;
     expect(current.completedAt).toBeGreaterThan(current.createdAt);
     expect(current.accumulatedRunningMs).toBeGreaterThanOrEqual(0);

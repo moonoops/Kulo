@@ -27,6 +27,7 @@ import {
   type ConnectionVaultKeyStore,
 } from "@kulo/hub";
 import { resolveEffectiveIdentityDir } from "../packages/hub/src/settings.js";
+import { isSafeSyncRelativePath } from "../packages/hub/src/cluster-sync.js";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 
@@ -537,5 +538,141 @@ describe("warm-standby tiered sync engine and crash-idempotent promotion", () =>
       identity: { directory: existingCustom, directoryRevision: 2 },
     } as never;
     expect(resolveEffectiveIdentityDir(docExisting, defaultIdentity)).toBe(existingCustom);
+  });
+
+  it("syncs allowlisted trusted SSH known-hosts files across failover, blocks orphans/symlinks/oversized files, and prunes removals", async () => {
+    const trustedId = "connection-00000000-0000-4000-8000-0000000000aa";
+    const untrustedId = "connection-00000000-0000-4000-8000-0000000000bb";
+    const orphanId = "connection-00000000-0000-4000-8000-0000000000cc";
+    const symlinkId = "connection-00000000-0000-4000-8000-0000000000dd";
+    const oversizedId = "connection-00000000-0000-4000-8000-0000000000ee";
+
+    expect(isSafeSyncRelativePath(`connection-runtime/${trustedId}.known-hosts`)).toBe(true);
+    expect(isSafeSyncRelativePath(`connection-runtime/${trustedId}.known-hosts.tmp`)).toBe(false);
+    expect(isSafeSyncRelativePath("connection-runtime/other.txt")).toBe(false);
+    expect(isSafeSyncRelativePath(`connection-runtime/nested/${trustedId}.known-hosts`)).toBe(false);
+
+    const primaryData = tempDir("kulo-ssh-sync-primary-");
+    const standbyData = tempDir("kulo-ssh-sync-standby-");
+    const primaryPaths = resolveClusterPaths(primaryData);
+    const standbyPaths = resolveClusterPaths(standbyData);
+    fs.mkdirSync(primaryPaths.hubStateDir, { recursive: true });
+    fs.mkdirSync(standbyPaths.hubStateDir, { recursive: true });
+
+    const primaryKeyStore = new MemoryKeyStore();
+    const standbyKeyStore = new MemoryKeyStore();
+    const primaryKeys = await ensureLocalClusterKeys({ dataDir: primaryData, hubStateDir: primaryPaths.hubStateDir, standbyDir: primaryPaths.standbyDir, keyStore: primaryKeyStore });
+    const standbyKeys = await ensureLocalClusterKeys({ dataDir: standbyData, hubStateDir: standbyPaths.hubStateDir, standbyDir: standbyPaths.standbyDir, keyStore: standbyKeyStore });
+
+    const hubId = "hub-ssh-sync-test";
+    const primaryNodeId = "node-primary-ssh";
+    const standbyNodeId = "node-standby-ssh";
+    const syncToken = "sync-tok-ssh-0123456789abcdef0123";
+
+    const db = new DatabaseSync(path.join(primaryPaths.hubStateDir, "kulo.sqlite"));
+    cleanups.push(() => db.close());
+    db.exec("PRAGMA journal_mode = WAL; CREATE TABLE t (k TEXT PRIMARY KEY); INSERT INTO t VALUES ('ok');");
+
+    const primaryVault = new LocalConnectionVault({ stateDir: primaryPaths.hubStateDir, keyStore: primaryKeyStore });
+    await primaryVault.set(`connection:${trustedId}`, { password: "pw", __binding: JSON.stringify(["ssh", "10.0.0.10", 22, "demo"]) });
+
+    const writeConnectionsDoc = (includeTrusted: boolean) => {
+      const connections: Record<string, unknown> = {
+        [untrustedId]: { id: untrustedId, kind: "ssh", name: "Untrusted", host: "10.0.0.11", port: 22, username: "u", revision: 1, status: "saved", hasCredential: true, secretFields: ["password"], createdAt: 1, updatedAt: 1 },
+        [symlinkId]: { id: symlinkId, kind: "ssh", name: "Symlink", host: "10.0.0.12", port: 22, username: "u", revision: 1, status: "verified", hasCredential: true, secretFields: ["password"], trustedHostFingerprint: "ssh-ed25519 SHA256:s", createdAt: 1, updatedAt: 1 },
+        [oversizedId]: { id: oversizedId, kind: "ssh", name: "Huge", host: "10.0.0.13", port: 22, username: "u", revision: 1, status: "verified", hasCredential: true, secretFields: ["password"], trustedHostFingerprint: "ssh-ed25519 SHA256:h", createdAt: 1, updatedAt: 1 },
+      };
+      if (includeTrusted) {
+        connections[trustedId] = { id: trustedId, kind: "ssh", name: "KuloStation", host: "10.0.0.10", port: 22, username: "demo", revision: 1, status: "verified", hasCredential: true, secretFields: ["password"], trustedHostFingerprint: "ssh-ed25519 SHA256:valid", createdAt: 1, updatedAt: 1 };
+      }
+      fs.writeFileSync(path.join(primaryPaths.hubStateDir, "connections.json"), JSON.stringify({ version: 1, connections, inputs: {}, imports: {}, requests: {} }));
+    };
+    writeConnectionsDoc(true);
+
+    const runtimeDir = path.join(primaryPaths.hubStateDir, "connection-runtime");
+    fs.mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(runtimeDir, `${trustedId}.known-hosts`), "kulo-connection-valid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM1inaskvnmoT7eUffkbAvYviNhZ8k2G0aVKustDv0Js\n", { mode: 0o600 });
+    fs.writeFileSync(path.join(runtimeDir, `${untrustedId}.known-hosts`), "kulo-connection-untrusted ssh-ed25519 AAAA\n", { mode: 0o600 });
+    fs.writeFileSync(path.join(runtimeDir, `${orphanId}.known-hosts`), "kulo-connection-orphan ssh-ed25519 AAAA\n", { mode: 0o600 });
+    const outsideTarget = path.join(primaryData, "outside.txt");
+    fs.writeFileSync(outsideTarget, "outside-secret\n");
+    fs.symlinkSync(outsideTarget, path.join(runtimeDir, `${symlinkId}.known-hosts`));
+    fs.writeFileSync(path.join(runtimeDir, `${oversizedId}.known-hosts`), "a".repeat(70 * 1024));
+
+    fs.writeFileSync(path.join(primaryPaths.hubStateDir, "devices.json"), JSON.stringify({
+      version: 1, hubId, enabled: true, localNodeId: primaryNodeId, primaryNodeId, preferredPrimaryNodeId: primaryNodeId, clusterEpoch: 1,
+      identityPublicKey: primaryKeys.ed25519PublicKey,
+      devices: [{ id: standbyNodeId, name: "Standby", tokenHash: "h", clusterRole: "standby", syncPublicKey: standbyKeys.x25519PublicKey, identityPublicKey: standbyKeys.ed25519PublicKey, createdAt: 1, updatedAt: 1 }],
+    }));
+
+    const syncService = new ClusterSyncService({
+      stateDir: primaryPaths.hubStateDir,
+      getHubId: () => hubId,
+      getPrimaryNodeId: () => primaryNodeId,
+      getClusterEpoch: () => 1,
+      hasRemoteStandbys: () => true,
+      getEffectiveIdentityDir: () => path.join(primaryPaths.hubStateDir, "identity"),
+      backupAssistantLedger: async () => false,
+      readVaultEntries: async () => primaryVault.entries(),
+      getSenderKeys: () => primaryKeys,
+      resolveStandbyPublicKey: (id) => (id === standbyNodeId ? standbyKeys.x25519PublicKey : undefined),
+      notifySyncAvailable: () => undefined,
+    });
+    cleanups.push(() => syncService.close());
+    const srv = await startMockSyncPrimary({ syncService, syncToken, standbyNodeId });
+    cleanups.push(() => srv.close());
+
+    const replicator = new StandbyReplicator({
+      dataDir: standbyData,
+      hubStateDir: standbyPaths.hubStateDir,
+      standbyDir: standbyPaths.standbyDir,
+      hubId,
+      nodeId: standbyNodeId,
+      syncToken,
+      getPrimaryUrl: () => srv.origin,
+      getPrimaryNodeId: () => primaryNodeId,
+      getPrimaryIdentityPublicKey: () => primaryKeys.ed25519PublicKey,
+      getClusterEpoch: () => 1,
+      getNodeKeys: async () => standbyKeys,
+      keyStore: standbyKeyStore,
+    });
+    cleanups.push(() => replicator.stop());
+
+    const gen1 = await syncService.flushNow();
+    await replicator.syncForHandover(gen1.generation);
+
+    const replicaKnownHosts = path.join(replicator.replicaDir, "connection-runtime", `${trustedId}.known-hosts`);
+    expect(fs.existsSync(replicaKnownHosts)).toBe(true);
+    expect(fs.statSync(path.join(replicator.replicaDir, "connection-runtime")).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(replicaKnownHosts).mode & 0o777).toBe(0o600);
+    expect(fs.existsSync(path.join(replicator.replicaDir, "connection-runtime", `${untrustedId}.known-hosts`))).toBe(false);
+    expect(fs.existsSync(path.join(replicator.replicaDir, "connection-runtime", `${orphanId}.known-hosts`))).toBe(false);
+    expect(fs.existsSync(path.join(replicator.replicaDir, "connection-runtime", `${symlinkId}.known-hosts`))).toBe(false);
+    expect(fs.existsSync(path.join(replicator.replicaDir, "connection-runtime", `${oversizedId}.known-hosts`))).toBe(false);
+
+    // Promote standby -> verify known-hosts landed in promoted hub with strict modes and stale local files removed
+    const staleLocal = path.join(standbyPaths.hubStateDir, "connection-runtime", `${orphanId}.known-hosts`);
+    fs.mkdirSync(path.dirname(staleLocal), { recursive: true });
+    fs.writeFileSync(staleLocal, "stale\n");
+    await applyReplicaForPromotion(standbyPaths, {
+      nodeId: standbyNodeId,
+      targetEpoch: 2,
+      reason: "failover",
+      primaryIdentityPublicKey: primaryKeys.ed25519PublicKey,
+      keyStore: standbyKeyStore,
+    });
+    const promotedKnownHosts = path.join(standbyPaths.hubStateDir, "connection-runtime", `${trustedId}.known-hosts`);
+    expect(fs.existsSync(promotedKnownHosts)).toBe(true);
+    expect(fs.existsSync(staleLocal)).toBe(false);
+    expect(fs.statSync(path.join(standbyPaths.hubStateDir, "connection-runtime")).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(promotedKnownHosts).mode & 0o777).toBe(0o600);
+
+    // Delete SSH connection on primary -> standby prunes its known-hosts file on next sync
+    writeConnectionsDoc(false);
+    fs.rmSync(path.join(runtimeDir, `${trustedId}.known-hosts`), { force: true });
+    syncService.markDirty("files");
+    const gen2 = await syncService.flushNow();
+    await replicator.syncForHandover(gen2.generation);
+    expect(fs.existsSync(replicaKnownHosts)).toBe(false);
   });
 });

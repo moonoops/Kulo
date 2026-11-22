@@ -1196,7 +1196,7 @@ function AppShell() {
       setProjectedTicketId(undefined);
       selectTopic(topicId);
       setSheet(undefined);
-      requestAnimationFrame(() => composerRef.current?.focus());
+      requestAnimationFrame(() => { if (!document.querySelector(".kulo-topic-rename")) composerRef.current?.focus(); });
     });
   };
   const navigateConversation = (destination: ConversationDestination) => {
@@ -1552,9 +1552,8 @@ function AppShell() {
       selectedTargetDeviceId={selectedTargetDeviceId}
       connected={connected}
       liveBusy={live.busy}
-      onSelectTargetDevice={(deviceId) => {
-        setTopicTargetOverrides((current) => ({ ...current, [activeTopicId]: deviceId }));
-      }}
+      liveContext={live.context}
+      onSelectTargetDevice={(deviceId) => setTopicTargetOverrides((current) => ({ ...current, [activeTopicId]: deviceId }))}
       onOpenConversationSearch={() => openConversationSearch("all")}
       deliveryScope={deliveryScope}
       filesRevision={`${persistedMessages.at(-1)?.id ?? 0}:${persistedMessages.length}`}

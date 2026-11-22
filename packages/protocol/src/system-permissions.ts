@@ -1,6 +1,10 @@
 export type SystemPermissionKind = "microphone" | "accessibility" | "screen";
-export type NativeAppPermissionKind = "full-disk-access" | "automation";
+export type NativeAppPermissionKind = "full-disk-access" | "automation" | "local-network";
 export type SystemPermissionSettingsKind = SystemPermissionKind | NativeAppPermissionKind | "notifications";
+
+export function isNativeAppPermissionKind(value: unknown): value is NativeAppPermissionKind {
+  return value === "full-disk-access" || value === "automation" || value === "local-network";
+}
 
 export type SystemPermissionState = "granted" | "not-determined" | "denied" | "restricted" | "unknown" | "unsupported";
 

@@ -24,6 +24,7 @@ const settingsUrls: Record<DesktopPermissionSettingsKind, string> = {
   screen: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
   "full-disk-access": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
   automation: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+  "local-network": "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork",
   notifications: "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
 };
 

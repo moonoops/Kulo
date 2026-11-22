@@ -191,7 +191,7 @@ describe("per-run loopback MCP transport", () => {
 
   it("rejects oversized bodies and unsupported media without invoking tools", async () => {
     const { result, authorization, handler } = await bridge();
-    const large = await fetch(result.server.url, { method: "POST", headers: { Authorization: authorization, "Content-Type": "application/json" }, body: JSON.stringify({ text: "x".repeat(70_000) }) });
+    const large = await fetch(result.server.url, { method: "POST", headers: { Authorization: authorization, "Content-Type": "application/json" }, body: JSON.stringify({ text: "x".repeat(270_000) }) });
     expect(large.status).toBe(413);
     const unsupported = await fetch(result.server.url, { method: "POST", headers: { Authorization: authorization, "Content-Type": "text/plain" }, body: "{}" });
     expect(unsupported.status).toBe(415);

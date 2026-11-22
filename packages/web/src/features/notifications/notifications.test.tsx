@@ -178,6 +178,7 @@ describe("General settings notifications section", () => {
     expect(htmlOff).toContain('aria-label="提示音"');
     expect(htmlOff).toContain('aria-label="应用角标"');
     expect(htmlOff).not.toContain("系统通知设置");
+    expect(htmlOff).not.toContain("发送测试通知");
 
     store.set(NOTIFICATION_PREFERENCES_STORAGE_KEY, JSON.stringify({ enabled: true, sound: false, badge: true }));
     vi.stubGlobal("Notification", { permission: "denied" });

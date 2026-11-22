@@ -228,12 +228,15 @@ export class HubComputerController {
     if (retainedSession && retainedSession.runEpoch !== source.runEpoch) {
       retainedSession.runEpoch = source.runEpoch;
     }
+    const currentState = await rt.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+    const execScope = resolveTicketExecutionScope(currentState, api.conversationId);
     return {
       ticketId: source.ticketId,
       conversationId: Number(api.conversationId),
       runEpoch: source.runEpoch,
       envId: source.envId,
       readOnly: Boolean(source.readOnly),
+      ...(execScope?.isSubagent ? { isSubagent: true } : {}),
       ...(retainedSession ? { preservedSessionId: retainedSession.sessionId } : {}),
       assertActive,
     };

@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-durable";
 import {
-  redactSensitiveText, validateCustomImageAdapter, validateImageModelProfile,
+  cleanGoogleImageModelId, normalizeVertexConfig, redactSensitiveText, resolveVertexImageBaseUrl,
+  validateCustomImageAdapter, validateImageModelProfile,
   type DiscoverModelsRequest, type DiscoverModelsResponse, type ImageCapabilityConfiguration,
   type ImageCapabilityDraft, type ImageConfigurationWorkspace, type ImageDraftSaveResult,
   type ImageDraftUpdateRequest, type ImageModelCandidate, type ImageModelDiscovery,
@@ -57,7 +58,7 @@ export function validateImageDraft(config: unknown): asserts config is ImageCapa
     throw new CapabilityError(400, "invalid_image_draft", "图像草稿字段无效；密钥请通过保密输入填写。");
   }
   const value = config as Record<string, unknown>;
-  if (!["openai-image", "gemini-image", "custom-image"].includes(String(value.adapter)) || typeof value.name !== "string" || value.name.length > 100 || typeof value.modelId !== "string" || value.modelId.length > 200) {
+  if (!["openai-image", "gemini-image", "vertex-image", "custom-image"].includes(String(value.adapter)) || typeof value.name !== "string" || value.name.length > 100 || typeof value.modelId !== "string" || value.modelId.length > 200) {
     throw new CapabilityError(400, "invalid_image_draft", "图像草稿的接口、名称或模型无效。");
   }
   if (JSON.stringify(config).length > 48_000) throw new CapabilityError(400, "image_draft_too_large", "图像配置草稿过大。");
@@ -100,21 +101,34 @@ export function validateImageDraft(config: unknown): asserts config is ImageCapa
 }
 
 function effectiveImageProvider(provider: ProviderCatalogItem): ProviderCatalogItem {
-  const protocols = ["openai-completions", "openai-responses", "google-generative-ai"] as const;
+  const protocols = ["openai-completions", "openai-responses", "google-generative-ai", "google-vertex"] as const;
   const api = provider.api ?? [...provider.models, ...(provider.configuredModels ?? [])].map((model) => model.api)
     .find((value): value is typeof protocols[number] => protocols.some((protocol) => protocol === value));
-  return { ...provider, ...(api ? { api } : {}), ...(provider.baseUrl ? { baseUrl: provider.baseUrl.replace(/\/+$/, "") } : {}) };
+  let baseUrl = provider.baseUrl?.replace(/\/+$/, "");
+  if (api === "google-vertex" && baseUrl) {
+    try { baseUrl = resolveVertexImageBaseUrl(baseUrl, provider); } catch { /* surfaced in providerConnection */ }
+  }
+  return { ...provider, ...(api ? { api } : {}), ...(baseUrl ? { baseUrl } : {}) };
 }
 
 function providerConnection(raw: ProviderCatalogItem): ImageProviderConnection {
   const provider = effectiveImageProvider(raw);
-  const supportedProtocol = ["openai-completions", "openai-responses", "google-generative-ai"].includes(provider.api ?? "");
-  const imageSupported = provider.authenticated && provider.authType === "api_key" && !!provider.baseUrl && supportedProtocol;
+  const supportedProtocol = ["openai-completions", "openai-responses", "google-generative-ai", "google-vertex"].includes(provider.api ?? "");
+  let vertexError: string | undefined;
+  if (provider.api === "google-vertex" && provider.baseUrl) {
+    try {
+      normalizeVertexConfig(provider);
+      resolveVertexImageBaseUrl(provider.baseUrl, provider);
+    } catch (cause) {
+      vertexError = cause instanceof Error ? cause.message : "Vertex AI 配置无效";
+    }
+  }
+  const imageSupported = provider.authenticated && provider.authType === "api_key" && !!provider.baseUrl && supportedProtocol && !vertexError;
   return {
     id: provider.id, name: provider.name, ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
     ...(provider.api ? { api: provider.api } : {}), ...(provider.authType ? { authType: provider.authType } : {}),
     authenticated: provider.authenticated, imageSupported,
-    ...(!imageSupported ? { reason: provider.authType === "oauth" ? "此订阅授权暂未提供可用的图像接口" : !provider.authenticated ? "请先连接此供应商" : !provider.baseUrl ? "此连接尚未提供图像接口地址" : "请通过自定义图像接口接入此协议" } : {}),
+    ...(!imageSupported ? { reason: provider.authType === "oauth" ? "此订阅授权暂未提供可用的图像接口" : !provider.authenticated ? "请先连接此供应商" : !provider.baseUrl ? "此连接尚未提供图像接口地址" : vertexError ?? "请通过自定义图像接口接入此协议" } : {}),
   };
 }
 
@@ -242,7 +256,7 @@ export class KuloImageConfiguration {
           const candidates = new Map<string, ImageModelCandidate>();
           for (const entry of adapted.models) {
             const { model, adapter } = entry;
-            const modelId = adapter === "gemini-image" ? model.id.replace(/^models\//, "") : model.id;
+            const modelId = adapter === "gemini-image" || adapter === "vertex-image" ? cleanGoogleImageModelId(model.id) : model.id;
             if (!/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/.test(modelId)) continue;
             const id = `image-candidate-${fingerprint([provider.id, provider.baseUrl, modelId]).slice(0, 24)}`;
             candidates.set(id, { id, providerId: provider.id, providerName: redactSensitiveText(provider.name), baseUrl: provider.baseUrl!, adapter, modelId,

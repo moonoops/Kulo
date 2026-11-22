@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getImageModelPreset, getImageModelProfile, normalizeImageGenerationParameters, validateCustomImageAdapter, type CustomImageAdapter } from "@kulo/protocol";
+import { cleanGoogleImageModelId, getImageModelPreset, getImageModelProfile, isOfficialVertexBaseUrl, normalizeImageGenerationParameters, resolveVertexImageBaseUrl, validateCustomImageAdapter, type CustomImageAdapter } from "@kulo/protocol";
 
 describe("image provider contracts", () => {
   it("uses model-specific Gemini resolution, grounding, and thinking controls", () => {
@@ -12,6 +12,24 @@ describe("image provider contracts", () => {
     expect(() => normalizeImageGenerationParameters({ size: "4K" }, lite.profile, lite.adapter)).toThrow();
     expect(() => normalizeImageGenerationParameters({ grounding: true }, lite.profile, lite.adapter)).toThrow();
     expect(getImageModelProfile("gemini-image", "gemini-2.5-flash-image")?.sizes).toEqual([]);
+
+    const vertexBanana = getImageModelPreset("vertex-image", "publishers/google/models/gemini-nano-banana-2.1")!;
+    expect(vertexBanana).toMatchObject({ adapter: "vertex-image", baseUrl: "https://aiplatform.googleapis.com/v1", modelId: "gemini-nano-banana-2.1" });
+    const vertexPreview = getImageModelPreset("vertex-image", "gemini-3.1-flash-image-preview")!;
+    expect(vertexPreview).toMatchObject({ adapter: "vertex-image", modelId: "gemini-3.1-flash-image-preview" });
+    expect(vertexPreview.profile.sizes).toEqual(["0.5K", "1K", "2K", "4K"]);
+    expect(vertexPreview.profile.maxReferences).toBe(14);
+    expect(getImageModelPreset("gemini-image", "gemini-3-pro-image-preview-2026-06-01")?.profile.supportsEdit).toBe(true);
+    expect(() => normalizeImageGenerationParameters({ count: 2 }, vertexBanana.profile, "vertex-image")).toThrow();
+
+    expect(isOfficialVertexBaseUrl("https://aiplatform.us.rep.googleapis.com")).toBe(true);
+    expect(isOfficialVertexBaseUrl("https://aiplatform.eu.rep.googleapis.com/v1")).toBe(true);
+    expect(isOfficialVertexBaseUrl("https://aiplatform.googleapis.com.evil.example")).toBe(false);
+    expect(resolveVertexImageBaseUrl("https://aiplatform.googleapis.com", { vertexProject: "demo-proj", vertexLocation: "global" }))
+      .toBe("https://aiplatform.googleapis.com/v1/projects/demo-proj/locations/global");
+    expect(resolveVertexImageBaseUrl("https://aiplatform.googleapis.com/v1beta")).toBe("https://aiplatform.googleapis.com/v1");
+    expect(resolveVertexImageBaseUrl("https://aiplatform.googleapis.com/v1beta1")).toBe("https://aiplatform.googleapis.com/v1beta1");
+    expect(cleanGoogleImageModelId("publishers/google/models/gemini-nano-banana-2.1")).toBe("gemini-nano-banana-2.1");
   });
   it("keeps newer arbitrary sizing out of legacy GPT Image models", () => {
     const older = getImageModelProfile("openai-image", "gpt-image-1.5")!;

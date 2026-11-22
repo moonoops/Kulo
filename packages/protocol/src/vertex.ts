@@ -7,7 +7,9 @@ export function isOfficialVertexBaseUrl(baseUrl: string): boolean {
   try {
     const url = new URL(baseUrl);
     return url.protocol === "https:" && !url.port && !url.username && !url.password && !url.search && !url.hash &&
-      (url.hostname === "aiplatform.googleapis.com" || /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*-aiplatform\.googleapis\.com$/.test(url.hostname));
+      (url.hostname === "aiplatform.googleapis.com"
+        || /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*-aiplatform\.googleapis\.com$/.test(url.hostname)
+        || /^aiplatform\.(?:us|eu)\.rep\.googleapis\.com$/.test(url.hostname));
   } catch {
     return false;
   }
@@ -51,4 +53,28 @@ export function buildVertexModelBaseUrl(baseUrl: string, input: { vertexProject?
   const root = projectRoute ? projectRoute[1]! : path.replace(/\/v\d+(?:beta\d*)?$/, "");
   url.pathname = `${root}/v1/projects/${config.vertexProject}/locations/${config.vertexLocation}`;
   return url.toString().replace(/\/+$/, "");
+}
+
+/** Resolve Vertex AI image base URL, preserving origin and normalizing bare or legacy `/v1beta` paths to `/v1`. */
+export function resolveVertexImageBaseUrl(baseUrl: string, input?: { vertexProject?: unknown; vertexLocation?: unknown }): string {
+  const config = input ? normalizeVertexConfig(input) : undefined;
+  if (config) return buildVertexModelBaseUrl(baseUrl, config);
+  const base = baseUrl.trim().replace(/\/+$/, "");
+  let url: URL;
+  try { url = new URL(base); }
+  catch { throw new VertexConfigError("Vertex AI 接口地址格式无效。"); }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new VertexConfigError("Vertex AI 接口地址须为不含账号、查询参数或片段的 HTTP 地址。");
+  }
+  const path = url.pathname.replace(/\/+$/, "");
+  if (isOfficialVertexBaseUrl(base) && /\/v1beta$/i.test(path)) {
+    url.pathname = path.replace(/\/v1beta$/i, "/v1");
+  } else if (!path.split("/").some((part) => /^v\d+(?:beta\d*)?$/.test(part))) {
+    url.pathname = `${path}/v1`;
+  }
+  return url.toString().replace(/\/+$/, "");
+}
+
+export function cleanGoogleImageModelId(modelId: string): string {
+  return modelId.trim().replace(/^(?:publishers\/google\/models\/|models\/|google\/)/, "");
 }

@@ -286,11 +286,12 @@ export async function connectGrok(ctx: ExternalDriverContext): Promise<ExternalD
   if (ctx.sessionId) throw new Error("Grok Bot native session resume is unsupported");
   if (ctx.modelId) throw new Error("Grok Bot model selection must be configured in its own local client");
   if (ctx.thinkingLevel) throw new Error("Grok Bot thinking level selection must be configured in its own local client");
-  if (!ctx.prompt.trim() || ctx.prompt.length > 65536) throw new Error("Grok Bot experiment prompt is empty or exceeds the size limit");
+  const prompt = [ctx.developerInstructions?.trim(), ctx.prompt.trim()].filter(Boolean).join("\n\n");
+  if (!prompt || prompt.length > 65536) throw new Error("Grok Bot experiment prompt is empty or exceeds the size limit");
   if (!Number.isFinite(ctx.timeoutMs) || ctx.timeoutMs <= 0) throw new Error("Invalid Grok Bot experiment timeout");
   const cdp = await GrokCdp.open(await target(origin));
   const key = `__kuloGrokRun_${randomUUID().replaceAll("-", "")}`;
-  const prompt = ctx.prompt.trim(), deadline = Date.now() + ctx.timeoutMs;
+  const deadline = Date.now() + ctx.timeoutMs;
   let closed = false, submitted = false, finished = false;
   let wake: (() => void) | undefined;
   const remaining = () => Math.max(1, Math.min(10000, deadline - Date.now()));

@@ -407,8 +407,8 @@ export function createWorkerExtension(options: {
 
         const formattedEntries: string[] = [];
         for (const [idx, r] of results.entries()) {
-          const modeTag = r.readOnly ? "只读" : "读写";
-          const reuseTag = r.reused ? "续接队友" : "新建";
+          const modeTag = r.readOnly ? "read-only" : "read-write";
+          const reuseTag = r.reused ? "reused" : "new";
           const statusTag = r.status === "done" ? "DONE" : r.status === "timeout" ? "TIMEOUT" : "ERROR";
           let body = r.summary;
           if (body.length > SUBAGENT_INLINE_MAX_CHARS) {

@@ -6,15 +6,22 @@ export {
 } from "./prompts/orchestrator.js";
 export {
   DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT,
+  buildExternalAgentPrompt,
+  buildExternalAgentRunRequest,
+  budgetExternalContextSections,
   composeSubagentInstructions,
   composeWorkerInstructions,
   createWorkerSections,
   defaultExternalAgentRolePrompt,
   defaultExternalAgentWhenToUse,
+  escapeXmlContent,
   formatExternalAgentFollowUpPrompt,
   formatExternalAgentHandoffPrompt,
   formatWorkerInitialPrompt,
+  reconcileConsumedResumeState,
+  selectImageAttachmentCandidates,
   type ComposeWorkerOptions,
+  type MaterializedExternalAttachment,
 } from "./prompts/worker.js";
 export {
   APPEARANCE_CUSTOMIZATION_GUIDE,

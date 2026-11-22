@@ -528,7 +528,6 @@ export function WorkersModule({
                           <Dropdown.Item
                             id="delete"
                             textValue={t("删除智能体", "Delete agent")}
-                            variant="danger"
                             isDisabled={conflict || totalRoleCount <= 1 || disableSwitchOff}
                           >
                             <Label>{t("删除智能体", "Delete agent")}</Label>

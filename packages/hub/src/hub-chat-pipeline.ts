@@ -356,11 +356,15 @@ export class HubChatPipeline {
     }
     if (Array.isArray(options.attachments) && options.attachments.length > 0) {
       for (const att of options.attachments) {
-        if (!att?.id || !this.#deps.uploads.getUpload(att.id)) {
+        const loaded = att?.id ? this.#deps.uploads.getUpload(att.id) : null;
+        if (!loaded) {
           throw Object.assign(
             new Error(`附件 '${att?.name || att?.id || "unknown"}' 不存在或已失效，请重新上传后再发送。`),
             { code: "attachment_not_found" },
           );
+        }
+        if (loaded.record.internalOnly) {
+          throw Object.assign(new Error("内部资源不可作为普通附件发送。"), { code: "attachment_forbidden", status: 403 });
         }
       }
     }

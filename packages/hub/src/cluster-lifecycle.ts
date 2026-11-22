@@ -46,6 +46,7 @@ import {
   type ClusterSyncVaultPayload,
 } from "./cluster-sync.js";
 import { MANAGED_IDENTITY_DIRECTORY_KEY } from "./identity-files.js";
+import { enforceConnectionRuntimePermissions } from "./cluster-sync-paths.js";
 
 const MAX_ARCHIVED_BACKUPS = 3;
 const PRE_START_PROBE_TIMEOUT_MS = 3_000;
@@ -375,24 +376,16 @@ export async function applyReplicaForPromotion(
   for (const stale of STALE_SQLITE_ARTIFACTS) {
     fs.rmSync(path.join(paths.hubStateDir, stale), { recursive: true, force: true });
   }
-  // Remove stale managed identity/skills directories before copying exact replicated snapshot
-  fs.rmSync(path.join(paths.hubStateDir, "identity"), { recursive: true, force: true });
-  fs.rmSync(path.join(paths.hubStateDir, "skills"), { recursive: true, force: true });
+  // Remove stale managed identity/skills/connection-runtime directories before copying exact replicated snapshot
+  for (const dir of ["identity", "skills", "connection-runtime"] as const) fs.rmSync(path.join(paths.hubStateDir, dir), { recursive: true, force: true });
 
   const skipOnCopy = new Set([
-    "replica-state.json",
-    "connection-vault.json",
-    "vault-envelope.enc",
-    ".connection-vault.lock",
-    "devices.json",
-    "uploads",
-    "kulo.sqlite-wal",
-    "kulo.sqlite-shm",
-    "assistant.sqlite-wal",
-    "assistant.sqlite-shm",
+    "replica-state.json", "connection-vault.json", "vault-envelope.enc", ".connection-vault.lock",
+    "devices.json", "uploads", "kulo.sqlite-wal", "kulo.sqlite-shm", "assistant.sqlite-wal", "assistant.sqlite-shm",
   ]);
   copyTreeNonDestructive(replicaDir, paths.hubStateDir, { skipNames: skipOnCopy });
   normalizeManagedIdentityBackups(path.join(paths.hubStateDir, "identity"));
+  enforceConnectionRuntimePermissions(paths.hubStateDir);
 
   const replicaUploads = path.join(replicaDir, "uploads");
   if (fs.existsSync(replicaUploads)) {

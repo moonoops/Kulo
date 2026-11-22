@@ -6,10 +6,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { cleanSupervisedExecution, processFingerprint, supervisedCommand } from "./worker-supervisor.js";
 import { defaultProtectedPaths } from "./isolation.js";
 import { ExternalAgentRpc, type ExternalAgentPipeFactory, type RpcValue } from "./external-agent-rpc.js";
-import { isBlockedCustomAcpExecutableName, isBundledClaudeSdkExecutable, isSupportedExternalAgentKind, KULO_VERSION, validateCustomAcpArgs, type ExternalAgentBinding, type ExternalAgentCapabilities, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentQuotaProbeResult, type ExternalAgentServiceTierInfo, type ExternalWorkspaceMode } from "@kulo/protocol";
+import { isBlockedCustomAcpExecutableName, isBundledClaudeSdkExecutable, isSupportedExternalAgentKind, KULO_VERSION, validateCustomAcpArgs, type ExternalAgentBinding, type ExternalAgentCapabilities, type ExternalAgentInputAttachment, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentQuotaProbeResult, type ExternalWorkspaceMode } from "@kulo/protocol";
 import { ACP_FLAVORS, acpReadableSkillSubdirs, extractModelsFromAcpInitialize, extractModelsFromAcpModelState, getAcpFlavor, isSensitiveCredentialFilename, sortEffortTokens } from "./external-agent-acp.js";
 import { filterNativeAgentEnvironment, type NativeAgentEnvOptions } from "./external-agent-env.js";
-import { parseCodexRateLimitsSnapshot, sanitizeQuotaError } from "./external-agent-quota.js";
+import { prependKuloInstructions, resolveSafeExternalImages } from "./external-agent-validation.js";
 
 export interface ExternalDriverContext {
   binding: ExternalAgentBinding;
@@ -17,8 +17,12 @@ export interface ExternalDriverContext {
   cwd: string;
   workspaceMode?: ExternalWorkspaceMode;
   scratchNotesDir?: string;
+  inputsDir?: string;
+  overlapsProtected?: (canonicalPath: string) => boolean;
   readOnly: boolean;
   prompt: string;
+  developerInstructions?: string;
+  attachments?: ExternalAgentInputAttachment[];
   modelId?: string;
   thinkingLevel?: string;
   serviceTier?: string;
@@ -442,7 +446,7 @@ function createAcpLocalClient(ctx:ExternalDriverContext){
         if(typeof params.path!=="string"||!path.isAbsolute(params.path)||typeof params.content!=="string")throw new Error("Invalid ACP file write");
         const target=canonicalAcpPath(params.path);
         if(isProtectedAcpPath(target,true,ctx.binding.kind))throw new Error("ACP file write is denied for protected system, git control, or Kulo paths");
-        if(ctx.workspaceMode==="read_only"){
+        if(ctx.readOnly||ctx.workspaceMode==="read_only"){
           const inNotes=Boolean(ctx.scratchNotesDir&&isWithinAcpDir(target,ctx.scratchNotesDir));
           if(!inNotes)throw new Error("Read-only external task cannot modify files outside its scratch notes directory");
         }else if(ctx.workspaceMode==="staged"){
@@ -454,7 +458,7 @@ function createAcpLocalClient(ctx:ExternalDriverContext){
         await fs.promises.writeFile(target,params.content,"utf8");return{};
       }
       if(method==="terminal/create"){
-        if(ctx.workspaceMode==="read_only")throw new Error("Read-only external task cannot spawn unrestricted ACP terminals");
+        if(ctx.readOnly||ctx.workspaceMode==="read_only")throw new Error("Read-only external task cannot spawn unrestricted ACP terminals");
         if(typeof params.command!=="string"||!params.command||params.args!==undefined&&(!Array.isArray(params.args)||params.args.some(value=>typeof value!=="string")))throw new Error("Invalid ACP terminal command");
         if(!ctx.controlRoot)throw new Error("ACP terminal process supervision is unavailable");
         const env:NodeJS.ProcessEnv={...nativeAgentEnvironment(ctx.binding.kind,{terminal:true})};for(const item of Array.isArray(params.env)?params.env:[]){const value=obj(item);if(typeof value.name!=="string"||typeof value.value!=="string")throw new Error("Invalid ACP terminal environment");env[value.name]=value.value;}
@@ -546,17 +550,19 @@ function extractXaiPromptComplete(method: string, params: RpcValue): { sessionId
 
 export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<{driver:ExternalDriver;models:ExternalAgentModelInfo[]}>{
   const flavor = getAcpFlavor(ctx.binding.kind);
+  const effectiveReadOnly = Boolean(ctx.readOnly || ctx.workspaceMode === "read_only");
   let launchArgs: string[];
   if (ctx.binding.kind === "acp") {
     const validated = ctx.binding.acpArgs !== undefined ? validateCustomAcpArgs(ctx.binding.acpArgs) : { ok: true as const, value: [] };
     if (!validated.ok) throw new Error(validated.error);
     launchArgs = validated.value;
   } else if (flavor) {
-    launchArgs = [...(probe ? (flavor.probeArgs ?? flavor.acpArgs) : ctx.readOnly ? (flavor.readOnlyArgs ?? flavor.acpArgs) : flavor.acpArgs)];
+    launchArgs = [...(probe ? (flavor.probeArgs ?? flavor.acpArgs) : effectiveReadOnly ? (flavor.readOnlyArgs ?? flavor.acpArgs) : flavor.acpArgs)];
   } else {
     launchArgs = ["acp", "--process-per-session"];
   }
 
+  const isResumingSession = Boolean(ctx.sessionId);
   let sessionId=ctx.sessionId;let submitted=false;let closed=false;let cancelRequested=false;let permissionCancelled=false;let sawToolOrOutput=false;let promptSettled=false;
   let activePromptId: string | undefined;
   let settlePromptFn: ((stopReason: string, errorMessage?: string) => void) | undefined;
@@ -616,7 +622,7 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
     if(kind==="plan"||kind==="current_mode_update"||kind==="config_option_update"||kind==="compaction_update"||kind==="compaction_summary_chunk"||kind==="usage_update"||kind==="notice"||kind==="session_info_update")ctx.activity?.("Working...");
     if(kind==="tool_call"||kind==="tool_call_update"){sawToolOrOutput=true;const id=text(update.toolCallId);if(update.title)tools.set(id,text(update.title));ctx.event("tool",text(update.title)||tools.get(id)||"Tool update");}
   },failed:error=>{if(!closed&&submitted&&!promptSettled)ctx.complete("uncertain",error.message);}});
-  const pipe=await ctx.pipe({executable:ctx.executable,args:launchArgs,cwd:ctx.cwd,env:{},isolated:false,readOnly:ctx.readOnly,runtimePaths:externalRuntimePaths(ctx.executable),onStdout:data=>rpc.accept(data),onStderr:data=>ctx.event("error",Buffer.from(data).toString("utf8"))});rpc.attach(pipe);
+  const pipe=await ctx.pipe({executable:ctx.executable,args:launchArgs,cwd:ctx.cwd,env:{},isolated:false,readOnly:effectiveReadOnly,runtimePaths:externalRuntimePaths(ctx.executable),onStdout:data=>rpc.accept(data),onStderr:data=>ctx.event("error",Buffer.from(data).toString("utf8"))});rpc.attach(pipe);
   const driver:ExternalDriver={
     cancel:async()=>{
       cancelRequested=true;
@@ -662,15 +668,18 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
       validateRequestedModelAndEffort(initModels.models, initModels.currentModelId);
       return { driver, models: initModels.models };
     }
-    const capabilities=obj(init.agentCapabilities);const mcpServers=obj(capabilities.mcpCapabilities).http?ctx.servers.map(server=>({type:"http",name:`kulo-${randomUUID()}-${server.name}`,url:server.url,headers:server.headers??[]})):[];
-    if(ctx.servers.length&&!mcpServers.length)ctx.event("state","This client does not advertise HTTP MCP; continuing with its native tools");
+    const capabilities=obj(init.agentCapabilities);const mcpServers=obj(capabilities.mcpCapabilities).http?ctx.servers.map(server=>({type:"http",name:server.name,url:server.url,headers:server.headers??[]})):[];
+    const noHttpMcpFallback=ctx.servers.length>0&&!mcpServers.length;
+    if(noHttpMcpFallback)ctx.event("state","This client does not advertise HTTP MCP; continuing with its native tools");
+    const supportsSessionSystemPrompt=Boolean(obj(capabilities.sessionCapabilities).systemPrompt);
+    const systemPromptParam=supportsSessionSystemPrompt&&ctx.developerInstructions?.trim()?{systemPrompt:{mode:"append",text:ctx.developerInstructions.trim()}}:{};
     let session:RpcValue;
     if(sessionId){
       const canResume = Boolean(obj(capabilities.sessionCapabilities).resume);
       if(!capabilities.loadSession&&!canResume)throw new Error("Installed agent does not support native session resume");
       if (!canResume && flavor?.sessionLoadReplayIdleReadiness) {
         let idleTimer: NodeJS.Timeout | undefined;
-        const loadPromise = rpc.call("session/load",{sessionId,cwd:ctx.cwd,mcpServers});
+        const loadPromise = rpc.call("session/load",{sessionId,cwd:ctx.cwd,mcpServers,...systemPromptParam});
         session = await new Promise<RpcValue>((resolve, reject) => {
           let done = false;
           const finish = (value: RpcValue | Error) => {
@@ -689,10 +698,10 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
           void loadPromise.then(finish, (err: unknown) => finish(err instanceof Error ? err : new Error("ACP session/load failed")));
         });
       } else {
-        session=await rpc.call(canResume?"session/resume":"session/load",{sessionId,cwd:ctx.cwd,mcpServers});
+        session=await rpc.call(canResume?"session/resume":"session/load",{sessionId,cwd:ctx.cwd,mcpServers,...systemPromptParam});
       }
     } else {
-      session=await rpc.call("session/new",{cwd:ctx.cwd,mcpServers});
+      session=await rpc.call("session/new",{cwd:ctx.cwd,mcpServers,...systemPromptParam});
     }
     sessionId=text(session.sessionId)||sessionId;if(!sessionId)throw new Error("Agent did not return a native session ID");ctx.session(sessionId);
 
@@ -788,11 +797,38 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
           if (cancelRequested || permissionCancelled) ctx.complete("cancelled");
           else if (sawToolOrOutput) ctx.complete("uncertain", errorMessage || "External agent spontaneously cancelled mid-turn without an explicit cancel request");
           else ctx.complete("failed", errorMessage || "External agent cancelled without an explicit cancel request");
-        } else if (["end_turn", "max_tokens", "max_turn_requests", "refusal"].includes(reason)) ctx.complete("completed");
-        else ctx.complete(cancelRequested ? "uncertain" : "failed", errorMessage || `Unexpected ACP stop reason: ${reason || "missing"}`);
+        } else if (reason === "end_turn") {
+          ctx.complete("completed");
+        } else if (["max_tokens", "max_turn_requests", "refusal"].includes(reason)) {
+          ctx.event("state", `External agent stopped with reason: ${reason}`);
+          ctx.complete("completed", errorMessage || `External agent stopped early (${reason})`);
+        } else ctx.complete(cancelRequested ? "uncertain" : "failed", errorMessage || `Unexpected ACP stop reason: ${reason || "missing"}`);
         driver.close();
       };
-      const promptParams: RpcValue = { sessionId, prompt: [{ type: "text", text: ctx.prompt }] };
+      let promptText = !supportsSessionSystemPrompt && !isResumingSession
+        ? prependKuloInstructions(ctx.developerInstructions, ctx.prompt)
+        : ctx.prompt;
+      if (noHttpMcpFallback) {
+        promptText = `${promptText}\n\nNote: kulo-task HTTP MCP tools are unavailable in this client; deliver your full findings and status directly in your final response.`;
+      }
+      const promptBlocks: RpcValue[] = [{ type: "text", text: promptText }];
+      if (Boolean(obj(capabilities.promptCapabilities).image) && ctx.attachments?.length) {
+        // Keep combined base64 payload safely under ExternalAgentRpc's 8 MiB inbound replay frame cap.
+        const images = resolveSafeExternalImages({
+          attachments: ctx.attachments,
+          expectedInputsDir: ctx.inputsDir,
+          overlapsProtected: ctx.overlapsProtected,
+          maxCount: 4,
+          maxFileBytes: 3 * 1024 * 1024,
+          maxTotalBytes: 4 * 1024 * 1024,
+          readBytes: true,
+          onSkip: (reason) => ctx.event("state", reason),
+        });
+        for (const img of images) {
+          promptBlocks.push({ type: "image", mimeType: img.mimeType, data: img.base64! });
+        }
+      }
+      const promptParams: RpcValue = { sessionId, prompt: promptBlocks };
       if (flavor?.xaiPromptCompletionFallback) {
         activePromptId = `kulo-xai-prompt-${randomUUID()}`;
         promptParams._meta = { promptId: activePromptId, requestId: activePromptId };
@@ -813,251 +849,4 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
   }catch(error){driver.close();throw error;}
 }
 
-export async function connectCodex(ctx:ExternalDriverContext,probe=false):Promise<{driver:ExternalDriver;models:ExternalAgentModelInfo[];authenticated:boolean|null}>{
-  let sessionId=ctx.sessionId;let turnId:string|undefined;let submitted=false;let closed=false;let sawMessageDelta=false;
-  let cancelRequested=false;let pendingInterrupt=false;let permissionCancelled=false;let sawToolOrOutput=false;
-  const flushPendingInterrupt=()=>{if(pendingInterrupt&&sessionId&&turnId&&!closed){pendingInterrupt=false;void rpc.call("turn/interrupt",{threadId:sessionId,turnId}).catch(()=>{});}};
-  const rpc=new ExternalAgentRpc({request:async(method,params,id)=>{
-    if(params.threadId&&params.threadId!==sessionId)throw new Error("Stale Codex thread");
-    if(method==="item/commandExecution/requestApproval"||method==="item/fileChange/requestApproval"){
-      const decisions=Array.isArray(params.availableDecisions)?params.availableDecisions:["accept","acceptForSession","decline","cancel"];
-      const choices=decisions.map((decision,index)=>({id:String(index),label:typeof decision==="string"?decision:JSON.stringify(decision)}));
-      const choice=await ctx.permission(`codex:${createHash("sha256").update(String(id)).digest("hex")}`,text(params.reason)||text(params.command)||"Codex tool approval",choices);
-      const selected=choices.findIndex(value=>value.id===choice);if(selected<0){permissionCancelled=true;throw new Error("Codex approval input was cancelled");}
-      const picked=decisions[selected];
-      if(picked==="decline"||picked==="cancel")permissionCancelled=true;
-      return{decision:picked};
-    }
-    if(method==="item/permissions/requestApproval"){
-      const choice=await ctx.permission(`codex:${createHash("sha256").update(String(id)).digest("hex")}`,text(params.reason)||JSON.stringify(params.permissions),[{id:"turn",label:"Allow for this turn"},{id:"session",label:"Allow for this session"},{id:"deny",label:"Reject"}]);
-      if(choice!=="turn"&&choice!=="session")permissionCancelled=true;
-      return{permissions:choice==="turn"||choice==="session"?params.permissions:{},scope:choice==="session"?"session":"turn"};
-    }
-    if(method==="item/tool/requestUserInput"){
-      const questions=(Array.isArray(params.questions)?params.questions:[]).map(obj);
-      const answers:Record<string,{answers:string[]}>={};
-      for(const [qIndex,q] of questions.entries()){
-        const qId=text(q.id)||`q${qIndex}`;
-        const qTitle=[text(q.header),text(q.question)].filter(Boolean).join(": ")||"Codex requested input";
-        const rawOptions=(Array.isArray(q.options)?q.options:[]).map(obj).filter(opt=>typeof opt.label==="string"&&opt.label.length>0);
-        const choices=rawOptions.length
-          ?rawOptions.map((opt,idx)=>({id:String(idx),label:text(opt.description)?`${text(opt.label)} — ${text(opt.description)}`:text(opt.label)}))
-          :[{id:"continue",label:"Proceed with best judgment"},{id:"decline",label:"Cancel"}];
-        const choice=await ctx.permission(`codex:${createHash("sha256").update(`${String(id)}:${qId}`).digest("hex")}`,qTitle,choices);
-        if(rawOptions.length){
-          const idx=Number(choice);
-          const selected=Number.isInteger(idx)&&idx>=0&&idx<rawOptions.length?rawOptions[idx]:undefined;
-          if(!selected)permissionCancelled=true;
-          answers[qId]={answers:selected?[text(selected.label)]:[]};
-        }else{
-          if(choice!=="continue")permissionCancelled=true;
-          answers[qId]={answers:choice==="continue"?["Proceed with best judgment"]:[]};
-        }
-      }
-      return{answers};
-    }
-    throw new Error("Unsupported Codex request");
-  },notification:(method,params)=>{
-    if(params.threadId&&params.threadId!==sessionId)return;
-    if(method==="item/agentMessage/delta"){sawMessageDelta=true;const delta=text(params.delta);if(delta)sawToolOrOutput=true;ctx.event("message",delta);}
-    if(method==="item/reasoning/summaryTextDelta"||method==="item/reasoning/textDelta"||method==="item/reasoning/summaryPartAdded")ctx.activity?.("Reasoning...");
-    if(method==="item/commandExecution/outputDelta"||method==="item/fileChange/outputDelta"||method==="item/plan/delta"||method==="turn/plan/updated"||method==="turn/diff/updated")ctx.activity?.("Executing...");
-    if(method==="item/started"||method==="item/completed"){
-      const item=obj(params.item);
-      if(item.type==="agentMessage"){
-        if(method==="item/completed"&&!sawMessageDelta){
-          const fallback=text(item.text)||(Array.isArray(item.content)?item.content.map(part=>{const p=obj(part);return (p.type==="text"||p.type==="output_text")?text(p.text):"";}).join(""):"");
-          if(fallback){sawToolOrOutput=true;ctx.event("message",fallback);}
-        }
-      }else{
-        sawToolOrOutput=true;
-        ctx.event("tool",text(item.type)||"Tool update");
-      }
-    }
-    if(method==="turn/started"){sawMessageDelta=false;turnId=text(obj(params.turn).id)||turnId;flushPendingInterrupt();}
-    if(method==="turn/completed"){
-      const turn=obj(params.turn);const status=text(turn.status);const errMsg=text(obj(turn.error).message)||undefined;
-      if(status==="completed")ctx.complete("completed",errMsg);
-      else if(status==="interrupted"){
-        if(cancelRequested||permissionCancelled)ctx.complete("cancelled",errMsg);
-        else if(sawToolOrOutput)ctx.complete("uncertain",errMsg||"Codex turn was interrupted mid-execution without a cancel request");
-        else ctx.complete("failed",errMsg||"Codex turn was interrupted without a cancel request");
-      }else ctx.complete("failed",errMsg);
-      driver.close();
-    }
-    if(method==="account/rateLimits/updated"){
-      const parsed=parseCodexRateLimitsSnapshot(params,{source:"passive_run"});
-      if(parsed)ctx.quota?.(parsed);
-    }
-    if(method==="error"&&params.willRetry!==true)ctx.event("error",text(obj(params.error).message)||"Codex reported an error");
-  },failed:error=>{if(!closed&&submitted)ctx.complete("uncertain",error.message);}});
-  const pipe=await ctx.pipe({executable:ctx.executable,args:["app-server"],cwd:ctx.cwd,env:{},isolated:false,readOnly:ctx.readOnly,runtimePaths:externalRuntimePaths(ctx.executable),onStdout:data=>rpc.accept(data),onStderr:data=>ctx.event("error",Buffer.from(data).toString("utf8"))});rpc.attach(pipe);
-  const driver:ExternalDriver={cancel:async()=>{cancelRequested=true;if(!sessionId||!turnId){pendingInterrupt=true;return;}await rpc.call("turn/interrupt",{threadId:sessionId,turnId});},close:()=>{closed=true;rpc.close();},cleanup:()=>pipe.cleanup?.()??pipe.exited.then(()=>true,()=>false)};
-  try{
-    await rpc.call("initialize",{clientInfo:{name:"kulo",version:KULO_VERSION},capabilities:{experimentalApi:true}});rpc.notify("initialized",{});
-    const [modelResult,account]=probe?await Promise.all([rpc.call("model/list",{}),rpc.call("account/read",{refreshToken:false}).catch(()=>({}))]):[ctx.modelId||ctx.thinkingLevel||ctx.serviceTier?await rpc.call("model/list",{}):{},{}];
-    const catalog=(Array.isArray(modelResult.data)?modelResult.data:[]).map(obj);
-    const parseCodexServiceTiers=(value:RpcValue):ExternalAgentServiceTierInfo[]=>{
-      const seen=new Set<string>(),tiers:ExternalAgentServiceTierInfo[]=[];
-      const pushTier=(id:string,name?:string,description?:string)=>{
-        const clean=id.trim();if(!clean||seen.has(clean))return;seen.add(clean);
-        tiers.push({id:clean,...(name?.trim()?{name:name.trim()}:{}),...(description?.trim()?{description:description.trim()}:{})});
-      };
-      if(Array.isArray(value.serviceTiers)){
-        for(const item of value.serviceTiers){
-          const row=obj(item);
-          if(typeof row.id==="string")pushTier(row.id,text(row.name),text(row.description));
-        }
-      }
-      if(Array.isArray(value.additionalSpeedTiers)){
-        for(const item of value.additionalSpeedTiers){
-          if(typeof item==="string")pushTier(item);
-        }
-      }
-      return tiers;
-    };
-    const models:ExternalAgentModelInfo[]=catalog.filter(value=>typeof value.id==="string").map(value=>{
-      const efforts=(Array.isArray(value.supportedReasoningEfforts)?value.supportedReasoningEfforts:[]).map(item=>text(obj(item).reasoningEffort)).filter(Boolean);
-      const serviceTiers=parseCodexServiceTiers(value);
-      const defaultServiceTier=text(value.defaultServiceTier).trim()||undefined;
-      return{
-        id:text(value.model)||text(value.id),
-        name:text(value.displayName)||text(value.id),
-        ...(efforts.length?{efforts:[...new Set(efforts)]}:{}),
-        ...(serviceTiers.length?{serviceTiers}:{}),
-        ...(defaultServiceTier?{defaultServiceTier}:{}),
-        ...(value.isDefault===true?{isDefault:true}:{}),
-      };
-    });
-    const authenticated=probe?Boolean(approvedAgentEnv("codex").OPENAI_API_KEY||obj(account).account):null;
-    if(ctx.modelId&&models.length&&!models.some(model=>model.id===ctx.modelId))throw new Error("Selected model is not advertised by Codex");
-    if(!probe){
-      const mcp_servers=Object.fromEntries(ctx.servers.map(server=>[`kulo-${randomUUID()}-${server.name}`,{enabled:true,url:server.url,http_headers:Object.fromEntries((server.headers??[]).map(item=>[item.name,item.value]))}]));
-      const preSelected=catalog.find(value=>(value.model??value.id)===ctx.modelId)??(!ctx.modelId?catalog.find(value=>value.isDefault):undefined);
-      if(ctx.serviceTier&&preSelected){
-        const advertisedTiers=parseCodexServiceTiers(preSelected);
-        if(advertisedTiers.length>0&&ctx.serviceTier!=="default"&&!advertisedTiers.some(tier=>tier.id===ctx.serviceTier)){
-          throw new Error("Selected service tier is not advertised by Codex for this model");
-        }
-      }
-      const thread=await rpc.call(sessionId?"thread/resume":"thread/start",{...(sessionId?{threadId:sessionId}:{}),cwd:ctx.cwd,...(ctx.modelId?{model:ctx.modelId}:{}),...(ctx.serviceTier?{serviceTier:ctx.serviceTier}:{}),...(ctx.servers.length?{config:{mcp_servers}}:{})});
-      const selected=catalog.find(value=>(value.model??value.id)===(ctx.modelId??thread.model))??(!ctx.modelId?catalog.find(value=>value.isDefault):undefined);
-      if(ctx.thinkingLevel){
-        if(!selected||!(Array.isArray(selected.supportedReasoningEfforts)?selected.supportedReasoningEfforts:[]).some(value=>obj(value).reasoningEffort===ctx.thinkingLevel))throw new Error("Selected thinking level is not advertised by Codex for this model");
-      }
-      if(ctx.serviceTier&&selected){
-        const advertisedTiers=parseCodexServiceTiers(selected);
-        if(advertisedTiers.length>0&&ctx.serviceTier!=="default"&&!advertisedTiers.some(tier=>tier.id===ctx.serviceTier)){
-          throw new Error("Selected service tier is not advertised by Codex for this model");
-        }
-      }
-      sessionId=text(obj(thread.thread).id);if(!sessionId)throw new Error("Codex did not return a native thread ID");ctx.session(sessionId);
-      submitted=true;ctx.submitted();const turn=await rpc.call("turn/start",{threadId:sessionId,cwd:ctx.cwd,input:[{type:"text",text:ctx.prompt,text_elements:[]}],...(ctx.modelId?{model:ctx.modelId}:{}),...(ctx.thinkingLevel?{effort:ctx.thinkingLevel}:{}),...(ctx.serviceTier?{serviceTier:ctx.serviceTier}:{})});turnId=text(obj(turn.turn).id)||turnId;flushPendingInterrupt();
-    }
-    return{driver,models,authenticated};
-  }catch(error){driver.close();throw error;}
-}
-
-export async function probeCodexQuota(options: {
-  executable: string;
-  cwd: string;
-  controlRoot: string;
-  pipeFactory?: ExternalAgentPipeFactory;
-  signal?: AbortSignal;
-  timeoutMs?: number;
-  redact?: (value: string) => string;
-}): Promise<ExternalAgentQuotaProbeResult> {
-  const timeoutMs = options.timeoutMs ?? 8_000;
-  const startedAt = Date.now();
-  const remainingMs = () => Math.max(500, timeoutMs - (Date.now() - startedAt));
-  if (options.signal?.aborted) {
-    return { kind: "codex", status: "unavailable", source: "live", fetchedAt: Date.now(), windows: [], error: "Quota check aborted" };
-  }
-  const rpc = new ExternalAgentRpc({
-    request: async () => { throw new Error("Quota probe does not accept interactive requests"); },
-    notification: () => {},
-    failed: () => {},
-  });
-  const factory = options.pipeFactory ?? createExternalPipeFactory({ controlRoot: options.controlRoot, kind: "codex" });
-  const pipe = await factory({
-    executable: options.executable,
-    args: ["app-server", "-c", "mcp_servers={}"],
-    cwd: options.cwd,
-    env: {},
-    isolated: false,
-    readOnly: true,
-    runtimePaths: externalRuntimePaths(options.executable),
-    onStdout: (data) => rpc.accept(data),
-    onStderr: () => {},
-  });
-  rpc.attach(pipe);
-  const onAbort = () => { try { rpc.close(); pipe.close(); } catch { /* ignore */ } };
-  options.signal?.addEventListener("abort", onAbort, { once: true });
-  try {
-    await rpc.call("initialize", { clientInfo: { name: "kulo", version: KULO_VERSION }, capabilities: { experimentalApi: true } }, remainingMs());
-    rpc.notify("initialized", {});
-    const accountResp = await rpc.call("account/read", { refreshToken: false }, remainingMs()).catch(() => ({} as RpcValue));
-    const account = obj(accountResp.account);
-    const accountType = text(account.type);
-    if (!accountType) {
-      return {
-        kind: "codex",
-        status: approvedAgentEnv("codex").OPENAI_API_KEY ? "api_key_billing" : "unauthenticated",
-        source: "live",
-        fetchedAt: Date.now(),
-        windows: [],
-      };
-    }
-    if (accountType !== "chatgpt") {
-      return {
-        kind: "codex",
-        status: "api_key_billing",
-        source: "live",
-        fetchedAt: Date.now(),
-        windows: [],
-      };
-    }
-    let rateLimitsResp: RpcValue;
-    try {
-      rateLimitsResp = await rpc.call("account/rateLimits/read", { excludeResetCreditDetails: true }, remainingMs());
-    } catch (error) {
-      const code = (error as { code?: unknown } | null)?.code;
-      const msg = error instanceof Error ? error.message : String(error);
-      if (code === -32602 || /-32602|invalid params/i.test(msg)) {
-        rateLimitsResp = await rpc.call("account/rateLimits/read", {}, remainingMs());
-      } else {
-        throw error;
-      }
-    }
-    const parsed = parseCodexRateLimitsSnapshot(rateLimitsResp, {
-      source: "live",
-      fetchedAt: Date.now(),
-      accountPlanType: account.planType,
-    });
-    if (!parsed) {
-      return {
-        kind: "codex",
-        status: "unavailable",
-        source: "live",
-        fetchedAt: Date.now(),
-        windows: [],
-        error: "Codex returned no quota buckets",
-      };
-    }
-    return parsed;
-  } catch (error) {
-    return {
-      kind: "codex",
-      status: "unavailable",
-      source: "live",
-      fetchedAt: Date.now(),
-      windows: [],
-      error: sanitizeQuotaError(error instanceof Error ? error.message : "Codex quota query failed", options.redact),
-    };
-  } finally {
-    options.signal?.removeEventListener("abort", onAbort);
-    try { rpc.close(); } catch { /* ignore */ }
-    try { pipe.close(); } catch { /* ignore */ }
-    await (pipe.cleanup?.() ?? pipe.exited.then(() => true, () => false)).catch(() => false);
-  }
-}
+export { connectCodex, probeCodexQuota } from "./external-agent-codex.js";

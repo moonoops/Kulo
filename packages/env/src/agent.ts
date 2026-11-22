@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { localDaemon } from "@earendil-works/pi-env";
 import WebSocket from "ws";
 import { canonicalExecutionPath, createWorkerSandbox, nativeProtectedPaths, workerIsolationCapabilities, type WorkerSandbox } from "./isolation.js";
-import { ExternalAgentService, isExternalAgentRequest } from "./external-agents.js";
+import { EXTERNAL_AGENT_NODE_CAPABILITIES, ExternalAgentService, isExternalAgentRequest } from "./external-agents.js";
 import type { ExternalAgentMcpInvocation } from "./external-agent-mcp.js";
 import { randomBytes } from "node:crypto";
 import { ProjectDirectoryRegistry } from "./project-directories.js";
@@ -26,7 +26,6 @@ import {
   CONNECTORS_CAPABILITY,
   CLUSTER_FAILOVER_CAPABILITY,
   WARM_STANDBY_CAPABILITY,
-  EXTERNAL_AGENT_QUOTA_CAPABILITY,
   type ClusterHandoverDirective,
   type ClusterSyncAvailableNotification,
   type ClusterSyncStatus,
@@ -461,8 +460,7 @@ export class KuloEnvAgent {
           STREAM_RESUME_CAPABILITY,
           CLUSTER_FAILOVER_CAPABILITY,
           ...(this.#options.warmStandbyCapable ? [WARM_STANDBY_CAPABILITY] : []),
-          "external-agents",
-          EXTERNAL_AGENT_QUOTA_CAPABILITY,
+          ...EXTERNAL_AGENT_NODE_CAPABILITIES,
           "host-actions",
           ...workerIsolationCapabilities(),
           ...(this.#options.capabilities ?? []).filter((capability) => !["flow-browser", "agent-browser", "agent-desktop"].includes(capability)),

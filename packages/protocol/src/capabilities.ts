@@ -20,7 +20,7 @@ export interface SkillRecord {
 }
 export interface SkillSnapshot { revision: number; skills: SkillRecord[] }
 
-export type MediaAdapterId = "openai-image" | "gemini-image" | "custom-image" | "flow-browser";
+export type MediaAdapterId = "openai-image" | "gemini-image" | "vertex-image" | "custom-image" | "flow-browser";
 export type MediaKind = "image" | "video";
 export type MediaOutputFormat = "png" | "jpeg" | "webp" | "gif" | "svg" | "mp4";
 export type ImageIntent = "generate" | "edit" | "animate" | "vector";

@@ -24,26 +24,31 @@ const settings: KuloSettingsView = {
 const update = () => {};
 
 describe("settings controls and layout", () => {
-  it("uses compact font and language pickers with the saved default selected", () => {
+  it("uses compact theme, language, and font pickers with the saved defaults selected", () => {
     const html = renderToStaticMarkup(<AppearanceModule />);
+    expect(html).toContain("外观");
+    expect(html).toContain("明暗模式");
+    expect(html).toContain("跟随系统");
     expect(html).toContain("对话字号");
-    expect(html.match(/aria-haspopup="listbox"/g)).toHaveLength(2);
+    expect(html.match(/aria-haspopup="listbox"/g)).toHaveLength(3);
     expect(html).toContain("中 · 14 px");
     expect(html).toContain("中文");
     expect(html).toContain('aria-label="外观偏好"');
-    expect(html.match(/class="[^"]*\bkulo-settings-row\b/g)).toHaveLength(7);
+    expect(html.match(/class="[^"]*\bkulo-settings-row\b/g)).toHaveLength(8);
     expect(html).toContain('aria-label="自动切换形象"');
     expect(html).toContain('aria-label="动态"');
     expect(html).toContain('aria-label="通知偏好"');
     expect(html).toContain('aria-label="系统通知"');
     expect(html).toContain('aria-label="提示音"');
     expect(html).toContain('aria-label="应用角标"');
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain('type="radio"');
     expect(html).not.toContain("grid-cols-4");
     expect(html).not.toContain('type="range"');
     expect(html).not.toContain("对话字号预览");
     expect(html).not.toContain("保存");
-    expect(html).toContain('aria-label="明暗模式"');
-    expect(html.match(/type="radio"/g)).toHaveLength(3);
+    expect(html).not.toContain("系统通知设置");
+    expect(html).not.toContain("发送测试通知");
   });
 
   it("names each settings section from its own heading", () => {

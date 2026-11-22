@@ -155,7 +155,7 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
     expect(sec.kulo_skills).toContain("genui-cards");
 
     const tools = offeredToolNames(first);
-    expect(tools).toHaveLength(14);
+    expect(tools).toHaveLength(15);
     expect(tools).toEqual(
       expect.arrayContaining([
         "kulo_dispatch",
@@ -172,8 +172,10 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
         "kulo_ui_show",
         "kulo_ui_diagram",
         "kulo_skill_read",
+        "kulo_history_search",
       ]),
     );
+    expect(tools).not.toContain("kulo_history_read");
     const rootAgent = await hub.rootConversation.agent(BACKGROUND_CONTEXT);
     const callableNames = rootAgent.callable.map((t) => t.name);
     expect(callableNames).not.toContain("kulo_skill_materialize");
@@ -181,14 +183,15 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
     expect(callableNames).not.toContain("kulo_synthesize_speech");
     expect(callableNames.some((t) => t.startsWith("hindsight_"))).toBe(false);
 
-    // Budget gates (down from 11,800 Chinese system chars [~7.8k tok] and 53 tools / 29,898 mixed-Chinese schema chars [~10k tok] on blank Hub)
+    // Budget gates (down from 11,800 Chinese system chars [~7.8k tok] and 53 tools / 29,898 mixed-Chinese schema chars [~10k tok] on blank Hub;
+    // includes chat-resident `kulo_history_search` as the 15th resident tool)
     const sysChars = systemTextLength(first);
     const schemaChars = JSON.stringify(offeredToolObjects(first)).length;
     expect(sysChars).toBeGreaterThan(2_000);
     expect(sysChars).toBeLessThan(11_000);
     expect(schemaChars).toBeGreaterThan(3_000);
-    expect(schemaChars).toBeLessThan(12_000);
-    expect(sysChars + schemaChars).toBeLessThan(23_000);
+    expect(schemaChars).toBeLessThan(12_800);
+    expect(sysChars + schemaChars).toBeLessThan(23_500);
   });
 
   it("enforces unified first-person self-reference across main chat, settings, voice, and default identity templates", () => {

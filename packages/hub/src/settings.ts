@@ -214,7 +214,7 @@ export function sanitizeCustomModelList(
     if (mObj.protocolAdapter !== undefined && !(MODEL_PROTOCOL_ADAPTERS as readonly unknown[]).includes(mObj.protocolAdapter)) {
       throw new SettingsUpdateError(400, "模型接口协议无效。");
     }
-    const protocolAdapter = mObj.protocolAdapter as ModelProtocolAdapter | undefined;
+    const protocolAdapter = (api === "google-vertex" && mObj.protocolAdapter === "gemini-image" ? "vertex-image" : mObj.protocolAdapter) as ModelProtocolAdapter | undefined;
     let voices: string[] | undefined;
     if (mObj.voices !== undefined) {
       if (!Array.isArray(mObj.voices) || mObj.voices.length > 64 || mObj.voices.some((v) => typeof v !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(v.trim()))) {
@@ -231,7 +231,7 @@ export function sanitizeCustomModelList(
     let imageDefaults: CustomModelConfig["imageDefaults"];
     if (mObj.imageDefaults !== undefined) {
       if (!imageProfile) throw new SettingsUpdateError(400, "配置默认图像参数前需提供图像能力声明。");
-      const mediaAdapter = protocolAdapter === "gemini-image" ? "gemini-image" : protocolAdapter === "custom-image" ? "custom-image" : "openai-image";
+      const mediaAdapter = protocolAdapter === "vertex-image" ? "vertex-image" : protocolAdapter === "gemini-image" ? "gemini-image" : protocolAdapter === "custom-image" ? "custom-image" : "openai-image";
       try { imageDefaults = normalizeImageGenerationParameters(mObj.imageDefaults as NonNullable<CustomModelConfig["imageDefaults"]>, imageProfile, mediaAdapter); }
       catch (err) { throw new SettingsUpdateError(400, err instanceof Error ? err.message : "默认图像参数无效。"); }
     }

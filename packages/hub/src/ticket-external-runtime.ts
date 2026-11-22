@@ -6,6 +6,7 @@ import type { ConversationId, Harness } from "@earendil-works/pi-durable";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import type { EnvManager } from "@kulo/env";
 import {
+  isEffectiveExternalReadOnly,
   isSupportedExternalAgentKind,
   type ChatAttachment,
   type ExternalAgentPendingReport,
@@ -92,7 +93,7 @@ export class TicketExternalRuntime {
             id: role.id,
             label: role.label,
             whenToUse: role.whenToUse,
-            readOnly: !role.external && Boolean(role.readOnly),
+            readOnly: Boolean(role.readOnly),
             ...(role.external ? { envId: role.external.envId } : {}),
             available: !role.external || Boolean(role.external.verifiedAt && isSupportedExternalAgentKind(role.external.kind)),
           }));
@@ -136,6 +137,9 @@ export class TicketExternalRuntime {
         return {
           recorded: true,
           pendingNativeCompletion: true,
+          ...(["ready", "blocked", "failed"].includes(finalizedReport.state)
+            ? { instruction: "Report recorded. End your turn immediately with one brief sentence; do not repeat the full report or make further edits." }
+            : {}),
           ...(stagedAttachments?.length ? { stagedAssets: stagedAttachments.map((a) => ({ id: a.id, name: a.name })) } : {}),
           ...(finalizedReport.overflowAsset ? { overflowAssetId: finalizedReport.overflowAsset.id } : {}),
         };
@@ -172,7 +176,7 @@ export class TicketExternalRuntime {
           conversationId: ticket.workerConversationId,
           ticketId: ticket.id,
           runEpoch: ticket.runEpoch,
-          readOnly: Boolean(ticket.readOnly || ticket.externalExecution?.workspaceMode === "read_only"),
+          readOnly: isEffectiveExternalReadOnly(ticket),
           isSubagent: false,
         }, BACKGROUND_CONTEXT);
         const granted = new Set(list.grantedConnectionIds);
@@ -195,7 +199,7 @@ export class TicketExternalRuntime {
           conversationId: ticket.workerConversationId,
           ticketId: ticket.id,
           runEpoch: ticket.runEpoch,
-          readOnly: Boolean(ticket.readOnly || ticket.externalExecution?.workspaceMode === "read_only"),
+          readOnly: isEffectiveExternalReadOnly(ticket),
           isSubagent: false,
         }, input, BACKGROUND_CONTEXT);
       },
@@ -228,6 +232,7 @@ export class TicketExternalRuntime {
           parentExternalRequest: { runId: scope.runId, runEpoch: scope.runEpoch, requestId: request.requestId, fingerprint: request.fingerprint },
         }, BACKGROUND_CONTEXT);
         const childRole = live.roles[request.agentId];
+        // Slot-lock yield check must track actual scheduler write-holder lock (`!parent.readOnly`), not effective read-only intent.
         const requiresParentYield =
           (!parent.readOnly && (Boolean(childRole?.external) || !childRole?.readOnly)) ||
           (state?.slots.holders.length ?? 0) >= live.executor.maxConcurrentWorkers;
@@ -302,13 +307,15 @@ export class TicketExternalRuntime {
     ticket: Readonly<TicketRecord>,
     attachmentIds: readonly string[],
     context: Context,
-  ): Promise<Array<{ id: string; name: string; mimeType: string; path: string }>> {
+    options?: { subdir?: string },
+  ): Promise<Array<{ id: string; name: string; mimeType: string; path: string; size: number; sha256: string }>> {
     const { harness, envManager, uploads } = this.#deps;
     if (!attachmentIds.length || !ticket.scratchDir) return [];
     const envDesc = envManager.getEnvDescriptor(ticket.envId);
     if (!envDesc?.online) return [];
     const pathApi = envDesc.platform === "win32" ? path.win32 : path.posix;
-    const inputsDir = pathApi.join(ticket.scratchDir, "inputs");
+    const safeSubdir = options?.subdir ? sanitizeDiskFilename(options.subdir) : undefined;
+    const inputsDir = safeSubdir ? pathApi.join(ticket.scratchDir, "inputs", safeSubdir) : pathApi.join(ticket.scratchDir, "inputs");
     const env = envManager.createExecutionEnv(ticket.envId, ticket.scratchDir);
     getOrThrow(await env.createDir(inputsDir, { recursive: true }, context));
     const assertActive = async () => {
@@ -316,7 +323,7 @@ export class TicketExternalRuntime {
       if (!current || ["stopped", "closed"].includes(current.status)) throw new Error("任务已结束，停止转存附件。");
     };
     const epochPrefix = ticket.runEpoch > 1 ? `e${ticket.runEpoch}-` : "";
-    const results: Array<{ id: string; name: string; mimeType: string; path: string }> = [];
+    const results: Array<{ id: string; name: string; mimeType: string; path: string; size: number; sha256: string }> = [];
     for (const [index, id] of attachmentIds.entries()) {
       const loaded = uploads.getUpload(id);
       if (!loaded) continue;
@@ -359,7 +366,7 @@ export class TicketExternalRuntime {
           assertActive,
           context,
         });
-        results.push({ id: loaded.record.id, name: loaded.record.name, mimeType: loaded.record.mimeType, path: written.path });
+        results.push({ id: loaded.record.id, name: loaded.record.name, mimeType: loaded.record.mimeType, path: written.path, size: stat.size, sha256: sha });
       } finally {
         await handle.close();
       }

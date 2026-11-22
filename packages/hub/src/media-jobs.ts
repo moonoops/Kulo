@@ -193,7 +193,7 @@ export class KuloMediaJobs {
       const explicit: ImageGenerationParameters = { ...request.parameters,
         ...(request.format !== undefined ? { format: request.format } : {}), ...(request.count !== undefined ? { count: request.count } : {}),
         ...(request.aspectRatio !== undefined ? { aspectRatio: request.aspectRatio } : {}), ...(request.quality !== undefined ? { quality: request.quality } : {}) };
-      if (connection.adapter === "gemini-image" && explicit.quality && ["0.5K", "1K", "2K", "4K"].includes(explicit.quality)) { explicit.size = explicit.quality; delete explicit.quality; }
+      if ((connection.adapter === "gemini-image" || connection.adapter === "vertex-image") && explicit.quality && ["0.5K", "1K", "2K", "4K"].includes(explicit.quality)) { explicit.size = explicit.quality; delete explicit.quality; }
       const parameters = request.kind === "image" ? mergeImageGenerationParameters(capability.defaults, { ...explicit, ...(desiredFormat ? { format: desiredFormat } : {}) }) : undefined;
       const count = parameters?.count ?? request.count ?? 1;
       if (count > capability.maxOutputs) throw new MediaJobError(400, "media_output_limit", `此能力每次最多生成 ${capability.maxOutputs} 个结果。`);
@@ -266,7 +266,7 @@ export class KuloMediaJobs {
     await this.#options.validateInput?.(id, source);
     const loaded = this.#options.uploads.getUpload(id);
     const scopes = new Set([`conversation:${source.conversationId}`, `topic:${source.topicId}`, ...(source.ticketId ? [`ticket:${source.ticketId}`] : [])]);
-    if (!loaded || !this.#options.validateInput && !this.#options.uploads.canReadUpload(id, `agent:${source.conversationId}`, (scope) => scopes.has(scope))) {
+    if (!loaded || loaded.record.internalOnly || !this.#options.validateInput && !this.#options.uploads.canReadUpload(id, `agent:${source.conversationId}`, (scope) => scopes.has(scope))) {
       throw new MediaJobError(403, "media_reference_forbidden", "没有权限读取此参考资源。");
     }
     if (loaded.record.kind !== "image" && !(allowVideo && loaded.record.kind === "video")) throw new MediaJobError(400, "media_reference_type", "参考资源需要可用图片或此能力支持的视频。");

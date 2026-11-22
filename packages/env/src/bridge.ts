@@ -4,7 +4,7 @@ import path from "node:path";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { canonicalExecutionPath, createWorkerSandbox, workerIsolationCapabilities, type WorkerExecutionOptions, type WorkerNetworkPolicy, type WorkerSandbox } from "./isolation.js";
-import { ExternalAgentService, isExternalAgentRequest, isExternalAgentResponse, type ExternalAgentToolHandler } from "./external-agents.js";
+import { EXTERNAL_AGENT_NODE_CAPABILITIES, ExternalAgentService, isExternalAgentRequest, isExternalAgentResponse, type ExternalAgentToolHandler } from "./external-agents.js";
 import { ProjectDirectoryRegistry, type AuthorizeDirectoryInput } from "./project-directories.js";
 import { StagedWorkspaceService } from "./staged-workspace-service.js";
 import { cleanupRecordedExecutions, hasOrphanedExecution } from "./worker-supervisor.js";
@@ -26,11 +26,10 @@ import {
 } from "@earendil-works/pi-env";
 import type { WebSocket } from "ws";
 import {
-  STREAM_RESUME_CAPABILITY,
-  STREAM_RESUME_GRACE_MS,
+  STREAM_RESUME_CAPABILITY, STREAM_RESUME_GRACE_MS,
   CONNECTORS_CAPABILITY,
   CONNECTOR_MAX_BATCH_BYTES,
-  EXTERNAL_AGENT_QUOTA_CAPABILITY,
+  EXTERNAL_AGENT_QUOTA_CAPABILITY, EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY,
   isClusterSyncStatus,
   type ClusterHandoverDirective,
   type ClusterSyncAvailableNotification,
@@ -570,7 +569,7 @@ export class EnvManager {
         arch: process.arch,
         rootDir,
         executionKind: "pi-env",
-        capabilities: [...(process.platform === "darwin" ? ["fs", "bash", "macos-local", CONNECTORS_CAPABILITY] : ["fs", "bash"]), "external-agents", EXTERNAL_AGENT_QUOTA_CAPABILITY, "host-actions", ...workerIsolationCapabilities(), ...(this.#localBrowser.available ? ["flow-browser"] : []), ...this.#localComputer.capabilities()],
+        capabilities: [...(process.platform === "darwin" ? ["fs", "bash", "macos-local", CONNECTORS_CAPABILITY] : ["fs", "bash"]), ...EXTERNAL_AGENT_NODE_CAPABILITIES, "host-actions", ...workerIsolationCapabilities(), ...(this.#localBrowser.available ? ["flow-browser"] : []), ...this.#localComputer.capabilities()],
         connectedAt: now,
         lastSeenAt: now,
         info: collectDeviceSystemInfo(),
@@ -1574,6 +1573,7 @@ export class EnvManager {
     if (!peer?.descriptor.online || !peer.ws || peer.ws.readyState !== peer.ws.OPEN) throw new Error(`External agent device '${envId}' is offline`);
     if (!peer.descriptor.capabilities.includes("external-agents")) throw new Error("The selected device must update its Kulo Env before connecting external agents");
     if (request.operation === "quota" && !peer.descriptor.capabilities.includes(EXTERNAL_AGENT_QUOTA_CAPABILITY)) throw new Error("The selected device must update its Kulo Env before checking external agent quotas");
+    if (request.operation === "run" && (request.developerInstructions !== undefined || request.attachments !== undefined) && !peer.descriptor.capabilities.includes(EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY)) throw new Error("The selected device must update its Kulo Env before using structured external agent dispatch");
     if (this.#externalAgentRequests.size >= 32) throw new Error("External agent control request limit reached");
     const ws = peer.ws;
     const requestId = randomBytes(16).toString("hex");

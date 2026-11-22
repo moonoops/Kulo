@@ -47,6 +47,7 @@ import { KuloConnections } from "./connections.js";
 import { LocalConnectionVault } from "./connection-vault.js";
 import { SecureCredentialStore } from "./secure-provider-credentials.js";
 import { createCredentialRedactionExtension, redactCredentialData, scrubStoredConversationSecrets, wrapRedactedStorage } from "./credential-redaction.js";
+import { HubContextGuard } from "./context-guard.js";
 import type { ConnectionToolController } from "./tools-connections.js";
 import { KuloSkills } from "./skills.js";
 import { KuloCapabilities, type SyncedProviderImageSource } from "./capabilities.js";
@@ -97,6 +98,8 @@ import { HomeAssistantService, isHomeAssistantPreDispatchError, sanitizeServiceD
 import { HaLanAudioRelay } from "./connectors/ha-lan-audio.js";
 import { LarkConnectorService } from "./connectors/lark-connector.js";
 import { ContextCompactionDoc, createContextCompactionController, validateBillionKernel, type BillionKernelRuntime } from "./context-compaction.js";
+import { HubMemoryRuntime } from "./hub-memory-runtime.js";
+import { createOrchestratorToolOverflowExtension, containsToolOverflowMarker } from "./orchestrator-tool-overflow.js";
 import { createRecentWorkSyncHook, isSystemBaselinePending } from "./recent-work-sync.js";
 import { type LoadedBillionContextPackage } from "./extension-packages.js";
 import { stageProjectSkillSource } from "./skill-source-env.js";
@@ -194,6 +197,7 @@ import {
   createSettingsTierExtension,
   injectEventToolsInTx,
   pruneIdleDeferredToolsInTx,
+  resolveDeferredAddTools,
   resolveSettingsPreloadedTools,
   resolveSurfaceTools,
   type ToolSurfaceAudience,
@@ -566,6 +570,8 @@ export class KuloHub implements OrchestratorController {
   readonly #memoryServiceExt: ReturnType<typeof createMemoryServiceExtension>;
   readonly #memorySetupExt: ReturnType<typeof createMemorySetupExtension>;
   readonly #redactionExt: ReturnType<typeof createCredentialRedactionExtension>;
+  readonly #toolOverflowExt: ReturnType<typeof createOrchestratorToolOverflowExtension>;
+  readonly memoryRuntime: HubMemoryRuntime;
   readonly #historyExt: ReturnType<typeof createHistoryToolsExtension>;
   readonly #assistantToolsExt: ReturnType<typeof createAssistantToolsExtension>;
   readonly #customizationExtensions: ReturnType<typeof createCustomizationToolsExtension>[];
@@ -582,6 +588,7 @@ export class KuloHub implements OrchestratorController {
   readonly #subagentRunner: KuloSubagentRunner;
   readonly #listeners = new Set<HubEventListener>();
   readonly #topics: HubTopicManager;
+  readonly #contextGuard: HubContextGuard;
   readonly #chat: HubChatPipeline;
   readonly #connectionsBridge: HubConnectionsBridge;
   readonly #hostActions: HubHostActions;
@@ -676,6 +683,8 @@ export class KuloHub implements OrchestratorController {
     connectionManager: KuloConnections;
     connections: ConnectionToolController;
     redactionExt: ReturnType<typeof createCredentialRedactionExtension>;
+    toolOverflowExt: ReturnType<typeof createOrchestratorToolOverflowExtension>;
+    memoryRuntime: HubMemoryRuntime;
     credentialStore: CredentialStore;
     voiceAsr?: VoiceAsrEngine;
     voiceOpenLive?: KuloVoiceCallsOptions["openLive"];
@@ -690,6 +699,8 @@ export class KuloHub implements OrchestratorController {
     this.connectionManager = params.connectionManager;
     this.connections = params.connections;
     this.#redactionExt = params.redactionExt;
+    this.#toolOverflowExt = params.toolOverflowExt;
+    this.memoryRuntime = params.memoryRuntime;
     this.rootConversation = params.rootConversation;
     this.identityFiles = params.identityFiles;
     this.usageCaps = new KuloUsageCaps({ harness: params.harness });
@@ -1318,12 +1329,9 @@ export class KuloHub implements OrchestratorController {
       onCreated: (job) => job.source.ticketId ? this.#recordTicketOutwardAction(job.source.ticketId, undefined, "media", `media:${job.kind}:${job.modelId}`) : undefined,
       onCompleted: (job) => this.#mediaDelivery.onMediaCompleted(job), onSettled: (job) => this.#mediaDelivery.onMediaSettled(job) });
     this.projects = new KuloProjects({
-      harness: this.harness,
-      envManager: this.envManager,
-      stopTicket: (id, reason) => this.stopTicket(id, reason),
-      onChanged: () => {
-        void this.#broadcastProjects().catch((error) => console.error("[KuloProjects]", error));
-      },
+      harness: this.harness, envManager: this.envManager, stopTicket: (id, reason) => this.stopTicket(id, reason),
+      onChanged: () => { void this.#broadcastProjects().catch((error) => console.error("[KuloProjects]", error)); },
+      onProjectDeleted: (id, convIds, ctx) => this.memoryRuntime.onProjectDeleted(id, convIds, ctx),
     });
     this.uiCards = new KuloUiCards({ harness: this.harness, validateAssetReferences: (spec) => {
       for (const element of Object.values(spec.elements)) {
@@ -1377,10 +1385,11 @@ export class KuloHub implements OrchestratorController {
       },
       prepareInput: (text, attachments, principalId) => {
         for (const attachment of attachments) {
-          if (typeof attachment?.id !== "string" || !this.uploads.getUpload(attachment.id)) {
+          const loaded = typeof attachment?.id === "string" ? this.uploads.getUpload(attachment.id) : null;
+          if (!loaded) {
             throw Object.assign(new Error("附件不存在或已失效，请重新上传后再发送。"), { code: "attachment_not_found" });
           }
-          if (!this.uploads.canReadUpload(attachment.id, principalId)) {
+          if (loaded.record.internalOnly || !this.uploads.canReadUpload(attachment.id, principalId)) {
             throw Object.assign(new Error("无权引用此附件。"), { code: "attachment_forbidden", status: 403 });
           }
         }
@@ -1447,6 +1456,13 @@ export class KuloHub implements OrchestratorController {
       },
       emit: (snapshot) => { for (const listener of this.#listeners) listener.onSettingsAssistant?.(snapshot); },
     });
+    this.#contextGuard = new HubContextGuard({
+      harness: this.harness,
+      models: this.#models,
+      settingsStore: this.#settingsStore,
+      runtimeGates: this.#runtimeGates,
+      onContextUpdated: (conversationId) => this.#topics?.refreshByConversation(conversationId),
+    });
     this.#topics = new HubTopicManager({
       harness: this.harness,
       settingsStore: this.#settingsStore,
@@ -1461,6 +1477,9 @@ export class KuloHub implements OrchestratorController {
         pruneCommittedBaseline: (conversationId, ctx, force) =>
           this.#contextCompaction.pruneCommittedBaseline(conversationId, ctx, force),
       },
+      onTopicIdle: (topicId, conversationId, live, value) => {
+        void this.#contextGuard.maybeTriggerEarlyCompaction(topicId, conversationId, live.context, value, BACKGROUND_CONTEXT).catch(() => {});
+      },
       orchestrator: {
         resolveAgent: () => this.#resolveOrchestratorAgent(),
         extensions: (isRoot) => this.#orchestratorExtensions(isRoot),
@@ -1469,18 +1488,14 @@ export class KuloHub implements OrchestratorController {
         mainWorkspaceDir: this.#mainWorkspaceDir,
       },
       projection: {
-        hydrateMessages: (entries, conversationId, ctx) =>
-          this.#hydrateMessages(entries, conversationId, undefined, ctx),
-        projectTopicMessages: (value, conversationId) =>
-          this.#projectTopicMessages(value, conversationId),
-        projectTopicLiveState: (value, conversationId) =>
-          this.#projectTopicLiveState(value, conversationId),
+        hydrateMessages: (entries, conversationId, ctx) => this.#hydrateMessages(entries, conversationId, undefined, ctx),
+        projectTopicMessages: (value, conversationId) => this.#projectTopicMessages(value, conversationId),
+        projectTopicLiveState: (value, conversationId, conversation) => this.#projectTopicLiveState(value, conversationId, conversation),
       },
       cleanup: {
-        closeOrchestratorBrowserSession: (topicId) =>
-          this.#computer.closeOrchestratorBrowserSession(topicId),
-        discardTicketStagedWorkspace: (ticket) =>
-          this.#discardTicketStagedWorkspace(ticket),
+        closeOrchestratorBrowserSession: (topicId) => this.#computer.closeOrchestratorBrowserSession(topicId),
+        discardTicketStagedWorkspace: (ticket) => this.#discardTicketStagedWorkspace(ticket),
+        onTopicDeleted: (topicId, convId, ctx) => this.memoryRuntime.onTopicDeleted(topicId, convId, ctx),
       },
     });
     this.#chat = new HubChatPipeline({
@@ -1723,7 +1738,7 @@ export class KuloHub implements OrchestratorController {
       ...sealing,
       processUserText: (text, requestId) => connectionManager.processText(text, { requestId }),
     });
-    const redactionExt = createCredentialRedactionExtension(redact, { isKnownSecret });
+    const redactionExt = createCredentialRedactionExtension(redact, { isKnownSecret, onCompactionDeclined: (convId, reason) => { if (hubRef) hubRef.#contextGuard.recordCompactionDeclined(convId, reason); } });
     const mainWorkspaceDir = path.resolve(
       config.localEnvRoot ?? path.join(config.stateDir, "workspace"),
     );
@@ -1746,6 +1761,14 @@ export class KuloHub implements OrchestratorController {
     const uploads = new KuloUploadStore(path.join(config.stateDir, "uploads"));
     uploads.cleanupIncompleteUploads();
     uploads.cleanupDrafts();
+    uploads.cleanupToolOverflows();
+    const toolOverflowExt = createOrchestratorToolOverflowExtension({
+      uploads, redact, isKnownSecret,
+      resolveDeferredTools: async (convId, candidates, ctx) => {
+        const conv = hubRef ? await hubRef.harness.conversation(convId, ctx) : undefined;
+        return conv ? resolveDeferredAddTools(conv, ctx, candidates) : [];
+      },
+    });
 
     fs.mkdirSync(config.stateDir, { recursive: true });
     fs.mkdirSync(mainWorkspaceDir, { recursive: true });
@@ -1958,10 +1981,7 @@ export class KuloHub implements OrchestratorController {
         });
       },
       onTicketSettled: async (ticketId) => {
-        if (hubRef) {
-          hubRef.#watchdog.untrack(ticketId);
-          await hubRef.#settleStaleTicketConfirmations(ticketId);
-        }
+        if (hubRef) { hubRef.#watchdog.untrack(ticketId); await hubRef.#settleStaleTicketConfirmations(ticketId); void hubRef.memoryRuntime.onTicketSettled(ticketId).catch(() => {}); }
       },
       onInlineCandidateSettled: (ticketId) => {
         if (hubRef) hubRef.#notifyInlineWaiters(ticketId);
@@ -2005,7 +2025,7 @@ export class KuloHub implements OrchestratorController {
       proposeIdentity: (content, summary) => hubRef!.personality.proposeIdentity(content, summary),
       updateRelationship: (request) => hubRef!.personality.saveRelationship(request),
       getForgottenTerms: () => hubRef!.personality.getForgottenTerms(),
-      forgetMemory: (term, reason, caller, signal) => executeMemoryForget({ term, reason, caller, signal, host: { addForgottenTerm: (t, r) => hubRef!.personality.addForgottenTerm(t, r), forgetFromRelationship: (t, r) => hubRef!.personality.forgetFromRelationship(t, r), getMemoryConfig: getLiveMemory } }),
+      forgetMemory: (term, reason, caller, signal) => executeMemoryForget({ term, reason, caller, signal, host: { addForgottenTerm: (t, r) => hubRef!.personality.addForgottenTerm(t, r), forgetFromRelationship: (t, r) => hubRef!.personality.forgetFromRelationship(t, r), forgetFromWorkingMemory: (t, r) => hubRef!.memoryRuntime.forgetFromWorkingMemory(t, r), getMemoryConfig: getLiveMemory } }),
       setAgentExpression: (face, cue, ctx) => hubRef!.setAgentExpression(face, cue, ctx),
       handleBoardTool: (params, source, ctx) => hubRef!.#handleBoardTool(params, source, ctx),
     };
@@ -2031,7 +2051,7 @@ export class KuloHub implements OrchestratorController {
       freezeRecentWorkBaseline: true,
       isSystemBaselinePending: (conversationId, ctx) => isSystemBaselinePending(hubRef!.harness, conversationId, ctx),
     });
-    const tailKeys = new Set(["kulo_envs", "kulo_projects", "kulo_recent_work"]);
+    const tailKeys = new Set(["kulo_envs", "kulo_projects", "kulo_recent_work", "kulo_working_memory"]);
     const headSections = allOrchestratorSections.filter((sec) => !tailKeys.has(sec.key));
     const tailSections = allOrchestratorSections.filter((sec) => tailKeys.has(sec.key));
 
@@ -2379,12 +2399,20 @@ export class KuloHub implements OrchestratorController {
       isActive: () => hubRef ? hubRef.#contextEnabled : false,
       getReserveTokens: () => settingsStore.getCompactionConfig().reserveTokens,
       onCompactionBaseline: async (conversationId, firstKept, ctx) => {
-        if (hubRef) await hubRef.#pruneCompactedConversationTools(conversationId, firstKept, ctx);
+        if (hubRef) { await hubRef.#pruneCompactedConversationTools(conversationId, firstKept, ctx); void hubRef.memoryRuntime.onCompactionCommitted(conversationId, firstKept, BACKGROUND_CONTEXT).catch(() => {}); }
       },
+    });
+    const memoryRuntime = new HubMemoryRuntime({
+      getHarness: () => hubRef!.harness, getModels: () => hubRef!.#models, getSettingsStore: () => hubRef!.#settingsStore,
+      getContextGuard: () => hubRef!.#contextGuard, getRuntimeGates: () => hubRef!.#runtimeGates, getMemoryLifecycle: () => memoryLifecycleExt,
+      redact, isPersonalityCapped: () => { const c = hubRef!.usageCaps.isCappedFor("personality"); return { capped: c.capped, ...(c.resetAt !== null ? { resetAt: c.resetAt } : {}) }; },
+      willUseCloudModel: () => hubRef!.ambientModel.willUseCloudModel(false), completeZeroToolJson: (input) => hubRef!.ambientModel.completeZeroToolJson(input),
     });
 
     const registry = createRegistry();
     registry.install(redactionExt);
+    registry.install(toolOverflowExt);
+    registry.install(memoryRuntime.memoryFlushExt);
     registry.install(schedulerExt);
     registry.install(codingToolsExt);
     registry.install(androidExt);
@@ -2557,7 +2585,7 @@ export class KuloHub implements OrchestratorController {
       agent: {
         model: orchestratorAgent.model,
         thinkingLevel: orchestratorAgent.thinkingLevel,
-        extensions: [redactionExt, orchestratorExt, codingToolsExt, orchestratorGuardExt, computerUseExt, toolSearchExt, contentExt, projectExt, skillExt, orchestratorTailExt, mediaExt, voiceExt, memoryServiceExt, memorySetupExt, historyExt, assistantToolsExt, globalSettingsExt, ...(customizationExt ? [customizationExt] : []), contextCompaction.extension],
+        extensions: [redactionExt, toolOverflowExt, orchestratorExt, codingToolsExt, orchestratorGuardExt, computerUseExt, toolSearchExt, contentExt, projectExt, skillExt, orchestratorTailExt, mediaExt, voiceExt, memoryServiceExt, memorySetupExt, historyExt, assistantToolsExt, globalSettingsExt, ...(customizationExt ? [customizationExt] : []), contextCompaction.extension],
         cwd: mainWorkspaceDir,
         maxTurns: 25,
       },
@@ -2567,7 +2595,7 @@ export class KuloHub implements OrchestratorController {
       {
         model: orchestratorAgent.model,
         thinkingLevel: orchestratorAgent.thinkingLevel,
-        extensions: [redactionExt, orchestratorExt, codingToolsExt, orchestratorGuardExt, computerUseExt, toolSearchExt, contentExt, projectExt, skillExt, orchestratorTailExt, mediaExt, voiceExt, memoryServiceExt, memorySetupExt, historyExt, assistantToolsExt, globalSettingsExt, ...(customizationExt ? [customizationExt] : []), contextCompaction.extension],
+        extensions: [redactionExt, toolOverflowExt, orchestratorExt, codingToolsExt, orchestratorGuardExt, computerUseExt, toolSearchExt, contentExt, projectExt, skillExt, orchestratorTailExt, mediaExt, voiceExt, memoryServiceExt, memorySetupExt, historyExt, assistantToolsExt, globalSettingsExt, ...(customizationExt ? [customizationExt] : []), contextCompaction.extension],
         cwd: mainWorkspaceDir,
         maxTurns: 25,
       },
@@ -2630,6 +2658,8 @@ export class KuloHub implements OrchestratorController {
       connectionManager,
       connections,
       redactionExt,
+      toolOverflowExt,
+      memoryRuntime,
       credentialStore,
       voiceAsr: init.voiceAsr,
       voiceOpenLive: init.voiceOpenLive,
@@ -2729,6 +2759,7 @@ export class KuloHub implements OrchestratorController {
     await hub.archiveInactiveTopics(context);
     hub.#topics.startAutoArchive();
     hub.#startUploadCleanup();
+    hub.memoryRuntime.start();
     return hub;
     } catch (error) {
       const cleanup = hubRef ? [() => hubRef!.close(BACKGROUND_CONTEXT)] :
@@ -3054,6 +3085,7 @@ export class KuloHub implements OrchestratorController {
   #orchestratorExtensions(isRoot: boolean): ReturnType<typeof defineExtension>[] {
     return [
       this.#redactionExt,
+      this.#toolOverflowExt,
       this.#orchestratorExt,
       this.#codingToolsExt,
       this.#orchestratorGuardExt,
@@ -3241,36 +3273,11 @@ export class KuloHub implements OrchestratorController {
     return this.#topics.archiveInactiveTopics(context);
   }
 
-  async createTopic(
-    title?: string,
-    context: Context = BACKGROUND_CONTEXT,
-    projectId?: string | null,
-  ): Promise<TopicSummary> {
-    return this.#topics.createTopic(title, context, projectId);
-  }
-
-  async patchTopic(
-    topicId: string,
-    patch: { title?: string; pinned?: boolean; archived?: boolean },
-    context: Context = BACKGROUND_CONTEXT,
-  ): Promise<TopicSummary> {
-    return this.#topics.patchTopic(topicId, patch, context);
-  }
-
-  async deleteTopic(
-    topicId: string,
-    context: Context = BACKGROUND_CONTEXT,
-    options: { stopTasks?: boolean } = {},
-  ): Promise<{ deleted: string; topics: TopicSummary[] }> {
-    return this.#topics.deleteTopic(topicId, context, options);
-  }
-
-  async getTopicView(
-    topicId = "root",
-    context: Context = BACKGROUND_CONTEXT,
-  ): Promise<TopicView> {
-    return this.#topics.getTopicView(topicId, context);
-  }
+  async createTopic(title?: string, context: Context = BACKGROUND_CONTEXT, projectId?: string | null): Promise<TopicSummary> { return this.#topics.createTopic(title, context, projectId); }
+  async patchTopic(topicId: string, patch: { title?: string; pinned?: boolean; archived?: boolean }, context: Context = BACKGROUND_CONTEXT): Promise<TopicSummary> { return this.#topics.patchTopic(topicId, patch, context); }
+  async deleteTopic(topicId: string, context: Context = BACKGROUND_CONTEXT, options: { stopTasks?: boolean } = {}): Promise<{ deleted: string; topics: TopicSummary[] }> { return this.#topics.deleteTopic(topicId, context, options); }
+  async compactTopic(topicId: string, context: Context = BACKGROUND_CONTEXT) { return this.#contextGuard.compactTopic(topicId, context); }
+  async getTopicView(topicId = "root", context: Context = BACKGROUND_CONTEXT): Promise<TopicView> { return this.#topics.getTopicView(topicId, context); }
 
   async publishCurrentTopicView(topicId: string, publish: (view: TopicView) => void, context: Context = BACKGROUND_CONTEXT): Promise<void> {
     return this.#topics.publishCurrentTopicView(topicId, publish, context);
@@ -4010,8 +4017,9 @@ export class KuloHub implements OrchestratorController {
     ticket: Readonly<TicketRecord>,
     attachmentIds: readonly string[],
     context: Context,
-  ): Promise<Array<{ id: string; name: string; mimeType: string; path: string }>> {
-    return this.#externalRuntime.materializeAttachments(ticket, attachmentIds, context);
+    options?: { subdir?: string },
+  ): Promise<Array<{ id: string; name: string; mimeType: string; path: string; size?: number; sha256?: string }>> {
+    return this.#externalRuntime.materializeAttachments(ticket, attachmentIds, context, options);
   }
 
   async #consumeExternalPendingReports(
@@ -4165,7 +4173,7 @@ export class KuloHub implements OrchestratorController {
             this.uploads.bindAttachments([saved], `ticket:${ticket.id}`, `agent:${ticket.workerConversationId}`);
             uploadIds.push(saved.id);
           }
-          reviewMaterialized = await this.#materializeExternalAttachments(ticket, uploadIds, context);
+          reviewMaterialized = await this.#materializeExternalAttachments(ticket, uploadIds, context, { subdir: `review-${safeTargetId}` });
           const hint = reviewMaterialized[0]?.path ? path.posix.dirname(reviewMaterialized[0].path.replace(/\\/g, "/")) : "inputs";
           reviewContext = formatReviewPromptSection({
             target,
@@ -4743,10 +4751,8 @@ export class KuloHub implements OrchestratorController {
     }
     this.#watchdog.stopTimer();
     this.#topics.stopAutoArchiveTimer();
-    if (this.#uploadCleanupTimer) {
-      clearInterval(this.#uploadCleanupTimer);
-      this.#uploadCleanupTimer = null;
-    }
+    this.memoryRuntime.close();
+    if (this.#uploadCleanupTimer) { clearInterval(this.#uploadCleanupTimer); this.#uploadCleanupTimer = null; }
     await finish(() => this.#customizationInstance?.close());
     await finish(() => this.voiceCalls.close());
     await finish(() => this.voice.close());
@@ -5229,8 +5235,9 @@ export class KuloHub implements OrchestratorController {
     return [...this.#projectMessages(value.entries, conversationId), ...pending];
   }
 
-  #projectTopicLiveState(value: ConversationView, conversationId: number): LiveStreamState {
-    return extractLiveState(value, this.#searchHistory(conversationId).projectionEntries(value.entries));
+  #projectTopicLiveState(value: ConversationView, conversationId: number, conversation?: Conversation): LiveStreamState {
+    const live = extractLiveState(value, this.#searchHistory(conversationId).projectionEntries(value.entries));
+    return { ...live, context: this.#contextGuard.projectLiveContext(value, conversationId, conversation) };
   }
 
   #refreshTopicContent(cache: WatchedTopicCache, value = cache.watch.value): void {
@@ -5292,6 +5299,8 @@ export class KuloHub implements OrchestratorController {
     }
 
     await this.#reconfigureOrchestratorConversations(context);
+    this.#contextGuard.invalidateAll();
+    this.#topics.refreshAll();
     await this.settingsAssistant.reconfigureActiveConversation(context);
     await this.#reconfigureWorkerConversations(context);
   }
@@ -5320,6 +5329,7 @@ export class KuloHub implements OrchestratorController {
           }
         } else if (msg.role === "toolResult") {
           retained.add(msg.toolName);
+          if (msg.content.some((part) => part.type === "text" && containsToolOverflowMarker(part.text))) retained.add("kulo_inspect_asset");
         }
       }
     }
@@ -5397,11 +5407,11 @@ export class KuloHub implements OrchestratorController {
     const model = this.#liveSettings.model;
     const sources: SyncedProviderImageSource[] = [
       ...(model.gatewayDisabled !== true && model.baseUrl?.trim() && model.gatewayModels?.length
-        ? [{ id: KULO_GATEWAY_PROVIDER_ID, name: "Kulo Gateway", baseUrl: model.baseUrl, api: model.apiMode, models: model.gatewayModels }]
+        ? [{ id: KULO_GATEWAY_PROVIDER_ID, name: "Kulo Gateway", baseUrl: model.baseUrl, api: model.apiMode, ...(model.vertexProject ? { vertexProject: model.vertexProject } : {}), ...(model.vertexLocation ? { vertexLocation: model.vertexLocation } : {}), models: model.gatewayModels }]
         : []),
       ...(model.customProviders ?? []).map((cp) => ({
-        id: cp.id, name: cp.name, baseUrl: cp.baseUrl, api: cp.api,
-        ...(cp.preset ? { preset: cp.preset } : {}), models: cp.models,
+        id: cp.id, name: cp.name, baseUrl: cp.baseUrl, api: cp.api, ...(cp.preset ? { preset: cp.preset } : {}),
+        ...(cp.vertexProject ? { vertexProject: cp.vertexProject } : {}), ...(cp.vertexLocation ? { vertexLocation: cp.vertexLocation } : {}), models: cp.models,
       })),
     ];
     await this.capabilities.syncProviderImageModels(sources);
@@ -5743,53 +5753,23 @@ export class KuloHub implements OrchestratorController {
     if (!verified.ok) throw new ProjectError(409, verified.code, verified.message);
   }
 
-  async #recentPriorUserTurns(
-    conversationId: number | undefined,
-    context: Context,
-    toolTaskId: number | undefined,
-    excludeIds: ReadonlySet<EntryId>,
-    limit = 12,
-  ): Promise<PriorUserDeviceTurn[]> {
+  async #recentPriorUserTurns(conversationId: number | undefined, context: Context, toolTaskId: number | undefined, excludeIds: ReadonlySet<EntryId>, limit = 12): Promise<PriorUserDeviceTurn[]> {
     return this.#turnContext.recentPriorUserTurns(conversationId, context, toolTaskId, excludeIds, limit);
   }
-
   async #currentControlInputs(conversationId: number | undefined, context: Context, toolTaskId?: number): Promise<EntryRecord[]> {
     return this.#turnContext.currentControlInputs(conversationId, context, toolTaskId);
   }
-
   #startUploadCleanup(): void {
     if (this.#uploadCleanupTimer || this.#closed) return;
     this.#uploadCleanupTimer = setInterval(() => {
       if (this.#closed) return;
-      try {
-        this.uploads.cleanupIncompleteUploads();
-        this.uploads.cleanupDrafts();
-      } catch (error) {
-        console.warn("[KuloUploads] Periodic upload cleanup failed", error);
-      }
+      try { this.uploads.cleanupIncompleteUploads(); this.uploads.cleanupDrafts(); this.uploads.cleanupToolOverflows(); }
+      catch (error) { console.warn("[KuloUploads] Periodic upload cleanup failed", error); }
     }, 60 * 60_000);
     this.#uploadCleanupTimer.unref?.();
   }
-
-  #emitTopics(topics: TopicSummary[]): void {
-    this.#topics.emitTopics(topics);
-  }
-
-  #emitAssistantItems(assistantRevision: number, items: AssistantItemView[]): void {
-    for (const listener of this.#listeners) {
-      listener.onAssistantItems?.(assistantRevision, items);
-    }
-  }
-
-  #emitEnvs(envs: EnvNodeDescriptor[]): void {
-    for (const listener of this.#listeners) {
-      listener.onEnvs?.(envs);
-    }
-  }
-
-  #emitSettings(settings: KuloSettingsView): void {
-    for (const listener of this.#listeners) {
-      listener.onSettings?.(settings);
-    }
-  }
+  #emitTopics(topics: TopicSummary[]): void { this.#topics.emitTopics(topics); }
+  #emitAssistantItems(assistantRevision: number, items: AssistantItemView[]): void { for (const l of this.#listeners) l.onAssistantItems?.(assistantRevision, items); }
+  #emitEnvs(envs: EnvNodeDescriptor[]): void { for (const l of this.#listeners) l.onEnvs?.(envs); }
+  #emitSettings(settings: KuloSettingsView): void { for (const l of this.#listeners) l.onSettings?.(settings); }
 }

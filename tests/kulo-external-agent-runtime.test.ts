@@ -157,7 +157,7 @@ describe("external agent runtime", () => {
     const { root, cwd, registry } = setup(), pipe = mockPipe();
     const service = new ExternalAgentService({ envId: "local", rootDir: root, projectRegistry: registry, pipeFactory: pipe.factory });
     try {
-      await service.request(runRequest(cwd)); await spin(() => pipe.sent.some(item => item.method === "turn/start"));
+      await service.request(runRequest(cwd, { readOnly: false })); await spin(() => pipe.sent.some(item => item.method === "turn/start"));
       const nativeDecision = { acceptWithExecpolicyAmendment: { execpolicyAmendment: ["node", "build.mjs"] } };
       pipe.emit({ id: 77, method: "item/commandExecution/requestApproval", params: { threadId: "native-thread", reason: "Client-requested approval", availableDecisions: ["decline", nativeDecision] } });
       await spin(async () => (await run(service)).permissions.length === 1);
@@ -229,9 +229,10 @@ describe("external agent runtime", () => {
     const service = new ExternalAgentService({ envId: "local", rootDir: root, projectRegistry: registry, pipeFactory: pipe.factory, toolHandler: async invocation => { calls.push(invocation); return { reported: true }; } });
     try {
       await service.request(runRequest(cwd, { allowSubagents: true })); await spin(() => pipe.sent.some(item => item.method === "turn/start"));
-      const config = pipe.sent.find(item => item.method === "thread/start")!.params!.config as { mcp_servers: Record<string, { url: string; http_headers: Record<string, string>; enabled?: boolean }> };
-      expect(config).toBeDefined(); const server = Object.values(config.mcp_servers).find(item => item.url)!;
-      expect(Object.values(config.mcp_servers).some(item => item.enabled === false)).toBe(false);
+      const config = pipe.sent.find(item => item.method === "thread/start")!.params!.config as Record<string, { url?: string; http_headers?: Record<string, string>; enabled?: boolean }>;
+      expect(config).toBeDefined(); expect(config.mcp_servers).toBeUndefined();
+      const server = config["mcp_servers.kulo-task"] as { url: string; http_headers: Record<string, string>; enabled?: boolean };
+      expect(server?.url).toBeTruthy(); expect(server.enabled).not.toBe(false);
       const call = async (method: string, params?: unknown) => (await fetch(server.url, { method: "POST", headers: { ...server.http_headers, "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) })).json();
       const listing = await call("tools/list"); expect(listing.result.tools.map((tool: { name: string }) => tool.name)).toContain("kulo_request_collaboration"); expect(listing.result.tools.map((tool: { name: string }) => tool.name)).not.toContain("kulo_task_exec");
       const removed = await call("tools/call", { name: "kulo_task_exec", arguments: { command: "pwd" } }); expect(removed.error.code).toBe(-32602); expect(calls).toHaveLength(0);

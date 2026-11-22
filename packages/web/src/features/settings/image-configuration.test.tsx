@@ -54,6 +54,36 @@ describe("image configuration UI", () => {
     const unknown = applyImageModelPreset(next, "vendor-new-image-model", true);
     expect(unknown.imageProfile).toBeUndefined();
     expect(unknown.defaults).toEqual({});
+
+    const vertexWorkspace: CapabilitiesWorkspaceSnapshot = {
+      ...workspace,
+      imageSetup: {
+        providers: [{
+          id: "api-vertex", name: "Google Vertex AI", api: "google-vertex",
+          baseUrl: "https://aiplatform.googleapis.com/v1/projects/demo-proj/locations/global",
+          authType: "api_key", authenticated: true, imageSupported: true,
+        }],
+      },
+    };
+    const vertexDraft = createImageDraftConfig(vertexWorkspace);
+    expect(vertexDraft).toMatchObject({
+      adapter: "vertex-image",
+      baseUrl: "https://aiplatform.googleapis.com/v1/projects/demo-proj/locations/global",
+      credentialProviderId: "api-vertex",
+      modelId: "gemini-nano-banana-2.1",
+    });
+    const switchedKeep = applyImageModelPreset(vertexDraft, "gemini-3.1-flash-image", true);
+    expect(switchedKeep).toMatchObject({
+      adapter: "vertex-image",
+      baseUrl: "https://aiplatform.googleapis.com/v1/projects/demo-proj/locations/global",
+      modelId: "gemini-3.1-flash-image",
+    });
+    const switchedFresh = applyImageModelPreset(vertexDraft, "gemini-3.1-flash-image", false);
+    expect(switchedFresh).toMatchObject({
+      adapter: "vertex-image",
+      baseUrl: "https://aiplatform.googleapis.com/v1",
+      modelId: "gemini-3.1-flash-image",
+    });
   });
 
   it("keeps generation dimensions separate from rendering quality and gates format-specific controls", () => {

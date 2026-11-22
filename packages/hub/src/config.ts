@@ -61,6 +61,11 @@ export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
  * or inflating `reserveTokens`.
  */
 export const DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS = 128_000;
+/** Candidate tighter soft background trigger & tail target for chat-scoped paired replay validation. */
+export const CANDIDATE_CHAT_SOFT_BACKGROUND_TRIGGER_TOKENS = 72_000;
+export const CANDIDATE_CHAT_KEEP_RECENT_TOKENS = 16_000;
+/** Proactive alert & async early-compaction guard ceiling (never mutates `reserveTokens`). */
+export const HARD_CONTEXT_GUARD_CEILING_TOKENS = 200_000;
 const MIN_SOFT_COMPACTION_SLACK = 8_192;
 
 /**
@@ -68,12 +73,13 @@ const MIN_SOFT_COMPACTION_SLACK = 8_192;
  * so `keepRecentTokens` never exceeds `contextWindow - reserveTokens` (avoiding per-turn blocking loops)
  * and `backgroundTokens` retains healthy headroom (avoiding thrashing storms).
  * For large-window models (e.g. 200K / 1M), raises `backgroundTokens` so non-blocking background
- * compaction triggers around `DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS` instead of waiting until ~1M tokens,
+ * compaction triggers around `softTriggerCeiling` instead of waiting until ~1M tokens,
  * while preserving explicit `backgroundTokens === 0` opt-outs and earlier user-configured triggers.
  */
 export function clampCompactionConfigForWindow(
   compaction: CompactionConfig,
   contextWindow: number,
+  softTriggerCeiling = DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS,
 ): CompactionConfig {
   if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
     return { ...compaction };
@@ -95,7 +101,7 @@ export function clampCompactionConfigForWindow(
           Math.max(0, Math.floor((blocking - keepRecentTokens) * 0.5)),
         );
   const softTrigger = Math.max(
-    DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS,
+    softTriggerCeiling,
     keepRecentTokens + MIN_SOFT_COMPACTION_SLACK,
   );
   const backgroundTokens =
@@ -110,9 +116,53 @@ export function clampCompactionConfigForWindow(
   };
 }
 
+export interface ComputedContextThresholds {
+  window: number;
+  blocking: number;
+  softLimit: number;
+  warnLimit: number;
+  reserveTokens: number;
+  keepRecentTokens: number;
+  backgroundTokens: number;
+}
+
+/**
+ * Computes effective compaction and proactive UI warning thresholds for a model window.
+ * Guarantees `warnLimit < blocking` across all windows (including 32K where `softLimit * 1.5`
+ * would otherwise overshoot the blocking threshold).
+ */
+export function computeContextThresholds(
+  compaction: CompactionConfig,
+  contextWindow: number,
+  softTriggerCeiling = DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS,
+): ComputedContextThresholds {
+  const window = Number.isFinite(contextWindow) && contextWindow > 0
+    ? Math.floor(contextWindow)
+    : DEFAULT_CONTEXT_WINDOW;
+  const clamped = clampCompactionConfigForWindow(compaction, window, softTriggerCeiling);
+  const blocking = Math.max(512, window - clamped.reserveTokens);
+  const softLimit = clamped.backgroundTokens > 0
+    ? Math.max(clamped.keepRecentTokens, blocking - clamped.backgroundTokens)
+    : blocking;
+  const blockingCap = Math.max(1, Math.min(blocking - 1, Math.floor(blocking * 0.9)));
+  const warnLimit = clamped.backgroundTokens > 0
+    ? Math.min(blockingCap, Math.max(softLimit + MIN_SOFT_COMPACTION_SLACK, Math.floor(softLimit * 1.5)))
+    : blockingCap;
+  return {
+    window,
+    blocking,
+    softLimit,
+    warnLimit,
+    reserveTokens: clamped.reserveTokens,
+    keepRecentTokens: clamped.keepRecentTokens,
+    backgroundTokens: clamped.backgroundTokens,
+  };
+}
+
 export function buildAdaptiveCompactionPolicy(
   compaction: CompactionConfig,
   models: Iterable<{ provider: string; id: string; contextWindow?: number }>,
+  softTriggerCeiling = DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS,
 ): CompactionConfig & { modelOverrides?: Record<string, CompactionConfig> } {
   const overrides: Record<string, CompactionConfig> = {};
   let count = 0;
@@ -120,7 +170,7 @@ export function buildAdaptiveCompactionPolicy(
     if (typeof model.contextWindow !== "number" || !Number.isFinite(model.contextWindow) || model.contextWindow <= 0) {
       continue;
     }
-    const clamped = clampCompactionConfigForWindow(compaction, model.contextWindow);
+    const clamped = clampCompactionConfigForWindow(compaction, model.contextWindow, softTriggerCeiling);
     if (
       clamped.reserveTokens !== compaction.reserveTokens ||
       clamped.keepRecentTokens !== compaction.keepRecentTokens ||
@@ -137,6 +187,27 @@ export function buildAdaptiveCompactionPolicy(
     backgroundTokens: compaction.backgroundTokens,
     ...(count > 0 ? { modelOverrides: overrides } : {}),
   };
+}
+
+/**
+ * Builds a chat-conversation-scoped compaction policy without altering Harness-wide Worker or
+ * Settings Assistant thresholds. Preserves explicit user customization when `compaction` differs
+ * from the legacy default unless overrides are explicitly supplied.
+ */
+export function buildChatCompactionPolicy(
+  compaction: CompactionConfig,
+  models: Iterable<{ provider: string; id: string; contextWindow?: number }>,
+  options: { softTriggerCeiling?: number; keepRecentTokens?: number } = {},
+): CompactionConfig & { modelOverrides?: Record<string, CompactionConfig> } {
+  const effective: CompactionConfig = {
+    ...compaction,
+    ...(options.keepRecentTokens !== undefined ? { keepRecentTokens: options.keepRecentTokens } : {}),
+  };
+  return buildAdaptiveCompactionPolicy(
+    effective,
+    models,
+    options.softTriggerCeiling ?? CANDIDATE_CHAT_SOFT_BACKGROUND_TRIGGER_TOKENS,
+  );
 }
 
 export interface KuloModelConfig {

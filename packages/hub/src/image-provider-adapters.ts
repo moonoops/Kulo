@@ -1,5 +1,5 @@
 import {
-  getImageModelPreset, isImageGenerationModel, redactSensitiveText, validateCustomImageAdapter, validateImageModelProfile,
+  getImageModelPreset, isImageGenerationModel, isOfficialVertexBaseUrl, redactSensitiveText, validateCustomImageAdapter, validateImageModelProfile,
   type CustomImageAdapter, type ImageGenerationParameters, type ImageJsonValue, type ImageModelProfile,
   type ImageParameterDefinition, type MediaOutputFormat, type ProviderCatalogItem, type ProviderModelItem,
 } from "@kulo/protocol";
@@ -7,7 +7,7 @@ import { readWebResponseText, serviceApiFetch } from "./web-content.js";
 
 export interface ImageProviderAdapterModel {
   model: ProviderModelItem;
-  adapter: "openai-image" | "gemini-image" | "custom-image";
+  adapter: "openai-image" | "gemini-image" | "vertex-image" | "custom-image";
   imageProfile: ImageModelProfile;
   defaults?: ImageGenerationParameters;
   customAdapter?: CustomImageAdapter;
@@ -164,12 +164,18 @@ export async function discoverImageProviderAdapters(provider: ProviderCatalogIte
       return { source: "configuration-required", models: eligible.map((model) => unconfigured(model, "未能读取供应商的图像接口目录，请稍后重试或补充接口配置")), error: "未能读取 OpenRouter 图像模型目录" };
     }
   }
-  const nativeAdapter = endpoint?.origin === "https://api.openai.com" && endpoint.pathname.replace(/\/+$/, "") === "/v1" ? "openai-image" as const
-    : endpoint?.origin === "https://generativelanguage.googleapis.com" && ["/v1beta", "/v1"].includes(endpoint.pathname.replace(/\/+$/, "")) ? "gemini-image" as const : undefined;
-  if (nativeAdapter) return { source: "native-image-api", models: eligible.map((model) => {
-    const preset = getImageModelPreset(nativeAdapter, model.id);
-    return { model: clone(model), adapter: nativeAdapter, imageProfile: preset?.profile ?? { formats: nativeAdapter === "gemini-image" ? ["jpeg"] : ["png"], supportsEdit: false, maxReferences: 0 },
-      defaults: preset?.defaults ?? { format: nativeAdapter === "gemini-image" ? "jpeg" : "png", count: 1 } };
-  }) };
+  const pathname = endpoint?.pathname.replace(/\/+$/, "") ?? "";
+  const nativeAdapter = endpoint?.origin === "https://api.openai.com" && pathname === "/v1" ? "openai-image" as const
+    : endpoint?.origin === "https://generativelanguage.googleapis.com" && ["/v1beta", "/v1"].includes(pathname) ? "gemini-image" as const
+    : endpoint && isOfficialVertexBaseUrl(endpoint.toString()) && /^(?:\/v\d+(?:beta\d*)?(?:\/projects\/[^/]+\/locations\/[^/]+)?)?$/.test(pathname) ? "vertex-image" as const
+    : undefined;
+  if (nativeAdapter) {
+    const isGoogleNative = nativeAdapter === "gemini-image" || nativeAdapter === "vertex-image";
+    return { source: "native-image-api", models: eligible.map((model) => {
+      const preset = getImageModelPreset(nativeAdapter, model.id);
+      return { model: clone(model), adapter: nativeAdapter, imageProfile: preset?.profile ?? { formats: isGoogleNative ? ["jpeg"] : ["png"], supportsEdit: false, maxReferences: 0 },
+        defaults: preset?.defaults ?? { format: isGoogleNative ? "jpeg" : "png", count: 1 } };
+    }) };
+  }
   return { source: "configuration-required", models: eligible.map((model) => unconfigured(model)) };
 }

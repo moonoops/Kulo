@@ -55,6 +55,11 @@ export function purposeBadgeLabel(purpose: ModelPurpose): string {
   }
 }
 
+const isNativeImageAdapter = (adapter?: ModelProtocolAdapter): adapter is "openai-image" | "gemini-image" | "vertex-image" =>
+  adapter === "openai-image" || adapter === "gemini-image" || adapter === "vertex-image";
+const isGoogleImageAdapter = (adapter?: ModelProtocolAdapter) =>
+  adapter === "gemini-image" || adapter === "vertex-image";
+
 export function modelConfigFromCatalog(
   item: ProviderModelItem,
   api: CustomProviderApi,
@@ -62,16 +67,17 @@ export function modelConfigFromCatalog(
 ): CustomModelConfig {
   const purpose = inferModelPurpose(item);
   if (purpose !== "chat") {
-    const protocolAdapter = item.protocolAdapter ?? defaultProtocolAdapterForModel(purpose, item.id, api, options?.presetId);
+    const rawAdapter = item.protocolAdapter ?? defaultProtocolAdapterForModel(purpose, item.id, api, options?.presetId);
+    const protocolAdapter = purpose === "image" && api === "google-vertex" && rawAdapter === "gemini-image" ? "vertex-image" : rawAdapter;
     const voices = purpose === "tts" || purpose === "live"
       ? (item.voices?.length ? [...item.voices] : defaultVoicesForAdapter(protocolAdapter))
       : undefined;
-    const preset = purpose === "image" && (protocolAdapter === "openai-image" || protocolAdapter === "gemini-image")
-      ? getImageModelPreset(protocolAdapter, item.id.replace(/^models\//, ""))
+    const preset = purpose === "image" && isNativeImageAdapter(protocolAdapter)
+      ? getImageModelPreset(protocolAdapter, item.id)
       : undefined;
     const imageProfile = purpose === "image"
       ? (item.imageProfile ?? preset?.profile ?? {
-          formats: protocolAdapter === "gemini-image" ? ["jpeg", "png"] : ["png", "jpeg", "webp"],
+          formats: isGoogleImageAdapter(protocolAdapter) ? ["jpeg", "png"] : ["png", "jpeg", "webp"],
           supportsEdit: true,
           maxReferences: 4,
         })
@@ -118,8 +124,8 @@ export function buildManualModelConfig(
   if (purpose !== "chat") {
     const protocolAdapter = defaultProtocolAdapterForModel(purpose, id, api, presetId);
     const voices = purpose === "tts" || purpose === "live" ? defaultVoicesForAdapter(protocolAdapter) : undefined;
-    const preset = purpose === "image" && (protocolAdapter === "openai-image" || protocolAdapter === "gemini-image")
-      ? getImageModelPreset(protocolAdapter, id.replace(/^models\//, ""))
+    const preset = purpose === "image" && isNativeImageAdapter(protocolAdapter)
+      ? getImageModelPreset(protocolAdapter, id)
       : undefined;
     return {
       id,
@@ -128,7 +134,7 @@ export function buildManualModelConfig(
       ...(voices?.length ? { voices } : {}),
       ...(purpose === "image" ? {
         imageProfile: preset?.profile ?? {
-          formats: protocolAdapter === "gemini-image" ? ["jpeg", "png"] : ["png", "jpeg", "webp"],
+          formats: isGoogleImageAdapter(protocolAdapter) ? ["jpeg", "png"] : ["png", "jpeg", "webp"],
           supportsEdit: true,
           maxReferences: 4,
         },
@@ -304,6 +310,7 @@ const ADAPTER_OPTIONS_BY_PURPOSE: Record<Exclude<ModelPurpose, "chat">, Array<{ 
   image: [
     { id: "openai-image", label: "OpenAI Images" },
     { id: "gemini-image", label: "Gemini Image" },
+    { id: "vertex-image", label: "Vertex AI Images" },
   ],
   tts: [
     { id: "openai-speech", label: "OpenAI Speech" },
@@ -345,12 +352,12 @@ function ModelParametersDialog({
   const voices = purpose === "tts" || purpose === "live"
     ? (model.voices?.length ? model.voices : defaultVoicesForAdapter(effectiveAdapter))
     : [];
-  const imagePreset = purpose === "image" && (effectiveAdapter === "openai-image" || effectiveAdapter === "gemini-image")
-    ? getImageModelPreset(effectiveAdapter, model.id.replace(/^models\//, ""))
+  const imagePreset = purpose === "image" && isNativeImageAdapter(effectiveAdapter)
+    ? getImageModelPreset(effectiveAdapter, model.id)
     : undefined;
   const imageFormats = model.imageProfile?.formats?.length
     ? model.imageProfile.formats
-    : imagePreset?.profile.formats ?? (effectiveAdapter === "gemini-image" ? ["jpeg", "png"] : ["png", "jpeg", "webp"]);
+    : imagePreset?.profile.formats ?? (isGoogleImageAdapter(effectiveAdapter) ? ["jpeg", "png"] : ["png", "jpeg", "webp"]);
   const supportsEdit = model.imageProfile?.supportsEdit ?? imagePreset?.profile.supportsEdit ?? true;
 
   const handlePurposeChange = (nextPurpose: ModelPurpose) => {
@@ -377,8 +384,8 @@ function ModelParametersDialog({
     }
     const nextAdapter = defaultProtocolAdapterForModel(nextPurpose, model.id, api, presetId);
     const nextVoices = nextPurpose === "tts" || nextPurpose === "live" ? defaultVoicesForAdapter(nextAdapter) : undefined;
-    const preset = nextPurpose === "image" && (nextAdapter === "openai-image" || nextAdapter === "gemini-image")
-      ? getImageModelPreset(nextAdapter, model.id.replace(/^models\//, ""))
+    const preset = nextPurpose === "image" && isNativeImageAdapter(nextAdapter)
+      ? getImageModelPreset(nextAdapter, model.id)
       : undefined;
     onUpdate(model.id, {
       purpose: nextPurpose,
@@ -386,7 +393,7 @@ function ModelParametersDialog({
       voices: nextVoices,
       imageProfile: nextPurpose === "image"
         ? (preset?.profile ?? {
-            formats: nextAdapter === "gemini-image" ? ["jpeg", "png"] : ["png", "jpeg", "webp"],
+            formats: isGoogleImageAdapter(nextAdapter) ? ["jpeg", "png"] : ["png", "jpeg", "webp"],
             supportsEdit: true,
             maxReferences: 4,
           })
@@ -403,13 +410,13 @@ function ModelParametersDialog({
       return;
     }
     if (purpose === "image") {
-      const preset = nextAdapter === "openai-image" || nextAdapter === "gemini-image"
-        ? getImageModelPreset(nextAdapter, model.id.replace(/^models\//, ""))
+      const preset = isNativeImageAdapter(nextAdapter)
+        ? getImageModelPreset(nextAdapter, model.id)
         : undefined;
       onUpdate(model.id, {
         protocolAdapter: nextAdapter,
         imageProfile: preset?.profile ?? {
-          formats: nextAdapter === "gemini-image" ? ["jpeg", "png"] : ["png", "jpeg", "webp"],
+          formats: isGoogleImageAdapter(nextAdapter) ? ["jpeg", "png"] : ["png", "jpeg", "webp"],
           supportsEdit: true,
           maxReferences: 4,
         },

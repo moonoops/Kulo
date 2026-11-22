@@ -95,6 +95,12 @@ export async function handleWorkspaceRoutes(ctx: HubHttpRouteContext): Promise<b
     sendJson(res, 200, out);
     return true;
   }
+  if (req.method === "POST" && pathname.startsWith("/api/topics/") && pathname.endsWith("/compact")) {
+    const topicId = decodeURIComponent(pathname.slice("/api/topics/".length, -"/compact".length));
+    const out = await hub.compactTopic(topicId);
+    sendJson(res, out.compacted ? 202 : 200, out);
+    return true;
+  }
   if (req.method === "PATCH" && pathname.startsWith("/api/topics/")) {
     const id = decodeURIComponent(pathname.slice("/api/topics/".length));
     const body = (await readJsonBody(req)) as {

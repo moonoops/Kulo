@@ -168,7 +168,7 @@ export class HubConnectionsBridge {
   }
 
   async request(caller: ConnectionCaller, input: { connectionId: string; reason: string; requestId: string }, context: Context) {
-    if (caller.kind !== "worker") throw new Error("连接权限申请只能由 Worker 发起。");
+    if (caller.kind !== "worker" || caller.isSubagent) throw new Error("连接权限申请只能由顶层 Worker 发起。");
     const { scope } = await this.assertCaller(caller, context);
     const connection = (await this.#deps.connectionManager.snapshot()).connections.find((entry) => entry.id === input.connectionId);
     if (

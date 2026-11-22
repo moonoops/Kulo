@@ -2,11 +2,16 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createReleaseManifest, readReleaseIdentity, readReleaseManifest, verifyRelease, writeReleaseManifest } from "@kulo/recovery";
 import { assertClosedLinks, finalizePackagedRelease, parseCodeSigningIdentities, prepareMacAgentClis, prepareRecoveryRuntime, preserveConnectorBroker, repairDeployedSelfLink, resolveDesktopChannel, resolveMacSignIdentity, signMacAppBundle, verifyRecoveryCleanupRuntime, withPreservedWorkspaceState } from "../packages/desktop/scripts/package.mjs";
+import { patchMacAppBundleUuids, patchMachOUuidBuffer, patchMachOUuidFile, readMachOUuidsFromBuffer } from "../packages/desktop/scripts/macho-uuid.mjs";
 import { resolveDesktopAppIdentity } from "../packages/desktop/src/desktop-config.js";
+
+const execFileAsync = promisify(execFile);
 
 const temporary: string[] = [];
 const desktopRoot = fileURLToPath(new URL("../packages/desktop/", import.meta.url)).replace(/\/$/, "");
@@ -408,6 +413,13 @@ describe("macOS app bundle code signing", () => {
       run: lockedExec,
     })).rejects.toThrow("errSecInteractionNotAllowed");
 
+    // Auto-selected Developer ID Application failures must NOT silently downgrade to ad-hoc (preserves Team ID).
+    await expect(signMacAppBundle("/tmp/Kulo Dev.app", {
+      signIdentity: "",
+      listIdentities: async () => '  1) 1111111111111111111111111111111111111111 "Developer ID Application: Example Corp (TEAM123456)"',
+      run: lockedExec,
+    })).rejects.toThrow("禁止静默降级");
+
     // Release channel ad-hoc signing uses the release bundle identifier.
     const releaseCalls: Array<{ file: string; args: string[] }> = [];
     await signMacAppBundle("/tmp/Kulo.app", {
@@ -439,5 +451,103 @@ describe("macOS app bundle code signing", () => {
     expect(resolveDesktopAppIdentity(releaseManifest)).toEqual({
       channel: "release", appName: "Kulo", bundleId: "io.kulo.desktop", sessionPartition: "persist:kulo",
     });
+  });
+
+  it("deterministically rewrites Thin and Universal Fat Mach-O LC_UUIDs per channel and helper role without touching framework/node", async () => {
+    function makeThinMachO(cpuType: number, uuidHex: string): Buffer {
+      const buf = Buffer.alloc(64);
+      buf.writeUInt32LE(0xfeedfacf, 0); // MH_MAGIC_64
+      buf.writeUInt32LE(cpuType, 4);
+      buf.writeUInt32LE(1, 16); // ncmds = 1
+      buf.writeUInt32LE(24, 20); // sizeofcmds = 24
+      buf.writeUInt32LE(0x1b, 32); // LC_UUID
+      buf.writeUInt32LE(24, 36); // cmdsize = 24
+      Buffer.from(uuidHex, "hex").copy(buf, 40);
+      return buf;
+    }
+
+    const origHex = "4c4c448455553144a1042ea30dd34d47";
+    const arm64 = makeThinMachO(0x0100000c, origHex);
+    const x86_64 = makeThinMachO(0x01000007, origHex);
+
+    // 1. Thin Mach-O determinism & cross-channel isolation
+    const devA = patchMachOUuidBuffer(arm64, { appId: "io.kulo.desktop.dev", role: "main" });
+    const devB = patchMachOUuidBuffer(arm64, { appId: "io.kulo.desktop.dev", role: "main" });
+    const rel = patchMachOUuidBuffer(arm64, { appId: "io.kulo.desktop", role: "main" });
+    const helper = patchMachOUuidBuffer(arm64, { appId: "io.kulo.desktop.dev", role: "helper" });
+    expect(devA.buffer.equals(devB.buffer)).toBe(true);
+    expect(devA.slices[0]!.patchedUuid).not.toBe("4C4C4484-5555-3144-A104-2EA30DD34D47");
+    expect(devA.slices[0]!.patchedUuid).not.toBe(rel.slices[0]!.patchedUuid);
+    expect(devA.slices[0]!.patchedUuid).not.toBe(helper.slices[0]!.patchedUuid);
+    expect(readMachOUuidsFromBuffer(devA.buffer)).toEqual([{ cpuType: 0x0100000c, uuid: devA.slices[0]!.patchedUuid }]);
+
+    // 2. Universal Fat 32-bit Big-Endian (0xcafebabe) multi-slice patching
+    const fat32 = Buffer.alloc(64 + arm64.length + x86_64.length);
+    fat32.writeUInt32BE(0xcafebabe, 0);
+    fat32.writeUInt32BE(2, 4);
+    fat32.writeUInt32BE(0x0100000c, 8); fat32.writeUInt32BE(64, 16); fat32.writeUInt32BE(arm64.length, 20);
+    fat32.writeUInt32BE(0x01000007, 28); fat32.writeUInt32BE(64 + arm64.length, 36); fat32.writeUInt32BE(x86_64.length, 40);
+    arm64.copy(fat32, 64);
+    x86_64.copy(fat32, 64 + arm64.length);
+    const patchedFat32 = patchMachOUuidBuffer(fat32, { appId: "io.kulo.desktop.dev", role: "main" });
+    expect(patchedFat32.slices).toHaveLength(2);
+    expect(patchedFat32.slices[0]!.patchedUuid).not.toBe(patchedFat32.slices[1]!.patchedUuid);
+    expect(readMachOUuidsFromBuffer(patchedFat32.buffer).map((s) => s.uuid)).toEqual(patchedFat32.slices.map((s) => s.patchedUuid));
+
+    // 3. Universal Fat 64-bit Big-Endian (0xcafebabf) multi-slice patching
+    const fat64 = Buffer.alloc(96 + arm64.length + x86_64.length);
+    fat64.writeUInt32BE(0xcafebabf, 0);
+    fat64.writeUInt32BE(2, 4);
+    fat64.writeUInt32BE(0x0100000c, 8); fat64.writeBigUInt64BE(96n, 16); fat64.writeBigUInt64BE(BigInt(arm64.length), 24);
+    fat64.writeUInt32BE(0x01000007, 40); fat64.writeBigUInt64BE(BigInt(96 + arm64.length), 48); fat64.writeBigUInt64BE(BigInt(x86_64.length), 56);
+    arm64.copy(fat64, 96);
+    x86_64.copy(fat64, 96 + arm64.length);
+    const patchedFat64 = patchMachOUuidBuffer(fat64, { appId: "io.kulo.desktop", role: "main" });
+    expect(patchedFat64.slices).toHaveLength(2);
+    expect(readMachOUuidsFromBuffer(patchedFat64.buffer).map((s) => s.uuid)).toEqual(patchedFat64.slices.map((s) => s.patchedUuid));
+
+    // 4. Bundle patcher rewrites exactly the 5 .app launchers and leaves Electron Framework & runtime/node untouched
+    const dir = await fixture();
+    const bundle = path.join(dir, "Kulo Dev.app");
+    const launchers = [
+      path.join(bundle, "Contents/MacOS/Kulo Dev"),
+      path.join(bundle, "Contents/Frameworks/Kulo Dev Helper.app/Contents/MacOS/Kulo Dev Helper"),
+      path.join(bundle, "Contents/Frameworks/Kulo Dev Helper (GPU).app/Contents/MacOS/Kulo Dev Helper (GPU)"),
+      path.join(bundle, "Contents/Frameworks/Kulo Dev Helper (Plugin).app/Contents/MacOS/Kulo Dev Helper (Plugin)"),
+      path.join(bundle, "Contents/Frameworks/Kulo Dev Helper (Renderer).app/Contents/MacOS/Kulo Dev Helper (Renderer)"),
+    ];
+    for (const file of launchers) {
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, arm64);
+    }
+    const framework = path.join(bundle, "Contents/Frameworks/Electron Framework.framework/Electron Framework");
+    const nodeBin = path.join(bundle, "Contents/Resources/runtime/node");
+    await fs.mkdir(path.dirname(framework), { recursive: true });
+    await fs.mkdir(path.dirname(nodeBin), { recursive: true });
+    await fs.writeFile(framework, arm64);
+    await fs.writeFile(nodeBin, arm64);
+
+    const patched = await patchMacAppBundleUuids(bundle, { appId: "io.kulo.desktop.dev", appName: "Kulo Dev" });
+    expect(patched).toHaveLength(5);
+    expect(new Set(patched.map((p) => p.slices[0]!.patchedUuid)).size).toBe(5);
+    expect((await fs.readFile(framework)).equals(arm64)).toBe(true);
+    expect((await fs.readFile(nodeBin)).equals(arm64)).toBe(true);
+  });
+
+  nativeIt("produces a valid codesign-verifiable macOS binary after LC_UUID rewrite", async () => {
+    const dir = await fixture();
+    const copyPath = path.join(dir, "launcher");
+    await fs.copyFile("/bin/echo", copyPath);
+    await fs.chmod(copyPath, 0o755);
+    const patched = await patchMachOUuidFile(copyPath, { appId: "io.kulo.desktop.dev", role: "main" });
+    await execFileAsync("/usr/bin/codesign", ["--force", "--sign", "-", "--identifier", "io.kulo.desktop.dev.test", copyPath]);
+    await execFileAsync("/usr/bin/codesign", ["--verify", "--strict", copyPath]);
+    const { stdout: dump } = await execFileAsync("/usr/bin/dwarfdump", ["--uuid", copyPath]);
+    for (const slice of patched.slices) {
+      expect(dump).toContain(slice.patchedUuid);
+      expect(dump).not.toContain(slice.originalUuid);
+    }
+    const { stdout: runOut } = await execFileAsync(copyPath, ["kulo-uuid-ok"]);
+    expect(runOut.trim()).toBe("kulo-uuid-ok");
   });
 });

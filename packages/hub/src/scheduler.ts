@@ -3,7 +3,7 @@ import type { EnvManager } from "@kulo/env";
 import type { Context } from "@earendil-works/chord/context";
 import { describeKuloError, detectOutwardShellCommandsFromToolText, isSupportedExternalAgentKind, type ExternalAgentBinding, type ExternalAgentPendingReport, type ExternalAgentQuotaProbeResult, type ExternalAgentRuntimeEvent, type ExternalAgentUncertainReason, type StagedWorkspaceDiffSummary, type TicketRecord, type TicketWait, type WorkerExecutionPhase, type WorkerReportRecord } from "@kulo/protocol";
 import { spillOversizedReport } from "./report-overflow.js";
-import { formatExternalAgentFollowUpPrompt, formatExternalAgentHandoffPrompt, formatExternalPermissionMessage, formatStagedDiffRelayLines, formatWorkerInitialPrompt, formatWorkerRelayMessage } from "./prompts.js";
+import { buildExternalAgentRunRequest, escapeXmlContent, formatExternalPermissionMessage, formatStagedDiffRelayLines, formatWorkerInitialPrompt, formatWorkerRelayMessage, reconcileConsumedResumeState, type MaterializedExternalAttachment } from "./prompts.js";
 import { KuloStateDoc, WorkerRelayEntry, getActiveStagedCwd, hasActiveSubagents, hasPendingWorkspaceApply, releaseSlot, transitionTicketStatus, tryClaimSlot, type KuloDurableState } from "./state.js";
 import { SettingsAssistantDoc, isActiveSettingsConversation, parseSettingsTopicConversationId } from "./settings-doc.js";
 import { settlePendingSubagentsInTx } from "./subagent-runner.js";
@@ -53,7 +53,7 @@ export interface WorkerTicketTaskDependencies {
   redact?: (text: string) => string;
   ticketAgentBlock?: (ticket: Readonly<TicketRecord>) => string | undefined;
   getProjectMeta?: (projectId: string, context: Context) => Promise<{ id: string; name: string; workspaceDir: string } | undefined>;
-  materializeExternalAttachments?: (ticket: Readonly<TicketRecord>, attachmentIds: readonly string[], context: Context) => Promise<Array<{ id: string; name: string; mimeType: string; path: string }>>;
+  materializeExternalAttachments?: (ticket: Readonly<TicketRecord>, attachmentIds: readonly string[], context: Context) => Promise<MaterializedExternalAttachment[]>;
   recallExternalMemory?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<string | undefined>;
   retainExternalMemory?: (ticket: Readonly<TicketRecord>, report: WorkerReportRecord, context: Context) => Promise<void>;
   consumeExternalPendingReports?: (ticket: Readonly<TicketRecord>, reports: readonly ExternalAgentPendingReport[], context: Context) => Promise<string[]>;
@@ -61,7 +61,7 @@ export interface WorkerTicketTaskDependencies {
   isExternalMemoryEnabled?: () => boolean;
   syncWorkerConversation?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<void>;
   prepareBuiltInStagedWorkspace?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<{ stagedCwd: string; reused: boolean; warnings?: string[] }>;
-  prepareWorkerCollaborationContext?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<{ boardContext?: string; reviewContext?: string; reviewMaterialized?: Array<{ id: string; name: string; mimeType: string; path: string }> }>;
+  prepareWorkerCollaborationContext?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<{ boardContext?: string; reviewContext?: string; reviewMaterialized?: MaterializedExternalAttachment[] }>;
   inspectBuiltInStagedDiff?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<StagedWorkspaceDiffSummary | undefined>;
   discardBuiltInStagedWorkspace?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<void>;
   onInlineCandidateSettled?: (ticketId: string) => void;
@@ -254,6 +254,8 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
         if (ticket.externalExecution) {
           const external = ticket.externalExecution;
           const runId = `kulo:external:${ticket.id}:${task.input.runEpoch}`;
+          const consumedResumePrompt = task.input.promptOverride == null ? ticket.resumePrompt : undefined;
+          const consumedResumeAttachmentIds = [...(ticket.resumeAttachmentIds ?? [])];
           const followUpText = task.input.promptOverride ?? ticket.resumePrompt;
           const isResumingNativeSession = Boolean(
             task.input.runEpoch > 1 &&
@@ -265,13 +267,14 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           const attachmentIds = [...new Set([
             ...(task.input.attachmentIds ?? []),
             ...(!isResumingNativeSession ? (ticket.inputAttachmentIds ?? []) : []),
-            ...(ticket.resumeAttachmentIds ?? []),
+            ...consumedResumeAttachmentIds,
           ])];
-          let materialized: Array<{ id: string; name: string; mimeType: string; path: string }> = [];
+          let materialized: MaterializedExternalAttachment[] = [];
           if (attachmentIds.length > 0 && deps.materializeExternalAttachments) {
             materialized = await deps.materializeExternalAttachments(ticket, attachmentIds, context);
           }
-          const projectMeta = !isResumingNativeSession && ticket.projectId && deps.getProjectMeta
+          // Always fetch projectMeta so structured developerInstructions (and Claude systemPrompt.append cache) stay byte-identical across resume epochs.
+          const projectMeta = ticket.projectId && deps.getProjectMeta
             ? await deps.getProjectMeta(ticket.projectId, context).catch(() => undefined)
             : undefined;
           const recalledMemory = !isResumingNativeSession && Boolean(ticket.projectId) && deps.recallExternalMemory
@@ -281,24 +284,22 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             ? await deps.prepareWorkerCollaborationContext(ticket, context).catch(() => undefined)
             : undefined;
           if (collab?.reviewMaterialized?.length) materialized = [...materialized, ...collab.reviewMaterialized];
-          const prompt = isResumingNativeSession
-            ? formatExternalAgentFollowUpPrompt({
-                ticket,
-                followUp: followUpText!.trim(),
-                materialized,
-              })
-            : formatExternalAgentHandoffPrompt({
-                ticket,
-                instructions: external.instructions,
-                workspaceMode: external.workspaceMode === "read_only" || external.workspaceMode === "direct" ? external.workspaceMode : "staged",
-                projectName: projectMeta?.name,
-                recalledMemory,
-                boardContext: collab?.boardContext,
-                reviewContext: collab?.reviewContext,
-                materialized,
-                followUp: followUpText,
-                localEnvId: deps.envManager.localEnvId,
-              });
+          const runRequest = buildExternalAgentRunRequest({
+            ticket,
+            runEpoch: task.input.runEpoch,
+            runId,
+            isResumingNativeSession,
+            followUpText,
+            projectName: projectMeta?.name,
+            recalledMemory,
+            boardContext: collab?.boardContext,
+            reviewContext: collab?.reviewContext,
+            materialized,
+            localEnvId: deps.envManager.localEnvId,
+            hasConnections: Boolean(deps.hasTicketConnections?.(ticket)),
+            memoryEnabled: Boolean(deps.isExternalMemoryEnabled?.()),
+            envCapabilities: deps.envManager.getEnvDescriptor(ticket.envId)?.capabilities,
+          });
           await runtime.commit(async (tx) => {
             const current = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
             if (!current || current.runEpoch !== task.input.runEpoch || current.status === "stopped" || current.status === "closed") return { status: "terminal", outcome: { status: "aborted" } };
@@ -310,17 +311,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           const current = (await runtime.snapshot(KuloStateDoc, context))?.tickets[ticket.id];
           if (!current || current.runEpoch !== task.input.runEpoch || current.status !== "running") return;
           try {
-            const response = await deps.envManager.requestExternalAgent(ticket.envId, { operation: "run", binding: external.binding,
-              taskId: ticket.id, runEpoch: task.input.runEpoch, requestId: runId, prompt, cwd: ticket.workspaceDir,
-              ...(external.workspaceMode ? { workspaceMode: external.workspaceMode } : {}),
-              ...(external.modelId ? { modelId: external.modelId } : {}),
-              ...(external.thinkingLevel ? { thinkingLevel: external.thinkingLevel } : {}),
-              ...(external.serviceTier ? { serviceTier: external.serviceTier } : {}),
-              ...(external.sessionId ? { sessionId: external.sessionId } : {}),
-              readOnly: Boolean(ticket.readOnly || external.workspaceMode === "read_only"), allowSubagents: Boolean(external.allowSubagents), taskTools: true,
-              ...(deps.hasTicketConnections?.(ticket) ? { hasConnections: true } : {}),
-              ...(deps.isExternalMemoryEnabled?.() ? { memoryEnabled: true } : {}),
-              projectId: ticket.projectId, directoryId: ticket.directoryId, grantRevision: ticket.grantRevision, timeoutMs: 30 * 60_000 });
+            const response = await deps.envManager.requestExternalAgent(ticket.envId, runRequest);
             if (response.type !== "run" || response.run.id !== runId || response.run.taskId !== ticket.id || response.run.runEpoch !== task.input.runEpoch || response.run.kind !== external.binding.kind) throw new Error("客户端未返回匹配的任务执行标识。");
             await runtime.commit(async (tx) => {
               const live = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
@@ -329,8 +320,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                 live.externalExecution!.sessionId = response.run.sessionId;
                 if (response.run.stagedCwd) live.externalExecution!.stagedCwd = response.run.stagedCwd;
                 live.externalExecution!.lastActivityAt = runtime.now();
-                live.resumePrompt = undefined;
-                live.resumeAttachmentIds = undefined;
+                reconcileConsumedResumeState(live, consumedResumePrompt, consumedResumeAttachmentIds);
               }
               return { status: "running", checkpoint: { phase: "external_wait" } };
             }, context);
@@ -469,10 +459,11 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
         const collab = !task.input.promptOverride && deps.prepareWorkerCollaborationContext
           ? await deps.prepareWorkerCollaborationContext(preparedTicket, context).catch(() => undefined)
           : undefined;
-        const initialPrompt = task.input.promptOverride ?? formatWorkerInitialPrompt(preparedTicket, collab);
-        const rawPrompt = pendingPrompt && pendingPrompt !== initialPrompt
-          ? `${initialPrompt}\n\n【排队期间补充要求】\n${pendingPrompt}`
-          : initialPrompt;
+        const rawPrompt = task.input.promptOverride
+          ? pendingPrompt && pendingPrompt !== task.input.promptOverride
+            ? `${task.input.promptOverride}\n\n<follow_up>\n${escapeXmlContent(pendingPrompt.trim())}\n</follow_up>`
+            : task.input.promptOverride
+          : formatWorkerInitialPrompt(preparedTicket, { ...collab, ...(pendingPrompt?.trim() ? { followUp: pendingPrompt } : {}) });
         const attachmentIds = [...new Set([...(task.input.attachmentIds ?? []), ...pendingAttachmentIds])];
         const promptContent = deps.uploads.buildMultimodalContent(
           rawPrompt,
@@ -491,15 +482,8 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
 
         if (pendingPrompt !== undefined || pendingAttachmentIds.length > 0) {
           await runtime.commit(async (tx) => {
-            const state = await tx.doc(KuloStateDoc);
-            const current = state.tickets[ticket.id];
-            if (!current || current.runEpoch !== task.input.runEpoch) return undefined;
-            const currentAttachments = current.resumeAttachmentIds ?? [];
-            if (current.resumePrompt === pendingPrompt && currentAttachments.length === pendingAttachmentIds.length &&
-                currentAttachments.every((id, index) => id === pendingAttachmentIds[index])) {
-              current.resumePrompt = undefined;
-              current.resumeAttachmentIds = undefined;
-            }
+            const current = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
+            if (current?.runEpoch === task.input.runEpoch) reconcileConsumedResumeState(current, pendingPrompt, pendingAttachmentIds);
             return undefined;
           }, context);
         }

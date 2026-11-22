@@ -48,7 +48,7 @@ describe("native external client ownership",()=>{
  });
  it("rejects explicit unsupported effort before submitting a prompt and appends only the voluntary collaboration MCP",async()=>{
   const f=fixture();f.ctx.thinkingLevel="unsupported";await expect(connectCodex(f.ctx)).rejects.toThrow("thinking level");expect(f.ctx.submitted).not.toHaveBeenCalled();
-  const g=fixture();g.ctx.servers=[{name:"kulo-task",url:"http://127.0.0.1:12345"}];const result=await connectCodex(g.ctx);const config=g.sent.find(value=>value.method==="thread/start").params.config;expect(Object.values(config.mcp_servers)).toEqual([{enabled:true,url:"http://127.0.0.1:12345",http_headers:{}}]);expect(Object.keys(config)).toEqual(["mcp_servers"]);result.driver.close();
+  const g=fixture();g.ctx.servers=[{name:"kulo-task",url:"http://127.0.0.1:12345"}];const result=await connectCodex(g.ctx);const config=g.sent.find(value=>value.method==="thread/start").params.config;expect(config["mcp_servers.kulo-task"]).toEqual({enabled:true,url:"http://127.0.0.1:12345",http_headers:{}});expect(config.mcp_optional_startup_grace_ms).toBe(10_000);expect(config.mcp_servers).toBeUndefined();expect(Object.keys(config).sort()).toEqual(["mcp_optional_startup_grace_ms","mcp_servers.kulo-task"]);result.driver.close();
  });
  it("adapts advertised ACP file and terminal capabilities without a worker sandbox or fixed provider",async()=>{
   const f=fixture("dsh");f.ctx.thinkingLevel="high";const result=await connectAcp(f.ctx,true);expect(f.spec.args).toEqual(["--profile","acp"]);expect(f.spec.isolated).toBe(false);expect(f.spec.env).toEqual({});expect(f.sent.find(value=>value.method==="initialize").params.clientCapabilities).toEqual({fs:{readTextFile:true,writeTextFile:true},terminal:true});

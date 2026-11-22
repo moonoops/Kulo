@@ -1,3 +1,4 @@
+import type { LiveContextState } from "./context-state.js";
 export const KULO_VERSION = "0.1.4";
 
 export type TicketStatus =
@@ -416,21 +417,11 @@ export interface LiveStreamState {
   responseId?: number;
   streamingText?: string;
   streamingThinking?: string;
-  activeTools: Array<{
-    callId: string;
-    name: string;
-    outputTail?: string;
-  }>;
+  activeTools: Array<{ callId: string; name: string; outputTail?: string }>;
   queuedCount: number;
-  retrying?: {
-    attempt: number;
-    at: number;
-  };
-  runFailure?: {
-    taskId?: number;
-    reason: string;
-    detail?: string;
-  };
+  retrying?: { attempt: number; at: number };
+  runFailure?: { taskId?: number; reason: string; detail?: string };
+  context?: LiveContextState;
 }
 
 // ============================================================================
@@ -623,16 +614,9 @@ export const MODEL_PURPOSES = ["chat", "image", "tts", "asr", "live"] as const;
 export type ModelPurpose = (typeof MODEL_PURPOSES)[number];
 
 export const MODEL_PROTOCOL_ADAPTERS = [
-  "openai-image",
-  "gemini-image",
-  "custom-image",
-  "openai-speech",
-  "minimax-t2a",
-  "gemini-tts",
-  "openai-asr",
-  "openai-realtime",
-  "gemini-live",
-  "vertex-live",
+  "openai-image", "gemini-image", "vertex-image", "custom-image",
+  "openai-speech", "minimax-t2a", "gemini-tts",
+  "openai-asr", "openai-realtime", "gemini-live", "vertex-live",
 ] as const;
 export type ModelProtocolAdapter = (typeof MODEL_PROTOCOL_ADAPTERS)[number];
 
@@ -668,6 +652,7 @@ export function defaultProtocolAdapterForModel(
 ): ModelProtocolAdapter | undefined {
   const lower = modelId.toLowerCase();
   if (purpose === "image") {
+    if (preset === "google-vertex" || providerApi === "google-vertex") return "vertex-image";
     if (preset === "google" || providerApi === "google-generative-ai" || /(?:^|\/)(?:imagen|nano-banana|gemini-)/.test(lower)) {
       return "gemini-image";
     }
@@ -866,6 +851,8 @@ export interface ProviderCatalogItem {
   isGateway?: boolean;
   baseUrl?: string;
   api?: CustomProviderApi;
+  vertexProject?: string;
+  vertexLocation?: string;
   supportsApiKey: boolean;
   supportsOAuth: boolean;
   oauthName?: string;

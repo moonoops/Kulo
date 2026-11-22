@@ -75,6 +75,7 @@ export interface HubTopicManagerDeps {
     align: (conversationId: ConversationId, context: Context) => Promise<void>;
     pruneCommittedBaseline: (conversationId: ConversationId, context: Context, force: boolean) => Promise<unknown>;
   };
+  onTopicIdle?: (topicId: string, conversationId: number, live: LiveStreamState, value: ConversationView) => void;
   orchestrator: {
     resolveAgent: () => { model: { provider: string; modelId: string }; thinkingLevel: BuiltinThinkingEffort };
     extensions: (isRoot: boolean) => Extension[];
@@ -85,11 +86,12 @@ export interface HubTopicManagerDeps {
   projection: {
     hydrateMessages: (entries: readonly EntryRecord[], conversationId: number, context?: Context) => Promise<ChatDisplayItem[]>;
     projectTopicMessages: (value: ConversationView, conversationId: number) => ChatDisplayItem[];
-    projectTopicLiveState: (value: ConversationView, conversationId: number) => LiveStreamState;
+    projectTopicLiveState: (value: ConversationView, conversationId: number, conversation?: Conversation) => LiveStreamState;
   };
   cleanup: {
     closeOrchestratorBrowserSession: (topicId: string) => Promise<void>;
     discardTicketStagedWorkspace: (ticket: TicketRecord) => Promise<unknown>;
+    onTopicDeleted?: (topicId: string, conversationId: number, context: Context) => Promise<void>;
   };
 }
 
@@ -396,7 +398,16 @@ export class HubTopicManager {
     }
     if (stagedToDiscard.length > 0) await Promise.allSettled(stagedToDiscard.map((ticket) => this.#deps.cleanup.discardTicketStagedWorkspace(ticket)));
     await this.#deps.cleanup.closeOrchestratorBrowserSession(topicId);
+    const wasWatched = this.#topicCaches.has(topicId);
     await this.unwatchTopic(topicId, context);
+    // Also abort background tasks on uncached deleted topic conversations.
+    if (!wasWatched && targetConversationId !== undefined) {
+      const conv = await this.#deps.harness.conversation(targetConversationId as ConversationId, context).catch(() => undefined);
+      await conv?.abort(context, { background: true }).catch(() => {});
+    }
+    if (targetConversationId !== undefined) {
+      await this.#deps.cleanup.onTopicDeleted?.(topicId, targetConversationId, context).catch(() => {});
+    }
     if (ticketsChanged) await this.#deps.runtimeGates.broadcastTickets(context);
     const topics = await this.listTopics(context);
     this.emitTopics(topics);
@@ -522,7 +533,7 @@ export class HubTopicManager {
     const attached = this.#topicCaches.get(topicId);
     if (attached) { await watch.stop(); return attached; }
     const initialMessages = this.#deps.projection.projectTopicMessages(watch.value, Number(conversation.id));
-    const initialLive = redactCredentialData(this.#deps.projection.projectTopicLiveState(watch.value, Number(conversation.id)), (text) => this.#deps.connectionManager.redact(text));
+    const initialLive = redactCredentialData(this.#deps.projection.projectTopicLiveState(watch.value, Number(conversation.id), conversation), (text) => this.#deps.connectionManager.redact(text));
     const cache: WatchedTopicCache = {
       topicId, conversation, watch, messages: initialMessages, live: initialLive,
       notificationBaseline: createTopicNotificationBaseline(initialMessages, initialLive),
@@ -556,8 +567,11 @@ export class HubTopicManager {
     const latestPreview = summarizeTopicPreview(messages);
     if (latestPreview) this.#topicPreviewCache.set(cache.topicId, latestPreview);
     const wasBusy = cache.live.busy;
-    cache.live = redactCredentialData(this.#deps.projection.projectTopicLiveState(value, Number(cache.conversation.id)), (text) => this.#deps.connectionManager.redact(text));
-    if (wasBusy && !cache.live.busy) this.recordTopicActivity(cache.topicId, latestPreview);
+    cache.live = redactCredentialData(this.#deps.projection.projectTopicLiveState(value, Number(cache.conversation.id), cache.conversation), (text) => this.#deps.connectionManager.redact(text));
+    if (wasBusy && !cache.live.busy) {
+      this.recordTopicActivity(cache.topicId, latestPreview);
+      this.#deps.onTopicIdle?.(cache.topicId, Number(cache.conversation.id), cache.live, value);
+    }
     if (!cache.live.busy && value.entries.some((entry) => CompactionEntry.is(entry))) {
       void this.#deps.contextCompaction.pruneCommittedBaseline(cache.conversation.id, BACKGROUND_CONTEXT, false).catch(() => {});
     }

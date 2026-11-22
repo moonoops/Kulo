@@ -1,6 +1,6 @@
 import { translate as t, useI18n } from "../../kulo-i18n";
 import { useCallback, useEffect, useRef, useState, type Key } from "react";
-import { Alert, Button, Card, Chip, Dropdown, Input, Label, Modal, Popover, Skeleton, Switch, TextField, toast } from "@heroui/react";
+import { Alert, Button, Card, Chip, Dropdown, Input, Label, Modal, Popover, Separator, Skeleton, Switch, TextField, toast } from "@heroui/react";
 import type {
   ClusterFailoverCandidate,
   ClusterLocalStatusView,
@@ -171,7 +171,8 @@ function DeviceCard({
                 {canGrantStandby && <Dropdown.Item id="set-standby" textValue={t("设为备用主机", "Set as standby host")}><Label>{t("设为备用主机", "Set as standby host")}</Label></Dropdown.Item>}
                 {canHandover && <Dropdown.Item id="handover" textValue={t("切换为主机", "Switch to host")}><Label>{t("切换为主机", "Switch to host")}</Label></Dropdown.Item>}
                 {canRevokeStandby && <Dropdown.Item id="unset-standby" textValue={t("取消备用主机", "Remove standby role")}><Label>{t("取消备用主机", "Remove standby role")}</Label></Dropdown.Item>}
-                <Dropdown.Item id="remove" textValue={t("移除设备", "Remove device")} variant="danger"><Label>{t("移除设备", "Remove device")}</Label></Dropdown.Item>
+                <Separator />
+                <Dropdown.Item id="remove" textValue={t("移除设备", "Remove device")}><Label>{t("移除设备", "Remove device")}</Label></Dropdown.Item>
               </Dropdown.Menu>
             </Dropdown.Popover>
           </Dropdown>}

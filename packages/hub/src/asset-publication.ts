@@ -139,6 +139,12 @@ export function createAssetPublisher(options: AssetPublisherOptions) {
           ticket.externalExecution?.explicitReadyReport?.overflowAsset?.id === loaded.record.id,
       ),
     );
+    if (isInternalOverflow && caller.ticket) {
+      throw new UiCardError("internal_overflow_asset_not_publishable", "内部溢出资产仅供所属会话主 Agent 审阅，后台任务不可访问或转发。", 403);
+    }
+    if (loaded.record.internalKind === "tool-overflow" && loaded.record.ownerId !== `agent:${Number(api.conversationId)}`) {
+      throw new UiCardError("asset_reference_denied", "当前聊天无权读取其他会话的内部工具溢出资产。", 403);
+    }
     return { ...caller, asset: options.uploads.toChatAttachment(loaded.record), canReadScope, isInternalOverflow };
   };
 
@@ -189,7 +195,7 @@ export function createAssetPublisher(options: AssetPublisherOptions) {
       if (input.assetId) {
         if (input.path !== `asset:${input.assetId}`) throw new UiCardError("invalid_asset_publication", "path 和 asset_id 只能选择一个。", 400);
         const initial = receivedAsset(await api.snapshot(KuloStateDoc, context), await api.snapshot(SettingsAssistantDoc, context), api, input);
-        if (!reviewOnly && !initial.ticket && initial.isInternalOverflow) {
+        if (!reviewOnly && initial.isInternalOverflow) {
           throw new UiCardError("internal_overflow_asset_not_publishable", "该资产属于内部超长汇报溢出文本，仅供主 Agent 使用 kulo_inspect_asset 分页审阅，不可直接发布给用户。", 403);
         }
         // Managed bytes were received already; forwarding them must not reopen the source device or project.

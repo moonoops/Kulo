@@ -24,17 +24,22 @@ function flowPrepared(req: Extract<BrowserRequest, { action: "prepare" }>): Brow
 }
 
 function configuration(adapter: MediaConnectionView["adapter"] = "openai-image") {
+  const isGoogle = adapter === "gemini-image" || adapter === "vertex-image";
   const capability: CapabilityRecord = {
     id: "cap-image", name: "图片", connectionId: "media-connection", kind: adapter === "flow-browser" ? "video" : "image",
-    modelId: adapter === "openai-image" ? "gpt-image-2.6-flare" : adapter === "gemini-image" ? "gemini-nano-banana-2.1" : "flow-default",
-    formats: adapter === "flow-browser" ? ["mp4"] : adapter === "gemini-image" ? ["jpeg"] : ["png", "gif"],
+    modelId: adapter === "openai-image" ? "gpt-image-2.6-flare" : isGoogle ? "gemini-nano-banana-2.1" : "flow-default",
+    formats: adapter === "flow-browser" ? ["mp4"] : adapter === "vertex-image" ? ["jpeg", "png"] : adapter === "gemini-image" ? ["jpeg"] : ["png", "gif"],
     supportsEdit: true, enabled: true, isDefault: true, allowTaskGeneration: true, maxOutputs: adapter === "openai-image" ? 4 : 1,
     revision: 1, status: "unverified", createdAt: 1, updatedAt: 1,
   };
+  const expectedOrigin = adapter === "openai-image" ? "https://images.example" : adapter === "vertex-image" ? "https://aiplatform.googleapis.com" : "https://generativelanguage.googleapis.com";
+  const defaultBaseUrl = adapter === "openai-image" ? "https://images.example/v1"
+    : adapter === "vertex-image" ? "https://aiplatform.googleapis.com/v1/projects/demo-proj/locations/global"
+    : "https://generativelanguage.googleapis.com/v1beta";
   const connection: MediaConnectionView = {
     id: "media-connection", name: "图片连接", adapter,
     ...(adapter === "flow-browser" ? { browserEnvId: "browser-mac", profileRef: "profile-test" }
-      : { baseUrl: adapter === "openai-image" ? "https://images.example/v1" : "https://generativelanguage.googleapis.com/v1beta", origin: adapter === "openai-image" ? "https://images.example" : "https://generativelanguage.googleapis.com" }),
+      : { baseUrl: defaultBaseUrl, origin: expectedOrigin }),
     hasCredential: adapter !== "flow-browser", revision: 1,
   };
   const capabilities: MediaCapabilities = {
@@ -43,7 +48,7 @@ function configuration(adapter: MediaConnectionView["adapter"] = "openai-image")
       return { capability: structuredClone(capability), connection: structuredClone(connection) };
     },
     async connection(id) { if (id !== connection.id) throw new Error("missing connection"); return structuredClone(connection); },
-    async apiKey(id) { if (id !== connection.id || connection.origin !== (adapter === "openai-image" ? "https://images.example" : "https://generativelanguage.googleapis.com")) throw new Error("credential origin mismatch"); return "synthetic-provider-key"; },
+    async apiKey(id) { if (id !== connection.id || connection.origin !== expectedOrigin) throw new Error("credential origin mismatch"); return "synthetic-provider-key"; },
   };
   return { capability, connection, capabilities };
 }
@@ -907,5 +912,120 @@ describe("durable media jobs", () => {
     releaseUpload(); await f.jobs.drain();
     expect(await f.jobs.get(job.id)).toMatchObject({ status: "running", source: { ...source, runEpoch: 3 } });
     expect(browser.mock.calls.filter((call) => call[1].action === "submit")).toHaveLength(1);
+  });
+
+  it("calls Vertex AI generateContent with x-goog-api-key only, maps parameters, skips thought parts, and embeds references", async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({
+      candidates: [{
+        content: {
+          role: "model",
+          parts: [
+            { thought: true, inlineData: { mimeType: "image/jpeg", data: png.toString("base64") } },
+            { text: "Generated image" },
+            { inlineData: { mimeType: "image/jpeg", data: jpeg.toString("base64") } },
+          ],
+        },
+      }],
+    }), { status: 200 }));
+    const f = await fixture({ adapter: "vertex-image", fetcher: fetcher as typeof fetch });
+    const ref = f.uploads.saveUpload({ bytes: png, name: "reference.png", mimeType: "image/png", ownerId: "client-1" });
+    f.uploads.bindAttachments([ref], "conversation:1", "client-1");
+    await f.jobs.start();
+    const job = await f.jobs.create(request({
+      inputAssetIds: [ref.id],
+      aspectRatio: "16:9",
+      quality: "2K",
+      parameters: { format: "jpeg", outputCompression: 85, thinkingLevel: "high", grounding: true },
+    }));
+    await f.jobs.drain();
+    const [url, options] = fetcher.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.toString()).toBe("https://aiplatform.googleapis.com/v1/projects/demo-proj/locations/global/publishers/google/models/gemini-nano-banana-2.1:generateContent");
+    expect(options.headers).toMatchObject({ "x-goog-api-key": "synthetic-provider-key", "Content-Type": "application/json" });
+    expect(options.headers).not.toHaveProperty("Authorization");
+    expect(options.headers).not.toHaveProperty("Api-Revision");
+    expect(JSON.parse(String(options.body))).toEqual({
+      contents: [{
+        role: "user",
+        parts: [
+          { text: "A clean product photo" },
+          { inlineData: { mimeType: "image/png", data: png.toString("base64") } },
+        ],
+      }],
+      tools: [{ googleSearch: {} }],
+      generationConfig: {
+        responseModalities: ["TEXT", "IMAGE"],
+        thinkingConfig: { thinkingLevel: "HIGH" },
+        imageConfig: {
+          aspectRatio: "16:9",
+          imageSize: "2K",
+          imageOutputOptions: { mimeType: "image/jpeg", compressionQuality: 85 },
+        },
+      },
+    });
+    const done = await f.jobs.get(job.id);
+    expect(done.status).toBe("completed");
+    expect(f.uploads.readUploadBytes(f.uploads.getUpload(done.assets[0]!.id)!)).toEqual(jpeg);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("supports Vertex Express, multi-region official endpoints, wire imageSize mapping, and third-party Vertex proxies", async () => {
+    const expressConfig = configuration("vertex-image");
+    expressConfig.capability.modelId = "gemini-3.1-flash-image";
+    expressConfig.connection.baseUrl = "https://aiplatform.googleapis.com/v1";
+    const expressFetch = vi.fn(async () => new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: png.toString("base64") } }] } }],
+    }), { status: 200 }));
+    const fExpress = await fixture({ capabilities: expressConfig.capabilities, fetcher: expressFetch as typeof fetch });
+    await fExpress.jobs.start();
+    const expressJob = await fExpress.jobs.create(request({ parameters: { format: "png", size: "0.5K" } }));
+    await fExpress.jobs.drain();
+    const [expressUrl, expressOpts] = expressFetch.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(expressUrl.toString()).toBe("https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-3.1-flash-image:generateContent");
+    expect(expressOpts.headers).not.toHaveProperty("Authorization");
+    expect(JSON.parse(String(expressOpts.body)).generationConfig.imageConfig).toEqual({
+      imageSize: "512",
+      imageOutputOptions: { mimeType: "image/png" },
+    });
+    expect((await fExpress.jobs.get(expressJob.id)).status).toBe("completed");
+
+    const proxyConn: MediaConnectionView = {
+      id: "media-proxy", name: "Vertex Proxy", adapter: "vertex-image",
+      baseUrl: "https://vertex-proxy.example.com", origin: "https://vertex-proxy.example.com",
+      hasCredential: true, revision: 1,
+    };
+    const proxyCap: CapabilityRecord = {
+      ...expressConfig.capability, id: "cap-proxy", connectionId: proxyConn.id, modelId: "gemini-nano-banana-2.1",
+    };
+    const proxyCaps: MediaCapabilities = {
+      async resolve() { return { capability: structuredClone(proxyCap), connection: structuredClone(proxyConn) }; },
+      async connection() { return structuredClone(proxyConn); },
+      async apiKey() { return "synthetic-proxy-key"; },
+    };
+    const proxyFetch = vi.fn(async () => new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: png.toString("base64") } }] } }],
+    }), { status: 200 }));
+    const fProxy = await fixture({ capabilities: proxyCaps, fetcher: proxyFetch as typeof fetch });
+    await fProxy.jobs.start();
+    const proxyJob = await fProxy.jobs.create(request({ operationId: "proxy-v1", parameters: { format: "png" } }));
+    await fProxy.jobs.drain();
+    const [proxyUrl, proxyOpts] = proxyFetch.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(proxyUrl.toString()).toBe("https://vertex-proxy.example.com/v1/publishers/google/models/gemini-nano-banana-2.1:generateContent");
+    expect(proxyOpts.headers).toMatchObject({ "x-goog-api-key": "synthetic-proxy-key", Authorization: "Bearer synthetic-proxy-key" });
+    expect((await fProxy.jobs.get(proxyJob.id)).status).toBe("completed");
+  });
+
+  it.each([
+    ["HTTP 404", new Response("not found", { status: 404 }), "failed"],
+    ["HTTP 500", new Response("server error", { status: 500 }), "needs_reconciliation"],
+    ["unrequested MIME", new Response(JSON.stringify({ candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: png.toString("base64") } }] } }] }), { status: 200 }), "needs_reconciliation"],
+    ["thought-only image", new Response(JSON.stringify({ candidates: [{ content: { parts: [{ thought: true, inlineData: { mimeType: "image/jpeg", data: jpeg.toString("base64") } }] } }] }), { status: 200 }), "needs_reconciliation"],
+  ])("never retries another paid protocol after a Vertex %s", async (_label, upstream, expectedStatus) => {
+    const fetcher = vi.fn(async () => upstream);
+    const f = await fixture({ adapter: "vertex-image", fetcher: fetcher as typeof fetch });
+    await f.jobs.start();
+    const job = await f.jobs.create(request({ parameters: { format: "jpeg" } }));
+    await f.jobs.drain();
+    expect(await f.jobs.get(job.id)).toMatchObject({ status: expectedStatus, assets: [] });
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });

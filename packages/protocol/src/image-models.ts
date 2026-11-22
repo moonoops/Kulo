@@ -1,9 +1,10 @@
 import type { CustomImageAdapter, ImageGenerationParameters, ImageJsonValue, ImageModelProfile, MediaAdapterId, MediaOutputFormat } from "./capabilities.js";
+import { cleanGoogleImageModelId } from "./vertex.js";
 
 export interface ImageModelPreset {
   id: string;
   name: string;
-  adapter: "openai-image" | "gemini-image";
+  adapter: "openai-image" | "gemini-image" | "vertex-image";
   baseUrl: string;
   modelId: string;
   profile: ImageModelProfile;
@@ -42,10 +43,19 @@ export const IMAGE_MODEL_PRESETS: readonly ImageModelPreset[] = [
 ];
 
 export function getImageModelPreset(adapter: MediaAdapterId, modelId: string): ImageModelPreset | undefined {
-  const id = modelId.replace(/^models\//, "");
-  const exact = IMAGE_MODEL_PRESETS.find((preset) => preset.adapter === adapter && preset.modelId === id);
-  const dated = exact ?? IMAGE_MODEL_PRESETS.find((preset) => preset.adapter === adapter && /^\d{4}-\d{2}-\d{2}$/.test(id.slice(preset.modelId.length + 1)) && id.startsWith(`${preset.modelId}-`));
-  return dated ? copy({ ...dated, modelId: id }) : undefined;
+  const isGoogle = adapter === "gemini-image" || adapter === "vertex-image";
+  const id = isGoogle ? cleanGoogleImageModelId(modelId) : modelId.replace(/^models\//, "");
+  const lookupAdapter = adapter === "vertex-image" ? "gemini-image" : adapter;
+  const exact = IMAGE_MODEL_PRESETS.find((preset) => preset.adapter === lookupAdapter && preset.modelId === id);
+  const variant = exact ?? IMAGE_MODEL_PRESETS.find((preset) => preset.adapter === lookupAdapter
+    && id.startsWith(`${preset.modelId}-`)
+    && /^(?:\d{4}-\d{2}-\d{2}|preview(?:-\d{4}-\d{2}-\d{2})?)$/.test(id.slice(preset.modelId.length + 1)));
+  if (!variant) return undefined;
+  return copy({
+    ...variant,
+    ...(adapter === "vertex-image" ? { adapter: "vertex-image" as const, baseUrl: "https://aiplatform.googleapis.com/v1" } : {}),
+    modelId: id,
+  });
 }
 export function getImageModelProfile(adapter: MediaAdapterId, modelId: string): ImageModelProfile | undefined {
   return getImageModelPreset(adapter, modelId)?.profile;
@@ -69,7 +79,7 @@ export function validateImageModelProfile(profile: ImageModelProfile): ImageMode
     if (!Array.isArray(profile.parameters) || profile.parameters.length > 30) problem("自定义图像参数过多。");
     const seen = new Set<string>();
     for (const field of profile.parameters) {
-      if (!field || Object.keys(field).some((key) => !["key", "label", "type", "enum", "minimum", "maximum", "required", "default"].includes(key)) || !safeKey(field.key) || ["model", "prompt", "n", "output_format", "size", "quality", "background", "complexity", "output_compression", "frame_count", "frame_duration_ms", "svg", "input", "response_format", "generation_config", "tools", "stream", "api_key", "apiKey", "token", "secret", "authorization"].includes(field.key) || seen.has(field.key) || typeof field.label !== "string" || !field.label.trim() || field.label.length > 100 || !["string", "number", "boolean"].includes(field.type)) problem("自定义图像参数声明无效。");
+      if (!field || Object.keys(field).some((key) => !["key", "label", "type", "enum", "minimum", "maximum", "required", "default"].includes(key)) || !safeKey(field.key) || ["model", "prompt", "n", "output_format", "size", "quality", "background", "complexity", "output_compression", "frame_count", "frame_duration_ms", "svg", "input", "contents", "response_format", "generation_config", "generationConfig", "tools", "stream", "api_key", "apiKey", "token", "secret", "authorization"].includes(field.key) || seen.has(field.key) || typeof field.label !== "string" || !field.label.trim() || field.label.length > 100 || !["string", "number", "boolean"].includes(field.type)) problem("自定义图像参数声明无效。");
       seen.add(field.key);
       if (field.enum && (!Array.isArray(field.enum) || field.enum.length > 50 || field.enum.some((value) => typeof value !== field.type))) problem("自定义参数选项类型无效。");
       if (field.minimum !== undefined && !Number.isFinite(field.minimum) || field.maximum !== undefined && !Number.isFinite(field.maximum)
@@ -114,7 +124,7 @@ export function normalizeImageGenerationParameters(input: ImageGenerationParamet
   if (value.grounding !== undefined && (typeof value.grounding !== "boolean" || value.grounding && !profile.supportsGrounding)) problem("此模型不支持搜索增强。");
   if (value.svgModel !== undefined && (value.format !== "svg" || typeof value.svgModel !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/.test(value.svgModel))) problem("SVG创作模型无效。");
   if (value.svgReasoning !== undefined && (value.format !== "svg" || !value.svgModel || !["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value.svgReasoning))) problem("SVG思考设置无效。");
-  if (adapter === "gemini-image" && value.count !== undefined && value.count !== 1) problem("Gemini每个作业只请求一张图片。");
+  if ((adapter === "gemini-image" || adapter === "vertex-image") && value.count !== undefined && value.count !== 1) problem("Gemini每个作业只请求一张图片。");
   if (value.custom !== undefined && (!value.custom || typeof value.custom !== "object" || Array.isArray(value.custom))) problem("自定义参数需要对象。");
   for (const [key, fieldValue] of Object.entries(value.custom ?? {})) {
     const field = profile.parameters?.find((item) => item.key === key);

@@ -38,6 +38,7 @@ import {
   transitionTicketStatus,
 } from "./state.js";
 import type { ApplyStagedChangesParams } from "./tools-router.js";
+import { recordTicketOutcomeToWorkingMemory } from "./working-memory.js";
 
 export interface TicketStagedApplyDeps {
   harness: Harness;
@@ -452,6 +453,19 @@ export class TicketStagedApplyService {
       }, context);
       if (unlockedOrScheduled) this.#deps.runtimeGates.resumeIfNotRecovering();
       await this.#deps.runtimeGates.broadcastTickets(context);
+      const postState = await this.#deps.harness.snapshot(KuloStateDoc, context);
+      const appliedTicket = postState?.tickets[params.ticketId];
+      if (appliedTicket) {
+        const appliedCount = applied.appliedAdded.length + applied.appliedModified.length + applied.appliedDeleted.length;
+        void recordTicketOutcomeToWorkingMemory(
+          this.#deps.harness,
+          (text) => this.#deps.connectionManager.redact(text),
+          appliedTicket,
+          "ticket_applied",
+          { detail: `已合入 ${appliedCount} 项文件变更` },
+          context,
+        ).catch(() => {});
+      }
       return applied;
     });
   }

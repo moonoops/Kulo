@@ -10,6 +10,7 @@ import type { ConnectionRecordView } from "@kulo/protocol";
 const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: spawnMock }));
 import { LocalConnectionExecutor } from "../packages/hub/src/connection-execution.js";
+import { classifySshExecutionFailure, isLocalNetworkHost } from "../packages/hub/src/connection-ssh-diagnostics.js";
 
 const directories: string[] = [];
 const connectionId = "connection-00000000-0000-4000-8000-000000000001";
@@ -149,6 +150,108 @@ describe("trusted connection SSH execution", () => {
     expect(JSON.stringify(invocation.slice(1))).not.toContain("synthetic-ssh-password");
     expect(invocation[1]).toEqual(expect.arrayContaining(["PreferredAuthentications=password", "PubkeyAuthentication=no", "KbdInteractiveAuthentication=no", "/dev/null"]));
     expect(invocation[2].env.SSH_AUTH_SOCK).toBeUndefined();
+  });
+  it("quotes UserKnownHostsFile, escapes percent tokens, pins LogLevel=ERROR and LC_ALL=C, and avoids leaking stdout/stderr on execute()", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "kulo-connection-exec-")); directories.push(root);
+    const stateDir = path.join(root, "Application Support", "Kulo Dev %h", "hub");
+    fs.mkdirSync(stateDir, { recursive: true });
+    const executor = new LocalConnectionExecutor({ stateDir, platform: "darwin" });
+    const connection = card({ kind: "ssh", host: "10.0.0.10", username: "kulo", url: undefined });
+    spawnMock.mockImplementation(fakeChild);
+    const scan = await executor.scan(connection);
+    expect(spawnMock.mock.calls[0]![1]).toEqual(["-T", "5", "-p", "22", "--", "10.0.0.10"]);
+    await executor.trust(connection, scan);
+    expect(executor.hasTrustedHost(connection, scan.fingerprint)).toBe(true);
+    expect(executor.hasTrustedHost(connection, "ssh-ed25519 SHA256:different")).toBe(false);
+    const execResult = await executor.execute(connection, { password: "synthetic-ssh-password" }, { kind: "ssh", command: "exit 0" });
+    expect(Object.keys(execResult).sort()).toEqual(["exitCode", "kind", "output"]);
+    const invocation = spawnMock.mock.calls.find(([binary]) => binary === "ssh")!;
+    const expectedPath = path.join(stateDir, "connection-runtime", `${connection.id}.known-hosts`);
+    expect(invocation[1]).toEqual(expect.arrayContaining([
+      `UserKnownHostsFile="${expectedPath.replaceAll("%", "%%")}"`,
+      "LogLevel=ERROR",
+    ]));
+    expect(invocation[2].env).toMatchObject({ LC_ALL: "C", LANG: "C" });
+    executor.clearTrustedHost(connection);
+    expect(executor.hasTrustedHost(connection, scan.fingerprint)).toBe(false);
+  });
+  it("normalizes CRLF OpenSSH private keys before piping to ssh-add and isolates ssh-keyscan stdout from stderr", async () => {
+    const f = fixture(), connection = card({ kind: "ssh", host: "server.example.test", username: "kulo", url: undefined });
+    const receivedInputs: string[] = [];
+    spawnMock.mockImplementation((binary: string, args: string[], options: { stdio: unknown[] }) => {
+      const child = fakeChild(binary, args, options);
+      if (binary === "ssh-keyscan") {
+        child.removeAllListeners("close");
+        setImmediate(() => {
+          child.stderr.end("# server.example.test:22 SSH-2.0-OpenSSH_10.2\nserver.example.test ssh-rsa BOGUS_STDERR_KEY\n");
+          child.stdout.end(`server.example.test ssh-ed25519 ${Buffer.from("synthetic-public-host-key").toString("base64")}\n`);
+          child.emit("close", 0);
+        });
+      }
+      if (binary === "ssh-add" && args.includes("-")) {
+        let collected = "";
+        child.stdin.on("data", (chunk) => { collected += chunk.toString("utf8"); });
+        child.stdin.on("end", () => { receivedInputs.push(collected); });
+      }
+      return child;
+    });
+    const scan = await f.executor.scan(connection);
+    expect(scan.lines).toHaveLength(1);
+    expect(scan.lines[0]).toContain("ssh-ed25519");
+    await f.executor.trust(connection, scan);
+    await f.executor.execute(
+      connection,
+      { privateKey: "  -----BEGIN OPENSSH PRIVATE KEY-----\r\nZmFrZS1rZXk=\r\n-----END OPENSSH PRIVATE KEY-----\r\n\r\n" },
+      { kind: "ssh", command: "true" },
+    );
+    expect(receivedInputs).toEqual(["-----BEGIN OPENSSH PRIVATE KEY-----\nZmFrZS1rZXk=\n-----END OPENSSH PRIVATE KEY-----\n"]);
+  });
+  it("classifies macOS local network scan blocks across LAN host forms regardless of runner OS", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "kulo-connection-exec-")); directories.push(root);
+    const darwinExec = new LocalConnectionExecutor({ stateDir: root, platform: "darwin" });
+    const linuxExec = new LocalConnectionExecutor({ stateDir: root, platform: "linux" });
+    spawnMock.mockImplementation(() => {
+      const child = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough; stdio: Array<PassThrough | null>; kill: ReturnType<typeof vi.fn> };
+      child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+      child.stdio = [child.stdin, child.stdout, child.stderr];
+      child.kill = vi.fn(() => true);
+      setImmediate(() => { child.stdout.end(""); child.stderr.end(""); child.emit("close", 1); });
+      return child;
+    });
+    for (const lanHost of ["10.0.0.10", "::ffff:10.0.0.10", "kulostation", "nas.lan", "macmini.local"]) {
+      expect(isLocalNetworkHost(lanHost)).toBe(true);
+      await expect(darwinExec.scan(card({ kind: "ssh", host: lanHost, username: "kulo", url: undefined }))).rejects.toMatchObject({
+        code: "connection_local_network_blocked",
+      });
+      await expect(linuxExec.scan(card({ kind: "ssh", host: lanHost, username: "kulo", url: undefined }))).rejects.toMatchObject({
+        code: "connection_host_scan_failed",
+      });
+    }
+    expect(isLocalNetworkHost("localhost")).toBe(false);
+    await expect(darwinExec.scan(card({ kind: "ssh", host: "203.0.113.10", username: "kulo", url: undefined }))).rejects.toMatchObject({
+      code: "connection_host_scan_failed",
+    });
+    await expect(darwinExec.scan(card({ kind: "ssh", host: "-oProxyCommand=evil", username: "kulo", url: undefined }))).rejects.toThrow("SSH 主机地址");
+  });
+  it("classifies sanitized SSH execution failures from stderr without leaking raw diagnostics", () => {
+    expect(classifySshExecutionFailure({ exitCode: 255, stderr: "@@@ REMOTE HOST IDENTIFICATION HAS CHANGED! @@@", host: "10.0.0.10", platform: "darwin" })).toMatchObject({
+      code: "connection_host_mismatch", hostMismatch: true,
+    });
+    expect(classifySshExecutionFailure({ exitCode: 255, stderr: "ssh: connect to host 10.0.0.10 port 22: No route to host", host: "10.0.0.10", platform: "darwin" })).toMatchObject({
+      code: "connection_local_network_blocked",
+    });
+    expect(classifySshExecutionFailure({ exitCode: 255, stderr: "ssh: Could not resolve hostname bad.host: nodename nor servname provided", host: "bad.host", platform: "darwin" })).toMatchObject({
+      code: "connection_execution_failed", message: expect.stringContaining("无法解析"),
+    });
+    expect(classifySshExecutionFailure({ exitCode: 255, stderr: "demo@10.0.0.10: Permission denied (publickey).", host: "10.0.0.10", authMethod: "password", platform: "darwin" })).toMatchObject({
+      code: "connection_auth_failed", message: expect.stringContaining("未开启 SSH 密码登录"),
+    });
+    expect(classifySshExecutionFailure({ exitCode: 255, stderr: "demo@10.0.0.10: Permission denied (publickey,password).", host: "10.0.0.10", authMethod: "password", platform: "darwin" })).toMatchObject({
+      code: "connection_auth_failed", message: expect.stringContaining("认证未通过"),
+    });
+    expect(classifySshExecutionFailure({ exitCode: 1, stderr: "Permission denied (publickey)", host: "10.0.0.10", platform: "darwin" })).toMatchObject({
+      code: "connection_execution_failed",
+    });
   });
   it("rejects a symlinked runtime directory before trusting a host", async () => {
     const f = fixture(), connection = card({ kind: "ssh", host: "server.example.test", username: "kulo", url: undefined });

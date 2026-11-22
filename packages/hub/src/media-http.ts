@@ -249,6 +249,7 @@ export function createMediaHttpHandler(options: MediaHttpOptions): MediaHttpHand
       try { id = decodeURIComponent(asset![1]!); } catch { throw new UploadError("无效的资源标识", 400); }
       const loaded = options.uploads.getUpload(id);
       if (!loaded) { json(res, 404, { error: "Attachment not found" }); return true; }
+      if (loaded.record.internalOnly) { json(res, 403, { error: "内部资源不可直接访问" }); return true; }
       const allowedScopes = options.canReadScope ? new Set((await Promise.all((loaded.record.referenceScopes ?? []).map(async (scope) => await options.canReadScope!(principal, scope) ? scope : undefined))).filter((scope): scope is string => scope !== undefined)) : undefined;
       if (!options.uploads.canReadUpload(id, principal, (scope) => !allowedScopes || allowedScopes.has(scope))) {
         json(res, 403, { error: "无权访问此资源" });

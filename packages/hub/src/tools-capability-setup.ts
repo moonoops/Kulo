@@ -1,7 +1,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, defineTool, section, type Harness } from "@earendil-works/pi-durable";
 import { arr, bool, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
-import { IMAGE_MODEL_PRESETS, type CapabilityConfigurationInput, type CapabilityRecord, type CapabilitiesWorkspaceSnapshot, type EnvNodeDescriptor, type ImageCapabilityConfiguration, type ImageRoutingSettings, type ProjectView, type ProviderCatalogItem, type SkillAudience } from "@kulo/protocol";
+import { IMAGE_MODEL_PRESETS, resolveVertexImageBaseUrl, type CapabilityConfigurationInput, type CapabilityRecord, type CapabilitiesWorkspaceSnapshot, type EnvNodeDescriptor, type ImageCapabilityConfiguration, type ImageRoutingSettings, type ProjectView, type ProviderCatalogItem, type SkillAudience } from "@kulo/protocol";
 import type { KuloCapabilities } from "./capabilities.js";
 import type { KuloImageConfiguration } from "./image-configuration.js";
 import type { KuloSkills } from "./skills.js";
@@ -80,7 +80,13 @@ export function createCapabilitySetupExtension(get: () => SetupHost) {
     }; }, BACKGROUND_CONTEXT);
     const recoveryConnections = await Promise.all(snapshot.jobs.filter((job) => ["needs_user", "needs_reconciliation"].includes(job.status)).map(async (job) => ({ jobId: job.id, connection: await get().mediaJobs.recoveryConnection(job.id) })));
     const credentialProviders = (await get().listProviders()).filter((provider) => provider.authenticated && provider.authType === "api_key" &&
-      (!provider.builtin || provider.isGateway) && provider.baseUrl).map(({ id, name, baseUrl, api }) => ({ id, name, baseUrl, api }));
+      (!provider.builtin || provider.isGateway) && provider.baseUrl).map((provider) => {
+      let baseUrl = provider.baseUrl;
+      if (provider.api === "google-vertex" && baseUrl) {
+        try { baseUrl = resolveVertexImageBaseUrl(baseUrl, provider); } catch { /* retain raw URL */ }
+      }
+      return { id: provider.id, name: provider.name, baseUrl, api: provider.api };
+    });
     return { ...snapshot, imagePresets: IMAGE_MODEL_PRESETS,
       customImageInterface: { adapter: "custom-image", imageProfile: { formats: ["png"], supportsEdit: false, maxReferences: 0, parameters: [{ key: "steps", label: "Steps", type: "number", minimum: 1, maximum: 100, default: 20 }] },
         defaults: { format: "png", count: 1, custom: { steps: 20 } },
@@ -94,6 +100,7 @@ export function createCapabilitySetupExtension(get: () => SetupHost) {
       adapters: [
         { id: "openai-image", baseUrl: "https://api.openai.com/v1", input: "text, reference images", output: "image (allowed formats follow capability `formats`; verify upstream support)" },
         { id: "gemini-image", baseUrl: "https://generativelanguage.googleapis.com/v1beta", input: "text, reference images", output: "image" },
+        { id: "vertex-image", baseUrl: "https://aiplatform.googleapis.com/v1", input: "text, reference images", output: "image" },
         { id: "flow-browser", modelId: "auto", input: "text (web default model)", output: "subscription web video", billing: "existing Flow membership credits only; never switch to paid API" },
       ] };
   };

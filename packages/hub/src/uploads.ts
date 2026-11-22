@@ -118,6 +118,7 @@ export interface StoredUploadRecord extends MediaMetadata {
   diagramMotion?: "none" | "reveal" | "step";
   recordedDuration?: number;
   internalOnly?: boolean;
+  internalKind?: "tool-overflow";
 }
 
 export interface UploadPresentationInput {
@@ -283,7 +284,7 @@ export class KuloUploadStore {
     }
   }
 
-  private createRecord(input: { id: string; name: string; fileName: string; size: number; ownerId?: string; sha256: string; internalOnly?: boolean } & UploadPresentationInput, metadata: MediaMetadata): StoredUploadRecord {
+  private createRecord(input: { id: string; name: string; fileName: string; size: number; ownerId?: string; sha256: string; internalOnly?: boolean; internalKind?: "tool-overflow" } & UploadPresentationInput, metadata: MediaMetadata): StoredUploadRecord {
     if (input.ownerId !== undefined && (!input.ownerId || input.ownerId.length > 240)) throw new UploadError("无效的上传归属", 400);
     validateUploadPresentation(input, { kind: metadata.kind, name: input.name, mimeType: metadata.mimeType });
     const { width, height, diagramMotion, ...rest } = input;
@@ -311,6 +312,7 @@ export class KuloUploadStore {
     ownerId?: string;
     idempotencyKey?: string;
     internalOnly?: boolean;
+    internalKind?: "tool-overflow";
   } & UploadPresentationInput): ChatAttachment {
     validateUploadPresentation(input);
     const bytes = input.bytes;
@@ -332,7 +334,7 @@ export class KuloUploadStore {
     this.checkSize(bytes.length, metadata.kind);
     const diskFileName = `${id}-${sanitizeDiskFilename(displayName)}`;
     const filePath = path.join(this.dir, diskFileName);
-    const record = this.createRecord({ id, name: displayName, fileName: diskFileName, size: bytes.length, ownerId: input.ownerId, sha256: crypto.createHash("sha256").update(bytes).digest("hex"), ...(input.internalOnly ? { internalOnly: true } : {}), presentation: input.presentation, diagramMotion: input.diagramMotion, recordedDuration: input.recordedDuration, width: input.width, height: input.height }, metadata);
+    const record = this.createRecord({ id, name: displayName, fileName: diskFileName, size: bytes.length, ownerId: input.ownerId, sha256: crypto.createHash("sha256").update(bytes).digest("hex"), ...(input.internalOnly ? { internalOnly: true } : {}), ...(input.internalKind ? { internalKind: input.internalKind } : {}), presentation: input.presentation, diagramMotion: input.diagramMotion, recordedDuration: input.recordedDuration, width: input.width, height: input.height }, metadata);
     const temporary = path.join(this.dir, `.${id}.partial`);
     let committed = false;
     try {
@@ -460,6 +462,7 @@ export class KuloUploadStore {
       (parsed.version === 2 && parsed.metadataStatus !== "ready" && parsed.metadataStatus !== "unavailable") ||
       (parsed.ownerId !== undefined && (typeof parsed.ownerId !== "string" || !parsed.ownerId || parsed.ownerId.length > 240)) ||
       (parsed.internalOnly !== undefined && typeof parsed.internalOnly !== "boolean") ||
+      (parsed.internalKind !== undefined && parsed.internalKind !== "tool-overflow") ||
       (parsed.referenceScopes !== undefined && (!Array.isArray(parsed.referenceScopes) || parsed.referenceScopes.some((scope) => typeof scope !== "string" || !scope || scope.length > 240)))) {
       throw new UploadError("资源索引损坏", 500);
     }
@@ -561,6 +564,42 @@ export class KuloUploadStore {
       if (!loaded || loaded.record.ownerId === undefined || loaded.record.referenceScopes?.length || loaded.record.createdAt >= before) continue;
       fs.rmSync(loaded.filePath);
       fs.rmSync(path.join(this.dir, name));
+      removed++;
+    }
+    return removed;
+  }
+
+  /** Garbage-collect expired or deleted-topic internal tool-overflow assets. */
+  cleanupToolOverflows(options: {
+    maxAgeMs?: number;
+    expiredConversationIds?: ReadonlySet<number>;
+    now?: number;
+  } = {}): number {
+    if (!fs.existsSync(this.dir)) return 0;
+    const now = options.now ?? Date.now();
+    const maxAgeMs = options.maxAgeMs ?? 14 * 24 * 60 * 60 * 1000;
+    const expiredConvs = options.expiredConversationIds;
+    let removed = 0;
+    for (const name of fs.readdirSync(this.dir)) {
+      if (!name.endsWith(".meta.json")) continue;
+      const id = name.slice(0, -".meta.json".length);
+      let loaded: LoadedUpload | null = null;
+      try { loaded = this.readStoredUpload(id); } catch { continue; }
+      if (!loaded || !loaded.record.internalOnly || loaded.record.internalKind !== "tool-overflow") continue;
+      const agedOut = loaded.record.createdAt < now - maxAgeMs;
+      let ownerExpired = false;
+      if (!agedOut && expiredConvs && expiredConvs.size > 0) {
+        const convScopes = (loaded.record.referenceScopes ?? [])
+          .map((scope) => (/^conversation:(\d+)$/.exec(scope)?.[1]))
+          .filter((raw): raw is string => raw !== undefined)
+          .map((raw) => Number(raw));
+        if (convScopes.length > 0 && convScopes.every((convId) => expiredConvs.has(convId))) {
+          ownerExpired = true;
+        }
+      }
+      if (!agedOut && !ownerExpired) continue;
+      fs.rmSync(loaded.filePath, { force: true });
+      fs.rmSync(path.join(this.dir, name), { force: true });
       removed++;
     }
     return removed;

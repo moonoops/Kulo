@@ -1,4 +1,5 @@
 export * from "./domain.js";
+export * from "./context-state.js";
 export * from "./task-boards.js";
 export * from "./ticket-board.js";
 export * from "./vertex.js";

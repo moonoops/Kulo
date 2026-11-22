@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   isAssistantItemAction,
+  isNativeAppPermissionKind,
   type ConnectionPrepareRequest,
   type ConnectionSaveRequest,
   type HomeAssistantAnnounceConfig,
@@ -360,7 +361,7 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
         });
       }
       const body = await readJsonObject(req, 1024);
-      if (Object.keys(body).some((key) => key !== "kind") || (body.kind !== "full-disk-access" && body.kind !== "automation")) {
+      if (Object.keys(body).some((key) => key !== "kind") || !isNativeAppPermissionKind(body.kind)) {
         throw Object.assign(new Error("系统权限类型无效。"), { status: 400, code: "connection_app_invalid_parameters" });
       }
       await openNativePermissionSettings(body.kind);
@@ -449,7 +450,11 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
         return true;
       }
       if (connection[2] === "test" && req.method === "POST") {
-        sendJson(res, 200, await hub.connectionManager.test(id));
+        const body = await readJsonObject(req, 1024);
+        if (Object.keys(body).some((key) => key !== "rescan") || body.rescan !== undefined && typeof body.rescan !== "boolean") {
+          throw Object.assign(new Error("连接测试参数无效。"), { status: 400, code: "invalid_connection" });
+        }
+        sendJson(res, 200, await hub.connectionManager.test(id, body.rescan === true ? { rescan: true } : undefined));
         return true;
       }
       if (connection[2] === "trust" && req.method === "POST") {

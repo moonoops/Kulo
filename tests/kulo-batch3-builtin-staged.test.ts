@@ -267,7 +267,9 @@ describe("Batch 3 — R4-B Built-in Worker Staged Project Writes", () => {
         workerStep += 1;
         if (workerStep === 1) {
           workerSawStagedMandate =
-            sys.includes("isolated staged copy of the project") && sys.includes("Authorized Working Copy:");
+            sys.includes("isolated staged copy of the project") &&
+            sys.includes("Project: StagedRepo") &&
+            !sys.includes(liveProjectReal);
           return toolReply("write", { path: "index.ts", content: "export const version = 2;\n" });
         }
         if (workerStep === 2) {

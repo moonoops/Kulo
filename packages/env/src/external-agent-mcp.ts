@@ -28,8 +28,16 @@ export interface ExternalAgentMcpServer {
   close(): Promise<void>;
 }
 
-const BODY_LIMIT = 64 * 1024;
+const BODY_LIMIT = 256 * 1024;
 const RESULT_LIMIT = 128 * 1024;
+
+function buildMcpInstructions(scope: Pick<ExternalAgentMcpScope, "allowSubagents" | "memoryEnabled" | "hasConnections">): string {
+  const parts = ["Use kulo_task_context and kulo_task_report to inspect task metadata or submit structured reports/artifacts to Kulo."];
+  if (scope.allowSubagents) parts.push("Use kulo_agents / kulo_request_collaboration / kulo_child_task only when specialized delegation is clearly needed.");
+  if (scope.memoryEnabled) parts.push("Use kulo_memory_* tools for shared project memory when relevant.");
+  if (scope.hasConnections) parts.push("Use kulo_connections / kulo_connection_use for authorized external connections.");
+  return parts.join(" ");
+}
 const text = (description: string, maxLength: number) => ({ type: "string", description, minLength: 1, maxLength });
 const integer = (description: string, minimum: number, maximum: number) => ({ type: "integer", description, minimum, maximum });
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
@@ -253,7 +261,7 @@ export async function startExternalAgentMcp(options: ExternalAgentMcpOptions): P
     const error = (code: number, description: string) => send(response, 200, { jsonrpc: "2.0", id, error: { code, message: description } });
     if (message.method === "initialize") {
       const requestedVersion = record(message.params) ? message.params.protocolVersion : undefined;
-      result({ protocolVersion: requestedVersion === "2025-06-18" ? "2025-06-18" : "2025-03-26", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "kulo-task", version: "1.0.0" }, instructions: "Report task context and verified results to Kulo. Use these optional Hub tools to request other Kulo agents when needed." }); return;
+      result({ protocolVersion: requestedVersion === "2025-06-18" ? "2025-06-18" : "2025-03-26", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "kulo-task", version: "1.0.0" }, instructions: buildMcpInstructions(options) }); return;
     }
     if (message.method === "ping") { result({}); return; }
     if (message.method === "tools/list") { result({ tools }); return; }

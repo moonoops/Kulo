@@ -250,4 +250,106 @@ describe("personality prompt context", () => {
     expect(afterCompactionSys?.sections?.kulo_recent_work).toContain("ready_for_review");
     expect(afterCompactionSys?.sections?.kulo_recent_work).toContain("交付包含");
   });
+
+  it("delivers reverted recent-work updates (A -> B -> C -> B) to the 4th-turn model request without dropping B", async () => {
+    const requests: TranscriptContext[] = [];
+    const provider = fauxProvider({
+      provider: "cache-revert-test",
+      models: [{ id: "m1", contextWindow: 128_000, maxTokens: 4_096 }],
+    });
+    provider.setResponses([
+      (ctx) => { requests.push(structuredClone(ctx)); return fauxAssistantMessage([fauxText("R1")]); },
+      (ctx) => { requests.push(structuredClone(ctx)); return fauxAssistantMessage([fauxText("R2")]); },
+      (ctx) => { requests.push(structuredClone(ctx)); return fauxAssistantMessage([fauxText("R3")]); },
+      (ctx) => { requests.push(structuredClone(ctx)); return fauxAssistantMessage([fauxText("R4")]); },
+    ]);
+    const models = createModels();
+    models.setProvider(provider.provider);
+
+    let harness!: Harness;
+    const identityDir = fs.mkdtempSync(path.join(os.tmpdir(), "kulo-cache-revert-"));
+    close.push(async () => { fs.rmSync(identityDir, { recursive: true, force: true }); });
+
+    const sections = createOrchestratorSections({
+      getRoles: () => ({}),
+      getEnvs: () => [],
+      getIdentityDir: () => identityDir,
+      getMemoryConfig: () => ({ enabled: false, endpoint: "", endpoints: [], caCertPem: "", authFile: "", banks: { private: "p", shared: "s" } }),
+      freezeRecentWorkBaseline: true,
+      isSystemBaselinePending: (id, ctx) => isSystemBaselinePending(harness, id, ctx),
+    });
+    const ext = defineExtension({
+      name: "kulo-revert-test",
+      sections,
+      hooks: [createRecentWorkSyncHook({ getHarness: () => harness })],
+    });
+    const registry = createRegistry();
+    registry.install(ext);
+    harness = await Harness.open(
+      new MemoryStorage(),
+      { models, registry, settings: { compaction: { enabled: false }, retry: { enabled: false, maxRetries: 1, baseDelayMs: 1 } } },
+      BACKGROUND_CONTEXT,
+    );
+    close.push(() => harness.close(BACKGROUND_CONTEXT));
+
+    const conversation = await harness.root(BACKGROUND_CONTEXT, {
+      agent: { model: { provider: "cache-revert-test", modelId: "m1" }, thinkingLevel: "off", extensions: [ext] },
+    });
+
+    const setTitle = async (title: string) => {
+      await harness.commit(async (tx) => {
+        const state = await tx.doc(KuloStateDoc);
+        ensureDefaultRootTopic(state, "Kulo");
+        state.tickets["T-9001"] = {
+          id: "T-9001",
+          commandId: "cmd-9001",
+          title,
+          goal: "回变验证",
+          scope: "sync",
+          role: "coder",
+          envId: "local",
+          workspaceDir: "/tmp/ws",
+          status: "running",
+          runEpoch: 1,
+          createdAt: 1000,
+          updatedAt: Date.now(),
+          workerConversationId: 99,
+          originConversationId: Number(conversation.id),
+          originTopicId: "root",
+        };
+      }, BACKGROUND_CONTEXT);
+    };
+    const send = async (text: string) => {
+      const sub = await conversation.submit({ type: "input", content: text }, BACKGROUND_CONTEXT);
+      const settled = await sub.wait(BACKGROUND_CONTEXT);
+      expect(settled.status).toBe("done");
+    };
+
+    // Turn 1: baseline A
+    await setTitle("状态-A");
+    await send("第一轮");
+    // Turn 2: change to B
+    await setTitle("状态-B");
+    await send("第二轮");
+    // Turn 3: change to C
+    await setTitle("状态-C");
+    await send("第三轮");
+    // Turn 4: revert back to B -> must NOT be suppressed by Turn 2's identical update text!
+    await setTitle("状态-B");
+    await send("第四轮");
+
+    expect(requests).toHaveLength(4);
+    const turn4Updates = requests[3]!.messages.filter(
+      (m) => m.role === "user" && typeof m.content === "string" && m.content.startsWith("[KULO_RECENT_WORK_UPDATE]"),
+    );
+    expect(turn4Updates).toHaveLength(3);
+    expect(String(turn4Updates[0]!.content)).toContain("状态-B");
+    expect(String(turn4Updates[1]!.content)).toContain("状态-C");
+    expect(String(turn4Updates[2]!.content)).toContain("状态-B");
+    // Confirm the final update sits immediately before Turn 4's user message
+    const turn4Msgs = requests[3]!.messages;
+    expect(String(turn4Msgs.at(-1)!.content)).toBe("第四轮");
+    expect(String(turn4Msgs.at(-2)!.content)).toContain("[KULO_RECENT_WORK_UPDATE]");
+    expect(String(turn4Msgs.at(-2)!.content)).toContain("状态-B");
+  });
 });

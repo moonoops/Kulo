@@ -298,7 +298,12 @@ export function wrapRedactedStorage(storage: Storage, redact: (text: string) => 
   });
 }
 
-export function createCredentialRedactionExtension(redact: (text: string) => string, options: Pick<CredentialSealingOptions, "isKnownSecret"> = {}) {
+export function createCredentialRedactionExtension(
+  redact: (text: string) => string,
+  options: Pick<CredentialSealingOptions, "isKnownSecret"> & {
+    onCompactionDeclined?: (conversationId: number, reasonCode: "unredacted_in_memory_secret") => void;
+  } = {},
+) {
   return defineExtension({
     name: "kulo-credential-redaction",
     hooks: [
@@ -311,10 +316,16 @@ export function createCredentialRedactionExtension(redact: (text: string) => str
         afterTool: (_call, result) => redactCredentialData(result, redact),
       }),
       hook(CompactionTask, {
-        beforeCompact: (input) => {
+        beforeCompact: (input, api) => {
           const safe = redactCredentialData(input.messages, redact, { nativeContent: "messages", isKnownSecret: options.isKnownSecret });
           // Compaction hooks cannot replace source messages; decline rather than send a stale raw cache to its model.
-          if (JSON.stringify(safe) !== JSON.stringify(input.messages) || input.instructions && redact(input.instructions) !== input.instructions) return { decline: true };
+          if (JSON.stringify(safe) !== JSON.stringify(input.messages) || input.instructions && redact(input.instructions) !== input.instructions) {
+            const convId = Number(api?.conversationId);
+            if (Number.isSafeInteger(convId) && convId > 0) {
+              options.onCompactionDeclined?.(convId, "unredacted_in_memory_secret");
+            }
+            return { decline: true };
+          }
           return undefined;
         },
       }),

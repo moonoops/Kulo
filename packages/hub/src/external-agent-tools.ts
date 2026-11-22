@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { EXTERNAL_AGENT_MCP_TOOL_NAMES, redactSensitiveText, type ConnectionUseOperation, type ExternalAgentMcpToolName, type RolePreset, type TicketRecord, type WorkerReportRecord } from "@kulo/protocol";
+import { EXTERNAL_AGENT_MCP_TOOL_NAMES, isEffectiveExternalReadOnly, redactSensitiveText, type ConnectionUseOperation, type ExternalAgentMcpToolName, type RolePreset, type TicketRecord, type WorkerReportRecord } from "@kulo/protocol";
 
 export const EXTERNAL_AGENT_TOOL_HANDLER_NAMES: readonly ExternalAgentMcpToolName[] = EXTERNAL_AGENT_MCP_TOOL_NAMES;
 const EXTERNAL_AGENT_TOOL_HANDLER_SET = new Set<string>(EXTERNAL_AGENT_TOOL_HANDLER_NAMES);
@@ -121,8 +121,10 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
   const collaboration = (snapshot: ExternalAgentToolSnapshot) => {
     if (!snapshot.role?.allowSubagents || snapshot.role.enabled === false) fail("external_collaboration_disabled", "该智能体未开启 Hub 协作，请向主 Agent 报告协作需求。");
   };
-  const candidates = async (scope: ExternalAgentToolScope, snapshot: ExternalAgentToolSnapshot) =>
-    (await host.agents(scope)).filter((agent) => agent.available !== false && (!agent.envId || agent.envId === snapshot.ticket.envId) && (!snapshot.ticket.readOnly || agent.readOnly));
+  const candidates = async (scope: ExternalAgentToolScope, snapshot: ExternalAgentToolSnapshot) => {
+    const parentReadOnly = isEffectiveExternalReadOnly(snapshot.ticket);
+    return (await host.agents(scope)).filter((agent) => agent.available !== false && (!agent.envId || agent.envId === snapshot.ticket.envId) && (!parentReadOnly || agent.readOnly));
+  };
   const cleanResult = (value: unknown): unknown => {
     const serialized = JSON.stringify(value);
     if (serialized === undefined || serialized.length > 128 * 1024) fail("external_task_result_too_large", "任务结果过大，请读取更小的结果摘要。");
@@ -139,11 +141,11 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
         const ticket = snapshot.ticket;
         return cleanResult({ taskId: ticket.id, title: ticket.title, goal: ticket.goal, scope: ticket.scope, acceptance: ticket.acceptance,
           ...(ticket.projectId ? { projectId: ticket.projectId } : {}),
-          workspaceDir: ticket.workspaceDir,
+          workspaceDir: ticket.externalExecution?.stagedCwd ?? ticket.workspaceDir,
           ...(ticket.externalExecution?.workspaceMode ? { workspaceMode: ticket.externalExecution.workspaceMode } : {}),
           ...(ticket.externalExecution?.stagedCwd ? { stagedCwd: ticket.externalExecution.stagedCwd } : {}),
           ...(ticket.scratchDir ? { scratchNotesDir: `${ticket.scratchDir}/notes` } : {}),
-          readOnly: Boolean(ticket.readOnly), role: snapshot.role?.label,
+          readOnly: isEffectiveExternalReadOnly(ticket), role: snapshot.role?.label,
           allowSubagents: Boolean(snapshot.role?.allowSubagents && snapshot.role.enabled !== false),
           hasConnections: Boolean(ticket.connectionIds?.length),
           children: Object.values(snapshot.children).map((child) => child.taskId) });
@@ -231,7 +233,7 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
         const args = argumentsObject(call.args, ["connection_id", "operation", "command", "timeout_ms", "path", "method", "body", "content_type", "action", "params_json"]);
         const connectionId = identifier(args.connection_id, "连接标识");
         if (!snapshot.ticket.connectionIds.includes(connectionId)) fail("external_connection_denied", "该连接未授权给当前任务。");
-        const effectiveReadOnly = Boolean(snapshot.ticket.readOnly || snapshot.ticket.externalExecution?.workspaceMode === "read_only");
+        const effectiveReadOnly = isEffectiveExternalReadOnly(snapshot.ticket);
         const opKind = String(args.operation);
         let operation: ConnectionUseOperation;
         if (opKind === "ssh") {

@@ -172,7 +172,7 @@ export function formatReviewPromptSection(options: {
 }): string {
   return [
     `## Independent Read-Only Review Target (Ticket ${options.target.id}: ${options.target.title})`,
-    "- Your workspace directory is the READ-ONLY baseline project (with full Git history & dependencies).",
+    "- Your workspace directory is the READ-ONLY baseline project (verify live files and available tooling in cwd).",
     `- Materialized review pack for \`${options.target.id}\` is located at \`${options.locationHint}\` (\`summary.md\` and \`changes.patch\` when available).`,
     `- Snapshot completeness: ${options.snapshotNote}`,
     "- Focus on correctness, edge cases, concurrency/security invariants, regressions, and untested branches. Never modify live project files.",

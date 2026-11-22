@@ -261,6 +261,79 @@ describe("task scoped connection access", () => {
     await f.manager.use("T-1", 1, card.id, { kind: "ssh", command: "true" });
     expect(f.executor.trust).toHaveBeenCalledTimes(1);
   });
+  it("normalizes CRLF OpenSSH private keys on save, persists scan failures with errorCode, and recovers missing known-hosts without silently accepting a changed key", async () => {
+    const f = fixture({ platform: "darwin" });
+    const clearTrustedHost = vi.fn();
+    let hasKnownHostFile = true;
+    f.executor.hasTrustedHost = vi.fn(() => hasKnownHostFile);
+    f.executor.clearTrustedHost = clearTrustedHost;
+
+    const card = await f.manager.save({
+      name: "KuloStation",
+      kind: "ssh",
+      host: "10.0.0.10",
+      username: "demo",
+      secrets: { privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\r\nZmFrZS1rZXk=\r\n-----END OPENSSH PRIVATE KEY-----\r\n" },
+    });
+    const savedVault = (await f.vault.entries()).find((e) => e.ref === `connection:${card.id}`)!;
+    expect(savedVault.fields.privateKey).toBe("-----BEGIN OPENSSH PRIVATE KEY-----\nZmFrZS1rZXk=\n-----END OPENSSH PRIVATE KEY-----\n");
+
+    // 1. Scan failure persists status='error' and returns structured errorCode
+    vi.mocked(f.executor.scan).mockRejectedValueOnce(Object.assign(new Error("blocked"), { code: "connection_local_network_blocked" }));
+    const blocked = await f.manager.test(card.id);
+    expect(blocked.connection.status).toBe("error");
+    expect(blocked.errorCode).toBe("connection_local_network_blocked");
+
+    // 2. Normal first scan + trust keeps revision
+    const firstScan = await f.manager.test(card.id);
+    expect(firstScan.requiresTrust).toBe(true);
+    const trusted = await f.manager.trust(card.id, firstScan.fingerprint!);
+    expect(trusted.revision).toBe(card.revision);
+    f.manager.grant("T-ssh", 1, [card.id]);
+
+    // 3. Standby failover loses local known-hosts file; rescanning SAME key preserves revision
+    hasKnownHostFile = false;
+    const recoveredScan = await f.manager.test(card.id);
+    expect(recoveredScan.requiresTrust).toBe(true);
+    expect(recoveredScan.hostMismatch).toBeUndefined();
+    const reTrustedSame = await f.manager.trust(card.id, recoveredScan.fingerprint!);
+    expect(reTrustedSame.revision).toBe(card.revision);
+    expect(f.manager.hasGrant("T-ssh", 1, card.id)).toBe(true);
+
+    // 4. Missing known-hosts encountering a CHANGED key (potential MITM) flags hostMismatch and revokes grants
+    vi.mocked(f.executor.scan).mockResolvedValueOnce({ fingerprint: "ssh-ed25519 SHA256:changed-attacker", lines: ["kulo ssh-ed25519 AAAA"] });
+    const mitmScan = await f.manager.test(card.id);
+    expect(mitmScan.requiresTrust).toBe(true);
+    expect(mitmScan.hostMismatch).toBe(true);
+    expect(mitmScan.previousFingerprint).toBe(firstScan.fingerprint);
+    expect(mitmScan.errorCode).toBe("connection_host_mismatch");
+    expect(f.manager.hasGrant("T-ssh", 1, card.id)).toBe(false);
+
+    // 5. Explicit rescan + trust of a changed key increments revision and revokes active grants
+    hasKnownHostFile = true;
+    f.manager.grant("T-ssh-2", 1, [card.id]);
+    f.executor.probeSsh = vi.fn(async () => ({ exitCode: 255, stderr: "REMOTE HOST IDENTIFICATION HAS CHANGED!", output: "" }));
+    const mismatchTest = await f.manager.test(card.id);
+    expect(mismatchTest.hostMismatch).toBe(true);
+    expect(mismatchTest.errorCode).toBe("connection_host_mismatch");
+    expect(f.manager.hasGrant("T-ssh-2", 1, card.id)).toBe(false);
+
+    vi.mocked(f.executor.scan).mockResolvedValueOnce({ fingerprint: "ssh-ed25519 SHA256:reinstalled-host", lines: ["kulo ssh-ed25519 BBBB"] });
+    const rescan = await f.manager.test(card.id, { rescan: true });
+    expect(rescan.requiresTrust).toBe(true);
+    expect(rescan.hostMismatch).toBe(true);
+    expect(rescan.previousFingerprint).toBe(firstScan.fingerprint);
+    f.manager.grant("T-ssh-3", 1, [card.id]);
+    const reTrustedNew = await f.manager.trust(card.id, rescan.fingerprint!);
+    expect(reTrustedNew.revision).toBe(card.revision + 1);
+    expect(f.manager.hasGrant("T-ssh-3", 1, card.id)).toBe(false);
+
+    // 6. Changing host or removing card cleans up known-hosts
+    await f.manager.save({ ...reTrustedNew, expectedRevision: reTrustedNew.revision, host: "10.0.0.11" });
+    expect(clearTrustedHost).toHaveBeenCalledTimes(1);
+    await f.manager.remove(card.id);
+    expect(clearTrustedHost).toHaveBeenCalledTimes(2);
+  });
   it("rejects a stale authorization when a user edit lands after the parent's preflight snapshot", async () => {
     const f = fixture(), card = await f.manager.save(api());
     const parentPreflight = { [card.id]: card.revision };

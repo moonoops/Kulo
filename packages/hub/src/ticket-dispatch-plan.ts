@@ -2,6 +2,7 @@ import path from "node:path";
 import { ROOT_CONVERSATION_ID, type EntryRecord } from "@earendil-works/pi-durable";
 import {
   externalClientConnectionId,
+  isEffectiveExternalReadOnly,
   isPersonalExternalAgentKind,
   type AgentAssignment,
   type AgentDispatchIntent,
@@ -455,7 +456,7 @@ export function resolveDispatchWorkspaceAndModel(input: {
   if (params.parentTicketId && (!parent?.externalExecution || parent.status !== "running" || !parent.externalExecution.allowSubagents || parent.envId !== targetEnvId || parent.projectId !== project?.id)) {
     throw new ProjectError(403, "external_parent_invalid", "子任务的父级执行资格或项目范围已失效。");
   }
-  const requestedReadOnly = Boolean(reviewTarget || rolePreset?.readOnly || routing.readOnly || parent?.readOnly || params.workspaceMode === "read_only");
+  const requestedReadOnly = Boolean(reviewTarget || rolePreset?.readOnly || routing.readOnly || (parent && isEffectiveExternalReadOnly(parent)) || params.workspaceMode === "read_only");
   // Native clients own their tool permissions; a task's read-only request is not a host-enforced write guarantee.
   const isReadOnly = !externalBinding && requestedReadOnly;
   const builtInWorkspaceMode: ExternalWorkspaceMode | undefined =

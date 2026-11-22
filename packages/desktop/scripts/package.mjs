@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { createRequire } from "node:module";
 import { createHash, createPublicKey, randomUUID } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { patchMacAppBundleUuids } from "./macho-uuid.mjs";
 
 const run = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -492,7 +493,13 @@ export async function signMacAppBundle(bundle, options = {}) {
     return resolved;
   } catch (error) {
     if (resolved.source === "explicit") throw error;
-    // Keychain may be locked in headless/CI shells; fall back to ad-hoc only for auto-selected certificates.
+    if (resolved.label.startsWith("Developer ID Application:")) {
+      throw new Error(
+        `Developer ID 签名失败（钥匙串可能已锁定，禁止静默降级为 ad-hoc）：${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+    // Keychain may be locked in headless/CI shells with Apple Development identities; fall back to ad-hoc.
     await exec("/usr/bin/codesign", argsFor("-", false), { maxBuffer: 1024 * 1024 });
     return {
       identity: "-",
@@ -528,6 +535,16 @@ export async function verifyMacApp(bundle, options = {}) {
   await assertRegularFile(path.join(resources, "runtime/recovery/bin.js"));
   await assertRegularFile(path.join(resources, "runtime/kulo-rescue"));
   await assertClosedLinks(app);
+  if (Array.isArray(options.patchedUuids)) {
+    for (const entry of options.patchedUuids) {
+      const { stdout: dump } = await run("/usr/bin/dwarfdump", ["--uuid", entry.executablePath]);
+      for (const slice of entry.slices) {
+        if (!dump.includes(slice.patchedUuid) || dump.includes(slice.originalUuid)) {
+          throw new Error(`安装包可执行文件 Mach-O UUID 隔离校验失败：${entry.executablePath}`);
+        }
+      }
+    }
+  }
   await run("/usr/bin/codesign", ["--verify", "--deep", "--strict", bundle]);
   await verifyRecoveryCleanupRuntime(path.join(resources, "runtime/recovery"));
   // Importing from the packaged location catches missing Node and native dependencies without opening user data.
@@ -631,9 +648,10 @@ export async function packageMacApp(options = {}) {
     finalManifest.productName = appName;
     finalManifest.kuloChannel = channel;
     await fs.writeFile(finalManifestPath, `${JSON.stringify(finalManifest, null, 2)}\n`);
+    const patchedUuids = await patchMacAppBundleUuids(bundle, { appId, appName });
     await finalizePackagedRelease(finalApp, path.join(finalResources, "runtime"), releaseOptions);
     const signed = await signMacAppBundle(bundle, { signIdentity: options.signIdentity, appId });
-    await verifyMacApp(bundle, { channel });
+    await verifyMacApp(bundle, { channel, patchedUuids });
     console.log(`已构建：${bundle}（通道：${channel}，签名：${signed.label}）`);
     if (signed.identity === "-") {
       console.warn("提示：当前使用 ad-hoc 临时签名，每次重新安装后 macOS 辅助功能/录屏等系统权限需要重新授权；配置本机签名证书或 KULO_MAC_SIGN_IDENTITY 可保留权限。");

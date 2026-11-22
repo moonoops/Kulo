@@ -102,17 +102,24 @@ describe("provider-specific image transports", () => {
     for (const [baseUrl, api, id, expected] of [
       ["https://api.openai.com/v1", "openai-responses", "gpt-image-2.5-flare", "openai-image"],
       ["https://generativelanguage.googleapis.com/v1beta", "google-generative-ai", "gemini-nano-banana-2.1", "gemini-image"],
+      ["https://aiplatform.googleapis.com/v1/projects/demo-proj/locations/global", "google-vertex", "gemini-nano-banana-2.1", "vertex-image"],
+      ["https://aiplatform.googleapis.com/v1", "google-vertex", "gemini-3.1-flash-image-preview", "vertex-image"],
+      ["https://aiplatform.us.rep.googleapis.com/v1/projects/demo-proj/locations/us", "google-vertex", "gemini-nano-banana-2.1", "vertex-image"],
     ] as const) {
       const result = await discoverImageProviderAdapters(provider(baseUrl, { api: undefined, builtin: true }), [model(id, { api }), model("vision-chat", { api })], { fetch: fetcher });
       expect(result.source).toBe("native-image-api");
       expect(result.models).toHaveLength(1);
       expect(result.models[0]).toMatchObject({ adapter: expected, model: { id } });
       expect(result.models[0]!.needsConfiguration).toBeUndefined();
+      if (id === "gemini-3.1-flash-image-preview") {
+        expect(result.models[0]!.imageProfile.supportsEdit).toBe(true);
+        expect(result.models[0]!.imageProfile.maxReferences).toBe(14);
+      }
     }
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it.each(["https://custom-gateway.example/v1", "https://openrouter.ai.evil.example/api/v1", "https://openrouter.ai/api/v1?token=hidden", "https://openrouter.ai/other"])("does not infer an image route from a chat protocol or misleading provider identity: %s", async (baseUrl) => {
+  it.each(["https://custom-gateway.example/v1", "https://openrouter.ai.evil.example/api/v1", "https://aiplatform.googleapis.com.evil.example/v1", "https://openrouter.ai/api/v1?token=hidden", "https://openrouter.ai/other"])("does not infer an image route from a chat protocol or misleading provider identity: %s", async (baseUrl) => {
     const fetcher = vi.fn();
     const result = await discoverImageProviderAdapters(provider(baseUrl, { id: "openrouter", preset: "openrouter" }), [model("gpt-image-2.6-flare"), model("vision-chat")], { fetch: fetcher });
     expect(result.source).toBe("configuration-required");

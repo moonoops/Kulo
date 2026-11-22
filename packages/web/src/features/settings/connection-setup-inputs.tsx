@@ -276,6 +276,11 @@ export function nativePermissionPromptMessage(
     if (state === "remote") return t("请在运行 Kulo 主脑的 Mac 上打开「系统设置 → 隐私与安全性 → 完全磁盘访问权限」，开启并重启后重新检查。", "On the Mac running the Kulo hub, open System Settings → Privacy & Security → Full Disk Access, allow Kulo, restart it, then check again.");
     return fallback || t("请在系统设置的「完全磁盘访问权限」中允许运行 Kulo 的应用，重启 Kulo 后重新检查。", "Allow the app running Kulo in System Settings → Full Disk Access, restart Kulo, then check again.");
   }
+  if (kind === "local-network") {
+    if (state === "opened") return t("已打开系统设置的「本地网络」。允许 Kulo 后重试连接。", "Opened Local Network in System Settings. Allow Kulo, then retry.");
+    if (state === "remote") return t("请在运行 Kulo 主脑的 Mac 上打开「系统设置 → 隐私与安全性 → 本地网络」，允许 Kulo 后重试连接。", "On the Mac running the Kulo hub, open System Settings → Privacy & Security → Local Network, allow Kulo, then retry.");
+    return fallback || t("请在系统设置的「本地网络」中允许运行 Kulo 的应用，然后重试连接。", "Allow Kulo in System Settings → Local Network, then retry.");
+  }
   if (state === "opened") return t(`已打开系统设置的「自动化」。允许 Kulo 控制${appName}后点击重新检查。`, `Opened Automation in System Settings. Allow Kulo to control ${appName}, then check again.`);
   if (state === "remote") return t(`请在运行 Kulo 主脑的 Mac 上打开「系统设置 → 隐私与安全性 → 自动化」，允许 Kulo 控制${appName}后重新检查。`, `On the Mac running the Kulo hub, open System Settings → Privacy & Security → Automation, allow Kulo to control ${appName}, then check again.`);
   return fallback || t(`请在系统设置的「自动化」中允许 Kulo 控制${appName}，然后重新检查。`, `Allow Kulo to control ${appName} in System Settings → Automation, then check again.`);
@@ -510,7 +515,7 @@ export function ConnectionSetupForm({ input, existing, application, clientId, co
         {permissionPrompt && <Alert status="warning" role="status">
           <Alert.Indicator />
           <Alert.Content>
-            <Alert.Title>{permissionPrompt.kind === "full-disk-access" ? t("需要完全磁盘访问权限", "Full Disk Access required") : t("需要自动化权限", "Automation permission required")}</Alert.Title>
+            <Alert.Title>{permissionPrompt.kind === "full-disk-access" ? t("需要完全磁盘访问权限", "Full Disk Access required") : permissionPrompt.kind === "local-network" ? t("需要本地网络权限", "Local Network permission required") : t("需要自动化权限", "Automation permission required")}</Alert.Title>
             <Alert.Description className="break-words">{permissionPrompt.message}</Alert.Description>
           </Alert.Content>
         </Alert>}

@@ -63,6 +63,7 @@ import type {
   ConnectionSetupInput,
   ConnectionSaveRequest,
   ConnectionRecordView,
+  ConnectionTestResult,
   McpOAuthSessionView,
   NativeAppPermissionKind,
   SearchSnapshot,
@@ -291,8 +292,8 @@ export const kuloRest = {
     apiRequest<void>(`/api/connections/inputs/${encodeURIComponent(id)}/cancel`, { method: "POST", body: { clientId } }),
   deleteConnection: (id: string) =>
     apiRequest<void>(`/api/connections/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  testConnection: (id: string) =>
-    apiRequest<{ connection: ConnectionRecordView; fingerprint?: string; requiresTrust?: boolean }>(`/api/connections/${encodeURIComponent(id)}/test`, { method: "POST" }),
+  testConnection: (id: string, body?: { rescan?: boolean }) =>
+    apiRequest<ConnectionTestResult>(`/api/connections/${encodeURIComponent(id)}/test`, { method: "POST", ...(body ? { body } : {}) }),
   trustConnection: (id: string, fingerprint: string) =>
     apiRequest<{ connection: ConnectionRecordView }>(`/api/connections/${encodeURIComponent(id)}/trust`, { method: "POST", body: { fingerprint } }),
   startConnectionOAuth: (connectionId: string, body: { clientId?: string; forceReauth?: boolean } = {}) =>
@@ -447,11 +448,8 @@ export const kuloRest = {
       `/api/topics/${encodeURIComponent(topicId)}`,
       { method: "DELETE", body: { stopTasks } },
     ),
-  retryTopic: (topicId: string) =>
-    apiRequest<{ retried: boolean }>(
-      `/api/topics/${encodeURIComponent(topicId)}/retry`,
-      { method: "POST" },
-    ),
+  retryTopic: (topicId: string) => apiRequest<{ retried: boolean }>(`/api/topics/${encodeURIComponent(topicId)}/retry`, { method: "POST" }),
+  compactTopic: (topicId: string) => apiRequest<import("@kulo/protocol").TopicCompactResult>(`/api/topics/${encodeURIComponent(topicId)}/compact`, { method: "POST" }),
   getUsage: (range: "today" | "7" | "30") =>
     apiRequest<UsageStatsView>(`/api/usage?range=${range}`),
   getExternalClientQuotas: (options?: { signal?: AbortSignal }) =>

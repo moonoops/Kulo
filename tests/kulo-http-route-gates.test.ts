@@ -55,6 +55,7 @@ describe("Extracted HTTP route plugins preserve auth, handover barrier, route pr
       const writes: Array<[string, string]> = [
         ["POST", "/api/projects"],
         ["POST", "/api/topics"],
+        ["POST", "/api/topics/root/compact"],
         ["POST", "/api/settings/presentation"],
         ["POST", "/api/assistant/configure"],
         ["POST", "/api/connections"],

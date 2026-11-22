@@ -259,10 +259,10 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
   },
   {
     name: "kulo_computer_handoff",
-    audiences: ALL_COMPUTER_WORKERS,
+    audiences: ["computer-worker"],
     tier: "deferred",
     scope: "global",
-    requires: (s) => s.computerUseBrowserEnabled !== false || s.computerUseDesktopEnabled !== false,
+    requires: (s) => !s.readOnly && (s.computerUseBrowserEnabled !== false || s.computerUseDesktopEnabled !== false),
   },
 
   // 5. UI Cards & Artifact Publication
@@ -335,18 +335,8 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
   ),
 
   // 8. Persisted History
-  {
-    name: "kulo_history_search",
-    audiences: ALL_ORCHESTRATOR,
-    tier: "deferred",
-    scope: "global",
-  },
-  {
-    name: "kulo_history_read",
-    audiences: ALL_ORCHESTRATOR,
-    tier: "deferred",
-    scope: "global",
-  },
+  { name: "kulo_history_search", audiences: ALL_ORCHESTRATOR, tier: "resident", tierFor: (s) => (s.audience === "chat" ? "resident" : "deferred"), scope: "global" },
+  { name: "kulo_history_read", audiences: ALL_ORCHESTRATOR, tier: "deferred", scope: "global" },
 
   // 9. Connections
   {
@@ -377,7 +367,7 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
   },
   {
     name: "kulo_connection_request",
-    audiences: ALL_COMPUTER_WORKERS,
+    audiences: ["computer-worker"],
     tier: "deferred",
     scope: "global",
   },
@@ -806,6 +796,7 @@ const SETTINGS_DEFERRED_KEYWORDS: Readonly<Record<string, string>> = {
   kulo_stop: "停止工单 终止任务",
   hindsight_retain: "保存记忆 写入长期记忆",
   hindsight_recall: "回忆 检索长期记忆",
+  kulo_history_search: "搜索聊天记录 查找历史对话 以前说过的话 回忆原文",
 };
 
 /**

@@ -43,6 +43,7 @@ import type { HubWatchdog } from "./hub-watchdog.js";
 import type { KuloMediaJobs } from "./media-jobs.js";
 import { KuloProjects, ProjectError } from "./projects.js";
 import type { createWorkerTicketTask } from "./scheduler.js";
+import { classifyTicketOutcome, recordTicketOutcomeToWorkingMemory } from "./working-memory.js";
 import {
   isTicketUnfinished,
   KuloStateDoc,
@@ -185,6 +186,9 @@ export class TicketControlService {
   ): Promise<TicketCardView> {
     const { harness, envManager, projects, uploads, connectionManager, actionConfirmations, uiCards, liveSettings, runtimeGates, ports } = this.#deps;
     const recoveryGuard = await ports.turnContext.currentRecoveryGuard(params.originConversationId, context, params.originToolTaskId);
+    if (params.attachments?.some((asset) => uploads.getUpload(asset.id)?.record.internalOnly)) {
+      throw Object.assign(new Error("内部资源不可作为普通附件发送。"), { code: "attachment_forbidden", status: 403 });
+    }
     if (params.principalId && params.attachments?.some((asset) => !uploads.canReadUpload(asset.id, params.principalId!))) {
       throw Object.assign(new Error("无权引用此附件。"), { code: "attachment_forbidden", status: 403 });
     }
@@ -519,12 +523,25 @@ export class TicketControlService {
       activeTaskId = admitted.activeTaskId;
       priorWaitingCardId = admitted.priorWaitingCardId ?? priorWaitingCardId;
     }
-    return finalizeTicketStop(this.finalizeTicketStopDeps(), {
+    const stoppedCard = await finalizeTicketStop(this.finalizeTicketStopDeps(), {
       ticketId, reason, epoch, previousEpoch,
       ...(activeTaskId === undefined ? {} : { activeTaskId }),
       ...(priorWaitingCardId ? { priorWaitingCardId } : {}),
       snapshot, ticket, intent,
     }, context);
+    const postState = await harness.snapshot(KuloStateDoc, context);
+    const stoppedTicket = postState?.tickets[ticketId];
+    if (stoppedTicket) {
+      void recordTicketOutcomeToWorkingMemory(
+        harness,
+        (text) => this.#deps.connectionManager.redact(text),
+        stoppedTicket,
+        "ticket_stopped",
+        { detail: reason?.trim() || stoppedTicket.stoppedReason },
+        context,
+      ).catch(() => {});
+    }
+    return stoppedCard;
   }
 
   async closeTicket(
@@ -559,6 +576,21 @@ export class TicketControlService {
     if (changed) {
       await actionConfirmations.settlePendingForTicket(params.ticketId, "任务已关闭", undefined, context);
       await runtimeGates.broadcastTickets(context);
+      const postState = await harness.snapshot(KuloStateDoc, context);
+      const closedTicket = postState?.tickets[params.ticketId];
+      if (closedTicket) {
+        const outcome = classifyTicketOutcome(closedTicket, { closureKind: params.kind });
+        if (outcome) {
+          void recordTicketOutcomeToWorkingMemory(
+            harness,
+            (text) => this.#deps.connectionManager.redact(text),
+            closedTicket,
+            outcome,
+            { detail: params.reason },
+            context,
+          ).catch(() => {});
+        }
+      }
     }
     return card;
   }

@@ -266,7 +266,8 @@ export function ProjectsSidebar({ projects, topics, tickets, topicActivity = {},
                   if (key === "delete") { setDeleteTarget(project); setDeleteError(undefined); setDeleteNeedsStop(false); }
                 }} disabledKeys={connected ? [] : ["rename", "delete"]}>
                   <Dropdown.Item id="rename" textValue={t("重命名项目", "Rename project")} className="kulo-navigation-menu-item"><KuloIcon name="edit" size={16} /><Label className="kulo-navigation-menu-label">{t("重命名", "Rename")}</Label></Dropdown.Item>
-                  <Dropdown.Item id="delete" textValue={t("删除项目", "Delete project")} variant="danger" className="kulo-navigation-menu-item"><KuloIcon name="cancel" size={16} /><Label className="kulo-navigation-menu-label">{t("删除项目", "Delete project")}</Label></Dropdown.Item>
+                  <Separator />
+                  <Dropdown.Item id="delete" textValue={t("删除项目", "Delete project")} className="kulo-navigation-menu-item"><KuloIcon name="delete" size={16} /><Label className="kulo-navigation-menu-label">{t("删除项目", "Delete project")}</Label></Dropdown.Item>
                 </Dropdown.Menu></Dropdown.Popover>
               </Dropdown>
             </div>

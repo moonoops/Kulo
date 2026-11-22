@@ -134,6 +134,18 @@ export function TopicsSidebar({
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const handledSearchFocus = useRef(0);
+  const restoreTopicFocus = useRef<string | null | undefined>(undefined);
+
+  const focusSurvivingTopic = (targetId: string | null) => {
+    requestAnimationFrame(() => {
+      if (!sidebarRef.current) return;
+      if (document.activeElement && document.activeElement !== document.body && sidebarRef.current.contains(document.activeElement)) return;
+      const target = targetId
+        ? [...sidebarRef.current.querySelectorAll<HTMLElement>("[data-topic-id]")].find((row) => row.dataset.topicId === targetId)?.querySelector<HTMLButtonElement>(".kulo-topic-select")
+        : null;
+      (target ?? sidebarRef.current.querySelector<HTMLButtonElement>(".kulo-navigation-create"))?.focus({ preventScroll: true });
+    });
+  };
 
   useEffect(() => {
     try { localStorage.setItem(projectSearchKey, JSON.stringify({ query: projectQuery })); }
@@ -165,10 +177,13 @@ export function TopicsSidebar({
 
   const confirmDelete = async () => {
     if (!deleteTarget || deleting) return;
+    const index = filteredTopics.findIndex((topic) => topic.id === deleteTarget.id);
+    const nextTopicId = index >= 0 ? (filteredTopics[index + 1]?.id ?? filteredTopics[index - 1]?.id ?? null) : undefined;
     setDeleting(true);
     try {
       setDeleteError(undefined);
       await onDeleteTopic(deleteTarget.id, deleteNeedsStop || tickets.some((ticket) => (ticket.originTopicId ?? "root") === deleteTarget.id && unfinishedTicket(ticket)));
+      restoreTopicFocus.current = nextTopicId;
       setDeleteTarget(null);
     } catch (error) {
       setDeleteError(error instanceof Error ? error.message : t("删除会话失败", "Failed to delete conversation"));
@@ -176,6 +191,16 @@ export function TopicsSidebar({
     } finally {
       setDeleting(false);
     }
+  };
+
+  const patchTopicFromList = (topic: TopicSummary, patch: { title?: string; pinned?: boolean; archived?: boolean }) => {
+    const activeRow = document.activeElement instanceof Element ? document.activeElement.closest<HTMLElement>("[data-topic-id]") : null;
+    const restoreAfterArchive = Boolean(patch.archived) && activeRow?.dataset.topicId === topic.id;
+    const index = restoreAfterArchive ? filteredTopics.findIndex((item) => item.id === topic.id) : -1;
+    const nextTopicId = index >= 0 ? (filteredTopics[index + 1]?.id ?? filteredTopics[index - 1]?.id ?? null) : null;
+    void onPatchTopic(topic.id, patch).then(() => {
+      if (restoreAfterArchive) focusSurvivingTopic(nextTopicId);
+    });
   };
 
   useEffect(() => {
@@ -292,7 +317,7 @@ export function TopicsSidebar({
                       {...topicNotifications(tickets, topic.id)}
                       activity={topicActivity[topic.id]}
                       onSelect={() => onSelectTopic(topic.id)}
-                      onPatch={(patch) => void onPatchTopic(topic.id, patch)}
+                      onPatch={(patch) => patchTopicFromList(topic, patch)}
                       onRequestDelete={() => { setDeleteError(undefined); setDeleteNeedsStop(false); setDeleteTarget(topic); }}
                     />
                   );
@@ -382,8 +407,13 @@ export function TopicsSidebar({
         confirmLabel={deleteNeedsStop || deleteTarget && tickets.some((ticket) => (ticket.originTopicId ?? "root") === deleteTarget.id && unfinishedTicket(ticket)) ? t("停止任务并删除", "Stop tasks and delete") : t("删除会话", "Delete conversation")}
         status="danger"
         isPending={deleting}
-        onCancel={() => setDeleteTarget(null)}
+        onCancel={() => { restoreTopicFocus.current = undefined; setDeleteTarget(null); }}
         onConfirm={() => void confirmDelete()}
+        onCloseComplete={() => {
+          const targetId = restoreTopicFocus.current;
+          restoreTopicFocus.current = undefined;
+          if (targetId !== undefined) focusSurvivingTopic(targetId);
+        }}
       />
     </div>
   );

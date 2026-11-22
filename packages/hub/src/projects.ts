@@ -64,6 +64,7 @@ export interface KuloProjectsDependencies {
   envManager: ProjectEnvManager;
   stopTicket: (id: string, reason: string) => Promise<unknown>;
   onChanged?: () => void | Promise<void>;
+  onProjectDeleted?: (projectId: string, conversationIds: readonly number[], context: Context) => Promise<void>;
 }
 
 const UNFINISHED = new Set(["queued", "running", "pausing", "waiting", "blocked"]);
@@ -366,7 +367,11 @@ export class KuloProjects {
           state.cancellations ??= {};
           state.cancellations[ticket.id] = { projectId: id, reason: "项目已删除", requestedAt: now, cancellationId: randomUUID() };
         }
-        return { project: clone(project), cleanupDevices: [...new Set(Object.values(state.cleanup).filter((item) => item.projectId === id).map((item) => item.deviceId))] };
+        return {
+          project: clone(project),
+          cleanupDevices: [...new Set(Object.values(state.cleanup).filter((item) => item.projectId === id).map((item) => item.deviceId))],
+          conversationIds: [...conversationIds],
+        };
       }, context);
       await this.#changed();
       return committed;
@@ -385,6 +390,9 @@ export class KuloProjects {
       return pending;
     });
     const runtime = await this.#deps.harness.snapshot(KuloStateDoc, context);
+    if (this.#deps.onProjectDeleted) {
+      await this.#deps.onProjectDeleted(id, transition.conversationIds, context).catch(() => {});
+    }
     await this.#changed();
     return { deleted: id, projects: await this.list(context), topics: Object.values(runtime?.topics ?? {}).filter((topic) => topic.deletedAt === undefined).map(clone), cleanupPending };
   }

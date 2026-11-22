@@ -1,21 +1,29 @@
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-durable";
 import type { CredentialStore } from "@earendil-works/pi-ai";
 import type {
   BrowserRequest, BrowserResult, CapabilityConfigurationInput, CapabilityRecord,
   CapabilitySnapshot, CapabilityStatus, ComputerUseConfigurationInput, ComputerUseSettings,
-  CustomModelConfig, CustomProviderApi, EnvNodeDescriptor, MediaAdapterId,
-  MediaConnectionView, MediaKind, MediaOutputFormat, SetupInputRequest, ImageModelProfile,
-  ImageRoutingSettings, ImageRoutingConfigurationInput, MediaJobRequest, ImageCapabilityRouting,
+  EnvNodeDescriptor, MediaAdapterId, MediaConnectionView, MediaKind, MediaOutputFormat,
+  SetupInputRequest, ImageModelProfile, ImageRoutingSettings, ImageRoutingConfigurationInput,
+  MediaJobRequest, ImageCapabilityRouting,
 } from "@kulo/protocol";
 import {
-  defaultProtocolAdapterForModel, getImageModelPreset, getImageModelProfile, inferModelPurpose,
-  mergeImageGenerationParameters, normalizeImageGenerationParameters, validateImageModelProfile, validateCustomImageAdapter,
+  cleanGoogleImageModelId, getImageModelPreset, getImageModelProfile, isOfficialVertexBaseUrl,
+  mergeImageGenerationParameters, normalizeImageGenerationParameters, resolveVertexImageBaseUrl,
+  validateImageModelProfile, validateCustomImageAdapter,
 } from "@kulo/protocol";
+import {
+  capabilityFingerprint as fingerprint, capabilityMetadataMatches, isGoogleImageAdapter,
+  isOfficialGoogleImageHost, normalizeCapabilityUrl, planSyncedProviderImageModels,
+  type SyncedProviderImageSource,
+} from "./capability-helpers.js";
+
+export type { SyncedProviderImageSource };
 
 const ORIGIN_ENV = "KULO_API_KEY_ORIGIN";
-const ADAPTERS: readonly MediaAdapterId[] = ["openai-image", "gemini-image", "custom-image", "flow-browser"];
+const ADAPTERS: readonly MediaAdapterId[] = ["openai-image", "gemini-image", "vertex-image", "custom-image", "flow-browser"];
 const INPUT_LIFETIME_MS = 15 * 60_000;
 const MAX_CAPABILITIES = 128;
 
@@ -43,15 +51,6 @@ export interface KuloCapabilitiesState {
   imageRouting?: ImageRoutingSettings;
   computerUse?: ComputerUseSettings;
   dismissedModelCapabilities?: Record<string, string>;
-}
-
-export interface SyncedProviderImageSource {
-  id: string;
-  name: string;
-  baseUrl: string;
-  api: CustomProviderApi;
-  preset?: string;
-  models: readonly CustomModelConfig[];
 }
 
 export const KuloCapabilitiesDoc = defineDoc<KuloCapabilitiesState & JsonObject>({
@@ -109,30 +108,8 @@ function revision(value: unknown): number {
   if (!Number.isSafeInteger(value) || Number(value) < 1) fail(400, "capability_revision_required", "请先读取当前能力版本。");
   return Number(value);
 }
-function fingerprint(value: unknown): string {
-  function ordered(item: unknown): unknown {
-    if (Array.isArray(item)) return item.map(ordered);
-    if (item && typeof item === "object") return Object.fromEntries(Object.entries(item).filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => [key, ordered(value)]));
-    return item;
-  }
-  return createHash("sha256").update(JSON.stringify(ordered(value))).digest("hex");
-}
 function normalizedUrl(value: unknown, adapter: MediaAdapterId): string {
-  if (adapter === "custom-image" && value === undefined) fail(400, "invalid_capability_url", "请填写自定义服务地址。");
-  const raw = value === undefined ? adapter === "openai-image" ? "https://api.openai.com/v1" : "https://generativelanguage.googleapis.com/v1beta" : text(value, "服务地址", 2048);
-  let url: URL;
-  try { url = new URL(raw); } catch { return fail(400, "invalid_capability_url", "服务地址必须是有效的 HTTP 或 HTTPS 地址。"); }
-  if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.username || url.password || url.search || url.hash) {
-    fail(400, "invalid_capability_url", "服务地址不能包含凭证、查询参数或片段。");
-  }
-  const cleanPath = url.pathname.replace(/\/+$/, "");
-  if (!cleanPath) url.pathname = adapter === "openai-image" ? "/v1" : "/v1beta";
-  else if (adapter === "gemini-image" && url.hostname !== "generativelanguage.googleapis.com" && /\/v1$/i.test(cleanPath)) {
-    url.pathname = cleanPath.replace(/\/v1$/i, "/v1beta");
-  } else if (adapter === "openai-image" && url.hostname !== "api.openai.com" && /\/v1beta$/i.test(cleanPath)) {
-    url.pathname = cleanPath.replace(/\/v1beta$/i, "/v1");
-  }
-  return url.toString().replace(/\/+$/, "");
+  return normalizeCapabilityUrl(value, adapter, fail, text);
 }
 function modelCapabilities(adapter: MediaAdapterId, modelId: string, profile?: ImageModelProfile): { kind: MediaKind; formats: MediaOutputFormat[]; supportsEdit: boolean } {
   if (adapter === "flow-browser") return { kind: "video", formats: ["mp4"], supportsEdit: false };
@@ -164,25 +141,7 @@ function publicInput(input: StoredInput): SetupInputRequest {
   return view;
 }
 async function metadataMatches(response: Response, adapter: MediaAdapterId, modelId: string): Promise<boolean> {
-  if (!response.body) return false;
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  try {
-    for (;;) {
-      const next = await reader.read();
-      if (next.done) break;
-      length += next.value.byteLength;
-      if (length > 64 * 1024) fail(502, "media_metadata_too_large", "服务返回的模型信息过大。");
-      chunks.push(next.value);
-    }
-    const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-    const object = value as Record<string, unknown>;
-    return adapter === "gemini-image"
-      ? object.name === `models/${modelId.replace(/^models\//, "")}`
-      : object.id === modelId;
-  } finally { await reader.cancel(); reader.releaseLock(); }
+  return capabilityMetadataMatches(response, adapter, modelId, () => fail(502, "media_metadata_too_large", "服务返回的模型信息过大。"));
 }
 
 export class KuloCapabilities {
@@ -194,18 +153,39 @@ export class KuloCapabilities {
       await this.#options.harness.commit(async (tx) => {
         const state = await tx.doc(KuloCapabilitiesDoc);
         let changed = false;
-        for (const cap of Object.values(state.capabilities)) {
-          if (cap.kind !== "image" || cap.imageProfile) continue;
-          const connection = requireConnection(state, cap.connectionId);
-          const preset = getImageModelPreset(connection.adapter, cap.modelId);
-          if (!preset) continue;
-          cap.imageProfile = clone(preset.profile);
-          cap.defaults = clone(preset.defaults);
-          cap.formats = [...preset.profile.formats];
-          cap.supportsEdit = preset.profile.supportsEdit;
-          cap.revision++;
-          cap.updatedAt = this.#now();
+        const migratedConnections = new Set<string>();
+        for (const conn of Object.values(state.connections)) {
+          if (conn.adapter !== "gemini-image" || !conn.baseUrl || !isOfficialVertexBaseUrl(conn.baseUrl)) continue;
+          conn.adapter = "vertex-image";
+          try { conn.baseUrl = resolveVertexImageBaseUrl(conn.baseUrl); } catch { /* retain same-origin base */ }
+          conn.revision++;
+          migratedConnections.add(conn.id);
           changed = true;
+        }
+        for (const cap of Object.values(state.capabilities)) {
+          let capChanged = false;
+          if (migratedConnections.has(cap.connectionId)) {
+            const cleanId = cleanGoogleImageModelId(cap.modelId);
+            if (cleanId) cap.modelId = cleanId;
+            if (cap.status === "error" || cap.error) { cap.status = "unverified"; delete cap.error; }
+            capChanged = true;
+          }
+          if (cap.kind === "image" && !cap.imageProfile) {
+            const connection = requireConnection(state, cap.connectionId);
+            const preset = getImageModelPreset(connection.adapter, cap.modelId);
+            if (preset) {
+              cap.imageProfile = clone(preset.profile);
+              cap.defaults = clone(preset.defaults);
+              cap.formats = [...preset.profile.formats];
+              cap.supportsEdit = preset.profile.supportsEdit;
+              capChanged = true;
+            }
+          }
+          if (capChanged) {
+            cap.revision++;
+            cap.updatedAt = this.#now();
+            changed = true;
+          }
         }
         if (changed) state.revision++;
       }, BACKGROUND_CONTEXT);
@@ -296,7 +276,7 @@ export class KuloCapabilities {
       if (!ADAPTERS.includes(raw.adapter)) fail(400, "unsupported_media_adapter", "尚未支持该媒体接口，请提供接口文档以补充适配。");
       const name = text(raw.name, "能力名称", 100);
       const suppliedModel = text(raw.modelId, "模型标识", 200);
-      const modelId = raw.adapter === "gemini-image" ? suppliedModel.replace(/^models\//, "") : suppliedModel;
+      const modelId = isGoogleImageAdapter(raw.adapter) ? cleanGoogleImageModelId(suppliedModel) : suppliedModel;
       if (raw.adapter !== "flow-browser" && !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/.test(modelId)) fail(400, "invalid_capability_model", "模型标识无效。");
       for (const field of ["enabled", "isDefault", "allowTaskGeneration"] as const) {
         if (raw[field] !== undefined && typeof raw[field] !== "boolean") fail(400, "invalid_capability", "能力开关必须是布尔值。");
@@ -615,9 +595,10 @@ export class KuloCapabilities {
       const key = await this.#boundKey(connection);
       if (!key && connection.customAdapter?.auth.type !== "none") { status = "needs_auth"; error = "需要填写此服务的 API Key。"; }
       else if (connection.adapter === "custom-image") { status = "unverified"; error = "接口已配置，尚未验证生成。"; }
+      else if (connection.adapter === "vertex-image") { status = "unverified"; error = "Vertex AI API Key 不提供模型元数据预检，可通过试生成验证。"; }
       else {
         try {
-          const isGoogleHost = connection.baseUrl ? new URL(connection.baseUrl).hostname === "generativelanguage.googleapis.com" : true;
+          const isGoogleHost = isOfficialGoogleImageHost(connection.baseUrl);
           const headers: Record<string, string> = connection.adapter === "gemini-image"
             ? { "x-goog-api-key": key!, ...(!isGoogleHost ? { Authorization: `Bearer ${key}` } : {}) }
             : { Authorization: `Bearer ${key}` };
@@ -746,7 +727,7 @@ export class KuloCapabilities {
       if (!connection || !profile) return false;
       const values = { ...request.parameters, ...(desiredFormat ? { format: desiredFormat } : {}), ...(request.count !== undefined ? { count: request.count } : {}),
         ...(request.aspectRatio !== undefined ? { aspectRatio: request.aspectRatio } : {}), ...(request.quality !== undefined ? { quality: request.quality } : {}) };
-      if (connection.adapter === "gemini-image" && values.quality && ["0.5K", "1K", "2K", "4K"].includes(values.quality)) { values.size = values.quality; delete values.quality; }
+      if (isGoogleImageAdapter(connection.adapter) && values.quality && ["0.5K", "1K", "2K", "4K"].includes(values.quality)) { values.size = values.quality; delete values.quality; }
       try { normalizeImageGenerationParameters(mergeImageGenerationParameters(cap.defaults, values), profile, connection.adapter); return true; } catch { return false; }
     };
     const available = snapshot.capabilities.filter((cap) => cap.kind === kind && cap.enabled && (!desiredFormat || cap.formats.includes(desiredFormat))
@@ -797,88 +778,38 @@ export class KuloCapabilities {
   async syncProviderImageModels(providers: readonly SyncedProviderImageSource[]): Promise<void> {
     let changed = false;
     await this.#serial(async () => {
-      const desired = new Map<string, {
-        capabilityId: string;
-        connectionId: string;
-        providerId: string;
-        providerName: string;
-        capabilityName: string;
-        adapter: "openai-image" | "gemini-image" | "custom-image";
-        baseUrl: string;
-        modelId: string;
-        profile: ImageModelProfile;
-        defaults: NonNullable<CapabilityRecord["defaults"]>;
-        customAdapter?: NonNullable<StoredConnection["customAdapter"]>;
-        syncSignature: string;
-      }>();
-
+      const desired = planSyncedProviderImageModels(providers, normalizedUrl);
+      const vertexProviderUrls = new Map<string, { url: string; origin: string }>();
       for (const p of providers) {
-        if (!p.id?.trim() || !p.baseUrl?.trim()) continue;
-        for (const m of p.models ?? []) {
-          if (inferModelPurpose(m) !== "image") continue;
-          const inferredAdapter = m.protocolAdapter === "custom-image" && m.customImageAdapter
-            ? "custom-image" as const
-            : m.protocolAdapter === "gemini-image"
-              ? "gemini-image" as const
-              : m.protocolAdapter === "openai-image"
-                ? "openai-image" as const
-                : defaultProtocolAdapterForModel("image", m.id, p.api, p.preset) === "gemini-image"
-                  ? "gemini-image" as const
-                  : "openai-image" as const;
-          const cleanId = inferredAdapter === "gemini-image" ? m.id.trim().replace(/^models\//, "") : m.id.trim();
-          if (!cleanId || !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/.test(cleanId)) continue;
-          if (inferredAdapter === "openai-image" && /^dall-e-/i.test(cleanId)) continue;
-          let baseUrl: string;
-          try { baseUrl = normalizedUrl(p.baseUrl, inferredAdapter); } catch { continue; }
-          const preset = getImageModelPreset(inferredAdapter, cleanId);
-          let profile: ImageModelProfile;
-          try {
-            if (preset) {
-              const userFormats = m.imageProfile?.formats?.filter((f) => preset.profile.formats.includes(f));
-              profile = validateImageModelProfile({
-                ...preset.profile,
-                ...(userFormats?.length ? { formats: userFormats } : {}),
-                ...(m.imageProfile?.supportsEdit !== undefined ? {
-                  supportsEdit: m.imageProfile.supportsEdit && preset.profile.supportsEdit,
-                  maxReferences: m.imageProfile.supportsEdit && preset.profile.supportsEdit ? preset.profile.maxReferences : 0,
-                } : {}),
-              });
-            } else {
-              profile = validateImageModelProfile(m.imageProfile ?? {
-                formats: inferredAdapter === "gemini-image" ? ["jpeg", "png"] : ["png", "jpeg", "webp"],
-                supportsEdit: true,
-                maxReferences: 4,
-              });
-            }
-          } catch { continue; }
-          let defaults: NonNullable<CapabilityRecord["defaults"]>;
-          try {
-            defaults = normalizeImageGenerationParameters(
-              m.imageDefaults ?? preset?.defaults ?? { format: profile.formats[0] ?? "png", count: 1 },
-              profile,
-              inferredAdapter,
-            );
-          } catch {
-            defaults = { format: profile.formats[0] ?? "png", count: 1 };
-          }
-          const customAdapter = inferredAdapter === "custom-image"
-            ? (() => { try { return validateCustomImageAdapter(m.customImageAdapter!); } catch { return undefined; } })()
-            : undefined;
-          if (inferredAdapter === "custom-image" && (!customAdapter || profile.supportsEdit && !customAdapter.edit)) continue;
-          const capabilityId = `cap-model-${fingerprint({ providerId: p.id, modelId: cleanId }).slice(0, 20)}`;
-          const connectionId = `media-model-${fingerprint({ providerId: p.id, adapter: inferredAdapter, baseUrl, customAdapter: customAdapter ?? null }).slice(0, 20)}`;
-          const capabilityName = (m.name?.trim() || cleanId).slice(0, 100);
-          const syncSignature = fingerprint({ connectionId, modelId: cleanId, capabilityName, profile, defaults });
-          desired.set(capabilityId, {
-            capabilityId, connectionId, providerId: p.id, providerName: (p.name?.trim() || p.id).slice(0, 100),
-            capabilityName, adapter: inferredAdapter, baseUrl, modelId: cleanId, profile, defaults, customAdapter, syncSignature,
-          });
-        }
+        if (p.api !== "google-vertex" || !p.id?.trim() || !p.baseUrl?.trim()) continue;
+        try {
+          const resolved = normalizedUrl(resolveVertexImageBaseUrl(p.baseUrl, { vertexProject: p.vertexProject, vertexLocation: p.vertexLocation }), "vertex-image");
+          vertexProviderUrls.set(p.id, { url: resolved, origin: new URL(resolved).origin });
+        } catch { /* ignore invalid vertex config */ }
       }
 
       await this.#options.harness.commit(async (tx) => {
         const state = await tx.doc(KuloCapabilitiesDoc);
         const now = this.#now();
+
+        for (const conn of Object.values(state.connections)) {
+          if (conn.id.startsWith("media-model-") || !conn.credentialProviderId || !conn.baseUrl || !isOfficialVertexBaseUrl(conn.baseUrl)) continue;
+          const target = vertexProviderUrls.get(conn.credentialProviderId);
+          if (!target || target.origin !== conn.origin) continue;
+          const shouldHeal = conn.adapter === "gemini-image"
+            || (conn.adapter === "vertex-image" && conn.baseUrl !== target.url && /\/(?:v1|v1beta)$/i.test(conn.baseUrl) && target.url.includes("/projects/"));
+          if (!shouldHeal) continue;
+          conn.adapter = "vertex-image";
+          conn.baseUrl = target.url;
+          conn.revision++;
+          for (const cap of Object.values(state.capabilities)) {
+            if (cap.connectionId !== conn.id) continue;
+            if (cap.status === "error" || cap.error) { cap.status = "unverified"; delete cap.error; }
+            cap.revision++;
+            cap.updatedAt = now;
+          }
+          changed = true;
+        }
 
         for (const existing of Object.values(state.capabilities)) {
           if (!existing.id.startsWith("cap-model-") || desired.has(existing.id)) continue;

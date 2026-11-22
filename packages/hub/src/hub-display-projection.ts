@@ -20,6 +20,7 @@ import {
 } from "@kulo/protocol";
 import { chatReceiptData } from "./chat-submissions.js";
 import { redactCredentialData } from "./credential-redaction.js";
+import { isContextSyncEntry } from "./recent-work-sync.js";
 import { resolveResponseContext } from "./response-context.js";
 import { nativeSearchEvidence, sanitizeSearchSources, selectCitedSources } from "./search-sources.js";
 import {
@@ -190,7 +191,7 @@ export function extractDisplayMessages(
     }
     if (isRecoveryInputBoundary(entry)) recoveryTurn = false;
     if (recoveryTurn && (AssistantEntry.is(entry) || ToolResultEntry.is(entry))) continue;
-    if (entry.kind === "kulo.memory-context" || entry.kind === "kulo.recent_work_update") continue;
+    if (entry.kind === "kulo.memory-context" || isContextSyncEntry(entry)) continue;
     const createdAt = entryTimestamp(entry);
 
     if (VoiceTranscriptEntry.is(entry)) continue;

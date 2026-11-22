@@ -12,6 +12,7 @@ type AppOperation = Extract<ConnectionUseOperation, { kind: "app" }>;
 const NATIVE_PERMISSION_SETTINGS_URLS: Record<NativeAppPermissionKind, string> = {
   "full-disk-access": "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
   automation: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+  "local-network": "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork",
 };
 
 export const NATIVE_CONNECTION_APPLICATIONS: ConnectionApplicationDefinition[] = [

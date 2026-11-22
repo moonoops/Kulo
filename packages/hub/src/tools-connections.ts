@@ -194,6 +194,7 @@ export function createConnectionTools(controller: ConnectionToolController, audi
     replay: "safe",
     execute: async (args, api, context) => {
       const caller = await callerFor(api, "worker", context);
+      if (caller.kind !== "worker" || caller.isSubagent) throw new Error("连接权限申请只能由顶层 Worker 发起。");
       const connectionId = identifier(args.connection_id, "连接标识");
       if (typeof args.reason !== "string" || !args.reason.trim() || args.reason.length > 2_000) throw new Error("请简要说明连接权限的用途。");
       const value = await controller.request(caller, { connectionId, reason: args.reason.trim(), requestId: api.callId }, context);

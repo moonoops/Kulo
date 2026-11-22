@@ -196,6 +196,11 @@ describe("connection authorization HTTP boundary", () => {
     const tested = await f.request(`/api/connections/${connection.id}/test`, "POST");
     expect((await tested.json() as { connection: ConnectionRecordView }).connection.status).toBe("verified");
     expect(f.executor.execute).toHaveBeenCalledTimes(1);
+    expect((await f.request(`/api/connections/${connection.id}/test`, "POST", { rescan: "yes" })).status).toBe(400);
+    expect((await f.request(`/api/connections/${connection.id}/test`, "POST", { extra: true })).status).toBe(400);
+    const rescanned = await f.request(`/api/connections/${connection.id}/test`, "POST", { rescan: true });
+    expect(rescanned.status).toBe(200);
+    expect((await rescanned.json() as { requiresTrust?: boolean }).requiresTrust).toBe(true);
     expect(JSON.stringify(await (await f.request("/api/connections")).json())).not.toContain(key);
   });
 
@@ -227,6 +232,8 @@ describe("connection authorization HTTP boundary", () => {
     expect(okFullDisk.status).toBe(200);
     const okAutomation = await f.request("/api/connections/permission-settings", "POST", { kind: "automation" }, HUB_TEST_ADMIN_TOKEN, { Origin: f.url });
     expect(okAutomation.status).toBe(200);
-    expect(f.openNativePermissionSettings.mock.calls).toEqual([["full-disk-access"], ["automation"]]);
+    const okLocalNet = await f.request("/api/connections/permission-settings", "POST", { kind: "local-network" }, HUB_TEST_ADMIN_TOKEN, { Origin: f.url });
+    expect(okLocalNet.status).toBe(200);
+    expect(f.openNativePermissionSettings.mock.calls).toEqual([["full-disk-access"], ["automation"], ["local-network"]]);
   });
 });

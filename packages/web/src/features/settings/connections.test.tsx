@@ -18,7 +18,7 @@ import { McpOAuthModal } from "./mcp-oauth-modal";
 import { ComposioConfigModal } from "./composio-config-modal";
 import { ComposioAppsModal } from "./composio-apps-modal";
 import { HomeAssistantConfigModal } from "./home-assistant-config-modal";
-import { checkConnectionFollowup, connectionFollowupResult } from "./connection-followup";
+import { ConnectionFollowupActions, ConnectionFollowupBody, checkConnectionFollowup, connectionFollowupResult } from "./connection-followup";
 import { kuloRest } from "../../kulo-api";
 import { getSettingsAssistantShortcuts } from "./settings-assistant-actions";
 import { clearSettingsAssistantDraftStorage, readSettingsAssistantDraft } from "./use-settings-assistant";
@@ -188,7 +188,8 @@ describe("connection management tabs", () => {
     expect(html).not.toContain("deploy@server.example");
     expect(html).toContain("待补全");
     expect(html).not.toContain("测试连接");
-    expect(html).not.toContain('aria-label="连接部署服务器"');
+    expect(html).toContain('aria-label="连接部署服务器"');
+    expect(html).not.toContain('aria-label="连接刚收到的账号"');
     expect(html).toContain('aria-label="移除部署服务器"');
     expect(html).not.toContain("card-private-key-sentinel");
     expect(connectionStatusLabel({ ...connection, kind: "account", status: "saved" })).toBe("已保存");
@@ -390,6 +391,102 @@ describe("SSH connection followup", () => {
     vi.spyOn(kuloRest, "trustConnection").mockRejectedValue(new Error("服务器指纹已变更"));
     await expect(checkConnectionFollowup(connection.id, "SHA256:old")).rejects.toThrow("指纹已变更");
     expect(test).not.toHaveBeenCalled();
+  });
+
+  it("propagates local-network errorCode, hostMismatch rescan flow, and pending-fingerprint row connect action", async () => {
+    expect(connectionFollowupResult({
+      connection: { ...connection, status: "error", error: "未能读取服务器指纹，请检查地址、端口、网络及 macOS 本地网络权限。" },
+      errorCode: "connection_local_network_blocked",
+    })).toEqual({
+      phase: "error",
+      error: "未能读取服务器指纹，请检查地址、端口、网络及 macOS 本地网络权限。",
+      errorCode: "connection_local_network_blocked",
+    });
+
+    const test = vi.spyOn(kuloRest, "testConnection").mockResolvedValueOnce({
+      connection: { ...connection, status: "error", error: "服务器指纹已变更，请核对后重新信任。" },
+      requiresTrust: true,
+      hostMismatch: true,
+      fingerprint: "ssh-ed25519 SHA256:new-key",
+      previousFingerprint: "ssh-ed25519 SHA256:old-key",
+      errorCode: "connection_host_mismatch",
+    });
+    expect(await checkConnectionFollowup(connection.id, { rescan: true })).toEqual({
+      phase: "trust",
+      fingerprint: "ssh-ed25519 SHA256:new-key",
+      hostMismatch: true,
+      previousFingerprint: "ssh-ed25519 SHA256:old-key",
+    });
+    expect(test).toHaveBeenCalledWith(connection.id, { rescan: true });
+
+    const html = renderToStaticMarkup(
+      <ConnectionsModule
+        snapshot={{
+          ...snapshot,
+          connections: [
+            { ...connection, id: "ssh-awaiting", name: "待确认主机", status: "incomplete", error: "请确认服务器指纹。" },
+            { ...connection, id: "ssh-verified", name: "已连通主机", status: "verified" },
+          ],
+        }}
+        loading={false}
+        error={null}
+        connected
+        onPrepare={async () => {}}
+        onRefresh={() => {}}
+      />,
+    );
+    expect(html).toContain('aria-label="连接待确认主机"');
+    expect(html).toContain('aria-label="测试已连通主机"');
+
+    const noop = () => {};
+    const localBlockedActions = renderToStaticMarkup(
+      <ConnectionFollowupActions
+        state={{ phase: "error", error: "blocked", errorCode: "connection_local_network_blocked" }}
+        connected available localHost openingSettings={false}
+        onClose={noop} onCheck={noop} onOpenLocalNetwork={noop}
+      />,
+    );
+    expect(localBlockedActions).toContain("打开系统设置");
+    expect(localBlockedActions).toContain("重试连接");
+
+    const remoteBlockedActions = renderToStaticMarkup(
+      <ConnectionFollowupActions
+        state={{ phase: "error", error: "blocked", errorCode: "connection_local_network_blocked" }}
+        connected available localHost={false} openingSettings={false}
+        onClose={noop} onCheck={noop} onOpenLocalNetwork={noop}
+      />,
+    );
+    expect(remoteBlockedActions).not.toContain("打开系统设置");
+    expect(remoteBlockedActions).toContain("重试连接");
+
+    const mismatchErrorActions = renderToStaticMarkup(
+      <ConnectionFollowupActions
+        state={{ phase: "error", error: "changed", errorCode: "connection_host_mismatch", hostMismatch: true }}
+        connected available localHost openingSettings={false}
+        onClose={noop} onCheck={noop} onOpenLocalNetwork={noop}
+      />,
+    );
+    expect(mismatchErrorActions).toContain("重新扫描指纹");
+    expect(mismatchErrorActions).not.toContain("重试连接");
+
+    const mismatchTrustBody = renderToStaticMarkup(
+      <ConnectionFollowupBody
+        state={{ phase: "trust", fingerprint: "ssh-ed25519 SHA256:new", hostMismatch: true, previousFingerprint: "ssh-ed25519 SHA256:old" }}
+        statusRef={{ current: null }}
+      />,
+    );
+    expect(mismatchTrustBody).toContain("服务器指纹已变更");
+    expect(mismatchTrustBody).toContain("SHA256:old");
+    expect(mismatchTrustBody).toContain("SHA256:new");
+
+    const mismatchTrustActions = renderToStaticMarkup(
+      <ConnectionFollowupActions
+        state={{ phase: "trust", fingerprint: "ssh-ed25519 SHA256:new", hostMismatch: true, previousFingerprint: "ssh-ed25519 SHA256:old" }}
+        connected available localHost openingSettings={false}
+        onClose={noop} onCheck={noop} onOpenLocalNetwork={noop}
+      />,
+    );
+    expect(mismatchTrustActions).toContain("信任新指纹并连接");
   });
 });
 

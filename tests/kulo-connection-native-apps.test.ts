@@ -147,15 +147,17 @@ describe("native connection application contract", () => {
     const launcher = async (url: string) => { opened.push(url); };
     await openNativePermissionSettings("full-disk-access", { platform: "darwin", launcher });
     await openNativePermissionSettings("automation", { platform: "darwin", launcher });
+    await openNativePermissionSettings("local-network", { platform: "darwin", launcher });
     expect(opened).toEqual([
       "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
       "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork",
     ]);
     await expect(openNativePermissionSettings("full-disk-access", { platform: "linux", launcher })).rejects.toMatchObject({ code: "connection_app_platform_unavailable" });
     for (const invalid of ["microphone", "__proto__", "https://example.com", "", null]) {
       await expect(openNativePermissionSettings(invalid, { platform: "darwin", launcher })).rejects.toMatchObject({ code: "connection_app_invalid_parameters" });
     }
-    expect(opened).toHaveLength(2);
+    expect(opened).toHaveLength(3);
   });
 
   it("requests Automation only during an explicit setup probe", async () => {

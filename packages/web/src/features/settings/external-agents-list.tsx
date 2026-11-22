@@ -172,7 +172,6 @@ export function ExternalClientsList({
                           <Dropdown.Item
                             id="disconnect"
                             textValue={t("移除连接", "Remove connection")}
-                            variant="danger"
                             isDisabled={busy}
                           >
                             <Label>{t("移除连接", "Remove connection")}</Label>

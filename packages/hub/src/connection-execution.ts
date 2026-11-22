@@ -5,12 +5,24 @@ import { createHash, randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import type { ConnectionRecordView, ConnectionSecrets, ConnectionUseOperation, ConnectionUseResult } from "@kulo/protocol";
 import { LocalConnectionApplications, type ConnectionApplicationBackend } from "./connection-applications.js";
+import {
+  SSH_KEYSCAN_LINE,
+  classifySshScanFailure,
+  computeSshKnownHostsFingerprint,
+  formatSshHostFingerprints,
+  normalizeSshPrivateKey,
+} from "./connection-ssh-diagnostics.js";
 
 const MAX_OUTPUT = 128_000;
+const MAX_KNOWN_HOSTS_BYTES = 64 * 1024;
 export interface ConnectionHostScan { fingerprint: string; lines: string[] }
+export interface ConnectionSshProbeResult { exitCode: number; stderr: string; output: string }
 export interface ConnectionExecutionBackend {
   scan(connection: ConnectionRecordView, signal?: AbortSignal): Promise<ConnectionHostScan>;
   trust(connection: ConnectionRecordView, scan: ConnectionHostScan): Promise<void>;
+  hasTrustedHost?(connection: ConnectionRecordView, expectedFingerprint?: string): boolean;
+  clearTrustedHost?(connection: ConnectionRecordView): void;
+  probeSsh?(connection: ConnectionRecordView, secrets: ConnectionSecrets, signal?: AbortSignal): Promise<ConnectionSshProbeResult>;
   execute(connection: ConnectionRecordView, secrets: ConnectionSecrets, operation: ConnectionUseOperation, signal?: AbortSignal): Promise<ConnectionUseResult>;
 }
 
@@ -20,15 +32,26 @@ function fail(message: string, code = "connection_execution_failed"): never {
 function alias(connection: ConnectionRecordView): string {
   return `kulo-connection-${createHash("sha256").update(`${connection.host}:${connection.port ?? 22}`).digest("hex").slice(0, 24)}`;
 }
+/** Quotes a path passed to OpenSSH `-o` options so spaces (e.g. `Application Support`) are not split and `%` stays literal. */
+function sshConfigPath(label: string, filePath: string): string {
+  if (!filePath || /["\x00-\x1f\x7f]/.test(filePath)) fail(`${label}无效。`, "connection_storage_invalid");
+  return `"${filePath.replaceAll("%", "%%")}"`;
+}
 function safeProcessEnv(): NodeJS.ProcessEnv {
-  return { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", ...(process.platform === "win32" && process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) };
+  return {
+    PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+    LC_ALL: "C",
+    LANG: "C",
+    ...(process.platform === "win32" && process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+  };
 }
 interface CaptureOptions { signal?: AbortSignal; timeoutMs: number; environment?: NodeJS.ProcessEnv; input?: string }
-function capture(binary: string, args: string[], options: CaptureOptions): Promise<{ output: string; exitCode: number }> {
+interface CaptureResult { stdout: string; stderr: string; output: string; exitCode: number }
+function capture(binary: string, args: string[], options: CaptureOptions): Promise<CaptureResult> {
   options.signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { env: options.environment ?? safeProcessEnv(), stdio: [options.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"], windowsHide: true });
-    let output = "", settled = false, stopped = false;
+    let stdout = "", stderr = "", output = "", settled = false, stopped = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     const stop = () => {
       stopped = true;
@@ -45,9 +68,16 @@ function capture(binary: string, args: string[], options: CaptureOptions): Promi
       if (killTimer) clearTimeout(killTimer);
       options.signal?.removeEventListener("abort", abort);
     };
-    const collect = (data: Buffer) => { output = (output + data.toString("utf8")).slice(-MAX_OUTPUT); };
-    child.stdout?.on("data", collect);
-    child.stderr?.on("data", collect);
+    child.stdout?.on("data", (data: Buffer) => {
+      const text = data.toString("utf8");
+      stdout = (stdout + text).slice(-MAX_OUTPUT);
+      output = (output + text).slice(-MAX_OUTPUT);
+    });
+    child.stderr?.on("data", (data: Buffer) => {
+      const text = data.toString("utf8");
+      stderr = (stderr + text).slice(-MAX_OUTPUT);
+      output = (output + text).slice(-MAX_OUTPUT);
+    });
     child.once("error", () => {
       if (settled) return;
       settled = true; cleanup();
@@ -57,7 +87,7 @@ function capture(binary: string, args: string[], options: CaptureOptions): Promi
       if (settled) return;
       settled = true; cleanup();
       if (stopped || options.signal?.aborted) reject(Object.assign(new Error("连接操作已取消或超时。"), { code: "connection_cancelled", status: 409 }));
-      else resolve({ output, exitCode: code ?? 1 });
+      else resolve({ stdout, stderr, output, exitCode: code ?? 1 });
     });
     if (options.input !== undefined) {
       child.stdin?.on("error", () => { /* The authentication program may reject input before consuming all of it. */ });
@@ -94,10 +124,12 @@ export class LocalConnectionExecutor implements ConnectionExecutionBackend {
   readonly #directory: string;
   readonly #fetch: typeof fetch;
   readonly #applications: ConnectionApplicationBackend;
-  constructor(options: { stateDir: string; fetch?: typeof fetch; applications?: ConnectionApplicationBackend }) {
+  readonly #platform: NodeJS.Platform;
+  constructor(options: { stateDir: string; fetch?: typeof fetch; applications?: ConnectionApplicationBackend; platform?: NodeJS.Platform }) {
     this.#directory = path.join(options.stateDir, "connection-runtime");
     this.#fetch = options.fetch ?? globalThis.fetch;
-    this.#applications = options.applications ?? new LocalConnectionApplications({ stateDir: options.stateDir });
+    this.#platform = options.platform ?? process.platform;
+    this.#applications = options.applications ?? new LocalConnectionApplications({ stateDir: options.stateDir, platform: this.#platform });
   }
   #prepare(): void {
     if (fs.existsSync(this.#directory) && (fs.lstatSync(this.#directory).isSymbolicLink() || !fs.statSync(this.#directory).isDirectory())) fail("连接运行目录无效。", "connection_storage_invalid");
@@ -108,17 +140,39 @@ export class LocalConnectionExecutor implements ConnectionExecutionBackend {
     if (!/^connection-[a-f0-9-]{16,64}$/.test(connection.id)) fail("连接标识无效。");
     return path.join(this.#directory, `${connection.id}.known-hosts`);
   }
+  hasTrustedHost(connection: ConnectionRecordView, expectedFingerprint?: string): boolean {
+    if (connection.kind !== "ssh" || !connection.host) return false;
+    let filePath: string;
+    try { filePath = this.#knownHosts(connection); } catch { return false; }
+    let stat: fs.Stats;
+    try { stat = fs.lstatSync(filePath); } catch { return false; }
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size === 0 || stat.size > MAX_KNOWN_HOSTS_BYTES) return false;
+    let content: string;
+    try { content = fs.readFileSync(filePath, "utf8"); } catch { return false; }
+    const fingerprint = computeSshKnownHostsFingerprint(content, alias(connection));
+    if (!fingerprint) return false;
+    return expectedFingerprint ? fingerprint === expectedFingerprint : true;
+  }
+  clearTrustedHost(connection: ConnectionRecordView): void {
+    if (connection.kind !== "ssh") return;
+    try { fs.rmSync(this.#knownHosts(connection), { force: true }); } catch { /* Best-effort cleanup of stale known-hosts. */ }
+  }
   async scan(connection: ConnectionRecordView, signal?: AbortSignal): Promise<ConnectionHostScan> {
-    if (connection.kind !== "ssh" || !connection.host) fail("请先填写 SSH 主机地址。");
-    const result = await capture("ssh-keyscan", ["-T", "5", "-p", String(connection.port ?? 22), connection.host], { timeoutMs: 10_000, signal });
-    const keys = result.output.split(/\r?\n/).flatMap((line) => {
-      const match = /^[^\s#]+\s+(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521))\s+([A-Za-z0-9+/=]+)\s*$/.exec(line);
+    if (connection.kind !== "ssh" || !connection.host || connection.host.startsWith("-") || /[\s\x00-\x1f\x7f]/.test(connection.host)) fail("请先填写有效的 SSH 主机地址。");
+    const result = await capture("ssh-keyscan", ["-T", "5", "-p", String(connection.port ?? 22), "--", connection.host], { timeoutMs: 10_000, signal });
+    const keys = result.stdout.split(/\r?\n/).flatMap((line) => {
+      const match = SSH_KEYSCAN_LINE.exec(line);
       return match ? [{ algorithm: match[1]!, data: match[2]! }] : [];
     });
-    if (!keys.length) fail("未能读取服务器指纹，请检查地址、端口和网络。", "connection_host_scan_failed");
+    if (!keys.length) {
+      const classified = classifySshScanFailure({ host: connection.host, platform: this.#platform });
+      fail(classified.message, classified.code);
+    }
     const unique = [...new Map(keys.map((key) => [`${key.algorithm} ${key.data}`, key])).values()];
-    return { fingerprint: unique.map((key) => `${key.algorithm} SHA256:${createHash("sha256").update(Buffer.from(key.data, "base64")).digest("base64").replace(/=+$/, "")}`).sort().join("\n"),
-      lines: unique.map((key) => `${alias(connection)} ${key.algorithm} ${key.data}`) };
+    return {
+      fingerprint: formatSshHostFingerprints(unique),
+      lines: unique.map((key) => `${alias(connection)} ${key.algorithm} ${key.data}`),
+    };
   }
   async trust(connection: ConnectionRecordView, scan: ConnectionHostScan): Promise<void> {
     this.#prepare();
@@ -129,6 +183,10 @@ export class LocalConnectionExecutor implements ConnectionExecutionBackend {
       fs.writeFileSync(temporary, `${scan.lines.join("\n")}\n`, { mode: 0o600, flag: "wx" });
       fs.renameSync(temporary, destination);
     } finally { fs.rmSync(temporary, { force: true }); }
+  }
+  async probeSsh(connection: ConnectionRecordView, secrets: ConnectionSecrets, signal?: AbortSignal): Promise<ConnectionSshProbeResult> {
+    const result = await this.#executeSsh(connection, secrets, { kind: "ssh", command: "exit 0", timeoutMs: 15_000 }, signal);
+    return { exitCode: result.exitCode, stderr: result.stderr, output: result.output };
   }
   async execute(connection: ConnectionRecordView, secrets: ConnectionSecrets, operation: ConnectionUseOperation, signal?: AbortSignal): Promise<ConnectionUseResult> {
     signal?.throwIfAborted();
@@ -141,13 +199,19 @@ export class LocalConnectionExecutor implements ConnectionExecutionBackend {
     if (operation.kind === "app") fail("此连接不是预置应用。", "connection_application_operation_invalid");
     if (connection.kind === "custom") fail("此凭据尚未配置对应的执行方式。", "connection_adapter_unavailable");
     if (operation.kind === "http") return this.#http(connection, secrets, operation, signal);
+    const result = await this.#executeSsh(connection, secrets, operation, signal);
+    return { kind: "ssh", output: result.output, exitCode: result.exitCode };
+  }
+  async #executeSsh(connection: ConnectionRecordView, secrets: ConnectionSecrets, operation: Extract<ConnectionUseOperation, { kind: "ssh" }>, signal?: AbortSignal): Promise<CaptureResult> {
     if (connection.kind !== "ssh" || !connection.host || !connection.username) fail("SSH 连接资料不完整。");
     if (!secrets.password && !secrets.privateKey) fail("此连接缺少 SSH 登录凭据。");
-    if (process.platform === "win32") fail("此环境暂不支持安全的 SSH 凭据注入。", "connection_ssh_platform_unavailable");
+    if (this.#platform === "win32") fail("此环境暂不支持安全的 SSH 凭据注入。", "connection_ssh_platform_unavailable");
     if (!operation.command.trim() || operation.command.length > 32_000 || operation.command.includes("\0")) fail("SSH 命令无效。");
     const timeout = operation.timeoutMs ?? 30_000;
     if (!Number.isSafeInteger(timeout) || timeout < 1_000 || timeout > 120_000) fail("SSH 超时范围无效。");
-    if (!fs.existsSync(this.#knownHosts(connection)) || fs.lstatSync(this.#knownHosts(connection)).isSymbolicLink()) fail("请先在连接授权页确认服务器指纹。", "connection_host_untrusted");
+    const knownHostsPath = this.#knownHosts(connection);
+    if (!fs.existsSync(knownHostsPath) || fs.lstatSync(knownHostsPath).isSymbolicLink()) fail("请先在连接授权页确认服务器指纹。", "connection_host_untrusted");
+    const knownHostsOption = sshConfigPath("SSH 已知主机路径", knownHostsPath);
     this.#prepare();
     // sockaddr_un paths are short on macOS; using stateDir here silently truncates long paths.
     const control = fs.mkdtempSync(path.join(process.platform === "darwin" ? "/private/tmp" : "/tmp", "kulo-connection-"));
@@ -185,6 +249,7 @@ export class LocalConnectionExecutor implements ConnectionExecutionBackend {
       let identityArgs = ["-o", "IdentityAgent=none", "-o", "PubkeyAuthentication=no"];
       if (secrets.privateKey) {
         const agentSocket = path.join(control, "agent.sock");
+        if (/[\s"%\x00-\x1f\x7f]/.test(agentSocket)) fail("SSH 认证通道路径无效。", "connection_storage_invalid");
         agent = spawn("ssh-agent", ["-D", "-a", agentSocket, "-t", String(Math.ceil(timeout / 1000) + 15)], { env: safeProcessEnv(), stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
         let agentError = false;
         agent.once("error", () => { agentError = true; });
@@ -197,23 +262,22 @@ export class LocalConnectionExecutor implements ConnectionExecutionBackend {
         if (!fs.existsSync(agentSocket) || agentError) fail("无法启动本机安全 SSH 认证服务。", "connection_agent_unavailable");
         fs.chmodSync(agentSocket, 0o600);
         environment.SSH_AUTH_SOCK = agentSocket;
-        const added = await capture("ssh-add", ["-t", String(Math.ceil(timeout / 1000) + 15), "-"], { environment, input: secrets.privateKey, timeoutMs: 10_000, signal });
+        const added = await capture("ssh-add", ["-t", String(Math.ceil(timeout / 1000) + 15), "-"], { environment, input: normalizeSshPrivateKey(secrets.privateKey), timeoutMs: 10_000, signal });
         if (added.exitCode !== 0) fail("SSH 私钥或私钥口令无效。", "connection_key_invalid");
         const identities = await capture("ssh-add", ["-L"], { environment, timeoutMs: 5_000, signal });
-        const publicKeys = identities.output.trim().split(/\r?\n/);
+        const publicKeys = identities.stdout.trim().split(/\r?\n/);
         if (identities.exitCode !== 0 || publicKeys.length !== 1 || !/^(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)) [A-Za-z0-9+/=]+(?: .*)?$/.test(publicKeys[0]!)) fail("SSH 身份加载失败。", "connection_key_invalid");
         const publicFile = path.join(control, "identity.pub");
         fs.writeFileSync(publicFile, `${publicKeys[0]!.split(" ").slice(0, 2).join(" ")}\n`, { mode: 0o600, flag: "wx" });
         identityArgs = ["-o", `IdentityAgent=${agentSocket}`, "-i", publicFile];
       }
-      const args = ["-F", "/dev/null", "-o", "BatchMode=no", "-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${this.#knownHosts(connection)}`,
+      const args = ["-F", "/dev/null", "-o", "LogLevel=ERROR", "-o", "BatchMode=no", "-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${knownHostsOption}`,
         "-o", "GlobalKnownHostsFile=/dev/null", "-o", `HostKeyAlias=${alias(connection)}`, "-o", "IdentitiesOnly=yes", ...identityArgs,
         "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "PermitLocalCommand=no",
         "-o", "NumberOfPasswordPrompts=1", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=2",
         "-o", secrets.privateKey ? "PreferredAuthentications=publickey" : "PreferredAuthentications=password", "-o", "KbdInteractiveAuthentication=no",
         "-p", String(connection.port ?? 22), "-l", connection.username, "--", connection.host, operation.command];
-      const result = await capture("ssh", args, { signal, timeoutMs: timeout, environment });
-      return { kind: "ssh", ...result };
+      return await capture("ssh", args, { signal, timeoutMs: timeout, environment });
     } finally {
       if (agent) await stopAgent(agent);
       await new Promise<void>((resolve) => server.close(() => resolve()));

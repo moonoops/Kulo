@@ -437,4 +437,75 @@ describe("media capability registry", () => {
     expect(browser.mock.calls.every(([, request]) => request.action === "check")).toBe(true);
     expect((await f.capabilities.snapshot()).capabilities[0]?.status).toBe("unverified");
   });
+
+  it("skips metadata GET on vertex-image check and heals legacy manual Vertex /v1beta capabilities", async () => {
+    const f = await fixture({
+      resolveProviderApiKey: async (providerId, baseUrl) =>
+        providerId === "api-vertex" && new URL(baseUrl).origin === "https://aiplatform.googleapis.com" ? dummyKey : undefined,
+    });
+    const vertexCap = await f.capabilities.configure(imageInput("vertex-check", {
+      adapter: "vertex-image",
+      modelId: "publishers/google/models/gemini-nano-banana-2.1",
+      baseUrl: "https://aiplatform.googleapis.com/v1/projects/demo-proj/locations/global",
+      credentialProviderId: "api-vertex",
+    }));
+    expect(vertexCap.modelId).toBe("gemini-nano-banana-2.1");
+    const checked = await f.capabilities.check(vertexCap.id);
+    expect(checked.status).toBe("unverified");
+    expect(f.http).not.toHaveBeenCalled();
+
+    // Seed a legacy manual cap-<uuid> left on gemini-image + /v1beta + error, plus a custom-image connection to verify it is untouched.
+    await f.harness.commit(async (tx) => {
+      const state = await tx.doc(KuloCapabilitiesDoc);
+      state.connections["media-legacy-vertex"] = {
+        id: "media-legacy-vertex", name: "Vertex AI", adapter: "gemini-image",
+        baseUrl: "https://aiplatform.googleapis.com/v1beta", origin: "https://aiplatform.googleapis.com",
+        credentialProviderId: "api-vertex", revision: 1,
+      };
+      state.capabilities["cap-legacy-vertex"] = {
+        id: "cap-legacy-vertex", name: "Nano Banana 2.1", connectionId: "media-legacy-vertex",
+        modelId: "models/gemini-nano-banana-2.1", kind: "image", formats: ["jpeg", "png"], supportsEdit: true,
+        enabled: true, isDefault: false, allowTaskGeneration: true, maxOutputs: 1,
+        revision: 1, status: "error", error: "生成服务返回 HTTP 404。", createdAt: 1, updatedAt: 1,
+      };
+      state.connections["media-custom-vertex"] = {
+        id: "media-custom-vertex", name: "Custom Vertex", adapter: "custom-image",
+        baseUrl: "https://aiplatform.googleapis.com/v1beta", origin: "https://aiplatform.googleapis.com",
+        credentialProviderId: "api-vertex",
+        customAdapter: { auth: { type: "api-key", header: "x-goog-api-key" }, generate: { path: "custom", body: { prompt: "{{prompt}}" } }, response: { imagesPath: "data", base64Path: "b64" } },
+        revision: 1,
+      };
+      state.capabilities["cap-custom-vertex"] = {
+        id: "cap-custom-vertex", name: "Custom", connectionId: "media-custom-vertex",
+        modelId: "custom-model", kind: "image", formats: ["png"], supportsEdit: false,
+        enabled: true, isDefault: false, allowTaskGeneration: true, maxOutputs: 1,
+        imageProfile: { formats: ["png"], supportsEdit: false, maxReferences: 0 },
+        revision: 1, status: "unverified", createdAt: 2, updatedAt: 2,
+      };
+      state.revision++;
+    }, context);
+
+    await f.capabilities.initialize();
+    const afterInit = await f.capabilities.snapshot();
+    expect(afterInit.connections.find((c) => c.id === "media-legacy-vertex")).toMatchObject({
+      adapter: "vertex-image", baseUrl: "https://aiplatform.googleapis.com/v1",
+    });
+    expect(afterInit.capabilities.find((c) => c.id === "cap-legacy-vertex")).toMatchObject({
+      modelId: "gemini-nano-banana-2.1", status: "unverified",
+    });
+    expect(afterInit.capabilities.find((c) => c.id === "cap-legacy-vertex")?.error).toBeUndefined();
+
+    await f.capabilities.syncProviderImageModels([{
+      id: "api-vertex", name: "Google Vertex AI", api: "google-vertex", preset: "google-vertex",
+      baseUrl: "https://aiplatform.googleapis.com", vertexProject: "demo-proj", vertexLocation: "global",
+      models: [],
+    }]);
+    const afterSync = await f.capabilities.snapshot();
+    expect(afterSync.connections.find((c) => c.id === "media-legacy-vertex")).toMatchObject({
+      adapter: "vertex-image", baseUrl: "https://aiplatform.googleapis.com/v1/projects/demo-proj/locations/global",
+    });
+    expect(afterSync.connections.find((c) => c.id === "media-custom-vertex")).toMatchObject({
+      adapter: "custom-image", baseUrl: "https://aiplatform.googleapis.com/v1beta",
+    });
+  });
 });

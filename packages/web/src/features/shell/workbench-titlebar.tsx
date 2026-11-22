@@ -3,6 +3,7 @@ import type {
   ComputerPreviewSessionView,
   EnvNodeDescriptor,
   KuloLanguage,
+  LiveContextState,
   TicketCardView,
   TopicSummary,
 } from "@kulo/protocol";
@@ -16,6 +17,7 @@ import {
 } from "../chat/conversation-library";
 import { ChatTargetDeviceMenu } from "../chat/target-device-menu";
 import { settingsModuleTitle } from "../settings/settings-helpers";
+import { TopicContextMenu } from "./topic-context-menu";
 
 export interface WorkbenchTitlebarProps {
   settingsMode: boolean;
@@ -33,6 +35,7 @@ export interface WorkbenchTitlebarProps {
   selectedTargetDeviceId: string;
   connected: boolean;
   liveBusy: boolean;
+  liveContext?: LiveContextState;
   onSelectTargetDevice: (deviceId: string) => void;
   onOpenConversationSearch: () => void;
   deliveryScope?: string;
@@ -67,6 +70,7 @@ export function WorkbenchTitlebar({
   selectedTargetDeviceId,
   connected,
   liveBusy,
+  liveContext,
   onSelectTargetDevice,
   onOpenConversationSearch,
   deliveryScope,
@@ -151,6 +155,13 @@ export function WorkbenchTitlebar({
             revision={filesRevision}
             isLocal={isLocalTopic}
             onNavigate={onNavigateConversation}
+          />
+          <TopicContextMenu
+            topicId={activeTopicId}
+            isLocalTopic={isLocalTopic}
+            connected={connected}
+            liveBusy={liveBusy}
+            context={liveContext}
           />
         </>
       )}

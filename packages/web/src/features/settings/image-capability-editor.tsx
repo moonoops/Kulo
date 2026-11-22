@@ -27,9 +27,9 @@ const isOfficialOpenAi = (url: string | undefined): boolean => {
 
 export function createImageDraftConfig(workspace: CapabilitiesWorkspaceSnapshot): ImageCapabilityConfiguration {
   const provider = workspace.imageSetup?.providers.find((item) => item.authType === "api_key" && item.authenticated && item.imageSupported && item.baseUrl);
-  const adapter = provider?.api === "google-generative-ai" ? "gemini-image" : "openai-image";
-  const preset = IMAGE_MODEL_PRESETS.find((item) => item.adapter === adapter && item.modelId === (adapter === "gemini-image" ? "gemini-nano-banana-2.1" : "gpt-image-2.6-flare"))!;
-  const usePreset = !provider || adapter === "gemini-image" || isOfficialOpenAi(provider.baseUrl);
+  const adapter: MediaAdapterId = provider?.api === "google-vertex" ? "vertex-image" : provider?.api === "google-generative-ai" ? "gemini-image" : "openai-image";
+  const preset = getImageModelPreset(adapter, adapter === "openai-image" ? "gpt-image-2.6-flare" : "gemini-nano-banana-2.1")!;
+  const usePreset = !provider || adapter === "gemini-image" || adapter === "vertex-image" || isOfficialOpenAi(provider.baseUrl);
   return {
     name: usePreset ? preset.name : "",
     adapter,
@@ -63,8 +63,11 @@ export function applyImageModelPreset(config: ImageCapabilityConfiguration, mode
   const preset = IMAGE_MODEL_PRESETS.find((item) => item.modelId === modelId);
   if (!preset) return { ...config, modelId, imageProfile: undefined, defaults: {} };
   const previous = IMAGE_MODEL_PRESETS.find((item) => item.modelId === config.modelId);
-  return { ...config, modelId, adapter: preset.adapter, name: !config.name || config.name === previous?.name ? preset.name : config.name,
-    baseUrl: keepEndpoint ? config.baseUrl : preset.baseUrl, imageProfile: clone(preset.profile), defaults: clone(preset.defaults),
+  const keepVertex = config.adapter === "vertex-image" && preset.adapter === "gemini-image";
+  const nextAdapter: MediaAdapterId = keepVertex ? "vertex-image" : preset.adapter;
+  const nextBaseUrl = keepEndpoint ? config.baseUrl : keepVertex ? "https://aiplatform.googleapis.com/v1" : preset.baseUrl;
+  return { ...config, modelId, adapter: nextAdapter, name: !config.name || config.name === previous?.name ? preset.name : config.name,
+    baseUrl: nextBaseUrl, imageProfile: clone(preset.profile), defaults: clone(preset.defaults),
     customAdapter: undefined };
 }
 
@@ -143,9 +146,10 @@ export function ImageCapabilityFields({ config, providers, onChange, apiKey, onA
     const provider = providers.find((item) => item.id === id);
     if (!provider?.authenticated || !provider.baseUrl || !provider.imageSupported && config.adapter !== "custom-image") return;
     if (config.adapter === "custom-image") { onChange({ ...config, credentialProviderId: id, baseUrl: provider.baseUrl }); onApiKeyChange(""); return; }
-    const adapter: MediaAdapterId = provider.api === "google-generative-ai" ? "gemini-image" : "openai-image";
-    const usePreset = adapter === "gemini-image" || isOfficialOpenAi(provider.baseUrl);
-    const preset = getImageModelPreset(adapter, config.modelId) ?? (usePreset ? IMAGE_MODEL_PRESETS.find((item) => item.adapter === adapter) : undefined);
+    const adapter: MediaAdapterId = provider.api === "google-vertex" ? "vertex-image" : provider.api === "google-generative-ai" ? "gemini-image" : "openai-image";
+    const usePreset = adapter === "gemini-image" || adapter === "vertex-image" || isOfficialOpenAi(provider.baseUrl);
+    const preset = getImageModelPreset(adapter, config.modelId)
+      ?? (usePreset ? getImageModelPreset(adapter, adapter === "openai-image" ? "gpt-image-2.6-flare" : "gemini-nano-banana-2.1") : undefined);
     if (preset) {
       onChange({ ...config, adapter, credentialProviderId: id, baseUrl: provider.baseUrl, modelId: preset.modelId,
         name: !config.name || config.name === IMAGE_MODEL_PRESETS.find((item) => item.modelId === config.modelId)?.name ? preset.name : config.name,
@@ -188,12 +192,12 @@ export function ImageCapabilityFields({ config, providers, onChange, apiKey, onA
         {config.customAdapter?.auth.type !== "none" && <ImageText label="API Key" type="password" value={apiKey} onChange={onApiKeyChange} disabled={disabled} placeholder={canKeepSavedKey ? t("留空保留已保存的密钥", "Leave blank to keep the saved key") : t("输入 API Key", "Enter an API key")} />}
       </>}
       <ImageSelect label={t("接口协议", "API protocol")} value={config.adapter} disabled={disabled} onChange={(adapter) => {
-        if (!["openai-image", "gemini-image", "custom-image"].includes(adapter)) return;
+        if (!["openai-image", "gemini-image", "vertex-image", "custom-image"].includes(adapter)) return;
         onChange({ ...config, adapter: adapter as MediaAdapterId,
           imageProfile: getImageModelPreset(adapter as MediaAdapterId, config.modelId)?.profile ?? config.imageProfile ?? (adapter === "custom-image" ? clone(fallbackProfile) : undefined),
           defaults: getImageModelPreset(adapter as MediaAdapterId, config.modelId)?.defaults ?? {},
           customAdapter: adapter === "custom-image" ? config.customAdapter ?? clone(customAdapterTemplate) : undefined });
-      }} options={[{ id: "openai-image", label: "OpenAI Images" }, { id: "gemini-image", label: "Gemini Images" }, { id: "custom-image", label: t("自定义接口", "Custom API") }]} />
+      }} options={[{ id: "openai-image", label: "OpenAI Images" }, { id: "gemini-image", label: "Gemini Images" }, { id: "vertex-image", label: "Vertex AI Images" }, { id: "custom-image", label: t("自定义接口", "Custom API") }]} />
       {customModel && <div className="kulo-form-stack">
         <h3 className="kulo-group-title">{t("模型能力", "Model capabilities")}</h3>
         <CheckboxGroup className="kulo-form-field" value={(profile ?? fallbackProfile).formats} isDisabled={disabled} onChange={(formats) => onChange({ ...config, imageProfile: { ...(profile ?? fallbackProfile), formats: formats as MediaOutputFormat[] }, defaults: {} })}>
@@ -206,7 +210,7 @@ export function ImageCapabilityFields({ config, providers, onChange, apiKey, onA
         <h3 className="kulo-group-title">{t("默认生成参数", "Default generation parameters")}</h3>
         <div className="kulo-form-grid">
           <ImageSelect label={t("输出格式", "Output format")} value={parameters.format ?? profile.formats[0] ?? "png"} options={profile.formats.map((format) => ({ id: format, label: format.toUpperCase() }))} disabled={disabled} onChange={(format) => updateParameters({ format: format as MediaOutputFormat })} />
-          <ImageNumber label={t("图片数量", "Image count")} value={parameters.count ?? 1} maximum={config.adapter === "gemini-image" || parameters.format === "svg" ? 1 : config.maxOutputs ?? 1} disabled={disabled} onChange={(count) => updateParameters({ count })} />
+          <ImageNumber label={t("图片数量", "Image count")} value={parameters.count ?? 1} maximum={config.adapter === "gemini-image" || config.adapter === "vertex-image" || parameters.format === "svg" ? 1 : config.maxOutputs ?? 1} disabled={disabled} onChange={(count) => updateParameters({ count })} />
           {Boolean(profile.aspectRatios?.length) && <ImageSelect label={t("画面比例", "Aspect ratio")} value={parameters.aspectRatio ?? "__default"} options={[{ id: "__default", label: t("跟随任务", "Follow task") }, ...profile.aspectRatios!.map((ratio) => ({ id: ratio, label: ratio === "auto" ? t("自动", "Auto") : ratio }))]} disabled={disabled} onChange={(aspectRatio) => updateParameters({ aspectRatio: aspectRatio === "__default" ? undefined : aspectRatio })} />}
           {Boolean(profile.sizes?.length) && <ImageText label={t("图片尺寸", "Image size")} value={parameters.size ?? ""} disabled={disabled} placeholder={profile.sizes!.join(" / ")} onChange={(size) => updateParameters({ size: size || undefined })} />}
           {Boolean(profile.qualities?.length) && <ImageSelect label={t("渲染质量", "Rendering quality")} value={parameters.quality ?? "auto"} options={profile.qualities!.map((quality) => ({ id: quality, label: quality === "auto" ? t("自动", "Auto") : quality }))} disabled={disabled} onChange={(quality) => updateParameters({ quality })} />}

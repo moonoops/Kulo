@@ -384,6 +384,7 @@ export class AmbientModelService {
     maxTokens?: number;
     signal?: AbortSignal;
     preferMainModel?: boolean;
+    allowCloudFallback?: boolean;
   }): Promise<string> {
     const cfg = await this.#host.persistedConfig();
     if (!input.preferMainModel && cfg.mode === "local-managed" && cfg.modelId && this.#running && this.#endpoint) {
@@ -411,7 +412,8 @@ export class AmbientModelService {
           }
         }
       } catch {
-        // Fall through cleanly to configured Kulo model when local runtime is temporarily busy/offline.
+        // Fall through cleanly to configured Kulo model when local runtime is temporarily busy/offline
+        // unless cloud fallback has been explicitly disallowed by UsageCaps.
       }
     }
 
@@ -420,6 +422,11 @@ export class AmbientModelService {
       : this.#host.defaultModel();
     const model = this.#host.models.getModel(chosen.provider, chosen.modelId);
     if (!model) throw new Error("assistant_model_unavailable");
+    if (input.allowCloudFallback === false && !isLoopbackBaseUrl(model.baseUrl)) {
+      throw Object.assign(new Error("ambient_cloud_fallback_disallowed"), {
+        code: "ambient_cloud_fallback_disallowed",
+      });
+    }
 
     const message = await this.#host.models.completeSimple(
       model,

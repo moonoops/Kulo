@@ -15,6 +15,7 @@ export interface ComputerUseScope {
   runEpoch: number;
   envId: string;
   readOnly: boolean;
+  isSubagent?: boolean;
   /** Reused across `steerTicket` after an active `computer_handoff` so browser login state persists. */
   preservedSessionId?: string;
   assertActive(): Promise<void>;
@@ -157,10 +158,10 @@ export function createComputerUseTools(options: ComputerUseToolsOptions) {
             replay: "unsafe",
             execute: async (args, api, context) => {
               const scope = await options.scope(api);
-              if (scope.readOnly || scope.ticketId.startsWith("chat:")) {
+              if (scope.readOnly || scope.isSubagent || scope.ticketId.startsWith("chat:")) {
                 return {
                   isError: true,
-                  output: [{ type: "text" as const, text: "仅可写的后台执行任务可以发起电脑/浏览器人工接管。" }],
+                  output: [{ type: "text" as const, text: "仅可写的顶层后台执行任务可以发起电脑/浏览器人工接管。" }],
                 };
               }
               await scope.assertActive();

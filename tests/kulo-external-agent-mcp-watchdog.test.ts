@@ -228,8 +228,8 @@ describe("Phase 3: Default kulo-task MCP, artifact staging, Hindsight shared mem
               } else if (parsed.method === "model/list") {
                 queueMicrotask(() => emit({ jsonrpc: "2.0", id: parsed.id, result: { data: [{ id: "gpt-5-codex", displayName: "GPT-5 Codex", isDefault: true }] } }));
               } else if (parsed.method === "thread/start") {
-                const cfg = parsed.params?.config as { mcp_servers?: Record<string, { url: string; http_headers: Record<string, string> }> } | undefined;
-                mcpConfig = cfg?.mcp_servers ? Object.values(cfg.mcp_servers)[0] : undefined;
+                const cfg = parsed.params?.config as Record<string, { url: string; http_headers: Record<string, string> }> | undefined;
+                mcpConfig = cfg?.["mcp_servers.kulo-task"];
                 queueMicrotask(() => emit({ jsonrpc: "2.0", id: parsed.id, result: { thread: { id: "thread-mem-1" } } }));
               } else if (parsed.method === "turn/start") {
                 observedPrompt = ((parsed.params?.input as Array<{ text?: string }> | undefined)?.[0]?.text) ?? "";

@@ -1,11 +1,14 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import type { Options, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ExternalAgentModelInfo, ExternalAgentQuotaProbeResult } from "@kulo/protocol";
 import { managedNativeProcess, nativeAgentEnvironment, type ExternalDriver, type ExternalDriverContext } from "./external-agent-drivers.js";
 import { parseClaudeControlUsageResponse, parseClaudeRateLimitEvent, sanitizeQuotaError } from "./external-agent-quota.js";
+import { resolveSafeExternalImages, type ResolvedExternalImage } from "./external-agent-validation.js";
 
 const CLAUDE_READ_ONLY_DISALLOWED_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"] as const;
+const CLAUDE_MAX_IMAGES = 4;
+const CLAUDE_MAX_IMAGE_FILE_BYTES = Math.floor(3.5 * 1024 * 1024);
+const CLAUDE_MAX_IMAGE_TOTAL_BYTES = 10 * 1024 * 1024;
 
 export function claudeThinkingOptions(level?:string):Pick<Options,"effort"|"thinking">{
   if(level===undefined)return{};
@@ -21,15 +24,19 @@ export function claudeServiceTierOptions(tier?:string):Pick<Options,"settings">{
   throw new Error("Selected service tier is not supported by Claude Code");
 }
 export function nativeClaudeOptions(ctx:ExternalDriverContext):Options{
-  const isIsolatedReadOnly=ctx.workspaceMode==="read_only";
+  const isReadOnly=Boolean(ctx.readOnly||ctx.workspaceMode==="read_only");
+  const appendedInstructions=ctx.developerInstructions?.trim();
+  const systemPrompt:Options["systemPrompt"]=appendedInstructions
+    ?{type:"preset",preset:"claude_code",append:appendedInstructions,snapshot:true}
+    :{type:"preset",preset:"claude_code"};
   return{
     cwd:ctx.cwd,...(ctx.modelId?{model:ctx.modelId}:{}),...(ctx.sessionId?{resume:ctx.sessionId}:{}),
     settingSources:["user","project","local"],pathToClaudeCodeExecutable:ctx.executable,includePartialMessages:true,env:nativeAgentEnvironment("claude-code"),
-    systemPrompt:{type:"preset",preset:"claude_code"},...claudeThinkingOptions(ctx.thinkingLevel),...claudeServiceTierOptions(ctx.serviceTier),
-    ...(isIsolatedReadOnly?{disallowedTools:[...CLAUDE_READ_ONLY_DISALLOWED_TOOLS]}:{}),
-    ...(ctx.servers.length?{mcpServers:Object.fromEntries(ctx.servers.map(server=>[`kulo-${randomUUID()}-${server.name}`,{type:"http" as const,url:server.url,headers:Object.fromEntries((server.headers??[]).map(row=>[row.name,row.value]))}]))}:{}),
+    systemPrompt,...claudeThinkingOptions(ctx.thinkingLevel),...claudeServiceTierOptions(ctx.serviceTier),
+    ...(isReadOnly?{disallowedTools:[...CLAUDE_READ_ONLY_DISALLOWED_TOOLS]}:{}),
+    ...(ctx.servers.length?{mcpServers:Object.fromEntries(ctx.servers.map(server=>[server.name,{type:"http" as const,url:server.url,headers:Object.fromEntries((server.headers??[]).map(row=>[row.name,row.value]))}]))}:{}),
     canUseTool:async(name,input,request)=>{
-      if(isIsolatedReadOnly&&(CLAUDE_READ_ONLY_DISALLOWED_TOOLS as readonly string[]).includes(name)){
+      if(isReadOnly&&(CLAUDE_READ_ONLY_DISALLOWED_TOOLS as readonly string[]).includes(name)){
         return{behavior:"deny",message:"Write tools are disabled in read-only mode"};
       }
       const suggestions=request.suggestions??[];
@@ -46,8 +53,21 @@ export async function connectClaude(ctx:ExternalDriverContext,probe=false):Promi
   const {query}=await import("@anthropic-ai/claude-agent-sdk");
   const abortController=new AbortController();let release:(value:boolean)=>void=()=>{};let started=false;let cancelRequested=false;let closed=false;
   let child:ChildProcessWithoutNullStreams|undefined;let cleanup:(()=>Promise<boolean>)|undefined;
+  let resolvedImages:ResolvedExternalImage[]=[];
   const gate=new Promise<boolean>(resolve=>{release=resolve;});
-  async function* prompt():AsyncGenerator<SDKUserMessage>{if(await gate)yield{type:"user",message:{role:"user",content:ctx.prompt},parent_tool_use_id:null,session_id:ctx.sessionId??""};}
+  async function* prompt():AsyncGenerator<SDKUserMessage>{
+    if(!(await gate))return;
+    const content:SDKUserMessage["message"]["content"]=resolvedImages.length>0
+      ?[
+        {type:"text",text:ctx.prompt},
+        ...resolvedImages.map(image=>({
+          type:"image" as const,
+          source:{type:"base64" as const,media_type:image.mimeType,data:image.base64!},
+        })),
+      ]
+      :ctx.prompt;
+    yield{type:"user",message:{role:"user",content},parent_tool_use_id:null,session_id:ctx.sessionId??""};
+  }
   const options:Options={
     spawnClaudeCodeProcess:spec=>{
       if(!ctx.controlRoot)throw new Error("Claude task process supervision is unavailable");
@@ -73,6 +93,16 @@ export async function connectClaude(ctx:ExternalDriverContext,probe=false):Promi
     if(ctx.thinkingLevel==="adaptive"&&!selected?.supportsAdaptiveThinking)throw new Error("Adaptive thinking is not advertised by Claude Code for this model");
     if(ctx.serviceTier==="fast"&&!selected?.supportsFastMode)throw new Error("Fast mode is not advertised by Claude Code for this model");
     if(!probe){
+      resolvedImages=resolveSafeExternalImages({
+        attachments:ctx.attachments,
+        expectedInputsDir:ctx.inputsDir,
+        overlapsProtected:ctx.overlapsProtected,
+        maxCount:CLAUDE_MAX_IMAGES,
+        maxFileBytes:CLAUDE_MAX_IMAGE_FILE_BYTES,
+        maxTotalBytes:CLAUDE_MAX_IMAGE_TOTAL_BYTES,
+        readBytes:true,
+        onSkip:reason=>ctx.event("state",reason),
+      });
       started=true;ctx.submitted();release(true);
       void(async()=>{
         let resultSeen=false;let streamed=false;const seenToolIds=new Set<string>();

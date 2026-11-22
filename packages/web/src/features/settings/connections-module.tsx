@@ -11,6 +11,7 @@ import { McpOAuthModal } from "./mcp-oauth-modal";
 import { ComposioConfigModal } from "./composio-config-modal";
 import { ComposioAppsModal } from "./composio-apps-modal";
 import { HomeAssistantConfigModal } from "./home-assistant-config-modal";
+import { SshFollowupModal } from "./ssh-followup-modal";
 import { SettingsList, SettingsSection } from "./settings-layout";
 import type { SettingsAssistantEntryIntent } from "./settings-assistant-actions";
 import "./connections-module.css";
@@ -473,6 +474,7 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
   const [oauthTarget, setOauthTarget] = useState<{ connection: ConnectionRecordView; forceReauth: boolean } | null>(null);
   const [composioConfigTarget, setComposioConfigTarget] = useState<{ mode: "create" } | { mode: "edit"; connection: ConnectionRecordView } | null>(null);
   const [composioAppsTarget, setComposioAppsTarget] = useState<ConnectionRecordView | null>(null);
+  const [sshFollowupTarget, setSshFollowupTarget] = useState<ConnectionRecordView | null>(null);
   const [remove, setRemove] = useState<{ id: string; name: string; category: ConnectionCategory; isComposio?: boolean } | null>(null);
   const rootRef = useRef<HTMLElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
@@ -565,6 +567,17 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
               </Table.Cell>
               <Table.Cell className="kulo-settings-table-cell kulo-settings-table-actions">
                 <div className="kulo-settings-table-action-group">
+                  {connection.kind === "ssh" && connection.hasCredential && Boolean(connection.host && connection.username) && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      aria-label={connection.status === "verified" ? t(`测试${connection.name}`, `Test ${connection.name}`) : t(`连接${connection.name}`, `Connect ${connection.name}`)}
+                      isDisabled={disabled || unavailable || Boolean(clientId && snapshot?.inputs.some((input) => input.clientId === clientId && input.status === "pending" && input.connectionId === connection.id))}
+                      onPress={() => { setActionError(null); captureFocus(); setSshFollowupTarget(connection); }}
+                    >
+                      {connection.status === "verified" ? t("测试", "Test") : t("连接", "Connect")}
+                    </Button>
+                  )}
                   <Button size="sm" variant="ghost" aria-label={t(`编辑${connection.name}`, `Edit ${connection.name}`)} isDisabled={disabled} onPress={() => void prepare({ connectionId: connection.id })}>{t("编辑", "Edit")}</Button>
                   <Button size="sm" variant="ghost" aria-label={t(`移除${connection.name}`, `Remove ${connection.name}`)} isDisabled={!connected || busy !== null} onPress={() => openRemove({ id: connection.id, name: connection.name, category })}>{t("移除", "Remove")}</Button>
                 </div>
@@ -843,6 +856,17 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
           setHaModalOpen(false);
           restoreFocus();
         }}
+      />
+    )}
+    {sshFollowupTarget && snapshot && (
+      <SshFollowupModal
+        open
+        connection={sshFollowupTarget}
+        connected={connected}
+        available={snapshot.vault.available}
+        localHost={snapshot.localHost}
+        onChanged={onRefresh}
+        onClose={() => { setSshFollowupTarget(null); onRefresh(); restoreFocus(); }}
       />
     )}
     {remove && <ConfirmDialog open title={remove.category === "app" ? t(`取消与「${remove.name}」的连接？`, `Disconnect from “${remove.name}”?`) : t(`移除「${remove.name}」？`, `Remove “${remove.name}”?`)} description={<div className="space-y-2"><p>{remove.category === "information" ? t("将移除本地保存的信息。", "Locally saved information will be removed.") : remove.isComposio ? t("将清除本地授权记录与 API Key，并撤销任务使用权限；已在 Composio 云端授权的第三方应用请先在「管理应用」中断开。", "Local records and API Key will be deleted, and task access will be revoked. Disconnect cloud app authorizations in Manage apps if no longer needed.") : t("将清除本地授权记录和凭据，并撤销任务使用权限。", "Local access records and credentials will be deleted, and task access will be revoked.")}</p>{actionError && <p role="alert" className="text-danger">{actionError}</p>}</div>} confirmLabel={remove.category === "app" ? t("取消连接", "Disconnect") : t("移除", "Remove")} isPending={busy !== null} onConfirm={() => void disconnect()} onCancel={() => { setRemove(null); restoreFocus(); }} />}

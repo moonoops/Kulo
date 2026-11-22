@@ -8,7 +8,7 @@ import {
   type JsonObject, type SubmissionId, type TaskId, type TaskRuntime, type Tx,
 } from "@earendil-works/pi-durable";
 import type { CompressionBlock, CompressionCore, CompressionState, Config, CoreMessage } from "acp-kernel";
-import { clampCompactionConfigForWindow } from "./config.js";
+import { DEFAULT_COMPACTION_CONFIG, clampCompactionConfigForWindow } from "./config.js";
 import { BILLION_SUMMARY_SYSTEM } from "./prompts.js";
 
 /** Only the reviewed library surface is passed through the managed extension boundary. */
@@ -266,7 +266,7 @@ export function createContextCompactionController(options: ContextCompactionOpti
     const rawReserve = agent.compaction?.modelOverrides?.[`${agent.model.provider}/${agent.model.modelId}`]?.reserveTokens
       ?? agent.compaction?.reserveTokens ?? options.getReserveTokens?.(api.conversationId) ?? 16_384;
     const reserveTokens = clampCompactionConfigForWindow(
-      { enabled: true, reserveTokens: rawReserve, keepRecentTokens: 24_000, backgroundTokens: 32_768 },
+      { ...DEFAULT_COMPACTION_CONFIG, enabled: true, reserveTokens: rawReserve },
       model.contextWindow,
     ).reserveTokens;
     const maxChars = Math.max(256, Math.min(options.maxSourceChars ?? 48_000, Math.floor(Math.max(256, model.contextWindow - reserveTokens - 768))));

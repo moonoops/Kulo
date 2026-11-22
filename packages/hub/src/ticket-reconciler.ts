@@ -406,7 +406,7 @@ export class TicketReconciler {
         ticketId,
         commandId: `wake:${ticketId}:${ticket.runEpoch}`,
         text: ticket.schedule?.nextRunAt != null
-          ? `Scheduled execution time reached. Execute this run within the authorized goal and scope below—inspect current state and any unconfirmed side-effect results first so prior side effects are not repeated.\n\n${formatWorkerInitialPrompt(ticket)}`
+          ? `Scheduled execution time reached. Execute this run per your authorized mandate—inspect current state and any unconfirmed side-effect results first so prior side effects are not repeated.\n\n${formatWorkerInitialPrompt(ticket)}`
           : ticket.executionDomain === "android"
             ? "Wait condition satisfied. Re-observe the target Android phone first and verify prior action receipts and current screen state before continuing; never replay completed or uncertain side effects."
             : "Wait condition satisfied. Incorporate any follow-up instructions, inspect workspace file changes and unconfirmed tool results first, and continue without repeating completed side effects.",

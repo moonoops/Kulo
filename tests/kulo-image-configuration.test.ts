@@ -37,7 +37,7 @@ async function fixture() {
   const state = { providers: [provider("api-images")] };
   const capabilities = new KuloCapabilities({ harness, credentials: new FileCredentialStore(path.join(directory, "credentials.json")),
     envs: () => [], browser: async () => { throw new Error("Browser is not used by image setup tests"); },
-    resolveProviderApiKey: async (id, baseUrl) => state.providers.some((item) => item.id === id && item.baseUrl === baseUrl && item.authenticated && item.authType === "api_key") ? key : undefined,
+    resolveProviderApiKey: async (id, baseUrl) => state.providers.some((item) => item.id === id && item.baseUrl && new URL(item.baseUrl).origin === new URL(baseUrl).origin && item.authenticated && item.authType === "api_key") ? key : undefined,
   });
   const discover = vi.fn(async (_request: DiscoverModelsRequest): Promise<DiscoverModelsResponse> => ({ ok: true, latencyMs: 0, models: [model("gpt-image-2.6-flare"), model("vision-chat")] }));
   const onChanged = vi.fn();
@@ -212,5 +212,42 @@ describe("shared image configuration workspace", () => {
     expect(first.added[0]!.allowTaskGeneration).toBe(true);
     expect(second.added[0]!.id).toBe(first.added[0]!.id);
     expect((await f.capabilities.snapshot()).capabilities).toHaveLength(1);
+  });
+
+  it("exposes resolved Vertex AI project baseUrl for discovery, import, and duplicate detection", async () => {
+    const f = await fixture();
+    f.state.providers = [
+      provider("api-vertex", {
+        name: "Google Vertex AI", api: "google-vertex", baseUrl: "https://aiplatform.googleapis.com",
+        vertexProject: "demo-proj", vertexLocation: "global",
+      }),
+      provider("api-vertex-broken", {
+        name: "Broken Vertex", api: "google-vertex", baseUrl: "https://aiplatform.googleapis.com",
+        vertexProject: "demo-proj",
+      }),
+    ];
+    f.discover.mockResolvedValue({
+      ok: true, latencyMs: 0,
+      models: [model("gemini-nano-banana-2.1"), model("gemini-3.1-flash-image-preview"), model("gemini-3.8-flash")],
+    });
+    const ws = await f.setup.workspace("client-a");
+    expect(ws.providers.find((item) => item.id === "api-vertex")).toMatchObject({
+      imageSupported: true,
+      baseUrl: "https://aiplatform.googleapis.com/v1/projects/demo-proj/locations/global",
+    });
+    expect(ws.providers.find((item) => item.id === "api-vertex-broken")).toMatchObject({ imageSupported: false });
+
+    const found = await f.setup.discover("client-a", ["api-vertex"]);
+    expect(found.candidates.map((c) => [c.modelId, c.adapter, c.baseUrl])).toEqual([
+      ["gemini-nano-banana-2.1", "vertex-image", "https://aiplatform.googleapis.com/v1/projects/demo-proj/locations/global"],
+      ["gemini-3.1-flash-image-preview", "vertex-image", "https://aiplatform.googleapis.com/v1/projects/demo-proj/locations/global"],
+    ]);
+    expect(found.candidates[1]!.imageProfile?.maxReferences).toBe(14);
+    const imported = await f.setup.importModels({
+      clientId: "client-a", discoveryId: found.id, candidateIds: [found.candidates[0]!.id], commandId: "vertex-import", allowTaskGeneration: true,
+    });
+    expect(imported.errors).toEqual([]);
+    expect(imported.added).toHaveLength(1);
+    expect((await f.setup.workspace("client-a")).discovery!.candidates[0]!.alreadyAdded).toBe(true);
   });
 });

@@ -316,6 +316,16 @@ export function deriveConnectedExternalClients(
 }
 
 export const EXTERNAL_AGENT_QUOTA_CAPABILITY = "external-agent-quota" as const;
+export const EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY = "external-agent-structured-dispatch" as const;
+
+export interface ExternalAgentInputAttachment {
+  id?: string;
+  name: string;
+  mimeType: string;
+  path: string;
+  size?: number;
+  sha256?: string;
+}
 
 export const EXTERNAL_AGENT_QUOTA_SUPPORTED_KINDS = [
   "codex",
@@ -519,7 +529,7 @@ export type ExternalAgentRequest =
   | { operation: "detect"; kind: ExternalAgentKind; executable?: string }
   | { operation: "probe"; binding: ExternalAgentBinding; modelId?: string }
   | { operation: "quota"; binding: ExternalAgentBinding }
-  | { operation: "run"; binding: ExternalAgentBinding; taskId: string; runEpoch: number; requestId: string; prompt: string; cwd: string; workspaceMode?: ExternalWorkspaceMode; modelId?: string; thinkingLevel?: string; serviceTier?: string; sessionId?: string; readOnly: boolean; allowSubagents: boolean; taskTools?: boolean; hasConnections?: boolean; memoryEnabled?: boolean; projectId?: string; directoryId?: string; grantRevision?: number; timeoutMs: number; mcpServers?: Array<{ name: string; url: string; headers?: Array<{ name: string; value: string }> }> }
+  | { operation: "run"; binding: ExternalAgentBinding; taskId: string; runEpoch: number; requestId: string; prompt: string; developerInstructions?: string; attachments?: ExternalAgentInputAttachment[]; cwd: string; workspaceMode?: ExternalWorkspaceMode; modelId?: string; thinkingLevel?: string; serviceTier?: string; sessionId?: string; readOnly: boolean; allowSubagents: boolean; taskTools?: boolean; hasConnections?: boolean; memoryEnabled?: boolean; projectId?: string; directoryId?: string; grantRevision?: number; timeoutMs: number; mcpServers?: Array<{ name: string; url: string; headers?: Array<{ name: string; value: string }> }> }
   | { operation: "inspect"; runId: string; afterSequence?: number; compact?: boolean; ackReportIds?: string[] }
   | { operation: "diff"; taskId: string; filePath?: string }
   | { operation: "apply"; taskId: string; projectId: string; directoryId?: string; grantRevision?: number; paths?: string[]; allowConflicts?: boolean }
@@ -653,6 +663,18 @@ export interface ExternalTicketExecution {
   pendingPermissions?: ExternalAgentPermission[];
   notifiedPermissions?: string[];
   instructions?: string;
+  /** Effective read-only intent propagated across Hub, MCP tools, child dispatches, and native drivers. */
+  effectiveReadOnly?: boolean;
   allowSubagents?: boolean;
   children?: Record<string, { taskId: string; fingerprint: string }>;
+}
+
+export function isEffectiveExternalReadOnly(
+  ticket: { readOnly?: boolean; externalExecution?: Pick<ExternalTicketExecution, "workspaceMode" | "effectiveReadOnly"> } | undefined,
+): boolean {
+  return Boolean(
+    ticket?.readOnly ||
+      ticket?.externalExecution?.effectiveReadOnly ||
+      ticket?.externalExecution?.workspaceMode === "read_only",
+  );
 }

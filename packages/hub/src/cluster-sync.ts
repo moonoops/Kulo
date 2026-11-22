@@ -43,7 +43,20 @@ import {
   type ConnectionSecretFields,
   type ConnectionVaultKeyStore,
 } from "./connection-vault.js";
+import {
+  SYNC_META_FILE,
+  TIER3_FIXED_FILES,
+  collectTrustedSshConnectionIds,
+  collectTrustedSshKnownHostsFiles,
+  enforceConnectionRuntimePermissions,
+  isSafeSyncRelativePath,
+  isTrustedSshKnownHostsPath,
+  shouldSkipTempFile,
+  shouldSkipUploadEntry,
+  walkRegularFiles,
+} from "./cluster-sync-paths.js";
 
+export { isSafeSyncRelativePath };
 export const CLUSTER_SYNC_PAGE_SIZE = 4096;
 export const CLUSTER_SYNC_MAX_PAGES_PER_REQUEST = 512;
 export const CLUSTER_SYNC_UPLOAD_CHUNK_BYTES = 1024 * 1024;
@@ -51,19 +64,7 @@ const PAGE_HASH_TRUNCATED_BYTES = 16;
 const SNAPSHOT_TTL_MS = 120_000;
 const MAX_RETAINED_SNAPSHOTS = 2;
 const STALE_STAGING_MS = 24 * 60 * 60 * 1000;
-const SYNC_META_FILE = "cluster-sync-meta.json";
 const SNAPSHOT_ROOT_DIR = ".cluster-sync-snapshots";
-
-const TIER3_FIXED_FILES = [
-  "devices.json",
-  "connections.json",
-  "state-version.json",
-  "models-cache.json",
-  "model-metadata-cache.json",
-  "android-notification-decisions.json",
-  "device-ssh-known-hosts",
-  SYNC_META_FILE,
-] as const;
 
 export class ClusterSyncHttpError extends Error {
   constructor(
@@ -328,18 +329,6 @@ function verifySqliteQuickCheck(filePath: string): void {
   }
 }
 
-export function isSafeSyncRelativePath(relPath: string): boolean {
-  if (!relPath || relPath.length > 512 || relPath.includes("\0") || relPath.includes("\\")) return false;
-  if (relPath.startsWith("/") || relPath.endsWith("/")) return false;
-  const parts = relPath.split("/");
-  if (parts.some((p) => !p || p === "." || p === "..")) return false;
-  if ((TIER3_FIXED_FILES as readonly string[]).includes(relPath)) return true;
-  if (relPath.startsWith("identity/") || relPath.startsWith("skills/") || relPath.startsWith("uploads/")) {
-    return parts.length >= 2;
-  }
-  return false;
-}
-
 function safeResolveUnder(rootDir: string, relPath: string): string {
   const resolvedRoot = path.resolve(rootDir);
   const target = path.resolve(resolvedRoot, relPath);
@@ -347,59 +336,6 @@ function safeResolveUnder(rootDir: string, relPath: string): string {
     throw new ClusterSyncHttpError(400, "invalid_sync_path", "同步文件路径越界。");
   }
   return target;
-}
-
-function walkRegularFiles(
-  rootDir: string,
-  prefix: string,
-  options: { skipNames?: (name: string) => boolean } = {},
-): Array<{ relPath: string; absPath: string; size: number; mtimeMs: number }> {
-  const results: Array<{ relPath: string; absPath: string; size: number; mtimeMs: number }> = [];
-  if (!fs.existsSync(rootDir)) return results;
-  let rootStat: fs.Stats;
-  try {
-    rootStat = fs.lstatSync(rootDir);
-  } catch {
-    return results;
-  }
-  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return results;
-
-  const visit = (dirAbs: string, relBase: string): void => {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dirAbs, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of entries) {
-      if (options.skipNames?.(entry.name)) continue;
-      const abs = path.join(dirAbs, entry.name);
-      let st: fs.Stats;
-      try {
-        st = fs.lstatSync(abs);
-      } catch {
-        continue;
-      }
-      if (st.isSymbolicLink()) continue;
-      const rel = relBase ? `${relBase}/${entry.name}` : entry.name;
-      if (st.isDirectory()) {
-        visit(abs, rel);
-      } else if (st.isFile()) {
-        results.push({ relPath: `${prefix}/${rel}`, absPath: abs, size: st.size, mtimeMs: Math.floor(st.mtimeMs) });
-      }
-    }
-  };
-  visit(rootDir, "");
-  return results;
-}
-
-function shouldSkipTempFile(name: string): boolean {
-  return name.endsWith(".tmp") || name.endsWith(".part") || name.endsWith(".lock") || name === ".DS_Store";
-}
-
-function shouldSkipUploadEntry(name: string): boolean {
-  return shouldSkipTempFile(name) || name === "drafts" || name === ".incomplete";
 }
 
 interface RetainedSnapshot {
@@ -866,6 +802,16 @@ export class ClusterSyncService {
         const dst = safeResolveUnder(filesSnapDir, item.relPath);
         fs.mkdirSync(path.dirname(dst), { recursive: true, mode: 0o700 });
         fs.copyFileSync(item.absPath, dst);
+        const info = sha256File(dst);
+        tier3Entries.push({ path: item.relPath, size: info.size, sha256: info.sha256, mtimeMs: info.mtimeMs });
+      }
+
+      const trustedSshIds = collectTrustedSshConnectionIds(safeResolveUnder(filesSnapDir, "connections.json"));
+      for (const item of collectTrustedSshKnownHostsFiles(this.#opts.stateDir, trustedSshIds)) {
+        const dst = safeResolveUnder(filesSnapDir, item.relPath);
+        fs.mkdirSync(path.dirname(dst), { recursive: true, mode: 0o700 });
+        fs.copyFileSync(item.absPath, dst);
+        fs.chmodSync(dst, 0o600);
         const info = sha256File(dst);
         tier3Entries.push({ path: item.relPath, size: info.size, sha256: info.sha256, mtimeMs: info.mtimeMs });
       }
@@ -1412,14 +1358,15 @@ export class StandbyReplicator {
         const dst = safeResolveUnder(this.#replicaDir, fileEntry.path);
         fs.mkdirSync(path.dirname(dst), { recursive: true, mode: 0o700 });
         fs.renameSync(src, dst);
+        if (isTrustedSshKnownHostsPath(fileEntry.path)) fs.chmodSync(dst, 0o600);
       }
-      // Prune deleted Tier 3 fixed files + identity/** + skills/**
+      // Prune deleted Tier 3 fixed files + identity/** + skills/** + connection-runtime/**
       for (const fixed of TIER3_FIXED_FILES) {
         if (!presentTier3.has(fixed)) {
           fs.rmSync(path.join(this.#replicaDir, fixed), { force: true });
         }
       }
-      for (const sub of ["identity", "skills"] as const) {
+      for (const sub of ["identity", "skills", "connection-runtime"] as const) {
         const subDir = path.join(this.#replicaDir, sub);
         for (const existing of walkRegularFiles(subDir, sub)) {
           if (!presentTier3.has(existing.relPath)) {
@@ -1427,6 +1374,7 @@ export class StandbyReplicator {
           }
         }
       }
+      enforceConnectionRuntimePermissions(this.#replicaDir);
 
       const replicaVaultPath = path.join(this.#replicaDir, "connection-vault.json");
       const replicaEnvelopePath = path.join(this.#replicaDir, "vault-envelope.enc");
