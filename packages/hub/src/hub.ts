@@ -81,13 +81,7 @@ import { createMediaExportExtension } from "./tools-media-export.js";
 import { createMemoryLifecycleExtension } from "./memory-lifecycle.js";
 import { executeMemoryForget, validateRelationshipReviewDecision } from "./memory-forget.js";
 import { computeCapDeferredDueAt, KuloUsageCaps, withUsageMeterModels } from "./usage-caps.js";
-import {
-  ActiveComputerHandoffTracker,
-  buildComputerHandoffCard,
-  COMPUTER_HANDOFF_TTL_MS,
-  computerHandoffFingerprint,
-  formatComputerHandoffResumePrompt,
-} from "./computer-handoff.js";
+import { formatComputerHandoffResumePrompt } from "./computer-handoff.js";
 import { HindsightLocalService } from "./hindsight-service.js";
 import { MemoryLlmBridge } from "./memory-llm-bridge.js";
 import { KuloMemoryService, MemoryServiceDoc, createMemoryServiceExtension } from "./memory-service.js";
@@ -287,6 +281,7 @@ import {
   type HubRuntimeGates,
 } from "./hub-kernel-ports.js";
 import { HubChatPipeline, replyContext, userDisplayEntry, type MessageSubmissionOptions } from "./hub-chat-pipeline.js";
+import { HubComputerController } from "./hub-computer-controller.js";
 import { HubConnectionsBridge } from "./hub-connections-bridge.js";
 import { HubDeliveryCoordinator } from "./hub-delivery-coordinator.js";
 import { HubHostActions } from "./hub-host-actions.js";
@@ -379,7 +374,7 @@ import {
   type RunSubagentsRequest,
   type SubagentTaskOutcome,
 } from "./tools-worker.js";
-import { createComputerUseExtension } from "./tools-computer-use.js";
+import type { createComputerUseExtension } from "./tools-computer-use.js";
 import { KuloUploadStore, parseUserEntryContent, sanitizeDiskFilename } from "./uploads.js";
 import { EXECUTION_FILE_CHUNK_BYTES, writeExecutionFile } from "./execution-files.js";
 import { ContentPublicationEntry, UiActionEntry, KuloUserEntry, KuloUiCards, UiCardError, type ContentPublicationData } from "./ui-cards.js";
@@ -657,7 +652,6 @@ export class KuloHub implements OrchestratorController {
   #ttsEnabled = false;
   #webSearchAvailable = true;
   #assistantActive = false;
-  #computerUseSettings: ComputerUseSettings = { browserEnabled: true, desktopEnabled: true };
   readonly #contextPreferenceUpdates = new Set<Promise<void>>();
   #envTransition: Promise<void> = Promise.resolve();
   #waitTransition: Promise<void> = Promise.resolve();
@@ -677,10 +671,7 @@ export class KuloHub implements OrchestratorController {
   readonly #searchHistories = new Map<number, SearchEvidenceHistory>();
   readonly #watchdog: HubWatchdog;
   readonly #failureRecovery: HubFailureRecovery;
-  readonly #computerSessions = new Map<string, { ticketId: string; envId: string; tool: "browser" | "desktop"; sessionId: string; conversationId: number; runEpoch: number; app?: string }>();
-  readonly #computerHandoffs = new ActiveComputerHandoffTracker();
-  readonly #orchestratorBrowserSessions = new Map<string, { topicId: string; conversationId: number; envId: string; sessionId: string; idleTimer: ReturnType<typeof setTimeout> }>();
-  readonly #orchestratorBrowserIdleMs: number;
+  readonly #computer: HubComputerController;
   readonly #verifyClientReceipts = new Map<string, import("@kulo/protocol").ExternalAgentVerifyClientResult>();
   readonly deviceJoinStaging: DeviceJoinStaging;
   readonly assistantEchoSuppressor = new AssistantEchoSuppressor();
@@ -723,6 +714,7 @@ export class KuloHub implements OrchestratorController {
     settingsTierExt: ReturnType<typeof createSettingsTierExtension>;
     computerMixedAndroidTierExt: ReturnType<typeof createComputerMixedAndroidTierExtension>;
     orchestratorGuardExt: ReturnType<typeof defineExtension>;
+    computerController: HubComputerController;
     computerUseExt: ReturnType<typeof createComputerUseExtension>;
     routerReadExt: ReturnType<typeof defineExtension>;
     workerExt: ReturnType<typeof createWorkerExtension>;
@@ -760,7 +752,6 @@ export class KuloHub implements OrchestratorController {
     voiceOpenLive?: KuloVoiceCallsOptions["openLive"];
     watchdogCheckIntervalMs: number;
     watchdogStallMsOverride?: number;
-    orchestratorBrowserIdleMs: number;
   }) {
     this.#releaseProxy = params.releaseProxy;
     this.#stateOwner = params.stateOwner;
@@ -866,6 +857,7 @@ export class KuloHub implements OrchestratorController {
     this.#settingsTierExt = params.settingsTierExt;
     this.#computerMixedAndroidTierExt = params.computerMixedAndroidTierExt;
     this.#orchestratorGuardExt = params.orchestratorGuardExt;
+    this.#computer = params.computerController;
     this.#computerUseExt = params.computerUseExt;
     this.#routerReadExt = params.routerReadExt;
     this.#workerExt = params.workerExt;
@@ -1703,7 +1695,7 @@ export class KuloHub implements OrchestratorController {
       },
       cleanup: {
         closeOrchestratorBrowserSession: (topicId) =>
-          this.#closeOrchestratorBrowserSession(topicId),
+          this.#computer.closeOrchestratorBrowserSession(topicId),
         discardTicketStagedWorkspace: (ticket) =>
           this.#discardTicketStagedWorkspace(ticket),
       },
@@ -1755,7 +1747,25 @@ export class KuloHub implements OrchestratorController {
         resumeWaitingTicket: (ticketId, ctx) => this.#resumeWaitingTicket(ticketId, ctx),
       },
     });
-    this.#orchestratorBrowserIdleMs = params.orchestratorBrowserIdleMs;
+    this.#computer.attachRuntime({
+      harness: this.harness,
+      rootConversationId: Number(this.rootConversation.id),
+      capabilities: this.capabilities,
+      actionConfirmations: this.actionConfirmations,
+      connectionManager: this.connectionManager,
+      runtimeGates: this.#runtimeGates,
+      mediaDelivery: this.#mediaDelivery,
+      resolveOrchestratorTargetEnvId: (conversationId, toolTaskId, ctx) =>
+        this.#resolveOrchestratorTargetEnvId(conversationId, toolTaskId, ctx),
+      reconfigureConversations: async (ctx) => {
+        await this.#reconfigureOrchestratorConversations(ctx);
+        await this.settingsAssistant.reconfigureActiveConversation(ctx);
+        await this.#reconfigureWorkerConversations(ctx);
+      },
+      stopTicket: (ticketId, reason, ctx, commandId) =>
+        this.stopTicket(ticketId, reason, ctx, commandId),
+      steerTicket: (req, ctx) => this.steerTicket(req, ctx),
+    });
   }
 
   get #liveSettings(): KuloDurableSettings {
@@ -1860,7 +1870,7 @@ export class KuloHub implements OrchestratorController {
         if (hubRef) {
           for (const env of envs) {
             if (!env.online) {
-              void hubRef.#closeOrchestratorBrowserSessionsForEnv(env.id, false);
+              void hubRef.#computer.closeOrchestratorBrowserSessionsForEnv(env.id, false);
             }
           }
           hubRef.#emitEnvs(envs);
@@ -1962,129 +1972,9 @@ export class KuloHub implements OrchestratorController {
       grant: (caller, input, ctx) => hubRef!.#connectionsBridge.grant(caller, input, ctx),
       use: (caller, input, ctx) => hubRef!.#connectionsBridge.use(caller, input, ctx),
     };
-    const computerUseExt = createComputerUseExtension({
-      scope: async (api) => {
-        const state = await hubRef!.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-        if (isOrchestratorConversation(api.conversationId, state)) {
-          const resolved = await hubRef!.#resolveOrchestratorTargetEnvId(
-            Number(api.conversationId),
-            Number(api.taskId),
-            BACKGROUND_CONTEXT,
-          );
-          const existing = hubRef!.#orchestratorBrowserSessions.get(resolved.topicId);
-          if (existing && existing.envId !== resolved.envId) {
-            await hubRef!.#closeOrchestratorBrowserSession(resolved.topicId);
-          } else if (existing) {
-            hubRef!.#touchOrchestratorBrowserSession(
-              resolved.topicId,
-              Number(api.conversationId),
-              resolved.envId,
-              existing.sessionId,
-            );
-          }
-          const assertActive = async () => {
-            if (hubRef!.#closed) throw new Error("Hub 已关闭。");
-            const latestState = await hubRef!.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-            const topic = latestState?.topics?.[resolved.topicId];
-            if (!topic || topic.deletedAt) throw new Error("会话已删除。");
-            const envDesc = envManager.getEnvDescriptor(resolved.envId);
-            if (!envDesc?.online) throw new Error("目标电脑已离线，浏览器会话已停止。");
-          };
-          return {
-            ticketId: `chat:${resolved.topicId}:${resolved.envId}`,
-            conversationId: Number(api.conversationId),
-            runEpoch: 1,
-            envId: resolved.envId,
-            readOnly: true,
-            assertActive,
-          };
-        }
-
-        const source = await hubRef!.mediaSource(Number(api.conversationId));
-        if (!source.ticketId || !source.envId || source.runEpoch === undefined) {
-          throw new Error("电脑操作需要有效的执行任务及目标设备。");
-        }
-        const assertActive = async () => {
-          const current = await hubRef!.mediaSource(Number(api.conversationId));
-          if (current.ticketId !== source.ticketId || current.envId !== source.envId || current.runEpoch !== source.runEpoch) {
-            throw new Error("电脑操作的任务执行资格已失效。");
-          }
-          const currentState = await hubRef!.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-          const scope = resolveTicketExecutionScope(currentState, api.conversationId);
-          if (scope?.subagent && scope.subagent.state !== "running") {
-            throw new Error("子任务已停止，不能继续操作设备。");
-          }
-          await hubRef!.#validateMediaSource(source);
-        };
-        const retainedSession = [...hubRef!.#computerSessions.values()].find(
-          (entry) => entry.ticketId === source.ticketId && entry.conversationId === Number(api.conversationId) && entry.envId === source.envId,
-        );
-        if (retainedSession && retainedSession.runEpoch !== source.runEpoch) {
-          retainedSession.runEpoch = source.runEpoch;
-        }
-        return {
-          ticketId: source.ticketId,
-          conversationId: Number(api.conversationId),
-          runEpoch: source.runEpoch,
-          envId: source.envId,
-          readOnly: Boolean(source.readOnly),
-          ...(retainedSession ? { preservedSessionId: retainedSession.sessionId } : {}),
-          assertActive,
-        };
-      },
-      execute: (envId, request, signal) => {
-        if (request.tool === "browser" && !hubRef!.#computerUseSettings.browserEnabled) {
-          throw new Error("浏览器操控已关闭，请在「工具与技能 → 电脑操控」中开启。");
-        }
-        if (request.tool === "desktop" && !hubRef!.#computerUseSettings.desktopEnabled) {
-          throw new Error("桌面操控已关闭，请在「工具与技能 → 电脑操控」中开启。");
-        }
-        return envManager.requestComputerUse(envId, request, signal);
-      },
-      sessionOpened: async (scope, tool, sessionId) => {
-        if (scope.ticketId.startsWith("chat:")) {
-          if (tool === "browser") {
-            const topicId = scope.ticketId.split(":")[1] ?? "root";
-            hubRef!.#touchOrchestratorBrowserSession(topicId, scope.conversationId, scope.envId, sessionId);
-          }
-          return;
-        }
-        if (tool === "browser") {
-          await hubRef!.#closeOrchestratorBrowserSessionsForEnv(scope.envId, true);
-        }
-        if (!envManager.getEnvDescriptor(scope.envId)?.capabilities.includes(`agent-${tool}`)) return;
-        const key = `${scope.ticketId}:${tool}:${sessionId}`;
-        if (!hubRef!.#computerSessions.has(key)) {
-          hubRef!.#computerSessions.set(key, {
-            ticketId: scope.ticketId,
-            envId: scope.envId,
-            tool,
-            sessionId,
-            conversationId: scope.conversationId,
-            runEpoch: scope.runEpoch,
-          });
-        }
-        await hubRef!.harness.commit(async (tx) => {
-          const ticket = (await tx.doc(KuloStateDoc)).tickets[scope.ticketId];
-          if (ticket && ticket.runEpoch === scope.runEpoch && !ticket.deviceStateTouched) {
-            ticket.deviceStateTouched = true;
-          }
-        }, BACKGROUND_CONTEXT);
-      },
-      sessionObserved: (scope, tool, sessionId, app) => {
-        if (scope.ticketId.startsWith("chat:")) return;
-        const session = hubRef!.#computerSessions.get(`${scope.ticketId}:${tool}:${sessionId}`);
-        if (session) session.app = app;
-      },
-      sessionClosed: (scope, tool, sessionId) => {
-        if (scope.ticketId.startsWith("chat:")) {
-          const topicId = scope.ticketId.split(":")[1] ?? "root";
-          hubRef!.#forgetOrchestratorBrowserSession(topicId, sessionId);
-          return;
-        }
-        hubRef!.#computerSessions.delete(`${scope.ticketId}:${tool}:${sessionId}`);
-      },
-      requestHandoff: (scope, input, api, ctx) => hubRef!.#requestComputerHandoff(scope, input, api, ctx),
+    const { controller: computerController, extension: computerUseExt } = HubComputerController.createShell({
+      envManager,
+      orchestratorBrowserIdleMs: init.orchestratorBrowserIdleMs ?? 60_000,
     });
     const hostActions: HostActionController = {
       inspect: (caller, input, ctx) => hubRef!.#hostActions.inspect(caller, input, ctx),
@@ -2348,8 +2238,8 @@ export class KuloHub implements OrchestratorController {
         const state = await harness.snapshot(KuloStateDoc, context);
         const filterComputerCaps = (caps: readonly string[]) =>
           caps.filter((cap) =>
-            (cap !== "agent-browser" || hubRef!.#computerUseSettings.browserEnabled)
-            && (cap !== "agent-desktop" || hubRef!.#computerUseSettings.desktopEnabled),
+            (cap !== "agent-browser" || computerController.settings.browserEnabled)
+            && (cap !== "agent-desktop" || computerController.settings.desktopEnabled),
           );
         const resolveMediaKinds = async (isWorker: boolean): Promise<MediaKind[]> => {
           if (!requirements.media) return [];
@@ -2803,6 +2693,7 @@ export class KuloHub implements OrchestratorController {
       settingsTierExt,
       computerMixedAndroidTierExt,
       orchestratorGuardExt,
+      computerController,
       computerUseExt,
       routerReadExt,
       workerExt,
@@ -2842,7 +2733,6 @@ export class KuloHub implements OrchestratorController {
       ...(init.watchdogStallMsOverride !== undefined
         ? { watchdogStallMsOverride: init.watchdogStallMsOverride }
         : {}),
-      orchestratorBrowserIdleMs: init.orchestratorBrowserIdleMs ?? 60_000,
     });
     hubRef = hub;
     await observeChatAttachmentGrants(harness, uploads, context);
@@ -2853,7 +2743,7 @@ export class KuloHub implements OrchestratorController {
     }, context);
     await hub.skills.initialize();
     await hub.capabilities.initialize();
-    hub.#computerUseSettings = (await hub.capabilities.computerUseSettings()).computerUse;
+    hub.#computer.setInitialSettings((await hub.capabilities.computerUseSettings()).computerUse);
     await hub.#syncProviderImageCapabilities();
     await hub.search.initialize();
     hub.#webSearchAvailable = (await hub.search.snapshot()).plans.some((plan) => plan.enabled && plan.status !== "needs_auth");
@@ -2956,164 +2846,15 @@ export class KuloHub implements OrchestratorController {
   }
 
   async listComputerPreviews(topicId: string): Promise<ComputerPreviewSessionView[]> {
-    if (this.#closed || !topicId || topicId.length > 256) return [];
-    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-    const allTopics = topicId === "*";
-    if (!allTopics) {
-      const topic = state?.topics?.[topicId];
-      if (!topic || topic.deletedAt) return [];
-    }
-    const sessions: ComputerPreviewSessionView[] = [];
-    for (const [key, session] of this.#computerSessions) {
-      const scope = resolveTicketExecutionScope(state, session.conversationId as ConversationId);
-      const ticket = scope?.ticket;
-      const env = this.envManager.getEnvDescriptor(session.envId);
-      const originTopicId = ticket ? (ticket.originTopicId ?? "root") : undefined;
-      const originTopic = originTopicId ? state?.topics?.[originTopicId] : undefined;
-      const activeHandoff = this.#computerHandoffs.get(session.ticketId);
-      const handoffActiveForSession = Boolean(activeHandoff && activeHandoff.sessionId === session.sessionId && ticket?.status === "waiting" && ticket.waiting?.reason === "user");
-      if (!ticket || ticket.id !== session.ticketId || (!handoffActiveForSession && (ticket.status !== "running" || ticket.runEpoch !== session.runEpoch))
-        || ticket.envId !== session.envId || !originTopic || originTopic.deletedAt
-        || (!allTopics && originTopicId !== topicId)
-        || (!handoffActiveForSession && scope?.subagent && scope.subagent.state !== "running") || !env?.online
-        || !env.capabilities.includes(`agent-${session.tool}`)) continue;
-      sessions.push({
-        id: createHash("sha256").update(key).digest("hex"),
-        ticketId: ticket.id,
-        tool: session.tool,
-        envId: env.id,
-        deviceName: env.name,
-        title: ticket.title,
-        ...(session.app ? { app: session.app } : {}),
-        ...(handoffActiveForSession && activeHandoff
-          ? {
-              handoff: {
-                requestId: activeHandoff.requestId,
-                ...(activeHandoff.cardId ? { cardId: activeHandoff.cardId } : {}),
-                reason: activeHandoff.reason,
-                target: activeHandoff.tool,
-                expiresAt: activeHandoff.expiresAt,
-                ...(activeHandoff.url ? { url: activeHandoff.url } : {}),
-                ...(activeHandoff.app ? { app: activeHandoff.app } : {}),
-                interactive: session.tool === "browser",
-              },
-            }
-          : {}),
-      });
-    }
-    return sessions.slice(0, 16);
+    return this.#computer.listComputerPreviews(topicId);
   }
 
   async subscribeComputerPreview(id: string, topicId: string, listener: (update: ComputerPreviewUpdate) => void): Promise<() => void> {
-    if (!(await this.listComputerPreviews(topicId)).some((session) => session.id === id)) throw new Error("操作预览已失效。");
-    const session = [...this.#computerSessions].find(([key]) => createHash("sha256").update(key).digest("hex") === id)?.[1];
-    if (!session) throw new Error("操作预览已失效。");
-    let closed = false;
-    let unsubscribe = () => {};
-    let latest: ComputerPreviewUpdate | undefined;
-    let checking = false;
-    const dispose = () => { if (!closed) { closed = true; latest = undefined; unsubscribe(); } };
-    // Authorize each delivered frame against the current epoch, including subagent and task stops.
-    const flush = async () => {
-      checking = true;
-      try {
-        while (!closed && latest) {
-          const authorized = (await this.listComputerPreviews(topicId)).some((view) => view.id === id);
-          if (closed) break;
-          if (!authorized) { listener({ state: "closed" }); dispose(); break; }
-          const update = latest;
-          latest = undefined;
-          listener(update);
-        }
-      } catch {
-        if (!closed) listener({ state: "unavailable", message: "操作预览暂不可用。" });
-        dispose();
-      } finally { checking = false; }
-    };
-    unsubscribe = this.envManager.subscribeComputerPreview(session.envId, { tool: session.tool, sessionId: session.sessionId }, (update) => {
-      if (closed) return;
-      latest = update;
-      if (!checking) void flush();
-    });
-    if (closed) unsubscribe();
-    return dispose;
+    return this.#computer.subscribeComputerPreview(id, topicId, listener);
   }
 
   async sendComputerPreviewInput(id: string, topicId: string, event: ComputerPreviewInputEvent): Promise<boolean> {
-    if (this.#closed) return false;
-    const previews = await this.listComputerPreviews(topicId);
-    const view = previews.find((item) => item.id === id);
-    if (!view?.handoff?.interactive || view.tool !== "browser") return false;
-    const session = [...this.#computerSessions].find(([key]) => createHash("sha256").update(key).digest("hex") === id)?.[1];
-    if (!session || !this.#computerHandoffs.hasActiveHandoff(session.ticketId, session.sessionId)) return false;
-    return this.envManager.sendComputerPreviewInput(session.envId, { tool: "browser", sessionId: session.sessionId }, event);
-  }
-
-  async #requestComputerHandoff(
-    scope: { ticketId: string; conversationId: number; runEpoch: number; envId: string },
-    input: { target: "browser" | "desktop"; sessionId: string; reason: string; url?: string; app?: string },
-    api: { callId: string },
-    context: Context,
-  ): Promise<{ requestId: string; cardId?: string; expiresAt: number }> {
-    const state = await this.harness.snapshot(KuloStateDoc, context);
-    const ticket = state?.tickets[scope.ticketId];
-    if (!ticket || ticket.status !== "running" || ticket.runEpoch !== scope.runEpoch) {
-      throw new Error("当前任务已不在运行中，无法发起人工接管。");
-    }
-    const envDesc = this.envManager.getEnvDescriptor(scope.envId);
-    if (!envDesc?.online || !envDesc.capabilities.includes(`agent-${input.target}`)) {
-      throw new Error("目标设备离线或未开启对应电脑操控能力。");
-    }
-    const now = Date.now();
-    const expiresAt = now + COMPUTER_HANDOFF_TTL_MS;
-    const originConversationId = ticket.originConversationId ?? Number(this.rootConversation.id);
-    const key = `${scope.ticketId}:${input.target}:${input.sessionId}`;
-    if (!this.#computerSessions.has(key)) {
-      this.#computerSessions.set(key, {
-        ticketId: scope.ticketId, envId: scope.envId, tool: input.target, sessionId: input.sessionId,
-        conversationId: scope.conversationId, runEpoch: scope.runEpoch, ...(input.app ? { app: input.app } : {}),
-      });
-    }
-    const safeReason = this.connectionManager.redact(input.reason);
-    const built = buildComputerHandoffCard({
-      target: input.target, deviceName: envDesc.name, reason: safeReason, url: input.url, app: input.app,
-    });
-    const fingerprint = computerHandoffFingerprint({
-      ticketId: scope.ticketId, runEpoch: scope.runEpoch, target: input.target, sessionId: input.sessionId, reason: safeReason,
-    });
-    const { confirmation } = await this.actionConfirmations.ensurePendingCard({
-      conversationId: originConversationId, topicId: ticket.originTopicId ?? "root", ticketId: scope.ticketId,
-      callId: api.callId, kind: "computer_handoff", fingerprint, cardInput: built.input, logicalIds: built.logicalIds,
-      payload: {
-        kind: "computer_handoff", ticketId: scope.ticketId, runEpoch: scope.runEpoch, envId: scope.envId,
-        target: input.target, sessionId: input.sessionId, reason: safeReason,
-        ...(input.url ? { url: input.url } : {}), ...(input.app ? { app: input.app } : {}), expiresAt,
-      },
-    }, context);
-    this.#computerHandoffs.register({
-      requestId: confirmation.id, ...(confirmation.cardId ? { cardId: confirmation.cardId } : {}),
-      ticketId: scope.ticketId, runEpoch: scope.runEpoch, envId: scope.envId, tool: input.target,
-      sessionId: input.sessionId, conversationId: scope.conversationId, originConversationId,
-      reason: safeReason, ...(input.url ? { url: input.url } : {}), ...(input.app ? { app: input.app } : {}), expiresAt,
-    }, async () => { await this.resolveComputerHandoff(scope.ticketId, "expired"); });
-    // Silent park (`waiting.reason = "user"` WITHOUT `latestReport.state = "blocked"`) avoids duplicate coordinator card
-    await this.harness.commit(async (tx) => {
-      const live = (await tx.doc(KuloStateDoc)).tickets[scope.ticketId];
-      if (!live || live.status !== "running" || live.runEpoch !== scope.runEpoch) return;
-      live.waiting = {
-        reason: "user", since: now, detail: safeReason,
-        waitToken: `computer-handoff:${confirmation.cardId ?? confirmation.id}`,
-        ...(confirmation.cardId ? { cardId: confirmation.cardId } : {}),
-        requestId: confirmation.id,
-        options: [
-          { id: "confirm", label: "已完成，请继续", tone: "primary" },
-          { id: "cancel", label: "跳过并停止", tone: "secondary", action: "stop" },
-        ],
-      };
-      live.updatedAt = now;
-    }, context);
-    await this.#broadcastTickets(context);
-    return { requestId: confirmation.id, ...(confirmation.cardId ? { cardId: confirmation.cardId } : {}), expiresAt };
+    return this.#computer.sendComputerPreviewInput(id, topicId, event);
   }
 
   async resolveComputerHandoff(
@@ -3122,58 +2863,7 @@ export class KuloHub implements OrchestratorController {
     manualInstruction?: string,
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<{ ok: boolean; status: string }> {
-    const active = this.#computerHandoffs.clear(ticketId);
-    const state = await this.harness.snapshot(KuloStateDoc, context);
-    const ticket = state?.tickets[ticketId];
-    const requestId = active?.requestId ?? ticket?.waiting?.requestId;
-    if (action === "cancel") {
-      const stopReason = "用户跳过人工接管并停止任务";
-      if (ticket && canDirectStopTicket(ticket)) {
-        await this.stopTicket(
-          ticketId,
-          stopReason,
-          context,
-          `computer-handoff:${requestId ?? ticketId}:cancel`,
-        );
-      } else {
-        await this.actionConfirmations.settlePendingForTicket(ticketId, "已跳过人工接管", undefined, context);
-        const sessions = [...this.#computerSessions].filter(([, s]) => s.ticketId === ticketId);
-        for (const [key, session] of sessions) {
-          this.#computerSessions.delete(key);
-          await this.envManager.requestComputerUse(session.envId, { tool: session.tool, action: "close", sessionId: session.sessionId }).catch(() => {});
-        }
-      }
-      return { ok: true, status: action };
-    }
-    const pending = requestId ? await this.actionConfirmations.getById(requestId, context) : undefined;
-    const payload = pending?.payload.kind === "computer_handoff" ? pending.payload : undefined;
-    const target = active?.tool ?? payload?.target ?? "browser";
-    const reason = active?.reason ?? payload?.reason ?? "人工接管操作";
-    if (pending && (pending.status === "pending" || pending.status === "pending_orchestrator")) {
-      await this.actionConfirmations.resolveProgrammatically(pending.id, {
-        status: action === "done" ? "approved" : "denied",
-        selectedChoiceId: action === "done" ? "confirm" : "cancel",
-        resultSummary: action === "done" ? "已完成人工接管" : "人工接管已超时",
-        markExecuted: true,
-      }, context);
-    }
-    if (action !== "done") {
-      // Immediately close preserved session to release MAX_BROWSER_SESSIONS slot
-      const sessions = [...this.#computerSessions].filter(([, s]) => s.ticketId === ticketId);
-      for (const [key, session] of sessions) {
-        this.#computerSessions.delete(key);
-        await this.envManager.requestComputerUse(session.envId, { tool: session.tool, action: "close", sessionId: session.sessionId }).catch(() => {});
-      }
-    }
-    if (ticket && ticket.status === "waiting") {
-      const prompt = formatComputerHandoffResumePrompt({ action, target, reason, manualInstruction });
-      await this.steerTicket({
-        ticketId,
-        commandId: `computer-handoff:${requestId ?? ticketId}:${action}`,
-        text: prompt,
-      }, context).catch(() => {});
-    }
-    return { ok: true, status: action };
+    return this.#computer.resolveComputerHandoff(ticketId, action, manualInstruction, context);
   }
 
   async removeConnection(id: string): Promise<void> {
@@ -3225,18 +2915,7 @@ export class KuloHub implements OrchestratorController {
   }
 
   async configureComputerUse(input: ComputerUseConfigurationInput): Promise<{ computerUse: ComputerUseSettings; revision: number }> {
-    const result = await this.capabilities.configureComputerUse(input);
-    const previous = this.#computerUseSettings;
-    this.#computerUseSettings = { ...result.computerUse };
-    if (previous.browserEnabled && !result.computerUse.browserEnabled) {
-      for (const topicId of [...this.#orchestratorBrowserSessions.keys()]) {
-        await this.#closeOrchestratorBrowserSession(topicId);
-      }
-    }
-    await this.#reconfigureOrchestratorConversations(BACKGROUND_CONTEXT);
-    await this.settingsAssistant.reconfigureActiveConversation(BACKGROUND_CONTEXT);
-    await this.#reconfigureWorkerConversations(BACKGROUND_CONTEXT);
-    return result;
+    return this.#computer.configureComputerUse(input);
   }
 
   async testImageCapability(id: string, input: { clientId: string; commandId: string; prompt?: string }): Promise<MediaJob> {
@@ -3471,8 +3150,8 @@ export class KuloHub implements OrchestratorController {
       webSearchAvailable: this.#webSearchAvailable,
       customizationEnabled: Boolean(this.config.customization),
       deviceInviteAvailable: deviceView?.role === "hub",
-      computerUseBrowserEnabled: this.#computerUseSettings.browserEnabled,
-      computerUseDesktopEnabled: this.#computerUseSettings.desktopEnabled,
+      computerUseBrowserEnabled: this.#computer.settings.browserEnabled,
+      computerUseDesktopEnabled: this.#computer.settings.desktopEnabled,
       hasStagedDeviceJoin: Boolean(this.deviceJoinStaging.hasActive),
       assistantActive: this.#assistantActive,
       ...extra,
@@ -3812,10 +3491,7 @@ export class KuloHub implements OrchestratorController {
           !ticket.workspaceStaging.discardedAt &&
           ticket.workspaceStaging.stagedCwd,
       );
-      if (!options.park) this.#computerHandoffs.clear(ticket.id);
-      const sessions = [...this.#computerSessions].filter(([, session]) =>
-        session.ticketId === ticket.id && !(options.park && this.#computerHandoffs.hasActiveHandoff(ticket.id, session.sessionId)),
-      );
+      const computerCloseTasks = this.#computer.buildTicketSessionCleanupTasks(ticket.id, options);
       const [connection, worker, ...computer] = await Promise.allSettled([
         this.connectionManager.revoke(ticket.id),
         ticket.externalExecution || ticket.executionDomain === "android"
@@ -3837,11 +3513,7 @@ export class KuloHub implements OrchestratorController {
             ticketId: ticket.id, runEpoch: ticket.runEpoch, reason: options.park ? "task_epoch_parked" : "task_epoch_retired" });
           if (!result.quiescent && !(options.park && result.epochQuiescent === true && result.resourcesRetained === true)) throw new Error("手机任务尚未确认静止。");
         }),
-        ...sessions.map(async ([key, session]) => {
-          const result = await this.envManager.requestComputerUse(session.envId, { tool: session.tool, action: "close", sessionId: session.sessionId });
-          if (!result.ok) throw new Error("任务的电脑操作会话尚未关闭。");
-          this.#computerSessions.delete(key);
-        }),
+        ...computerCloseTasks,
       ]);
       if (worker!.status === "rejected") throw worker!.reason;
       return { cleanupPending: connection!.status === "rejected" || worker!.value.cleanupPending || computer.some((result) => result.status === "rejected") };
@@ -6584,7 +6256,7 @@ export class KuloHub implements OrchestratorController {
     if (params.originConversationId === undefined && ticket.waiting?.requestId) {
       const pending = await this.actionConfirmations.getById(ticket.waiting.requestId, context);
       if (pending && pending.payload.kind === "computer_handoff" && pending.status === "pending") {
-        this.#computerHandoffs.clear(params.ticketId);
+        this.#computer.clearHandoff(params.ticketId);
         await this.actionConfirmations.resolveProgrammatically(pending.id, {
           status: "approved",
           selectedChoiceId: "confirm",
@@ -6865,7 +6537,7 @@ export class KuloHub implements OrchestratorController {
       actionConfirmations: this.actionConfirmations,
       uiCards: this.uiCards,
       getRoles: () => this.#liveSettings.roles,
-      clearComputerHandoff: (id: string) => { this.#computerHandoffs.clear(id); },
+      clearComputerHandoff: (id: string) => { this.#computer.clearHandoff(id); },
       cancelConnectionRequests: (id: string) => { this.connectionManager.cancelRequests(id); },
       stopChildTicket: (childId: string, childReason: string, ctx: Context) =>
         this.#queueTicketOperation(childId, () => this.#stopTicket(childId, childReason, ctx, undefined, undefined)),
@@ -8067,9 +7739,7 @@ export class KuloHub implements OrchestratorController {
     };
     await finish(() => this.#clusterCloseHook?.());
     this.#inlineWaiters.notifyAll();
-    for (const topicId of [...this.#orchestratorBrowserSessions.keys()]) {
-      await this.#closeOrchestratorBrowserSession(topicId, true);
-    }
+    await this.#computer.closeAllOrchestratorBrowserSessions();
     await finish(() => this.#ticketBoard.close());
     if (this.#cleanupRetryTimer) {
       clearTimeout(this.#cleanupRetryTimer);
@@ -8098,7 +7768,7 @@ export class KuloHub implements OrchestratorController {
     await finish(() => this.#topics.closeTitles());
     await finish(() => this.personality.close());
     await finish(() => this.usageCaps.close());
-    this.#computerHandoffs.closeAll();
+    this.#computer.closeAllHandoffs();
     await finish(() => this.mediaJobs.close());
     await finish(() => this.extensions.close());
     await finish(() => this.#topics.drainPendingActivity());
@@ -8948,70 +8618,6 @@ export class KuloHub implements OrchestratorController {
 
   async #currentControlInput(conversationId: number | undefined, context: Context, toolTaskId?: number): Promise<EntryRecord | undefined> {
     return this.#turnContext.currentControlInput(conversationId, context, toolTaskId);
-  }
-
-  #touchOrchestratorBrowserSession(
-    topicId: string,
-    conversationId: number,
-    envId: string,
-    sessionId: string,
-  ): void {
-    const prev = this.#orchestratorBrowserSessions.get(topicId);
-    if (prev) clearTimeout(prev.idleTimer);
-    const idleTimer = setTimeout(() => {
-      if (!this.#closed) {
-        void this.#closeOrchestratorBrowserSession(topicId);
-      }
-    }, this.#orchestratorBrowserIdleMs);
-    idleTimer.unref?.();
-    this.#orchestratorBrowserSessions.set(topicId, {
-      topicId,
-      conversationId,
-      envId,
-      sessionId,
-      idleTimer,
-    });
-  }
-
-  #forgetOrchestratorBrowserSession(topicId: string, sessionId?: string): void {
-    const existing = this.#orchestratorBrowserSessions.get(topicId);
-    if (!existing) return;
-    if (sessionId && existing.sessionId !== sessionId) return;
-    clearTimeout(existing.idleTimer);
-    this.#orchestratorBrowserSessions.delete(topicId);
-  }
-
-  async #closeOrchestratorBrowserSession(topicId: string, allowDuringClose = false): Promise<void> {
-    const existing = this.#orchestratorBrowserSessions.get(topicId);
-    if (!existing) return;
-    clearTimeout(existing.idleTimer);
-    this.#orchestratorBrowserSessions.delete(topicId);
-    if ((!this.#closed || allowDuringClose) && this.envManager.getEnvDescriptor(existing.envId)?.online) {
-      await this.envManager
-        .requestComputerUse(existing.envId, {
-          tool: "browser",
-          action: "close",
-          sessionId: existing.sessionId,
-        })
-        .catch(() => {});
-    }
-  }
-
-  async #closeOrchestratorBrowserSessionsForEnv(envId: string, sendClose = true): Promise<void> {
-    const matching = [...this.#orchestratorBrowserSessions.values()].filter((s) => s.envId === envId);
-    for (const entry of matching) {
-      clearTimeout(entry.idleTimer);
-      this.#orchestratorBrowserSessions.delete(entry.topicId);
-      if (sendClose && !this.#closed && this.envManager.getEnvDescriptor(envId)?.online) {
-        await this.envManager
-          .requestComputerUse(envId, {
-            tool: "browser",
-            action: "close",
-            sessionId: entry.sessionId,
-          })
-          .catch(() => {});
-      }
-    }
   }
 
   async #resolveOrchestratorTargetEnvId(
