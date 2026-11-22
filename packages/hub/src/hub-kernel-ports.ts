@@ -417,8 +417,9 @@ export interface HubRuntimeGates {
   broadcastTickets: (context: Context) => Promise<void>;
   recordTicketOutwardAction: (
     ticketId: string,
-    runEpoch: number,
+    runEpoch: number | undefined,
     kind: TicketOutwardAction["kind"],
     label: string,
+    context?: Context,
   ) => Promise<void>;
 }

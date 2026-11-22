@@ -27,7 +27,7 @@ const NEW_FILE_MAX_LINES = 900;
  * to permanently tighten the baseline (or delete the entry once <= 900 lines).
  */
 const LEGACY_FILE_LINE_CEILINGS: Record<string, number> = {
-  "packages/hub/src/hub.ts": 9747,
+  "packages/hub/src/hub.ts": 9309,
   "packages/protocol/src/android.ts": 3886,
   "packages/env/src/bridge.ts": 2630,
   "packages/hub/src/server.ts": 2266,

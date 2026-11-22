@@ -43,7 +43,7 @@ import {
   createCodingTools,
   createReadTool,
 } from "@earendil-works/pi-durable/tools";
-import { EnvManager, canonicalExecutionPath, isApplicationPrivatePath, validateHostMaintenanceCommands } from "@kulo/env";
+import { EnvManager, canonicalExecutionPath, isApplicationPrivatePath } from "@kulo/env";
 import { lazyProjectEnvironment } from "./project-env.js";
 import { createAndroidToolsExtension, type AndroidToolScope } from "./tools-android.js";
 import { KuloAndroidNotifications } from "./android-notifications.js";
@@ -119,7 +119,6 @@ import { createRecentWorkSyncHook, isSystemBaselinePending } from "./recent-work
 import { type LoadedBillionContextPackage } from "./extension-packages.js";
 import { stageProjectSkillSource } from "./skill-source-env.js";
 import {
-  classifyShellSafetyFloor,
   DEFAULT_IMAGE_TEST_PROMPT,
   defaultProtocolAdapterForModel,
   inferModelPurpose,
@@ -250,14 +249,12 @@ import {
   KuloActionConfirmations,
   buildCustomizationConfirmCard,
   buildExternalPermissionCard,
-  buildHostActionConfirmCard,
   buildMemoryServiceConfirmCard,
   buildStagedApplyConfirmCard,
   buildTicketDecisionCard,
   customizationValidateFingerprint,
   effectiveConfirmationEffect,
   externalPermissionFingerprint,
-  hostActionFingerprint,
   memoryServiceOperationFingerprint,
   resolveCardConfirmationDeniedInTx,
   stagedApplyFingerprint,
@@ -272,7 +269,7 @@ import {
   resolveSteerDirectStopReason,
   type AdmittedTicketStop,
 } from "./ticket-stop.js";
-import { executeApprovedHostAction, type ExecuteApprovedHostActionDeps } from "./host-action-execution.js";
+import { executeApprovedHostAction } from "./host-action-execution.js";
 import {
   entryTimestamp,
   extractDisplayMessages,
@@ -292,11 +289,12 @@ import {
 import { HubChatPipeline, replyContext, userDisplayEntry, type MessageSubmissionOptions } from "./hub-chat-pipeline.js";
 import { HubConnectionsBridge } from "./hub-connections-bridge.js";
 import { HubDeliveryCoordinator } from "./hub-delivery-coordinator.js";
+import { HubHostActions } from "./hub-host-actions.js";
 import { HubMediaDelivery, MediaNoticesDoc } from "./hub-media-delivery.js";
 import { HubTopicManager, requireTopic, type TopicView, type WatchedTopicCache } from "./hub-topic-manager.js";
 import { HubFailureRecovery, HubWatchdog } from "./hub-watchdog.js";
 import { createOrchestratorCodingGuardExtension } from "./orchestrator-coding-guard.js";
-import type { HostActionCaller, HostActionController, HostActionDecideOutcome, HostActionRunOutcome } from "./tools-host-action.js";
+import type { HostActionController } from "./tools-host-action.js";
 import type { AskUserForTicketParams } from "./tools-router.js";
 import { API_KEY_ORIGIN_ENV } from "./providers.js";
 import { executeHindsightTool, isSafeMemoryText, probeHindsightConnection, resolveHindsightToken, resolveHindsightSharedReadToken } from "./hindsight.js";
@@ -313,7 +311,6 @@ import {
   RELATIONSHIP_REVIEW_INSTRUCTIONS,
   createOrchestratorSections,
   formatConnectionRequestMessage,
-  formatHostActionRequestMessage,
   formatWorkerInitialPrompt,
   formatWorkerRelayMessage,
 } from "./prompts.js";
@@ -670,6 +667,7 @@ export class KuloHub implements OrchestratorController {
   readonly #topics: HubTopicManager;
   readonly #chat: HubChatPipeline;
   readonly #connectionsBridge: HubConnectionsBridge;
+  readonly #hostActions: HubHostActions;
   readonly #mediaDelivery: HubMediaDelivery;
   readonly #delivery: HubDeliveryCoordinator;
   readonly #inlineWaiters = new InlineDispatchWaiters();
@@ -801,8 +799,8 @@ export class KuloHub implements OrchestratorController {
         if (!this.#recovering && !this.#closed) this.harness.resume();
       },
       broadcastTickets: (ctx) => this.#broadcastTickets(ctx),
-      recordTicketOutwardAction: (ticketId, runEpoch, kind, label) =>
-        this.#recordTicketOutwardAction(ticketId, runEpoch, kind, label),
+      recordTicketOutwardAction: (ticketId, runEpoch, kind, label, ctx) =>
+        this.#recordTicketOutwardAction(ticketId, runEpoch, kind, label, ctx),
     };
     this.#androidNotifications = new KuloAndroidNotifications({ stateDir: this.config.stateDir, models: this.#models,
       agent: () => this.#resolveOrchestratorAgent(), hubId: () => this.#androidHubId,
@@ -1732,6 +1730,16 @@ export class KuloHub implements OrchestratorController {
       runtimeGates: this.#runtimeGates,
       steerTicket: (req, ctx) => this.steerTicket(req, ctx),
     });
+    this.#hostActions = new HubHostActions({
+      harness: this.harness,
+      envManager: this.envManager,
+      projects: this.projects,
+      actionConfirmations: this.actionConfirmations,
+      connectionManager: this.connectionManager,
+      inlineWaiters: this.#inlineWaiters,
+      runtimeGates: this.#runtimeGates,
+      steerTicket: (req, ctx) => this.steerTicket(req, ctx),
+    });
     this.#mediaDelivery = new HubMediaDelivery({
       harness: this.harness,
       rootConversationId: Number(this.rootConversation.id),
@@ -2079,9 +2087,9 @@ export class KuloHub implements OrchestratorController {
       requestHandoff: (scope, input, api, ctx) => hubRef!.#requestComputerHandoff(scope, input, api, ctx),
     });
     const hostActions: HostActionController = {
-      inspect: (caller, input, ctx) => hubRef!.#hostActionInspect(caller, input, ctx),
-      run: (caller, input, ctx) => hubRef!.#hostActionRun(caller, input, ctx),
-      decide: (caller, input, ctx) => hubRef!.#hostActionDecide(caller, input, ctx),
+      inspect: (caller, input, ctx) => hubRef!.#hostActions.inspect(caller, input, ctx),
+      run: (caller, input, ctx) => hubRef!.#hostActions.run(caller, input, ctx),
+      decide: (caller, input, ctx) => hubRef!.#hostActions.decide(caller, input, ctx),
     };
     const workerExt = createWorkerExtension({
       connections,
@@ -2131,7 +2139,7 @@ export class KuloHub implements OrchestratorController {
         if (hubRef && reason !== "user" && reason !== "coordinator") hubRef.#notifyInlineWaiters(id);
         if (hubRef && reason === "env") hubRef.#queueEnvReconcile();
         if (hubRef && reason === "connection") void hubRef.#relayConnectionRequest(id).catch((error) => console.error("[KuloConnectionRequest]", redact(error instanceof Error ? error.message : "连接申请转交失败")));
-        if (hubRef && reason === "coordinator") void hubRef.#relayHostActionRequest(id).catch((error) => console.error("[KuloHostActionRequest]", redact(error instanceof Error ? error.message : "本机操作审批转交失败")));
+        if (hubRef && reason === "coordinator") void hubRef.#hostActions.relayRequest(id).catch((error) => console.error("[KuloHostActionRequest]", redact(error instanceof Error ? error.message : "本机操作审批转交失败")));
       },
       resumeWaitingTicket: async (id, ctx) => { if (hubRef) await hubRef.#resumeWaitingTicket(id, ctx); },
       scheduledWakeDeferUntil: (ticket, now) => hubRef ? hubRef.#scheduledWakeDeferUntil(ticket, now) : null,
@@ -3638,7 +3646,7 @@ export class KuloHub implements OrchestratorController {
       for (const ticket of Object.values(connections?.tickets ?? {})) {
         if (ticket.status === "waiting" && ticket.waiting?.reason === "connection") await this.#relayConnectionRequest(ticket.id);
         if (ticket.status === "waiting" && ticket.waiting?.reason === "coordinator" && ticket.waiting.waitToken?.startsWith("host-action-req:")) {
-          await this.#relayHostActionRequest(ticket.id);
+          await this.#hostActions.relayRequest(ticket.id);
         }
       }
     }).catch((error) => { console.error("[KuloWaitReconcile]", error); });
@@ -3947,7 +3955,7 @@ export class KuloHub implements OrchestratorController {
     }
     if (preservedWait.reason === "connection") await this.#relayConnectionRequest(ticketId);
     if (preservedWait.reason === "coordinator" && preservedWait.waitToken?.startsWith("host-action-req:")) {
-      await this.#relayHostActionRequest(ticketId);
+      await this.#hostActions.relayRequest(ticketId);
     }
     this.#notifyInlineWaiters(ticketId);
     await this.#broadcastTickets(context);
@@ -6599,7 +6607,7 @@ export class KuloHub implements OrchestratorController {
             context,
           );
           if (resolved) {
-            const exec = await executeApprovedHostAction(this.#hostActionExecDeps(), resolved, { actorLabel: "用户", context });
+            const exec = await executeApprovedHostAction(this.#hostActions.execDeps(), resolved, { actorLabel: "用户", context });
             effectiveText = exec.status === "executed"
               ? `${exec.summaryText}\n请基于实际执行结果继续验证并完成当前任务。`
               : exec.status === "failed"
@@ -8262,452 +8270,6 @@ export class KuloHub implements OrchestratorController {
     };
   }
 
-  async #resolveHostActionTargetEnv(
-    caller: HostActionCaller,
-    requestedEnvId: string | undefined,
-    context: Context,
-  ): Promise<{ envId: string; envName: string }> {
-    let envId: string;
-    if (caller.kind === "worker") {
-      envId = caller.envId;
-    } else if (requestedEnvId?.trim()) {
-      envId = requestedEnvId.trim();
-    } else {
-      const state = await this.harness.snapshot(KuloStateDoc, context);
-      const topicId = state?.conversationToTopic?.[String(caller.conversationId)];
-      const topic = topicId ? state?.topics?.[topicId] : undefined;
-      if (topic?.projectId) {
-        const project = await this.projects.get(topic.projectId, context).catch(() => undefined);
-        envId = project?.deviceId ?? this.envManager.pickDefaultEnvId();
-      } else if (topic?.targetDeviceId) {
-        envId = topic.targetDeviceId;
-      } else {
-        envId = this.envManager.pickDefaultEnvId();
-      }
-    }
-    const descriptor = this.envManager.getEnvDescriptor(envId);
-    if (!descriptor) {
-      throw new Error(`找不到执行设备 '${envId}'。`);
-    }
-    if (!descriptor.online) {
-      throw new Error(`目标设备 '${descriptor.name}' (${envId}) 当前离线。`);
-    }
-    if (descriptor.executionKind === "native-device") {
-      throw new Error(`设备 '${descriptor.name}' 是 Android 手机，不支持电脑本机操作。`);
-    }
-    return { envId, envName: descriptor.name || envId };
-  }
-
-  async #hostActionInspect(
-    caller: HostActionCaller,
-    input: {
-      envId?: string;
-      scope: "summary" | "processes" | "ports";
-      filter?: string;
-      paths?: string[];
-      limit?: number;
-    },
-    context: Context,
-  ) {
-    const { envId, envName } = await this.#resolveHostActionTargetEnv(caller, input.envId, context);
-    const result = await this.envManager.requestHostAction(
-      envId,
-      {
-        kind: "inspect",
-        scope: input.scope,
-        ...(input.filter ? { filter: input.filter } : {}),
-        ...(input.paths?.length ? { paths: input.paths } : {}),
-        ...(input.limit !== undefined ? { limit: input.limit } : {}),
-      },
-      context.abortSignal,
-    );
-    return { envId, envName, result };
-  }
-
-  async #hostActionRun(
-    caller: HostActionCaller,
-    input: {
-      envId?: string;
-      summary: string;
-      commands: string[];
-      cwd?: string;
-      timeoutMs?: number;
-    },
-    context: Context,
-  ): Promise<HostActionRunOutcome> {
-    if (caller.kind === "worker" && caller.readOnly) {
-      throw new Error("当前角色为只读模式，不能执行本机变更命令。");
-    }
-    validateHostMaintenanceCommands(input.commands);
-    const { envId, envName } = await this.#resolveHostActionTargetEnv(caller, input.envId, context);
-
-    // Main Agent holds full personal-assistant authority and executes host actions directly.
-    if (caller.kind === "orchestrator") {
-      const result = await this.envManager.requestHostAction(
-        envId,
-        {
-          kind: "run",
-          commands: input.commands,
-          ...(input.cwd ? { cwd: input.cwd } : {}),
-          ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-        },
-        context.abortSignal,
-      );
-      return { status: "executed", envId, envName, result };
-    }
-
-    if (caller.isSubagent) {
-      throw new Error("子智能体不能直接申请本机运维操作；请将待执行的命令清单返回给父级 Worker，由父级 Worker 统一提交给主智能体研判。");
-    }
-
-    const originConversationId = caller.originConversationId || Number(ROOT_CONVERSATION_ID);
-    const state = await this.harness.snapshot(KuloStateDoc, context);
-    const topicId = state?.conversationToTopic?.[String(originConversationId)];
-    const topic = topicId ? state?.topics?.[topicId] : undefined;
-    if (topic?.deletedAt) {
-      throw new Error("所属会话已删除。");
-    }
-
-    const fingerprint = hostActionFingerprint({
-      envId,
-      commands: input.commands,
-      cwd: input.cwd,
-      ticketId: caller.ticketId,
-      runEpoch: caller.runEpoch,
-      requestId: caller.callId,
-    });
-    const existing = await this.actionConfirmations.lookup(originConversationId, "host_action", fingerprint, context);
-    if (existing?.status === "approved" && !existing.executed) {
-      const result = await this.envManager.requestHostAction(
-        envId,
-        {
-          kind: "run",
-          commands: input.commands,
-          ...(input.cwd ? { cwd: input.cwd } : {}),
-          ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-        },
-        context.abortSignal,
-      );
-      await this.actionConfirmations.markExecuted(existing.id, context);
-      return { status: "executed", envId, envName, result };
-    }
-
-    const redactedSummary = this.connectionManager.redact(input.summary);
-    const confirmation = await this.actionConfirmations.createPendingOrchestratorRequest({
-      conversationId: originConversationId,
-      kind: "host_action",
-      fingerprint,
-      payload: {
-        kind: "host_action",
-        envId,
-        envName,
-        summary: redactedSummary,
-        commands: [...input.commands],
-        ...(input.cwd ? { cwd: input.cwd } : {}),
-        ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-        ticketId: caller.ticketId,
-        runEpoch: caller.runEpoch,
-        requestId: caller.callId,
-      },
-    }, context);
-
-    const now = Date.now();
-    await this.harness.commit(async (tx) => {
-      const doc = await tx.doc(KuloStateDoc);
-      const ticket = doc.tickets[caller.ticketId];
-      if (!ticket || ticket.status !== "running" || ticket.runEpoch !== caller.runEpoch) return;
-      ticket.waiting = {
-        reason: "coordinator",
-        since: now,
-        detail: redactedSummary,
-        waitToken: `host-action-req:${confirmation.id}`,
-        requestId: confirmation.id,
-      };
-      ticket.updatedAt = now;
-    }, context);
-    this.#notifyInlineWaiters(caller.ticketId);
-    await this.#broadcastTickets(context);
-
-    return {
-      status: "awaiting_orchestrator_decision",
-      requestId: confirmation.id,
-      envId,
-      envName,
-      message: "已将本机操作申请提交给主智能体研判，当前任务已挂起等待裁决。",
-    };
-  }
-
-  async #relayHostActionRequest(ticketId: string): Promise<void> {
-    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-    const ticket = state?.tickets[ticketId];
-    if (
-      !ticket ||
-      ticket.status !== "waiting" ||
-      ticket.waiting?.reason !== "coordinator" ||
-      !ticket.waiting.waitToken?.startsWith("host-action-req:")
-    ) {
-      return;
-    }
-    const requestId = ticket.waiting.waitToken.slice("host-action-req:".length);
-    const confirmation = await this.actionConfirmations.getById(requestId, BACKGROUND_CONTEXT);
-    if (!confirmation || confirmation.status !== "pending_orchestrator" || confirmation.payload.kind !== "host_action") {
-      return;
-    }
-    const origin = await this.harness.conversation((ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) as ConversationId, BACKGROUND_CONTEXT);
-    if (!origin) return;
-    const payload = confirmation.payload;
-    const redactedCommands = payload.commands.map((cmd) => this.connectionManager.redact(cmd));
-    const message = formatHostActionRequestMessage({
-      requestId: confirmation.id,
-      ticketId: ticket.id,
-      title: ticket.title,
-      envId: payload.envId,
-      envName: payload.envName,
-      cwd: payload.cwd,
-      summary: this.connectionManager.redact(payload.summary),
-      commands: redactedCommands,
-    });
-    await this.harness.commit(async (tx) => {
-      await injectEventToolsInTx(tx, origin.id, ["kulo_host_action_decide"]);
-      return submitAutomaticChatInput(tx, origin, {
-        type: "input",
-        content: this.connectionManager.redact(message),
-        whenBusy: "followUp",
-        requestId: `kulo:host-action-request:${confirmation.id}`,
-      });
-    }, BACKGROUND_CONTEXT);
-    this.#runtimeGates.resumeIfNotRecovering();
-    await this.#broadcastTickets(BACKGROUND_CONTEXT);
-  }
-
-  async #hostActionDecide(
-    caller: Extract<HostActionCaller, { kind: "orchestrator" }>,
-    input: {
-      requestId: string;
-      decision: "approve" | "deny" | "ask_user";
-      reason?: string;
-    },
-    context: Context,
-  ): Promise<HostActionDecideOutcome> {
-    const pending = await this.actionConfirmations.getById(input.requestId, context);
-    if (!pending || pending.payload.kind !== "host_action" || pending.conversationId !== caller.conversationId) {
-      throw new Error(`找不到属于当前会话的本机操作申请 '${input.requestId}'。`);
-    }
-    if (pending.executed || (pending.status !== "pending_orchestrator" && pending.status !== "pending")) {
-      return {
-        status: "already_resolved",
-        requestId: pending.id,
-        message: "该本机操作申请已被处理完成。",
-      };
-    }
-    const payload = pending.payload;
-
-    if (input.decision === "ask_user") {
-      const state = await this.harness.snapshot(KuloStateDoc, context);
-      const topicId = state?.conversationToTopic?.[String(caller.conversationId)];
-      const redactedSummary = this.connectionManager.redact(payload.summary);
-      const redactedReason = input.reason ? this.connectionManager.redact(input.reason) : undefined;
-      const redactedCommands = payload.commands.map((cmd) => this.connectionManager.redact(cmd));
-      const built = buildHostActionConfirmCard({
-        envName: payload.envName,
-        summary: redactedSummary,
-        commands: redactedCommands,
-        cwd: payload.cwd,
-        reason: redactedReason,
-      });
-      const { confirmation } = await this.actionConfirmations.attachCardToRequest(
-        pending.id,
-        {
-          ...(topicId ? { topicId } : {}),
-          ...(payload.ticketId ? { ticketId: payload.ticketId } : {}),
-          callId: caller.callId,
-          cardInput: built.input,
-          logicalIds: built.logicalIds,
-        },
-        context,
-      );
-      if (payload.ticketId) {
-        const now = Date.now();
-        await this.harness.commit(async (tx) => {
-          const doc = await tx.doc(KuloStateDoc);
-          const ticket = doc.tickets[payload.ticketId!];
-          if (!ticket || !isTicketUnfinished(ticket)) return;
-          ticket.waiting = {
-            reason: "user",
-            since: now,
-            detail: redactedReason ? `${redactedSummary}（${redactedReason}）` : redactedSummary,
-            waitToken: `host-action:${confirmation.cardId}`,
-            cardId: confirmation.cardId,
-            requestId: confirmation.id,
-            options: [
-              { id: "confirm", label: "允许", tone: "primary" },
-              { id: "cancel", label: "拒绝", tone: "secondary" },
-            ],
-          };
-          ticket.updatedAt = now;
-        }, context);
-        await this.#broadcastTickets(context);
-      }
-      return {
-        status: "awaiting_user_confirmation",
-        requestId: confirmation.id,
-        cardId: confirmation.cardId!,
-        envId: payload.envId,
-        envName: payload.envName,
-        message: "已向用户弹出本机操作确认卡片（含允许/拒绝/手动输入），对话不阻塞；若用户直接在聊天中回复，你可以再次调用 kulo_host_action_decide 直接执行并自动收口该卡片。",
-      };
-    }
-
-    const openCardId = pending.cardId;
-    if (input.decision === "deny") {
-      const resolved = await this.actionConfirmations.resolveProgrammatically(
-        pending.id,
-        {
-          status: "denied",
-          selectedChoiceId: "cancel",
-          resultSummary: openCardId ? "已通过对话拒绝" : "主智能体已拒绝",
-          markExecuted: true,
-        },
-        context,
-      );
-      if (!resolved) {
-        return { status: "already_resolved", requestId: pending.id, message: "该本机操作申请已被处理完成。" };
-      }
-      if (payload.ticketId) {
-        const reasonText = input.reason ? this.connectionManager.redact(input.reason) : "主智能体评估后拒绝了该本机操作。";
-        await this.steerTicket({
-          ticketId: payload.ticketId,
-          commandId: `host-action:${resolved.id}:denied`,
-          text: `主智能体拒绝了在 ${payload.envName} (${payload.envId}) 上执行的本机操作「${payload.summary}」。原因/指引：${reasonText}\n请勿重复同一操作，按指引调整方案或向主智能体汇报。`,
-          originConversationId: caller.conversationId,
-        }, context);
-      }
-      return {
-        status: "denied",
-        requestId: resolved.id,
-        ...(payload.ticketId ? { ticketId: payload.ticketId } : {}),
-        ...(openCardId ? { settledCardId: openCardId } : {}),
-        message: "已拒绝该本机操作并通知 Worker 调整方案。",
-      };
-    }
-
-    // decision === "approve"
-    if (!openCardId) {
-      for (const cmd of payload.commands) {
-        const floor = classifyShellSafetyFloor(cmd);
-        if (floor.verdict !== "safe") {
-          throw new Error(
-            floor.verdict === "block"
-              ? `本机操作命令触发毁灭性安全底线（${floor.reason ?? "catastrophic"}），禁止放行。`
-              : `本机操作命令包含无法静态完整解析的 Shell 语法（${floor.reason ?? "unreadable"}），禁止主智能体静默自动放行；请改用 decision='ask_user' 由用户亲自确认。`,
-          );
-        }
-      }
-    }
-    const resolved = await this.actionConfirmations.resolveProgrammatically(
-      pending.id,
-      {
-        status: "approved",
-        selectedChoiceId: "confirm",
-        resultSummary: openCardId ? "已通过对话允许" : "主智能体已允许",
-        markExecuted: false,
-      },
-      context,
-    );
-    if (!resolved) {
-      return { status: "already_resolved", requestId: pending.id, message: "该本机操作申请已被处理完成。" };
-    }
-    const exec = await executeApprovedHostAction(this.#hostActionExecDeps(), resolved, { actorLabel: "主智能体", context });
-    if (exec.status === "already_dispatched") {
-      return { status: "already_resolved", requestId: resolved.id, message: "该本机操作申请已发出或已处理完成，切勿重复执行。" };
-    }
-    if (exec.status === "failed") {
-      throw exec.error;
-    }
-    if (payload.ticketId) {
-      await this.steerTicket({
-        ticketId: payload.ticketId,
-        commandId: `host-action:${resolved.id}:approved`,
-        text: `${exec.summaryText}\n请基于实际执行结果继续验证并完成当前任务。`,
-        originConversationId: caller.conversationId,
-      }, context);
-    }
-    return {
-      status: "executed",
-      requestId: resolved.id,
-      envId: payload.envId,
-      envName: payload.envName,
-      result: exec.result,
-      ...(openCardId ? { settledCardId: openCardId } : {}),
-      message: "已批准并执行完成，Worker 已恢复继续推进（如无需向用户汇报，可直接回复 [COORDINATOR_OK]）。",
-    };
-  }
-
-  #hostActionExecDeps(): ExecuteApprovedHostActionDeps {
-    return {
-      actionConfirmations: this.actionConfirmations,
-      envManager: this.envManager,
-      redact: (text) => this.connectionManager.redact(text),
-      recordOutwardAction: (ticketId, summary, context) =>
-        this.#recordTicketOutwardAction(ticketId, undefined, "host_action", summary, context),
-    };
-  }
-
-  async #executeResolvedHostAction(
-    resolved: PendingActionConfirmation,
-    conversationId: number,
-  ): Promise<void> {
-    if (resolved.payload.kind !== "host_action" || effectiveConfirmationEffect(resolved) !== "none") return;
-    const payload = resolved.payload;
-    const refId = resolved.cardId ?? resolved.id;
-    if (resolved.status !== "approved") {
-      await this.actionConfirmations.markOutcome(resolved.id, "confirmed");
-      if (payload.ticketId) {
-        try {
-          await this.steerTicket({
-            ticketId: payload.ticketId,
-            commandId: `host-action:${refId}:denied`,
-            text: `用户拒绝了在 ${payload.envName} (${payload.envId}) 上执行的本机操作「${payload.summary}」。请勿再次尝试同一操作，直接按现状向主智能体汇报。`,
-          });
-        } catch (error) {
-          console.warn("[KuloConfirmation] Failed to resume worker after host action denial", error instanceof Error ? error.message : String(error));
-        }
-      }
-      return;
-    }
-
-    const exec = await executeApprovedHostAction(this.#hostActionExecDeps(), resolved, { actorLabel: "用户" });
-    if (exec.status === "already_dispatched") return;
-    const summaryText = exec.summaryText;
-
-    if (payload.ticketId) {
-      try {
-        await this.steerTicket({
-          ticketId: payload.ticketId,
-          commandId: `host-action:${refId}:approved`,
-          text: `${summaryText}\n请基于实际执行结果继续验证并完成当前任务。`,
-        });
-      } catch (error) {
-        console.warn("[KuloConfirmation] Failed to resume worker after host action execution", error instanceof Error ? error.message : String(error));
-      }
-      return;
-    }
-
-    const origin = await this.harness.conversation(conversationId as ConversationId, BACKGROUND_CONTEXT);
-    if (origin) {
-      await this.harness.commit(
-        (tx) =>
-          submitAutomaticChatInput(tx, origin, {
-            type: "input",
-            content: `[KULO_HOST_ACTION_RESULT]\n${summaryText}\n请用当前对话语言向用户简洁反馈实际执行结果，不要暴露内部卡片或工单编号。`,
-            whenBusy: "followUp",
-            requestId: `kulo:host-action-result:${refId}`,
-          }),
-        BACKGROUND_CONTEXT,
-      );
-    }
-  }
-
   async #reconcileDispatchedConfirmations(context: Context = BACKGROUND_CONTEXT): Promise<void> {
     const recovered = await this.actionConfirmations.reconcileDispatchedOnStartup(context);
     for (const record of recovered) {
@@ -8861,7 +8423,7 @@ export class KuloHub implements OrchestratorController {
       return;
     }
     if (resolved.payload.kind === "host_action") {
-      const task = this.#executeResolvedHostAction(resolved, conversationId).catch((error: unknown) => {
+      const task = this.#hostActions.executeResolvedHostAction(resolved, conversationId).catch((error: unknown) => {
         console.warn("[KuloConfirmation] Host action execution failed", error instanceof Error ? error.message : String(error));
       });
       let timer: NodeJS.Timeout | undefined;
