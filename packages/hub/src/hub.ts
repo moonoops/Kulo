@@ -278,6 +278,7 @@ import {
   resolveSteerDirectStopReason,
   type AdmittedTicketStop,
 } from "./ticket-stop.js";
+import { executeApprovedHostAction, type ExecuteApprovedHostActionDeps } from "./host-action-execution.js";
 import type { HostActionCaller, HostActionController, HostActionDecideOutcome, HostActionRunOutcome } from "./tools-host-action.js";
 import type { AskUserForTicketParams } from "./tools-router.js";
 import { API_KEY_ORIGIN_ENV } from "./providers.js";
@@ -8348,26 +8349,16 @@ export class KuloHub implements OrchestratorController {
         if (params.decisionOptionId === "confirm") {
           const resolved = await this.actionConfirmations.resolveProgrammatically(
             pending.id,
-            { status: "approved", selectedChoiceId: "confirm", resultSummary: "已在任务详情允许", markExecuted: true },
+            { status: "approved", selectedChoiceId: "confirm", resultSummary: "已在任务详情允许", markExecuted: false },
             context,
           );
           if (resolved) {
-            if (payload.ticketId) {
-              await this.#recordTicketOutwardAction(payload.ticketId, undefined, "host_action", `host_action:${payload.summary}`, context);
-            }
-            try {
-              const result = await this.envManager.requestHostAction(payload.envId, {
-                kind: "run",
-                commands: payload.commands,
-                ...(payload.cwd ? { cwd: payload.cwd } : {}),
-                ...(payload.timeoutMs !== undefined ? { timeoutMs: payload.timeoutMs } : {}),
-              });
-              const safeOut = this.connectionManager.redact(JSON.stringify(result));
-              effectiveText = `用户已批准并在 ${payload.envName} (${payload.envId}) 上执行完成本机操作「${payload.summary}」。执行结果：\n${safeOut}\n请基于实际执行结果继续验证并完成当前任务。`;
-            } catch (error) {
-              const errMsg = this.connectionManager.redact(error instanceof Error ? error.message : "本机操作执行失败");
-              effectiveText = `用户已批准在 ${payload.envName} (${payload.envId}) 上执行本机操作「${payload.summary}」，但执行失败：${errMsg}\n请基于实际执行结果继续处理或向主智能体汇报。`;
-            }
+            const exec = await executeApprovedHostAction(this.#hostActionExecDeps(), resolved, { actorLabel: "用户", context });
+            effectiveText = exec.status === "executed"
+              ? `${exec.summaryText}\n请基于实际执行结果继续验证并完成当前任务。`
+              : exec.status === "failed"
+                ? `${exec.summaryText}\n请基于实际执行结果继续处理或向主智能体汇报。`
+                : `本机操作「${payload.summary}」已发出或已处理完成（未重复执行）。请先通过只读方式核验当前状态再继续。`;
           }
         } else if (params.decisionOptionId === "cancel") {
           await this.actionConfirmations.resolveProgrammatically(
@@ -10469,45 +10460,18 @@ export class KuloHub implements OrchestratorController {
     if (!resolved) {
       return { status: "already_resolved", requestId: pending.id, message: "该本机操作申请已被处理完成。" };
     }
-    const dispatched = await this.actionConfirmations.markDispatched(resolved.id, context);
-    if (!dispatched) {
+    const exec = await executeApprovedHostAction(this.#hostActionExecDeps(), resolved, { actorLabel: "主智能体", context });
+    if (exec.status === "already_dispatched") {
       return { status: "already_resolved", requestId: resolved.id, message: "该本机操作申请已发出或已处理完成，切勿重复执行。" };
     }
-    if (payload.ticketId) {
-      await this.#recordTicketOutwardAction(payload.ticketId, undefined, "host_action", `host_action:${payload.summary}`, context);
-    }
-    let result: Awaited<ReturnType<EnvManager["requestHostAction"]>>;
-    try {
-      result = await this.envManager.requestHostAction(
-        payload.envId,
-        {
-          kind: "run",
-          commands: payload.commands,
-          ...(payload.cwd ? { cwd: payload.cwd } : {}),
-          ...(payload.timeoutMs !== undefined ? { timeoutMs: payload.timeoutMs } : {}),
-        },
-        context.abortSignal,
-      );
-      await this.actionConfirmations.markOutcome(resolved.id, "confirmed", undefined, context);
-    } catch (error) {
-      const errMsg = this.connectionManager.redact(error instanceof Error ? error.message : "本机操作执行失败");
-      const errCode = (error as { code?: unknown })?.code;
-      const preDispatch = errCode === "env_offline" || errCode === "env_unavailable";
-      await this.actionConfirmations.markOutcome(
-        resolved.id,
-        preDispatch ? "failed_pre_dispatch" : "unknown",
-        errMsg,
-        context,
-      );
-      throw error;
+    if (exec.status === "failed") {
+      throw exec.error;
     }
     if (payload.ticketId) {
-      const safeOut = this.connectionManager.redact(JSON.stringify(result));
-      const summaryText = `主智能体已批准并在 ${payload.envName} (${payload.envId}) 上执行完成本机操作「${payload.summary}」。执行结果：\n${safeOut}`;
       await this.steerTicket({
         ticketId: payload.ticketId,
         commandId: `host-action:${resolved.id}:approved`,
-        text: `${summaryText}\n请基于实际执行结果继续验证并完成当前任务。`,
+        text: `${exec.summaryText}\n请基于实际执行结果继续验证并完成当前任务。`,
         originConversationId: caller.conversationId,
       }, context);
     }
@@ -10516,9 +10480,19 @@ export class KuloHub implements OrchestratorController {
       requestId: resolved.id,
       envId: payload.envId,
       envName: payload.envName,
-      result,
+      result: exec.result,
       ...(openCardId ? { settledCardId: openCardId } : {}),
       message: "已批准并执行完成，Worker 已恢复继续推进（如无需向用户汇报，可直接回复 [COORDINATOR_OK]）。",
+    };
+  }
+
+  #hostActionExecDeps(): ExecuteApprovedHostActionDeps {
+    return {
+      actionConfirmations: this.actionConfirmations,
+      envManager: this.envManager,
+      redact: (text) => this.connectionManager.redact(text),
+      recordOutwardAction: (ticketId, summary, context) =>
+        this.#recordTicketOutwardAction(ticketId, undefined, "host_action", summary, context),
     };
   }
 
@@ -10545,36 +10519,9 @@ export class KuloHub implements OrchestratorController {
       return;
     }
 
-    const claimed = await this.actionConfirmations.markDispatched(resolved.id);
-    if (!claimed) return;
-    if (payload.ticketId) {
-      await this.#recordTicketOutwardAction(payload.ticketId, undefined, "host_action", `host_action:${payload.summary}`);
-    }
-
-    let summaryText: string;
-    try {
-      const result = await this.envManager.requestHostAction(payload.envId, {
-        kind: "run",
-        commands: payload.commands,
-        ...(payload.cwd ? { cwd: payload.cwd } : {}),
-        ...(payload.timeoutMs !== undefined ? { timeoutMs: payload.timeoutMs } : {}),
-      });
-      await this.actionConfirmations.markOutcome(resolved.id, "confirmed");
-      const safeOut = this.connectionManager.redact(JSON.stringify(result));
-      summaryText = `用户已批准并在 ${payload.envName} (${payload.envId}) 上执行完成本机操作「${payload.summary}」。执行结果：\n${safeOut}`;
-    } catch (error) {
-      const errMsg = this.connectionManager.redact(error instanceof Error ? error.message : "本机操作执行失败");
-      const errCode = (error as { code?: unknown })?.code;
-      const preDispatch = errCode === "env_offline" || errCode === "env_unavailable";
-      await this.actionConfirmations.markOutcome(
-        resolved.id,
-        preDispatch ? "failed_pre_dispatch" : "unknown",
-        errMsg,
-      );
-      summaryText = preDispatch
-        ? `用户已批准在 ${payload.envName} (${payload.envId}) 上执行本机操作「${payload.summary}」，但目标设备当时离线未发出：${errMsg}`
-        : `用户已批准在 ${payload.envName} (${payload.envId}) 上执行本机操作「${payload.summary}」，命令已发出但回执未决（未自动重放）：${errMsg}。请先通过只读命令核验实际状态，切勿盲目重复执行。`;
-    }
+    const exec = await executeApprovedHostAction(this.#hostActionExecDeps(), resolved, { actorLabel: "用户" });
+    if (exec.status === "already_dispatched") return;
+    const summaryText = exec.summaryText;
 
     if (payload.ticketId) {
       try {

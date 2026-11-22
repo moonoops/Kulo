@@ -24,7 +24,8 @@ import {
 } from "@kulo/env";
 import { KuloStateDoc, type KuloHub } from "@kulo/hub";
 import { WebSocketServer } from "ws";
-import { buildHostActionConfirmCard } from "../packages/hub/src/action-confirmations.js";
+import { buildHostActionConfirmCard, type PendingActionConfirmation } from "../packages/hub/src/action-confirmations.js";
+import { executeApprovedHostAction } from "../packages/hub/src/host-action-execution.js";
 import { openTestHub } from "./helpers/secure-hub.js";
 
 const dirs: string[] = [];
@@ -635,4 +636,92 @@ describe("Host action Main-Agent authority, smart judgment, escalation cards & c
     expect(workerSawDenial).toBe(true);
     expect(fs.existsSync(markerDenied)).toBe(false);
   }, 25_000);
+
+  it("enforces durable markDispatched -> markOutcome and abortSignal forwarding in executeApprovedHostAction", async () => {
+    const baseRecord: PendingActionConfirmation = {
+      id: "confirm-ha-1",
+      fingerprint: "fp-1",
+      status: "approved",
+      effect: "none",
+      actionMap: {},
+      createdAt: 1,
+      updatedAt: 1,
+      payload: {
+        kind: "host_action",
+        ticketId: "T-0099",
+        envId: "local",
+        envName: "Local Mac",
+        summary: "重启服务",
+        commands: ["echo ok"],
+      },
+    };
+    const events: string[] = [];
+    const controller = new AbortController();
+    let seenSignal: AbortSignal | undefined;
+
+    // 1. Success path: markDispatched -> outward action -> requestHostAction(signal) -> markOutcome(confirmed)
+    const okRes = await executeApprovedHostAction(
+      {
+        actionConfirmations: {
+          markDispatched: async (id) => { events.push(`dispatched:${id}`); return true; },
+          markOutcome: async (id, outcome) => { events.push(`outcome:${id}:${outcome}`); return true; },
+        },
+        envManager: {
+          requestHostAction: async (_envId, _req, signal) => {
+            seenSignal = signal;
+            events.push("exec");
+            return { ok: true, kind: "run", steps: [] } as never;
+          },
+        },
+        redact: (s) => s,
+        recordOutwardAction: async (ticketId, summary) => { events.push(`outward:${ticketId}:${summary}`); },
+      },
+      baseRecord,
+      { actorLabel: "用户", context: { ...BACKGROUND_CONTEXT, abortSignal: controller.signal } },
+    );
+    expect(okRes.status).toBe("executed");
+    expect(seenSignal).toBe(controller.signal);
+    expect(events).toEqual([
+      "dispatched:confirm-ha-1",
+      "outward:T-0099:host_action:重启服务",
+      "exec",
+      "outcome:confirm-ha-1:confirmed",
+    ]);
+
+    // 2. Duplicate dispatch guard refuses re-execution when markDispatched returns false
+    const dupExec = vi.fn();
+    const dupRes = await executeApprovedHostAction(
+      {
+        actionConfirmations: {
+          markDispatched: async () => false,
+          markOutcome: async () => true,
+        },
+        envManager: { requestHostAction: dupExec },
+        redact: (s) => s,
+        recordOutwardAction: async () => {},
+      },
+      baseRecord,
+      { actorLabel: "用户" },
+    );
+    expect(dupRes.status).toBe("already_dispatched");
+    expect(dupExec).not.toHaveBeenCalled();
+
+    // 3. Transport failure after dispatch marks outcome as "unknown" (never auto-replayed)
+    const outcomes: string[] = [];
+    const failRes = await executeApprovedHostAction(
+      {
+        actionConfirmations: {
+          markDispatched: async () => true,
+          markOutcome: async (_id, outcome) => { outcomes.push(outcome); return true; },
+        },
+        envManager: { requestHostAction: async () => { throw new Error("socket reset"); } },
+        redact: (s) => s,
+        recordOutwardAction: async () => {},
+      },
+      baseRecord,
+      { actorLabel: "用户" },
+    );
+    expect(failRes.status).toBe("failed");
+    expect(outcomes).toEqual(["unknown"]);
+  });
 });
