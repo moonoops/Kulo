@@ -46,6 +46,77 @@ export function beginTicketRecovery(ticket: TicketRecord, now: number): TicketRe
   return ticket.recovery;
 }
 
+export interface LegacyFailureRecoveryPlanItem {
+  ticketId: string;
+  startedAt: number;
+  originConversationId?: number;
+}
+
+/**
+ * Pure transaction helper: resolves superseded ready tickets and attaches
+ * recovery lineages to legacy failed tickets that do not yet have recovery state.
+ * Returns the failure-recovery tasks to enqueue in the same transaction.
+ */
+export function planLegacyFailureRecovery(
+  state: KuloDurableState,
+  isTopicDeleted: (topicId: string | undefined) => boolean,
+  now: number,
+): LegacyFailureRecoveryPlanItem[] {
+  for (const ticket of Object.values(state.tickets)) {
+    if (ticket.status === "ready") resolveSupersededTickets(state, ticket, now);
+  }
+  const pending = Object.values(state.tickets).filter(
+    (ticket) => ticket.status === "failed" && !ticket.recovery,
+  );
+  pending.sort((a, b) => a.createdAt - b.createdAt);
+  const toSchedule: LegacyFailureRecoveryPlanItem[] = [];
+  for (const ticket of pending) {
+    if (
+      ticket.status !== "failed" ||
+      ticket.recovery ||
+      ticket.autoRecoverySuppressed ||
+      isTopicDeleted(ticket.originTopicId) ||
+      state.topics?.[ticket.originTopicId ?? "root"]?.deletedAt
+    ) {
+      continue;
+    }
+    const existing = recoveryLeaf(state, ticket).recovery;
+    if (existing) {
+      ticket.recovery = { ...existing };
+      continue;
+    }
+    const recovery = beginTicketRecovery(ticket, now);
+    const seen = new Set([ticket.id]);
+    const ancestors = [...seen];
+    while (ancestors.length) {
+      const id = ancestors.pop()!;
+      for (const related of Object.values(state.tickets)) {
+        if (
+          !seen.has(related.id) &&
+          related.supersedes?.includes(id) &&
+          sameRecoveryScope(ticket, related) &&
+          related.status !== "closed" &&
+          related.status !== "stopped"
+        ) {
+          seen.add(related.id);
+          ancestors.push(related.id);
+          if (!related.recovery && !related.autoRecoverySuppressed) {
+            related.recovery = { ...recovery };
+          }
+        }
+      }
+    }
+    toSchedule.push({
+      ticketId: ticket.id,
+      startedAt: recovery.startedAt,
+      ...(ticket.originConversationId !== undefined
+        ? { originConversationId: ticket.originConversationId }
+        : {}),
+    });
+  }
+  return toSchedule;
+}
+
 export function sameRecoveryScope(a: Pick<TicketRecord, "originTopicId" | "projectId">, b: Pick<TicketRecord, "originTopicId" | "projectId">): boolean {
   return (a.originTopicId ?? "root") === (b.originTopicId ?? "root") && a.projectId === b.projectId;
 }

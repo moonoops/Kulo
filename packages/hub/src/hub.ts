@@ -50,8 +50,8 @@ import { EnvManager, canonicalExecutionPath, isApplicationPrivatePath, validateH
 import { lazyProjectEnvironment } from "./project-env.js";
 import { createAndroidToolsExtension, type AndroidToolScope } from "./tools-android.js";
 import { KuloAndroidNotifications } from "./android-notifications.js";
-import { appendTicketOutwardAction, beginTicketRecovery, createFailureRecoveryTask, recoveryLeaf, sameRecoveryScope,
-  recoveryWaitSummary, isSilentRecoveryFailure, resolveSupersededTickets, assertRecoveryGuard, MAX_RECOVERY_ATTEMPTS, RECOVERY_REVIEW_INTERVAL_MS } from "./task-recovery.js";
+import { appendTicketOutwardAction, createFailureRecoveryTask, sameRecoveryScope,
+  isSilentRecoveryFailure, resolveSupersededTickets, assertRecoveryGuard } from "./task-recovery.js";
 import { prepareStateStorage } from "./state-storage.js";
 import { HubStateOwner } from "./state-owner.js";
 import { KuloConnections } from "./connections.js";
@@ -288,6 +288,7 @@ import {
 } from "./hub-display-projection.js";
 export { extractDisplayMessages, extractLiveState };
 import { computeHubUsageStats } from "./hub-usage-stats.js";
+import { HubFailureRecovery, HubWatchdog } from "./hub-watchdog.js";
 import { createOrchestratorCodingGuardExtension } from "./orchestrator-coding-guard.js";
 import type { HostActionCaller, HostActionController, HostActionDecideOutcome, HostActionRunOutcome } from "./tools-host-action.js";
 import type { AskUserForTicketParams } from "./tools-router.js";
@@ -307,11 +308,8 @@ import {
   createOrchestratorSections,
   formatConnectionRequestMessage,
   formatHostActionRequestMessage,
-  formatRecoveryExhaustedRelayMessage,
   formatWorkerInitialPrompt,
-  formatWorkerRecoveryMessage,
   formatWorkerRelayMessage,
-  formatWorkerWatchdogMessage,
 } from "./prompts.js";
 import { createWorkerTicketTask } from "./scheduler.js";
 import { bindDispatchedAttachments, createDispatchedTicket, type TicketDispatchDraft } from "./ticket-dispatch.js";
@@ -665,14 +663,6 @@ const RelationshipEvidenceDoc = defineDoc<(RelationshipEvidenceProgress & {
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 16,
 });
 
-interface TrackedWorkerRuntime {
-  ticketId: string;
-  workerConversationId: number;
-  runEpoch: number;
-  lastActivityAt: number;
-  detachObserver?: () => void;
-}
-
 /**
  * KuloHub: Durable SuperAgent Engine combining Pi Durable (SQLite) + Pi Env + Identity Documents + Hindsight.
  */
@@ -780,27 +770,23 @@ export class KuloHub implements OrchestratorController {
   readonly #topicTitles: KuloTopicTitles;
   readonly #cardSnapshots = new Map<string, UiCardSnapshot>();
   readonly #searchHistories = new Map<number, SearchEvidenceHistory>();
-  readonly #trackedWorkers = new Map<string, TrackedWorkerRuntime>();
+  readonly #watchdog: HubWatchdog;
+  readonly #failureRecovery: HubFailureRecovery;
   readonly #computerSessions = new Map<string, { ticketId: string; envId: string; tool: "browser" | "desktop"; sessionId: string; conversationId: number; runEpoch: number; app?: string }>();
   readonly #computerHandoffs = new ActiveComputerHandoffTracker();
   readonly #orchestratorBrowserSessions = new Map<string, { topicId: string; conversationId: number; envId: string; sessionId: string; idleTimer: ReturnType<typeof setTimeout> }>();
   readonly #orchestratorBrowserIdleMs: number;
-  readonly #lastWatchdogAlertAt = new Map<string, number>();
-  readonly #watchdogCheckIntervalMs: number;
   readonly #verifyClientReceipts = new Map<string, import("@kulo/protocol").ExternalAgentVerifyClientResult>();
-  readonly #watchdogStallMsOverride?: number;
   readonly deviceJoinStaging: DeviceJoinStaging;
   readonly assistantEchoSuppressor = new AssistantEchoSuppressor();
   #deviceController: HubDeviceController | undefined;
 
-  #watchdogTimer: ReturnType<typeof setInterval> | null = null;
   #topicAutoArchiveTimer: ReturnType<typeof setInterval> | null = null;
   #uploadCleanupTimer: ReturnType<typeof setInterval> | null = null;
   #topicAutoArchiveRun: Promise<TopicSummary[]> | null = null;
   readonly #topicActivityUpdates = new Map<string, Promise<void>>();
   #cleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
   #cleanupRetryDelayMs = 500;
-  #watchdogTickInFlight = false;
   #liveSettings: KuloDurableSettings;
   #recovering = true;
   #closed = false;
@@ -942,12 +928,30 @@ export class KuloHub implements OrchestratorController {
         }),
       syncSubagentConversation: (conv, ticket, sub, ctx) => this.#syncSingleSubagentConversation(conv, ticket, sub, ctx),
       touchParentActivity: (ticketId) => {
-        const tracked = this.#trackedWorkers.get(ticketId);
-        if (tracked) tracked.lastActivityAt = Date.now();
+        this.#watchdog.touchActivity(ticketId);
       },
     });
     this.#workerTicketTask = params.workerTicketTask;
     this.#failureRecoveryTask = params.failureRecoveryTask;
+    this.#watchdog = new HubWatchdog({
+      harness: this.harness,
+      rootConversation: this.rootConversation,
+      revokeTicketConnections: (ticketId) => { void this.connectionManager.revoke(ticketId); },
+      isClosed: () => this.#closed,
+      isHandoverBarrierActive: () => this.#handoverBarrierActive,
+      getWatchdogMinutes: () => this.#liveSettings.executor.watchdogMinutes ?? 0,
+      checkIntervalMs: params.watchdogCheckIntervalMs,
+      ...(params.watchdogStallMsOverride !== undefined ? { stallMsOverride: params.watchdogStallMsOverride } : {}),
+    });
+    this.#failureRecovery = new HubFailureRecovery({
+      harness: this.harness,
+      rootConversation: this.rootConversation,
+      failureRecoveryTask: this.#failureRecoveryTask,
+      isClosed: () => this.#closed,
+      isRecovering: () => this.#recovering,
+      isExecutorPaused: () => this.#liveSettings.executor.paused,
+      broadcastTickets: (ctx) => this.#broadcastTickets(ctx),
+    });
     this.#codingToolsExt = params.codingToolsExt;
     this.#androidExt = params.androidExt;
     this.#toolSearchExt = params.toolSearchExt;
@@ -1766,8 +1770,6 @@ export class KuloHub implements OrchestratorController {
       },
       emit: (snapshot) => { for (const listener of this.#listeners) listener.onSettingsAssistant?.(snapshot); },
     });
-    this.#watchdogCheckIntervalMs = params.watchdogCheckIntervalMs;
-    this.#watchdogStallMsOverride = params.watchdogStallMsOverride;
     this.#orchestratorBrowserIdleMs = params.orchestratorBrowserIdleMs;
   }
 
@@ -2130,7 +2132,7 @@ export class KuloHub implements OrchestratorController {
 
     const memoryLifecycleExt = createMemoryLifecycleExtension({ getHarness: () => hubRef!.harness, getMemoryConfig: getLiveMemory });
     const failureRecoveryTask = createFailureRecoveryTask({
-      review: (ticketId, startedAt, ctx) => hubRef!.#reviewTicketRecovery(ticketId, startedAt, ctx),
+      review: (ticketId, startedAt, ctx) => hubRef!.#failureRecovery.review(ticketId, startedAt, ctx),
       onChanged: ctx => hubRef!.#broadcastTickets(ctx),
     });
     const workerTicketTask = createWorkerTicketTask({
@@ -2164,13 +2166,13 @@ export class KuloHub implements OrchestratorController {
       discardBuiltInStagedWorkspace: (ticket) => hubRef!.#discardTicketStagedWorkspace(ticket).then(() => undefined),
       onTicketsChanged: notifyTicketsChanged,
       onTicketRunning: (ticketId, workerConversationId, runEpoch) => {
-        if (hubRef) void hubRef.#trackWorkerRunning(ticketId, workerConversationId, runEpoch).catch((error) => {
+        if (hubRef) void hubRef.#watchdog.trackRunning(ticketId, workerConversationId, runEpoch).catch((error) => {
           if (hubRef && !hubRef.#closed) console.error("[KuloWorkerTracking]", redact(error instanceof Error ? error.message : String(error)));
         });
       },
       onTicketSettled: async (ticketId) => {
         if (hubRef) {
-          hubRef.#untrackWorker(ticketId);
+          hubRef.#watchdog.untrack(ticketId);
           await hubRef.#settleStaleTicketConfirmations(ticketId);
         }
       },
@@ -2934,11 +2936,11 @@ export class KuloHub implements OrchestratorController {
     await hub.assistantCoordinator.reconcileDispatchedActions(context);
     hub.#recovering = false;
     await hub.#reconcileDispatchedConfirmations(context);
-    await hub.#startLegacyFailureRecovery(context);
+    await hub.#failureRecovery.startLegacyRecovery(context);
     await hub.mediaJobs.start();
     await hub.usageCaps.start();
     await hub.personality.start();
-    hub.#startWatchdog();
+    hub.#watchdog.start();
     harness.resume();
     for (const topicId of await hub.#topicTitles.start()) {
       try {
@@ -4289,7 +4291,7 @@ export class KuloHub implements OrchestratorController {
       }
     }, context);
     this.#parkingTickets.delete(ticketId);
-    this.#untrackWorker(ticketId, ticket.runEpoch);
+    this.#watchdog.untrack(ticketId, ticket.runEpoch);
     const parked = await this.harness.snapshot(KuloStateDoc, context);
     if (parked?.tickets[ticketId]?.wakePending) await this.#resumeWaitingTicket(ticketId, context);
     const isBlockedCoordinatorWait =
@@ -7914,7 +7916,7 @@ export class KuloHub implements OrchestratorController {
         }
       },
       releaseTicketExecution: (t: Readonly<TicketRecord>) => this.#releaseTicketExecution(t),
-      untrackWorker: (id: string, prevEpoch: number) => { this.#untrackWorker(id, prevEpoch); },
+      untrackWorker: (id: string, prevEpoch: number) => { this.#watchdog.untrack(id, prevEpoch); },
       resumeIfReady: (cleanupPending: boolean) => { if (!cleanupPending && !this.#recovering) this.harness.resume(); },
       broadcastTickets: (ctx: Context) => this.#broadcastTickets(ctx),
     };
@@ -8819,13 +8821,13 @@ export class KuloHub implements OrchestratorController {
     }
 
     const now = Date.now();
-    const tracked = this.#trackedWorkers.get(ticketId);
+    const trackedLastActivityAt = this.#watchdog.getLastActivityAt(ticketId);
     const runningDurationSec =
       ticket.status === "running" && ticket.startedRunningAt
         ? Math.max(0, Math.round((now - ticket.startedRunningAt) / 1000))
         : undefined;
     const lastActivityAt = Math.max(
-      tracked?.lastActivityAt ?? 0,
+      trackedLastActivityAt ?? 0,
       ticket.startedRunningAt ?? 0,
       ticket.latestReport?.at ?? 0,
     );
@@ -9121,10 +9123,7 @@ export class KuloHub implements OrchestratorController {
       clearTimeout(this.#cleanupRetryTimer);
       this.#cleanupRetryTimer = null;
     }
-    if (this.#watchdogTimer) {
-      clearInterval(this.#watchdogTimer);
-      this.#watchdogTimer = null;
-    }
+    this.#watchdog.stopTimer();
     if (this.#topicAutoArchiveTimer) {
       clearInterval(this.#topicAutoArchiveTimer);
       this.#topicAutoArchiveTimer = null;
@@ -9155,11 +9154,9 @@ export class KuloHub implements OrchestratorController {
     await finish(() => this.extensions.close());
     await finish(() => this.#topicAutoArchiveRun);
     await finish(() => Promise.all(this.#topicActivityUpdates.values()));
-    for (const rec of this.#trackedWorkers.values()) {
-      await finish(() => rec.detachObserver?.());
+    for (const detach of this.#watchdog.drainDetachers()) {
+      await finish(detach);
     }
-    this.#trackedWorkers.clear();
-    this.#lastWatchdogAlertAt.clear();
     await finish(() => this.settingsAssistant.close());
     for (const cache of this.#topicWatchesList()) {
       await finish(() => cache.watch.stop());
@@ -10962,143 +10959,6 @@ export class KuloHub implements OrchestratorController {
     return inputs;
   }
 
-  async #startLegacyFailureRecovery(context: Context): Promise<void> {
-    await this.harness.commit(async tx => {
-      const state = await tx.doc(KuloStateDoc);
-      const settingsDoc = await tx.doc(SettingsAssistantDoc);
-      const now = Date.now();
-      for (const ticket of Object.values(state.tickets)) if (ticket.status === "ready") resolveSupersededTickets(state, ticket, now);
-      const pending = Object.values(state.tickets).filter(ticket => ticket.status === "failed" && !ticket.recovery);
-      pending.sort((a, b) => a.createdAt - b.createdAt);
-      for (const ticket of pending) {
-        if (ticket.status !== "failed" || ticket.recovery || ticket.autoRecoverySuppressed ||
-            isSettingsTopicDeleted(ticket.originTopicId, settingsDoc) ||
-            state.topics?.[ticket.originTopicId ?? "root"]?.deletedAt) continue;
-        const existing = recoveryLeaf(state, ticket).recovery;
-        if (existing) { ticket.recovery = { ...existing }; continue; }
-        const recovery = beginTicketRecovery(ticket, now);
-        const seen = new Set([ticket.id]);
-        const ancestors = [...seen];
-        while (ancestors.length) {
-          const id = ancestors.pop()!;
-          for (const related of Object.values(state.tickets)) {
-            if (!seen.has(related.id) && related.supersedes?.includes(id) && sameRecoveryScope(ticket, related) &&
-                related.status !== "closed" && related.status !== "stopped") {
-              seen.add(related.id); ancestors.push(related.id);
-              if (!related.recovery && !related.autoRecoverySuppressed) related.recovery = { ...recovery };
-            }
-          }
-        }
-        await tx.createTask(this.#failureRecoveryTask, { ticketId: ticket.id, startedAt: recovery.startedAt }, {
-          ownership: { kind: "conversation" }, conversationId: (ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) as ConversationId, background: true,
-        });
-      }
-    }, context);
-  }
-
-  async #reviewTicketRecovery(ticketId: string, startedAt: number, context: Context): Promise<number | null> {
-    if (this.#closed) return null;
-    if (this.#recovering || this.#liveSettings.executor.paused) return Date.now() + 30_000;
-    const snapshot = await this.harness.snapshot(KuloStateDoc, context);
-    const settingsSnapshot = await this.harness.snapshot(SettingsAssistantDoc, context);
-    const root = snapshot?.tickets[ticketId];
-    if (!root?.recovery || root.recovery.startedAt !== startedAt ||
-        ["closed", "stopped", "ready"].includes(root.status) ||
-        isSettingsTopicDeleted(root.originTopicId, settingsSnapshot) ||
-        snapshot?.topics?.[root.originTopicId ?? "root"]?.deletedAt) return null;
-    const origin = (await this.harness.conversation((root.originConversationId ?? Number(ROOT_CONVERSATION_ID)) as ConversationId, context)) ?? this.rootConversation;
-    let nextAt: number | null = Date.now() + 30_000;
-    await origin.commit(async tx => {
-      const state = await tx.doc(KuloStateDoc);
-      const current = state.tickets[ticketId];
-      const recovery = current?.recovery;
-      if (!current || !recovery || recovery.startedAt !== startedAt || ["closed", "stopped", "ready"].includes(current.status)) { nextAt = null; return; }
-      const target = recoveryLeaf(state, current);
-      const now = Date.now();
-      if (target.status === "ready") {
-        resolveSupersededTickets(state, target, now);
-        nextAt = null;
-        return;
-      }
-      if (
-        target.status === "blocked" ||
-        (target.status === "waiting" &&
-          (target.waiting?.reason === "user" || target.waiting?.reason === "coordinator"))
-      ) {
-        // The Worker's blocker relay already handed this decision to the coordinator/user.
-        recovery.state = "exhausted";
-        recovery.notifiedAt ??= target.latestReport?.at ?? now;
-        recovery.nextAttemptAt = undefined;
-        nextAt = null;
-      } else if (target.status === "running" || target.status === "pausing") {
-        return;
-      } else if (now >= recovery.deadlineAt) {
-        recovery.state = "exhausted";
-        recovery.nextAttemptAt = undefined;
-        nextAt = null;
-        if (recovery.notifiedAt) return;
-        const failed = target.status === "failed";
-        const reportTicket = failed ? target : current;
-        const summary = failed ? target.latestReport?.summary ?? "自动恢复未能完成任务。" : recoveryWaitSummary(target);
-        await submitAutomaticChatInput(tx, origin, {
-          type: "input", whenBusy: "followUp", requestId: `kulo:recovery-exhausted:${ticketId}:${startedAt}`,
-          content: formatRecoveryExhaustedRelayMessage({
-            title: reportTicket.title,
-            summary,
-            ...(!failed ? { replacementStatus: target.status } : {}),
-          }),
-          entry: { kind: WorkerRelayEntry.kind, data: { ticketId: reportTicket.id, title: reportTicket.title, role: reportTicket.role,
-            state: "failed", summary, deliverable: null, question: null } },
-        });
-        recovery.notifiedAt = now;
-      } else if (target.status !== "failed") {
-        nextAt = Math.min(now + 30_000, recovery.deadlineAt);
-        return;
-      } else {
-        if (recovery.attempts >= MAX_RECOVERY_ATTEMPTS) { nextAt = recovery.deadlineAt; return; }
-        if (recovery.nextAttemptAt !== undefined && now < recovery.nextAttemptAt) { nextAt = Math.min(recovery.nextAttemptAt, recovery.deadlineAt); return; }
-        recovery.attempts++;
-        recovery.nextAttemptAt = Math.min(now + RECOVERY_REVIEW_INTERVAL_MS, recovery.deadlineAt);
-        const guard: WorkerRecoveryEntryData = { ticketId: target.id, rootTicketId: ticketId,
-          startedAt, attempt: recovery.attempts, runEpoch: target.runEpoch };
-        const topicTargetDeviceId = state.topics?.[target.originTopicId ?? "root"]?.targetDeviceId;
-        await injectEventToolsInTx(tx, origin.id, ["kulo_inspect"]);
-        await submitAutomaticChatInput(tx, origin, {
-          type: "input", whenBusy: "followUp", requestId: `kulo:recovery:${ticketId}:${startedAt}:${recovery.attempts}`,
-          content: formatWorkerRecoveryMessage({
-            ticketId: target.id,
-            title: target.title,
-            summary: target.latestReport?.summary ?? "execution incomplete",
-            attempt: recovery.attempts,
-            maxAttempts: MAX_RECOVERY_ATTEMPTS,
-            deviceLocked: !canSwitchEnvDuringRecovery(target, topicTargetDeviceId),
-            envId: target.envId,
-          }),
-          entry: { kind: WorkerRecoveryEntry.kind, data: guard },
-        });
-        nextAt = recovery.nextAttemptAt;
-      }
-      current.updatedAt = now;
-      for (const related of Object.values(state.tickets)) {
-        if (related.id !== current.id && related.recovery?.rootTicketId === ticketId && related.recovery.startedAt === startedAt) {
-          related.recovery = { ...recovery };
-          related.updatedAt = now;
-        }
-      }
-    }, context);
-    await this.#broadcastTickets(context);
-    return nextAt;
-  }
-
-  #startWatchdog(): void {
-    if (this.#watchdogTimer || this.#closed) return;
-    this.#watchdogTimer = setInterval(() => {
-      if (this.#handoverBarrierActive) return;
-      void this.#runWatchdogCheck();
-    }, this.#watchdogCheckIntervalMs);
-    this.#watchdogTimer.unref?.();
-  }
-
   #startTopicAutoArchive(): void {
     if (this.#topicAutoArchiveTimer || this.#closed) return;
     this.#topicAutoArchiveTimer = setInterval(() => {
@@ -11122,189 +10982,6 @@ export class KuloHub implements OrchestratorController {
       }
     }, 60 * 60_000);
     this.#uploadCleanupTimer.unref?.();
-  }
-
-  async #trackWorkerRunning(
-    ticketId: string,
-    workerConversationId: number,
-    runEpoch: number,
-  ): Promise<void> {
-    if (this.#closed) return;
-    const ticket = (await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))?.tickets[ticketId];
-    if (this.#closed || !ticket || ticket.runEpoch !== runEpoch || ticket.status !== "running") return;
-    if (ticket.externalExecution) {
-      this.#trackedWorkers.get(ticketId)?.detachObserver?.();
-      this.#trackedWorkers.delete(ticketId);
-      return;
-    }
-    const prev = this.#trackedWorkers.get(ticketId);
-    if (
-      prev &&
-      prev.runEpoch === runEpoch &&
-      prev.workerConversationId === workerConversationId
-    ) {
-      prev.lastActivityAt = Date.now();
-      return;
-    }
-    if (prev) {
-      prev.detachObserver?.();
-      this.#trackedWorkers.delete(ticketId);
-    }
-
-    const rec: TrackedWorkerRuntime = {
-      ticketId,
-      workerConversationId,
-      runEpoch,
-      lastActivityAt: Date.now(),
-    };
-    this.#trackedWorkers.set(ticketId, rec);
-
-    void this.harness
-      .observeConversation(
-        workerConversationId as ConversationId,
-        {
-          advance: () => {
-            rec.lastActivityAt = Date.now();
-          },
-          end: () => {},
-        },
-        BACKGROUND_CONTEXT,
-        { min: 1, max: 1 },
-      )
-      .then((obs) => {
-        if (this.#closed || this.#trackedWorkers.get(ticketId) !== rec) {
-          obs.detach();
-          return;
-        }
-        rec.detachObserver = () => obs.detach();
-      })
-      .catch(() => {
-        // Conversation might already be gone or harness closing
-      });
-  }
-
-  #untrackWorker(ticketId: string, throughEpoch?: number): void {
-    const prev = this.#trackedWorkers.get(ticketId);
-    if (prev && throughEpoch !== undefined && prev.runEpoch > throughEpoch) return;
-    void this.connectionManager.revoke(ticketId);
-    if (prev) {
-      prev.detachObserver?.();
-      this.#trackedWorkers.delete(ticketId);
-    }
-  }
-
-  async #runWatchdogCheck(): Promise<void> {
-    if (this.#closed || this.#watchdogTickInFlight) return;
-    const watchdogMinutes = this.#liveSettings.executor.watchdogMinutes ?? 0;
-    if (watchdogMinutes <= 0 && this.#watchdogStallMsOverride === undefined) {
-      return;
-    }
-
-    this.#watchdogTickInFlight = true;
-    try {
-      const stallMs =
-        this.#watchdogStallMsOverride ?? Math.max(1, watchdogMinutes) * 60_000;
-      const longRunMs = Math.max(stallMs * 3, 15 * 60_000);
-      const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-      if (!state || this.#closed) return;
-
-      const now = Date.now();
-      for (const id of [...this.#trackedWorkers.keys()]) {
-        const ticket = state.tickets[id];
-        if (!ticket || ticket.status !== "running") {
-          this.#untrackWorker(id);
-        }
-      }
-
-      for (const ticket of Object.values(state.tickets)) {
-        if (ticket.status !== "running") continue;
-        if (ticket.externalExecution && (ticket.externalExecution.pendingPermissions?.length ?? 0) > 0) continue;
-
-        let tracked: TrackedWorkerRuntime | undefined;
-        if (!ticket.externalExecution) {
-          tracked = this.#trackedWorkers.get(ticket.id);
-          if (!tracked || tracked.runEpoch !== ticket.runEpoch) {
-            await this.#trackWorkerRunning(
-              ticket.id,
-              ticket.workerConversationId,
-              ticket.runEpoch,
-            );
-            tracked = this.#trackedWorkers.get(ticket.id);
-          }
-        }
-
-        const startedAt =
-          ticket.startedRunningAt ?? ticket.updatedAt ?? ticket.createdAt;
-        const lastActivityAt = Math.max(
-          ticket.externalExecution ? (ticket.externalExecution.lastActivityAt ?? 0) : (tracked?.lastActivityAt ?? 0),
-          startedAt,
-          ticket.latestReport?.at ?? 0,
-        );
-        const idleMs = Math.max(0, now - lastActivityAt);
-        const runningMs = Math.max(0, now - startedAt);
-
-        let reason: "stalled" | "long_running" | null = null;
-        let cooldownMs = stallMs;
-        if (idleMs >= stallMs) {
-          reason = "stalled";
-          cooldownMs = stallMs;
-        } else if (runningMs >= longRunMs) {
-          reason = "long_running";
-          cooldownMs = longRunMs;
-        }
-        if (!reason) continue;
-
-        const dedupKey = `${ticket.id}:${ticket.runEpoch}:${reason}`;
-        const lastAlert = this.#lastWatchdogAlertAt.get(dedupKey) ?? 0;
-        if (now - lastAlert < cooldownMs) continue;
-
-        this.#lastWatchdogAlertAt.set(dedupKey, now);
-
-        const idleSec = Math.round(idleMs / 1000);
-        const runningSec = Math.round(runningMs / 1000);
-        const originConvId = (ticket.originConversationId ??
-          Number(ROOT_CONVERSATION_ID)) as ConversationId;
-        const originConv =
-          (await this.harness.conversation(originConvId, BACKGROUND_CONTEXT)) ??
-          this.rootConversation;
-
-        const watchdogPrompt = formatWorkerWatchdogMessage({
-          ticketId: ticket.id,
-          title: ticket.title,
-          role: ticket.role,
-          ...(ticket.externalExecution ? { externalKind: ticket.externalExecution.binding.kind } : {}),
-          reason,
-          idleSec,
-          runningSec,
-        });
-
-        await this.harness.commit(async (tx) => {
-          await injectEventToolsInTx(tx, originConv.id, ["kulo_inspect"]);
-          await submitAutomaticChatInput(tx, originConv, {
-            type: "input",
-            content: watchdogPrompt,
-            whenBusy: "followUp",
-            requestId: `kulo:watchdog:${ticket.id}:${ticket.runEpoch}:${reason}:${now}`,
-            entry: {
-              kind: WorkerWatchdogEntry.kind,
-              data: {
-                ticketId: ticket.id,
-                title: ticket.title,
-                role: ticket.role,
-                reason,
-                idleSec,
-                runningSec,
-                runEpoch: ticket.runEpoch,
-              },
-            },
-          });
-        }, BACKGROUND_CONTEXT);
-      }
-    } catch {
-      // Best-effort periodic watchdog check
-    } finally {
-      this.#watchdogTickInFlight = false;
-    }
   }
 
   #enrichTopicsWithPreviews(topics: TopicSummary[]): TopicSummary[] {
