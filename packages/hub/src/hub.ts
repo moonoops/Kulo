@@ -7,7 +7,7 @@ import { chatReceiptData, chatRoutingData, queuedChatEntries, type ChatMessageSo
 import { PendingChatAttachmentsDoc, assertChatDestination, bindChatAttachments, chatRequestTargetKey, observeChatAttachmentGrants, removePendingChatAttachments, repairHistoricalChatAttachments,
   snapshotChatUploadScope, stageChatAttachments, type ChatDeliveryDraft } from "./chat-attachment-deliveries.js";
 import { submitAutomaticChatInput } from "./chat-control.js";
-import { DeliveryReceiptDoc, assertDeliveryIntent, assertValidReplyReference, clientDeliveryIntent, deliveryReceiptKey, legacyDeliveryConflict, sameDeliveryValue, validateReliableClientMessage, writeDeliveryReceipt,
+import { DeliveryReceiptDoc, assertValidReplyReference, clientDeliveryIntent, deliveryReceiptKey, legacyDeliveryConflict, sameDeliveryValue, validateReliableClientMessage, writeDeliveryReceipt,
   type DeliveryAck, type DeliveryIntent, type DeliveryReceipt, type ReliableClientMessage } from "./delivery-receipts.js";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT, withoutAbortSignal, type Context } from "@earendil-works/chord/context";
@@ -295,6 +295,7 @@ import {
   TurnContextReader,
   type HubRuntimeGates,
 } from "./hub-kernel-ports.js";
+import { HubDeliveryCoordinator } from "./hub-delivery-coordinator.js";
 import { HubFailureRecovery, HubWatchdog } from "./hub-watchdog.js";
 import { createOrchestratorCodingGuardExtension } from "./orchestrator-coding-guard.js";
 import type { HostActionCaller, HostActionController, HostActionDecideOutcome, HostActionRunOutcome } from "./tools-host-action.js";
@@ -770,9 +771,7 @@ export class KuloHub implements OrchestratorController {
   readonly #topicTitleCache = new Map<string, string>();
   readonly #topicPreviewCache = new Map<string, { preview: string; at?: number }>();
   #queryService?: ConversationQueries;
-  readonly #chatAdmissions = new Map<string, Promise<unknown>>();
-  readonly #deliveryAdmissions = new Map<string, Promise<unknown>>();
-  readonly #ticketAdmissions = new Map<string, Promise<unknown>>();
+  readonly #delivery: HubDeliveryCoordinator;
   readonly #inlineWaiters = new InlineDispatchWaiters();
   readonly #turnContext: TurnContextReader;
   readonly #runtimeGates: HubRuntimeGates;
@@ -896,6 +895,7 @@ export class KuloHub implements OrchestratorController {
     this.#defaultIdentityDir = params.defaultIdentityDir;
     this.#mainWorkspaceDir = params.mainWorkspaceDir;
     this.#settingsStore = params.settingsStore;
+    this.#delivery = new HubDeliveryCoordinator(this.harness);
     this.#turnContext = new TurnContextReader(this.harness);
     this.#runtimeGates = {
       isClosed: () => this.#closed,
@@ -5336,42 +5336,12 @@ export class KuloHub implements OrchestratorController {
   }
 
   async #deliveryReceipt(intent: DeliveryIntent, context: Context): Promise<Readonly<DeliveryReceipt> | undefined> {
-    const receipt = await this.harness.snapshot(DeliveryReceiptDoc, intent.key, context);
-    assertDeliveryIntent(receipt, intent);
-    if (receipt) return receipt;
-    const legacy = await this.harness.snapshot(DeliveryReceiptDoc, intent.legacyKey, context);
-    if (!legacy) return undefined;
-    assertDeliveryIntent(legacy, { ...intent, fingerprint: intent.legacyFingerprint });
-    if (legacy.phase === "empty") return undefined;
-    const phase = legacy.phase;
-    await this.harness.commit((tx) => writeDeliveryReceipt(tx, intent, legacy.ack as DeliveryAck, phase, legacy.continuation), context);
-    return { ...legacy, fingerprint: intent.fingerprint };
+    return this.#delivery.deliveryReceipt(intent, context);
   }
 
   async #withDelivery<T>(intent: DeliveryIntent | undefined, context: Context,
     operation: (receipt?: Readonly<DeliveryReceipt>) => Promise<T>, replay: (receipt: Readonly<DeliveryReceipt>) => Promise<T>): Promise<T> {
-    if (!intent) return operation();
-    const previous = this.#deliveryAdmissions.get(intent.key) ?? Promise.resolve();
-    const current = previous.catch(() => {}).then(async () => {
-      const receipt = await this.#deliveryReceipt(intent, context);
-      if (receipt && receipt.phase !== "empty") intent.replayed = true;
-      if (receipt?.phase === "complete") {
-        return replay(receipt);
-      }
-      if (!receipt || receipt.phase === "empty") {
-        const state = await this.harness.snapshot(KuloStateDoc, context);
-        if (state?.processedCommands?.[intent.id] || state?.commandIndex[intent.id]) legacyDeliveryConflict();
-        for (const [key, command] of Object.entries(state?.processedCommands ?? {})) {
-          if (command.action === "chat.send" && key === `req:${command.ticketId}:${intent.id}` &&
-            (intent.action !== "chat.send" || intent.topicId !== command.ticketId)) legacyDeliveryConflict();
-        }
-      }
-      return operation(receipt);
-    });
-    this.#deliveryAdmissions.set(intent.key, current);
-    void current.then(() => { if (this.#deliveryAdmissions.get(intent.key) === current) this.#deliveryAdmissions.delete(intent.key); },
-      () => { if (this.#deliveryAdmissions.get(intent.key) === current) this.#deliveryAdmissions.delete(intent.key); });
-    return current;
+    return this.#delivery.withDelivery(intent, context, operation, replay);
   }
 
   async #receiptTicket(receipt: Readonly<DeliveryReceipt>, context: Context): Promise<TicketCardView> {
@@ -5533,21 +5503,11 @@ export class KuloHub implements OrchestratorController {
   }
 
   #queueChatOperation<T>(key: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.#chatAdmissions.get(key) ?? Promise.resolve();
-    const submission = previous.catch(() => {}).then(operation);
-    this.#chatAdmissions.set(key, submission);
-    void submission.then(() => { if (this.#chatAdmissions.get(key) === submission) this.#chatAdmissions.delete(key); },
-      () => { if (this.#chatAdmissions.get(key) === submission) this.#chatAdmissions.delete(key); });
-    return submission;
+    return this.#delivery.queueChat(key, operation);
   }
 
   #queueTicketOperation<T>(ticketId: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.#ticketAdmissions.get(ticketId) ?? Promise.resolve();
-    const current = previous.catch(() => {}).then(operation);
-    this.#ticketAdmissions.set(ticketId, current);
-    void current.then(() => { if (this.#ticketAdmissions.get(ticketId) === current) this.#ticketAdmissions.delete(ticketId); },
-      () => { if (this.#ticketAdmissions.get(ticketId) === current) this.#ticketAdmissions.delete(ticketId); });
-    return current;
+    return this.#delivery.queueTicket(ticketId, operation);
   }
 
   async #sendUserMessage(content: string, options: MessageSubmissionOptions & { principalId: string }, context: Context, receivedAt: number, intent?: DeliveryIntent) {
@@ -9152,6 +9112,7 @@ export class KuloHub implements OrchestratorController {
     }
     this.#topicCaches.clear();
     // A cancelled caller may stop waiting on Durable before admitted writes have drained.
+    await finish(() => this.#delivery.close());
     await finish(() => this.harness.close(withoutAbortSignal(context)));
     const contextPackage = this.#contextPackage;
     this.#contextPackage = null;
