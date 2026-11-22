@@ -1,11 +1,10 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { chatReceiptData, chatRoutingData, queuedChatEntries, type ChatMessageSource } from "./chat-submissions.js";
+import { chatRoutingData, queuedChatEntries, type ChatMessageSource } from "./chat-submissions.js";
 import { observeChatAttachmentGrants, repairHistoricalChatAttachments } from "./chat-attachment-deliveries.js";
 import { submitAutomaticChatInput } from "./chat-control.js";
-import { DeliveryReceiptDoc, assertValidReplyReference, clientDeliveryIntent, deliveryReceiptKey, legacyDeliveryConflict, validateReliableClientMessage, writeDeliveryReceipt,
+import { DeliveryReceiptDoc, clientDeliveryIntent, deliveryReceiptKey, validateReliableClientMessage,
   type DeliveryAck, type DeliveryIntent, type DeliveryReceipt, type ReliableClientMessage } from "./delivery-receipts.js";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT, withoutAbortSignal, type Context } from "@earendil-works/chord/context";
@@ -16,21 +15,16 @@ import {
   InboxDoc,
   LiveDoc,
   ROOT_CONVERSATION_ID,
-  ToolResultEntry,
-  ToolTask,
   UserEntry,
   createRegistry,
   defineDoc,
   defineExtension,
-  hook,
   type Conversation,
   type ConversationId,
   type ConversationView,
   type EntryRecord,
   type EntryId,
   type JsonObject,
-  type LiveState,
-  type Observation,
   type Storage,
   type TaskId,
   type ToolRegistration,
@@ -42,19 +36,18 @@ import {
   createCodingTools,
   createReadTool,
 } from "@earendil-works/pi-durable/tools";
-import { EnvManager, canonicalExecutionPath, isApplicationPrivatePath } from "@kulo/env";
+import { EnvManager, canonicalExecutionPath } from "@kulo/env";
 import { lazyProjectEnvironment } from "./project-env.js";
 import { createAndroidToolsExtension, type AndroidToolScope } from "./tools-android.js";
 import { KuloAndroidNotifications } from "./android-notifications.js";
-import { appendTicketOutwardAction, createFailureRecoveryTask, sameRecoveryScope,
-  isSilentRecoveryFailure, resolveSupersededTickets, assertRecoveryGuard } from "./task-recovery.js";
+import { appendTicketOutwardAction, createFailureRecoveryTask, isSilentRecoveryFailure } from "./task-recovery.js";
 import { prepareStateStorage } from "./state-storage.js";
 import { HubStateOwner } from "./state-owner.js";
 import { KuloConnections } from "./connections.js";
 import { LocalConnectionVault } from "./connection-vault.js";
 import { SecureCredentialStore } from "./secure-provider-credentials.js";
 import { createCredentialRedactionExtension, redactCredentialData, scrubStoredConversationSecrets, wrapRedactedStorage } from "./credential-redaction.js";
-import type { ConnectionCaller, ConnectionToolController } from "./tools-connections.js";
+import type { ConnectionToolController } from "./tools-connections.js";
 import { KuloSkills } from "./skills.js";
 import { KuloCapabilities, type SyncedProviderImageSource } from "./capabilities.js";
 import { KuloSearch } from "./search.js";
@@ -67,20 +60,17 @@ import { TicketBoardProjection } from "./ticket-board.js";
 import { VoiceTranscriptEntry } from "./voice-transcripts.js";
 import { createVoiceContext } from "./voice-context.js";
 import { createVoiceToolsExtension } from "./tools-voice.js";
-import { nativeSearchEvidence, sanitizeSearchSources, selectCitedSources } from "./search-sources.js";
 import { loadSearchEvidencePrefix, SearchEvidenceHistory } from "./search-history.js";
-import { resolveResponseContext } from "./response-context.js";
 import { KuloMediaJobs } from "./media-jobs.js";
 import { createSkillToolsExtension } from "./tools-skills.js";
 import { detectReactWorkspace, SkillRuntimeError } from "./skill-runtime.js";
-import { FileError, getOrThrow } from "@earendil-works/pi-durable/env";
+import { FileError } from "@earendil-works/pi-durable/env";
 import { createCapabilitySetupExtension } from "./tools-capability-setup.js";
 import { createMediaToolsExtension } from "./tools-media.js";
 import { createMediaExportExtension } from "./tools-media-export.js";
 import { createMemoryLifecycleExtension } from "./memory-lifecycle.js";
 import { executeMemoryForget, validateRelationshipReviewDecision } from "./memory-forget.js";
-import { computeCapDeferredDueAt, KuloUsageCaps, withUsageMeterModels } from "./usage-caps.js";
-import { formatComputerHandoffResumePrompt } from "./computer-handoff.js";
+import { KuloUsageCaps, withUsageMeterModels } from "./usage-caps.js";
 import { HindsightLocalService } from "./hindsight-service.js";
 import { MemoryLlmBridge } from "./memory-llm-bridge.js";
 import { KuloMemoryService, MemoryServiceDoc, createMemoryServiceExtension } from "./memory-service.js";
@@ -91,10 +81,9 @@ import { KuloConversationHistory } from "./conversation-history.js";
 import { deriveConnectedExternalClients, type ConversationSearchInput, type MainSessionNotificationEvent, type MemoryServiceJob } from "@kulo/protocol";
 import { ExternalAgentQuotaService } from "./external-agent-quotas.js";
 import { topicActivity } from "./topic-activity.js";
-import { KuloSubagentRunner, buildTicketSubagentViews, pruneClosedSubagentsInTx, settlePendingSubagentsInTx } from "./subagent-runner.js";
+import { KuloSubagentRunner } from "./subagent-runner.js";
 import { formatTaskBoardWorkerContext, readTaskBoard, searchTaskBoards, writeTaskBoardInTx } from "./task-boards.js";
 import { collectReviewPackAssets, formatReviewPromptSection, writeReviewPackToScratchEnv } from "./ticket-review-pack.js";
-import { listTaskDeliverables, readTaskDeliverable, reportFileReferences, taskDeliverableError, TaskDeliverableError, type TaskDeliverableOptions } from "./task-deliverables.js";
 import { createHistoryToolsExtension } from "./tools-history.js";
 import { AssistantDoc, ensureAssistantState } from "./assistant-state.js";
 import { AssistantLedger } from "./assistant-ledger.js";
@@ -116,11 +105,8 @@ import {
   defaultProtocolAdapterForModel,
   inferModelPurpose,
   resolveRolePresetFromPool,
-  EXTERNAL_AGENT_KINDS,
-  isPersonalExternalAgentKind,
   isSupportedExternalAgentKind,
   getMessageParts,
-  getUiSpecFields,
   redactSensitiveText,
   type TicketOutwardAction,
   type AmbientLocalEngine,
@@ -132,10 +118,8 @@ import {
   type AgentFace,
   type ChatAttachment,
   type ChatDisplayItem,
-  type ChatReplyReference,
   type CustomModelConfig,
   type CustomProviderApi,
-  type WebSource,
   type CapabilitiesWorkspaceSnapshot,
   type ComputerUseConfigurationInput,
   type ComputerUseSettings,
@@ -166,8 +150,6 @@ import {
   type OAuthSessionView,
   type ProviderCatalogItem,
   type ProjectView,
-  type CreateProjectInput,
-  type RolePreset,
   type SettingsBlockName,
   type SettingsAssistantSnapshot,
   type SlotSummary,
@@ -176,17 +158,11 @@ import {
   type BuiltinThinkingEffort,
   type TicketCardView,
   type TicketBoardDelta,
-  type TicketEnvBinding,
-  type WorkerReportRecord,
   type ExternalAgentPendingReport,
   type TicketRecord,
   type TopicSummary,
-  type UsageModelItem,
   type UsageStatsView,
-  type WorkerInspectEntrySummary,
   type WorkerInspectResult,
-  type ConnectionUseOperation,
-  type ConnectionDescribeRequest,
   type ComputerPreviewSessionView,
   type ComputerPreviewInputEvent,
   type ComputerPreviewUpdate,
@@ -209,10 +185,8 @@ import {
   createGlobalSettingsToolsExtension,
   createSettingsAssistantExtension,
   isActiveSettingsConversation,
-  isSettingsTopicDeleted,
   parseSettingsTopicConversationId,
   settingsTopicId,
-  type SettingsAssistantState,
 } from "./settings-assistant.js";
 import {
   assertUniqueExtensionTools,
@@ -231,9 +205,8 @@ import { KuloModelConfiguration, ModelConfigurationDoc } from "./model-configura
 import { createModelConfigurationToolsExtension } from "./tools-model-configuration.js";
 import { KuloAgentConfiguration, AgentConfigurationDoc } from "./agent-configuration.js";
 import { createAgentConfigurationToolsExtension } from "./tools-agent-configuration.js";
-import { assertExternalAgentScope, createExternalAgentToolHandler, type ExternalAgentReportFile, type ExternalAgentToolScope } from "./external-agent-tools.js";
-import { directExternalClientRoleId, externalClientConnectionId, type AgentConfigurationDraft, type ExternalAgentRun, type StagedWorkspaceApplyResult, type StagedWorkspaceDiffDetail, type StagedWorkspaceDiffSummary } from "@kulo/protocol";
-import { assertAgentDispatchAvailable, evaluateTicketAgentBlock, extractAgentDispatchIntent, resolveAgentDispatch, resolveRoleOrDirectClient } from "./agent-routing.js";
+import { externalClientConnectionId, type AgentConfigurationDraft, type StagedWorkspaceApplyResult, type StagedWorkspaceDiffDetail, type StagedWorkspaceDiffSummary } from "@kulo/protocol";
+import { evaluateTicketAgentBlock } from "./agent-routing.js";
 import { createAppearanceCustomizationToolsExtension } from "./tools-appearance-customization.js";
 import { createCustomizationToolsExtension } from "./tools-customization.js";
 import { createDesktopCustomizationService } from "./customization-host.js";
@@ -245,27 +218,22 @@ import {
   buildMemoryServiceConfirmCard,
   buildTicketDecisionCard,
   customizationValidateFingerprint,
-  effectiveConfirmationEffect,
   externalPermissionFingerprint,
   memoryServiceOperationFingerprint,
   resolveCardConfirmationDeniedInTx,
   ticketDecisionFingerprint,
-  type PendingActionConfirmation,
 } from "./action-confirmations.js";
 import {
   admitTicketStopInTx,
   canDirectStopTicket,
   finalizeTicketStop,
   resolveDirectStopCardTarget,
-  resolveSteerDirectStopReason,
   type AdmittedTicketStop,
 } from "./ticket-stop.js";
-import { executeApprovedHostAction } from "./host-action-execution.js";
 import {
   entryTimestamp,
   extractDisplayMessages,
   extractLiveState,
-  summarizeEntryForInspect,
   type DisplayMessageOptions,
 } from "./hub-display-projection.js";
 export { extractDisplayMessages, extractLiveState };
@@ -277,13 +245,13 @@ import {
   TurnContextReader,
   type HubRuntimeGates,
 } from "./hub-kernel-ports.js";
-import { HubChatPipeline, replyContext, userDisplayEntry, type MessageSubmissionOptions } from "./hub-chat-pipeline.js";
+import { HubChatPipeline, type MessageSubmissionOptions } from "./hub-chat-pipeline.js";
 import { HubComputerController } from "./hub-computer-controller.js";
 import { HubConnectionsBridge } from "./hub-connections-bridge.js";
 import { HubDeliveryCoordinator } from "./hub-delivery-coordinator.js";
 import { HubHostActions } from "./hub-host-actions.js";
 import { HubMediaDelivery, MediaNoticesDoc } from "./hub-media-delivery.js";
-import { HubTopicManager, requireTopic, type TopicView, type WatchedTopicCache } from "./hub-topic-manager.js";
+import { HubTopicManager, type TopicView, type WatchedTopicCache } from "./hub-topic-manager.js";
 import { ExternalClientAdminService } from "./external-client-admin.js";
 import { HubFailureRecovery, HubWatchdog } from "./hub-watchdog.js";
 import { TicketControlService } from "./ticket-control-service.js";
@@ -296,7 +264,7 @@ import { createOrchestratorCodingGuardExtension } from "./orchestrator-coding-gu
 import type { HostActionController } from "./tools-host-action.js";
 import type { AskUserForTicketParams } from "./tools-router.js";
 import { API_KEY_ORIGIN_ENV } from "./providers.js";
-import { executeHindsightTool, isSafeMemoryText, probeHindsightConnection, resolveHindsightToken, resolveHindsightSharedReadToken } from "./hindsight.js";
+import { isSafeMemoryText, probeHindsightConnection, resolveHindsightToken, resolveHindsightSharedReadToken } from "./hindsight.js";
 import {
   KULO_GATEWAY_PROVIDER_ID,
   KULO_PROVIDER_ID,
@@ -304,14 +272,11 @@ import {
   withThinkingLevelModels,
   probeOpenAICompatibleGateway,
 } from "./models.js";
-import { FileCredentialStore, KuloProviderManager, serializeProviderCatalogItem } from "./providers.js";
+import { KuloProviderManager, serializeProviderCatalogItem } from "./providers.js";
 import {
   DEFAULT_COMPACTION_FOCUS_INSTRUCTIONS,
   RELATIONSHIP_REVIEW_INSTRUCTIONS,
   createOrchestratorSections,
-  formatConnectionRequestMessage,
-  formatWorkerInitialPrompt,
-  formatWorkerRelayMessage,
 } from "./prompts.js";
 import { createWorkerTicketTask } from "./scheduler.js";
 import { androidTargetsOf, areTicketDevicesOnline } from "./ticket-dispatch.js";
@@ -337,28 +302,15 @@ function isLoopbackEndpointUrl(rawUrl: string): boolean {
   }
 }
 
-
 import {
   KuloStateDoc,
   WorkerRelayEntry,
-  WorkerWatchdogEntry,
-  WorkerRecoveryEntry,
-  isRecoveryInputBoundary,
-  type WorkerRecoveryEntryData,
-  recordProcessedCommand,
   ensureDefaultRootTopic,
   isOrchestratorConversation,
-  listSortedTopics,
-  releaseProjectWrite,
-  releaseSlot,
   getActiveStagedCwd,
   getEffectiveWorkspaceDir,
-  hasActiveSubagents,
-  hasPendingWorkspaceApply,
   isTicketUnfinished,
-  ticketsShareWriteScope,
   resolveTicketExecutionScope,
-  toTicketCardView,
   transitionTicketStatus,
   summarizeTopicPreview,
   type KuloDurableState,
@@ -379,20 +331,13 @@ import {
   type SubagentTaskOutcome,
 } from "./tools-worker.js";
 import type { createComputerUseExtension } from "./tools-computer-use.js";
-import { KuloUploadStore, parseUserEntryContent, sanitizeDiskFilename } from "./uploads.js";
-import { EXECUTION_FILE_CHUNK_BYTES, writeExecutionFile } from "./execution-files.js";
-import { ContentPublicationEntry, UiActionEntry, KuloUserEntry, KuloUiCards, UiCardError, type ContentPublicationData } from "./ui-cards.js";
+import { KuloUploadStore } from "./uploads.js";
+import { ContentPublicationEntry, KuloUserEntry, KuloUiCards, UiCardError, type ContentPublicationData } from "./ui-cards.js";
 import { createContentToolsExtension } from "./tools-content.js";
 import { createAssetPublisher } from "./asset-publication.js";
 import { createDiagramPublisher } from "./diagram-publication.js";
-import { publishExecutionAsset } from "./content-assets.js";
-import { KuloProjects, KuloProjectsDoc, ProjectError, assertProjectBinding } from "./projects.js";
+import { KuloProjects, KuloProjectsDoc, ProjectError } from "./projects.js";
 import { createProjectToolsExtension, type ProjectController } from "./tools-projects.js";
-import {
-  boundInspectResult,
-  inferBuiltInWorkerPhaseAndFiles,
-  spillOversizedReport,
-} from "./report-overflow.js";
 import {
   inspectChatReadTarget,
   preflightOrchestratorTargetEnv,
@@ -3698,15 +3643,6 @@ export class KuloHub implements OrchestratorController {
     return this.#delivery.deliveryReceipt(intent, context);
   }
 
-  async #withDelivery<T>(intent: DeliveryIntent | undefined, context: Context,
-    operation: (receipt?: Readonly<DeliveryReceipt>) => Promise<T>, replay: (receipt: Readonly<DeliveryReceipt>) => Promise<T>): Promise<T> {
-    return this.#delivery.withDelivery(intent, context, operation, replay);
-  }
-
-  async #receiptTicket(receipt: Readonly<DeliveryReceipt>, context: Context): Promise<TicketCardView> {
-    return this.#ticketControl.receiptTicket(receipt, context);
-  }
-
   async deliverClientMessage(message: ReliableClientMessage, principalId = this.envManager.localEnvId, context: Context = BACKGROUND_CONTEXT,
     source?: ChatMessageSource): Promise<DeliveryAck & { deduplicated?: boolean }> {
     if (this.#handoverBarrierActive && message.type !== "chat.abort") {
@@ -3825,10 +3761,6 @@ export class KuloHub implements OrchestratorController {
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<DispatchTicketModelOutcome> {
     return this.#ticketDispatch.dispatchTicketForModel(params, context);
-  }
-
-  async #agentDispatchSource(conversationId: number | undefined, toolTaskId: number | undefined, context: Context, selectedInput?: EntryId) {
-    return this.#ticketDispatch.agentDispatchSource(conversationId, toolTaskId, context, selectedInput);
   }
 
   #ticketAgentBlock(ticket: Readonly<TicketRecord>): string | undefined {
@@ -5674,14 +5606,6 @@ export class KuloHub implements OrchestratorController {
   async #broadcastTickets(context: Context): Promise<void> {
     context.abortSignal?.throwIfAborted();
     this.#refreshTicketState(true);
-  }
-
-  async #currentRecoveryGuard(conversationId: number | undefined, context: Context, toolTaskId?: number): Promise<WorkerRecoveryEntryData | undefined> {
-    return this.#turnContext.currentRecoveryGuard(conversationId, context, toolTaskId);
-  }
-
-  async #currentControlInput(conversationId: number | undefined, context: Context, toolTaskId?: number): Promise<EntryRecord | undefined> {
-    return this.#turnContext.currentControlInput(conversationId, context, toolTaskId);
   }
 
   #toRoutingSignals(inputs: readonly EntryRecord[]): ChatRoutingSignals[] {
