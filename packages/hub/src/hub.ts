@@ -292,6 +292,7 @@ import {
 import { HubChatPipeline, replyContext, userDisplayEntry, type MessageSubmissionOptions } from "./hub-chat-pipeline.js";
 import { HubConnectionsBridge } from "./hub-connections-bridge.js";
 import { HubDeliveryCoordinator } from "./hub-delivery-coordinator.js";
+import { HubMediaDelivery, MediaNoticesDoc } from "./hub-media-delivery.js";
 import { HubTopicManager, requireTopic, type TopicView, type WatchedTopicCache } from "./hub-topic-manager.js";
 import { HubFailureRecovery, HubWatchdog } from "./hub-watchdog.js";
 import { createOrchestratorCodingGuardExtension } from "./orchestrator-coding-guard.js";
@@ -363,7 +364,6 @@ import {
   resolveTicketExecutionScope,
   toTicketCardView,
   transitionTicketStatus,
-  applyTopicPreview,
   summarizeTopicPreview,
   type KuloDurableState,
 } from "./state.js";
@@ -552,11 +552,6 @@ export interface HubEventListener {
   onNotification?: (event: MainSessionNotificationEvent) => void;
 }
 
-const MediaNoticesDoc = defineDoc<{ notices: Record<string, boolean> } & JsonObject>({
-  kind: "kulo.media-notices", version: 1, scope: "session", initial: () => ({ notices: {} }) as { notices: Record<string, boolean> } & JsonObject,
-  checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
-});
-
 const RelationshipReviewsDoc = defineDoc<{ conversationIds: number[] } & JsonObject>({
   kind: "kulo.relationship-reviews", version: 1, scope: "session",
   initial: () => ({ conversationIds: [] }),
@@ -675,6 +670,7 @@ export class KuloHub implements OrchestratorController {
   readonly #topics: HubTopicManager;
   readonly #chat: HubChatPipeline;
   readonly #connectionsBridge: HubConnectionsBridge;
+  readonly #mediaDelivery: HubMediaDelivery;
   readonly #delivery: HubDeliveryCoordinator;
   readonly #inlineWaiters = new InlineDispatchWaiters();
   readonly #turnContext: TurnContextReader;
@@ -1547,7 +1543,7 @@ export class KuloHub implements OrchestratorController {
       validateInput: (id, source) => this.#validateMediaInput(id, source),
       onChanged: () => this.#broadcastCapabilities(),
       onCreated: (job) => job.source.ticketId ? this.#recordTicketOutwardAction(job.source.ticketId, undefined, "media", `media:${job.kind}:${job.modelId}`) : undefined,
-      onCompleted: (job) => this.#mediaCompleted(job), onSettled: (job) => this.#mediaSettled(job) });
+      onCompleted: (job) => this.#mediaDelivery.onMediaCompleted(job), onSettled: (job) => this.#mediaDelivery.onMediaSettled(job) });
     this.projects = new KuloProjects({
       harness: this.harness,
       envManager: this.envManager,
@@ -1735,6 +1731,21 @@ export class KuloHub implements OrchestratorController {
       settingsAssistant: this.settingsAssistant,
       runtimeGates: this.#runtimeGates,
       steerTicket: (req, ctx) => this.steerTicket(req, ctx),
+    });
+    this.#mediaDelivery = new HubMediaDelivery({
+      harness: this.harness,
+      rootConversationId: Number(this.rootConversation.id),
+      uploads: this.uploads,
+      uiCards: this.uiCards,
+      mediaJobs: () => this.mediaJobs,
+      projects: this.projects,
+      settingsAssistant: this.settingsAssistant,
+      topics: this.#topics,
+      runtimeGates: this.#runtimeGates,
+      ticketWaitPort: {
+        queueWaitReconcile: () => this.#queueWaitReconcile(),
+        resumeWaitingTicket: (ticketId, ctx) => this.#resumeWaitingTicket(ticketId, ctx),
+      },
     });
     this.#orchestratorBrowserIdleMs = params.orchestratorBrowserIdleMs;
   }
@@ -3356,22 +3367,7 @@ export class KuloHub implements OrchestratorController {
   }
 
   async mediaSource(conversationId: number): Promise<MediaJobSource> {
-    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-    if (isOrchestratorConversation(conversationId as ConversationId, state)) {
-      const topicId = state?.conversationToTopic?.[String(conversationId)] ?? "root";
-      const topic = state?.topics?.[topicId];
-      if (!topic || topic.deletedAt) throw new Error("会话已删除。");
-      return { conversationId, topicId, ...(topic.projectId ? { projectId: topic.projectId } : {}) };
-    }
-    const settings = await this.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
-    if (isActiveSettingsConversation(conversationId, settings)) {
-      return { conversationId, topicId: settingsTopicId(conversationId) };
-    }
-    const scope = resolveTicketExecutionScope(state, conversationId as ConversationId);
-    if (!scope || scope.ticket.status !== "running") throw new Error("当前任务没有有效执行资格。");
-    return { conversationId, topicId: scope.ticket.originTopicId ?? "root", ticketId: scope.ticket.id,
-      ...(scope.ticket.projectId ? { projectId: scope.ticket.projectId } : {}), envId: scope.ticket.envId,
-      runEpoch: scope.ticket.runEpoch, readOnly: scope.readOnly };
+    return this.#mediaDelivery.mediaSource(conversationId);
   }
 
   async #resolveAndroidInput(scope: AndroidToolScope & { deviceId: string }, action: import("@kulo/protocol").AndroidAction, args: Record<string, unknown>) {
@@ -3576,183 +3572,15 @@ export class KuloHub implements OrchestratorController {
   }
 
   async #validateMediaInput(assetId: string, source: MediaJobSource): Promise<void> {
-    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-    const scopes = new Set([`conversation:${source.conversationId}`]);
-    if (source.ticketId) {
-      const ticket = state?.tickets[source.ticketId];
-      if (!ticket || ["stopped", "closed"].includes(ticket.status)) throw new Error("任务执行资格已失效。");
-      scopes.add(`conversation:${ticket.workerConversationId}`);
-      if (ticket.originConversationId !== undefined) scopes.add(`conversation:${ticket.originConversationId}`);
-    }
-    if (!this.uploads.canReadUpload(assetId, `agent:${source.conversationId}`, (scope) => scopes.has(scope))) throw new Error("无权使用此参考素材。");
+    return this.#mediaDelivery.validateMediaInput(assetId, source);
   }
 
   async #validateMediaSource(source: MediaJobSource, job?: MediaJob): Promise<void> {
-    if (source.setupClientId) {
-      imageSetupIdentifier(source.setupClientId, "窗口标识");
-      if (source.conversationId !== Number(this.rootConversation.id) || source.topicId !== "root" || source.ticketId) throw new Error("图像测试来源无效。");
-    }
-    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-    const settingsConvId = parseSettingsTopicConversationId(source.topicId);
-    if (settingsConvId !== null) {
-      const settings = await this.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
-      if (!isActiveSettingsConversation(settingsConvId, settings)) throw new Error("生成来源会话已删除。");
-      if (!source.ticketId) {
-        if (settingsConvId !== source.conversationId) throw new Error("生成来源无效。");
-        return;
-      }
-    } else {
-      const topic = state?.topics?.[source.topicId];
-      if (!topic || topic.deletedAt) throw new Error("生成来源会话已删除。");
-      if (!source.ticketId) {
-        if (Number(topic.conversationId) !== source.conversationId) throw new Error("生成来源无效。");
-        return;
-      }
-    }
-    const ticket = state?.tickets[source.ticketId];
-    if (!ticket || !isTicketUnfinished(ticket) || (ticket.originTopicId ?? "root") !== source.topicId) throw new Error("生成所属任务已停止或关闭。");
-    const live = ticket.status === "running" && ticket.runEpoch === source.runEpoch;
-    // Login or review changes the wait reason, while the original media association remains valid.
-    const waiting = !!job && ["running", "pausing", "waiting"].includes(ticket.status) &&
-      (ticket.waiting?.reason === "external" || ticket.waiting?.reason === "user") && ticket.waiting.externalJobIds?.includes(job.id);
-    if (!live && !waiting) throw new Error("生成所属任务的执行资格已失效。");
-    if (ticket.projectId) {
-      const project = await this.projects.get(ticket.projectId);
-      if (project.grantRevision !== ticket.grantRevision) throw new Error("项目授权已变化，请重新确认任务。");
-    }
-  }
-
-  async #mediaSettled(job: MediaJob): Promise<void> {
-    if (job.source.setupClientId) return;
-    const needsUser = job.status === "needs_user" || job.status === "needs_reconciliation";
-    const message = `媒体作业${needsUser ? "需要处理" : job.status === "stopped" ? "已停止跟踪" : "失败"}：${job.error ?? job.id}`;
-    const noticeKey = `${job.id}:${job.status}:${job.updatedAt}`;
-    let wakeTicket: string | undefined;
-    const snapshot = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-    const settingsSnapshot = await this.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
-    const settingsConvId = parseSettingsTopicConversationId(job.source.topicId);
-    const recipientId = settingsConvId ?? snapshot?.topics?.[job.source.topicId]?.conversationId;
-    const recipient = job.source.ticketId && recipientId !== undefined ? await this.harness.conversation(recipientId as ConversationId, BACKGROUND_CONTEXT) : undefined;
-    await this.harness.commit(async (tx) => {
-      const state = await tx.doc(KuloStateDoc);
-      const settingsDoc = await tx.doc(SettingsAssistantDoc);
-      const notices = await tx.doc(MediaNoticesDoc);
-      if (notices.notices[noticeKey]) return;
-      const topic = state.topics?.[job.source.topicId];
-      const targetConvId = settingsConvId !== null
-        ? (isActiveSettingsConversation(settingsConvId, settingsDoc) ? settingsConvId : undefined)
-        : (!topic || topic.deletedAt ? undefined : Number(topic.conversationId));
-      const ticket = job.source.ticketId ? state.tickets[job.source.ticketId] : undefined;
-      notices.notices[noticeKey] = true;
-      if (targetConvId === undefined || job.source.ticketId && (!ticket || ["stopped", "closed"].includes(ticket.status))) return;
-      if (!ticket) {
-        const now = Date.now();
-        await tx.appendEntry(ContentPublicationEntry, targetConvId as ConversationId, { data: { parts: [{ partId: `media-notice:${noticeKey}`, type: "markdown", text: message }], fallbackText: message, createdAt: now } as unknown as ContentPublicationData & JsonObject });
-        if (settingsConvId === null && topic && !topic.deletedAt) {
-          applyTopicPreview(topic, summarizeTopicPreview([{ role: "assistant", text: message, createdAt: now }]), now);
-        }
-      } else if (needsUser && recipient?.id === targetConvId) {
-        await submitAutomaticChatInput(tx, recipient, { type: "input", whenBusy: "followUp", requestId: `kulo:media-review:${noticeKey}`,
-          content: `[KULO_WORKER_RELAY]\nBackground media job requires coordinator attention: ${message}\nVerify the actual issue first before deciding whether to inform the user; this notice grants no extra execution permissions.`,
-          entry: { kind: WorkerRelayEntry.kind, data: { ticketId: ticket.id, title: ticket.title, role: ticket.role, state: "blocked", summary: message, deliverable: null, question: message } },
-        });
-      }
-      if ((ticket?.waiting?.reason === "external" || ticket?.waiting?.reason === "user") && ticket.waiting.externalJobIds?.includes(job.id)) {
-        if (needsUser) {
-          ticket.waiting.reason = "user";
-          ticket.waiting.detail = message;
-          ticket.latestReport = { state: "blocked", summary: message, question: message, at: Date.now() };
-        } else {
-          ticket.waiting.externalJobIds = ticket.waiting.externalJobIds.filter((id) => id !== job.id);
-          ticket.wakePending = true;
-          ticket.resumePrompt = [ticket.resumePrompt, message, "Inspect the original job via kulo_media_job rather than resubmitting a paid generation."].filter(Boolean).join("\n");
-          wakeTicket = ticket.id;
-        }
-      }
-    }, BACKGROUND_CONTEXT);
-    this.#topics.refreshTopic(job.source.topicId);
-    if (settingsConvId !== null && isActiveSettingsConversation(settingsConvId, settingsSnapshot)) {
-      await this.settingsAssistant.refreshIfConversation(settingsConvId);
-    }
-    if (wakeTicket && !this.#recovering) { await this.#queueWaitReconcile(); await this.#resumeWaitingTicket(wakeTicket, BACKGROUND_CONTEXT); }
-    await this.#broadcastTickets(BACKGROUND_CONTEXT);
-  }
-
-  async #mediaCompleted(job: MediaJob): Promise<void> {
-    if (job.source.setupClientId) { await this.mediaJobs.markDelivered(job.id); return; }
-    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-    const settingsDoc = await this.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
-    const settingsConvId = parseSettingsTopicConversationId(job.source.topicId);
-    const topic = state?.topics?.[job.source.topicId];
-    const targetConvId = settingsConvId !== null
-      ? (isActiveSettingsConversation(settingsConvId, settingsDoc) ? settingsConvId : undefined)
-      : (!topic || topic.deletedAt ? undefined : Number(topic.conversationId));
-    const ticket = job.source.ticketId ? state?.tickets[job.source.ticketId] : undefined;
-    if (targetConvId === undefined || (job.source.ticketId && (!ticket || ["stopped", "closed"].includes(ticket.status)))) {
-      await this.mediaJobs.markDelivered(job.id);
-      return;
-    }
-    const conversationId = targetConvId;
-    for (const asset of job.assets) {
-      if (ticket) {
-        await this.#stageWorkerArtifact(asset, job.source, `media-result:${job.id}:${asset.id}`);
-        continue;
-      }
-      this.uploads.bindAttachments([asset], `conversation:${conversationId}`, `agent:${job.source.conversationId}`,
-        (scope) => scope === `conversation:${job.source.conversationId}`);
-      await this.uiCards.publishAsset({ path: `media-job:${job.id}:${asset.id}`, name: asset.name },
-        { conversationId, callId: `media-result:${job.id}:${asset.id}`, topicId: job.source.topicId }, async () => asset);
-    }
-    this.#topics.refreshTopic(job.source.topicId);
-    if (settingsConvId !== null) await this.settingsAssistant.refreshIfConversation(settingsConvId);
-    if (ticket) {
-      await this.harness.commit(async (tx) => {
-        const current = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
-        if (!current || ["stopped", "closed"].includes(current.status) ||
-          !(current.waiting?.reason === "external" || current.waiting?.reason === "user") || !current.waiting.externalJobIds?.includes(job.id)) return;
-        current.waiting.externalJobIds = current.waiting.externalJobIds.filter((id) => id !== job.id);
-        current.wakePending = true;
-        current.resumeAttachmentIds = [...new Set([...(current.resumeAttachmentIds ?? []), ...job.assets.map((asset) => asset.id)])];
-        current.resumePrompt = [current.resumePrompt, `Media job ${job.id} completed with asset(s): ${job.assets.map((asset) => asset.id).join(", ")}. Assets are staged privately (not yet published to the user)—reuse them and submit via kulo_report for coordinator review (use kulo_media_export to write into the project workspace; do not regenerate).`].filter(Boolean).join("\n");
-        await injectEventToolsInTx(
-          tx,
-          current.workerConversationId,
-          current.readOnly ? ["kulo_publish_asset"] : ["kulo_media_export", "kulo_publish_asset"],
-        );
-      }, BACKGROUND_CONTEXT);
-      if (!this.#recovering) { await this.#queueWaitReconcile(); await this.#resumeWaitingTicket(ticket.id, BACKGROUND_CONTEXT); }
-    }
-    await this.mediaJobs.markDelivered(job.id);
+    return this.#mediaDelivery.validateMediaSource(source, job);
   }
 
   async #stageWorkerArtifact(asset: ChatAttachment, source: MediaJobSource, callId: string): Promise<void> {
-    if (!source.ticketId) throw new UiCardError("content_scope_denied", "产物缺少 Worker 任务归属。", 403);
-    const snapshot = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-    const settingsSnapshot = await this.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
-    const ticket = snapshot?.tickets[source.ticketId];
-    const settingsConvId = parseSettingsTopicConversationId(source.topicId);
-    const topicValid = settingsConvId !== null
-      ? isActiveSettingsConversation(settingsConvId, settingsSnapshot)
-      : Boolean(snapshot?.topics?.[source.topicId] && !snapshot.topics[source.topicId]!.deletedAt);
-    if (!ticket || ["stopped", "closed"].includes(ticket.status) || !topicValid || (ticket.originTopicId ?? "root") !== source.topicId) throw new UiCardError("content_scope_denied", "产物所属任务或聊天已失效。", 403);
-    await this.uiCards.stageAsset({ path: `worker-asset:${asset.id}`, name: asset.name },
-      { conversationId: ticket.workerConversationId, callId, ticketId: ticket.id, topicId: source.topicId }, async () => asset,
-      async (tx, staged) => {
-        const state = await tx.doc(KuloStateDoc);
-        const settingsDoc = await tx.doc(SettingsAssistantDoc);
-        const current = state.tickets[ticket.id];
-        const originValid = settingsConvId !== null
-          ? isActiveSettingsConversation(settingsConvId, settingsDoc)
-          : Boolean(state.topics?.[source.topicId] && !state.topics[source.topicId]!.deletedAt);
-        if (!current || ["stopped", "closed"].includes(current.status) || !originValid || current.workerConversationId !== ticket.workerConversationId || current.runEpoch !== ticket.runEpoch || (current.originTopicId ?? "root") !== source.topicId) throw new UiCardError("content_scope_denied", "产物所属任务已变更。", 403);
-        this.uploads.bindAttachments([staged], `conversation:${current.workerConversationId}`, `agent:${source.conversationId}`, (scope) => scope === `conversation:${source.conversationId}`);
-        this.uploads.bindAttachments([staged], `ticket:${current.id}`, `agent:${source.conversationId}`, (scope) => scope === `conversation:${source.conversationId}`);
-        state.workerArtifacts ??= {};
-        const artifacts = state.workerArtifacts[current.id] ?? [];
-        if (!artifacts.some((entry) => entry.id === staged.id)) state.workerArtifacts[current.id] = [...artifacts, staged];
-        const originConvId = settingsConvId ?? state.topics?.[source.topicId]?.conversationId ?? Number(ROOT_CONVERSATION_ID);
-        await injectEventToolsInTx(tx, originConvId, ["kulo_inspect_asset", "kulo_publish_asset"]);
-      });
+    return this.#mediaDelivery.stageWorkerArtifact(asset, source, callId);
   }
 
   getSettingsView(): KuloSettingsView {
