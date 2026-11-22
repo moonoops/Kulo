@@ -58,8 +58,10 @@ import {
   type ClusterPaths,
 } from "./cluster-lifecycle.js";
 import { openNativePermissionSettings } from "./connection-native-apps.js";
+import { handleComposioRoutes } from "./composio-routes.js";
 import { IdentityFilesError, getIdentityTemplate } from "./identity-files.js";
 import { PersonalityError } from "./personality.js";
+import { UsageCapsError } from "./usage-caps.js";
 import { MEMORY_LLM_BRIDGE_PATH, MemoryLlmBridgeError } from "./memory-llm-bridge.js";
 import { MemoryServiceError } from "./memory-service.js";
 import { ExtensionError } from "./extensions.js";
@@ -486,6 +488,31 @@ export async function startKuloHubServer(
   const previewClients = new Map<WebSocket, { principal: string; dispose: () => void }>();
   let mobileHttpServer: http.Server | undefined;
   let mobileHttpStarting: Promise<string> | undefined;
+  let mobileConnectorRestoreTimer: ReturnType<typeof setTimeout> | undefined;
+  let mobileConnectorRestoreAttempt = 0;
+  const nonRetryableMobileConnectorCodes = new Set([
+    "connector_closed",
+    "connector_not_built",
+    "connector_listener_state_invalid",
+    "connector_listener_changed",
+  ]);
+  const cancelMobileConnectorRestore = () => {
+    if (mobileConnectorRestoreTimer) {
+      clearTimeout(mobileConnectorRestoreTimer);
+      mobileConnectorRestoreTimer = undefined;
+    }
+    mobileConnectorRestoreAttempt = 0;
+  };
+  const scheduleMobileConnectorRestore = (delayMs?: number) => {
+    if (closing || !devices.enabled || !devices.hasMobileClients() || mobileConnectorRestoreTimer) return;
+    const waitMs = delayMs ?? Math.min(30_000, 2_000 * 2 ** Math.min(mobileConnectorRestoreAttempt, 4));
+    mobileConnectorRestoreAttempt++;
+    mobileConnectorRestoreTimer = setTimeout(() => {
+      mobileConnectorRestoreTimer = undefined;
+      restoreMobileConnector();
+    }, waitMs);
+    mobileConnectorRestoreTimer.unref?.();
+  };
   const mobileConnector = new MobileConnector({ stateDir: hub.config.stateDir, hubId: devices.hubId,
     upstream: () => {
       if (closing) return Promise.reject(new DeviceConnectionError("Hub 正在关闭。", 503));
@@ -501,7 +528,24 @@ export async function startKuloHubServer(
         });
       });
       return mobileHttpStarting;
-    }, options: options.mobileConnector });
+    }, options: options.mobileConnector, onUnexpectedExit: () => scheduleMobileConnectorRestore(1_000) });
+  const restoreMobileConnector = () => {
+    if (closing || !devices.enabled || !devices.hasMobileClients()) return;
+    if (mobileConnectorRestoreTimer) {
+      clearTimeout(mobileConnectorRestoreTimer);
+      mobileConnectorRestoreTimer = undefined;
+    }
+    void mobileConnector.ensure().then(() => {
+      mobileConnectorRestoreAttempt = 0;
+    }, (error: unknown) => {
+      if (closing || !devices.enabled || !devices.hasMobileClients()) return;
+      const code = error instanceof DeviceConnectionError ? error.code : undefined;
+      console.error("恢复手机安全连接失败:", error instanceof Error ? error.message : String(error));
+      if (!code || !nonRetryableMobileConnectorCodes.has(code)) {
+        scheduleMobileConnectorRestore();
+      }
+    });
+  };
   const isMobileConnector = (req: http.IncomingMessage): boolean => {
     const address = req.socket.remoteAddress;
     const supplied = req.headers["x-kulo-connector"] ?? req.headers["x-moco-connector"];
@@ -592,6 +636,8 @@ export async function startKuloHubServer(
         host = desiredHost;
       } catch (error) {
         devices.setEnabled(false);
+        cancelMobileConnectorRestore();
+        await mobileConnector.stop();
         await listenOn(previousHost, actualPort);
         console.error("设备互联监听地址切换失败:", error instanceof Error ? error.message : String(error));
       }
@@ -602,15 +648,18 @@ export async function startKuloHubServer(
     if (!enabled) await guardRemoteTasks(undefined, force);
     devices.setEnabled(enabled);
     if (!enabled) {
+      cancelMobileConnectorRestore();
       mediaHttp.revoke();
       sshDevices.cancelPending();
       await Promise.all([...voiceClients.values()].filter((call) => !devices.isLocalPrincipal(call.principal)).map((call) => hub.voiceCalls.end(call.id, call.principal)));
       for (const [client, deviceId] of deviceClients) if (!devices.isLocalPrincipal(deviceId)) client.close(4003, "Device interconnection disabled");
       for (const client of mobileProbeWss.clients) client.close(4003, "Device interconnection disabled");
+      await mobileConnector.stop();
     } else {
       void sshDevices.restore(devices.sshRecords).catch((error: unknown) => {
         console.error("恢复 SSH 设备失败:", error instanceof Error ? error.message : String(error));
       });
+      restoreMobileConnector();
     }
     const desiredHost = options.host ?? (enabled ? "0.0.0.0" : hub.config.host);
     const changedListener = desiredHost !== host;
@@ -1538,7 +1587,7 @@ export async function startKuloHubServer(
             const onClose = () => { if (!res.writableEnded) controller.abort(); };
             res.once("close", onClose);
             try {
-              const audio = await hub.voice.synthesize(body.text, controller.signal, { preview: body.preview === true });
+              const audio = await hub.voice.synthesize(body.text, controller.signal, { preview: body.preview === true, cleanMarkdown: body.preview !== true });
               if (!res.destroyed) { res.writeHead(200, { "content-type": audio.mimeType, "content-length": audio.bytes.length, "x-content-type-options": "nosniff" }); res.end(audio.bytes); }
             } finally { res.off("close", onClose); }
             return;
@@ -1790,6 +1839,7 @@ export async function startKuloHubServer(
             sendJson(res, 200, { ok: true });
             return;
           }
+          if (await handleComposioRoutes({ req, res, pathname, connections: hub.connectionManager, assertSameOrigin, readJsonObject, sendJson })) return;
           const oauthSession = /^\/api\/connections\/oauth\/([^/]+)(?:\/(complete|cancel))?$/.exec(pathname);
           if (oauthSession) {
             assertSameOrigin();
@@ -2645,6 +2695,26 @@ export async function startKuloHubServer(
           return;
         }
 
+        // Ticket Computer Handoff Settlement API
+        if (
+          req.method === "POST" &&
+          pathname.startsWith("/api/tickets/") &&
+          pathname.endsWith("/computer-handoff")
+        ) {
+          const ticketId = decodeURIComponent(
+            pathname.slice("/api/tickets/".length, -"/computer-handoff".length),
+          );
+          const body = await readJsonObject(req);
+          const action = body.action === "done" || body.action === "cancel" ? body.action : undefined;
+          if (!action) {
+            sendJson(res, 400, { error: "无效的人工接管操作。" });
+            return;
+          }
+          const manual = typeof body.note === "string" ? body.note.slice(0, 1000) : undefined;
+          sendJson(res, 200, await hub.resolveComputerHandoff(ticketId, action, manual));
+          return;
+        }
+
         // Ticket Retry API
         if (
           req.method === "POST" &&
@@ -2662,6 +2732,52 @@ export async function startKuloHubServer(
         // Settings API
         if (req.method === "GET" && pathname === "/api/settings") {
           sendJson(res, 200, hub.getSettingsView());
+          return;
+        }
+
+        if (req.method === "GET" && pathname === "/api/external-clients/quotas") {
+          res.setHeader("cache-control", "no-store");
+          sendJson(res, 200, hub.externalClientQuotas.getSnapshot());
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/api/external-clients/quotas/refresh") {
+          res.setHeader("cache-control", "no-store");
+          if (req.headers["sec-fetch-site"] === "cross-site" || req.headers.origin && req.headers.origin !== requestOrigin(req)) {
+            sendJson(res, 403, { error: "请在 Kulo 中刷新外部客户端额度。", code: "external_quota_origin_required" });
+            return;
+          }
+          const body = await readJsonObject(req, 4096);
+          if (Object.keys(body).some((key) => key !== "clientId" && key !== "force")) {
+            throw new AgentConfigurationError(400, "invalid_agent_configuration", "刷新额度参数无效。");
+          }
+          let clientId: string | undefined;
+          if (body.clientId !== undefined) {
+            if (typeof body.clientId !== "string" || !body.clientId.trim() || body.clientId.length > 200 || /[\x00-\x1f\x7f]/.test(body.clientId)) {
+              throw new AgentConfigurationError(400, "invalid_agent_configuration", "外部客户端标识无效。");
+            }
+            clientId = body.clientId.trim();
+          }
+          if (body.force !== undefined && typeof body.force !== "boolean") {
+            throw new AgentConfigurationError(400, "invalid_agent_configuration", "刷新标志无效。");
+          }
+          const controller = new AbortController();
+          const abort = () => controller.abort();
+          req.once("aborted", abort);
+          res.once("close", abort);
+          try {
+            const view = await hub.externalClientQuotas.refresh({
+              ...(clientId ? { clientId } : {}),
+              force: body.force === true,
+              signal: controller.signal,
+            });
+            if (!res.writableEnded && !res.destroyed) {
+              sendJson(res, 200, view);
+            }
+          } finally {
+            req.off("aborted", abort);
+            res.off("close", abort);
+          }
           return;
         }
 
@@ -2776,6 +2892,16 @@ export async function startKuloHubServer(
             body.value,
           );
           sendJson(res, 200, out);
+          return;
+        }
+
+        if (req.method === "GET" && pathname === "/api/usage-caps") {
+          sendJson(res, 200, hub.usageCaps.snapshot());
+          return;
+        }
+        if (req.method === "PUT" && pathname === "/api/usage-caps") {
+          const body = await readJsonObject(req);
+          sendJson(res, 200, await hub.usageCaps.updateConfig(Number(body.expectedRevision), body.config));
           return;
         }
 
@@ -3109,7 +3235,7 @@ export async function startKuloHubServer(
         sendJson(res, err.status, { error: err.message, code: err.code });
         return;
       }
-      if (err instanceof IdentityFilesError || err instanceof PersonalityError || err instanceof MemoryServiceError || err instanceof ExtensionError || err instanceof ExtensionPackageError || err instanceof VoiceError || err instanceof VoiceCallsError || err instanceof SkillError || err instanceof CapabilityError || err instanceof AgentConfigurationError || err instanceof ConversationQueryError) {
+      if (err instanceof IdentityFilesError || err instanceof PersonalityError || err instanceof UsageCapsError || err instanceof MemoryServiceError || err instanceof ExtensionError || err instanceof ExtensionPackageError || err instanceof VoiceError || err instanceof VoiceCallsError || err instanceof SkillError || err instanceof CapabilityError || err instanceof AgentConfigurationError || err instanceof ConversationQueryError) {
         sendJson(res, err.status, { error: err.message, code: err.code });
         return;
       }
@@ -3252,9 +3378,12 @@ export async function startKuloHubServer(
   }
   actualPort = addr.port;
   const advertised = new URL(localListenerOrigin({ address: host, port: actualPort }));
-  if (devices.enabled) void sshDevices.restore(devices.sshRecords).catch((error: unknown) => {
-    console.error("恢复 SSH 设备失败:", error instanceof Error ? error.message : String(error));
-  });
+  if (devices.enabled) {
+    void sshDevices.restore(devices.sshRecords).catch((error: unknown) => {
+      console.error("恢复 SSH 设备失败:", error instanceof Error ? error.message : String(error));
+    });
+    restoreMobileConnector();
+  }
   if (isClusterActive()) {
     persistPrimaryClusterMembership(advertised.origin);
     void ensurePrimaryClusterKeys()
@@ -3278,6 +3407,7 @@ export async function startKuloHubServer(
     },
     close: async () => {
       closing = true;
+      cancelMobileConnectorRestore();
       fenceMonitor.stop();
       hub.setOnClusterDirty(undefined);
       devices.setOnWrite(undefined);

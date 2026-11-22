@@ -1,6 +1,8 @@
+import { safeJsonForXmlTag } from "@kulo/protocol";
 import type { StoredAssistantDigest, StoredAssistantEvent } from "./assistant-ledger.js";
 import type { AssistantLedger } from "./assistant-ledger.js";
 import type { AmbientModelService } from "./ambient-model-service.js";
+import type { AssistantEchoSuppressor } from "./assistant-echo.js";
 
 export interface SorterParsedResult {
   digest: string;
@@ -16,6 +18,8 @@ export interface AssistantSorterOptions {
   ambientModel: AmbientModelService;
   redact: (text: string) => string;
   onNotifyBrain: (input: { digest: StoredAssistantDigest; events: StoredAssistantEvent[] }) => void;
+  echoSuppressor?: AssistantEchoSuppressor;
+  shouldSkipCloudModel?: () => Promise<boolean>;
   coalesceWindowMs?: number;
   maxCoalesceMs?: number;
   maxCallsPerMinute?: number;
@@ -24,6 +28,9 @@ export interface AssistantSorterOptions {
 const DEFAULT_COALESCE_MS = 8_000;
 const DEFAULT_MAX_COALESCE_MS = 25_000;
 const DEFAULT_MAX_CALLS_PER_MINUTE = 20;
+export const MAX_SORTER_PROMPT_EVENTS = 12;
+const PROMPT_HEAD_EVENTS = 2;
+const PROMPT_TAIL_EVENTS = MAX_SORTER_PROMPT_EVENTS - PROMPT_HEAD_EVENTS;
 
 const SORTER_SYSTEM_PROMPT = [
   "You are Kulo's silent background event sorter. You have NO tools.",
@@ -104,6 +111,39 @@ export class AssistantSorter {
   enqueue(events: readonly StoredAssistantEvent[]): void {
     if (this.#closed || events.length === 0) return;
     for (const event of events) {
+      if (
+        this.#options.echoSuppressor?.consumeIfEcho({
+          appId: event.appId,
+          driverId: event.driverId,
+          sender: event.sender,
+          title: event.title,
+          body: event.body,
+        })
+      ) {
+        const echoSummary = `[${event.appLabel}] ${event.title || event.sender || "回执"}（已抑制本机外发回声）`.slice(0, 200);
+        this.#serial = this.#serial
+          .then(async () => {
+            if (this.#closed) return;
+            await this.#options.ledger.recordDigest(
+              {
+                createdAt: Date.now(),
+                appId: event.appId,
+                appLabel: event.appLabel,
+                ...(event.threadHint ? { threadHint: event.threadHint } : {}),
+                category: "noise",
+                disposition: "noise",
+                urgency: "low",
+                digest: echoSummary,
+                eventIds: [event.id],
+                situationKey: `${event.appId}:${event.threadHint || event.sender || event.title || "echo"}`.slice(0, 120),
+              },
+              this.#options.redact,
+            );
+          })
+          .catch(() => {});
+        continue;
+      }
+
       const bucketKey = `${event.appId}\0${event.threadHint || event.sender || event.title || "default"}`;
       let bucket = this.#buckets.get(bucketKey);
       if (!bucket) {
@@ -178,22 +218,28 @@ export class AssistantSorter {
       this.#callTimestamps.shift();
     }
     const fallbackSummary = `[${sample.appLabel}] ${sample.title || sample.sender || ""}${sample.body ? `：${sample.body}` : ""}`.trim().slice(0, 200);
-    if (this.#callTimestamps.length >= this.#maxCallsPerMinute) {
-      await this.#options.ledger.recordDigest(
+    const rateLimited = this.#callTimestamps.length >= this.#maxCallsPerMinute;
+    const usageCapped = !rateLimited && Boolean(await this.#options.shouldSkipCloudModel?.());
+    if (rateLimited || usageCapped) {
+      const isHomeAssistant = sample.appId === "home-assistant";
+      const digest = await this.#options.ledger.recordDigest(
         {
           createdAt: now,
           appId: sample.appId,
           appLabel: sample.appLabel,
           ...(sample.threadHint ? { threadHint: sample.threadHint } : {}),
-          category: "general",
-          disposition: "archive",
-          urgency: "low",
+          category: isHomeAssistant ? "security" : "general",
+          disposition: isHomeAssistant ? "notify_brain" : "archive",
+          urgency: isHomeAssistant ? "high" : "low",
           digest: fallbackSummary,
           eventIds: events.map((e) => e.id),
           situationKey: `${sample.appId}:${sample.threadHint || sample.sender || sample.title || "general"}`.slice(0, 120),
         },
         this.#options.redact,
       );
+      if (isHomeAssistant) {
+        this.#options.onNotifyBrain({ digest, events });
+      }
       return;
     }
     this.#callTimestamps.push(now);
@@ -205,17 +251,24 @@ export class AssistantSorter {
 
     let parsed: SorterParsedResult;
     try {
-      const payload = events.map((ev) => ({
+      const formatEvent = (ev: StoredAssistantEvent) => ({
         app: ev.appLabel,
         appId: ev.appId,
         sender: ev.sender ?? ev.title,
         subtitle: ev.subtitle,
         body: ev.body.slice(0, 600),
         at: new Date(ev.occurredAt).toISOString(),
-      }));
+      });
+      const payload = events.length > MAX_SORTER_PROMPT_EVENTS
+        ? [
+            ...events.slice(0, PROMPT_HEAD_EVENTS).map(formatEvent),
+            { omittedEvents: events.length - MAX_SORTER_PROMPT_EVENTS, note: "middle burst events omitted from prompt; raw events retained in ledger" },
+            ...events.slice(-PROMPT_TAIL_EVENTS).map(formatEvent),
+          ]
+        : events.map(formatEvent);
       const raw = await this.#options.ambientModel.completeZeroToolJson({
         systemPrompt: SORTER_SYSTEM_PROMPT,
-        userContent: `<untrusted_events>\n${JSON.stringify(payload)}\n</untrusted_events>`,
+        userContent: `<untrusted_events>\n${safeJsonForXmlTag(payload)}\n</untrusted_events>`,
         maxTokens: 400,
         signal: controller.signal,
       });

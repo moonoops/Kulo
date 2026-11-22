@@ -6,6 +6,7 @@ import { KuloMarkdown } from "../../kulo-markdown";
 import { kuloRest } from "../../kulo-api";
 import { AssetImageGallery, type PreviewableImage } from "./asset-preview";
 import { CodeBlock } from "./code-block";
+import { filePreviewKind, isOfficePreviewKind } from "./file-preview-model";
 import { MediaMessage } from "./media-message";
 import { MessageSources } from "./message-sources";
 import { VoiceMessage } from "./voice-message";
@@ -85,7 +86,7 @@ function ResolvedAssets({ parts, conversationKey, onPreviewImage, role }: {
   const unavailable = parts.filter((part) => !part.asset && !resolved.has(part.assetId));
   const fallbackByAsset = new Map(parts.filter((part) => part.fallbackText).map((part) => [part.assetId, part.fallbackText!]));
   return <>
-    {parts[0]?.type === "image" ? <AssetImageGallery assets={assets} onPreviewImage={onPreviewImage} /> : assets.map((asset) => role === "user" && asset.kind === "audio" && asset.presentation === "voice" ? <VoiceMessage key={asset.id} asset={asset} conversationKey={conversationKey} /> : <MediaMessage key={asset.id} asset={asset} conversationKey={conversationKey} onPreviewImage={onPreviewImage} defaultExpanded fallbackText={fallbackByAsset.get(asset.id)} />)}
+    {parts[0]?.type === "image" ? <AssetImageGallery assets={assets} onPreviewImage={onPreviewImage} /> : assets.map((asset) => role === "user" && asset.kind === "audio" && asset.presentation === "voice" ? <VoiceMessage key={asset.id} asset={asset} conversationKey={conversationKey} /> : <MediaMessage key={asset.id} asset={asset} conversationKey={conversationKey} onPreviewImage={onPreviewImage} defaultExpanded={role === "assistant" || !isOfficePreviewKind(filePreviewKind(asset))} fallbackText={fallbackByAsset.get(asset.id)} />)}
     {unavailable.map((part) => <div key={part.partId} className="kulo-chat-unavailable-part" role="status"><span>{failures.has(part.assetId) ? tr("附件不可用", "Attachment unavailable") : tr("正在加载附件", "Loading attachment")}</span>{failures.has(part.assetId) && <Button size="sm" variant="secondary" onPress={() => setAttempt((value) => value + 1)}>{tr("重试", "Retry")}</Button>}</div>)}
     {parts.some((part) => part.caption) && <p className="kulo-chat-media-caption">{parts.map((part) => part.caption).filter(Boolean).join("\n")}</p>}
   </>;
@@ -107,13 +108,17 @@ export function MessageContent({ item, onPreviewImage, renderUiPart, renderDevic
   useLayoutEffect(() => {
     setSnapshot((previous) => previous.scope === scope ? { scope, rows: reconcileRows(previous.rows, groups) } : { scope, rows: groups.map((group) => ({ group, present: true, animateEntry: false })) });
   }, [groups, scope]);
+  const [highlightedSourceUrl, setHighlightedSourceUrl] = useState<string | undefined>(undefined);
+  const assistantSources = item.role === "assistant" && item.sources?.length ? item.sources : undefined;
   const rows = snapshot.scope === scope ? snapshot.rows : groups.map((group) => ({ group, present: true, animateEntry: false }));
   const render = (group: ContentGroup) => {
     const part = group.parts[0]!;
     switch (part.type) {
-      case "markdown": return item.role === "user" ? <div className="mc-user-message kulo-chat-user-text">{part.text}</div> : <KuloMarkdown text={part.text} onPreviewImage={onPreviewImage} />;
+      case "markdown": return item.role === "user"
+        ? <div className="mc-user-message kulo-chat-user-text">{part.text}</div>
+        : <KuloMarkdown text={part.text} sources={assistantSources} highlightedSourceUrl={highlightedSourceUrl} onHighlightSource={assistantSources ? setHighlightedSourceUrl : undefined} onPreviewImage={onPreviewImage} />;
       case "code": return <CodeBlock code={part.code} language={part.language} fileName={part.fileName} />;
-      case "ui": return renderUiPart ? renderUiPart(part) : <KuloMarkdown text={part.fallbackText} onPreviewImage={onPreviewImage} />;
+      case "ui": return renderUiPart ? renderUiPart(part) : <KuloMarkdown text={part.fallbackText} sources={assistantSources} onPreviewImage={onPreviewImage} />;
       case "device-invitation": return item.role === "assistant" && renderDeviceInvitation
         ? renderDeviceInvitation(part)
         : <span>{messagePartFallback(part)}</span>;
@@ -125,6 +130,6 @@ export function MessageContent({ item, onPreviewImage, renderUiPart, renderDevic
     {rows.map((row) => <ContentPresence key={row.group.id} present={row.present} animateEntry={row.animateEntry} onExited={() => setSnapshot((previous) => ({ ...previous, rows: previous.rows.filter((candidate) => candidate.group.id !== row.group.id || candidate.present) }))}>
       <ContentBoundary fallback={row.group.parts.map(messagePartFallback).join("\n\n")}>{render(row.group)}</ContentBoundary>
     </ContentPresence>)}
-    {item.role === "assistant" && item.sources?.length ? <MessageSources sources={item.sources} searchSuggestions={item.searchSuggestions} /> : null}
+    {assistantSources ? <MessageSources sources={assistantSources} searchSuggestions={item.searchSuggestions} highlightedSourceUrl={highlightedSourceUrl} onHighlightSource={setHighlightedSourceUrl} /> : null}
   </div>;
 }

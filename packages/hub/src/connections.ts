@@ -14,7 +14,8 @@ import { CONNECTION_APPLICATIONS, getConnectionApplication, LocalConnectionAppli
 import { closeMcpHttpAgents } from "./mcp-fetch.js";
 import { McpConnectionPool, type McpDiscoverySnapshot, type McpTransportFactoryContext } from "./mcp-connections.js";
 import { McpOAuthRefreshLockManager, McpOAuthSessionManager, extractMcpOAuthSecrets, mcpOAuthVaultRef, parseMcpOAuthVaultEntry } from "./mcp-oauth.js";
-import { MCP_PRESET_CATALOG, getMcpPreset, isCloudMetadataIp, isLoopbackHost, isValidMcpEnvKey, stripBrackets } from "./mcp-presets.js";
+import { MCP_PRESET_CATALOG, getMcpPreset, isLoopbackHost, isValidMcpEnvKey, normalizeMcpConnectionFields } from "./mcp-presets.js";
+import { COMPOSIO_PRESET_ID, composioBinding, createComposioSession } from "./composio-bridge.js";
 import type { McpTransport } from "@earendil-works/pi-mcp";
 
 export interface ConnectionVault {
@@ -45,7 +46,6 @@ const KNOWN_KINDS: ConnectionKind[] = ["ssh", "account", "api-key", "custom", "a
 const MAX_RECORDS = 256;
 const MAX_INPUT_AGE = 30 * 60_000;
 const MAX_CREDENTIAL_FIELDS = 32;
-const MAX_MCP_ARGS = 64;
 const RESERVED_FIELD_KEYS = new Set(["__binding", "__proto__", "constructor", "prototype", "toString", "valueOf", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString"]);
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 function fail(message: string, code = "invalid_connection", status = 400): never { throw Object.assign(new Error(message), { code, status }); }
@@ -90,35 +90,6 @@ function instructionsField(value: unknown): string | undefined {
   return value.trim() || undefined;
 }
 function fieldLabel(key: string): string { return ({ password: "密码", privateKey: "私钥", passphrase: "私钥口令", apiKey: "API Key", clientSecret: "Client Secret" } as Record<string, string>)[key] ?? key; }
-function normalizeMcpCommand(value: unknown): string {
-  const command = textField(value, "启动命令", 512);
-  if (!command) fail("请填写本机 MCP 启动命令。");
-  if (command.startsWith("./") || command.startsWith("../") || command.includes("..")) fail("启动命令不能使用相对路径。");
-  if ((command.includes("/") || command.includes("\\")) && !path.isAbsolute(command)) fail("启动命令须为可执行文件名或绝对路径。");
-  if (!path.isAbsolute(command) && !/^[A-Za-z0-9._-]+$/.test(command)) fail("启动命令名称包含不支持的字符。");
-  return command;
-}
-function normalizeMcpArgs(value: unknown): string[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.length > MAX_MCP_ARGS) fail("MCP 启动参数无效（最多 64 项）。");
-  return value.map((item) => {
-    if (typeof item !== "string" || item.length > 1_024 || /[\x00\r\n]/.test(item)) fail("MCP 启动参数包含无效字符或过长。");
-    return item;
-  });
-}
-function normalizeMcpCwd(value: unknown, stateDir?: string): string | undefined {
-  const cwd = textField(value, "工作目录", 1_024);
-  if (!cwd) return undefined;
-  if (!path.isAbsolute(cwd)) fail("MCP 工作目录必须为绝对路径。");
-  if (stateDir) {
-    const resolvedState = path.resolve(stateDir);
-    const resolvedCwd = path.resolve(cwd);
-    if (resolvedCwd === resolvedState || resolvedCwd.startsWith(`${resolvedState}${path.sep}`)) {
-      fail("MCP 工作目录不能指向应用受保护数据目录。");
-    }
-  }
-  return cwd;
-}
 function normalizeFields(input: ConnectionFields, stateDir?: string): ConnectionFields {
   if (!input || typeof input !== "object" || !KNOWN_KINDS.includes(input.kind)) fail("请选择连接类型。");
   if (input.kind === "app") {
@@ -131,77 +102,7 @@ function normalizeFields(input: ConnectionFields, stateDir?: string): Connection
       instructions: app.instructions.join("\n"), credentialFields: app.authentication === "token" ? [{ key: "apiKey", label: "访问令牌" }] : [] };
   }
   if (input.kind === "mcp") {
-    if (input.appId !== undefined) fail("MCP 连接不能指定固定应用标识。");
-    if (input.category !== undefined && input.category !== "app") fail("MCP 连接归属应用分类。");
-    const name = textField(input.name, "连接名称", 120);
-    if (!name) fail("请填写连接名称。");
-    const transport: McpTransportKind = input.mcpTransport ?? (input.mcpCommand ? "stdio" : "http");
-    if (transport !== "http" && transport !== "stdio") fail("MCP 传输方式无效。");
-    const instructions = instructionsField(input.instructions);
-    if (transport === "http") {
-      if (input.mcpCommand !== undefined || input.mcpArgs !== undefined || input.mcpCwd !== undefined) fail("远程 HTTP MCP 不能包含本地命令行参数。");
-      const preset = input.mcpPresetId ? getMcpPreset(input.mcpPresetId) : undefined;
-      const rawUrl = textField(input.url ?? preset?.url, "MCP 服务地址", 2_048);
-      if (!rawUrl) fail("请填写 MCP 服务地址。");
-      let url: URL;
-      try { url = new URL(rawUrl); } catch { fail("请输入有效的 MCP 服务地址。"); }
-      if (url.username || url.password || url.search || url.hash) fail("MCP 服务地址不能包含账号、密码或查询参数。");
-      const host = stripBrackets(url.hostname);
-      if (!host || isCloudMetadataIp(host)) fail("MCP 服务地址无效或受安全策略阻止。");
-      if (url.protocol === "http:") {
-        if (!isLoopbackHost(host)) fail("远程 MCP 服务地址必须使用 HTTPS。");
-      } else if (url.protocol !== "https:") {
-        fail("远程 MCP 服务地址必须使用 HTTPS。");
-      }
-      const authMode: McpAuthMode = input.mcpAuthMode ?? preset?.authMode ?? "oauth";
-      if (!["oauth", "bearer", "header", "none"].includes(authMode)) fail("MCP 认证方式无效。");
-      let headerName: string | undefined;
-      if (authMode === "header") {
-        const header = textField(input.headerName ?? preset?.headerName, "认证请求头", 80) ?? "X-API-Key";
-        if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(header) || /^(host|cookie|set-cookie|proxy-authorization|connection|content-length|transfer-encoding)$/i.test(header)) fail("认证请求头无效。");
-        headerName = header;
-      }
-      const mcpOAuthClientId = authMode === "oauth" ? textField(input.mcpOAuthClientId, "OAuth Client ID", 256) : undefined;
-      const mcpOAuthScope = authMode === "oauth" ? textField(input.mcpOAuthScope, "OAuth Scope", 512) : undefined;
-      let mcpOAuthCallbackPort: number | undefined;
-      if (authMode === "oauth" && input.mcpOAuthCallbackPort !== undefined) {
-        if (!Number.isInteger(input.mcpOAuthCallbackPort) || input.mcpOAuthCallbackPort < 1024 || input.mcpOAuthCallbackPort > 65_535) fail("OAuth 回调端口必须在 1024 到 65535 之间。");
-        mcpOAuthCallbackPort = input.mcpOAuthCallbackPort;
-      }
-      const schema = credentialSchema(input.credentialFields);
-      if (schema?.some((field) => !allowedSecretKeyFor("mcp", field.key, "http", authMode))) fail("此 MCP 认证方式不支持该凭据字段。");
-      const credentialFields: ConnectionCredentialField[] =
-        authMode === "bearer" || authMode === "header"
-          ? [{ key: "apiKey", label: "访问令牌" }]
-          : authMode === "oauth" && mcpOAuthClientId
-            ? [{ key: "clientSecret", label: "Client Secret" }]
-            : [];
-      return {
-        name, kind: "mcp", category: "app", mcpTransport: "http", url: url.href, mcpAuthMode: authMode,
-        ...(preset ? { mcpPresetId: preset.id } : {}),
-        ...(headerName ? { headerName } : {}),
-        ...(mcpOAuthClientId ? { mcpOAuthClientId } : {}),
-        ...(mcpOAuthScope ? { mcpOAuthScope } : {}),
-        ...(mcpOAuthCallbackPort !== undefined ? { mcpOAuthCallbackPort } : {}),
-        ...(instructions ? { instructions } : {}),
-        credentialFields,
-      };
-    }
-    if (input.url !== undefined || input.mcpAuthMode !== undefined || input.headerName !== undefined || input.mcpPresetId !== undefined || input.mcpOAuthClientId !== undefined || input.mcpOAuthScope !== undefined || input.mcpOAuthCallbackPort !== undefined) {
-      fail("本机 Stdio MCP 不能包含远程 HTTP 或 OAuth 字段。");
-    }
-    const mcpCommand = normalizeMcpCommand(input.mcpCommand);
-    const mcpArgs = normalizeMcpArgs(input.mcpArgs);
-    const mcpCwd = normalizeMcpCwd(input.mcpCwd, stateDir);
-    const schema = credentialSchema(input.credentialFields) ?? [];
-    if (schema.some((field) => !isValidMcpEnvKey(field.key))) fail("本机 MCP 环境变量名须为大写字母/数字/下划线且不得覆盖受保护系统变量。");
-    return {
-      name, kind: "mcp", category: "app", mcpTransport: "stdio", mcpCommand,
-      ...(mcpArgs?.length ? { mcpArgs } : {}),
-      ...(mcpCwd ? { mcpCwd } : {}),
-      ...(instructions ? { instructions } : {}),
-      credentialFields: schema,
-    };
+    return normalizeMcpConnectionFields(input, { stateDir, textField, instructionsField, credentialSchema, allowedSecretKeyFor });
   }
   if (input.appId !== undefined || input.category === "app") fail("请从预置应用入口连接应用。");
   const category: ConnectionCategory = input.category ?? "credential";
@@ -247,6 +148,7 @@ function binding(fields: ConnectionFields): string {
     if (fields.mcpTransport === "stdio") {
       return JSON.stringify(["mcp", "stdio", fields.mcpCommand ?? "", fields.mcpArgs ?? [], fields.mcpCwd ?? ""]);
     }
+    if (fields.mcpPresetId === COMPOSIO_PRESET_ID) return composioBinding(fields);
     const u = fields.url ? new URL(fields.url) : undefined;
     return JSON.stringify(["mcp", "http", u ? `${u.origin}${u.pathname}` : "", fields.mcpAuthMode ?? "oauth", fields.headerName?.toLowerCase() ?? "", fields.mcpOAuthClientId ?? ""]);
   }
@@ -320,6 +222,7 @@ export class KuloConnections {
   #onPersist?: () => void;
   #clusterHostContext?: { localNodeId: string; legacyLocalNodeId?: string };
   readonly #mcpLocks: McpOAuthRefreshLockManager;
+  readonly #mcpBaseFetch?: typeof fetch;
   readonly #mcpPool: McpConnectionPool;
   readonly mcpOAuth: McpOAuthSessionManager;
   #doc: ConnectionDocument;
@@ -355,6 +258,7 @@ export class KuloConnections {
     this.#executor = options.executor ?? new LocalConnectionExecutor({ stateDir: options.stateDir, applications: this.#applications });
     this.#onChanged = options.onChanged;
     this.#mcpLocks = new McpOAuthRefreshLockManager(options.stateDir);
+    this.#mcpBaseFetch = options.mcpBaseFetch;
     this.#doc = { version: 1, connections: {}, inputs: {}, imports: {}, requests: {} };
     if (fs.existsSync(this.#file)) {
       if (fs.lstatSync(this.#file).isSymbolicLink() || !fs.statSync(this.#file).isFile()) fail("连接记录路径无效。", "connection_storage_corrupt", 500);
@@ -385,6 +289,7 @@ export class KuloConnections {
         else this.#mcpOAuthAuthorized.delete(id);
       },
       onDiscoveryUpdated: (id, expectedRevision, discovery) => this.#updateMcpDiscoveryCache(id, expectedRevision, discovery),
+      onComposioSessionExpired: (id, expectedBinding, signal, failedSessionId) => this.refreshComposioSession(id, expectedBinding, signal, failedSessionId),
       ...(options.mcpIdleMs !== undefined ? { idleMs: options.mcpIdleMs } : {}),
       ...(options.mcpBaseFetch ? { baseFetch: options.mcpBaseFetch } : {}),
       ...(options.mcpTransportFactory ? { transportFactory: options.mcpTransportFactory } : {}),
@@ -520,6 +425,7 @@ export class KuloConnections {
     this.rememberSecrets(Object.entries(fields).flatMap(([key, value]) => value && secretField.test(key) ? [value] : []));
   }
   get localVault(): LocalConnectionVault | undefined { return this.#vault instanceof LocalConnectionVault ? this.#vault : undefined; }
+  get mcpBaseFetch(): typeof fetch | undefined { return this.#mcpBaseFetch; }
   get redactionRevision(): number { return this.#known.size; }
   rememberSecrets(values: readonly string[]): void {
     for (const value of values) {
@@ -638,13 +544,39 @@ export class KuloConnections {
     });
   }
   async save(request: ConnectionSaveRequest, source: "form" | "chat" = "form"): Promise<ConnectionRecordView> {
-    return this.#serialize(async () => {
-      const view = await this.#save(request, source);
-      await this.#changed();
-      return view;
+    return this.#serialize(async () => { const view = await this.#save(request, source); await this.#changed(); return view; });
+  }
+  async saveComposioSession(request: ConnectionSaveRequest): Promise<ConnectionRecordView> {
+    return this.#serialize(async () => { const view = await this.#save(request, "form", { allowComposioDirect: true }); await this.#changed(); return view; });
+  }
+  async getComposioContext(id: string): Promise<{ record: ConnectionRecordView; apiKey: string; binding: string }> {
+    this.#assertOpen();
+    const record = this.#record(id);
+    if (record.kind !== "mcp" || record.mcpPresetId !== COMPOSIO_PRESET_ID) fail("此连接不是 Composio 应用连接。", "connection_composio_not_composio", 400);
+    const secrets = await this.#secrets(record);
+    if (!secrets.apiKey) fail("Composio API Key 尚未保存。", "connection_credential_missing", 409);
+    return { record: this.#view(record), apiKey: secrets.apiKey, binding: binding(record) };
+  }
+  async refreshComposioSession(id: string, expectedBinding: string, signal?: AbortSignal, failedSessionId?: string): Promise<ConnectionRecordView | undefined> {
+    return this.#mcpLocks.withLock(id, async () => {
+      if (this.#closed) return undefined;
+      const current = this.#doc.connections[id];
+      if (!current || current.kind !== "mcp" || current.mcpPresetId !== COMPOSIO_PRESET_ID || binding(current) !== expectedBinding || !current.mcpComposioUserId) return undefined;
+      if (failedSessionId && current.mcpComposioSessionId && current.mcpComposioSessionId !== failedSessionId) return this.#view(current);
+      const secrets = await this.#secrets(current);
+      if (!secrets.apiKey) return undefined;
+      const created = await createComposioSession(secrets.apiKey, { userId: current.mcpComposioUserId, allowedToolkits: current.mcpAllowedToolkits, baseFetch: this.#mcpBaseFetch, redact: (t) => this.redact(t), signal });
+      return this.#serialize(async () => {
+        if (this.#closed) return undefined;
+        const latest = this.#doc.connections[id];
+        if (!latest || latest.kind !== "mcp" || latest.mcpPresetId !== COMPOSIO_PRESET_ID || binding(latest) !== expectedBinding) return undefined;
+        const updated: StoredConnection = { ...latest, url: created.mcpUrl, mcpComposioSessionId: created.sessionId, updatedAt: Date.now() };
+        this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: updated } });
+        return this.#view(updated);
+      });
     });
   }
-  async #save(request: ConnectionSaveRequest, source: "form" | "chat", options: { requestPermission?: boolean; signal?: AbortSignal; trustedInformation?: boolean; humanInformation?: boolean; inputId?: string } = {}): Promise<ConnectionRecordView> {
+  async #save(request: ConnectionSaveRequest, source: "form" | "chat", options: { requestPermission?: boolean; signal?: AbortSignal; trustedInformation?: boolean; humanInformation?: boolean; inputId?: string; allowComposioDirect?: boolean } = {}): Promise<ConnectionRecordView> {
     this.#assertOpen();
     options.signal?.throwIfAborted();
     const previous = request.id ? this.#record(request.id) : undefined;
@@ -655,7 +587,17 @@ export class KuloConnections {
       if (draft.category === undefined) draft.category = "app";
       if (draft.mcpTransport === undefined && previous?.kind === "mcp") draft.mcpTransport = previous.mcpTransport;
       if (draft.mcpAuthMode === undefined && previous?.kind === "mcp" && draft.mcpTransport === "http") draft.mcpAuthMode = previous.mcpAuthMode;
-      if (draft.mcpPresetId === undefined && previous?.kind === "mcp" && draft.mcpTransport === "http" && draft.url === previous.url) draft.mcpPresetId = previous.mcpPresetId;
+      const prevComposio = previous?.kind === "mcp" && previous.mcpPresetId === COMPOSIO_PRESET_ID;
+      if (draft.mcpPresetId === undefined && previous?.kind === "mcp" && draft.mcpTransport === "http" && (draft.url === previous.url || prevComposio)) draft.mcpPresetId = previous.mcpPresetId;
+      if (prevComposio) {
+        if (draft.mcpComposioUserId === undefined) draft.mcpComposioUserId = previous.mcpComposioUserId;
+        if (draft.mcpComposioSessionId === undefined) draft.mcpComposioSessionId = previous.mcpComposioSessionId;
+        if (!options.allowComposioDirect && draft.mcpAllowedToolkits === undefined && previous.mcpAllowedToolkits) draft.mcpAllowedToolkits = previous.mcpAllowedToolkits;
+      }
+      if (!options.allowComposioDirect && (draft.mcpPresetId === COMPOSIO_PRESET_ID || prevComposio)) {
+        const mutatesComposio = !previous || Boolean(request.secrets?.apiKey) || draft.url !== previous.url || draft.mcpComposioUserId !== previous.mcpComposioUserId || draft.mcpComposioSessionId !== previous.mcpComposioSessionId || JSON.stringify(draft.mcpAllowedToolkits ?? []) !== JSON.stringify(previous.mcpAllowedToolkits ?? []);
+        if (mutatesComposio) fail("请通过 Composio 专用配置弹窗创建或修改 Composio 连接。", "connection_composio_route_required", 400);
+      }
       if (draft.credentialFields === undefined && previous?.kind === "mcp" && draft.mcpTransport === "stdio") draft.credentialFields = previous.credentialFields;
     }
     const effectiveMcpTransport = request.kind === "mcp" ? (draft.mcpTransport ?? (draft.mcpCommand ? "stdio" : "http")) : undefined;
@@ -713,8 +655,8 @@ export class KuloConnections {
     if (!informationReadable) this.#remember(secrets);
     // Public card descriptions may not become a second copy of an encrypted value.
     const metadataHasSecret = (value: string) => this.#metadataHasSecret(value) || informationReadable && redactSensitiveText(value, Object.values(secrets).filter((secret) => secret.length >= 4 || secret === value)) !== value;
-    for (const key of ["name", "username", "host", "url", "headerName", "typeLabel", "instructions", "mcpCommand", "mcpCwd", "mcpOAuthClientId", "mcpOAuthScope"] as const) if (fields[key] && metadataHasSecret(fields[key]!)) fail("连接资料中包含凭据，请把秘密值放入专用输入框。");
-    for (const arg of fields.mcpArgs ?? []) if (arg && metadataHasSecret(arg)) fail("MCP 启动参数中包含凭据，请通过环境变量凭据字段安全录入。");
+    for (const key of ["name", "username", "host", "url", "headerName", "typeLabel", "instructions", "mcpCommand", "mcpCwd", "mcpOAuthClientId", "mcpOAuthScope", "mcpComposioUserId", "mcpComposioSessionId"] as const) if (fields[key] && metadataHasSecret(fields[key]!)) fail("连接资料中包含凭据，请把秘密值放入专用输入框。");
+    for (const arg of [...(fields.mcpArgs ?? []), ...(fields.mcpAllowedToolkits ?? [])]) if (arg && metadataHasSecret(arg)) fail("MCP 参数中包含凭据，请通过专用凭据字段安全录入。");
     for (const field of fields.credentialFields ?? []) if (metadataHasSecret(field.key) || metadataHasSecret(field.label)) fail("字段名称中包含凭据，请使用普通名称。");
     const secretFields = fields.kind === "custom" || fields.kind === "mcp" ? [...schemaKeys].filter((key) => Boolean(secrets[key])) : SECRET_FIELDS.filter((key) => Boolean(secrets[key]));
     if (fields.kind === "app") {
@@ -853,6 +795,7 @@ export class KuloConnections {
       const app = appId ? getConnectionApplication(appId) : undefined;
       const preset = !app && (request.kind === "mcp" || target?.kind === "mcp" || request.mcpPresetId) && (request.mcpPresetId ?? target?.mcpPresetId)
         ? getMcpPreset(request.mcpPresetId ?? target?.mcpPresetId) : undefined;
+      if (preset?.id === COMPOSIO_PRESET_ID || target?.mcpPresetId === COMPOSIO_PRESET_ID) fail("Composio 连接请通过左侧「添加应用 → Composio」或该行的「编辑 / 管理应用」配置。", "connection_composio_route_required", 400);
       const kind: ConnectionKind = app ? "app" : preset ? "mcp" : request.kind ?? target?.kind ?? "ssh";
       const merged: ConnectionFields = {
         ...target,
@@ -1085,7 +1028,7 @@ export class KuloConnections {
       await this.#changed();
     });
   }
-  async use(ticketId: string, runEpoch: number, connectionId: string, operation: ConnectionUseOperation, options: { readOnly?: boolean; signal?: AbortSignal; assertActive?: () => Promise<void> } = {}): Promise<ConnectionUseResult> {
+  async use(ticketId: string, runEpoch: number, connectionId: string, operation: ConnectionUseOperation, options: { readOnly?: boolean; signal?: AbortSignal; assertActive?: () => Promise<void>; onOutwardAction?: (label: string) => void | Promise<void> } = {}): Promise<ConnectionUseResult> {
     this.#assertOpen();
     if (!this.hasGrant(ticketId, runEpoch, connectionId)) fail("本任务尚未获得此连接的使用权限，请向主模型申请。", "connection_access_denied", 403);
     const record = this.#record(connectionId);
@@ -1132,9 +1075,24 @@ export class KuloConnections {
       }
       if (record.kind === "mcp" && operation.kind === "mcp") {
         this.#assertNotPausedLocalMcp(record);
-        const result = await this.#mcpPool.execute(this.#view(record), secrets, binding(record), operation, { readOnly: options.readOnly, signal });
+        const result = await this.#mcpPool.execute(this.#view(record), secrets, binding(record), operation, { readOnly: options.readOnly, signal, onOutwardAction: options.onOutwardAction });
         if (!this.hasGrant(ticketId, runEpoch, connectionId) || signal.aborted) fail("任务连接权限已撤销。", "connection_access_revoked", 403);
         return { ...result, output: this.redact(result.output) };
+      }
+      if (options.onOutwardAction) {
+        if (operation.kind === "ssh") {
+          await options.onOutwardAction(`ssh:${record.name}`);
+        } else if (operation.kind === "http") {
+          const method = (operation.method ?? "GET").toUpperCase();
+          if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+            await options.onOutwardAction(`http:${method} ${record.name}${operation.path}`);
+          }
+        } else if (operation.kind === "app") {
+          const action = getConnectionApplication(record.appId).actions.find((item) => item.id === operation.action);
+          if (action && !action.readOnly) {
+            await options.onOutwardAction(`app:${record.appId ?? record.name}:${operation.action}`);
+          }
+        }
       }
       const result = await this.#executor.execute(this.#view(record), secrets, operation, signal);
       if (!this.hasGrant(ticketId, runEpoch, connectionId) || signal.aborted) fail("任务连接权限已撤销。", "connection_access_revoked", 403);

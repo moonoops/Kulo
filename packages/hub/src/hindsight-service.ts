@@ -518,8 +518,15 @@ export class HindsightLocalService {
     throw new HindsightServiceError("Hindsight 未在时限内启动，请检查托管服务日志后重试。");
   }
   #status(manifest: Manifest | undefined, running = false): LocalHindsightStatus {
+    const phase: LocalHindsightStatus["phase"] = manifest
+      ? running && manifest.phase === "ready"
+        ? "ready"
+        : manifest.phase === "ready"
+          ? "stopped"
+          : manifest.phase
+      : "absent";
     return {
-      installed: Boolean(manifest && manifest.phase !== "absent"),
+      installed: phase === "ready" || phase === "stopped",
       running,
       platform: this.#platform,
       deviceName: this.#options.deviceName ?? os.hostname(),
@@ -527,7 +534,7 @@ export class HindsightLocalService {
       version: MANAGED_HINDSIGHT_VERSION,
       ...(manifest ? { model: manifest.model, embeddings: manifest.embeddings ?? { ...DEFAULT_LOCAL_EMBEDDINGS }, reranker: manifest.reranker ?? { ...DEFAULT_LOCAL_RERANKER } } : {}),
       dataDirectory: path.join(this.root, "home"),
-      phase: manifest ? running && manifest.phase === "ready" ? "ready" : manifest.phase === "ready" ? "stopped" : manifest.phase : "absent",
+      phase,
     };
   }
   #removedDuring(epoch: number): LocalHindsightStatus | undefined {
@@ -950,21 +957,23 @@ export class HindsightLocalService {
         await this.#removeRoot(manifest);
       } else {
         // Retained databases stay recoverable, while model API keys are removed.
-        const runtime = await this.#runtime();
-        for (const key of [
-          "HINDSIGHT_API_LLM_API_KEY",
-          "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
-          "HINDSIGHT_API_EMBEDDINGS_GEMINI_API_KEY",
-          "HINDSIGHT_API_EMBEDDINGS_COHERE_API_KEY",
-          "HINDSIGHT_API_RERANKER_COHERE_API_KEY",
-          "HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY",
-          "HINDSIGHT_API_RERANKER_ALIBABA_API_KEY",
-          "HINDSIGHT_API_RERANKER_ZEROENTROPY_API_KEY",
-          "KULO_HINDSIGHT_ROUTER_API_KEY",
-          "KULO_HINDSIGHT_WORKER_API_KEY",
-          "KULO_HINDSIGHT_MANAGEMENT_API_KEY",
-        ]) delete runtime.env[key];
-        await this.#write(this.#runtimePath, JSON.stringify(runtime));
+        if (await this.#regular(this.#runtimePath)) {
+          const runtime = await this.#runtime();
+          for (const key of [
+            "HINDSIGHT_API_LLM_API_KEY",
+            "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
+            "HINDSIGHT_API_EMBEDDINGS_GEMINI_API_KEY",
+            "HINDSIGHT_API_EMBEDDINGS_COHERE_API_KEY",
+            "HINDSIGHT_API_RERANKER_COHERE_API_KEY",
+            "HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY",
+            "HINDSIGHT_API_RERANKER_ALIBABA_API_KEY",
+            "HINDSIGHT_API_RERANKER_ZEROENTROPY_API_KEY",
+            "KULO_HINDSIGHT_ROUTER_API_KEY",
+            "KULO_HINDSIGHT_WORKER_API_KEY",
+            "KULO_HINDSIGHT_MANAGEMENT_API_KEY",
+          ]) delete runtime.env[key];
+          await this.#write(this.#runtimePath, JSON.stringify(runtime));
+        }
         for (const directory of ["venv", "source", "python", "cache", "home/.cache", "configuration-backup.json"]) await fs.rm(path.join(this.root, directory), { recursive: true, force: true });
         manifest.phase = "absent"; manifest.commandId = command.commandId; await this.#saveManifest(manifest);
       }

@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { Context } from "@earendil-works/chord/context";
 import type { Op } from "@earendil-works/chord/delta";
 import type { Harness } from "@earendil-works/pi-durable";
-import { compareTicketCards, type RolePreset, type SlotSummary, type TicketBoardDelta, type TicketCardView } from "@kulo/protocol";
+import { compareTicketCards, type ExternalClientConnection, type RolePreset, type SlotSummary, type TicketBoardDelta, type TicketCardView } from "@kulo/protocol";
 import { redactCredentialData } from "./credential-redaction.js";
 import { computeSlotSummary, hasPendingWorkspaceApply, KuloStateDoc, toTicketCardView, type KuloDurableState } from "./state.js";
 
@@ -14,6 +14,7 @@ export class TicketBoardProjection {
   #failure?: Error;
   #dirty?: Set<string>;
   #roles?: Record<string, RolePreset>;
+  #externalClients?: Record<string, ExternalClientConnection>;
   #redactionRevision = -1;
   #revision = 0;
   #slots: SlotSummary = { used: 0, max: 0, queuedCount: 0 };
@@ -61,13 +62,13 @@ export class TicketBoardProjection {
     return Array.from(this.#replacements.get(id) ?? [], child => this.#lastProjected!.tickets[child]!);
   }
 
-  refresh(roles: Record<string, RolePreset>, maxWorkers: number, currentRedactionRevision: () => number, redact: (text: string) => string) {
+  refresh(roles: Record<string, RolePreset>, maxWorkers: number, currentRedactionRevision: () => number, redact: (text: string) => string, externalClients?: Record<string, ExternalClientConnection>) {
     if (this.#failure) throw this.#failure;
     const state = this.#state;
     if (!state) throw new Error("Ticket board is not ready");
     const allIds = () => new Set([...this.#cards.keys(), ...Object.keys(state.tickets)]);
     let redactionRevision = currentRedactionRevision();
-    let ids = this.#dirty && roles === this.#roles && this.#redactionRevision === redactionRevision ? this.#dirty : allIds();
+    let ids = this.#dirty && roles === this.#roles && externalClients === this.#externalClients && this.#redactionRevision === redactionRevision ? this.#dirty : allIds();
     const upsert: TicketCardView[] = [];
     const removed: string[] = [];
     const voiceChanges = new Set<string>();
@@ -82,7 +83,7 @@ export class TicketBoardProjection {
           if (this.#cards.has(id)) removed.push(id);
           continue;
         }
-        const card = redactCredentialData(toTicketCardView(ticket, roles), redact);
+        const card = redactCredentialData(toTicketCardView(ticket, roles, externalClients), redact);
         if (!isDeepStrictEqual(this.#cards.get(id), card)) upsert.push(card);
       }
       const now = currentRedactionRevision();
@@ -124,6 +125,7 @@ export class TicketBoardProjection {
     this.#lastProjected = state;
     this.#dirty = new Set();
     this.#roles = roles;
+    this.#externalClients = externalClients;
     this.#redactionRevision = redactionRevision;
     const slots = computeSlotSummary(state, maxWorkers, this.#queued.size);
     let delta: TicketBoardDelta | undefined;

@@ -93,12 +93,12 @@ describe("independent agent mutations", () => {
     expect(response.blocks.roles.value.writer?.prompt).toBe(writer.prompt);
   });
 
-  it("rejects duplicate and external IDs, missing agents and disabling or deleting the final enabled internal agent before writing", async () => {
+  it("rejects duplicate and external IDs, missing agents and disabling or deleting the final enabled agent before writing", async () => {
     const save = vi.fn();
     for (const id of [analyst.id, external.id]) {
       await expect(commitRoleMutation({ revision: 8, value: saved }, { kind: "create", role: { ...writer, id } }, save)).rejects.toThrow();
     }
-    const lastEnabled = { ...saved, writer: { ...writer, enabled: false } };
+    const lastEnabled = { ...saved, writer: { ...writer, enabled: false }, [external.id]: { ...external, enabled: false } };
     for (const mutation of [{ kind: "enabled", id: analyst.id, enabled: false }, { kind: "delete", id: analyst.id }] as const) {
       await expect(commitRoleMutation({ revision: 8, value: lastEnabled }, mutation, save)).rejects.toThrow();
     }
@@ -106,9 +106,18 @@ describe("independent agent mutations", () => {
     expect(save).not.toHaveBeenCalled();
   });
 
-  it("restores internal defaults with an explicit save while preserving the current external configuration", () => {
-    const restored = roleMutationValue(saved, { kind: "restore" });
+  it("restores built-in defaults (including built-in roles switched to external engines) while preserving custom external roles", () => {
+    const withBuiltInOnExternal: Record<string, RolePreset> = {
+      ...saved,
+      architect: {
+        ...defaultRolePresets().architect!,
+        externalClientId: "codex:mac",
+        external: { kind: "codex", envId: "mac", verifiedAt: 123 },
+      },
+    };
+    const restored = roleMutationValue(withBuiltInOnExternal, { kind: "restore" });
     expect(internalAgentPresets(restored)).toEqual(defaultRolePresets());
+    expect(restored.architect?.external).toBeUndefined();
     expect(restored[external.id]).toBe(external);
     expect(restored.analyst).toBeUndefined();
   });

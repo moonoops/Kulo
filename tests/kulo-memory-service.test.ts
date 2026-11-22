@@ -514,4 +514,32 @@ describe("Hindsight setup confirmation and credential custody", () => {
     expect(job.changes.join("\n")).toContain("onnx-community/bge-reranker-v2-m3-ONNX");
     expect(job.changes.join("\n")).toContain("Xenova/bge-small-zh-v1.5");
   });
+
+  it("blocks configure but allows uninstall when a local deployment failed before completing", async () => {
+    const f = await fixture();
+    vi.spyOn(f.local, "inspect").mockResolvedValue({
+      installed: false,
+      running: false,
+      phase: "failed",
+      platform: "darwin",
+      deviceName: "主脑测试机",
+    });
+
+    await expect(f.service.prepare({
+      commandId: "configure-after-failed-deploy",
+      clientId: "browser-a",
+      expectedRevision: f.settings().revisions.memory,
+      operation: "configure",
+      model: { provider: "ollama", model: "llama3.2" },
+    })).rejects.toMatchObject({ status: 409, code: "memory_not_managed" });
+
+    const cleanup = await f.service.prepare({
+      commandId: "uninstall-after-failed-deploy",
+      clientId: "browser-a",
+      expectedRevision: f.settings().revisions.memory,
+      operation: "uninstall",
+      deleteData: false,
+    });
+    expect(cleanup.jobs.find((item) => item.id === "uninstall-after-failed-deploy")?.status).toBe("awaiting-confirmation");
+  });
 });

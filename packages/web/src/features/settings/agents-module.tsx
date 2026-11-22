@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Tabs } from "@heroui/react";
 import type { EnvNodeDescriptor, KuloSettingsView, ProjectView, SlotSummary } from "@kulo/protocol";
 import { ConcurrencyModule } from "./concurrency-module";
+import { ExternalClientsModule } from "./external-agents-list";
 import { WorkersModule } from "./workers-module";
 
 export function AgentsModule({ settings, slots, envs, projects, onSettingsUpdated, onDirtyChange }: {
@@ -27,11 +28,15 @@ export function AgentsModule({ settings, slots, envs, projects, onSettingsUpdate
     <Tabs.ListContainer className="w-fit max-w-full min-w-0 shrink-0">
       <Tabs.List aria-label={t("智能体设置", "Agents")} className="w-max">
         <Tabs.Tab id="agents" className="w-auto shrink-0 whitespace-nowrap">{t("智能体", "Agents")}<Tabs.Indicator /></Tabs.Tab>
+        <Tabs.Tab id="external-agents" className="w-auto shrink-0 whitespace-nowrap">{t("第三方 Agent", "Third-party Agents")}<Tabs.Indicator /></Tabs.Tab>
         <Tabs.Tab id="runtime" className="w-auto shrink-0 whitespace-nowrap">{t("运行设置", "Runtime")}<Tabs.Indicator /></Tabs.Tab>
       </Tabs.List>
     </Tabs.ListContainer>
     <Tabs.Panel id="agents" shouldForceMount className="mt-0 min-w-0 flex-1 p-0 data-[inert]:hidden">
       <WorkersModule settings={settings} envs={envs} projects={projects} onSettingsUpdated={onSettingsUpdated} onDirtyChange={setAgentsDirty} />
+    </Tabs.Panel>
+    <Tabs.Panel id="external-agents" shouldForceMount className="mt-0 min-w-0 flex-1 p-0 data-[inert]:hidden">
+      <ExternalClientsModule settings={settings} envs={envs} onSettingsUpdated={onSettingsUpdated} />
     </Tabs.Panel>
     <Tabs.Panel id="runtime" shouldForceMount className="mt-0 min-w-0 flex-1 p-0 data-[inert]:hidden">
       <ConcurrencyModule settings={settings} slots={slots} onSettingsUpdated={onSettingsUpdated} onDirtyChange={setRuntimeDirty} />

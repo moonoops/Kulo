@@ -2,7 +2,10 @@ import { ROOT_CONVERSATION_ID, UserEntry, defineDoc, defineEntry, type EntryReco
 import path from "node:path";
 import {
   compareTicketCards,
+  externalClientDisplayName,
+  parseDirectExternalClientRoleId,
   resolveRolePresetFromPool,
+  type ExternalClientConnection,
   type RolePreset,
   type SlotSummary,
   type SubagentRecord,
@@ -520,9 +523,21 @@ export function computeSlotSummary(
 export function toTicketCardView(
   ticket: Readonly<TicketRecord>,
   roles: Record<string, RolePreset>,
+  externalClients?: Record<string, ExternalClientConnection>,
 ): TicketCardView {
+  const directClientId = parseDirectExternalClientRoleId(ticket.role);
+  const directClient = directClientId ? externalClients?.[directClientId] : undefined;
+  const directLabel = directClient
+    ? externalClientDisplayName(directClient)
+    : directClientId && ticket.externalExecution
+      ? externalClientDisplayName({
+          kind: ticket.externalExecution.binding.kind,
+          agentRef: ticket.externalExecution.binding.agentRef,
+        })
+      : undefined;
   const roleLabel =
     roles[ticket.role]?.label ??
+    directLabel ??
     resolveRolePresetFromPool(roles, ticket.role).preset?.label ??
     ticket.role;
   return {

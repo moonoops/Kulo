@@ -50,7 +50,7 @@ import { EnvManager, canonicalExecutionPath, isApplicationPrivatePath, validateH
 import { lazyProjectEnvironment } from "./project-env.js";
 import { createAndroidToolsExtension, type AndroidToolScope } from "./tools-android.js";
 import { KuloAndroidNotifications } from "./android-notifications.js";
-import { beginTicketRecovery, createFailureRecoveryTask, recoveryLeaf, sameRecoveryScope,
+import { appendTicketOutwardAction, beginTicketRecovery, createFailureRecoveryTask, recoveryLeaf, sameRecoveryScope,
   recoveryWaitSummary, isSilentRecoveryFailure, resolveSupersededTickets, assertRecoveryGuard, MAX_RECOVERY_ATTEMPTS, RECOVERY_REVIEW_INTERVAL_MS } from "./task-recovery.js";
 import { prepareStateStorage } from "./state-storage.js";
 import { HubStateOwner } from "./state-owner.js";
@@ -82,6 +82,15 @@ import { createCapabilitySetupExtension } from "./tools-capability-setup.js";
 import { createMediaToolsExtension } from "./tools-media.js";
 import { createMediaExportExtension } from "./tools-media-export.js";
 import { createMemoryLifecycleExtension } from "./memory-lifecycle.js";
+import { executeMemoryForget, validateRelationshipReviewDecision } from "./memory-forget.js";
+import { computeCapDeferredDueAt, KuloUsageCaps, withUsageMeterModels } from "./usage-caps.js";
+import {
+  ActiveComputerHandoffTracker,
+  buildComputerHandoffCard,
+  COMPUTER_HANDOFF_TTL_MS,
+  computerHandoffFingerprint,
+  formatComputerHandoffResumePrompt,
+} from "./computer-handoff.js";
 import { HindsightLocalService } from "./hindsight-service.js";
 import { MemoryLlmBridge } from "./memory-llm-bridge.js";
 import { KuloMemoryService, MemoryServiceDoc, createMemoryServiceExtension } from "./memory-service.js";
@@ -90,7 +99,8 @@ import { KuloExtensions, createExtensionsExtension, type ExtensionPackageExecuto
 import { createExtensionSetupExtension } from "./tools-extensions.js";
 import { KuloConversationHistory } from "./conversation-history.js";
 import { ConversationQueries } from "./conversation-query.js";
-import type { ConversationSearchInput, MainSessionNotificationEvent, MemoryServiceJob } from "@kulo/protocol";
+import { deriveConnectedExternalClients, type ConversationSearchInput, type MainSessionNotificationEvent, type MemoryServiceJob } from "@kulo/protocol";
+import { ExternalAgentQuotaService } from "./external-agent-quotas.js";
 import { topicActivity } from "./topic-activity.js";
 import { createTopicNotificationBaseline, detectMainSessionNotification, type TopicNotificationBaseline } from "./session-notifications.js";
 import { listTaskDeliverables, readTaskDeliverable, reportFileReferences, taskDeliverableError, TaskDeliverableError, type TaskDeliverableOptions } from "./task-deliverables.js";
@@ -99,16 +109,18 @@ import { AssistantDoc, ensureAssistantState } from "./assistant-state.js";
 import { AssistantLedger } from "./assistant-ledger.js";
 import { AmbientModelService } from "./ambient-model-service.js";
 import { AssistantSorter } from "./assistant-sorter.js";
+import { AssistantEchoSuppressor } from "./assistant-echo.js";
 import { AssistantCoordinator } from "./assistant-coordinator.js";
 import { createAssistantToolsExtension } from "./tools-assistant.js";
 import { SparkMailService } from "./connectors/spark-mail-service.js";
-import { HomeAssistantService, sanitizeServiceData } from "./connectors/home-assistant.js";
+import { HomeAssistantService, isHomeAssistantPreDispatchError, sanitizeServiceData } from "./connectors/home-assistant.js";
 import { HaLanAudioRelay } from "./connectors/ha-lan-audio.js";
 import { LarkConnectorService } from "./connectors/lark-connector.js";
 import { ContextCompactionDoc, createContextCompactionController, validateBillionKernel, type BillionKernelRuntime } from "./context-compaction.js";
 import { type LoadedBillionContextPackage } from "./extension-packages.js";
 import { stageProjectSkillSource } from "./skill-source-env.js";
 import {
+  classifyShellSafetyFloor,
   DEFAULT_IMAGE_TEST_PROMPT,
   defaultProtocolAdapterForModel,
   inferModelPurpose,
@@ -119,6 +131,7 @@ import {
   getMessageParts,
   getUiSpecFields,
   redactSensitiveText,
+  type TicketOutwardAction,
   type AmbientLocalEngine,
   type AssistantItemView,
   type AssistantWorkspaceSnapshot,
@@ -184,11 +197,13 @@ import {
   type ConnectionUseOperation,
   type ConnectionDescribeRequest,
   type ComputerPreviewSessionView,
+  type ComputerPreviewInputEvent,
   type ComputerPreviewUpdate,
 } from "@kulo/protocol";
 import {
   DEFAULT_COMPACTION_CONFIG,
   DEFAULT_CONTEXT_WINDOW,
+  buildAdaptiveCompactionPolicy,
   resolveHubConfig,
   type KuloHubConfig,
   type KuloHubConfigOverrides,
@@ -227,8 +242,8 @@ import { createModelConfigurationToolsExtension } from "./tools-model-configurat
 import { KuloAgentConfiguration, AgentConfigurationDoc } from "./agent-configuration.js";
 import { createAgentConfigurationToolsExtension } from "./tools-agent-configuration.js";
 import { createExternalAgentToolHandler, type ExternalAgentReportFile, type ExternalAgentToolScope } from "./external-agent-tools.js";
-import { externalClientConnectionId, type AgentAssignment, type AgentConfigurationDraft, type AgentDispatchIntent, type ExternalAgentRun, type ExternalWorkspaceMode, type StagedWorkspaceApplyResult, type StagedWorkspaceDiffDetail, type StagedWorkspaceDiffSummary } from "@kulo/protocol";
-import { extractAgentDispatchIntent, namedDispatchDevices, resolveAgentDispatch, assertAgentDispatchAvailable } from "./agent-routing.js";
+import { directExternalClientRoleId, externalClientConnectionId, type AgentAssignment, type AgentConfigurationDraft, type AgentDispatchIntent, type ExternalAgentRun, type ExternalWorkspaceMode, type StagedWorkspaceApplyResult, type StagedWorkspaceDiffDetail, type StagedWorkspaceDiffSummary } from "@kulo/protocol";
+import { extractAgentDispatchIntent, namedDispatchDevices, resolveAgentDispatch, assertAgentDispatchAvailable, resolveRoleOrDirectClient } from "./agent-routing.js";
 import { createAppearanceCustomizationToolsExtension } from "./tools-appearance-customization.js";
 import { createCustomizationToolsExtension } from "./tools-customization.js";
 import { createDesktopCustomizationService } from "./customization-host.js";
@@ -242,6 +257,7 @@ import {
   buildStagedApplyConfirmCard,
   buildTicketDecisionCard,
   customizationValidateFingerprint,
+  effectiveConfirmationEffect,
   externalPermissionFingerprint,
   hostActionFingerprint,
   memoryServiceOperationFingerprint,
@@ -470,7 +486,10 @@ function withKuloCompactionFocus(models: Models): Models {
 
 function replyContext(text: string, replyTo?: ChatReplyReference): string {
   if (!replyTo) return text;
-  return `【回复消息：${replyTo.role} #${replyTo.messageId}】\n${replyTo.text.split("\n").map((line) => `> ${line}`).join("\n")}\n\n${text}`;
+  const heading = replyTo.excerpt
+    ? `【引用消息片段：${replyTo.role} #${replyTo.messageId}】`
+    : `【回复消息：${replyTo.role} #${replyTo.messageId}】`;
+  return `${heading}\n${replyTo.text.split("\n").map((line) => `> ${line}`).join("\n")}\n\n${text}`;
 }
 
 function legacyUserPayload(kind: string, data: unknown, content?: Parameters<typeof parseUserEntryContent>[0]): { text: string; attachments: ChatAttachment[]; replyTo?: ChatReplyReference } | undefined {
@@ -1086,6 +1105,8 @@ export class KuloHub implements OrchestratorController {
   readonly imageConfiguration: KuloImageConfiguration;
   readonly modelConfiguration: KuloModelConfiguration;
   readonly agentConfiguration: KuloAgentConfiguration;
+  readonly externalClientQuotas: ExternalAgentQuotaService;
+  readonly usageCaps: KuloUsageCaps;
   readonly search: KuloSearch;
   readonly voice: KuloVoiceService;
   readonly voiceCalls: KuloVoiceCalls;
@@ -1172,6 +1193,7 @@ export class KuloHub implements OrchestratorController {
   readonly #searchHistories = new Map<number, SearchEvidenceHistory>();
   readonly #trackedWorkers = new Map<string, TrackedWorkerRuntime>();
   readonly #computerSessions = new Map<string, { ticketId: string; envId: string; tool: "browser" | "desktop"; sessionId: string; conversationId: number; runEpoch: number; app?: string }>();
+  readonly #computerHandoffs = new ActiveComputerHandoffTracker();
   readonly #orchestratorBrowserSessions = new Map<string, { topicId: string; conversationId: number; envId: string; sessionId: string; idleTimer: ReturnType<typeof setTimeout> }>();
   readonly #orchestratorBrowserIdleMs: number;
   readonly #lastWatchdogAlertAt = new Map<string, number>();
@@ -1179,6 +1201,7 @@ export class KuloHub implements OrchestratorController {
   readonly #verifyClientReceipts = new Map<string, import("@kulo/protocol").ExternalAgentVerifyClientResult>();
   readonly #watchdogStallMsOverride?: number;
   readonly deviceJoinStaging: DeviceJoinStaging;
+  readonly assistantEchoSuppressor = new AssistantEchoSuppressor();
   #deviceController: HubDeviceController | undefined;
 
   #watchdogTimer: ReturnType<typeof setInterval> | null = null;
@@ -1272,11 +1295,13 @@ export class KuloHub implements OrchestratorController {
     this.#redactionExt = params.redactionExt;
     this.rootConversation = params.rootConversation;
     this.identityFiles = params.identityFiles;
+    this.usageCaps = new KuloUsageCaps({ harness: params.harness });
     this.personality = new KuloPersonality({
       harness: params.harness,
       identityFiles: params.identityFiles,
       collectRelationshipInput: (since) => this.#collectRelationshipInput(since),
       canReviewRelationship: () => this.#canReviewRelationship(),
+      isUsageCapped: () => this.usageCaps.isCappedFor("personality").capped,
       reviewRelationship: (input) => this.#reviewRelationship(input),
       onError: (error) => console.error("[KuloPersonality]", error),
     });
@@ -1451,6 +1476,7 @@ export class KuloHub implements OrchestratorController {
         }
         return false;
       },
+      shouldSkipCloudModel: async () => this.usageCaps.isCappedFor("assistant").capped && (await this.ambientModel.willUseCloudModel(true)),
       redact: redactAssistantText,
       createDetachedOrchestratorConversation: async (ctx) => {
         const orchestratorAgent = this.#resolveOrchestratorAgent();
@@ -1520,51 +1546,99 @@ export class KuloHub implements OrchestratorController {
             },
             action.envId,
           );
-          return { ok: res.ok, ...(res.error ? { error: res.error } : {}) };
+          return {
+            ok: res.ok,
+            ...(res.preDispatch !== undefined ? { preDispatch: res.preDispatch } : {}),
+            ...(res.error ? { error: res.error } : {}),
+          };
         }
         if (action.kind === "ha_call_service") {
           const domain = typeof action.params.domain === "string" ? action.params.domain : "";
           const service = typeof action.params.service === "string" ? action.params.service : "";
           const entityId = typeof action.params.entityId === "string" ? action.params.entityId : undefined;
           const serviceData = action.params.serviceData !== undefined ? sanitizeServiceData(action.params.serviceData) : undefined;
-          await this.homeAssistant.callService({
-            domain,
-            service,
-            ...(entityId ? { entityId } : {}),
-            ...(serviceData ? { serviceData } : {}),
-            triggerSource: "user_confirmed_l2",
-          });
-          return { ok: true };
+          try {
+            await this.homeAssistant.callService({
+              domain,
+              service,
+              ...(entityId ? { entityId } : {}),
+              ...(serviceData ? { serviceData } : {}),
+              triggerSource: "user_confirmed_l2",
+            });
+            return { ok: true };
+          } catch (error) {
+            return {
+              ok: false,
+              preDispatch: isHomeAssistantPreDispatchError(error),
+              error: error instanceof Error ? error.message : "Home Assistant 服务调用失败。",
+            };
+          }
         }
         if (action.kind === "ha_upsert_automation") {
           const configId = typeof action.params.configId === "string" ? action.params.configId : "";
           const config = action.params.config && typeof action.params.config === "object" && !Array.isArray(action.params.config)
             ? (action.params.config as Record<string, unknown>)
             : null;
-          if (!configId || !config) return { ok: false, error: "自动化配置参数缺失。" };
-          await this.homeAssistant.upsertAutomation({ configId, config });
-          return { ok: true };
+          if (!configId || !config) return { ok: false, preDispatch: true, error: "自动化配置参数缺失。" };
+          try {
+            await this.homeAssistant.upsertAutomation({ configId, config });
+            return { ok: true };
+          } catch (error) {
+            return {
+              ok: false,
+              preDispatch: isHomeAssistantPreDispatchError(error),
+              error: error instanceof Error ? error.message : "写入 Home Assistant 自动化失败。",
+            };
+          }
         }
         if (action.kind === "ha_delete_automation") {
           const configId = typeof action.params.configId === "string" ? action.params.configId : "";
-          if (!configId) return { ok: false, error: "缺少待删除的自动化 ID。" };
-          await this.homeAssistant.deleteAutomation(configId);
-          return { ok: true };
+          if (!configId) return { ok: false, preDispatch: true, error: "缺少待删除的自动化 ID。" };
+          try {
+            await this.homeAssistant.deleteAutomation(configId);
+            return { ok: true };
+          } catch (error) {
+            return {
+              ok: false,
+              preDispatch: isHomeAssistantPreDispatchError(error),
+              error: error instanceof Error ? error.message : "删除 Home Assistant 自动化失败。",
+            };
+          }
         }
         if (action.kind === "lark_send_reply") {
-          return this.larkConnector.executeConfirmedReply({
+          const profile = typeof action.params.profile === "string" && action.params.profile.trim()
+            ? action.params.profile.trim()
+            : "default";
+          const text = typeof action.params.text === "string" ? action.params.text : "";
+          const res = await this.larkConnector.executeConfirmedReply({
             ...(typeof action.params.profile === "string" ? { profile: action.params.profile } : {}),
             chatId: typeof action.params.chatId === "string" ? action.params.chatId : "",
-            text: typeof action.params.text === "string" ? action.params.text : "",
+            text,
           });
+          if (res.ok) {
+            this.assistantEchoSuppressor.recordOutgoing({
+              appId: `lark:${profile}`,
+              body: text,
+              requireSenderMatch: true,
+            });
+            for (const macBundle of ["com.electron.lark", "com.bytedance.lark"]) {
+              this.assistantEchoSuppressor.recordOutgoing({
+                appId: macBundle,
+                body: text,
+              });
+            }
+          }
+          return res;
         }
-        return { ok: false, error: "不支持的待确认动作类型。" };
+        return { ok: false, preDispatch: true, error: "不支持的待确认动作类型。" };
       },
     });
     this.assistantSorter = new AssistantSorter({
       ledger: this.assistantLedger,
       ambientModel: this.ambientModel,
       redact: redactAssistantText,
+      echoSuppressor: this.assistantEchoSuppressor,
+      shouldSkipCloudModel: async () => this.usageCaps.isCappedFor("assistant").capped && (await this.ambientModel.willUseCloudModel(false)),
       onNotifyBrain: (payload) => this.assistantCoordinator.enqueueEscalation(payload),
     });
     this.envManager.setConnectorHandlers({
@@ -1652,6 +1726,13 @@ export class KuloHub implements OrchestratorController {
       },
       onChanged: () => this.#broadcastCapabilities(),
     });
+    this.externalClientQuotas = new ExternalAgentQuotaService({
+      getClients: () => deriveConnectedExternalClients(this.#liveSettings.roles, this.#liveSettings.externalClients),
+      getEnvDescriptor: (envId) => this.envManager.getEnvDescriptor(envId),
+      getEnvConnectionState: (envId) => this.envManager.getConnectionState(envId),
+      requestQuota: (envId, binding, signal) => this.envManager.requestExternalAgent(envId, { operation: "quota", binding }, signal),
+      redact: (value) => this.connectionManager.redact(value),
+    });
     this.agentConfiguration = new KuloAgentConfiguration({ harness: this.harness,
       settings: () => this.getSettingsView(), envs: () => this.envManager.listEnvs(),
       projects: async () => (await this.projects.list(BACKGROUND_CONTEXT)).map((project) => ({ id: project.id, name: project.name, envId: project.deviceId })),
@@ -1682,6 +1763,45 @@ export class KuloHub implements OrchestratorController {
             ...(!stillHasOldClient && oldClientId ? { removeClientIds: [oldClientId] } : {}),
           });
           operations.commits[operationKey] = cloneJson(commit);
+          return cloneJson(doc) as KuloDurableSettings;
+        }, BACKGROUND_CONTEXT);
+        await this.#applyLiveSettings(next, BACKGROUND_CONTEXT);
+        const view = this.getSettingsView(); this.#emitSettings(view); return view;
+      },
+      saveClient: async ({ client, expectedRevision, operationKey, fingerprint, commit }) => {
+        const next = await this.harness.commit(async (tx) => {
+          const doc = await tx.doc(KuloSettingsDoc);
+          const operations = await tx.doc(AgentConfigurationDoc);
+          const prior = operations.clientCommits?.[operationKey];
+          if (prior) {
+            if (prior.fingerprint !== fingerprint) throw new SettingsUpdateError(409, "此保存标识已用于另一份客户端连接配置。");
+            return cloneJson(doc) as KuloDurableSettings;
+          }
+          syncExternalClientsInSettings(doc);
+          const previousClient = doc.externalClients?.[client.id];
+          const wasVerified = Boolean(previousClient?.verifiedAt);
+          const nextRoles = cloneJson(doc.roles);
+          const binding = bindingFromExternalClient(client);
+          for (const role of Object.values(nextRoles)) {
+            if (!role.external) continue;
+            const roleClientId = role.externalClientId?.trim() || externalClientConnectionId(role.external);
+            if (roleClientId === client.id) {
+              role.externalClientId = client.id;
+              role.external = cloneJson(binding);
+              if (!wasVerified && client.verifiedAt && isSupportedExternalAgentKind(client.kind) && role.enabled === false) {
+                role.enabled = true;
+              } else if (!client.verifiedAt || !isSupportedExternalAgentKind(client.kind)) {
+                role.enabled = false;
+              }
+            }
+          }
+          applySettingsBlockUpdate(doc, "roles", expectedRevision, nextRoles, {
+            externalAgents: true,
+            upsertClients: { [client.id]: cloneJson(client) },
+            summaryOverride: `连接外部客户端（${client.kind}）`,
+          });
+          operations.clientCommits ??= {};
+          operations.clientCommits[operationKey] = cloneJson(commit);
           return cloneJson(doc) as KuloDurableSettings;
         }, BACKGROUND_CONTEXT);
         await this.#applyLiveSettings(next, BACKGROUND_CONTEXT);
@@ -1718,7 +1838,7 @@ export class KuloHub implements OrchestratorController {
       read: async (scope) => {
         const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         const ticket = this.#externalAgentScope(scope, state);
-        const role = this.#liveSettings.roles[ticket.role];
+        const role = resolveRoleOrDirectClient(ticket.role, this.#liveSettings.roles, this.#liveSettings.externalClients, this.#liveSettings.presentation.language);
         return { ticket: cloneJson(ticket), role: role ? { ...cloneJson(role), allowSubagents: Boolean(role.allowSubagents && ticket.externalExecution?.allowSubagents) } : undefined,
           maxSubagents: this.#liveSettings.executor.maxSubagentsPerTicket, children: cloneJson(ticket.externalExecution!.children ?? {}) };
       },
@@ -1808,9 +1928,16 @@ export class KuloHub implements OrchestratorController {
           isSubagent: false,
         }, BACKGROUND_CONTEXT);
         const granted = new Set(list.grantedConnectionIds);
+        const grantedEntries = list.connections.filter((entry) => granted.has(entry.id)).map((entry) => {
+          const { mcpArgs: _args, mcpCwd: _cwd, instructions, ...rest } = entry;
+          return { ...rest, ...(instructions ? { instructions: instructions.slice(0, 1_000) } : {}) };
+        });
+        const grantedApps = new Set(grantedEntries.filter((entry) => entry.kind === "app" && entry.appId).map((entry) => entry.appId!));
         return {
           ...list,
-          connections: list.connections.filter((entry) => granted.has(entry.id)),
+          connections: grantedEntries,
+          applications: (list.applications ?? []).filter((app) => grantedApps.has(app.id)),
+          requests: [],
         };
       },
       connectionUse: async (scope, input) => {
@@ -1886,7 +2013,9 @@ export class KuloHub implements OrchestratorController {
       browser: (id, request) => this.envManager.requestBrowser(id, request),
       validateSource: (source, job) => this.#validateMediaSource(source, job),
       validateInput: (id, source) => this.#validateMediaInput(id, source),
-      onChanged: () => this.#broadcastCapabilities(), onCompleted: (job) => this.#mediaCompleted(job), onSettled: (job) => this.#mediaSettled(job) });
+      onChanged: () => this.#broadcastCapabilities(),
+      onCreated: (job) => job.source.ticketId ? this.#recordTicketOutwardAction(job.source.ticketId, undefined, "media", `media:${job.kind}:${job.modelId}`) : undefined,
+      onCompleted: (job) => this.#mediaCompleted(job), onSettled: (job) => this.#mediaSettled(job) });
     this.projects = new KuloProjects({
       harness: this.harness,
       envManager: this.envManager,
@@ -2131,7 +2260,9 @@ export class KuloHub implements OrchestratorController {
     }
     const providerId =
       init.providerId ?? (init.models ? KULO_PROVIDER_ID : KULO_GATEWAY_PROVIDER_ID);
-    const models: Models = withNativeToolsModels(withThinkingLevelModels(init.models ?? providerManager!.models), {
+    const models: Models = withNativeToolsModels(
+      withUsageMeterModels(withThinkingLevelModels(init.models ?? providerManager!.models), () => hubRef?.usageCaps),
+      {
       fetch: proxyFetch,
       getNativeTools: (provider, id) => {
         if (providerManager && !providerManager.isOfficialNativeSearchAllowed(provider)) return undefined;
@@ -2183,12 +2314,6 @@ export class KuloHub implements OrchestratorController {
 
     const ORCHESTRATOR_DEFAULT_BASH_TIMEOUT_SECONDS = 60;
     const ORCHESTRATOR_MAX_BASH_TIMEOUT_SECONDS = 300;
-    const ORCHESTRATOR_DANGEROUS_SHELL_PATTERNS: readonly RegExp[] = [
-      /(?:^|[;&|]\s*)rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+\/(?:\s|$)/i,
-      /(?:^|[;&|]\s*)mkfs\b/i,
-      /(?:^|[;&|]\s*)dd\s+if=.*of=\/dev\//i,
-      /:\(\)\s*\{\s*:\|:&\s*\};:/,
-    ];
     const isInsideLocalOrPosix = (candidatePath: string, dirPath: string): boolean => {
       if (!dirPath) return false;
       const resolvedDir = path.resolve(dirPath);
@@ -2352,12 +2477,9 @@ export class KuloHub implements OrchestratorController {
 
           // toolName === "bash"
           const cmd = String((args as { command?: unknown })?.command ?? "");
-          for (const pattern of ORCHESTRATOR_DANGEROUS_SHELL_PATTERNS) {
-            if (pattern.test(cmd)) {
-              return blockResult(
-                `主脑安全护栏拦截了毁灭性 Shell 命令："${cmd.slice(0, 120)}"。`,
-              );
-            }
+          const floor = classifyShellSafetyFloor(cmd);
+          if (floor.verdict === "block") {
+            return blockResult(`主脑安全护栏拦截了毁灭性 Shell 命令（${floor.reason ?? "catastrophic"}）："${cmd.slice(0, 120)}"。`);
           }
           const liveIdentityDir = getLiveIdentityDir();
           if (
@@ -2469,12 +2591,19 @@ export class KuloHub implements OrchestratorController {
           }
           await hubRef!.#validateMediaSource(source);
         };
+        const retainedSession = [...hubRef!.#computerSessions.values()].find(
+          (entry) => entry.ticketId === source.ticketId && entry.conversationId === Number(api.conversationId) && entry.envId === source.envId,
+        );
+        if (retainedSession && retainedSession.runEpoch !== source.runEpoch) {
+          retainedSession.runEpoch = source.runEpoch;
+        }
         return {
           ticketId: source.ticketId,
           conversationId: Number(api.conversationId),
           runEpoch: source.runEpoch,
           envId: source.envId,
           readOnly: Boolean(source.readOnly),
+          ...(retainedSession ? { preservedSessionId: retainedSession.sessionId } : {}),
           assertActive,
         };
       },
@@ -2530,6 +2659,7 @@ export class KuloHub implements OrchestratorController {
         }
         hubRef!.#computerSessions.delete(`${scope.ticketId}:${tool}:${sessionId}`);
       },
+      requestHandoff: (scope, input, api, ctx) => hubRef!.#requestComputerHandoff(scope, input, api, ctx),
     });
     const hostActions: HostActionController = {
       inspect: (caller, input, ctx) => hubRef!.#hostActionInspect(caller, input, ctx),
@@ -2544,6 +2674,7 @@ export class KuloHub implements OrchestratorController {
       getLocalEnvId: () => envManager.localEnvId,
       publishAsset: (input, api, context) => contentExt.publishAsset(input, api, context),
       onStateChanged: notifyTicketsChanged,
+      onOutwardAction: (ticketId, runEpoch, label) => hubRef ? hubRef.#recordTicketOutwardAction(ticketId, runEpoch, "shell", label) : undefined,
       getIdentityDir: getLiveIdentityDir,
       getMemoryConfig: getLiveMemory,
       getRoles: getLiveRoles,
@@ -2588,6 +2719,7 @@ export class KuloHub implements OrchestratorController {
         if (hubRef && reason === "coordinator") void hubRef.#relayHostActionRequest(id).catch((error) => console.error("[KuloHostActionRequest]", redact(error instanceof Error ? error.message : "本机操作审批转交失败")));
       },
       resumeWaitingTicket: async (id, ctx) => { if (hubRef) await hubRef.#resumeWaitingTicket(id, ctx); },
+      scheduledWakeDeferUntil: (ticket, now) => hubRef ? hubRef.#scheduledWakeDeferUntil(ticket, now) : null,
       prepareTicketRelease: (ticket) => hubRef!.#releaseTicketExecution(ticket, { park: Boolean(ticket.waiting) && isTicketUnfinished(ticket) }),
       ticketAgentBlock: (ticket) => hubRef ? hubRef.#ticketAgentBlock(ticket) : undefined,
       getProjectMeta: async (projectId, ctx) => hubRef ? hubRef.projects.get(projectId, ctx).then((p) => ({ id: p.id, name: p.name, workspaceDir: p.workspaceDir }), () => undefined) : undefined,
@@ -2617,6 +2749,9 @@ export class KuloHub implements OrchestratorController {
       },
       onOriginConversationRelayed: async (originConvId, ctx) => {
         if (hubRef) await hubRef.#ensureTopicWatchedByConversation(originConvId, ctx);
+      },
+      onExternalAgentQuota: (binding, quota) => {
+        hubRef?.externalClientQuotas.ingestPassiveQuota(binding, quota);
       },
     });
 
@@ -2650,6 +2785,8 @@ export class KuloHub implements OrchestratorController {
       readIdentityFiles: (f) => hubRef!.readIdentityFiles(f),
       proposeIdentity: (content, summary) => hubRef!.personality.proposeIdentity(content, summary),
       updateRelationship: (request) => hubRef!.personality.saveRelationship(request),
+      getForgottenTerms: () => hubRef!.personality.getForgottenTerms(),
+      forgetMemory: (term, reason, caller, signal) => executeMemoryForget({ term, reason, caller, signal, host: { addForgottenTerm: (t, r) => hubRef!.personality.addForgottenTerm(t, r), forgetFromRelationship: (t, r) => hubRef!.personality.forgetFromRelationship(t, r), getMemoryConfig: getLiveMemory } }),
       setAgentExpression: (face, cue, ctx) => hubRef!.setAgentExpression(face, cue, ctx),
     };
 
@@ -2657,6 +2794,7 @@ export class KuloHub implements OrchestratorController {
       getAgentName,
       getLanguage: getLiveLanguage,
       getRoles: getLiveRoles,
+      getExternalClients: () => (hubRef ? hubRef.#liveSettings.externalClients : undefined) ?? {},
       getEnvs: () => envManager.listEnvs(),
       getIdentityDir: getLiveIdentityDir,
       getMemoryConfig: getLiveMemory,
@@ -2893,6 +3031,7 @@ export class KuloHub implements OrchestratorController {
     const mediaExt = createMediaToolsExtension({ get: () => hubRef!.mediaJobs, capabilities: () => hubRef!.capabilities.snapshot(), scope: (api) => hubRef!.mediaSource(Number(api.conversationId)) });
     const voiceExt = createVoiceToolsExtension({ service: () => hubRef!.voice, uploads: () => hubRef!.uploads,
       scope: (api) => hubRef!.mediaSource(Number(api.conversationId)), assertActive: (source) => hubRef!.#validateMediaSource(source),
+      onOutwardAction: (source, label) => source.ticketId ? hubRef!.#recordTicketOutwardAction(source.ticketId, undefined, "voice", label) : undefined,
       publish: async (asset, source, callId) => {
         await hubRef!.#validateMediaSource(source);
         if (source.ticketId) {
@@ -3047,6 +3186,7 @@ export class KuloHub implements OrchestratorController {
         identity: { attribution: null },
         settings: () => {
           const liveComp =
+            (hubRef ? hubRef.#liveSettings.model.compaction : undefined) ??
             bootSettings?.model.compaction ??
             config.model.compaction ??
             DEFAULT_COMPACTION_CONFIG;
@@ -3054,12 +3194,7 @@ export class KuloHub implements OrchestratorController {
             toolExecution: "parallel",
             steeringMode: "all",
             followUpMode: "all",
-            compaction: {
-              enabled: liveComp.enabled,
-              reserveTokens: liveComp.reserveTokens,
-              keepRecentTokens: liveComp.keepRecentTokens,
-              backgroundTokens: liveComp.backgroundTokens,
-            },
+            compaction: buildAdaptiveCompactionPolicy(liveComp, models.getModels()),
             progress: {
               partialIntervalMs: 80,
               outputIntervalMs: 120,
@@ -3342,9 +3477,12 @@ export class KuloHub implements OrchestratorController {
     await hub.#queueEnvReconcile();
     await hub.extensions.initialize();
     await hub.#recoverChatAttachments(context);
+    await hub.assistantCoordinator.reconcileDispatchedActions(context);
     hub.#recovering = false;
+    await hub.#reconcileDispatchedConfirmations(context);
     await hub.#startLegacyFailureRecovery(context);
     await hub.mediaJobs.start();
+    await hub.usageCaps.start();
     await hub.personality.start();
     hub.#startWatchdog();
     harness.resume();
@@ -3397,13 +3535,36 @@ export class KuloHub implements OrchestratorController {
       const env = this.envManager.getEnvDescriptor(session.envId);
       const originTopicId = ticket ? (ticket.originTopicId ?? "root") : undefined;
       const originTopic = originTopicId ? state?.topics?.[originTopicId] : undefined;
-      if (!ticket || ticket.id !== session.ticketId || ticket.status !== "running" || ticket.runEpoch !== session.runEpoch
+      const activeHandoff = this.#computerHandoffs.get(session.ticketId);
+      const handoffActiveForSession = Boolean(activeHandoff && activeHandoff.sessionId === session.sessionId && ticket?.status === "waiting" && ticket.waiting?.reason === "user");
+      if (!ticket || ticket.id !== session.ticketId || (!handoffActiveForSession && (ticket.status !== "running" || ticket.runEpoch !== session.runEpoch))
         || ticket.envId !== session.envId || !originTopic || originTopic.deletedAt
         || (!allTopics && originTopicId !== topicId)
-        || scope.subagent && scope.subagent.state !== "running" || !env?.online
+        || (!handoffActiveForSession && scope?.subagent && scope.subagent.state !== "running") || !env?.online
         || !env.capabilities.includes(`agent-${session.tool}`)) continue;
-      sessions.push({ id: createHash("sha256").update(key).digest("hex"), ticketId: ticket.id, tool: session.tool,
-        envId: env.id, deviceName: env.name, title: ticket.title, ...(session.app ? { app: session.app } : {}) });
+      sessions.push({
+        id: createHash("sha256").update(key).digest("hex"),
+        ticketId: ticket.id,
+        tool: session.tool,
+        envId: env.id,
+        deviceName: env.name,
+        title: ticket.title,
+        ...(session.app ? { app: session.app } : {}),
+        ...(handoffActiveForSession && activeHandoff
+          ? {
+              handoff: {
+                requestId: activeHandoff.requestId,
+                ...(activeHandoff.cardId ? { cardId: activeHandoff.cardId } : {}),
+                reason: activeHandoff.reason,
+                target: activeHandoff.tool,
+                expiresAt: activeHandoff.expiresAt,
+                ...(activeHandoff.url ? { url: activeHandoff.url } : {}),
+                ...(activeHandoff.app ? { app: activeHandoff.app } : {}),
+                interactive: session.tool === "browser",
+              },
+            }
+          : {}),
+      });
     }
     return sessions.slice(0, 16);
   }
@@ -3441,6 +3602,124 @@ export class KuloHub implements OrchestratorController {
     });
     if (closed) unsubscribe();
     return dispose;
+  }
+
+  async sendComputerPreviewInput(id: string, topicId: string, event: ComputerPreviewInputEvent): Promise<boolean> {
+    if (this.#closed) return false;
+    const previews = await this.listComputerPreviews(topicId);
+    const view = previews.find((item) => item.id === id);
+    if (!view?.handoff?.interactive || view.tool !== "browser") return false;
+    const session = [...this.#computerSessions].find(([key]) => createHash("sha256").update(key).digest("hex") === id)?.[1];
+    if (!session || !this.#computerHandoffs.hasActiveHandoff(session.ticketId, session.sessionId)) return false;
+    return this.envManager.sendComputerPreviewInput(session.envId, { tool: "browser", sessionId: session.sessionId }, event);
+  }
+
+  async #requestComputerHandoff(
+    scope: { ticketId: string; conversationId: number; runEpoch: number; envId: string },
+    input: { target: "browser" | "desktop"; sessionId: string; reason: string; url?: string; app?: string },
+    api: { callId: string },
+    context: Context,
+  ): Promise<{ requestId: string; cardId?: string; expiresAt: number }> {
+    const state = await this.harness.snapshot(KuloStateDoc, context);
+    const ticket = state?.tickets[scope.ticketId];
+    if (!ticket || ticket.status !== "running" || ticket.runEpoch !== scope.runEpoch) {
+      throw new Error("当前任务已不在运行中，无法发起人工接管。");
+    }
+    const envDesc = this.envManager.getEnvDescriptor(scope.envId);
+    if (!envDesc?.online || !envDesc.capabilities.includes(`agent-${input.target}`)) {
+      throw new Error("目标设备离线或未开启对应电脑操控能力。");
+    }
+    const now = Date.now();
+    const expiresAt = now + COMPUTER_HANDOFF_TTL_MS;
+    const originConversationId = ticket.originConversationId ?? Number(this.rootConversation.id);
+    const key = `${scope.ticketId}:${input.target}:${input.sessionId}`;
+    if (!this.#computerSessions.has(key)) {
+      this.#computerSessions.set(key, {
+        ticketId: scope.ticketId, envId: scope.envId, tool: input.target, sessionId: input.sessionId,
+        conversationId: scope.conversationId, runEpoch: scope.runEpoch, ...(input.app ? { app: input.app } : {}),
+      });
+    }
+    const safeReason = this.connectionManager.redact(input.reason);
+    const built = buildComputerHandoffCard({
+      target: input.target, deviceName: envDesc.name, reason: safeReason, url: input.url, app: input.app,
+    });
+    const fingerprint = computerHandoffFingerprint({
+      ticketId: scope.ticketId, runEpoch: scope.runEpoch, target: input.target, sessionId: input.sessionId, reason: safeReason,
+    });
+    const { confirmation } = await this.actionConfirmations.ensurePendingCard({
+      conversationId: originConversationId, topicId: ticket.originTopicId ?? "root", ticketId: scope.ticketId,
+      callId: api.callId, kind: "computer_handoff", fingerprint, cardInput: built.input, logicalIds: built.logicalIds,
+      payload: {
+        kind: "computer_handoff", ticketId: scope.ticketId, runEpoch: scope.runEpoch, envId: scope.envId,
+        target: input.target, sessionId: input.sessionId, reason: safeReason,
+        ...(input.url ? { url: input.url } : {}), ...(input.app ? { app: input.app } : {}), expiresAt,
+      },
+    }, context);
+    this.#computerHandoffs.register({
+      requestId: confirmation.id, ...(confirmation.cardId ? { cardId: confirmation.cardId } : {}),
+      ticketId: scope.ticketId, runEpoch: scope.runEpoch, envId: scope.envId, tool: input.target,
+      sessionId: input.sessionId, conversationId: scope.conversationId, originConversationId,
+      reason: safeReason, ...(input.url ? { url: input.url } : {}), ...(input.app ? { app: input.app } : {}), expiresAt,
+    }, async () => { await this.resolveComputerHandoff(scope.ticketId, "expired"); });
+    // Silent park (`waiting.reason = "user"` WITHOUT `latestReport.state = "blocked"`) avoids duplicate coordinator card
+    await this.harness.commit(async (tx) => {
+      const live = (await tx.doc(KuloStateDoc)).tickets[scope.ticketId];
+      if (!live || live.status !== "running" || live.runEpoch !== scope.runEpoch) return;
+      live.waiting = {
+        reason: "user", since: now, detail: safeReason,
+        waitToken: `computer-handoff:${confirmation.cardId ?? confirmation.id}`,
+        ...(confirmation.cardId ? { cardId: confirmation.cardId } : {}),
+        requestId: confirmation.id,
+        options: [
+          { id: "confirm", label: "已完成，请继续", tone: "primary" },
+          { id: "cancel", label: "跳过并停止", tone: "secondary" },
+        ],
+      };
+      live.updatedAt = now;
+    }, context);
+    await this.#broadcastTickets(context);
+    return { requestId: confirmation.id, ...(confirmation.cardId ? { cardId: confirmation.cardId } : {}), expiresAt };
+  }
+
+  async resolveComputerHandoff(
+    ticketId: string,
+    action: "done" | "cancel" | "expired",
+    manualInstruction?: string,
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<{ ok: boolean; status: string }> {
+    const active = this.#computerHandoffs.clear(ticketId);
+    const state = await this.harness.snapshot(KuloStateDoc, context);
+    const ticket = state?.tickets[ticketId];
+    const requestId = active?.requestId ?? ticket?.waiting?.requestId;
+    const pending = requestId ? await this.actionConfirmations.getById(requestId, context) : undefined;
+    const payload = pending?.payload.kind === "computer_handoff" ? pending.payload : undefined;
+    const target = active?.tool ?? payload?.target ?? "browser";
+    const reason = active?.reason ?? payload?.reason ?? "人工接管操作";
+    if (pending && (pending.status === "pending" || pending.status === "pending_orchestrator")) {
+      await this.actionConfirmations.resolveProgrammatically(pending.id, {
+        status: action === "done" ? "approved" : "denied",
+        selectedChoiceId: action === "done" ? "confirm" : "cancel",
+        resultSummary: action === "done" ? "已完成人工接管" : action === "expired" ? "人工接管已超时" : "已跳过人工接管",
+        markExecuted: true,
+      }, context);
+    }
+    if (action !== "done") {
+      // Immediately close preserved session to release MAX_BROWSER_SESSIONS slot
+      const sessions = [...this.#computerSessions].filter(([, s]) => s.ticketId === ticketId);
+      for (const [key, session] of sessions) {
+        this.#computerSessions.delete(key);
+        await this.envManager.requestComputerUse(session.envId, { tool: session.tool, action: "close", sessionId: session.sessionId }).catch(() => {});
+      }
+    }
+    if (ticket && ticket.status === "waiting") {
+      const prompt = formatComputerHandoffResumePrompt({ action, target, reason, manualInstruction });
+      await this.steerTicket({
+        ticketId,
+        commandId: `computer-handoff:${requestId ?? ticketId}:${action}`,
+        text: prompt,
+      }, context).catch(() => {});
+    }
+    return { ok: true, status: action };
   }
 
   async #assertConnectionCaller(caller: ConnectionCaller, context: Context) {
@@ -3512,6 +3791,22 @@ export class KuloHub implements OrchestratorController {
     for (const request of pending) await this.#resumeConnectionDecision(request.id, false, BACKGROUND_CONTEXT);
   }
 
+  async #recordTicketOutwardAction(
+    ticketId: string,
+    runEpoch: number | undefined,
+    kind: TicketOutwardAction["kind"],
+    label: string,
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<void> {
+    await this.harness.commit(async (tx) => {
+      const live = (await tx.doc(KuloStateDoc)).tickets[ticketId];
+      if (!live || live.status === "closed" || live.status === "stopped") return;
+      const targetEpoch = runEpoch ?? live.runEpoch;
+      if (live.runEpoch !== targetEpoch) return;
+      appendTicketOutwardAction(live, { runEpoch: targetEpoch, kind, label, at: Date.now() });
+    }, withoutAbortSignal(context));
+  }
+
   async #connectionUse(caller: ConnectionCaller, input: { connectionId: string; operation: ConnectionUseOperation }, context: Context) {
     const { scope } = await this.#assertConnectionCaller(caller, context);
     context.abortSignal?.throwIfAborted();
@@ -3527,8 +3822,12 @@ export class KuloHub implements OrchestratorController {
     if (!this.connectionManager.hasGrant(caller.ticketId, caller.runEpoch, input.connectionId)) {
       await this.connectionManager.grant(caller.ticketId, caller.runEpoch, [input.connectionId], scope!.ticket.connectionRevisions);
     }
-    const result = await this.connectionManager.use(caller.ticketId, caller.runEpoch, input.connectionId, input.operation,
-      { readOnly: scope!.readOnly, signal: context.abortSignal, assertActive: async () => { await this.#assertConnectionCaller(caller, context); } });
+    const result = await this.connectionManager.use(caller.ticketId, caller.runEpoch, input.connectionId, input.operation, {
+      readOnly: scope!.readOnly,
+      signal: context.abortSignal,
+      assertActive: async () => { await this.#assertConnectionCaller(caller, context); },
+      onOutwardAction: (label) => this.#recordTicketOutwardAction(caller.ticketId, caller.runEpoch, "connection", label, context),
+    });
     await this.#assertConnectionCaller(caller, context);
     return result;
   }
@@ -4419,7 +4718,10 @@ export class KuloHub implements OrchestratorController {
           !ticket.workspaceStaging.discardedAt &&
           ticket.workspaceStaging.stagedCwd,
       );
-      const sessions = [...this.#computerSessions].filter(([, session]) => session.ticketId === ticket.id);
+      if (!options.park) this.#computerHandoffs.clear(ticket.id);
+      const sessions = [...this.#computerSessions].filter(([, session]) =>
+        session.ticketId === ticket.id && !(options.park && this.#computerHandoffs.hasActiveHandoff(ticket.id, session.sessionId)),
+      );
       const [connection, worker, ...computer] = await Promise.allSettled([
         this.connectionManager.revoke(ticket.id),
         ticket.externalExecution || ticket.executionDomain === "android"
@@ -4565,6 +4867,13 @@ export class KuloHub implements OrchestratorController {
     await this.#broadcastTickets(context);
   }
 
+  #scheduledWakeDeferUntil(ticket: Readonly<TicketRecord>, now: number): number | null {
+    if (!ticket.schedule) return null;
+    const status = this.usageCaps.isCappedFor("schedule");
+    if (!status.capped || status.resetAt == null) return null;
+    return computeCapDeferredDueAt(ticket, status.resetAt, now);
+  }
+
   async #resumeWaitingTicket(ticketId: string, context: Context): Promise<void> {
     const state = await this.harness.snapshot(KuloStateDoc, context);
     const ticket = state?.tickets[ticketId];
@@ -4572,6 +4881,20 @@ export class KuloHub implements OrchestratorController {
     if (!ticket.wakePending && ticket.schedule?.nextRunAt != null && hasPendingWorkspaceApply(ticket)) return;
     if (ticket.schedule?.nextRunAt != null && ticket.schedule.nextRunAt > Date.now()) return;
     if (!ticket.wakePending && ticket.waiting?.until !== undefined && ticket.waiting.until > Date.now()) return;
+    if (!ticket.wakePending && ticket.schedule) {
+      const deferUntil = this.#scheduledWakeDeferUntil(ticket, Date.now());
+      if (deferUntil != null && deferUntil > Date.now()) {
+        await this.harness.commit(async (tx) => {
+          const live = (await tx.doc(KuloStateDoc)).tickets[ticketId];
+          if (!live || live.runEpoch !== ticket.runEpoch || live.status !== "waiting" || !live.schedule) return;
+          live.schedule.nextRunAt = deferUntil;
+          live.waiting = { reason: "time", since: Date.now(), until: deferUntil, detail: "已达后台用量上限，推迟至额度重置后继续" };
+          live.updatedAt = Date.now();
+        }, context);
+        await this.#broadcastTickets(context);
+        return;
+      }
+    }
     if (!this.#ticketDevicesOnline(ticket)) {
       if (ticket.waiting?.reason === "time") await this.harness.commit(async (tx) => {
         const next = await tx.doc(KuloStateDoc);
@@ -5202,17 +5525,33 @@ export class KuloHub implements OrchestratorController {
       if (!doc.externalClients?.[cleanId] && boundRoleIds.length === 0) {
         throw new SettingsUpdateError(400, "外部客户端尚未连接。");
       }
-      if (boundRoleIds.length > 0) {
-        const tasks = await tx.doc(KuloStateDoc);
-        if (Object.values(tasks.tickets).some((ticket) => boundRoleIds.includes(ticket.role) && isTicketUnfinished(ticket))) {
-          throw new SettingsUpdateError(409, "请先停止或完成该客户端下智能体的未结束任务。");
-        }
+      const directRoleId = directExternalClientRoleId(cleanId);
+      const tasks = await tx.doc(KuloStateDoc);
+      const hasActiveTask = Object.values(tasks.tickets).some((ticket) => {
+        if (!isTicketUnfinished(ticket)) return false;
+        if (boundRoleIds.includes(ticket.role) || ticket.role === directRoleId) return true;
+        if (ticket.externalExecution && externalClientConnectionId(ticket.externalExecution.binding) === cleanId) return true;
+        return false;
+      });
+      if (hasActiveTask) {
+        throw new SettingsUpdateError(409, "请先停止或完成该客户端下智能体的未结束任务。");
       }
       const nextRoles = cloneJson(doc.roles);
-      for (const id of boundRoleIds) delete nextRoles[id];
+      for (const id of boundRoleIds) {
+        const role = nextRoles[id];
+        if (!role) continue;
+        delete role.external;
+        delete role.externalClientId;
+        delete role.dispatchPolicy;
+        delete role.modelId;
+        delete role.provider;
+        delete role.serviceTier;
+        role.thinkingLevel = "auto";
+      }
       applySettingsBlockUpdate(doc, "roles", expectedRevision ?? doc.revisions.roles, nextRoles, {
         externalAgents: true,
         removeClientIds: [cleanId],
+        summaryOverride: `移除外部客户端连接（${cleanId}）`,
       });
       return cloneJson(doc) as KuloDurableSettings;
     }, context);
@@ -5496,13 +5835,14 @@ export class KuloHub implements OrchestratorController {
     return !activity.some(Boolean);
   }
 
-  async #reviewRelationship(input: { current: string; updates: string; signal: AbortSignal }): Promise<{ content: string | null; summary?: string; defer?: boolean }> {
+  async #reviewRelationship(input: { current: string; updates: string; signal: AbortSignal }): Promise<{ content: string | null; summary?: string; defer?: boolean; skipReason?: string }> {
     if (input.signal.aborted) throw new Error("协作关系更新已取消。");
     if (!await this.#canReviewRelationship()) return { content: null, defer: true };
     if (!this.#liveSettings.model.defaultModel.trim()) throw new Error("请先配置主模型，再更新协作关系。");
-    const [state, projects] = await Promise.all([
+    const [state, projects, forgottenTerms] = await Promise.all([
       this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT),
       this.harness.snapshot(KuloProjectsDoc, BACKGROUND_CONTEXT),
+      this.personality.getForgottenTerms(),
     ]);
     const currentActivity = {
       foregroundBusy: false,
@@ -5522,7 +5862,12 @@ export class KuloHub implements OrchestratorController {
     try {
       if (input.signal.aborted) throw new Error("协作关系更新已取消。");
       const submission = await conversation.submit({ type: "input", whenBusy: "reject",
-        content: JSON.stringify({ current: input.current, newConversationEvidence: input.updates, currentActivity }) }, BACKGROUND_CONTEXT);
+        content: JSON.stringify({
+          current: input.current,
+          newConversationEvidence: input.updates,
+          currentActivity,
+          ...(forgottenTerms.length ? { forgottenTerms: forgottenTerms.map((item) => item.term) } : {}),
+        }) }, BACKGROUND_CONTEXT);
       await submission.wait(BACKGROUND_CONTEXT);
       if (input.signal.aborted) throw new Error("协作关系更新已取消。");
       const page = await conversation.entries({}, 10, undefined, BACKGROUND_CONTEXT);
@@ -5532,16 +5877,7 @@ export class KuloHub implements OrchestratorController {
       if (!message || message.role !== "assistant") throw new Error("主模型未返回有效的协作关系检查结果。");
       if (message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length") throw new Error("主模型未完整完成协作关系检查。");
       const raw = message.content.filter((block) => block.type === "text").map((block) => block.text).join("").trim();
-      const json = raw.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
-      const decision: unknown = JSON.parse(json);
-      if (!decision || typeof decision !== "object" || !("content" in decision) ||
-        (decision.content !== null && typeof decision.content !== "string")) throw new Error("主模型返回的协作关系格式无效。");
-      if ("defer" in decision && (typeof decision.defer !== "boolean" || (decision.defer && decision.content !== null))) {
-        throw new Error("主模型返回的协作关系推迟决定无效。");
-      }
-      if (typeof decision.content === "string" && !isSafeMemoryText(decision.content)) throw new Error("协作关系结果包含不适合保存的敏感内容。");
-      const summary = "summary" in decision && typeof decision.summary === "string" ? decision.summary.slice(0, 500) : "整理协作关系";
-      return { content: decision.content, summary, ...("defer" in decision && decision.defer === true ? { defer: true } : {}) };
+      return validateRelationshipReviewDecision(raw, input.current, forgottenTerms);
     } finally {
       input.signal.removeEventListener("abort", abort);
     }
@@ -5880,9 +6216,13 @@ export class KuloHub implements OrchestratorController {
     for (const { record } of this.uploads.resolveAttachments(options.attachments)) {
       if (record.kind === "audio") await this.transcribeVoiceAsset(record.id, { topicId: targetTopicId, principalId: options.principalId || this.envManager.localEnvId }, context);
     }
-    const replyTo = options.replyTo ? { messageId: options.replyTo.messageId, role: options.replyTo.role,
-      text: this.connectionManager.redact(options.replyTo.text) } : undefined;
-    const agentDispatchIntent = extractAgentDispatchIntent(content, this.#liveSettings.roles, this.envManager.listEnvs());
+    const replyTo = options.replyTo ? {
+      messageId: options.replyTo.messageId,
+      role: options.replyTo.role,
+      text: this.connectionManager.redact(options.replyTo.text),
+      ...(options.replyTo.excerpt ? { excerpt: true } : {}),
+    } : undefined;
+    const agentDispatchIntent = extractAgentDispatchIntent(content, this.#liveSettings.roles, this.envManager.listEnvs(), this.#liveSettings.externalClients);
     const draft: ChatDeliveryDraft = {
       topicId: cache.topicId, conversationId: Number(cache.conversation.id), targetDeviceId, content, receivedAt, replyTo,
       principalId: options.principalId, requestId: cleanReqId, whenBusy: options.whenBusy ?? "steer",
@@ -5928,6 +6268,7 @@ export class KuloHub implements OrchestratorController {
   async #submitChatDraft(cache: WatchedTopicCache, draft: ChatDeliveryDraft, context: Context, pendingKey?: string) {
     const { content, replyTo, agentDispatchIntent } = draft;
     if (Number(cache.conversation.id) !== draft.conversationId) legacyDeliveryConflict();
+    await this.#contextCompaction.pruneCommittedBaseline(cache.conversation.id, context, false).catch(() => {});
     const messageContext = {
       ...(draft.source ? { source: draft.source } : {}),
       ...(draft.requestId ? { requestId: draft.requestId } : {}),
@@ -6117,7 +6458,7 @@ export class KuloHub implements OrchestratorController {
         throw new ProjectError(409, "dispatch_command_conflict", "该派单标识已用于其他任务，请使用新的标识。");
       }
       if (dispatchSource.intent || dispatchSource.inheritedAssignment) {
-        const choice = resolveAgentDispatch({ roles: activeRoles, ...dispatchSource, requestedRole: prior.role,
+        const choice = resolveAgentDispatch({ roles: activeRoles, externalClients: this.#liveSettings.externalClients, language: this.#liveSettings.presentation.language, ...dispatchSource, requestedRole: prior.role,
           taskKind: prior.agentAssignment?.taskKind ?? params.taskKind, projectId: prior.projectId, envId: prior.envId, trustedManual: true });
         if (choice.role !== prior.role) throw new ProjectError(409, "agent_binding_conflict", "该派单标识已经绑定其他 Agent，请为新的用户指派创建新任务。");
       }
@@ -6286,7 +6627,9 @@ export class KuloHub implements OrchestratorController {
       }),
     );
     // Scope default Agent selection to the Hub-verified target, never to a model guess.
-    const proposedRole = params.role && Object.hasOwn(activeRoles, params.role) ? activeRoles[params.role] : undefined;
+    const activeExternalClients = this.#liveSettings.externalClients;
+    const activeLanguage = this.#liveSettings.presentation.language;
+    const proposedRole = resolveRoleOrDirectClient(params.role, activeRoles, activeExternalClients, activeLanguage);
     if (!namedAgent && proposedRole?.external) {
       if (boundEnv && !project && proposedRole.external.envId !== boundEnv) {
         throw new ProjectError(409, "agent_device_conflict", `指定的外部 Agent「${proposedRole.label}」绑定在设备 ${proposedRole.external.envId}，与当前目标设备 ${boundEnv} 不一致。`);
@@ -6308,12 +6651,12 @@ export class KuloHub implements OrchestratorController {
     );
     const requestedRole = params.role;
     const selectionRoles = androidDeviceIds.length || executionDomain === "android" ? Object.fromEntries(Object.entries(activeRoles).map(([id, role]) => [id, role.external ? { ...role, dispatchPolicy: undefined } : role])) : activeRoles;
-    const routing = resolveAgentDispatch({ roles: selectionRoles, ...dispatchSource, requestedRole, taskKind: params.taskKind,
+    const routing = resolveAgentDispatch({ roles: selectionRoles, externalClients: activeExternalClients, language: activeLanguage, ...dispatchSource, requestedRole, taskKind: params.taskKind,
       workspaceMode: params.workspaceMode,
       projectId: project?.id, envId: routingEnv,
       trustedManual: params.originToolTaskId === undefined });
     const roleId = routing.role;
-    const rolePreset = activeRoles[roleId];
+    const rolePreset = resolveRoleOrDirectClient(roleId, activeRoles, activeExternalClients, activeLanguage);
     const externalBinding = rolePreset?.external;
     const explicitAgentDevice = externalBinding && (routing.source === "explicit" || routing.source === "manual") ? externalBinding.envId : undefined;
     if (modelDispatch && !params.sourceRequestId && !boundEnv && !explicitAgentDevice && inputs.some((input) =>
@@ -6522,13 +6865,15 @@ export class KuloHub implements OrchestratorController {
       const duplicate = checkAdmission(state, settings.executor.paused);
       if (duplicate) return cloneJson(duplicate);
       const currentRoles = settings.roles;
+      const currentExternalClients = settings.externalClients;
       const currentSelection = androidDeviceIds.length || executionDomain === "android" ? Object.fromEntries(Object.entries(currentRoles).map(([id, role]) => [id, role.external ? { ...role, dispatchPolicy: undefined } : role])) : currentRoles;
-      const currentRouting = resolveAgentDispatch({ roles: currentSelection, ...dispatchSource, requestedRole, taskKind: params.taskKind,
+      const currentRouting = resolveAgentDispatch({ roles: currentSelection, externalClients: currentExternalClients, language: settings.presentation.language, ...dispatchSource, requestedRole, taskKind: params.taskKind,
         workspaceMode: params.workspaceMode,
         projectId: project?.id, envId: routingEnv,
         trustedManual: params.originToolTaskId === undefined });
-      if (currentRouting.role !== roleId || !isDeepStrictEqual(currentRoles[roleId], rolePreset)) throw new ProjectError(409, "agent_configuration_changed", "派单期间智能体或默认承接范围已改变，请读取最新配置后重新指派。");
-      assertAgentDispatchAvailable(currentRoles[roleId], { envs: this.envManager.listEnvs(), envId: agentEnv, allowOffline: waitForSource });
+      const currentResolvedRole = resolveRoleOrDirectClient(roleId, currentRoles, currentExternalClients, settings.presentation.language);
+      if (currentRouting.role !== roleId || !isDeepStrictEqual(currentResolvedRole, rolePreset)) throw new ProjectError(409, "agent_configuration_changed", "派单期间智能体或默认承接范围已改变，请读取最新配置后重新指派。");
+      assertAgentDispatchAvailable(currentResolvedRole, { envs: this.envManager.listEnvs(), envId: agentEnv, allowOffline: waitForSource });
       assertRecoveryGuard(state, recoveryGuard);
       if (recoveryGuard) {
         const failed = state.tickets[recoveryGuard.ticketId]!;
@@ -6646,6 +6991,7 @@ export class KuloHub implements OrchestratorController {
           ...(externalWorkspaceMode ? { workspaceMode: externalWorkspaceMode } : {}),
           ...(rolePreset?.modelId?.trim() ? { modelId: rolePreset.modelId.trim() } : {}),
           ...(nativeThinking && nativeThinking !== "auto" ? { thinkingLevel: nativeThinking } : {}),
+          ...(rolePreset?.serviceTier?.trim() ? { serviceTier: rolePreset.serviceTier.trim() } : {}),
           instructions: [rolePreset?.prompt?.trim(), requestedReadOnly ? "Read-only assignment: inspect and analyze only; do not modify workspace files." : ""].filter(Boolean).join("\n\n"),
           allowSubagents: Boolean(rolePreset?.allowSubagents) } } : {}),
         status: executeAt === undefined ? "queued" : "waiting",
@@ -6722,7 +7068,7 @@ export class KuloHub implements OrchestratorController {
     bindDispatchedAttachments(this.uploads, admitted);
     if (!this.#recovering) this.harness.resume();
     await this.#broadcastTickets(context);
-    return toTicketCardView(admitted, activeRoles);
+    return toTicketCardView(admitted, activeRoles, activeExternalClients);
   }
 
   #notifyInlineWaiters(ticketId: string): void {
@@ -6877,7 +7223,7 @@ export class KuloHub implements OrchestratorController {
       : message?.role === "user"
         ? parseUserEntryContent(message.content).text
         : "";
-    return text ? extractAgentDispatchIntent(text, this.#liveSettings.roles, this.envManager.listEnvs()) : undefined;
+    return text ? extractAgentDispatchIntent(text, this.#liveSettings.roles, this.envManager.listEnvs(), this.#liveSettings.externalClients) : undefined;
   }
 
   async #agentDispatchSource(conversationId: number | undefined, toolTaskId: number | undefined, context: Context, selectedInput?: EntryId): Promise<{
@@ -6935,7 +7281,7 @@ export class KuloHub implements OrchestratorController {
         const message = entry.model?.find((item) => item.role === "user");
         const text = typeof data?.text === "string" ? data.text : message?.role === "user" ? parseUserEntryContent(message.content).text : "";
         const intent = data && Object.hasOwn(data, "agentDispatchIntent") ? capturedAgentIntent(data.agentDispatchIntent)
-          : extractAgentDispatchIntent(text, this.#liveSettings.roles, this.envManager.listEnvs());
+          : extractAgentDispatchIntent(text, this.#liveSettings.roles, this.envManager.listEnvs(), this.#liveSettings.externalClients);
         if (!intent && !continuing && /^(?:请|帮我)?\s*(?:继续(?:执行|处理|推进|完成|原任务|这个任务)?|接着(?:做|执行|处理)?|重试(?:一下|这个任务)?|再试(?:一次|一下)?|continue|retry)[\s,，。.!！]*$/i.test(text.trim())) { continuing = true; continue; }
         if (!intent && continuing) {
           const state = await this.harness.snapshot(KuloStateDoc, context);
@@ -6958,7 +7304,7 @@ export class KuloHub implements OrchestratorController {
 
   #ticketAgentBlock(ticket: Readonly<TicketRecord>): string | undefined {
     if (!ticket.agentAssignment && !ticket.externalExecution) return;
-    const role = this.#liveSettings.roles[ticket.role];
+    const role = resolveRoleOrDirectClient(ticket.role, this.#liveSettings.roles, this.#liveSettings.externalClients, this.#liveSettings.presentation.language);
     if (!role) return "原任务绑定的 Agent 已被移除，请明确选择其他 Agent 后新建任务。";
     if (ticket.agentAssignment && ticket.agentAssignment.agentId !== ticket.role) return "任务的 Agent 绑定已改变，请重新指派。";
     if (role.enabled === false) return `任务指定的 Agent「${role.label}」已停用，请启用它或明确选择其他 Agent。`;
@@ -6966,7 +7312,8 @@ export class KuloHub implements OrchestratorController {
       const old = ticket.externalExecution;
       if (!role.external || role.external.kind !== old.binding.kind || role.external.envId !== old.binding.envId ||
           role.external.executable !== old.binding.executable || role.external.agentRef !== old.binding.agentRef ||
-          JSON.stringify(role.external.acpArgs ?? []) !== JSON.stringify(old.binding.acpArgs ?? []) || role.modelId !== old.modelId) {
+          JSON.stringify(role.external.acpArgs ?? []) !== JSON.stringify(old.binding.acpArgs ?? []) ||
+          role.modelId !== old.modelId || role.serviceTier !== old.serviceTier) {
         return `任务指定的 Agent「${role.label}」配置已改变，请核对后重新指派。`;
       }
       if (!role.external.verifiedAt || isPersonalExternalAgentKind(role.external.kind)) return `任务指定的 Agent「${role.label}」尚未完成可用性验证，请先在智能体设置页完成验证。`;
@@ -7801,6 +8148,28 @@ export class KuloHub implements OrchestratorController {
     let effectiveText = params.text;
     if (params.originConversationId === undefined && ticket.waiting?.requestId) {
       const pending = await this.actionConfirmations.getById(ticket.waiting.requestId, context);
+      if (pending && pending.payload.kind === "computer_handoff" && pending.status === "pending") {
+        const action = params.decisionOptionId === "cancel" ? "cancel" : "done";
+        this.#computerHandoffs.clear(params.ticketId);
+        await this.actionConfirmations.resolveProgrammatically(pending.id, {
+          status: action === "done" ? "approved" : "denied",
+          selectedChoiceId: action === "done" ? "confirm" : "cancel",
+          resultSummary: action === "done" ? "已在任务详情完成人工接管" : "已在任务详情跳过人工接管",
+          markExecuted: true,
+        }, context);
+        if (action === "cancel") {
+          for (const [key, session] of [...this.#computerSessions].filter(([, s]) => s.ticketId === params.ticketId)) {
+            this.#computerSessions.delete(key);
+            await this.envManager.requestComputerUse(session.envId, { tool: session.tool, action: "close", sessionId: session.sessionId }).catch(() => {});
+          }
+        }
+        effectiveText = formatComputerHandoffResumePrompt({
+          action,
+          target: pending.payload.target,
+          reason: pending.payload.reason,
+          manualInstruction: params.decisionOptionId ? undefined : params.text,
+        });
+      }
       if (pending && pending.payload.kind === "host_action" && (pending.status === "pending" || pending.status === "pending_orchestrator")) {
         const payload = pending.payload;
         if (params.decisionOptionId === "confirm") {
@@ -7810,6 +8179,9 @@ export class KuloHub implements OrchestratorController {
             context,
           );
           if (resolved) {
+            if (payload.ticketId) {
+              await this.#recordTicketOutwardAction(payload.ticketId, undefined, "host_action", `host_action:${payload.summary}`, context);
+            }
             try {
               const result = await this.envManager.requestHostAction(payload.envId, {
                 kind: "run",
@@ -7898,14 +8270,15 @@ export class KuloHub implements OrchestratorController {
       }
     }
     const assignmentSource = params.originConversationId === undefined
-      ? { intent: extractAgentDispatchIntent(effectiveText, this.#liveSettings.roles, this.envManager.listEnvs()) }
+      ? { intent: extractAgentDispatchIntent(effectiveText, this.#liveSettings.roles, this.envManager.listEnvs(), this.#liveSettings.externalClients) }
       : await this.#agentDispatchSource(params.originConversationId, params.originToolTaskId, context);
     if (assignmentSource.intent) {
-      const choice = resolveAgentDispatch({ roles: this.#liveSettings.roles, intent: assignmentSource.intent, requestedRole: ticket.role,
+      const choice = resolveAgentDispatch({ roles: this.#liveSettings.roles, externalClients: this.#liveSettings.externalClients, language: this.#liveSettings.presentation.language, intent: assignmentSource.intent, requestedRole: ticket.role,
         taskKind: ticket.agentAssignment?.taskKind, projectId: ticket.projectId, envId: ticket.envId, trustedManual: true });
-      const boundRole = resolveRolePresetFromPool(this.#liveSettings.roles, ticket.role).preset;
+      const boundRole = resolveRoleOrDirectClient(ticket.role, this.#liveSettings.roles, this.#liveSettings.externalClients, this.#liveSettings.presentation.language)
+        ?? resolveRolePresetFromPool(this.#liveSettings.roles, ticket.role).preset;
       const sameLegacyInternalRole = !ticket.externalExecution && !boundRole?.external && boundRole?.id === choice.role;
-      if (choice.role !== ticket.role && !sameLegacyInternalRole) throw new ProjectError(409, "agent_binding_conflict", `该任务固定由「${this.#liveSettings.roles[ticket.role]?.label ?? ticket.role}」执行。本次点名了其他 Agent，请创建对应的新任务，不能通过继续操作更换执行者。`);
+      if (choice.role !== ticket.role && !sameLegacyInternalRole) throw new ProjectError(409, "agent_binding_conflict", `该任务固定由「${boundRole?.label ?? ticket.role}」执行。本次点名了其他 Agent，请创建对应的新任务，不能通过继续操作更换执行者。`);
       assertAgentDispatchAvailable(boundRole, { envs: this.envManager.listEnvs(), envId: ticket.envId });
     }
     if (ticket.externalExecution && params.attachments?.length && (!ticket.scratchDir || params.attachments.some((att) => typeof att?.id !== "string" || !this.uploads.getUpload(att.id)))) {
@@ -7932,8 +8305,12 @@ export class KuloHub implements OrchestratorController {
       requestId: cleanCmdId ? `steer:${ticket.id}:${cleanCmdId}` : undefined, replyText: params.replyTo?.text,
     });
     const prompt = protectedMessage.text.trim() || "请查看补充附件并继续原任务。";
-    const replyTo = params.replyTo ? { messageId: params.replyTo.messageId, role: params.replyTo.role,
-      text: this.connectionManager.redact(params.replyTo.text) } : undefined;
+    const replyTo = params.replyTo ? {
+      messageId: params.replyTo.messageId,
+      role: params.replyTo.role,
+      text: this.connectionManager.redact(params.replyTo.text),
+      ...(params.replyTo.excerpt ? { excerpt: true } : {}),
+    } : undefined;
     const modelPrompt = replyContext(prompt, replyTo);
     for (const { record } of this.uploads.resolveAttachments(params.attachments)) {
       if (record.kind === "audio") await this.transcribeVoiceAsset(record.id, { topicId: ticket.originTopicId ?? "root", principalId: params.principalId || this.envManager.localEnvId }, context);
@@ -9559,6 +9936,7 @@ export class KuloHub implements OrchestratorController {
 
   async #finishClose(context: Context): Promise<void> {
     this.#closed = true;
+    this.externalClientQuotas.close();
     this.releaseHandoverBarrier();
     const errors: unknown[] = [];
     const finish = async (work: () => unknown) => {
@@ -9604,6 +9982,8 @@ export class KuloHub implements OrchestratorController {
     await finish(() => this.#androidNotifications.close());
     await finish(() => this.#topicTitles.close());
     await finish(() => this.personality.close());
+    await finish(() => this.usageCaps.close());
+    this.#computerHandoffs.closeAll();
     await finish(() => this.mediaJobs.close());
     await finish(() => this.extensions.close());
     await finish(() => this.#topicAutoArchiveRun);
@@ -10144,29 +10524,63 @@ export class KuloHub implements OrchestratorController {
     }
 
     // decision === "approve"
+    if (!openCardId) {
+      for (const cmd of payload.commands) {
+        const floor = classifyShellSafetyFloor(cmd);
+        if (floor.verdict !== "safe") {
+          throw new Error(
+            floor.verdict === "block"
+              ? `本机操作命令触发毁灭性安全底线（${floor.reason ?? "catastrophic"}），禁止放行。`
+              : `本机操作命令包含无法静态完整解析的 Shell 语法（${floor.reason ?? "unreadable"}），禁止主智能体静默自动放行；请改用 decision='ask_user' 由用户亲自确认。`,
+          );
+        }
+      }
+    }
     const resolved = await this.actionConfirmations.resolveProgrammatically(
       pending.id,
       {
         status: "approved",
         selectedChoiceId: "confirm",
         resultSummary: openCardId ? "已通过对话允许" : "主智能体已允许",
-        markExecuted: true,
+        markExecuted: false,
       },
       context,
     );
     if (!resolved) {
       return { status: "already_resolved", requestId: pending.id, message: "该本机操作申请已被处理完成。" };
     }
-    const result = await this.envManager.requestHostAction(
-      payload.envId,
-      {
-        kind: "run",
-        commands: payload.commands,
-        ...(payload.cwd ? { cwd: payload.cwd } : {}),
-        ...(payload.timeoutMs !== undefined ? { timeoutMs: payload.timeoutMs } : {}),
-      },
-      context.abortSignal,
-    );
+    const dispatched = await this.actionConfirmations.markDispatched(resolved.id, context);
+    if (!dispatched) {
+      return { status: "already_resolved", requestId: resolved.id, message: "该本机操作申请已发出或已处理完成，切勿重复执行。" };
+    }
+    if (payload.ticketId) {
+      await this.#recordTicketOutwardAction(payload.ticketId, undefined, "host_action", `host_action:${payload.summary}`, context);
+    }
+    let result: Awaited<ReturnType<EnvManager["requestHostAction"]>>;
+    try {
+      result = await this.envManager.requestHostAction(
+        payload.envId,
+        {
+          kind: "run",
+          commands: payload.commands,
+          ...(payload.cwd ? { cwd: payload.cwd } : {}),
+          ...(payload.timeoutMs !== undefined ? { timeoutMs: payload.timeoutMs } : {}),
+        },
+        context.abortSignal,
+      );
+      await this.actionConfirmations.markOutcome(resolved.id, "confirmed", undefined, context);
+    } catch (error) {
+      const errMsg = this.connectionManager.redact(error instanceof Error ? error.message : "本机操作执行失败");
+      const errCode = (error as { code?: unknown })?.code;
+      const preDispatch = errCode === "env_offline" || errCode === "env_unavailable";
+      await this.actionConfirmations.markOutcome(
+        resolved.id,
+        preDispatch ? "failed_pre_dispatch" : "unknown",
+        errMsg,
+        context,
+      );
+      throw error;
+    }
     if (payload.ticketId) {
       const safeOut = this.connectionManager.redact(JSON.stringify(result));
       const summaryText = `主智能体已批准并在 ${payload.envName} (${payload.envId}) 上执行完成本机操作「${payload.summary}」。执行结果：\n${safeOut}`;
@@ -10192,11 +10606,11 @@ export class KuloHub implements OrchestratorController {
     resolved: PendingActionConfirmation,
     conversationId: number,
   ): Promise<void> {
-    if (resolved.payload.kind !== "host_action" || resolved.executed) return;
+    if (resolved.payload.kind !== "host_action" || effectiveConfirmationEffect(resolved) !== "none") return;
     const payload = resolved.payload;
     const refId = resolved.cardId ?? resolved.id;
     if (resolved.status !== "approved") {
-      await this.actionConfirmations.markExecuted(resolved.id);
+      await this.actionConfirmations.markOutcome(resolved.id, "confirmed");
       if (payload.ticketId) {
         try {
           await this.steerTicket({
@@ -10211,6 +10625,12 @@ export class KuloHub implements OrchestratorController {
       return;
     }
 
+    const claimed = await this.actionConfirmations.markDispatched(resolved.id);
+    if (!claimed) return;
+    if (payload.ticketId) {
+      await this.#recordTicketOutwardAction(payload.ticketId, undefined, "host_action", `host_action:${payload.summary}`);
+    }
+
     let summaryText: string;
     try {
       const result = await this.envManager.requestHostAction(payload.envId, {
@@ -10219,13 +10639,21 @@ export class KuloHub implements OrchestratorController {
         ...(payload.cwd ? { cwd: payload.cwd } : {}),
         ...(payload.timeoutMs !== undefined ? { timeoutMs: payload.timeoutMs } : {}),
       });
-      await this.actionConfirmations.markExecuted(resolved.id);
+      await this.actionConfirmations.markOutcome(resolved.id, "confirmed");
       const safeOut = this.connectionManager.redact(JSON.stringify(result));
       summaryText = `用户已批准并在 ${payload.envName} (${payload.envId}) 上执行完成本机操作「${payload.summary}」。执行结果：\n${safeOut}`;
     } catch (error) {
-      await this.actionConfirmations.markExecuted(resolved.id);
       const errMsg = this.connectionManager.redact(error instanceof Error ? error.message : "本机操作执行失败");
-      summaryText = `用户已批准在 ${payload.envName} (${payload.envId}) 上执行本机操作「${payload.summary}」，但执行失败：${errMsg}`;
+      const errCode = (error as { code?: unknown })?.code;
+      const preDispatch = errCode === "env_offline" || errCode === "env_unavailable";
+      await this.actionConfirmations.markOutcome(
+        resolved.id,
+        preDispatch ? "failed_pre_dispatch" : "unknown",
+        errMsg,
+      );
+      summaryText = preDispatch
+        ? `用户已批准在 ${payload.envName} (${payload.envId}) 上执行本机操作「${payload.summary}」，但目标设备当时离线未发出：${errMsg}`
+        : `用户已批准在 ${payload.envName} (${payload.envId}) 上执行本机操作「${payload.summary}」，命令已发出但回执未决（未自动重放）：${errMsg}。请先通过只读命令核验实际状态，切勿盲目重复执行。`;
     }
 
     if (payload.ticketId) {
@@ -10253,6 +10681,63 @@ export class KuloHub implements OrchestratorController {
           }),
         BACKGROUND_CONTEXT,
       );
+    }
+  }
+
+  async #reconcileDispatchedConfirmations(context: Context = BACKGROUND_CONTEXT): Promise<void> {
+    const recovered = await this.actionConfirmations.reconcileDispatchedOnStartup(context);
+    for (const record of recovered) {
+      const payload = record.payload;
+      if (payload.kind === "host_action") {
+        const notice = `服务在执行已批准的本机操作「${payload.summary}」（设备 ${payload.envName} / ${payload.envId}）期间发生重启或切换，操作已发出但未收到最终回执（未自动重放）。请先通过只读方式核验实际状态，切勿盲目重复执行具有副作用的命令。`;
+        if (payload.ticketId) {
+          try {
+            await this.steerTicket(
+              {
+                ticketId: payload.ticketId,
+                commandId: `action-recovery:${record.id}:unknown`,
+                text: notice,
+              },
+              context,
+            );
+          } catch (error) {
+            console.warn("[KuloConfirmation] Startup unknown host_action wake skipped", error instanceof Error ? error.message : String(error));
+          }
+        } else {
+          try {
+            const origin = await this.harness.conversation(record.conversationId as ConversationId, context);
+            if (origin) {
+              await this.harness.commit(
+                (tx) =>
+                  submitAutomaticChatInput(tx, origin, {
+                    type: "input",
+                    content: `[KULO_HOST_ACTION_RESULT]\n${notice}\n请用当前对话语言简洁告知用户需要核实，不要暴露内部卡片或工单编号。`,
+                    whenBusy: "followUp",
+                    requestId: `kulo:action-recovery:${record.id}:unknown`,
+                  }),
+                context,
+              );
+            }
+          } catch (error) {
+            console.warn("[KuloConfirmation] Startup unknown host_action chat notice skipped", error instanceof Error ? error.message : String(error));
+          }
+        }
+        continue;
+      }
+      if (payload.kind === "staged_apply" || payload.kind === "external_permission") {
+        try {
+          await this.steerTicket(
+            {
+              ticketId: payload.ticketId,
+              commandId: `action-recovery:${record.id}:unknown`,
+              text: "服务在应用已批准操作期间发生重启或切换，当前结果未知且未自动重放。请先只读检查工作区或外部任务现状后再决定下一步。",
+            },
+            context,
+          );
+        } catch (error) {
+          console.warn("[KuloConfirmation] Startup unknown ticket recovery skipped", error instanceof Error ? error.message : String(error));
+        }
+      }
     }
   }
 
@@ -10343,6 +10828,14 @@ export class KuloHub implements OrchestratorController {
       }, BACKGROUND_CONTEXT);
       return;
     }
+    if (resolved.payload.kind === "computer_handoff") {
+      await this.resolveComputerHandoff(
+        resolved.payload.ticketId,
+        resolved.status === "approved" ? "done" : "cancel",
+        resolved.manualInstruction,
+      );
+      return;
+    }
     if (resolved.payload.kind === "host_action") {
       const task = this.#executeResolvedHostAction(resolved, conversationId).catch((error: unknown) => {
         console.warn("[KuloConfirmation] Host action execution failed", error instanceof Error ? error.message : String(error));
@@ -10379,6 +10872,8 @@ export class KuloHub implements OrchestratorController {
       return;
     }
     if (resolved.payload.kind === "external_permission" && resolved.selectedChoiceId) {
+      const claimed = await this.actionConfirmations.markDispatched(resolved.id);
+      if (!claimed) return;
       try {
         await this.respondExternalAgentPermission(
           resolved.payload.ticketId,
@@ -10386,13 +10881,17 @@ export class KuloHub implements OrchestratorController {
           resolved.selectedChoiceId,
           resolved.payload.runEpoch,
         );
-        await this.actionConfirmations.markExecuted(resolved.id);
+        await this.actionConfirmations.markOutcome(resolved.id, "confirmed");
       } catch (error) {
-        console.warn("[KuloConfirmation] External permission execution skipped", error instanceof Error ? error.message : String(error));
+        const errMsg = this.connectionManager.redact(error instanceof Error ? error.message : "外部权限回应失败");
+        await this.actionConfirmations.markOutcome(resolved.id, "unknown", errMsg);
+        console.warn("[KuloConfirmation] External permission execution skipped", errMsg);
       }
       return;
     }
     if (resolved.payload.kind === "staged_apply") {
+      const claimed = await this.actionConfirmations.markDispatched(resolved.id);
+      if (!claimed) return;
       try {
         await this.applyStagedChanges({
           commandId: resolved.payload.commandId,
@@ -10401,9 +10900,17 @@ export class KuloHub implements OrchestratorController {
           allowConflicts: resolved.payload.allowConflicts,
           originConversationId: conversationId,
         });
-        await this.actionConfirmations.markExecuted(resolved.id);
+        await this.actionConfirmations.markOutcome(resolved.id, "confirmed");
       } catch (error) {
-        console.warn("[KuloConfirmation] Staged apply execution skipped", error instanceof Error ? error.message : String(error));
+        const errMsg = this.connectionManager.redact(error instanceof Error ? error.message : "应用暂存更改失败");
+        const errCode = (error as { code?: unknown })?.code;
+        const preDispatch = errCode === "staged_conflict" || errCode === "env_offline";
+        await this.actionConfirmations.markOutcome(
+          resolved.id,
+          preDispatch ? "failed_pre_dispatch" : "unknown",
+          errMsg,
+        );
+        console.warn("[KuloConfirmation] Staged apply execution skipped", errMsg);
       }
       return;
     }
@@ -10484,6 +10991,9 @@ export class KuloHub implements OrchestratorController {
     cache.live = redactCredentialData(this.#projectTopicLiveState(value, Number(cache.conversation.id)), (text) => this.connectionManager.redact(text));
     if (wasBusy && !cache.live.busy) {
       this.#recordTopicActivity(cache.topicId, latestPreview);
+    }
+    if (!cache.live.busy && value.entries.some((entry) => CompactionEntry.is(entry))) {
+      void this.#contextCompaction.pruneCommittedBaseline(cache.conversation.id, BACKGROUND_CONTEXT, false).catch(() => {});
     }
     const notification = detectMainSessionNotification({
       topicId: cache.topicId,
@@ -10573,6 +11083,7 @@ export class KuloHub implements OrchestratorController {
       if (!Object.hasOwn(nextDoc, key)) delete (this.#liveSettings as Record<string, unknown>)[key];
     }
     Object.assign(this.#liveSettings, nextDoc);
+    this.externalClientQuotas.reconcileFromSettings(this.#liveSettings.roles, this.#liveSettings.externalClients);
 
     const effectiveIdentityDir = resolveEffectiveIdentityDir(this.#liveSettings, this.#defaultIdentityDir);
     if (oldIdentityDir !== effectiveIdentityDir || oldAuthFile !== nextDoc.memory.authFile) {
@@ -10884,7 +11395,7 @@ export class KuloHub implements OrchestratorController {
   #refreshTicketState(notifyFullListeners = false): void {
     if (this.#closed) return;
     const { state, delta, voiceChanges } = this.#ticketBoard.refresh(this.#liveSettings.roles, this.#liveSettings.executor.maxConcurrentWorkers,
-      () => this.connectionManager.redactionRevision, text => this.connectionManager.redact(text));
+      () => this.connectionManager.redactionRevision, text => this.connectionManager.redact(text), this.#liveSettings.externalClients);
     this.#scheduleTicketCleanup(state);
     for (const id of voiceChanges) {
       const ticket = state.tickets[id];

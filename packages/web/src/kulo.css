@@ -7,7 +7,7 @@
 
 :root {
   --kulo-chat-font-size: var(--kulo-text-body);
-  --kulo-chat-line-height: 1.6;
+  --kulo-chat-line-height: 1.65;
   --kulo-conversation-width: 880px;
 }
 

@@ -26,6 +26,7 @@ import {
   CONNECTORS_CAPABILITY,
   CLUSTER_FAILOVER_CAPABILITY,
   WARM_STANDBY_CAPABILITY,
+  EXTERNAL_AGENT_QUOTA_CAPABILITY,
   type ClusterHandoverDirective,
   type ClusterSyncAvailableNotification,
   type ClusterSyncStatus,
@@ -161,6 +162,7 @@ export class KuloEnvAgent {
   readonly #externalTools = new Map<string, { ws: WebSocket; scope: ExternalAgentMcpInvocation; resolve: (result: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   readonly #computerRequests = new Map<string, { ws: WebSocket; controller: AbortController }>();
   readonly #hostActionRequests = new Map<string, { ws: WebSocket; controller: AbortController }>();
+  readonly #externalQuotaRequests = new Map<string, { ws: WebSocket; controller: AbortController }>();
   readonly #computerPreviews = new Map<string, { ws: WebSocket; stop: () => void; pending?: ComputerPreviewUpdate; flushTimer?: NodeJS.Timeout }>();
   #registered = false;
   #controlQueue: Promise<void> = Promise.resolve();
@@ -247,6 +249,7 @@ export class KuloEnvAgent {
     this.#clearLivenessTimers();
     this.#cancelComputerRequests();
     this.#cancelHostActionRequests();
+    this.#cancelExternalQuotaRequests();
     if (this.#graceTimer) {
       clearTimeout(this.#graceTimer);
       this.#graceTimer = null;
@@ -297,6 +300,7 @@ export class KuloEnvAgent {
     if (previous) {
       this.#cancelComputerRequests(previous);
       this.#cancelHostActionRequests(previous);
+      this.#cancelExternalQuotaRequests(previous);
       try {
         if (previous.readyState === WebSocket.CONNECTING) previous.terminate();
         else if (previous.readyState === WebSocket.OPEN) previous.close(1000, "Switching cluster primary");
@@ -458,6 +462,7 @@ export class KuloEnvAgent {
           CLUSTER_FAILOVER_CAPABILITY,
           ...(this.#options.warmStandbyCapable ? [WARM_STANDBY_CAPABILITY] : []),
           "external-agents",
+          EXTERNAL_AGENT_QUOTA_CAPABILITY,
           "host-actions",
           ...workerIsolationCapabilities(),
           ...(this.#options.capabilities ?? []).filter((capability) => !["flow-browser", "agent-browser", "agent-desktop"].includes(capability)),
@@ -629,6 +634,8 @@ export class KuloEnvAgent {
           if (preview.flushTimer) clearTimeout(preview.flushTimer);
           preview.stop();
         }
+      } else if (msg.type === "hub.computer_preview_input") {
+        if (ws === this.#ws && this.#registered && this.#computer) this.#computer.sendPreviewInput(msg.target, msg.event);
       } else if (msg.type === "hub.computer_cancel") {
         if (ws === this.#ws && this.#registered && typeof msg.requestId === "string") {
           const pending = this.#computerRequests.get(msg.requestId);
@@ -695,6 +702,7 @@ export class KuloEnvAgent {
       this.#clearLivenessTimers();
       this.#cancelComputerRequests(ws);
       this.#cancelHostActionRequests(ws);
+      this.#cancelExternalQuotaRequests(ws);
       if (wasRegistered) this.#options.onConnectionStateChange?.(false, code);
 
       const immediateRevokeOrStop =
@@ -910,11 +918,24 @@ export class KuloEnvAgent {
   async #handleExternalAgentRequest(ws: WebSocket, message: Extract<HubToEnvControlMessage, { type: "hub.external_agent_request" }>): Promise<void> {
     if (ws !== this.#ws || !this.#registered || this.#stopped || ws.readyState !== ws.OPEN) return;
     if (!/^[a-f0-9]{32}$/.test(message.requestId) || !isExternalAgentRequest(message.request)) return;
+    const isQuota = message.request.operation === "quota";
+    const controller = isQuota ? new AbortController() : undefined;
+    if (controller) this.#externalQuotaRequests.set(message.requestId, { ws, controller });
     try {
-      const result = await this.#externalAgents.request(message.request);
+      const result = await this.#externalAgents.request(message.request, controller?.signal);
       if (ws === this.#ws && this.#registered && !this.#stopped) this.#sendControl(ws, { type: "env.external_agent_result", requestId: message.requestId, result });
     } catch (error) {
       if (ws === this.#ws) this.#sendControl(ws, { type: "env.external_agent_result", requestId: message.requestId, error: error instanceof Error ? error.message.slice(0, 2000) : "External agent request failed" });
+    } finally {
+      if (controller) this.#externalQuotaRequests.delete(message.requestId);
+    }
+  }
+
+  #cancelExternalQuotaRequests(ws?: WebSocket): void {
+    for (const [id, pending] of this.#externalQuotaRequests) {
+      if (ws && pending.ws !== ws) continue;
+      pending.controller.abort();
+      this.#externalQuotaRequests.delete(id);
     }
   }
 

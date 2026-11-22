@@ -3,14 +3,44 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import type { ChatAttachment } from "@kulo/protocol";
 import { KuloMarkdown } from "../../kulo-markdown";
 import { translate as tr, useI18n } from "../../kulo-i18n";
+import type { PreviewableImage } from "./asset-preview";
 import { readFileAsset } from "./file-actions";
 import { readTextPreview, type FilePreviewKind } from "./file-preview-model";
 
 const PdfPreview = lazy(() => import("./pdf-preview"));
+const XlsxPreview = lazy(() => import("./xlsx-preview"));
+const PptxPreview = lazy(() => import("./pptx-preview"));
+const DocxPreview = lazy(() => import("./docx-preview"));
 
-export function FilePreview({ asset, kind }: { asset: ChatAttachment; kind: Exclude<FilePreviewKind, "html"> }) {
+export function FilePreview({
+  asset,
+  kind,
+  onPreviewImage,
+}: {
+  asset: ChatAttachment;
+  kind: Exclude<FilePreviewKind, "html">;
+  onPreviewImage?: (image: PreviewableImage) => void;
+}) {
   useI18n();
-  return kind === "pdf" ? <Suspense fallback={<div className="kulo-artifact-feedback" role="status"><Spinner size="sm" /><span>{tr("正在加载预览", "Loading preview")}</span></div>}><PdfPreview asset={asset} /></Suspense> : <TextPreview key={asset.id} asset={asset} markdown={kind === "markdown"} />;
+  const fallback = (
+    <div className="kulo-artifact-feedback" role="status">
+      <Spinner size="sm" />
+      <span>{tr("正在加载预览", "Loading preview")}</span>
+    </div>
+  );
+  if (kind === "pdf") {
+    return <Suspense fallback={fallback}><PdfPreview key={asset.id} asset={asset} /></Suspense>;
+  }
+  if (kind === "xlsx") {
+    return <Suspense fallback={fallback}><XlsxPreview key={asset.id} asset={asset} /></Suspense>;
+  }
+  if (kind === "pptx") {
+    return <Suspense fallback={fallback}><PptxPreview key={asset.id} asset={asset} onPreviewImage={onPreviewImage} /></Suspense>;
+  }
+  if (kind === "docx") {
+    return <Suspense fallback={fallback}><DocxPreview key={asset.id} asset={asset} onPreviewImage={onPreviewImage} /></Suspense>;
+  }
+  return <TextPreview key={asset.id} asset={asset} markdown={kind === "markdown"} />;
 }
 
 function TextPreview({ asset, markdown }: { asset: ChatAttachment; markdown: boolean }) {

@@ -32,6 +32,7 @@ export interface MediaJobsOptions {
   validateSource?: (source: MediaJobSource, job?: MediaJob) => void | Promise<void>;
   validateInput?: (assetId: string, source: MediaJobSource) => void | Promise<void>;
   onChanged?: () => void | Promise<void>;
+  onCreated?: (job: MediaJob) => void | Promise<void>;
   onCompleted?: (job: MediaJob) => void | Promise<void>;
   onSettled?: (job: MediaJob) => void | Promise<void>;
   fetcher?: typeof fetch;
@@ -228,9 +229,11 @@ export class KuloMediaJobs {
         doc.jobs[record.id] = record;
         doc.operations[key] = record.id;
       }, context);
+      const createdJob = publicJob(record);
+      await this.#options.onCreated?.(createdJob);
       await this.#options.onChanged?.();
       if (this.#started && !this.#closed) this.#kick(record.id);
-      return publicJob(record);
+      return createdJob;
     });
   }
   #validateRequest(request: MediaJobRequest): void {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { defaultRolePresets, type AgentDispatchIntent, type EnvNodeDescriptor, type ExternalAgentKind, type RolePreset } from "@kulo/protocol";
-import { AgentRoutingError, assertAgentDefaultScopes, assertAgentDispatchAvailable, extractAgentDispatchIntent, normalizeAgentDispatchPolicy, resolveAgentDispatch } from "../packages/hub/src/agent-routing.js";
+import { defaultRolePresets, type AgentDispatchIntent, type EnvNodeDescriptor, type ExternalAgentKind, type ExternalClientConnection, type RolePreset } from "@kulo/protocol";
+import { AgentRoutingError, assertAgentDefaultScopes, assertAgentDispatchAvailable, extractAgentDispatchIntent, normalizeAgentDispatchPolicy, resolveAgentDispatch, resolveRoleOrDirectClient } from "../packages/hub/src/agent-routing.js";
 
 function external(id = "codex-main", kind: ExternalAgentKind = "codex", extra: Partial<RolePreset> = {}): RolePreset {
   return { id, label: id, whenToUse: "Configured external Agent", prompt: "Work within the task", enabled: true,
@@ -296,5 +296,63 @@ describe("routing authority boundaries", () => {
     expect(resolveAgentDispatch({ roles: pool, requestedRole: "checker", inheritedAssignment: { agentId: "codex-main", source: "explicit" } })).toMatchObject({ role: "codex-main", readOnly: true });
     const multi: AgentDispatchIntent = { version: 1, targets: [{ name: "scout", agentId: "scout" }, { name: "Codex", agentId: "codex-main" }] };
     expect(resolveAgentDispatch({ roles: pool, requestedRole: "codex-main", intent: multi }).readOnly).toBe(false);
+  });
+
+  it("directly invokes a connected third-party client by explicit name when zero roles are bound, while blocking unrequested direct calls", () => {
+    const builtins = defaultRolePresets();
+    const codexMac: ExternalClientConnection = {
+      id: "codex:mac", kind: "codex", envId: "mac", verifiedAt: 100, models: [], updatedAt: 100,
+    };
+    const codexOffice: ExternalClientConnection = {
+      id: "codex:office", kind: "codex", envId: "office", verifiedAt: 100, models: [], updatedAt: 100,
+    };
+    const kimiMac: ExternalClientConnection = {
+      id: "acp:mac:kimi-code", kind: "acp", envId: "mac", label: "Kimi Code", agentRef: "kimi-code",
+      executable: "/usr/local/bin/kimi-code", acpArgs: ["acp"], verifiedAt: 100, models: [], updatedAt: 100,
+    };
+    const clients = { [codexMac.id]: codexMac, [kimiMac.id]: kimiMac };
+    const devices = [env("mac"), env("office", { name: "办公室电脑" })];
+
+    // Single connected Codex client with zero bound roles
+    const codexIntent = extractAgentDispatchIntent("让 Codex 帮我修一下这个 bug", builtins, devices, clients);
+    expect(codexIntent?.targets).toEqual([expect.objectContaining({ agentId: "client:codex:mac", kind: "codex" })]);
+    const resolved = resolveAgentDispatch({ roles: builtins, externalClients: clients, intent: codexIntent, requestedRole: "coder" });
+    expect(resolved).toMatchObject({ role: "client:codex:mac", source: "explicit" });
+    const directPreset = resolveRoleOrDirectClient(resolved.role, builtins, clients);
+    expect(directPreset).toMatchObject({ id: "client:codex:mac", label: "Codex", thinkingLevel: "auto" });
+    expect(directPreset?.modelId).toBeUndefined();
+    expect(() => assertAgentDispatchAvailable(directPreset, { envs: devices, envId: "mac" })).not.toThrow();
+
+    // Custom ACP client invoked directly by label
+    const acpIntent = extractAgentDispatchIntent("请让 Kimi Code 审查这段代码", builtins, devices, clients);
+    expect(acpIntent?.targets).toEqual([expect.objectContaining({ agentId: "client:acp:mac:kimi-code" })]);
+    expect(resolveAgentDispatch({ roles: builtins, externalClients: clients, intent: acpIntent, requestedRole: "coder" }))
+      .toMatchObject({ role: "client:acp:mac:kimi-code", source: "explicit" });
+
+    // Multi-device Codex clients require disambiguation unless scoped to one device
+    const multiClients = { ...clients, [codexOffice.id]: codexOffice };
+    const multiIntent = extractAgentDispatchIntent("让 Codex 修一下", builtins, devices, multiClients);
+    expect(multiIntent?.targets[0]?.agentId).toBeUndefined();
+    expect(() => resolveAgentDispatch({ roles: builtins, externalClients: multiClients, intent: multiIntent })).toThrow(/多个已配置/);
+    expect(resolveAgentDispatch({ roles: builtins, externalClients: multiClients, intent: multiIntent, envId: "office" }).role)
+      .toBe("client:codex:office");
+    const namedOffice = extractAgentDispatchIntent("让办公室电脑上的 Codex 修一下", builtins, devices, multiClients);
+    expect(namedOffice?.targets[0]?.agentId).toBe("client:codex:office");
+
+    // Unverified direct client surfaces exact verification error instead of falling back
+    const unverifiedClients = { [codexMac.id]: { ...codexMac, verifiedAt: undefined } };
+    const unverifiedRole = resolveRoleOrDirectClient("client:codex:mac", builtins, unverifiedClients);
+    expect(() => assertAgentDispatchAvailable(unverifiedRole, { envs: devices, envId: "mac" })).toThrow(/验证/);
+
+    // Orchestrator cannot spontaneously invoke a direct client without explicit user naming
+    expect(() => resolveAgentDispatch({ roles: builtins, externalClients: clients, requestedRole: "client:codex:mac" }))
+      .toThrow(/仅在用户显式指定/);
+
+    // Explicit built-in Worker escape still works even when coder itself is assigned to Codex
+    const coderOnCodex = { ...builtins, coder: { ...builtins.coder!, externalClientId: codexMac.id, external: { kind: "codex" as const, envId: "mac", verifiedAt: 100 } } };
+    const internalIntent = extractAgentDispatchIntent("用内置 Worker 来处理", coderOnCodex, devices, clients);
+    const internalResolved = resolveAgentDispatch({ roles: coderOnCodex, externalClients: clients, intent: internalIntent });
+    expect(internalResolved.source).toBe("explicit");
+    expect(coderOnCodex[internalResolved.role]?.external).toBeUndefined();
   });
 });

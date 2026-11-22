@@ -189,6 +189,20 @@ export function MemoryConnectionForm({
     () => modelsDraft ?? initialMemoryModelsDraft(snapshot ?? undefined, settings, providers),
     [modelsDraft, snapshot, settings, providers],
   );
+  const localPhase = snapshot?.phase;
+  const isFailedInstall = localPhase === "failed";
+  const isInProgressInstall = localPhase === "installing" || localPhase === "verifying";
+  const hasManagedInstall = Boolean(snapshot?.installed) || isFailedInstall || isInProgressInstall;
+  const isReadyInstall = Boolean(snapshot?.installed) && !isFailedInstall && !isInProgressInstall;
+  const localStatusLabel = isFailedInstall
+    ? t("部署失败", "Deployment failed")
+    : localPhase === "installing"
+      ? t("部署中", "Deploying")
+      : localPhase === "verifying"
+        ? t("验证中", "Verifying")
+        : snapshot?.running
+          ? t("运行中", "Running")
+          : t("已停止", "Stopped");
   useEffect(() => {
     if (!pending && restoreEnabledFocus.current) {
       restoreEnabledFocus.current = false;
@@ -256,12 +270,12 @@ export function MemoryConnectionForm({
     </form>
     <div inert={busy || undefined}>
     <SettingsSection title={t("本机服务", "Local service")}>
-      {snapshot?.installed && <dl className="mb-5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-3 text-sm">
+      {hasManagedInstall && snapshot && <dl className="mb-5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-3 text-sm">
         <dt className="text-muted">{t("部署设备", "Deployment device")}</dt><dd className="break-words">{snapshot.deviceName}</dd>
-        <dt className="text-muted">{t("服务状态", "Service status")}</dt><dd>{snapshot.running ? t("运行中", "Running") : t("已停止", "Stopped")}{snapshot.version ? ` · ${snapshot.version}` : ""}</dd>
-        {snapshot.model && <><dt className="text-muted">{t("理解模型", "Understanding model")}</dt><dd className="break-all">{formatUnderstandingModelLabel(snapshot.model, kuloConnections)}</dd></>}
-        {snapshot.embeddings && <><dt className="text-muted">{t("向量模型", "Embedding model")}</dt><dd className="break-all">{formatEmbeddingsModelLabel(snapshot.embeddings)}</dd></>}
-        {snapshot.reranker && <><dt className="text-muted">{t("重排模型", "Rerank model")}</dt><dd className="break-all">{formatRerankerModelLabel(snapshot.reranker)}</dd></>}
+        <dt className="text-muted">{t("服务状态", "Service status")}</dt><dd className={isFailedInstall ? "text-danger" : undefined}>{localStatusLabel}{isReadyInstall && snapshot.version ? ` · ${snapshot.version}` : ""}</dd>
+        {isReadyInstall && snapshot.model && <><dt className="text-muted">{t("理解模型", "Understanding model")}</dt><dd className="break-all">{formatUnderstandingModelLabel(snapshot.model, kuloConnections)}</dd></>}
+        {isReadyInstall && snapshot.embeddings && <><dt className="text-muted">{t("向量模型", "Embedding model")}</dt><dd className="break-all">{formatEmbeddingsModelLabel(snapshot.embeddings)}</dd></>}
+        {isReadyInstall && snapshot.reranker && <><dt className="text-muted">{t("重排模型", "Rerank model")}</dt><dd className="break-all">{formatRerankerModelLabel(snapshot.reranker)}</dd></>}
       </dl>}
       <MemoryModelFields
         draft={effectiveModelsDraft}
@@ -272,9 +286,9 @@ export function MemoryConnectionForm({
       />
       {modelsError && <Alert status="danger" role="alert" className="mt-4 rounded-2xl p-3"><Alert.Content className="flex-1 break-words text-sm">{modelsError}</Alert.Content></Alert>}
       <div className="mt-4 flex flex-wrap items-center gap-2">
-        {(!snapshot?.installed || snapshot.phase === "failed") && <Button type="button" variant="secondary" isDisabled={disabled || modelsBusy} onPress={() => onLocalDeploy ? onLocalDeploy() : requestMemoryService("deploy")}>{snapshot?.phase === "failed" ? t("恢复部署", "Resume deployment") : t("在本机配置 Hindsight", "Set up Hindsight locally")}</Button>}
-        {snapshot?.installed && snapshot.phase !== "failed" && <Button type="button" variant="secondary" isDisabled={disabled || modelsBusy} onPress={() => onLocalConfigure ? onLocalConfigure() : requestMemoryService("configure")}>{t("配置本机模型", "Configure local model")}</Button>}
-        {snapshot?.installed && <Button type="button" variant="danger" isPending={modelsBusy} isDisabled={disabled || modelsBusy} onPress={() => onLocalUninstall ? onLocalUninstall() : requestMemoryService("uninstall")}>{t("卸载本机服务", "Uninstall local service")}</Button>}
+        {(!hasManagedInstall || isFailedInstall) && <Button type="button" variant="secondary" isDisabled={disabled || modelsBusy} onPress={() => onLocalDeploy ? onLocalDeploy() : requestMemoryService("deploy")}>{isFailedInstall ? t("重新部署", "Retry deployment") : t("在本机配置 Hindsight", "Set up Hindsight locally")}</Button>}
+        {isReadyInstall && <Button type="button" variant="secondary" isDisabled={disabled || modelsBusy} onPress={() => onLocalConfigure ? onLocalConfigure() : requestMemoryService("configure")}>{t("配置本机模型", "Configure local model")}</Button>}
+        {hasManagedInstall && <Button type="button" variant="danger" isPending={modelsBusy} isDisabled={disabled || modelsBusy} onPress={() => onLocalUninstall ? onLocalUninstall() : requestMemoryService("uninstall")}>{isReadyInstall ? t("卸载本机服务", "Uninstall local service") : t("清理未完成安装", "Clean up incomplete install")}</Button>}
         {activeStage && <div className="flex items-center gap-2 text-xs text-muted" role="status"><Spinner size="sm" aria-label={t("记忆服务处理中", "Memory service is processing")} /><span>{activeStage}</span></div>}
       </div>
     </SettingsSection>
@@ -523,7 +537,7 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
     try {
       const prompt = buildMemoryServicePrefillPrompt({
         operation,
-        resume: operation === "deploy" && snapshot?.phase === "failed",
+        retry: operation === "deploy" && snapshot?.phase === "failed",
         deviceName: snapshot?.deviceName,
         draft: modelsDraft,
         connections: kuloMemoryConnections(settings, providers),
@@ -567,6 +581,8 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
     }
   };
 
+  const isIncompleteInstall = snapshot?.phase === "failed" || snapshot?.phase === "installing" || snapshot?.phase === "verifying";
+
   return <div ref={formRef}>
     <MemoryConnectionForm
       settings={settings}
@@ -600,7 +616,7 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
     />
     <ConfirmDialog
       open={uninstallOpen}
-      title={t("卸载本机 Hindsight？", "Uninstall local Hindsight?")}
+      title={isIncompleteInstall ? t("清理未完成的本机 Hindsight 安装？", "Clean up incomplete local Hindsight install?") : t("卸载本机 Hindsight？", "Uninstall local Hindsight?")}
       description={
         <div className="space-y-3">
           {snapshot?.deviceName && <p>{snapshot.deviceName}</p>}
@@ -612,7 +628,9 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
           </Checkbox>
         </div>
       }
-      confirmLabel={uninstallDeleteData ? t("卸载并删除数据", "Uninstall and delete data") : t("卸载并保留数据", "Uninstall and keep data")}
+      confirmLabel={isIncompleteInstall
+        ? (uninstallDeleteData ? t("清理并删除数据", "Clean up and delete data") : t("清理并保留数据", "Clean up and keep data"))
+        : (uninstallDeleteData ? t("卸载并删除数据", "Uninstall and delete data") : t("卸载并保留数据", "Uninstall and keep data"))}
       isPending={modelsBusy}
       onCancel={() => { if (!modelsBusy) setUninstallOpen(false); }}
       onConfirm={() => void uninstallLocalService(uninstallDeleteData)}

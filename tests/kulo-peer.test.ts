@@ -72,7 +72,10 @@ async function client(url: string, authToken?: string): Promise<WebSocket> {
   return socket;
 }
 
-async function fakeHub(options: { clientHttpStatus?: number } = {}) {
+async function fakeHub(options: {
+  clientHttpStatus?: number;
+  onRequest?: (request: http.IncomingMessage, response: http.ServerResponse) => boolean | void;
+} = {}) {
   const clientSockets = new Set<WebSocket>();
   const envSockets = new Set<WebSocket>();
   const registrations: Record<string, unknown>[] = [];
@@ -80,6 +83,7 @@ async function fakeHub(options: { clientHttpStatus?: number } = {}) {
   const conversations: string[] = [];
   const server = http.createServer((request, response) => {
     requests.push({ authorization: request.headers.authorization, cookie: request.headers.cookie, url: request.url! });
+    if (options.onRequest?.(request, response)) return;
     response.writeHead(options.clientHttpStatus ?? 200, { "content-type": "application/json" });
     response.end(JSON.stringify({ items: [], conversations }));
   });
@@ -553,5 +557,81 @@ describe("joined device local access", () => {
     activePid = replacement.pid;
     expect(replacement).toMatchObject({ deviceId: "replacement-peer", ready: true });
     expect(readPeerConfig(configPath)?.deviceId).toBe("replacement-peer");
+  });
+
+  it("does not cut off slow upstream HTTP responses after TCP connect succeeds", async () => {
+    const hub = await fakeHub({
+      onRequest(request, response) {
+        if (request.url !== "/api/external-clients/connect") return false;
+        const timer = setTimeout(() => {
+          if (response.destroyed) return;
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({ connected: true, clientId: "codex:local" }));
+        }, 350);
+        timer.unref();
+        return true;
+      },
+    });
+    const peer = await startDevicePeer(peerConfig(hub.url), { proxyConnectTimeoutMs: 100 });
+    cleanup.push(() => peer.close());
+    await peer.ready;
+
+    const response = await fetch(`${peer.url}/api/external-clients/connect`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${peer.authToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ kind: "codex", envId: "local" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ connected: true, clientId: "codex:local" });
+  });
+
+  it("aborts in-flight HTTP proxy requests to the previous Hub immediately on switchHub", async () => {
+    let hungRequestArrived!: () => void;
+    const hungReady = new Promise<void>((resolve) => { hungRequestArrived = resolve; });
+    const hungResponses: http.ServerResponse[] = [];
+    const hubA = await fakeHub({
+      onRequest(request, response) {
+        if (request.url !== "/api/media/session") return false;
+        hungResponses.push(response);
+        hungRequestArrived();
+        return true;
+      },
+    });
+    const hubB = await fakeHub({
+      onRequest(request, response) {
+        if (request.url !== "/api/media/session") return false;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ hub: "B", expiresAt: Date.now() + 600_000 }));
+        return true;
+      },
+    });
+    cleanup.push(() => {
+      for (const res of hungResponses) {
+        if (!res.writableEnded) res.destroy();
+      }
+    });
+
+    const peer = await startDevicePeer(peerConfig(hubA.url));
+    cleanup.push(() => peer.close());
+    await peer.ready;
+
+    const pendingToOldHub = fetch(`${peer.url}/api/media/session`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${peer.authToken}` },
+    });
+    await hungReady;
+
+    const startedSwitch = Date.now();
+    peer.switchHub(hubB.url);
+    const failedOld = await pendingToOldHub;
+    expect(failedOld.status).toBe(503);
+    expect(Date.now() - startedSwitch).toBeLessThan(2_000);
+
+    const switched = await fetch(`${peer.url}/api/media/session`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${peer.authToken}` },
+    });
+    expect(switched.status).toBe(200);
+    expect(await switched.json()).toMatchObject({ hub: "B" });
   });
 });

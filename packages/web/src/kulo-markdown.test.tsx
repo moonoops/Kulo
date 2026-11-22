@@ -62,3 +62,61 @@ describe("CJK Markdown", () => {
     }
   });
 });
+
+describe("Inline search citations vs. ordinary prose links", () => {
+  const sources = [
+    { id: "s1", title: "iPhone Duo目前市场价格是多少？", url: "https://cj.sina.com.cn/articles/view/1", snippet: "256GB 15,999 元起。" },
+    { id: "s2", title: "iPhone Duo发售两天价格破发专家分析后续走势", url: "https://www.sohu.com/a/2", snippet: "第三方渠道普遍低约 200 元。" },
+    { id: "s3", title: "iPhone Duo 首发销量公开：_产品_频道_苹果", url: "https://www.sohu.com/a/3", snippet: "预售期最高溢价数万元。" },
+    { id: "s4", title: "苹果回应iPhone Duo渠道破发：官网价格更稳定", url: "https://feng.ifeng.com/c/4" },
+  ];
+
+  it("folds parenthesized source citations into compact site pills and strips redundant parens/separators", () => {
+    const text = [
+      "- **2TB**：26,499 元\n（[iPhone Duo目前市场价格是多少？](https://cj.sina.com.cn/articles/view/1)）",
+      "- 第三方电商店铺普遍比官方价低约 200 元左右（[iPhone Duo发售两天价格破发专家分析后续走势](https://www.sohu.com/a/2)、[iPhone Duo 首发销量公开](https://www.sohu.com/a/3)）。",
+    ].join("\n");
+    const html = renderToStaticMarkup(<KuloMarkdown text={text} sources={sources} />);
+    expect(html).toContain("kulo-chat-citation");
+    expect(html).toContain(">新浪财经</span>");
+    // Same-site distinct articles disambiguate with matching bottom source indices (2 and 3)
+    expect(html).toContain(">搜狐</span><span class=\"kulo-chat-citation-index\">2</span>");
+    expect(html).toContain(">搜狐</span><span class=\"kulo-chat-citation-index\">3</span>");
+    // Redundant wrapping Chinese parentheses and SEO titles must not pollute visible prose text
+    expect(html).not.toContain("（<a");
+    expect(html).not.toContain(">iPhone Duo目前市场价格是多少？<");
+    expect(html).not.toContain("</a>、<a");
+    // Accessible labels keep the full title and domain
+    expect(html).toContain('aria-label="来源 1：iPhone Duo目前市场价格是多少？（cj.sina.com.cn）"');
+  });
+
+  it("handles two consecutive parenthesized citation groups in the same paragraph", () => {
+    const text = "预售加价（[iPhone Duo 首发销量公开](https://www.sohu.com/a/3)），随后官网维持原价（[苹果回应iPhone Duo渠道破发：官网价格更稳定](https://feng.ifeng.com/c/4)）。";
+    const html = renderToStaticMarkup(<KuloMarkdown text={text} sources={sources} />);
+    expect(html.match(/kulo-chat-citation-label/g)).toHaveLength(2);
+    expect(html).toContain(">搜狐</span>");
+    expect(html).toContain(">凤凰网</span>");
+    const visibleText = html.replace(/<[^>]+>/g, "");
+    expect(visibleText).toBe("预售加价搜狐3，随后官网维持原价。凤凰网");
+    expect(visibleText).not.toContain("（");
+    expect(visibleText).not.toContain("）");
+  });
+
+  it("preserves ordinary prose links and mixed-prose parentheses without folding them into pills", () => {
+    const text = "详情见 [AppleCare 官方售后说明](https://support.apple.com/care)（或参考 [官方政策](https://cj.sina.com.cn/articles/view/1) 后再决定）。";
+    const html = renderToStaticMarkup(<KuloMarkdown text={text} sources={sources} />);
+    expect(html).not.toContain("kulo-chat-citation-label");
+    expect(html.match(/kulo-chat-prose-link/g)).toHaveLength(2);
+    expect(html).toContain("AppleCare 官方售后说明");
+    expect(html).toContain("（或参考 ");
+    expect(html).toContain(" 后再决定）。");
+  });
+
+  it("never alters parenthesized citation syntax inside inline code or fenced code blocks", () => {
+    const raw = "（[iPhone Duo目前市场价格是多少？](https://cj.sina.com.cn/articles/view/1)）";
+    const html = renderToStaticMarkup(<KuloMarkdown text={`\`${raw}\`\n\n\`\`\`markdown\n${raw}\n\`\`\``} sources={sources} />);
+    expect(html).not.toContain("kulo-chat-citation");
+    expect(html).toContain(`<code class="kulo-chat-inline-code">${raw}</code>`);
+    expect(html).toContain(`<code>${raw}</code>`);
+  });
+});

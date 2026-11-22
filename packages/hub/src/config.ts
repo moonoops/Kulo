@@ -55,6 +55,72 @@ export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
   backgroundTokens: 32_768,
 };
 
+/**
+ * Clamps compaction thresholds proportionally for small/medium context windows (e.g. 32K / 64K)
+ * so `keepRecentTokens` never exceeds `contextWindow - reserveTokens` (avoiding per-turn blocking loops)
+ * and `backgroundTokens` retains healthy headroom (avoiding thrashing storms).
+ * Large-window models (128K+) keep the configured defaults unchanged.
+ */
+export function clampCompactionConfigForWindow(
+  compaction: CompactionConfig,
+  contextWindow: number,
+): CompactionConfig {
+  if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
+    return { ...compaction };
+  }
+  const reserveTokens = Math.min(
+    compaction.reserveTokens,
+    Math.max(512, Math.floor(contextWindow * 0.25)),
+  );
+  const blocking = Math.max(512, contextWindow - reserveTokens);
+  const keepRecentTokens = Math.min(
+    compaction.keepRecentTokens,
+    Math.max(512, Math.floor(blocking * 0.45)),
+  );
+  const backgroundTokens =
+    compaction.backgroundTokens === 0
+      ? 0
+      : Math.min(
+          compaction.backgroundTokens,
+          Math.max(0, Math.floor((blocking - keepRecentTokens) * 0.5)),
+        );
+  return {
+    enabled: compaction.enabled,
+    reserveTokens,
+    keepRecentTokens,
+    backgroundTokens,
+  };
+}
+
+export function buildAdaptiveCompactionPolicy(
+  compaction: CompactionConfig,
+  models: Iterable<{ provider: string; id: string; contextWindow?: number }>,
+): CompactionConfig & { modelOverrides?: Record<string, CompactionConfig> } {
+  const overrides: Record<string, CompactionConfig> = {};
+  let count = 0;
+  for (const model of models) {
+    if (typeof model.contextWindow !== "number" || !Number.isFinite(model.contextWindow) || model.contextWindow <= 0) {
+      continue;
+    }
+    const clamped = clampCompactionConfigForWindow(compaction, model.contextWindow);
+    if (
+      clamped.reserveTokens !== compaction.reserveTokens ||
+      clamped.keepRecentTokens !== compaction.keepRecentTokens ||
+      clamped.backgroundTokens !== compaction.backgroundTokens
+    ) {
+      overrides[`${model.provider}/${model.id}`] = clamped;
+      count += 1;
+    }
+  }
+  return {
+    enabled: compaction.enabled,
+    reserveTokens: compaction.reserveTokens,
+    keepRecentTokens: compaction.keepRecentTokens,
+    backgroundTokens: compaction.backgroundTokens,
+    ...(count > 0 ? { modelOverrides: overrides } : {}),
+  };
+}
+
 export interface KuloModelConfig {
   baseUrl: string;
   apiKey?: string;

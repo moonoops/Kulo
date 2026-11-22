@@ -37,5 +37,8 @@ export * from "./extensions.js";
 export * from "./android.js";
 export * from "./android-notifications.js";
 export * from "./assistant.js";
+export * from "./provenance.js";
+export * from "./shell-safety-floor.js";
+export * from "./usage-caps.js";
 
 export type * from "./recovery.js";

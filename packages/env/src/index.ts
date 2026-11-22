@@ -45,7 +45,27 @@ export {
   type ParsedClusterAuthHeader,
 } from "./cluster-security.js";
 
-export { ExternalAgentService, isExternalAgentRequest, isExternalAgentResponse, type ExternalAgentServiceOptions, type ExternalAgentToolHandler } from "./external-agents.js";
+export { ExternalAgentService, isExternalAgentRequest, isExternalAgentResponse, type ClaudeAuthStatusProbe, type ExternalAgentServiceOptions, type ExternalAgentToolHandler } from "./external-agents.js";
+export {
+  clampQuotaPercent,
+  formatQuotaCurrencyAmount,
+  isGrokNotSignedInText,
+  isGrokShellRouteUnavailableText,
+  isGrokTeamManagedOutput,
+  isValidQuotaProbeResult,
+  mergeQuotaProbeResults,
+  normalizeQuotaPlanLabel,
+  normalizeQuotaTimestampMs,
+  parseClaudeControlUsageResponse,
+  parseClaudeRateLimitEvent,
+  parseCodexRateLimitsSnapshot,
+  parseGrokBillingPayload,
+  sanitizeQuotaBalanceText,
+  sanitizeQuotaError,
+} from "./external-agent-quota.js";
+export { probeCodexQuota } from "./external-agent-drivers.js";
+export { probeClaudeQuota, quotaClaudeOptions } from "./external-agent-claude.js";
+export { probeGrokQuota, type GrokQuotaCliRunner } from "./external-agent-acp.js";
 export { SAFE_HOST_GIT_ARGS, STAGED_NON_COW_MAX_BYTES, STAGED_NON_COW_MAX_FILES, StagedWorkspaceConflictError, StagedWorkspaceOversizedError, applyStagedChanges, cloneStagedWorkspace, computeStagedDiff, preflightNonCowWorkspace, safeHostGitEnv, scanWorkspaceManifest, type CloneStagedWorkspaceOptions } from "./staged-workspace.js";
 export { StagedWorkspaceService, type StagedWorkspaceServiceOptions } from "./staged-workspace-service.js";
 export { EXTERNAL_AGENT_MCP_DEFINED_TOOL_NAMES, EXTERNAL_AGENT_MCP_TOOLS, type ExternalAgentMcpInvocation, type ExternalAgentMcpScope } from "./external-agent-mcp.js";

@@ -1,10 +1,11 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type {
-  HomeAssistantEntityView,
-  HomeAssistantSentinelConfig,
-  RawConnectorEvent,
+import {
+  safeJsonForXmlTag,
+  type HomeAssistantEntityView,
+  type HomeAssistantSentinelConfig,
+  type RawConnectorEvent,
 } from "@kulo/protocol";
 import type { AssistantLedger, HaSentinelStateRow } from "../assistant-ledger.js";
 
@@ -363,7 +364,7 @@ export class HomeAssistantSentinel {
       if (this.#closed) return;
       const rawVerdict = await this.#host.completeVisionJson!({
         systemPrompt: CAMERA_TRIAGE_SYSTEM_PROMPT,
-        userText: `<untrusted_camera_event>${JSON.stringify({
+        userText: `<untrusted_camera_event>${safeJsonForXmlTag({
           doorway: label,
           area: entity.area ?? "门口",
           someoneHome,

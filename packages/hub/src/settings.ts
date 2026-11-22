@@ -825,10 +825,20 @@ export function syncExternalClientsInSettings(
   clientModels?: Record<string, ExternalAgentModelInfo[]>,
   removeClientIds?: readonly string[],
   clientPatches?: Record<string, Partial<ExternalClientConnection>>,
+  upsertClients?: Record<string, ExternalClientConnection>,
 ): void {
   const existing = doc.externalClients ? cleanJson(doc.externalClients) : {};
   for (const clientId of removeClientIds ?? []) {
     delete existing[clientId];
+  }
+  if (upsertClients) {
+    for (const [clientId, client] of Object.entries(upsertClients)) {
+      const nextClient = cleanJson(client);
+      if (nextClient.kind === "claude-code" && isBundledClaudeSdkExecutable(nextClient.executable)) {
+        delete nextClient.executable;
+      }
+      existing[clientId] = { ...nextClient, id: clientId };
+    }
   }
   for (const client of Object.values(existing)) {
     if (client.kind === "claude-code" && isBundledClaudeSdkExecutable(client.executable)) {
@@ -1230,6 +1240,7 @@ export function applySettingsBlockUpdate(
     externalAgents?: boolean;
     clientModels?: Record<string, ExternalAgentModelInfo[]>;
     clientPatches?: Record<string, Partial<ExternalClientConnection>>;
+    upsertClients?: Record<string, ExternalClientConnection>;
     removeClientIds?: readonly string[];
     summaryOverride?: string;
   } = {},
@@ -1353,14 +1364,24 @@ export function applySettingsBlockUpdate(
             continue;
           }
           if (!nextEntry) continue;
-          if (!nextEntry.external && !nextEntry.externalClientId) {
-            throw new SettingsUpdateError(400, "外部智能体不能直接转换为内部智能体。");
-          }
-          if (!isDeepStrictEqual(current.dispatchPolicy, nextEntry.dispatchPolicy)) {
+          const nextIsExternal = Boolean(nextEntry.external || nextEntry.externalClientId);
+          if (nextIsExternal && !isDeepStrictEqual(current.dispatchPolicy, nextEntry.dispatchPolicy)) {
             throw new SettingsUpdateError(400, "外部智能体请通过智能体页面右侧对话修改。");
           }
         }
       }
+      const parseExternalServiceTier = (raw: unknown): string | undefined => {
+        if (raw === undefined || raw === null) return undefined;
+        if (typeof raw !== "string") {
+          throw new SettingsUpdateError(400, "外部智能体服务档位无效。");
+        }
+        const clean = raw.trim();
+        if (!clean || clean === "auto" || clean === "__client_default__") return undefined;
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(clean)) {
+          throw new SettingsUpdateError(400, "外部智能体服务档位无效。");
+        }
+        return clean;
+      };
       const nextRoles: Record<string, RolePreset> = {};
       const updatedClientBindings = new Map<string, ExternalAgentBinding>();
       for (const [roleId, entry] of Object.entries(val)) {
@@ -1369,9 +1390,12 @@ export function applySettingsBlockUpdate(
         }
         const r = entry as Record<string, unknown>;
         const existingRole = doc.roles[roleId];
-        const explicitClientId = typeof r.externalClientId === "string" && r.externalClientId.trim()
-          ? r.externalClientId.trim()
-          : existingRole?.externalClientId?.trim();
+        const hasExplicitClientId = typeof r.externalClientId === "string" && Boolean(r.externalClientId.trim());
+        const explicitClientId = hasExplicitClientId
+          ? (r.externalClientId as string).trim()
+          : r.external
+            ? existingRole?.externalClientId?.trim()
+            : undefined;
         let externalClientId = explicitClientId;
         let external = r.external as RolePreset["external"];
         if (!options.externalAgents && externalClientId) {
@@ -1448,6 +1472,7 @@ export function applySettingsBlockUpdate(
           typeof r.provider === "string" && r.provider.trim()
             ? r.provider.trim()
             : undefined;
+        const serviceTier = external ? parseExternalServiceTier(r.serviceTier) : undefined;
         nextRoles[roleId] = {
           id: roleId,
           label,
@@ -1463,6 +1488,7 @@ export function applySettingsBlockUpdate(
           ...(typeof r.modelId === "string" && r.modelId.trim()
             ? { modelId: r.modelId.trim() }
             : {}),
+          ...(serviceTier ? { serviceTier } : {}),
           thinkingLevel: external
             ? parseExternalRoleThinking(r.thinkingLevel)
             : parseRoleThinking(r.thinkingLevel, "auto"),
@@ -1492,8 +1518,8 @@ export function applySettingsBlockUpdate(
       }
       for (const role of roleValues) if (!role.external) assertConversationModelSelection(doc.model, role.provider, role.modelId || doc.model.defaultModel);
       doc.roles = nextRoles;
-      if (options.externalAgents || doc.externalClients || options.removeClientIds?.length || options.clientPatches) {
-        syncExternalClientsInSettings(doc, options.clientModels, options.removeClientIds, options.clientPatches);
+      if (options.externalAgents || doc.externalClients || options.removeClientIds?.length || options.clientPatches || options.upsertClients) {
+        syncExternalClientsInSettings(doc, options.clientModels, options.removeClientIds, options.clientPatches, options.upsertClients);
       }
       normalizeRoleThinkingSelections(doc.roles, doc.model);
       doc.rolesMigratedV2 = true;

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import { COMPUTER_USE_MAX_RESULT, isComputerUseRequest, isComputerUseResult, type ComputerUseRequest, type ComputerUseResult, type ComputerPreviewTarget, type ComputerPreviewUpdate, type DesktopSystemPermissions, type SystemPermissionState } from "@kulo/protocol";
+import { COMPUTER_USE_MAX_RESULT, isComputerPreviewInputEvent, isComputerUseRequest, isComputerUseResult, type ComputerPreviewInputEvent, type ComputerUseRequest, type ComputerUseResult, type ComputerPreviewTarget, type ComputerPreviewUpdate, type DesktopSystemPermissions, type SystemPermissionState } from "@kulo/protocol";
 import { AgentCliError, runAgentCli, type AgentCliInvocation, type AgentCliRunner } from "./agent-cli.js";
 import {
   checkMacosChromeBackgroundTasks,
@@ -172,7 +172,7 @@ export class ComputerUseService {
     const downloads = privateDirectory(path.join(this.rootDir, "downloads"));
     this.#browserConfig = path.join(this.rootDir, "browser.json");
     const descriptor = fs.openSync(this.#browserConfig, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW, 0o600);
-    try { fs.writeFileSync(descriptor, JSON.stringify({ headed: false, autoConnect: false, noWebmcp: true, noAutoDialog: true, allowFileAccess: false, idleTimeout: "5m", maxOutput: OUTPUT_CHARACTERS, downloadPath: downloads })); }
+    try { fs.writeFileSync(descriptor, JSON.stringify({ headed: false, autoConnect: false, noWebmcp: true, noAutoDialog: true, allowFileAccess: false, idleTimeout: "12m", maxOutput: OUTPUT_CHARACTERS, downloadPath: downloads })); }
     finally { fs.closeSync(descriptor); }
     this.#previews = new ComputerPreviewService({
       rootDir: this.rootDir,
@@ -214,6 +214,13 @@ export class ComputerUseService {
       return () => {};
     }
     return this.#previews.subscribe(target, listener);
+  }
+
+  sendPreviewInput(target: ComputerPreviewTarget, event: ComputerPreviewInputEvent): boolean {
+    if (this.#closed || this.#suspending || !SUPPORTED.has(this.#platform) || target.tool !== "browser" || !this.#browserEnabled || !isComputerPreviewInputEvent(event)) {
+      return false;
+    }
+    return this.#previews.sendInput(target, event);
   }
 
   async request(request: ComputerUseRequest, isActive: () => boolean = () => true, signal?: AbortSignal): Promise<ComputerUseResult> {

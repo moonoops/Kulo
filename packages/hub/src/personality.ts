@@ -7,6 +7,12 @@ import type {
   RelationshipUpdateStatus, RelationshipWriteRequest,
 } from "@kulo/protocol";
 import { IDENTITY_AGREEMENT_FILE, IdentityFilesError, KuloIdentityFiles } from "./identity-files.js";
+import {
+  MAX_FORGOTTEN_TERMS,
+  normalizeForgetTerm,
+  stripForgottenLinesFromMarkdown,
+  type ForgottenTermEntry,
+} from "./memory-forget.js";
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const DAY_MS = 86_400_000;
@@ -35,13 +41,14 @@ export interface PersonalityState {
   sourceCursor: number;
   identityProposal: IdentityProposal | null;
   pendingUpdate: PendingRelationshipUpdate | null;
+  forgottenTerms?: ForgottenTermEntry[];
 }
 export const PersonalityDoc = defineDoc<PersonalityState & JsonObject>({
   kind: "kulo.personality", version: 1, scope: "session",
   initial: () => ({
     revision: 1, settings: defaultPersonalitySettings(), relationshipStatus: emptyStatus(),
-    sourceCursor: 0, identityProposal: null, pendingUpdate: null,
-  }) as PersonalityState & JsonObject,
+    sourceCursor: 0, identityProposal: null, pendingUpdate: null, forgottenTerms: [],
+  }) as unknown as PersonalityState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 16,
 });
 
@@ -81,8 +88,9 @@ export interface KuloPersonalityOptions {
   identityFiles: KuloIdentityFiles;
   now?: () => number;
   canReviewRelationship?: () => Promise<boolean>;
+  isUsageCapped?: () => boolean;
   collectRelationshipInput: (since: number) => Promise<{ cursor: number; content: string }>;
-  reviewRelationship: (input: { current: string; updates: string; signal: AbortSignal }) => Promise<{ content: string | null; summary?: string; defer?: boolean }>;
+  reviewRelationship: (input: { current: string; updates: string; signal: AbortSignal }) => Promise<{ content: string | null; summary?: string; defer?: boolean; skipReason?: string }>;
   onChanged?: () => void | Promise<void>;
   onError?: (error: unknown) => void;
 }
@@ -246,6 +254,55 @@ export class KuloPersonality {
     });
   }
 
+  async getForgottenTerms(): Promise<ForgottenTermEntry[]> {
+    const state = await this.#state();
+    return clone(state.forgottenTerms ?? []);
+  }
+
+  /**
+   * Adds a personal memory forget tombstone without bumping `state.revision`
+   * so active settings-form optimistic locks never suffer `409 personality_conflict`.
+   */
+  async addForgottenTerm(rawTerm: string, reason?: string): Promise<{ added: boolean; entry: ForgottenTermEntry; total: number }> {
+    const { term, normalized } = normalizeForgetTerm(rawTerm);
+    const cleanReason = reason?.trim().slice(0, 200) || undefined;
+    return this.#serialize(async () => {
+      const outcome = await this.#options.harness.commit(async (tx) => {
+        const state = await tx.doc(PersonalityDoc);
+        const list = [...(state.forgottenTerms ?? [])];
+        const existingIdx = list.findIndex((item) => item.normalized === normalized);
+        if (existingIdx >= 0) {
+          const existing = list[existingIdx]!;
+          return { added: false, entry: clone(existing), total: list.length };
+        }
+        const entry: ForgottenTermEntry = {
+          term,
+          normalized,
+          ...(cleanReason ? { reason: cleanReason } : {}),
+          addedAt: this.#now(),
+        };
+        const updated = [...list, entry].slice(-MAX_FORGOTTEN_TERMS);
+        state.forgottenTerms = updated;
+        return { added: true, entry: clone(entry), total: updated.length };
+      }, BACKGROUND_CONTEXT);
+      if (outcome.added) await this.#changed();
+      return outcome;
+    });
+  }
+
+  async forgetFromRelationship(term: string, reason?: string): Promise<{ removedLines: number }> {
+    const current = await this.#options.identityFiles.read("relationship.md");
+    if (!current.exists || !current.content.trim()) return { removedLines: 0 };
+    const { content, removedLines } = stripForgottenLinesFromMarkdown(current.content, term);
+    if (removedLines === 0) return { removedLines: 0 };
+    await this.saveRelationship({
+      expected: current.version,
+      content,
+      summary: reason ? `遗忘「${term}」（${reason.slice(0, 120)}）` : `遗忘关于「${term}」的记录`,
+    });
+    return { removedLines };
+  }
+
   checkRelationship(options: { force?: boolean } = {}): Promise<PersonalitySnapshot> {
     if (this.#active) return this.#active;
     this.#active = this.#check(options.force === true).finally(() => { this.#active = undefined; });
@@ -254,6 +311,7 @@ export class KuloPersonality {
   async #check(force: boolean): Promise<PersonalitySnapshot> {
     const state = await this.#state();
     if (this.#closed || (!force && !state.settings.relationshipUpdate.enabled)) return this.snapshot();
+    if (!force && this.#options.isUsageCapped?.()) return this.snapshot();
     if (!force && !state.pendingUpdate && (state.relationshipStatus.nextRunAt === null || state.relationshipStatus.nextRunAt > this.#now())) return this.snapshot();
     const checkedAt = this.#now();
     try {
@@ -269,6 +327,9 @@ export class KuloPersonality {
       const decision = await this.#options.reviewRelationship({ current: current.content, updates: input.content, signal: this.#abort.signal });
       if (this.#closed) return this.snapshot();
       if (decision.defer || !await this.#ready()) return this.#defer(state.revision);
+      if (decision.skipReason) {
+        return this.#finish(state.revision, "skipped", checkedAt, input.cursor, decision.skipReason);
+      }
       if (decision.content === null || decision.content.trim() === current.content.trim()) {
         return this.#finish(state.revision, "unchanged", checkedAt, input.cursor);
       }

@@ -22,6 +22,7 @@ export function McpOAuthModal({
   connection,
   clientId,
   forceReauth = false,
+  hostedAggregator = false,
   onCompleted,
   onClose,
 }: {
@@ -29,6 +30,7 @@ export function McpOAuthModal({
   connection: ConnectionRecordView | null;
   clientId?: string;
   forceReauth?: boolean;
+  hostedAggregator?: boolean;
   onCompleted: (connection?: ConnectionRecordView) => void;
   onClose: () => void;
 }) {
@@ -193,6 +195,16 @@ export function McpOAuthModal({
             </Modal.Header>
 
             <Modal.Body className="kulo-form-stack">
+              {hostedAggregator && (
+                <Alert status="default">
+                  <Alert.Content>
+                    <Alert.Description>
+                      {t("此连接由第三方云端托管应用授权与工具执行。", "App authorizations and tool execution are hosted by this third-party service.")}
+                    </Alert.Description>
+                  </Alert.Content>
+                </Alert>
+              )}
+
               {starting && (
                 <div className="flex items-center gap-2.5 rounded-2xl bg-surface-secondary p-4 text-sm text-foreground" role="status">
                   <Spinner size="sm" />

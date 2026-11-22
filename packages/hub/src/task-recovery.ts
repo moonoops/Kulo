@@ -1,6 +1,6 @@
 import { defineTask } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
-import type { TicketRecord, TicketRecoveryRecord } from "@kulo/protocol";
+import type { TicketOutwardAction, TicketRecord, TicketRecoveryRecord } from "@kulo/protocol";
 import { redactSecrets } from "@kulo/protocol";
 import { KuloStateDoc, releaseProjectWrite, transitionTicketStatus, type KuloDurableState } from "./state.js";
 import type { WorkerRecoveryEntryData } from "./state.js";
@@ -8,6 +8,37 @@ import type { WorkerRecoveryEntryData } from "./state.js";
 export const RECOVERY_WINDOW_MS = 10 * 60_000;
 export const RECOVERY_REVIEW_INTERVAL_MS = 60_000;
 export const MAX_RECOVERY_ATTEMPTS = 2;
+const MAX_TICKET_OUTWARD_ACTIONS = 16;
+
+export function appendTicketOutwardAction(
+  ticket: TicketRecord,
+  entry: Omit<TicketOutwardAction, "at"> & { at?: number },
+): boolean {
+  const label = redactSecrets(entry.label).trim().slice(0, 160);
+  if (!label) return false;
+  const existing = ticket.outwardActions ?? [];
+  if (existing.some((item) => item.runEpoch === entry.runEpoch && item.kind === entry.kind && item.label === label)) {
+    return false;
+  }
+  const next: TicketOutwardAction = {
+    runEpoch: entry.runEpoch,
+    kind: entry.kind,
+    label,
+    at: entry.at ?? Date.now(),
+  };
+  ticket.outwardActions = [...existing, next].slice(-MAX_TICKET_OUTWARD_ACTIONS);
+  return true;
+}
+
+export function epochOutwardActions(ticket: Pick<TicketRecord, "outwardActions">, runEpoch: number): TicketOutwardAction[] {
+  return (ticket.outwardActions ?? []).filter((item) => item.runEpoch === runEpoch);
+}
+
+export function formatOutwardActionsSummary(actions: readonly TicketOutwardAction[]): string {
+  const labels = [...new Set(actions.map((item) => item.label))].slice(0, 6);
+  const suffix = actions.length > labels.length ? ` 等共 ${actions.length} 项` : "";
+  return `本轮执行在失败前已发起不可自动重放的外部动作（${labels.join("、")}${suffix}），系统已阻止后台自动重试。请先核实外部实际状态，再决定继续还是重新操作。`;
+}
 
 export function beginTicketRecovery(ticket: TicketRecord, now: number): TicketRecoveryRecord {
   ticket.recovery ??= { state: "recovering", attempts: 0, startedAt: now,

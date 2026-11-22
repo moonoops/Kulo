@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { connectAcp, connectCodex, nativeAgentEnvironment, type ExternalDriverContext } from "../packages/env/src/external-agent-drivers.js";
-import { claudeThinkingOptions, nativeClaudeOptions } from "../packages/env/src/external-agent-claude.js";
+import { claudeServiceTierOptions, claudeThinkingOptions, nativeClaudeOptions } from "../packages/env/src/external-agent-claude.js";
 import type { ExternalAgentPipeOptions } from "../packages/env/src/external-agent-rpc.js";
 const roots:string[]=[];afterEach(()=>{vi.unstubAllEnvs();for(const root of roots.splice(0))fs.rmSync(root,{recursive:true,force:true});});
 function fixture(kind:"codex"|"dsh"="codex"){
@@ -12,7 +12,7 @@ function fixture(kind:"codex"|"dsh"="codex"){
  const reply=(id:number,result:unknown)=>spec.onStdout(Buffer.from(JSON.stringify({id,result})+"\n"));
  const ctx:ExternalDriverContext={binding:{kind,envId:"local"},executable:process.execPath,cwd,prompt:"native task",timeoutMs:10_000,readOnly:false,controlRoot:path.join(root,"control"),servers:[],event:vi.fn(),session:vi.fn(),submitted:vi.fn(),complete:vi.fn(),permission:vi.fn(async()=>"0"),pipe:async value=>{spec=value;return{exited:new Promise(()=>{}),close:vi.fn(),cleanup:async()=>true,write:raw=>{const message=JSON.parse(raw);sent.push(message);if(!message.method){responses.set(message.id,message);return;}const {id,method}=message;if(id===undefined)return;
  if(method==="initialize")reply(id,kind==="codex"?{}:{agentCapabilities:{mcpCapabilities:{http:true}}});
- else if(method==="model/list")reply(id,{data:[{id:"native-alias",model:"native-model",displayName:"Native",isDefault:true,supportedReasoningEfforts:[{reasoningEffort:"high"}]}]});
+ else if(method==="model/list")reply(id,{data:[{id:"native-alias",model:"native-model",displayName:"Native",isDefault:true,supportedReasoningEfforts:[{reasoningEffort:"high"}],serviceTiers:[{id:"fast",name:"Fast",description:"Faster responses"},{id:"ultrafast",name:"Ultra Fast",description:"Fastest responses"}],defaultServiceTier:"default"}]});
  else if(method==="account/read")reply(id,{account:{type:"chatgpt"}});
  else if(method==="thread/start"||method==="thread/resume")reply(id,{thread:{id:"thread-native"},model:"native-model"});
  else if(method==="turn/start")reply(id,{turn:{id:"turn-native"}});
@@ -30,10 +30,16 @@ describe("native external client ownership",()=>{
   expect(f.sent.find(value=>value.method==="turn/start").params).toEqual({threadId:"thread-native",cwd:f.ctx.cwd,input:[{type:"text",text:"native task",text_elements:[]}]});
   expect(f.sent.some(value=>["permissionProfile/list","config/read"].includes(value.method))).toBe(false);result.driver.close();
  });
- it("passes advertised model and effort and forwards native approval choices including persistent grants",async()=>{
-  const f=fixture();f.ctx.modelId="native-model";f.ctx.thinkingLevel="high";const decisions=["decline",{acceptWithExecpolicyAmendment:{execpolicyAmendment:["node"]}}];f.ctx.permission=vi.fn(async()=>"1");const result=await connectCodex(f.ctx);
-  expect(f.sent.find(value=>value.method==="turn/start").params).toMatchObject({model:"native-model",effort:"high"});
+ it("passes advertised model, effort, and serviceTier (fast/ultrafast) to Codex and rejects unsupported serviceTiers",async()=>{
+  const f=fixture();f.ctx.modelId="native-model";f.ctx.thinkingLevel="high";f.ctx.serviceTier="ultrafast";const decisions=["decline",{acceptWithExecpolicyAmendment:{execpolicyAmendment:["node"]}}];f.ctx.permission=vi.fn(async()=>"1");const result=await connectCodex(f.ctx);
+  expect(result.models[0]).toMatchObject({id:"native-model",defaultServiceTier:"default",serviceTiers:[{id:"fast",name:"Fast",description:"Faster responses"},{id:"ultrafast",name:"Ultra Fast",description:"Fastest responses"}]});
+  expect(f.sent.find(value=>value.method==="thread/start").params).toMatchObject({model:"native-model",serviceTier:"ultrafast"});
+  expect(f.sent.find(value=>value.method==="turn/start").params).toMatchObject({model:"native-model",effort:"high",serviceTier:"ultrafast"});
   expect(await f.request(700,"item/commandExecution/requestApproval",{threadId:"thread-native",command:"node build.js",availableDecisions:decisions})).toMatchObject({result:{decision:decisions[1]}});result.driver.close();
+
+  const bad=fixture();bad.ctx.modelId="native-model";bad.ctx.serviceTier="turbo-invalid";
+  await expect(connectCodex(bad.ctx)).rejects.toThrow("service tier");
+  expect(bad.ctx.submitted).not.toHaveBeenCalled();
  });
  it("rejects explicit unsupported effort before submitting a prompt and appends only the voluntary collaboration MCP",async()=>{
   const f=fixture();f.ctx.thinkingLevel="unsupported";await expect(connectCodex(f.ctx)).rejects.toThrow("thinking level");expect(f.ctx.submitted).not.toHaveBeenCalled();
@@ -49,6 +55,8 @@ describe("native external client ownership",()=>{
   for(const key of["tools","disallowedTools","hooks","sandbox","permissionMode","strictMcpConfig","mcpServers","effort","thinking"])expect(options).not.toHaveProperty(key);
   expect(options.settingSources).toEqual(["user","project","local"]);const suggestions=[{type:"setMode",mode:"acceptEdits",destination:"session"}];expect(await options.canUseTool!("Bash",{command:"native build"},{toolUseID:"native-permission",suggestions,signal:new AbortController().signal})).toEqual({behavior:"allow",updatedInput:{command:"native build"},updatedPermissions:suggestions});
   expect(claudeThinkingOptions("high")).toEqual({effort:"high"});expect(claudeThinkingOptions("none")).toEqual({thinking:{type:"disabled"}});expect(()=>claudeThinkingOptions("minimal")).toThrow("not supported");
+  expect(claudeServiceTierOptions("fast")).toEqual({settings:{fastMode:true}});expect(claudeServiceTierOptions("default")).toEqual({settings:{fastMode:false}});expect(()=>claudeServiceTierOptions("unknown")).toThrow("not supported");
+  expect(nativeClaudeOptions({...f.ctx,serviceTier:"fast"}).settings).toEqual({fastMode:true});
  });
  it("enforces ACP protected path, staged containment, and read-only terminal guards",async()=>{
   const f=fixture("dsh");f.ctx.workspaceMode="staged";f.ctx.scratchNotesDir=path.join(f.root,"notes");fs.mkdirSync(f.ctx.scratchNotesDir);

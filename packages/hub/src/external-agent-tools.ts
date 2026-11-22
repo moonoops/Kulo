@@ -277,7 +277,7 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
             };
           } else {
             if (Object.keys(paramsObj).some((k) => k !== "tool" && k !== "arguments")) fail("invalid_task_tool_arguments", "call_tool 仅支持 tool 与 arguments。");
-            if (typeof paramsObj.tool !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(paramsObj.tool)) fail("invalid_task_tool_arguments", "MCP 工具名无效。");
+            if (typeof paramsObj.tool !== "string" || !/^[A-Za-z0-9_][A-Za-z0-9._:/-]{0,127}$/.test(paramsObj.tool)) fail("invalid_task_tool_arguments", "MCP 工具名无效。");
             if (paramsObj.arguments !== undefined && (!paramsObj.arguments || typeof paramsObj.arguments !== "object" || Array.isArray(paramsObj.arguments))) fail("invalid_task_tool_arguments", "MCP 工具 arguments 必须是 JSON 对象。");
             operation = {
               kind: "mcp",

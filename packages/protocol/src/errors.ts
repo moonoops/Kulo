@@ -258,6 +258,24 @@ export function describeKuloError(input: FriendlyErrorInput): FriendlyErrorDescr
     .join("\n")
     .toLowerCase();
 
+  if (
+    haystack.includes("request was aborted") ||
+    haystack.includes("context canceled") ||
+    haystack.includes("operation was aborted") ||
+    haystack.includes("stream cancelled")
+  ) {
+    return {
+      kind: "interrupted",
+      title: "上游模型连接意外中断",
+      hint: "模型网关或上游服务在未收到停止指令时中断了本次连接（并非你手动停止）。点击「重试」即可继续生成。",
+      ...(info.statusCode !== undefined ? { statusCode: info.statusCode } : {}),
+      ...(rawDetail ? { rawDetail } : {}),
+      retryable: true,
+      suggestModelSettings: false,
+      isUserAbort: false,
+    };
+  }
+
   const statusCode = info.statusCode;
 
   if (

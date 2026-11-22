@@ -1,8 +1,12 @@
 import { ROOT_CONVERSATION_ID, section } from "@earendil-works/pi-durable";
 import {
+  directExternalClientRoleId,
+  externalClientDisplayName,
+  isSupportedExternalAgentKind,
   localizeDefaultRolePreset,
   type CapabilitySnapshot,
   type EnvNodeDescriptor,
+  type ExternalClientConnection,
   type HindsightMemoryConfig,
   type KuloLanguage,
   type RolePreset,
@@ -26,7 +30,7 @@ export function buildPhilosophyPrompt(agentName = "Kulo", language?: KuloLanguag
 - **Self-Contained Handoff**: Workers cannot see this chat, Identity/Relationship files, or private memory. Pass a complete redacted brief (goal, scope, acceptance, user constraints, device/project/Agent/format choices) via \`context_summary\` and \`attachment_ids\`.
 - **In-Flight & Events**: Use \`kulo_steer\` to update/unblock active tickets (keeping device/scope), \`kulo_stop\` only if asked, and \`kulo_status\` for \`current_time\`/\`time_zone\` before \`execute_at\`. Handle \`[KULO_...]\` runtime events per instructions without addressing them as the user.
 - **Verify & Present**: Worker outputs and staged items are unverified. Inspect diffs (\`kulo_inspect_staged_diff\`) or assets (\`kulo_inspect_asset\`) before merging (\`kulo_apply_staged_changes\`), publishing (\`kulo_publish_asset\` -> \`published\`), or claiming completion.
-- **Response Format & Media**: Respect any user-requested format. Use plain text for simple answers and Markdown tables for quick comparisons. Use \`kulo_ui_show\` for interactive choices/charts (read \`genui-cards\` first), \`kulo_ui_diagram\` for concise inline SVG diagrams (takeaway first; \`diagram-design\` for complex layouts), delegate offline \`.html\` reports/tools (\`interactive-html\` + \`diagram-design\`), and use \`kulo_generate_image\`/\`kulo_generate_video\` (\`kulo_media_capabilities\` if uncertain)—claim completion only after a real asset returns.
+- **Response Format & Media**: Respect any user-requested format. Use plain text for simple answers and Markdown tables for quick comparisons. Proactively pair a takeaway with \`kulo_ui_diagram\` (\`diagram-design\`) for trends, comparisons, timelines, flows, or architectures (label phase schematics; never invent points). Use \`kulo_ui_show\` for interactive forms/choices/tables (\`genui-cards\`), delegate \`.html\` reports (\`interactive-html\`+\`diagram-design\`), and claim \`kulo_generate_image\`/\`kulo_generate_video\` (\`kulo_media_capabilities\`) only after a real asset returns.
 - **Tool Discovery**: Call \`tool_search\` (\`limit\` <= 3) for deferred tools (host ops, browser, memory, history, projects/topics, connections, media/TTS, UI cards/assets, identity, ticket inspect/close, pairing, settings).`;
 }
 
@@ -77,6 +81,7 @@ export function createOrchestratorSections(options: {
   getAgentName?: () => string;
   getLanguage?: () => KuloLanguage | undefined;
   getRoles: () => Record<string, RolePreset>;
+  getExternalClients?: () => Record<string, ExternalClientConnection>;
   getEnvs: () => EnvNodeDescriptor[];
   getIdentityDir: () => string;
   getMemoryConfig: () => HindsightMemoryConfig;
@@ -167,10 +172,10 @@ export function createOrchestratorSections(options: {
     const rows = roles.map((r) => {
       const envDesc = r.external ? envsById.get(r.external.envId) : undefined;
       const channelHint = r.external
-        ? `${r.external.kind} @ ${envDesc ? `${envDesc.name} (${envDesc.online ? "online" : "offline"})` : r.external.envId}`
+        ? `${r.external.kind} @ ${envDesc ? envDesc.name : r.external.envId}`
         : "built-in";
       const modelHint = r.external
-        ? r.modelId || "client default"
+        ? `${r.modelId || "client default"}${r.serviceTier ? ` (${r.serviceTier})` : ""}`
         : r.modelId
           ? r.provider
             ? `${r.provider}/${r.modelId}`
@@ -194,6 +199,17 @@ export function createOrchestratorSections(options: {
         defaultFor: role.dispatchPolicy!.defaultFor,
         projectIds: role.dispatchPolicy!.projectIds ?? "all on bound device",
       }));
+    const connectedClients = Object.values(options.getExternalClients?.() ?? {})
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const hasExternalOrClients = hasExternal || connectedClients.length > 0;
+    const directClientRows = connectedClients.map((client) => {
+      const envDesc = envsById.get(client.envId);
+      const envLabel = envDesc ? `${envDesc.name} (${envDesc.online ? "online" : "offline"})` : client.envId;
+      const statusHint = !isSupportedExternalAgentKind(client.kind)
+        ? client.kind === "grok-bot" ? "experimental" : "reserved"
+        : client.verifiedAt ? "verified" : "unverified";
+      return `| ${escapeCell(directExternalClientRoleId(client.id))} | ${escapeCell(externalClientDisplayName(client))} | ${escapeCell(envLabel)} | ${escapeCell(statusHint)} |`;
+    });
     return [
       "## Worker Roles",
       "Pass the matching `role` and `task_kind` to `kulo_dispatch` (when thinking is `auto`, optionally set `thinking_level`: `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`; for multi-step interactive browser/desktop UI tasks via `kulo_browser`/`kulo_desktop`, prefer `thinking_level: \"low\"` or `\"medium\"` so step-by-step page interactions stay responsive):",
@@ -208,10 +224,19 @@ export function createOrchestratorSections(options: {
           ]),
       ...rows,
       "- Explicit user-named Agents or external clients (e.g. Codex, Claude Code, Antigravity, DSH) take highest priority: lock to the named target, and if unconfigured, disabled, unverified, offline, or failed, report the exact status and wait—never silently substitute another Agent or Worker.",
-      ...(hasExternal
+      ...(hasExternalOrClients
         ? [
             "- External Agents are peer Worker channels on their bound computer (native tools/MCP, `staged` clones by default, `read_only` for parallel audits). Pick by `When to Use`, review returned diffs/results (optionally verifying with `checker`/`scout`, then `kulo_apply_staged`) before reporting. Honor default dispatch policies below when unnamed, or recover non-user-named failures via `kulo_dispatch(supersedes=[...])`.",
             ...(defaultPolicies.length ? [`Default dispatch policies: ${JSON.stringify(defaultPolicies)}`] : []),
+          ]
+        : []),
+      ...(directClientRows.length
+        ? [
+            "### Connected Third-Party Agents (Direct Explicit Invocation)",
+            "Use these `client:<id>` role IDs ONLY when the user explicitly names that third-party client (invokes the client with its native defaults without requiring a dedicated Worker role):",
+            "| role | Client | Device | Status |",
+            "| --- | --- | --- | --- |",
+            ...directClientRows,
           ]
         : []),
     ].join("\n");
@@ -227,7 +252,6 @@ export function createOrchestratorSections(options: {
     const summarizeEnvCapabilities = (e: EnvNodeDescriptor): string => {
       if (e.executionKind === "native-device") {
         if (e.android?.enabled === false) return "android (disabled)";
-        if (e.android?.paused) return "android (paused)";
         return "android";
       }
       const caps = new Set(e.capabilities);
@@ -244,15 +268,15 @@ export function createOrchestratorSections(options: {
     const envRows = envs.length
       ? envs.map(
           (e) =>
-            `| ${escapeCell(e.id)} | ${escapeCell(e.name)} | ${e.online ? "online" : "offline"} | ${e.platform}/${e.arch} | ${escapeCell(summarizeEnvCapabilities(e))} | ${e.executionKind === "native-device" ? "Android phone (no computer fs)" : escapeCell(e.rootDir)} |`,
+            `| ${escapeCell(e.id)} | ${escapeCell(e.name)} | ${e.platform}/${e.arch} | ${escapeCell(summarizeEnvCapabilities(e))} | ${e.executionKind === "native-device" ? "Android phone (no computer fs)" : escapeCell(e.rootDir)} |`,
         )
-      : ["| (none) | No execution environment connected | offline | - | - | - |"];
+      : ["| (none) | No execution environment connected | - | - | - |"];
 
     return [
       "## Execution Environments",
       "`[KULO_MESSAGE_SOURCE]` marks each message's sender device. Routing rules: (1) Project work (`project_id`) and named/bound external Agents lock to their configured Env; (2) When the user explicitly names a device (or continues cross-device work established in earlier turns of this conversation), pass that target's `env_id`; (3) Ungrouped tasks touching the sender computer's local files, localhost ports, browser, or desktop set `target_scope='sender_device'` (or `env_id` to the sender device ID—never silently substitute another machine if offline); (4) Location-independent tasks (web research, multi-model proposals, standalone writing/HTML, or uploaded `attachment_ids` analysis—use `execution_domain='computer'` when sent from a phone) set `target_scope='hub_local'` so the Hub runs them on its `local` Env when available. Pass `source_request_id` when multiple devices send messages in one turn; delegate via `kulo_dispatch` if `read` is not bound to the target device.",
-      "| env_id | Name | Status | Platform | Capabilities | Root Directory |",
-      "| --- | --- | --- | --- | --- | --- |",
+      "| env_id | Name | Platform | Capabilities | Root Directory |",
+      "| --- | --- | --- | --- | --- |",
       ...envRows,
       ...(hasAndroid
         ? [

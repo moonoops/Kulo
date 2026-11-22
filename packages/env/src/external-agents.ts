@@ -3,15 +3,16 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { EXTERNAL_AGENT_KINDS, isPersonalExternalAgentKind, redactSensitiveText, validateCustomAcpArgs, type ExternalAgentBinding, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentPendingReportFile, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentRun, type ExternalAgentUncertainReason, type ExternalWorkspaceMode, type ReadOnlyViolationSummary, type StagedWorkspaceDiffSummary, type WorkerExecutionPhase } from "@kulo/protocol";
+import { EXTERNAL_AGENT_KINDS, isPersonalExternalAgentKind, isQuotaSupportedExternalAgentKind, redactSensitiveText, validateCustomAcpArgs, type ExternalAgentBinding, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentPendingReportFile, type ExternalAgentQuotaProbeResult, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentRun, type ExternalAgentUncertainReason, type ExternalWorkspaceMode, type ReadOnlyViolationSummary, type StagedWorkspaceDiffSummary, type WorkerExecutionPhase } from "@kulo/protocol";
 import { canonicalExecutionPath } from "./isolation.js";
 import { cleanupRecordedExecutions, hasOrphanedExecution } from "./worker-supervisor.js";
 import { ProjectDirectoryRegistry } from "./project-directories.js";
-import { getAcpFlavor } from "./external-agent-acp.js";
-import { augmentedNativePath, connectAcp, connectCodex, createExternalPipeFactory, externalCapabilities, primeLoginShellPath, resolveExternalExecutable, type ExternalDriver, type ExternalDriverContext } from "./external-agent-drivers.js";
+import { getAcpFlavor, probeGrokQuota, type GrokQuotaCliRunner } from "./external-agent-acp.js";
+import { augmentedNativePath, connectAcp, connectCodex, createExternalPipeFactory, externalCapabilities, externalRuntimePaths, nativeAgentEnvironment, primeLoginShellPath, probeCodexQuota, resolveExternalExecutable, type ExternalDriver, type ExternalDriverContext } from "./external-agent-drivers.js";
 import { connectGrok, detectGrok } from "./external-agent-grok.js";
-import { connectClaude } from "./external-agent-claude.js";
+import { connectClaude, probeClaudeQuota } from "./external-agent-claude.js";
 import { startExternalAgentMcp, type ExternalAgentMcpInvocation, type ExternalAgentMcpServer } from "./external-agent-mcp.js";
+import { isValidQuotaProbeResult, mergeQuotaProbeResults, sanitizeQuotaError } from "./external-agent-quota.js";
 import type { ExternalAgentPipeFactory } from "./external-agent-rpc.js";
 import { SAFE_HOST_GIT_ARGS, applyStagedChanges, cloneStagedWorkspace, computeStagedDiff, safeHostGitEnv, type WorkspaceManifest } from "./staged-workspace.js";
 
@@ -172,10 +173,11 @@ function recordTouchedFiles(run:ExternalAgentRun,text:string,cwd:string):void{
 }
 export function isExternalAgentRequest(value:unknown):value is ExternalAgentRequest{
   if(!object(value))return false;
-  const fields:Record<string,string[]>={detect:["operation","kind","executable"],probe:["operation","binding","modelId"],run:["operation","binding","taskId","runEpoch","requestId","prompt","cwd","workspaceMode","modelId","thinkingLevel","sessionId","readOnly","allowSubagents","taskTools","hasConnections","memoryEnabled","projectId","directoryId","grantRevision","timeoutMs","mcpServers"],inspect:["operation","runId","afterSequence","compact","ackReportIds"],diff:["operation","taskId","filePath"],apply:["operation","taskId","projectId","directoryId","grantRevision","paths","allowConflicts"],cancel:["operation","runId"],respond:["operation","runId","permissionId","choiceId"],close:["operation","runId","discardStaged"]};
+  const fields:Record<string,string[]>={detect:["operation","kind","executable"],probe:["operation","binding","modelId"],quota:["operation","binding"],run:["operation","binding","taskId","runEpoch","requestId","prompt","cwd","workspaceMode","modelId","thinkingLevel","serviceTier","sessionId","readOnly","allowSubagents","taskTools","hasConnections","memoryEnabled","projectId","directoryId","grantRevision","timeoutMs","mcpServers"],inspect:["operation","runId","afterSequence","compact","ackReportIds"],diff:["operation","taskId","filePath"],apply:["operation","taskId","projectId","directoryId","grantRevision","paths","allowConflicts"],cancel:["operation","runId"],respond:["operation","runId","permissionId","choiceId"],close:["operation","runId","discardStaged"]};
   const allowed=fields[String(value.operation)];if(!allowed||Object.keys(value).some(key=>!allowed.includes(key)))return false;
   if(value.operation==="detect")return EXTERNAL_AGENT_KINDS.includes(value.kind as ExternalAgentKind)&&optionalString(value.executable);
   if(value.operation==="probe")return binding(value.binding)&&optionalString(value.modelId,512);
+  if(value.operation==="quota")return binding(value.binding);
   if(value.operation==="diff")return id(value.taskId)&&optionalString(value.filePath,4096);
   if(value.operation==="apply")return id(value.taskId)&&id(value.projectId)&&(value.directoryId===undefined||id(value.directoryId))&&(value.grantRevision===undefined||Number.isSafeInteger(value.grantRevision)&&Number(value.grantRevision)>=1)&&(value.allowConflicts===undefined||typeof value.allowConflicts==="boolean")&&(value.paths===undefined||Array.isArray(value.paths)&&value.paths.length<=2000&&value.paths.every(p=>typeof p==="string"&&p.length>0&&p.length<=4096&&!/[\x00]/.test(p)));
   if(["inspect","cancel","close"].includes(String(value.operation)))return id(value.runId)&&(value.afterSequence===undefined||Number.isSafeInteger(value.afterSequence)&&Number(value.afterSequence)>=0)&&(value.compact===undefined||typeof value.compact==="boolean")&&(value.ackReportIds===undefined||Array.isArray(value.ackReportIds)&&value.ackReportIds.length<=32&&value.ackReportIds.every(item=>id(item)))&&(value.discardStaged===undefined||typeof value.discardStaged==="boolean");
@@ -183,7 +185,7 @@ export function isExternalAgentRequest(value:unknown):value is ExternalAgentRequ
   if(value.operation!=="run"||!binding(value.binding)||!id(value.taskId)||!id(value.requestId)||!Number.isSafeInteger(value.runEpoch)||Number(value.runEpoch)<0||typeof value.prompt!=="string"||value.prompt.length>256_000||typeof value.cwd!=="string"||!path.isAbsolute(value.cwd)||value.cwd.length>8192||/[\x00-\x1f\x7f]/.test(value.cwd)||typeof value.readOnly!=="boolean"||typeof value.allowSubagents!=="boolean"||!Number.isSafeInteger(value.timeoutMs)||Number(value.timeoutMs)<1000||Number(value.timeoutMs)>86_400_000)return false;
   if(value.taskTools!==undefined&&typeof value.taskTools!=="boolean"||value.hasConnections!==undefined&&typeof value.hasConnections!=="boolean"||value.memoryEnabled!==undefined&&typeof value.memoryEnabled!=="boolean")return false;
   if(value.workspaceMode!==undefined&&!["staged","direct","read_only"].includes(String(value.workspaceMode)))return false;
-  if(!optionalString(value.modelId,512)||!optionalString(value.thinkingLevel,512)||!optionalString(value.sessionId,512)||value.projectId!==undefined&&!id(value.projectId)||value.directoryId!==undefined&&!id(value.directoryId)||value.grantRevision!==undefined&&(!Number.isSafeInteger(value.grantRevision)||Number(value.grantRevision)<1))return false;
+  if(!optionalString(value.modelId,512)||!optionalString(value.thinkingLevel,512)||!optionalString(value.serviceTier,128)||!optionalString(value.sessionId,512)||value.projectId!==undefined&&!id(value.projectId)||value.directoryId!==undefined&&!id(value.directoryId)||value.grantRevision!==undefined&&(!Number.isSafeInteger(value.grantRevision)||Number(value.grantRevision)<1))return false;
   // Only Env creates task-scoped MCP endpoints; arbitrary URLs/credentials are not accepted from control messages.
   return value.mcpServers===undefined||Array.isArray(value.mcpServers)&&value.mcpServers.length===0;
 }
@@ -192,7 +194,11 @@ export function isExternalAgentResponse(value:unknown):value is ExternalAgentRes
   if(value.type==="detection"){
     const detection=value.detection;if(!object(detection)||!EXTERNAL_AGENT_KINDS.includes(detection.kind as ExternalAgentKind)||typeof detection.installed!=="boolean"||(detection.desktopAppInstalled!==undefined&&typeof detection.desktopAppInstalled!=="boolean")||detection.authenticated!==null&&typeof detection.authenticated!=="boolean"||!Array.isArray(detection.models)||detection.models.length>1000||!optionalString(detection.executable)||!optionalString(detection.version,200)||!optionalString(detection.error,4000))return false;
     const capabilities=detection.capabilities;if(!object(capabilities)||!["resume","cancel","models","permissions","collaboration"].every(key=>typeof capabilities[key]==="boolean")||!["native","observed","none"].includes(String(capabilities.terminalEvidence)))return false;
-    return detection.models.every(model=>object(model)&&typeof model.id==="string"&&model.id.length>0&&model.id.length<=4096&&typeof model.name==="string"&&model.name.length<=4096&&(model.isDefault===undefined||typeof model.isDefault==="boolean")&&(model.efforts===undefined||Array.isArray(model.efforts)&&model.efforts.length<=32&&model.efforts.every(effort=>typeof effort==="string"&&effort.length>0&&effort.length<=64)));
+    return detection.models.every(model=>object(model)&&typeof model.id==="string"&&model.id.length>0&&model.id.length<=4096&&typeof model.name==="string"&&model.name.length<=4096&&(model.isDefault===undefined||typeof model.isDefault==="boolean")&&(model.defaultServiceTier===undefined||typeof model.defaultServiceTier==="string"&&model.defaultServiceTier.length>0&&model.defaultServiceTier.length<=128)&&(model.efforts===undefined||Array.isArray(model.efforts)&&model.efforts.length<=32&&model.efforts.every(effort=>typeof effort==="string"&&effort.length>0&&effort.length<=64))&&(model.serviceTiers===undefined||Array.isArray(model.serviceTiers)&&model.serviceTiers.length<=32&&model.serviceTiers.every(tier=>object(tier)&&typeof tier.id==="string"&&tier.id.length>0&&tier.id.length<=64&&(tier.name===undefined||typeof tier.name==="string"&&tier.name.length<=128)&&(tier.description===undefined||typeof tier.description==="string"&&tier.description.length<=512))));
+  }
+  if(value.type==="quota"){
+    if(Object.keys(value).some(key=>key!=="type"&&key!=="quota"))return false;
+    return isValidQuotaProbeResult(value.quota);
   }
   if(value.type==="diff"){
     const d=value.diff;
@@ -203,7 +209,7 @@ export function isExternalAgentResponse(value:unknown):value is ExternalAgentRes
     return object(applied)&&typeof applied.cleanedUp==="boolean"&&["appliedAdded","appliedModified","appliedDeleted"].every(key=>Array.isArray(applied[key])&&(applied[key] as unknown[]).length<=5000&&(applied[key] as unknown[]).every(item=>typeof item==="string"&&item.length>0&&item.length<=4096));
   }
   if(value.type!=="run"||!object(value.run))return false;const run=value.run;
-  if(!id(run.id)||!id(run.taskId)||!Number.isSafeInteger(run.runEpoch)||Number(run.runEpoch)<0||!EXTERNAL_AGENT_KINDS.includes(run.kind as ExternalAgentKind)||!["starting","running","waiting","completed","failed","cancelled","uncertain"].includes(String(run.state))||typeof run.text!=="string"||run.text.length>256_000||!Array.isArray(run.events)||run.events.length>401||!Array.isArray(run.permissions)||run.permissions.length>64||!Number.isSafeInteger(run.nextSequence)||Number(run.nextSequence)<1||run.quiescent!==undefined&&typeof run.quiescent!=="boolean"||!optionalString(run.sessionId,512)||!optionalString(run.stagedCwd,8192)||!optionalString(run.scratchNotesDir,8192)||(run.stagedDiff!==undefined&&!validDiffSummary(run.stagedDiff))||(run.uncertainReason!==undefined&&!UNCERTAIN_REASONS.has(run.uncertainReason as ExternalAgentUncertainReason))||(run.phase!==undefined&&!WORKER_PHASES.has(run.phase as WorkerExecutionPhase))||(run.touchedFiles!==undefined&&!validPathList(run.touchedFiles,25,1024))||(run.readOnlyViolation!==undefined&&!validReadOnlyViolation(run.readOnlyViolation))||(run.pendingReports!==undefined&&(!Array.isArray(run.pendingReports)||run.pendingReports.length>16||!run.pendingReports.every(validPendingReport)))||!optionalString(run.error,4000))return false;
+  if(!id(run.id)||!id(run.taskId)||!Number.isSafeInteger(run.runEpoch)||Number(run.runEpoch)<0||!EXTERNAL_AGENT_KINDS.includes(run.kind as ExternalAgentKind)||!["starting","running","waiting","completed","failed","cancelled","uncertain"].includes(String(run.state))||typeof run.text!=="string"||run.text.length>256_000||!Array.isArray(run.events)||run.events.length>401||!Array.isArray(run.permissions)||run.permissions.length>64||!Number.isSafeInteger(run.nextSequence)||Number(run.nextSequence)<1||run.quiescent!==undefined&&typeof run.quiescent!=="boolean"||!optionalString(run.sessionId,512)||!optionalString(run.stagedCwd,8192)||!optionalString(run.scratchNotesDir,8192)||(run.stagedDiff!==undefined&&!validDiffSummary(run.stagedDiff))||(run.uncertainReason!==undefined&&!UNCERTAIN_REASONS.has(run.uncertainReason as ExternalAgentUncertainReason))||(run.phase!==undefined&&!WORKER_PHASES.has(run.phase as WorkerExecutionPhase))||(run.touchedFiles!==undefined&&!validPathList(run.touchedFiles,25,1024))||(run.readOnlyViolation!==undefined&&!validReadOnlyViolation(run.readOnlyViolation))||(run.pendingReports!==undefined&&(!Array.isArray(run.pendingReports)||run.pendingReports.length>16||!run.pendingReports.every(validPendingReport)))||(run.latestQuota!==undefined&&!isValidQuotaProbeResult(run.latestQuota))||!optionalString(run.error,4000))return false;
   let previous=0;for(const event of run.events){if(!object(event)||!Number.isSafeInteger(event.sequence)||Number(event.sequence)<=previous||Number(event.sequence)>=Number(run.nextSequence)||!Number.isFinite(event.at)||!["message","tool","permission","state","error"].includes(String(event.type))||typeof event.text!=="string"||event.text.length>16_000)return false;previous=Number(event.sequence);}
   return run.permissions.every(permission=>object(permission)&&id(permission.id)&&typeof permission.title==="string"&&permission.title.length<=4000&&Array.isArray(permission.choices)&&permission.choices.length>0&&permission.choices.length<=20&&permission.choices.every(choice=>object(choice)&&typeof choice.id==="string"&&choice.id.length>0&&choice.id.length<=200&&typeof choice.label==="string"&&choice.label.length<=500));
 }
@@ -253,30 +259,48 @@ function hasClaudeExternalAuthConfig():boolean{
   }catch{/* ignore unreadable settings */}
   return false;
 }
-async function detectClaudeAuthenticated(executable:string):Promise<boolean|null>{
+export interface ClaudeAuthStatusProbe {
+  loggedIn: boolean | null;
+  authMethod?: string;
+  apiProvider?: string;
+}
+async function detectClaudeAuthStatus(executable:string,signal?:AbortSignal):Promise<ClaudeAuthStatusProbe>{
   return new Promise(resolve=>{
+    if(signal?.aborted)return resolve({loggedIn:null});
     let stdout="";
     let settled=false;
-    const finish=(value:boolean|null)=>{if(settled)return;settled=true;clearTimeout(timer);resolve(value);};
-    const child=spawn(executable,["auth","status","--json"],{env:{HOME:os.homedir(),PATH:augmentedNativePath(process.env.PATH??"")},stdio:["ignore","pipe","ignore"],windowsHide:true});
-    const timer=setTimeout(()=>{try{child.kill();}catch{/* ignore */}finish(null);},5_000);timer.unref();
-    child.stdout.on("data",(data:Buffer)=>{stdout+=data.toString("utf8");if(stdout.length>32_000){try{child.kill();}catch{/* ignore */}finish(null);}});
-    child.once("error",()=>finish(null));
+    const finish=(value:ClaudeAuthStatusProbe)=>{if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener("abort",onAbort);resolve(value);};
+    const child=spawn(executable,["auth","status","--json"],{env:nativeAgentEnvironment("claude-code"),stdio:["ignore","pipe","ignore"],windowsHide:true});
+    const onAbort=()=>{try{child.kill();}catch{/* ignore */}finish({loggedIn:null});};
+    signal?.addEventListener("abort",onAbort,{once:true});
+    const timer=setTimeout(()=>{try{child.kill();}catch{/* ignore */}finish({loggedIn:null});},5_000);timer.unref();
+    child.stdout.on("data",(data:Buffer)=>{stdout+=data.toString("utf8");if(stdout.length>32_000){try{child.kill();}catch{/* ignore */}finish({loggedIn:null});}});
+    child.once("error",()=>finish({loggedIn:null}));
     child.once("exit",()=>{
       try{
         const parsed=JSON.parse(stdout.trim()) as Record<string,unknown>;
+        const authMethod=typeof parsed.authMethod==="string"&&parsed.authMethod.trim()?parsed.authMethod.trim():undefined;
+        const apiProvider=typeof parsed.apiProvider==="string"&&parsed.apiProvider.trim()?parsed.apiProvider.trim():undefined;
         if(typeof parsed.loggedIn==="boolean"){
-          if(parsed.loggedIn)return finish(true);
-          return finish(hasClaudeExternalAuthConfig()?null:false);
+          return finish({loggedIn:parsed.loggedIn,...(authMethod?{authMethod}:{}),...(apiProvider?{apiProvider}:{})});
         }
       }catch{/* older claude CLI or non-JSON output */}
-      finish(null);
+      finish({loggedIn:null});
     });
   });
+}
+async function detectClaudeAuthenticated(executable:string):Promise<boolean|null>{
+  const status=await detectClaudeAuthStatus(executable);
+  if(status.loggedIn===true)return true;
+  if(status.loggedIn===false)return hasClaudeExternalAuthConfig()?null:false;
+  return null;
 }
 export interface ExternalAgentServiceOptions {
   envId:string;rootDir:string;projectRegistry:ProjectDirectoryRegistry;
   toolHandler?:ExternalAgentToolHandler;pipeFactory?:ExternalAgentPipeFactory;
+  claudeAuthStatus?:(executable:string,signal?:AbortSignal)=>Promise<ClaudeAuthStatusProbe>;
+  claudeQuotaProbe?:typeof probeClaudeQuota;
+  grokQuotaRunner?:GrokQuotaCliRunner;
 }
 export class ExternalAgentService {
   readonly rootDir:string;
@@ -284,6 +308,7 @@ export class ExternalAgentService {
   readonly #runs=new Map<string,StoredRun>();
   readonly #staged=new Map<string,StoredStagedTask>();
   readonly #live=new Map<string,LiveRun>();
+  readonly #activeQuotas=new Set<AbortController>();
   readonly #ephemeralSecrets=new Set<string>();
   readonly #background=new Set<Promise<unknown>>();
   #backgroundError?:Error;
@@ -305,6 +330,7 @@ export class ExternalAgentService {
       if(!/^[a-f0-9]{64}\.json$/.test(name))continue;const stored=JSON.parse(fs.readFileSync(path.join(this.rootDir,name),"utf8")) as StoredRun;
       if(stored.version!==1||!id(stored.run?.id)||!id(stored.run.taskId)||typeof stored.fingerprint!=="string"||!path.isAbsolute(stored.cwd))throw new Error("Invalid external agent execution receipt");
       stored.run.permissions=[];
+      if(stored.run.latestQuota!==undefined&&!isValidQuotaProbeResult(stored.run.latestQuota)){delete stored.run.latestQuota;}
       if(!terminal(stored.run.state)){stored.run.state="uncertain";stored.run.uncertainReason="env_restart";stored.run.quiescent=false;stored.run.error="Env restarted before the native terminal result was recorded; this task was not resubmitted";}
       this.#runs.set(stored.run.id,stored);this.#persist(stored);
     }
@@ -328,6 +354,7 @@ export class ExternalAgentService {
     if(this.#closed)throw new Error("External agent runtime is closed");if(!isExternalAgentRequest(request))throw new Error("Invalid external agent request");if(signal?.aborted)throw new Error("External agent request was aborted");
     if(request.operation==="detect")return{type:"detection",detection:await this.#detect(request.kind,request.executable)};
     if(request.operation==="probe"){this.#bindingEnv(request.binding);return{type:"detection",detection:await this.#probe(request.binding,request.modelId)};}
+    if(request.operation==="quota"){this.#bindingEnv(request.binding);return{type:"quota",quota:await this.#quota(request.binding,signal)};}
     if(request.operation==="run")return{type:"run",run:this.#start(request)};
     if(request.operation==="diff")return{type:"diff",diff:this.#diff(request.taskId,request.filePath)};
     if(request.operation==="apply")return{type:"apply",applied:this.#apply(request)};
@@ -519,16 +546,16 @@ export class ExternalAgentService {
     return{
     binding:request.binding,executable:live.stored.executable,cwd:executionCwd,workspaceMode:live.stored.workspaceMode,scratchNotesDir:live.stored.scratchNotesDir,controlRoot:path.join(this.#options.projectRegistry.privateDirectory,"external-executions"),projectId:request.projectId,readOnly:request.readOnly,
     prompt:[request.prompt,request.readOnly&&!/Workspace Mode:\s*read_only/i.test(request.prompt)?"Read-only mode: inspect and analyze only; never modify files or perform write operations.":"",live.mcp?"Use the attached `kulo-task` MCP tools to report progress/outcomes, request collaboration or decisions from Kulo, or query/update shared project memory.":""].filter(Boolean).join("\n\n"),
-    modelId:request.modelId,thinkingLevel:request.thinkingLevel,sessionId:request.sessionId,timeoutMs:request.timeoutMs,servers:live.mcp?[live.mcp.server]:[],
+    modelId:request.modelId,thinkingLevel:request.thinkingLevel,serviceTier:request.serviceTier,sessionId:request.sessionId,timeoutMs:request.timeoutMs,servers:live.mcp?[live.mcp.server]:[],
     pipe:async spec=>{
-      const factory=this.#options.pipeFactory??createExternalPipeFactory({controlRoot:path.join(this.#options.projectRegistry.privateDirectory,"external-executions"),projectId:request.projectId});
+      const factory=this.#options.pipeFactory??createExternalPipeFactory({controlRoot:path.join(this.#options.projectRegistry.privateDirectory,"external-executions"),projectId:request.projectId,kind:request.binding.kind});
       const pipe=await factory(spec);const cleanup=async()=>{pipe.close();return pipe.cleanup?.()??pipe.exited.then(()=>true,()=>false);};
       (live.cleanups??=[]).push(cleanup);
       if(terminal(live.stored.run.state)||this.#closed){const quiescent=await cleanup();throw Object.assign(new Error("External agent scope expired during process launch"),{externalAgentQuiescent:quiescent});}
       return pipe;
     },
     registerCleanup:cleanup=>{(live.cleanups??=[]).push(cleanup);},
-    event:(type,value)=>this.#event(live,type,value),activity:label=>this.#activity(live,label),session:sessionId=>{if(typeof sessionId!=="string"||!sessionId||sessionId.length>512)throw new Error("Invalid native agent session ID");live.stored.run.sessionId=sessionId;this.#persist(live.stored);},
+    event:(type,value)=>this.#event(live,type,value),activity:label=>this.#activity(live,label),quota:snapshot=>this.#recordPassiveQuota(live,snapshot),session:sessionId=>{if(typeof sessionId!=="string"||!sessionId||sessionId.length>512)throw new Error("Invalid native agent session ID");live.stored.run.sessionId=sessionId;this.#persist(live.stored);},
     submitted:()=>{if(terminal(live.stored.run.state)||Date.now()>=(live.deadline??Infinity))throw new Error("External agent run has expired");live.submitted=true;live.stored.run.state="running";if(!live.stored.run.phase||live.stored.run.phase==="starting")live.stored.run.phase="investigating";this.#event(live,"state","Task accepted by local agent protocol");},complete:(state,error)=>this.#finish(live,state,error,state==="uncertain"?"disconnect":undefined),
     permission:async(permissionId,title,choices)=>{
       if(terminal(live.stored.run.state))throw new Error("External agent permission scope expired");
@@ -542,6 +569,13 @@ export class ExternalAgentService {
     for(const secret of this.#ephemeralSecrets)safe=safe.split(secret).join("[REDACTED]");
     for(const [name,secret] of Object.entries(process.env))if(secret&&secret.length>=4&&/(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|AUTHORIZATION)/i.test(name))safe=safe.split(secret).join("[REDACTED]");
     return safe;
+  }
+  #recordPassiveQuota(live:LiveRun,snapshot:ExternalAgentQuotaProbeResult):void{
+    if(live.stored.fingerprint==="probe"||snapshot.kind!==live.stored.run.kind)return;
+    const merged=mergeQuotaProbeResults(live.stored.run.latestQuota,snapshot);
+    if(!isValidQuotaProbeResult(merged))return;
+    live.stored.run.latestQuota=merged;
+    this.#persist(live.stored);
   }
   #activity(live:LiveRun,label?:string):void{
     if(terminal(live.stored.run.state))return;
@@ -692,8 +726,9 @@ export class ExternalAgentService {
   #snapshot(stored:StoredRun,after?:number,compact?:boolean):ExternalAgentRun{
     const filteredEvents=stored.run.events.filter(event=>after===undefined||event.sequence>after);
     if(compact){
+      const {latestQuota:_omittedQuota,...compactRun}=stored.run;
       return structuredClone({
-        ...stored.run,
+        ...compactRun,
         text:stored.run.text.slice(-1600),
         events:filteredEvents.slice(-15),
       });
@@ -754,8 +789,84 @@ export class ExternalAgentService {
     }catch(error){detection.error=this.#redact(error instanceof Error?error.message:"Local agent protocol probe failed");}finally{driver?.close();const cleanup=await Promise.all((live.cleanups??[]).map(close=>close().catch(()=>false)));if(cleanup.some(value=>!value))detection.error=detection.error??"Local protocol process cleanup is pending";}
     return detection;
   }
+  async #quota(value:ExternalAgentBinding,externalSignal?:AbortSignal):Promise<ExternalAgentQuotaProbeResult>{
+    await primeLoginShellPath();
+    if(!isQuotaSupportedExternalAgentKind(value.kind)){
+      return{kind:value.kind,status:"unsupported",source:"live",fetchedAt:Date.now(),windows:[]};
+    }
+    let executable:string|undefined;
+    try{
+      executable=resolveExternalExecutable(value.kind,value.executable);
+    }catch(error){
+      return{kind:value.kind,status:"unavailable",source:"live",fetchedAt:Date.now(),windows:[],error:sanitizeQuotaError(error instanceof Error?error.message:"Local client executable is unavailable",v=>this.#redact(v))};
+    }
+    if(!executable){
+      return{kind:value.kind,status:"unavailable",source:"live",fetchedAt:Date.now(),windows:[],error:"Local client executable was not found"};
+    }
+    const controller=new AbortController();
+    const onExternalAbort=()=>controller.abort();
+    if(externalSignal?.aborted)controller.abort();
+    else externalSignal?.addEventListener("abort",onExternalAbort,{once:true});
+    this.#activeQuotas.add(controller);
+    const controlRoot=path.join(this.#options.projectRegistry.privateDirectory,"external-executions");
+    const cwd=path.join(this.#options.rootDir,"external-agent-quota");
+    fs.mkdirSync(cwd,{recursive:true,mode:0o700});
+    const runProbe=(async():Promise<ExternalAgentQuotaProbeResult>=>{
+      if(value.kind==="codex"){
+        return probeCodexQuota({
+          executable,
+          cwd,
+          controlRoot,
+          pipeFactory:this.#options.pipeFactory,
+          signal:controller.signal,
+          redact:v=>this.#redact(v),
+        });
+      }
+      if(value.kind==="claude-code"){
+        const authProbe=await (this.#options.claudeAuthStatus??detectClaudeAuthStatus)(executable,controller.signal);
+        if(authProbe.loggedIn===false){
+          return{kind:"claude-code",status:hasClaudeExternalAuthConfig()?"api_key_billing":"unauthenticated",source:"live",fetchedAt:Date.now(),windows:[]};
+        }
+        if(authProbe.loggedIn===true){
+          const nonFirstParty=Boolean(authProbe.apiProvider&&authProbe.apiProvider!=="firstParty");
+          const nonSubscriptionMethod=Boolean(authProbe.authMethod&&authProbe.authMethod!=="claude.ai"&&authProbe.authMethod!=="oauth");
+          if(nonFirstParty||nonSubscriptionMethod){
+            return{kind:"claude-code",status:"api_key_billing",source:"live",fetchedAt:Date.now(),windows:[]};
+          }
+        }
+        const claudeProbe=this.#options.claudeQuotaProbe??probeClaudeQuota;
+        return claudeProbe({
+          executable,
+          cwd,
+          controlRoot,
+          signal:controller.signal,
+          redact:v=>this.#redact(v),
+        });
+      }
+      const grokPipeFactory=this.#options.pipeFactory??createExternalPipeFactory({controlRoot,kind:"grok"});
+      return probeGrokQuota({
+        executable,
+        cwd,
+        pathEnv:augmentedNativePath(process.env.PATH??""),
+        pipeFactory:grokPipeFactory,
+        runtimePaths:externalRuntimePaths(executable),
+        runner:this.#options.grokQuotaRunner,
+        signal:controller.signal,
+        redact:v=>this.#redact(v),
+      });
+    })().finally(()=>{
+      externalSignal?.removeEventListener("abort",onExternalAbort);
+      this.#activeQuotas.delete(controller);
+    });
+    this.#track(runProbe.then(()=>undefined,()=>undefined));
+    const result=await runProbe;
+    if(!isValidQuotaProbeResult(result)){
+      return{kind:value.kind,status:"unavailable",source:"live",fetchedAt:Date.now(),windows:[],error:"Quota snapshot failed validation"};
+    }
+    return result;
+  }
   async stopProject(projectId:string):Promise<boolean>{const pending=await this.#stopMatching(item=>item.stored.projectId===projectId,"Project directory grant was revoked");return pending||[...this.#runs.values()].some(item=>item.projectId===projectId&&item.run.quiescent!==true);}
   async stopWorkspace(cwd:string):Promise<boolean>{const actual=canonicalExecutionPath(cwd);const pending=await this.#stopMatching(item=>within(item.stored.cwd,actual)||within(actual,item.stored.cwd),"Task workspace cleanup requested");return pending||[...this.#runs.values()].some(item=>item.run.quiescent!==true&&(within(item.cwd,actual)||within(actual,item.cwd)));}
   async #stopMatching(match:(live:LiveRun)=>boolean,message:string):Promise<boolean>{let pending=false;for(const live of[...this.#live.values()])if(match(live)){if(!live.driver)for(const cleanup of live.cleanups??[])await cleanup().catch(()=>false);live.driver?.close();this.#finish(live,"uncertain",message,"closed");if(!await this.#settle(live))pending=true;}return pending;}
-  async close():Promise<void>{this.#closed=true;await this.#stopMatching(()=>true,"Env runtime stopped before native completion");while(this.#background.size)await Promise.allSettled([...this.#background]);if(this.#backgroundError)throw this.#backgroundError;}
+  async close():Promise<void>{this.#closed=true;for(const controller of this.#activeQuotas)controller.abort();await this.#stopMatching(()=>true,"Env runtime stopped before native completion");while(this.#background.size)await Promise.allSettled([...this.#background]);if(this.#backgroundError)throw this.#backgroundError;}
 }

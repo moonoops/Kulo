@@ -235,7 +235,7 @@ describe("external agent setup through the real Hub settings Agent", () => {
     await settled(f.hub, "检测到可连接的 Codex 和 Claude Code");
     expect(scannedKinds).toEqual(["codex", "claude-code"]);
 
-    let connectedResult!: { agentId: string; enabled: boolean; verificationLevel: string };
+    let connectedResult!: { clientId: string; agentId?: string; enabled: boolean; verificationLevel: string };
     f.provider.setResponses([
       () => tool("connect", { client_kind: "codex", env_id: f.device.id, run_test: false }),
       (context) => {
@@ -245,10 +245,12 @@ describe("external agent setup through the real Hub settings Agent", () => {
     ]);
     await f.send("先只做协议检查并保存 Codex", "agent-fast-connect");
     await settled(f.hub, "已完成 Codex 协议检查并保存");
-    expect(connectedResult).toMatchObject({ enabled: false, verificationLevel: "protocol" });
-    const role = f.hub.getSettingsView().blocks.roles.value[connectedResult.agentId];
-    expect(role).toMatchObject({ enabled: false, external: { kind: "codex", envId: f.device.id, version: "codex-1.0" } });
-    expect(views.some((view) => Boolean(view.blocks.roles.value[connectedResult.agentId]))).toBe(true);
+    expect(connectedResult).toMatchObject({ clientId: `codex:${f.device.id}`, enabled: false, verificationLevel: "protocol" });
+    expect(connectedResult.agentId).toBeUndefined();
+    const client = f.hub.getSettingsView().externalClients?.[connectedResult.clientId];
+    expect(client).toMatchObject({ id: connectedResult.clientId, kind: "codex", envId: f.device.id, version: "codex-1.0" });
+    expect(client?.verifiedAt).toBeUndefined();
+    expect(views.some((view) => Boolean(view.externalClients?.[connectedResult.clientId]))).toBe(true);
   });
 
   it("keeps setup guides out of normal chat and automatic Worker skill catalogs", async () => {

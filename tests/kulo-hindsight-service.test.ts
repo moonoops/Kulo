@@ -123,7 +123,7 @@ describe("Kulo-owned Hindsight local service", () => {
   it.each([false, true])("uninstalls an incomplete Python environment after dependency installation fails (deleteData=%s)", async (deleteData) => {
     const f = await fixture({ installationFails: true });
     await expect(f.deploy()).rejects.toThrow("uv 操作未完成");
-    expect(await f.service.inspect()).toMatchObject({ phase: "failed", running: false });
+    expect(await f.service.inspect()).toMatchObject({ installed: false, phase: "failed", running: false });
     await fs.access(path.join(f.root, "venv", "bin", "python"));
     expect(await f.service.uninstall({ commandId: "clean-failed-install", deleteData })).toMatchObject({ installed: false, running: false, phase: "absent" });
     expect(f.calls.some((call) => call.command === path.join(f.root, "venv", "bin", "python"))).toBe(false);
@@ -522,7 +522,7 @@ describe("Kulo-owned Hindsight local service", () => {
     expect(now).toBeLessThan(10_000);
     expect(registered).toBe(false);
     expect(calls.filter((c) => c.command === "launchctl" && c.args[0] === "bootout").length).toBeGreaterThanOrEqual(2);
-    expect(await service.inspect()).toMatchObject({ phase: "failed", running: false });
+    expect(await service.inspect()).toMatchObject({ installed: false, phase: "failed", running: false });
 
     // Retrying the same failed commandId ignores earlier log lines, updates manifest models, and succeeds.
     crashOnStart = false;
@@ -538,5 +538,18 @@ describe("Kulo-owned Hindsight local service", () => {
     });
     expect(diagnoseHindsightStartupFailure("Application startup failed. Exiting.")).toBeUndefined();
     expect(diagnoseHindsightStartupFailure("Application startup failed. Exiting.\nApplication startup failed. Exiting.")).toContain("启动失败并提前退出");
+  });
+
+  it("cleans up a failed installation with keep-data even if runtime.json was never written", async () => {
+    const f = await fixture({ installationFails: true });
+    await expect(f.deploy()).rejects.toThrow("uv 操作未完成");
+    await fs.unlink(path.join(f.root, "runtime.json"));
+    expect(await f.service.inspect()).toMatchObject({ installed: false, running: false, phase: "failed" });
+    expect(await f.service.uninstall({ commandId: "clean-missing-runtime", deleteData: false })).toMatchObject({
+      installed: false,
+      running: false,
+      phase: "absent",
+    });
+    expect(await f.service.inspect()).toMatchObject({ installed: false, running: false, phase: "absent" });
   });
 });

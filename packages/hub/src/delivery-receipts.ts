@@ -97,7 +97,8 @@ export function assertValidReplyReference(value: unknown): asserts value is Chat
   }
   const reply = value as Record<string, unknown>;
   if (!Number.isSafeInteger(reply.messageId) || typeof reply.role !== "string" || !["user", "assistant", "dispatch"].includes(reply.role) ||
-      typeof reply.text !== "string" || !reply.text.trim() || reply.text.length > 8000) {
+      typeof reply.text !== "string" || !reply.text.trim() || reply.text.length > 8000 ||
+      (reply.excerpt !== undefined && typeof reply.excerpt !== "boolean")) {
     throw Object.assign(new Error("回复引用无效。"), { code: "invalid_message", status: 400 });
   }
 }
@@ -139,11 +140,11 @@ export function assertDeliveryIntent(receipt: Readonly<DeliveryReceipt> | undefi
 }
 
 export async function writeDeliveryReceipt(tx: Tx, intent: DeliveryReceiptIdentity | undefined, ack: DeliveryAck,
-  phase: "admitted" | "complete" = "complete", continuation: JsonObject = {}): Promise<void> {
+  phase: "empty" | "admitted" | "complete" = "complete", continuation: JsonObject = {}): Promise<void> {
   if (!intent) return;
   const receipt = await tx.doc(DeliveryReceiptDoc, intent.key, { fingerprint: intent.fingerprint, action: intent.action });
   assertDeliveryIntent(receipt, intent);
   receipt.phase = phase;
-  receipt.ack = { ...ack } as JsonObject;
+  receipt.ack = phase === "empty" ? {} : ({ ...ack } as JsonObject);
   receipt.continuation = continuation;
 }

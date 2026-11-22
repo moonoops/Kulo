@@ -30,6 +30,7 @@ import {
   STREAM_RESUME_GRACE_MS,
   CONNECTORS_CAPABILITY,
   CONNECTOR_MAX_BATCH_BYTES,
+  EXTERNAL_AGENT_QUOTA_CAPABILITY,
   isClusterSyncStatus,
   type ClusterHandoverDirective,
   type ClusterSyncAvailableNotification,
@@ -58,6 +59,7 @@ import {
   isHostActionRequest,
   isHostActionResult,
   HOST_ACTION_MAX_RESULT,
+  isComputerPreviewInputEvent,
   isComputerPreviewTarget,
   isComputerPreviewUpdate,
   COMPUTER_USE_MAX_RESULT,
@@ -92,6 +94,7 @@ import {
   type ComputerUseResult,
   type HostActionRequest,
   type HostActionResult,
+  type ComputerPreviewInputEvent,
   type ComputerPreviewTarget,
   type ComputerPreviewUpdate,
 } from "@kulo/protocol";
@@ -567,7 +570,7 @@ export class EnvManager {
         arch: process.arch,
         rootDir,
         executionKind: "pi-env",
-        capabilities: [...(process.platform === "darwin" ? ["fs", "bash", "macos-local", CONNECTORS_CAPABILITY] : ["fs", "bash"]), "external-agents", "host-actions", ...workerIsolationCapabilities(), ...(this.#localBrowser.available ? ["flow-browser"] : []), ...this.#localComputer.capabilities()],
+        capabilities: [...(process.platform === "darwin" ? ["fs", "bash", "macos-local", CONNECTORS_CAPABILITY] : ["fs", "bash"]), "external-agents", EXTERNAL_AGENT_QUOTA_CAPABILITY, "host-actions", ...workerIsolationCapabilities(), ...(this.#localBrowser.available ? ["flow-browser"] : []), ...this.#localComputer.capabilities()],
         connectedAt: now,
         lastSeenAt: now,
         info: collectDeviceSystemInfo(),
@@ -922,6 +925,7 @@ export class EnvManager {
             this.#failComputerRequests(envId, "Computer-use device reconnected before confirming the operation");
             this.#failHostActionRequests(envId, "Device reconnected before confirming the host action");
             this.#failProjectRequests(envId, "Project device reconnected before confirming the operation");
+            this.#failExternalAgentRequests(envId, "External agent device reconnected before confirming the operation");
             // Tear down previous socket & streams if replacing stale connection
             if (peer.ws && peer.ws !== ws) {
               try {
@@ -1149,13 +1153,17 @@ export class EnvManager {
           const valid = isExternalAgentResponse(result) && data.toString("utf8").length < 1_500_000 && (
             result.type === "detection"
               ? (request.operation === "detect" && result.detection.kind === request.kind || request.operation === "probe" && result.detection.kind === request.binding.kind)
-              : result.type === "diff"
-                ? request.operation === "diff"
-                : result.type === "apply"
-                  ? request.operation === "apply"
-                  : request.operation === "run"
-                    ? result.run.id === request.requestId && result.run.taskId === request.taskId && result.run.runEpoch === request.runEpoch && result.run.kind === request.binding.kind
-                    : "runId" in request && result.run.id === request.runId
+              : result.type === "quota"
+                ? request.operation === "quota" && result.quota.kind === request.binding.kind
+                : result.type === "diff"
+                  ? request.operation === "diff"
+                  : result.type === "apply"
+                    ? request.operation === "apply"
+                    : result.type === "run"
+                      ? (request.operation === "run"
+                          ? result.run.id === request.requestId && result.run.taskId === request.taskId && result.run.runEpoch === request.runEpoch && result.run.kind === request.binding.kind
+                          : "runId" in request && result.run.id === request.runId)
+                      : false
           );
           if (valid) pending.resolve(result); else pending.reject(new Error("Invalid external agent response"));
         }
@@ -1354,6 +1362,7 @@ export class EnvManager {
       this.#failComputerRequests(id, "Computer-use device credential changed");
       this.#failHostActionRequests(id, "Device credential changed");
       this.#failAndroidRequests(id, "Android device credential changed");
+      this.#failExternalAgentRequests(id, "External agent device credential changed");
       const peer = this.#wsPeers.get(id);
       if (peer) {
         peer.descriptor.online = false;
@@ -1378,6 +1387,7 @@ export class EnvManager {
       this.#failComputerRequests(envId, "Computer-use device connection lease changed");
       this.#failHostActionRequests(envId, "Device connection lease changed");
       this.#failAndroidRequests(envId, "Android device connection lease changed");
+      this.#failExternalAgentRequests(envId, "External agent device connection lease changed");
     }
   }
 
@@ -1395,6 +1405,7 @@ export class EnvManager {
         this.#failComputerRequests(peer.descriptor.id, "Device interconnection disabled");
         this.#failHostActionRequests(peer.descriptor.id, "Device interconnection disabled");
         this.#failAndroidRequests(peer.descriptor.id, "Device interconnection disabled");
+        this.#failExternalAgentRequests(peer.descriptor.id, "Device interconnection disabled");
         peer.connectionState = "offline";
         peer.descriptor.online = false;
         peer.connection?.close();
@@ -1552,8 +1563,8 @@ export class EnvManager {
     if (this.#closed) throw new Error("Env manager is closed");
     this.#assertPiEnv(envId);
     if (!isExternalAgentRequest(request) || JSON.stringify(request).length > 300_000) throw new Error("Invalid external agent control request");
-    if ((request.operation === "run" || request.operation === "probe") && request.binding.envId !== envId) throw new Error("External agent binding belongs to another device");
-    if ((request.operation === "run" || request.operation === "probe") && !this.isLocalEnv(envId) && !this.#options.workerEnvIds?.includes(envId) && !this.#deviceTokens.has(envId)) throw new Error(`Env '${envId}' has not been approved for isolated Worker execution`);
+    if ((request.operation === "run" || request.operation === "probe" || request.operation === "quota") && request.binding.envId !== envId) throw new Error("External agent binding belongs to another device");
+    if ((request.operation === "run" || request.operation === "probe" || request.operation === "quota") && !this.isLocalEnv(envId) && !this.#options.workerEnvIds?.includes(envId) && !this.#deviceTokens.has(envId)) throw new Error(`Env '${envId}' has not been approved for isolated Worker execution`);
     if (signal?.aborted) throw new Error("External agent request was aborted");
     if (this.isLocalEnv(envId)) {
       if (!this.#localExternalAgents) throw new Error("Local external agent runtime is not enabled");
@@ -1562,6 +1573,7 @@ export class EnvManager {
     const peer = this.#wsPeers.get(envId);
     if (!peer?.descriptor.online || !peer.ws || peer.ws.readyState !== peer.ws.OPEN) throw new Error(`External agent device '${envId}' is offline`);
     if (!peer.descriptor.capabilities.includes("external-agents")) throw new Error("The selected device must update its Kulo Env before connecting external agents");
+    if (request.operation === "quota" && !peer.descriptor.capabilities.includes(EXTERNAL_AGENT_QUOTA_CAPABILITY)) throw new Error("The selected device must update its Kulo Env before checking external agent quotas");
     if (this.#externalAgentRequests.size >= 32) throw new Error("External agent control request limit reached");
     const ws = peer.ws;
     const requestId = randomBytes(16).toString("hex");
@@ -1786,6 +1798,18 @@ export class EnvManager {
       throw error;
     }
     return () => this.#endComputerPreview(subscriptionId);
+  }
+
+  sendComputerPreviewInput(envId: string, target: ComputerPreviewTarget, event: ComputerPreviewInputEvent): boolean {
+    if (this.#closed || !isComputerPreviewTarget(target) || !isComputerPreviewInputEvent(event) || target.tool !== "browser") return false;
+    const descriptor = this.getEnvDescriptor(envId);
+    if (!descriptor?.online || !descriptor.capabilities.includes("agent-browser")) return false;
+    if (this.isLocalEnv(envId)) return this.#localComputer?.sendPreviewInput(target, event) ?? false;
+    const peer = this.#wsPeers.get(envId);
+    const lease = this.#deviceConnectionLeases.get(envId);
+    if (!peer?.ws || peer.ws.readyState !== peer.ws.OPEN || this.#revokedDeviceIds.has(envId) || !this.#remoteConnectionsEnabled || (lease !== undefined && !sameToken(peer.connectionLease, lease))) return false;
+    try { this.#sendControl(peer.ws, { type: "hub.computer_preview_input", target, event }); return true; }
+    catch { return false; }
   }
 
   #endComputerPreview(subscriptionId: string, update?: ComputerPreviewUpdate): void {

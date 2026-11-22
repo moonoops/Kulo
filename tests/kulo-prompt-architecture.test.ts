@@ -359,7 +359,7 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
     const requests: TranscriptContext[] = [];
     const provider = fauxProvider({ provider: "live-toggle", models: [{ id: "test", contextWindow: 8_000 }] });
     provider.setResponses(
-      Array.from({ length: 20 }, () => (req: TranscriptContext) => {
+      Array.from({ length: 48 }, () => (req: TranscriptContext) => {
         requests.push(JSON.parse(JSON.stringify(req)) as TranscriptContext);
         const sys = req.messages[0];
         if (

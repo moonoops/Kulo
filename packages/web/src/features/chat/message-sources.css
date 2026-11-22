@@ -1,40 +1,192 @@
 .kulo-message-sources {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px var(--kulo-space-3);
+  width: 100%;
   min-width: 0;
   max-width: 100%;
+  margin-top: var(--kulo-space-2);
+  padding-top: var(--kulo-space-2);
+  border-top: 1px solid var(--separator);
+}
+
+.kulo-message-sources-disclosure {
+  width: 100%;
+  min-width: 0;
+}
+
+.kulo-message-sources-heading {
+  margin: 0;
+}
+
+.kulo-message-sources-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--kulo-space-2);
+  max-width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  padding: var(--kulo-space-1) 10px;
+  border: 1px solid color-mix(in oklab, var(--foreground) 13%, var(--surface));
+  border-radius: 999px;
+  background: var(--surface-secondary);
   color: var(--muted);
   font-size: var(--kulo-text-caption);
   line-height: var(--kulo-leading-caption);
+  font-weight: 500;
+  text-align: start;
+  transition:
+    background-color 140ms var(--ease-smooth),
+    border-color 140ms var(--ease-smooth),
+    color 140ms var(--ease-smooth);
 }
-.kulo-message-sources-label { flex-shrink: 0; }
+
+.kulo-message-sources-trigger:hover,
+.kulo-message-sources-trigger[data-hovered="true"],
+.kulo-message-sources-trigger[aria-expanded="true"] {
+  background: var(--surface-tertiary);
+  border-color: color-mix(in oklab, var(--foreground) 24%, var(--surface));
+  color: var(--foreground);
+}
+
+.kulo-message-sources-count {
+  flex-shrink: 0;
+  color: var(--foreground);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.kulo-message-sources-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.kulo-message-sources-indicator {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  margin-inline-start: 0;
+  color: var(--muted);
+}
+
+/* Disclosure.Body's className styles the inner slot; zero outer padding so pills align flush with the trigger. */
+.kulo-message-sources-content > .disclosure__body {
+  padding: 0;
+}
+
+.kulo-message-sources .kulo-message-sources-body {
+  padding: var(--kulo-space-2) 0 0;
+}
+
 .kulo-message-sources-list {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: stretch;
   min-width: 0;
   max-width: 100%;
-  gap: 6px 14px;
+  gap: var(--kulo-space-2);
   list-style: none;
   padding: 0;
   margin: 0;
 }
-.kulo-message-source { min-width: 0; max-width: 100%; }
+
+.kulo-message-source {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .kulo-message-source-link {
   display: inline-flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0 5px;
-  max-width: 100%;
-  border-radius: 4px;
+  align-items: center;
+  gap: 7px;
+  max-width: min(100%, 300px);
+  min-width: 0;
+  padding: 5px 10px;
+  border: 1px solid color-mix(in oklab, var(--foreground) 14%, var(--surface));
+  border-radius: var(--kulo-control-radius);
+  background: var(--surface-secondary);
   color: var(--foreground);
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
   text-decoration: none;
+  transition:
+    background-color 140ms var(--ease-smooth),
+    border-color 140ms var(--ease-smooth);
 }
-.kulo-message-source-title { overflow-wrap: anywhere; }
-.kulo-message-source-domain { color: var(--muted); overflow-wrap: anywhere; }
-.kulo-message-source-link:hover .kulo-message-source-title { text-decoration: underline; text-underline-offset: 3px; }
-.kulo-message-source-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
-.kulo-message-search-suggestions { display: flex; flex-direction: column; gap: var(--kulo-space-2); width: 100%; max-width: 640px; min-width: 0; }
-.kulo-message-search-suggestions-frame { display: block; width: 100%; min-width: 0; height: 128px; border: 0; border-radius: 8px; background: var(--surface); color-scheme: inherit; }
+
+.kulo-message-source-link:hover,
+.kulo-message-source-link[data-highlighted="true"] {
+  background: var(--surface-tertiary);
+  border-color: color-mix(in oklab, var(--foreground) 28%, var(--surface));
+}
+
+.kulo-message-source-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.kulo-message-source-index {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding-inline: var(--kulo-space-1);
+  border: 1px solid var(--separator);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.kulo-message-source-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.kulo-message-source-domain {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.kulo-message-search-suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kulo-space-2);
+  width: 100%;
+  max-width: 640px;
+  min-width: 0;
+}
+
+.kulo-message-search-suggestions-frame {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 128px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface);
+  color-scheme: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kulo-message-sources-trigger,
+  .kulo-message-source-link {
+    transition: none;
+  }
+}
+
+@media (pointer: coarse) {
+  .kulo-message-sources-trigger,
+  .kulo-message-source-link {
+    min-height: 44px;
+  }
+
+  .kulo-message-sources-trigger {
+    padding-inline: var(--kulo-space-3);
+  }
+}

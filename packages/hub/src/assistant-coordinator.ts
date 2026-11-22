@@ -2,14 +2,16 @@ import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord/context";
 import type { ConversationId, Harness, JsonObject } from "@earendil-works/pi-durable";
-import type {
-  AssistantItemAction,
-  AssistantItemKind,
-  AssistantItemView,
-  AssistantPendingAction,
-  ChatAttachment,
-  MessagePart,
-  TopicSummary,
+import {
+  escapeUntrustedText,
+  safeJsonForXmlTag,
+  type AssistantItemAction,
+  type AssistantItemKind,
+  type AssistantItemView,
+  type AssistantPendingAction,
+  type ChatAttachment,
+  type MessagePart,
+  type TopicSummary,
 } from "@kulo/protocol";
 import type { AmbientModelService } from "./ambient-model-service.js";
 import type { AssistantLedger, StoredAssistantDigest, StoredAssistantEvent } from "./assistant-ledger.js";
@@ -48,6 +50,7 @@ export interface AssistantCoordinatorHost {
   agentName(): string;
   envDisplayName(envId: string): string | undefined;
   isForegroundBusy(): boolean;
+  shouldSkipCloudModel?(): Promise<boolean>;
   redact(text: string): string;
   createDetachedOrchestratorConversation(context: Context): Promise<{ id: ConversationId }>;
   onItemsChanged(revision: number, items: AssistantItemView[]): void;
@@ -64,7 +67,9 @@ export interface AssistantCoordinatorHost {
     summary: string;
     urgency: "low" | "normal" | "high";
   }): void;
-  executePendingAction?(action: AssistantPendingAction): Promise<{ ok: boolean; error?: string }>;
+  executePendingAction?(
+    action: AssistantPendingAction,
+  ): Promise<{ ok: boolean; preDispatch?: boolean; error?: string }>;
 }
 
 const COORDINATOR_SYSTEM_PROMPT = [
@@ -218,10 +223,17 @@ export class AssistantCoordinator {
     timer.unref();
 
     let decision: CoordinatorDecision;
-    try {
+    if (await this.#host.shouldSkipCloudModel?.()) {
+      if (input.digest.appId !== "home-assistant" && input.digest.category !== "security") {
+        clearTimeout(timer);
+        this.#controllers.delete(controller);
+        return;
+      }
+      decision = { action: "upsert_card", kind: "alert", title: input.digest.appLabel, summary: input.digest.digest };
+    } else try {
       const promptPayload = [
         "<untrusted_event>",
-        JSON.stringify({
+        safeJsonForXmlTag({
           app: input.digest.appLabel,
           appId: input.digest.appId,
           category: input.digest.category,
@@ -236,11 +248,11 @@ export class AssistantCoordinator {
         "</untrusted_event>",
         `<untrusted_recent_digests count="${recentDigests.length}" truncated="${String(truncated)}">`,
         recentDigests
-          .map((d) => `- [${new Date(d.createdAt).toISOString()}] (${d.appLabel}/${d.category}) ${d.digest}`)
+          .map((d) => escapeUntrustedText(`- [${new Date(d.createdAt).toISOString()}] (${d.appLabel}/${d.category}) ${d.digest}`))
           .join("\n"),
         "</untrusted_recent_digests>",
         "<active_cards>",
-        JSON.stringify(activeItems),
+        safeJsonForXmlTag(activeItems),
         "</active_cards>",
       ].join("\n");
 
@@ -549,10 +561,21 @@ export class AssistantCoordinator {
         assertDeliveryIntent(prior, input.intent);
         return { ack: prior.ack as DeliveryAck & { itemId?: string }, deduplicated: true };
       }
+      if (prior && prior.phase === "admitted" && input.action === "confirm_action") {
+        assertDeliveryIntent(prior, input.intent);
+        throw Object.assign(
+          new Error("该确认动作正在执行或结果未决，请先核对目标应用，避免重复操作。"),
+          { code: "action_in_flight_or_unknown", status: 409 },
+        );
+      }
     }
 
     if (input.action === "confirm_action") {
-      // Pre-validate item and claim receipt atomically BEFORE executing external L2 side effect.
+      if (!this.#host.executePendingAction) {
+        throw Object.assign(new Error("当前中枢未注册待确认动作执行器。"), { code: "assistant_action_unavailable", status: 501 });
+      }
+      // Atomically claim lock (`executionState = "dispatched"` + `revision++` + receipt `admitted`)
+      // BEFORE executing external L2 side effect so concurrent taps or crashes can never double-fire.
       const claimed = await this.#host.harness.commit(async (tx) => {
         if (input.intent) {
           const existingReceipt = await tx.doc(DeliveryReceiptDoc, input.intent.key, {
@@ -562,6 +585,12 @@ export class AssistantCoordinator {
           assertDeliveryIntent(existingReceipt, input.intent);
           if (existingReceipt.phase === "complete") {
             return { deduplicated: true as const, ack: existingReceipt.ack as DeliveryAck & { itemId?: string } };
+          }
+          if (existingReceipt.phase === "admitted") {
+            throw Object.assign(
+              new Error("该确认动作正在执行或结果未决，请先核对目标应用，避免重复操作。"),
+              { code: "action_in_flight_or_unknown", status: 409 },
+            );
           }
         }
         const doc = await tx.doc(AssistantDoc);
@@ -576,9 +605,27 @@ export class AssistantCoordinator {
         if (!item.pendingAction) {
           throw Object.assign(new Error("此卡片没有可执行的一键确认动作。"), { code: "assistant_action_missing", status: 400 });
         }
+        if (item.pendingAction.executionState === "dispatched") {
+          throw Object.assign(new Error("该动作正在执行中，请稍候。"), { code: "action_in_flight", status: 409 });
+        }
+        if (item.pendingAction.executionState === "unknown") {
+          throw Object.assign(
+            new Error("该动作已发出但未确认结果，请核对目标应用后点击收起，不可重复执行。"),
+            { code: "action_outcome_unknown", status: 409 },
+          );
+        }
+        const now = Date.now();
+        item.pendingAction.executionState = "dispatched";
+        item.pendingAction.dispatchedAt = now;
+        delete item.pendingAction.lastError;
+        item.revision += 1;
+        item.updatedAt = now;
+        doc.assistantRevision += 1;
+        await writeDeliveryReceipt(tx, input.intent, { itemId: input.itemId, delivery: "accepted" }, "admitted");
         return {
           deduplicated: false as const,
           pendingAction: JSON.parse(JSON.stringify(item.pendingAction)) as AssistantPendingAction,
+          itemsChanged: { revision: doc.assistantRevision, items: cloneAssistantItems(doc.items) },
         };
       }, context);
 
@@ -586,14 +633,69 @@ export class AssistantCoordinator {
         return { ack: claimed.ack, deduplicated: true };
       }
 
-      if (!this.#host.executePendingAction) {
-        throw Object.assign(new Error("当前中枢未注册待确认动作执行器。"), { code: "assistant_action_unavailable", status: 501 });
+      // Immediately broadcast dispatched state across all connected clients to disable duplicate clicks.
+      this.#host.onItemsChanged(claimed.itemsChanged.revision, claimed.itemsChanged.items);
+
+      let execResult: { ok: boolean; preDispatch?: boolean; error?: string };
+      try {
+        execResult = await this.#host.executePendingAction(claimed.pendingAction);
+      } catch (error) {
+        execResult = {
+          ok: false,
+          preDispatch: false,
+          error: error instanceof Error ? error.message : "执行确认动作异常",
+        };
       }
-      const execResult = await this.#host.executePendingAction(claimed.pendingAction);
+
       if (!execResult.ok) {
+        const safeError = this.#host.redact(execResult.error || "执行确认动作失败，请核对目标应用。").slice(0, 300);
+        if (execResult.preDispatch === true) {
+          const rolledBack = await this.#host.harness.commit(async (tx) => {
+            const doc = await tx.doc(AssistantDoc);
+            ensureAssistantState(doc);
+            const item = doc.items.find((candidate) => candidate.id === input.itemId);
+            const now = Date.now();
+            if (item?.pendingAction) {
+              item.pendingAction.executionState = "none";
+              delete item.pendingAction.dispatchedAt;
+              item.pendingAction.lastError = safeError;
+              item.revision += 1;
+              item.updatedAt = now;
+              doc.assistantRevision += 1;
+            }
+            await writeDeliveryReceipt(tx, input.intent, {}, "empty");
+            return { revision: doc.assistantRevision, items: cloneAssistantItems(doc.items) };
+          }, context);
+          this.#host.onItemsChanged(rolledBack.revision, rolledBack.items);
+          throw Object.assign(new Error(safeError), { code: "assistant_action_failed", status: 502 });
+        }
+
+        // Post-dispatch failure / timeout: transition to read-only `unknown` state and never auto-replay.
+        const unknownUpdated = await this.#host.harness.commit(async (tx) => {
+          const doc = await tx.doc(AssistantDoc);
+          ensureAssistantState(doc);
+          const item = doc.items.find((candidate) => candidate.id === input.itemId);
+          const now = Date.now();
+          if (item?.pendingAction) {
+            item.pendingAction.executionState = "unknown";
+            item.pendingAction.lastError = safeError;
+            item.revision += 1;
+            item.updatedAt = now;
+            doc.assistantRevision += 1;
+          }
+          await writeDeliveryReceipt(
+            tx,
+            input.intent,
+            { itemId: input.itemId, delivery: "accepted" },
+            "complete",
+            { outcome: "unknown" },
+          );
+          return { revision: doc.assistantRevision, items: cloneAssistantItems(doc.items) };
+        }, context);
+        this.#host.onItemsChanged(unknownUpdated.revision, unknownUpdated.items);
         throw Object.assign(
-          new Error(this.#host.redact(execResult.error || "执行确认动作失败，请稍后重试。")),
-          { code: "assistant_action_failed", status: 502 },
+          new Error(`操作已发出但未确认结果：${safeError}。请先在目标应用核对后再收起，切勿盲目重试。`),
+          { code: "assistant_action_unknown", status: 502 },
         );
       }
 
@@ -761,5 +863,36 @@ export class AssistantCoordinator {
     if (outcome.itemsChanged) this.#host.onItemsChanged(outcome.itemsChanged.revision, outcome.itemsChanged.items);
     if (outcome.mutedApps) this.#host.onMutedAppsChanged?.(outcome.mutedApps);
     return { ack: outcome.ack, ...(outcome.deduplicated ? { deduplicated: true } : {}) };
+  }
+
+  /**
+   * Startup / failover recovery: downgrades any lingering `dispatched` L2 cards from a crashed
+   * process to read-only `unknown` state so users can verify the external app without blind replay.
+   */
+  async reconcileDispatchedActions(context: Context = BACKGROUND_CONTEXT): Promise<number> {
+    const recovered = await this.#host.harness.commit(async (tx) => {
+      const doc = await tx.doc(AssistantDoc);
+      ensureAssistantState(doc);
+      let count = 0;
+      const now = Date.now();
+      for (const item of doc.items) {
+        if (item.pendingAction?.executionState !== "dispatched") continue;
+        item.pendingAction.executionState = "unknown";
+        item.pendingAction.lastError = "服务重启或切换期间操作状态未决，请先在目标应用核对实际结果后再收起。";
+        item.revision += 1;
+        item.updatedAt = now;
+        count += 1;
+      }
+      if (count === 0) return null;
+      doc.assistantRevision += 1;
+      return {
+        count,
+        revision: doc.assistantRevision,
+        items: cloneAssistantItems(doc.items),
+      };
+    }, context);
+    if (!recovered) return 0;
+    this.#host.onItemsChanged(recovered.revision, recovered.items);
+    return recovered.count;
   }
 }

@@ -59,6 +59,7 @@ export interface RolePreset {
   provider?: string;
   modelId?: string;
   thinkingLevel?: RoleThinkingEffort;
+  serviceTier?: string;
   externalClientId?: string;
   external?: import("./external-agents.js").ExternalAgentBinding;
   dispatchPolicy?: import("./agent-routing.js").AgentDispatchPolicy;
@@ -154,6 +155,13 @@ export interface TicketWorkspaceStaging {
   warnings?: string[];
 }
 
+export interface TicketOutwardAction {
+  runEpoch: number;
+  kind: "connection" | "media" | "voice" | "shell" | "host_action" | "external_bash";
+  label: string;
+  at: number;
+}
+
 export interface TicketRecord {
   id: string;
   commandId: string;
@@ -200,6 +208,8 @@ export interface TicketRecord {
   recovery?: TicketRecoveryRecord;
   /** A user dismissed the recovery lineage while this alternative was still running. */
   autoRecoverySuppressed?: boolean;
+  /** Real harness-recorded outward side effects (never model text) used to block blind auto-retry. */
+  outwardActions?: TicketOutwardAction[];
   supersedes?: string[];
   originTopicId?: string;
   originConversationId?: number;
@@ -379,6 +389,8 @@ export interface ChatReplyReference {
   messageId: number;
   role: "user" | "assistant" | "dispatch";
   text: string;
+  /** True when quoting a user-selected text or code excerpt rather than the full message. */
+  excerpt?: boolean;
 }
 
 export interface ChatDisplayItem {

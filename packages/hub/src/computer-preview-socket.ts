@@ -1,9 +1,10 @@
-import { isComputerPreviewUpdate, type ComputerPreviewServerMessage, type ComputerPreviewSessionView, type ComputerPreviewUpdate } from "@kulo/protocol";
+import { isComputerPreviewInputEvent, isComputerPreviewUpdate, type ComputerPreviewInputEvent, type ComputerPreviewServerMessage, type ComputerPreviewSessionView, type ComputerPreviewUpdate } from "@kulo/protocol";
 import type { RawData, WebSocket } from "ws";
 
 export interface ComputerPreviewSource {
   listComputerPreviews(topicId: string): Promise<ComputerPreviewSessionView[]>;
   subscribeComputerPreview(id: string, topicId: string, onUpdate: (update: ComputerPreviewUpdate) => void): Promise<() => void>;
+  sendComputerPreviewInput?(id: string, topicId: string, event: ComputerPreviewInputEvent): Promise<boolean>;
 }
 
 interface Subscription {
@@ -131,20 +132,39 @@ export function attachComputerPreviewSocket(
   const onMessage = (raw: RawData, binary: boolean) => {
     if (closed) return;
     const bytes = Buffer.isBuffer(raw) ? raw : Array.isArray(raw) ? Buffer.concat(raw) : Buffer.from(raw);
-    if (binary || bytes.byteLength > 1024) { close(1008, "Invalid preview command"); return; }
+    if (binary || bytes.byteLength > 2048) { close(1008, "Invalid preview command"); return; }
     let message: unknown;
     try { message = JSON.parse(bytes.toString("utf8")); }
     catch { close(1008, "Invalid preview command"); return; }
-    if (!message || typeof message !== "object" || Array.isArray(message)
-      || Object.keys(message).some((key) => key !== "type" && key !== "visible")
-      || (message as { type?: unknown }).type !== "preview.visibility"
-      || typeof (message as { visible?: unknown }).visible !== "boolean") {
+    if (!message || typeof message !== "object" || Array.isArray(message)) {
       close(1008, "Invalid preview command");
       return;
     }
-    visible = (message as { visible: boolean }).visible;
-    if (!visible) for (const id of subscriptions.keys()) removeSubscription(id);
-    else void poll();
+    const msg = message as Record<string, unknown>;
+    if (msg.type === "preview.visibility") {
+      if (Object.keys(msg).some((key) => key !== "type" && key !== "visible") || typeof msg.visible !== "boolean") {
+        close(1008, "Invalid preview command");
+        return;
+      }
+      visible = msg.visible;
+      if (!visible) for (const id of subscriptions.keys()) removeSubscription(id);
+      else void poll();
+      return;
+    }
+    if (msg.type === "preview.input") {
+      if (
+        Object.keys(msg).some((key) => key !== "type" && key !== "id" && key !== "event") ||
+        typeof msg.id !== "string" ||
+        !sessions.has(msg.id) ||
+        !isComputerPreviewInputEvent(msg.event)
+      ) {
+        return;
+      }
+      if (options.isPrincipalActive && !options.isPrincipalActive()) { close(4001, "Preview authorization revoked"); return; }
+      void source.sendComputerPreviewInput?.(msg.id, topicId, msg.event).catch(() => {});
+      return;
+    }
+    close(1008, "Invalid preview command");
   };
   const onSocketError = () => cleanup();
   const pollTimer = setInterval(() => { void poll(); }, options.pollMs ?? 500);

@@ -393,7 +393,11 @@ export class KuloMemoryService {
       if (this.#options.settings().blocks.memory.revision !== raw.expectedRevision) fail(409, "memory_revision_conflict", "记忆设置已更新，请刷新后重试。");
       if (Object.values(state?.jobs ?? {}).some((job) => job.view.status === "running")) fail(409, "memory_service_busy", "记忆服务正在处理另一项操作。");
       const local = await this.#options.local.inspect();
-      if (["configure", "uninstall"].includes(raw.operation) && !local.installed) fail(409, "memory_not_managed", "未发现由 Kulo 管理的本机安装。");
+      const hasManagedInstall = local.installed || Boolean(local.phase && local.phase !== "absent");
+      if (raw.operation === "configure" && !local.installed) {
+        fail(409, "memory_not_managed", local.phase === "failed" ? "上次本机部署未完成，请重新部署 Hindsight。" : "未发现由 Kulo 管理的本机安装。");
+      }
+      if (raw.operation === "uninstall" && !hasManagedInstall) fail(409, "memory_not_managed", "未发现由 Kulo 管理的本机安装。");
       const model = normalized.model ?? (raw.operation === "configure" ? publicModel(local.model) : undefined);
       const embeddings = normalized.embeddings ?? (raw.operation === "configure" ? publicEmbeddings(local.embeddings) : undefined);
       const reranker = normalized.reranker ?? (raw.operation === "configure" ? publicReranker(local.reranker) : undefined);

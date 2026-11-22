@@ -1,0 +1,522 @@
+@reference "../../kulo.css";
+
+/* Shared Office preview styles — strictly four-tier typography & HeroUI semantic tokens. */
+
+.kulo-xlsx-preview {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.kulo-xlsx-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--kulo-control-gap);
+  flex-shrink: 0;
+  padding: var(--kulo-space-2) var(--kulo-list-padding-inline);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.kulo-xlsx-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--kulo-space-2);
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
+  color: var(--muted);
+}
+
+.kulo-xlsx-sheet-title {
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.kulo-xlsx-tabs {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.kulo-xlsx-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+}
+
+.kulo-xlsx-scroll {
+  @apply scrollbar;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: var(--surface);
+}
+
+.kulo-xlsx-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
+}
+
+.kulo-xlsx-axis {
+  padding: var(--kulo-space-1) var(--kulo-space-2);
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
+  font-weight: 500;
+  color: var(--muted);
+  background: var(--surface-secondary);
+  border-right: 1px solid var(--separator);
+  border-bottom: 1px solid var(--separator);
+  text-align: center;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.kulo-xlsx-axis--col {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.kulo-xlsx-axis--row {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  min-width: 36px;
+  font-variant-numeric: tabular-nums;
+}
+
+.kulo-xlsx-axis--corner {
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 3;
+  min-width: 36px;
+}
+
+.kulo-xlsx-cell {
+  max-width: 320px;
+  padding: var(--kulo-space-1) var(--kulo-space-3);
+  border-right: 1px solid var(--separator);
+  border-bottom: 1px solid var(--separator);
+  color: var(--foreground);
+  background: var(--surface);
+  vertical-align: top;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.kulo-xlsx-cell--header {
+  background: var(--surface-secondary);
+}
+
+.kulo-xlsx-cell--number {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.kulo-xlsx-cell--center {
+  text-align: center;
+  white-space: nowrap;
+}
+
+.kulo-xlsx-cell--formula {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--muted);
+}
+
+.kulo-xlsx-cell--error {
+  color: var(--danger);
+}
+
+.kulo-office-notice {
+  margin: 0;
+  flex-shrink: 0;
+  padding: var(--kulo-space-2) var(--kulo-list-padding-inline);
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
+  color: var(--muted);
+  border-top: 1px solid var(--separator);
+  background: var(--surface);
+}
+
+/* PPTX structured slide viewer */
+
+.kulo-pptx-preview {
+  min-width: 0;
+  outline: none;
+}
+
+.kulo-pptx-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--kulo-control-gap);
+  padding: var(--kulo-space-2);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.kulo-pptx-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--kulo-space-1);
+}
+
+.kulo-pptx-page-label {
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.kulo-pptx-slide {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kulo-space-4);
+  max-width: 794px;
+  margin: var(--kulo-space-4) auto;
+  padding: var(--kulo-space-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.kulo-pptx-slide-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kulo-space-1);
+  padding-bottom: var(--kulo-space-3);
+  border-bottom: 1px solid var(--separator);
+}
+
+.kulo-pptx-slide-title {
+  margin: 0;
+  font-size: var(--kulo-text-heading);
+  line-height: var(--kulo-leading-heading);
+  font-weight: 600;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+
+.kulo-pptx-slide-subtitle {
+  margin: 0;
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.kulo-pptx-text-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kulo-space-2);
+}
+
+.kulo-pptx-line {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--kulo-space-2);
+  margin: 0;
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
+  color: var(--foreground);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.kulo-pptx-line[data-level="1"] { padding-inline-start: 16px; }
+.kulo-pptx-line[data-level="2"] { padding-inline-start: 32px; }
+.kulo-pptx-line[data-level="3"] { padding-inline-start: 48px; }
+.kulo-pptx-line[data-level="4"] { padding-inline-start: 64px; }
+
+.kulo-pptx-bullet {
+  flex-shrink: 0;
+  color: var(--muted);
+  user-select: none;
+}
+
+.kulo-pptx-chart-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--kulo-space-2);
+  align-self: flex-start;
+  padding: var(--kulo-space-2) var(--kulo-space-3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-secondary);
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
+  color: var(--muted);
+}
+
+.kulo-pptx-notes {
+  border-top: 1px solid var(--separator);
+  padding-top: var(--kulo-space-3);
+}
+
+.kulo-pptx-notes-body {
+  padding-top: var(--kulo-space-2);
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* DOCX semantic paper card */
+
+.kulo-docx-preview {
+  padding: var(--kulo-space-4);
+  background: var(--surface-secondary);
+}
+
+.kulo-docx-paper {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kulo-space-3);
+  max-width: 794px;
+  margin: 0 auto;
+  padding: var(--kulo-space-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.kulo-docx-running-text {
+  margin: 0;
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.kulo-docx-running-text--header {
+  padding-bottom: var(--kulo-space-2);
+  border-bottom: 1px solid var(--separator);
+}
+
+.kulo-docx-running-text--footer {
+  padding-top: var(--kulo-space-2);
+  border-top: 1px solid var(--separator);
+}
+
+.kulo-docx-p {
+  margin: 0;
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
+  color: var(--foreground);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.kulo-docx-p[data-role="title"] {
+  font-size: var(--kulo-text-title);
+  line-height: var(--kulo-leading-title);
+  font-weight: 600;
+}
+
+.kulo-docx-p[data-role="subtitle"] {
+  font-size: var(--kulo-text-heading);
+  line-height: var(--kulo-leading-heading);
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.kulo-docx-p[data-role="h1"] {
+  margin-top: var(--kulo-space-3);
+  font-size: var(--kulo-text-heading);
+  line-height: var(--kulo-leading-heading);
+  font-weight: 600;
+}
+
+.kulo-docx-p[data-role="h2"] {
+  margin-top: var(--kulo-space-2);
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
+  font-weight: 600;
+}
+
+.kulo-docx-p[data-role="h3"] {
+  margin-top: var(--kulo-space-1);
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.kulo-docx-p[data-align="center"] { text-align: center; }
+.kulo-docx-p[data-align="right"] { text-align: right; }
+
+.kulo-docx-p--shaded {
+  padding: var(--kulo-space-2) var(--kulo-space-3);
+  background: var(--surface-secondary);
+  border-radius: 8px;
+  border-inline-start: 3px solid var(--border);
+}
+
+.kulo-docx-list-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--kulo-space-2);
+}
+
+.kulo-docx-list-row[data-level="1"] { padding-inline-start: 16px; }
+.kulo-docx-list-row[data-level="2"] { padding-inline-start: 32px; }
+.kulo-docx-list-row[data-level="3"] { padding-inline-start: 48px; }
+.kulo-docx-list-row[data-level="4"] { padding-inline-start: 64px; }
+
+.kulo-docx-list-marker {
+  flex-shrink: 0;
+  min-width: 16px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.kulo-docx-list-content {
+  min-width: 0;
+  flex: 1;
+}
+
+.kulo-docx-highlight {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: var(--surface-secondary);
+}
+
+.kulo-docx-code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--surface-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.kulo-docx-page-break {
+  height: 1px;
+  margin: var(--kulo-space-3) 0;
+  border: 0;
+  border-top: 1px dashed var(--border);
+}
+
+/* Shared document tables & images (PPTX + DOCX) */
+
+.kulo-office-table-scroll {
+  @apply scrollbar;
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.kulo-office-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
+}
+
+.kulo-office-table th,
+.kulo-office-table td {
+  padding: var(--kulo-space-2) var(--kulo-space-3);
+  border-bottom: 1px solid var(--separator);
+  border-right: 1px solid var(--separator);
+  text-align: left;
+  vertical-align: top;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.kulo-office-table th:last-child,
+.kulo-office-table td:last-child {
+  border-right: 0;
+}
+
+.kulo-office-table tr:last-child th,
+.kulo-office-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.kulo-office-table-cell--shaded {
+  background: var(--surface-secondary);
+}
+
+.kulo-office-image-button {
+  display: inline-flex;
+  align-self: flex-start;
+  width: fit-content;
+  padding: 0;
+  margin: var(--kulo-space-1) 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface-secondary);
+  cursor: zoom-in;
+  max-width: 100%;
+}
+
+.kulo-office-image-button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.kulo-office-image {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+.kulo-office-empty {
+  margin: 0;
+  padding: var(--kulo-space-6) var(--kulo-space-4);
+  text-align: center;
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
+  color: var(--muted);
+}
+
+@container (max-width: 560px) {
+  .kulo-pptx-slide,
+  .kulo-docx-paper {
+    margin: var(--kulo-space-2);
+    padding: var(--kulo-space-4);
+  }
+
+  .kulo-docx-preview {
+    padding: var(--kulo-space-2);
+  }
+}
+
+@media (pointer: coarse) {
+  .kulo-pptx-controls .button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}

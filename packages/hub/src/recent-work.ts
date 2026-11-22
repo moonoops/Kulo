@@ -8,7 +8,7 @@ import type { KuloProjectsState } from "./projects.js";
 const ACTIVE = new Set(["queued", "running", "pausing", "waiting", "blocked"]);
 const RESULTS = new Set(["ready", "failed", "stopped"]);
 const STATUS: Record<TicketRecord["status"], string> = {
-  queued: "queued",
+  queued: "running",
   running: "running",
   pausing: "pausing",
   waiting: "waiting",

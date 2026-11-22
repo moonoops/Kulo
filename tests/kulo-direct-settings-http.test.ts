@@ -178,7 +178,9 @@ describe("direct settings HTTP routes without chat detours", () => {
       version: "codex-2.0",
       modelsCount: 1,
     });
-    expect(f.hub.getSettingsView().blocks.roles.value[connectRes.value.agentId]?.enabled).toBe(true);
+    expect(connectRes.value.agentId).toBeUndefined();
+    expect(f.hub.getSettingsView().externalClients?.[connectRes.value.clientId]?.verifiedAt).toBeTypeOf("number");
+    expect(f.hub.getSettingsView().blocks.roles.value["codex"]).toBeUndefined();
 
     const afterScan = await f.post<ExternalAgentScanResult>("/api/external-clients/scan", {});
     expect(afterScan.value.candidates.find((item) => item.kind === "codex")).toMatchObject({

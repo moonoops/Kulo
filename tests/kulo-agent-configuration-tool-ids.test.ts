@@ -39,6 +39,20 @@ async function fixture() {
     }, BACKGROUND_CONTEXT);
     return structuredClone(settings);
   });
+  const saveClient = vi.fn<NonNullable<AgentConfigurationOptions["saveClient"]>>(async input => {
+    await harness.commit(async tx => {
+      const doc = await tx.doc(AgentConfigurationDoc);
+      doc.clientCommits ??= {};
+      if (doc.clientCommits[input.operationKey]) return;
+      settings.externalClients = {
+        ...(settings.externalClients ?? {}),
+        [input.client.id]: structuredClone(input.client),
+      };
+      settings.blocks.roles.revision += 1;
+      doc.clientCommits[input.operationKey] = input.commit;
+    }, BACKGROUND_CONTEXT);
+    return structuredClone(settings);
+  });
   const removeRole = vi.fn<NonNullable<AgentConfigurationOptions["removeRole"]>>(async input => {
     await harness.commit(async tx => {
       const doc = await tx.doc(AgentConfigurationDoc);
@@ -52,9 +66,9 @@ async function fixture() {
     return structuredClone(settings);
   });
   const service = new KuloAgentConfiguration({ harness, settings: () => settings, envs: () => [env],
-    request: async () => ({ type: "detection", detection }), verifyRoundtrip, saveRole, removeRole, assertContext: async () => {},
+    request: async () => ({ type: "detection", detection }), verifyRoundtrip, saveRole, saveClient, removeRole, assertContext: async () => {},
   });
-  return { service, invoke: tools(service), verifyRoundtrip, saveRole, removeRole, settings };
+  return { service, invoke: tools(service), verifyRoundtrip, saveRole, saveClient, removeRole, settings };
 }
 
 describe("external Agent configuration tool call identities", () => {
@@ -99,11 +113,13 @@ describe("external Agent configuration tool call identities", () => {
     const scan = await f.invoke<{ candidates: Array<{ kind: string; installed: boolean; alreadyConnected: boolean }> }>("scan", {}, "call_scan|fc_200");
     expect(scan.candidates.some((item) => item.kind === "antigravity" && item.installed && !item.alreadyConnected)).toBe(true);
     const args = { client_kind: "antigravity", env_id: "local", run_test: true };
-    const first = await f.invoke<{ agentId: string; enabled: boolean; verificationLevel: string }>("connect", args, "call_connect|fc_201");
-    expect(first).toMatchObject({ enabled: true, verificationLevel: "roundtrip" });
+    const first = await f.invoke<{ clientId: string; agentId?: string; enabled: boolean; verificationLevel: string }>("connect", args, "call_connect|fc_201");
+    expect(first).toMatchObject({ clientId: "antigravity:local", enabled: true, verificationLevel: "roundtrip" });
+    expect(first.agentId).toBeUndefined();
     expect(await f.invoke("connect", args, "call_connect|fc_201")).toEqual(first);
     expect(f.verifyRoundtrip).toHaveBeenCalledTimes(1);
-    expect(f.saveRole).toHaveBeenCalledTimes(1);
+    expect(f.saveClient).toHaveBeenCalledTimes(1);
+    expect(f.saveRole).not.toHaveBeenCalled();
     const afterScan = await f.invoke<{ candidates: Array<{ kind: string; installed: boolean; alreadyConnected: boolean; connectedVerified?: boolean }> }>("scan", {}, "call_scan|fc_202");
     expect(afterScan.candidates.find((item) => item.kind === "antigravity")).toMatchObject({ alreadyConnected: true, connectedVerified: true });
   });

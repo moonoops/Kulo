@@ -80,7 +80,9 @@ export class ExternalAgentRpc {
         this.#pending.delete(message.id); clearTimeout(pending.timer);
         if (message.error) {
           const error = message.error as RpcValue;
-          pending.reject(new Error(typeof error.message === "string" ? error.message.slice(0, 2000) : "Agent protocol request failed"));
+          const err = new Error(typeof error.message === "string" ? error.message.slice(0, 2000) : "Agent protocol request failed") as Error & { code?: number };
+          if (typeof error.code === "number") err.code = error.code;
+          pending.reject(err);
         } else pending.resolve(message.result && typeof message.result === "object" ? message.result as RpcValue : {});
       }
     }

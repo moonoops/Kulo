@@ -683,6 +683,7 @@ export function inspectSensitiveText(text: string, options: SensitiveTextOptions
     ["apiKey", /\b(?:tvly-|xai-|pplx-|hf_|r8_)[A-Za-z0-9_-]{16,}/gu],
     ["apiKey", /\bBSA[A-Za-z0-9_-]{16,}/gu],
     ["apiKey", /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}/gu],
+    ["apiKey", /\bak_[A-Za-z0-9_-]{16,}/gu],
     ["token", /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/gu],
   ];
   for (const [kind, pattern] of tokens) {

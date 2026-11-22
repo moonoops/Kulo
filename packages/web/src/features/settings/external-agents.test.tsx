@@ -1,21 +1,23 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { defaultRolePresets, type EnvNodeDescriptor, type ExternalAgentScanResult, type ExternalClientConnection, type KuloSettingsView, type RolePreset } from "@kulo/protocol";
-import { ExternalAgentsList } from "./external-agents-list";
+import { AgentsModule } from "./agents-module";
+import { AgentPresetFields } from "./agent-preset-fields";
+import { ExternalClientsList, ExternalClientsModule } from "./external-agents-list";
 import {
   ExternalAgentConnectCard,
   formatMissingExternalAgentLabels,
   parseAcpArgsInput,
   partitionExternalAgentScan,
 } from "./external-agent-connect-card";
-import { deriveExternalClients, internalAgentPresets, withExternalAgentPresets } from "./external-agents-view";
+import { deriveExternalClients, internalAgentPresets, switchRoleEngine, withExternalAgentPresets } from "./external-agents-view";
 import { advanceSettingsAssistantPageScope } from "./settings-assistant-page-scope";
 import { getSettingsAssistantShortcuts } from "./settings-assistant-actions";
 import { WorkersModule } from "./workers-module";
 
 const external: RolePreset = {
   id: "codex-architect", label: "Codex 架构师", whenToUse: "负责复杂架构拆解与设计", prompt: "遵循项目规范给出架构方案。", enabled: true,
-  modelId: "astra", thinkingLevel: "high", externalClientId: "codex:mac",
+  modelId: "astra", thinkingLevel: "high", serviceTier: "ultrafast", externalClientId: "codex:mac",
   external: { kind: "codex", envId: "mac", version: "1.0", verifiedAt: 123 },
 };
 const externalTester: RolePreset = {
@@ -30,12 +32,37 @@ const codexClient: ExternalClientConnection = {
   version: "1.0",
   verifiedAt: 123,
   models: [
-    { id: "astra", name: "Astra", efforts: ["low", "medium", "high"], isDefault: true },
+    {
+      id: "astra",
+      name: "Astra",
+      efforts: ["low", "medium", "high"],
+      serviceTiers: [
+        { id: "fast", name: "Fast" },
+        { id: "ultrafast", name: "Ultra Fast" },
+      ],
+      isDefault: true,
+    },
     { id: "sol", name: "Sol", efforts: ["low", "medium"] },
   ],
   updatedAt: 123,
 };
 const device = { id: "mac", name: "开发电脑", online: true } as EnvNodeDescriptor;
+
+function settingsFixture(overrides: Partial<KuloSettingsView> = {}): KuloSettingsView {
+  return {
+    globalRevision: 1,
+    blocks: {
+      presentation: { revision: 1, value: { agentName: "Kulo", language: "zh-CN" } },
+      executor: { revision: 1, value: { maxConcurrentWorkers: 2, maxSubagentsPerTicket: 4, paused: false, watchdogMinutes: 5, completedTaskDisplayHours: 3, autoArchiveEnabled: true, autoArchiveDays: 7 } },
+      roles: { revision: 1, value: defaultRolePresets() },
+      model: { revision: 1, value: { baseUrl: "https://api.openai.com/v1", apiMode: "openai-completions", defaultModel: "gpt-5", thinkingLevel: "medium", contextWindow: 128000, compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000, backgroundTokens: 64000 }, customProviders: [], gatewayDisabled: true }, hasApiKey: false },
+      identity: { revision: 1, value: { directory: "" }, effectiveDirectory: "/tmp/identity", directoryRevision: 1 },
+      memory: { revision: 1, value: { enabled: false, accessMode: "kulo", endpoint: "http://127.0.0.1:8888", endpoints: [], caCertPem: "", routerApiKeyEnv: "", workerApiKeyEnv: "", sharedReadApiKeyEnv: "", authFile: "", autoAttachTopLevelRouters: true, banks: { private: "kulo-core", shared: "kulo-shared" } }, hasRouterApiKey: false, hasWorkerApiKey: false, hasSharedReadApiKey: false },
+    },
+    history: [],
+    ...overrides,
+  } as unknown as KuloSettingsView;
+}
 
 describe("external agents in settings", () => {
   it.each([true, false])("offers direct page-scoped agent connection shortcuts without synthetic chat prompts (%s)", (hasModel) => {
@@ -48,6 +75,20 @@ describe("external agents in settings", () => {
     for (const page of ["models", "appearance", "connections", "capabilities"] as const) {
       expect(getSettingsAssistantShortcuts(page, hasModel, "dark").some((item) => item.kind === "agent")).toBe(false);
     }
+  });
+
+  it("renders three top-level tabs in AgentsModule: Agents, Third-party Agents, and Runtime", () => {
+    const html = renderToStaticMarkup(
+      <AgentsModule
+        settings={settingsFixture({ externalClients: { [codexClient.id]: codexClient } })}
+        envs={[device]}
+        onSettingsUpdated={vi.fn()}
+      />,
+    );
+    expect(html).toContain("智能体");
+    expect(html).toContain("第三方 Agent");
+    expect(html).toContain("运行设置");
+    expect(html).toContain("Codex @ 开发电脑");
   });
 
   it("renders direct scanned local client candidates with one-click connect and batch connect controls", () => {
@@ -99,57 +140,92 @@ describe("external agents in settings", () => {
     expect(html).toContain("暂未开放");
   });
 
-  it("groups multiple external agent personas under one connected client with streamlined 5-field editors", () => {
+  it("renders third-party client connections cleanly without duplicating worker lists and surfaces model/usage summary", () => {
     const html = renderToStaticMarkup(
-      <ExternalAgentsList
-        agents={[external, externalTester, ...Object.values(defaultRolePresets())]}
-        externalClients={{ [codexClient.id]: codexClient }}
+      <ExternalClientsList
+        clients={[codexClient]}
+        roles={{ ...defaultRolePresets(), [external.id]: external, [externalTester.id]: externalTester }}
         envs={[device]}
-        openRole={external.id}
-        onRoleChange={vi.fn()}
-        onToggleEnabled={vi.fn()}
-        onCreateRole={vi.fn(async () => true)}
-        onDeleteRole={vi.fn()}
         onRefreshClient={vi.fn()}
-      />,
-    );
-    for (const value of ["Codex · 开发电脑", "连接已验证", "刷新模型", "新建智能体", "Codex 架构师", "astra", "Codex 测试员", "sol", "委派时机", "交给该智能体的任务要求"]) {
-      expect(html).toContain(value);
-    }
-    // Redundant toggles removed for product restraint
-    expect(html).not.toContain("仅点名");
-    expect(html).not.toContain("Hub 协作");
-    expect(html).not.toContain("允许子智能体");
-    expect(html).not.toContain("只读模式");
-    expect(renderToStaticMarkup(<ExternalAgentsList agents={Object.values(defaultRolePresets())} />)).toBe("");
-  });
-
-  it("keeps connected client section visible when all its personas were removed and exposes connection removal", () => {
-    const html = renderToStaticMarkup(
-      <ExternalAgentsList
-        agents={Object.values(defaultRolePresets())}
-        externalClients={{ [codexClient.id]: codexClient }}
-        envs={[device]}
-        onCreateRole={vi.fn(async () => true)}
+        onVerifyClient={vi.fn()}
         onRemoveClient={vi.fn()}
       />,
     );
-    expect(html).toContain("Codex · 开发电脑");
-    expect(html).toContain("新建智能体");
-    expect(html).toContain('aria-label="Codex · 开发电脑连接操作"');
-    expect(html).toContain("暂无智能体");
+    for (const value of ["Codex @ 开发电脑", "已连接", "刷新模型", "2 个模型", "2 个智能体使用"]) {
+      expect(html).toContain(value);
+    }
+    expect(html).toContain('aria-label="Codex @ 开发电脑连接操作"');
+    expect(renderToStaticMarkup(<ExternalClientsList clients={[]} roles={defaultRolePresets()} />)).toContain("暂无已连接的第三方 Agent");
   });
 
-  it("keeps experimental, offline and reserved status distinct from verified connections", () => {
-    const cases: Array<{ role: RolePreset; envs?: EnvNodeDescriptor[]; status: string }> = [
-      { role: { ...external, external: { ...external.external!, verifiedAt: undefined } }, status: "待验证" },
-      { role: { ...external, enabled: false }, status: "已停用" },
-      { role: external, envs: [{ ...device, online: false }], status: "设备离线" },
-      { role: { ...external, externalClientId: undefined, external: { ...external.external!, kind: "grok-bot", experimental: true } }, status: "实验" },
-      { role: { ...external, externalClientId: undefined, external: { ...external.external!, kind: "dots" } }, status: "待支持" },
-      { role: { ...external, externalClientId: undefined, external: { ...external.external!, kind: "muse" } }, status: "待支持" },
+  it("unifies built-in and external-bound workers in WorkersModule with engine, serviceTier, readOnly/allowSubagents, and unambiguous creation placeholders", () => {
+    const base = defaultRolePresets();
+    const rolesWithExternal: Record<string, RolePreset> = {
+      ...base,
+      architect: {
+        ...base.architect!,
+        modelId: "astra",
+        thinkingLevel: "high",
+        serviceTier: "ultrafast",
+        externalClientId: codexClient.id,
+        external: { kind: "codex", envId: "mac", version: "1.0", verifiedAt: 123 },
+      },
+    };
+    const workersHtml = renderToStaticMarkup(
+      <WorkersModule
+        settings={settingsFixture({
+          blocks: { ...settingsFixture().blocks, roles: { revision: 2, value: rolesWithExternal } },
+          externalClients: { [codexClient.id]: codexClient },
+        })}
+        envs={[device]}
+        onSettingsUpdated={vi.fn()}
+      />,
+    );
+    expect(workersHtml).toContain("架构师");
+    expect(workersHtml).toContain("Codex @ 开发电脑 · astra · 高 · Ultra Fast");
+    expect(workersHtml).not.toContain("外部客户端");
+
+    const fieldsHtml = renderToStaticMarkup(
+      <AgentPresetFields
+        value={rolesWithExternal.architect!}
+        onChange={vi.fn()}
+        externalClients={[codexClient]}
+        envs={[device]}
+        isCreating
+      />,
+    );
+    expect(fieldsHtml).toContain("运行引擎");
+    expect(fieldsHtml).toContain("服务档位");
+    expect(fieldsHtml).toContain("只读模式");
+    expect(fieldsHtml).toContain("允许子智能体");
+    expect(fieldsHtml).toContain("例如：数据分析师");
+    expect(fieldsHtml).toContain("例如：analyst");
+
+    // Switching engines clears incompatible provider/model/serviceTier cleanly
+    const toExternal = switchRoleEngine(base.coder!, codexClient);
+    expect(toExternal.externalClientId).toBe(codexClient.id);
+    expect(toExternal.external?.kind).toBe("codex");
+    expect(toExternal.provider).toBeUndefined();
+    expect(toExternal.modelId).toBeUndefined();
+    const backToBuiltin = switchRoleEngine({ ...toExternal, modelId: "astra", serviceTier: "fast" }, undefined);
+    expect(backToBuiltin.external).toBeUndefined();
+    expect(backToBuiltin.externalClientId).toBeUndefined();
+    expect(backToBuiltin.modelId).toBeUndefined();
+    expect(backToBuiltin.serviceTier).toBeUndefined();
+    expect(backToBuiltin.thinkingLevel).toBe("auto");
+  });
+
+  it("keeps experimental, offline, unverified and reserved client statuses distinct", () => {
+    const cases: Array<{ client: ExternalClientConnection; envs?: EnvNodeDescriptor[]; status: string }> = [
+      { client: { ...codexClient, verifiedAt: undefined }, status: "待验证" },
+      { client: codexClient, envs: [{ ...device, online: false }], status: "设备离线" },
+      { client: { ...codexClient, id: "grok-bot:mac", kind: "grok-bot", experimental: true, verifiedAt: undefined }, status: "实验" },
+      { client: { ...codexClient, id: "dots:mac", kind: "dots", verifiedAt: undefined }, status: "待支持" },
+      { client: { ...codexClient, id: "muse:mac", kind: "muse", verifiedAt: undefined }, status: "待支持" },
     ];
-    for (const { role, envs, status } of cases) expect(renderToStaticMarkup(<ExternalAgentsList agents={[role]} envs={envs} />)).toContain(status);
+    for (const { client, envs, status } of cases) {
+      expect(renderToStaticMarkup(<ExternalClientsList clients={[client]} roles={{}} envs={envs} />)).toContain(status);
+    }
   });
 
   it("preserves current external configurations when internal settings are edited or reset", () => {
@@ -164,7 +240,7 @@ describe("external agents in settings", () => {
     expect(merged.coder?.label).toBe("新的开发者");
   });
 
-  it("shows unauthenticated login hints, pending-verify actions, custom path toggle, and left-panel connect entry (U1, U3)", () => {
+  it("shows unauthenticated login hints, pending-verify actions, custom path toggle, and connect entry in Third-party Agents tab (U1, U3)", () => {
     const scan: ExternalAgentScanResult = {
       scannedAt: 1,
       devices: [{ id: "mac", name: "MacBook", online: true }],
@@ -185,11 +261,10 @@ describe("external agents in settings", () => {
     expect(cardHtml).toContain("手动指定客户端路径");
 
     const unverifiedClient: ExternalClientConnection = { ...codexClient, verifiedAt: undefined };
-    const unverifiedRole: RolePreset = { ...external, enabled: false, external: { ...external.external!, verifiedAt: undefined } };
     const listHtml = renderToStaticMarkup(
-      <ExternalAgentsList
-        agents={[unverifiedRole]}
-        externalClients={{ [unverifiedClient.id]: unverifiedClient }}
+      <ExternalClientsList
+        clients={[unverifiedClient]}
+        roles={{}}
         envs={[device]}
         onVerifyClient={vi.fn()}
         onRemoveClient={vi.fn()}
@@ -197,23 +272,11 @@ describe("external agents in settings", () => {
     );
     expect(listHtml).toContain("验证连接");
 
-    const emptySettings = {
-      globalRevision: 1,
-      blocks: {
-        presentation: { revision: 1, value: { agentName: "Kulo", language: "zh-CN" } },
-        executor: { revision: 1, value: { maxConcurrentWorkers: 2, maxSubagentsPerTicket: 4, paused: false, watchdogMinutes: 5, completedTaskDisplayHours: 3, autoArchiveEnabled: true, autoArchiveDays: 7 } },
-        roles: { revision: 1, value: defaultRolePresets() },
-        model: { revision: 1, value: { baseUrl: "https://api.openai.com/v1", apiMode: "openai-completions", defaultModel: "gpt-5", thinkingLevel: "medium", contextWindow: 128000, compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000, backgroundTokens: 64000 }, customProviders: [], gatewayDisabled: true }, hasApiKey: false },
-        identity: { revision: 1, value: { directory: "" }, effectiveDirectory: "/tmp/identity", directoryRevision: 1 },
-        memory: { revision: 1, value: { enabled: false, accessMode: "kulo", endpoint: "http://127.0.0.1:8888", endpoints: [], caCertPem: "", routerApiKeyEnv: "", workerApiKeyEnv: "", sharedReadApiKeyEnv: "", authFile: "", autoAttachTopLevelRouters: true, banks: { private: "kulo-core", shared: "kulo-shared" } }, hasRouterApiKey: false, hasWorkerApiKey: false, hasSharedReadApiKey: false },
-      },
-      history: [],
-    } as unknown as KuloSettingsView;
-    const workersHtml = renderToStaticMarkup(
-      <WorkersModule settings={emptySettings} envs={[device]} onSettingsUpdated={vi.fn()} />,
+    const clientsModuleHtml = renderToStaticMarkup(
+      <ExternalClientsModule settings={settingsFixture()} envs={[device]} onSettingsUpdated={vi.fn()} />,
     );
-    expect(workersHtml).toContain("外部客户端");
-    expect(workersHtml).toContain("连接客户端");
+    expect(clientsModuleHtml).toContain("第三方 Agent");
+    expect(clientsModuleHtml).toContain("连接客户端");
   });
 
   it("prioritizes currentDeviceId over remote hub local, collapses >3 missing labels, shows Grok Bot desktopAppInstalled chip, and distinguishes custom ACP clients", () => {
@@ -288,12 +351,13 @@ describe("external agents in settings", () => {
     expect(derived[0]).toMatchObject({ id: "acp:macbook:kimi-code", label: "Kimi Code", acpArgs: ["acp"] });
 
     const acpListHtml = renderToStaticMarkup(
-      <ExternalAgentsList
-        agents={[kimiRole]}
+      <ExternalClientsList
+        clients={derived}
+        roles={{ [kimiRole.id]: kimiRole }}
         envs={[{ id: "macbook", name: "Macbook", online: true } as EnvNodeDescriptor]}
       />,
     );
-    expect(acpListHtml).toContain("Kimi Code · Macbook");
+    expect(acpListHtml).toContain("Kimi Code @ Macbook");
     expect(parseAcpArgsInput('acp --profile "my profile" --fast')).toEqual(["acp", "--profile", "my profile", "--fast"]);
   });
 });

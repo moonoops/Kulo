@@ -1,27 +1,36 @@
 ---
 name: diagram-design
-description: SVG diagram layouts, --d-* tokens, HTML report layout, and check-diagram.mjs.
+description: Proactive inline SVG charts/trends/diagrams, --d-* tokens, HTML report layout.
 metadata:
   kulo-audiences: chat, worker
   kulo-dependencies: node
 ---
 
-# Diagram Design (Kulo Editorial System)
+# Diagram & Chart Design (Kulo Editorial System)
 
-Create crisp, publication-grade inline SVG diagrams for two contexts:
-1. **Inline chat diagrams (`kulo_ui_diagram`, Main Chat only)** — calm, frameless illustrations embedded directly inside Kulo's reply. Never use `kulo_ui_diagram` in Settings Assistant (use `kulo_ui_show` instead).
+Create crisp, publication-grade inline SVG charts and diagrams for two contexts:
+1. **Inline chat visuals (`kulo_ui_diagram`, Main Chat only)** — calm, frameless charts and illustrations embedded directly inside Kulo's reply. Never use `kulo_ui_diagram` in Settings Assistant (use `kulo_ui_show` instead).
 2. **Standalone offline HTML reports (`interactive-html` + `kulo_publish_asset`, Workers)** — multi-section editorial reports embedding multiple clean SVG figures.
 
 ---
 
-## 1. Restraint First (When NOT to Draw)
+## 1. Proactive Visual Utility & Restraint (When to Draw vs. Skip)
 
-**The highest-quality move is usually deletion.** Before drawing, ask: *Will a diagram communicate this substantially faster than 2–3 sentences or a Markdown table?* If no, do **not** draw.
+Use contextual utility to decide automatically—do **not** wait for the user to explicitly ask for a chart when a visual materially cuts cognitive load, and do **not** draw decorative visuals for plain prose.
 
-- Ordinary prose questions, bullet lists, or simple 3-column comparisons → **text or Markdown table**.
-- Decisions, parameter forms, filterable/selectable tables → **`kulo_ui_show`** (`genui-cards`).
-- Complex structure, topology, flows, sequences, state machines, hierarchies, timelines, quadrants, Sankey/waterfalls, or before/after deltas → **draw**.
-- Inline chat rhythm: **give a 1–2 sentence text takeaway first**, then call `kulo_ui_diagram` (at most **1 diagram per reply** unless asked for more).
+**Proactively draw (1 visual per reply, after a 1–2 sentence text takeaway):**
+- **Trends, price trajectories, or phase shifts** (market/price changes over time, before/after evolution, milestone-annotated curves, benchmark deltas) → see `references/types/charts-editorial.md`.
+- **Multi-item quantitative comparisons or breakdowns** (tiered pricing/specs comparison bars, dumbbell shifts, waterfalls, composition/flow splits).
+- **Structures, mechanics, flows, timelines, or trade-offs** (system architectures, workflows, sequence diagrams, state machines, hierarchies, timelines/Gantt, 2×2 quadrants).
+
+**Honest Data Fidelity (Sparse or Qualitative Sources):**
+- **Exact numeric series available** → plot exact verified data points with direct value labels and units.
+- **Only milestone dates, ranges, or relative deltas available** (e.g. "pre-order high premium → launch MSRP → 2 days later -200 below MSRP") → draw a **benchmark-relative phase trajectory / schematic chart** anchored to the verified baseline (e.g. official MSRP reference line) and explicitly note `"示意 · 基于公开报道阶段/区间"` in the chart footnote or caption. **Never fabricate unobserved intermediate daily values, and never omit the visual purely because daily ticks are missing.**
+
+**Do NOT draw here:**
+- Simple factual lookups, single values, short definitions, or brief ≤ 3-column static comparisons → **plain text or Markdown table**.
+- Decisions, parameter forms, sliders, or filterable/selectable tables → **`kulo_ui_show`** (`genui-cards`).
+- Multi-section reports or interactive simulators/calculators → delegate offline `.html` (`interactive-html` + `diagram-design`).
 
 ---
 
@@ -59,7 +68,7 @@ Simple 3–6 node architectures or linear flows can be emitted directly in 1 hop
 | 2×2 prioritization quadrants, role/permission/comparison matrices | `references/types/quadrant-matrix.md` |
 | Trees, org charts, stacked architecture layers, nested scopes | `references/types/hierarchy.md` |
 | Splitting/merging quantities (Sankey), data pipelines, medallion tiers | `references/types/flow-quantitative.md` |
-| Waterfall bridges, dumbbell/bar comparisons, slopegraphs, radar/heatmap | `references/types/charts-editorial.md` |
+| Trend lines, annotated price/metric trajectories, phase schematics, waterfall/bar/dumbbell/radar/heatmap | `references/types/charts-editorial.md` |
 | Reinforcing flywheels/loops, conversion funnels/pyramids, Venn overlaps | `references/types/loop-funnel.md` |
 | Core tokens, contrast, CJK typography | `references/style-guide.md` |
 | Reusable SVG markers, node boxes, 6 connector rules | `references/primitives-core.md` |

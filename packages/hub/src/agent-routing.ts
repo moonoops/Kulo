@@ -1,10 +1,69 @@
 import {
-  AGENT_TASK_KINDS, EXTERNAL_AGENT_KINDS, LEGACY_ROLE_ALIASES, SUPPORTED_EXTERNAL_AGENT_KINDS, redactSensitiveText,
+  AGENT_TASK_KINDS, EXTERNAL_AGENT_KINDS, LEGACY_ROLE_ALIASES, SUPPORTED_EXTERNAL_AGENT_KINDS,
+  directExternalClientRoleId, externalClientDisplayName, isBundledClaudeSdkExecutable,
+  isDirectExternalClientRoleId, parseDirectExternalClientRoleId, redactSensitiveText,
   type AgentAssignment, type AgentDispatchIntent, type AgentDispatchPolicy, type AgentRoutingTarget, type AgentTaskKind,
-  type EnvNodeDescriptor, type ExternalAgentKind, type RolePreset,
+  type EnvNodeDescriptor, type ExternalAgentBinding, type ExternalAgentKind, type ExternalClientConnection,
+  type KuloLanguage, type RolePreset,
 } from "@kulo/protocol";
+import { defaultExternalAgentRolePrompt, defaultExternalAgentWhenToUse } from "./prompts/worker.js";
 
 type Roles = Readonly<Record<string, RolePreset>>;
+type ExternalClients = Readonly<Record<string, ExternalClientConnection>>;
+
+function bindingFromClient(client: ExternalClientConnection): ExternalAgentBinding {
+  const executable =
+    client.executable && !(client.kind === "claude-code" && isBundledClaudeSdkExecutable(client.executable))
+      ? client.executable
+      : undefined;
+  return {
+    kind: client.kind,
+    envId: client.envId,
+    ...(executable ? { executable } : {}),
+    ...(client.kind === "acp" && client.acpArgs?.length ? { acpArgs: [...client.acpArgs] } : {}),
+    ...(client.agentRef ? { agentRef: client.agentRef } : {}),
+    ...(client.cdpUrl ? { cdpUrl: client.cdpUrl } : {}),
+    ...(client.experimental !== undefined ? { experimental: client.experimental } : {}),
+    ...(client.version ? { version: client.version } : {}),
+    ...(client.verifiedAt !== undefined ? { verifiedAt: client.verifiedAt } : {}),
+    ...(client.capabilities ? { capabilities: { ...client.capabilities } } : {}),
+  };
+}
+
+export function synthesizeDirectClientRole(
+  client: ExternalClientConnection,
+  language?: KuloLanguage,
+): RolePreset {
+  return {
+    id: directExternalClientRoleId(client.id),
+    label: externalClientDisplayName(client),
+    whenToUse: defaultExternalAgentWhenToUse(client.kind, language),
+    prompt: defaultExternalAgentRolePrompt(language),
+    enabled: true,
+    readOnly: false,
+    allowSubagents: false,
+    thinkingLevel: "auto",
+    externalClientId: client.id,
+    external: bindingFromClient(client),
+  };
+}
+
+export function resolveRoleOrDirectClient(
+  roleId: string | undefined,
+  roles: Roles,
+  externalClients?: ExternalClients,
+  language?: KuloLanguage,
+): RolePreset | undefined {
+  if (!roleId?.trim()) return undefined;
+  const clean = roleId.trim();
+  const direct = Object.hasOwn(roles, clean) ? roles[clean] : undefined;
+  if (direct) return direct;
+  const clientId = parseDirectExternalClientRoleId(clean);
+  if (clientId && externalClients && Object.hasOwn(externalClients, clientId)) {
+    return synthesizeDirectClientRole(externalClients[clientId]!, language);
+  }
+  return undefined;
+}
 export class AgentRoutingError extends Error {
   readonly humanError: string;
   constructor(readonly code: string, message: string, readonly status: 400 | 409 = 409) {
@@ -79,7 +138,7 @@ const PLATFORM_ALIASES: Readonly<Record<ExternalAgentKind, readonly string[]>> =
 };
 const INTERNAL_ALIASES = ["内置 Worker", "内置Worker", "内置智能体", "Kulo Worker", "built-in Worker", "builtin worker", "internal worker"];
 interface Alias { text: string; kind?: ExternalAgentKind; internal?: boolean; ids: string[]; }
-function aliases(roles: Roles): Alias[] {
+function aliases(roles: Roles, externalClients?: ExternalClients): Alias[] {
   const names = new Map<string, Alias>();
   const add = (text: string, data: Partial<Alias>) => {
     if (!validName(text)) fail("invalid_agent_registry_name", "智能体的名称或编号包含无效字符，请先检查智能体配置。", 400);
@@ -91,6 +150,13 @@ function aliases(roles: Roles): Alias[] {
   for (const role of Object.values(roles)) { add(role.id, { ids: [role.id] }); add(role.label, { ids: [role.id] }); }
   for (const [alias, target] of Object.entries(LEGACY_ROLE_ALIASES)) {
     if (ownRole(roles, target) && !names.has(canonical(alias))) add(alias, { ids: [target] });
+  }
+  for (const client of Object.values(externalClients ?? {})) {
+    const virtualId = directExternalClientRoleId(client.id);
+    if (client.kind === "acp") {
+      if (client.label?.trim() && validName(client.label.trim())) add(client.label.trim(), { ids: [virtualId] });
+      if (client.agentRef?.trim() && validName(client.agentRef.trim())) add(client.agentRef.trim(), { ids: [virtualId] });
+    }
   }
   for (const kind of EXTERNAL_AGENT_KINDS) for (const text of PLATFORM_ALIASES[kind]) add(text, { kind });
   for (const text of INTERNAL_ALIASES) add(text, { internal: true });
@@ -274,9 +340,14 @@ function namesIn(text: string, names: readonly Alias[]): Array<{ alias: Alias; s
 }
 
 /** This deliberately recognizes explicit assignment syntax, not a task classifier or model-generated intent. */
-export function extractAgentDispatchIntent(text: string, roles: Roles, envs: readonly EnvNodeDescriptor[] = []): AgentDispatchIntent | undefined {
+export function extractAgentDispatchIntent(
+  text: string,
+  roles: Roles,
+  envs: readonly EnvNodeDescriptor[] = [],
+  externalClients?: ExternalClients,
+): AgentDispatchIntent | undefined {
   if (typeof text !== "string" || !text.trim()) return undefined;
-  const names = aliases(roles); const source = unquotedText(text.normalize("NFKC"), names);
+  const names = aliases(roles, externalClients); const source = unquotedText(text.normalize("NFKC"), names);
   const targets: AgentRoutingTarget[] = [];
   for (const match of namesIn(source, names)) {
     const prefix = source.slice(0, match.start);
@@ -310,11 +381,30 @@ export function extractAgentDispatchIntent(text: string, roles: Roles, envs: rea
     }
     const namedEnv = matchedDeviceIds.size === 1 ? [...matchedDeviceIds][0] : undefined;
     let ids = match.alias.ids;
-    if (match.alias.internal) ids = ["coder"];
-    else if (match.at && ownRole(roles, match.alias.text)) ids = [match.alias.text];
-    else if (match.alias.kind) {
+    if (match.alias.internal) {
+      const internalRoles = Object.values(roles).filter((role) => !role.external);
+      const preferred =
+        (ownRole(roles, "coder") && !ownRole(roles, "coder")!.external && ownRole(roles, "coder")!.enabled !== false ? "coder" : undefined) ??
+        internalRoles.find((role) => role.enabled !== false)?.id ??
+        internalRoles[0]?.id;
+      ids = preferred ? [preferred] : [];
+    } else if (match.at && ownRole(roles, match.alias.text)) {
+      ids = [match.alias.text];
+    } else if (match.at && resolveRoleOrDirectClient(match.alias.text, roles, externalClients)) {
+      ids = [match.alias.text];
+    } else if (match.alias.kind) {
       ids = Object.values(roles).filter(role => role.external?.kind === match.alias.kind).map(role => role.id);
       if (namedEnv) ids = ids.filter(id => roles[id]?.external?.envId === namedEnv);
+      if (ids.length === 0 && externalClients) {
+        const matchingClients = Object.values(externalClients)
+          .filter(client => client.kind === match.alias.kind && (!namedEnv || client.envId === namedEnv));
+        ids = matchingClients.map(client => directExternalClientRoleId(client.id));
+      }
+    } else if (namedEnv && ids.length > 1) {
+      ids = ids.filter((id) => {
+        const resolved = resolveRoleOrDirectClient(id, roles, externalClients);
+        return !resolved?.external || resolved.external.envId === namedEnv;
+      });
     }
     const target: AgentRoutingTarget = {
       name: match.alias.text,
@@ -334,6 +424,8 @@ export function extractAgentDispatchIntent(text: string, roles: Roles, envs: rea
 
 export interface ResolveAgentDispatchInput {
   roles: Roles;
+  externalClients?: ExternalClients;
+  language?: KuloLanguage;
   intent?: AgentDispatchIntent;
   inheritedAssignment?: AgentAssignment;
   relaySettledReady?: boolean;
@@ -351,29 +443,73 @@ export interface ResolvedAgentDispatch {
   requestedName?: string;
   readOnly: boolean;
 }
-function requested(roles: Roles, value: string | undefined): RolePreset | undefined {
+function requested(
+  roles: Roles,
+  externalClients: ExternalClients | undefined,
+  value: string | undefined,
+  language?: KuloLanguage,
+): RolePreset | undefined {
   if (!value?.trim()) return undefined;
-  const id = value.trim(); return ownRole(roles, id) ?? (Object.hasOwn(LEGACY_ROLE_ALIASES, id) ? ownRole(roles, LEGACY_ROLE_ALIASES[id]!) : undefined);
+  const id = value.trim();
+  return (
+    resolveRoleOrDirectClient(id, roles, externalClients, language) ??
+    (Object.hasOwn(LEGACY_ROLE_ALIASES, id) ? ownRole(roles, LEGACY_ROLE_ALIASES[id]!) : undefined)
+  );
 }
-function targetCandidates(roles: Roles, target: AgentRoutingTarget, envId?: string): RolePreset[] {
+function directClientCandidates(
+  externalClients: ExternalClients | undefined,
+  target: AgentRoutingTarget,
+  scope: string | undefined,
+  language?: KuloLanguage,
+): RolePreset[] {
+  if (!externalClients) return [];
+  const all = Object.values(externalClients).filter(client => !scope || client.envId === scope);
+  const matching = target.kind
+    ? all.filter(client => client.kind === target.kind)
+    : all.filter(client => {
+        const virtualId = directExternalClientRoleId(client.id);
+        const nameKey = canonical(target.name);
+        return (
+          canonical(virtualId) === nameKey ||
+          canonical(client.id) === nameKey ||
+          (client.kind === "acp" && (
+            (client.label && canonical(client.label) === nameKey) ||
+            (client.agentRef && canonical(client.agentRef) === nameKey)
+          ))
+        );
+      });
+  return matching.map(client => synthesizeDirectClientRole(client, language));
+}
+function targetCandidates(
+  roles: Roles,
+  externalClients: ExternalClients | undefined,
+  target: AgentRoutingTarget,
+  envId?: string,
+  language?: KuloLanguage,
+): RolePreset[] {
   if (target.internal) {
     const internalRoles = Object.values(roles).filter(role => !role.external);
     const enabledInternal = internalRoles.filter(role => role.enabled !== false);
     return enabledInternal.length ? enabledInternal : internalRoles;
   }
-  if (target.agentId) { const role = ownRole(roles, target.agentId); return role ? [role] : []; }
+  if (target.agentId) {
+    const role = resolveRoleOrDirectClient(target.agentId, roles, externalClients, language);
+    return role ? [role] : [];
+  }
   const scope = target.envId ?? envId;
   const candidates = target.kind ? Object.values(roles).filter(role => role.external?.kind === target.kind) :
     Object.values(roles).filter(role => canonical(role.id) === canonical(target.name) || canonical(role.label) === canonical(target.name));
-  return candidates.filter(role => !scope || !role.external || role.external.envId === scope);
+  const scoped = candidates.filter(role => !scope || !role.external || role.external.envId === scope);
+  if (scoped.length > 0) return scoped;
+  return directClientCandidates(externalClients, target, scope, language);
 }
 function result(role: RolePreset, source: ResolvedAgentDispatch["source"], taskKind?: AgentTaskKind, requestedName?: string, readOnlyFloor = false): ResolvedAgentDispatch {
   return { role: role.id, source, ...(taskKind ? { taskKind } : {}), ...(requestedName ? { requestedName } : {}), readOnly: Boolean(role.readOnly || readOnlyFloor) };
 }
 
 export function resolveAgentDispatch(input: ResolveAgentDispatchInput): ResolvedAgentDispatch {
-  const { roles } = input;
-  const requestedPreset = requested(roles, input.requestedRole);
+  const { roles, externalClients, language } = input;
+  const requestedPreset = requested(roles, externalClients, input.requestedRole, language);
   const requestedKind = requestedPreset && !requestedPreset.external ? BUILTIN_TASK_KINDS[requestedPreset.id] : undefined;
   const finish = (role: RolePreset, source: ResolvedAgentDispatch["source"], taskKind?: AgentTaskKind, name?: string) => result(role, source, taskKind, name, Boolean(requestedPreset?.readOnly));
   if (input.taskKind !== undefined && !(AGENT_TASK_KINDS as readonly string[]).includes(input.taskKind)) fail("invalid_agent_task_kind", "智能体任务类型无效。", 400);
@@ -385,15 +521,34 @@ export function resolveAgentDispatch(input: ResolveAgentDispatchInput): Resolved
   if (input.intent) {
     const targets = input.intent.targets;
     let target = targets[0]!;
-    let candidates = targetCandidates(roles, target, input.envId);
+    let candidates = targetCandidates(roles, externalClients, target, input.envId, language);
     if (targets.length > 1) {
-      const selected = requested(roles, input.requestedRole);
-      const matches = selected ? targets.filter(item => targetCandidates(roles, item, input.envId).some(role => role.id === selected.id)) : [];
-      const matched = matches.find(item => targetCandidates(roles, item, input.envId).length === 1) ?? matches[0];
+      const selected = requested(roles, externalClients, input.requestedRole, language);
+      const matches = selected ? targets.filter(item => {
+        const list = targetCandidates(roles, externalClients, item, input.envId, language);
+        if (list.some(role => role.id === selected.id)) return true;
+        if (isDirectExternalClientRoleId(selected.id) && item.kind && selected.external?.kind === item.kind) {
+          const scope = item.envId ?? input.envId;
+          return !scope || selected.external.envId === scope;
+        }
+        return false;
+      }) : [];
+      const matched = matches.find(item => targetCandidates(roles, externalClients, item, input.envId, language).length === 1) ?? matches[0];
       if (!selected || !matched) fail("agent_selection_required", `你点名了 ${targets.map(item => item.name).join("、")}，请明确本任务交给其中哪一个智能体。`);
-      target = matched; candidates = targetCandidates(roles, target, input.envId);
+      target = matched; candidates = targetCandidates(roles, externalClients, target, input.envId, language);
     }
     if (!candidates.length) fail("agent_not_configured", `${target.name}${target.envId ? ` 在设备 ${target.envId} 上` : ""} 尚未配置或已移除，请先连接该智能体；本任务不会改派其他智能体。`);
+    if (
+      requestedPreset &&
+      isDirectExternalClientRoleId(requestedPreset.id) &&
+      target.kind &&
+      requestedPreset.external?.kind === target.kind &&
+      (!target.envId || requestedPreset.external.envId === target.envId) &&
+      (!input.envId || requestedPreset.external.envId === input.envId) &&
+      candidates.every(role => role.external && (role.externalClientId ?? `${role.external.kind}:${role.external.envId}`) === requestedPreset.externalClientId)
+    ) {
+      candidates = [requestedPreset];
+    }
     if (candidates.length > 1) {
       if (target.internal) {
         const chosen = (requestedPreset && !requestedPreset.external && candidates.some(role => role.id === requestedPreset.id) ? requestedPreset : undefined)
@@ -425,7 +580,7 @@ export function resolveAgentDispatch(input: ResolveAgentDispatchInput): Resolved
       (requestedPreset.readOnly || input.workspaceMode === "read_only"),
     );
     if (!allowPostReadyVerification) {
-      const selected = ownRole(roles, inherited.agentId);
+      const selected = resolveRoleOrDirectClient(inherited.agentId, roles, externalClients, language);
       if (!selected) fail("agent_not_configured", `${inherited.requestedName ?? inherited.agentId} 的原任务绑定已移除，请重新指定智能体；不会自动改派。`);
       return finish(selected, inherited.source, input.taskKind ?? inherited.taskKind, inherited.requestedName);
     }
@@ -434,6 +589,9 @@ export function resolveAgentDispatch(input: ResolveAgentDispatchInput): Resolved
   if (input.requestedRole?.trim() && !selected) fail("agent_not_configured", `${input.requestedRole.trim()} 未配置，不能创建无角色定义的 Worker。`);
   const taskKind = input.taskKind ?? requestedKind;
   if (input.trustedManual && selected) return finish(selected, "manual", taskKind);
+  if (selected && isDirectExternalClientRoleId(selected.id)) {
+    fail("direct_client_explicit_only", "第三方 Agent 默认配置仅在用户显式指定时直接调用，或在智能体设置中绑定到具体智能体角色。");
+  }
   const defaults = Object.values(roles).map(role => ({ role, policy: normalizeAgentDispatchPolicy(role.dispatchPolicy) })).filter(({ role, policy }) => policy &&
     (!input.envId || !role.external || role.external.envId === input.envId) && (!policy.projectIds || Boolean(input.projectId && policy.projectIds.includes(input.projectId))));
   if (defaults.length && !taskKind) fail("agent_task_kind_required", `默认承接智能体 ${defaults.map(({ role }) => display(role)).join("、")} 需要先明确任务类型，请为本任务分类。`);

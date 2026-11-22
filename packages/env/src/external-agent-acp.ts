@@ -1,8 +1,15 @@
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import type { ExternalAgentKind, ExternalAgentModelInfo } from "@kulo/protocol";
-import type { RpcValue } from "./external-agent-rpc.js";
+import { KULO_VERSION, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentQuotaProbeResult } from "@kulo/protocol";
+import { ExternalAgentRpc, type ExternalAgentPipeFactory, type RpcValue } from "./external-agent-rpc.js";
+import {
+  isGrokNotSignedInText,
+  isGrokShellRouteUnavailableText,
+  isGrokTeamManagedOutput,
+  parseGrokBillingPayload,
+  sanitizeQuotaError,
+} from "./external-agent-quota.js";
 
 export interface AcpFlavorSpec {
   readonly kind: ExternalAgentKind;
@@ -136,6 +143,221 @@ export async function detectGrokAuthenticated(
     return parseGrokModelsOutput(result.output).authenticated;
   } catch {
     return null;
+  }
+}
+
+export type GrokQuotaCliRunner = (
+  executable: string,
+  args: readonly string[],
+  pathEnv: string,
+  timeoutMs?: number,
+  signal?: AbortSignal,
+) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+
+function runGrokQuotaCli(
+  executable: string,
+  args: readonly string[],
+  pathEnv: string,
+  timeoutMs = 2_500,
+  signal?: AbortSignal,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("Quota check aborted"));
+      return;
+    }
+    const env: NodeJS.ProcessEnv = {
+      HOME: os.homedir(),
+      PATH: pathEnv,
+    };
+    for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"]) {
+      if (process.env[key]) env[key] = process.env[key];
+    }
+    const child = spawn(executable, [...args], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (value: { code: number | null; stdout: string; stderr: string } | Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (value instanceof Error) reject(value);
+      else resolve(value);
+    };
+    const onAbort = () => {
+      try { child.kill(); } catch { /* ignore */ }
+      finish(new Error("Quota check aborted"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+      if (stdout.length > 64_000) {
+        try { child.kill(); } catch { /* ignore */ }
+        finish({ code: null, stdout, stderr });
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+      if (stderr.length > 64_000) {
+        try { child.kill(); } catch { /* ignore */ }
+        finish({ code: null, stdout, stderr });
+      }
+    });
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* ignore */ }
+      finish(new Error("Grok usage command timed out"));
+    }, timeoutMs);
+    timer.unref();
+    child.once("error", (error) => finish(error));
+    child.once("exit", (code) => finish({ code, stdout, stderr }));
+  });
+}
+
+export async function probeGrokQuota(options: {
+  executable: string;
+  cwd: string;
+  pathEnv: string;
+  pipeFactory: ExternalAgentPipeFactory;
+  runtimePaths: string[];
+  runner?: GrokQuotaCliRunner;
+  hasApiKey?: boolean;
+  signal?: AbortSignal;
+  cliTimeoutMs?: number;
+  stdioTimeoutMs?: number;
+  redact?: (value: string) => string;
+}): Promise<ExternalAgentQuotaProbeResult> {
+  const hasApiKey = options.hasApiKey ?? Boolean(process.env.XAI_API_KEY?.trim());
+  const runner = options.runner ?? runGrokQuotaCli;
+  if (options.signal?.aborted) {
+    return { kind: "grok", status: "unavailable", source: "live", fetchedAt: Date.now(), windows: [], error: "Quota check aborted" };
+  }
+
+  let shouldFallbackToStdio = false;
+  let stage1Error: string | undefined;
+  try {
+    const cli = await runner(options.executable, ["usage", "--json"], options.pathEnv, options.cliTimeoutMs ?? 2_500, options.signal);
+    const combined = `${cli.stdout}\n${cli.stderr}`.trim();
+    if (cli.code === 0) {
+      if (isGrokTeamManagedOutput(combined)) {
+        return { kind: "grok", status: "ok", source: "live", fetchedAt: Date.now(), planLabel: "Team", windows: [] };
+      }
+      const trimmedOut = cli.stdout.trim();
+      if (trimmedOut) {
+        try {
+          const parsedJson = JSON.parse(trimmedOut) as unknown;
+          const mapped = parseGrokBillingPayload(parsedJson, Date.now());
+          if (mapped) return mapped;
+        } catch {
+          // Fall through to unavailable / stdio check
+        }
+      }
+      stage1Error = "Grok usage output did not contain recognizable quota fields";
+    } else if (isGrokNotSignedInText(combined)) {
+      return {
+        kind: "grok",
+        status: hasApiKey ? "api_key_billing" : "unauthenticated",
+        source: "live",
+        fetchedAt: Date.now(),
+        windows: [],
+      };
+    } else if (isGrokShellRouteUnavailableText(combined)) {
+      shouldFallbackToStdio = true;
+    } else {
+      stage1Error = sanitizeQuotaError(combined || `Grok usage failed (${cli.code ?? "signal"})`, options.redact);
+    }
+  } catch (error) {
+    if (options.signal?.aborted) {
+      return { kind: "grok", status: "unavailable", source: "live", fetchedAt: Date.now(), windows: [], error: "Quota check aborted" };
+    }
+    stage1Error = sanitizeQuotaError(error instanceof Error ? error.message : "Grok usage check failed", options.redact);
+  }
+
+  if (!shouldFallbackToStdio) {
+    return {
+      kind: "grok",
+      status: "unavailable",
+      source: "live",
+      fetchedAt: Date.now(),
+      windows: [],
+      error: stage1Error ?? "Grok quota is currently unavailable",
+    };
+  }
+
+  // Stage 2: Stateless ACP stdio fallback via `_x.ai/billing` (no background daemon, no session/new, 0 tokens).
+  const timeoutMs = options.stdioTimeoutMs ?? 5_500;
+  const startedAt = Date.now();
+  const remainingMs = () => Math.max(500, timeoutMs - (Date.now() - startedAt));
+  const rpc = new ExternalAgentRpc({
+    request: async () => { throw new Error("Quota probe does not accept interactive requests"); },
+    notification: () => {},
+    failed: () => {},
+  });
+  const pipe = await options.pipeFactory({
+    executable: options.executable,
+    args: ["agent", "stdio"],
+    cwd: options.cwd,
+    env: {},
+    isolated: false,
+    readOnly: true,
+    runtimePaths: options.runtimePaths,
+    onStdout: (data) => rpc.accept(data),
+    onStderr: () => {},
+  });
+  rpc.attach(pipe);
+  const onAbort = () => { try { rpc.close(); pipe.close(); } catch { /* ignore */ } };
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    await rpc.call(
+      "initialize",
+      {
+        protocolVersion: 1,
+        clientCapabilities: {},
+        clientInfo: { name: "kulo", version: KULO_VERSION },
+        _meta: { clientType: "extension" },
+      },
+      remainingMs(),
+    );
+    const billing = await rpc.call("_x.ai/billing", {}, remainingMs());
+    const mapped = parseGrokBillingPayload(billing, Date.now());
+    if (mapped) return mapped;
+    return {
+      kind: "grok",
+      status: "unavailable",
+      source: "live",
+      fetchedAt: Date.now(),
+      windows: [],
+      error: "Grok billing response did not include quota metrics",
+    };
+  } catch (error) {
+    const code = (error as { code?: unknown } | null)?.code;
+    const msg = error instanceof Error ? error.message : String(error);
+    if (code === -32000 || /-32000/.test(msg) || isGrokNotSignedInText(msg)) {
+      return {
+        kind: "grok",
+        status: hasApiKey ? "api_key_billing" : "unauthenticated",
+        source: "live",
+        fetchedAt: Date.now(),
+        windows: [],
+      };
+    }
+    return {
+      kind: "grok",
+      status: "unavailable",
+      source: "live",
+      fetchedAt: Date.now(),
+      windows: [],
+      error: sanitizeQuotaError(msg, options.redact),
+    };
+  } finally {
+    options.signal?.removeEventListener("abort", onAbort);
+    try { rpc.close(); } catch { /* ignore */ }
+    try { pipe.close(); } catch { /* ignore */ }
+    await (pipe.cleanup?.() ?? pipe.exited.then(() => true, () => false)).catch(() => false);
   }
 }
 

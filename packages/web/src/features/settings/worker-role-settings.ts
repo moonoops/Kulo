@@ -1,6 +1,5 @@
 import { defaultRolePresets, type KuloLanguage, type KuloSettingsView, type RolePreset } from "@kulo/protocol";
 import { translate as t } from "../../kulo-i18n";
-import { internalAgentPresets, withExternalAgentPresets } from "./external-agents-view";
 
 export type RoleMutation =
   | { kind: "enabled"; id: string; enabled: boolean }
@@ -11,7 +10,11 @@ export type RoleMutation =
 export function roleMutationValue(saved: Record<string, RolePreset>, mutation: RoleMutation): Record<string, RolePreset> {
   let next: Record<string, RolePreset>;
   if (mutation.kind === "restore") {
-    next = withExternalAgentPresets(defaultRolePresets(mutation.language ?? "en"), saved);
+    const defaults = defaultRolePresets(mutation.language ?? "en");
+    const customExternal = Object.fromEntries(
+      Object.entries(saved).filter(([id, role]) => (role.external || role.externalClientId) && !Object.hasOwn(defaults, id)),
+    );
+    next = { ...defaults, ...customExternal };
   } else if (mutation.kind === "create") {
     if (saved[mutation.role.id]) throw new Error(t("智能体标识已存在，请使用其他标识。", "This agent ID already exists. Use another ID."));
     next = { ...saved, [mutation.role.id]: mutation.role };
@@ -21,8 +24,8 @@ export function roleMutationValue(saved: Record<string, RolePreset>, mutation: R
     if (mutation.kind === "enabled") next = { ...saved, [mutation.id]: { ...role, enabled: mutation.enabled } };
     else { next = { ...saved }; delete next[mutation.id]; }
   }
-  const internal = internalAgentPresets(next);
-  if (!Object.keys(internal).length || !Object.values(internal).some((role) => role.enabled !== false)) {
+  const values = Object.values(next);
+  if (!values.length || !values.some((role) => role.enabled !== false)) {
     throw new Error(t("至少需保留 1 个启用状态的智能体。", "Keep at least one agent enabled."));
   }
   return next;

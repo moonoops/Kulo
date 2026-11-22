@@ -27,6 +27,7 @@ export interface VoiceToolsOptions {
   assertActive: (source: MediaJobSource) => Promise<void>;
   /** Must publish idempotently for asset.id, including recovery after publication but before the tool receipt commits. */
   publish: (asset: ChatAttachment, source: MediaJobSource, callId: string) => Promise<void>;
+  onOutwardAction?: (source: MediaJobSource, label: string) => void | Promise<void>;
 }
 interface SpeechResult { status: "published" | "pending_review"; assetId: string; reused: boolean }
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -68,6 +69,9 @@ export function createVoiceToolsExtension(options: VoiceToolsOptions) {
     if (!reservation.created && receipt.status === "submitting") throw new VoiceError(409, "voice_speech_submission_unknown", "原语音合成的提交状态待核实，未重复计费生成。");
     if (reservation.created) {
       try {
+        if (source.ticketId) {
+          await options.onOutwardAction?.(source, "voice:synthesize");
+        }
         const audio = await options.service().synthesize(text, context.abortSignal);
         await assertActive();
         const asset = options.uploads().saveUpload({

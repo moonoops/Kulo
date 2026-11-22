@@ -5,6 +5,20 @@ import type {
   SparkConnectorSnapshot,
 } from "@kulo/protocol";
 
+const SPARK_PRE_DISPATCH_CODES = new Set([
+  "spark_unavailable",
+  "invalid_request",
+  "env_unavailable",
+  "env_offline",
+  "connectors_unsupported",
+  "send_failed",
+  "spark_cli_not_installed",
+  "invalid_params",
+  "unsupported_driver",
+  "ENOENT",
+  "EACCES",
+]);
+
 export interface SparkMailServiceHost {
   listOnlineEnvs(): EnvNodeDescriptor[];
   callConnector(envId: string, request: ConnectorCallRequest, timeoutMs?: number): Promise<ConnectorCallResult>;
@@ -115,11 +129,12 @@ export class SparkMailService {
   async executeConfirmedDraft(
     params: { replyToThreadId?: string; to?: string; subject?: string; body: string },
     preferredEnvId?: string,
-  ): Promise<ConnectorCallResult & { envId?: string }> {
+  ): Promise<ConnectorCallResult & { envId?: string; preDispatch?: boolean }> {
     const snap = await this.status({ force: true, envId: preferredEnvId });
     if (!snap.available || !snap.envId) {
       return {
         ok: false,
+        preDispatch: true,
         code: "spark_unavailable",
         error: snap.error || "Spark CLI 当前不可用，未能创建草稿。",
       };
@@ -133,8 +148,10 @@ export class SparkMailService {
       },
       18_000,
     );
+    const preDispatch = !res.ok && Boolean(res.code && SPARK_PRE_DISPATCH_CODES.has(res.code));
     return {
       ...res,
+      ...(!res.ok ? { preDispatch } : {}),
       ...(res.error ? { error: this.#host.redact(res.error) } : {}),
       envId: snap.envId,
     };

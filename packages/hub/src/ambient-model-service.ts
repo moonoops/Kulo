@@ -13,6 +13,7 @@ import type {
 } from "@kulo/protocol";
 import type { AssistantBackgroundModelPersisted } from "./assistant-state.js";
 import { buildAugmentedHostPath, findHostExecutable } from "./host-path.js";
+import { isLoopbackBaseUrl } from "./usage-caps.js";
 
 const GIB = 1024 ** 3;
 const DEFAULT_OMLX_PORT = 18_741;
@@ -353,6 +354,23 @@ export class AmbientModelService {
       this.#host.onStatusChanged?.();
       throw error;
     }
+  }
+
+  /**
+   * Returns true when `completeZeroToolJson(preferMainModel)` will hit a remote cloud model
+   * rather than a managed local oMLX/Ollama server or loopback custom provider.
+   */
+  async willUseCloudModel(preferMainModel = false): Promise<boolean> {
+    const cfg = await this.#host.persistedConfig();
+    if (!preferMainModel && cfg.mode === "local-managed" && cfg.modelId && this.#running && this.#endpoint) {
+      return false;
+    }
+    const chosen = !preferMainModel && cfg.mode === "kulo-provider" && cfg.providerId && cfg.modelId
+      ? { provider: cfg.providerId, modelId: cfg.modelId }
+      : this.#host.defaultModel();
+    const model = this.#host.models.getModel(chosen.provider, chosen.modelId);
+    if (!model) return false;
+    return !isLoopbackBaseUrl(model.baseUrl);
   }
 
   /**

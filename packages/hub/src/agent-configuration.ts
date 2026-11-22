@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-durable";
-import { AUTO_SCAN_EXTERNAL_AGENT_KINDS, EXTERNAL_AGENT_KINDS, LEGACY_ROLE_ALIASES, externalClientConnectionId, isBlockedCustomAcpExecutableName, isValidCustomAcpAgentRef, redactSensitiveText, validateCustomAcpArgs, type AgentConfigurationDraft, type AgentConfigurationWorkspace, type AgentDispatchPolicy, type EnvNodeDescriptor, type ExternalAgentBinding, type ExternalAgentCatalogItem, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentQuickConnectRequest, type ExternalAgentQuickConnectResult, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentScanCandidate, type ExternalAgentScanResult, type KuloSettingsView, type RolePreset } from "@kulo/protocol";
+import { AUTO_SCAN_EXTERNAL_AGENT_KINDS, EXTERNAL_AGENT_KINDS, LEGACY_ROLE_ALIASES, externalClientConnectionId, externalClientDisplayName, isBlockedCustomAcpExecutableName, isValidCustomAcpAgentRef, redactSensitiveText, validateCustomAcpArgs, type AgentConfigurationDraft, type AgentConfigurationWorkspace, type AgentDispatchPolicy, type EnvNodeDescriptor, type ExternalAgentBinding, type ExternalAgentCatalogItem, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentQuickConnectRequest, type ExternalAgentQuickConnectResult, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentScanCandidate, type ExternalAgentScanResult, type ExternalClientConnection, type KuloSettingsView, type RolePreset } from "@kulo/protocol";
 import { assertAgentDefaultScopes, normalizeAgentDispatchPolicy } from "./agent-routing.js";
 
 export interface AgentConfigurationCommit {
@@ -18,18 +18,25 @@ export interface AgentConfigurationCommit {
   role: RolePreset;
   models?: ExternalAgentModelInfo[];
 }
+export interface AgentConfigurationClientCommit {
+  fingerprint: string;
+  clientId: string;
+  expectedRevision: number;
+  client: ExternalClientConnection;
+}
 export interface AgentConfigurationSaveResult { agentId: string; enabled: boolean; settings: KuloSettingsView }
 export interface AgentConfigurationRemovalCommit { fingerprint: string; clientId: string; agentId: string; expectedRevision: number }
 type ReceiptResult = AgentConfigurationSaveResult | ExternalAgentQuickConnectResult | { agentId: string; removed: true; settings: KuloSettingsView } | AgentConfigurationDraft;
 interface ConfigurationState {
   drafts: Record<string, AgentConfigurationDraft>;
   commits: Record<string, AgentConfigurationCommit>;
+  clientCommits?: Record<string, AgentConfigurationClientCommit>;
   removals: Record<string, AgentConfigurationRemovalCommit>;
   receipts: Record<string, { fingerprint: string; state: "pending" | "complete" | "uncertain"; result?: ReceiptResult }>;
 }
 export const AgentConfigurationDoc = defineDoc<ConfigurationState & JsonObject>({
   kind: "kulo.agent-configuration", version: 1, scope: "session",
-  initial: () => ({ drafts: {}, commits: {}, removals: {}, receipts: {} }) as ConfigurationState & JsonObject,
+  initial: () => ({ drafts: {}, commits: {}, clientCommits: {}, removals: {}, receipts: {} }) as ConfigurationState & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
 
@@ -43,6 +50,7 @@ export interface AgentConfigurationOptions {
   projects?: () => Promise<NonNullable<AgentConfigurationWorkspace["projects"]>>;
   request: (envId: string, request: ExternalAgentRequest) => Promise<ExternalAgentResponse>;
   saveRole: (input: { role: RolePreset; models?: ExternalAgentModelInfo[]; expectedRevision: number; commandId: string; operationKey: string; fingerprint: string; commit: AgentConfigurationCommit }) => Promise<KuloSettingsView>;
+  saveClient?: (input: { client: ExternalClientConnection; expectedRevision: number; commandId: string; operationKey: string; fingerprint: string; commit: AgentConfigurationClientCommit }) => Promise<KuloSettingsView>;
   removeRole?: (input: { agentId: string; expectedRevision: number; commandId: string; operationKey: string; fingerprint: string; commit: AgentConfigurationRemovalCommit }) => Promise<KuloSettingsView>;
   verifyRoundtrip?: (draft: AgentConfigurationDraft, nonce: string) => Promise<{ sessionId?: string; version?: string }>;
   assertContext?: (clientId: string) => Promise<unknown>;
@@ -336,15 +344,16 @@ export class KuloAgentConfiguration {
       const fingerprint = hash(input);
       const previous = await this.#receipt<ExternalAgentQuickConnectResult>(key, fingerprint);
       if (previous) return previous;
-      const committed = (await this.#state())?.commits[key];
-      if (committed && committed.fingerprint !== fingerprint) fail(409, "agent_configuration_command_conflict", "此操作标识已用于另一份智能体配置。");
+      const state = await this.#state();
+      const committed = state?.clientCommits?.[key];
+      if (committed && committed.fingerprint !== fingerprint) fail(409, "agent_configuration_command_conflict", "此操作标识已用于另一份客户端连接配置。");
       const device = this.#device(envId);
       const item = catalog(clientKind);
-      let commit: AgentConfigurationCommit;
+      let commit: AgentConfigurationClientCommit;
       let verificationLevel: "protocol" | "roundtrip";
       if (committed) {
         commit = committed;
-        verificationLevel = commit.role.external?.verifiedAt ? "roundtrip" : "protocol";
+        verificationLevel = commit.client.verifiedAt ? "roundtrip" : "protocol";
       } else {
         const binding: ExternalAgentBinding = {
           kind: clientKind,
@@ -409,72 +418,52 @@ export class KuloAgentConfiguration {
         }
         const rolesBlock = this.#options.settings().blocks.roles;
         const externalClientId = externalClientConnectionId(binding);
-        const existingUpgrade = !label
-          ? Object.values(rolesBlock.value).find((role) => role.external && (role.externalClientId ?? externalClientConnectionId(role.external)) === externalClientId && !role.external.verifiedAt)
-          : undefined;
-        const roleId = existingUpgrade?.id ?? suggestExternalRoleId(clientKind, envId, rolesBlock.value, binding.agentRef);
-        const policyDraft: AgentConfigurationDraft = {
-          id: roleId,
-          agentId: existingUpgrade?.id,
-          revision: 1,
-          clientId,
-          settingsRevision: rolesBlock.revision,
-          binding,
-          label: existingUpgrade?.label ?? resolvedLabel,
-          whenToUse: whenToUse || existingUpgrade?.whenToUse || resolvedWhenToUse,
-          prompt: prompt || existingUpgrade?.prompt || resolvedPrompt,
-          readOnly: false,
-          allowSubagents: input.allowSubagents ?? existingUpgrade?.allowSubagents ?? false,
-          ...(input.dispatchPolicy ? { dispatchPolicy: { defaultFor: input.dispatchPolicy.defaultFor ?? [], ...(input.dispatchPolicy.projectIds !== undefined ? { projectIds: [...input.dispatchPolicy.projectIds] } : {}) } } : existingUpgrade?.dispatchPolicy ? { dispatchPolicy: clone(existingUpgrade.dispatchPolicy) } : {}),
-          updatedAt: Date.now(),
+        const verifiedReady = verificationLevel === "roundtrip" && item.status === "supported";
+        if (!verifiedReady) delete binding.verifiedAt;
+        const now = Date.now();
+        const client: ExternalClientConnection = {
+          id: externalClientId,
+          kind: binding.kind,
+          envId: binding.envId,
+          ...(binding.kind === "acp" && resolvedLabel ? { label: resolvedLabel } : {}),
+          ...(binding.executable ? { executable: binding.executable } : {}),
+          ...(binding.kind === "acp" && binding.acpArgs?.length ? { acpArgs: [...binding.acpArgs] } : {}),
+          ...(binding.agentRef ? { agentRef: binding.agentRef } : {}),
+          ...(binding.cdpUrl ? { cdpUrl: binding.cdpUrl } : {}),
+          ...(binding.experimental !== undefined ? { experimental: binding.experimental } : {}),
+          ...(binding.version ? { version: binding.version } : {}),
+          ...(binding.verifiedAt !== undefined ? { verifiedAt: binding.verifiedAt } : {}),
+          ...(binding.capabilities ? { capabilities: clone(binding.capabilities) } : {}),
+          models: clone(detection.models ?? []),
+          updatedAt: now,
         };
-        const policy = await this.#validateDispatchPolicy(policyDraft, guard);
-        const enabled = verificationLevel === "roundtrip" && item.status === "supported";
-        const role: RolePreset = {
-          id: roleId,
-          label: policyDraft.label,
-          whenToUse: policyDraft.whenToUse,
-          prompt: policyDraft.prompt,
-          readOnly: false,
-          allowSubagents: policyDraft.allowSubagents,
-          ...(modelId ? { modelId } : {}),
-          ...(thinkingLevel ? { thinkingLevel } : {}),
-          ...(policy ? { dispatchPolicy: clone(policy) } : {}),
-          enabled,
-          externalClientId,
-          external: clone(binding),
-        };
-        if (!role.enabled && role.external) delete role.external.verifiedAt;
         commit = {
           fingerprint,
           clientId,
-          draftId: `agent-quick-${commandId}`,
-          draftRevision: 1,
           expectedRevision: rolesBlock.revision,
-          role: clone(role),
-          ...(detection.models ? { models: clone(detection.models) } : {}),
+          client: clone(client),
         };
       }
       await this.#guard(clientId, guard);
-      const settings = await this.#options.saveRole({
-        role: clone(commit.role),
-        ...(commit.models ? { models: clone(commit.models) } : {}),
+      if (!this.#options.saveClient) fail(500, "agent_client_save_unavailable", "当前运行时不支持单独保存外部客户端连接。");
+      const settings = await this.#options.saveClient({
+        client: clone(commit.client),
         expectedRevision: commit.expectedRevision,
         commandId,
         operationKey: key,
         fingerprint,
         commit,
       });
+      const enabled = Boolean(commit.client.verifiedAt && item.status === "supported");
       const result: ExternalAgentQuickConnectResult = {
-        agentId: commit.role.id,
-        clientId: commit.role.externalClientId ?? externalClientConnectionId(commit.role.external!),
+        clientId: commit.client.id,
         kind: clientKind,
         envId,
-        label: commit.role.label,
-        enabled: commit.role.enabled !== false,
+        label: externalClientDisplayName(commit.client),
+        enabled,
         verificationLevel,
-        ...(commit.role.external?.version ? { version: commit.role.external.version } : {}),
-        modelsCount: commit.models?.length ?? 0,
+        ...(commit.client.version ? { version: commit.client.version } : {}),
+        modelsCount: commit.client.models.length,
         settings,
       };
       this.#public(result);

@@ -357,9 +357,15 @@ export function KuloTaskRail({
           data-has-tasks={rows.length > 0 || undefined}
         >
           {assistantItems.map((item) => {
-            const itemBusy = busyAssistantIds.has(item.id);
+            const pendingState = item.pendingAction?.executionState ?? "none";
+            const isDispatched = pendingState === "dispatched";
+            const isUnknown = pendingState === "unknown";
+            const itemBusy = busyAssistantIds.has(item.id) || isDispatched;
             const sourceText = item.envName ? `${item.sourceLabel} · ${item.envName}` : item.sourceLabel;
             const timeText = assistantItemAgeLabel(item.updatedAt, now, t);
+            const actionStatusNotice = isUnknown
+              ? (item.pendingAction?.lastError || t("操作已发出但未确认结果，请核对目标应用后再收起。", "Action was sent without confirmation. Verify in the target app before dismissing."))
+              : item.pendingAction?.lastError;
             return (
               <div className="kulo-task-space" key={item.id} data-assistant-item-id={item.id}>
                 <Card variant="secondary" className="kulo-task-card kulo-assistant-card" data-kind={item.kind}>
@@ -379,9 +385,12 @@ export function KuloTaskRail({
                         {item.pendingAction?.previewText && (
                           <span className="kulo-assistant-preview" title={item.pendingAction.previewText}>{item.pendingAction.previewText}</span>
                         )}
+                        {actionStatusNotice && (
+                          <span className="kulo-assistant-preview" role="status" title={actionStatusNotice}>{actionStatusNotice}</span>
+                        )}
                         <span className="kulo-task-card-foot">
                           <span className="kulo-assistant-source" title={sourceText}>
-                            <KuloIcon name={item.kind === "alert" ? "error" : item.kind === "decision" ? "help" : "bulb"} size={13} />
+                            <KuloIcon name={item.kind === "alert" || isUnknown ? "error" : item.kind === "decision" ? "help" : "bulb"} size={13} />
                             <span className="kulo-task-status-label">{sourceText}</span>
                           </span>
                           <span className="kulo-task-time">{timeText}</span>
@@ -442,9 +451,21 @@ export function KuloTaskRail({
                           variant="secondary"
                           isDisabled={!connected || itemBusy}
                           isPending={itemBusy}
-                          onPress={() => void runAssistantAction(item, item.pendingAction ? "confirm_action" : "promote_to_topic")}
+                          onPress={() => {
+                            if (isUnknown) {
+                              void runAssistantAction(item, "acknowledge");
+                            } else if (!isDispatched) {
+                              void runAssistantAction(item, item.pendingAction ? "confirm_action" : "promote_to_topic");
+                            }
+                          }}
                         >
-                          {item.pendingAction ? item.pendingAction.label : item.primaryActionLabel}
+                          {isDispatched
+                            ? t("执行中…", "Running…")
+                            : isUnknown
+                              ? t("已核对，收起", "Verified, dismiss")
+                              : item.pendingAction
+                                ? item.pendingAction.label
+                                : item.primaryActionLabel}
                         </Button>
                       </div>
                     )}

@@ -372,11 +372,13 @@ describe("Step 3: tool_search bilingual recall, deterministic event injection & 
       await (await hub.harness.submission(done.state.outcome.result.submissionId, BACKGROUND_CONTEXT))?.wait(BACKGROUND_CONTEXT);
     }
 
-    const agentDocAfterCompact = await hub.harness.snapshot(AgentDoc, hub.rootConversation.id, BACKGROUND_CONTEXT);
-    const addAfterCompact =
-      agentDocAfterCompact?.modelTools && !Array.isArray(agentDocAfterCompact.modelTools)
-        ? agentDocAfterCompact.modelTools.add ?? []
-        : [];
-    expect(addAfterCompact).not.toContain("kulo_settings_appearance");
+    await vi.waitFor(async () => {
+      const agentDocAfterCompact = await hub.harness.snapshot(AgentDoc, hub.rootConversation.id, BACKGROUND_CONTEXT);
+      const addAfterCompact =
+        agentDocAfterCompact?.modelTools && !Array.isArray(agentDocAfterCompact.modelTools)
+          ? agentDocAfterCompact.modelTools.add ?? []
+          : [];
+      expect(addAfterCompact).not.toContain("kulo_settings_appearance");
+    });
   });
 });

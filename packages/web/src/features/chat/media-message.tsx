@@ -80,7 +80,7 @@ export function MediaMessage({ asset, conversationKey, onPreviewImage, localPrev
   useI18n();
   if (asset.kind === "image") return <AssetImageGallery assets={[asset]} onPreviewImage={onPreviewImage} />;
   if (asset.kind === "file" && asset.presentation === "diagram" && isHtmlArtifact(asset)) return <InlineDiagram asset={asset} fallbackText={fallbackText} />;
-  if (asset.kind !== "audio" && asset.kind !== "video") return <FileMessage asset={asset} defaultExpanded={defaultExpanded} />;
+  if (asset.kind !== "audio" && asset.kind !== "video") return <FileMessage asset={asset} defaultExpanded={defaultExpanded} onPreviewImage={onPreviewImage} />;
   return <PlayableMedia asset={asset} conversationKey={conversationKey} localPreview={localPreview} />;
 }
 

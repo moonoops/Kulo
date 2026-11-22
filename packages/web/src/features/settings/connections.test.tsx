@@ -15,6 +15,8 @@ import { ConnectionsModule, applicationStatusLabel, connectionAddress, connectio
 import { ConnectionIcon } from "./connection-icon";
 import { AddAppModal } from "./mcp-add-modal";
 import { McpOAuthModal } from "./mcp-oauth-modal";
+import { ComposioConfigModal } from "./composio-config-modal";
+import { ComposioAppsModal } from "./composio-apps-modal";
 import { HomeAssistantConfigModal } from "./home-assistant-config-modal";
 import { checkConnectionFollowup, connectionFollowupResult } from "./connection-followup";
 import { kuloRest } from "../../kulo-api";
@@ -719,6 +721,8 @@ describe("MCP app connections UI", () => {
 
   it("renders official brand SVGs for every curated MCP preset and the official MCP mark for custom HTTP servers", () => {
     const presets: Array<[string, string]> = [
+      ["zapier", "zapier"],
+      ["composio", "composio"],
       ["linear", "linear"],
       ["notion", "notion"],
       ["atlassian", "atlassian"],
@@ -731,6 +735,10 @@ describe("MCP app connections UI", () => {
       ["github-mcp", "github"],
       ["figma-mcp", "figma"],
       ["slack", "slack"],
+      ["exa", "exa"],
+      ["deepwiki", "deepwiki"],
+      ["tavily", "tavily"],
+      ["posthog", "posthog"],
     ];
     for (const [presetId, brandClass] of presets) {
       const html = renderToStaticMarkup(<ConnectionIcon kind="mcp" mcpPresetId={presetId} mcpTransport="http" />);
@@ -741,5 +749,55 @@ describe("MCP app connections UI", () => {
     const customHttpHtml = renderToStaticMarkup(<ConnectionIcon kind="mcp" mcpTransport="http" />);
     expect(customHttpHtml).toContain("<svg");
     expect(customHttpHtml).not.toContain("mc-icon");
+  });
+
+  it("renders Composio row actions inside the existing 3-table structure and renders Composio modals cleanly", () => {
+    const composioConn: ConnectionRecordView = {
+      id: "connection-composio-1111222233334444",
+      name: "Composio",
+      kind: "mcp",
+      category: "app",
+      mcpTransport: "http",
+      mcpPresetId: "composio",
+      mcpAuthMode: "header",
+      headerName: "x-api-key",
+      url: "https://backend.composio.dev/tool_router/trs_demo_001/mcp",
+      mcpComposioUserId: "kulo_0123456789abcdef0123456789abcdef",
+      mcpComposioSessionId: "trs_demo_001",
+      mcpAllowedToolkits: ["gmail", "googlecalendar"],
+      status: "verified",
+      hasCredential: true,
+      secretFields: ["apiKey"],
+      revision: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      mcpTools: [{ name: "COMPOSIO_SEARCH_TOOLS", readOnly: true }],
+    };
+    const html = renderToStaticMarkup(
+      <ConnectionsModule
+        snapshot={{ ...snapshot, connections: [composioConn] }}
+        loading={false}
+        error={null}
+        connected
+        onPrepare={async () => {}}
+        onRefresh={() => {}}
+      />,
+    );
+    expect(html.match(/<table\b/g)).toHaveLength(3);
+    expect(html.match(/<h2 class="kulo-section-title">/g)).toHaveLength(3);
+    expect(html.match(/role="columnheader"/g)).toHaveLength(9);
+    expect(html).toContain('aria-label="管理Composio应用"');
+    expect(html).toContain("gmail, googlecalendar");
+
+    expect(() =>
+      renderToStaticMarkup(
+        <ComposioConfigModal open existing={composioConn} connected vaultAvailable onSaved={() => {}} onClose={() => {}} />,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      renderToStaticMarkup(
+        <ComposioAppsModal open connection={composioConn} connected onClose={() => {}} />,
+      ),
+    ).not.toThrow();
   });
 });

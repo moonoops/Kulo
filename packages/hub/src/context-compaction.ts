@@ -3,11 +3,12 @@ import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context"
 import type { AssistantMessage, Message, Usage } from "@earendil-works/pi-ai";
 import { isRetryableAssistantError, retryDelayMs } from "@earendil-works/pi-ai/utils/retry";
 import {
-  CompactionTask, GenerationTask, UsageDoc, defineDoc, defineEntry, defineExtension, defineTask, hook,
+  CompactionTask, GenerationTask, LiveDoc, UsageDoc, defineDoc, defineEntry, defineExtension, defineTask, hook,
   type CompactionHooks, type ConversationId, type EntryId, type EntryRecord, type Harness, type HookApi,
   type JsonObject, type SubmissionId, type TaskId, type TaskRuntime, type Tx,
 } from "@earendil-works/pi-durable";
 import type { CompressionBlock, CompressionCore, CompressionState, Config, CoreMessage } from "acp-kernel";
+import { clampCompactionConfigForWindow } from "./config.js";
 import { BILLION_SUMMARY_SYSTEM } from "./prompts.js";
 
 /** Only the reviewed library surface is passed through the managed extension boundary. */
@@ -51,6 +52,7 @@ interface ContextCompactionState {
   enabled: boolean; epoch: number; kernelVersion: string | null; lastError: string | null;
   jobs: Record<string, CompactionJob>;
   active: { epoch: number; checkpointEntryId: number; blockCount: number; kernelVersion: string } | null;
+  lastPrunedCompactionHead?: number;
 }
 export const ContextCompactionDoc = defineDoc<ContextCompactionState & JsonObject>({
   kind: "kulo.context-compaction", version: 1, scope: "conversation", history: "latest", fork: "initial",
@@ -250,9 +252,9 @@ export function createContextCompactionController(options: ContextCompactionOpti
   }
 
   async function beforeCompact(input: Parameters<CompactionHooks["beforeCompact"]>[0], api: HookApi, context: Context) {
-    if (options.onCompactionBaseline) {
-      await options.onCompactionBaseline(api.conversationId, Number(input.firstKept), context);
-    }
+    // Do NOT prune deferred tools here: background compaction runs concurrently with an active
+    // foreground GenerationTask/ToolTask before its CompactionEntry commits. Pruning runs safely
+    // in `pruneCommittedBaseline` only after the compaction head marker is actually committed.
     const harness = options.getHarness();
     const config = await api.snapshot(ContextCompactionDoc, api.conversationId, context);
     if (!config?.enabled || options.isActive?.() === false) return;
@@ -261,8 +263,12 @@ export function createContextCompactionController(options: ContextCompactionOpti
     if (!loaded || !agent.model) return;
     const model = api.models.getModel(agent.model.provider, agent.model.modelId);
     if (!model) return;
-    const reserveTokens = agent.compaction?.modelOverrides?.[`${agent.model.provider}/${agent.model.modelId}`]?.reserveTokens
+    const rawReserve = agent.compaction?.modelOverrides?.[`${agent.model.provider}/${agent.model.modelId}`]?.reserveTokens
       ?? agent.compaction?.reserveTokens ?? options.getReserveTokens?.(api.conversationId) ?? 16_384;
+    const reserveTokens = clampCompactionConfigForWindow(
+      { enabled: true, reserveTokens: rawReserve, keepRecentTokens: 24_000, backgroundTokens: 32_768 },
+      model.contextWindow,
+    ).reserveTokens;
     const maxChars = Math.max(256, Math.min(options.maxSourceChars ?? 48_000, Math.floor(Math.max(256, model.contextWindow - reserveTokens - 768))));
     const chunks = sourceChunks(input.entries, input.messages, maxChars);
     if (!chunks.length) return;
@@ -315,8 +321,49 @@ export function createContextCompactionController(options: ContextCompactionOpti
     return undefined;
   }
 
+  const pruningByConversation = new Map<number, Promise<boolean>>();
+
+  async function pruneCommittedBaseline(
+    conversationId: ConversationId,
+    context: Context = BACKGROUND_CONTEXT,
+    allowDuringRunBoundary = false,
+  ): Promise<boolean> {
+    if (!options.onCompactionBaseline) return false;
+    const key = Number(conversationId);
+    const existing = pruningByConversation.get(key);
+    if (existing) return existing;
+    const run = (async () => {
+      const harness = options.getHarness();
+      const conversation = await harness.conversation(conversationId, context);
+      if (!conversation) return false;
+      const [view, docSnap, liveSnap] = await Promise.all([
+        conversation.context(context),
+        harness.snapshot(ContextCompactionDoc, conversationId, context),
+        harness.snapshot(LiveDoc, conversationId, context),
+      ]);
+      const head = view.head;
+      if (!head || head.kind !== "pi.compaction" || head.head === undefined) return false;
+      const headEntryId = Number(head.id);
+      if (headEntryId <= (docSnap?.lastPrunedCompactionHead ?? 0)) return false;
+      if (!allowDuringRunBoundary && liveSnap?.run !== undefined) return false;
+      await options.onCompactionBaseline!(conversationId, Number(head.head), context);
+      await harness.commit(async (tx) => {
+        const doc = await tx.doc(ContextCompactionDoc, conversationId);
+        doc.lastPrunedCompactionHead = Math.max(doc.lastPrunedCompactionHead ?? 0, headEntryId);
+      }, context);
+      return true;
+    })();
+    pruningByConversation.set(key, run);
+    try {
+      return await run;
+    } finally {
+      if (pruningByConversation.get(key) === run) pruningByConversation.delete(key);
+    }
+  }
+
   async function reconcile(conversationId: ConversationId, context: Context = BACKGROUND_CONTEXT) {
     const harness = options.getHarness();
+    await pruneCommittedBaseline(conversationId, context, false);
     const snapshot = await harness.snapshot(ContextCompactionDoc, conversationId, context);
     if (!snapshot) return;
     const conversation = await harness.conversation(conversationId, context);
@@ -366,10 +413,22 @@ export function createContextCompactionController(options: ContextCompactionOpti
 
   const extension = defineExtension({ name: "kulo-context-compaction", tasks: [summaryTask], hooks: [
     hook(CompactionTask, { beforeCompact }),
-    hook(GenerationTask, { beforeRequest: async (_request, api, context) => { await reconcile(api.conversationId, context); return undefined; } }),
+    hook(GenerationTask, {
+      beforeRequest: async (_request, api, context) => {
+        await reconcile(api.conversationId, context);
+        return undefined;
+      },
+      afterTools: async (_assistant, _results, api, context) => {
+        await pruneCommittedBaseline(api.conversationId, context, true);
+      },
+      afterRun: async (_run, api, context) => {
+        await pruneCommittedBaseline(api.conversationId, context, true);
+        return undefined;
+      },
+    }),
   ] });
   return {
-    extension, reconcile,
+    extension, reconcile, pruneCommittedBaseline,
     async setEnabled(conversationId: ConversationId, enabled: boolean, context: Context = BACKGROUND_CONTEXT) {
       const loaded = enabled ? await options.getKernel() : null;
       if (enabled && !loaded) throw new Error("请先安装 Billion Context 上下文压缩。");

@@ -4,11 +4,11 @@ import { createPortal } from "react-dom";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { translate as tr, useI18n } from "../../kulo-i18n";
 import { KuloIcon } from "../../kulo-icon";
-import { formatAssetSize } from "./asset-preview";
+import { formatAssetSize, type PreviewableImage } from "./asset-preview";
 import { CodeBlock } from "./code-block";
 import { desktopFileBridge, downloadFileAsset, openFileInDefaultApp, openHtmlInBrowser, prepareHtmlPreview, readFileAsset } from "./file-actions";
 import { FilePreview } from "./file-preview";
-import { filePreviewKind } from "./file-preview-model";
+import { filePreviewKind, isOversizedOfficeFile } from "./file-preview-model";
 import "./file-message.css";
 
 export { isPreviewableFile } from "./file-preview-model";
@@ -21,11 +21,20 @@ function movePreview(node: HTMLElement | null, target: HTMLElement | null): void
   else target.appendChild(node);
 }
 
-export function FileMessage({ asset, defaultExpanded = true }: { asset: ChatAttachment; defaultExpanded?: boolean }) {
+export function FileMessage({
+  asset,
+  defaultExpanded = true,
+  onPreviewImage,
+}: {
+  asset: ChatAttachment;
+  defaultExpanded?: boolean;
+  onPreviewImage?: (image: PreviewableImage) => void;
+}) {
   useI18n();
   const html = isHtmlArtifact(asset);
   const kind = filePreviewKind(asset);
-  const previewable = kind !== undefined;
+  const officeOversized = isOversizedOfficeFile(asset);
+  const previewable = kind !== undefined && !officeOversized;
   const desktop = desktopFileBridge();
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [large, setLarge] = useState(false);
@@ -152,10 +161,10 @@ export function FileMessage({ asset, defaultExpanded = true }: { asset: ChatAtta
       {previewable && !large && <Card.Footer className="kulo-artifact-collapsed">
         {expanded ? <Button variant="ghost" size="sm" aria-expanded={reading} aria-label={reading ? tr(`收起阅读：${asset.name}`, `Collapse reading: ${asset.name}`) : tr(`展开阅读：${asset.name}`, `Expand reading: ${asset.name}`)} onPress={() => { previewTouched.current = true; setNearViewport(true); setReading((value) => !value); }}><KuloIcon name={reading ? "minimize" : "chevron-down"} size={16} />{reading ? tr("收起阅读", "Collapse reading") : tr("展开阅读", "Expand reading")}</Button> : <Button variant="ghost" size="sm" aria-label={tr(`展开预览：${asset.name}`, `Show preview: ${asset.name}`)} onPress={() => { previewTouched.current = true; setNearViewport(true); setExpanded(true); }}>{tr("展开预览", "Show preview")}</Button>}
       </Card.Footer>}
-      {!previewable && <p className="kulo-artifact-unsupported kulo-item-description">{tr("此文件暂不支持内嵌预览", "Inline preview is unavailable for this file")}</p>}
+      {!previewable && <p className="kulo-artifact-unsupported kulo-item-description">{officeOversized ? tr("文件超过 15 MB，请下载或使用默认应用打开", "File exceeds 15 MB. Download or open in default app.") : tr("此文件暂不支持内嵌预览", "Inline preview is unavailable for this file")}</p>}
     </Card>
     {mount && previewable && createPortal(<>
-      {!hasOpened.current ? <div className="kulo-artifact-feedback" role="status"><Spinner size="sm" /><span>{tr("正在加载预览", "Loading preview")}</span></div> : kind !== "html" ? <FilePreview asset={asset} kind={kind} /> : previewError ? <div className="kulo-artifact-feedback" role="alert"><span>{previewError}</span><Button size="sm" variant="secondary" onPress={() => setAttempt((value) => value + 1)}>{tr("重试", "Retry")}</Button></div> : <>
+      {!hasOpened.current ? <div className="kulo-artifact-feedback" role="status"><Spinner size="sm" /><span>{tr("正在加载预览", "Loading preview")}</span></div> : kind !== "html" ? <FilePreview asset={asset} kind={kind} onPreviewImage={onPreviewImage} /> : previewError ? <div className="kulo-artifact-feedback" role="alert"><span>{previewError}</span><Button size="sm" variant="secondary" onPress={() => setAttempt((value) => value + 1)}>{tr("重试", "Retry")}</Button></div> : <>
         {!loaded && <div className="kulo-artifact-feedback" role="status"><Spinner size="sm" /><span>{tr("正在加载预览", "Loading preview")}</span></div>}
         {previewUrl && <iframe key={attempt} className="kulo-artifact-frame" title={tr(`预览：${asset.name}`, `Preview: ${asset.name}`)} sandbox="allow-scripts allow-forms" referrerPolicy="no-referrer" src={previewUrl} onLoad={() => setLoaded(true)} onError={() => setPreviewError(tr("预览加载失败", "Failed to load preview"))} />}
       </>}

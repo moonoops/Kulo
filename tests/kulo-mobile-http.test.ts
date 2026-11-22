@@ -77,6 +77,46 @@ async function registeredEnv(origin: string, profile: MobilePairingProfile, leas
   return ws;
 }
 
+async function waitForTlsConnection(origin: string, token: string, timeoutMs = 8_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      const response = await tlsRequest(origin, "/api/mobile/connection", "GET", undefined, token);
+      if (response.status === 200) return response;
+      lastError = new Error(`Unexpected status ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw lastError ?? new Error("Timed out waiting for mobile TLS connector");
+}
+
+async function openServerOnStateDir(stateDir: string) {
+  const provider = fauxProvider({ provider: "openai", models: [{ id: "mobile-test" }] });
+  provider.setResponses([() => fauxAssistantMessage([fauxText("已连接")])]);
+  const models = createModels(); models.setProvider(provider.provider);
+  const hub = await openTestHub({ models, providerId: "openai", config: { stateDir,
+    host: "127.0.0.1", authToken: HUB_TEST_ADMIN_TOKEN, envTokens: {}, enableLocalEnv: false,
+    workerEnvIds: [], memory: { enabled: false },
+    model: { defaultProvider: "openai", defaultModel: "mobile-test", thinkingLevel: "off", baseUrl: "http://127.0.0.1:9/v1" } } });
+  const server = await startKuloHubServer(hub, { host: "127.0.0.1", port: 0,
+    mobileConnector: { binaryPath: executable, systemTailscaleOrigins: [], enableTailscale: false } });
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    await server.close();
+    await hub.close();
+  };
+  cleanup.push(close);
+  const request = (pathname: string, method = "GET", body?: unknown, token = HUB_TEST_ADMIN_TOKEN) => fetch(`${server.url}${pathname}`, {
+    method, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  return { hub, server, request, close };
+}
+
 // The Go binary is built by Kulo-mobile/tools/build_phase2.sh before this integration suite.
 describe.skipIf(!fs.existsSync(executable))("real mobile TLS Hub integration", () => {
   it("keeps the advertised LAN port and TLS identity when the managed process restarts", async () => {
@@ -151,5 +191,41 @@ describe.skipIf(!fs.existsSync(executable))("real mobile TLS Hub integration", (
     expect((await f.request(`/api/devices/${profile.deviceId}`, "DELETE", { force: true })).status).toBe(200);
     expect((await tlsRequest(f.origin, "/api/mobile/connection", "GET", undefined, profile.clientToken)).status).toBe(401);
     expect((await tlsRequest(f.origin, "/api/mobile/pair", "POST", f.pairBody)).status).toBe(401);
+  });
+
+  it("automatically restores the mobile TLS connector after Hub restart and interconnection re-enable", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "kulo-mobile-autorestore-"));
+    cleanup.push(() => fs.rmSync(stateDir, { force: true, recursive: true }));
+    const first = await openServerOnStateDir(stateDir);
+    expect((await first.request("/api/devices", "PATCH", { enabled: true })).status).toBe(200);
+    const inviteRes = await first.request("/api/mobile/invitations", "POST", { name: "Android restart" });
+    expect(inviteRes.status).toBe(201);
+    const invitation = await inviteRes.json() as MobileInvitation;
+    const data = JSON.parse(Buffer.from(new URL(invitation.qrValue).searchParams.get("data")!, "base64url").toString()) as MobileInvitationData;
+    const origin = data.candidates.find((candidate) => candidate.route === "lan")!.origin;
+    const pairBody = {
+      invitationId: data.invitationId, invitationToken: data.invitationToken,
+      installationId: "64d8485e-9091-4d4f-8a32-47d67fd899cc", attemptId: "5ad08ea7-a0e1-4932-a540-41fd965f039c",
+      deviceName: "Android restart",
+      info: { hostname: "test-android", platform: "android", arch: "arm64", release: "16", cpu: "", memoryBytes: 0, ips: [] },
+    };
+    const profile = JSON.parse((await tlsRequest(origin, "/api/mobile/pair", "POST", pairBody)).data) as MobilePairingProfile;
+    await first.close();
+
+    // Restart Hub on the same stateDir without opening any local pairing endpoint.
+    const second = await openServerOnStateDir(stateDir);
+    const restored = await waitForTlsConnection(origin, profile.clientToken);
+    expect((JSON.parse(restored.data) as MobilePublicProfile).hubId).toBe(profile.hubId);
+    const lease = JSON.parse((await tlsRequest(origin, "/api/mobile/connection/lease", "POST", {}, profile.clientToken)).data).lease as string;
+    const env = await registeredEnv(origin, profile, lease);
+    expect(second.hub.envManager.listEnvs().find((entry) => entry.id === profile.deviceId)?.online).toBe(true);
+    env.terminate();
+
+    // Disabling device interconnection stops the connector; re-enabling restores it automatically.
+    expect((await second.request("/api/devices", "PATCH", { enabled: false })).status).toBe(200);
+    await expect(tlsRequest(origin, "/api/mobile/connection", "GET", undefined, profile.clientToken)).rejects.toThrow();
+    expect((await second.request("/api/devices", "PATCH", { enabled: true })).status).toBe(200);
+    const reenabled = await waitForTlsConnection(origin, profile.clientToken);
+    expect((JSON.parse(reenabled.data) as MobilePublicProfile).deviceId).toBe(profile.deviceId);
   });
 });

@@ -256,6 +256,12 @@ export class DeviceInterconnectionManager {
   get identityPublicKey(): string | undefined { return this.#state.identityPublicKey; }
   get sshRecords(): DeviceSshRecord[] { return this.#state.devices.flatMap((d) => d.ssh ? [d.ssh] : []); }
 
+  hasMobileClients(): boolean {
+    const now = Date.now();
+    return this.#state.devices.some((d) => Boolean(d.pairedAt && d.mobile) && !this.isRevoked(d.id))
+      || Boolean(this.#state.mobileInvitations?.some((invite) => now < (invite.binding?.recoveryExpiresAt ?? invite.expiresAt)));
+  }
+
   isLocalPrincipal(id: string): boolean {
     return id === "local" || id === this.localNodeId;
   }

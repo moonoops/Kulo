@@ -390,7 +390,7 @@ export function formatRerankerModelLabel(reranker: HindsightRerankerModel): stri
 
 export function buildMemoryServicePrefillPrompt(input: {
   operation: "deploy" | "configure";
-  resume?: boolean;
+  retry?: boolean;
   deviceName?: string;
   draft: MemoryModelsDraft;
   connections: MemoryKuloConnectionOption[];
@@ -448,10 +448,10 @@ export function buildMemoryServicePrefillPrompt(input: {
         `请更新本机${host ? `（${host}）` : ""} Hindsight 的模型配置（待我确认后执行）：`,
         `Update the local Hindsight model settings${host ? ` on ${host}` : ""} (wait for my confirmation before applying):`,
       )
-    : input.resume
+    : input.retry
       ? t(
-          `请恢复在本机${host ? `（${host}）` : ""}部署 Hindsight 记忆服务，先检查本机环境，再按以下配置准备部署（待我确认后执行）：`,
-          `Resume deploying local Hindsight${host ? ` on ${host}` : ""}. Check the local environment first, then prepare deployment with these settings (wait for my confirmation before running):`,
+          `请重新在本机${host ? `（${host}）` : ""}部署 Hindsight 记忆服务，先检查本机环境和上次失败原因，再按以下配置准备部署（待我确认后执行）：`,
+          `Retry deploying local Hindsight${host ? ` on ${host}` : ""}. Check the local environment and previous failure first, then prepare deployment with these settings (wait for my confirmation before running):`,
         )
       : t(
           `请在本机${host ? `（${host}）` : ""}部署 Hindsight 记忆服务，先检查本机环境，再按以下配置准备部署（待我确认后执行）：`,

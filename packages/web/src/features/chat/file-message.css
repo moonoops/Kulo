@@ -8,8 +8,10 @@
 .kulo-artifact-inline-stage { min-width: 0; border-top: 1px solid var(--border); }
 .kulo-artifact-live-preview { @apply scrollbar; position: relative; width: 100%; min-width: 0; max-height: min(68dvh, 680px); overflow: auto; }
 .kulo-artifact-live-preview[data-kind="html"] { height: clamp(320px, 65dvh, 680px); }
+.kulo-artifact-live-preview[data-kind="xlsx"] { display: flex; flex-direction: column; overflow: hidden; max-height: min(68dvh, 680px); }
 .kulo-artifact-live-preview[data-reading="expanded"] { max-height: none; }
 .kulo-artifact-live-preview[data-reading="expanded"][data-kind="html"] { height: max(680px, 85dvh); }
+.kulo-artifact-live-preview[data-reading="expanded"][data-kind="xlsx"] { max-height: max(680px, 85dvh); }
 .kulo-artifact-frame { display: block; width: 100%; height: 100%; border: 0; color-scheme: light; background: Canvas; border-radius: 0 0 12px 12px; }
 .kulo-artifact-feedback { display: flex; align-items: center; justify-content: center; gap: var(--kulo-control-gap); min-height: 160px; padding: var(--kulo-overlay-padding); font-size: var(--kulo-text-body); line-height: var(--kulo-leading-body); color: var(--muted); }
 .kulo-artifact-live-preview[data-kind="html"] > .kulo-artifact-feedback { position: absolute; inset: 0; background: var(--surface); }

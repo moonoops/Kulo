@@ -7,14 +7,30 @@ import { MessageSources, safeSourceUrl, searchSuggestionsDocument } from "./mess
 const source: WebSource = { id: "source-1", title: "官方文档", url: "https://docs.example.com/guide" };
 
 describe("chat search sources", () => {
-  it("renders compact clickable source titles and domains once after structured content", () => {
+  it("renders a collapsed single-row source bar with site summary and numbered pills after structured content", () => {
     const html = renderToStaticMarkup(<MessageContent item={{ id: 1, role: "assistant", text: "不重复的旧文本", parts: [{ partId: "text", type: "markdown", text: "参考[文档](https://docs.example.com/guide)。" }], sources: [source, { ...source, id: "duplicate" }] }} />);
     expect(html).toContain('aria-label="引用来源"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain("kulo-message-sources-trigger");
+    expect(html).toContain("来源 · 1");
+    expect(html).toContain("kulo-message-source-index");
     expect(html).toContain('target="_blank" rel="noopener noreferrer"');
     expect(html).toContain("docs.example.com");
     expect(html.match(/kulo-message-source-title/g)).toHaveLength(1);
     expect(html.indexOf('aria-label="引用来源"')).toBeGreaterThan(html.indexOf("kulo-chat-markdown"));
     expect(html).not.toContain("不重复的旧文本");
+  });
+
+  it("summarizes deduplicated site labels in the single-row header while keeping all distinct articles numbered", () => {
+    const html = renderToStaticMarkup(<MessageSources sources={[
+      { id: "1", title: "定价", url: "https://cj.sina.com.cn/1" },
+      { id: "2", title: "走势一", url: "https://www.sohu.com/a/1" },
+      { id: "3", title: "走势二", url: "https://www.sohu.com/a/2" },
+      { id: "4", title: "回应", url: "https://feng.ifeng.com/c/1" },
+    ]} />);
+    expect(html).toContain("来源 · 4");
+    expect(html).toContain("新浪财经 · 搜狐 · 凤凰网");
+    expect(html.match(/kulo-message-source-index/g)).toHaveLength(4);
   });
 
   it.each(["javascript:alert(1)", "data:text/html,hi", "//evil.example.com/", "https://user:secret@example.com", "http://localhost/", "http://127.1/", "http://[::1]/", "http://169.254.169.254/", "https://example.com/\npath"])("blocks unsafe citation URL %s", (url) => {

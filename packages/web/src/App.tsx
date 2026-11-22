@@ -1000,13 +1000,16 @@ function AppShell() {
   }, [archiveTicket]);
 
   const handleAssistantItemAction = useCallback(async (item: AssistantItemView, action: AssistantItemAction) => {
-    const ack = await sendWsWithAck({
-      type: "assistant.item_action",
-      itemId: item.id,
-      expectedRevision: item.revision,
-      action,
-      commandId: newDeliveryId(`assistant:${item.id}:${action}`),
-    });
+    const ack = await sendWsWithAck(
+      {
+        type: "assistant.item_action",
+        itemId: item.id,
+        expectedRevision: item.revision,
+        action,
+        commandId: newDeliveryId(`assistant:${item.id}:${action}`),
+      },
+      action === "confirm_action" ? 35_000 : 15_000,
+    );
     if (action === "promote_to_topic" && ack.topicId) {
       setSettingsMode(false);
       setSettingsDirty(false);

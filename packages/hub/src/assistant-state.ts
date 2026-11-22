@@ -167,7 +167,10 @@ export function upsertAssistantCardInDoc(
   let card: AssistantItemView;
   if (existingIdx >= 0) {
     const prev = doc.items[existingIdx]!;
-    const nextPending = cleanPending ?? prev.pendingAction;
+    const prevLocked =
+      prev.pendingAction?.executionState === "dispatched" ||
+      prev.pendingAction?.executionState === "unknown";
+    const nextPending = prevLocked ? prev.pendingAction : (cleanPending ?? prev.pendingAction);
     card = {
       ...prev,
       revision: prev.revision + 1,

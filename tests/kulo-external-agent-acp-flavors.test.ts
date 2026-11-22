@@ -532,6 +532,14 @@ describe("routing disambiguation, Hub custom ACP UI-only enforcement, and ACP re
         state.settings.blocks.roles.revision += 1;
         return structuredClone(state.settings);
       },
+      saveClient: async (input) => {
+        state.settings.externalClients = {
+          ...(state.settings.externalClients ?? {}),
+          [input.client.id]: structuredClone(input.client),
+        };
+        state.settings.blocks.roles.revision += 1;
+        return structuredClone(state.settings);
+      },
     };
     const service = new KuloAgentConfiguration(options);
 
@@ -561,7 +569,8 @@ describe("routing disambiguation, Hub custom ACP UI-only enforcement, and ACP re
     }, undefined, { allowCustomAcpCommand: true });
     expect(first.clientId).toBe("acp:local:kimi-code");
     expect(first.enabled).toBe(true);
-    expect(state.settings.blocks.roles.value[first.agentId]?.external?.acpArgs).toEqual(["acp"]);
+    expect(first.agentId).toBeUndefined();
+    expect(state.settings.externalClients?.[first.clientId]?.acpArgs).toEqual(["acp"]);
 
     const second = await service.quickConnect({
       clientId: "win-1",
@@ -586,7 +595,16 @@ describe("routing disambiguation, Hub custom ACP UI-only enforcement, and ACP re
 
     // Non-UI caller cannot mutate an existing custom ACP draft's executable/agentRef
     nextAuth = true;
-    const editDraft = await service.prepare({ clientId: "win-edit", kind: "acp", envId: "local", agentId: first.agentId });
+    state.settings.blocks.roles.value["kimi-code"] = {
+      id: "kimi-code",
+      label: "Kimi Code",
+      whenToUse: "Kimi 任务",
+      prompt: "使用 Kimi 完成任务。",
+      enabled: true,
+      externalClientId: first.clientId,
+      external: { kind: "acp", envId: "local", executable: "/usr/local/bin/kimi-code", agentRef: "kimi-code", acpArgs: ["acp"], verifiedAt: 100 },
+    };
+    const editDraft = await service.prepare({ clientId: "win-edit", kind: "acp", envId: "local", agentId: "kimi-code" });
     await expect(service.updateDraft({
       clientId: "win-edit",
       expectedRevision: editDraft.revision,

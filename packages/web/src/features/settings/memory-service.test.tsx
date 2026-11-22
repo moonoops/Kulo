@@ -250,12 +250,25 @@ describe("memory service approval and private input", () => {
     expect(checkbox).toBeDefined();
     expect(checkbox).not.toContain("checked");
     expect(connectionForm()).not.toContain("卸载本机服务");
-    const installed = connectionForm(settings, { ...snapshot, installed: true, running: true, model: job.model });
+    expect(connectionForm()).not.toContain("清理未完成安装");
+    const installed = connectionForm(settings, { ...snapshot, installed: true, running: true, phase: "ready", version: "1.2.1", model: job.model });
+    expect(installed).toContain("运行中 · 1.2.1");
     expect(installed).toContain("卸载本机服务");
     expect(installed).toContain("配置本机模型");
     expect(installed).not.toContain("在本机配置 Hindsight");
-    const failed = connectionForm(settings, { ...snapshot, installed: true, phase: "failed" });
-    expect(failed).toContain("恢复部署");
+    const failed = connectionForm(settings, { ...snapshot, installed: false, running: false, phase: "failed", version: "1.2.1", model: job.model });
+    expect(failed).toContain("部署失败");
+    expect(failed).toContain("重新部署");
+    expect(failed).toContain("清理未完成安装");
+    expect(failed).not.toContain("已停止");
+    expect(failed).not.toContain("恢复部署");
+    expect(failed).not.toContain("卸载本机服务");
+    expect(failed).not.toContain("配置本机模型");
+    const installing = connectionForm(settings, { ...snapshot, installed: false, running: false, phase: "installing" });
+    expect(installing).toContain("部署中");
+    expect(installing).toContain("清理未完成安装");
+    expect(installing).not.toContain("重新部署");
+    expect(installing).not.toContain("配置本机模型");
   });
 
   it("separates the saved runtime switch from the complete manual connection form", () => {
@@ -448,14 +461,15 @@ describe("memory service approval and private input", () => {
     expect(normalizedSavedDraft.embeddingsModel).toBe("Xenova/bge-small-zh-v1.5");
     expect(normalizedSavedDraft.rerankerModel).toBe("onnx-community/bge-reranker-v2-m3-ONNX");
 
-    const resumePrompt = buildMemoryServicePrefillPrompt({
+    const retryPrompt = buildMemoryServicePrefillPrompt({
       operation: "deploy",
-      resume: true,
+      retry: true,
       deviceName: "Macmini.local",
       draft: modelDraft,
       connections,
     });
-    expect(resumePrompt).toContain("恢复");
+    expect(retryPrompt).toContain("重新");
+    expect(retryPrompt).not.toContain("恢复");
 
     const configurePrompt = buildMemoryServicePrefillPrompt({
       operation: "configure",

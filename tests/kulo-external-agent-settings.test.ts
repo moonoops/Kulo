@@ -336,4 +336,70 @@ describe("external agent settings boundary", () => {
     rollbackSettingsToSnapshot(doc, revBeforeDisconnect, doc.globalRevision);
     expect(doc.externalClients?.["codex:local"]?.verifiedAt).toBe(42);
   });
+
+  it("allows switching built-in roles onto a registered external client with serviceTier and switching back to built-in", () => {
+    const doc = settings();
+    syncExternalClientsInSettings(doc, undefined, undefined, undefined, {
+      "codex:local": {
+        id: "codex:local",
+        kind: "codex",
+        envId: "local",
+        verifiedAt: 55,
+        models: [
+          {
+            id: "gpt-6.2-sol",
+            name: "GPT-6.2 Sol",
+            efforts: ["low", "high", "xhigh"],
+            serviceTiers: [{ id: "fast", name: "Fast" }, { id: "ultrafast", name: "Ultra Fast" }],
+            defaultServiceTier: "default",
+            isDefault: true,
+          },
+        ],
+        updatedAt: 55,
+      },
+    });
+    applySettingsBlockUpdate(doc, "roles", doc.revisions.roles, {
+      ...doc.roles,
+      coder: {
+        ...doc.roles.coder!,
+        modelId: "gpt-6.2-sol",
+        thinkingLevel: "xhigh",
+        serviceTier: "ultrafast",
+        externalClientId: "codex:local",
+      },
+    });
+    expect(doc.roles.coder).toMatchObject({
+      id: "coder",
+      modelId: "gpt-6.2-sol",
+      thinkingLevel: "xhigh",
+      serviceTier: "ultrafast",
+      externalClientId: "codex:local",
+      external: { kind: "codex", envId: "local", verifiedAt: 55 },
+    });
+
+    // Reject malformed serviceTier values
+    expect(() => applySettingsBlockUpdate(doc, "roles", doc.revisions.roles, {
+      ...doc.roles,
+      coder: { ...doc.roles.coder!, serviceTier: "fast\ninjected" },
+    })).toThrow("服务档位无效");
+
+    // Switching back to built-in clears external binding and serviceTier
+    applySettingsBlockUpdate(doc, "roles", doc.revisions.roles, {
+      ...doc.roles,
+      coder: {
+        id: "coder",
+        label: doc.roles.coder!.label,
+        whenToUse: doc.roles.coder!.whenToUse,
+        prompt: doc.roles.coder!.prompt,
+        enabled: true,
+        readOnly: false,
+        allowSubagents: false,
+        thinkingLevel: "auto",
+      },
+    });
+    expect(doc.roles.coder?.external).toBeUndefined();
+    expect(doc.roles.coder?.externalClientId).toBeUndefined();
+    expect(doc.roles.coder?.serviceTier).toBeUndefined();
+    expect(doc.externalClients?.["codex:local"]?.verifiedAt).toBe(55);
+  });
 });

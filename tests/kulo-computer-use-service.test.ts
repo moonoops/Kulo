@@ -162,7 +162,7 @@ describe("managed browser sessions", () => {
     expect(invocation.env).not.toHaveProperty("AGENT_BROWSER_PROFILE");
     expect(invocation.env).not.toHaveProperty("AGENT_BROWSER_INIT_SCRIPTS");
     expect(invocation.env).not.toHaveProperty("AI_GATEWAY_API_KEY");
-    expect(JSON.parse(fs.readFileSync(path.join(rootDir, "browser.json"), "utf8"))).toMatchObject({ autoConnect: false, headed: false, noWebmcp: true, allowFileAccess: false, idleTimeout: "5m", maxOutput: 48_000 });
+    expect(JSON.parse(fs.readFileSync(path.join(rootDir, "browser.json"), "utf8"))).toMatchObject({ autoConnect: false, headed: false, noWebmcp: true, allowFileAccess: false, idleTimeout: "12m", maxOutput: 48_000 });
   });
 
   it.skipIf(process.platform === "win32")("keeps maximum session ids within Unix socket path limits", async () => {

@@ -571,6 +571,36 @@ interface PendingWsRequest {
   timer: NodeJS.Timeout;
 }
 
+const HA_PRE_DISPATCH_CODES = new Set([
+  "ha_physical_security_blocked",
+  "ha_dns_rebinding_blocked",
+  "ha_camera_not_authorized",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+]);
+
+const HA_PRE_DISPATCH_HTTP_STATUSES = new Set([400, 401, 403, 404, 405, 422]);
+
+export function isHomeAssistantPreDispatchError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const obj = error as { preDispatch?: unknown; code?: unknown; status?: unknown; cause?: unknown };
+  if (typeof obj.preDispatch === "boolean") return obj.preDispatch;
+  if (typeof obj.code === "string" && HA_PRE_DISPATCH_CODES.has(obj.code)) return true;
+  if (typeof obj.status === "number" && HA_PRE_DISPATCH_HTTP_STATUSES.has(obj.status)) return true;
+  if (obj.cause && typeof obj.cause === "object") {
+    const causeCode = (obj.cause as { code?: unknown }).code;
+    if (typeof causeCode === "string" && HA_PRE_DISPATCH_CODES.has(causeCode)) return true;
+  }
+  return false;
+}
+
+function preDispatchError(message: string, extra: Record<string, unknown> = {}): Error {
+  return Object.assign(new Error(message), { preDispatch: true, ...extra });
+}
+
 export class HomeAssistantService {
   readonly #host: HomeAssistantServiceHost;
   readonly #sentinel: HomeAssistantSentinel | null;
@@ -744,11 +774,15 @@ export class HomeAssistantService {
   async #requireConnection(): Promise<{ baseUrl: URL; token: string }> {
     const cfg = await this.#host.persistedConfig();
     if (!cfg.enabled || !cfg.baseUrl) {
-      throw new Error("Home Assistant 连接未启用或尚未配置地址。");
+      throw preDispatchError("Home Assistant 连接未启用或尚未配置地址。");
     }
     const token = await this.#readToken();
-    if (!token) throw new Error("缺少 Home Assistant 访问令牌。");
-    return { baseUrl: validateLanHaUrl(cfg.baseUrl), token };
+    if (!token) throw preDispatchError("缺少 Home Assistant 访问令牌。");
+    try {
+      return { baseUrl: validateLanHaUrl(cfg.baseUrl), token };
+    } catch (error) {
+      throw preDispatchError(error instanceof Error ? error.message : "Home Assistant 地址无效。");
+    }
   }
 
   async syncNow(): Promise<{ entities: HomeAssistantEntityView[]; totalCount: number; filteredNoiseCount: number }> {
@@ -885,7 +919,7 @@ export class HomeAssistantService {
     const domain = input.domain.trim().toLowerCase();
     const service = input.service.trim().toLowerCase();
     if (!/^[a-z0-9_]{1,40}$/.test(domain) || !/^[a-z0-9_]{1,64}$/.test(service)) {
-      throw new Error("Home Assistant 服务名格式无效。");
+      throw preDispatchError("Home Assistant 服务名格式无效。");
     }
     const body: Record<string, unknown> = {
       ...(cleanData ?? {}),
@@ -899,7 +933,7 @@ export class HomeAssistantService {
       dnsLookup: this.#host.dnsLookup,
     });
     if (res.status < 200 || res.status >= 300) {
-      throw new Error(`Home Assistant 执行失败 (HTTP ${res.status})`);
+      throw Object.assign(new Error(`Home Assistant 执行失败 (HTTP ${res.status})`), { status: res.status });
     }
     let states: unknown;
     try { states = JSON.parse(res.body); } catch { states = undefined; }
@@ -979,9 +1013,16 @@ export class HomeAssistantService {
   }): Promise<{ ok: boolean; configId: string; alias: string; backupId?: string }> {
     const cleanId = input.configId.trim();
     if (!cleanId || !/^[a-zA-Z0-9_-]{1,128}$/.test(cleanId)) {
-      throw new Error("自动化配置 ID 无效。");
+      throw preDispatchError("自动化配置 ID 无效。");
     }
-    const validated = await this.validateAutomationDraft(input.config);
+    let validated: ValidatedAutomationDraft;
+    try {
+      validated = await this.validateAutomationDraft(input.config);
+    } catch (error) {
+      throw preDispatchError(error instanceof Error ? error.message : "自动化草稿校验失败。", {
+        code: (error as { code?: string })?.code,
+      });
+    }
     const { baseUrl, token } = await this.#requireConnection();
 
     // Snapshot previous config before mutating so user can say "撤销刚才的配置".
@@ -1009,7 +1050,7 @@ export class HomeAssistantService {
       dnsLookup: this.#host.dnsLookup,
     });
     if (res.status < 200 || res.status >= 300) {
-      throw new Error(`写入 Home Assistant 自动化失败 (HTTP ${res.status})`);
+      throw Object.assign(new Error(`写入 Home Assistant 自动化失败 (HTTP ${res.status})`), { status: res.status });
     }
 
     let backupId: string | undefined;
@@ -1037,17 +1078,17 @@ export class HomeAssistantService {
   async deleteAutomation(configId: string): Promise<{ ok: boolean; configId: string; backupId?: string }> {
     const cleanId = configId.trim();
     if (!cleanId || !/^[a-zA-Z0-9_-]{1,128}$/.test(cleanId)) {
-      throw new Error("自动化配置 ID 无效。");
+      throw preDispatchError("自动化配置 ID 无效。");
     }
     const matched = this.listAutomations().find((a) => a.configId === cleanId);
     if (matched && !matched.editable) {
-      throw new Error(`自动化「${matched.name}」为手写 YAML 只读配置，无法通过接口删除。`);
+      throw preDispatchError(`自动化「${matched.name}」为手写 YAML 只读配置，无法通过接口删除。`);
     }
     if (matched && /(?:alarm|security|smoke|gas|leak|门锁|安防|烟雾|燃气|漏水)/i.test(`${matched.name} ${matched.entityId}`)) {
-      throw Object.assign(
-        new Error(`物理安防红线：禁止删除疑似安防告警类自动化「${matched.name}」。`),
-        { code: "ha_physical_security_blocked", status: 403 },
-      );
+      throw preDispatchError(`物理安防红线：禁止删除疑似安防告警类自动化「${matched.name}」。`, {
+        code: "ha_physical_security_blocked",
+        status: 403,
+      });
     }
 
     const { baseUrl, token } = await this.#requireConnection();
@@ -1073,7 +1114,7 @@ export class HomeAssistantService {
       dnsLookup: this.#host.dnsLookup,
     });
     if (res.status < 200 || res.status >= 300) {
-      throw new Error(`删除 Home Assistant 自动化失败 (HTTP ${res.status})`);
+      throw Object.assign(new Error(`删除 Home Assistant 自动化失败 (HTTP ${res.status})`), { status: res.status });
     }
 
     let backupId: string | undefined;

@@ -203,10 +203,18 @@ export interface ExternalAgentCatalogItem {
   instructions: string;
 }
 
+export interface ExternalAgentServiceTierInfo {
+  id: string;
+  name?: string;
+  description?: string;
+}
+
 export interface ExternalAgentModelInfo {
   id: string;
   name: string;
   efforts?: string[];
+  serviceTiers?: ExternalAgentServiceTierInfo[];
+  defaultServiceTier?: string;
   isDefault?: boolean;
 }
 
@@ -227,10 +235,176 @@ export interface ExternalClientConnection {
   updatedAt: number;
 }
 
+export const EXTERNAL_CLIENT_KIND_LABELS: Readonly<Record<ExternalAgentKind, string>> = {
+  codex: "Codex",
+  "claude-code": "Claude Code",
+  antigravity: "Antigravity",
+  grok: "Grok Build",
+  cursor: "Cursor Agent",
+  opencode: "OpenCode",
+  "gemini-cli": "Gemini CLI",
+  kiro: "Kiro CLI",
+  copilot: "GitHub Copilot",
+  dsh: "DeepSeek Harness",
+  acp: "自定义 ACP",
+  "grok-bot": "Grok Bot",
+  dots: "ChatGPT Dots",
+  muse: "Meta Muse",
+};
+
+export function externalClientDisplayName(
+  client: Pick<ExternalClientConnection, "kind" | "label" | "agentRef">,
+): string {
+  if (client.kind === "acp") {
+    return client.label?.trim() || client.agentRef?.trim() || EXTERNAL_CLIENT_KIND_LABELS[client.kind];
+  }
+  return EXTERNAL_CLIENT_KIND_LABELS[client.kind];
+}
+
+export const DIRECT_EXTERNAL_CLIENT_ROLE_PREFIX = "client:";
+
+export function directExternalClientRoleId(clientId: string): string {
+  return `${DIRECT_EXTERNAL_CLIENT_ROLE_PREFIX}${clientId}`;
+}
+
+export function parseDirectExternalClientRoleId(roleId: string | undefined): string | undefined {
+  if (typeof roleId !== "string" || !roleId.startsWith(DIRECT_EXTERNAL_CLIENT_ROLE_PREFIX)) return undefined;
+  const clientId = roleId.slice(DIRECT_EXTERNAL_CLIENT_ROLE_PREFIX.length).trim();
+  return clientId || undefined;
+}
+
+export function isDirectExternalClientRoleId(roleId: string | undefined): boolean {
+  return parseDirectExternalClientRoleId(roleId) !== undefined;
+}
+
 export function externalClientConnectionId(binding: Pick<ExternalAgentBinding, "kind" | "envId" | "agentRef">): string {
   const ref = typeof binding.agentRef === "string" ? binding.agentRef.trim() : "";
   const raw = ref ? `${binding.kind}:${binding.envId}:${ref}` : `${binding.kind}:${binding.envId}`;
   return raw.replace(/[^A-Za-z0-9._:-]/g, "_").slice(0, 180);
+}
+
+export function deriveConnectedExternalClients(
+  roles: Readonly<Record<string, import("./domain.js").RolePreset>> | undefined,
+  savedClients?: Readonly<Record<string, ExternalClientConnection>>,
+): ExternalClientConnection[] {
+  const map = new Map<string, ExternalClientConnection>();
+  for (const [id, client] of Object.entries(savedClients ?? {})) {
+    map.set(id, client);
+  }
+  for (const role of Object.values(roles ?? {})) {
+    if (!role.external) continue;
+    const id = role.externalClientId?.trim() || externalClientConnectionId(role.external);
+    if (map.has(id)) continue;
+    map.set(id, {
+      id,
+      kind: role.external.kind,
+      envId: role.external.envId,
+      ...(role.external.kind === "acp" && role.label ? { label: role.label } : {}),
+      ...(role.external.executable ? { executable: role.external.executable } : {}),
+      ...(role.external.kind === "acp" && role.external.acpArgs?.length ? { acpArgs: [...role.external.acpArgs] } : {}),
+      ...(role.external.agentRef ? { agentRef: role.external.agentRef } : {}),
+      ...(role.external.cdpUrl ? { cdpUrl: role.external.cdpUrl } : {}),
+      ...(role.external.experimental !== undefined ? { experimental: role.external.experimental } : {}),
+      ...(role.external.version ? { version: role.external.version } : {}),
+      ...(role.external.verifiedAt !== undefined ? { verifiedAt: role.external.verifiedAt } : {}),
+      ...(role.external.capabilities ? { capabilities: role.external.capabilities } : {}),
+      models: [],
+      updatedAt: 0,
+    });
+  }
+  return [...map.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+export const EXTERNAL_AGENT_QUOTA_CAPABILITY = "external-agent-quota" as const;
+
+export const EXTERNAL_AGENT_QUOTA_SUPPORTED_KINDS = [
+  "codex",
+  "claude-code",
+  "grok",
+] as const;
+
+export type QuotaSupportedExternalAgentKind = typeof EXTERNAL_AGENT_QUOTA_SUPPORTED_KINDS[number];
+
+export function isQuotaSupportedExternalAgentKind(kind: unknown): kind is QuotaSupportedExternalAgentKind {
+  return typeof kind === "string" && (EXTERNAL_AGENT_QUOTA_SUPPORTED_KINDS as readonly string[]).includes(kind);
+}
+
+export type ExternalAgentQuotaStatus =
+  | "ok"
+  | "api_key_billing"
+  | "unauthenticated"
+  | "device_offline"
+  | "env_outdated"
+  | "unsupported"
+  | "unavailable";
+
+export type ExternalAgentQuotaSeverity = "normal" | "warning" | "exhausted";
+
+export interface ExternalAgentQuotaWindow {
+  /** Stable key within a snapshot, e.g. "primary", "secondary", "five_hour", "seven_day", "model:opus". */
+  id: string;
+  /** Concise non-PII label, e.g. "5h", "7d", "Opus 7d". */
+  label: string;
+  /** Used percentage clamped to [0, 100]. */
+  usedPercent: number;
+  /** Optional rolling window duration in minutes (e.g. 300, 10080). */
+  windowMinutes?: number;
+  /** Optional Unix timestamp in milliseconds when the window resets. */
+  resetsAt?: number;
+  /** Optional normalized severity. */
+  severity?: ExternalAgentQuotaSeverity;
+  /** Optional bucket group name for multi-bucket accounts. */
+  bucketLabel?: string;
+}
+
+export interface ExternalAgentQuotaCredits {
+  hasCredits: boolean;
+  unlimited?: boolean;
+  /** Whitelisted non-PII currency/balance summary, e.g. "$12.50" or "$3.60 / $20.00". */
+  balanceText?: string;
+  usedPercent?: number;
+  isExtraUsage?: boolean;
+}
+
+/** Env -> Hub normalized quota snapshot (strictly free of email/accountId/tokens). */
+export interface ExternalAgentQuotaProbeResult {
+  kind: ExternalAgentKind;
+  status: Exclude<ExternalAgentQuotaStatus, "device_offline" | "env_outdated">;
+  source: "live" | "passive_run";
+  fetchedAt: number;
+  planLabel?: string;
+  ordinaryUsageAllowed?: boolean;
+  windows: ExternalAgentQuotaWindow[];
+  credits?: ExternalAgentQuotaCredits;
+  error?: string;
+}
+
+/** Hub -> Web per-client quota view model. */
+export interface ExternalClientQuotaItem {
+  clientId: string;
+  kind: ExternalAgentKind;
+  label: string;
+  envId: string;
+  envName: string;
+  deviceOnline: boolean;
+  canRefresh: boolean;
+  status: ExternalAgentQuotaStatus;
+  source?: "live" | "passive_run";
+  fetchedAt?: number;
+  stale: boolean;
+  refreshError?: string;
+  planLabel?: string;
+  ordinaryUsageAllowed?: boolean;
+  windows: ExternalAgentQuotaWindow[];
+  credits?: ExternalAgentQuotaCredits;
+  error?: string;
+}
+
+export interface ExternalClientQuotasView {
+  serverTime: number;
+  softTtlMs: number;
+  minRefreshCooldownMs: number;
+  items: ExternalClientQuotaItem[];
 }
 
 export function isBundledClaudeSdkExecutable(filePath?: string): boolean {
@@ -336,13 +510,16 @@ export interface ExternalAgentRun {
   readOnlyViolation?: ReadOnlyViolationSummary;
   /** Unacknowledged offline kulo_task_report entries buffered locally on Env until Hub consumes & ACKs them. */
   pendingReports?: ExternalAgentPendingReport[];
+  /** Latest passively captured quota snapshot observed during this external run (never blocks run settlement). */
+  latestQuota?: ExternalAgentQuotaProbeResult;
   error?: string;
 }
 
 export type ExternalAgentRequest =
   | { operation: "detect"; kind: ExternalAgentKind; executable?: string }
   | { operation: "probe"; binding: ExternalAgentBinding; modelId?: string }
-  | { operation: "run"; binding: ExternalAgentBinding; taskId: string; runEpoch: number; requestId: string; prompt: string; cwd: string; workspaceMode?: ExternalWorkspaceMode; modelId?: string; thinkingLevel?: string; sessionId?: string; readOnly: boolean; allowSubagents: boolean; taskTools?: boolean; hasConnections?: boolean; memoryEnabled?: boolean; projectId?: string; directoryId?: string; grantRevision?: number; timeoutMs: number; mcpServers?: Array<{ name: string; url: string; headers?: Array<{ name: string; value: string }> }> }
+  | { operation: "quota"; binding: ExternalAgentBinding }
+  | { operation: "run"; binding: ExternalAgentBinding; taskId: string; runEpoch: number; requestId: string; prompt: string; cwd: string; workspaceMode?: ExternalWorkspaceMode; modelId?: string; thinkingLevel?: string; serviceTier?: string; sessionId?: string; readOnly: boolean; allowSubagents: boolean; taskTools?: boolean; hasConnections?: boolean; memoryEnabled?: boolean; projectId?: string; directoryId?: string; grantRevision?: number; timeoutMs: number; mcpServers?: Array<{ name: string; url: string; headers?: Array<{ name: string; value: string }> }> }
   | { operation: "inspect"; runId: string; afterSequence?: number; compact?: boolean; ackReportIds?: string[] }
   | { operation: "diff"; taskId: string; filePath?: string }
   | { operation: "apply"; taskId: string; projectId: string; directoryId?: string; grantRevision?: number; paths?: string[]; allowConflicts?: boolean }
@@ -352,6 +529,7 @@ export type ExternalAgentRequest =
 
 export type ExternalAgentResponse =
   | { type: "detection"; detection: ExternalAgentDetection }
+  | { type: "quota"; quota: ExternalAgentQuotaProbeResult }
   | { type: "run"; run: ExternalAgentRun }
   | { type: "diff"; diff: StagedWorkspaceDiffDetail }
   | { type: "apply"; applied: StagedWorkspaceApplyResult };
@@ -428,7 +606,7 @@ export interface ExternalAgentQuickConnectRequest {
 }
 
 export interface ExternalAgentQuickConnectResult {
-  agentId: string;
+  agentId?: string;
   clientId: string;
   kind: ExternalAgentKind;
   envId: string;
@@ -454,6 +632,7 @@ export interface ExternalTicketExecution {
   binding: ExternalAgentBinding;
   modelId?: string;
   thinkingLevel?: string;
+  serviceTier?: string;
   workspaceMode?: ExternalWorkspaceMode;
   stagedCwd?: string;
   stagedDiff?: StagedWorkspaceDiffSummary;

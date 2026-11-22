@@ -26,6 +26,7 @@ import {
   type ApiProviderModalState,
 } from "./api-provider-modal";
 import { OAuthSubscriptionModal } from "./oauth-modal";
+import { UsageCapsSection } from "./usage-caps-section";
 import { ModelSelectionFields } from "./model-selection-fields";
 import { SettingsList } from "./settings-layout";
 import { ProviderConnectionTable, type ProviderConnectionItem } from "./provider-connection-table";
@@ -691,6 +692,8 @@ export function ModelsModule({
           </section>
         </div>
       </section>
+
+      <UsageCapsSection />
 
       {(error || catalogError) && !providerModal?.open && !oauthModal?.open && (
         <Alert status="danger" className="rounded-2xl p-3">

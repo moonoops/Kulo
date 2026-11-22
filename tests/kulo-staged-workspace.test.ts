@@ -380,10 +380,17 @@ describe("Hub + ExternalAgentService staged workspace, context distillation & at
     expect(updatedTicket.externalExecution?.stagedAppliedAt).toEqual(expect.any(Number));
     expect(updatedTicket.externalExecution?.stagedCwd).toBeUndefined();
 
-    // Disconnecting the external client removes both the client entry and its persona roles
+    // Disconnecting the external client removes the client entry and reverts bound roles to the built-in engine
     const disconnected = await hub.removeExternalClient("codex:local");
     expect(disconnected.settings.externalClients?.["codex:local"]).toBeUndefined();
-    expect(disconnected.settings.blocks.roles.value["codex-architect"]).toBeUndefined();
+    expect(disconnected.settings.blocks.roles.value["codex-architect"]).toMatchObject({
+      id: "codex-architect",
+      thinkingLevel: "auto",
+    });
+    expect(disconnected.settings.blocks.roles.value["codex-architect"]?.external).toBeUndefined();
+    expect(disconnected.settings.blocks.roles.value["codex-architect"]?.externalClientId).toBeUndefined();
+    expect(disconnected.settings.blocks.roles.value["codex-architect"]?.modelId).toBeUndefined();
+    expect(disconnected.settings.blocks.roles.value["codex-architect"]?.serviceTier).toBeUndefined();
   });
 
   it("blocks ACP fs/write_text_file against project files in read_only mode while allowing scratch/notes", async () => {

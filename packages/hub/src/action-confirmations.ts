@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-durable";
-import type { TicketWaitOption, UiCardInput, UiCardSnapshot, UiValues } from "@kulo/protocol";
+import type { ActionEffectState, TicketWaitOption, UiCardInput, UiCardSnapshot, UiValues } from "@kulo/protocol";
 import type { KuloUiCards } from "./ui-cards.js";
 
 export type ActionConfirmationKind =
@@ -10,7 +10,8 @@ export type ActionConfirmationKind =
   | "staged_apply"
   | "memory_service_operation"
   | "host_action"
-  | "ticket_decision";
+  | "ticket_decision"
+  | "computer_handoff";
 
 export type ActionConfirmationPayload =
   | {
@@ -65,6 +66,18 @@ export type ActionConfirmationPayload =
       runEpoch: number;
       question: string;
       options: TicketWaitOption[];
+    }
+  | {
+      kind: "computer_handoff";
+      ticketId: string;
+      runEpoch: number;
+      envId: string;
+      target: "browser" | "desktop";
+      sessionId: string;
+      reason: string;
+      url?: string;
+      app?: string;
+      expiresAt: number;
     };
 
 export interface PendingActionConfirmation {
@@ -80,7 +93,15 @@ export interface PendingActionConfirmation {
   selectedChoiceId?: string;
   manualInstruction?: string;
   executed?: boolean;
+  effect?: ActionEffectState;
+  dispatchedAt?: number;
+  lastError?: string;
   payload: ActionConfirmationPayload;
+}
+
+export function effectiveConfirmationEffect(record: Readonly<PendingActionConfirmation>): ActionEffectState {
+  if (record.effect) return record.effect;
+  return record.executed ? "confirmed" : "none";
 }
 
 export interface ActionConfirmationsState {
@@ -905,14 +926,75 @@ export class KuloActionConfirmations {
     return resolved;
   }
 
-  async markExecuted(idOrCardId: string, context: Context = BACKGROUND_CONTEXT): Promise<void> {
+  async markDispatched(idOrCardId: string, context: Context = BACKGROUND_CONTEXT): Promise<boolean> {
+    return this.#harness.commit(async (tx) => {
+      const doc = await tx.doc(ActionConfirmationsDoc);
+      const record = findRecord(doc, idOrCardId);
+      if (!record) return false;
+      const current = effectiveConfirmationEffect(record);
+      if (current === "dispatched" || current === "confirmed" || current === "unknown") {
+        return false;
+      }
+      record.effect = "dispatched";
+      record.dispatchedAt = Date.now();
+      delete record.lastError;
+      writeRecord(doc, record as PendingActionConfirmation & JsonObject);
+      return true;
+    }, context);
+  }
+
+  async markOutcome(
+    idOrCardId: string,
+    effect: Exclude<ActionEffectState, "none" | "dispatched">,
+    lastError?: string,
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<void> {
     await this.#harness.commit(async (tx) => {
       const doc = await tx.doc(ActionConfirmationsDoc);
       const record = findRecord(doc, idOrCardId);
-      if (record) {
+      if (!record) return;
+      record.effect = effect;
+      if (effect === "confirmed" || effect === "unknown") {
         record.executed = true;
-        writeRecord(doc, record as PendingActionConfirmation & JsonObject);
       }
+      if (lastError) {
+        record.lastError = lastError.slice(0, 400);
+      } else {
+        delete record.lastError;
+      }
+      writeRecord(doc, record as PendingActionConfirmation & JsonObject);
     }, context);
+  }
+
+  /**
+   * Startup / failover recovery: transitions any confirmation left in `dispatched` from a crashed
+   * process into `unknown` (never auto-replaying side effects) and returns those records so the Hub
+   * can wake any waiting Worker tickets or notify conversations to verify actual state.
+   */
+  async reconcileDispatchedOnStartup(
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<PendingActionConfirmation[]> {
+    return this.#harness.commit(async (tx) => {
+      const doc = await tx.doc(ActionConfirmationsDoc);
+      const seen = new Set<string>();
+      const recovered: PendingActionConfirmation[] = [];
+      const visit = (record: PendingActionConfirmation | undefined) => {
+        if (!record || seen.has(record.id)) return;
+        seen.add(record.id);
+        if (record.effect !== "dispatched") return;
+        record.effect = "unknown";
+        record.executed = true;
+        record.lastError = "服务重启或切换期间操作状态未决，未自动重放，请先只读核验实际结果。";
+        writeRecord(doc, record as PendingActionConfirmation & JsonObject);
+        recovered.push(JSON.parse(JSON.stringify(record)) as PendingActionConfirmation);
+      };
+      for (const record of Object.values(doc.byId ?? {})) visit(record);
+      for (const record of Object.values(doc.byCardId ?? {})) visit(record);
+      return recovered;
+    }, context);
+  }
+
+  async markExecuted(idOrCardId: string, context: Context = BACKGROUND_CONTEXT): Promise<void> {
+    await this.markOutcome(idOrCardId, "confirmed", undefined, context);
   }
 }

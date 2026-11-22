@@ -1,7 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MessageActions, messageQuote } from "./message-actions";
+import { CodeBlock } from "./code-block";
 import { ConnectedMessageContent } from "./connected-message-content";
+import { messageReply } from "./reply-reference";
 import type { ChatAttachment, ChatDisplayItem } from "@kulo/protocol";
 
 const asset: ChatAttachment = { id: "photo", name: "参考图.png", mimeType: "image/png", size: 64, kind: "image", url: "/api/uploads/photo" };
@@ -105,5 +107,34 @@ describe("message timestamp rendering", () => {
     ]) {
       expect(renderToStaticMarkup(<ConnectedMessageContent item={item} />)).not.toContain("<time");
     }
+  });
+});
+
+describe("excerpt and code block quoting (#7)", () => {
+  it("renders a quote action button on code blocks when MessageActions supports replies and omits it otherwise", () => {
+    const item: ChatDisplayItem = { id: 12, role: "assistant", text: "代码片段" };
+    const withReply = renderToStaticMarkup(
+      <MessageActions item={item} onReply={() => {}}>
+        <CodeBlock code="const x = 1;" language="ts" />
+      </MessageActions>,
+    );
+    expect(withReply).toContain('aria-label="引用此代码块"');
+
+    const withoutReply = renderToStaticMarkup(
+      <MessageActions item={item}>
+        <CodeBlock code="const x = 1;" language="ts" />
+      </MessageActions>,
+    );
+    expect(withoutReply).not.toContain('aria-label="引用此代码块"');
+  });
+
+  it("sets excerpt: true only for snippet quotes and omits excerpt key for whole-message replies", () => {
+    const item: ChatDisplayItem = { id: 15, role: "assistant", text: "完整正文" };
+    const fullReply = messageReply(item, "完整正文");
+    expect(fullReply).toEqual({ messageId: 15, role: "assistant", text: "完整正文" });
+    expect("excerpt" in fullReply!).toBe(false);
+
+    const excerptReply = messageReply(item, "正文片段", { excerpt: true });
+    expect(excerptReply).toEqual({ messageId: 15, role: "assistant", text: "正文片段", excerpt: true });
   });
 });

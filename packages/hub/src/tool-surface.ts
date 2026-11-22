@@ -223,30 +223,21 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     tier: "event",
     scope: "global",
   },
-  {
-    name: "kulo_identity_read",
-    audiences: ALL_ORCHESTRATOR,
-    tier: "deferred",
-    tierFor: (s) =>
-      s.audience === "settings" && s.settingsModule === "identity" ? "resident" : "deferred",
-    scope: "global",
-  },
-  {
-    name: "kulo_identity_propose",
-    audiences: ALL_ORCHESTRATOR,
-    tier: "deferred",
-    tierFor: (s) =>
-      s.audience === "settings" && s.settingsModule === "identity" ? "resident" : "deferred",
-    scope: "global",
-  },
-  {
-    name: "kulo_relationship_update",
-    audiences: ALL_ORCHESTRATOR,
-    tier: "deferred",
-    tierFor: (s) =>
-      s.audience === "settings" && s.settingsModule === "identity" ? "resident" : "deferred",
-    scope: "global",
-  },
+  ...[
+    "kulo_identity_read",
+    "kulo_identity_propose",
+    "kulo_relationship_update",
+    "kulo_memory_forget",
+  ].map(
+    (name): ToolSurfaceEntry => ({
+      name,
+      audiences: ALL_ORCHESTRATOR,
+      tier: "deferred",
+      tierFor: (s) =>
+        s.audience === "settings" && s.settingsModule === "identity" ? "resident" : "deferred",
+      scope: "global",
+    }),
+  ),
   {
     name: "kulo_expression",
     audiences: ALL_ORCHESTRATOR,
@@ -294,6 +285,13 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     tier: "deferred",
     scope: "global",
     requires: (s) => s.computerUseDesktopEnabled !== false,
+  },
+  {
+    name: "kulo_computer_handoff",
+    audiences: ALL_COMPUTER_WORKERS,
+    tier: "deferred",
+    scope: "global",
+    requires: (s) => s.computerUseBrowserEnabled !== false || s.computerUseDesktopEnabled !== false,
   },
 
   // 5. UI Cards & Artifact Publication

@@ -2,6 +2,7 @@ import { translate as t, useI18n } from "../../kulo-i18n";
 import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Disclosure, Input, Label, Link, ListBox, Select, TextArea, TextField } from "@heroui/react";
 import {
+  isValidMcpEnvKey,
   redactSensitiveText,
   type ConnectionAuthType,
   type ConnectionApplicationId,
@@ -23,15 +24,6 @@ export const CONNECTION_KIND_LABEL: Record<ConnectionKind, string> = { ssh: "SSH
 const CREDENTIAL_TEMPLATES = (["account", "ssh", "api-key", "custom"] as const).map((id) => ({ id, label: CONNECTION_KIND_LABEL[id] }));
 const connectionKindLabel = (kind: ConnectionKind) => t(CONNECTION_KIND_LABEL[kind], { ssh: "SSH server", account: "Account", "api-key": "API Key", custom: "Custom credentials", app: "Built-in app", mcp: "MCP app" }[kind]);
 const RESERVED_CREDENTIAL_KEYS = new Set(["__binding", "__proto__", "constructor", "prototype", "toString", "valueOf", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString"]);
-const MCP_ENV_KEY_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
-const MCP_BLOCKED_ENV_KEYS = new Set([
-  "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL",
-  "NODE_OPTIONS", "NODE_EXTRA_CA_CERTS", "NODE_TLS_REJECT_UNAUTHORIZED", "NODE_PATH",
-  "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
-  "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "RUBYOPT", "PERL5OPT", "BASH_ENV", "ENV", "ZDOTDIR",
-  "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
-  "KULO_STATE_DIR", "KULO_VAULT_KEY", "KULO_AUTH_TOKEN",
-]);
 
 function isLoopbackHostname(hostname: string): boolean {
   const bare = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
@@ -200,7 +192,7 @@ export function connectionSaveRequest(draft: ConnectionDraft, input: ConnectionS
       const secrets: Record<string, string> = {};
       for (const field of draft.credentialFields) {
         const envKey = field.label.trim().toUpperCase();
-        if (!MCP_ENV_KEY_PATTERN.test(envKey) || MCP_BLOCKED_ENV_KEYS.has(envKey) || envKeys.has(envKey)) {
+        if (!isValidMcpEnvKey(envKey) || envKeys.has(envKey)) {
           throw new Error(t("环境变量名须为大写字母/数字/下划线，且不得重复或覆盖系统变量。", "Environment variable names must use uppercase letters, digits, and underscores without duplicating or overriding system variables."));
         }
         envKeys.add(envKey);

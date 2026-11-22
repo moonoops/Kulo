@@ -1061,13 +1061,10 @@ export class SettingsAssistant implements DeviceAssistantHost {
     const existing = input.connectionId ? this.#host.connections.getConnectionRecord(input.connectionId) : undefined;
     const isMcp = input.kind === "mcp" || Boolean(input.mcpPresetId) || existing?.kind === "mcp";
     if (isMcp) {
-      if (input.mcpTransport === "stdio" || input.mcpCommand !== undefined || input.mcpArgs !== undefined || input.mcpCwd !== undefined || existing?.mcpTransport === "stdio") {
-        throw new Error("本机 Stdio MCP 命令必须由用户在本机页面手动填写，不能由助手预填。");
-      }
+      if (input.mcpPresetId === "composio" || existing?.mcpPresetId === "composio") throw new Error("Composio 连接请通过左侧「添加应用 → Composio」或该行的「编辑 / 管理应用」配置。");
+      if (input.mcpTransport === "stdio" || input.mcpCommand !== undefined || input.mcpArgs !== undefined || input.mcpCwd !== undefined || existing?.mcpTransport === "stdio") throw new Error("本机 Stdio MCP 命令必须由用户在本机页面手动填写，不能由助手预填。");
       const targetUrl = input.url ?? existing?.url;
-      if (targetUrl && (!targetUrl.startsWith("https://") || isNonPublicMcpUrl(targetUrl))) {
-        throw new Error("助手只能预填公开的 HTTPS MCP 地址，环回或内网地址请由用户在本机页面手动配置。");
-      }
+      if (targetUrl && (!targetUrl.startsWith("https://") || isNonPublicMcpUrl(targetUrl))) throw new Error("助手只能预填公开的 HTTPS MCP 地址，环回或内网地址请由用户在本机页面手动配置。");
     }
     if (current.module !== "connections") await this.clientAction("navigate", { module: "connections" }, `connection-page:${commandId}`);
     return this.#host.connections.prepare({ ...input, clientId: context.clientId });

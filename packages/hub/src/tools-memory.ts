@@ -12,6 +12,7 @@ import {
 import { KuloStateDoc, resolveTicketExecutionScope, type KuloDurableState } from "./state.js";
 import { SettingsAssistantDoc, isMainOrchestratorConversation, type SettingsAssistantState } from "./settings-doc.js";
 import { resolveDeferredAddTools } from "./tool-surface.js";
+import { findMatchingForgottenTerm, type ForgottenTermEntry, type MemoryForgetOutcome } from "./memory-forget.js";
 
 export function memoryCallerFromState(
   state: Readonly<KuloDurableState> | undefined,
@@ -44,6 +45,13 @@ export function memoryCallerFromState(
 export function createHindsightTools(options: {
   getMemoryConfig: () => HindsightMemoryConfig;
   defaultBank: MemoryBank;
+  getForgottenTerms?: () => Promise<ForgottenTermEntry[]>;
+  forgetMemory?: (
+    term: string,
+    reason: string | undefined,
+    caller: MemoryCallerContext,
+    signal?: AbortSignal,
+  ) => Promise<MemoryForgetOutcome>;
 }) {
   type ToolExecApi = Parameters<Parameters<typeof defineTool>[0]["execute"]>[1];
   type ToolExecCtx = Parameters<Parameters<typeof defineTool>[0]["execute"]>[2];
@@ -74,6 +82,21 @@ export function createHindsightTools(options: {
           : options.defaultBank;
 
     const { bank: _b, ...rest } = rawArgs;
+    if (
+      requestedBank === "private" &&
+      (toolName === "hindsight_retain" || toolName === "hindsight_ingest_document") &&
+      options.getForgottenTerms
+    ) {
+      const terms = await options.getForgottenTerms();
+      const candidateText = [typeof rest.title === "string" ? rest.title : "", typeof rest.content === "string" ? rest.content : ""].join("\n");
+      const matched = findMatchingForgottenTerm(candidateText, terms);
+      if (matched) {
+        return {
+          isError: true,
+          output: [{ type: "text" as const, text: `拒绝写入私有记忆：内容命中用户已遗忘词条「${matched.term}」。` }],
+        };
+      }
+    }
     const res = await executeHindsightTool({
       toolName,
       args: rest,
@@ -428,10 +451,38 @@ export function createHindsightTools(options: {
       run("hindsight_invalidate_memory", { ...(args as Record<string, unknown>), bank: "private" }, api, context),
   });
 
+  const forgetMemoryTool = options.forgetMemory
+    ? defineTool({
+        name: "kulo_memory_forget",
+        description:
+          "Permanently forget a personal fact/topic when the user asks to forget or stop remembering it: records a tombstone in forgottenTerms, removes matching lines from relationship.md, and invalidates exact-matching private Hindsight memories (never touches shared project memory). 关键词：忘掉 别再记住 清除记忆 遗忘黑名单 删除个人偏好",
+        deferred: true,
+        replay: "safe",
+        outputLimits: { maxBytes: 4_000, maxLines: 80 },
+        parameters: obj({
+          term: str({ description: "Specific personal fact, topic, or keyword to forget (2–120 characters)." }),
+          reason: opt(str({ description: "Optional short reason recorded alongside the tombstone." })),
+        }),
+        execute: async (args, api, context) => {
+          try {
+            const caller = await resolveCaller(api, context);
+            const outcome = await options.forgetMemory!(args.term, args.reason, caller, context.abortSignal);
+            return { output: [{ type: "text" as const, text: JSON.stringify(outcome) }] };
+          } catch (error) {
+            return {
+              isError: true,
+              output: [{ type: "text" as const, text: error instanceof Error ? error.message : "遗忘记忆失败。" }],
+            };
+          }
+        },
+      })
+    : undefined;
+
   return [
     ...sharedEligibleTools,
     createMentalModelTool,
     refreshMentalModelTool,
     invalidateMemoryTool,
+    ...(forgetMemoryTool ? [forgetMemoryTool] : []),
   ];
 }

@@ -21,7 +21,7 @@ import type { ProjectView, ProjectEnvRequest, ProjectDirectoryListing, ProjectDi
 import type { BrowserRequest, BrowserResult, CapabilitiesWorkspaceSnapshot } from "./capabilities.js";
 import type { VoiceSnapshot } from "./voice.js";
 import type { ComputerUseRequest, ComputerUseResult } from "./computer-use.js";
-import type { ComputerPreviewTarget, ComputerPreviewUpdate } from "./computer-preview.js";
+import type { ComputerPreviewInputEvent, ComputerPreviewTarget, ComputerPreviewUpdate } from "./computer-preview.js";
 import type { HostActionRequest, HostActionResult } from "./host-actions.js";
 import type {
   AssistantItemAction,
@@ -330,6 +330,7 @@ export type HubToEnvControlMessage =
   | { type: "hub.external_agent_tool_result"; requestId: string; runId: string; taskId: string; runEpoch: number; result?: unknown; error?: string }
   | { type: "hub.computer_preview_subscribe"; subscriptionId: string; target: ComputerPreviewTarget }
   | { type: "hub.computer_preview_unsubscribe"; subscriptionId: string }
+  | { type: "hub.computer_preview_input"; target: ComputerPreviewTarget; event: ComputerPreviewInputEvent }
   | { type: "hub.android_request"; requestId: string; budgetMs: number; request: import("./android.js").AndroidRequest }
   | { type: "hub.android_cancel"; requestId: string; request: import("./android.js").AndroidCancel }
   | { type: "hub.notification_decision"; result: import("./android-notifications.js").AndroidNotificationClassificationResult }

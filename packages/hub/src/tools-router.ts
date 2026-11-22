@@ -30,6 +30,8 @@ import {
 import { isMainOrchestratorApi } from "./settings-doc.js";
 import { resolveDeferredAddTools } from "./tool-surface.js";
 import { createHindsightTools } from "./tools-memory.js";
+import type { MemoryCallerContext } from "./hindsight.js";
+import type { ForgottenTermEntry, MemoryForgetOutcome } from "./memory-forget.js";
 import { createWebSearchTool } from "./tools-search.js";
 import { createWebFetchTool } from "./tools-worker.js";
 import type { KuloSearch } from "./search.js";
@@ -172,6 +174,13 @@ export interface OrchestratorController {
   readIdentityFiles(file?: IdentityFile): Promise<IdentityList | IdentityRead>;
   proposeIdentity(content: string, summary: string): Promise<IdentityProposal>;
   updateRelationship(request: RelationshipWriteRequest): Promise<IdentitySaved>;
+  getForgottenTerms?(): Promise<ForgottenTermEntry[]>;
+  forgetMemory?(
+    term: string,
+    reason: string | undefined,
+    caller: MemoryCallerContext,
+    signal?: AbortSignal,
+  ): Promise<MemoryForgetOutcome>;
   setAgentExpression(
     face: AgentFace | "auto",
     cue: string | undefined,
@@ -621,6 +630,8 @@ export function createOrchestratorToolsExtension(
   const hindsightTools = createHindsightTools({
     getMemoryConfig,
     defaultBank: "private",
+    ...(controller.getForgottenTerms ? { getForgottenTerms: () => controller.getForgottenTerms!() } : {}),
+    ...(controller.forgetMemory ? { forgetMemory: (term, reason, caller, signal) => controller.forgetMemory!(term, reason, caller, signal) } : {}),
   });
 
   return defineExtension({

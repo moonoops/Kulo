@@ -178,6 +178,28 @@
   gap: var(--kulo-control-gap);
 }
 
+.kulo-computer-handoff-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kulo-space-2);
+}
+
+.kulo-computer-handoff-paste {
+  display: flex;
+  align-items: center;
+  gap: var(--kulo-control-gap);
+}
+
+.kulo-computer-preview-modal-stage[data-interactive="true"] {
+  cursor: pointer;
+  border-color: var(--accent);
+}
+
+.kulo-computer-preview-modal-stage[data-interactive="true"]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 .kulo-preview-titlebar-trigger {
   flex: none;
 }

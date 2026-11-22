@@ -3,6 +3,8 @@ import { KuloIcon } from "../../kulo-icon";
 
 type BrandIconId =
   | ConnectionApplicationId
+  | "zapier"
+  | "composio"
   | "linear"
   | "notion"
   | "atlassian"
@@ -12,11 +14,17 @@ type BrandIconId =
   | "cloudflare"
   | "stripe"
   | "context7"
-  | "slack";
+  | "slack"
+  | "exa"
+  | "deepwiki"
+  | "tavily"
+  | "posthog";
 
 const PRESET_TO_BRAND: Record<string, BrandIconId> = {
   "github-mcp": "github",
   "figma-mcp": "figma",
+  zapier: "zapier",
+  composio: "composio",
   linear: "linear",
   notion: "notion",
   atlassian: "atlassian",
@@ -27,6 +35,10 @@ const PRESET_TO_BRAND: Record<string, BrandIconId> = {
   stripe: "stripe",
   context7: "context7",
   slack: "slack",
+  exa: "exa",
+  deepwiki: "deepwiki",
+  tavily: "tavily",
+  posthog: "posthog",
 };
 
 function renderBrandSvg(brandId: BrandIconId) {
@@ -134,6 +146,52 @@ function renderBrandSvg(brandId: BrandIconId) {
             d="M15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"
             fill="#ECB22E"
           />
+        </svg>
+      );
+    case "zapier":
+      return (
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <path
+            d="M13.3 2h-2.6v6.8L5.9 4 4 5.9l4.8 4.8H2v2.6h6.8L4 18.1 5.9 20l4.8-4.8V22h2.6v-6.8l4.8 4.8 1.9-1.9-4.8-4.8H22v-2.6h-6.8l4.8-4.8L18.1 4l-4.8 4.8V2Z"
+            fill="#FF4F00"
+          />
+        </svg>
+      );
+    case "composio":
+      return (
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <rect x="2.5" y="2.5" width="8.5" height="8.5" rx="2.5" fill="currentColor" />
+          <rect x="13" y="2.5" width="8.5" height="8.5" rx="4.25" fill="#E6493A" />
+          <rect x="2.5" y="13" width="8.5" height="8.5" rx="4.25" fill="currentColor" opacity="0.55" />
+          <rect x="13" y="13" width="8.5" height="8.5" rx="2.5" fill="currentColor" />
+        </svg>
+      );
+    case "exa":
+      return (
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <path d="M4 5h16v3.2H7.6v2.2h9.4v3.2H7.6v2.2H20V19H4V5Z" fill="#1F40ED" />
+        </svg>
+      );
+    case "deepwiki":
+      return (
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <path d="M3 5.5A2.5 2.5 0 0 1 5.5 3H11v17H5.5A2.5 2.5 0 0 0 3 22V5.5Z" fill="currentColor" opacity="0.85" />
+          <path d="M21 5.5A2.5 2.5 0 0 0 18.5 3H13v17h5.5a2.5 2.5 0 0 1 2.5 2V5.5Z" fill="currentColor" opacity="0.45" />
+        </svg>
+      );
+    case "tavily":
+      return (
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <circle cx="11" cy="11" r="6.5" stroke="#2563EB" strokeWidth="2.6" />
+          <path d="m16 16 5 5" stroke="#F59E0B" strokeWidth="2.6" strokeLinecap="round" />
+        </svg>
+      );
+    case "posthog":
+      return (
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <rect x="3" y="12" width="4" height="9" rx="1" fill="#F54E00" />
+          <rect x="10" y="7" width="4" height="14" rx="1" fill="#1D4AFF" />
+          <rect x="17" y="3" width="4" height="18" rx="1" fill="#F9BD2B" />
         </svg>
       );
   }

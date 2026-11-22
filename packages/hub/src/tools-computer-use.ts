@@ -15,6 +15,8 @@ export interface ComputerUseScope {
   runEpoch: number;
   envId: string;
   readOnly: boolean;
+  /** Reused across `steerTicket` after an active `computer_handoff` so browser login state persists. */
+  preservedSessionId?: string;
   assertActive(): Promise<void>;
 }
 
@@ -24,6 +26,12 @@ export interface ComputerUseToolsOptions {
   sessionOpened?(scope: ComputerUseScope, tool: ComputerUseRequest["tool"], sessionId: string): void | Promise<void>;
   sessionObserved?(scope: ComputerUseScope, tool: ComputerUseRequest["tool"], sessionId: string, app?: string): void;
   sessionClosed?(scope: ComputerUseScope, tool: ComputerUseRequest["tool"], sessionId: string): void;
+  requestHandoff?(
+    scope: ComputerUseScope,
+    input: { target: ComputerUseRequest["tool"]; sessionId: string; reason: string; url?: string; app?: string },
+    api: ToolExecutionApi,
+    context: Context,
+  ): Promise<{ requestId: string; cardId?: string; expiresAt: number }>;
 }
 
 export function computerUseSessionId(scope: Pick<ComputerUseScope, "ticketId" | "conversationId" | "runEpoch">): string {
@@ -55,7 +63,7 @@ export function createComputerUseTools(options: ComputerUseToolsOptions) {
     if (scope.readOnly && !readOnlyActions.has(args.action)) {
       throw new Error("当前会话或角色只读，仅允许观察页面状态（status/open/snapshot/get-url/get-text/close），不能点击、输入、滚动或修改应用状态；如需交互操作请使用 kulo_dispatch。");
     }
-    const sessionId = computerUseSessionId(scope);
+    const sessionId = scope.preservedSessionId ?? computerUseSessionId(scope);
     const request: Record<string, unknown> = {
       tool,
       action: args.action,
@@ -133,6 +141,64 @@ export function createComputerUseTools(options: ComputerUseToolsOptions) {
       replay: "unsafe",
       execute: (args, api, context) => invoke("desktop", args, api, context),
     }),
+    ...(options.requestHandoff
+      ? [
+          defineTool({
+            name: "kulo_computer_handoff",
+            description:
+              "Pause this Worker and hand the live browser/desktop session over to the user for human-only steps (login, 2FA/OTP, CAPTCHA, payment, or consent). Keeps the browser session alive for up to 10 minutes without losing login state; end your turn immediately after calling. 关键词：人工接管 登录 验证码 扫码 人类操作 交给人处理",
+            parameters: obj({
+              target: oneOf(["browser", "desktop"]),
+              reason: str({ description: "Concise reason explaining what the user needs to complete (e.g. '请完成扫码登录或输入短信验证码')." }),
+              url: opt(str({ description: "Optional current page URL for browser handoff." })),
+              app: opt(str({ description: "Optional target desktop application name." })),
+            }),
+            deferred: true,
+            replay: "unsafe",
+            execute: async (args, api, context) => {
+              const scope = await options.scope(api);
+              if (scope.readOnly || scope.ticketId.startsWith("chat:")) {
+                return {
+                  isError: true,
+                  output: [{ type: "text" as const, text: "仅可写的后台执行任务可以发起电脑/浏览器人工接管。" }],
+                };
+              }
+              await scope.assertActive();
+              const reason = args.reason.trim().slice(0, 400);
+              if (!reason) {
+                return { isError: true, output: [{ type: "text" as const, text: "请提供明确的人工接管原因。" }] };
+              }
+              const sessionId = scope.preservedSessionId ?? computerUseSessionId(scope);
+              const handoff = await options.requestHandoff!(
+                scope,
+                {
+                  target: args.target,
+                  sessionId,
+                  reason,
+                  ...(args.url?.trim() ? { url: args.url.trim().slice(0, 2000) } : {}),
+                  ...(args.app?.trim() ? { app: args.app.trim().slice(0, 200) } : {}),
+                },
+                api,
+                context,
+              );
+              return {
+                output: [
+                  {
+                    type: "text" as const,
+                    text: JSON.stringify({
+                      status: "awaiting_user_handoff",
+                      requestId: handoff.requestId,
+                      expiresAt: handoff.expiresAt,
+                      message: "已向用户发起人工接管，会话已保活并挂起。请立即结束当前轮次等待用户完成。",
+                    }),
+                  },
+                ],
+                control: { terminate: true },
+              };
+            },
+          }),
+        ]
+      : []),
   ];
 }
 

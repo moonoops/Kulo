@@ -29,6 +29,12 @@ import {
   createVaultMcpOAuthStore,
   type KuloMcpAuthProvider,
 } from "./mcp-oauth.js";
+import {
+  COMPOSIO_PRESET_ID,
+  evaluateComposioCall,
+  filterComposioTools,
+  isComposioSessionMissingError,
+} from "./composio-bridge.js";
 import { isBlockedMcpEnvKey, isNonPublicMcpUrl } from "./mcp-presets.js";
 
 const DEFAULT_IDLE_MS = 5 * 60_000;
@@ -63,6 +69,7 @@ export interface McpConnectionPoolOptions {
   onSecrets: (values: readonly string[]) => void;
   onAuthorizedChange: (connectionId: string, authorized: boolean) => void;
   onDiscoveryUpdated: (connectionId: string, expectedRevision: number, snapshot: McpDiscoverySnapshot) => Promise<void> | void;
+  onComposioSessionExpired?: (connectionId: string, expectedBinding: string, signal?: AbortSignal, failedSessionId?: string) => Promise<ConnectionRecordView | undefined>;
   idleMs?: number;
   baseFetch?: typeof fetch;
   transportFactory?: (ctx: McpTransportFactoryContext) => McpTransport | Promise<McpTransport>;
@@ -344,7 +351,8 @@ export class McpConnectionPool {
     try {
       const init = await client.connect(transport);
       signal?.throwIfAborted();
-      const tools = init.capabilities?.tools ? await client.listTools({ signal, timeoutMs: 20_000 }) : [];
+      const rawTools = init.capabilities?.tools ? await client.listTools({ signal, timeoutMs: 20_000 }) : [];
+      const tools = filterComposioTools(record, rawTools);
       const serverName = init.serverInfo?.title || init.serverInfo?.name;
       const entry: PoolEntry = {
         connectionId: record.id,
@@ -412,9 +420,9 @@ export class McpConnectionPool {
     return pending;
   }
 
-  async #ensureFreshTools(entry: PoolEntry, forceRefresh: boolean, signal?: AbortSignal): Promise<Tool[]> {
+  async #ensureFreshTools(record: ConnectionRecordView, entry: PoolEntry, forceRefresh: boolean, signal?: AbortSignal): Promise<Tool[]> {
     if (forceRefresh || entry.toolsDirty) {
-      const fresh = await entry.client.listTools({ signal, timeoutMs: 20_000 });
+      const fresh = filterComposioTools(record, await entry.client.listTools({ signal, timeoutMs: 20_000 }));
       entry.tools = fresh;
       entry.toolsDirty = false;
       await this.#options.onDiscoveryUpdated(entry.connectionId, entry.revision, {
@@ -436,14 +444,29 @@ export class McpConnectionPool {
     if (this.#closed) {
       throw Object.assign(new Error("连接池已关闭。"), { code: "connection_manager_closed", status: 503 });
     }
-    const entry = await this.#openEntry(record, secrets, binding, false, signal);
-    const snapshot: McpDiscoverySnapshot = {
-      ...(entry.serverName ? { serverName: entry.serverName } : {}),
-      tools: summarizeMcpTools(entry.tools, this.#options.redact),
-      updatedAt: Date.now(),
-    };
-    await this.#closeEntry(entry);
-    return snapshot;
+    let current = record;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const entry = await this.#openEntry(current, secrets, binding, false, signal);
+        const snapshot: McpDiscoverySnapshot = {
+          ...(entry.serverName ? { serverName: entry.serverName } : {}),
+          tools: summarizeMcpTools(entry.tools, this.#options.redact),
+          updatedAt: Date.now(),
+        };
+        await this.#closeEntry(entry);
+        return snapshot;
+      } catch (error) {
+        if (attempt === 0 && current.mcpPresetId === COMPOSIO_PRESET_ID && isComposioSessionMissingError(error) && this.#options.onComposioSessionExpired) {
+          const refreshed = await this.#options.onComposioSessionExpired(current.id, binding, signal, current.mcpComposioSessionId);
+          if (refreshed) {
+            current = refreshed;
+            continue;
+          }
+        }
+        throw error;
+      }
+    }
+    throw Object.assign(new Error("MCP 连接测试失败。"), { code: "connection_mcp_execution_failed", status: 502 });
   }
 
   async execute(
@@ -451,89 +474,112 @@ export class McpConnectionPool {
     secrets: ConnectionSecrets,
     binding: string,
     operation: McpOperation,
-    options: { readOnly?: boolean; signal?: AbortSignal } = {},
+    options: { readOnly?: boolean; signal?: AbortSignal; onOutwardAction?: (label: string) => void | Promise<void> } = {},
   ): Promise<ConnectionUseResult> {
-    try {
-      const entry = await this.#getOrConnect(record, secrets, binding, options.signal);
-      this.#touchIdle(entry);
+    const composioPolicy = evaluateComposioCall(record, operation, { readOnly: options.readOnly });
+    let current = record;
+    let outwardRecorded = false;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const entry = await this.#getOrConnect(current, secrets, binding, options.signal);
+        this.#touchIdle(entry);
 
-      if (operation.action === "list_tools") {
-        const tools = await this.#ensureFreshTools(entry, operation.refresh === true, options.signal);
-        const query = operation.query?.trim().toLowerCase() ?? "";
-        const limit = Math.max(1, Math.min(30, operation.limit ?? 20));
-        const matched = query
-          ? tools.filter((t) => {
-              const hay = `${t.name} ${t.title ?? ""} ${t.description ?? ""}`.toLowerCase();
-              return hay.includes(query);
-            })
-          : tools;
+        if (operation.action === "list_tools") {
+          const tools = await this.#ensureFreshTools(current, entry, operation.refresh === true, options.signal);
+          const query = operation.query?.trim().toLowerCase() ?? "";
+          const limit = Math.max(1, Math.min(30, operation.limit ?? 20));
+          const matched = query
+            ? tools.filter((t) => {
+                const hay = `${t.name} ${t.title ?? ""} ${t.description ?? ""}`.toLowerCase();
+                return hay.includes(query);
+              })
+            : tools;
 
-        const outTools: Array<Record<string, unknown>> = [];
-        let approxBytes = 256;
-        for (const tool of matched.slice(0, limit)) {
-          const item = {
-            name: tool.name,
-            ...(tool.title ? { title: this.#options.redact(tool.title).slice(0, 120) } : {}),
-            ...(tool.description ? { description: this.#options.redact(tool.description).slice(0, MAX_TOOL_DESCRIPTION_CHARS) } : {}),
-            readOnly: isMcpToolReadOnly(tool),
-            ...(tool.annotations?.destructiveHint === true ? { destructive: true } : {}),
-            inputSchema: normalizeMcpInputSchema(tool.inputSchema),
+          const outTools: Array<Record<string, unknown>> = [];
+          let approxBytes = 256;
+          for (const tool of matched.slice(0, limit)) {
+            const item = {
+              name: tool.name,
+              ...(tool.title ? { title: this.#options.redact(tool.title).slice(0, 120) } : {}),
+              ...(tool.description ? { description: this.#options.redact(tool.description).slice(0, MAX_TOOL_DESCRIPTION_CHARS) } : {}),
+              readOnly: isMcpToolReadOnly(tool),
+              ...(tool.annotations?.destructiveHint === true ? { destructive: true } : {}),
+              inputSchema: normalizeMcpInputSchema(tool.inputSchema),
+            };
+            const serialized = this.#options.redact(JSON.stringify(item));
+            if (approxBytes + Buffer.byteLength(serialized, "utf8") > MAX_LIST_TOOLS_BYTES) break;
+            approxBytes += Buffer.byteLength(serialized, "utf8");
+            outTools.push(JSON.parse(serialized) as Record<string, unknown>);
+          }
+          return {
+            kind: "mcp",
+            output: JSON.stringify({
+              untrustedData: true,
+              connectionId: current.id,
+              total: tools.length,
+              matched: matched.length,
+              returned: outTools.length,
+              tools: outTools,
+            }),
           };
-          const serialized = this.#options.redact(JSON.stringify(item));
-          if (approxBytes + Buffer.byteLength(serialized, "utf8") > MAX_LIST_TOOLS_BYTES) break;
-          approxBytes += Buffer.byteLength(serialized, "utf8");
-          outTools.push(JSON.parse(serialized) as Record<string, unknown>);
         }
+
+        // call_tool: verify tool against current live tool list (re-fetching if dirtied by list_changed)
+        const tools = await this.#ensureFreshTools(current, entry, false, options.signal);
+        const target = tools.find((item) => item.name === operation.tool);
+        if (!target) {
+          throw Object.assign(new Error(`此 MCP 服务未提供名为「${operation.tool}」的工具。`), {
+            code: "connection_mcp_tool_not_found",
+            status: 400,
+          });
+        }
+        if (options.readOnly && !isMcpToolReadOnly(target)) {
+          throw Object.assign(new Error("只读任务不能调用非只读 MCP 工具（工具未明确声明 readOnlyHint=true 且非破坏性）。"), {
+            code: "connection_read_only",
+            status: 403,
+          });
+        }
+        if (!outwardRecorded) {
+          if (composioPolicy.forceOutwardLabel) {
+            outwardRecorded = true;
+            await options.onOutwardAction?.(composioPolicy.forceOutwardLabel);
+          } else if (!composioPolicy.skipOutwardAction && !isMcpToolReadOnly(target)) {
+            outwardRecorded = true;
+            await options.onOutwardAction?.(`mcp:${current.name}:${operation.tool}`);
+          }
+        }
+
+        const rawResult = await entry.client.callTool(operation.tool, operation.arguments ?? {}, {
+          signal: options.signal,
+          timeoutMs: DEFAULT_CALL_TIMEOUT_MS,
+        });
+        this.#touchIdle(entry);
+
+        const blocks = toLlmContent(rawResult);
+        const sanitized = await sanitizeMcpCallContent(blocks, this.#options.redact);
         return {
           kind: "mcp",
           output: JSON.stringify({
             untrustedData: true,
-            connectionId: record.id,
-            total: tools.length,
-            matched: matched.length,
-            returned: outTools.length,
-            tools: outTools,
+            connectionId: current.id,
+            tool: operation.tool,
+            isError: rawResult.isError === true,
+            content: sanitized,
           }),
         };
+      } catch (error) {
+        if (attempt === 0 && current.mcpPresetId === COMPOSIO_PRESET_ID && isComposioSessionMissingError(error) && this.#options.onComposioSessionExpired) {
+          await this.invalidate(current.id);
+          const refreshed = await this.#options.onComposioSessionExpired(current.id, binding, options.signal, current.mcpComposioSessionId);
+          if (refreshed) {
+            current = refreshed;
+            continue;
+          }
+        }
+        this.#mapError(error);
       }
-
-      // call_tool: verify tool against current live tool list (re-fetching if dirtied by list_changed)
-      const tools = await this.#ensureFreshTools(entry, false, options.signal);
-      const target = tools.find((item) => item.name === operation.tool);
-      if (!target) {
-        throw Object.assign(new Error(`此 MCP 服务未提供名为「${operation.tool}」的工具。`), {
-          code: "connection_mcp_tool_not_found",
-          status: 400,
-        });
-      }
-      if (options.readOnly && !isMcpToolReadOnly(target)) {
-        throw Object.assign(new Error("只读任务不能调用非只读 MCP 工具（工具未明确声明 readOnlyHint=true 且非破坏性）。"), {
-          code: "connection_read_only",
-          status: 403,
-        });
-      }
-
-      const rawResult = await entry.client.callTool(operation.tool, operation.arguments ?? {}, {
-        signal: options.signal,
-        timeoutMs: DEFAULT_CALL_TIMEOUT_MS,
-      });
-      this.#touchIdle(entry);
-
-      const blocks = toLlmContent(rawResult);
-      const sanitized = await sanitizeMcpCallContent(blocks, this.#options.redact);
-      return {
-        kind: "mcp",
-        output: JSON.stringify({
-          untrustedData: true,
-          connectionId: record.id,
-          tool: operation.tool,
-          isError: rawResult.isError === true,
-          content: sanitized,
-        }),
-      };
-    } catch (error) {
-      this.#mapError(error);
     }
+    throw Object.assign(new Error("MCP 调用失败。"), { code: "connection_mcp_execution_failed", status: 502 });
   }
 
   async invalidate(connectionId: string): Promise<void> {

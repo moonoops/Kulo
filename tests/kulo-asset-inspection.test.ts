@@ -159,4 +159,22 @@ describe("managed asset inspection", () => {
     expect(() => inspectAssetContent({ assetId: asset.id, offset: 1 }, f.uploads)).toThrowError(expect.objectContaining({ status: 400 }));
     expect(() => inspectAssetContent({ assetId: asset.id, limit: 4 }, f.uploads)).toThrowError(expect.objectContaining({ status: 400 }));
   });
+
+  it("assigns canonical OOXML MIME types for .docx/.xlsx/.pptx and keeps inspection metadata-only without bloating model context", () => {
+    const f = fixture();
+    const pkBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 1, 2, 3]);
+    const cases = [
+      ["方案.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+      ["报表.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+      ["演示.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+    ] as const;
+    for (const [name, expectedMime] of cases) {
+      const asset = f.uploads.saveUpload({ name, mimeType: "application/octet-stream", bytes: pkBytes });
+      expect(asset.kind).toBe("file");
+      expect(asset.mimeType).toBe(expectedMime);
+      const result = inspectAssetContent({ assetId: asset.id }, f.uploads);
+      expect(result.details).toMatchObject({ inspection: "metadata", contentProvided: false });
+      expect(result.output).toHaveLength(1);
+    }
+  });
 });

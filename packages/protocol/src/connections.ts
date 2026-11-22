@@ -4,7 +4,7 @@ export type ConnectionApplicationId = "messages" | "mail" | "github" | "figma";
 export type ConnectionAuthType = "bearer" | "basic" | "header";
 export type McpTransportKind = "http" | "stdio";
 export type McpAuthMode = "oauth" | "bearer" | "header" | "none";
-export type McpPresetCategory = "productivity" | "engineering" | "design" | "cloud" | "docs";
+export type McpPresetCategory = "aggregator" | "productivity" | "engineering" | "design" | "cloud" | "docs";
 export interface McpToolSummary {
   name: string;
   title?: string;
@@ -24,6 +24,23 @@ export interface McpPresetDefinition {
   headerName?: string;
   helpUrl?: string;
   category: McpPresetCategory;
+  keywords?: readonly string[];
+  hostedAggregator?: boolean;
+  defaultOAuthScope?: string;
+  bootstrapMode?: "composio";
+}
+export interface ComposioConnectedAccountView {
+  id: string;
+  toolkit: string;
+  status: string;
+  updatedAt?: string;
+}
+export interface ComposioConnectSessionRequest {
+  id?: string;
+  expectedRevision?: number;
+  name?: string;
+  apiKey?: string;
+  allowedToolkits?: string[];
 }
 export type McpOAuthSessionStatus = "pending" | "authorized" | "completed" | "failed" | "cancelled";
 export interface McpOAuthSessionView {
@@ -72,6 +89,9 @@ export interface ConnectionFields {
   mcpCommand?: string;
   mcpArgs?: string[];
   mcpCwd?: string;
+  mcpComposioUserId?: string;
+  mcpComposioSessionId?: string;
+  mcpAllowedToolkits?: string[];
 }
 export interface ConnectionRecordView extends ConnectionFields {
   id: string;
@@ -162,4 +182,65 @@ export interface ConnectionUseResult {
   output: string;
   exitCode?: number;
   status?: number;
+}
+
+/** Case-insensitive blocklist of process-hijacking or runtime-overriding environment variables for stdio MCP servers. */
+export const MCP_BLOCKED_ENV_KEYS: ReadonlySet<string> = new Set<string>([
+  "path",
+  "home",
+  "user",
+  "logname",
+  "shell",
+  "lang",
+  "lc_all",
+  "userprofile",
+  "comspec",
+  "pathext",
+  "systemroot",
+  "windir",
+  "tmpdir",
+  "temp",
+  "tmp",
+  "ld_preload",
+  "ld_library_path",
+  "ld_audit",
+  "dyld_insert_libraries",
+  "dyld_library_path",
+  "dyld_framework_path",
+  "dyld_fallback_library_path",
+  "node_options",
+  "node_extra_ca_certs",
+  "node_tls_reject_unauthorized",
+  "node_path",
+  "electron_run_as_node",
+  "ssl_cert_file",
+  "ssl_cert_dir",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "no_proxy",
+  "ifs",
+  "bash_env",
+  "env",
+  "zdotdir",
+  "pythonpath",
+  "pythonstartup",
+  "pythonhome",
+  "rubyopt",
+  "perl5opt",
+  "java_tool_options",
+  "jdk_java_options",
+  "dotnet_startup_hooks",
+  "npm_config_script_shell",
+]);
+
+export function isBlockedMcpEnvKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  if (MCP_BLOCKED_ENV_KEYS.has(lower)) return true;
+  if (lower.startsWith("dyld_") || lower.startsWith("ld_") || lower.startsWith("kulo_")) return true;
+  return false;
+}
+
+export function isValidMcpEnvKey(key: string): boolean {
+  return /^[A-Z][A-Z0-9_]{0,63}$/.test(key) && !isBlockedMcpEnvKey(key);
 }

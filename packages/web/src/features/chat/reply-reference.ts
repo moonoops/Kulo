@@ -2,10 +2,20 @@ import { redactDeviceInvitationText, type ChatDisplayItem, type ChatReplyReferen
 
 export type ReplyDrafts = Partial<Record<string, ChatReplyReference>>;
 
-export function messageReply(item: ChatDisplayItem, text: string): ChatReplyReference | undefined {
+export function messageReply(
+  item: ChatDisplayItem,
+  text: string,
+  options?: { excerpt?: boolean },
+): ChatReplyReference | undefined {
   if (item.role !== "user" && item.role !== "assistant" && item.role !== "dispatch") return undefined;
   const snapshot = text.trim().slice(0, 8000);
-  return snapshot ? { messageId: item.id, role: item.role, text: snapshot } : undefined;
+  if (!snapshot) return undefined;
+  return {
+    messageId: item.id,
+    role: item.role,
+    text: snapshot,
+    ...(options?.excerpt ? { excerpt: true } : {}),
+  };
 }
 
 export function replyPreview(reply: ChatReplyReference): string {

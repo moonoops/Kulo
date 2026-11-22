@@ -50,6 +50,9 @@ import type {
   TopicSummary,
   TopicActivity,
   UsageStatsView,
+  UsageCapsSnapshot,
+  UsageCapsUpdateInput,
+  ExternalClientQuotasView,
   UiActionInput,
   UiActionReceipt,
   UiCardSnapshot,
@@ -187,20 +190,42 @@ export interface MediaSession {
 }
 let mediaSession: MediaSession | undefined;
 let mediaSessionRequest: Promise<MediaSession> | undefined;
+let mediaSessionAbort: (() => void) | undefined;
 
 export function ensureMediaSession(force = false): Promise<MediaSession> {
   if (!force && mediaSession && mediaSession.expiresAt > Date.now() + 60_000) return Promise.resolve(mediaSession);
+  if (force && mediaSessionAbort) {
+    mediaSessionAbort();
+  }
   if (!mediaSessionRequest) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10_000);
-    mediaSessionRequest = apiRequest<MediaSession>("/api/media/session", { method: "POST", signal: controller.signal })
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 10_000);
+    const request = apiRequest<MediaSession>("/api/media/session", { method: "POST", signal: controller.signal })
       .then((session) => { mediaSession = session; return session; })
       .catch((error: unknown) => {
-        if (controller.signal.aborted) throw new KuloApiError(408, t("连接中枢超时，待发内容已保留", "The Hub connection timed out. Pending content has been kept"));
+        if (timedOut) throw new KuloApiError(408, t("连接中枢超时，待发内容已保留", "The Hub connection timed out. Pending content has been kept"));
         if (error instanceof KuloApiError && error.status === 404) throw new KuloApiError(404, t("请重启中枢加载新版聊天功能", "Restart the Hub to load the updated chat features"), "media_session_unavailable");
         throw error;
       })
-      .finally(() => { clearTimeout(timeout); mediaSessionRequest = undefined; });
+      .finally(() => {
+        clearTimeout(timeout);
+        if (mediaSessionRequest === request) {
+          mediaSessionRequest = undefined;
+          mediaSessionAbort = undefined;
+        }
+      });
+    mediaSessionRequest = request;
+    mediaSessionAbort = () => {
+      if (mediaSessionRequest === request) {
+        mediaSessionRequest = undefined;
+        mediaSessionAbort = undefined;
+      }
+      controller.abort();
+    };
   }
   return mediaSessionRequest;
 }
@@ -451,6 +476,17 @@ export const kuloRest = {
     ),
   getUsage: (range: "today" | "7" | "30") =>
     apiRequest<UsageStatsView>(`/api/usage?range=${range}`),
+  getExternalClientQuotas: (options?: { signal?: AbortSignal }) =>
+    apiRequest<ExternalClientQuotasView>("/api/external-clients/quotas", { method: "GET", signal: options?.signal }),
+  refreshExternalClientQuotas: (
+    body: { clientId?: string; force?: boolean } = {},
+    options?: { signal?: AbortSignal },
+  ) =>
+    apiRequest<ExternalClientQuotasView>("/api/external-clients/quotas/refresh", {
+      method: "POST",
+      body,
+      signal: options?.signal,
+    }),
   retryTicket: (ticketId: string) =>
     apiRequest<{ ticket: TicketCardView }>(
       `/api/tickets/${encodeURIComponent(ticketId)}/retry`,
@@ -520,6 +556,13 @@ export const kuloRest = {
     ).then((result) => { void providerCatalog.configure(result.settings); return result; }),
   listIdentityFiles: () => apiRequest<IdentityList>("/api/identity/files"),
   getPersonality: () => apiRequest<PersonalitySnapshot>("/api/personality"),
+  getUsageCaps: () => apiRequest<UsageCapsSnapshot>("/api/usage-caps"),
+  saveUsageCaps: (body: UsageCapsUpdateInput) => apiRequest<UsageCapsSnapshot>("/api/usage-caps", { method: "PUT", body }),
+  resolveComputerHandoff: (ticketId: string, action: "done" | "cancel", note?: string) =>
+    apiRequest<{ ok: boolean; status: string }>(`/api/tickets/${encodeURIComponent(ticketId)}/computer-handoff`, {
+      method: "POST",
+      body: { action, ...(note ? { note } : {}) },
+    }),
   savePersonalitySettings: (body: PersonalitySettingsRequest) =>
     apiRequest<PersonalitySnapshot>("/api/personality/settings", { method: "POST", body }),
   readIdentityAgreement: () =>

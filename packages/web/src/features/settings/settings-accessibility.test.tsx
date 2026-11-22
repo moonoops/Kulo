@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { defaultRolePresets, type KuloSettingsView } from "@kulo/protocol";
 import { WorkersModule } from "./workers-module";
+import { ExternalClientsModule } from "./external-agents-list";
 import { ConcurrencyModule } from "./concurrency-module";
 import { IdentityModule } from "./identity-module";
 import { WorkbenchShell } from "../shell/workbench-shell";
@@ -63,20 +64,30 @@ describe("settings controls and layout", () => {
     }
   });
 
-  it("groups external agents under labeled client sections with operable switches separate from internal role forms", () => {
-    const next: KuloSettingsView = { ...settings, blocks: { ...settings.blocks, roles: { revision: 2, value: {
-      ...settings.blocks.roles.value,
-      "external-codex": { id: "external-codex", label: "本机 Codex", whenToUse: "代码任务", prompt: "外部执行指令", enabled: true,
-        external: { kind: "codex", envId: "local", verifiedAt: 123 } },
-    } } } };
-    const html = renderToStaticMarkup(<WorkersModule settings={next} onSettingsUpdated={update} />);
-    expect(html).toContain("Codex · local");
-    expect(html).toContain("本机 Codex");
-    expect(html).toContain('aria-label="启用本机 Codex"');
-    expect(html).toContain("外部执行指令");
-    expect(html.match(/aria-label="启用/g)).toHaveLength(Object.keys(settings.blocks.roles.value).length + 1);
-    const internalForm = html.slice(html.indexOf('aria-label="智能体配置"'));
-    expect(internalForm).not.toContain("本机 Codex");
+  it("unifies external-bound roles in the worker list and keeps third-party client connections in their own module", () => {
+    const next: KuloSettingsView = {
+      ...settings,
+      externalClients: {
+        "codex:local": { id: "codex:local", kind: "codex", envId: "local", verifiedAt: 123, models: [], updatedAt: 123 },
+      },
+      blocks: { ...settings.blocks, roles: { revision: 2, value: {
+        ...settings.blocks.roles.value,
+        "external-codex": { id: "external-codex", label: "本机 Codex", whenToUse: "代码任务", prompt: "外部执行指令", enabled: true,
+          externalClientId: "codex:local", external: { kind: "codex", envId: "local", verifiedAt: 123 } },
+      } } },
+    };
+    const workersHtml = renderToStaticMarkup(<WorkersModule settings={next} onSettingsUpdated={update} />);
+    expect(workersHtml).toContain("Codex @ local");
+    expect(workersHtml).toContain("本机 Codex");
+    expect(workersHtml).toContain('aria-label="启用本机 Codex"');
+    expect(workersHtml).toContain("外部执行指令");
+    expect(workersHtml).toContain("运行引擎");
+    expect(workersHtml.match(/aria-label="启用/g)).toHaveLength(Object.keys(settings.blocks.roles.value).length + 1);
+
+    const clientsHtml = renderToStaticMarkup(<ExternalClientsModule settings={next} onSettingsUpdated={update} />);
+    expect(clientsHtml).toContain("第三方 Agent");
+    expect(clientsHtml).toContain("Codex @ local");
+    expect(clientsHtml).toContain("连接客户端");
   });
 
   it("exposes task acceptance and memory enable controls as switches", () => {

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import WebSocket from "ws";
-import { COMPUTER_PREVIEW_MAX_DATA, isComputerPreviewTarget, isComputerPreviewUpdate, type ComputerPreviewTarget, type ComputerPreviewUpdate } from "@kulo/protocol";
+import { COMPUTER_PREVIEW_MAX_DATA, isComputerPreviewInputEvent, isComputerPreviewTarget, isComputerPreviewUpdate, type ComputerPreviewInputEvent, type ComputerPreviewTarget, type ComputerPreviewUpdate } from "@kulo/protocol";
 import type { AgentCliInvocation, AgentCliRunner } from "./agent-cli.js";
 
 interface PreviewEntry {
@@ -94,6 +94,26 @@ export class ComputerPreviewService {
     for (const entry of [...this.#entries.values()]) this.close(entry.target);
   }
 
+  /** Forwards interactive input frames over `agent-browser`'s native stream WebSocket (only during authorized handoffs). */
+  sendInput(target: ComputerPreviewTarget, event: ComputerPreviewInputEvent): boolean {
+    if (target.tool !== "browser" || !isComputerPreviewTarget(target) || !isComputerPreviewInputEvent(event)) return false;
+    const entry = this.#entries.get(`browser:${target.sessionId}`);
+    if (!entry?.socket || entry.socket.readyState !== WebSocket.OPEN) return false;
+    try {
+      if (event.type === "input_text") {
+        for (const ch of [...event.text]) {
+          if (entry.socket.readyState !== WebSocket.OPEN) return false;
+          entry.socket.send(JSON.stringify({ type: "input_keyboard", eventType: "char", text: ch }));
+        }
+        return true;
+      }
+      entry.socket.send(JSON.stringify(event));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   #dispose(key: string, entry: PreviewEntry): void {
     this.#entries.delete(key);
     entry.controller.abort();
@@ -133,8 +153,20 @@ export class ComputerPreviewService {
         catch { this.#publish(entry, { state: "unavailable", message: "浏览器画面格式无效" }); socket.terminate(); return; }
         if (message?.type === "frame") {
           const data = message.data;
-          const timestamp = record(message.metadata)?.timestamp;
-          const update: ComputerPreviewUpdate = { state: "live", frame: { mimeType: "image/jpeg", data: typeof data === "string" ? data : "", capturedAt: typeof timestamp === "number" && Number.isFinite(timestamp) && timestamp > 0 ? Math.trunc(timestamp) : Date.now() } };
+          const meta = record(message.metadata);
+          const timestamp = meta?.timestamp;
+          const deviceWidth = typeof meta?.deviceWidth === "number" && Number.isFinite(meta.deviceWidth) && meta.deviceWidth > 0 && meta.deviceWidth <= 16384 ? Math.trunc(meta.deviceWidth) : undefined;
+          const deviceHeight = typeof meta?.deviceHeight === "number" && Number.isFinite(meta.deviceHeight) && meta.deviceHeight > 0 && meta.deviceHeight <= 16384 ? Math.trunc(meta.deviceHeight) : undefined;
+          const update: ComputerPreviewUpdate = {
+            state: "live",
+            frame: {
+              mimeType: "image/jpeg",
+              data: typeof data === "string" ? data : "",
+              capturedAt: typeof timestamp === "number" && Number.isFinite(timestamp) && timestamp > 0 ? Math.trunc(timestamp) : Date.now(),
+              ...(deviceWidth !== undefined ? { deviceWidth } : {}),
+              ...(deviceHeight !== undefined ? { deviceHeight } : {}),
+            },
+          };
           if (!isComputerPreviewUpdate(update)) {
             this.#publish(entry, { state: "unavailable", message: "浏览器画面格式无效" });
             socket.terminate();

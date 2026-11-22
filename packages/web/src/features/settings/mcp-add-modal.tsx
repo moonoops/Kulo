@@ -3,16 +3,8 @@ import {
   Alert,
   Button,
   Chip,
-  Disclosure,
-  Input,
-  Label,
-  Link,
-  ListBox,
   Modal,
   SearchField,
-  Select,
-  TextArea,
-  TextField,
 } from "@heroui/react";
 import {
   redactSensitiveText,
@@ -30,10 +22,10 @@ import {
   clearConnectionDraftSecrets,
   connectionSaveRequest,
   createConnectionDraft,
-  mcpAuthModeLabel,
   safeConnectionInputError,
   type ConnectionDraft,
 } from "./connection-setup-inputs";
+import { McpCustomForm } from "./mcp-custom-form";
 
 const BLANK_MCP_INPUT: ConnectionSetupInput = {
   id: "add-mcp-modal",
@@ -55,7 +47,33 @@ function createPresetDraft(preset: McpPresetDefinition): ConnectionDraft {
     url: preset.url,
     mcpAuthMode: preset.authMode,
     ...(preset.headerName ? { headerName: preset.headerName } : {}),
+    ...(preset.defaultOAuthScope ? { mcpOAuthScope: preset.defaultOAuthScope } : {}),
   });
+}
+
+/** Three-tier search ranking: direct official name/id > direct official keywords/desc > cloud aggregators. */
+export function filterAndRankMcpPresets(
+  presets: readonly McpPresetDefinition[],
+  rawQuery: string,
+): McpPresetDefinition[] {
+  const q = rawQuery.trim().toLowerCase();
+  if (!q) return [...presets];
+  const scored: Array<{ preset: McpPresetDefinition; rank: number; index: number }> = [];
+  for (let index = 0; index < presets.length; index++) {
+    const preset = presets[index]!;
+    const nameHit = preset.name.toLowerCase().includes(q) || preset.id.toLowerCase().includes(q);
+    const metaHit =
+      preset.description.toLowerCase().includes(q)
+      || preset.category.toLowerCase().includes(q)
+      || Boolean(preset.keywords?.some((kw) => kw.toLowerCase().includes(q)));
+    if (!nameHit && !metaHit) continue;
+    const rank = preset.hostedAggregator
+      ? (nameHit ? 2 : 3)
+      : (nameHit ? 0 : 1);
+    scored.push({ preset, rank, index });
+  }
+  scored.sort((a, b) => a.rank - b.rank || a.index - b.index);
+  return scored.map((entry) => entry.preset);
 }
 
 export function AddAppModal({
@@ -69,6 +87,7 @@ export function AddAppModal({
   onSelectApplication,
   onSavedMcp,
   onStartOAuth,
+  onSelectComposio,
   onClose,
 }: {
   open: boolean;
@@ -81,6 +100,7 @@ export function AddAppModal({
   onSelectApplication: (application: ConnectionApplicationView) => void;
   onSavedMcp: (connection: ConnectionRecordView) => void;
   onStartOAuth: (connection: ConnectionRecordView) => void;
+  onSelectComposio?: () => void;
   onClose: () => void;
 }) {
   const { t } = useI18n();
@@ -116,16 +136,10 @@ export function AddAppModal({
     );
   }, [applications, presets.length, query]);
 
-  const filteredPresets = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return presets;
-    return presets.filter((preset) =>
-      preset.name.toLowerCase().includes(q)
-      || preset.description.toLowerCase().includes(q)
-      || preset.id.toLowerCase().includes(q)
-      || preset.category.toLowerCase().includes(q),
-    );
-  }, [presets, query]);
+  const filteredPresets = useMemo(
+    () => filterAndRankMcpPresets(presets, query),
+    [presets, query],
+  );
 
   const connectedPresetIds = useMemo(
     () => new Set(existingConnections.filter((c) => c.kind === "mcp" && c.mcpPresetId).map((c) => c.mcpPresetId!)),
@@ -137,32 +151,13 @@ export function AddAppModal({
     setError(null);
   };
 
-  const addEnvField = () => {
-    const key = `env_${globalThis.crypto?.randomUUID?.().replaceAll("-", "") ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`}`;
-    setDraft((current) =>
-      current.credentialFields.length >= 32
-        ? current
-        : { ...current, credentialFields: [...current.credentialFields, { key, label: "", value: "" }] },
-    );
-  };
-
-  const updateEnvField = (key: string, patch: { label?: string; value?: string }) => {
-    setDraft((current) => ({
-      ...current,
-      credentialFields: current.credentialFields.map((field) => (field.key === key ? { ...field, ...patch } : field)),
-    }));
-    setError(null);
-  };
-
-  const removeEnvField = (key: string) => {
-    setDraft((current) => ({
-      ...current,
-      credentialFields: current.credentialFields.filter((field) => field.key !== key),
-    }));
-  };
-
   const handleQuickPreset = async (preset: McpPresetDefinition) => {
     if (!connected || !vaultAvailable || busyId || submitting) return;
+    if (preset.bootstrapMode === "composio" && onSelectComposio) {
+      onClose();
+      onSelectComposio();
+      return;
+    }
     if (preset.authMode === "oauth" && !preset.requiresClientId) {
       setBusyId(preset.id);
       setError(null);
@@ -175,6 +170,7 @@ export function AddAppModal({
           mcpPresetId: preset.id,
           url: preset.url,
           mcpAuthMode: "oauth",
+          ...(preset.defaultOAuthScope ? { mcpOAuthScope: preset.defaultOAuthScope } : {}),
         });
         onSavedMcp(res.connection);
         onClose();
@@ -394,8 +390,19 @@ export function AddAppModal({
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className="kulo-item-title">{preset.name}</span>
                                 <Chip size="sm" variant="soft">
-                                  {isOAuth ? "OAuth" : preset.authMode === "none" ? t("免鉴权", "Public") : "Token"}
+                                  {preset.bootstrapMode === "composio"
+                                    ? "API Key"
+                                    : isOAuth
+                                      ? "OAuth"
+                                      : preset.authMode === "none"
+                                        ? t("免鉴权", "Public")
+                                        : "Token"}
                                 </Chip>
+                                {preset.hostedAggregator && (
+                                  <Chip size="sm" variant="soft">
+                                    {t("云端聚合", "Cloud hub")}
+                                  </Chip>
+                                )}
                               </div>
                               <span className="kulo-item-description">{preset.description}</span>
                             </div>
@@ -420,330 +427,18 @@ export function AddAppModal({
                   </div>
                 </>
               ) : (
-                <form
-                  id="kulo-add-mcp-form"
-                  autoComplete="off"
-                  className="kulo-form-stack"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void handleSubmitForm();
-                  }}
-                >
-                  {mode === "preset" && selectedPreset?.helpUrl && (
-                    <Link className="self-start text-xs" href={selectedPreset.helpUrl} target="_blank" rel="noopener noreferrer">
-                      {t("官方指南", "Official guide")}
-                      <Link.Icon />
-                    </Link>
-                  )}
-
-                  {mode === "custom" && (
-                    <Select
-                      className="kulo-form-field"
-                      variant="secondary"
-                      value={draft.mcpTransport}
-                      isDisabled={busy}
-                      onChange={(value) => {
-                        if (value === "http" || value === "stdio") {
-                          setDraft((current) => clearConnectionDraftSecrets({
-                            ...current,
-                            mcpTransport: value,
-                            credentialFields: value === "stdio" ? current.credentialFields : [],
-                          }));
-                          setError(null);
-                        }
-                      }}
-                      fullWidth
-                    >
-                      <Label>{t("接入方式", "Transport")}</Label>
-                      <Select.Trigger>
-                        <Select.Value />
-                        <Select.Indicator />
-                      </Select.Trigger>
-                      <Select.Popover>
-                        <ListBox>
-                          <ListBox.Item id="http" textValue={t("远程服务 (HTTP)", "Remote server (HTTP)")}>
-                            {t("远程服务 (HTTP)", "Remote server (HTTP)")}
-                            <ListBox.ItemIndicator />
-                          </ListBox.Item>
-                          {localHost && (
-                            <ListBox.Item id="stdio" textValue={t("本机命令 (Stdio)", "Local command (Stdio)")}>
-                              {t("本机命令 (Stdio)", "Local command (Stdio)")}
-                              <ListBox.ItemIndicator />
-                            </ListBox.Item>
-                          )}
-                        </ListBox>
-                      </Select.Popover>
-                    </Select>
-                  )}
-
-                  <TextField
-                    className="kulo-form-field"
-                    variant="secondary"
-                    value={draft.name}
-                    onChange={(value) => change("name", value)}
-                    isRequired
-                    isDisabled={busy}
-                    fullWidth
-                  >
-                    <Label>{t("连接名称", "Connection name")}</Label>
-                    <Input autoFocus maxLength={120} autoComplete="off" />
-                  </TextField>
-
-                  {draft.mcpTransport === "http" ? (
-                    <>
-                      <TextField
-                        className="kulo-form-field"
-                        variant="secondary"
-                        value={draft.url}
-                        onChange={(value) => change("url", value)}
-                        isRequired
-                        isDisabled={busy}
-                        isReadOnly={mode === "preset" && Boolean(selectedPreset)}
-                        fullWidth
-                      >
-                        <Label>{t("服务地址", "Server URL")}</Label>
-                        <Input type="url" autoComplete="off" spellCheck={false} placeholder="https://mcp.example.com/mcp" />
-                      </TextField>
-
-                      {authModes.length > 1 && (
-                        <Select
-                          className="kulo-form-field"
-                          variant="secondary"
-                          value={draft.mcpAuthMode}
-                          isDisabled={busy}
-                          onChange={(value) => {
-                            if (value === "oauth" || value === "bearer" || value === "header" || value === "none") {
-                              setDraft((current) => clearConnectionDraftSecrets({ ...current, mcpAuthMode: value }));
-                              setError(null);
-                            }
-                          }}
-                          fullWidth
-                        >
-                          <Label>{t("认证方式", "Authentication")}</Label>
-                          <Select.Trigger>
-                            <Select.Value />
-                            <Select.Indicator />
-                          </Select.Trigger>
-                          <Select.Popover>
-                            <ListBox>
-                              {authModes.map((item) => (
-                                <ListBox.Item key={item} id={item} textValue={mcpAuthModeLabel(item)}>
-                                  {mcpAuthModeLabel(item)}
-                                  <ListBox.ItemIndicator />
-                                </ListBox.Item>
-                              ))}
-                            </ListBox>
-                          </Select.Popover>
-                        </Select>
-                      )}
-
-                      {draft.mcpAuthMode === "header" && (
-                        <TextField
-                          className="kulo-form-field"
-                          variant="secondary"
-                          value={draft.headerName}
-                          onChange={(value) => change("headerName", value)}
-                          isDisabled={busy}
-                          fullWidth
-                        >
-                          <Label>{t("请求头名称", "Header name")}</Label>
-                          <Input autoComplete="off" spellCheck={false} />
-                        </TextField>
-                      )}
-
-                      {(draft.mcpAuthMode === "bearer" || draft.mcpAuthMode === "header") && (
-                        <TextField
-                          className="kulo-form-field"
-                          variant="secondary"
-                          type="password"
-                          value={draft.apiKey}
-                          onChange={(value) => change("apiKey", value)}
-                          isDisabled={busy}
-                          fullWidth
-                        >
-                          <Label>Token</Label>
-                          <Input autoComplete="new-password" spellCheck={false} placeholder={t("粘贴 Token", "Paste token")} />
-                        </TextField>
-                      )}
-
-                      {draft.mcpAuthMode === "oauth" && (
-                        mode === "preset" && selectedPreset?.requiresClientId ? (
-                          <>
-                            <TextField
-                              className="kulo-form-field"
-                              variant="secondary"
-                              value={draft.mcpOAuthClientId}
-                              onChange={(value) => change("mcpOAuthClientId", value)}
-                              isRequired
-                              isDisabled={busy}
-                              fullWidth
-                            >
-                              <Label>Client ID</Label>
-                              <Input autoComplete="off" spellCheck={false} />
-                            </TextField>
-                            <TextField
-                              className="kulo-form-field"
-                              variant="secondary"
-                              type="password"
-                              value={draft.clientSecret}
-                              onChange={(value) => change("clientSecret", value)}
-                              isDisabled={busy}
-                              fullWidth
-                            >
-                              <Label>Client Secret</Label>
-                              <Input autoComplete="new-password" spellCheck={false} />
-                            </TextField>
-                          </>
-                        ) : (
-                          <Disclosure>
-                            <Disclosure.Heading>
-                              <Button size="sm" slot="trigger" variant="ghost" className="w-full justify-between">
-                                {t("高级 OAuth 选项", "Advanced OAuth options")}
-                                <Disclosure.Indicator />
-                              </Button>
-                            </Disclosure.Heading>
-                            <Disclosure.Content>
-                              <Disclosure.Body className="kulo-form-stack pt-2">
-                                <TextField
-                                  className="kulo-form-field"
-                                  variant="secondary"
-                                  value={draft.mcpOAuthClientId}
-                                  onChange={(value) => change("mcpOAuthClientId", value)}
-                                  isDisabled={busy}
-                                  fullWidth
-                                >
-                                  <Label>Client ID</Label>
-                                  <Input autoComplete="off" spellCheck={false} />
-                                </TextField>
-                                {Boolean(draft.mcpOAuthClientId.trim()) && (
-                                  <TextField
-                                    className="kulo-form-field"
-                                    variant="secondary"
-                                    type="password"
-                                    value={draft.clientSecret}
-                                    onChange={(value) => change("clientSecret", value)}
-                                    isDisabled={busy}
-                                    fullWidth
-                                  >
-                                    <Label>Client Secret</Label>
-                                    <Input autoComplete="new-password" spellCheck={false} />
-                                  </TextField>
-                                )}
-                                <TextField
-                                  className="kulo-form-field"
-                                  variant="secondary"
-                                  value={draft.mcpOAuthScope}
-                                  onChange={(value) => change("mcpOAuthScope", value)}
-                                  isDisabled={busy}
-                                  fullWidth
-                                >
-                                  <Label>Scope</Label>
-                                  <Input autoComplete="off" spellCheck={false} />
-                                </TextField>
-                                <TextField
-                                  className="kulo-form-field"
-                                  variant="secondary"
-                                  value={draft.mcpOAuthCallbackPort}
-                                  onChange={(value) => change("mcpOAuthCallbackPort", value)}
-                                  isDisabled={busy}
-                                  fullWidth
-                                >
-                                  <Label>{t("回调端口", "Callback port")}</Label>
-                                  <Input inputMode="numeric" autoComplete="off" placeholder={t("默认自动分配", "Auto")} />
-                                </TextField>
-                              </Disclosure.Body>
-                            </Disclosure.Content>
-                          </Disclosure>
-                        )
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      <TextField
-                        className="kulo-form-field"
-                        variant="secondary"
-                        value={draft.mcpCommand}
-                        onChange={(value) => change("mcpCommand", value)}
-                        isRequired
-                        isDisabled={busy}
-                        fullWidth
-                      >
-                        <Label>{t("启动命令", "Command")}</Label>
-                        <Input autoComplete="off" spellCheck={false} placeholder="npx" />
-                      </TextField>
-                      <TextField
-                        className="kulo-form-field"
-                        variant="secondary"
-                        value={draft.mcpArgsText}
-                        onChange={(value) => change("mcpArgsText", value)}
-                        isDisabled={busy}
-                        fullWidth
-                      >
-                        <Label>{t("启动参数（每行一项）", "Arguments (one per line)")}</Label>
-                        <TextArea rows={3} className="scrollbar font-mono" autoComplete="off" spellCheck={false} placeholder={"-y\n@modelcontextprotocol/server-filesystem"} />
-                      </TextField>
-                      <TextField
-                        className="kulo-form-field"
-                        variant="secondary"
-                        value={draft.mcpCwd}
-                        onChange={(value) => change("mcpCwd", value)}
-                        isDisabled={busy}
-                        fullWidth
-                      >
-                        <Label>{t("工作目录", "Working directory")}</Label>
-                        <Input autoComplete="off" spellCheck={false} placeholder={t("可选绝对路径", "Optional absolute path")} />
-                      </TextField>
-                      {draft.credentialFields.map((field, index) => (
-                        <div key={field.key} role="group" aria-label={field.label.trim() || t(`环境变量 ${index + 1}`, `Env var ${index + 1}`)} className="kulo-form-stack rounded-xl border border-border p-3">
-                          <div className="kulo-field-action-row">
-                            <TextField
-                              className="kulo-form-field min-w-0 flex-1"
-                              variant="secondary"
-                              value={field.label}
-                              onChange={(value) => updateEnvField(field.key, { label: value })}
-                              isRequired
-                              isDisabled={busy}
-                              fullWidth
-                            >
-                              <Label>{t(`环境变量 ${index + 1}`, `Env var ${index + 1}`)}</Label>
-                              <Input className="kulo-field-action-input font-mono" maxLength={64} autoComplete="off" spellCheck={false} placeholder="API_TOKEN" />
-                            </TextField>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="kulo-field-action-button"
-                              aria-label={t(`移除${field.label.trim() || `环境变量 ${index + 1}`}`, `Remove ${field.label.trim() || `env var ${index + 1}`}`)}
-                              isDisabled={busy}
-                              onPress={() => removeEnvField(field.key)}
-                            >
-                              {t("移除", "Remove")}
-                            </Button>
-                          </div>
-                          <TextField
-                            className="kulo-form-field"
-                            variant="secondary"
-                            type="password"
-                            value={field.value}
-                            onChange={(value) => updateEnvField(field.key, { value })}
-                            isDisabled={busy}
-                            fullWidth
-                          >
-                            <Label>{t("变量值", "Value")}</Label>
-                            <Input autoComplete="new-password" spellCheck={false} />
-                          </TextField>
-                        </div>
-                      ))}
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        isDisabled={busy || draft.credentialFields.length >= 32}
-                        onPress={addEnvField}
-                      >
-                        {t("添加环境变量", "Add env var")}
-                      </Button>
-                    </>
-                  )}
-                </form>
+                <McpCustomForm
+                  mode={mode}
+                  selectedPreset={selectedPreset}
+                  draft={draft}
+                  authModes={authModes}
+                  busy={busy}
+                  localHost={localHost}
+                  onChange={change}
+                  onUpdateDraft={setDraft}
+                  onClearError={() => setError(null)}
+                  onSubmit={() => void handleSubmitForm()}
+                />
               )}
             </Modal.Body>
 

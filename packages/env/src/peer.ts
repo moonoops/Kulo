@@ -67,6 +67,8 @@ const STATIC_MIME_BY_EXT: Record<string, string> = {
 };
 
 const CLUSTER_AUTH_HEADER = "x-kulo-cluster-auth";
+const DEFAULT_PROXY_CONNECT_TIMEOUT_MS = 15_000;
+const CLUSTER_PROBE_TIMEOUT_MS = 5_000;
 const ALLOWED_REMOTE_CLUSTER_ROUTES = new Set([
   "GET /_kulo/cluster/status",
   "POST /_kulo/cluster/prepare-promote",
@@ -287,6 +289,8 @@ export interface StartDevicePeerOptions {
   failoverOfflineThresholdMs?: number;
   failoverMinFailedRounds?: number;
   resumeGraceMs?: number;
+  /** Pure TCP/TLS connect timeout for proxied upstream HTTP requests (default: 15_000ms). */
+  proxyConnectTimeoutMs?: number;
   onLog?: (message: string) => void;
 }
 
@@ -320,6 +324,10 @@ async function listenDevicePeer(
 
   const webSockets = new Set<WebSocket>();
   const sockets = new Set<Socket>();
+  const activeUpstreams = new Set<http.ClientRequest>();
+  let httpAgent = new http.Agent({ keepAlive: true });
+  let httpsAgent = new https.Agent({ keepAlive: true });
+  const proxyConnectTimeoutMs = options.proxyConnectTimeoutMs ?? DEFAULT_PROXY_CONNECT_TIMEOUT_MS;
   const wss = new WebSocketServer({ noServer: true });
   let port = 0;
   let listenHost: "127.0.0.1" | "0.0.0.0" = Boolean(standbyHost && currentConfig.standby?.enabled) ? "0.0.0.0" : "127.0.0.1";
@@ -337,7 +345,7 @@ async function listenDevicePeer(
 
   // Awake-time consecutive failure tracking (P1-2: immune to OS sleep wall-clock jumps).
   const probeIntervalMs = options.failoverProbeIntervalMs ?? 5_000;
-  const offlineThresholdMs = options.failoverOfflineThresholdMs ?? 15_000;
+  const offlineThresholdMs = options.failoverOfflineThresholdMs ?? 30_000;
   const minFailedRounds = options.failoverMinFailedRounds ?? 3;
   const resumeGraceMs = options.resumeGraceMs ?? 8_000;
 
@@ -452,7 +460,7 @@ async function listenDevicePeer(
         throw new Error("Cluster hubId mismatch");
       }
       return data;
-    }, { timeoutMs: 3_000, staggerMs: 150, signal });
+    }, { timeoutMs: CLUSTER_PROBE_TIMEOUT_MS, staggerMs: 150, signal });
     return { url: result.url, status: result.value };
   };
 
@@ -467,23 +475,45 @@ async function listenDevicePeer(
   const isPrimaryCurrentlyReachable = async (): Promise<boolean> => {
     const urls = currentPrimaryUrls();
     try {
-      const { status } = await probeClusterNode(urls, currentConfig.clientToken);
-      if (status.active && (!currentConfig.cluster || status.nodeId === currentConfig.cluster.primaryNodeId)) {
-        return true;
-      }
-    } catch {
-      // Fallback: probe legacy /api/devices endpoint in case primary hasn't enabled cluster status yet.
-    }
-    try {
       await probeUrlsHappyEyeballs(urls, async (origin, signal) => {
-        const res = await fetch(`${origin}/api/devices`, {
+        const pathWithQuery = "/_kulo/cluster/status";
+        const { header } = createClusterAuthHeader({
+          secret: currentConfig.clientToken,
+          nodeId: currentConfig.deviceId,
+          method: "GET",
+          pathWithQuery,
+        });
+        const response = await fetch(`${origin}${pathWithQuery}`, {
+          method: "GET",
           redirect: "error",
-          headers: { authorization: `Bearer ${currentConfig.clientToken}` },
+          headers: { [CLUSTER_AUTH_HEADER]: header },
           signal,
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return true;
-      }, { timeoutMs: 2_500, staggerMs: 150 });
+        if (response.ok) {
+          const data = await response.json() as ClusterNodeStatus;
+          if (
+            data &&
+            data.version === 1 &&
+            typeof data.nodeId === "string" &&
+            typeof data.epoch === "number" &&
+            (!currentConfig.cluster?.hubId || data.hubId === currentConfig.cluster.hubId) &&
+            data.active &&
+            (!currentConfig.cluster || data.nodeId === currentConfig.cluster.primaryNodeId)
+          ) {
+            return true;
+          }
+        }
+        // Only fall back to legacy /api/devices if the host responded at HTTP level without /_kulo/cluster/status.
+        if (response.status === 404 || response.status === 405 || response.status === 501) {
+          const legacy = await fetch(`${origin}/api/devices`, {
+            redirect: "error",
+            headers: { authorization: `Bearer ${currentConfig.clientToken}` },
+            signal,
+          });
+          if (legacy.ok) return true;
+        }
+        throw new Error(`HTTP ${response.status}`);
+      }, { timeoutMs: CLUSTER_PROBE_TIMEOUT_MS, staggerMs: 150 });
       return true;
     } catch {
       return false;
@@ -567,6 +597,15 @@ async function listenDevicePeer(
     nextEnvUrl.protocol = activeHub.protocol === "https:" ? "wss:" : "ws:";
     agent.switchHub(nextEnvUrl.toString());
     if (changed) {
+      // Abort in-flight HTTP proxy requests to the previous primary and flush keep-alive pools
+      // so pending calls (such as /api/media/session) immediately fail over to the new primary.
+      for (const req of [...activeUpstreams]) {
+        req.destroy(new Error("Cluster primary changed"));
+      }
+      httpAgent.destroy();
+      httpsAgent.destroy();
+      httpAgent = new http.Agent({ keepAlive: true });
+      httpsAgent = new https.Agent({ keepAlive: true });
       // Force active local browser WS proxies to reconnect immediately and fetch fresh hub.snapshot + media cookie.
       for (const ws of [...webSockets]) {
         try { ws.close(1001, "Cluster primary changed"); } catch { ws.terminate(); }
@@ -646,7 +685,7 @@ async function listenDevicePeer(
           }
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           return true;
-        }, { timeoutMs: 2_500, staggerMs: 150 });
+        }, { timeoutMs: CLUSTER_PROBE_TIMEOUT_MS, staggerMs: 150 });
       } catch (error) {
         if (error && typeof error === "object" && "code" in error && error.code === "promote_conflict") throw error;
         // Unreachable sibling standbys do not block explicit user-confirmed failover.
@@ -724,7 +763,7 @@ async function listenDevicePeer(
         });
       }
       return payload;
-    }, { timeoutMs: 8_000, staggerMs: 150 });
+    }, { timeoutMs: 20_000, staggerMs: 150 });
 
     // Wait briefly for the promoted Standby to finish restarting as Active Hub, then hot-switch.
     const deadline = Date.now() + 25_000;
@@ -1369,12 +1408,22 @@ async function listenDevicePeer(
       return;
     }
     target.searchParams.delete("token");
-    const transport = activeHub.protocol === "https:" ? https : http;
+    const isHttps = activeHub.protocol === "https:";
+    const transport = isHttps ? https : http;
+    const agentForRequest = isHttps ? httpsAgent : httpAgent;
+    let connectTimer: NodeJS.Timeout | undefined;
+    const clearConnectTimer = () => {
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+        connectTimer = undefined;
+      }
+    };
     const upstream = transport.request(target, {
       method: request.method,
       headers: requestHeaders(request.headers, activeHub, currentConfig.clientToken),
-      timeout: 3_000,
+      agent: agentForRequest,
     }, (upstreamResponse) => {
+      clearConnectTimer();
       const headers = { ...upstreamResponse.headers };
       delete headers["set-cookie"];
       if (headers.location?.startsWith(activeHub.origin)) {
@@ -1384,10 +1433,28 @@ async function listenDevicePeer(
       response.writeHead(upstreamResponse.statusCode ?? 502, headers);
       upstreamResponse.pipe(response);
     });
-    upstream.on("timeout", () => {
-      upstream.destroy(new Error("Upstream connection timed out"));
-    });
+    activeUpstreams.add(upstream);
+    const cleanupUpstream = () => {
+      clearConnectTimer();
+      activeUpstreams.delete(upstream);
+    };
+    upstream.once("close", cleanupUpstream);
+    if (proxyConnectTimeoutMs > 0) {
+      upstream.once("socket", (socket) => {
+        if (!socket.connecting) return;
+        connectTimer = setTimeout(() => {
+          connectTimer = undefined;
+          upstream.destroy(new Error("Upstream connection timed out"));
+        }, proxyConnectTimeoutMs);
+        connectTimer.unref();
+        const connectedEvent = isHttps ? "secureConnect" : "connect";
+        socket.once(connectedEvent, clearConnectTimer);
+        socket.once("error", clearConnectTimer);
+        socket.once("close", clearConnectTimer);
+      });
+    }
     upstream.on("error", () => {
+      cleanupUpstream();
       if (response.headersSent) {
         response.destroy();
         return;
@@ -1648,6 +1715,9 @@ async function listenDevicePeer(
         clearInterval(clusterMonitorTimer);
         if (readinessRetry) clearTimeout(readinessRetry);
         await listenerTransition.catch(() => {});
+        for (const req of [...activeUpstreams]) req.destroy();
+        httpAgent.destroy();
+        httpsAgent.destroy();
         for (const ws of webSockets) ws.terminate();
         for (const socket of sockets) socket.destroy();
         server.closeAllConnections?.();

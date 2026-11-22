@@ -1,7 +1,55 @@
 import net from "node:net";
-import type { McpPresetDefinition } from "@kulo/protocol";
+import path from "node:path";
+import {
+  MCP_BLOCKED_ENV_KEYS,
+  isBlockedMcpEnvKey,
+  isValidMcpEnvKey,
+  type ConnectionCredentialField,
+  type ConnectionFields,
+  type McpAuthMode,
+  type McpPresetDefinition,
+  type McpTransportKind,
+} from "@kulo/protocol";
+import { COMPOSIO_PRESET_ID, validateComposioMetadataFields } from "./composio-bridge.js";
+
+export { MCP_BLOCKED_ENV_KEYS, isBlockedMcpEnvKey, isValidMcpEnvKey };
+
+const AGGREGATOR_KEYWORDS: readonly string[] = [
+  "gmail", "google", "calendar", "drive", "sheets", "docs", "slack", "discord",
+  "hubspot", "asana", "airtable", "trello", "salesforce", "jira", "dropbox",
+  "reddit", "shopify", "notion", "linear", "github", "email", "mail",
+  "邮箱", "日历", "网盘", "表格", "聚合", "500", "9000",
+];
 
 const RAW_MCP_PRESETS: McpPresetDefinition[] = [
+  {
+    id: "zapier",
+    name: "Zapier",
+    description: "云端聚合 9,000+ 应用动作（需在 Zapier 勾选开放，免费版约 50 次/月）",
+    transport: "http",
+    url: "https://mcp.zapier.com/api/v1/connect",
+    authMode: "oauth",
+    supportedAuthModes: ["oauth", "bearer"],
+    helpUrl: "https://mcp.zapier.com",
+    category: "aggregator",
+    keywords: AGGREGATOR_KEYWORDS,
+    hostedAggregator: true,
+  },
+  {
+    id: "composio",
+    name: "Composio",
+    description: "云端聚合 500+ 应用（Gmail、日历、Drive、Slack 等，免费版 10 万次/月）",
+    transport: "http",
+    url: "https://backend.composio.dev/api/v3.1",
+    authMode: "header",
+    supportedAuthModes: ["header"],
+    headerName: "x-api-key",
+    helpUrl: "https://dashboard.composio.dev/~/project/settings/api-keys",
+    category: "aggregator",
+    keywords: AGGREGATOR_KEYWORDS,
+    hostedAggregator: true,
+    bootstrapMode: "composio",
+  },
   {
     id: "linear",
     name: "Linear",
@@ -34,6 +82,7 @@ const RAW_MCP_PRESETS: McpPresetDefinition[] = [
     supportedAuthModes: ["oauth"],
     helpUrl: "https://support.atlassian.com/atlassian-rovo-mcp-server/",
     category: "engineering",
+    keywords: ["jira", "confluence"],
   },
   {
     id: "sentry",
@@ -135,10 +184,62 @@ const RAW_MCP_PRESETS: McpPresetDefinition[] = [
     helpUrl: "https://docs.slack.dev/ai/mcp-server/",
     category: "productivity",
   },
+  {
+    id: "exa",
+    name: "Exa",
+    description: "网页、代码与论文深度检索",
+    transport: "http",
+    url: "https://mcp.exa.ai/mcp",
+    authMode: "none",
+    supportedAuthModes: ["none", "bearer"],
+    helpUrl: "https://docs.exa.ai/reference/exa-mcp",
+    category: "docs",
+    keywords: ["search", "research", "搜索", "检索"],
+  },
+  {
+    id: "deepwiki",
+    name: "DeepWiki",
+    description: "开源 GitHub 仓库结构与文档问答",
+    transport: "http",
+    url: "https://mcp.deepwiki.com/mcp",
+    authMode: "none",
+    supportedAuthModes: ["none", "bearer"],
+    helpUrl: "https://docs.devin.ai/work-with-devin/deepwiki-mcp",
+    category: "docs",
+    keywords: ["github", "wiki", "docs", "文档", "代码库"],
+  },
+  {
+    id: "tavily",
+    name: "Tavily",
+    description: "AI 实时网页搜索与正文抽取",
+    transport: "http",
+    url: "https://mcp.tavily.com/mcp",
+    authMode: "oauth",
+    supportedAuthModes: ["oauth", "bearer"],
+    helpUrl: "https://docs.tavily.com/documentation/mcp",
+    category: "docs",
+    keywords: ["search", "web", "extract", "搜索"],
+  },
+  {
+    id: "posthog",
+    name: "PostHog",
+    description: "产品分析、事件与实验排查（推荐令牌或自设最小 Scope）",
+    transport: "http",
+    url: "https://mcp.posthog.com/mcp",
+    authMode: "bearer",
+    supportedAuthModes: ["bearer", "oauth"],
+    helpUrl: "https://posthog.com/docs/model-context-protocol",
+    category: "engineering",
+    keywords: ["analytics", "events", "flags", "分析", "埋点"],
+  },
 ];
 
 export const MCP_PRESET_CATALOG: readonly McpPresetDefinition[] = Object.freeze(
-  RAW_MCP_PRESETS.map((item) => Object.freeze({ ...item, supportedAuthModes: Object.freeze([...item.supportedAuthModes]) })),
+  RAW_MCP_PRESETS.map((item) => Object.freeze({
+    ...item,
+    supportedAuthModes: Object.freeze([...item.supportedAuthModes]),
+    ...(item.keywords ? { keywords: Object.freeze([...item.keywords]) } : {}),
+  })),
 );
 
 export function findMcpPreset(id: unknown): McpPresetDefinition | undefined {
@@ -152,62 +253,6 @@ export function getMcpPreset(id: unknown): McpPresetDefinition {
     throw Object.assign(new Error("不支持的预置 MCP 应用。"), { code: "connection_mcp_preset_unknown", status: 400 });
   }
   return preset;
-}
-
-/** Case-insensitive blocklist of process-hijacking or runtime-overriding environment variables for stdio MCP servers. */
-export const MCP_BLOCKED_ENV_KEYS = new Set<string>([
-  "path",
-  "home",
-  "userprofile",
-  "comspec",
-  "pathext",
-  "systemroot",
-  "windir",
-  "tmpdir",
-  "temp",
-  "tmp",
-  "ld_preload",
-  "ld_library_path",
-  "ld_audit",
-  "dyld_insert_libraries",
-  "dyld_library_path",
-  "dyld_framework_path",
-  "dyld_fallback_library_path",
-  "node_options",
-  "node_extra_ca_certs",
-  "node_tls_reject_unauthorized",
-  "node_path",
-  "electron_run_as_node",
-  "ssl_cert_file",
-  "ssl_cert_dir",
-  "http_proxy",
-  "https_proxy",
-  "all_proxy",
-  "no_proxy",
-  "ifs",
-  "bash_env",
-  "env",
-  "zdotdir",
-  "pythonpath",
-  "pythonstartup",
-  "pythonhome",
-  "rubyopt",
-  "perl5opt",
-  "java_tool_options",
-  "jdk_java_options",
-  "dotnet_startup_hooks",
-  "npm_config_script_shell",
-]);
-
-export function isBlockedMcpEnvKey(key: string): boolean {
-  const lower = key.toLowerCase();
-  if (MCP_BLOCKED_ENV_KEYS.has(lower)) return true;
-  if (lower.startsWith("dyld_") || lower.startsWith("ld_") || lower.startsWith("kulo_")) return true;
-  return false;
-}
-
-export function isValidMcpEnvKey(key: string): boolean {
-  return /^[A-Z][A-Z0-9_]{0,63}$/.test(key) && !isBlockedMcpEnvKey(key);
 }
 
 export function stripBrackets(hostname: string): string {
@@ -319,4 +364,138 @@ export function isNonPublicMcpUrl(rawUrl: string): boolean {
     return true;
   }
   return false;
+}
+
+const MAX_MCP_ARGS = 64;
+
+function failMcpField(message: string): never {
+  throw Object.assign(new Error(message), { code: "invalid_connection", status: 400 });
+}
+
+function cleanMcpText(value: unknown, label: string, max: number): string | undefined {
+  if (value === undefined || value === "") return undefined;
+  if (typeof value !== "string" || value.length > max || /[\x00-\x1f\x7f]/.test(value)) failMcpField(`${label}无效。`);
+  return value.trim() || undefined;
+}
+
+export function normalizeMcpCommand(value: unknown): string {
+  const command = cleanMcpText(value, "启动命令", 512);
+  if (!command) failMcpField("请填写本机 MCP 启动命令。");
+  if (command.startsWith("./") || command.startsWith("../") || command.includes("..")) failMcpField("启动命令不能使用相对路径。");
+  if ((command.includes("/") || command.includes("\\")) && !path.isAbsolute(command)) failMcpField("启动命令须为可执行文件名或绝对路径。");
+  if (!path.isAbsolute(command) && !/^[A-Za-z0-9._-]+$/.test(command)) failMcpField("启动命令名称包含不支持的字符。");
+  return command;
+}
+
+export function normalizeMcpArgs(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > MAX_MCP_ARGS) failMcpField("MCP 启动参数无效（最多 64 项）。");
+  return value.map((item) => {
+    if (typeof item !== "string" || item.length > 1_024 || /[\x00\r\n]/.test(item)) failMcpField("MCP 启动参数包含无效字符或过长。");
+    return item;
+  });
+}
+
+export function normalizeMcpCwd(value: unknown, stateDir?: string): string | undefined {
+  const cwd = cleanMcpText(value, "工作目录", 1_024);
+  if (!cwd) return undefined;
+  if (!path.isAbsolute(cwd)) failMcpField("MCP 工作目录必须为绝对路径。");
+  if (stateDir) {
+    const resolvedState = path.resolve(stateDir);
+    const resolvedCwd = path.resolve(cwd);
+    if (resolvedCwd === resolvedState || resolvedCwd.startsWith(`${resolvedState}${path.sep}`)) {
+      failMcpField("MCP 工作目录不能指向应用受保护数据目录。");
+    }
+  }
+  return cwd;
+}
+
+export function normalizeMcpConnectionFields(
+  input: ConnectionFields,
+  helpers: {
+    stateDir?: string;
+    textField: (value: unknown, label: string, max: number) => string | undefined;
+    instructionsField: (value: unknown) => string | undefined;
+    credentialSchema: (value: unknown) => ConnectionCredentialField[] | undefined;
+    allowedSecretKeyFor: (kind: "mcp", key: string, mcpTransport?: McpTransportKind, mcpAuthMode?: McpAuthMode) => boolean;
+  },
+): ConnectionFields {
+  if (input.appId !== undefined) failMcpField("MCP 连接不能指定固定应用标识。");
+  if (input.category !== undefined && input.category !== "app") failMcpField("MCP 连接归属应用分类。");
+  const name = helpers.textField(input.name, "连接名称", 120);
+  if (!name) failMcpField("请填写连接名称。");
+  const transport: McpTransportKind = input.mcpTransport ?? (input.mcpCommand ? "stdio" : "http");
+  if (transport !== "http" && transport !== "stdio") failMcpField("MCP 传输方式无效。");
+  const instructions = helpers.instructionsField(input.instructions);
+  if (transport === "http") {
+    if (input.mcpCommand !== undefined || input.mcpArgs !== undefined || input.mcpCwd !== undefined) failMcpField("远程 HTTP MCP 不能包含本地命令行参数。");
+    const preset = input.mcpPresetId ? getMcpPreset(input.mcpPresetId) : undefined;
+    const rawUrl = helpers.textField(input.url ?? preset?.url, "MCP 服务地址", 2_048);
+    if (!rawUrl) failMcpField("请填写 MCP 服务地址。");
+    let url: URL;
+    try { url = new URL(rawUrl); } catch { failMcpField("请输入有效的 MCP 服务地址。"); }
+    if (url.username || url.password || url.search || url.hash) failMcpField("MCP 服务地址不能包含账号、密码或查询参数。");
+    const host = stripBrackets(url.hostname);
+    if (!host || isCloudMetadataIp(host)) failMcpField("MCP 服务地址无效或受安全策略阻止。");
+    if (url.protocol === "http:") {
+      if (!isLoopbackHost(host)) failMcpField("远程 MCP 服务地址必须使用 HTTPS。");
+    } else if (url.protocol !== "https:") {
+      failMcpField("远程 MCP 服务地址必须使用 HTTPS。");
+    }
+    const authMode: McpAuthMode = input.mcpAuthMode ?? preset?.authMode ?? "oauth";
+    if (!["oauth", "bearer", "header", "none"].includes(authMode)) failMcpField("MCP 认证方式无效。");
+    let headerName: string | undefined;
+    if (authMode === "header") {
+      const header = helpers.textField(input.headerName ?? preset?.headerName, "认证请求头", 80) ?? "X-API-Key";
+      if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(header) || /^(host|cookie|set-cookie|proxy-authorization|connection|content-length|transfer-encoding)$/i.test(header)) failMcpField("认证请求头无效。");
+      headerName = header;
+    }
+    const mcpOAuthClientId = authMode === "oauth" ? helpers.textField(input.mcpOAuthClientId, "OAuth Client ID", 256) : undefined;
+    const mcpOAuthScope = authMode === "oauth" ? helpers.textField(input.mcpOAuthScope, "OAuth Scope", 512) : undefined;
+    let mcpOAuthCallbackPort: number | undefined;
+    if (authMode === "oauth" && input.mcpOAuthCallbackPort !== undefined) {
+      if (!Number.isInteger(input.mcpOAuthCallbackPort) || input.mcpOAuthCallbackPort < 1024 || input.mcpOAuthCallbackPort > 65_535) failMcpField("OAuth 回调端口必须在 1024 到 65535 之间。");
+      mcpOAuthCallbackPort = input.mcpOAuthCallbackPort;
+    }
+    const schema = helpers.credentialSchema(input.credentialFields);
+    if (schema?.some((field) => !helpers.allowedSecretKeyFor("mcp", field.key, "http", authMode))) failMcpField("此 MCP 认证方式不支持该凭据字段。");
+    const composioMeta = preset?.id === COMPOSIO_PRESET_ID
+      ? validateComposioMetadataFields(input, url, authMode, headerName)
+      : undefined;
+    if (!composioMeta && (input.mcpComposioUserId !== undefined || input.mcpComposioSessionId !== undefined || input.mcpAllowedToolkits !== undefined)) {
+      failMcpField("仅 Composio 连接支持 Composio 会话与应用范围字段。");
+    }
+    const credentialFields: ConnectionCredentialField[] =
+      authMode === "bearer" || authMode === "header"
+        ? [{ key: "apiKey", label: "访问令牌" }]
+        : authMode === "oauth" && mcpOAuthClientId
+          ? [{ key: "clientSecret", label: "Client Secret" }]
+          : [];
+    return {
+      name, kind: "mcp", category: "app", mcpTransport: "http", url: url.href, mcpAuthMode: authMode,
+      ...(preset ? { mcpPresetId: preset.id } : {}),
+      ...(headerName ? { headerName } : {}),
+      ...(mcpOAuthClientId ? { mcpOAuthClientId } : {}),
+      ...(mcpOAuthScope ? { mcpOAuthScope } : {}),
+      ...(mcpOAuthCallbackPort !== undefined ? { mcpOAuthCallbackPort } : {}),
+      ...(composioMeta ?? {}),
+      ...(instructions ? { instructions } : {}),
+      credentialFields,
+    };
+  }
+  if (input.url !== undefined || input.mcpAuthMode !== undefined || input.headerName !== undefined || input.mcpPresetId !== undefined || input.mcpOAuthClientId !== undefined || input.mcpOAuthScope !== undefined || input.mcpOAuthCallbackPort !== undefined || input.mcpComposioUserId !== undefined || input.mcpComposioSessionId !== undefined || input.mcpAllowedToolkits !== undefined) {
+    failMcpField("本机 Stdio MCP 不能包含远程 HTTP、OAuth 或 Composio 字段。");
+  }
+  const mcpCommand = normalizeMcpCommand(input.mcpCommand);
+  const mcpArgs = normalizeMcpArgs(input.mcpArgs);
+  const mcpCwd = normalizeMcpCwd(input.mcpCwd, helpers.stateDir);
+  const schema = helpers.credentialSchema(input.credentialFields) ?? [];
+  if (schema.some((field) => !isValidMcpEnvKey(field.key))) failMcpField("本机 MCP 环境变量名须为大写字母/数字/下划线且不得覆盖受保护系统变量。");
+  return {
+    name, kind: "mcp", category: "app", mcpTransport: "stdio", mcpCommand,
+    ...(mcpArgs?.length ? { mcpArgs } : {}),
+    ...(mcpCwd ? { mcpCwd } : {}),
+    ...(instructions ? { instructions } : {}),
+    credentialFields: schema,
+  };
 }

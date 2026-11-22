@@ -551,32 +551,47 @@ describe("external agent redesign — Hub End-to-End Flows (B1–B5, I1–I6, H2
     expect(claudeCand?.authenticated).toBe(false);
     expect(agyCand?.installed).toBe(true);
 
-    // Connect protocol-only first (saved disabled, friendly roleId = "antigravity", no auto executable persisted)
+    // Connect protocol-only first (saved unverified in externalClients without auto-creating a role or persisting auto executable)
     const connected = await f.hub.agentConfiguration.quickConnect({
       clientId: "ui-test", kind: "antigravity", envId: "macbook", commandId: "cmd-proto", runTest: false,
     });
-    expect(connected.agentId).toBe("antigravity");
+    expect(connected.agentId).toBeUndefined();
+    expect(connected.clientId).toBe("antigravity:macbook");
     expect(connected.enabled).toBe(false);
-    const savedRole = connected.settings.blocks.roles.value["antigravity"]!;
-    expect(savedRole.external?.executable).toBeUndefined();
-    expect(savedRole.label).toBe("Antigravity");
+    expect(connected.settings.blocks.roles.value["antigravity"]).toBeUndefined();
+    const savedClient = connected.settings.externalClients?.["antigravity:macbook"]!;
+    expect(savedClient.executable).toBeUndefined();
+    expect(savedClient.verifiedAt).toBeUndefined();
 
     // Verify with echoed error text containing nonce MUST FAIL (I1)
     verifyReplyMode = "echoed_error";
     await expect(f.hub.verifyExternalClient(connected.clientId, { commandId: "verify-fail" })).rejects.toThrow(/测试回复/);
 
-    // Verify with backtick-wrapped nonce MUST SUCCEED, auto-enable role, and record settings history (H4, I2)
+    // Verify with backtick-wrapped nonce MUST SUCCEED, stamp client verifiedAt, and record settings history (H4, I2)
     verifyReplyMode = "backticks";
     const historyBefore = f.hub.getSettingsView().history.length;
     const verified = await f.hub.verifyExternalClient(connected.clientId, { commandId: "verify-ok" });
-    expect(verified.enabledRoleIds).toEqual(["antigravity"]);
-    expect(verified.settings.blocks.roles.value["antigravity"]?.enabled).toBe(true);
-    expect(verified.settings.blocks.roles.value["antigravity"]?.external?.verifiedAt).toBeTypeOf("number");
+    expect(verified.enabledRoleIds).toEqual([]);
+    expect(verified.settings.externalClients?.["antigravity:macbook"]?.verifiedAt).toBeTypeOf("number");
     expect(verified.settings.history.length).toBeGreaterThan(historyBefore);
 
     // Retry with same commandId is idempotent (I2)
     const deduped = await f.hub.verifyExternalClient(connected.clientId, { commandId: "verify-ok" });
     expect(deduped.verifiedAt).toBe(verified.verifiedAt);
+
+    // Direct explicit dispatch works even with zero roles bound to Antigravity
+    await f.hub.sendUserMessage("请让 Antigravity 帮我检查这个目录", { topicId: "root" });
+    const card = await f.hub.dispatchTicket({
+      commandId: "direct-agy-1",
+      title: "直接调用 Antigravity",
+      goal: "检查目录",
+      scope: f.directory,
+      role: "client:antigravity:macbook",
+      originConversationId: Number(f.hub.rootConversation.id),
+    });
+    expect(card.role).toBe("client:antigravity:macbook");
+    expect(card.roleLabel).toBe("Antigravity");
+    expect(card.externalAgentKind).toBe("antigravity");
   });
 
   it("clamps advisory thinkingLevel on auto external roles, uses concise follow-up prompt on resume, persists recentEvents timeline, and discards zero-diff staged workspace on ready (H5, H6, H9, I3, I4, I6, E6)", async () => {

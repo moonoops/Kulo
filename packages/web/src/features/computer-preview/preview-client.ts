@@ -1,4 +1,4 @@
-import { COMPUTER_PREVIEW_MAX_DATA, isComputerPreviewUpdate, type ComputerPreviewFrame, type ComputerPreviewSessionView, type ComputerPreviewUpdate } from "@kulo/protocol";
+import { COMPUTER_PREVIEW_MAX_DATA, isComputerPreviewUpdate, type ComputerPreviewFrame, type ComputerPreviewInputEvent, type ComputerPreviewSessionView, type ComputerPreviewUpdate } from "@kulo/protocol";
 
 export interface PreviewSocket {
   readyState: number;
@@ -14,6 +14,8 @@ export interface PreviewDisplay {
   state: ComputerPreviewUpdate["state"];
   imageUrl?: string;
   capturedAt?: number;
+  deviceWidth?: number;
+  deviceHeight?: number;
   message?: string;
   permissionRequired?: ComputerPreviewUpdate["permissionRequired"];
 }
@@ -36,13 +38,29 @@ export const EMPTY_PREVIEW_STATE: ComputerPreviewState = {
   sessions: [], selectedByTicket: {}, displays: {}, stops: {}, collapsed: false, expanded: false, connection: "connecting",
 };
 
+function validHandoff(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const h = value as Record<string, unknown>;
+  return typeof h.requestId === "string" && h.requestId.length > 0 && h.requestId.length <= 200
+    && typeof h.reason === "string" && h.reason.length > 0 && h.reason.length <= 1000
+    && (h.target === "browser" || h.target === "desktop")
+    && typeof h.expiresAt === "number" && Number.isFinite(h.expiresAt)
+    && typeof h.interactive === "boolean"
+    && (h.cardId === undefined || typeof h.cardId === "string")
+    && (h.url === undefined || typeof h.url === "string")
+    && (h.app === undefined || typeof h.app === "string");
+}
+
 function session(value: unknown): value is ComputerPreviewSessionView {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
   const identifier = (input: unknown) => typeof input === "string" && /^[a-zA-Z0-9][a-zA-Z0-9:_-]{0,255}$/.test(input) && !["__proto__", "constructor", "prototype"].includes(input);
   return identifier(v.id) && identifier(v.ticketId)
     && ["envId", "deviceName", "title"].every((key) => typeof v[key] === "string" && (v[key] as string).length > 0 && (v[key] as string).length <= 2000)
-    && (v.tool === "browser" || v.tool === "desktop") && (v.app === undefined || typeof v.app === "string" && v.app.length <= 256);
+    && (v.tool === "browser" || v.tool === "desktop")
+    && (v.app === undefined || typeof v.app === "string" && v.app.length <= 256)
+    && validHandoff(v.handoff);
 }
 
 export function previewFrameUrl(frame: ComputerPreviewFrame): string {
@@ -207,7 +225,13 @@ export class ComputerPreviewClient {
       if (update.state === "live" && update.frame) {
         if (previous?.capturedAt && update.frame.capturedAt < previous.capturedAt) return;
         try {
-          display = { ...display, imageUrl: (this.options.createImageUrl ?? previewFrameUrl)(update.frame), capturedAt: update.frame.capturedAt };
+          display = {
+            ...display,
+            imageUrl: (this.options.createImageUrl ?? previewFrameUrl)(update.frame),
+            capturedAt: update.frame.capturedAt,
+            ...(update.frame.deviceWidth !== undefined ? { deviceWidth: update.frame.deviceWidth } : {}),
+            ...(update.frame.deviceHeight !== undefined ? { deviceHeight: update.frame.deviceHeight } : {}),
+          };
           hasFreshFrame = true;
         }
         catch { display = { state: "unavailable", message: "invalid_frame" }; }
@@ -239,6 +263,18 @@ export class ComputerPreviewClient {
 
   #sendVisibility(): void {
     if (this.#socket?.readyState === 1) this.#socket.send(JSON.stringify({ type: "preview.visibility", visible: this.#effectiveVisible() }));
+  }
+
+  sendInput(id: string, event: ComputerPreviewInputEvent): boolean {
+    if (this.#closed || this.#socket?.readyState !== 1) return false;
+    const target = this.#state.sessions.find((item) => item.id === id);
+    if (!target?.handoff?.interactive) return false;
+    try {
+      this.#socket.send(JSON.stringify({ type: "preview.input", id, event }));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   setPageVisible(visible: boolean): void { this.#pageVisible = visible; this.#sendVisibility(); }

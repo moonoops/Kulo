@@ -59,6 +59,18 @@ export {
 } from "./hub.js";
 export { startKuloHubServer, type KuloHubServer, type KuloHubServerOptions } from "./server.js";
 export {
+  ExternalAgentQuotaService,
+  QUOTA_AUTO_FAILURE_BACKOFF_MS,
+  QUOTA_MAX_GLOBAL_CONCURRENCY,
+  QUOTA_MIN_FORCE_COOLDOWN_MS,
+  QUOTA_PROBE_TIMEOUT_MS,
+  QUOTA_QUICK_RETRY_COOLDOWN_MS,
+  QUOTA_SOFT_TTL_MS,
+  bindingFromClientConnection,
+  computeQuotaBindingFingerprint,
+  type ExternalAgentQuotaServiceOptions,
+} from "./external-agent-quotas.js";
+export {
   MEMORY_LLM_BRIDGE_FILENAME,
   MEMORY_LLM_BRIDGE_OWNER,
   MEMORY_LLM_BRIDGE_PATH,

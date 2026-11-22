@@ -10,7 +10,8 @@ import {
   type VoiceSnapshot, type VoiceTtsProvider,
 } from "@kulo/protocol";
 import { transcribeCloudAudio } from "./voice-asr.js";
-import { synthesizeVoice, VOICE_TTS_ORIGINS, type VoiceSynthesisOutput } from "./voice-tts.js";
+import { MAX_VOICE_TTS_TEXT, synthesizeVoice, VOICE_TTS_ORIGINS, type VoiceSynthesisOutput } from "./voice-tts.js";
+import { MAX_VOICE_TTS_RAW_TEXT, prepareSpeechText } from "./voice-speech-text.js";
 
 const ORIGIN_ENV = "KULO_API_KEY_ORIGIN";
 const CALL_ORIGINS: Readonly<Record<VoiceLiveProvider, string>> = {
@@ -509,7 +510,15 @@ export class KuloVoiceService {
       throw new VoiceError(502, "voice_asr_failed", safeError(error));
     }
   }
-  async synthesize(text: string, signal?: AbortSignal, options: { preview?: boolean } = {}): Promise<VoiceSynthesisOutput> {
+  async synthesize(text: string, signal?: AbortSignal, options: { preview?: boolean; cleanMarkdown?: boolean } = {}): Promise<VoiceSynthesisOutput> {
+    let targetText = text;
+    if (options.cleanMarkdown) {
+      if (typeof text !== "string" || !text.trim() || text.length > MAX_VOICE_TTS_RAW_TEXT || /\x00/.test(text)) {
+        fail(400, "invalid_voice_tts_text", `朗读文本应为 1 至 ${MAX_VOICE_TTS_RAW_TEXT} 个字符。`);
+      }
+      targetText = prepareSpeechText(text, MAX_VOICE_TTS_TEXT);
+      if (!targetText) fail(400, "voice_tts_nothing_to_speak", "这条内容没有适合朗读的文字。");
+    }
     const { tts } = await this.#state();
     if (!tts.enabled && !options.preview) fail(409, "voice_tts_disabled", "语音合成已关闭。");
     if (!tts.modelId) fail(409, "voice_model_required", "请先在模型设置中添加并选择语音合成模型。");
@@ -519,12 +528,12 @@ export class KuloVoiceService {
       if (!resolved.apiKey) fail(409, "voice_credential_required", "请先在模型设置中配置语音合成模型的 API Key。");
       const rawAdapter = resolved.protocolAdapter ?? defaultProtocolAdapterForModel("tts", tts.modelId, undefined, resolved.preset);
       const protocolAdapter = rawAdapter === "gemini-tts" || rawAdapter === "minimax-t2a" || rawAdapter === "openai-speech" ? rawAdapter : "openai-speech";
-      return synthesizeVoice({ ...tts, provider: tts.provider ?? ttsProviderFromAdapter(protocolAdapter, resolved.preset), protocolAdapter, baseUrl: resolved.baseUrl }, resolved.apiKey, text, { fetch: this.#options.fetch, signal });
+      return synthesizeVoice({ ...tts, provider: tts.provider ?? ttsProviderFromAdapter(protocolAdapter, resolved.preset), protocolAdapter, baseUrl: resolved.baseUrl }, resolved.apiKey, targetText, { fetch: this.#options.fetch, signal });
     }
     if (!tts.provider) fail(409, "voice_model_required", "请先在模型设置中添加并选择语音合成模型。");
     const key = await this.#key(tts, VOICE_TTS_ORIGINS[tts.provider]);
     if (!key) fail(409, "voice_credential_required", "请先配置语音合成 API Key。");
-    return synthesizeVoice({ ...tts, provider: tts.provider }, key, text, { fetch: this.#options.fetch, signal });
+    return synthesizeVoice({ ...tts, provider: tts.provider }, key, targetText, { fetch: this.#options.fetch, signal });
   }
   async liveConfig(options: { allowDisabled?: boolean } = {}): Promise<VoiceLiveConfiguration> {
     const { call } = await this.#state();

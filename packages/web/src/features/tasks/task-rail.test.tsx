@@ -258,5 +258,72 @@ describe("background task rail", () => {
     expect(decisionHtml).toContain("kulo-assistant-preview");
     expect(decisionHtml).toContain("您好，附件是更新后的方案。");
     expect(decisionHtml).toContain("确认存为草稿");
+
+    // Dispatched L2 card disables confirmation button and displays in-flight label.
+    const dispatchedHtml = renderToStaticMarkup(
+      <KuloTaskRail
+        tickets={[]}
+        assistantItems={[
+          {
+            ...assistantItem,
+            id: "asst-l2-dispatched",
+            kind: "decision",
+            title: "发送飞书回复",
+            summary: "执行中测试",
+            primaryActionLabel: undefined,
+            pendingAction: {
+              actionId: "act-disp",
+              kind: "lark_send_reply",
+              label: "确认发送",
+              targetLabel: "群聊",
+              previewText: "会议改期通知",
+              driverId: "lark-cli",
+              operation: "send_reply",
+              params: { chatId: "oc_1", text: "会议改期通知" },
+              executionState: "dispatched",
+              dispatchedAt: Date.now(),
+            },
+          },
+        ]}
+        onAssistantItemAction={async () => {}}
+        onProject={() => {}}
+      />,
+    );
+    expect(dispatchedHtml).toContain("执行中…");
+    expect(dispatchedHtml).not.toContain(">确认发送<");
+
+    // Unknown L2 card renders verification notice and read-only dismiss button (never re-offering confirm).
+    const unknownHtml = renderToStaticMarkup(
+      <KuloTaskRail
+        tickets={[]}
+        assistantItems={[
+          {
+            ...assistantItem,
+            id: "asst-l2-unknown",
+            kind: "decision",
+            title: "发送飞书回复",
+            summary: "超时未决",
+            primaryActionLabel: undefined,
+            pendingAction: {
+              actionId: "act-unk",
+              kind: "lark_send_reply",
+              label: "确认发送",
+              targetLabel: "群聊",
+              previewText: "会议改期通知",
+              driverId: "lark-cli",
+              operation: "send_reply",
+              params: { chatId: "oc_1", text: "会议改期通知" },
+              executionState: "unknown",
+              lastError: "连接超时，请核对飞书群聊是否已发出",
+            },
+          },
+        ]}
+        onAssistantItemAction={async () => {}}
+        onProject={() => {}}
+      />,
+    );
+    expect(unknownHtml).toContain("连接超时，请核对飞书群聊是否已发出");
+    expect(unknownHtml).toContain("已核对，收起");
+    expect(unknownHtml).not.toContain(">确认发送<");
   });
 });

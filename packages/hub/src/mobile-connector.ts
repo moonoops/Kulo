@@ -66,21 +66,26 @@ export class MobileConnector {
   readonly #stateDir: string;
   readonly #hubId: string;
   readonly #upstream: () => Promise<string>;
+  readonly #onUnexpectedExit?: () => void;
   #child?: ChildProcessWithoutNullStreams;
   #initializing?: Promise<MobileConnectorStatus>;
+  #stopping?: Promise<void>;
   #status?: MobileConnectorStatus;
   #authURL = "";
   #closed = false;
+  #abortingStart = false;
+  #generation = 0;
   #sequence = 0;
   #systemOrigins: string[] = [];
   #systemCheckedAt = 0;
   #systemRefresh?: Promise<void>;
 
-  constructor(input: { stateDir: string; hubId: string; upstream: () => Promise<string>; options?: MobileConnectorOptions }) {
+  constructor(input: { stateDir: string; hubId: string; upstream: () => Promise<string>; options?: MobileConnectorOptions; onUnexpectedExit?: () => void }) {
     this.#stateDir = path.join(input.stateDir, "mobile-connect");
     this.#hubId = input.hubId;
     this.#upstream = input.upstream;
     this.#options = input.options ?? {};
+    this.#onUnexpectedExit = input.onUnexpectedExit;
   }
 
   async status(): Promise<MobileConnectorStatus> {
@@ -95,7 +100,7 @@ export class MobileConnector {
   ensure(): Promise<MobileConnectorStatus> {
     if (this.#closed) return Promise.reject(unavailable("connector_closed"));
     if (this.#initializing) return this.#initializing;
-    if (this.#child && this.#status) return Promise.resolve(structuredClone(this.#status));
+    if (!this.#stopping && this.#child && this.#status) return Promise.resolve(structuredClone(this.#status));
     const starting = this.#start();
     this.#initializing = starting;
     void starting.finally(() => { if (this.#initializing === starting) this.#initializing = undefined; }).catch(() => {});
@@ -114,24 +119,46 @@ export class MobileConnector {
     throw new DeviceConnectionError("登录链接仍在准备，请重试。", 503, "tailscale_login_pending");
   }
 
-  async close(): Promise<void> {
-    this.#closed = true;
-    const child = this.#child;
-    if (child) {
-      try { await this.#rpc("stop", undefined, 2_000); } catch { /* The owned process is killed below if IPC is already gone. */ }
-      if (child.exitCode === null) child.kill("SIGTERM");
-      if (child.exitCode === null && child.signalCode === null) await new Promise<void>((resolve) => {
-        const timeout = setTimeout(() => { child.kill("SIGKILL"); resolve(); }, 3_000);
-        child.once("exit", () => { clearTimeout(timeout); resolve(); });
-      });
+  async stop(): Promise<void> {
+    this.#generation++;
+    if (this.#stopping) {
+      await this.#stopping;
+      return;
     }
-    this.#failPending(unavailable("connector_closed"));
-    this.#child = undefined;
+    const child = this.#child;
     this.#status = undefined;
     this.#authURL = "";
+    const stopping = (async () => {
+      if (child) {
+        try { await this.#rpc("stop", undefined, 2_000); } catch { /* The owned process is killed below if IPC is already gone. */ }
+        if (child.exitCode === null) child.kill("SIGTERM");
+        if (child.exitCode === null && child.signalCode === null) await new Promise<void>((resolve) => {
+          const timeout = setTimeout(() => { child.kill("SIGKILL"); resolve(); }, 3_000);
+          child.once("exit", () => { clearTimeout(timeout); resolve(); });
+        });
+      }
+      this.#failPending(unavailable(this.#closed ? "connector_closed" : "connector_stopped"));
+      if (this.#child === child) this.#child = undefined;
+    })();
+    this.#stopping = stopping;
+    try {
+      await stopping;
+    } finally {
+      if (this.#stopping === stopping) this.#stopping = undefined;
+    }
+  }
+
+  async close(): Promise<void> {
+    this.#closed = true;
+    await this.stop();
   }
 
   async #start(): Promise<MobileConnectorStatus> {
+    const generation = this.#generation;
+    if (this.#stopping) await this.#stopping;
+    if (this.#closed || this.#generation !== generation) {
+      throw unavailable(this.#closed ? "connector_closed" : "connector_stopped");
+    }
     const executable = this.#options.binaryPath ?? process.env.KULO_CONNECTOR_PATH?.trim() ??
       fileURLToPath(new URL(`../native/kulo-connector-${process.platform}-${process.arch}${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
     if (!fs.existsSync(executable)) {
@@ -141,7 +168,9 @@ export class MobileConnector {
     const systemTailscaleOrigins = this.#options.systemTailscaleOrigins ?? (await discoverSystemTailscale()).origins;
     this.#systemOrigins = systemTailscaleOrigins;
     this.#systemCheckedAt = Date.now();
-    if (this.#closed) throw unavailable("connector_closed");
+    if (this.#closed || this.#generation !== generation) {
+      throw unavailable(this.#closed ? "connector_closed" : "connector_stopped");
+    }
     const child = spawn(executable, ["--stdio"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     this.#child = child;
     // stderr is drained without forwarding raw upstream diagnostics or enrollment URLs.
@@ -166,23 +195,36 @@ export class MobileConnector {
     try {
       this.#acceptStatus(await this.#rpc("start", { upstream, hubId: this.#hubId, stateDir: this.#stateDir,
         connectorToken: this.token, listen: this.#listenerAddress(), systemTailscaleOrigins }));
+      if (this.#closed || this.#generation !== generation) {
+        throw unavailable(this.#closed ? "connector_closed" : "connector_stopped");
+      }
       if (this.#options.enableTailscale !== false) this.#acceptStatus(await this.#rpc("ensureTailscale"));
+      if (this.#closed || this.#generation !== generation) {
+        throw unavailable(this.#closed ? "connector_closed" : "connector_stopped");
+      }
       if (!this.#status) throw unavailable("connector_invalid_status");
       this.#saveListenerPort();
       return structuredClone(this.#status);
     } catch (error) {
-      child.kill();
-      this.#processEnded(child);
+      this.#abortingStart = true;
+      try {
+        if (child.exitCode === null && child.signalCode === null) child.kill();
+        this.#processEnded(child);
+      } finally {
+        this.#abortingStart = false;
+      }
       throw error;
     }
   }
 
   #processEnded(child: ChildProcessWithoutNullStreams): void {
     if (this.#child !== child) return;
+    const unexpected = !this.#closed && !this.#stopping && !this.#abortingStart && this.#status !== undefined;
     this.#child = undefined;
     this.#status = undefined;
     this.#authURL = "";
-    this.#failPending(unavailable("connector_stopped"));
+    this.#failPending(unavailable(this.#closed ? "connector_closed" : "connector_stopped"));
+    if (unexpected) this.#onUnexpectedExit?.();
   }
 
   #listenerAddress(): string {

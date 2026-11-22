@@ -7,7 +7,7 @@ metadata:
 
 # Generative UI Cards (`kulo_ui_show` / `kulo_ui_update`)
 
-Publish durable, schema-validated HeroUI v3 cards in the active conversation. Each card should serve a single decision, parameter group, or compact visual comparison—never wrap ordinary prose answers in a large console or nested cards.
+Publish durable, schema-validated HeroUI v3 cards in the active conversation. Each card should serve a single interactive decision, parameter group, selectable/exportable table, or compact data-toggle chart—never wrap ordinary prose answers in a large console or nested cards. For non-interactive editorial charts, annotated trends/price trajectories, or inline diagrams without card chrome, prefer `kulo_ui_diagram` (`diagram-design`).
 
 ## Layout & Restraint
 - Prefer `Stack` as the root container: use `gap: "sm"` for compact display groups, and omit `gap` (or use `gap: "md"`) for multi-field forms to preserve standard 16px field spacing.

@@ -3,8 +3,16 @@ import { Button, Link, Modal } from "@heroui/react";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { ThemedToken } from "shiki";
 import { KuloIcon } from "../../kulo-icon";
+import { useMessageReply } from "./message-actions";
 import { useContentResize } from "./use-content-motion";
 import "./chat-content.css";
+
+function fencedCodeExcerpt(code: string, language?: string): string {
+  const longestRun = (code.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  const lang = language?.trim().toLowerCase() ?? "";
+  return `${fence}${lang}\n${code}\n${fence}`;
+}
 
 const highlighted = new Map<string, Promise<ThemedToken[][] | null>>();
 let shikiModule: Promise<typeof import("shiki")> | undefined;
@@ -56,6 +64,7 @@ function CodeText({ code, tokens }: { code: string; tokens: ThemedToken[][] | nu
 
 export function CodeBlock({ code, language, fileName }: { code: string; language?: string; fileName?: string }) {
   useI18n();
+  const quoteExcerpt = useMessageReply();
   const [tokens, setTokens] = useState<ThemedToken[][] | null>(null);
   const [highlightFailed, setHighlightFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -111,6 +120,7 @@ export function CodeBlock({ code, language, fileName }: { code: string; language
         <Button size="sm" variant="ghost" aria-label={wrap ? tr("关闭代码自动折行", "Disable code wrapping") : tr("开启代码自动折行", "Enable code wrapping")} aria-pressed={wrap} onPress={() => { prepareResize(); setWrap((value) => !value); }}>{tr("折行", "Wrap")}</Button>
         <Button size="sm" variant="ghost" onPress={() => setIsOpen(true)}>{tr("放大", "Expand")}</Button>
         <Button size="sm" variant="ghost" onPress={() => { void copy(); }}><KuloIcon name={copyState === "copied" ? "check" : "copy"} size={14} />{copyState === "copied" ? tr("已复制", "Copied") : tr("复制", "Copy")}</Button>
+        {quoteExcerpt && <Button size="sm" variant="ghost" aria-label={tr("引用此代码块", "Quote code block")} onPress={() => quoteExcerpt(fencedCodeExcerpt(code, normalizedLanguage))}>{tr("引用", "Quote")}</Button>}
         {downloadUrl && <Link href={downloadUrl} download={codeFileName(normalizedLanguage, fileName)} className="kulo-chat-download-link">{tr("下载", "Download")}</Link>}
       </div>
     </div>

@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import {
   HOST_ACTION_MAX_RESULT,
+  classifyShellSafetyFloor,
   isHostActionRequest,
   redactSecrets,
   redactSensitiveText,
@@ -35,13 +36,6 @@ const MAX_OUTPUT_BYTES = 64 * 1024;
 const DEFAULT_RUN_TIMEOUT_MS = 120_000;
 const INSPECT_TIMEOUT_MS = 10_000;
 
-const CATASTROPHIC_COMMAND_PATTERNS: readonly RegExp[] = [
-  /(?:^|[;&|]\s*)rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+\/(?:\s|$)/i,
-  /(?:^|[;&|]\s*)mkfs\b/i,
-  /(?:^|[;&|]\s*)dd\s+if=.*of=\/dev\//i,
-  /:\(\)\s*\{\s*:\|:&\s*\};:/,
-];
-
 const PRIVILEGE_ESCALATION_PATTERNS: readonly RegExp[] = [
   /(?:^|[;&|`(]\s*)(?:\/usr\/bin\/)?sudo(?:\s|$)/,
   /(?:^|[;&|`(]\s*)(?:\/usr\/bin\/)?doas(?:\s|$)/,
@@ -70,10 +64,9 @@ export function expandHostPath(raw: string, homeDir = os.homedir()): string {
 
 export function validateHostMaintenanceCommands(commands: readonly string[]): void {
   for (const command of commands) {
-    for (const pattern of CATASTROPHIC_COMMAND_PATTERNS) {
-      if (pattern.test(command)) {
-        throw new Error(`已拦截高危系统命令："${command.slice(0, 120)}"`);
-      }
+    const floor = classifyShellSafetyFloor(command);
+    if (floor.verdict === "block") {
+      throw new Error(`已拦截高危系统命令："${command.slice(0, 120)}"`);
     }
     for (const pattern of PRIVILEGE_ESCALATION_PATTERNS) {
       if (pattern.test(command)) {

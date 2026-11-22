@@ -8,6 +8,8 @@ import { kuloRest, type AssistantWorkspaceView } from "../../kulo-api";
 import { ConnectionIcon } from "./connection-icon";
 import { AddAppModal } from "./mcp-add-modal";
 import { McpOAuthModal } from "./mcp-oauth-modal";
+import { ComposioConfigModal } from "./composio-config-modal";
+import { ComposioAppsModal } from "./composio-apps-modal";
 import { HomeAssistantConfigModal } from "./home-assistant-config-modal";
 import { SettingsList, SettingsSection } from "./settings-layout";
 import type { SettingsAssistantEntryIntent } from "./settings-assistant-actions";
@@ -469,7 +471,9 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
   const [addOpen, setAddOpen] = useState(false);
   const [haModalOpen, setHaModalOpen] = useState(false);
   const [oauthTarget, setOauthTarget] = useState<{ connection: ConnectionRecordView; forceReauth: boolean } | null>(null);
-  const [remove, setRemove] = useState<{ id: string; name: string; category: ConnectionCategory } | null>(null);
+  const [composioConfigTarget, setComposioConfigTarget] = useState<{ mode: "create" } | { mode: "edit"; connection: ConnectionRecordView } | null>(null);
+  const [composioAppsTarget, setComposioAppsTarget] = useState<ConnectionRecordView | null>(null);
+  const [remove, setRemove] = useState<{ id: string; name: string; category: ConnectionCategory; isComposio?: boolean } | null>(null);
   const rootRef = useRef<HTMLElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
@@ -487,7 +491,7 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
   const captureFocus = () => {
     returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   };
-  const openRemove = (item: { id: string; name: string; category: ConnectionCategory }) => {
+  const openRemove = (item: { id: string; name: string; category: ConnectionCategory; isComposio?: boolean }) => {
     setActionError(null);
     captureFocus();
     setRemove(item);
@@ -629,11 +633,14 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
                       </Table.Row>;
                     }
                     const { connection } = row;
+                    const isComposio = connection.mcpPresetId === "composio";
                     const status = mcpConnectionStatus(connection);
                     const needsOAuth = connection.mcpTransport === "http" && connection.mcpAuthMode === "oauth" && (!connection.mcpOAuthAuthorized || connection.status === "error");
-                    const subtitle = connection.mcpServerName && connection.mcpServerName !== connection.name
-                      ? connection.mcpServerName
-                      : connectionAddress(connection);
+                    const subtitle = isComposio
+                      ? (connection.mcpAllowedToolkits?.length ? connection.mcpAllowedToolkits.join(", ") : "composio.dev")
+                      : connection.mcpServerName && connection.mcpServerName !== connection.name
+                        ? connection.mcpServerName
+                        : connectionAddress(connection);
                     return <Table.Row id={row.id} textValue={connection.name}>
                       <Table.Cell className="kulo-settings-table-cell kulo-settings-table-primary">
                         <div className="kulo-connection-name">
@@ -652,6 +659,21 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
                       </Table.Cell>
                       <Table.Cell className="kulo-settings-table-cell kulo-settings-table-actions">
                         <div className="kulo-settings-table-action-group">
+                          {isComposio && (
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              aria-label={t(`管理${connection.name}应用`, `Manage ${connection.name} apps`)}
+                              isDisabled={disabled || unavailable}
+                              onPress={() => {
+                                setActionError(null);
+                                captureFocus();
+                                setComposioAppsTarget(connection);
+                              }}
+                            >
+                              {t("管理应用", "Apps")}
+                            </Button>
+                          )}
                           {needsOAuth && (
                             <Button
                               size="sm"
@@ -678,7 +700,15 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
                             variant="ghost"
                             aria-label={t(`编辑${connection.name}`, `Edit ${connection.name}`)}
                             isDisabled={disabled || (connection.mcpTransport === "stdio" && !snapshot.localHost)}
-                            onPress={() => void prepare({ connectionId: connection.id })}
+                            onPress={() => {
+                              if (isComposio) {
+                                setActionError(null);
+                                captureFocus();
+                                setComposioConfigTarget({ mode: "edit", connection });
+                              } else {
+                                void prepare({ connectionId: connection.id });
+                              }
+                            }}
                           >
                             {t("编辑", "Edit")}
                           </Button>
@@ -687,7 +717,7 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
                             variant="ghost"
                             aria-label={t(`取消连接${connection.name}`, `Disconnect ${connection.name}`)}
                             isDisabled={!connected || busy !== null}
-                            onPress={() => openRemove({ id: connection.id, name: connection.name, category: "app" })}
+                            onPress={() => openRemove({ id: connection.id, name: connection.name, category: "app", isComposio })}
                           >
                             {t("取消连接", "Disconnect")}
                           </Button>
@@ -738,8 +768,41 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
         onStartOAuth={(connection) => {
           setOauthTarget({ connection, forceReauth: false });
         }}
+        onSelectComposio={() => {
+          setComposioConfigTarget({ mode: "create" });
+        }}
         onClose={() => {
           setAddOpen(false);
+          restoreFocus();
+        }}
+      />
+    )}
+    {composioConfigTarget && snapshot && (
+      <ComposioConfigModal
+        open={composioConfigTarget !== null}
+        existing={composioConfigTarget.mode === "edit" ? composioConfigTarget.connection : null}
+        connected={connected}
+        vaultAvailable={snapshot.vault.available}
+        onSaved={(saved, isNew) => {
+          setComposioConfigTarget(null);
+          onRefresh();
+          if (isNew) setComposioAppsTarget(saved);
+          else restoreFocus();
+        }}
+        onClose={() => {
+          setComposioConfigTarget(null);
+          restoreFocus();
+        }}
+      />
+    )}
+    {composioAppsTarget && (
+      <ComposioAppsModal
+        open={composioAppsTarget !== null}
+        connection={composioAppsTarget}
+        connected={connected}
+        onClose={() => {
+          setComposioAppsTarget(null);
+          onRefresh();
           restoreFocus();
         }}
       />
@@ -750,6 +813,7 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
         connection={oauthTarget.connection}
         clientId={clientId}
         forceReauth={oauthTarget.forceReauth}
+        hostedAggregator={Boolean(snapshot?.mcpPresets?.find((preset) => preset.id === oauthTarget.connection.mcpPresetId)?.hostedAggregator)}
         onCompleted={() => onRefresh()}
         onClose={() => {
           setOauthTarget(null);
@@ -781,6 +845,6 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
         }}
       />
     )}
-    {remove && <ConfirmDialog open title={remove.category === "app" ? t(`取消与「${remove.name}」的连接？`, `Disconnect from “${remove.name}”?`) : t(`移除「${remove.name}」？`, `Remove “${remove.name}”?`)} description={<div className="space-y-2"><p>{remove.category === "information" ? t("将移除本地保存的信息。", "Locally saved information will be removed.") : t("将清除本地授权记录和凭据，并撤销任务使用权限。", "Local access records and credentials will be deleted, and task access will be revoked.")}</p>{actionError && <p role="alert" className="text-danger">{actionError}</p>}</div>} confirmLabel={remove.category === "app" ? t("取消连接", "Disconnect") : t("移除", "Remove")} isPending={busy !== null} onConfirm={() => void disconnect()} onCancel={() => { setRemove(null); restoreFocus(); }} />}
+    {remove && <ConfirmDialog open title={remove.category === "app" ? t(`取消与「${remove.name}」的连接？`, `Disconnect from “${remove.name}”?`) : t(`移除「${remove.name}」？`, `Remove “${remove.name}”?`)} description={<div className="space-y-2"><p>{remove.category === "information" ? t("将移除本地保存的信息。", "Locally saved information will be removed.") : remove.isComposio ? t("将清除本地授权记录与 API Key，并撤销任务使用权限；已在 Composio 云端授权的第三方应用请先在「管理应用」中断开。", "Local records and API Key will be deleted, and task access will be revoked. Disconnect cloud app authorizations in Manage apps if no longer needed.") : t("将清除本地授权记录和凭据，并撤销任务使用权限。", "Local access records and credentials will be deleted, and task access will be revoked.")}</p>{actionError && <p role="alert" className="text-danger">{actionError}</p>}</div>} confirmLabel={remove.category === "app" ? t("取消连接", "Disconnect") : t("移除", "Remove")} isPending={busy !== null} onConfirm={() => void disconnect()} onCancel={() => { setRemove(null); restoreFocus(); }} />}
   </section>;
 }

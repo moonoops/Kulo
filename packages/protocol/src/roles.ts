@@ -241,7 +241,6 @@ export function localizeDefaultRolePreset(
   role: RolePreset,
   language: KuloLanguage,
 ): RolePreset {
-  if (role.external || role.externalClientId) return role;
   const texts = BUILTIN_ROLE_TEXTS[role.id];
   if (!texts) return role;
   const target = texts[language];
@@ -341,6 +340,7 @@ export function areInternalRolesAtDefaults(
       Boolean(actual.allowSubagents) !== Boolean(def.allowSubagents) ||
       (actual.provider?.trim() || undefined) !== def.provider ||
       (actual.modelId?.trim() || undefined) !== def.modelId ||
+      (actual.serviceTier?.trim() || undefined) !== def.serviceTier ||
       (actual.thinkingLevel ?? "auto") !== (def.thinkingLevel ?? "auto")
     ) {
       return false;

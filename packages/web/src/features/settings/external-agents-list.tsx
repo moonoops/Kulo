@@ -1,442 +1,417 @@
-import { useEffect, useState } from "react";
-import { Alert, Button, Chip, Disclosure, Dropdown, Label, Spinner, Switch } from "@heroui/react";
-import { isSupportedExternalAgentKind, type EnvNodeDescriptor, type ExternalAgentKind, type ExternalClientConnection, type ProjectView, type RolePreset } from "@kulo/protocol";
+import { useRef, useState } from "react";
+import { Alert, Button, Chip, Disclosure, Dropdown, Label, toast } from "@heroui/react";
+import {
+  EXTERNAL_CLIENT_KIND_LABELS,
+  externalClientDisplayName as protocolExternalClientDisplayName,
+  isSupportedExternalAgentKind,
+  type EnvNodeDescriptor,
+  type ExternalClientConnection,
+  type KuloSettingsView,
+  type RolePreset,
+} from "@kulo/protocol";
+import { ConfirmDialog } from "../../components/confirm-dialog";
 import { RoleAvatar } from "../../components/role-avatar";
+import { KuloApiError, kuloRest } from "../../kulo-api";
 import { KuloIcon } from "../../kulo-icon";
 import { useI18n } from "../../kulo-i18n";
-import { AgentPresetFields, externalEffortLabel } from "./agent-preset-fields";
-import { deriveExternalClients, roleExternalClientId } from "./external-agents-view";
+import { externalEffortLabel, externalServiceTierLabel } from "./agent-preset-fields";
+import { ExternalAgentConnectModal } from "./external-agent-connect-card";
+import { deriveExternalClients, formatExternalClientTarget, roleExternalClientId } from "./external-agents-view";
 import { SettingsList, SettingsSection } from "./settings-layout";
+import { useSettingsPending } from "./settings-save-activity";
 
-export const EXTERNAL_CLIENT_NAMES: Record<ExternalAgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  grok: "Grok Build",
-  cursor: "Cursor Agent",
-  opencode: "OpenCode",
-  "gemini-cli": "Gemini CLI",
-  kiro: "Kiro CLI",
-  copilot: "GitHub Copilot",
-  dsh: "DeepSeek Harness",
-  acp: "自定义 ACP",
-  "grok-bot": "Grok Bot",
-  dots: "ChatGPT Dots",
-  muse: "Meta Muse",
-};
+export const EXTERNAL_CLIENT_NAMES = EXTERNAL_CLIENT_KIND_LABELS;
+export const externalClientDisplayName = protocolExternalClientDisplayName;
 
-export function externalClientDisplayName(
-  client: Pick<ExternalClientConnection, "kind" | "label" | "agentRef">,
-): string {
-  if (client.kind === "acp") {
-    return client.label?.trim() || client.agentRef?.trim() || EXTERNAL_CLIENT_NAMES[client.kind];
-  }
-  return EXTERNAL_CLIENT_NAMES[client.kind];
-}
-
-function defaultExternalPersonaPrompt(language: string): string {
-  return language === "en"
-    ? "Follow repository conventions, verify changes with real checks, report actual outcomes and file paths, and hand back to Kulo if scope expansion or cross-agent collaboration is needed."
-    : "遵循仓库既有约定与任务边界，完成改动后执行真实检查验证，向主 Agent 汇报具体结论、改动路径与验证证据；若需扩大范围或跨智能体协作，及时交回主 Agent 决策。";
-}
-
-function createDraftForClient(client: ExternalClientConnection, language: string): RolePreset {
-  return {
-    id: "",
-    label: "",
-    whenToUse: "",
-    prompt: defaultExternalPersonaPrompt(language),
-    enabled: Boolean(client.verifiedAt && isSupportedExternalAgentKind(client.kind)),
-    readOnly: false,
-    allowSubagents: false,
-    thinkingLevel: "auto",
-    externalClientId: client.id,
-    external: {
-      kind: client.kind,
-      envId: client.envId,
-      ...(client.executable ? { executable: client.executable } : {}),
-      ...(client.kind === "acp" && client.acpArgs?.length ? { acpArgs: [...client.acpArgs] } : {}),
-      ...(client.agentRef ? { agentRef: client.agentRef } : {}),
-      ...(client.cdpUrl ? { cdpUrl: client.cdpUrl } : {}),
-      ...(client.experimental !== undefined ? { experimental: client.experimental } : {}),
-      ...(client.version ? { version: client.version } : {}),
-      ...(client.verifiedAt !== undefined ? { verifiedAt: client.verifiedAt } : {}),
-      ...(client.capabilities ? { capabilities: client.capabilities } : {}),
-    },
-  };
-}
-
-export function ExternalAgentsList({
-  agents,
-  savedRoles,
-  externalClients,
+export function ExternalClientsList({
+  clients,
+  roles,
   envs = [],
-  openRole = null,
-  onOpenRoleChange,
-  onRoleChange,
-  onToggleEnabled,
-  onToggleRowRef,
-  onCreateRole,
-  onCreatingDirtyChange,
-  resetSignal = 0,
-  onDeleteRole,
   onRefreshClient,
   onVerifyClient,
   onRemoveClient,
   refreshingClientId = null,
   verifyingClientId = null,
-  activeToggleId = null,
-  creatingBusy = false,
   busy = false,
-  conflict = false,
 }: {
-  agents: RolePreset[];
-  savedRoles?: Record<string, RolePreset>;
-  externalClients?: Record<string, ExternalClientConnection>;
+  clients: ExternalClientConnection[];
+  roles: Record<string, RolePreset>;
   envs?: EnvNodeDescriptor[];
-  projects?: Pick<ProjectView, "id" | "name">[];
-  openRole?: string | null;
-  onOpenRoleChange?: (roleId: string | null) => void;
-  onRoleChange?: (roleId: string, next: RolePreset) => void;
-  onToggleEnabled?: (roleId: string, enabled: boolean) => void;
-  onToggleRowRef?: (roleId: string, element: HTMLDivElement | null) => void;
-  onCreateRole?: (role: RolePreset) => Promise<{ ok: boolean; error?: string } | boolean>;
-  onCreatingDirtyChange?: (dirty: boolean) => void;
-  resetSignal?: number;
-  onDeleteRole?: (role: RolePreset) => void;
   onRefreshClient?: (clientId: string) => void;
   onVerifyClient?: (clientId: string) => void;
   onRemoveClient?: (client: ExternalClientConnection) => void;
   refreshingClientId?: string | null;
   verifyingClientId?: string | null;
-  activeToggleId?: string | null;
-  creatingBusy?: boolean;
   busy?: boolean;
-  conflict?: boolean;
 }) {
-  const { t, language } = useI18n();
-  const roleRecord = Object.fromEntries(agents.map((role) => [role.id, role]));
-  const clients = deriveExternalClients(roleRecord, externalClients);
-  const [creatingClientId, setCreatingClientId] = useState<string | null>(null);
-  const [newRole, setNewRole] = useState<RolePreset | null>(null);
-  const [createError, setCreateError] = useState<string>();
-  const [localOpen, setLocalOpen] = useState<string | null>(null);
+  const { t } = useI18n();
+  const [openClientId, setOpenClientId] = useState<string | null>(null);
+  const allRoles = Object.values(roles);
 
-  const creatingClient = creatingClientId ? clients.find((item) => item.id === creatingClientId) : undefined;
-  const isDraftDirty = Boolean(
-    creatingClient &&
-      newRole &&
-      JSON.stringify(newRole) !== JSON.stringify(createDraftForClient(creatingClient, language)),
-  );
+  if (clients.length === 0) {
+    return (
+      <div className="kulo-list-surface px-4 py-3 text-sm text-muted">
+        {t("暂无已连接的第三方 Agent。", "No connected third-party agents yet.")}
+      </div>
+    );
+  }
 
-  useEffect(() => {
-    onCreatingDirtyChange?.(isDraftDirty);
-    return () => onCreatingDirtyChange?.(false);
-  }, [isDraftDirty, onCreatingDirtyChange]);
+  return (
+    <SettingsList label={t("第三方 Agent", "Third-party Agents")}>
+      {clients.map((client) => {
+        const device = envs.find((env) => env.id === client.envId);
+        const boundRoles = allRoles.filter(
+          (role) => (role.external || role.externalClientId) && roleExternalClientId(role) === client.id,
+        );
+        const reserved = client.kind === "dots" || client.kind === "muse";
+        const experimental = Boolean(client.experimental || client.kind === "grok-bot");
+        const statusLabel = reserved
+          ? t("待支持", "Reserved")
+          : device?.online === false
+            ? t("设备离线", "Device offline")
+            : client.verifiedAt
+              ? t("已连接", "Connected")
+              : t("待验证", "Unverified");
+        const title = formatExternalClientTarget(client, envs);
+        const meta = [
+          client.version ? client.version : "",
+          client.models.length > 0 ? t(`${client.models.length} 个模型`, `${client.models.length} models`) : "",
+          boundRoles.length > 0
+            ? t(`${boundRoles.length} 个智能体使用`, `Used by ${boundRoles.length} agent(s)`)
+            : "",
+        ].filter(Boolean).join(" · ");
+        const expanded = openClientId === client.id;
 
-  useEffect(() => {
-    if (!resetSignal) return;
-    setCreatingClientId(null);
-    setNewRole(null);
-    setCreateError(undefined);
-  }, [resetSignal]);
-
-  if (clients.length === 0) return null;
-
-  const activeOpenRole = onOpenRoleChange ? openRole : localOpen;
-  const setExpandedRole = onOpenRoleChange ?? setLocalOpen;
-
-  const startCreating = (client: ExternalClientConnection) => {
-    setCreatingClientId(client.id);
-    setNewRole(createDraftForClient(client, language));
-    setCreateError(undefined);
-  };
-
-  const cancelCreating = () => {
-    setCreatingClientId(null);
-    setNewRole(null);
-    setCreateError(undefined);
-  };
-
-  const submitCreate = async (client: ExternalClientConnection) => {
-    if (!newRole || !onCreateRole || busy || conflict) return;
-    const cleanId = newRole.id.trim().toLowerCase();
-    if (!/^[a-z][a-z0-9_-]{0,39}$/.test(cleanId)) {
-      setCreateError(t("标识须以小写字母开头，只能包含字母、数字、下划线或连字符，最多 40 字符。", "Use up to 40 letters, numbers, underscores or hyphens, starting with a lowercase letter."));
-      return;
-    }
-    if (roleRecord[cleanId] || savedRoles?.[cleanId]) {
-      setCreateError(t(`智能体「${cleanId}」已存在`, `Agent “${cleanId}” already exists`));
-      return;
-    }
-    if (!newRole.label.trim() || !newRole.whenToUse.trim() || !newRole.prompt.trim()) {
-      setCreateError(t("请填写智能体名称、委派时机和系统提示词。", "Enter the agent name, delegation timing and system prompt."));
-      return;
-    }
-    const created: RolePreset = {
-      ...createDraftForClient(client, language),
-      id: cleanId,
-      label: newRole.label.trim(),
-      whenToUse: newRole.whenToUse.trim(),
-      prompt: newRole.prompt.trim(),
-      ...(newRole.modelId?.trim() ? { modelId: newRole.modelId.trim() } : {}),
-      thinkingLevel: newRole.thinkingLevel ?? "auto",
-    };
-    try {
-      const outcome = await onCreateRole(created);
-      const ok = typeof outcome === "boolean" ? outcome : outcome.ok;
-      if (ok) {
-        setExpandedRole(cleanId);
-        cancelCreating();
-      } else if (typeof outcome === "object" && outcome.error) {
-        setCreateError(outcome.error);
-      }
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : t("添加智能体失败", "Failed to add agent"));
-    }
-  };
-
-  return <>
-    {clients.map((client) => {
-      const device = envs.find((env) => env.id === client.envId);
-      const clientRoles = agents.filter((agent) => (agent.external || agent.externalClientId) && roleExternalClientId(agent) === client.id);
-      const reserved = client.kind === "dots" || client.kind === "muse";
-      const experimental = Boolean(client.experimental || client.kind === "grok-bot");
-      const canEnable = Boolean(client.verifiedAt && !reserved && !experimental);
-      const statusLabel = reserved
-        ? t("待支持", "Reserved")
-        : device?.online === false
-          ? t("设备离线", "Device offline")
-          : client.verifiedAt
-            ? t("连接已验证", "Connection verified")
-            : t("待验证", "Unverified");
-      const sectionTitle = `${externalClientDisplayName(client)} · ${device?.name ?? client.envId}`;
-      const isCreatingHere = creatingClientId === client.id && newRole !== null;
-
-      return (
-        <SettingsSection
-          key={client.id}
-          title={sectionTitle}
-          action={
-            <div className="flex flex-wrap items-center gap-2">
-              {experimental && <Chip size="sm" variant="soft" color="warning">{t("实验", "Experimental")}</Chip>}
-              <Chip size="sm" variant="soft">{statusLabel}</Chip>
-              {onVerifyClient && !client.verifiedAt && !reserved && !experimental && (
-                <Button
-                  size="sm"
-                  variant="primary"
-                  isDisabled={busy || conflict || device?.online === false}
-                  isPending={verifyingClientId === client.id}
-                  onPress={() => onVerifyClient(client.id)}
-                >
-                  {t("验证连接", "Verify")}
-                </Button>
-              )}
-              {onRefreshClient && !reserved && !experimental && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  isDisabled={busy || conflict || device?.online === false}
-                  isPending={refreshingClientId === client.id}
-                  onPress={() => onRefreshClient(client.id)}
-                >
-                  <KuloIcon name="refresh" size={15} />
-                  {t("刷新模型", "Refresh models")}
-                </Button>
-              )}
-              {onCreateRole && !reserved && (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  isDisabled={busy || conflict || isCreatingHere}
-                  onPress={() => startCreating(client)}
-                >
-                  <KuloIcon name="add" size={16} />
-                  {t("新建智能体", "New agent")}
-                </Button>
-              )}
-              {(onRemoveClient || (onVerifyClient && client.verifiedAt && !reserved && !experimental)) && (
-                <Dropdown>
+        return (
+          <Disclosure
+            key={client.id}
+            isExpanded={expanded}
+            onExpandedChange={(next) => setOpenClientId(next ? client.id : null)}
+            className="flex min-w-0 flex-col"
+          >
+            <div className="kulo-settings-list-row flex-wrap items-center gap-x-4 gap-y-2">
+              <div className="flex min-w-[200px] flex-1 items-center gap-3">
+                <RoleAvatar roleId={client.kind} label={externalClientDisplayName(client)} size="sm" quiet />
+                <Disclosure.Heading className="min-w-0 flex-1">
+                  <Disclosure.Trigger className="flex w-full min-w-0 cursor-pointer items-center gap-3 rounded-xl py-1 text-left">
+                    <span className="min-w-0 flex-1">
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        <strong className="kulo-item-title">{title}</strong>
+                        {experimental && (
+                          <Chip size="sm" variant="soft" color="warning" className="shrink-0 whitespace-nowrap">
+                            {t("实验", "Experimental")}
+                          </Chip>
+                        )}
+                        <Chip
+                          size="sm"
+                          variant="soft"
+                          color={client.verifiedAt && !reserved && !experimental && device?.online !== false ? "success" : undefined}
+                          className="shrink-0 whitespace-nowrap"
+                        >
+                          {statusLabel}
+                        </Chip>
+                      </span>
+                      {meta && <span className="kulo-item-description mt-0.5 block truncate">{meta}</span>}
+                    </span>
+                    <Disclosure.Indicator className="shrink-0 text-muted" />
+                  </Disclosure.Trigger>
+                </Disclosure.Heading>
+              </div>
+              <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                {onVerifyClient && !client.verifiedAt && !reserved && !experimental && isSupportedExternalAgentKind(client.kind) && (
                   <Button
-                    isIconOnly
+                    size="sm"
+                    variant="primary"
+                    isDisabled={busy || device?.online === false}
+                    isPending={verifyingClientId === client.id}
+                    onPress={() => onVerifyClient(client.id)}
+                  >
+                    {t("验证连接", "Verify")}
+                  </Button>
+                )}
+                {onRefreshClient && !reserved && !experimental && (
+                  <Button
                     size="sm"
                     variant="ghost"
-                    aria-label={sectionTitle + t("连接操作", " connection actions")}
+                    isDisabled={busy || device?.online === false}
+                    isPending={refreshingClientId === client.id}
+                    onPress={() => onRefreshClient(client.id)}
                   >
-                    <KuloIcon name="more-vert" size={18} />
+                    <KuloIcon name="refresh" size={15} />
+                    {t("刷新模型", "Refresh models")}
                   </Button>
-                  <Dropdown.Popover placement="bottom end">
-                    <Dropdown.Menu
-                      aria-label={sectionTitle + t("连接操作", " connection actions")}
-                      onAction={(key) => {
-                        if (key === "verify") onVerifyClient?.(client.id);
-                        if (key === "disconnect") onRemoveClient?.(client);
-                      }}
+                )}
+                {(onRemoveClient || (onVerifyClient && client.verifiedAt && !reserved && !experimental)) && (
+                  <Dropdown>
+                    <Button
+                      isIconOnly
+                      size="sm"
+                      variant="ghost"
+                      aria-label={title + t("连接操作", " connection actions")}
                     >
-                      {onVerifyClient && client.verifiedAt && !reserved && !experimental ? (
-                        <Dropdown.Item
-                          id="verify"
-                          textValue={t("重新验证", "Re-verify")}
-                          isDisabled={conflict || busy || device?.online === false}
-                        >
-                          <Label>{t("重新验证", "Re-verify")}</Label>
-                        </Dropdown.Item>
-                      ) : null}
-                      {onRemoveClient ? (
-                        <Dropdown.Item
-                          id="disconnect"
-                          textValue={t("移除连接", "Remove connection")}
-                          variant="danger"
-                          isDisabled={conflict || busy}
-                        >
-                          <Label>{t("移除连接", "Remove connection")}</Label>
-                        </Dropdown.Item>
-                      ) : null}
-                    </Dropdown.Menu>
-                  </Dropdown.Popover>
-                </Dropdown>
-              )}
-            </div>
-          }
-        >
-          {isCreatingHere && newRole && (
-            <form
-              aria-label={`${sectionTitle} ${t("新建智能体", "New agent")}`}
-              className="mb-2 flex flex-col gap-4 rounded-2xl bg-surface-secondary p-4"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void submitCreate(client);
-              }}
-            >
-              <AgentPresetFields
-                value={newRole}
-                externalClient={client}
-                isCreating
-                isDisabled={busy}
-                onChange={(next) => {
-                  setNewRole(next);
-                  setCreateError(undefined);
-                }}
-              />
-              {createError && (
-                <Alert status="danger">
-                  <Alert.Indicator />
-                  <Alert.Content className="text-sm">{createError}</Alert.Content>
-                </Alert>
-              )}
-              <div className="flex items-center justify-end gap-2">
-                <Button type="button" size="sm" variant="tertiary" onPress={cancelCreating}>
-                  {t("取消", "Cancel")}
-                </Button>
-                <Button type="submit" size="sm" variant="primary" isPending={creatingBusy} isDisabled={conflict}>
-                  {t("添加智能体", "Add agent")}
-                </Button>
-              </div>
-            </form>
-          )}
-
-          {clientRoles.length > 0 ? (
-            <SettingsList label={sectionTitle}>
-              {clientRoles.map((role) => {
-                const expanded = activeOpenRole === role.id;
-                const savedEnabled = (savedRoles?.[role.id] ?? role).enabled !== false;
-                const displayModel = role.modelId?.trim() || t("客户端默认", "Client default");
-                const displayEffort = externalEffortLabel(role.thinkingLevel ?? "auto", t);
-
-                return (
-                  <Disclosure
-                    key={role.id}
-                    isExpanded={expanded}
-                    onExpandedChange={(next) => setExpandedRole(next ? role.id : null)}
-                    className="flex min-w-0 flex-col"
-                  >
-                    <div
-                      ref={(node) => onToggleRowRef?.(role.id, node)}
-                      className="kulo-settings-list-row"
-                      aria-busy={activeToggleId === role.id || undefined}
-                    >
-                      <RoleAvatar roleId={role.id} label={role.label} size="sm" quiet />
-                      <Disclosure.Heading className="min-w-0 flex-1">
-                        <Disclosure.Trigger className="flex w-full min-w-0 cursor-pointer items-center gap-3 rounded-xl py-1 text-left">
-                          <span className="min-w-0 flex-1">
-                            <span className="flex flex-wrap items-center gap-1.5" title={role.whenToUse}>
-                              <strong className="kulo-item-title">{role.label}</strong>
-                              {!savedEnabled && <Chip size="sm" variant="soft">{t("已停用", "Disabled")}</Chip>}
-                            </span>
-                            <span className="kulo-item-description mt-0.5 block truncate">
-                              {displayModel} · {displayEffort}
-                            </span>
-                          </span>
-                          <Disclosure.Indicator className="shrink-0 text-muted" />
-                        </Disclosure.Trigger>
-                      </Disclosure.Heading>
-                      {activeToggleId === role.id && (
-                        <Spinner size="sm" aria-label={t(`正在保存${role.label}启用状态`, `Saving ${role.label} status`)} />
-                      )}
-                      <Switch
-                        aria-label={t("启用", "Enable") + role.label}
-                        isSelected={savedEnabled}
-                        isDisabled={busy || conflict || (!savedEnabled && !canEnable) || !onToggleEnabled}
-                        onChange={(next) => {
-                          if (next !== savedEnabled) onToggleEnabled?.(role.id, next);
+                      <KuloIcon name="more-vert" size={18} />
+                    </Button>
+                    <Dropdown.Popover placement="bottom end">
+                      <Dropdown.Menu
+                        aria-label={title + t("连接操作", " connection actions")}
+                        onAction={(key) => {
+                          if (key === "verify") onVerifyClient?.(client.id);
+                          if (key === "disconnect") onRemoveClient?.(client);
                         }}
                       >
-                        <Switch.Content>
-                          <Switch.Control><Switch.Thumb /></Switch.Control>
-                        </Switch.Content>
-                      </Switch>
-                      {onDeleteRole && (
-                        <Dropdown>
-                          <Button
-                            isIconOnly
-                            size="sm"
-                            variant="ghost"
-                            aria-label={role.label + t("智能体操作", "Agent actions")}
+                        {onVerifyClient && client.verifiedAt && !reserved && !experimental ? (
+                          <Dropdown.Item
+                            id="verify"
+                            textValue={t("重新验证", "Re-verify")}
+                            isDisabled={busy || device?.online === false}
                           >
-                            <KuloIcon name="more-vert" size={18} />
-                          </Button>
-                          <Dropdown.Popover placement="bottom end">
-                            <Dropdown.Menu
-                              aria-label={role.label + t("智能体操作", "Agent actions")}
-                              onAction={(key) => {
-                                if (key === "delete") onDeleteRole(role);
-                              }}
-                            >
-                              <Dropdown.Item
-                                id="delete"
-                                textValue={t("删除智能体", "Delete agent")}
-                                variant="danger"
-                                isDisabled={conflict || busy}
-                              >
-                                <Label>{t("删除智能体", "Delete agent")}</Label>
-                              </Dropdown.Item>
-                            </Dropdown.Menu>
-                          </Dropdown.Popover>
-                        </Dropdown>
-                      )}
-                    </div>
-
-                    <Disclosure.Content>
-                      <Disclosure.Body className="kulo-list-editor">
-                        <AgentPresetFields
-                          value={role}
-                          externalClient={client}
-                          isDisabled={busy || !onRoleChange}
-                          onChange={(next) => onRoleChange?.(role.id, next)}
-                        />
-                      </Disclosure.Body>
-                    </Disclosure.Content>
-                  </Disclosure>
-                );
-              })}
-            </SettingsList>
-          ) : (
-            <div className="kulo-list-surface px-4 py-3 text-sm text-muted">
-              {t("暂无智能体，可点击右上角新建智能体。", "No agents yet. Select New agent above to add one.")}
+                            <Label>{t("重新验证", "Re-verify")}</Label>
+                          </Dropdown.Item>
+                        ) : null}
+                        {onRemoveClient ? (
+                          <Dropdown.Item
+                            id="disconnect"
+                            textValue={t("移除连接", "Remove connection")}
+                            variant="danger"
+                            isDisabled={busy}
+                          >
+                            <Label>{t("移除连接", "Remove connection")}</Label>
+                          </Dropdown.Item>
+                        ) : null}
+                      </Dropdown.Menu>
+                    </Dropdown.Popover>
+                  </Dropdown>
+                )}
+              </div>
             </div>
+
+            <Disclosure.Content>
+              <Disclosure.Body className="kulo-list-editor flex flex-col gap-3">
+                {boundRoles.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
+                    <span>{t("绑定智能体：", "Assigned agents:")}</span>
+                    {boundRoles.map((role) => (
+                      <Chip key={role.id} size="sm" variant="soft">{role.label}</Chip>
+                    ))}
+                  </div>
+                )}
+                {client.executable && (
+                  <div className="flex flex-col gap-0.5 text-xs">
+                    <span className="text-muted">{t("可执行路径", "Executable")}</span>
+                    <span className="break-all font-mono text-foreground">{client.executable}</span>
+                  </div>
+                )}
+                {client.kind === "acp" && client.acpArgs && client.acpArgs.length > 0 && (
+                  <div className="flex flex-col gap-0.5 text-xs">
+                    <span className="text-muted">{t("启动参数", "Arguments")}</span>
+                    <span className="break-all font-mono text-foreground">{client.acpArgs.join(" ")}</span>
+                  </div>
+                )}
+                {client.models.length > 0 ? (
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-xs text-muted">{t("可用模型", "Available models")}</span>
+                    <div className="flex flex-col gap-1">
+                      {client.models.map((model) => {
+                        const effortText = model.efforts?.length
+                          ? model.efforts.map((effort) => externalEffortLabel(effort, t)).join(" / ")
+                          : "";
+                        const tierText = model.serviceTiers?.length
+                          ? model.serviceTiers.map((tier) => externalServiceTierLabel(tier, t)).join(" / ")
+                          : "";
+                        const detail = [effortText, tierText].filter(Boolean).join(" · ");
+                        return (
+                          <div key={model.id} className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
+                            <span className="font-medium text-foreground">
+                              {model.name || model.id}
+                              {model.name && model.name !== model.id ? (
+                                <span className="ml-1.5 font-normal text-muted">{model.id}</span>
+                              ) : null}
+                              {model.isDefault ? ` (${t("默认", "Default")})` : ""}
+                            </span>
+                            {detail && <span className="text-muted">{detail}</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <span className="text-xs text-muted">
+                    {t("暂无缓存模型", "No cached models")}
+                  </span>
+                )}
+              </Disclosure.Body>
+            </Disclosure.Content>
+          </Disclosure>
+        );
+      })}
+    </SettingsList>
+  );
+}
+
+export function ExternalClientsModule({
+  settings,
+  envs = [],
+  onSettingsUpdated,
+}: {
+  settings: KuloSettingsView;
+  envs?: EnvNodeDescriptor[];
+  onSettingsUpdated: (next: KuloSettingsView) => void;
+}) {
+  const { t } = useI18n();
+  const roles = settings.blocks.roles.value;
+  const rolesRevision = settings.blocks.roles.revision;
+  const clients = deriveExternalClients(roles, settings.externalClients);
+
+  const [connectModalOpen, setConnectModalOpen] = useState(false);
+  const [connectClientId] = useState(() => `external-clients-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`);
+  const connectTriggerRef = useRef<HTMLButtonElement>(null);
+  const [refreshingClientId, setRefreshingClientId] = useState<string | null>(null);
+  const [verifyingClientId, setVerifyingClientId] = useState<string | null>(null);
+  const [removing, setRemoving] = useState(false);
+  const [removeClientTarget, setRemoveClientTarget] = useState<ExternalClientConnection | null>(null);
+  const [error, setError] = useState<string>();
+
+  const busy = Boolean(refreshingClientId || verifyingClientId || removing);
+  useSettingsPending(busy);
+
+  const handleRefreshClient = async (clientId: string) => {
+    if (busy) return;
+    setRefreshingClientId(clientId);
+    setError(undefined);
+    try {
+      const res = await kuloRest.refreshExternalClient(clientId);
+      onSettingsUpdated(res.settings);
+      toast.success(t("已刷新客户端模型目录", "Client model catalog refreshed"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("刷新客户端模型目录失败", "Failed to refresh client model catalog"));
+    } finally {
+      setRefreshingClientId(null);
+    }
+  };
+
+  const handleVerifyClient = async (clientId: string) => {
+    if (busy) return;
+    setVerifyingClientId(clientId);
+    setError(undefined);
+    try {
+      const res = await kuloRest.verifyExternalClient(clientId, { expectedRevision: rolesRevision });
+      onSettingsUpdated(res.settings);
+      toast.success(t("第三方 Agent 连接验证通过", "Third-party agent connection verified"));
+    } catch (err) {
+      if (err instanceof KuloApiError && err.status === 409) {
+        const latest = await kuloRest.getSettings().catch(() => undefined);
+        if (latest) onSettingsUpdated(latest);
+      }
+      setError(err instanceof Error ? err.message : t("验证第三方 Agent 连接失败", "Failed to verify third-party agent connection"));
+    } finally {
+      setVerifyingClientId(null);
+    }
+  };
+
+  const confirmRemoveClient = async (client: ExternalClientConnection) => {
+    if (busy) return;
+    setRemoving(true);
+    setError(undefined);
+    try {
+      const res = await kuloRest.removeExternalClient(client.id, rolesRevision);
+      onSettingsUpdated(res.settings);
+      setRemoveClientTarget(null);
+      toast.success(t("已移除第三方 Agent 连接", "Third-party agent connection removed"));
+    } catch (err) {
+      if (err instanceof KuloApiError && err.status === 409) {
+        const latest = await kuloRest.getSettings().catch(() => undefined);
+        if (latest) onSettingsUpdated(latest);
+      }
+      setError(err instanceof Error ? err.message : t("移除第三方 Agent 连接失败", "Failed to remove third-party agent connection"));
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  const removeBoundRoles = removeClientTarget
+    ? Object.values(roles).filter(
+        (role) => (role.external || role.externalClientId) && roleExternalClientId(role) === removeClientTarget.id,
+      )
+    : [];
+
+  return (
+    <div className="kulo-settings-form" aria-busy={busy}>
+      <div inert={busy || undefined} className="flex min-w-0 flex-col gap-6">
+        <SettingsSection
+          title={t("第三方 Agent", "Third-party Agents")}
+          action={
+            <Button
+              ref={connectTriggerRef}
+              size="sm"
+              variant="secondary"
+              isDisabled={busy}
+              onPress={() => setConnectModalOpen(true)}
+            >
+              <KuloIcon name="add" size={16} />
+              {t("连接客户端", "Connect client")}
+            </Button>
+          }
+        >
+          {error && (
+            <Alert status="danger" className="mb-4 rounded-2xl p-3">
+              <Alert.Indicator />
+              <Alert.Content className="text-sm">{error}</Alert.Content>
+            </Alert>
           )}
+          <ExternalClientsList
+            clients={clients}
+            roles={roles}
+            envs={envs}
+            onRefreshClient={(clientId) => { void handleRefreshClient(clientId); }}
+            onVerifyClient={(clientId) => { void handleVerifyClient(clientId); }}
+            onRemoveClient={(client) => setRemoveClientTarget(client)}
+            refreshingClientId={refreshingClientId}
+            verifyingClientId={verifyingClientId}
+            busy={busy}
+          />
         </SettingsSection>
-      );
-    })}
-  </>;
+      </div>
+
+      <ExternalAgentConnectModal
+        open={connectModalOpen}
+        clientId={connectClientId}
+        connected
+        disabled={busy}
+        envs={envs}
+        onClose={() => {
+          setConnectModalOpen(false);
+          requestAnimationFrame(() => connectTriggerRef.current?.focus({ preventScroll: true }));
+        }}
+        onConnected={(result) => onSettingsUpdated(result.settings)}
+      />
+
+      <ConfirmDialog
+        open={Boolean(removeClientTarget)}
+        title={t("移除第三方 Agent 连接？", "Remove third-party agent connection?")}
+        description={
+          removeClientTarget
+            ? removeBoundRoles.length > 0
+              ? t(
+                  `移除「${formatExternalClientTarget(removeClientTarget, envs)}」后，正在使用该连接的 ${removeBoundRoles.length} 个智能体（${removeBoundRoles.map((r) => r.label).join("、")}）将自动回退为内置引擎；原客户端本身与账号不会被卸载。`,
+                  `Removing “${formatExternalClientTarget(removeClientTarget, envs)}” will automatically revert ${removeBoundRoles.length} assigned agent(s) (${removeBoundRoles.map((r) => r.label).join(", ")}) to the built-in engine. The local client and account will not be uninstalled.`,
+                )
+              : t(
+                  `移除「${formatExternalClientTarget(removeClientTarget, envs)}」？原客户端本身与账号不会被卸载。`,
+                  `Remove “${formatExternalClientTarget(removeClientTarget, envs)}”? The local client and account will not be uninstalled.`,
+                )
+            : undefined
+        }
+        confirmLabel={t("移除连接", "Remove connection")}
+        status="danger"
+        onCancel={() => setRemoveClientTarget(null)}
+        onConfirm={() => {
+          if (removeClientTarget) {
+            const target = removeClientTarget;
+            setRemoveClientTarget(null);
+            void confirmRemoveClient(target);
+          }
+        }}
+      />
+    </div>
+  );
 }

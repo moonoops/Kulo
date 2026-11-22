@@ -91,6 +91,13 @@ export type AssistantPendingActionKind =
   | "ha_delete_automation"
   | "lark_send_reply";
 
+export type ActionEffectState =
+  | "none"
+  | "dispatched"
+  | "confirmed"
+  | "failed_pre_dispatch"
+  | "unknown";
+
 export interface AssistantPendingAction {
   actionId: string;
   kind: AssistantPendingActionKind;
@@ -101,6 +108,10 @@ export interface AssistantPendingAction {
   envId?: string;
   operation: string;
   params: Record<string, unknown>;
+  /** Durable execution barrier state for L2 side-effect replay protection. */
+  executionState?: ActionEffectState;
+  dispatchedAt?: number;
+  lastError?: string;
 }
 
 export interface AssistantItemView {

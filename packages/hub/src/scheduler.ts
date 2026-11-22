@@ -7,7 +7,21 @@ import {
 } from "@earendil-works/pi-durable";
 import type { EnvManager } from "@kulo/env";
 import type { Context } from "@earendil-works/chord/context";
-import { describeKuloError, isSupportedExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentRuntimeEvent, type ExternalAgentUncertainReason, type StagedWorkspaceDiffSummary, type TicketRecord, type TicketWait, type WorkerExecutionPhase, type WorkerReportRecord } from "@kulo/protocol";
+import {
+  describeKuloError,
+  detectOutwardShellCommandsFromToolText,
+  isSupportedExternalAgentKind,
+  type ExternalAgentBinding,
+  type ExternalAgentPendingReport,
+  type ExternalAgentQuotaProbeResult,
+  type ExternalAgentRuntimeEvent,
+  type ExternalAgentUncertainReason,
+  type StagedWorkspaceDiffSummary,
+  type TicketRecord,
+  type TicketWait,
+  type WorkerExecutionPhase,
+  type WorkerReportRecord,
+} from "@kulo/protocol";
 import { spillOversizedReport } from "./report-overflow.js";
 import {
   formatExternalAgentFollowUpPrompt,
@@ -22,7 +36,14 @@ import { SettingsAssistantDoc, isActiveSettingsConversation, parseSettingsTopicC
 import { injectEventToolsInTx } from "./tool-surface.js";
 import type { KuloUploadStore } from "./uploads.js";
 import { nativeSearchEvidence, sanitizeSearchSources, selectCitedSources } from "./search-sources.js";
-import { beginTicketRecovery, resolveSupersededTickets, type createFailureRecoveryTask } from "./task-recovery.js";
+import {
+  appendTicketOutwardAction,
+  beginTicketRecovery,
+  epochOutwardActions,
+  formatOutwardActionsSummary,
+  resolveSupersededTickets,
+  type createFailureRecoveryTask,
+} from "./task-recovery.js";
 import { submitAutomaticChatInput } from "./chat-control.js";
 import { bindDispatchedAttachments } from "./ticket-dispatch.js";
 
@@ -60,6 +81,7 @@ export interface WorkerTicketTaskDependencies {
   isTicketRunnable?: (ticket: Readonly<TicketRecord>, state: Readonly<KuloDurableState>) => boolean;
   onTicketWaiting?: (ticketId: string, reason: TicketWait["reason"]) => void;
   resumeWaitingTicket?: (ticketId: string, context: Context) => Promise<unknown>;
+  scheduledWakeDeferUntil?: (ticket: Readonly<TicketRecord>, now: number) => number | null;
   prepareTicketRelease?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<{ cleanupPending: boolean }>;
   redact?: (text: string) => string;
   ticketAgentBlock?: (ticket: Readonly<TicketRecord>) => string | undefined;
@@ -76,6 +98,7 @@ export interface WorkerTicketTaskDependencies {
   discardBuiltInStagedWorkspace?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<void>;
   onInlineCandidateSettled?: (ticketId: string) => void;
   onOriginConversationRelayed?: (originConversationId: number, context: Context) => Promise<void>;
+  onExternalAgentQuota?: (binding: ExternalAgentBinding, quota: ExternalAgentQuotaProbeResult) => void;
 }
 
 export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
@@ -123,6 +146,18 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             }
             ticket.activeTaskId = undefined;
             return { status: "terminal", outcome: { status: "completed", result: null } };
+          }
+
+          const capDeferUntil = ticket.schedule && !ticket.wakePending ? deps.scheduledWakeDeferUntil?.(ticket, runtime.now()) : null;
+          if (capDeferUntil != null && capDeferUntil > runtime.now()) {
+            ticket.schedule!.nextRunAt = capDeferUntil;
+            ticket.waiting = { reason: "time", since: runtime.now(), until: capDeferUntil, detail: "已达后台用量上限，推迟至额度重置后继续" };
+            transitionTicketStatus(ticket, "waiting", runtime.now());
+            ticket.updatedAt = runtime.now();
+            releaseSlot(state, ticket.id);
+            waitingReason = "time";
+            notified = true;
+            return { status: "running", checkpoint: { phase: "wait_until" } };
           }
 
           const agentBlock = deps.ticketAgentBlock?.(ticket);
@@ -306,6 +341,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
               ...(external.workspaceMode ? { workspaceMode: external.workspaceMode } : {}),
               ...(external.modelId ? { modelId: external.modelId } : {}),
               ...(external.thinkingLevel ? { thinkingLevel: external.thinkingLevel } : {}),
+              ...(external.serviceTier ? { serviceTier: external.serviceTier } : {}),
               ...(external.sessionId ? { sessionId: external.sessionId } : {}),
               readOnly: Boolean(ticket.readOnly || external.workspaceMode === "read_only"), allowSubagents: Boolean(external.allowSubagents), taskTools: true,
               ...(deps.hasTicketConnections?.(ticket) ? { hasConnections: true } : {}),
@@ -574,6 +610,9 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
               if (latestSnap) activeTicket = latestSnap;
             }
           }
+          if (run.latestQuota) {
+            deps.onExternalAgentQuota?.(execution.binding, run.latestQuota);
+          }
           const redact = (value: string) => deps.redact?.(value) ?? value;
           const origin = run.permissions.length ? await runtime.conversation((activeTicket.originConversationId ?? ROOT_CONVERSATION_ID) as never, context) : undefined;
           const activeExplicitReady =
@@ -654,6 +693,16 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                 const seenSeq = new Set(merged.map((ev) => ev.sequence));
                 for (const ev of nonMessage) {
                   if (seenSeq.has(ev.sequence)) continue;
+                  if (ev.type === "tool") {
+                    for (const label of detectOutwardShellCommandsFromToolText(ev.text)) {
+                      appendTicketOutwardAction(live, {
+                        runEpoch: task.input.runEpoch,
+                        kind: "external_bash",
+                        label,
+                        at: ev.at,
+                      });
+                    }
+                  }
                   const last = merged.at(-1);
                   if (last && isHeartbeatStateEvent(ev) && isHeartbeatStateEvent(last) && last.text === ev.text) {
                     merged[merged.length - 1] = { sequence: ev.sequence, at: ev.at, type: ev.type, text: redact(ev.text).slice(0, 500) };
@@ -1016,13 +1065,26 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
               ticket.recovery = undefined;
               return undefined;
             }
-            const existed = Boolean(ticket.recovery);
-            const recovery = beginTicketRecovery(ticket, now);
-            if (!existed && (recovery.rootTicketId ?? ticket.id) === ticket.id) {
-              await tx.createTask(deps.recoveryTask, { ticketId: ticket.id, startedAt: recovery.startedAt },
-                { ownership: { kind: "conversation" }, background: true });
+            const outward = epochOutwardActions(ticket, task.input.runEpoch);
+            if (outward.length > 0) {
+              const warning = formatOutwardActionsSummary(outward);
+              finalReport = {
+                ...finalReport,
+                summary: finalReport.summary.includes(warning)
+                  ? finalReport.summary
+                  : `${finalReport.summary}\n\n${warning}`,
+              };
+              ticket.latestReport = finalReport;
+              ticket.recovery = undefined;
+            } else {
+              const existed = Boolean(ticket.recovery);
+              const recovery = beginTicketRecovery(ticket, now);
+              if (!existed && (recovery.rootTicketId ?? ticket.id) === ticket.id) {
+                await tx.createTask(deps.recoveryTask, { ticketId: ticket.id, startedAt: recovery.startedAt },
+                  { ownership: { kind: "conversation" }, background: true });
+              }
+              return undefined;
             }
-            return undefined;
           }
           const activeStagedDiff =
             ticket.workspaceStaging?.mode === "staged" &&
@@ -1252,6 +1314,21 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
         }
         if (hasPendingWorkspaceApply(ticket)) {
           await runtime.sleepUntil(runtime.now() + 5_000, { phase: "wait_until" }, context);
+          return;
+        }
+        const capDeferUntil = ticket.schedule && !ticket.wakePending ? deps.scheduledWakeDeferUntil?.(ticket, runtime.now()) : null;
+        if (capDeferUntil != null && capDeferUntil > runtime.now()) {
+          await runtime.commit(async (tx) => {
+            const live = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
+            if (!live || live.runEpoch !== task.input.runEpoch || live.status !== "waiting" || !live.schedule) {
+              return { status: "terminal", outcome: { status: "aborted" } };
+            }
+            live.schedule.nextRunAt = capDeferUntil;
+            live.waiting = { reason: "time", since: runtime.now(), until: capDeferUntil, detail: "已达后台用量上限，推迟至额度重置后继续" };
+            live.updatedAt = runtime.now();
+            return { status: "sleeping", until: capDeferUntil, checkpoint: { phase: "wait_until" } };
+          }, context);
+          deps.onTicketsChanged?.();
           return;
         }
         if (!deps.resumeWaitingTicket) throw new Error("Timed Worker waits require a host resumeWaitingTicket handler");

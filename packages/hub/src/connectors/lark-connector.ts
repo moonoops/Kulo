@@ -9,7 +9,7 @@ const MAX_OUTPUT_BYTES = 512 * 1024;
 const SAFE_PROFILE_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const SAFE_CHAT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 
-export type LarkExecResult = { ok: boolean; stdout: string; stderr: string };
+export type LarkExecResult = { ok: boolean; stdout: string; stderr: string; code?: string };
 export type LarkExecRunner = (exe: string, args: string[], timeoutMs: number) => Promise<LarkExecResult>;
 
 export interface LarkPersistedConfig {
@@ -58,8 +58,12 @@ function defaultLarkRunner(exe: string, args: string[], timeoutMs: number): Prom
       },
       (error, stdout, stderr) => {
         if (error) {
+          const errCode = typeof (error as NodeJS.ErrnoException).code === "string"
+            ? (error as NodeJS.ErrnoException).code
+            : undefined;
           resolve({
             ok: false,
+            ...(errCode ? { code: errCode } : {}),
             stdout: String(stdout ?? "").slice(0, MAX_OUTPUT_BYTES),
             stderr: String(stderr ?? error.message ?? "").slice(0, 2_000),
           });
@@ -132,7 +136,7 @@ export class LarkConnectorService {
 
   async #exec(args: string[], timeoutMs = 12_000): Promise<LarkExecResult> {
     const exe = this.#resolveExe();
-    if (!exe) return { ok: false, stdout: "", stderr: "未检测到 lark-cli，请先安装并登录飞书 CLI。" };
+    if (!exe) return { ok: false, code: "ENOENT", stdout: "", stderr: "未检测到 lark-cli，请先安装并登录飞书 CLI。" };
     return (this.#host.runner ?? defaultLarkRunner)(exe, args, timeoutMs);
   }
 
@@ -325,21 +329,26 @@ export class LarkConnectorService {
     profile?: string;
     chatId: string;
     text: string;
-  }): Promise<{ ok: boolean; error?: string }> {
+  }): Promise<{ ok: boolean; preDispatch?: boolean; error?: string }> {
     const profile = params.profile?.trim() || "default";
     if (!SAFE_PROFILE_RE.test(profile)) {
-      return { ok: false, error: "飞书 profile 名称无效" };
+      return { ok: false, preDispatch: true, error: "飞书 profile 名称无效" };
     }
     const chatId = params.chatId.trim();
     if (!SAFE_CHAT_ID_RE.test(chatId) || chatId.startsWith("-")) {
-      return { ok: false, error: "飞书会话 ID 格式无效" };
+      return { ok: false, preDispatch: true, error: "飞书会话 ID 格式无效" };
     }
     const text = params.text.trim().slice(0, 4_000);
-    if (!text) return { ok: false, error: "回复内容不能为空" };
+    if (!text) return { ok: false, preDispatch: true, error: "回复内容不能为空" };
     const prefix = profile === "default" ? [] : ["--profile", profile];
     const res = await this.#exec([...prefix, "im", "+messages-send", "--chat-id", chatId, "--text", text], 15_000);
     if (!res.ok) {
-      return { ok: false, error: this.#host.redact(res.stderr || "发送飞书回复失败").slice(0, 400) };
+      const preDispatch = res.code === "ENOENT" || res.code === "EACCES";
+      return {
+        ok: false,
+        preDispatch,
+        error: this.#host.redact(res.stderr || "发送飞书回复失败").slice(0, 400),
+      };
     }
     return { ok: true };
   }

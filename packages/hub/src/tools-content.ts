@@ -48,7 +48,7 @@ export function createContentToolsExtension(options: ContentToolsOptions) {
       defineTool({
         name: "kulo_ui_show",
         description:
-          "Publish a durable HeroUI v3 card in the active conversation (Orchestrator/Settings only). Read the `genui-cards` skill before building multi-element, table-selection, chart, or tabbed layouts. Minimal spec example: `{\"root\":\"main\",\"elements\":{\"main\":{\"type\":\"Stack\",\"props\":{\"gap\":\"md\"},\"children\":[\"q\",\"go\"]},\"q\":{\"type\":\"Choice\",\"props\":{\"field\":\"choice\",\"options\":[{\"value\":\"a\",\"label\":\"Option A\"}],\"required\":true}},\"go\":{\"type\":\"Button\",\"props\":{\"actionId\":\"ok\",\"label\":\"Confirm\",\"variant\":\"primary\"}}},\"state\":{\"values\":{}}}` with `actions: [{\"id\":\"ok\",\"label\":\"Confirm\",\"kind\":\"submit\"}]` (max 80 elements, depth 8; no JS/style/class/URLs).",
+          "Publish an interactive HeroUI v3 card (choices, forms, selectable tables; read `genui-cards` for multi-element/tabbed/chart cards). Example: `{\"root\":\"main\",\"elements\":{\"main\":{\"type\":\"Stack\",\"props\":{\"gap\":\"md\"},\"children\":[\"q\",\"go\"]},\"q\":{\"type\":\"Choice\",\"props\":{\"field\":\"choice\",\"options\":[{\"value\":\"a\",\"label\":\"Option A\"}],\"required\":true}},\"go\":{\"type\":\"Button\",\"props\":{\"actionId\":\"ok\",\"label\":\"Confirm\",\"variant\":\"primary\"}}},\"state\":{\"values\":{}}}` + `actions:[{\"id\":\"ok\",\"label\":\"Confirm\",\"kind\":\"submit\"}]` (<=80 elements, depth 8; no JS/style/class/URLs).",
         parameters: obj(definition),
         replay: "safe",
         execute: (args, api, context) => ordered(api, async () => {
@@ -69,7 +69,7 @@ export function createContentToolsExtension(options: ContentToolsOptions) {
       ...(options.publishDiagram ? [defineTool({
         name: "kulo_ui_diagram",
         description:
-          "Embed a clean inline SVG diagram in Main Chat when visuals beat prose (takeaway first; `--d-*` tokens; `diagram-design` for complex types).",
+          "Proactively embed an inline SVG chart or diagram in Main Chat for trends, comparisons, timelines, flows, or architectures (takeaway first; `--d-*`; `diagram-design`).",
         parameters: obj({
           title: str(),
           svg: str(),

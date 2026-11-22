@@ -3,10 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   Popover,
-  ProgressBar,
   SearchField,
-  Separator,
-  Spinner,
   Tabs,
 } from "@heroui/react";
 import type {
@@ -16,18 +13,18 @@ import type {
   ProjectView,
   TicketCardView,
   TopicSummary,
-  UsageStatsView,
 } from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { AgentTerminal } from "./agent-terminal";
 import type { AgentTerminalEntry } from "./agent-terminal-state";
 import { useVoiceWorkspace } from "../voice/voice-context";
 import { hasSidebarVoiceCall } from "../voice/voice-call-panel";
-import { KuloApiError, kuloRest } from "../../kulo-api";
+import { KuloApiError } from "../../kulo-api";
 import { KuloIcon } from "../../kulo-icon";
 import { SETTINGS_MODULES, type SettingsModuleId } from "../../kulo-settings";
 import { settingsModuleTitle } from "../settings/settings-helpers";
 import { ConversationModelSettings } from "./conversation-model-settings";
+import { UsageStatsPopover } from "./usage-stats-popover";
 import { TopicRow, type TopicRowActivity } from "./topic-row";
 import { topicNotifications } from "./topic-activity";
 import { ProjectsSidebar } from "../projects/projects-sidebar";
@@ -135,11 +132,6 @@ export function TopicsSidebar({
   const [deleteError, setDeleteError] = useState<string>();
   const [deleteNeedsStop, setDeleteNeedsStop] = useState(false);
 
-  const [statsOpen, setStatsOpen] = useState(false);
-  const [usageRange, setUsageRange] = useState<"today" | "7" | "30">("today");
-  const [usageData, setUsageData] = useState<UsageStatsView | null>(null);
-  const [usageLoading, setUsageLoading] = useState(false);
-  const [usageError, setUsageError] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const handledSearchFocus = useRef(0);
 
@@ -161,27 +153,6 @@ export function TopicsSidebar({
     });
     return () => cancelAnimationFrame(frame);
   }, [searchOpen, searchFocusRequest, sideTab]);
-
-  const loadUsage = (range: "today" | "7" | "30") => {
-    setUsageLoading(true);
-    setUsageError(null);
-    kuloRest
-      .getUsage(range)
-      .then((res) => {
-        setUsageData(res);
-      })
-      .catch((err) => {
-        setUsageError(err instanceof Error ? err.message : t("加载统计失败", "Failed to load usage"));
-      })
-      .finally(() => {
-        setUsageLoading(false);
-      });
-  };
-
-  useEffect(() => {
-    if (!statsOpen) return;
-    loadUsage(usageRange);
-  }, [statsOpen, usageRange, messagesCount]);
 
   const filteredTopics = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -389,123 +360,11 @@ export function TopicsSidebar({
                   onShowProcessChange={onShowProcessChange}
                 />
 
-                {/* Usage Statistics Popover */}
-                <Popover isOpen={statsOpen} onOpenChange={setStatsOpen}>
-                  <Button isIconOnly variant="ghost" aria-label={t("使用统计", "Usage")}>
-                    <KuloIcon name="chart" size={18} />
-                  </Button>
-                  <Popover.Content placement="top start" className="w-[330px]">
-                    <Popover.Dialog className="flex flex-col gap-3 outline-none">
-                      <Popover.Heading className="text-sm font-semibold text-foreground">
-
-                        {t("使用统计", "Usage")}
-                      </Popover.Heading>
-
-                      <Tabs
-                        selectedKey={usageRange}
-                        onSelectionChange={(k) => setUsageRange(k as "today" | "7" | "30")}
-                        className="w-full"
-                      >
-                        <Tabs.ListContainer className="w-fit max-w-full min-w-0 shrink-0">
-                          <Tabs.List aria-label={t("统计时间范围", "Usage period")} className="w-max">
-                            <Tabs.Tab id="today" className="w-auto shrink-0 whitespace-nowrap">
-
-                              {t("今天", "Today")}
-                              <Tabs.Indicator />
-                            </Tabs.Tab>
-                            <Tabs.Tab id="7" className="w-auto shrink-0 whitespace-nowrap">
-
-                              {t("7 天", "7 days")}
-                              <Tabs.Indicator />
-                            </Tabs.Tab>
-                            <Tabs.Tab id="30" className="w-auto shrink-0 whitespace-nowrap">
-
-                              {t("30 天", "30 days")}
-                              <Tabs.Indicator />
-                            </Tabs.Tab>
-                          </Tabs.List>
-                        </Tabs.ListContainer>
-                      </Tabs>
-
-                      {usageLoading && !usageData ? (
-                        <div className="flex items-center gap-2 py-6 text-xs text-muted">
-                          <Spinner size="sm" />
-                          <span>{t("正在加载统计…", "Loading usage…")}</span>
-                        </div>
-                      ) : usageError ? (
-                        <div className="flex flex-col items-start gap-2 rounded-xl border border-danger/30 bg-danger-soft/30 p-3 text-xs">
-                          <span className="text-danger">{usageError}</span>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onPress={() => loadUsage(usageRange)}
-                          >
-
-                            {t("重试", "Retry")}
-                          </Button>
-                        </div>
-                      ) : usageData ? (
-                        <div className="flex flex-col gap-3">
-                          <div className="flex items-baseline gap-1.5">
-                            <strong className="text-2xl font-semibold text-foreground">
-                              {usageData.totalTokens.toLocaleString(language, {
-                                notation: "compact",
-                                maximumFractionDigits: 1,
-                              })}
-                            </strong>
-                            <span className="text-xs text-muted">tokens</span>
-                          </div>
-                          <div className="flex items-center gap-4 text-xs text-muted">
-                            <span>{t(`${usageData.turns} 轮`, `${usageData.turns} turns`)}</span>
-                            {usageData.cacheHitRate !== undefined && (
-                              <span>
-                                {t(`缓存命中 ${(usageData.cacheHitRate * 100).toFixed(1)}%`, `Cache hit ${(usageData.cacheHitRate * 100).toFixed(1)}%`)}
-                              </span>
-                            )}
-                          </div>
-                          {usageData.models.length > 0 && (
-                            <>
-                              <Separator />
-                              <div className="scrollbar flex max-h-44 flex-col gap-2.5 overflow-y-auto">
-                                {usageData.models.map((m) => {
-                                  const pct =
-                                    usageData.totalTokens > 0
-                                      ? Math.round((m.totalTokens / usageData.totalTokens) * 100)
-                                      : 0;
-                                  return (
-                                    <div key={`${m.provider ?? ""}/${m.model}`} className="flex flex-col gap-1">
-                                      <div className="flex items-center justify-between gap-2 text-xs">
-                                        <span className="truncate font-mono text-foreground" title={[m.provider, m.model].filter(Boolean).join(" / ")}>
-                                          {m.model}
-                                        </span>
-                                        <span className="shrink-0 text-muted">
-                                          {m.totalTokens.toLocaleString(language, {
-                                            notation: "compact",
-                                            maximumFractionDigits: 1,
-                                          })}
-                                        </span>
-                                      </div>
-                                      <ProgressBar
-                                        aria-label={t(`${m.model} 用量占比`, `${m.model} usage share`)}
-                                        value={Math.max(4, pct)}
-                                        size="sm"
-                                        className="w-full"
-                                      >
-                                        <ProgressBar.Track>
-                                          <ProgressBar.Fill />
-                                        </ProgressBar.Track>
-                                      </ProgressBar>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      ) : null}
-                    </Popover.Dialog>
-                  </Popover.Content>
-                </Popover>
+                <UsageStatsPopover
+                  settings={settings}
+                  envs={envs}
+                  messagesCount={messagesCount}
+                />
               </div>
             </div>
           </footer>

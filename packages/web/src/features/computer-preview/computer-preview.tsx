@@ -1,16 +1,20 @@
-import { useId } from "react";
+import { useId, useRef, useState } from "react";
 import { Button, Card, Modal, Spinner, Tooltip } from "@heroui/react";
-import type { ComputerPreviewSessionView } from "@kulo/protocol";
+import type { ComputerPreviewInputEvent, ComputerPreviewSessionView } from "@kulo/protocol";
+import { kuloRest } from "../../kulo-api";
 import { useI18n } from "../../kulo-i18n";
 import { KuloIcon } from "../../kulo-icon";
 import type { ComputerPreviewClient, ComputerPreviewState, PreviewDisplay } from "./preview-client";
 import { requestSystemPermissionHelp } from "../system-permissions/system-permissions";
+import { ComputerHandoffBar, keyEventModifiers, mapImagePointerToDeviceCoords, mouseButtonName } from "./handoff-controls";
 import "./computer-preview.css";
 
 export type ComputerPreviewActions = Pick<
   ComputerPreviewClient,
   "setCollapsed" | "setExpanded" | "expandTicket" | "collapseTicket" | "openModal" | "closeModal" | "select" | "stopTask" | "retry" | "frameFailed"
->;
+> & {
+  sendInput?: ComputerPreviewClient["sendInput"];
+};
 
 export interface ComputerPreviewBinding {
   state: ComputerPreviewState;
@@ -55,6 +59,8 @@ function PreviewViewport({
   reconnecting,
   client,
   zoomable,
+  interactive,
+  onSendInput,
   className,
 }: {
   selected: ComputerPreviewSessionView;
@@ -62,23 +68,87 @@ function PreviewViewport({
   reconnecting: boolean;
   client: Pick<ComputerPreviewActions, "frameFailed" | "openModal">;
   zoomable?: boolean;
+  interactive?: boolean;
+  onSendInput?: (event: ComputerPreviewInputEvent) => boolean;
   className: string;
 }) {
   const { t } = useI18n();
+  const imgRef = useRef<HTMLImageElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const lastMoveAtRef = useRef(0);
   const frameError = display?.message === "invalid_frame" ? t("画面无法显示", "The frame could not be displayed") : display?.message;
   const liveImage = Boolean(display?.imageUrl && !reconnecting);
   const canZoom = Boolean(zoomable && liveImage);
+  const canInteract = Boolean(interactive && liveImage && onSendInput);
+
+  const mapCoords = (clientX: number, clientY: number) =>
+    imgRef.current ? mapImagePointerToDeviceCoords(imgRef.current, clientX, clientY, display?.deviceWidth, display?.deviceHeight) : null;
 
   return (
     <div
+      ref={stageRef}
       className={className}
+      tabIndex={canInteract ? 0 : undefined}
+      role={canInteract ? "application" : undefined}
+      aria-label={canInteract ? t("可交互浏览器画面，点击后可直接输入", "Interactive browser viewport") : undefined}
       data-zoomable={canZoom || undefined}
+      data-interactive={canInteract || undefined}
       onClick={canZoom ? () => client.openModal(selected.id) : undefined}
+      onContextMenu={canInteract ? (event) => event.preventDefault() : undefined}
+      onPointerDown={canInteract ? (event) => {
+        const coords = mapCoords(event.clientX, event.clientY);
+        if (!coords) return;
+        stageRef.current?.focus({ preventScroll: true });
+        if (event.pointerType === "touch") {
+          onSendInput!({ type: "input_touch", eventType: "touchStart", touchPoints: [{ x: coords.x, y: coords.y, id: event.pointerId }] });
+        } else {
+          onSendInput!({ type: "input_mouse", eventType: "mousePressed", x: coords.x, y: coords.y, button: mouseButtonName(event.button), clickCount: Math.max(1, Math.min(3, event.detail || 1)), modifiers: keyEventModifiers(event) });
+        }
+      } : undefined}
+      onPointerUp={canInteract ? (event) => {
+        const coords = mapCoords(event.clientX, event.clientY);
+        if (!coords) return;
+        if (event.pointerType === "touch") {
+          onSendInput!({ type: "input_touch", eventType: "touchEnd", touchPoints: [{ x: coords.x, y: coords.y, id: event.pointerId }] });
+        } else {
+          onSendInput!({ type: "input_mouse", eventType: "mouseReleased", x: coords.x, y: coords.y, button: mouseButtonName(event.button), clickCount: 1, modifiers: keyEventModifiers(event) });
+        }
+      } : undefined}
+      onPointerMove={canInteract ? (event) => {
+        const now = performance.now();
+        if (now - lastMoveAtRef.current < 32) return;
+        const coords = mapCoords(event.clientX, event.clientY);
+        if (!coords) return;
+        lastMoveAtRef.current = now;
+        if (event.pointerType === "touch") {
+          onSendInput!({ type: "input_touch", eventType: "touchMove", touchPoints: [{ x: coords.x, y: coords.y, id: event.pointerId }] });
+        } else {
+          onSendInput!({ type: "input_mouse", eventType: "mouseMoved", x: coords.x, y: coords.y, button: "none", modifiers: keyEventModifiers(event) });
+        }
+      } : undefined}
+      onWheel={canInteract ? (event) => {
+        const coords = mapCoords(event.clientX, event.clientY);
+        if (!coords) return;
+        onSendInput!({ type: "input_mouse", eventType: "mouseWheel", x: coords.x, y: coords.y, deltaX: Math.round(event.deltaX), deltaY: Math.round(event.deltaY), modifiers: keyEventModifiers(event) });
+      } : undefined}
+      onKeyDown={canInteract ? (event) => {
+        if (event.key === "Escape" || event.nativeEvent.isComposing || event.keyCode === 229) return;
+        event.preventDefault();
+        const text = event.key.length === 1 && !event.ctrlKey && !event.metaKey ? event.key : undefined;
+        onSendInput!({ type: "input_keyboard", eventType: "keyDown", key: event.key, code: event.code, ...(text ? { text } : {}), windowsVirtualKeyCode: event.keyCode, modifiers: keyEventModifiers(event) });
+      } : undefined}
+      onKeyUp={canInteract ? (event) => {
+        if (event.key === "Escape" || event.nativeEvent.isComposing || event.keyCode === 229) return;
+        event.preventDefault();
+        onSendInput!({ type: "input_keyboard", eventType: "keyUp", key: event.key, code: event.code, windowsVirtualKeyCode: event.keyCode, modifiers: keyEventModifiers(event) });
+      } : undefined}
     >
       {liveImage ? (
         <img
+          ref={imgRef}
           className="kulo-computer-preview-image"
           src={display!.imageUrl}
+          draggable={false}
           onError={() => client.frameFailed(selected.id, display!.imageUrl!)}
           alt={selected.tool === "browser" ? t("浏览器操作画面", "Browser operation view") : t("应用窗口截图", "Application window snapshot")}
         />
@@ -250,6 +320,14 @@ export function TaskCardComputerPreview({
             </Tooltip>
           )}
         </div>
+        {selected.handoff && (
+          <div className="kulo-computer-preview-feedback">
+            <span className="text-xs text-foreground">{selected.handoff.reason}</span>
+            <Button type="button" size="sm" variant="primary" onPress={() => client.openModal(selected.id)}>
+              {t("接管操作", "Take over")}
+            </Button>
+          </div>
+        )}
         {showFeedback && (
           <div className="kulo-computer-preview-feedback">
             {previewError && <span className="text-xs text-danger" role="alert">{previewError}</span>}
@@ -369,6 +447,8 @@ export function ComputerPreviewModal({
   onStop: (ticketId: string) => Promise<unknown>;
 }) {
   const { t } = useI18n();
+  const [handoffBusy, setHandoffBusy] = useState(false);
+  const [handoffError, setHandoffError] = useState<string>();
   const selected = state.sessions.find((item) => item.id === state.selectedId) ?? state.sessions[0];
   const open = Boolean(state.expanded && selected);
   const display = selected ? state.displays[selected.id] : undefined;
@@ -376,12 +456,29 @@ export function ComputerPreviewModal({
   const reconnecting = state.connection !== "connected";
   const stopped = Boolean(stop?.pending || stop?.accepted);
   const previewError = state.error === "invalid_preview" ? t("预览数据无效", "Invalid preview data") : state.error;
-  const status = selected ? previewStatusLabel(t, selected, display, reconnecting) : "";
+  const status = selected ? (selected.handoff ? t("等待接管", "Awaiting handoff") : previewStatusLabel(t, selected, display, reconnecting)) : "";
   const subtitle = selected ? [selected.deviceName, selected.app, status].filter(Boolean).join(" · ") : "";
   const showReconnect = Boolean(selected && (previewError || reconnecting || display?.state === "unavailable"));
   const showPermission = Boolean(
     selected && selected.tool === "desktop" && display?.state !== "closed" && (display?.state === "unavailable" || !display?.imageUrl),
   );
+  const handoff = selected?.handoff;
+  const sendPreviewInput = selected && handoff?.interactive && client.sendInput
+    ? (event: ComputerPreviewInputEvent) => client.sendInput!(selected.id, event)
+    : undefined;
+  const settleHandoff = async (action: "done" | "cancel") => {
+    if (!selected || handoffBusy) return;
+    setHandoffBusy(true);
+    setHandoffError(undefined);
+    try {
+      await kuloRest.resolveComputerHandoff(selected.ticketId, action);
+      if (action === "cancel") client.closeModal();
+    } catch (err) {
+      setHandoffError(err instanceof Error ? err.message : t("操作失败，请重试", "Action failed, try again"));
+    } finally {
+      setHandoffBusy(false);
+    }
+  };
 
   return (
     <Modal.Backdrop isOpen={open} onOpenChange={(next) => { if (!next) client.closeModal(); }}>
@@ -421,13 +518,29 @@ export function ComputerPreviewModal({
                   );
                 })()}
 
+                {handoff && (
+                  <ComputerHandoffBar
+                    handoff={handoff}
+                    deviceName={selected.deviceName}
+                    onSendInput={sendPreviewInput}
+                  />
+                )}
+
                 <PreviewViewport
                   selected={selected}
                   display={display}
                   reconnecting={reconnecting}
                   client={client}
+                  interactive={Boolean(sendPreviewInput)}
+                  onSendInput={sendPreviewInput}
                   className="kulo-computer-preview-modal-stage"
                 />
+
+                {handoffError && (
+                  <div className="kulo-computer-preview-feedback" role="alert">
+                    <span className="text-xs text-danger">{handoffError}</span>
+                  </div>
+                )}
 
                 {previewError && (
                   <div className="kulo-computer-preview-feedback" role="alert">
@@ -447,6 +560,29 @@ export function ComputerPreviewModal({
 
               <Modal.Footer className="kulo-computer-preview-modal-footer">
                 <div className="kulo-computer-preview-modal-actions">
+                  {handoff && (
+                    <>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="primary"
+                        isDisabled={!connected || handoffBusy}
+                        isPending={handoffBusy}
+                        onPress={() => { void settleHandoff("done"); }}
+                      >
+                        {t("已完成，请继续", "Done, continue")}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        isDisabled={!connected || handoffBusy}
+                        onPress={() => { void settleHandoff("cancel"); }}
+                      >
+                        {t("跳过并停止", "Skip & stop")}
+                      </Button>
+                    </>
+                  )}
                   {showPermission && (
                     <Button
                       type="button"
