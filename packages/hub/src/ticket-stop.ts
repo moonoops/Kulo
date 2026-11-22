@@ -204,7 +204,7 @@ export async function finalizeTicketStop(
   // Stop unfinished descendants top-down through each child's ticket queue (parent -> child DAG cannot deadlock).
   const childStops = await Promise.allSettled(
     Object.values(snapshot?.tickets ?? {})
-      .filter((child) => child.parentTicketId === ticketId && (isTicketUnfinished(child) || child.cleanupPending))
+      .filter((child) => child.id !== ticketId && child.parentTicketId === ticketId && (isTicketUnfinished(child) || child.cleanupPending))
       .map((child) => deps.stopChildTicket(child.id, reason ?? "父任务已停止", context)),
   );
   const childCleanupPending = childStops.some((result) => result.status === "rejected" || result.value.cleanupPending);
@@ -249,15 +249,35 @@ export async function finalizeTicketStop(
       const projects = await tx.doc(KuloProjectsDoc);
       delete projects.cancellations?.[ticketId];
     }
-    await writeDeliveryReceipt(tx, intent, { ticketId });
+    await writeDeliveryReceipt(
+      tx,
+      intent,
+      { ticketId },
+      "complete",
+      priorWaitingCardId ? { priorWaitingCardId } : {},
+    );
     return toTicketCardView(t, deps.getRoles());
   }, context);
-  await deps.actionConfirmations.settlePendingForTicket(ticketId, "任务已停止", undefined, context);
+  let tailError: unknown;
+  try {
+    await deps.actionConfirmations.settlePendingForTicket(ticketId, "任务已停止", undefined, context);
+  } catch (error) {
+    tailError ??= error;
+  }
   if (priorWaitingCardId) {
-    await deps.uiCards.settle(priorWaitingCardId, { status: "cancelled", resultSummary: "任务已停止" });
+    try {
+      await deps.uiCards.settle(priorWaitingCardId, { status: "cancelled", resultSummary: "任务已停止" });
+    } catch (error) {
+      tailError ??= error;
+    }
   }
   deps.untrackWorker(ticketId, previousEpoch);
   deps.resumeIfReady(Boolean(card.cleanupPending));
-  await deps.broadcastTickets(context);
+  try {
+    await deps.broadcastTickets(context);
+  } catch (error) {
+    tailError ??= error;
+  }
+  if (tailError !== undefined) throw tailError;
   return card;
 }

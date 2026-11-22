@@ -2,7 +2,7 @@ import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context"
 import { defineDoc, type Harness, type JsonObject, type Tx } from "@earendil-works/pi-durable";
 import type { ActionEffectState, TicketWaitOption, UiCardInput, UiCardSnapshot, UiValues } from "@kulo/protocol";
 import { hashConfirmationValue as hashValue } from "./action-confirmation-cards.js";
-import type { KuloUiCards } from "./ui-cards.js";
+import { UiCardsDoc, type KuloUiCards } from "./ui-cards.js";
 
 export {
   buildCustomizationConfirmCard,
@@ -556,11 +556,19 @@ export class KuloActionConfirmations {
     const settledIds = new Set<string>();
     await this.#harness.commit(async (tx) => {
       const doc = await tx.doc(ActionConfirmationsDoc);
+      const uiDoc = await tx.doc(UiCardsDoc);
       const now = Date.now();
       const visit = (record: PendingActionConfirmation | undefined) => {
         if (!record) return;
         if (confirmationPayloadTicketId(record.payload) !== ticketId) return;
         if (excluded.has(record.kind)) return;
+        if (record.status === "denied" && record.executed && record.cardId) {
+          const card = uiDoc.cards?.[record.cardId];
+          if (card && (card.status === "ready" || card.status === "failed")) {
+            openCardIds.add(record.cardId);
+          }
+          return;
+        }
         if (record.status !== "pending" && record.status !== "pending_orchestrator") return;
         if (record.executed || effectiveConfirmationEffect(record) !== "none") return;
         record.status = "denied";
