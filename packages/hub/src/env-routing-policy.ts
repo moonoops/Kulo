@@ -351,3 +351,242 @@ export function resolveComputerEnvBinding(input: ComputerEnvResolutionInput): Co
     waitForSource: false,
   };
 }
+
+export interface ChatRoutingSignals {
+  text?: string;
+  targetDeviceId?: string;
+  sourceDeviceId?: string;
+}
+
+export interface RoutingPolicyError {
+  ok: false;
+  code:
+    | "target_device_conflict"
+    | "source_device_ambiguous"
+    | "browser_device_unavailable"
+    | "read_device_mismatch";
+  message: string;
+}
+
+export interface OrchestratorTargetEnvResolution {
+  ok: true;
+  envId: string;
+  descriptor: EnvNodeDescriptor;
+}
+
+export interface OrchestratorSkillTarget {
+  platform?: string;
+  capabilities: string[];
+}
+
+export type OrchestratorTargetPreflight =
+  | { ok: true; explicitTarget?: string; sourceId?: string }
+  | RoutingPolicyError;
+
+export function preflightOrchestratorTargetEnv(input: {
+  routings: readonly ChatRoutingSignals[];
+  topicTargetDeviceId?: string;
+  envs: readonly EnvNodeDescriptor[];
+}): OrchestratorTargetPreflight {
+  const message = input.routings[0] ?? {};
+  const namedTargets = message.text
+    ? [...new Set(namedDispatchDevices(message.text, input.envs).flat())]
+    : [];
+  if (namedTargets.length > 1) {
+    return { ok: false, code: "target_device_conflict", message: "消息中提到多台设备，请用 kulo_dispatch 明确指定执行设备。" };
+  }
+  const explicitTarget = message.targetDeviceId || input.topicTargetDeviceId || namedTargets[0];
+  if (message.targetDeviceId && namedTargets[0] && message.targetDeviceId !== namedTargets[0]) {
+    return { ok: false, code: "target_device_conflict", message: "消息中指定的设备与会话选定的设备不同，请先确认目标设备。" };
+  }
+  if (
+    input.routings.some((inp) => inp.sourceDeviceId !== message.sourceDeviceId) &&
+    !message.targetDeviceId &&
+    !input.topicTargetDeviceId
+  ) {
+    return { ok: false, code: "source_device_ambiguous", message: "本轮有来自不同设备的消息，请用 kulo_dispatch 并填写对应的 source_request_id。" };
+  }
+  return { ok: true, explicitTarget, sourceId: message.sourceDeviceId };
+}
+
+export function resolveOrchestratorTargetEnv(input: {
+  explicitTarget?: string;
+  sourceId?: string;
+  projectDeviceId?: string;
+  getEnvDescriptor: (id: string) => EnvNodeDescriptor | undefined;
+  isLocalEnv: (id: string) => boolean;
+  localEnvId: string;
+  pickDefaultEnvId: () => string;
+}): OrchestratorTargetEnvResolution | RoutingPolicyError {
+  let envId: string;
+  if (input.projectDeviceId) {
+    if (input.explicitTarget && input.explicitTarget !== input.projectDeviceId) {
+      return { ok: false, code: "target_device_conflict", message: "所选设备与当前项目绑定设备不同，请确认目标设备或使用 kulo_dispatch。" };
+    }
+    envId = input.projectDeviceId;
+  } else if (input.explicitTarget) {
+    envId = input.explicitTarget;
+  } else if (input.sourceId && !(input.isLocalEnv(input.sourceId) && !input.getEnvDescriptor(input.localEnvId))) {
+    envId = input.sourceId;
+  } else {
+    envId = input.pickDefaultEnvId();
+  }
+
+  const descriptor = input.getEnvDescriptor(envId);
+  if (!descriptor?.online || descriptor.executionKind === "native-device") {
+    return {
+      ok: false,
+      code: "browser_device_unavailable",
+      message: "目标电脑当前不在线或不支持桌面浏览器；请连接该电脑或用 kulo_dispatch 指定其他在线电脑。",
+    };
+  }
+  return { ok: true, envId, descriptor };
+}
+
+function summarizeComputerCapabilities(
+  descriptors: readonly EnvNodeDescriptor[],
+  sortCapabilities: boolean,
+): OrchestratorSkillTarget {
+  if (!descriptors.length) return { capabilities: [] };
+  const raw = [...new Set(descriptors.flatMap((desc) => desc.capabilities))];
+  const capabilities = sortCapabilities ? raw.sort() : raw;
+  const platforms = new Set(descriptors.map((desc) => desc.platform));
+  return {
+    ...(platforms.size === 1 ? { platform: [...platforms][0] } : {}),
+    capabilities,
+  };
+}
+
+export function resolveOrchestratorCatalogSkillTarget(input: {
+  routings: readonly ChatRoutingSignals[];
+  topicTargetDeviceId?: string;
+  projectDeviceId?: string;
+  envs: readonly EnvNodeDescriptor[];
+  getEnvDescriptor: (id: string) => EnvNodeDescriptor | undefined;
+}): OrchestratorSkillTarget {
+  const explicitComputerIds = new Set<string>();
+  const addIfComputer = (id: string | undefined) => {
+    if (!id) return;
+    const desc = input.getEnvDescriptor(id);
+    if (desc && desc.executionKind !== "native-device") explicitComputerIds.add(id);
+  };
+
+  for (const routing of input.routings) {
+    addIfComputer(routing.targetDeviceId);
+    if (routing.text) {
+      for (const id of namedDispatchDevices(routing.text, input.envs).flat()) {
+        addIfComputer(id);
+      }
+    }
+  }
+  addIfComputer(input.topicTargetDeviceId);
+  addIfComputer(input.projectDeviceId);
+
+  if (explicitComputerIds.size > 0) {
+    const explicitOnline = [...explicitComputerIds]
+      .map((id) => input.getEnvDescriptor(id))
+      .filter((desc): desc is EnvNodeDescriptor => Boolean(desc?.online && desc.executionKind !== "native-device"));
+    return summarizeComputerCapabilities(explicitOnline, true);
+  }
+
+  // Keep the orchestrator skill catalog prefix-cache stable across sender-device switches,
+  // Android turns, worker relays, and transient peer sleep/reconnects using registered computers.
+  const registeredComputers = input.envs.filter((desc) => desc.executionKind !== "native-device");
+  return summarizeComputerCapabilities(registeredComputers, true);
+}
+
+export function resolveOrchestratorConflictSkillTarget(input: {
+  errorCode: "target_device_conflict" | "source_device_ambiguous";
+  routings: readonly ChatRoutingSignals[];
+  topicTargetDeviceId?: string;
+  projectDeviceId?: string;
+  envs: readonly EnvNodeDescriptor[];
+  getEnvDescriptor: (id: string) => EnvNodeDescriptor | undefined;
+}): OrchestratorSkillTarget {
+  const candidateIds = new Set<string>();
+  for (const routing of input.routings) {
+    if (routing.targetDeviceId) candidateIds.add(routing.targetDeviceId);
+    if (routing.text) {
+      for (const id of namedDispatchDevices(routing.text, input.envs).flat()) {
+        candidateIds.add(id);
+      }
+    }
+  }
+  if (input.topicTargetDeviceId) candidateIds.add(input.topicTargetDeviceId);
+  if (input.projectDeviceId) candidateIds.add(input.projectDeviceId);
+  if (input.errorCode === "source_device_ambiguous" || candidateIds.size === 0) {
+    for (const routing of input.routings) {
+      if (routing.sourceDeviceId) candidateIds.add(routing.sourceDeviceId);
+    }
+  }
+
+  const onlineComputers = [...candidateIds]
+    .map((id) => input.getEnvDescriptor(id))
+    .filter((desc): desc is EnvNodeDescriptor => Boolean(desc?.online && desc.executionKind !== "native-device"));
+  return summarizeComputerCapabilities(onlineComputers, false);
+}
+
+export type ChatReadTargetPreflight =
+  | { status: "project"; projectId: string; explicitTarget?: string }
+  | { status: "env"; explicitTarget?: string; envTargetId?: string; sourceId?: string; currentText?: string }
+  | ({ status: "error" } & Omit<RoutingPolicyError, "ok">);
+
+export function inspectChatReadTarget(input: {
+  routings: readonly ChatRoutingSignals[];
+  envs: readonly EnvNodeDescriptor[];
+  environment?: string;
+  localEnvId: string;
+}): ChatReadTargetPreflight {
+  const message = input.routings[0] ?? {};
+  const namedTargets = message.text ? [...new Set(namedDispatchDevices(message.text, input.envs).flat())] : [];
+  if (namedTargets.length > 1) {
+    return { status: "error", code: "target_device_conflict", message: "消息中提到多台设备，请用 kulo_dispatch 指定文件所在的设备。" };
+  }
+  const explicitTarget = message.targetDeviceId || namedTargets[0];
+  if (message.targetDeviceId && namedTargets[0] && message.targetDeviceId !== namedTargets[0]) {
+    return { status: "error", code: "target_device_conflict", message: "消息中指定的设备与会话选定的设备不同，请确认文件所在设备。" };
+  }
+  if (input.environment?.startsWith("kulo-project:")) {
+    return { status: "project", projectId: input.environment.slice("kulo-project:".length), explicitTarget };
+  }
+  if (input.routings.some((inp) => inp.sourceDeviceId !== message.sourceDeviceId) && !message.targetDeviceId) {
+    return { status: "error", code: "source_device_ambiguous", message: "本轮有来自不同设备的消息，请用 kulo_dispatch 并填写对应的 source_request_id。" };
+  }
+  const envTargetId = input.environment === "node:local"
+    ? input.localEnvId
+    : input.environment?.startsWith("pi-env:")
+      ? input.environment.slice("pi-env:".length)
+      : undefined;
+  return { status: "env", explicitTarget, envTargetId, sourceId: message.sourceDeviceId, currentText: message.text };
+}
+
+export function verifyChatReadTargetEnv(input: {
+  explicitTarget?: string;
+  envTargetId?: string;
+  sourceId?: string;
+  currentText?: string;
+  priorUserTurns?: readonly PriorUserDeviceTurn[];
+  envs: readonly EnvNodeDescriptor[];
+  localEnvId: string;
+  isLocalEnv: (id: string) => boolean;
+  hasLocalEnv: boolean;
+  environment?: string;
+}): { ok: true } | RoutingPolicyError {
+  const contextualTarget = !input.explicitTarget && input.envTargetId
+    ? resolveNamedOrContextualEnv({
+        currentText: input.currentText,
+        priorUserTurns: input.priorUserTurns,
+        envs: input.envs,
+        proposedEnvId: input.envTargetId,
+      })?.envId
+    : undefined;
+  const target =
+    input.explicitTarget ||
+    contextualTarget ||
+    (input.sourceId && input.isLocalEnv(input.sourceId) && !input.hasLocalEnv ? undefined : input.sourceId);
+  const expectedEnv = target && input.isLocalEnv(target) ? "node:local" : target ? `pi-env:${target}` : undefined;
+  if (target && input.environment !== expectedEnv) {
+    return { ok: false, code: "read_device_mismatch", message: "请用 kulo_dispatch 在这条消息对应的设备上读取文件。" };
+  }
+  return { ok: true };
+}

@@ -393,8 +393,15 @@ import {
   detectSenderLocalSignals,
   hasExplicitSenderReference,
   hasWorkerIsolation,
+  inspectChatReadTarget,
+  preflightOrchestratorTargetEnv,
   resolveComputerEnvBinding,
   resolveNamedOrContextualEnv,
+  resolveOrchestratorCatalogSkillTarget,
+  resolveOrchestratorConflictSkillTarget,
+  resolveOrchestratorTargetEnv,
+  verifyChatReadTargetEnv,
+  type ChatRoutingSignals,
   type PriorUserDeviceTurn,
 } from "./env-routing-policy.js";
 
@@ -8293,6 +8300,22 @@ export class KuloHub implements OrchestratorController {
     return this.#turnContext.currentControlInput(conversationId, context, toolTaskId);
   }
 
+  #toRoutingSignals(inputs: readonly EntryRecord[]): ChatRoutingSignals[] {
+    return inputs.map((inp) => {
+      const r = chatRoutingData(inp);
+      return { text: r.text, targetDeviceId: r.targetDeviceId, sourceDeviceId: r.source?.deviceId };
+    });
+  }
+
+  async #resolveOptionalProjectDeviceId(projectId: string | null | undefined, context: Context): Promise<string | undefined> {
+    if (!projectId) return undefined;
+    try {
+      return (await this.projects.get(projectId, context)).deviceId;
+    } catch {
+      return undefined;
+    }
+  }
+
   async #resolveOrchestratorTargetEnvId(
     conversationId: number,
     toolTaskId: number | undefined,
@@ -8304,52 +8327,25 @@ export class KuloHub implements OrchestratorController {
     if (!topic || topic.deletedAt) throw new Error("会话已删除。");
 
     const inputs = await this.#currentControlInputs(conversationId, context, toolTaskId);
-    const message = chatRoutingData(inputs[0]);
-    const namedTargets = message.text
-      ? [...new Set(namedDispatchDevices(message.text, this.envManager.listEnvs()).flat())]
-      : [];
-    if (namedTargets.length > 1) {
-      throw new ProjectError(409, "target_device_conflict", "消息中提到多台设备，请用 kulo_dispatch 明确指定执行设备。");
-    }
-    const explicitTarget = message.targetDeviceId || topic.targetDeviceId || namedTargets[0];
-    if (message.targetDeviceId && namedTargets[0] && message.targetDeviceId !== namedTargets[0]) {
-      throw new ProjectError(409, "target_device_conflict", "消息中指定的设备与会话选定的设备不同，请先确认目标设备。");
-    }
-    if (
-      inputs.some((inp) => chatRoutingData(inp).source?.deviceId !== message.source?.deviceId) &&
-      !message.targetDeviceId &&
-      !topic.targetDeviceId
-    ) {
-      throw new ProjectError(409, "source_device_ambiguous", "本轮有来自不同设备的消息，请用 kulo_dispatch 并填写对应的 source_request_id。");
-    }
+    const preflight = preflightOrchestratorTargetEnv({
+      routings: this.#toRoutingSignals(inputs),
+      topicTargetDeviceId: topic.targetDeviceId,
+      envs: this.envManager.listEnvs(),
+    });
+    if (!preflight.ok) throw new ProjectError(409, preflight.code, preflight.message);
 
-    let envId: string;
-    if (topic.projectId) {
-      const project = await this.projects.get(topic.projectId, context);
-      if (explicitTarget && explicitTarget !== project.deviceId) {
-        throw new ProjectError(409, "target_device_conflict", "所选设备与当前项目绑定设备不同，请确认目标设备或使用 kulo_dispatch。");
-      }
-      envId = project.deviceId;
-    } else {
-      const sourceId = message.source?.deviceId;
-      if (explicitTarget) {
-        envId = explicitTarget;
-      } else if (sourceId && !(this.envManager.isLocalEnv(sourceId) && !this.envManager.getEnvDescriptor(this.envManager.localEnvId))) {
-        envId = sourceId;
-      } else {
-        envId = this.envManager.pickDefaultEnvId();
-      }
-    }
-
-    const descriptor = this.envManager.getEnvDescriptor(envId);
-    if (!descriptor?.online || descriptor.executionKind === "native-device") {
-      throw new ProjectError(
-        409,
-        "browser_device_unavailable",
-        "目标电脑当前不在线或不支持桌面浏览器；请连接该电脑或用 kulo_dispatch 指定其他在线电脑。",
-      );
-    }
-    return { topicId, envId, descriptor };
+    const projectDeviceId = topic.projectId ? (await this.projects.get(topic.projectId, context)).deviceId : undefined;
+    const resolved = resolveOrchestratorTargetEnv({
+      explicitTarget: preflight.explicitTarget,
+      sourceId: preflight.sourceId,
+      projectDeviceId,
+      getEnvDescriptor: (id) => this.envManager.getEnvDescriptor(id),
+      isLocalEnv: (id) => this.envManager.isLocalEnv(id),
+      localEnvId: this.envManager.localEnvId,
+      pickDefaultEnvId: () => this.envManager.pickDefaultEnvId(),
+    });
+    if (!resolved.ok) throw new ProjectError(409, resolved.code, resolved.message);
+    return { topicId, envId: resolved.envId, descriptor: resolved.descriptor };
   }
 
   async #resolveOrchestratorCatalogSkillTarget(
@@ -8361,58 +8357,15 @@ export class KuloHub implements OrchestratorController {
     const topicId = state?.conversationToTopic?.[String(conversationId)] ?? "root";
     const topic = state?.topics?.[topicId];
     if (!topic || topic.deletedAt) return { capabilities: [] };
-
-    const envs = this.envManager.listEnvs();
-    const explicitComputerIds = new Set<string>();
-    const addIfComputer = (id: string | undefined) => {
-      if (!id) return;
-      const desc = this.envManager.getEnvDescriptor(id);
-      if (desc && desc.executionKind !== "native-device") explicitComputerIds.add(id);
-    };
-
     const inputs = await this.#currentControlInputs(conversationId, context, toolTaskId);
-    for (const inp of inputs) {
-      const routing = chatRoutingData(inp);
-      addIfComputer(routing.targetDeviceId);
-      if (routing.text) {
-        for (const id of namedDispatchDevices(routing.text, envs).flat()) {
-          addIfComputer(id);
-        }
-      }
-    }
-    addIfComputer(topic.targetDeviceId);
-    if (topic.projectId) {
-      try {
-        const project = await this.projects.get(topic.projectId, context);
-        addIfComputer(project.deviceId);
-      } catch {
-        // Ignore unavailable project bindings when collecting candidate devices.
-      }
-    }
-
-    if (explicitComputerIds.size > 0) {
-      const explicitOnline = [...explicitComputerIds]
-        .map((id) => this.envManager.getEnvDescriptor(id))
-        .filter((desc): desc is EnvNodeDescriptor => Boolean(desc?.online && desc.executionKind !== "native-device"));
-      if (!explicitOnline.length) return { capabilities: [] };
-      const capabilities = [...new Set(explicitOnline.flatMap((desc) => desc.capabilities))].sort();
-      const platforms = new Set(explicitOnline.map((desc) => desc.platform));
-      return {
-        ...(platforms.size === 1 ? { platform: [...platforms][0] } : {}),
-        capabilities,
-      };
-    }
-
-    // Keep the orchestrator skill catalog prefix-cache stable across sender-device switches,
-    // Android turns, worker relays, and transient peer sleep/reconnects using registered computers.
-    const registeredComputers = envs.filter((desc) => desc.executionKind !== "native-device");
-    if (!registeredComputers.length) return { capabilities: [] };
-    const capabilities = [...new Set(registeredComputers.flatMap((desc) => desc.capabilities))].sort();
-    const platforms = new Set(registeredComputers.map((desc) => desc.platform));
-    return {
-      ...(platforms.size === 1 ? { platform: [...platforms][0] } : {}),
-      capabilities,
-    };
+    const projectDeviceId = await this.#resolveOptionalProjectDeviceId(topic.projectId, context);
+    return resolveOrchestratorCatalogSkillTarget({
+      routings: this.#toRoutingSignals(inputs),
+      topicTargetDeviceId: topic.targetDeviceId,
+      projectDeviceId,
+      envs: this.envManager.listEnvs(),
+      getEnvDescriptor: (id) => this.envManager.getEnvDescriptor(id),
+    });
   }
 
   async #resolveOrchestratorSkillTarget(
@@ -8421,15 +8374,8 @@ export class KuloHub implements OrchestratorController {
     context: Context,
   ): Promise<{ platform?: string; capabilities: string[] }> {
     try {
-      const resolved = await this.#resolveOrchestratorTargetEnvId(
-        conversationId,
-        toolTaskId,
-        context,
-      );
-      return {
-        platform: resolved.descriptor.platform,
-        capabilities: [...resolved.descriptor.capabilities],
-      };
+      const resolved = await this.#resolveOrchestratorTargetEnvId(conversationId, toolTaskId, context);
+      return { platform: resolved.descriptor.platform, capabilities: [...resolved.descriptor.capabilities] };
     } catch (error) {
       if (
         !(error instanceof ProjectError) ||
@@ -8437,103 +8383,56 @@ export class KuloHub implements OrchestratorController {
       ) {
         return { capabilities: [] };
       }
-      // Multi-device turns cannot bind a single read-only browser session, but the
-      // orchestrator still needs capability-gated Skills (e.g. desktop-automation /
-      // browser-automation) to plan and dispatch work across those online computers.
       const state = await this.harness.snapshot(KuloStateDoc, context);
       const topicId = state?.conversationToTopic?.[String(conversationId)] ?? "root";
       const topic = state?.topics?.[topicId];
       if (!topic || topic.deletedAt) return { capabilities: [] };
-
-      const envs = this.envManager.listEnvs();
       const inputs = await this.#currentControlInputs(conversationId, context, toolTaskId);
-      const candidateIds = new Set<string>();
-      for (const inp of inputs) {
-        const routing = chatRoutingData(inp);
-        if (routing.targetDeviceId) candidateIds.add(routing.targetDeviceId);
-        if (routing.text) {
-          for (const id of namedDispatchDevices(routing.text, envs).flat()) {
-            candidateIds.add(id);
-          }
-        }
-      }
-      if (topic.targetDeviceId) candidateIds.add(topic.targetDeviceId);
-      if (topic.projectId) {
-        try {
-          const project = await this.projects.get(topic.projectId, context);
-          candidateIds.add(project.deviceId);
-        } catch {
-          // Ignore unavailable project bindings when collecting candidate devices.
-        }
-      }
-      if (error.code === "source_device_ambiguous" || candidateIds.size === 0) {
-        for (const inp of inputs) {
-          const sourceId = chatRoutingData(inp).source?.deviceId;
-          if (sourceId) candidateIds.add(sourceId);
-        }
-      }
-
-      const onlineComputers = [...candidateIds]
-        .map((id) => this.envManager.getEnvDescriptor(id))
-        .filter((desc): desc is EnvNodeDescriptor => Boolean(desc?.online && desc.executionKind !== "native-device"));
-      if (!onlineComputers.length) return { capabilities: [] };
-
-      const capabilities = [...new Set(onlineComputers.flatMap((desc) => desc.capabilities))];
-      const platforms = new Set(onlineComputers.map((desc) => desc.platform));
-      return {
-        ...(platforms.size === 1 ? { platform: [...platforms][0] } : {}),
-        capabilities,
-      };
+      const projectDeviceId = await this.#resolveOptionalProjectDeviceId(topic.projectId, context);
+      return resolveOrchestratorConflictSkillTarget({
+        errorCode: error.code,
+        routings: this.#toRoutingSignals(inputs),
+        topicTargetDeviceId: topic.targetDeviceId,
+        projectDeviceId,
+        envs: this.envManager.listEnvs(),
+        getEnvDescriptor: (id) => this.envManager.getEnvDescriptor(id),
+      });
     }
   }
 
   async #assertChatReadTarget(conversationId: number, toolTaskId: number, environment: string | undefined, context: Context) {
     const inputs = await this.#currentControlInputs(conversationId, context, toolTaskId);
-    const message = chatRoutingData(inputs[0]);
     const envs = this.envManager.listEnvs();
-    const namedTargets = message.text ? [...new Set(namedDispatchDevices(message.text, envs).flat())] : [];
-    if (namedTargets.length > 1) throw new ProjectError(409, "target_device_conflict", "消息中提到多台设备，请用 kulo_dispatch 指定文件所在的设备。");
-    const explicitTarget = message.targetDeviceId || namedTargets[0];
-    if (message.targetDeviceId && namedTargets[0] && message.targetDeviceId !== namedTargets[0]) {
-      throw new ProjectError(409, "target_device_conflict", "消息中指定的设备与会话选定的设备不同，请确认文件所在设备。");
-    }
-    if (environment?.startsWith("kulo-project:")) {
-      if (explicitTarget) {
-        const project = await this.projects.get(environment.slice("kulo-project:".length), context);
-        if (project.deviceId !== explicitTarget) throw new ProjectError(409, "target_device_conflict", "所选设备与项目所在设备不同，请确认要读取哪个设备上的文件。");
+    const localEnvId = this.envManager.localEnvId;
+    const preflight = inspectChatReadTarget({
+      routings: this.#toRoutingSignals(inputs),
+      envs,
+      environment,
+      localEnvId,
+    });
+    if (preflight.status === "error") throw new ProjectError(409, preflight.code, preflight.message);
+    if (preflight.status === "project") {
+      if (preflight.explicitTarget) {
+        const project = await this.projects.get(preflight.projectId, context);
+        if (project.deviceId !== preflight.explicitTarget) {
+          throw new ProjectError(409, "target_device_conflict", "所选设备与项目所在设备不同，请确认要读取哪个设备上的文件。");
+        }
       }
       return;
     }
-    if (inputs.some((input) => chatRoutingData(input).source?.deviceId !== message.source?.deviceId) && !message.targetDeviceId) {
-      throw new ProjectError(409, "source_device_ambiguous", "本轮有来自不同设备的消息，请用 kulo_dispatch 并填写对应的 source_request_id。");
-    }
-    const localEnvId = this.envManager.localEnvId;
-    const envTargetId = environment === "node:local"
-      ? localEnvId
-      : environment?.startsWith("pi-env:")
-        ? environment.slice("pi-env:".length)
-        : undefined;
-    let contextualTarget: string | undefined;
-    if (!explicitTarget && envTargetId) {
-      const priorUserTurns = await this.#recentPriorUserTurns(
-        conversationId,
-        context,
-        toolTaskId,
-        new Set(inputs.map((entry) => entry.id)),
-      );
-      contextualTarget = resolveNamedOrContextualEnv({
-        currentText: message.text,
-        priorUserTurns,
-        envs,
-        proposedEnvId: envTargetId,
-      })?.envId;
-    }
-    const sourceId = message.source?.deviceId;
-    const target = explicitTarget || contextualTarget || (sourceId && this.envManager.isLocalEnv(sourceId) && !this.envManager.getEnvDescriptor(localEnvId) ? undefined : sourceId);
-    const expectedEnv = target && this.envManager.isLocalEnv(target) ? "node:local" : target ? `pi-env:${target}` : undefined;
-    if (target && environment !== expectedEnv) {
-      throw new ProjectError(409, "read_device_mismatch", "请用 kulo_dispatch 在这条消息对应的设备上读取文件。");
-    }
+    const priorUserTurns = !preflight.explicitTarget && preflight.envTargetId
+      ? await this.#recentPriorUserTurns(conversationId, context, toolTaskId, new Set(inputs.map((entry) => entry.id)))
+      : undefined;
+    const verified = verifyChatReadTargetEnv({
+      ...preflight,
+      priorUserTurns,
+      envs,
+      localEnvId,
+      isLocalEnv: (id) => this.envManager.isLocalEnv(id),
+      hasLocalEnv: Boolean(this.envManager.getEnvDescriptor(localEnvId)),
+      environment,
+    });
+    if (!verified.ok) throw new ProjectError(409, verified.code, verified.message);
   }
 
   async #recentPriorUserTurns(
