@@ -290,6 +290,7 @@ import {
   type HubRuntimeGates,
 } from "./hub-kernel-ports.js";
 import { HubChatPipeline, replyContext, userDisplayEntry, type MessageSubmissionOptions } from "./hub-chat-pipeline.js";
+import { HubConnectionsBridge } from "./hub-connections-bridge.js";
 import { HubDeliveryCoordinator } from "./hub-delivery-coordinator.js";
 import { HubTopicManager, requireTopic, type TopicView, type WatchedTopicCache } from "./hub-topic-manager.js";
 import { HubFailureRecovery, HubWatchdog } from "./hub-watchdog.js";
@@ -673,6 +674,7 @@ export class KuloHub implements OrchestratorController {
   readonly #listeners = new Set<HubEventListener>();
   readonly #topics: HubTopicManager;
   readonly #chat: HubChatPipeline;
+  readonly #connectionsBridge: HubConnectionsBridge;
   readonly #delivery: HubDeliveryCoordinator;
   readonly #inlineWaiters = new InlineDispatchWaiters();
   readonly #turnContext: TurnContextReader;
@@ -1449,7 +1451,7 @@ export class KuloHub implements OrchestratorController {
       },
       connectionsList: async (scope) => {
         const ticket = this.#externalAgentScope(scope, await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT));
-        const list = await this.#connectionList({
+        const list = await this.#connectionsBridge.list({
           kind: "worker",
           conversationId: ticket.workerConversationId,
           ticketId: ticket.id,
@@ -1472,7 +1474,7 @@ export class KuloHub implements OrchestratorController {
       },
       connectionUse: async (scope, input) => {
         const ticket = this.#externalAgentScope(scope, await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT));
-        return this.#connectionUse({
+        return this.#connectionsBridge.use({
           kind: "worker",
           conversationId: ticket.workerConversationId,
           ticketId: ticket.id,
@@ -1725,6 +1727,15 @@ export class KuloHub implements OrchestratorController {
       pruneCompactionBaseline: (conversationId, ctx, force) =>
         this.#contextCompaction.pruneCommittedBaseline(conversationId, ctx, force),
     });
+    this.#connectionsBridge = new HubConnectionsBridge({
+      harness: this.harness,
+      connectionManager: this.connectionManager,
+      envManager: this.envManager,
+      projects: this.projects,
+      settingsAssistant: this.settingsAssistant,
+      runtimeGates: this.#runtimeGates,
+      steerTicket: (req, ctx) => this.steerTicket(req, ctx),
+    });
     this.#orchestratorBrowserIdleMs = params.orchestratorBrowserIdleMs;
   }
 
@@ -1925,12 +1936,12 @@ export class KuloHub implements OrchestratorController {
     });
 
     const connections: ConnectionToolController = {
-      list: (caller, ctx) => hubRef!.#connectionList(caller, ctx),
-      describe: (caller, input, ctx) => hubRef!.#connectionDescribe(caller, input, ctx),
-      request: (caller, input, ctx) => hubRef!.#connectionRequest(caller, input, ctx),
-      decide: (caller, input, ctx) => hubRef!.#connectionDecide(caller, input, ctx),
-      grant: (caller, input, ctx) => hubRef!.#connectionGrant(caller, input, ctx),
-      use: (caller, input, ctx) => hubRef!.#connectionUse(caller, input, ctx),
+      list: (caller, ctx) => hubRef!.#connectionsBridge.list(caller, ctx),
+      describe: (caller, input, ctx) => hubRef!.#connectionsBridge.describe(caller, input, ctx),
+      request: (caller, input, ctx) => hubRef!.#connectionsBridge.request(caller, input, ctx),
+      decide: (caller, input, ctx) => hubRef!.#connectionsBridge.decide(caller, input, ctx),
+      grant: (caller, input, ctx) => hubRef!.#connectionsBridge.grant(caller, input, ctx),
+      use: (caller, input, ctx) => hubRef!.#connectionsBridge.use(caller, input, ctx),
     };
     const computerUseExt = createComputerUseExtension({
       scope: async (api) => {
@@ -3146,73 +3157,8 @@ export class KuloHub implements OrchestratorController {
     return { ok: true, status: action };
   }
 
-  async #assertConnectionCaller(caller: ConnectionCaller, context: Context) {
-    if (this.#closed) throw new Error("Kulo 正在关闭，连接授权已停止。");
-    const state = await this.harness.snapshot(KuloStateDoc, context);
-    if (caller.kind === "orchestrator") {
-      if (isOrchestratorConversation(caller.conversationId as ConversationId, state)) {
-        const topicId = state?.conversationToTopic?.[String(caller.conversationId)];
-        if (topicId && state?.topics?.[topicId]?.deletedAt) throw new Error("会话已删除。");
-        return { state, scope: undefined, isSettings: false };
-      }
-      const settings = await this.harness.snapshot(SettingsAssistantDoc, context);
-      if (isActiveSettingsConversation(caller.conversationId, settings)) {
-        return { state, scope: undefined, isSettings: true };
-      }
-      throw new Error("只有主模型可以管理连接权限。");
-    }
-    const scope = resolveTicketExecutionScope(state, caller.conversationId as ConversationId);
-    if (!scope || scope.ticket.id !== caller.ticketId || scope.ticket.runEpoch !== caller.runEpoch ||
-      scope.ticket.status !== "running" || scope.subagent && scope.subagent.state !== "running") throw new Error("任务的连接使用资格已失效。");
-    if (!this.envManager.getEnvDescriptor(scope.ticket.envId)?.online) throw new Error("任务执行设备已离线。");
-    if (scope.ticket.projectId && (await this.projects.get(scope.ticket.projectId, context)).grantRevision !== scope.ticket.grantRevision) throw new Error("项目授权已变化。");
-    return { state, scope, isSettings: false };
-  }
-
-  async #connectionList(caller: ConnectionCaller, context: Context) {
-    const { state, scope } = await this.#assertConnectionCaller(caller, context);
-    const snapshot = await this.connectionManager.snapshot();
-    const connections = snapshot.connections.map((entry) => {
-      if (entry.kind !== "mcp") return entry;
-      const { mcpTools, ...rest } = entry;
-      const tools = mcpTools ?? [];
-      return {
-        ...rest,
-        toolCount: tools.length,
-        sampleTools: tools.slice(0, 12).map((t) => ({ name: t.name, readOnly: t.readOnly })),
-      };
-    });
-    return {
-      connections,
-      applications: snapshot.applications,
-      grantedConnectionIds: scope?.ticket.connectionIds ?? [],
-      requests: snapshot.requests.filter((request) => caller.kind === "worker" ? request.ticketId === caller.ticketId :
-        (state?.tickets[request.ticketId]?.originConversationId ?? Number(ROOT_CONVERSATION_ID)) === caller.conversationId),
-      vault: snapshot.vault,
-    };
-  }
-
-  async #connectionDescribe(caller: ConnectionCaller, input: ConnectionDescribeRequest, context: Context) {
-    const verified = await this.#assertConnectionCaller(caller, context);
-    if (caller.kind !== "orchestrator") throw new Error("只有主模型可以整理连接卡片。");
-    context.abortSignal?.throwIfAborted();
-    if (verified.isSettings) {
-      return this.settingsAssistant.describeConnection(input);
-    }
-    return this.connectionManager.describe(input);
-  }
-
   async removeConnection(id: string): Promise<void> {
-    const pending = (await this.connectionManager.snapshot()).requests.filter((request) => request.connectionId === id && request.status === "pending");
-    await this.connectionManager.remove(id);
-    await this.harness.commit(async (tx) => {
-      const state = await tx.doc(KuloStateDoc);
-      for (const ticket of Object.values(state.tickets)) if (ticket.connectionIds?.includes(id)) {
-        ticket.connectionIds = ticket.connectionIds.filter((value) => value !== id);
-        if (ticket.connectionRevisions) delete ticket.connectionRevisions[id];
-      }
-    }, BACKGROUND_CONTEXT);
-    for (const request of pending) await this.#resumeConnectionDecision(request.id, false, BACKGROUND_CONTEXT);
+    return this.#connectionsBridge.removeConnection(id);
   }
 
   async #recordTicketOutwardAction(
@@ -3231,52 +3177,6 @@ export class KuloHub implements OrchestratorController {
     }, withoutAbortSignal(context));
   }
 
-  async #connectionUse(caller: ConnectionCaller, input: { connectionId: string; operation: ConnectionUseOperation }, context: Context) {
-    const { scope } = await this.#assertConnectionCaller(caller, context);
-    context.abortSignal?.throwIfAborted();
-    if (caller.kind === "orchestrator") {
-      const identity = `conversation:${caller.conversationId}`;
-      await this.connectionManager.grant(identity, 0, [input.connectionId]);
-      return this.connectionManager.use(identity, 0, input.connectionId, input.operation, { signal: context.abortSignal });
-    }
-    if (!scope!.ticket.connectionIds?.includes(input.connectionId)) throw new Error("尚未获得这个连接的使用权限，请向主模型申请。");
-    const connection = (await this.connectionManager.snapshot()).connections.find((entry) => entry.id === input.connectionId);
-    if (!connection || scope!.ticket.connectionRevisions?.[input.connectionId] !== connection.revision) throw new Error("连接已修改，请重新向主模型申请授权。");
-    await this.#assertConnectionCaller(caller, context);
-    if (!this.connectionManager.hasGrant(caller.ticketId, caller.runEpoch, input.connectionId)) {
-      await this.connectionManager.grant(caller.ticketId, caller.runEpoch, [input.connectionId], scope!.ticket.connectionRevisions);
-    }
-    const result = await this.connectionManager.use(caller.ticketId, caller.runEpoch, input.connectionId, input.operation, {
-      readOnly: scope!.readOnly,
-      signal: context.abortSignal,
-      assertActive: async () => { await this.#assertConnectionCaller(caller, context); },
-      onOutwardAction: (label) => this.#recordTicketOutwardAction(caller.ticketId, caller.runEpoch, "connection", label, context),
-    });
-    await this.#assertConnectionCaller(caller, context);
-    return result;
-  }
-
-  async #connectionRequest(caller: ConnectionCaller, input: { connectionId: string; reason: string; requestId: string }, context: Context) {
-    if (caller.kind !== "worker") throw new Error("连接权限申请只能由 Worker 发起。");
-    const { scope } = await this.#assertConnectionCaller(caller, context);
-    const connection = (await this.connectionManager.snapshot()).connections.find((entry) => entry.id === input.connectionId);
-    if (connection && scope!.ticket.connectionIds?.includes(input.connectionId) && scope!.ticket.connectionRevisions?.[input.connectionId] === connection.revision) return { status: "approved", connectionId: input.connectionId };
-    const request = await this.connectionManager.requestAccess({ ticketId: caller.ticketId, conversationId: caller.conversationId,
-      runEpoch: caller.runEpoch, connectionId: input.connectionId, reason: this.connectionManager.redact(input.reason),
-      requestId: `${caller.ticketId}:${caller.runEpoch}:${input.requestId}` });
-    if (request.status !== "pending") return request;
-    await this.harness.commit(async (tx) => {
-      const state = await tx.doc(KuloStateDoc);
-      const ticket = state.tickets[caller.ticketId];
-      if (!ticket || ticket.runEpoch !== caller.runEpoch || ticket.status !== "running") throw new Error("任务已停止。");
-      if (ticket.waiting && ticket.waiting.waitToken !== request.id) throw new Error("任务已有待处理事项。");
-      ticket.waiting = { reason: "connection", since: Date.now(), detail: "等待主模型分配连接权限", waitToken: request.id };
-      ticket.latestReport = { state: "progress", summary: "正在向主模型申请连接权限。", at: Date.now() };
-      ticket.updatedAt = Date.now();
-    }, context);
-    return request;
-  }
-
   async #relayConnectionRequest(ticketId: string): Promise<void> {
     const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const ticket = state?.tickets[ticketId];
@@ -3284,7 +3184,7 @@ export class KuloHub implements OrchestratorController {
     const request = await this.connectionManager.getRequest(ticket.waiting.waitToken);
     if (!request) return;
     if (request.status !== "pending") {
-      await this.#resumeConnectionDecision(request.id, request.status === "approved", BACKGROUND_CONTEXT);
+      await this.#connectionsBridge.resumeConnectionDecision(request.id, request.status === "approved", BACKGROUND_CONTEXT);
       return;
     }
     const origin = await this.harness.conversation((ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) as ConversationId, BACKGROUND_CONTEXT);
@@ -3295,64 +3195,6 @@ export class KuloHub implements OrchestratorController {
         whenBusy: "followUp", requestId: `kulo:connection-request:${request.id}` });
     }, BACKGROUND_CONTEXT);
     await this.#broadcastTickets(BACKGROUND_CONTEXT);
-  }
-
-  async #resumeConnectionDecision(requestId: string, approved: boolean, context: Context) {
-    const request = await this.connectionManager.getRequest(requestId);
-    if (!request) throw new Error("连接权限申请不存在。");
-    const state = await this.harness.snapshot(KuloStateDoc, context);
-    const ticket = state?.tickets[request.ticketId];
-    if (!ticket || !isTicketUnfinished(ticket) || ticket.waiting?.reason !== "connection" || ticket.waiting.waitToken !== request.id) return;
-    await this.harness.commit(async (tx) => {
-      const current = (await tx.doc(KuloStateDoc)).tickets[request.ticketId];
-      if (current && isTicketUnfinished(current) && current.waiting?.waitToken === request.id) {
-        if (approved) {
-          current.connectionIds = [...new Set([...(current.connectionIds ?? []), request.connectionId])];
-          const connection = (await this.connectionManager.snapshot()).connections.find((item) => item.id === request.connectionId);
-          if (!connection) throw new Error("连接已取消。");
-          current.connectionRevisions = { ...(current.connectionRevisions ?? {}), [request.connectionId]: connection.revision };
-        }
-        if (current.workerConversationId) {
-          await injectEventToolsInTx(tx, current.workerConversationId, ["kulo_connections", "kulo_connection_use"]);
-        }
-      }
-    }, context);
-    return this.steerTicket({ ticketId: ticket.id, commandId: `connection-decision:${request.id}:${approved ? "approved" : "rejected"}`,
-      text: approved ? `Connection access approved for ${request.connectionId}. Continue via kulo_connection_use; credentials remain handled by the execution layer.` :
-        `Connection access denied for ${request.connectionId}. Continue within existing permissions or report what cannot be completed.` }, context);
-  }
-
-  async #connectionDecide(caller: ConnectionCaller, input: { requestId: string; decision: "approve" | "reject" }, context: Context) {
-    if (caller.kind !== "orchestrator") throw new Error("只有主模型可以处理权限申请。");
-    const { state } = await this.#assertConnectionCaller(caller, context);
-    const request = await this.connectionManager.getRequest(input.requestId);
-    const ticket = request ? state?.tickets[request.ticketId] : undefined;
-    if (!request || !ticket || (ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) !== caller.conversationId || !isTicketUnfinished(ticket)) throw new Error("这个权限申请不属于当前会话或任务已结束。");
-    if (ticket.waiting?.waitToken !== request.id || ticket.waiting.reason !== "connection") {
-      if (request.status !== "pending") return request;
-      throw new Error("权限申请已失效。");
-    }
-    const result = await this.connectionManager.decide(request.id, input.decision === "approve");
-    await this.#resumeConnectionDecision(request.id, result.status === "approved", context);
-    return result;
-  }
-
-  async #connectionGrant(caller: ConnectionCaller, input: { ticketId: string; connectionIds: string[] }, context: Context) {
-    if (caller.kind !== "orchestrator") throw new Error("只有主模型可以分配权限。");
-    const { state } = await this.#assertConnectionCaller(caller, context);
-    const ticket = state?.tickets[input.ticketId];
-    if (!ticket || !isTicketUnfinished(ticket) || (ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) !== caller.conversationId) throw new Error("任务不属于当前会话或已经结束。");
-    await this.connectionManager.grant(ticket.id, ticket.runEpoch, input.connectionIds);
-    const revisions = Object.fromEntries((await this.connectionManager.snapshot()).connections.filter((item) => input.connectionIds.includes(item.id)).map((item) => [item.id, item.revision]));
-    await this.harness.commit(async (tx) => {
-      const current = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
-      if (!current || !isTicketUnfinished(current)) throw new Error("任务已结束。");
-      current.connectionIds = [...new Set([...(current.connectionIds ?? []), ...input.connectionIds])];
-      current.connectionRevisions = { ...(current.connectionRevisions ?? {}), ...revisions };
-    }, context);
-    const request = ticket.waiting?.reason === "connection" && ticket.waiting.waitToken ? await this.connectionManager.getRequest(ticket.waiting.waitToken) : undefined;
-    if (request?.status === "pending" && input.connectionIds.includes(request.connectionId)) return this.#connectionDecide(caller, { requestId: request.id, decision: "approve" }, context);
-    return { ticketId: ticket.id, connectionIds: [...new Set([...(ticket.connectionIds ?? []), ...input.connectionIds])] };
   }
 
   async getCapabilitiesSnapshot(clientId?: string): Promise<CapabilitiesWorkspaceSnapshot> {
