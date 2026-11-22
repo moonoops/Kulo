@@ -476,4 +476,84 @@ describe("durable project registry", () => {
     if (kind !== "settings") expect(state?.topics?.[record.id]?.title).toBe("保留标题");
     expect(state?.topics?.root?.title).toBe("与 Kulo 对话");
   });
+
+  it("does not deadlock when project remove(stopTasks) interleaves with a per-ticket ensureAuthorized call", async () => {
+    let ticketTail: Promise<unknown> = Promise.resolve();
+    const withTicketLock = <T>(run: () => Promise<T>): Promise<T> => {
+      const next = ticketTail.then(run, run);
+      ticketTail = next.then(() => undefined, () => undefined);
+      return next;
+    };
+
+    let stopTicketEntered!: () => void;
+    const stopTicketWaiting = new Promise<void>((resolve) => { stopTicketEntered = resolve; });
+    const stopEvents: string[] = [];
+    const f = await fixture({
+      stopTicket: async (ticketId: string) => {
+        stopTicketEntered();
+        await withTicketLock(async () => {
+          stopEvents.push(`stopped:${ticketId}`);
+        });
+      },
+    });
+    const proj = await f.project("interleave");
+    const { record } = await f.topic("live", proj.id);
+    await f.harness.commit(async (tx) => {
+      const state = await tx.doc(KuloStateDoc);
+      const t = ticket("STAGED-1", proj.id, record, "ready");
+      t.workspaceStaging = { mode: "staged", stagedDiff: { hasChanges: true, added: ["a.txt"], modified: [], deleted: [] } };
+      state.tickets[t.id] = t;
+    }, context);
+
+    let holdTicketLock!: () => void;
+    let ticketLockAcquired!: () => void;
+    const ticketLockReady = new Promise<void>((resolve) => { ticketLockAcquired = resolve; });
+    const allowEnsureAuthorized = new Promise<void>((resolve) => { holdTicketLock = resolve; });
+
+    // Simulate applyStagedChanges holding per-ticket lock before entering projects.ensureAuthorized().
+    let appliedWriteAttempted = false;
+    const applyAttempt = withTicketLock(async () => {
+      ticketLockAcquired();
+      await allowEnsureAuthorized;
+      await f.projects.ensureAuthorized(proj.id, context);
+      appliedWriteAttempted = true;
+    });
+
+    await ticketLockReady;
+    // Start project deletion while ticket lock is held; wait until remove() enters stopTicket()
+    // (which would still be holding KuloProjects.#tail before the fix), THEN let ensureAuthorized() run.
+    const removePromise = f.projects.remove(proj.id, { stopTasks: true }, context);
+    await stopTicketWaiting;
+    holdTicketLock();
+
+    await expect(applyAttempt).rejects.toMatchObject({ code: "project_not_found" });
+    const removed = await removePromise;
+    expect(removed.deleted).toBe(proj.id);
+    expect(appliedWriteAttempted).toBe(false);
+    expect(stopEvents).toEqual(["stopped:STAGED-1"]);
+    const afterProjects = await f.harness.snapshot(KuloProjectsDoc, context);
+    expect(afterProjects?.cancellations["STAGED-1"]).toBeUndefined();
+  });
+
+  it("only clears the matching cancellation record after stopTicket finishes", async () => {
+    let fRef!: Awaited<ReturnType<typeof fixture>>;
+    const f = await fixture({
+      stopTicket: async (ticketId: string) => {
+        // Simulate a newer cancellation replacing the entry while the older stopTicket is in flight.
+        await fRef.harness.commit(async (tx) => {
+          const state = await tx.doc(KuloProjectsDoc);
+          state.cancellations[ticketId] = { reason: "更新后的取消记录", requestedAt: Date.now() + 1000, cancellationId: "newer-id" };
+        }, context);
+      },
+    });
+    fRef = f;
+    await f.harness.commit(async (tx) => {
+      const state = await tx.doc(KuloProjectsDoc);
+      state.cancellations["T-RACE"] = { reason: "旧取消记录", requestedAt: 100, cancellationId: "older-id" };
+    }, context);
+
+    await f.projects.reconcileCancellations(context);
+    const snap = await f.harness.snapshot(KuloProjectsDoc, context);
+    expect(snap?.cancellations["T-RACE"]?.cancellationId).toBe("newer-id");
+  });
 });

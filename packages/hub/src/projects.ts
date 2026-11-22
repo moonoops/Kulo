@@ -38,7 +38,7 @@ export interface KuloProjectsState {
   needsAuthorization: Record<string, boolean>;
   cleanup: Record<string, { projectId: string; deviceId: string; since: number }>;
   errors: Record<string, string>;
-  cancellations: Record<string, { projectId?: string; reason: string; requestedAt: number }>;
+  cancellations: Record<string, { projectId?: string; reason: string; requestedAt: number; cancellationId?: string }>;
 }
 
 export const KuloProjectsDoc = defineDoc<KuloProjectsState & JsonObject>({
@@ -327,8 +327,8 @@ export class KuloProjects {
   }
 
   async remove(id: string, options: { stopTasks?: boolean } = {}, context: Context = BACKGROUND_CONTEXT): Promise<RemoveProjectResult> {
-    return this.#serial(async () => {
-      const transition = await this.#deps.harness.commit(async (tx) => {
+    const transition = await this.#serial(async () => {
+      const committed = await this.#deps.harness.commit(async (tx) => {
         const state = await tx.doc(KuloProjectsDoc);
         const project = own(state.projects, id);
         if (!project) throw new ProjectError(404, "project_not_found", "项目不存在。");
@@ -364,18 +364,29 @@ export class KuloProjects {
           transitionTicketStatus(ticket, "stopped", now); ticket.stoppedReason = "项目已删除";
           ticket.updatedAt = now; ticket.cleanupPending = true;
           state.cancellations ??= {};
-          state.cancellations[ticket.id] = { projectId: id, reason: "项目已删除", requestedAt: now };
+          state.cancellations[ticket.id] = { projectId: id, reason: "项目已删除", requestedAt: now, cancellationId: randomUUID() };
         }
         return { project: clone(project), cleanupDevices: [...new Set(Object.values(state.cleanup).filter((item) => item.projectId === id).map((item) => item.deviceId))] };
       }, context);
       await this.#changed();
-      await this.#cancelPending(context, id);
-      let cleanupPending = false;
-      for (const deviceId of transition.cleanupDevices) cleanupPending = await this.#revoke(deviceId, id, context) || cleanupPending;
-      const runtime = await this.#deps.harness.snapshot(KuloStateDoc, context);
-      await this.#changed();
-      return { deleted: id, projects: await this.list(context), topics: Object.values(runtime?.topics ?? {}).filter((topic) => topic.deletedAt === undefined).map(clone), cleanupPending };
+      return committed;
     });
+    // Release KuloProjects.#tail before invoking stopTicket() to prevent inverse lock-order deadlock
+    // with per-ticket operations (e.g. applyStagedChanges) that call projects.ensureAuthorized().
+    await this.#cancelPending(context, id);
+    const cleanupPending = await this.#serial(async () => {
+      let pending = false;
+      const currentProjects = await this.#deps.harness.snapshot(KuloProjectsDoc, context);
+      for (const deviceId of transition.cleanupDevices) {
+        const key = `${deviceId}:${id}`;
+        if (!currentProjects?.cleanup[key] && currentProjects?.projects[id]?.deletedAt === undefined) continue;
+        pending = (await this.#revoke(deviceId, id, context)) || pending;
+      }
+      return pending;
+    });
+    const runtime = await this.#deps.harness.snapshot(KuloStateDoc, context);
+    await this.#changed();
+    return { deleted: id, projects: await this.list(context), topics: Object.values(runtime?.topics ?? {}).filter((topic) => topic.deletedAt === undefined).map(clone), cleanupPending };
   }
 
   async restore(id: string, context: Context = BACKGROUND_CONTEXT): Promise<ProjectView> {
@@ -453,8 +464,8 @@ export class KuloProjects {
   }
 
   async reconcileDevice(deviceId: string, context: Context = BACKGROUND_CONTEXT): Promise<void> {
+    await this.#cancelPending(context);
     await this.#serial(async () => {
-      await this.#cancelPending(context);
       if (!this.#deps.envManager.getEnvDescriptor(deviceId)?.online) return;
       const state = await this.#deps.harness.snapshot(KuloProjectsDoc, context);
       for (const cleanup of Object.values(state?.cleanup ?? {}).filter((item) => item.deviceId === deviceId)) {
@@ -464,7 +475,7 @@ export class KuloProjects {
   }
 
   async reconcileCancellations(context: Context = BACKGROUND_CONTEXT): Promise<void> {
-    await this.#serial(() => this.#cancelPending(context));
+    await this.#cancelPending(context);
   }
 
   async #cancelPending(context: Context, projectId?: string): Promise<void> {
@@ -472,7 +483,18 @@ export class KuloProjects {
     for (const [ticketId, cancellation] of Object.entries(snapshot?.cancellations ?? {})) {
       if (projectId && cancellation.projectId !== projectId) continue;
       await this.#deps.stopTicket(ticketId, cancellation.reason);
-      await this.#deps.harness.commit(async (tx) => { const state = await tx.doc(KuloProjectsDoc); delete state.cancellations[ticketId]; }, context);
+      await this.#deps.harness.commit(async (tx) => {
+        const state = await tx.doc(KuloProjectsDoc);
+        const current = own(state.cancellations, ticketId);
+        if (
+          current &&
+          current.projectId === cancellation.projectId &&
+          current.requestedAt === cancellation.requestedAt &&
+          current.cancellationId === cancellation.cancellationId
+        ) {
+          delete state.cancellations[ticketId];
+        }
+      }, context);
     }
   }
 
