@@ -29,8 +29,8 @@ const NEW_FILE_MAX_LINES = 900;
 const LEGACY_FILE_LINE_CEILINGS: Record<string, number> = {
   "packages/hub/src/hub.ts": 12058,
   "packages/protocol/src/android.ts": 3886,
-  "packages/hub/src/server.ts": 3074,
   "packages/env/src/bridge.ts": 2630,
+  "packages/hub/src/server.ts": 2609,
   "packages/web/src/App.tsx": 2304,
   "packages/hub/src/settings-assistant.ts": 2213,
   "packages/hub/src/providers.ts": 1951,
