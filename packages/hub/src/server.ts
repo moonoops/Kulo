@@ -82,6 +82,8 @@ import { createMediaHttpHandler } from "./media-http.js";
 import { snapshotChatUploadScope } from "./chat-attachment-deliveries.js";
 import { handleImageConfigurationHttp } from "./image-configuration-http.js";
 import { handleModelConfigurationHttp } from "./model-configuration-http.js";
+import type { HubHttpRouteContext } from "./http/context.js";
+import { handleProjectsRoutes } from "./http/projects-routes.js";
 import { MAINSTREAM_PROVIDER_PRESETS } from "./providers.js";
 import { UiCardError } from "./ui-cards.js";
 import { DeviceConnectionError, DeviceInterconnectionManager } from "./devices.js";
@@ -1490,6 +1492,12 @@ export async function startKuloHubServer(
           sendJson(res, 503, { error: "主机正在切换，请稍候。", code: "cluster_handover_in_progress" });
           return;
         }
+        const routeCtx: HubHttpRouteContext = {
+          hub, req, res, parsedUrl, pathname, readJsonObject, readJsonBody, sendJson,
+          requestOrigin, currentDevice, hasLocalDeviceControl, conversationQueryContext,
+          isHubSecret: (candidate) => [authToken, ...Object.values(hub.config.envTokens ?? {})].some((token) => Boolean(token) && token === candidate.trim()),
+          openNativePermissionSettings: (kind) => options.openNativePermissionSettings ? options.openNativePermissionSettings(kind) : openNativePermissionSettings(kind),
+        };
 
         const systemPermissionsRoute = /^\/api\/envs\/([^/]+)\/system-permissions(\/guide)?$/.exec(pathname);
         if (systemPermissionsRoute) {
@@ -2545,48 +2553,7 @@ export async function startKuloHubServer(
           return;
         }
 
-        if (pathname === "/api/projects/directories" && req.method === "GET") {
-          const deviceId = parsedUrl.searchParams.get("deviceId")?.trim();
-          if (!deviceId) throw new ProjectError(400, "invalid_device", "请选择设备。");
-          sendJson(res, 200, await hub.envManager.listProjectDirectories(deviceId, parsedUrl.searchParams.get("path") ?? undefined));
-          return;
-        }
-        if (pathname === "/api/projects" && req.method === "GET") {
-          sendJson(res, 200, { projects: await hub.projects.list() });
-          return;
-        }
-        if (pathname === "/api/projects" && req.method === "POST") {
-          const body = await readJsonObject(req);
-          if (typeof body.name !== "string" || typeof body.deviceId !== "string" || typeof body.workspaceDir !== "string" ||
-            (body.commandId !== undefined && typeof body.commandId !== "string") ||
-            (body.createDirectory !== undefined && typeof body.createDirectory !== "boolean")) {
-            throw new ProjectError(400, "invalid_project", "项目名称、设备和目录无效。");
-          }
-          const project = await hub.projects.create({ name: body.name, deviceId: body.deviceId, workspaceDir: body.workspaceDir,
-            commandId: body.commandId as string | undefined ?? randomUUID(), createDirectory: body.createDirectory as boolean | undefined });
-          sendJson(res, 201, { project });
-          return;
-        }
-        const projectRoute = /^\/api\/projects\/([^/]+)$/.exec(pathname);
-        if (projectRoute && req.method === "PATCH") {
-          const body = await readJsonObject(req);
-          if (body.deviceId !== undefined || body.workspaceDir !== undefined) throw new ProjectError(400, "project_binding_tool_required", "请通过 Kulo 重新关联项目目录。");
-          if ((body.name !== undefined && typeof body.name !== "string") || (body.notes !== undefined && typeof body.notes !== "string") ||
-            (body.expectedRevision !== undefined && (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 1))) {
-            throw new ProjectError(400, "invalid_project", "项目修改参数无效。");
-          }
-          const project = await hub.projects.patch(decodeURIComponent(projectRoute[1]!), {
-            name: body.name as string | undefined, notes: body.notes as string | undefined, expectedRevision: body.expectedRevision as number | undefined,
-          });
-          sendJson(res, 200, { project });
-          return;
-        }
-        if (projectRoute && req.method === "DELETE") {
-          const body = await readJsonObject(req) as { stopTasks?: boolean };
-          if (body.stopTasks !== undefined && typeof body.stopTasks !== "boolean") throw new ProjectError(400, "invalid_project", "删除参数无效。");
-          sendJson(res, 200, await hub.projects.remove(decodeURIComponent(projectRoute[1]!), { stopTasks: body.stopTasks }));
-          return;
-        }
+        if (await handleProjectsRoutes(routeCtx)) return;
 
         // Topics API
         if (req.method === "GET" && pathname === "/api/topics") {
