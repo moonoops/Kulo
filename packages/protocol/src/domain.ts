@@ -65,30 +65,8 @@ export interface RolePreset {
   dispatchPolicy?: import("./agent-routing.js").AgentDispatchPolicy;
 }
 
-export interface SubagentRecord {
-  id: string;
-  name: string;
-  role: string;
-  roleLabel: string;
-  ticketId: string;
-  parentConversationId: number;
-  conversationId: number;
-  readOnly: boolean;
-  runs: number;
-  createdAt: number;
-  updatedAt: number;
-  lastSummary?: string;
-  narrowedScope?: string;
-  state?: "queued" | "running" | "waiting" | "ready" | "failed" | "stopped";
-  invocationId?: string;
-}
-
-export interface OverflowReportAsset {
-  id: string;
-  name: string;
-  size: number;
-  totalChars: number;
-}
+export type { OverflowReportAsset, SubagentRecord, TicketSubagentSummary } from "./task-boards.js";
+import type { OverflowReportAsset, TicketSubagentSummary } from "./task-boards.js";
 
 export interface WorkerReportRecord {
   state: WorkerReportState;
@@ -236,11 +214,18 @@ export interface TicketRecord {
     sources?: import("./search.js").WebSource[];
     stagedDiff?: import("./external-agents.js").StagedWorkspaceDiffSummary;
   };
+  /** Optional TaskBoard ID linking multi-ticket collaborative work. */
+  boardId?: string;
+  /** Optional upstream ticket ID reviewed in read-only mode by this ticket. */
+  reviewTicketId?: string;
 }
 
 export interface TicketCardView {
   externalAgentKind?: import("./external-agents.js").ExternalAgentKind;
   pendingWorkspaceApply?: boolean;
+  subagentSummary?: TicketSubagentSummary;
+  boardId?: string;
+  reviewTicketId?: string;
   id: string;
   title: string;
   userSummary?: string;

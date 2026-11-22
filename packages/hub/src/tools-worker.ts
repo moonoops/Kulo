@@ -112,6 +112,7 @@ export interface SubagentTaskRequest {
   goal: string;
   scope?: string;
   thinkingLevel?: ThinkingEffort;
+  timeoutSeconds?: number;
 }
 
 export interface SubagentTaskOutcome {
@@ -121,7 +122,7 @@ export interface SubagentTaskOutcome {
   roleLabel: string;
   readOnly: boolean;
   reused: boolean;
-  status: "done" | "error";
+  status: "done" | "timeout" | "error";
   summary: string;
 }
 
@@ -351,6 +352,12 @@ export function createWorkerExtension(options: {
                 "Optional thinking effort override when the subagent role's thinkingLevel is 'auto'.",
             }),
           ),
+          timeout_seconds: opt(
+            num({
+              description:
+                "Optional per-subagent timeout in seconds (30–900; default 180s read-only, 300s writable).",
+            }),
+          ),
         }),
         {
           description: "List of subagent tasks to execute in parallel and await together.",
@@ -385,6 +392,7 @@ export function createWorkerExtension(options: {
               ...(t.thinking_level
                 ? { thinkingLevel: t.thinking_level as ThinkingEffort }
                 : {}),
+              ...(typeof t.timeout_seconds === "number" ? { timeoutSeconds: t.timeout_seconds } : {}),
             })),
             onProgress: (line) => {
               api.output(`${line}\n`);
@@ -401,7 +409,7 @@ export function createWorkerExtension(options: {
         for (const [idx, r] of results.entries()) {
           const modeTag = r.readOnly ? "只读" : "读写";
           const reuseTag = r.reused ? "续接队友" : "新建";
-          const statusTag = r.status === "done" ? "DONE" : "ERROR";
+          const statusTag = r.status === "done" ? "DONE" : r.status === "timeout" ? "TIMEOUT" : "ERROR";
           let body = r.summary;
           if (body.length > SUBAGENT_INLINE_MAX_CHARS) {
             const preview = body.slice(0, REPORT_DELIVERABLE_PREVIEW_CHARS);
@@ -435,7 +443,7 @@ export function createWorkerExtension(options: {
         const formatted = formattedEntries.join("\n\n---\n\n");
 
         return {
-          isError: results.every((r) => r.status === "error"),
+          isError: results.every((r) => r.status !== "done"),
           output: [{ type: "text", text: formatted }],
           details: { subagents: results } as never,
         };

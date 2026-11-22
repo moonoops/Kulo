@@ -28,7 +28,8 @@
   min-width: 0;
   gap: var(--kulo-space-4);
   padding: var(--kulo-space-4);
-  border: 1px solid var(--border);
+  border: 1px solid var(--kulo-card-edge);
+  border-radius: var(--kulo-card-radius);
   box-shadow: none;
 }
 
@@ -82,7 +83,7 @@
   flex-shrink: 0;
   place-items: center;
   border-radius: 10px;
-  background: var(--surface-secondary);
+  background: var(--surface);
   color: var(--muted);
 }
 
@@ -213,6 +214,7 @@
   min-height: 180px;
   padding: var(--kulo-space-4);
   border: 1px dashed var(--border);
+  border-radius: var(--kulo-card-radius);
   box-shadow: none;
 }
 

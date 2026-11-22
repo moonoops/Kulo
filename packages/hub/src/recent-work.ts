@@ -4,6 +4,7 @@ import type { RecentWorkSnapshot, TicketRecord } from "@kulo/protocol";
 import { isOrchestratorConversation, type KuloDurableState } from "./state.js";
 import { isActiveSettingsConversation, isSettingsTopicDeleted, type SettingsAssistantState } from "./settings-doc.js";
 import type { KuloProjectsState } from "./projects.js";
+import { formatRecentWorkTaskBoardsSection, RECENT_WORK_BOARD_BUDGET_CHARS } from "./task-boards.js";
 
 const ACTIVE = new Set(["queued", "running", "pausing", "waiting", "blocked"]);
 const RESULTS = new Set(["ready", "failed", "stopped"]);
@@ -18,7 +19,8 @@ const STATUS: Record<TicketRecord["status"], string> = {
   stopped: "stopped",
   closed: "closed",
 };
-export const RECENT_WORK_LIMIT = 1200;
+export const RECENT_WORK_LIMIT = 1600;
+export const RECENT_WORK_TICKET_TEXT_LIMIT = 1150;
 export const RECENT_WORK_TICKET_LIMIT = 5;
 
 const PRIORITY: Record<TicketRecord["status"], number> = {
@@ -126,7 +128,22 @@ export function buildRecentWorkSnapshot(input: RecentWorkInput): RecentWorkSnaps
   lines.push(...(selected.length ? selected.map(ticketLines) : ["No active or recent tickets in scope."]));
   if (tickets.length > selected.length) lines.push(`${tickets.length - selected.length} additional ticket(s) in scope; inspect via kulo_status.`);
 
-  const joined = lines.join("\n\n");
-  const content = joined.length > RECENT_WORK_LIMIT ? `${joined.slice(0, RECENT_WORK_LIMIT - 1)}…` : joined;
+  const joinedTickets = lines.join("\n\n");
+  const ticketContent =
+    joinedTickets.length > RECENT_WORK_TICKET_TEXT_LIMIT
+      ? `${joinedTickets.slice(0, RECENT_WORK_TICKET_TEXT_LIMIT - 1)}…`
+      : joinedTickets;
+  const boardsSection = formatRecentWorkTaskBoardsSection(
+    state,
+    projects,
+    settings,
+    conversationId,
+    RECENT_WORK_BOARD_BUDGET_CHARS,
+  );
+  const combined = boardsSection ? `${ticketContent}\n\n${boardsSection}` : ticketContent;
+  const content =
+    combined.length > RECENT_WORK_LIMIT
+      ? `${combined.slice(0, RECENT_WORK_LIMIT - 1)}…`
+      : combined;
   return { enabled: true, content, revision: createHash("sha256").update(content).digest("hex"), ...scope };
 }

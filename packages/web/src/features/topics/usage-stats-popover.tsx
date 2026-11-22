@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   Chip,
-  Disclosure,
   Popover,
   ProgressBar,
   Separator,
@@ -56,6 +55,18 @@ function barColor(severity: ExternalAgentQuotaSeverity | undefined): "accent" | 
   return "accent";
 }
 
+function windowPercentClass(severity: ExternalAgentQuotaSeverity | undefined): string {
+  if (severity === "exhausted") return "font-medium text-danger";
+  if (severity === "warning") return "font-medium text-warning";
+  return "font-medium text-foreground";
+}
+
+function itemDisplayOrder(status: ExternalAgentQuotaStatus): number {
+  if (status === "ok") return 0;
+  if (status === "api_key_billing" || status === "unsupported") return 1;
+  return 2;
+}
+
 function statusChipColor(status: ExternalAgentQuotaStatus): "default" | "warning" {
   if (status === "unauthenticated" || status === "env_outdated") return "warning";
   return "default";
@@ -74,8 +85,6 @@ function statusChipLabel(
       return t("设备离线", "Offline");
     case "env_outdated":
       return t("需更新设备", "Update required");
-    case "unsupported":
-      return t("未提供额度接口", "No quota API");
     default:
       return t("暂不可用", "Unavailable");
   }
@@ -128,17 +137,23 @@ function formatResetLabel(
 }
 
 function formatSyncTimestamp(
-  fetchedAt: number | undefined,
+  fetchedAt: number,
   nowMs: number,
   t: (zh: string, en: string) => string,
 ): string {
-  if (!fetchedAt) return t("未同步", "Not synced");
   const diffSec = Math.max(0, Math.floor((nowMs - fetchedAt) / 1000));
   if (diffSec < 45) return t("刚刚更新", "Updated just now");
   const diffMin = Math.floor(diffSec / 60);
   if (diffMin < 60) return t(`${diffMin} 分钟前`, `${diffMin}m ago`);
   const diffHour = Math.floor(diffMin / 60);
   return t(`${diffHour} 小时前`, `${diffHour}h ago`);
+}
+
+function formatCurrencyAmounts(text: string): string {
+  return text.replace(/([€£¥$])(\d{4,})(\.\d+)?/g, (_match, symbol: string, intPart: string, fracPart = "") => {
+    const formattedInt = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return `${symbol}${formattedInt}${fracPart}`;
+  });
 }
 
 function formatCreditsCaption(
@@ -149,16 +164,76 @@ function formatCreditsCaption(
   if (!credits) return undefined;
   if (credits.unlimited) return t("无限 Credits", "Unlimited credits");
   if (credits.isExtraUsage) {
-    const parts = [
-      credits.balanceText,
-      credits.usedPercent !== undefined ? `${credits.usedPercent}%` : undefined,
-    ].filter(Boolean);
-    return parts.length > 0
-      ? t(`超额用量 · ${parts.join(" · ")}`, `Extra usage · ${parts.join(" · ")}`)
-      : t("已启用超额用量", "Extra usage enabled");
+    const formattedBalance = credits.balanceText ? formatCurrencyAmounts(credits.balanceText) : undefined;
+    if (formattedBalance && credits.usedPercent !== undefined) {
+      return t(
+        `超额已用 ${formattedBalance}（${credits.usedPercent}%）`,
+        `Extra used ${formattedBalance} (${credits.usedPercent}%)`,
+      );
+    }
+    if (formattedBalance) {
+      return t(`超额已用 ${formattedBalance}`, `Extra used ${formattedBalance}`);
+    }
+    if (credits.usedPercent !== undefined) {
+      return t(`超额已用 ${credits.usedPercent}%`, `Extra used ${credits.usedPercent}%`);
+    }
+    return t("已启用超额用量", "Extra usage enabled");
   }
-  if (credits.balanceText) return `Credits ${credits.balanceText}`;
+  if (credits.balanceText) {
+    const formattedBalance = formatCurrencyAmounts(credits.balanceText);
+    return t(`Credits 余额 ${formattedBalance}`, `Credits balance ${formattedBalance}`);
+  }
   return undefined;
+}
+
+function latestQuotaFetchedAt(quotaView: ExternalClientQuotasView | null): number | undefined {
+  let maxAt: number | undefined;
+  for (const item of quotaView?.items ?? []) {
+    if (item.status === "unsupported") continue;
+    if (item.fetchedAt && (!maxAt || item.fetchedAt > maxAt)) maxAt = item.fetchedAt;
+  }
+  return maxAt;
+}
+
+export function ExternalQuotasSyncStatus({
+  quotaView,
+  clockOffsetMs,
+  loading,
+  refreshing,
+}: {
+  quotaView: ExternalClientQuotasView | null;
+  clockOffsetMs: number;
+  loading: boolean;
+  refreshing: boolean;
+}) {
+  const { t } = useI18n();
+  const latestFetchedAt = useMemo(() => latestQuotaFetchedAt(quotaView), [quotaView]);
+
+  if (refreshing) {
+    return (
+      <span
+        className="flex min-w-0 items-center gap-1.5 text-xs tabular-nums text-muted"
+        aria-live="polite"
+      >
+        <span
+          aria-hidden="true"
+          className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent animate-pulse motion-reduce:animate-none"
+        />
+        <span className="truncate">{t("更新中…", "Updating…")}</span>
+      </span>
+    );
+  }
+
+  if ((loading && !quotaView) || !latestFetchedAt) {
+    return null;
+  }
+
+  const calibratedNow = Date.now() - clockOffsetMs;
+  return (
+    <span className="min-w-0 truncate text-xs tabular-nums text-muted" aria-live="polite">
+      {formatSyncTimestamp(latestFetchedAt, calibratedNow, t)}
+    </span>
+  );
 }
 
 export function ExternalQuotasPanel({
@@ -179,43 +254,17 @@ export function ExternalQuotasPanel({
   onRefresh: () => void;
 }) {
   const { t, language } = useI18n();
-  const primaryQuotaItems = useMemo(
-    () => (quotaView?.items ?? []).filter((item) => item.status !== "unsupported"),
-    [quotaView],
-  );
-  const unsupportedQuotaItems = useMemo(
-    () => (quotaView?.items ?? []).filter((item) => item.status === "unsupported"),
-    [quotaView],
-  );
-  const latestFetchedAt = useMemo(() => {
-    let maxAt: number | undefined;
-    for (const item of primaryQuotaItems) {
-      if (item.fetchedAt && (!maxAt || item.fetchedAt > maxAt)) maxAt = item.fetchedAt;
-    }
-    return maxAt;
-  }, [primaryQuotaItems]);
+  const orderedQuotaItems = useMemo(() => {
+    const items = quotaView?.items ?? [];
+    return items
+      .map((item, index) => ({ item, index }))
+      .sort((a, b) => itemDisplayOrder(a.item.status) - itemDisplayOrder(b.item.status) || a.index - b.index)
+      .map(({ item }) => item);
+  }, [quotaView]);
   const calibratedNow = Date.now() - clockOffsetMs;
 
   return (
-    <div className="flex flex-col gap-2.5" aria-busy={refreshing || undefined}>
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs text-muted">
-          {refreshing
-            ? t("正在刷新…", "Refreshing…")
-            : formatSyncTimestamp(latestFetchedAt, calibratedNow, t)}
-        </span>
-        <Button
-          size="sm"
-          variant="ghost"
-          isIconOnly
-          isPending={refreshing}
-          aria-label={t("刷新外部额度", "Refresh external quotas")}
-          onPress={onRefresh}
-        >
-          {refreshing ? <Spinner size="sm" color="current" /> : <KuloIcon name="refresh" size={16} />}
-        </Button>
-      </div>
-
+    <div className="flex flex-col gap-2" aria-busy={refreshing || undefined}>
       {loading && !quotaView ? (
         <div className="flex items-center gap-2 py-6 text-xs text-muted">
           <Spinner size="sm" />
@@ -236,32 +285,19 @@ export function ExternalQuotasPanel({
             </span>
           )}
 
-          {primaryQuotaItems.length > 0 && (
+          {orderedQuotaItems.length > 0 && (
             <div className="scrollbar flex max-h-[min(24rem,52vh)] flex-col divide-y divide-separator overflow-y-auto">
-              {primaryQuotaItems.map((item) => {
-                if (item.status !== "ok") {
-                  return (
-                    <div
-                      key={item.clientId}
-                      className="flex items-center justify-between gap-2 py-2 first:pt-0.5 last:pb-0.5"
-                    >
-                      <div className="flex min-w-0 items-baseline gap-1.5">
-                        <span className="truncate text-sm font-medium text-foreground">{item.label}</span>
-                        {showDeviceName && (
-                          <span className="truncate text-xs text-muted">{item.envName}</span>
-                        )}
-                      </div>
-                      <Chip size="sm" variant="soft" color={statusChipColor(item.status)}>
-                        <Chip.Label title={item.error}>
-                          {statusChipLabel(item.status, t)}
-                        </Chip.Label>
-                      </Chip>
-                    </div>
-                  );
-                }
+              {orderedQuotaItems.map((item) => {
+                const isOk = item.status === "ok";
+                const peak = isOk ? itemPeakSeverity(item) : "normal";
+                const creditsCaption = isOk ? formatCreditsCaption(item, t) : undefined;
+                const chipLabel = isOk
+                  ? item.planLabel
+                  : item.status === "unsupported"
+                    ? undefined
+                    : statusChipLabel(item.status, t);
+                const chipColor = isOk ? planChipColor(peak) : statusChipColor(item.status);
 
-                const peak = itemPeakSeverity(item);
-                const creditsCaption = formatCreditsCaption(item, t);
                 return (
                   <div
                     key={item.clientId}
@@ -274,14 +310,16 @@ export function ExternalQuotasPanel({
                           <span className="truncate text-xs text-muted">{item.envName}</span>
                         )}
                       </div>
-                      {item.planLabel && (
-                        <Chip size="sm" variant="soft" color={planChipColor(peak)}>
-                          <Chip.Label>{item.planLabel}</Chip.Label>
+                      {chipLabel && (
+                        <Chip size="sm" variant="soft" color={chipColor}>
+                          <Chip.Label title={isOk ? undefined : item.error}>
+                            {chipLabel}
+                          </Chip.Label>
                         </Chip>
                       )}
                     </div>
 
-                    {item.windows.length > 0 ? (
+                    {isOk && item.windows.length > 0 ? (
                       <div className="flex flex-col gap-2">
                         {item.windows.map((win) => {
                           const winLabel = formatWindowLabel(win, t);
@@ -292,8 +330,10 @@ export function ExternalQuotasPanel({
                             <div key={win.id} className="flex flex-col gap-1">
                               <div className="flex items-center justify-between gap-2 text-xs">
                                 <span className="truncate text-muted">{winLabel}</span>
-                                <span className="shrink-0 tabular-nums text-foreground">
-                                  <span>{win.usedPercent}%</span>
+                                <span className="shrink-0 tabular-nums">
+                                  <span className={windowPercentClass(win.severity)}>
+                                    {t(`已用 ${win.usedPercent}%`, `${win.usedPercent}% used`)}
+                                  </span>
                                   {resetLabel && <span className="text-muted"> · {resetLabel}</span>}
                                 </span>
                               </div>
@@ -312,57 +352,27 @@ export function ExternalQuotasPanel({
                           );
                         })}
                       </div>
-                    ) : item.planLabel === "Team" ? (
+                    ) : isOk && item.planLabel === "Team" ? (
                       <span className="text-xs text-muted">
                         {t("由团队统一管理配额", "Managed by team")}
                       </span>
+                    ) : !isOk || !creditsCaption ? (
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="truncate text-muted">{t("已用额度", "Quota used")}</span>
+                        <span className="shrink-0 font-mono tabular-nums text-muted">--- / ---</span>
+                      </div>
                     ) : null}
 
                     {creditsCaption && (
-                      <span className="text-xs text-muted">{creditsCaption}</span>
+                      <span className="text-xs tabular-nums text-muted">{creditsCaption}</span>
                     )}
-                    {item.refreshError && (
+                    {isOk && item.refreshError && (
                       <span className="text-xs text-danger">{item.refreshError}</span>
                     )}
                   </div>
                 );
               })}
             </div>
-          )}
-
-          {unsupportedQuotaItems.length > 0 && (
-            <>
-              {primaryQuotaItems.length > 0 && <Separator />}
-              <Disclosure>
-                <Disclosure.Heading>
-                  <Disclosure.Trigger className="flex w-full cursor-pointer items-center justify-between gap-2 py-1 text-left">
-                    <span className="text-xs font-medium text-foreground">
-                      {t(
-                        `其他已连接 (${unsupportedQuotaItems.length})`,
-                        `Other connected (${unsupportedQuotaItems.length})`,
-                      )}
-                    </span>
-                    <span className="flex items-center gap-1 text-xs text-muted">
-                      <span>{t("未提供额度接口", "No quota API")}</span>
-                      <Disclosure.Indicator />
-                    </span>
-                  </Disclosure.Trigger>
-                </Disclosure.Heading>
-                <Disclosure.Content>
-                  <Disclosure.Body className="flex flex-col gap-1.5 pt-1">
-                    {unsupportedQuotaItems.map((item) => (
-                      <div
-                        key={item.clientId}
-                        className="flex items-center justify-between gap-2 text-xs text-muted"
-                      >
-                        <span className="truncate text-foreground">{item.label}</span>
-                        {showDeviceName && <span className="shrink-0">{item.envName}</span>}
-                      </div>
-                    ))}
-                  </Disclosure.Body>
-                </Disclosure.Content>
-              </Disclosure>
-            </>
           )}
         </div>
       ) : null}
@@ -437,10 +447,15 @@ export function UsageStatsPopover({
     }
     const controller = new AbortController();
     let active = true;
-    setQuotaError(null);
-    if (!quotaView) setQuotaLoading(true);
+    let inFlight = false;
 
-    void (async () => {
+    const runSilentSync = async (isInitial: boolean) => {
+      if (!active || controller.signal.aborted || inFlight) return;
+      inFlight = true;
+      if (isInitial) {
+        setQuotaError(null);
+        if (!quotaView) setQuotaLoading(true);
+      }
       try {
         const snapshot = await kuloRest.getExternalClientQuotas({ signal: controller.signal });
         if (!active || controller.signal.aborted) return;
@@ -463,7 +478,7 @@ export function UsageStatsPopover({
             setQuotaError(
               refreshErr instanceof Error
                 ? refreshErr.message
-                : t("刷新外部额度失败", "Failed to refresh external quotas"),
+                : t("刷新外部 Agent 额度失败", "Failed to refresh external agent quotas"),
             );
           } finally {
             if (active) setQuotaRefreshing(false);
@@ -471,21 +486,39 @@ export function UsageStatsPopover({
         }
       } catch (err) {
         if (!active || controller.signal.aborted || isAbortError(err)) return;
-        setQuotaError(err instanceof Error ? err.message : t("加载外部额度失败", "Failed to load external quotas"));
+        setQuotaError(
+          err instanceof Error
+            ? err.message
+            : t("加载外部 Agent 额度失败", "Failed to load external agent quotas"),
+        );
         setQuotaLoading(false);
+      } finally {
+        inFlight = false;
       }
-    })();
+    };
+
+    void runSilentSync(true);
+
+    const onWindowFocus = () => {
+      void runSilentSync(false);
+    };
+    window.addEventListener("focus", onWindowFocus);
+    const intervalId = window.setInterval(() => {
+      void runSilentSync(false);
+    }, 60_000);
 
     return () => {
       active = false;
       controller.abort();
+      window.removeEventListener("focus", onWindowFocus);
+      window.clearInterval(intervalId);
       setQuotaRefreshing(false);
     };
     // Intentionally excludes quotaView so SWR only runs on open/tab-switch/client-list changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, hasExternalClients, activeTab, connectedClients.length]);
 
-  const handleManualRefresh = () => {
+  const handleRetryRefresh = () => {
     if (quotaRefreshing) return;
     manualRefreshAbortRef.current?.abort();
     const controller = new AbortController();
@@ -501,7 +534,11 @@ export function UsageStatsPopover({
       })
       .catch((err) => {
         if (controller.signal.aborted || isAbortError(err)) return;
-        setQuotaError(err instanceof Error ? err.message : t("刷新外部额度失败", "Failed to refresh external quotas"));
+        setQuotaError(
+          err instanceof Error
+            ? err.message
+            : t("刷新外部 Agent 额度失败", "Failed to refresh external agent quotas"),
+        );
       })
       .finally(() => {
         if (manualRefreshAbortRef.current === controller) {
@@ -638,7 +675,7 @@ export function UsageStatsPopover({
       refreshing={quotaRefreshing}
       error={quotaError}
       showDeviceName={showDeviceName}
-      onRefresh={handleManualRefresh}
+      onRefresh={handleRetryRefresh}
     />
   );
 
@@ -662,18 +699,28 @@ export function UsageStatsPopover({
               onSelectionChange={(k) => setActiveTab(k as "usage" | "quota")}
               className="w-full"
             >
-              <Tabs.ListContainer className="w-fit max-w-full min-w-0 shrink-0">
-                <Tabs.List aria-label={t("统计视图", "Usage view")} className="w-max">
-                  <Tabs.Tab id="usage" className="w-auto shrink-0 whitespace-nowrap">
-                    {t("用量", "Usage")}
-                    <Tabs.Indicator />
-                  </Tabs.Tab>
-                  <Tabs.Tab id="quota" className="w-auto shrink-0 whitespace-nowrap">
-                    {t("外部额度", "External quotas")}
-                    <Tabs.Indicator />
-                  </Tabs.Tab>
-                </Tabs.List>
-              </Tabs.ListContainer>
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                <Tabs.ListContainer className="w-fit max-w-full min-w-0 shrink-0">
+                  <Tabs.List aria-label={t("统计视图", "Usage view")} className="w-max">
+                    <Tabs.Tab id="usage" className="w-auto shrink-0 whitespace-nowrap">
+                      {t("用量", "Usage")}
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                    <Tabs.Tab id="quota" className="w-auto shrink-0 whitespace-nowrap">
+                      {t("外部 Agent", "External Agents")}
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                  </Tabs.List>
+                </Tabs.ListContainer>
+                {activeTab === "quota" && (
+                  <ExternalQuotasSyncStatus
+                    quotaView={quotaView}
+                    clockOffsetMs={clockOffsetMs}
+                    loading={quotaLoading}
+                    refreshing={quotaRefreshing}
+                  />
+                )}
+              </div>
               <Tabs.Panel id="usage" className="mt-3 w-full p-0">
                 {renderUsageSection()}
               </Tabs.Panel>

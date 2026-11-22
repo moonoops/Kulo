@@ -71,8 +71,8 @@ export function readHostDiagramThemeVars(mode: "light" | "dark"): Record<Diagram
   const style = window.getComputedStyle(document.documentElement);
   const read = (prop: string, fallback: string) => resolveCssColorToSrgb(style.getPropertyValue(prop), fallback);
 
-  const paper = read("--surface", defaults["--d-paper"]);
-  const paper2 = read("--surface-secondary", defaults["--d-paper-2"]);
+  const paper = read("--surface-secondary", defaults["--d-paper"]);
+  const paper2 = read("--surface", defaults["--d-paper-2"]);
   const ink = read("--foreground", defaults["--d-ink"]);
   const muted = read("--muted", defaults["--d-muted"]);
   const ruleSolid = read("--border", defaults["--d-rule-solid"]);

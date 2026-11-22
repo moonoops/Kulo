@@ -124,4 +124,55 @@ describe("task failure details", () => {
     expect(html).not.toContain("问题待确认");
     expect(html).not.toContain("<textarea");
   });
+
+  it("disables quick-action stop choices and top controls while an offline ticket.stop is pending", () => {
+    const html = render(
+      {
+        status: "waiting",
+        waiting: {
+          reason: "user",
+          since: 2,
+          detail: "是否授予手机截屏权限？",
+          options: [
+            { id: "grant", label: "已授权，继续", tone: "primary", action: "reply" },
+            { id: "stop", label: "暂不授予，结束任务", tone: "secondary", action: "stop" },
+          ],
+        },
+      },
+      { pendingStop: true },
+    );
+    expect(button(html, "已授权，继续")).toMatch(/\sdisabled(?:=|\s|>)/);
+    expect(button(html, "暂不授予，结束任务")).toMatch(/\sdisabled(?:=|\s|>)/);
+    expect(button(html, `停止任务：${ticket.title}`)).toMatch(/\sdisabled(?:=|\s|>)|aria-disabled="true"/);
+  });
+
+  it("renders stopped tasks with localized default reason, custom reason, cleanup-pending label, and no duplicate execution result", () => {
+    const defaultStopped = render({
+      status: "stopped",
+      stoppedReason: "Stopped by user",
+      latestReport: { state: "blocked", summary: "缺少权限", deliverable: "缺少权限", at: 2 },
+    });
+    expect(defaultStopped).toContain("已停止");
+    expect(defaultStopped).toContain("已由用户停止");
+    expect(defaultStopped).not.toContain("Stopped by user");
+    expect(defaultStopped).not.toContain("执行结果");
+
+    const customStopped = render({
+      status: "stopped",
+      stoppedReason: "暂不授予，结束任务",
+      latestReport: { state: "blocked", summary: "设备未授予截屏权限", deliverable: "设备未授予截屏权限", at: 2 },
+    });
+    expect(customStopped).toContain("已停止");
+    expect(customStopped).toContain("暂不授予，结束任务");
+    expect(customStopped).not.toContain("最新进展");
+    expect(customStopped).not.toContain("执行结果");
+
+    const cleanupStopped = render({
+      status: "stopped",
+      cleanupPending: true,
+      stoppedReason: "用户跳过人工接管并停止任务",
+    });
+    expect(cleanupStopped).toContain("清理待确认");
+    expect(cleanupStopped).toContain("用户跳过人工接管并停止任务");
+  });
 });

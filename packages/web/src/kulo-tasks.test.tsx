@@ -12,6 +12,8 @@ describe("task dispatch chat cards", () => {
       latestReport: { state: "ready", summary: "NATIVE_UNREVIEWED_CLAIM", at: 2 },
     };
     const html = renderToStaticMarkup(<TaskDispatchCard dispatch={dispatch} liveTicket={native} onProject={() => {}} />);
+    expect(html).toContain("card--secondary");
+    expect(html).toContain("kulo-dispatch-card");
     expect(html).toContain("已完成");
     expect(html).not.toContain("待验收");
     expect(html).not.toContain("已返回");

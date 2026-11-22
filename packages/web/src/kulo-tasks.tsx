@@ -24,6 +24,7 @@ import { KuloIcon } from "./kulo-icon";
 import { KuloMarkdown } from "./kulo-markdown";
 import { TaskTimeline } from "./features/tasks/task-timeline";
 import { TaskDeliverables } from "./features/tasks/task-deliverables";
+import { TaskSubagents } from "./features/tasks/task-subagents";
 
 import { compactTaskPaths, ticketHasPendingWorkspaceApply, ticketTone, taskIsRecovering, taskStatusLabel, taskTimeLabel, type TaskTone } from "./features/tasks/task-model";
 import { TaskFailureActions, type TicketAction } from "./features/tasks/task-failure-actions";
@@ -111,7 +112,7 @@ export function TaskDispatchCard({
   const summary = liveTicket?.userSummary ?? dispatch.userSummary;
 
   return (
-    <Card variant="secondary" className="w-full max-w-[560px] rounded-3xl">
+    <Card variant="secondary" className="kulo-dispatch-card">
       <Card.Content className="flex flex-row items-center gap-3">
       <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent">
         <KuloIcon name="task-alt" filled size={20} />
@@ -141,6 +142,7 @@ export function KuloTaskProjection({
   connected = true,
   canQueueActions = connected,
   pendingAnswer,
+  pendingStop = false,
   roleLabel,
   onAnswerBlocker,
   onStop,
@@ -160,9 +162,10 @@ export function KuloTaskProjection({
   connected?: boolean;
   canQueueActions?: boolean;
   pendingAnswer?: { text: string; commandId: string };
+  pendingStop?: boolean;
   roleLabel: string;
   onAnswerBlocker: (ticketId: string, answer: string, commandId: string, decisionOptionId?: string) => Promise<void>;
-  onStop: TicketAction;
+  onStop: (ticketId: string, reason?: string) => Promise<void> | void;
   onRetry: TicketAction;
   onArchiveClose: TicketAction;
   onDefer: () => void;
@@ -192,7 +195,9 @@ export function KuloTaskProjection({
   const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
   const controlFlightsRef = useRef(new Set<string>());
   const [controlPending, setControlPending] = useState<Partial<Record<string, "retry" | "close" | "stop">>>({});
-  const pendingControl = controlPending[ticket.id];
+  const [pendingStopOptions, setPendingStopOptions] = useState<Partial<Record<string, string>>>({});
+  const pendingControl = controlPending[ticket.id] ?? (pendingStop ? "stop" : undefined);
+  const pendingStopOptionId = pendingStopOptions[ticket.id];
 
   useEffect(() => {
     setAnswer("");
@@ -212,9 +217,16 @@ export function KuloTaskProjection({
 
   const now = useTaskClock();
 
-  const summary =
+  const reportSummary =
     ticket.latestReport?.summary ?? ticket.userSummary ?? ticket.goal;
-  const question = ticket.waiting?.detail ?? ticket.latestReport?.question ?? summary;
+  const rawStoppedReason = ticket.stoppedReason?.trim();
+  const stoppedSummary = ticket.status === "stopped" && rawStoppedReason
+    ? rawStoppedReason === "Stopped by user"
+      ? t("已由用户停止", "Stopped by user")
+      : rawStoppedReason
+    : undefined;
+  const summary = stoppedSummary || reportSummary;
+  const question = ticket.waiting?.detail ?? ticket.latestReport?.question ?? reportSummary;
   const decisionOptions: readonly TicketWaitOption[] = ticket.waiting?.options ?? [];
   const recovering = taskIsRecovering(ticket);
   const pendingWorkspaceApply = ticketHasPendingWorkspaceApply(ticket);
@@ -223,13 +235,18 @@ export function KuloTaskProjection({
   const needsAnswer = ticket.status === "blocked" || ticket.status === "waiting" && ticket.waiting?.reason === "user";
   const completed = ticket.status === "ready" || ticket.status === "closed";
   const detailedFileReport = completed && Boolean(deliverable && compactTaskPaths(deliverable, ticket) !== deliverable);
-  const result = completed ? detailedFileReport ? summary : deliverable?.trim() || summary : deliverable?.trim() !== summary.trim() ? deliverable : undefined;
+  const trimmedDeliverable = deliverable?.trim();
+  const result = completed
+    ? detailedFileReport ? reportSummary : trimmedDeliverable || reportSummary
+    : trimmedDeliverable && trimmedDeliverable !== summary.trim() && trimmedDeliverable !== reportSummary.trim()
+      ? deliverable
+      : undefined;
   const displayResult = result ? compactTaskPaths(result, ticket) : undefined;
   const fullReport = detailedFileReport ? deliverable : displayResult !== result ? result : undefined;
 
   const submitDecision = async (rawText: string, optionId?: string) => {
     const clean = rawText.trim();
-    if (!clean || !canQueueActions || submittingAnswer || answerFlightsRef.current.has(ticket.id)) return;
+    if (!clean || !canQueueActions || submittingAnswer || Boolean(pendingControl) || answerFlightsRef.current.has(ticket.id)) return;
     const ticketId = ticket.id;
     answerFlightsRef.current.add(ticketId);
     setAnswerError(null);
@@ -261,11 +278,14 @@ export function KuloTaskProjection({
     await submitDecision(answer);
   };
 
-  const runControl = async (action: "retry" | "close" | "stop", handler: TicketAction) => {
+  const runControl = async (action: "retry" | "close" | "stop", handler: TicketAction, stopOptionId?: string) => {
     const ticketId = ticket.id;
-    if (!canQueueActions || controlFlightsRef.current.has(ticketId)) return;
+    if (!canQueueActions || submittingAnswer || Boolean(pendingControl) || controlFlightsRef.current.has(ticketId)) return;
     controlFlightsRef.current.add(ticketId);
     setControlPending(current => ({ ...current, [ticketId]: action }));
+    if (stopOptionId) {
+      setPendingStopOptions(current => ({ ...current, [ticketId]: stopOptionId }));
+    }
     setControlError(null);
     try {
       await handler(ticketId);
@@ -276,6 +296,9 @@ export function KuloTaskProjection({
     } finally {
       controlFlightsRef.current.delete(ticketId);
       setControlPending(current => { const next = { ...current }; delete next[ticketId]; return next; });
+      if (stopOptionId) {
+        setPendingStopOptions(current => { const next = { ...current }; delete next[ticketId]; return next; });
+      }
     }
   };
 
@@ -301,14 +324,14 @@ export function KuloTaskProjection({
               requestAnimationFrame(() => overviewHeadingRef.current?.focus({ preventScroll: true }));
             }} onIgnore={onArchiveClose} /> :
               <div className="kulo-task-action-buttons">
-                {["running", "queued", "pausing", "waiting", "blocked"].includes(ticket.status) && <Button size="sm" variant="tertiary" aria-label={t(`停止任务：${ticket.title}`, `Stop task: ${ticket.title}`)} isDisabled={!canQueueActions || Boolean(pendingControl)} isPending={pendingControl === "stop"} onPress={() => setConfirmStopOpen(true)}>{pendingControl === "stop" && <Spinner size="sm" color="current" />}{t("停止任务", "Stop task")}</Button>}
-                {ticket.status === "blocked" && <Button size="sm" variant="secondary" aria-label={t(`重试任务：${ticket.title}`, `Retry task: ${ticket.title}`)} isDisabled={!canQueueActions || Boolean(pendingControl)} isPending={pendingControl === "retry"} onPress={() => void runControl("retry", onRetry)}>{pendingControl === "retry" && <Spinner size="sm" color="current" />}{t("重试", "Retry")}</Button>}
+                {["running", "queued", "pausing", "waiting", "blocked"].includes(ticket.status) && <Button size="sm" variant="tertiary" aria-label={t(`停止任务：${ticket.title}`, `Stop task: ${ticket.title}`)} isDisabled={!canQueueActions || Boolean(pendingControl) || submittingAnswer} isPending={pendingControl === "stop" && !pendingStopOptionId} onPress={() => setConfirmStopOpen(true)}>{pendingControl === "stop" && !pendingStopOptionId && <Spinner size="sm" color="current" />}{t("停止任务", "Stop task")}</Button>}
+                {ticket.status === "blocked" && <Button size="sm" variant="secondary" aria-label={t(`重试任务：${ticket.title}`, `Retry task: ${ticket.title}`)} isDisabled={!canQueueActions || Boolean(pendingControl) || submittingAnswer} isPending={pendingControl === "retry"} onPress={() => void runControl("retry", onRetry)}>{pendingControl === "retry" && <Spinner size="sm" color="current" />}{t("重试", "Retry")}</Button>}
                 {(ticket.status === "ready" || ticket.status === "stopped") && (
                   <Button
                     size="sm"
                     variant="tertiary"
                     aria-label={pendingWorkspaceApply ? t(`丢弃并关闭任务：${ticket.title}`, `Discard and close task: ${ticket.title}`) : t(`关闭任务：${ticket.title}`, `Close task: ${ticket.title}`)}
-                    isDisabled={!canQueueActions || Boolean(pendingControl)}
+                    isDisabled={!canQueueActions || Boolean(pendingControl) || submittingAnswer}
                     isPending={pendingControl === "close"}
                     onPress={() => {
                       if (pendingWorkspaceApply) setConfirmDiscardOpen(true);
@@ -328,7 +351,7 @@ export function KuloTaskProjection({
           <div className="kulo-task-overview-heading">
             <KuloIcon name={recovering ? "refresh" : failed ? "error" : "task-alt"} size={18} />
             <h2 id="task-overview-heading" className="kulo-group-title" ref={overviewHeadingRef} tabIndex={-1}>
-              {recovering ? t("正在尝试其他方案", "Trying another approach") : failed ? t("失败原因", "Failure reason") : ticket.status === "waiting" ? taskStatusLabel(ticket) : t("最新进展", "Latest progress")}
+              {recovering ? t("正在尝试其他方案", "Trying another approach") : failed ? t("失败原因", "Failure reason") : (ticket.status === "waiting" || ticket.status === "stopped") ? taskStatusLabel(ticket) : t("最新进展", "Latest progress")}
             </h2>
           </div>
           <p className="kulo-task-detail-summary">{summary}</p>
@@ -356,17 +379,29 @@ export function KuloTaskProjection({
               <div className="flex flex-col gap-3">
                 {decisionOptions.length > 0 && (
                   <div className="flex flex-wrap items-center gap-2" role="group" aria-label={t("快捷选项", "Quick choices")}>
-                    {decisionOptions.map((option, index) => (
-                      <Button
-                        key={option.id}
-                        size="sm"
-                        variant={option.tone ?? (index === 0 ? "primary" : "secondary")}
-                        isDisabled={!canQueueActions || submittingAnswer}
-                        onPress={() => void submitDecision(option.value ?? option.label, option.id)}
-                      >
-                        {option.label}
-                      </Button>
-                    ))}
+                    {decisionOptions.map((option, index) => {
+                      const isStopOption = option.action === "stop";
+                      const isOptionPending = isStopOption && pendingControl === "stop" && pendingStopOptionId === option.id;
+                      return (
+                        <Button
+                          key={option.id}
+                          size="sm"
+                          variant={option.tone ?? (index === 0 ? "primary" : "secondary")}
+                          isPending={isOptionPending}
+                          isDisabled={!canQueueActions || submittingAnswer || Boolean(pendingControl)}
+                          onPress={() => {
+                            if (isStopOption) {
+                              void runControl("stop", (id) => onStop(id, option.value ?? option.label), option.id);
+                            } else {
+                              void submitDecision(option.value ?? option.label, option.id);
+                            }
+                          }}
+                        >
+                          {isOptionPending && <Spinner size="sm" color="current" />}
+                          {option.label}
+                        </Button>
+                      );
+                    })}
                   </div>
                 )}
                 <form className="flex flex-col gap-2.5" onSubmit={(e) => void submitAnswer(e)}>
@@ -376,7 +411,7 @@ export function KuloTaskProjection({
                     aria-label={t("回答待确认问题", "Answer the pending question")}
                     placeholder={decisionOptions.length > 0 ? t("或手动输入补充说明、替代方案…", "Or enter custom instructions…") : t("输入你的决定…", "Enter your decision…")}
                     rows={decisionOptions.length > 0 ? 2 : 3}
-                    disabled={submittingAnswer}
+                    disabled={submittingAnswer || Boolean(pendingControl)}
                     value={pendingAnswer?.text ?? answer}
                     onChange={(e) => {
                       setAnswer(e.target.value);
@@ -389,7 +424,7 @@ export function KuloTaskProjection({
                     <Button
                       variant="ghost"
                       size="sm"
-                      isDisabled={submittingAnswer}
+                      isDisabled={submittingAnswer || Boolean(pendingControl)}
                       onPress={onDefer}
                     >
                       {t("稍后", "Later")}
@@ -399,7 +434,7 @@ export function KuloTaskProjection({
                       variant={decisionOptions.length > 0 ? "secondary" : "primary"}
                       size="sm"
                       isPending={submittingAnswer}
-                      isDisabled={!answer.trim() || !canQueueActions || submittingAnswer}
+                      isDisabled={!answer.trim() || !canQueueActions || submittingAnswer || Boolean(pendingControl)}
                     >
                       {submittingAnswer ? t("提交中…", "Submitting…") : decisionOptions.length > 0 ? t("按说明提交", "Submit note") : t("确认提交", "Submit")}
                     </Button>
@@ -423,6 +458,8 @@ export function KuloTaskProjection({
             </Disclosure>}
           </section>
         )}
+
+        <TaskSubagents subagents={detail.subagents} />
 
         <Disclosure className="kulo-task-detail-disclosure">
           <Disclosure.Heading level={2}>
@@ -492,12 +529,12 @@ export function KuloTaskProjection({
           description={t(`停止「${ticket.title}」，并取消后续执行。${ticket.waiting?.reason === "env" || ticket.cleanupPending ? "设备重新连接后清理旧执行。" : ""}`, `Stop “${ticket.title}” and cancel subsequent execution.${ticket.waiting?.reason === "env" || ticket.cleanupPending ? " Previous execution will be cleaned up when the device reconnects." : ""}`)}
           confirmLabel={t("停止任务", "Stop task")}
           status="danger"
-          isConfirmDisabled={!canQueueActions || Boolean(pendingControl)}
+          isConfirmDisabled={!canQueueActions || Boolean(pendingControl) || submittingAnswer}
           onCancel={() => setConfirmStopOpen(false)}
           onConfirm={() => {
-            if (!canQueueActions || controlFlightsRef.current.has(ticket.id)) return;
+            if (!canQueueActions || submittingAnswer || Boolean(pendingControl) || controlFlightsRef.current.has(ticket.id)) return;
             setConfirmStopOpen(false);
-            void runControl("stop", onStop);
+            void runControl("stop", (id) => onStop(id));
           }}
         />
         <ConfirmDialog
@@ -506,10 +543,10 @@ export function KuloTaskProjection({
           description={t(`关闭「${ticket.title}」将丢弃隔离副本中尚未合入的改动并释放项目写锁。`, `Closing “${ticket.title}” will discard unmerged staged changes and release the project write lock.`)}
           confirmLabel={t("丢弃并关闭", "Discard & close")}
           status="danger"
-          isConfirmDisabled={!canQueueActions || Boolean(pendingControl)}
+          isConfirmDisabled={!canQueueActions || Boolean(pendingControl) || submittingAnswer}
           onCancel={() => setConfirmDiscardOpen(false)}
           onConfirm={() => {
-            if (!canQueueActions || controlFlightsRef.current.has(ticket.id)) return;
+            if (!canQueueActions || submittingAnswer || Boolean(pendingControl) || controlFlightsRef.current.has(ticket.id)) return;
             setConfirmDiscardOpen(false);
             void runControl("close", onArchiveClose);
           }}

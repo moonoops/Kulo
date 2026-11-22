@@ -83,6 +83,12 @@ export { DeviceJoinStaging, type HubDeviceController } from "./tools-devices.js"
 export { KuloPersonality, PersonalityDoc, PersonalityError, defaultPersonalitySettings, nextRelationshipRun } from "./personality.js";
 export { buildRecentWorkSnapshot } from "./recent-work.js";
 export {
+  RecentWorkSyncDoc,
+  RecentWorkUpdateEntry,
+  createRecentWorkSyncHook,
+  isSystemBaselinePending,
+} from "./recent-work-sync.js";
+export {
   KuloStateDoc,
   WorkerRelayEntry,
   WorkerWatchdogEntry,
@@ -264,3 +270,34 @@ export {
   type CreateStandbyHostBridgeOptions,
   type PreStartFenceResult,
 } from "./cluster-lifecycle.js";
+export {
+  KuloSubagentRunner,
+  aggregateTicketSubagentSummaries,
+  buildTicketSubagentViews,
+  clampSubagentTimeoutSeconds,
+  extractCurrentTurnAssistantText,
+  pruneClosedSubagentsInTx,
+  settlePendingSubagentsInTx,
+} from "./subagent-runner.js";
+export {
+  MAX_TASK_BOARDS,
+  MAX_TASK_BOARD_ENTRIES,
+  MAX_TASK_BOARD_WORKER_CONTEXT_CHARS,
+  attachDispatchedTicketToBoardInTx,
+  canAccessTaskBoard,
+  canAccessTicketInScope,
+  createTaskBoardInTx,
+  formatRecentWorkTaskBoardsSection,
+  formatTaskBoardWorkerContext,
+  readTaskBoard,
+  resolveBoardCallerScope,
+  resolveReplyTaskAnchor,
+  searchTaskBoards,
+  writeTaskBoardInTx,
+} from "./task-boards.js";
+export {
+  collectReviewPackAssets,
+  formatReviewPromptSection,
+  validateReviewTargetTicket,
+  writeReviewPackToScratchEnv,
+} from "./ticket-review-pack.js";

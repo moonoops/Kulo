@@ -14,6 +14,10 @@ export interface DesktopNotificationBridgePayload {
   force?: boolean;
 }
 
+export interface DesktopPickDirectoryOptions {
+  defaultPath?: string;
+}
+
 export interface DesktopFileBridge {
   ready?(): Promise<void>;
   onCommand?(listener: (command: AppShortcutCommand) => void): () => void;
@@ -22,6 +26,7 @@ export interface DesktopFileBridge {
   onNotificationOpen?(listener: (target: { topicId: string }) => void): () => void;
   preferences?: DesktopPreferencesBridge;
   systemPermissions?: DesktopSystemPermissionBridge;
+  pickDirectory?(options?: DesktopPickDirectoryOptions): Promise<string | null>;
   openFile(assetId: string, target: "default" | "browser"): Promise<void>;
   saveFile(assetId: string): Promise<"saved" | "canceled">;
 }

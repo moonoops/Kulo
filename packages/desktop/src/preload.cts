@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopAppCommand } from "./desktop-menu.js";
+import type { DesktopPickDirectoryOptions } from "./directory-picker.js";
 import type { DesktopNotificationPreferences, DesktopPreferences, DesktopPreferencesPatch } from "./desktop-preferences.js";
 import type { DesktopNotificationPayload } from "./notifications.js";
 import type { DesktopMicrophonePermissions, DesktopPermissionSettingsKind } from "./system-permissions.js";
@@ -45,6 +46,14 @@ async function fileAction<T>(channel: "kulo:open-file" | "kulo:save-file", ...ar
   }
 }
 
+async function directoryAction<T>(channel: "kulo:pick-directory", ...args: unknown[]): Promise<T> {
+  try { return await ipcRenderer.invoke(channel, ...args) as T; }
+  catch (error) {
+    const message = error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "") : "目录选择失败，请重试。";
+    throw new Error(message);
+  }
+}
+
 async function permissionAction<T>(channel: "kulo:system-permissions-status" | "kulo:system-permissions-request-microphone" | "kulo:system-permissions-open-settings", ...args: unknown[]): Promise<T> {
   try { return await ipcRenderer.invoke(channel, ...args) as T; }
   catch (error) {
@@ -76,6 +85,10 @@ if (process.isMainFrame) {
     },
     openFile: (assetId: string, target: "default" | "browser"): Promise<void> => fileAction("kulo:open-file", assetId, target),
     saveFile: (assetId: string): Promise<"saved" | "canceled"> => fileAction("kulo:save-file", assetId),
+    pickDirectory: (options?: DesktopPickDirectoryOptions): Promise<string | null> =>
+      options === undefined
+        ? directoryAction("kulo:pick-directory")
+        : directoryAction("kulo:pick-directory", options),
     notify: (payload: DesktopNotificationPayload): Promise<boolean> =>
       ipcRenderer.invoke("kulo:notify", payload),
     setBadge: (count: number | boolean): Promise<void> =>

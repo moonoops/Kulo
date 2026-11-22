@@ -28,6 +28,7 @@ describe("summarizeTopicPreview", () => {
 
   it("returns undefined when no visible message has non-empty text", () => {
     expect(summarizeTopicPreview([{ role: "system_note", text: "note" }])).toBeUndefined();
+    expect(summarizeTopicPreview([{ role: "dispatch", text: "后台任务" }])).toBeUndefined();
     expect(summarizeTopicPreview([])).toBeUndefined();
   });
 

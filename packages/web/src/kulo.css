@@ -378,11 +378,23 @@
 .kulo-conversation-stream {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   width: 100%;
   min-width: 0;
   max-width: var(--kulo-conversation-width);
   margin-inline: auto;
+}
+
+.kulo-conversation-stream > .kulo-message-target[data-role="user"]:not(:first-child) {
+  margin-top: 8px;
+}
+
+.kulo-dispatch-card {
+  width: 100%;
+  max-width: 560px;
+  border: 1px solid var(--kulo-card-edge);
+  border-radius: var(--kulo-card-radius);
+  box-shadow: none;
 }
 
 .kulo-settings-assistant[data-conversation-ready="true"] .kulo-settings-assistant-scroll {

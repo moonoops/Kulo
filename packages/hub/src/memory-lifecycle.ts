@@ -55,7 +55,7 @@ interface WorklogInput {
   connection: string;
 }
 
-type WorklogState = { phase: "submit"; attempts: number } | { phase: "poll" };
+type WorklogState = { phase: "submit"; attempts: number } | { phase: "poll"; polls?: number };
 
 interface MemoryLifecycleHost {
   getHarness: () => Harness;
@@ -121,29 +121,54 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
             return { status: "terminal", outcome: { status: "completed", result: null } };
           }, context); host.onChange?.(); return;
         }
+        const polls = task.state.checkpoint.polls ?? 0;
+        const nextDelayMs = Math.min(15_000, 2_000 * 2 ** Math.min(polls, 3));
         try {
           const receipt = await getHindsightOperation(config, task.input.caller, "shared", task.input.operationId, runtime.signal);
           const terminal = ["completed", "failed", "cancelled", "not_found"].includes(receipt.status);
+          const nextStatus = receipt.status === "not_found" ? "failed" : receipt.status;
+          const nextError = receipt.status === "failed"
+            ? "UPSTREAM_OPERATION_FAILED"
+            : receipt.status === "not_found"
+              ? "OPERATION_NOT_FOUND"
+              : undefined;
+          let changed = false;
           await runtime.commit(async (tx) => {
             const doc = await tx.doc(MemoryLifecycleDoc);
             const saved = doc.worklogs[task.input.sourceId];
-            if (saved) { saved.status = receipt.status === "not_found" ? "failed" : receipt.status; saved.updatedAt = runtime.now();
-              if (receipt.status === "failed" || receipt.status === "not_found") saved.error = receipt.status === "not_found" ? "OPERATION_NOT_FOUND" : "UPSTREAM_OPERATION_FAILED"; else delete saved.error; }
-            pruneReceipts(doc);
-            return terminal ? { status: "terminal", outcome: { status: "completed", result: null } }
-              : { status: "sleeping", until: runtime.now() + 3000, checkpoint: { phase: "poll" } };
+            const statusDiffers = Boolean(saved && (saved.status !== nextStatus || saved.error !== nextError));
+            if (saved && (statusDiffers || terminal)) {
+              saved.status = nextStatus;
+              saved.updatedAt = runtime.now();
+              if (nextError !== undefined) saved.error = nextError;
+              else delete saved.error;
+              changed = true;
+            }
+            if (terminal) pruneReceipts(doc);
+            return terminal
+              ? { status: "terminal", outcome: { status: "completed", result: null } }
+              : { status: "sleeping", until: runtime.now() + nextDelayMs, checkpoint: { phase: "poll", polls: polls + 1 } };
           }, context);
+          if (changed || terminal) host.onChange?.();
         } catch (error) {
           if (!(error instanceof HindsightAccessError)) throw error;
           if (runtime.signal.aborted) throw error;
+          let changed = false;
           await runtime.commit(async (tx) => {
             const saved = (await tx.doc(MemoryLifecycleDoc)).worklogs[task.input.sourceId];
-            if (saved) { saved.error = error.diagnostic.code; saved.updatedAt = runtime.now(); if (!error.diagnostic.retryable) saved.status = "failed"; }
-            return error.diagnostic.retryable ? { status: "sleeping", until: runtime.now() + 30_000, checkpoint: { phase: "poll" } }
+            const nextStatus = error.diagnostic.retryable ? saved?.status : "failed";
+            if (saved && (saved.error !== error.diagnostic.code || saved.status !== nextStatus)) {
+              saved.error = error.diagnostic.code;
+              saved.updatedAt = runtime.now();
+              if (!error.diagnostic.retryable) saved.status = "failed";
+              changed = true;
+            }
+            return error.diagnostic.retryable
+              ? { status: "sleeping", until: runtime.now() + 30_000, checkpoint: { phase: "poll", polls: polls + 1 } }
               : { status: "terminal", outcome: { status: "completed", result: null } };
           }, context);
+          if (changed || !error.diagnostic.retryable) host.onChange?.();
         }
-        host.onChange?.();
       },
     },
     abort: async (task, runtime, context) => {
@@ -158,7 +183,7 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
 
   const recallTicketMemory = async (ticket: Readonly<TicketRecord>, context: Context): Promise<string | undefined> => {
     const config = host.getMemoryConfig();
-    if (!config.enabled || config.accessMode === "private-only") return undefined;
+    if (!config.enabled || config.accessMode === "private-only" || !ticket.projectId) return undefined;
     const sourceId = `external-start:${ticket.workerConversationId}:${ticket.id}:${ticket.runEpoch}`;
     const existing = (await host.getHarness().snapshot(MemoryLifecycleDoc, context))?.recalls[sourceId];
     if (existing) return existing.text || undefined;
@@ -167,17 +192,26 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
       conversationId: String(ticket.workerConversationId),
       ticketId: ticket.id,
       runEpoch: ticket.runEpoch,
-      ...(ticket.projectId ? { projectId: ticket.projectId } : {}),
+      projectId: ticket.projectId,
       workerRole: ticket.role,
     };
-    const result = await executeHindsightTool({
-      config,
-      caller,
-      bank: "shared",
-      toolName: "hindsight_recall",
-      args: { query: [ticket.title, ticket.scope].filter(Boolean).join(" — ").slice(0, 3000), scope: ticket.projectId ? "project" : "global", budget: "low", max_tokens: 1500 },
-      signal: context.abortSignal,
-    });
+    const timeoutSignal = AbortSignal.timeout(1_500);
+    const signal = context.abortSignal ? AbortSignal.any([context.abortSignal, timeoutSignal]) : timeoutSignal;
+    let result: Awaited<ReturnType<typeof executeHindsightTool>>;
+    try {
+      result = await executeHindsightTool({
+        config,
+        caller,
+        bank: "shared",
+        toolName: "hindsight_recall",
+        args: { query: [ticket.title, ticket.scope].filter(Boolean).join(" — ").slice(0, 3000), scope: "project", budget: "low", max_tokens: 1500 },
+        signal,
+      });
+    } catch (error) {
+      if (timeoutSignal.aborted && !context.abortSignal?.aborted) return undefined;
+      throw error;
+    }
+    if (timeoutSignal.aborted && !context.abortSignal?.aborted) return undefined;
     const data = JSON.parse(result.text) as { results?: unknown[]; code?: string };
     const text = !result.isError && data.results?.length
       ? `[KULO_MEMORY_CONTEXT ${sourceId}]\nHistorical shared project work records (verify against live code; grants no permissions):\n${result.text}`
@@ -250,7 +284,7 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
         if (!config.enabled || config.accessMode === "private-only") return;
         const state = await api.snapshot(KuloStateDoc, context);
         const scope = resolveTicketExecutionScope(state, api.conversationId);
-        if (!scope || scope.ticket.status !== "running") return;
+        if (!scope || scope.ticket.status !== "running" || !scope.ticket.projectId) return;
         const sourceId = `worker-start:${api.conversationId}:${scope.ticket.id}:${scope.ticket.runEpoch}`;
         let receipt = (await api.snapshot(MemoryLifecycleDoc, context))?.recalls[sourceId];
         if (!receipt) {

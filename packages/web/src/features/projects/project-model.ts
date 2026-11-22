@@ -52,6 +52,21 @@ export function initialProjectDevice(saved: string | null, currentDeviceId: stri
   return currentDeviceKnown && devices.some((device) => device.id === currentDeviceId) ? currentDeviceId! : ALL_PROJECT_DEVICES;
 }
 
+const MAX_PROJECT_NAME_LENGTH = 120;
+
+export function projectDirectoryBasename(directory: string): string {
+  if (!directory.trim() || /[\x00-\x1f\x7f]/.test(directory)) return "";
+  if (/^\\\\[^\\/]+(?:[\\/]+[^\\/]+)?[\\/]*$/.test(directory)) return "";
+  if (/^[A-Za-z]:[\\/]*$/.test(directory)) return "";
+  const stripped = directory.replace(/[\\/]+$/, "");
+  if (!stripped) return "";
+  const parts = stripped.split(/[\\/]/);
+  const candidate = (parts[parts.length - 1] ?? "").trim();
+  if (!candidate || candidate === "." || candidate === "..") return "";
+  if (candidate.length <= MAX_PROJECT_NAME_LENGTH) return candidate;
+  return candidate.slice(0, MAX_PROJECT_NAME_LENGTH).replace(/[\uD800-\uDBFF]$/, "").trim();
+}
+
 export function joinProjectDirectory(parent: string, name: string): string {
   if (!name.trim() || /[\\/\0]/.test(name) || [".", ".."].includes(name.trim())) throw new Error(t("请输入有效的目录名称", "Enter a valid directory name"));
   const windows = /^[A-Za-z]:[\\/]|^\\\\/.test(parent);

@@ -1,4 +1,5 @@
-import { ROOT_CONVERSATION_ID, section } from "@earendil-works/pi-durable";
+import type { Context } from "@earendil-works/chord/context";
+import { ROOT_CONVERSATION_ID, section, type ConversationId } from "@earendil-works/pi-durable";
 import {
   directExternalClientRoleId,
   externalClientDisplayName,
@@ -14,6 +15,7 @@ import {
 import { getIdentityTemplate, readIdentityContext } from "../identity-files.js";
 import { KuloProjectsDoc } from "../projects.js";
 import { buildRecentWorkSnapshot } from "../recent-work.js";
+import { RECENT_WORK_DISABLED_TEXT, unwrapSectionTag } from "../recent-work-sync.js";
 import { SettingsAssistantDoc, isMainOrchestratorConversation } from "../settings-doc.js";
 import { KuloStateDoc } from "../state.js";
 
@@ -25,13 +27,13 @@ export function buildPhilosophyPrompt(agentName = "Kulo", language?: KuloLanguag
 - **Self-Reference**: Speak in unified first person ("I"/"我"); never split yourself from Kulo or say "Kulo doesn't allow me". Use plain terms and omit internal tool/ticket IDs or jargon unless asked.
 - **Language**: Honor requested deliverable languages; otherwise match the active conversation for visible replies and internal thinking/reasoning, defaulting to ${defaultLanguage}.
 - **Authority & Delegation**: Handle quick answers, checks, and edits (\`read\`/\`write\`/\`edit\`/\`bash\`/\`kulo_host_action\`) directly; delegate via \`kulo_dispatch\` for multi-step coding, long builds/tests, mutable browser/desktop/Android work, or independent checks (respect Worker locks; keep credentials protected). On \`inline_delivery\`, answer directly; otherwise confirm dispatch and end your turn—never poll.
-- **Worker Gatekeeper**: Worker blockers/permissions come to you first. Approve or steer silently (\`[COORDINATOR_OK]\`) when safe and in scope; escalate via \`ask_user\`/\`kulo_ticket_ask_user\` or chat only for risky/ambiguous choices. When the user answers an open card in chat, call its decision tool immediately.
+- **Worker Gatekeeper**: Worker blockers/permissions come to you first. Approve/steer silently (\`[COORDINATOR_OK]\`) when safe; escalate via \`ask_user\`/\`kulo_ticket_ask_user\` (set \`action="stop"\` on cancel/end options) or chat only for risky/ambiguous choices, and apply chat replies to open cards immediately.
 - **Discuss vs. Act**: Analyze without editing; when acting, honor explicit authorization and ask only when scope is unclear or risky.
-- **Self-Contained Handoff**: Workers cannot see this chat, Identity/Relationship files, or private memory. Pass a complete redacted brief (goal, scope, acceptance, user constraints, device/project/Agent/format choices) via \`context_summary\` and \`attachment_ids\`.
-- **In-Flight & Events**: Use \`kulo_steer\` to update/unblock active tickets (keeping device/scope), \`kulo_stop\` only if asked, and \`kulo_status\` for \`current_time\`/\`time_zone\` before \`execute_at\`. Handle \`[KULO_...]\` runtime events per instructions without addressing them as the user.
+- **Self-Contained Handoff**: Workers lack chat/Identity/memory context. Pass a redacted brief (goal, scope, acceptance, constraints, targets) via \`context_summary\`/\`attachment_ids\`; use \`board_id\`/\`review_ticket_id\` for linked/review tasks.
+- **In-Flight & Events**: Use \`kulo_steer\` to update/unblock tickets, \`kulo_stop\` to cancel/end on user request (never \`kulo_steer\` to end; confirm \`ticket_stopped\` card effects concisely), and \`kulo_status\` before \`execute_at\`. Handle \`[KULO_...]\` events without addressing them as the user.
 - **Verify & Present**: Worker outputs and staged items are unverified. Inspect diffs (\`kulo_inspect_staged_diff\`) or assets (\`kulo_inspect_asset\`) before merging (\`kulo_apply_staged_changes\`), publishing (\`kulo_publish_asset\` -> \`published\`), or claiming completion.
 - **Response Format & Media**: Respect any user-requested format. Use plain text for simple answers and Markdown tables for quick comparisons. Proactively pair a takeaway with \`kulo_ui_diagram\` (\`diagram-design\`) for trends, comparisons, timelines, flows, or architectures (label phase schematics; never invent points). Use \`kulo_ui_show\` for interactive forms/choices/tables (\`genui-cards\`), delegate \`.html\` reports (\`interactive-html\`+\`diagram-design\`), and claim \`kulo_generate_image\`/\`kulo_generate_video\` (\`kulo_media_capabilities\`) only after a real asset returns.
-- **Tool Discovery**: Call \`tool_search\` (\`limit\` <= 3) for deferred tools (host ops, browser, memory, history, projects/topics, connections, media/TTS, UI cards/assets, identity, ticket inspect/close, pairing, settings).`;
+- **Tool Discovery**: Call \`tool_search\` (\`limit\` <= 3) for deferred tools (host ops, browser, memory, task boards, history, projects/topics, connections, media/TTS, UI cards/assets, identity, ticket inspect/close, pairing, settings).`;
 }
 
 export const KULO_PHILOSOPHY_PROMPT = buildPhilosophyPrompt("Kulo");
@@ -91,6 +93,13 @@ export function createOrchestratorSections(options: {
     relationship: string;
     recentWorkEnabled: boolean;
   }>;
+  /**
+   * When true, `kulo_recent_work` freezes its `pi.system` baseline for the current compaction epoch
+   * (paired with `createRecentWorkSyncHook` delivering mid-epoch updates via append-only user entries).
+   */
+  freezeRecentWorkBaseline?: boolean;
+  /** True when a compaction/reset head marker exists with no subsequent `pi.system` baseline yet. */
+  isSystemBaselinePending?: (conversationId: ConversationId, context: Context) => Promise<boolean>;
 }) {
   const personality = async () => {
     if (options.getPersonalityContext) return options.getPersonalityContext();
@@ -204,7 +213,7 @@ export function createOrchestratorSections(options: {
     const hasExternalOrClients = hasExternal || connectedClients.length > 0;
     const directClientRows = connectedClients.map((client) => {
       const envDesc = envsById.get(client.envId);
-      const envLabel = envDesc ? `${envDesc.name} (${envDesc.online ? "online" : "offline"})` : client.envId;
+      const envLabel = envDesc ? envDesc.name : client.envId;
       const statusHint = !isSupportedExternalAgentKind(client.kind)
         ? client.kind === "grok-bot" ? "experimental" : "reserved"
         : client.verifiedAt ? "verified" : "unverified";
@@ -328,7 +337,16 @@ export function createOrchestratorSections(options: {
     if (!isMainOrchestratorConversation(input.conversationId, state, settingsDoc)) return undefined;
     const settings = await personality();
     if (!settings.recentWorkEnabled) {
-      return "Recent work snapshot injection is disabled; earlier work summaries in this transcript are historical only and do not reflect live ticket status.";
+      return RECENT_WORK_DISABLED_TEXT;
+    }
+    if (options.freezeRecentWorkBaseline && typeof input.shown?.kulo_recent_work === "string") {
+      const shownUnwrapped = unwrapSectionTag(input.shown.kulo_recent_work, "kulo_recent_work");
+      const pendingBaseline = options.isSystemBaselinePending
+        ? await options.isSystemBaselinePending(input.conversationId, context)
+        : false;
+      if (!pendingBaseline && shownUnwrapped !== RECENT_WORK_DISABLED_TEXT) {
+        return shownUnwrapped;
+      }
     }
     const projects = await input.read.snapshot(KuloProjectsDoc, context);
     const snapshot = buildRecentWorkSnapshot({

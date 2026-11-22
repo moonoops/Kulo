@@ -131,7 +131,9 @@ describe("GeneratedCard", () => {
 
   it("isolates unsupported versions and forbidden props without rendering a control", () => {
     const invalid = { ...card(), catalogVersion: 99 } as unknown as UiCardSnapshot;
-    expect(renderToStaticMarkup(<GeneratedCard card={invalid} onAction={onAction} />)).toContain("此卡片暂不支持显示");
+    const invalidHtml = renderToStaticMarkup(<GeneratedCard card={invalid} onAction={onAction} />);
+    expect(invalidHtml).toContain("此卡片暂不支持显示");
+    expect(invalidHtml).toContain("card--secondary");
     const forbidden = card();
     forbidden.spec.elements.submit.props = { actionId: "server-issued-action", onClick: "run arbitrary code" };
     const html = renderToStaticMarkup(<GeneratedCard card={forbidden} onAction={onAction} />);
@@ -187,7 +189,23 @@ describe("GeneratedCard", () => {
     expect(html).toContain("授权媒体：authorized-asset");
     expect(html).toContain("查看代码");
     expect(html).toContain('data-wide="true"');
+    expect(html).toContain("card--secondary");
+    expect(html).toContain("textarea--primary");
+    expect(html).toContain("number-field--primary");
+    expect(html).toContain("select--primary");
     expect(html).not.toContain("此卡片暂不支持显示");
+  });
+
+  it("uses primary search field contrast inside the elevated secondary card for paginated tables", () => {
+    const rows = Array.from({ length: 10 }, (_, index) => ({ name: `方案 ${index + 1}` }));
+    const snapshot: UiCardSnapshot = { ...card(), cardId: "paged-table", actions: [], spec: {
+      root: "table", elements: { table: { type: "Table", props: {
+        columns: [{ key: "name", label: "方案" }], rows, caption: "多页方案",
+      } } },
+    } };
+    const html = renderToStaticMarkup(<GeneratedCard card={snapshot} onAction={onAction} />);
+    expect(html).toContain("card--secondary");
+    expect(html).toContain("search-field--primary");
   });
 
   it("keeps generated code behind a named disclosure instead of filling the chat", () => {

@@ -77,6 +77,14 @@ describe("#1 Prompt prefix stability", () => {
     const sections = createOrchestratorSections({
       getIdentityDir: () => "/nonexistent",
       getRoles: () => roles,
+      getExternalClients: () => ({
+        "codex:local": {
+          id: "codex:local",
+          kind: "codex",
+          envId: "local",
+          verifiedAt: 1,
+        },
+      }),
       getEnvs,
       getMemoryConfig: () => resolveHubConfig({}).memory,
     });
@@ -525,7 +533,7 @@ describe("#3 External action dispatched / unknown anti-replay and startup recove
 });
 
 describe("#6 Adaptive compaction clamping and post-commit tool pruning", () => {
-  it("prevents 32K blocking loops and 64K thrashing while leaving 128K/200K/1M unchanged", () => {
+  it("prevents 32K blocking loops and 64K thrashing, leaves 128K unchanged, and caps 200K/1M background triggers to 128K", () => {
     const c32k = clampCompactionConfigForWindow(DEFAULT_COMPACTION_CONFIG, 32_768);
     expect(c32k.reserveTokens).toBe(8_192);
     const blocking32 = 32_768 - c32k.reserveTokens;
@@ -537,15 +545,33 @@ describe("#6 Adaptive compaction clamping and post-commit tool pruning", () => {
     expect(blocking64 - c64k.backgroundTokens).toBeGreaterThan(30_000);
     expect(blocking64 - c64k.backgroundTokens - c64k.keepRecentTokens).toBeGreaterThan(10_000);
 
-    expect(clampCompactionConfigForWindow(DEFAULT_COMPACTION_CONFIG, 200_000)).toEqual(DEFAULT_COMPACTION_CONFIG);
-    expect(clampCompactionConfigForWindow(DEFAULT_COMPACTION_CONFIG, 1_000_000)).toEqual(DEFAULT_COMPACTION_CONFIG);
+    expect(clampCompactionConfigForWindow(DEFAULT_COMPACTION_CONFIG, 128_000)).toEqual(DEFAULT_COMPACTION_CONFIG);
+
+    const c200k = clampCompactionConfigForWindow(DEFAULT_COMPACTION_CONFIG, 200_000);
+    expect(c200k.reserveTokens).toBe(DEFAULT_COMPACTION_CONFIG.reserveTokens);
+    expect(c200k.keepRecentTokens).toBe(DEFAULT_COMPACTION_CONFIG.keepRecentTokens);
+    expect(200_000 - c200k.reserveTokens - c200k.backgroundTokens).toBe(128_000);
+
+    const c1m = clampCompactionConfigForWindow(DEFAULT_COMPACTION_CONFIG, 1_048_576);
+    expect(c1m.reserveTokens).toBe(DEFAULT_COMPACTION_CONFIG.reserveTokens);
+    expect(c1m.keepRecentTokens).toBe(DEFAULT_COMPACTION_CONFIG.keepRecentTokens);
+    expect(1_048_576 - c1m.reserveTokens - c1m.backgroundTokens).toBe(128_000);
+
+    // Explicit backgroundTokens=0 opt-out and earlier user-configured triggers remain honored.
+    expect(clampCompactionConfigForWindow({ ...DEFAULT_COMPACTION_CONFIG, backgroundTokens: 0 }, 1_048_576).backgroundTokens).toBe(0);
+    const c200kEarlier = clampCompactionConfigForWindow({ ...DEFAULT_COMPACTION_CONFIG, backgroundTokens: 70_000 }, 200_000);
+    expect(c200kEarlier.backgroundTokens).toBe(70_000);
 
     const policy = buildAdaptiveCompactionPolicy(DEFAULT_COMPACTION_CONFIG, [
       { provider: "local", id: "qwen-32k", contextWindow: 32_768 },
+      { provider: "local", id: "qwen-128k", contextWindow: 128_000 },
       { provider: "anthropic", id: "claude-200k", contextWindow: 200_000 },
+      { provider: "google-vertex", id: "gemini-1m", contextWindow: 1_048_576 },
     ]);
     expect(policy.modelOverrides?.["local/qwen-32k"]).toEqual(c32k);
-    expect(policy.modelOverrides?.["anthropic/claude-200k"]).toBeUndefined();
+    expect(policy.modelOverrides?.["local/qwen-128k"]).toBeUndefined();
+    expect(policy.modelOverrides?.["anthropic/claude-200k"]).toEqual(c200k);
+    expect(policy.modelOverrides?.["google-vertex/gemini-1m"]).toEqual(c1m);
   });
 
   it("never prunes deferred tools inside beforeCompact and only prunes once after compaction commits when idle", async () => {

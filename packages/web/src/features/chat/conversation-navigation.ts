@@ -1,10 +1,10 @@
 import type { ChatDisplayItem } from "@kulo/protocol";
 
-/** Durable publications from one response can share a single visible message. */
+/** Durable publications (and legacy dispatch references) from one response can share a single visible message. */
 export function visibleMessageId(source: readonly ChatDisplayItem[], rendered: readonly ChatDisplayItem[], messageId: number): number | undefined {
   if (rendered.some((item) => item.id === messageId)) return messageId;
   const original = source.find((item) => item.id === messageId);
-  if (original?.role !== "assistant" || original.responseId === undefined) return undefined;
+  if ((original?.role !== "assistant" && original?.role !== "dispatch") || original.responseId === undefined) return undefined;
   return rendered.find((item) => item.role === "assistant" && item.responseId === original.responseId)?.id;
 }
 

@@ -3,7 +3,6 @@ import type { ChatDisplayItem, LiveStreamState } from "@kulo/protocol";
 import { KuloMarkdown } from "../../kulo-markdown";
 import type { PreviewableImage } from "./asset-preview";
 import type { ChatViewItem } from "./chat-submissions";
-import type { ConversationEntry } from "./dispatch-groups";
 import { useReducedContentMotion } from "./use-content-motion";
 import "./message-motion.css";
 
@@ -12,19 +11,16 @@ export function messageMotionKey(item: Pick<ChatDisplayItem, "id" | "requestId" 
   return `message:${item.id}`;
 }
 
-export function responseMotionScopes(entries: readonly ConversationEntry[], pending: readonly ChatDisplayItem[], live: Pick<LiveStreamState, "responseId">) {
+export function responseMotionScopes(items: readonly ChatDisplayItem[], pending: readonly ChatDisplayItem[], live: Pick<LiveStreamState, "responseId">) {
   const messages = new Map<number, string>();
   let boundary = "start";
   const responseKey = (responseId: number | undefined, fallback: string) => responseId === undefined ? fallback : `${boundary}:response:${responseId}`;
-  for (const entry of entries) {
-    if (entry.type === "dispatch-group") {
-      boundary = entry.key;
-      for (const reply of entry.replies) messages.set(reply.id, responseKey(reply.responseId, messageMotionKey(reply)));
-    } else if (entry.item.role === "assistant") messages.set(entry.item.id, responseKey(entry.item.responseId, messageMotionKey(entry.item)));
-    else boundary = messageMotionKey(entry.item);
+  for (const item of items) {
+    if (item.role === "assistant") messages.set(item.id, responseKey(item.responseId, messageMotionKey(item)));
+    else if (item.role !== "dispatch") boundary = messageMotionKey(item);
   }
-  const last = entries.at(-1);
-  const lastResponse = last?.type === "message" ? last.item.responseId : last?.replies.at(-1)?.responseId ?? last?.dispatches.at(-1)?.responseId;
+  const last = items.at(-1);
+  const lastResponse = last?.responseId;
   if (pending.length && (live.responseId === undefined || lastResponse !== live.responseId)) boundary = messageMotionKey(pending[0]!);
   return { messages, live: responseKey(live.responseId, `${boundary}:live`) };
 }

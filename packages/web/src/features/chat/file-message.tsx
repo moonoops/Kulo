@@ -140,7 +140,7 @@ export function FileMessage({
   const actions = <>{openAction}{downloadAction}</>;
   const feedback = actionError && <p className="kulo-artifact-error" role="alert">{actionError}</p>;
   return <>
-    <Card ref={root} variant="default" className="kulo-chat-artifact" data-asset-id={asset.id} data-kind={kind ?? "file"}>
+    <Card ref={root} variant="secondary" className="kulo-chat-artifact" data-asset-id={asset.id} data-kind={kind ?? "file"}>
       <Card.Header className="kulo-artifact-header">
         <KuloIcon name={html ? "code" : "document"} size={20} />
         <div className="kulo-artifact-detail"><span className="kulo-item-title kulo-chat-truncate" title={asset.name}>{asset.name}</span><span className="kulo-item-description">{html ? "HTML" : asset.name.split(".").at(-1)?.toUpperCase()} · {formatAssetSize(asset.size)}</span></div>

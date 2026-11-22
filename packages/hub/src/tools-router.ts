@@ -73,6 +73,24 @@ export interface DispatchTicketParams {
   executeAt?: string;
   repeatEverySeconds?: number;
   inlineWaitMs?: number;
+  boardId?: string;
+  boardTitle?: string;
+  reviewTicketId?: string;
+}
+
+export interface BoardToolParams {
+  action: "search" | "read" | "write";
+  query?: string;
+  includeArchived?: boolean;
+  boardId?: string;
+  commandId?: string;
+  boardTitle?: string;
+  goal?: string;
+  ticketId?: string;
+  kind?: "verified" | "decision" | "constraint" | "handoff" | "correction";
+  note?: string;
+  supersedesSeq?: number;
+  status?: "active" | "archived";
 }
 
 export interface DispatchTicketModelOutcome {
@@ -186,6 +204,11 @@ export interface OrchestratorController {
     cue: string | undefined,
     context: Context,
   ): Promise<AgentExpressionState | null>;
+  handleBoardTool?(
+    params: BoardToolParams,
+    source: { conversationId: number },
+    context: Context,
+  ): Promise<Record<string, unknown>>;
 }
 
 export function createOrchestratorToolsExtension(
@@ -213,7 +236,7 @@ export function createOrchestratorToolsExtension(
   const dispatchTool = defineTool({
     name: "kulo_dispatch",
     description:
-      "Dispatch authorized work as a durable Worker Ticket. Project/bound tasks lock to their configured Env; set target_scope='hub_local' for location-independent compute/research/attachment work or target_scope='sender_device' for sender-machine files/ports/GUI. Set execution_domain='android' for phone-only work or list android_device_ids for mixed tasks. Reuse command_id on retry.",
+      "Dispatch work as a durable Worker Ticket. Project/bound tasks lock to their Env; use target_scope='hub_local' (compute/research/attachments) or 'sender_device' (sender files/ports/GUI), execution_domain='android' for phone-only. Reuse command_id on retry.",
     parameters: obj({
       command_id: str({ description: "Idempotency key; reuse on retry." }),
       title: str({ description: "Short user-visible title (8–18 chars / 3–6 words; no internal IDs or paths)." }),
@@ -224,24 +247,27 @@ export function createOrchestratorToolsExtension(
       assignment: opt(str({ description: "Extra Worker instructions." })),
       context_summary: opt(str({ description: "Redacted task context (no private identity or secrets)." })),
       attachment_ids: opt(arr(str(), { maxItems: 16, description: "Chat attachment IDs (att_...) to pass." })),
-      workspace_mode: opt(oneOf(["staged", "read_only"], { description: "Project workspace isolation mode ('staged' default for review-before-merge, or 'read_only')." })),
-      target_scope: opt(oneOf(["hub_local", "sender_device"], { description: "For ungrouped computer tasks without explicit env_id: 'hub_local' for location-independent research/writing/uploaded attachments; 'sender_device' when accessing the sender machine's local files, ports, browser, or desktop." })),
+      workspace_mode: opt(oneOf(["staged", "read_only"], { description: "Workspace mode: 'staged' (default) or 'read_only'." })),
+      target_scope: opt(oneOf(["hub_local", "sender_device"], { description: "For ungrouped tasks without env_id: 'hub_local' (research/writing/attachments) or 'sender_device' (sender files/ports/browser/desktop)." })),
       execute_at: opt(str({ description: "ISO 8601 timestamp with timezone for scheduled execution." })),
       repeat_every_seconds: opt(num({ description: "Positive integer interval in seconds (requires execute_at)." })),
       role: opt(str({ description: "Worker or external Agent role ID." })),
       provider_override: opt(str({ description: "Provider ID override for built-in Workers." })),
       model_override: opt(str({ description: "Model ID override for built-in Workers." })),
       task_kind: opt(oneOf(AGENT_TASK_KINDS, { description: "Task kind for default Agent routing." })),
-      thinking_level: opt(oneOf(["off", "minimal", "low", "medium", "high", "xhigh", "max"], { description: "Thinking effort override (prefer 'low' or 'medium' for interactive multi-step browser/desktop UI tasks when the role uses 'auto')." })),
-      env_id: opt(str({ description: "Explicit user-named or bound target device ID; omit to resolve from project_id or target_scope." })),
+      thinking_level: opt(oneOf(["off", "minimal", "low", "medium", "high", "xhigh", "max"], { description: "Thinking effort override ('low'/'medium' preferred for interactive UI tasks when role is 'auto')." })),
+      env_id: opt(str({ description: "Explicit target device ID; omit to infer from project_id/target_scope." })),
       execution_domain: opt(oneOf(["computer", "android"], { description: "'android' for phone-only Worker; 'computer' for filesystem/project work." })),
       source_request_id: opt(str({ description: "requestId from [KULO_MESSAGE_SOURCE] when disambiguating multi-device turns." })),
       android_device_ids: opt(arr(str(), { maxItems: 8, description: "Authorized Android device IDs." })),
       project_id: opt(str({ description: "Target project ID." })),
       connection_ids: opt(arr(str({ description: "Saved connection IDs to grant (never secret values)." }))),
       workspace_dir: opt(str({ description: "Explicit absolute working directory; omit for isolated table/<ticket>." })),
-      inline_wait_ms: opt(num({ description: "Optional inline wait window (0–15000 ms) when slots are free; fast ready outcomes return inline without duplicate relay." })),
+      inline_wait_ms: opt(num({ description: "Inline wait (0–15000 ms) for fast built-in Workers; ignored for external Agents." })),
       supersedes: opt(arr(obj({ ticket_id: str(), reason: str() }), { description: "Failed/obsolete tickets replaced once this ticket succeeds." })),
+      board_id: opt(str({ description: "TaskBoard ID to link." })),
+      board_title: opt(str({ description: "New TaskBoard title (multi-ticket only)." })),
+      review_ticket_id: opt(str({ description: "Settled ticket ID to review (read-only)." })),
     }),
     replay: "safe",
     execute: async (args, api, context) => {
@@ -278,6 +304,9 @@ export function createOrchestratorToolsExtension(
         originConversationId: Number(api.conversationId),
         originToolTaskId: Number(api.taskId),
         sourceRequestId: args.source_request_id,
+        ...(args.board_id?.trim() ? { boardId: args.board_id.trim() } : {}),
+        ...(args.board_title?.trim() ? { boardTitle: args.board_title.trim() } : {}),
+        ...(args.review_ticket_id?.trim() ? { reviewTicketId: args.review_ticket_id.trim() } : {}),
       };
       const outcome = controller.dispatchTicketForModel
         ? await controller.dispatchTicketForModel(dispatchParams, context)
@@ -308,7 +337,7 @@ export function createOrchestratorToolsExtension(
   const steerTool = defineTool({
     name: "kulo_steer",
     description:
-      "Send a follow-up instruction or answer a blocked question to an existing background Ticket. If running, injects seamlessly at the Worker's next step boundary (Auto-Steer); if blocked or settled (and not human-stopped), wakes and resumes the Worker.",
+      "Send follow-up guidance or a blocker answer to an existing Ticket (auto-steers if running; resumes if blocked/settled and not stopped). Never use to end/cancel a task—call kulo_stop.",
     parameters: obj({
       command_id: str({ description: "Unique idempotency key for this follow-up." }),
       ticket_id: str({ description: "Target Ticket ID (e.g. T-0001)." }),
@@ -337,7 +366,7 @@ export function createOrchestratorToolsExtension(
   const stopTool = defineTool({
     name: "kulo_stop",
     description:
-      "Immediately stop a Ticket upon explicit human request. Human-stopped tickets never auto-resume.",
+      "Immediately stop a Ticket when the user cancels, declines required permissions, or asks to end it. Never auto-resumes.",
     parameters: obj({
       ticket_id: str({ description: "Ticket ID to stop." }),
       reason: opt(str({ description: "Optional short reason." })),
@@ -385,16 +414,111 @@ export function createOrchestratorToolsExtension(
     },
   });
 
+  const statusTicketPriority = (ticket: TicketCardView): number => {
+    if (ticket.status === "waiting" || ticket.status === "blocked") return 0;
+    if (ticket.status === "running" || ticket.status === "pausing") return 1;
+    if (ticket.status === "queued") return 2;
+    if (ticket.pendingWorkspaceApply) return 3;
+    if (ticket.status === "failed" || ticket.status === "stopped") return 4;
+    if (ticket.status === "ready") return 5;
+    return 6;
+  };
+  const clipStatusText = (value: string | undefined, max: number): string | undefined => {
+    if (!value) return undefined;
+    const clean = value.replace(/\s+/g, " ").trim();
+    if (!clean) return undefined;
+    return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+  };
+  const compactStatusTicket = (ticket: TicketCardView) => {
+    const report = ticket.latestReport;
+    const compactReport = report
+      ? {
+          state: report.state,
+          summary: clipStatusText(report.summary, 200) ?? "",
+          ...(report.question ? { question: clipStatusText(report.question, 200) } : {}),
+          at: report.at,
+          hasDeliverable: Boolean(report.deliverable?.trim()),
+          ...(report.overflowAsset ? { overflowAsset: report.overflowAsset } : {}),
+        }
+      : undefined;
+    return {
+      id: ticket.id,
+      title: ticket.title,
+      status: ticket.status,
+      role: ticket.role,
+      envId: ticket.envId,
+      ...(ticket.executionDomain ? { executionDomain: ticket.executionDomain } : {}),
+      ...(ticket.externalAgentKind ? { externalAgentKind: ticket.externalAgentKind } : {}),
+      ...(ticket.projectId ? { projectId: ticket.projectId } : {}),
+      ...(ticket.originTopicId ? { originTopicId: ticket.originTopicId } : {}),
+      ...(ticket.boardId ? { boardId: ticket.boardId } : {}),
+      ...(ticket.reviewTicketId ? { reviewTicketId: ticket.reviewTicketId } : {}),
+      ...(ticket.pendingWorkspaceApply ? { pendingWorkspaceApply: true } : {}),
+      ...(ticket.waiting ? { waiting: ticket.waiting } : {}),
+      ...(ticket.schedule ? { schedule: ticket.schedule } : {}),
+      ...(ticket.stoppedReason ? { stoppedReason: clipStatusText(ticket.stoppedReason, 200) } : {}),
+      ...(ticket.recovery ? { recovery: ticket.recovery } : {}),
+      ...(ticket.subagentSummary ? { subagentSummary: ticket.subagentSummary } : {}),
+      ...(ticket.androidDeviceIds?.length ? { androidDeviceIds: ticket.androidDeviceIds } : {}),
+      updatedAt: ticket.updatedAt,
+      ...(compactReport ? { latestReport: compactReport } : {}),
+    };
+  };
+  const compactStatusEnv = (env: EnvNodeDescriptor) => ({
+    id: env.id,
+    name: env.name,
+    online: env.online,
+    platform: env.platform,
+    arch: env.arch,
+    ...(env.executionKind ? { executionKind: env.executionKind } : {}),
+    capabilities: env.capabilities,
+    rootDir: env.rootDir,
+    ...(env.android
+      ? {
+          android: {
+            enabled: env.android.enabled,
+            paused: env.android.paused,
+          },
+        }
+      : {}),
+  });
+
   const statusTool = defineTool({
     name: "kulo_status",
     description:
-      "Inspect current time and Hub timezone, Kulo's table tickets, slot usage, and connected execution nodes. Read before translating relative scheduling requests such as tomorrow morning into execute_at.",
+      "Inspect current time/timezone, compact table tickets (default top 15 non-closed; use kulo_inspect for full details), slots, and execution nodes.",
     replay: "safe",
-    parameters: obj({}),
-    execute: async (_args, api, context) => {
+    parameters: obj({
+      include_closed: opt(bool({ description: "Include closed tickets (default false)." })),
+      limit: opt(num({ description: "Max tickets (1–50, default 15)." })),
+    }),
+    execute: async (args, api, context) => {
       const board = await controller.getBoardSnapshot(context);
+      const includeClosed = args.include_closed === true;
+      const limit = args.limit !== undefined && Number.isFinite(args.limit)
+        ? Math.max(1, Math.min(50, Math.trunc(args.limit)))
+        : 15;
+      const filtered = includeClosed
+        ? board.tickets
+        : board.tickets.filter((ticket) => ticket.status !== "closed");
+      const ordered = [...filtered].sort(
+        (a, b) =>
+          statusTicketPriority(a) - statusTicketPriority(b) ||
+          b.updatedAt - a.updatedAt ||
+          a.id.localeCompare(b.id),
+      );
+      const selected = ordered.slice(0, limit).map(compactStatusTicket);
+      const payload = {
+        tickets: selected,
+        total_tickets: filtered.length,
+        truncated: ordered.length > selected.length,
+        slots: board.slots,
+        envs: board.envs.map(compactStatusEnv),
+        current_time: new Date(api.now()).toISOString(),
+        time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      };
       return {
-        output: [{ type: "text", text: JSON.stringify({ ...board, current_time: new Date(api.now()).toISOString(), time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone }, null, 2) }],
+        output: [{ type: "text", text: JSON.stringify(payload) }],
       };
     },
   });
@@ -457,7 +581,7 @@ export function createOrchestratorToolsExtension(
   const ticketAskUserTool = defineTool({
     name: "kulo_ticket_ask_user",
     description:
-      "Escalate a waiting/blocked Worker Ticket to the user ONLY when the main Agent genuinely needs human judgment or risk consent. Provide a concise question in the active conversation language (no internal IDs/logs) and concrete clickable options (e.g. 允许/拒绝 or discrete solution choices); shows an interactive card with options + manual input by default and syncs Task Detail without blocking chat. 关键词：向用户确认 任务决策卡片 升级用户确认",
+      "Escalate a waiting/blocked Worker Ticket to the user ONLY when the main Agent genuinely needs human judgment or risk consent. Provide a concise question in the active conversation language (no internal IDs/logs) and concrete clickable options (e.g. 允许/拒绝 or discrete solution choices; set action='stop' on any option that cancels/declines/ends the ticket directly); shows an interactive card with options + manual input by default and syncs Task Detail without blocking chat. 关键词：向用户确认 任务决策卡片 升级用户确认",
     deferred: true,
     parameters: obj({
       ticket_id: str({ description: "Target waiting/blocked Ticket ID." }),
@@ -469,6 +593,7 @@ export function createOrchestratorToolsExtension(
             label: str({ minLength: 1, maxLength: 120 }),
             tone: opt(oneOf(["primary", "secondary", "danger"])),
             value: opt(str({ maxLength: 400 })),
+            action: opt(oneOf(["reply", "stop"], { description: "'reply' (default) resumes the Worker with this choice; set 'stop' for options that cancel/decline/end this ticket directly without waking the Worker." })),
           }),
           { maxItems: 11, description: "Optional quick-action buttons shown alongside manual input." },
         ),
@@ -627,6 +752,52 @@ export function createOrchestratorToolsExtension(
     },
   });
 
+  const boardTool = defineTool({
+    name: "kulo_task_board",
+    description:
+      "Search, read, or update coordinator-verified Task Boards that connect multi-ticket workstreams across long conversations (never create boards for trivial one-off tasks). Use action='search' to recall older workstreams, 'read' to inspect verified decisions/constraints, or 'write' (with command_id) after reviewing Worker reports to promote verified conclusions or archive/reopen a board. 关键词：交接板 协作板 历史任务脉络 继续上次任务 归档看板 task board handoff",
+    deferred: true,
+    parameters: obj({
+      action: oneOf(["search", "read", "write"], { description: "'search' | 'read' | 'write'." }),
+      query: opt(str({ description: "For action='search': keywords, project/topic phrase, or ticket/board ID." })),
+      include_archived: opt(bool({ description: "For action='search': include archived boards (default true)." })),
+      board_id: opt(str({ description: "Target TaskBoard ID (e.g. 'B-0001') for 'read' or updating an existing board." })),
+      command_id: opt(str({ description: "Required for action='write': unique idempotency key." })),
+      board_title: opt(str({ description: "For action='write': title (<= 60 chars) when lazily creating or renaming a board." })),
+      goal: opt(str({ description: "For action='write': concise mission goal (<= 240 chars)." })),
+      ticket_id: opt(str({ description: "For action='write': optional reviewed Ticket ID to link and attach deterministic file/artifact anchors." })),
+      kind: opt(oneOf(["verified", "decision", "constraint", "handoff", "correction"], { description: "For action='write': entry category (default 'verified')." })),
+      note: opt(str({ description: "For action='write': coordinator-verified concise takeaway (<= 320 chars; no secrets)." })),
+      supersedes_seq: opt(num({ description: "For action='write': optional older entry seq number superseded by this new note." })),
+      status: opt(oneOf(["active", "archived"], { description: "For action='write': set 'archived' when finished or 'active' to reopen." })),
+    }),
+    execute: async (args, api, context) => {
+      const main = await isMainOrchestratorApi(api, context);
+      if (!main.allowed || main.isSettings || !controller.handleBoardTool) {
+        return { isError: true, output: [{ type: "text" as const, text: "Only the Kulo main chat Orchestrator may manage Task Boards." }] };
+      }
+      const res = await controller.handleBoardTool(
+        {
+          action: args.action,
+          ...(args.query !== undefined ? { query: args.query } : {}),
+          ...(args.include_archived !== undefined ? { includeArchived: args.include_archived } : {}),
+          ...(args.board_id !== undefined ? { boardId: args.board_id } : {}),
+          ...(args.command_id !== undefined ? { commandId: args.command_id } : {}),
+          ...(args.board_title !== undefined ? { boardTitle: args.board_title } : {}),
+          ...(args.goal !== undefined ? { goal: args.goal } : {}),
+          ...(args.ticket_id !== undefined ? { ticketId: args.ticket_id } : {}),
+          ...(args.kind !== undefined ? { kind: args.kind } : {}),
+          ...(args.note !== undefined ? { note: args.note } : {}),
+          ...(args.supersedes_seq !== undefined ? { supersedesSeq: args.supersedes_seq } : {}),
+          ...(args.status !== undefined ? { status: args.status } : {}),
+        },
+        { conversationId: Number(api.conversationId) },
+        context,
+      );
+      return { output: [{ type: "text" as const, text: JSON.stringify(res, null, 2) }] };
+    },
+  });
+
   const hindsightTools = createHindsightTools({
     getMemoryConfig,
     defaultBank: "private",
@@ -643,6 +814,7 @@ export function createOrchestratorToolsExtension(
       steerTool,
       stopTool,
       closeTool,
+      ...(controller.handleBoardTool ? [boardTool] : []),
       statusTool,
       inspectTool,
       ...(controller.respondExternalAgentPermission ? [externalPermissionTool] : []),

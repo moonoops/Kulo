@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EnvNodeDescriptor, ProjectView, TicketCardView, TopicSummary } from "@kulo/protocol";
-import { ALL_PROJECT_DEVICES, initialProjectDevice, joinProjectDirectory, ordinaryTopics, projectDevices, projectTickets, topicsForProject, unfinishedTicket } from "./project-model";
+import { ALL_PROJECT_DEVICES, initialProjectDevice, joinProjectDirectory, ordinaryTopics, projectDevices, projectDirectoryBasename, projectTickets, topicsForProject, unfinishedTicket } from "./project-model";
 import { scopeTickets, ticketWaitLabel } from "../../kulo-tasks";
 
 const topics: TopicSummary[] = [
@@ -83,5 +83,18 @@ describe("project navigation boundaries", () => {
     expect(joinProjectDirectory("C:/Projects", "Kulo")).toBe("C:\\Projects\\Kulo");
     expect(joinProjectDirectory("\\\\server\\share", "项目 文件")).toBe("\\\\server\\share\\项目 文件");
     for (const invalid of ["", ".", "..", "../escape", "a\\b", "a\0b"]) expect(() => joinProjectDirectory("/projects", invalid)).toThrow();
+  });
+
+  it("extracts safe default project names from directory paths without using roots or oversized names", () => {
+    expect(projectDirectoryBasename("/Users/ekaka/Documents/Moco")).toBe("Moco");
+    expect(projectDirectoryBasename("/Users/ekaka/Documents/Moco/")).toBe("Moco");
+    expect(projectDirectoryBasename("C:\\Projects\\Kulo\\")).toBe("Kulo");
+    expect(projectDirectoryBasename("\\\\nas\\share\\app")).toBe("app");
+    expect(projectDirectoryBasename("/Users/ekaka/ My App /")).toBe("My App");
+    for (const rootOrEmpty of ["", "   ", "/", "///", "C:", "C:\\", "C:/", "\\\\nas", "\\\\nas\\share", "\\\\nas\\share\\", "/Users/ekaka/.", "/Users/ekaka/..", "/Users/ekaka/   ", "/Users/ekaka/bad\nname"]) {
+      expect(projectDirectoryBasename(rootOrEmpty)).toBe("");
+    }
+    expect(projectDirectoryBasename(`/projects/${"a".repeat(200)}`)).toBe("a".repeat(120));
+    expect(projectDirectoryBasename(`/projects/${"a".repeat(119)}😀`)).toBe("a".repeat(119));
   });
 });

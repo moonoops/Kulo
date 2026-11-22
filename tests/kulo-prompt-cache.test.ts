@@ -4,11 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, type TranscriptContext } from "@earendil-works/pi-ai";
-import { Harness, MemoryStorage, createRegistry, defineExtension } from "@earendil-works/pi-durable";
+import { collapseSystemMessages, getInitialSystemMessage } from "@earendil-works/pi-ai/utils/transcript";
+import { CompactionEntry, Harness, MemoryStorage, createRegistry, defineExtension } from "@earendil-works/pi-durable";
 import type { TicketRecord } from "@kulo/protocol";
 import { resolveHubConfig } from "../packages/hub/src/config.js";
+import { extractDisplayMessages } from "../packages/hub/src/hub.js";
 import { createOrchestratorSections } from "../packages/hub/src/prompts.js";
+import { createRecentWorkSyncHook, isSystemBaselinePending, RecentWorkUpdateEntry } from "../packages/hub/src/recent-work-sync.js";
 import { KuloStateDoc, ensureDefaultRootTopic } from "../packages/hub/src/state.js";
+import { voiceHistory } from "../packages/hub/src/voice-context.js";
 
 const close: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const stop of close.splice(0)) await stop(); });
@@ -125,5 +129,125 @@ describe("personality prompt context", () => {
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("keeps wire-level systemInstruction and prefix byte-identical on mid-epoch recent-work updates and refreshes baseline after compaction", async () => {
+    const requests: TranscriptContext[] = [];
+    const provider = fauxProvider({ provider: "openai", models: [{ id: "cache-model" }] });
+    provider.setResponses(Array.from({ length: 6 }, () => (context: TranscriptContext) => {
+      requests.push(JSON.parse(JSON.stringify(context)) as TranscriptContext);
+      return fauxAssistantMessage([fauxText("已收到。")]);
+    }));
+    const models = createModels();
+    models.setProvider(provider.provider);
+
+    let harness!: Harness;
+    const redact = (value: string) => value.replace(/SECRET_TOKEN/g, "[REDACTED]");
+    const extension = defineExtension({
+      name: "test-frozen-recent-work",
+      sections: createOrchestratorSections({
+        getIdentityDir: () => "/nonexistent-personality-test",
+        getRoles: () => ({}),
+        getEnvs: () => [],
+        getMemoryConfig: () => resolveHubConfig({}).memory,
+        getPersonalityContext: async () => ({
+          identityAgreement: "身份：Kulo；诚实、简洁。",
+          relationship: "用户偏好简短交流。",
+          recentWorkEnabled: true,
+        }),
+        freezeRecentWorkBaseline: true,
+        isSystemBaselinePending: (cid, ctx) => isSystemBaselinePending(harness, cid, ctx),
+      }),
+      hooks: [
+        createRecentWorkSyncHook({
+          getHarness: () => harness,
+          getPersonalityContext: async () => ({ recentWorkEnabled: true }),
+          redact,
+        }),
+      ],
+    });
+    const registry = createRegistry();
+    registry.install(extension);
+    harness = await Harness.open(new MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
+    close.push(() => harness.close(BACKGROUND_CONTEXT));
+
+    const conversation = await harness.root(BACKGROUND_CONTEXT, {
+      agent: {
+        model: { provider: "openai", modelId: "cache-model" },
+        extensions: [extension],
+        thinkingLevel: "off",
+      },
+    });
+    await harness.commit(async (tx) => {
+      const state = await tx.doc(KuloStateDoc);
+      ensureDefaultRootTopic(state);
+      state.tickets.t1 = {
+        id: "t1", commandId: "t1", title: "实施方案", goal: "完成变更", scope: "当前项目", status: "running", role: "coder",
+        envId: "local", workspaceDir: "/project", workerConversationId: 200, runEpoch: 1, createdAt: 1, updatedAt: 1,
+      } satisfies TicketRecord;
+    }, BACKGROUND_CONTEXT);
+
+    const send = async (content: string) => {
+      await conversation.submit({ type: "input", content }, BACKGROUND_CONTEXT);
+      await conversation.waitForIdle(BACKGROUND_CONTEXT);
+    };
+
+    await send("第一轮");
+    // Transition ticket state mid-epoch (previously triggered a pi.system rewrite that busted Gemini/Vertex cache).
+    await harness.commit(async (tx) => {
+      const task = (await tx.doc(KuloStateDoc)).tickets.t1!;
+      task.status = "ready";
+      task.latestReport = { state: "ready", summary: "交付包含 SECRET_TOKEN 的结果", at: 2000 };
+    }, BACKGROUND_CONTEXT);
+    await send("第二轮");
+    // Subsequent turn with no further ticket change must not append another update.
+    await send("第三轮");
+
+    expect(requests).toHaveLength(3);
+
+    // Wire-level check for providers without mid-conversation system messages (Google Vertex/Gemini, Anthropic, etc.):
+    // systemInstruction (index 0 after collapseSystemMessages) MUST stay 100% byte-identical across all 3 turns!
+    const wire = requests.map((req) => collapseSystemMessages(req));
+    const sys0 = getInitialSystemMessage(wire[0]!.messages);
+    const sys1 = getInitialSystemMessage(wire[1]!.messages);
+    const sys2 = getInitialSystemMessage(wire[2]!.messages);
+    expect(sys1).toEqual(sys0);
+    expect(sys2).toEqual(sys0);
+    expect(wire[1]!.messages.slice(0, wire[0]!.messages.length)).toEqual(wire[0]!.messages);
+    expect(wire[2]!.messages.slice(0, wire[1]!.messages.length)).toEqual(wire[1]!.messages);
+
+    // Verify turn 2 delivered the redacted append-only update and turn 3 did not duplicate it.
+    const updateMsgs1 = wire[1]!.messages.filter(
+      (m) => m.role === "user" && typeof m.content === "string" && m.content.startsWith("[KULO_RECENT_WORK_UPDATE]"),
+    );
+    const updateMsgs2 = wire[2]!.messages.filter(
+      (m) => m.role === "user" && typeof m.content === "string" && m.content.startsWith("[KULO_RECENT_WORK_UPDATE]"),
+    );
+    expect(updateMsgs1).toHaveLength(1);
+    expect(updateMsgs2).toHaveLength(1);
+    expect(String(updateMsgs1[0]!.content)).toContain("[REDACTED]");
+    expect(String(updateMsgs1[0]!.content)).not.toContain("SECRET_TOKEN");
+
+    // Display messages and voice history must hide internal kulo.recent_work_update entries.
+    const view = await conversation.context(BACKGROUND_CONTEXT);
+    expect(view.entries.filter(RecentWorkUpdateEntry.is)).toHaveLength(1);
+    const display = extractDisplayMessages(view.entries);
+    expect(JSON.stringify(display)).not.toContain("KULO_RECENT_WORK_UPDATE");
+    const voice = voiceHistory(view, redact);
+    expect(JSON.stringify(voice)).not.toContain("KULO_RECENT_WORK_UPDATE");
+
+    // Simulate a compaction head marker (even when kept entries retain an older SystemEntry):
+    // next turn must refresh the pi.system baseline to the latest snapshot instead of freezing stale pre-compaction state.
+    const firstKept = view.entries[0]!.id;
+    await harness.commit(async (tx) => {
+      await tx.appendEntry(CompactionEntry, conversation.id, {
+        head: firstKept,
+        model: [{ role: "user", content: "<summary>earlier context</summary>", timestamp: Date.now() }],
+      });
+    }, BACKGROUND_CONTEXT);
+    await send("压缩后第一轮");
+    const afterCompactionSys = getInitialSystemMessage(collapseSystemMessages(requests[3]!).messages);
+    expect(afterCompactionSys?.sections?.kulo_recent_work).toContain("ready_for_review");
+    expect(afterCompactionSys?.sections?.kulo_recent_work).toContain("交付包含");
   });
 });

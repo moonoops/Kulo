@@ -1,32 +1,10 @@
 /** Kulo SuperAgent shell with a single-column conversation (HeroUI v3). */
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Alert, Button, Chip, Disclosure, Dropdown, Label, Spinner, toast } from "@heroui/react";
 import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
-import {
-  Alert,
-  Button,
-  Chip,
-  Disclosure,
-  Dropdown,
-  Label,
-  Spinner,
-  toast,
-} from "@heroui/react";
-import {
-  parseStandaloneDeviceInvitation,
-  redactDeviceInvitationText,
-  type AssistantItemAction,
-  type AssistantItemView,
-  type ChatReplyReference,
-  type ConversationMessageWindow,
-  type SettingsAssistantContext,
-  type TicketCardView,
+  parseStandaloneDeviceInvitation, redactDeviceInvitationText,
+  type AssistantItemAction, type AssistantItemView, type ChatReplyReference,
+  type ConversationMessageWindow, type SettingsAssistantContext, type TicketCardView,
 } from "@kulo/protocol";
 import { ConfirmDialog } from "./components/confirm-dialog";
 import { KuloTurnErrorCard } from "./features/chat/turn-error-card";
@@ -76,10 +54,8 @@ import {
 } from "./kulo-composer";
 import { KuloIcon } from "./kulo-icon";
 import { ConnectedMessageContent } from "./features/chat/connected-message-content";
-import { DispatchMessageGroup } from "./features/chat/dispatch-message-group";
-import { groupDispatchReplies, matchingLiveDispatchGroupKey, type ConversationEntry } from "./features/chat/dispatch-groups";
 import { liveResponseMessageId, mergeResponseMessages } from "./features/chat/response-messages";
-import { KuloThinkingIndicator } from "./features/chat/thinking-indicator";
+import { KuloLiveWaitRow } from "./features/chat/live-wait-row";
 import { chatDeliveryLabel, mergeChatSubmissions, splitChatTimeline, submissionKey, type ChatViewItem, type PendingSubmissionBackup, type SubmissionBackupInput } from "./features/chat/chat-submissions";
 import { blockerDraftKey, consumedOutboxReceipts, consumePersistedDraft, outboxSubmissions } from "./features/chat/outbox-submissions";
 import { newDeliveryId } from "./features/chat/reliable-intents";
@@ -123,7 +99,6 @@ import {
 import {
   KuloTaskProjection,
   KuloTaskRail,
-  TaskDispatchCard,
   TaskStatus,
 } from "./kulo-tasks";
 
@@ -290,7 +265,6 @@ function AppShell() {
   const messages = useMemo(() => mergeChatSubmissions(serverMessages, viewingHistory ? [] : pendingSubmissions, activeTopicId), [serverMessages, pendingSubmissions, activeTopicId, viewingHistory]);
   const chatTimeline = useMemo(() => splitChatTimeline(messages), [messages]);
   const responseMessages = useMemo(() => mergeResponseMessages(chatTimeline.transcript), [chatTimeline.transcript]);
-  const conversationTranscript = useMemo(() => groupDispatchReplies(responseMessages), [responseMessages]);
   const lastPausedMessageId = chatTimeline.pending.findLast((item) => item.delivery === "paused")?.id;
   useEffect(() => {
     const ids = consumedOutboxReceipts(outboxRecords, serverMessages, activeTopicId);
@@ -617,15 +591,34 @@ function AppShell() {
     requestAnimationFrame(() => composerRef.current?.focus());
   };
 
-  // Refresh projected ticket live when tickets broadcast updates
+  const projectedSyncKey = useMemo(() => {
+    if (!projectedTicketId) return "";
+    const card = tickets.find((t) => t.id === projectedTicketId);
+    return card ? `${card.status}:${card.updatedAt}:${card.subagentSummary?.revision ?? 0}` : "missing";
+  }, [tickets, projectedTicketId]);
+  const lastInspectedTicketIdRef = useRef<string | undefined>(undefined);
+
+  // Refresh projected ticket immediately on selection, or 300ms-throttled on same-ticket updates
   useEffect(() => {
-    if (!projectedTicketId || !subscriptionsReady) return;
-    sendWs({
-      type: "ticket.inspect",
-      ticketId: projectedTicketId,
-      requestId: `inspect:${projectedTicketId}:${Date.now()}`,
-    });
-  }, [projectedTicketId, tickets, subscriptionsReady, sendWs]);
+    if (!projectedTicketId || !subscriptionsReady) {
+      lastInspectedTicketIdRef.current = undefined;
+      return;
+    }
+    const fire = () => {
+      sendWs({
+        type: "ticket.inspect",
+        ticketId: projectedTicketId,
+        requestId: `inspect:${projectedTicketId}:${Date.now()}`,
+      });
+    };
+    if (lastInspectedTicketIdRef.current !== projectedTicketId) {
+      lastInspectedTicketIdRef.current = projectedTicketId;
+      fire();
+      return;
+    }
+    const timer = window.setTimeout(fire, 300);
+    return () => window.clearTimeout(timer);
+  }, [projectedTicketId, projectedSyncKey, subscriptionsReady, sendWs]);
 
   const runGuardedNavigation = settingsNavigation.navigate;
 
@@ -1311,6 +1304,15 @@ function AppShell() {
     const record = outboxRecords.find((item) => item.metadata?.draftKey === draftKey && item.envelope.type === "ticket.steer" && (item.state === "queued" || item.state === "sending"));
     return record?.envelope.type === "ticket.steer" ? { text: record.envelope.text, commandId: record.envelope.commandId } : undefined;
   }, [outboxRecords, projectedDetail]);
+  const pendingStop = useMemo(() => {
+    if (!projectedDetail) return false;
+    return outboxRecords.some(
+      (item) =>
+        item.envelope.type === "ticket.stop" &&
+        item.envelope.ticketId === projectedDetail.ticket.id &&
+        (item.state === "queued" || item.state === "sending"),
+    );
+  }, [outboxRecords, projectedDetail]);
   const projectedProject = projects.find((project) => project.id === projectedDetail?.ticket.projectId);
 
   const activeTopicTaskCount = useMemo(
@@ -1341,7 +1343,7 @@ function AppShell() {
       const sourceView = navigationViewRef.current;
       messageNavigationRequest.current = controller;
       setLocatingMessage(true);
-      const loaded = destination.topicId === activeTopicId && chatTimeline.transcript.some((item) => item.id === destination.messageId);
+      const loaded = destination.topicId === activeTopicId && visibleMessageId(chatTimeline.transcript, responseMessages, destination.messageId!) !== undefined;
       void (loaded ? Promise.resolve(undefined) : kuloRest.getTopicMessageWindow(destination.topicId, destination.messageId!, controller.signal)).then((result) => {
         if (controller.signal.aborted || navigationViewRef.current !== sourceView) return;
         setSettingsMode(false);
@@ -1569,12 +1571,10 @@ function AppShell() {
     />
   );
 
-  const lastConversationEntry = conversationTranscript.at(-1);
-  const liveMessageId = !viewingHistory && lastConversationEntry?.type === "message" ? liveResponseMessageId(responseMessages, live) : undefined;
-  const liveDispatchGroupKey = viewingHistory ? undefined : matchingLiveDispatchGroupKey(lastConversationEntry, live);
-  const responseScopes = responseMotionScopes(conversationTranscript, chatTimeline.pending, live);
+  const liveMessageId = !viewingHistory ? liveResponseMessageId(responseMessages, live) : undefined;
+  const responseScopes = responseMotionScopes(responseMessages, chatTimeline.pending, live);
 
-  const renderConversationMessage = (item: ChatViewItem, contentOnly = false) => {
+  const renderConversationMessage = (item: ChatViewItem) => {
     if (item.role === "user") {
       if (!isConversationTurn(item)) return null;
       const backup = item.clientSubmission ? pendingSubmissions.find((submission) => submissionKey(submission) === item.clientSubmission!.key) : undefined;
@@ -1582,7 +1582,7 @@ function AppShell() {
       const status = chatDeliveryLabel(item);
       const name = item.text.trim().slice(0, 24) || item.attachments?.[0]?.name || t("附件消息", "Attachment message");
       return (
-        <div key={messageMotionKey(item)} id={conversationTurnId(activeTopicId, item.id)} data-message-id={item.id} tabIndex={-1} data-request-id={item.requestId} data-delivery={state ?? item.delivery} className="kulo-message-target flex flex-col items-end gap-1.5">
+        <div key={messageMotionKey(item)} id={conversationTurnId(activeTopicId, item.id)} data-message-id={item.id} data-role="user" tabIndex={-1} data-request-id={item.requestId} data-delivery={state ?? item.delivery} className="kulo-message-target flex flex-col items-end gap-1.5">
           <MessageMotion className="w-full" scopeKey={messageMotionKey(item)} animateEntry={animateMessageEntry(item)}>
             <ConnectedMessageContent item={item} connected={connected} conversationKey={activeTopicId} deliveryScope={deliveryScope} onPreviewImage={setLightboxImage} onReply={replyToMessage} onNavigateReply={navigateReply} />
           </MessageMotion>
@@ -1596,17 +1596,7 @@ function AppShell() {
       );
     }
 
-    if (item.role === "dispatch" && item.dispatch) {
-      return (
-        <div key={item.id} data-message-id={item.id} tabIndex={-1} className="kulo-message-target"><MessageMotion animateEntry={animateMessageEntry(item)} scopeKey={item.id}><TaskDispatchCard
-          dispatch={item.dispatch}
-          liveTicket={ticketById.get(item.dispatch.ticketId)}
-          onProject={projectTask}
-        /></MessageMotion></div>
-      );
-    }
-
-    if (item.role === "relay") {
+    if (item.role === "dispatch" || item.role === "relay") {
       return null;
     }
 
@@ -1661,8 +1651,8 @@ function AppShell() {
               ))}
             </div>
           )}
-        <ConnectedMessageContent item={item} connected={connected} conversationKey={activeTopicId} deliveryScope={deliveryScope} onPreviewImage={setLightboxImage} onReply={replyToMessage} onNavigateReply={navigateReply} contentOnly={contentOnly}
-          trailingContent={!contentOnly && item.id === liveMessageId ? liveResponseNode : undefined}
+        <ConnectedMessageContent item={item} connected={connected} conversationKey={activeTopicId} deliveryScope={deliveryScope} onPreviewImage={setLightboxImage} onReply={replyToMessage} onNavigateReply={navigateReply}
+          trailingContent={item.id === liveMessageId ? liveResponseNode : undefined}
           onAdjust={(card, values) => {
             setCurrentDraft(cardAdjustmentDraft(card, values));
             requestAnimationFrame(() => composerRef.current?.focus());
@@ -1672,21 +1662,14 @@ function AppShell() {
   };
 
   const liveResponseNode = !viewingHistory && live.busy ? (
-    <MessageMotion key={responseScopes.live} as={liveMessageId === undefined && !liveDispatchGroupKey ? "article" : "div"} className="flex flex-col gap-2" scopeKey={responseScopes.live} animateEntry={animateLiveEntry && liveMessageId === undefined && !liveDispatchGroupKey}>
+    <MessageMotion key={responseScopes.live} as={liveMessageId === undefined ? "article" : "div"} className="flex flex-col gap-2" scopeKey={responseScopes.live} animateEntry={animateLiveEntry && liveMessageId === undefined}>
       {live.streamingText ? (
         <StreamingMessage text={live.streamingText} onPreviewImage={setLightboxImage} />
       ) : (
-        <div className="flex items-center gap-2.5 py-2 text-xs text-muted">
-          <KuloThinkingIndicator />
-          {live.retrying && <span>{t(`模型响应异常，正在重试（第 ${live.retrying.attempt} 次）…`, `Model response failed. Retrying (attempt ${live.retrying.attempt})…`)}</span>}
-        </div>
+        <KuloLiveWaitRow live={live} topicKey={activeTopicId} showProcess={showProcess} />
       )}
     </MessageMotion>
   ) : null;
-  const renderConversationEntry = (entry: ConversationEntry<ChatViewItem>) => entry.type === "message"
-    ? renderConversationMessage(entry.item)
-    : <MessageMotion key={entry.key} scopeKey={entry.key} animateEntry={entry.dispatches.some(animateMessageEntry)}><DispatchMessageGroup group={entry} onReply={replyToMessage} onNavigateReply={navigateReply} renderMessage={(item) => renderConversationMessage(item, true)}
-        trailingContent={entry.key === liveDispatchGroupKey ? liveResponseNode : undefined} /></MessageMotion>;
 
   const titlebarNode = (
       <div className="kulo-workbench-header">
@@ -1777,9 +1760,22 @@ function AppShell() {
         )}
 
         {!settingsMode && !projectedTicketId && activeTopicTaskCount > 0 && (
-          <Chip size="sm" variant="soft" color="accent" className="hidden sm:inline-flex">
-            {t(`${activeTopicTaskCount} 个任务`, `${activeTopicTaskCount} ${activeTopicTaskCount === 1 ? "task" : "tasks"}`)}
-          </Chip>
+          rightExpanded ? (
+            <Chip size="sm" variant="soft" color="accent" className="hidden sm:inline-flex">
+              {t(`${activeTopicTaskCount} 个任务`, `${activeTopicTaskCount} ${activeTopicTaskCount === 1 ? "task" : "tasks"}`)}
+            </Chip>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="kulo-window-control shrink-0"
+              aria-label={t(`展开任务栏，当前话题有 ${activeTopicTaskCount} 个进行中任务`, `Open task panel, ${activeTopicTaskCount} active ${activeTopicTaskCount === 1 ? "task" : "tasks"} in this topic`)}
+              onPress={() => togglePanel("right")}
+            >
+              {t(`${activeTopicTaskCount} 个任务`, `${activeTopicTaskCount} ${activeTopicTaskCount === 1 ? "task" : "tasks"}`)}
+            </Button>
+          )
         )}
 
         {!settingsMode && !rightExpanded && computerPreview.state.sessions.length > 0 && (() => {
@@ -1975,6 +1971,7 @@ function AppShell() {
               connected={connected}
               canQueueActions={outboxReady}
               pendingAnswer={pendingAnswer}
+              pendingStop={pendingStop}
               roleLabel={projectedCard?.roleLabel ?? projectedDetail.ticket.role}
               onAnswerBlocker={async (id, answer, commandId, decisionOptionId) => {
                 const ans = redactDeviceInvitationText(answer);
@@ -1989,11 +1986,11 @@ function AppShell() {
                 }, { draftKey, topicId: projectedDetail.ticket.originTopicId ?? "root", rawUserText: ans }, deliveryScope);
                 await waitForQueuedAck(record);
               }}
-              onStop={async (id) => {
+              onStop={async (id, reason) => {
                 await sendWsWithAck({
                   type: "ticket.stop",
                   ticketId: id,
-                  reason: "手动停止",
+                  reason: reason?.trim() || "手动停止",
                 });
               }}
               onRetry={retryTicket}
@@ -2121,8 +2118,8 @@ function AppShell() {
                   })).catch((error: unknown) => toast.danger(error instanceof Error ? error.message : t("加载历史失败", "Could not load history")));
                 }}>{historyLoading || messageWindowLoading ? t("加载中…", "Loading…") : t("更早的消息", "Earlier messages")}</Button>}
                 {[
-                  ...conversationTranscript.map(renderConversationEntry),
-                  liveDispatchGroupKey || liveMessageId !== undefined ? null : liveResponseNode,
+                  ...responseMessages.map((item) => renderConversationMessage(item)),
+                  liveMessageId !== undefined ? null : liveResponseNode,
                   ...chatTimeline.pending.map((item) => renderConversationMessage(item)),
                 ]}
 

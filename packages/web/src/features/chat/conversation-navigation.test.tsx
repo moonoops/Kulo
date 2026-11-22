@@ -14,10 +14,18 @@ describe("conversation navigation", () => {
     expect(html).toContain("kulo-window-control");
     expect(html).not.toContain(">本次文件<");
   });
-  it("locates a durable publication inside a coalesced assistant response", () => {
-    const source: ChatDisplayItem[] = [{ id: 1, role: "user", text: "问题" }, { id: 2, role: "assistant", text: "结论", responseId: 7 }, { id: 3, role: "assistant", text: "文档", responseId: 7 }];
+  it("locates a durable publication or legacy dispatch reference inside a coalesced assistant response", () => {
+    const source: ChatDisplayItem[] = [
+      { id: 1, role: "user", text: "问题" },
+      { id: 2, role: "dispatch", text: "后台任务", responseId: 7, dispatch: { actionLabel: "派发任务", ticketId: "T-7", title: "后台任务" } },
+      { id: 3, role: "assistant", text: "结论", responseId: 7 },
+      { id: 4, role: "assistant", text: "文档", responseId: 7 },
+      { id: 5, role: "dispatch", text: "静默推进", responseId: 8, dispatch: { actionLabel: "推进任务", ticketId: "T-8", title: "静默推进" } },
+    ];
     const displayed = mergeResponseMessages(source);
-    expect(visibleMessageId(source, displayed, 3)).toBe(2);
+    expect(visibleMessageId(source, displayed, 4)).toBe(3);
+    expect(visibleMessageId(source, displayed, 2)).toBe(3);
+    expect(visibleMessageId(source, displayed, 5)).toBeUndefined();
     expect(visibleMessageId(source, displayed, 1)).toBe(1);
     expect(visibleMessageId(source, displayed, 999)).toBeUndefined();
   });

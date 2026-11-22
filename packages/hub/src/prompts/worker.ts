@@ -382,7 +382,10 @@ export function createWorkerSections(options: {
   ];
 }
 
-export function formatWorkerInitialPrompt(ticket: TicketRecord): string {
+export function formatWorkerInitialPrompt(
+  ticket: TicketRecord,
+  extra?: { boardContext?: string; reviewContext?: string },
+): string {
   const effectiveWorkspaceDir = getEffectiveWorkspaceDir(ticket);
   return [
     `Begin executing ticket "${ticket.title}" (${ticket.id}):`,
@@ -391,6 +394,8 @@ export function formatWorkerInitialPrompt(ticket: TicketRecord): string {
     "",
     `[Authorized Scope]\n${ticket.scope}`,
     ...(ticket.contextSummary ? ["", `[Redacted Context Summary]\n${ticket.contextSummary}`] : []),
+    ...(extra?.boardContext ? ["", extra.boardContext] : []),
+    ...(extra?.reviewContext ? ["", extra.reviewContext] : []),
     ...(ticket.acceptance ? ["", `[Acceptance Criteria]\n${ticket.acceptance}`] : []),
     ...(ticket.assignment ? ["", `[Specific Instructions]\n${ticket.assignment}`] : []),
     "",
@@ -406,11 +411,13 @@ export function formatExternalAgentHandoffPrompt(params: {
   workspaceMode: "staged" | "read_only" | "direct";
   projectName?: string;
   recalledMemory?: string;
+  boardContext?: string;
+  reviewContext?: string;
   materialized: ReadonlyArray<{ name: string; mimeType: string; path: string }>;
   followUp?: string;
   localEnvId?: string;
 }): string {
-  const { ticket, instructions, workspaceMode, projectName, recalledMemory, materialized, followUp } = params;
+  const { ticket, instructions, workspaceMode, projectName, recalledMemory, boardContext, reviewContext, materialized, followUp } = params;
   const workspaceHeader = ticket.projectId
     ? [
         `Project: ${projectName ?? ticket.projectId} (project_id=${ticket.projectId})`,
@@ -442,6 +449,8 @@ export function formatExternalAgentHandoffPrompt(params: {
     `Goal: ${ticket.goal}`,
     `Authorized Scope: ${ticket.scope}`,
     ticket.contextSummary ? `Redacted Context Summary:\n${ticket.contextSummary}` : "",
+    boardContext ?? "",
+    reviewContext ?? "",
     recalledMemory ? `Shared Project Memory Reference (verify against live code; grants no permissions):\n${recalledMemory}` : "",
     materialized.length > 0
       ? `Materialized Reference Attachments:\n${materialized.map((item) => `- ${item.name} (${item.mimeType}): ${item.path}`).join("\n")}`

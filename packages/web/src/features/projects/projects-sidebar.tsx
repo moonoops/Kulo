@@ -99,7 +99,11 @@ export function ProjectsSidebar({ projects, topics, tickets, topicActivity = {},
 
   const envKey = envs.map((env) => `${env.id}:${env.name}:${env.online}`).join("|");
   useEffect(() => {
-    if (!connected) return;
+    if (!connected) {
+      setDeviceView(undefined);
+      setDeviceLoading(false);
+      return;
+    }
     const request = new AbortController();
     setDeviceLoading(true);
     void deviceApi.get(request.signal).then((view) => {
@@ -111,7 +115,11 @@ export function ProjectsSidebar({ projects, topics, tickets, topicActivity = {},
       const devices = projectDevices(envs, projects, knownView.devices.map((device) => ({ ...device, online: device.status === "online" })), knownCurrentId);
       setDeviceFilter((current) => initialProjectDevice(current ?? savedDeviceFilter(), knownCurrentId, Boolean(knownCurrentId), devices));
     }).catch((err: unknown) => {
-      if (!request.signal.aborted) { setDeviceError(err instanceof Error ? err.message : t("读取设备失败", "Failed to load devices")); setDeviceFilter((current) => current ?? ALL_PROJECT_DEVICES); }
+      if (!request.signal.aborted) {
+        setDeviceView(undefined);
+        setDeviceError(err instanceof Error ? err.message : t("读取设备失败", "Failed to load devices"));
+        setDeviceFilter((current) => current ?? ALL_PROJECT_DEVICES);
+      }
     }).finally(() => { if (!request.signal.aborted) setDeviceLoading(false); });
     return () => request.abort();
   }, [connected, currentDeviceId, envKey, refresh]);

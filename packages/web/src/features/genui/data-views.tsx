@@ -89,9 +89,9 @@ export function DataTable(props: { columns: DataColumn[]; rows: DataRow[]; capti
       setExportError(tr("导出失败，请重试", "Export failed. Please retry."));
     }
   };
-  const table = <div className="kulo-genui-data">
+  const renderTable = (searchVariant: "primary" | "secondary") => <div className="kulo-genui-data">
     {props.rows.length > PAGE_SIZE && <SearchField className="kulo-context-field" aria-label={tr("筛选表格", "Filter table")} value={query} onChange={(next) => { setQuery(next); setPage(1); }}
-      variant="secondary" onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); } }}>
+      variant={searchVariant} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); } }}>
       <SearchField.Group><SearchField.SearchIcon /><SearchField.Input placeholder={tr("筛选", "Filter")} /><SearchField.ClearButton className="kulo-genui-control" /></SearchField.Group>
     </SearchField>}
     <TableBody {...props} rows={view.rows} sort={sort} onSortChange={(next) => { setSort(next); setPage(1); }} selection={selection} />
@@ -115,14 +115,14 @@ export function DataTable(props: { columns: DataColumn[]; rows: DataRow[]; capti
             <Modal.Dialog className="kulo-genui-table-dialog">
               <Modal.CloseTrigger className="kulo-genui-control" />
               <Modal.Header><Modal.Heading>{props.caption || tr("数据表", "Data table")}</Modal.Heading></Modal.Header>
-              <Modal.Body>{table}{exportError && <p className="kulo-genui-error" role="alert">{exportError}</p>}</Modal.Body>
+              <Modal.Body>{renderTable("secondary")}{exportError && <p className="kulo-genui-error" role="alert">{exportError}</p>}</Modal.Body>
               <Modal.Footer><Button size="sm" variant="secondary" className="kulo-genui-control" onPress={exportCsv}>{tr("导出 CSV", "Export CSV")}</Button></Modal.Footer>
             </Modal.Dialog>
           </Modal.Container>
         </Modal.Backdrop>
       </Modal></div>
     </div>
-    {table}
+    {renderTable("primary")}
     {exportError && <p className="kulo-genui-error" role="alert">{exportError}</p>}
   </div>;
 }

@@ -536,6 +536,12 @@ export function KuloTaskRail({
                         <div className="kulo-task-card-foot kulo-task-card-preview-foot">
                           <span className="kulo-task-card-status-group">
                             <RailStatus ticket={ticket} />
+                            {ticket.subagentSummary && ticket.subagentSummary.running > 0 && (
+                              <>
+                                <span className="kulo-task-device-sep" aria-hidden="true">·</span>
+                                <span className="kulo-task-device-name">{t(`${ticket.subagentSummary.running} 队友运行中`, `${ticket.subagentSummary.running} teammates active`)}</span>
+                              </>
+                            )}
                             {selectedPreview?.deviceName && (
                               <>
                                 <span className="kulo-task-device-sep" aria-hidden="true">·</span>
@@ -553,7 +559,15 @@ export function KuloTaskRail({
                           onPress={() => onProject(ticket.id, ticket.title)}>
                           <strong className="kulo-task-title" title={ticket.title}>{ticket.title}</strong>
                           <span className="kulo-task-card-foot">
-                            <RailStatus ticket={ticket} />
+                            <span className="kulo-task-card-status-group">
+                              <RailStatus ticket={ticket} />
+                              {ticket.subagentSummary && ticket.subagentSummary.running > 0 && (
+                                <>
+                                  <span className="kulo-task-device-sep" aria-hidden="true">·</span>
+                                  <span className="kulo-task-device-name">{t(`${ticket.subagentSummary.running} 队友运行中`, `${ticket.subagentSummary.running} teammates active`)}</span>
+                                </>
+                              )}
+                            </span>
                             {durationLabel && <span className="kulo-task-time">{durationLabel}</span>}
                           </span>
                         </Button>

@@ -207,6 +207,7 @@ export type HubToClientMessage =
       ticket: TicketRecord;
       transcript: ChatDisplayItem[];
       live: LiveStreamState;
+      subagents?: import("./task-boards.js").SubagentCardView[];
     }
   | {
       type: "hub.ack";

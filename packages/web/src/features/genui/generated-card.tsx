@@ -292,7 +292,7 @@ function CardSession({ card, onAction, isConnected = true, animateEntry = false,
       {terminal && onAdjust && <Button variant="secondary" size="sm" onPress={() => onAdjust(currentCard, values)}>{tr("以此调整", "Adjust from this")}</Button>}
     </Card.Footer>}
   </>;
-  return <Card ref={cardElementRef} className="kulo-genui-card" data-wide={wide || undefined} data-enter={entrance || undefined} aria-label={card.title}>
+  return <Card ref={cardElementRef} variant="secondary" className="kulo-genui-card" data-wide={wide || undefined} data-enter={entrance || undefined} aria-label={card.title}>
     {previewOnly ? content : <Disclosure ref={disclosureRef} className="kulo-genui-shell" isExpanded={draft.expanded}
       onExpandedChange={(expanded) => {
         if (!expanded) restoreDisclosureFocus();
@@ -304,7 +304,7 @@ function CardSession({ card, onAction, isConnected = true, animateEntry = false,
 export function GeneratedCard(props: GeneratedCardProps) {
   useI18n();
   const parsed = useMemo(() => UiCardSnapshotSchema.safeParse(props.card), [props.card]);
-  if (!parsed.success) return <Card className="kulo-genui-card">
+  if (!parsed.success) return <Card variant="secondary" className="kulo-genui-card">
     <Card.Header><Card.Title>{typeof props.card?.title === "string" ? props.card.title : tr("交互卡片", "Interactive card")}</Card.Title></Card.Header>
     <Card.Content><p className="kulo-genui-fallback" role="status">{props.fallbackText || tr("此卡片暂不支持显示", "This card cannot be displayed yet")}</p></Card.Content>
   </Card>;

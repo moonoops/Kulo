@@ -1,5 +1,4 @@
 .kulo-message-with-actions { width: 100%; min-width: 0; }
-.kulo-dispatch-message-content { display: flex; min-width: 0; flex-direction: column; gap: var(--kulo-space-3); }
 .kulo-message-footer { display: flex; align-items: center; flex-wrap: wrap; gap: var(--kulo-control-gap); margin-top: var(--kulo-space-1); color: var(--muted); }
 .kulo-message-timestamp { flex-shrink: 0; font-size: var(--kulo-text-caption); line-height: var(--kulo-leading-caption); font-variant-numeric: tabular-nums; }
 .kulo-message-actions { --kulo-message-action-height: 24px; display: flex; align-items: center; flex-wrap: wrap; gap: var(--kulo-space-1); color: var(--muted); }

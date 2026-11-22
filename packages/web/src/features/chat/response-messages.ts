@@ -15,10 +15,11 @@ function appendParts(previous: ChatDisplayItem, next: ChatDisplayItem): MessageP
   return [...parts, ...getMessageParts(next).map((part) => ids.has(part.partId) ? { ...part, partId: `${next.id}:${part.partId}` } : part)];
 }
 
-/** Keep durable entry identities intact while presenting one assistant reply. */
+/** Keep durable entry identities intact while presenting one assistant reply, omitting inline task-dispatch cards shown in the right task rail. */
 export function mergeResponseMessages<T extends ChatDisplayItem>(items: readonly T[]): T[] {
   const merged: T[] = [];
   for (const item of items) {
+    if (item.role === "dispatch") continue;
     const previous = merged.at(-1);
     if (item.role !== "assistant" || item.responseId === undefined || previous?.role !== "assistant" || previous.responseId !== item.responseId) {
       merged.push(item);

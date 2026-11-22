@@ -173,6 +173,7 @@ describe("user conversation queries", () => {
     await f.hub.harness.commit(async (tx) => {
       hidden.push(Number((await tx.appendEntry(AssistantEntry, f.root, { model: [{ ...fauxAssistantMessage([]), content: [{ type: "thinking", thinking: "后台自动回执的内部处理" }] }] })).id));
       hidden.push(Number((await tx.appendEntry(AssistantEntry, f.root, { model: [{ ...fauxAssistantMessage([]), content: [{ type: "toolCall", id: "process-only-tool", name: "read", arguments: { path: "process-only.txt" } }] }] })).id));
+      hidden.push(Number((await tx.appendEntry(ToolResultEntry, f.root, { model: [{ role: "toolResult", toolName: "kulo_dispatch", toolCallId: "hidden-dispatch-card", isError: false, content: [{ type: "text", text: JSON.stringify({ ticket: { id: "T-hidden", title: "后台自动回执派发卡", userSummary: "仅在右侧任务栏显示" } }) }], timestamp: Date.now() }] })).id));
     }, BACKGROUND_CONTEXT);
     expect((await f.hub.searchConversations({ query: "后台自动回执" })).items).toEqual([]);
     expect((await f.hub.searchConversations({ query: "receipt.txt" })).items).toEqual([]);

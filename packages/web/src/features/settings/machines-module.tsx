@@ -144,7 +144,7 @@ function DeviceCard({
     else if (key === "remove") onRemove();
   };
 
-  return <Card className="kulo-device-card" variant="default" role="listitem" aria-label={device.name}>
+  return <Card className="kulo-device-card" variant="secondary" role="listitem" aria-label={device.name}>
     <Card.Header className="kulo-device-card-header">
       <div className="kulo-device-card-role">
         <span>{role}</span>

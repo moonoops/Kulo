@@ -14,6 +14,7 @@ import {
 import { validateUiCardInput } from "@kulo/protocol";
 import { KuloStateDoc, type KuloHub } from "@kulo/hub";
 import {
+  ActionConfirmationsDoc,
   buildCustomizationConfirmCard,
   buildExternalPermissionCard,
   buildHostActionConfirmCard,
@@ -21,7 +22,10 @@ import {
   buildStagedApplyConfirmCard,
   buildTicketDecisionCard,
   customizationValidateFingerprint,
+  ticketDecisionFingerprint,
 } from "../packages/hub/src/action-confirmations.js";
+import { DeliveryReceiptDoc, deliveryReceiptKey } from "../packages/hub/src/delivery-receipts.js";
+import { KuloProjectsDoc } from "../packages/hub/src/projects.js";
 import { HindsightLocalService } from "../packages/hub/src/hindsight-service.js";
 import { MemoryServiceDoc } from "../packages/hub/src/memory-service.js";
 import { openTestHub } from "./helpers/secure-hub.js";
@@ -87,10 +91,31 @@ describe("Main-Agent Full Authority, Smart Judgment & Non-Blocking Interactive C
       options: [
         { id: "reuse", label: "复用现有 8888 实例", tone: "primary" },
         { id: "new_port", label: "换端口全新安装", tone: "secondary" },
+        { id: "abort_task", label: "暂不安装，结束任务", tone: "secondary", action: "stop" },
       ],
     });
     expect(() => validateUiCardInput(c6.input)).not.toThrow();
-    expect(c6.logicalIds).toEqual(["reuse", "new_port", "manual"]);
+    expect(c6.logicalIds).toEqual(["reuse", "new_port", "abort_task", "manual"]);
+    expect(c6.input.actions.map((a) => ({ id: a.id, kind: a.kind }))).toEqual([
+      { id: "choice_0", kind: "submit" },
+      { id: "choice_1", kind: "submit" },
+      { id: "choice_2", kind: "cancel" },
+      { id: "manual", kind: "submit" },
+    ]);
+
+    const fpReply = ticketDecisionFingerprint({
+      ticketId: "T-0001",
+      runEpoch: 1,
+      question: "是否继续？",
+      options: [{ id: "end", label: "结束任务", action: "reply" }],
+    });
+    const fpStop = ticketDecisionFingerprint({
+      ticketId: "T-0001",
+      runEpoch: 1,
+      question: "是否继续？",
+      options: [{ id: "end", label: "结束任务", action: "stop" }],
+    });
+    expect(fpReply).not.toBe(fpStop);
   });
 
   it("lets Main Agent merge sensitive staged changes directly by default, and still supports optional ask_user card escalation", async () => {
@@ -750,5 +775,621 @@ describe("Main-Agent Full Authority, Smart Judgment & Non-Blocking Interactive C
     const settled = await hub.uiCards.get(cardId);
     expect(settled?.status).toBe("submitted");
     expect(settled?.resultSummary).toBe("已通过对话处理");
+  }, 30_000);
+
+  it("stops tickets atomically from action='stop' decision cards with zero race, zero worker wake, and idempotent Phase 2 retry", async () => {
+    const stateDir = tempDir("stop-card-state");
+    const localEnvRoot = tempDir("stop-card-env");
+    const faux = fauxProvider({ provider: "stop-card-test", models: [{ id: "stop-model" }] });
+    const models = createModels();
+    models.setProvider(faux.provider);
+
+    let workerRuns = 0;
+    let observedUiActionRaw = "";
+    let observedTicketStatusAtUiActionTurn = "";
+    let hubRef: KuloHub | undefined;
+
+    faux.setResponses(
+      Array.from({ length: 24 }, () => (ctx: TranscriptContext) => {
+        const isOrchestrator =
+          Boolean(ctx.tools?.some((t) => t.name === "kulo_dispatch")) ||
+          ctx.messages.some((m) => m.role === "system" && "toolsAdded" in m && Array.isArray(m.toolsAdded) && m.toolsAdded.some((t) => t.name === "kulo_dispatch"));
+        if (!isOrchestrator) {
+          const reported = ctx.messages.some((m) => m.role === "toolResult" && m.toolName === "kulo_report");
+          if (reported) return fauxAssistantMessage([fauxText("Parked")]);
+          workerRuns += 1;
+          return fauxAssistantMessage(
+            [
+              fauxToolCall("kulo_report", {
+                state: "blocked",
+                summary: "设备未授予截屏权限",
+                question: "是否授予截屏权限，还是结束本次截屏任务？",
+                options: ["已授权，继续截屏", "暂不授予，结束任务"],
+              }),
+            ],
+            { stopReason: "toolUse" },
+          );
+        }
+
+        const lastUserIdx = ctx.messages.findLastIndex((m) => m.role === "user");
+        const lastText = typeof ctx.messages[lastUserIdx]?.content === "string" ? ctx.messages[lastUserIdx]!.content as string : "";
+        const turnResults = ctx.messages.slice(lastUserIdx + 1).filter((m) => m.role === "toolResult");
+
+        if (lastText.includes("[KULO_WORKER_RELAY]") && lastText.includes("State: blocked")) {
+          const ticketId = /(T-\d{4})/.exec(lastText)![1]!;
+          if (turnResults.some((m) => m.toolName === "kulo_ticket_ask_user")) {
+            return fauxAssistantMessage([fauxText("请决定是否授予截屏权限。")]);
+          }
+          return fauxAssistantMessage(
+            [
+              fauxToolCall("kulo_ticket_ask_user", {
+                ticket_id: ticketId,
+                question: "当前未授予手机读屏/截图权限，你想怎么处理？",
+                options: [
+                  { id: "grant", label: "已授权，继续截屏", tone: "primary", action: "reply" },
+                  { id: "decline_stop", label: "暂不授予，结束任务", tone: "secondary", action: "stop" },
+                ],
+              }),
+            ],
+            { stopReason: "toolUse" },
+          );
+        }
+
+        if (lastText.includes("kulo.ui.action")) {
+          observedUiActionRaw = lastText;
+          observedTicketStatusAtUiActionTurn = JSON.stringify(ctx);
+          return fauxAssistantMessage([fauxText("好的，已为你结束这次截屏任务。")]);
+        }
+
+        return fauxAssistantMessage([fauxText("收到。")]);
+      }),
+    );
+
+    const hub = await openTestHub({
+      models,
+      providerId: "stop-card-test",
+      config: {
+        stateDir,
+        localEnvRoot,
+        model: { defaultProvider: "stop-card-test", defaultModel: "stop-model", thinkingLevel: "off" },
+      },
+    });
+    hubRef = hub;
+    hubs.push(hub);
+
+    // 1. Direct stop via chat decision card (zero 0ms race, zero worker re-wake, zero failure recovery)
+    const t1 = await hub.dispatchTicket({
+      commandId: "stop-card-1",
+      title: "截取手机屏幕",
+      goal: "截取手机当前画面",
+      scope: "android",
+      role: "coder",
+    });
+
+    let cardId = "";
+    await vi.waitFor(async () => {
+      const snap = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+      const t = snap?.tickets[t1.id];
+      expect(t?.status).toBe("waiting");
+      expect(t?.waiting?.reason).toBe("user");
+      expect(t?.waiting?.options?.[1]).toMatchObject({ id: "decline_stop", action: "stop" });
+      expect(t?.waiting?.cardId).toBeTruthy();
+      cardId = t!.waiting!.cardId!;
+    }, { timeout: 15_000, interval: 40 });
+    expect(workerRuns).toBe(1);
+
+    const card = (await hub.uiCards.get(cardId))!;
+    const stopAction = card.actions.find((a) => a.label === "暂不授予，结束任务")!;
+    expect(stopAction.kind).toBe("cancel");
+
+    const receipt = await hub.submitUiAction({
+      cardId: card.cardId,
+      revision: card.revision,
+      actionId: stopAction.id,
+      values: {},
+      commandId: "user-stop-via-card-1",
+    });
+    expect(receipt.status).toBe("cancelled");
+    expect(receipt.card?.resultSummary).toBe("已停止任务");
+
+    await vi.waitFor(() => {
+      expect(observedUiActionRaw).toContain("kulo.ui.action");
+    }, { timeout: 10_000, interval: 20 });
+
+    // P1-3: First JSON key stays `"type":"kulo.ui.action"` so transcript projection never leaks raw JSON.
+    expect(observedUiActionRaw.startsWith('{"type":"kulo.ui.action"')).toBe(true);
+    expect(JSON.parse(observedUiActionRaw)).toMatchObject({
+      type: "kulo.ui.action",
+      systemEffect: { kind: "ticket_stopped", ticketId: t1.id, reason: "暂不授予，结束任务" },
+    });
+    // Zero-race: at the moment Orchestrator woke up on 0ms fauxProvider, Recent Work already saw `stopped`.
+    expect(observedTicketStatusAtUiActionTurn).toContain(`${t1.id} · 截取手机屏幕 · stopped`);
+
+    const snap1 = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+    expect(snap1?.tickets[t1.id]).toMatchObject({
+      status: "stopped",
+      stoppedReason: "暂不授予，结束任务",
+      cleanupPending: false,
+    });
+    expect(snap1?.tickets[t1.id]?.recovery).toBeUndefined();
+    expect(snap1?.tickets[t1.id]?.waiting).toBeUndefined();
+    expect(workerRuns).toBe(1);
+
+    // 2. P0-2: Transient Phase 2 failure after uiCards.submit commits -> same commandId retry completes cleanup!
+    const t2 = await hub.dispatchTicket({
+      commandId: "stop-card-2",
+      title: "截取手机屏幕2",
+      goal: "再次截取手机画面",
+      scope: "android",
+      role: "coder",
+    });
+    let cardId2 = "";
+    await vi.waitFor(async () => {
+      const snap = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+      const t = snap?.tickets[t2.id];
+      expect(t?.status).toBe("waiting");
+      expect(t?.waiting?.cardId).toBeTruthy();
+      cardId2 = t!.waiting!.cardId!;
+    }, { timeout: 15_000, interval: 40 });
+    expect(workerRuns).toBe(2);
+
+    const card2 = (await hub.uiCards.get(cardId2))!;
+    const stopAction2 = card2.actions.find((a) => a.label === "暂不授予，结束任务")!;
+    const mediaSpy = vi.spyOn(hubRef.mediaJobs, "list").mockRejectedValueOnce(new Error("transient Phase 2 error"));
+    await expect(
+      hub.submitUiAction({
+        cardId: card2.cardId,
+        revision: card2.revision,
+        actionId: stopAction2.id,
+        values: {},
+        commandId: "user-stop-via-card-2",
+      }),
+    ).rejects.toThrow("transient Phase 2 error");
+    mediaSpy.mockRestore();
+
+    // Phase 1 committed stopped + projects.cancellations even though Phase 2 threw.
+    const midProjects = await hub.harness.snapshot(KuloProjectsDoc, BACKGROUND_CONTEXT);
+    expect(midProjects?.cancellations?.[t2.id]).toBeDefined();
+
+    // Retry with identical commandId hits deduplicated=true AND completes Phase 2 cleanup!
+    const retryReceipt = await hub.submitUiAction({
+      cardId: card2.cardId,
+      revision: card2.revision,
+      actionId: stopAction2.id,
+      values: {},
+      commandId: "user-stop-via-card-2",
+    });
+    expect(retryReceipt.deduplicated).toBe(true);
+    const afterProjects = await hub.harness.snapshot(KuloProjectsDoc, BACKGROUND_CONTEXT);
+    expect(afterProjects?.cancellations?.[t2.id]).toBeUndefined();
+    const snap2 = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+    expect(snap2?.tickets[t2.id]).toMatchObject({ status: "stopped", cleanupPending: false });
+    expect(workerRuns).toBe(2);
+  }, 30_000);
+
+  it("handles P0-1 crash replay on legacy ticket.steer stop fallback and auto-settles cards on kulo_stop", async () => {
+    const stateDir = tempDir("steer-stop-state");
+    const localEnvRoot = tempDir("steer-stop-env");
+    const faux = fauxProvider({ provider: "steer-stop-test", models: [{ id: "steer-stop-model" }] });
+    const models = createModels();
+    models.setProvider(faux.provider);
+
+    let workerRuns = 0;
+    let activeTicketId = "";
+
+    faux.setResponses(
+      Array.from({ length: 24 }, () => (ctx: TranscriptContext) => {
+        const isOrchestrator =
+          Boolean(ctx.tools?.some((t) => t.name === "kulo_dispatch")) ||
+          ctx.messages.some((m) => m.role === "system" && "toolsAdded" in m && Array.isArray(m.toolsAdded) && m.toolsAdded.some((t) => t.name === "kulo_dispatch"));
+        if (!isOrchestrator) {
+          const reported = ctx.messages.some((m) => m.role === "toolResult" && m.toolName === "kulo_report");
+          if (reported) return fauxAssistantMessage([fauxText("Parked")]);
+          workerRuns += 1;
+          return fauxAssistantMessage(
+            [
+              fauxToolCall("kulo_report", {
+                state: "blocked",
+                summary: "缺少权限",
+                question: "是否继续？",
+              }),
+            ],
+            { stopReason: "toolUse" },
+          );
+        }
+
+        const lastUserIdx = ctx.messages.findLastIndex((m) => m.role === "user");
+        const lastText = typeof ctx.messages[lastUserIdx]?.content === "string" ? ctx.messages[lastUserIdx]!.content as string : "";
+        const turnResults = ctx.messages.slice(lastUserIdx + 1).filter((m) => m.role === "toolResult");
+
+        if (lastText.includes("[KULO_WORKER_RELAY]") && lastText.includes("State: blocked")) {
+          activeTicketId = /(T-\d{4})/.exec(lastText)![1]!;
+          if (turnResults.some((m) => m.toolName === "kulo_ticket_ask_user")) {
+            return fauxAssistantMessage([fauxText("请确认操作。")]);
+          }
+          return fauxAssistantMessage(
+            [
+              fauxToolCall("kulo_ticket_ask_user", {
+                ticket_id: activeTicketId,
+                question: "是否授予权限？",
+                options: [
+                  { id: "grant", label: "继续", action: "reply" },
+                  { id: "stop_now", label: "结束任务", action: "stop", tone: "secondary" },
+                ],
+              }),
+            ],
+            { stopReason: "toolUse" },
+          );
+        }
+
+        if (lastText.includes("算了直接结束")) {
+          if (turnResults.some((m) => m.toolName === "kulo_stop")) {
+            return fauxAssistantMessage([fauxText("好的，已停止任务。")]);
+          }
+          return fauxAssistantMessage(
+            [fauxToolCall("kulo_stop", { ticket_id: activeTicketId, reason: "用户聊天要求结束" })],
+            { stopReason: "toolUse" },
+          );
+        }
+
+        return fauxAssistantMessage([fauxText("收到。")]);
+      }),
+    );
+
+    const hub = await openTestHub({
+      models,
+      providerId: "steer-stop-test",
+      config: {
+        stateDir,
+        localEnvRoot,
+        model: { defaultProvider: "steer-stop-test", defaultModel: "steer-stop-model", thinkingLevel: "off" },
+      },
+    });
+    hubs.push(hub);
+
+    // 1. P0-1: Legacy ticket.steer with decisionOptionId pointing to action='stop' crashes after Phase 1 -> replay succeeds without 409!
+    const t1 = await hub.dispatchTicket({
+      commandId: "legacy-stop-ticket-1",
+      title: "旧客户端停单测试",
+      goal: "测试停单崩溃重放",
+      scope: "local",
+      role: "coder",
+    });
+    let cardId1 = "";
+    await vi.waitFor(async () => {
+      const snap = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+      expect(snap?.tickets[t1.id]?.status).toBe("waiting");
+      expect(snap?.tickets[t1.id]?.waiting?.cardId).toBeTruthy();
+      cardId1 = snap!.tickets[t1.id]!.waiting!.cardId!;
+    }, { timeout: 15_000, interval: 40 });
+    expect(workerRuns).toBe(1);
+
+    const crashSpy = vi.spyOn(hub.mediaJobs, "list").mockRejectedValueOnce(new Error("crash after phase 1"));
+    await expect(
+      hub.steerTicket({
+        ticketId: t1.id,
+        commandId: "cmd-legacy-stop-1",
+        text: "结束任务",
+        decisionOptionId: "stop_now",
+      }),
+    ).rejects.toThrow("crash after phase 1");
+    crashSpy.mockRestore();
+
+    const midSnap = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+    expect(midSnap?.tickets[t1.id]?.status).toBe("stopped");
+    expect(midSnap?.tickets[t1.id]?.waiting).toBeUndefined();
+    const midReceipt = await hub.harness.snapshot(DeliveryReceiptDoc, deliveryReceiptKey("cmd-legacy-stop-1"), BACKGROUND_CONTEXT);
+    expect(midReceipt?.phase).toBe("admitted");
+
+    // Replay exact same ticket.steer command -> resumes Phase 2 cleanly without 409!
+    const completedCard = await hub.steerTicket({
+      ticketId: t1.id,
+      commandId: "cmd-legacy-stop-1",
+      text: "结束任务",
+      decisionOptionId: "stop_now",
+    });
+    expect(completedCard.status).toBe("stopped");
+    expect(completedCard.cleanupPending).toBeFalsy();
+    expect(completedCard.stoppedReason).toBe("结束任务");
+    const doneSnap = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+    expect(doneSnap?.tickets[t1.id]?.cleanupPending).toBe(false);
+    const doneReceipt = await hub.harness.snapshot(DeliveryReceiptDoc, deliveryReceiptKey("cmd-legacy-stop-1"), BACKGROUND_CONTEXT);
+    expect(doneReceipt?.phase).toBe("complete");
+    expect((await hub.uiCards.get(cardId1))?.status).toBe("cancelled");
+    expect(workerRuns).toBe(1);
+
+    // Third replay returns complete receipt idempotently.
+    const replayCard = await hub.steerTicket({
+      ticketId: t1.id,
+      commandId: "cmd-legacy-stop-1",
+      text: "结束任务",
+      decisionOptionId: "stop_now",
+    });
+    expect(replayCard.status).toBe("stopped");
+
+    // 2. Chat kulo_stop auto-settles open ticket_decision card!
+    const t2 = await hub.dispatchTicket({
+      commandId: "chat-stop-ticket-2",
+      title: "聊天停单收口测试",
+      goal: "测试聊天停单自动收口卡片",
+      scope: "local",
+      role: "coder",
+    });
+    let cardId2 = "";
+    await vi.waitFor(async () => {
+      const snap = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+      expect(snap?.tickets[t2.id]?.status).toBe("waiting");
+      expect(snap?.tickets[t2.id]?.waiting?.cardId).toBeTruthy();
+      cardId2 = snap!.tickets[t2.id]!.waiting!.cardId!;
+    }, { timeout: 15_000, interval: 40 });
+
+    const sub = await hub.sendUserMessage("算了直接结束");
+    await sub.wait(BACKGROUND_CONTEXT);
+
+    const snap2 = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+    expect(snap2?.tickets[t2.id]?.status).toBe("stopped");
+    const settledCard2 = await hub.uiCards.get(cardId2);
+    expect(settledCard2?.status).toBe("cancelled");
+    expect(settledCard2?.resultSummary).toBe("任务已停止");
+    expect(workerRuns).toBe(2);
+  }, 30_000);
+
+  it("prevents stale stop cards from clobbering ready tickets with staged diffs and respects manual/dispatched boundaries", async () => {
+    const stateDir = tempDir("p04-state");
+    const localEnvRoot = tempDir("p04-env");
+    const projectDir = tempDir("p04-proj");
+    fs.writeFileSync(path.join(projectDir, "README.md"), "# P0-4 Demo\n");
+
+    const faux = fauxProvider({ provider: "p04-test", models: [{ id: "p04-model" }] });
+    const models = createModels();
+    models.setProvider(faux.provider);
+
+    faux.setResponses(
+      Array.from({ length: 24 }, () => (ctx: TranscriptContext) => {
+        const isOrchestrator =
+          Boolean(ctx.tools?.some((t) => t.name === "kulo_dispatch")) ||
+          ctx.messages.some((m) => m.role === "system" && "toolsAdded" in m && Array.isArray(m.toolsAdded) && m.toolsAdded.some((t) => t.name === "kulo_dispatch"));
+        if (!isOrchestrator) {
+          const hasSteer = ctx.messages.some(
+            (m) =>
+              m.role === "user" &&
+              typeof m.content === "string" &&
+              (m.content.includes("继续执行") || m.content.includes("Follow-Up / Resume Instructions")),
+          );
+          const reportCount = ctx.messages.filter((m) => m.role === "toolResult" && m.toolName === "kulo_report").length;
+          if (hasSteer) {
+            if (reportCount >= 2) return fauxAssistantMessage([fauxText("Done")]);
+            const wrote = ctx.messages.some((m) => m.role === "toolResult" && m.toolName === "write");
+            if (!wrote) {
+              return fauxAssistantMessage(
+                [fauxToolCall("write", { path: ".github/workflows/p04.yml", content: "name: P04\n" })],
+                { stopReason: "toolUse" },
+              );
+            }
+            return fauxAssistantMessage(
+              [fauxToolCall("kulo_report", { state: "ready", summary: "Finished staged edit" })],
+              { stopReason: "toolUse" },
+            );
+          }
+          if (reportCount >= 1) return fauxAssistantMessage([fauxText("Parked")]);
+          return fauxAssistantMessage(
+            [fauxToolCall("kulo_report", { state: "blocked", summary: "Need go-ahead", question: "Continue or stop?" })],
+            { stopReason: "toolUse" },
+          );
+        }
+
+        const lastUserIdx = ctx.messages.findLastIndex((m) => m.role === "user");
+        const lastText = typeof ctx.messages[lastUserIdx]?.content === "string" ? ctx.messages[lastUserIdx]!.content as string : "";
+        const turnResults = ctx.messages.slice(lastUserIdx + 1).filter((m) => m.role === "toolResult");
+
+        if (lastText.includes("[KULO_WORKER_RELAY]") && lastText.includes("State: blocked")) {
+          const ticketId = /(T-\d{4})/.exec(lastText)![1]!;
+          if (turnResults.some((m) => m.toolName === "kulo_ticket_ask_user")) {
+            return fauxAssistantMessage([fauxText("请决定是否继续。")]);
+          }
+          return fauxAssistantMessage(
+            [
+              fauxToolCall("kulo_ticket_ask_user", {
+                ticket_id: ticketId,
+                question: "是否继续修改？",
+                options: [
+                  { id: "go", label: "继续", action: "reply" },
+                  { id: "stop", label: "结束", action: "stop" },
+                ],
+              }),
+            ],
+            { stopReason: "toolUse" },
+          );
+        }
+        if (lastText.includes("[KULO_WORKER_RELAY]") && lastText.includes("State: ready")) {
+          const ticketId = /(T-\d{4})/.exec(lastText)![1]!;
+          if (turnResults.some((m) => m.toolName === "kulo_apply_staged_changes")) {
+            return fauxAssistantMessage([fauxText("请确认是否合并敏感改动。")]);
+          }
+          return fauxAssistantMessage(
+            [
+              fauxToolCall("kulo_apply_staged_changes", {
+                command_id: `ask-apply-${ticketId}`,
+                ticket_id: ticketId,
+                ask_user: true,
+              }),
+            ],
+            { stopReason: "toolUse" },
+          );
+        }
+        return fauxAssistantMessage([fauxText("收到。")]);
+      }),
+    );
+
+    const hub = await openTestHub({
+      models,
+      providerId: "p04-test",
+      config: {
+        stateDir,
+        localEnvRoot,
+        model: { defaultProvider: "p04-test", defaultModel: "p04-model", thinkingLevel: "off" },
+      },
+    });
+    hubs.push(hub);
+
+    const project = await hub.projects.create({
+      commandId: "create-p04-proj",
+      name: "P04Proj",
+      deviceId: "local",
+      workspaceDir: projectDir,
+    });
+
+    const t = await hub.dispatchTicket({
+      commandId: "p04-dispatch-1",
+      title: "暂存改动测试",
+      goal: "写入 workflow 文件",
+      scope: ".github/workflows/",
+      role: "coder",
+      projectId: project.id,
+    });
+
+    let decisionCardId = "";
+    await vi.waitFor(async () => {
+      const snap = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+      expect(snap?.tickets[t.id]?.status).toBe("waiting");
+      expect(snap?.tickets[t.id]?.waiting?.cardId).toBeTruthy();
+      decisionCardId = snap!.tickets[t.id]!.waiting!.cardId!;
+    }, { timeout: 15_000, interval: 40 });
+
+    // Create a second independent decision card (simulating an unsettled stale stop card) plus a manual-split record and dispatched record test.
+    const staleBuilt = buildTicketDecisionCard({
+      title: t.title,
+      question: "过期决策卡",
+      options: [{ id: "stale_stop", label: "结束", action: "stop" }],
+    });
+    const { confirmation: staleConfirm } = await hub.actionConfirmations.ensurePendingCard({
+      conversationId: Number(hub.rootConversation.id),
+      ticketId: t.id,
+      callId: "stale-card-call",
+      kind: "ticket_decision",
+      fingerprint: "stale-stop-fp-1",
+      cardInput: staleBuilt.input,
+      logicalIds: staleBuilt.logicalIds,
+      payload: {
+        kind: "ticket_decision",
+        ticketId: t.id,
+        runEpoch: 1,
+        question: "过期决策卡",
+        options: [{ id: "stale_stop", label: "结束", action: "stop" }],
+      },
+    });
+
+    // Resume ticket directly so it finishes `ready` with stagedDiff and triggers staged_apply card.
+    await hub.steerTicket({ ticketId: t.id, commandId: "p04-go", text: "继续执行" });
+
+    let stagedApplyCardId = "";
+    await vi.waitFor(async () => {
+      const snap = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+      expect(snap?.tickets[t.id]?.status).toBe("ready");
+      expect(snap?.tickets[t.id]?.workspaceStaging?.stagedDiff?.hasChanges).toBe(true);
+      const cards = await hub.uiCards.snapshot(Number(hub.rootConversation.id));
+      const applyCard = cards.find((c) => c.title === "确认合并高风险改动");
+      expect(applyCard?.status).toBe("ready");
+      stagedApplyCardId = applyCard!.cardId;
+    }, { timeout: 15_000, interval: 40 });
+
+    // P0-4(a): onTicketSettled auto-settled stale decision cards while keeping staged_apply ready!
+    expect((await hub.uiCards.get(decisionCardId))?.status).toBe("submitted");
+    expect((await hub.uiCards.get(staleConfirm.cardId!))?.status).toBe("cancelled");
+    expect((await hub.uiCards.get(stagedApplyCardId))?.status).toBe("ready");
+
+    // P0-4(b): Even if a fresh stale action='stop' card exists on a ready ticket, clicking stop NEVER clobbers ready or deletes stagedCwd!
+    const lateBuilt = buildTicketDecisionCard({
+      title: t.title,
+      question: "迟到决策卡",
+      options: [{ id: "late_stop", label: "结束", action: "stop" }],
+    });
+    const { confirmation: lateConfirm } = await hub.actionConfirmations.ensurePendingCard({
+      conversationId: Number(hub.rootConversation.id),
+      ticketId: t.id,
+      callId: "late-card-call",
+      kind: "ticket_decision",
+      fingerprint: "late-stop-fp-2",
+      cardInput: lateBuilt.input,
+      logicalIds: lateBuilt.logicalIds,
+      payload: {
+        kind: "ticket_decision",
+        ticketId: t.id,
+        runEpoch: 2,
+        question: "迟到决策卡",
+        options: [{ id: "late_stop", label: "结束", action: "stop" }],
+      },
+    });
+    const lateCard = (await hub.uiCards.get(lateConfirm.cardId!))!;
+    const lateStopAction = lateCard.actions.find((a) => a.label === "结束")!;
+    const lateReceipt = await hub.submitUiAction({
+      cardId: lateCard.cardId,
+      revision: lateCard.revision,
+      actionId: lateStopAction.id,
+      values: {},
+      commandId: "late-stop-click",
+    });
+    expect(lateReceipt.card?.resultSummary).toBe("任务已完成");
+    const afterLate = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+    expect(afterLate?.tickets[t.id]?.status).toBe("ready");
+    expect(afterLate?.tickets[t.id]?.workspaceStaging?.stagedCwd).toBeTruthy();
+    expect(fs.existsSync(afterLate!.tickets[t.id]!.workspaceStaging!.stagedCwd!)).toBe(true);
+
+    // P1-2: Verify settlePendingForTicket settles manual-split byId pending_orchestrator record AND leaves dispatched record untouched!
+    const manualBuilt = buildTicketDecisionCard({
+      title: t.title,
+      question: "手动分裂测试",
+      options: [{ id: "ok", label: "好" }],
+    });
+    const { confirmation: manualConfirm } = await hub.actionConfirmations.ensurePendingCard({
+      conversationId: Number(hub.rootConversation.id),
+      ticketId: t.id,
+      callId: "manual-split-call",
+      kind: "ticket_decision",
+      fingerprint: "manual-split-fp",
+      cardInput: manualBuilt.input,
+      logicalIds: manualBuilt.logicalIds,
+      payload: {
+        kind: "ticket_decision",
+        ticketId: t.id,
+        runEpoch: 2,
+        question: "手动分裂测试",
+        options: [{ id: "ok", label: "好" }],
+      },
+    });
+    const manualActionId = Object.entries(manualConfirm.actionMap).find(([, logical]) => logical === "manual")![0]!;
+    await hub.actionConfirmations.resolveFromUiSubmit(manualConfirm.cardId!, manualActionId, { instruction: "改方案" });
+
+    const dispatchedConfirm = await hub.actionConfirmations.createPendingOrchestratorRequest({
+      conversationId: Number(hub.rootConversation.id),
+      kind: "host_action",
+      fingerprint: "dispatched-host-fp",
+      payload: {
+        kind: "host_action",
+        envId: "local",
+        envName: "local",
+        summary: "已派发命令",
+        commands: ["echo hi"],
+        ticketId: t.id,
+        runEpoch: 2,
+      },
+    });
+    await hub.actionConfirmations.resolveProgrammatically(dispatchedConfirm.id, {
+      status: "approved",
+      selectedChoiceId: "confirm",
+      resultSummary: "已允许",
+      markExecuted: false,
+    });
+    expect(await hub.actionConfirmations.markDispatched(dispatchedConfirm.id)).toBe(true);
+
+    // Close ticket -> settles staged_apply + manual-split pending_orchestrator, does NOT mutate dispatched!
+    await hub.closeTicket({ ticketId: t.id, commandId: "close-p04", kind: "obsolete", reason: "测试丢弃关闭" });
+    expect((await hub.uiCards.get(stagedApplyCardId))?.status).toBe("cancelled");
+    expect((await hub.uiCards.get(stagedApplyCardId))?.resultSummary).toBe("任务已关闭");
+
+    const confirmDoc = await hub.harness.snapshot(ActionConfirmationsDoc, BACKGROUND_CONTEXT);
+    expect(confirmDoc?.byId?.[manualConfirm.id]).toMatchObject({ status: "denied", executed: true, effect: "confirmed" });
+    expect(confirmDoc?.byId?.[dispatchedConfirm.id]).toMatchObject({ status: "approved", effect: "dispatched" });
+    expect(confirmDoc?.byId?.[dispatchedConfirm.id]?.executed).not.toBe(true);
   }, 30_000);
 });

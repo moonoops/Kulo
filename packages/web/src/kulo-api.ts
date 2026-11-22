@@ -10,34 +10,12 @@ import { deliveryIntentKey } from "./features/chat/reliable-intents";
 import { updateAgentTerminal, type AgentTerminalState } from "./features/topics/agent-terminal-state";
 import { ProviderCatalogCache } from "./features/settings/provider-catalog";
 import type {
-  AgentExpressionState,
-  ChatAttachment,
-  ChatDisplayItem,
-  ClusterClientSummary,
-  ConversationSearchInput,
-  ConversationSearchPage,
-  ConversationMessageWindow,
-  ConversationFilesPage,
-  ClientToHubMessage,
-  IdentityBackup,
-  IdentityFile,
-  IdentityList,
-  IdentityRead,
-  IdentityRollbackRequest,
-  IdentitySaved,
-  IdentityWriteRequest,
-  CustomProviderApi,
-  DiscoverModelsRequest,
-  DiscoverModelsResponse,
-  ResolveModelMetadataRequest,
-  ResolveModelMetadataResponse,
-  EnvNodeDescriptor,
-  HindsightProbeResult,
-  HomeAssistantMigrationAdvice,
-  HubToClientMessage,
-  LiveStreamState,
-  MainSessionNotificationEvent,
-  ModelProbeRequest,
+  AgentExpressionState, ChatAttachment, ChatDisplayItem, ClusterClientSummary, SubagentCardView,
+  ConversationSearchInput, ConversationSearchPage, ConversationMessageWindow, ConversationFilesPage,
+  ClientToHubMessage, IdentityBackup, IdentityFile, IdentityList, IdentityRead, IdentityRollbackRequest,
+  IdentitySaved, IdentityWriteRequest, CustomProviderApi, DiscoverModelsRequest, DiscoverModelsResponse,
+  ResolveModelMetadataRequest, ResolveModelMetadataResponse, EnvNodeDescriptor, HindsightProbeResult,
+  HomeAssistantMigrationAdvice, HubToClientMessage, LiveStreamState, MainSessionNotificationEvent, ModelProbeRequest,
   ModelProbeResult,
   KuloSettingsView,
   OAuthSessionView,
@@ -727,6 +705,7 @@ export interface TicketDetailSnapshot {
   ticket: TicketRecord;
   transcript: ChatDisplayItem[];
   live: LiveStreamState;
+  subagents?: SubagentCardView[];
 }
 
 export class KuloWsDisconnectedError extends Error {
@@ -1400,6 +1379,7 @@ export function useKuloHubConnection() {
                 ticket: msg.ticket,
                 transcript: msg.transcript,
                 live: msg.live,
+                ...(msg.subagents?.length ? { subagents: msg.subagents } : {}),
               });
               break;
             case "hub.ack": {

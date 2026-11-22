@@ -56,10 +56,20 @@ export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
 };
 
 /**
+ * Target soft background-compaction trigger ceiling for large-window models (200K / 1M+).
+ * Keeps long-running chats responsive and prompt-cache-efficient without lowering `blocking`
+ * or inflating `reserveTokens`.
+ */
+export const DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS = 128_000;
+const MIN_SOFT_COMPACTION_SLACK = 8_192;
+
+/**
  * Clamps compaction thresholds proportionally for small/medium context windows (e.g. 32K / 64K)
  * so `keepRecentTokens` never exceeds `contextWindow - reserveTokens` (avoiding per-turn blocking loops)
  * and `backgroundTokens` retains healthy headroom (avoiding thrashing storms).
- * Large-window models (128K+) keep the configured defaults unchanged.
+ * For large-window models (e.g. 200K / 1M), raises `backgroundTokens` so non-blocking background
+ * compaction triggers around `DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS` instead of waiting until ~1M tokens,
+ * while preserving explicit `backgroundTokens === 0` opt-outs and earlier user-configured triggers.
  */
 export function clampCompactionConfigForWindow(
   compaction: CompactionConfig,
@@ -77,13 +87,21 @@ export function clampCompactionConfigForWindow(
     compaction.keepRecentTokens,
     Math.max(512, Math.floor(blocking * 0.45)),
   );
-  const backgroundTokens =
-    compaction.backgroundTokens === 0
+  const baseBackgroundTokens =
+    compaction.backgroundTokens <= 0
       ? 0
       : Math.min(
           compaction.backgroundTokens,
           Math.max(0, Math.floor((blocking - keepRecentTokens) * 0.5)),
         );
+  const softTrigger = Math.max(
+    DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS,
+    keepRecentTokens + MIN_SOFT_COMPACTION_SLACK,
+  );
+  const backgroundTokens =
+    baseBackgroundTokens > 0 && blocking > softTrigger
+      ? Math.max(baseBackgroundTokens, blocking - softTrigger)
+      : baseBackgroundTokens;
   return {
     enabled: compaction.enabled,
     reserveTokens,

@@ -3,6 +3,8 @@
   .kulo-ui {
     --kulo-control-radius: 10px;
     --kulo-list-radius: 14px;
+    --kulo-card-radius: 16px;
+    --kulo-card-edge: color-mix(in oklab, var(--foreground) 7%, transparent);
     --kulo-control-edge: color-mix(in oklab, var(--foreground) 24%, var(--surface));
     --kulo-control-edge-strong: color-mix(in oklab, var(--foreground) 36%, var(--surface));
     --kulo-control-hover: color-mix(in oklab, var(--foreground) 6%, transparent);

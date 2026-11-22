@@ -28,7 +28,12 @@ describe("native external client ownership",()=>{
   const f=fixture();const result=await connectCodex(f.ctx);expect(f.spec.args).toEqual(["app-server"]);expect(f.spec.isolated).toBe(false);expect(f.spec.env).toEqual({});
   expect(f.sent.find(value=>value.method==="thread/start").params).toEqual({cwd:f.ctx.cwd});
   expect(f.sent.find(value=>value.method==="turn/start").params).toEqual({threadId:"thread-native",cwd:f.ctx.cwd,input:[{type:"text",text:"native task",text_elements:[]}]});
-  expect(f.sent.some(value=>["permissionProfile/list","config/read"].includes(value.method))).toBe(false);result.driver.close();
+  expect(f.sent.some(value=>["permissionProfile/list","config/read","account/read","model/list"].includes(value.method))).toBe(false);result.driver.close();
+  const probed=fixture();const probeRes=await connectCodex(probed.ctx,true);
+  expect(probed.sent.some(value=>value.method==="model/list")).toBe(true);
+  expect(probed.sent.some(value=>value.method==="account/read")).toBe(true);
+  expect(probeRes.authenticated).toBe(true);
+  probeRes.driver.close();
  });
  it("passes advertised model, effort, and serviceTier (fast/ultrafast) to Codex and rejects unsupported serviceTiers",async()=>{
   const f=fixture();f.ctx.modelId="native-model";f.ctx.thinkingLevel="high";f.ctx.serviceTier="ultrafast";const decisions=["decline",{acceptWithExecpolicyAmendment:{execpolicyAmendment:["node"]}}];f.ctx.permission=vi.fn(async()=>"1");const result=await connectCodex(f.ctx);

@@ -3,11 +3,22 @@ import os from "node:os";
 import path from "node:path";
 import { WebSocketServer } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import {
+  createModels,
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxText,
+  fauxToolCall,
+  type TranscriptContext,
+} from "@earendil-works/pi-ai";
+import { KuloStateDoc, type KuloHub } from "@kulo/hub";
 import {
   isComputerPreviewInputEvent,
   isComputerPreviewUpdate,
   type ComputerPreviewUpdate,
 } from "../packages/protocol/src/index.js";
+import { openTestHub } from "./helpers/secure-hub.js";
 import { ComputerPreviewService } from "../packages/env/src/computer-preview.js";
 import {
   ActiveComputerHandoffTracker,
@@ -253,4 +264,137 @@ describe("Batch 3 #7: computer handoff protocol, native stream input, and lifecy
     expect(client.sendInput("s1", { type: "input_text", text: "5678" })).toBe(false);
     client.close();
   });
+
+  it("stops computer_handoff directly across chat card, preview resolveComputerHandoff, and legacy ticket.steer cancel without waking Worker or triggering recovery", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "kulo-handoff-stop-state-"));
+    const localEnvRoot = fs.mkdtempSync(path.join(os.tmpdir(), "kulo-handoff-stop-env-"));
+    cleanups.push(() => {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+      fs.rmSync(localEnvRoot, { recursive: true, force: true });
+    });
+
+    const faux = fauxProvider({ provider: "handoff-stop-test", models: [{ id: "handoff-model" }] });
+    const models = createModels();
+    models.setProvider(faux.provider);
+
+    let workerRuns = 0;
+    faux.setResponses(
+      Array.from({ length: 24 }, () => (ctx: TranscriptContext) => {
+        const isOrchestrator =
+          Boolean(ctx.tools?.some((t) => t.name === "kulo_dispatch")) ||
+          ctx.messages.some((m) => m.role === "system" && "toolsAdded" in m && Array.isArray(m.toolsAdded) && m.toolsAdded.some((t) => t.name === "kulo_dispatch"));
+        if (!isOrchestrator) {
+          const loaded = ctx.messages.some((m) => m.role === "toolResult" && m.toolName === "tool_search");
+          if (!loaded) {
+            workerRuns += 1;
+            return fauxAssistantMessage(
+              [fauxToolCall("tool_search", { query: "kulo_computer_handoff", limit: 3 })],
+              { stopReason: "toolUse" },
+            );
+          }
+          const handedOff = ctx.messages.some((m) => m.role === "toolResult" && m.toolName === "kulo_computer_handoff");
+          if (handedOff) return fauxAssistantMessage([fauxText("Waiting for user handoff")]);
+          return fauxAssistantMessage(
+            [fauxToolCall("kulo_computer_handoff", { target: "browser", reason: "请完成扫码登录", url: "https://example.com/login" })],
+            { stopReason: "toolUse" },
+          );
+        }
+        return fauxAssistantMessage([fauxText("好的，已停止任务。")]);
+      }),
+    );
+
+    const hub = await openTestHub({
+      models,
+      providerId: "handoff-stop-test",
+      config: {
+        stateDir,
+        localEnvRoot,
+        model: { defaultProvider: "handoff-stop-test", defaultModel: "handoff-model", thinkingLevel: "off" },
+      },
+    });
+    cleanups.push(() => hub.close().catch(() => {}));
+
+    // Stub local env capabilities to expose agent-browser and record computer-use close calls.
+    const closeCalls: Array<{ envId: string; sessionId: string }> = [];
+    const localEnv = hub.envManager.getEnvDescriptor("local");
+    if (localEnv && !localEnv.capabilities.includes("agent-browser")) {
+      localEnv.capabilities.push("agent-browser");
+    }
+    vi.spyOn(hub.envManager, "requestComputerUse").mockImplementation(async (envId, req) => {
+      if (req.action === "close" && req.sessionId) {
+        closeCalls.push({ envId, sessionId: req.sessionId });
+      }
+      return { tool: req.tool, action: req.action, sessionId: req.sessionId ?? "s", ok: true, data: {} };
+    });
+
+    async function dispatchAndWaitForHandoff(cmd: string, expectedRuns: number) {
+      const card = await hub.dispatchTicket({
+        commandId: cmd,
+        title: `浏览器登录 ${expectedRuns}`,
+        goal: "打开网页并登录",
+        scope: "browser",
+        role: "coder",
+      });
+      let cardId = "";
+      await vi.waitFor(async () => {
+        const snap = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+        const live = snap?.tickets[card.id];
+        expect(live?.status).toBe("waiting");
+        expect(live?.waiting?.reason).toBe("user");
+        expect(live?.waiting?.options?.find((o) => o.id === "cancel")?.action).toBe("stop");
+        expect(live?.waiting?.cardId).toBeTruthy();
+        cardId = live!.waiting!.cardId!;
+      }, { timeout: 15_000, interval: 40 });
+      expect(workerRuns).toBe(expectedRuns);
+      return { ticketId: card.id, cardId };
+    }
+
+    // Entry 1: Chat card "跳过并停止" (submitUiAction atomic direct-stop)
+    const e1 = await dispatchAndWaitForHandoff("handoff-stop-1", 1);
+    const uiCard1 = (await hub.uiCards.get(e1.cardId))!;
+    const cancelBtn1 = uiCard1.actions.find((a) => a.label === "跳过并停止")!;
+    const receipt1 = await hub.submitUiAction({
+      cardId: uiCard1.cardId,
+      revision: uiCard1.revision,
+      actionId: cancelBtn1.id,
+      values: {},
+      commandId: "handoff-card-cancel-1",
+    });
+    expect(receipt1.status).toBe("cancelled");
+    expect(receipt1.card?.resultSummary).toBe("已停止任务");
+    const snap1 = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+    expect(snap1?.tickets[e1.ticketId]).toMatchObject({ status: "stopped", stoppedReason: "用户跳过人工接管并停止任务", cleanupPending: false });
+    expect(snap1?.tickets[e1.ticketId]?.recovery).toBeUndefined();
+    expect(workerRuns).toBe(1);
+    expect(closeCalls.length).toBeGreaterThanOrEqual(1);
+
+    // Entry 2: Preview modal resolveComputerHandoff(..., "cancel")
+    const closeBefore2 = closeCalls.length;
+    const e2 = await dispatchAndWaitForHandoff("handoff-stop-2", 2);
+    const res2 = await hub.resolveComputerHandoff(e2.ticketId, "cancel");
+    expect(res2).toEqual({ ok: true, status: "cancel" });
+    const snap2 = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+    expect(snap2?.tickets[e2.ticketId]).toMatchObject({ status: "stopped", stoppedReason: "用户跳过人工接管并停止任务", cleanupPending: false });
+    expect(snap2?.tickets[e2.ticketId]?.recovery).toBeUndefined();
+    expect((await hub.uiCards.get(e2.cardId))?.status).toBe("cancelled");
+    expect(workerRuns).toBe(2);
+    expect(closeCalls.length).toBeGreaterThan(closeBefore2);
+
+    // Entry 3: Legacy Task Detail client sending ticket.steer(decisionOptionId="cancel")
+    const closeBefore3 = closeCalls.length;
+    const e3 = await dispatchAndWaitForHandoff("handoff-stop-3", 3);
+    const card3 = await hub.steerTicket({
+      ticketId: e3.ticketId,
+      commandId: "handoff-legacy-cancel-3",
+      text: "跳过并停止",
+      decisionOptionId: "cancel",
+    });
+    expect(card3.status).toBe("stopped");
+    expect(card3.stoppedReason).toBe("用户跳过人工接管并停止任务");
+    const snap3 = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+    expect(snap3?.tickets[e3.ticketId]?.recovery).toBeUndefined();
+    expect((await hub.uiCards.get(e3.cardId))?.status).toBe("cancelled");
+    expect(workerRuns).toBe(3);
+    expect(closeCalls.length).toBeGreaterThan(closeBefore3);
+  }, 30_000);
 });

@@ -9,9 +9,11 @@ import {
   type RolePreset,
   type SlotSummary,
   type SubagentRecord,
+  type TaskBoardRecord,
   type TicketCardView,
   type TicketRecord,
   type TicketStatus,
+  type TicketSubagentSummary,
   type TopicSummary,
   type WorkerReportState,
 } from "@kulo/protocol";
@@ -46,6 +48,8 @@ export type KuloDurableState = {
   conversationToTicket: Record<string, string>;
   subagents?: Record<string, SubagentRecord>;
   conversationToSubagent?: Record<string, string>;
+  nextBoardNumber?: number;
+  boards?: Record<string, TaskBoardRecord>;
   topics?: Record<string, TopicSummary>;
   conversationToTopic?: Record<string, string>;
   topicTitles?: Record<string, TopicTitleJob>;
@@ -524,6 +528,7 @@ export function toTicketCardView(
   ticket: Readonly<TicketRecord>,
   roles: Record<string, RolePreset>,
   externalClients?: Record<string, ExternalClientConnection>,
+  subagentSummary?: TicketSubagentSummary,
 ): TicketCardView {
   const directClientId = parseDirectExternalClientRoleId(ticket.role);
   const directClient = directClientId ? externalClients?.[directClientId] : undefined;
@@ -544,6 +549,9 @@ export function toTicketCardView(
     id: ticket.id,
     ...(ticket.externalExecution ? { externalAgentKind: ticket.externalExecution.binding.kind } : {}),
     ...(hasPendingWorkspaceApply(ticket) ? { pendingWorkspaceApply: true } : {}),
+    ...(subagentSummary && subagentSummary.total > 0 ? { subagentSummary } : {}),
+    ...(ticket.boardId ? { boardId: ticket.boardId } : {}),
+    ...(ticket.reviewTicketId ? { reviewTicketId: ticket.reviewTicketId } : {}),
     title: ticket.title,
     ...(ticket.userSummary ? { userSummary: ticket.userSummary } : {}),
     role: ticket.role,
@@ -603,7 +611,7 @@ export function summarizeTopicPreview(
 ): { preview: string; at?: number } | undefined {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const item = messages[i];
-    if (!item || (item.role !== "assistant" && item.role !== "user" && item.role !== "dispatch")) continue;
+    if (!item || (item.role !== "assistant" && item.role !== "user")) continue;
     const cleaned = (item.text ?? "")
       .replace(/```[\s\S]*?```/g, " [code] ")
       .replace(/[#>*_`~]+/g, " ")

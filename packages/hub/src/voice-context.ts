@@ -58,12 +58,14 @@ export function voiceHistory(view: ContextView, redact: (text: string) => string
       WorkerRelayEntry.is(entry) ||
       WorkerWatchdogEntry.is(entry) ||
       entry.kind === "kulo.voice.delegation" ||
-      entry.kind === "kulo.memory-context"
+      entry.kind === "kulo.memory-context" ||
+      entry.kind === "kulo.recent_work_update"
     ) continue;
     for (const message of contributions) {
       if (message.role !== "user" && message.role !== "assistant") continue;
       const rawText = typeof message.content === "string" ? message.content : message.content
         .filter((part) => part.type === "text").map((part) => part.text).join("\n");
+      if (message.role === "user" && rawText.startsWith("[KULO_RECENT_WORK_UPDATE]")) continue;
       const text = message.role === "user" ? stripInternalUserMetadata(rawText) : rawText;
       if (message.role === "assistant" && ["[RECOVERY_OK]", "[WATCHDOG_OK]", "[COORDINATOR_OK]"].includes(text.trim())) continue;
       if (text.trim()) history.push({ role: message.role, text });

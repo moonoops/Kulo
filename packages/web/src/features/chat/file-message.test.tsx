@@ -11,6 +11,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe("message artifacts", () => {
   it("offers HTML preview controls while preserving an ordinary binary file's compact download", () => {
     const markup = renderToStaticMarkup(<FileMessage asset={html} />);
+    expect(markup).toContain("card--secondary");
     expect(markup).toContain('data-kind="html"');
     for (const label of ["放大预览：可交互报告.html", "在浏览器打开：可交互报告.html", "文件选项：可交互报告.html"]) expect(markup).toContain(label);
     const archive = renderToStaticMarkup(<FileMessage asset={{ ...html, name: "资料包.zip", mimeType: "application/zip" }} />);

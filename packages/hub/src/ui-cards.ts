@@ -105,6 +105,15 @@ function normalize(input: UiCardInput, cardId: string): Pick<UiCardSnapshot, "ti
   return { title: input.title, spec, actions, committedState };
 }
 
+export interface UiSubmitOptions {
+  /** Runs inside the same durable tx right before conversation.submit, only on non-deduplicated accepted submits. */
+  beforeConversationSubmit?: (tx: Tx, ctx: {
+    card: UiCardSnapshot;
+    action: UiActionDefinition;
+    values: import("@kulo/protocol").UiValues;
+  }) => Promise<{ resultSummary?: string; systemEffect?: JsonObject } | void>;
+}
+
 export interface KuloUiCardsOptions {
   harness: Harness;
   onChange?: (card: UiCardSnapshot) => void | Promise<void>;
@@ -201,7 +210,7 @@ export class KuloUiCards {
     return clone(result);
   }
 
-  async submit(raw: UiActionInput, actor: { conversationId: number }): Promise<UiActionReceipt> {
+  async submit(raw: UiActionInput, actor: { conversationId: number }, options?: UiSubmitOptions): Promise<UiActionReceipt> {
     const parsed = UiActionInputSchema.safeParse(raw);
     if (!parsed.success) throw new UiCardError("invalid_ui_action", "卡片操作格式无效。");
     const input = parsed.data;
@@ -232,8 +241,20 @@ export class KuloUiCards {
       const card: UiCardSnapshot = { ...clone(current!), revision: current!.revision + 1,
         status: action.kind === "cancel" ? "cancelled" : "submitted", committedState: action.kind === "cancel" ? clone(current!.committedState) : clone(values.data),
         resultSummary: action.kind === "cancel" ? "已取消" : "已提交给 Agent" };
-      const structured = { type: "kulo.ui.action", schemaVersion: 1, cardId: card.cardId, revision: input.revision,
-        title: card.title, action: { id: action.id, label: action.label, kind: action.kind }, values: values.data, commandId: input.commandId };
+      const hookResult = await options?.beforeConversationSubmit?.(tx, { card: clone(card), action: clone(action), values: clone(values.data) });
+      if (hookResult?.resultSummary) card.resultSummary = hookResult.resultSummary;
+      // Keep `type: "kulo.ui.action"` as the first key to preserve chat transcript prefix matching.
+      const structured = {
+        type: "kulo.ui.action",
+        schemaVersion: 1,
+        cardId: card.cardId,
+        revision: input.revision,
+        title: card.title,
+        action: { id: action.id, label: action.label, kind: action.kind },
+        values: values.data,
+        commandId: input.commandId,
+        ...(hookResult?.systemEffect ? { systemEffect: hookResult.systemEffect } : {}),
+      };
       // Admission must precede appendEntry; Pi makes the input, lock and receipt one durable commit.
       const text = JSON.stringify(structured);
       const submissionId = await conversation.submit(tx, { type: "input", content: text, whenBusy: "followUp",

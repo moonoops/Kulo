@@ -895,19 +895,13 @@ export async function connectCodex(ctx:ExternalDriverContext,probe=false):Promis
   const driver:ExternalDriver={cancel:async()=>{cancelRequested=true;if(!sessionId||!turnId){pendingInterrupt=true;return;}await rpc.call("turn/interrupt",{threadId:sessionId,turnId});},close:()=>{closed=true;rpc.close();},cleanup:()=>pipe.cleanup?.()??pipe.exited.then(()=>true,()=>false)};
   try{
     await rpc.call("initialize",{clientInfo:{name:"kulo",version:KULO_VERSION},capabilities:{experimentalApi:true}});rpc.notify("initialized",{});
-    const modelResult=await rpc.call("model/list",{});const catalog=(Array.isArray(modelResult.data)?modelResult.data:[]).map(obj);
+    const [modelResult,account]=probe?await Promise.all([rpc.call("model/list",{}),rpc.call("account/read",{refreshToken:false}).catch(()=>({}))]):[ctx.modelId||ctx.thinkingLevel||ctx.serviceTier?await rpc.call("model/list",{}):{},{}];
+    const catalog=(Array.isArray(modelResult.data)?modelResult.data:[]).map(obj);
     const parseCodexServiceTiers=(value:RpcValue):ExternalAgentServiceTierInfo[]=>{
-      const seen=new Set<string>();
-      const tiers:ExternalAgentServiceTierInfo[]=[];
+      const seen=new Set<string>(),tiers:ExternalAgentServiceTierInfo[]=[];
       const pushTier=(id:string,name?:string,description?:string)=>{
-        const clean=id.trim();
-        if(!clean||seen.has(clean))return;
-        seen.add(clean);
-        tiers.push({
-          id:clean,
-          ...(name?.trim()?{name:name.trim()}:{}),
-          ...(description?.trim()?{description:description.trim()}:{}),
-        });
+        const clean=id.trim();if(!clean||seen.has(clean))return;seen.add(clean);
+        tiers.push({id:clean,...(name?.trim()?{name:name.trim()}:{}),...(description?.trim()?{description:description.trim()}:{})});
       };
       if(Array.isArray(value.serviceTiers)){
         for(const item of value.serviceTiers){
@@ -935,8 +929,7 @@ export async function connectCodex(ctx:ExternalDriverContext,probe=false):Promis
         ...(value.isDefault===true?{isDefault:true}:{}),
       };
     });
-    const account=await rpc.call("account/read",{refreshToken:false}).catch(()=>({}));
-    const authenticated=Boolean(approvedAgentEnv("codex").OPENAI_API_KEY||obj(account).account);
+    const authenticated=probe?Boolean(approvedAgentEnv("codex").OPENAI_API_KEY||obj(account).account):null;
     if(ctx.modelId&&models.length&&!models.some(model=>model.id===ctx.modelId))throw new Error("Selected model is not advertised by Codex");
     if(!probe){
       const mcp_servers=Object.fromEntries(ctx.servers.map(server=>[`kulo-${randomUUID()}-${server.name}`,{enabled:true,url:server.url,http_headers:Object.fromEntries((server.headers??[]).map(item=>[item.name,item.value]))}]));

@@ -7,6 +7,7 @@ import { buildRuntimeEnvironment } from "./runtime-config.js";
 import { startNodeService, type NodeService } from "./child-service.js";
 import { desktopContentSecurityPolicy, desktopWindowChrome, externalHttpUrl, localHttpOrigin, parseDevelopmentMode, resolveDesktopAppIdentity, resolveDesktopDataDirectory, shouldAuthorizeDesktopRequest, type DevelopmentMode } from "./desktop-config.js";
 import { createDesktopContextMenuTemplate, createDesktopMenuTemplate, createMainWindowCloseController, shouldRevealWindowForCommand, type DesktopAppCommand } from "./desktop-menu.js";
+import { configureDesktopDirectoryPickerHandlers, createDesktopDirectoryPicker } from "./directory-picker.js";
 import { configureDesktopPreferenceHandlers, createDesktopPreferencesStore, DESKTOP_PREFERENCES_CHANNELS } from "./desktop-preferences.js";
 import { createDesktopTrayController, loadDesktopTrayIcon } from "./desktop-tray.js";
 import { createDesktopFileActions, isTrustedFileActionSender, type DesktopFileConnection } from "./file-actions.js";
@@ -100,6 +101,18 @@ const fileActions = createDesktopFileActions({
     if (!window || window.isDestroyed()) throw new Error("窗口已关闭。");
     const result = await dialog.showSaveDialog(window, { defaultPath: path.join(app.getPath("downloads"), name) });
     return result.canceled ? undefined : result.filePath;
+  },
+});
+
+const directoryPicker = createDesktopDirectoryPicker({
+  homeDirectory: () => app.getPath("home"),
+  chooseDirectory: async (defaultPath) => {
+    if (!window || window.isDestroyed()) throw new Error("窗口已关闭。");
+    const result = await dialog.showOpenDialog(window, {
+      ...(defaultPath ? { defaultPath } : {}),
+      properties: ["openDirectory", "createDirectory"],
+    });
+    return result.canceled ? undefined : result.filePaths[0];
   },
 });
 
@@ -625,6 +638,7 @@ if (!lock) {
   void app.whenReady().then(() => {
     configureSession();
     configureFileActions();
+    configureDesktopDirectoryPickerHandlers({ ipc: ipcMain, picker: directoryPicker, owner: () => window, rendererOrigin: () => rendererOrigin });
     configureDesktopPreferenceHandlers({ ipc: ipcMain, preferences: desktopPreferences, owner: () => window, rendererOrigin: () => rendererOrigin });
     configureDesktopSystemPermissionHandlers({ ipc: ipcMain, permissions: systemPermissions, owner: () => window, rendererOrigin: () => rendererOrigin });
     trayController.sync(desktopPreferences.get().backgroundRunning);

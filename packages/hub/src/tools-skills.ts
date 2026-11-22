@@ -22,6 +22,7 @@ export interface SkillToolsOptions {
       android: boolean;
       customization: boolean;
       memoryKnowledge: boolean;
+      catalogOnly?: boolean;
     },
   ) => Promise<SkillRuntimeContext | undefined>;
   executionScope?: (api: ToolExecutionApi) => Promise<{ scratchDir: string; assertActive: () => Promise<void> }>;
@@ -40,7 +41,7 @@ async function skillRuntime(options: SkillToolsOptions, audience: SkillAudience,
   if (!options.runtimeContext) return undefined;
   const required = await options.get().runtimeRequirements(audience, id);
   if (!required.targetDevice && !required.reactWorkspace && !required.media && !required.android && !required.customization && !required.memoryKnowledge) return undefined;
-  const runtime = await options.runtimeContext(api, context, required);
+  const runtime = await options.runtimeContext(api, context, { ...required, catalogOnly: id === undefined });
   if (id && required.reactWorkspace && runtime?.diagnostics?.length) throw new SkillError(409, "skill_context_unavailable", runtime.diagnostics.join(" "));
   return runtime;
 }

@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { getMessageParts, type ChatAttachment, type ChatDisplayItem, type LiveStreamState } from "@kulo/protocol";
 import { mergeChatHistory, splitChatTimeline } from "./chat-submissions";
 import { ConnectedMessageContent } from "./connected-message-content";
-import { groupDispatchReplies } from "./dispatch-groups";
 import { messageQuote } from "./message-actions";
 import { messageReply } from "./reply-reference";
 import { liveResponseMessageId, mergeResponseMessages } from "./response-messages";
@@ -57,7 +56,7 @@ describe("assistant response messages", () => {
     expect(tool.toolCalls![0]).not.toHaveProperty("result");
   });
 
-  it.each(["user", "relay", "dispatch", "system_note"] as const)("keeps replies separated across a %s boundary", (role) => {
+  it.each(["user", "relay", "system_note"] as const)("keeps replies separated across a %s boundary", (role) => {
     const boundary: ChatDisplayItem = { id: 3, role, responseId: 1, text: "独立消息" };
     expect(mergeResponseMessages([file(), boundary, body()])).toEqual([file(), boundary, body()]);
   });
@@ -79,14 +78,36 @@ describe("assistant response messages", () => {
     expect(recent).toEqual([body()]);
   });
 
-  it("preserves dispatch grouping and keeps pending user submissions outside the assistant reply", () => {
-    const dispatch: ChatDisplayItem = { id: 1, role: "dispatch", text: "生成页面", dispatch: { ticketId: "ticket", title: "生成页面", actionLabel: "派发任务" } };
+  it("omits inline dispatch cards in main chat while coalescing same-response assistant segments and preserving pending submissions", () => {
+    const user: ChatDisplayItem = { id: 1, role: "user", text: "给 Codex 发测试消息" };
+    const toolCall: ChatDisplayItem = { id: 2, role: "assistant", responseId: 10, text: "", toolCalls: [{ id: "call-1", name: "kulo_dispatch", argsSummary: "{}" }] };
+    const dispatch: ChatDisplayItem = { id: 3, role: "dispatch", responseId: 10, text: "向 Codex 发送测试消息", dispatch: { ticketId: "ticket", title: "向 Codex 发送测试消息", actionLabel: "派发任务" } };
+    const acknowledgement: ChatDisplayItem = { id: 4, role: "assistant", responseId: 10, text: "已经发给 Codex 了，正在等回复。", createdAt };
     const pending: ChatDisplayItem = { id: -1, role: "user", text: "下一个问题", delivery: "queued" };
-    const timeline = splitChatTimeline([dispatch, file(), body(), pending]);
-    const entries = groupDispatchReplies(mergeResponseMessages(timeline.transcript));
-    expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ type: "dispatch-group", replies: [expect.objectContaining({ id: 2 })] });
+    const timeline = splitChatTimeline([user, toolCall, dispatch, acknowledgement, pending]);
+    const merged = mergeResponseMessages(timeline.transcript);
+    expect(merged).toHaveLength(2);
+    expect(merged[0]).toEqual(user);
+    expect(merged[1]).toMatchObject({ id: 4, role: "assistant", text: "已经发给 Codex 了，正在等回复。", toolCalls: toolCall.toolCalls });
+    expect(merged.some((item) => item.role === "dispatch")).toBe(false);
     expect(timeline.pending).toEqual([pending]);
+
+    // Pre-dispatch and post-dispatch text within one response merge into one cohesive reply without a card boundary.
+    const preface: ChatDisplayItem = { id: 5, role: "assistant", responseId: 11, text: "好的，我来安排。", createdAt };
+    const secondDispatch: ChatDisplayItem = { id: 6, role: "dispatch", responseId: 11, text: "执行任务", dispatch: { ticketId: "ticket-2", title: "执行任务", actionLabel: "派发任务" } };
+    const followUp: ChatDisplayItem = { id: 7, role: "assistant", responseId: 11, text: "已派发到后台处理。", createdAt: createdAt + 500 };
+    const nextTurn: ChatDisplayItem = { id: 8, role: "assistant", responseId: 12, text: "任务已完成。", createdAt: createdAt + 5000 };
+    const combined = mergeResponseMessages([preface, secondDispatch, followUp, nextTurn]);
+    expect(combined).toHaveLength(2);
+    expect(combined[0]).toMatchObject({ id: 5, text: "好的，我来安排。\n\n已派发到后台处理。" });
+    expect(combined[1]).toEqual(nextTurn);
+
+    // Silent dispatch (e.g. coordinator steer + [COORDINATOR_OK]) produces no stray chat card.
+    expect(mergeResponseMessages([user, dispatch])).toEqual([user]);
+
+    // Live streaming attaches cleanly to an earlier visible assistant segment in the same response even after a dispatch.
+    const streamingAfterDispatch = mergeResponseMessages([preface, secondDispatch]);
+    expect(liveResponseMessageId(streamingAfterDispatch, live({ responseId: 11 }))).toBe(5);
   });
 
   it("keeps locally repeated part IDs distinct without changing earlier attachment IDs", () => {

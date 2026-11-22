@@ -5,6 +5,19 @@ import type { Harness } from "@earendil-works/pi-durable";
 import { compareTicketCards, type ExternalClientConnection, type RolePreset, type SlotSummary, type TicketBoardDelta, type TicketCardView } from "@kulo/protocol";
 import { redactCredentialData } from "./credential-redaction.js";
 import { computeSlotSummary, hasPendingWorkspaceApply, KuloStateDoc, toTicketCardView, type KuloDurableState } from "./state.js";
+import { aggregateTicketSubagentSummaries } from "./subagent-runner.js";
+
+function sameVoiceAnnouncementFields(a: TicketCardView, b: TicketCardView): boolean {
+  return (
+    a.status === b.status &&
+    a.stoppedReason === b.stoppedReason &&
+    a.pendingWorkspaceApply === b.pendingWorkspaceApply &&
+    isDeepStrictEqual(a.latestReport, b.latestReport) &&
+    isDeepStrictEqual(a.waiting, b.waiting) &&
+    isDeepStrictEqual(a.closure, b.closure) &&
+    isDeepStrictEqual(a.recovery, b.recovery)
+  );
+}
 
 /** Derived from committed Durable changes. Full snapshots and deltas share the same revision. */
 export class TicketBoardProjection {
@@ -53,6 +66,16 @@ export class TicketBoardProjection {
       }
       const [field, id] = op[1];
       if (field === "tickets" && typeof id === "string") { this.#dirty?.add(id); changed = true; }
+      if (field === "subagents") {
+        if (typeof id === "string") {
+          const parentId = this.#state?.subagents?.[id]?.ticketId ?? this.#lastProjected?.subagents?.[id]?.ticketId;
+          if (parentId) { this.#dirty?.add(parentId); changed = true; }
+          else { this.#dirty = undefined; return true; }
+        } else {
+          this.#dirty = undefined;
+          return true;
+        }
+      }
       if (field === "slots") changed = true;
     }
     return changed;
@@ -72,6 +95,7 @@ export class TicketBoardProjection {
     const upsert: TicketCardView[] = [];
     const removed: string[] = [];
     const voiceChanges = new Set<string>();
+    const subagentSummaries = ids.size > 0 ? aggregateTicketSubagentSummaries(state) : new Map();
     for (;;) {
       for (const id of ids) {
         const ticket = Object.hasOwn(state.tickets, id) ? state.tickets[id] : undefined;
@@ -83,7 +107,10 @@ export class TicketBoardProjection {
           if (this.#cards.has(id)) removed.push(id);
           continue;
         }
-        const card = redactCredentialData(toTicketCardView(ticket, roles, externalClients), redact);
+        const card = redactCredentialData(
+          toTicketCardView(ticket, roles, externalClients, subagentSummaries.get(id)),
+          redact,
+        );
         if (!isDeepStrictEqual(this.#cards.get(id), card)) upsert.push(card);
       }
       const now = currentRedactionRevision();
@@ -117,8 +144,9 @@ export class TicketBoardProjection {
     }
     for (const id of removed) this.#cards.delete(id);
     for (const card of upsert) {
+      const prev = this.#cards.get(card.id);
       this.#cards.set(card.id, card);
-      voiceChanges.add(card.id);
+      if (!prev || !sameVoiceAnnouncementFields(prev, card)) voiceChanges.add(card.id);
     }
     // A replacement can wake a silent failure anywhere in its own chain.
     for (const id of voiceChanges) for (const parent of state.tickets[id]?.supersedes ?? []) voiceChanges.add(parent);

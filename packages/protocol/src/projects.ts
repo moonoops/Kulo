@@ -50,12 +50,16 @@ export interface ProjectDirectoryGrant {
   platform?: string;
 }
 
+export type TicketWaitOptionAction = "reply" | "stop";
+
 export interface TicketWaitOption {
   id: string;
   label: string;
   tone?: "primary" | "secondary" | "danger";
   /** Optional exact reply text sent when selected (defaults to label). */
   value?: string;
+  /** 'reply' (default) steers/resumes the Worker; 'stop' terminates the Ticket directly without waking the Worker. */
+  action?: TicketWaitOptionAction;
 }
 
 export interface TicketWait {

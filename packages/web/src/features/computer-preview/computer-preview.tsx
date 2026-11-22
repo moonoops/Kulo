@@ -566,7 +566,7 @@ export function ComputerPreviewModal({
                         type="button"
                         size="sm"
                         variant="primary"
-                        isDisabled={!connected || handoffBusy}
+                        isDisabled={!connected || handoffBusy || stopped}
                         isPending={handoffBusy}
                         onPress={() => { void settleHandoff("done"); }}
                       >
@@ -576,7 +576,7 @@ export function ComputerPreviewModal({
                         type="button"
                         size="sm"
                         variant="secondary"
-                        isDisabled={!connected || handoffBusy}
+                        isDisabled={!connected || handoffBusy || stopped}
                         onPress={() => { void settleHandoff("cancel"); }}
                       >
                         {t("跳过并停止", "Skip & stop")}
@@ -603,7 +603,7 @@ export function ComputerPreviewModal({
                     type="button"
                     size="sm"
                     variant="danger-soft"
-                    isDisabled={!connected || stopped}
+                    isDisabled={!connected || stopped || handoffBusy}
                     isPending={Boolean(stop?.pending)}
                     aria-label={t(`停止任务：${selected.title}`, `Stop task: ${selected.title}`)}
                     onPress={() => { void client.stopTask(onStop, selected.ticketId); }}

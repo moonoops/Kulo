@@ -1,49 +1,16 @@
-import {
-  AssistantEntry,
-  ToolResultEntry,
-  ROOT_CONVERSATION_ID,
-  defineTask,
-  type JsonObject,
-} from "@earendil-works/pi-durable";
+import { AssistantEntry, ToolResultEntry, ROOT_CONVERSATION_ID, defineTask, type JsonObject } from "@earendil-works/pi-durable";
 import type { EnvManager } from "@kulo/env";
 import type { Context } from "@earendil-works/chord/context";
-import {
-  describeKuloError,
-  detectOutwardShellCommandsFromToolText,
-  isSupportedExternalAgentKind,
-  type ExternalAgentBinding,
-  type ExternalAgentPendingReport,
-  type ExternalAgentQuotaProbeResult,
-  type ExternalAgentRuntimeEvent,
-  type ExternalAgentUncertainReason,
-  type StagedWorkspaceDiffSummary,
-  type TicketRecord,
-  type TicketWait,
-  type WorkerExecutionPhase,
-  type WorkerReportRecord,
-} from "@kulo/protocol";
+import { describeKuloError, detectOutwardShellCommandsFromToolText, isSupportedExternalAgentKind, type ExternalAgentBinding, type ExternalAgentPendingReport, type ExternalAgentQuotaProbeResult, type ExternalAgentRuntimeEvent, type ExternalAgentUncertainReason, type StagedWorkspaceDiffSummary, type TicketRecord, type TicketWait, type WorkerExecutionPhase, type WorkerReportRecord } from "@kulo/protocol";
 import { spillOversizedReport } from "./report-overflow.js";
-import {
-  formatExternalAgentFollowUpPrompt,
-  formatExternalAgentHandoffPrompt,
-  formatExternalPermissionMessage,
-  formatStagedDiffRelayLines,
-  formatWorkerInitialPrompt,
-  formatWorkerRelayMessage,
-} from "./prompts.js";
+import { formatExternalAgentFollowUpPrompt, formatExternalAgentHandoffPrompt, formatExternalPermissionMessage, formatStagedDiffRelayLines, formatWorkerInitialPrompt, formatWorkerRelayMessage } from "./prompts.js";
 import { KuloStateDoc, WorkerRelayEntry, getActiveStagedCwd, hasActiveSubagents, hasPendingWorkspaceApply, releaseSlot, transitionTicketStatus, tryClaimSlot, type KuloDurableState } from "./state.js";
 import { SettingsAssistantDoc, isActiveSettingsConversation, parseSettingsTopicConversationId } from "./settings-doc.js";
+import { settlePendingSubagentsInTx } from "./subagent-runner.js";
 import { injectEventToolsInTx } from "./tool-surface.js";
 import type { KuloUploadStore } from "./uploads.js";
 import { nativeSearchEvidence, sanitizeSearchSources, selectCitedSources } from "./search-sources.js";
-import {
-  appendTicketOutwardAction,
-  beginTicketRecovery,
-  epochOutwardActions,
-  formatOutwardActionsSummary,
-  resolveSupersededTickets,
-  type createFailureRecoveryTask,
-} from "./task-recovery.js";
+import { appendTicketOutwardAction, beginTicketRecovery, epochOutwardActions, formatOutwardActionsSummary, resolveSupersededTickets, type createFailureRecoveryTask } from "./task-recovery.js";
 import { submitAutomaticChatInput } from "./chat-control.js";
 import { bindDispatchedAttachments } from "./ticket-dispatch.js";
 
@@ -77,7 +44,7 @@ export interface WorkerTicketTaskDependencies {
     workerConversationId: number,
     runEpoch: number,
   ) => void;
-  onTicketSettled?: (ticketId: string) => void;
+  onTicketSettled?: (ticketId: string) => void | Promise<void>;
   isTicketRunnable?: (ticket: Readonly<TicketRecord>, state: Readonly<KuloDurableState>) => boolean;
   onTicketWaiting?: (ticketId: string, reason: TicketWait["reason"]) => void;
   resumeWaitingTicket?: (ticketId: string, context: Context) => Promise<unknown>;
@@ -94,6 +61,7 @@ export interface WorkerTicketTaskDependencies {
   isExternalMemoryEnabled?: () => boolean;
   syncWorkerConversation?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<void>;
   prepareBuiltInStagedWorkspace?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<{ stagedCwd: string; reused: boolean; warnings?: string[] }>;
+  prepareWorkerCollaborationContext?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<{ boardContext?: string; reviewContext?: string; reviewMaterialized?: Array<{ id: string; name: string; mimeType: string; path: string }> }>;
   inspectBuiltInStagedDiff?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<StagedWorkspaceDiffSummary | undefined>;
   discardBuiltInStagedWorkspace?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<void>;
   onInlineCandidateSettled?: (ticketId: string) => void;
@@ -229,7 +197,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
         }
         if (waitingReason) {
           deps.onTicketWaiting?.(task.input.ticketId, waitingReason);
-          deps.onTicketSettled?.(task.input.ticketId);
+          await deps.onTicketSettled?.(task.input.ticketId);
         }
         if (notified) deps.onTicketsChanged?.();
       },
@@ -253,7 +221,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             return { status: "terminal", outcome: { status: "aborted" } };
           }, context);
           if (currentRun) {
-            deps.onTicketSettled?.(task.input.ticketId);
+            await deps.onTicketSettled?.(task.input.ticketId);
             deps.onTicketsChanged?.();
           }
           return;
@@ -306,9 +274,13 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           const projectMeta = !isResumingNativeSession && ticket.projectId && deps.getProjectMeta
             ? await deps.getProjectMeta(ticket.projectId, context).catch(() => undefined)
             : undefined;
-          const recalledMemory = !isResumingNativeSession && deps.recallExternalMemory
+          const recalledMemory = !isResumingNativeSession && Boolean(ticket.projectId) && deps.recallExternalMemory
             ? await deps.recallExternalMemory(ticket, context).catch(() => undefined)
             : undefined;
+          const collab = !isResumingNativeSession && deps.prepareWorkerCollaborationContext
+            ? await deps.prepareWorkerCollaborationContext(ticket, context).catch(() => undefined)
+            : undefined;
+          if (collab?.reviewMaterialized?.length) materialized = [...materialized, ...collab.reviewMaterialized];
           const prompt = isResumingNativeSession
             ? formatExternalAgentFollowUpPrompt({
                 ticket,
@@ -321,6 +293,8 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                 workspaceMode: external.workspaceMode === "read_only" || external.workspaceMode === "direct" ? external.workspaceMode : "staged",
                 projectName: projectMeta?.name,
                 recalledMemory,
+                boardContext: collab?.boardContext,
+                reviewContext: collab?.reviewContext,
                 materialized,
                 followUp: followUpText,
                 localEnvId: deps.envManager.localEnvId,
@@ -492,7 +466,10 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
 
         const pendingPrompt = preparedTicket.resumePrompt;
         const pendingAttachmentIds = [...(preparedTicket.resumeAttachmentIds ?? [])];
-        const initialPrompt = task.input.promptOverride ?? formatWorkerInitialPrompt(preparedTicket);
+        const collab = !task.input.promptOverride && deps.prepareWorkerCollaborationContext
+          ? await deps.prepareWorkerCollaborationContext(preparedTicket, context).catch(() => undefined)
+          : undefined;
+        const initialPrompt = task.input.promptOverride ?? formatWorkerInitialPrompt(preparedTicket, collab);
         const rawPrompt = pendingPrompt && pendingPrompt !== initialPrompt
           ? `${initialPrompt}\n\n【排队期间补充要求】\n${pendingPrompt}`
           : initialPrompt;
@@ -926,6 +903,8 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
               ticketId: string;
               title: string;
               role: string;
+              boardId?: string;
+              reviewTicketId?: string;
               originConvId?: number;
               report: WorkerReportRecord;
               stagedDiff?: StagedWorkspaceDiffSummary;
@@ -1040,6 +1019,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             delete ticket.externalExecution.stagedCwd;
           }
           transitionTicketStatus(ticket, finalReport.state === "blocked" ? "waiting" : finalReport.state === "progress" ? "ready" : finalReport.state, now);
+          if (finalReport.state !== "blocked") settlePendingSubagentsInTx(state, ticket.id, now);
           if (finalReport.state === "blocked") {
             const keepUserWait = ticket.waiting?.reason === "user";
             ticket.waiting = keepUserWait
@@ -1101,6 +1081,8 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             ticketId: String(ticket.id),
             title: String(ticket.title),
             role: String(ticket.role),
+            ...(ticket.boardId ? { boardId: ticket.boardId } : {}),
+            ...(ticket.reviewTicketId ? { reviewTicketId: ticket.reviewTicketId } : {}),
             ...(ticket.originConversationId !== undefined
               ? { originConvId: ticket.originConversationId }
               : {}),
@@ -1126,7 +1108,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
         }, context);
 
         if (settledCurrentRun) {
-          deps.onTicketSettled?.(task.input.ticketId);
+          await deps.onTicketSettled?.(task.input.ticketId);
           if (waitingReason) deps.onTicketWaiting?.(task.input.ticketId, waitingReason);
           deps.onTicketsChanged?.();
         }
@@ -1151,7 +1133,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             (await runtime.conversation(targetConvId, context)) ??
             (await runtime.conversation(ROOT_CONVERSATION_ID, context));
           if (targetConv) {
-            const { ticketId, title, role, report, stagedDiff, uncertainReason, hasNativeSession } = relayPayload;
+            const { ticketId, title, role, boardId, reviewTicketId, report, stagedDiff, uncertainReason, hasNativeSession } = relayPayload;
             const sources = selectCitedSources([report.summary, report.deliverable ?? ""].join("\n"), availableSources);
             const searchSuggestions = sources.length ? [...new Set(evidence.flatMap((details) => typeof details?.searchSuggestions === "string" && details.searchSuggestions.length <= 24_000 ? [details.searchSuggestions] : []))].slice(-3) : [];
             const stagedLines = stagedDiff ? formatStagedDiffRelayLines(stagedDiff) : [];
@@ -1159,6 +1141,8 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
               ticketId,
               title,
               role,
+              ...(boardId ? { boardId } : {}),
+              ...(reviewTicketId ? { reviewTicketId } : {}),
               report,
               stagedLines,
               sources,
@@ -1169,6 +1153,9 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             const eventTools: string[] = [];
             if (stagedDiff) {
               eventTools.push("kulo_inspect_staged_diff", "kulo_apply_staged_changes");
+            }
+            if (boardId) {
+              eventTools.push("kulo_task_board");
             }
             if (report.attachments?.length) {
               eventTools.push("kulo_inspect_asset", "kulo_publish_asset");
@@ -1207,8 +1194,12 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                   !(state.workerArtifacts?.[ticketId]?.length);
                 notifyInlineWaiter = true;
                 if (canClaimInline) {
-                  if (stagedDiff) {
-                    await injectEventToolsInTx(tx, targetConv.id, ["kulo_inspect_staged_diff", "kulo_apply_staged_changes"]);
+                  const inlineTools = [
+                    ...(stagedDiff ? ["kulo_inspect_staged_diff", "kulo_apply_staged_changes"] : []),
+                    ...(currentTicket.boardId ? ["kulo_task_board"] : []),
+                  ];
+                  if (inlineTools.length > 0) {
+                    await injectEventToolsInTx(tx, targetConv.id, inlineTools);
                   }
                   currentTicket.deliveryClaim = "claimed_inline";
                   currentTicket.inlineResult = {
@@ -1350,7 +1341,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
         return { status: "terminal", outcome: { status: "aborted" } };
       }, context);
       if (settledCurrentRun) {
-        deps.onTicketSettled?.(task.input.ticketId);
+        await deps.onTicketSettled?.(task.input.ticketId);
         deps.onTicketsChanged?.();
       }
     },

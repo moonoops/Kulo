@@ -117,7 +117,7 @@ export const { registry: kuloUiRegistry } = defineRegistry(kuloUiCatalog, {
     TextField: ({ props }) => {
       const runtime = useCardRuntime();
       const value = runtime.values[props.field];
-      return <TextField variant="secondary" className="kulo-genui-field" name={props.field} value={typeof value === "string" ? value : ""}
+      return <TextField variant="primary" className="kulo-genui-field" name={props.field} value={typeof value === "string" ? value : ""}
         onChange={(next) => runtime.change(props.field, next)} isReadOnly={runtime.locked}
         isRequired={props.required} isInvalid={!!runtime.errors[props.field]} validationBehavior="aria">
         <Label>{props.label}</Label>
@@ -130,7 +130,7 @@ export const { registry: kuloUiRegistry } = defineRegistry(kuloUiCatalog, {
       useI18n();
       const runtime = useCardRuntime();
       const value = runtime.values[props.field];
-      return <NumberField variant="secondary" className="kulo-genui-field" name={props.field} value={typeof value === "number" ? value : NaN}
+      return <NumberField variant="primary" className="kulo-genui-field" name={props.field} value={typeof value === "number" ? value : NaN}
         onChange={(next) => runtime.change(props.field, Number.isFinite(next) ? next : null)}
         minValue={props.min} maxValue={props.max} step={props.step} isDisabled={runtime.locked}
         isRequired={props.required} isInvalid={!!runtime.errors[props.field]} validationBehavior="aria">
@@ -146,7 +146,7 @@ export const { registry: kuloUiRegistry } = defineRegistry(kuloUiCatalog, {
     Select: ({ props }) => {
       const runtime = useCardRuntime();
       const value = runtime.values[props.field];
-      return <Select variant="secondary" className="kulo-genui-field" name={props.field} value={typeof value === "string" ? value : null}
+      return <Select variant="primary" className="kulo-genui-field" name={props.field} value={typeof value === "string" ? value : null}
         onChange={(next) => runtime.change(props.field, typeof next === "string" || typeof next === "number" ? String(next) : null)}
         isDisabled={runtime.locked} isRequired={props.required} isInvalid={!!runtime.errors[props.field]} validationBehavior="aria">
         <Label>{props.label}</Label>

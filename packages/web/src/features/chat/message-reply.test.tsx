@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MessageReply } from "./message-reply";
 import { MessageContent } from "./message-content";
 import { ConnectedMessageContent } from "./connected-message-content";
-import { DispatchMessageGroup } from "./dispatch-message-group";
 
 const presses = vi.hoisted(() => [] as Array<NonNullable<ButtonProps["onPress"]>>);
 vi.mock("@heroui/react", async (importOriginal) => {
@@ -47,22 +46,6 @@ describe("reply navigation", () => {
     const html = renderToStaticMarkup(<ConnectedMessageContent item={item} onNavigateReply={navigate} contentOnly />);
     expect(html).toContain('aria-label="查看原消息：Kulo，维护方式需要再确认。"');
     expect(html).not.toContain("kulo-message-footer");
-    presses[0]!({ pointerType: "keyboard" } as Parameters<typeof presses[number]>[0]);
-    expect(navigate).toHaveBeenCalledExactlyOnceWith(12);
-  });
-
-  it("forwards the conversation navigation through grouped dispatch replies", () => {
-    const navigate = vi.fn();
-    const dispatch: ChatDisplayItem = { id: 20, role: "dispatch", text: "已安排核对" };
-    const assistant: ChatDisplayItem = { ...item, role: "assistant" };
-    const render = vi.fn((message: ChatDisplayItem, onNavigateReply?: (messageId: number) => void) =>
-      <ConnectedMessageContent key={message.id} item={message} onNavigateReply={onNavigateReply} contentOnly />);
-    const html = renderToStaticMarkup(<DispatchMessageGroup
-      group={{ type: "dispatch-group", key: "dispatch:20", dispatches: [dispatch], replies: [assistant] }}
-      onNavigateReply={navigate} renderMessage={render} />);
-    expect(render).toHaveBeenNthCalledWith(1, dispatch, navigate);
-    expect(render).toHaveBeenNthCalledWith(2, assistant, navigate);
-    expect(html).toContain('data-source-message-id="12"');
     presses[0]!({ pointerType: "keyboard" } as Parameters<typeof presses[number]>[0]);
     expect(navigate).toHaveBeenCalledExactlyOnceWith(12);
   });

@@ -9,11 +9,11 @@ export const CONVERSATION_QUERY_PAGE_SIZE = 200;
 const FILTER_WORDS = 1024;
 const BIT_MASK = FILTER_WORDS * 32 - 1;
 
-export type VisibleMessage = ChatDisplayItem & { role: "user" | "assistant" | "dispatch" };
+export type VisibleMessage = ChatDisplayItem & { role: "user" | "assistant" };
 export function isVisibleMessage(item: ChatDisplayItem): item is VisibleMessage {
   if (item.role === "user") return !item.text.startsWith("[KULO_WORKER_RELAY]") && !item.text.startsWith("[KULO_WORKER_WATCHDOG]");
   if (item.role === "assistant") return Boolean(item.text || item.parts?.length || item.attachments?.length);
-  return item.role === "dispatch";
+  return false;
 }
 
 export const foldQueryText = (value: string) => value.normalize("NFKC").toLocaleLowerCase();
