@@ -2,7 +2,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
 import { chatReceiptData, chatRoutingData, queuedChatEntries, type ChatMessageSource } from "./chat-submissions.js";
 import { observeChatAttachmentGrants, repairHistoricalChatAttachments } from "./chat-attachment-deliveries.js";
 import { submitAutomaticChatInput } from "./chat-control.js";
@@ -93,8 +92,8 @@ import { deriveConnectedExternalClients, type ConversationSearchInput, type Main
 import { ExternalAgentQuotaService } from "./external-agent-quotas.js";
 import { topicActivity } from "./topic-activity.js";
 import { KuloSubagentRunner, buildTicketSubagentViews, pruneClosedSubagentsInTx, settlePendingSubagentsInTx } from "./subagent-runner.js";
-import { attachDispatchedTicketToBoardInTx, formatTaskBoardWorkerContext, readTaskBoard, searchTaskBoards, writeTaskBoardInTx } from "./task-boards.js";
-import { collectReviewPackAssets, formatReviewPromptSection, validateReviewTargetTicket, writeReviewPackToScratchEnv } from "./ticket-review-pack.js";
+import { formatTaskBoardWorkerContext, readTaskBoard, searchTaskBoards, writeTaskBoardInTx } from "./task-boards.js";
+import { collectReviewPackAssets, formatReviewPromptSection, writeReviewPackToScratchEnv } from "./ticket-review-pack.js";
 import { listTaskDeliverables, readTaskDeliverable, reportFileReferences, taskDeliverableError, TaskDeliverableError, type TaskDeliverableOptions } from "./task-deliverables.js";
 import { createHistoryToolsExtension } from "./tools-history.js";
 import { AssistantDoc, ensureAssistantState } from "./assistant-state.js";
@@ -232,9 +231,9 @@ import { KuloModelConfiguration, ModelConfigurationDoc } from "./model-configura
 import { createModelConfigurationToolsExtension } from "./tools-model-configuration.js";
 import { KuloAgentConfiguration, AgentConfigurationDoc } from "./agent-configuration.js";
 import { createAgentConfigurationToolsExtension } from "./tools-agent-configuration.js";
-import { createExternalAgentToolHandler, type ExternalAgentReportFile, type ExternalAgentToolScope } from "./external-agent-tools.js";
-import { directExternalClientRoleId, externalClientConnectionId, type AgentAssignment, type AgentConfigurationDraft, type AgentDispatchIntent, type ExternalAgentRun, type ExternalWorkspaceMode, type StagedWorkspaceApplyResult, type StagedWorkspaceDiffDetail, type StagedWorkspaceDiffSummary } from "@kulo/protocol";
-import { extractAgentDispatchIntent, namedDispatchDevices, resolveAgentDispatch, assertAgentDispatchAvailable, resolveRoleOrDirectClient } from "./agent-routing.js";
+import { assertExternalAgentScope, createExternalAgentToolHandler, type ExternalAgentReportFile, type ExternalAgentToolScope } from "./external-agent-tools.js";
+import { directExternalClientRoleId, externalClientConnectionId, type AgentConfigurationDraft, type ExternalAgentRun, type StagedWorkspaceApplyResult, type StagedWorkspaceDiffDetail, type StagedWorkspaceDiffSummary } from "@kulo/protocol";
+import { assertAgentDispatchAvailable, evaluateTicketAgentBlock, extractAgentDispatchIntent, resolveAgentDispatch, resolveRoleOrDirectClient } from "./agent-routing.js";
 import { createAppearanceCustomizationToolsExtension } from "./tools-appearance-customization.js";
 import { createCustomizationToolsExtension } from "./tools-customization.js";
 import { createDesktopCustomizationService } from "./customization-host.js";
@@ -286,6 +285,7 @@ import { HubHostActions } from "./hub-host-actions.js";
 import { HubMediaDelivery, MediaNoticesDoc } from "./hub-media-delivery.js";
 import { HubTopicManager, requireTopic, type TopicView, type WatchedTopicCache } from "./hub-topic-manager.js";
 import { HubFailureRecovery, HubWatchdog } from "./hub-watchdog.js";
+import { TicketDispatchService } from "./ticket-dispatch-service.js";
 import { TicketStagedApplyService } from "./ticket-staged-apply.js";
 import { createOrchestratorCodingGuardExtension } from "./orchestrator-coding-guard.js";
 import type { HostActionController } from "./tools-host-action.js";
@@ -309,7 +309,7 @@ import {
   formatWorkerRelayMessage,
 } from "./prompts.js";
 import { createWorkerTicketTask } from "./scheduler.js";
-import { bindDispatchedAttachments, createDispatchedTicket, type TicketDispatchDraft } from "./ticket-dispatch.js";
+import { androidTargetsOf, areTicketDevicesOnline } from "./ticket-dispatch.js";
 import {
   KuloSettingsDoc,
   SettingsUpdateError,
@@ -389,14 +389,8 @@ import {
   spillOversizedReport,
 } from "./report-overflow.js";
 import {
-  canSwitchEnvDuringRecovery,
-  detectSenderLocalSignals,
-  hasExplicitSenderReference,
-  hasWorkerIsolation,
   inspectChatReadTarget,
   preflightOrchestratorTargetEnv,
-  resolveComputerEnvBinding,
-  resolveNamedOrContextualEnv,
   resolveOrchestratorCatalogSkillTarget,
   resolveOrchestratorConflictSkillTarget,
   resolveOrchestratorTargetEnv,
@@ -419,21 +413,6 @@ function assertMemoryIdentitySeparation(memory: HindsightMemoryConfig, config: K
 
 function cloneJson<T>(val: T): T {
   return JSON.parse(JSON.stringify(val)) as T;
-}
-
-function capturedAgentIntent(value: unknown): AgentDispatchIntent | undefined {
-  if (value === undefined) return;
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new ProjectError(409, "agent_assignment_invalid", "无法核对原消息中的 Agent 指派，请重新说明要使用的智能体。");
-  const intent = value as Record<string, unknown>;
-  if (intent.version !== 1 || !Array.isArray(intent.targets) || intent.targets.length > 16 || intent.targets.some((target: unknown) => {
-    if (!target || typeof target !== "object" || Array.isArray(target)) return true;
-    const item = target as Record<string, unknown>;
-    return typeof item.name !== "string" || !item.name.trim() || item.name.length > 200 ||
-      item.agentId !== undefined && (typeof item.agentId !== "string" || !item.agentId.trim() || item.agentId.length > 200) ||
-      item.kind !== undefined && !(EXTERNAL_AGENT_KINDS as readonly unknown[]).includes(item.kind) ||
-      item.envId !== undefined && (typeof item.envId !== "string" || !item.envId.trim() || item.envId.length > 256);
-  })) throw new ProjectError(409, "agent_assignment_invalid", "原消息的 Agent 指派记录无效，请重新说明要使用的智能体。");
-  return intent.targets.length ? cloneJson(intent) as unknown as AgentDispatchIntent : undefined;
 }
 
 function withKuloCompactionFocus(models: Models): Models {
@@ -484,15 +463,6 @@ function withKuloCompactionFocus(models: Models): Models {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-}
-
-function slugifyTitle(title: string): string {
-  const ascii = title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 28);
-  return ascii || "task";
 }
 
 function normalizeModelConfig(m: ModelGatewayConfig): KuloModelConfig {
@@ -679,6 +649,7 @@ export class KuloHub implements OrchestratorController {
   readonly #watchdog: HubWatchdog;
   readonly #failureRecovery: HubFailureRecovery;
   readonly #computer: HubComputerController;
+  readonly #ticketDispatch: TicketDispatchService;
   readonly #verifyClientReceipts = new Map<string, import("@kulo/protocol").ExternalAgentVerifyClientResult>();
   readonly deviceJoinStaging: DeviceJoinStaging;
   readonly assistantEchoSuppressor = new AssistantEchoSuppressor();
@@ -1748,6 +1719,33 @@ export class KuloHub implements OrchestratorController {
       delivery: this.#delivery,
       runtimeGates: this.#runtimeGates,
       workerTicketTask: this.#workerTicketTask,
+    });
+    this.#ticketDispatch = new TicketDispatchService({
+      harness: this.harness,
+      rootConversation: this.rootConversation,
+      inlineDispatchWaitMs: this.config.inlineDispatchWaitMs ?? 0,
+      envManager: this.envManager,
+      projects: this.projects,
+      uploads: this.uploads,
+      connectionManager: this.connectionManager,
+      liveSettings: this.#settingsStore,
+      runtimeGates: this.#runtimeGates,
+      inlineWaiters: this.#inlineWaiters,
+      turnContext: this.#turnContext,
+      workerOps: {
+        workerTicketTask: this.#workerTicketTask,
+        resolveWorkerAgent: (providerOpt, modelId, desiredThinking) =>
+          resolveAgentModelAndThinking(
+            this.#models,
+            this.#providerId,
+            providerOpt,
+            modelId,
+            desiredThinking,
+            this.#liveSettings.model,
+          ),
+        workerTools: (options) => this.#workerTools(options),
+        discardTicketStagedWorkspace: (ticket) => this.#discardTicketStagedWorkspace(ticket),
+      },
     });
     this.#mediaDelivery = new HubMediaDelivery({
       harness: this.harness,
@@ -3141,15 +3139,11 @@ export class KuloHub implements OrchestratorController {
   }
 
   #androidTargets(ticket: Readonly<TicketRecord>): string[] {
-    return ticket.androidDeviceIds ?? (ticket.executionDomain === "android" ? [ticket.envId] : []);
+    return androidTargetsOf(ticket);
   }
 
   #ticketDevicesOnline(ticket: Readonly<TicketRecord>): boolean {
-    return Boolean(this.envManager.getEnvDescriptor(ticket.envId)?.online) &&
-      this.#androidTargets(ticket).every((id) => {
-        const device = this.envManager.getEnvDescriptor(id);
-        return device?.online && device.executionKind === "native-device" && device.android?.enabled && !device.android.paused;
-      });
+    return areTicketDevicesOnline(ticket, (id) => this.envManager.getEnvDescriptor(id));
   }
 
   #surfaceRuntimeState(
@@ -4453,686 +4447,7 @@ export class KuloHub implements OrchestratorController {
     params: DispatchTicketParams,
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<TicketCardView> {
-    params = redactCredentialData(params, (text) => this.connectionManager.redact(text));
-    const inputs = await this.#currentControlInputs(params.originConversationId, context, params.originToolTaskId);
-    const recoveryGuard = inputs[0] && WorkerRecoveryEntry.is(inputs[0]) ? inputs[0].data : undefined;
-    const originConversationId = params.originConversationId ?? Number(ROOT_CONVERSATION_ID);
-    const activeRoles = this.#liveSettings.roles;
-    const existingState = await this.harness.snapshot(KuloStateDoc, context);
-    const modelDispatch = !params.parentTicketId && params.originToolTaskId !== undefined;
-    const selectedInput = params.sourceRequestId ? inputs.find((input) => chatRoutingData(input).requestId === params.sourceRequestId) : inputs[0];
-    if (params.sourceRequestId && (!modelDispatch || !selectedInput)) {
-      throw new ProjectError(409, "source_message_unavailable", "请使用当前待处理消息的 requestId 指定任务来源。");
-    }
-    const dispatchSource = modelDispatch
-      ? await this.#agentDispatchSource(params.originConversationId, params.originToolTaskId, context, params.sourceRequestId ? selectedInput?.id : undefined)
-      : { intent: undefined, entryId: undefined, inheritedAssignment: undefined, input: undefined, continuing: false };
-    const sender = chatRoutingData(modelDispatch ? selectedInput ?? dispatchSource.input : undefined);
-    const checkAdmission = (state: Readonly<KuloDurableState> | undefined, paused: boolean) => {
-      const existingId = state && Object.hasOwn(state.commandIndex, params.commandId) ? state.commandIndex[params.commandId] : undefined;
-      const prior = existingId ? state?.tickets[existingId] : undefined;
-      if (!prior) {
-        if (paused) throw new Error("新任务派发当前已暂停，请先在「设置 -> 并发与运行」中恢复处理。");
-        if (typeof params.commandId !== "string" || !params.commandId.trim() || ["__proto__", "constructor", "prototype"].includes(params.commandId)) {
-          throw new ProjectError(400, "invalid_command_id", "派单标识无效。");
-        }
-        return;
-      }
-      if ((prior.originConversationId ?? Number(ROOT_CONVERSATION_ID)) !== originConversationId || prior.parentTicketId !== params.parentTicketId) {
-        throw new ProjectError(409, "dispatch_command_conflict", "该派单标识已用于其他任务，请使用新的标识。");
-      }
-      if (dispatchSource.intent || dispatchSource.inheritedAssignment) {
-        const choice = resolveAgentDispatch({ roles: activeRoles, externalClients: this.#liveSettings.externalClients, language: this.#liveSettings.presentation.language, ...dispatchSource, requestedRole: prior.role,
-          taskKind: prior.agentAssignment?.taskKind ?? params.taskKind, projectId: prior.projectId, envId: prior.envId, trustedManual: true });
-        if (choice.role !== prior.role) throw new ProjectError(409, "agent_binding_conflict", "该派单标识已经绑定其他 Agent，请为新的用户指派创建新任务。");
-      }
-      return prior;
-    };
-    const prior = checkAdmission(existingState, this.#liveSettings.executor.paused);
-    if (prior) {
-      bindDispatchedAttachments(this.uploads, prior);
-      return toTicketCardView(prior, activeRoles);
-    }
-    const executeAt = params.executeAt === undefined ? undefined : Date.parse(params.executeAt);
-    if (params.executeAt !== undefined && (typeof params.executeAt !== "string" ||
-        !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(params.executeAt) ||
-        !Number.isSafeInteger(executeAt) || executeAt! < 0)) {
-      throw new ProjectError(400, "invalid_schedule", "执行时间必须是带时区的有效 ISO 8601 时间。");
-    }
-    if (params.repeatEverySeconds !== undefined && (executeAt === undefined ||
-        !Number.isSafeInteger(params.repeatEverySeconds) || params.repeatEverySeconds <= 0 ||
-        params.repeatEverySeconds * 1000 > 8_640_000_000_000_000 - executeAt)) {
-      throw new ProjectError(400, "invalid_schedule", "重复间隔必须是正整数秒，并指定首次执行时间。");
-    }
-    if (recoveryGuard && executeAt !== undefined) throw new ProjectError(403, "recovery_schedule_denied", "自动恢复不能新建定时计划。");
-    if (existingState) assertRecoveryGuard(existingState, recoveryGuard);
-    if (recoveryGuard && !params.projectId && !params.workspaceDir) params.workspaceDir = existingState!.tickets[recoveryGuard.ticketId]!.workspaceDir;
-    const connectionIds = [...new Set(params.connectionIds ?? [])];
-    let connectionRevisions: Record<string, number> = {};
-    if (connectionIds.length > 32 || connectionIds.some((id) => typeof id !== "string" || !id.trim())) throw new Error("任务连接授权无效。");
-    if (connectionIds.length) {
-      const available = (await this.connectionManager.snapshot()).connections;
-      const known = new Set(available.map((connection) => connection.id));
-      if (connectionIds.some((id) => !known.has(id))) throw new Error("任务引用了不存在的连接。");
-      connectionRevisions = Object.fromEntries(available.filter((connection) => connectionIds.includes(connection.id)).map((connection) => [connection.id, connection.revision]));
-    }
-
-    const settingsSnapshot = await this.harness.snapshot(SettingsAssistantDoc, context);
-    const projectsSnapshot = params.reviewTicketId?.trim()
-      ? await this.harness.snapshot(KuloProjectsDoc, context)
-      : undefined;
-    const reviewTarget = params.reviewTicketId?.trim()
-      ? validateReviewTargetTicket(
-          existingState,
-          projectsSnapshot,
-          settingsSnapshot,
-          originConversationId,
-          params.reviewTicketId,
-        )
-      : undefined;
-    if (reviewTarget && params.projectId?.trim() && reviewTarget.projectId && params.projectId.trim() !== reviewTarget.projectId) {
-      throw new ProjectError(409, "review_project_mismatch", "评审工单指定的项目与被评审任务所属项目不一致。");
-    }
-    const originIsSettings = !isOrchestratorConversation(originConversationId, existingState) && isActiveSettingsConversation(originConversationId, settingsSnapshot);
-    const resolvedOriginTopicId = originIsSettings
-      ? settingsTopicId(originConversationId)
-      : existingState?.conversationToTopic?.[String(originConversationId)] ?? "root";
-    const originTopic = originIsSettings ? undefined : existingState?.topics?.[resolvedOriginTopicId];
-    if (originTopic?.deletedAt) throw new ProjectError(404, "topic_deleted", "会话已删除。");
-    if (sender.source && dispatchSource.continuing && Object.values(existingState?.tickets ?? {}).some((ticket) =>
-      ticket.originTopicId === resolvedOriginTopicId && !ticket.parentTicketId && !["stopped", "closed"].includes(ticket.status))) {
-      throw new ProjectError(409, "continue_existing_ticket", "请使用 kulo_steer 继续所指的原工单，沿用其执行设备和任务范围。");
-    }
-    if (params.workspaceMode !== undefined && !["staged", "direct", "read_only"].includes(params.workspaceMode)) {
-      throw new ProjectError(400, "invalid_workspace_mode", "工作区隔离模式无效。");
-    }
-    if (modelDispatch && params.workspaceMode === "direct") {
-      throw new ProjectError(400, "invalid_workspace_mode", "项目写任务默认在隔离副本（staged）中执行，模型不能直接指定 direct 模式。");
-    }
-    if (params.targetScope !== undefined && !["hub_local", "sender_device"].includes(params.targetScope)) {
-      throw new ProjectError(400, "invalid_target_scope", "任务目标位置参数无效。");
-    }
-    const contextSummary = params.contextSummary?.trim()
-      ? this.connectionManager.redact(params.contextSummary.trim()).slice(0, 16_000)
-      : undefined;
-    const inputAttachmentIds = [...new Set((params.attachmentIds ?? []).map((id) => typeof id === "string" ? id.trim() : "").filter(Boolean))];
-    if (inputAttachmentIds.length > 16 || (params.attachmentIds ?? []).some((id) => typeof id !== "string" || !id.trim())) {
-      throw new ProjectError(400, "invalid_attachments", "派单附件标识无效或超过数量上限。");
-    }
-    if (inputAttachmentIds.length > 0) {
-      const allowedScopes = new Set([`conversation:${originConversationId}`]);
-      for (const existingTicket of Object.values(existingState?.tickets ?? {})) {
-        if ((existingTicket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) === originConversationId &&
-            (existingTicket.originTopicId ?? "root") === resolvedOriginTopicId) {
-          allowedScopes.add(`ticket:${existingTicket.id}`);
-          allowedScopes.add(`conversation:${existingTicket.workerConversationId}`);
-        }
-      }
-      for (const id of inputAttachmentIds) {
-        const loaded = this.uploads.getUpload(id);
-        if (!loaded) throw new ProjectError(400, "attachment_not_found", `附件 '${id}' 不存在或已失效。`);
-        if (params.originToolTaskId !== undefined && !this.uploads.canReadUpload(id, `agent:${originConversationId}`, (scope) => allowedScopes.has(scope))) {
-          throw new ProjectError(403, "attachment_forbidden", "当前对话无权将该附件传递给后台任务。");
-        }
-      }
-    }
-    if (params.executionDomain !== undefined && !["android", "computer"].includes(params.executionDomain)) throw new ProjectError(400, "invalid_execution_domain", "任务执行类型无效。");
-    const recoveryTicket = recoveryGuard ? existingState?.tickets[recoveryGuard.ticketId] : undefined;
-    const fixedTargetId = recoveryTicket
-      ? (originTopic?.targetDeviceId || undefined)
-      : (sender.targetDeviceId ?? originTopic?.targetDeviceId) || undefined;
-    const fixedTarget = fixedTargetId ? this.envManager.getEnvDescriptor(fixedTargetId) : undefined;
-    const proposedEnv = params.envId?.trim() || undefined;
-    const envs = this.envManager.listEnvs();
-    const localEnvId = this.envManager.localEnvId;
-    const localEnv = this.envManager.getEnvDescriptor(localEnvId);
-    const localReady = Boolean(localEnv?.online && hasWorkerIsolation(localEnv));
-    const priorUserTurns = modelDispatch && !recoveryTicket
-      ? await this.#recentPriorUserTurns(
-          params.originConversationId,
-          context,
-          params.originToolTaskId,
-          new Set(inputs.map((entry) => entry.id)),
-        )
-      : [];
-    const namedEnvResolution = resolveNamedOrContextualEnv({
-      currentText: sender.text,
-      priorUserTurns,
-      envs,
-      proposedEnvId: proposedEnv,
-      targetScope: params.targetScope,
-      isRecovery: Boolean(recoveryTicket),
-    });
-    const namedEnv = namedEnvResolution?.envId;
-    if (namedEnvResolution?.source === "current" && fixedTargetId && fixedTargetId !== namedEnv) {
-      throw new ProjectError(409, "target_device_conflict", "消息中指定的设备与所选执行设备不同，请核对实际目标。");
-    }
-    const domainEnv = fixedTargetId ?? recoveryTicket?.envId ?? namedEnv ??
-      (!sender.source || sender.source.deviceId === proposedEnv ? proposedEnv : undefined);
-    const requestedProject = params.projectId?.trim() || reviewTarget?.projectId || (recoveryTicket ? recoveryTicket.projectId : originTopic?.projectId) || undefined;
-    const namedAgent = dispatchSource.intent || dispatchSource.inheritedAssignment?.source === "explicit" || dispatchSource.inheritedAssignment?.source === "manual";
-    const namedComputerAgent = dispatchSource.intent?.targets.some(({ kind, agentId }) => kind || (agentId && activeRoles[agentId]?.external)) ||
-      (dispatchSource.inheritedAssignment && activeRoles[dispatchSource.inheritedAssignment.agentId]?.external);
-    const inferSourcePhone =
-      !domainEnv &&
-      !requestedProject &&
-      !namedComputerAgent &&
-      params.targetScope !== "hub_local" &&
-      inputAttachmentIds.length === 0 &&
-      sender.source?.kind === "android";
-    const executionDomain = params.executionDomain ?? recoveryTicket?.executionDomain ??
-      (inferSourcePhone || this.envManager.getEnvDescriptor(domainEnv ?? "")?.executionKind === "native-device" ? "android" : "computer");
-    const androidDeviceIds = [...new Set(params.androidDeviceIds ?? recoveryTicket?.androidDeviceIds ?? [])];
-    if (androidDeviceIds.length > 8 || androidDeviceIds.some(id => typeof id !== "string" || !id.trim() || id.length > 256)) throw new ProjectError(400, "invalid_android_targets", "任务手机范围无效。");
-    if (executionDomain === "android" && (params.projectId?.trim() || params.workspaceDir?.trim())) throw new ProjectError(400, "android_workspace_denied", "纯手机任务不使用电脑项目或工作目录。");
-    const projectId = executionDomain === "android" ? undefined : requestedProject;
-    let project = projectId ? await this.projects.get(projectId, context) : undefined;
-    if (project && namedEnvResolution?.source === "current" && namedEnv !== project.deviceId) throw new ProjectError(409, "project_binding_conflict", "消息中指定的设备与项目所属设备不同，请核对实际目标。");
-    if (!project && modelDispatch && !recoveryTicket && fixedTargetId && fixedTarget?.executionKind !== "native-device") {
-      if (proposedEnv && proposedEnv !== fixedTargetId) {
-        const lockedName = fixedTarget?.name ?? fixedTargetId;
-        throw new ProjectError(
-          409,
-          "target_device_conflict",
-          `当前会话已锁定执行设备「${lockedName}」(${fixedTargetId})，不能改派到 ${proposedEnv}；请先切换或解除会话目标设备。`,
-        );
-      }
-      if (
-        !proposedEnv &&
-        params.targetScope === "sender_device" &&
-        sender.source?.kind === "computer" &&
-        sender.source.deviceId !== fixedTargetId
-      ) {
-        const lockedName = fixedTarget?.name ?? fixedTargetId;
-        throw new ProjectError(
-          409,
-          "target_device_conflict",
-          `当前会话已锁定执行设备「${lockedName}」(${fixedTargetId})，不能按发信设备改派到「${sender.source.name}」；请先切换或解除会话目标设备。`,
-        );
-      }
-    }
-    const boundEnv = project?.deviceId ?? fixedTargetId ?? recoveryTicket?.envId ?? namedEnv;
-    const sourceEnv = !boundEnv && sender.source?.kind === executionDomain &&
-      (!this.envManager.isLocalEnv(sender.source.deviceId) || this.envManager.getEnvDescriptor(localEnvId)) ? sender.source.deviceId : undefined;
-    const sourceRootDir = sourceEnv ? this.envManager.getEnvDescriptor(sourceEnv)?.rootDir : undefined;
-    const senderLocalSignals = Boolean(
-      sourceEnv &&
-      executionDomain === "computer" &&
-      detectSenderLocalSignals({
-        userMessage: sender.text,
-        goal: params.goal,
-        scope: params.scope,
-        senderRootDir: sourceRootDir,
-      }),
-    );
-    // Scope default Agent selection to the Hub-verified target, never to a model guess.
-    const activeExternalClients = this.#liveSettings.externalClients;
-    const activeLanguage = this.#liveSettings.presentation.language;
-    const proposedRole = resolveRoleOrDirectClient(params.role, activeRoles, activeExternalClients, activeLanguage);
-    if (!namedAgent && proposedRole?.external) {
-      if (boundEnv && !project && proposedRole.external.envId !== boundEnv) {
-        throw new ProjectError(409, "agent_device_conflict", `指定的外部 Agent「${proposedRole.label}」绑定在设备 ${proposedRole.external.envId}，与当前目标设备 ${boundEnv} 不一致。`);
-      }
-      if (sourceEnv && (params.targetScope === "sender_device" || senderLocalSignals) && proposedRole.external.envId !== sourceEnv) {
-        throw new ProjectError(409, "agent_device_conflict", `该任务涉及发信设备「${sender.source?.name}」本地环境，不能改派到绑定其他设备的外部 Agent「${proposedRole.label}」。`);
-      }
-    }
-    const routingEnv = boundEnv ?? (
-      params.originToolTaskId === undefined
-        ? proposedEnv
-        : namedAgent
-          ? undefined
-          : proposedRole?.external
-            ? proposedRole.external.envId
-            : executionDomain === "computer" && params.targetScope === "hub_local" && !senderLocalSignals && localReady
-              ? localEnvId
-              : sourceEnv
-    );
-    const requestedRole = params.role;
-    const selectionRoles = androidDeviceIds.length || executionDomain === "android" ? Object.fromEntries(Object.entries(activeRoles).map(([id, role]) => [id, role.external ? { ...role, dispatchPolicy: undefined } : role])) : activeRoles;
-    const routing = resolveAgentDispatch({ roles: selectionRoles, externalClients: activeExternalClients, language: activeLanguage, ...dispatchSource, requestedRole, taskKind: params.taskKind,
-      workspaceMode: params.workspaceMode,
-      projectId: project?.id, envId: routingEnv,
-      trustedManual: params.originToolTaskId === undefined });
-    const roleId = routing.role;
-    const rolePreset = resolveRoleOrDirectClient(roleId, activeRoles, activeExternalClients, activeLanguage);
-    const externalBinding = rolePreset?.external;
-    const explicitAgentDevice = externalBinding && (routing.source === "explicit" || routing.source === "manual") ? externalBinding.envId : undefined;
-    if (modelDispatch && !params.sourceRequestId && !boundEnv && !explicitAgentDevice && inputs.some((input) =>
-      chatRoutingData(input).source?.deviceId !== sender.source?.deviceId)) {
-      throw new ProjectError(409, "source_device_ambiguous", "本轮有来自不同设备的消息，请为本次任务填写对应的 source_request_id。");
-    }
-    if (externalBinding && (!externalBinding.verifiedAt || isPersonalExternalAgentKind(externalBinding.kind))) {
-      throw new ProjectError(409, "external_agent_unverified", `指定的外部 Agent「${rolePreset.label}」尚未完成稳定任务通信验证，请在智能体设置页继续配置。`);
-    }
-    if (externalBinding && proposedEnv && proposedEnv !== externalBinding.envId) throw new ProjectError(400, "agent_device_conflict", `指定的 Agent「${rolePreset.label}」已绑定其他执行设备，请明确选择同设备的 Agent。`);
-    if (externalBinding && (executionDomain === "android" || androidDeviceIds.length || project && project.deviceId !== externalBinding.envId)) throw new ProjectError(400, "agent_project_conflict", "外部智能体必须使用其绑定电脑上的授权项目。");
-
-    let targetEnvId: string;
-    let envBinding: TicketEnvBinding;
-    let waitForSource: boolean;
-    if (executionDomain === "computer") {
-      const resolved = resolveComputerEnvBinding({
-        projectDeviceId: project?.deviceId,
-        explicitWorkspaceDir: params.workspaceDir?.trim() || undefined,
-        messageTargetDeviceId: !recoveryTicket ? sender.targetDeviceId : undefined,
-        topicTargetDeviceId: originTopic?.targetDeviceId,
-        namedEnvId: namedEnv,
-        explicitAgentDeviceId: explicitAgentDevice,
-        externalBindingDeviceId: externalBinding?.envId,
-        recoveryTicket,
-        sourceEnvId: sourceEnv,
-        sourceRootDir,
-        proposedEnvId: proposedEnv,
-        targetScope: params.targetScope,
-        userMessage: sender.text,
-        goal: params.goal,
-        scope: params.scope,
-        localEnv,
-        pickFallbackEnvId: () => this.envManager.pickDefaultWorkerEnvId(),
-      });
-      if (resolved.conflictWithSource) {
-        throw new ProjectError(409, "source_device_conflict", `该消息默认在「${sender.source?.name}」上处理。请省略 env_id，或根据用户明确指定的设备重新派单。`);
-      }
-      if (!boundEnv && (!proposedEnv || proposedEnv === sourceEnv) && sourceEnv && resolved.envId === sourceEnv && !hasExplicitSenderReference(sender.text)) {
-        const briefTargets = [
-          ...new Set(
-            namedDispatchDevices(`${params.goal}\n${params.scope}`, envs)
-              .filter((ids) => ids.length === 1)
-              .map((ids) => ids[0]!),
-          ),
-        ];
-        if (briefTargets.length === 1 && briefTargets[0] !== sourceEnv) {
-          const intended = this.envManager.getEnvDescriptor(briefTargets[0]!)?.name ?? briefTargets[0]!;
-          throw new ProjectError(
-            409,
-            "target_device_mismatch",
-            `工单内容指向设备「${intended}」，但未传入目标 env_id 而默认落到了发信设备「${sender.source?.name}」。请确认用户意图后显式传入目标设备的 env_id，避免误派到发信设备。`,
-          );
-        }
-      }
-      targetEnvId = resolved.envId;
-      envBinding = resolved.envBinding;
-      waitForSource = resolved.waitForSource;
-    } else {
-      if (sourceEnv && !explicitAgentDevice && proposedEnv && proposedEnv !== sourceEnv) {
-        throw new ProjectError(409, "source_device_conflict", `该消息默认在「${sender.source?.name}」上处理。请省略 env_id，或根据用户明确指定的设备重新派单。`);
-      }
-      const initialEnv = (!explicitAgentDevice && sourceEnv ? sourceEnv : proposedEnv) ?? recoveryTicket?.envId ?? namedEnv;
-      targetEnvId = initialEnv ?? fixedTargetId ?? androidDeviceIds[0] ?? this.envManager.pickDefaultWorkerEnvId();
-      envBinding = !recoveryTicket && sender.targetDeviceId
-        ? "message_target"
-        : originTopic?.targetDeviceId
-          ? "topic_target"
-          : namedEnv
-            ? "message_named"
-            : sourceEnv
-              ? "sender_local"
-              : "pool_fallback";
-      waitForSource = Boolean(sourceEnv && !explicitAgentDevice);
-    }
-
-    const agentEnv = project?.deviceId ?? targetEnvId ?? fixedTargetId;
-    assertAgentDispatchAvailable(rolePreset, { envs, envId: agentEnv, allowOffline: waitForSource });
-    if (project && this.envManager.getEnvDescriptor(project.deviceId)?.online) {
-      project = await this.projects.ensureAuthorized(project.id, context);
-    }
-    if (project && proposedEnv && proposedEnv !== project.deviceId) {
-      throw new ProjectError(400, "project_binding_conflict", "执行设备必须与项目所属设备一致。");
-    }
-    const pathApi = project?.platform === "win32" || /^[A-Za-z]:[\\/]|^\\\\/.test(project?.workspaceDir ?? "") ? path.win32 : path.posix;
-    if (project && params.workspaceDir?.trim() && pathApi.normalize(params.workspaceDir.trim()) !== pathApi.normalize(project.workspaceDir)) {
-      throw new ProjectError(400, "project_binding_conflict", "工作目录必须与项目授权目录一致。");
-    }
-    const targetDescriptor = this.envManager.getEnvDescriptor(targetEnvId);
-    if (targetEnvId === sourceEnv && !targetDescriptor) {
-      throw new ProjectError(409, "source_env_unavailable", `发信设备「${sender.source?.name}」的执行环境尚未连接。请启动该设备的 Kulo 执行环境，或指定其他设备。`);
-    }
-    if (!externalBinding && executionDomain === "computer" && targetDescriptor?.online && !hasWorkerIsolation(targetDescriptor)) {
-      throw new ProjectError(409, "worker_isolation_unavailable", `目标执行设备「${targetDescriptor.name}」未启用沙箱隔离能力，无法运行内置后台 Worker。`);
-    }
-    if (targetEnvId === sourceEnv && executionDomain === "android" && androidDeviceIds.some((id) => id !== sourceEnv)) {
-      throw new ProjectError(409, "target_device_conflict", "当前手机任务默认使用发信手机。要操作其他手机，请明确指定目标设备。");
-    }
-    if (executionDomain === "android" && !androidDeviceIds.length) androidDeviceIds.push(targetEnvId);
-    if (executionDomain === "android" ? targetDescriptor?.executionKind !== "native-device" : targetDescriptor?.executionKind === "native-device") {
-      throw new ProjectError(400, "execution_domain_mismatch", "任务执行类型与目标设备不符。");
-    }
-    if (executionDomain === "android" && !androidDeviceIds.includes(targetEnvId)) throw new ProjectError(400, "invalid_android_targets", "纯手机任务必须包含主目标手机。");
-    for (const id of androidDeviceIds) {
-      const phone = this.envManager.getEnvDescriptor(id);
-      if (phone?.executionKind !== "native-device" || !phone.capabilities.includes("android-native-v1")) throw new ProjectError(409, "android_device_unavailable", `手机 ${id} 尚未接入原生控制协议。`);
-    }
-    if (fixedTargetId) {
-      if (fixedTarget?.executionKind === "native-device") {
-        if (!androidDeviceIds.length || androidDeviceIds.some(id => id !== fixedTargetId) || executionDomain === "android" && targetEnvId !== fixedTargetId) {
-          throw new ProjectError(403, "target_device_conflict", "任务必须使用当前会话明确选择的手机。");
-        }
-      } else if (targetEnvId !== fixedTargetId || executionDomain !== "computer") {
-        throw new ProjectError(403, "target_device_conflict", "任务必须使用当前会话明确选择的电脑。");
-      }
-    }
-    if (!project && params.workspaceDir?.trim()) {
-      const requested = { envId: targetEnvId, workspaceDir: this.envManager.isLocalEnv(targetEnvId) ? canonicalExecutionPath(params.workspaceDir) : params.workspaceDir } as TicketRecord;
-      const overlap = (await this.projects.list(context)).find((p) => ticketsShareWriteScope(requested, { envId: p.deviceId, workspaceDir: p.workspaceDir } as TicketRecord));
-      if (overlap) throw new ProjectError(400, "project_required", `该目录属于项目 ${overlap.name}，请使用 project_id 派单。`, { projectId: overlap.id });
-    }
-    const envDesc = targetDescriptor;
-    if (!envDesc && !project) {
-      throw new Error(
-        `Execution environment '${targetEnvId}' is not registered. Available: ${this.envManager
-          .listEnvs()
-          .map((e) => e.id)
-          .join(", ")}`,
-      );
-    }
-
-    const sep = project ? pathApi.sep : envDesc?.platform === "win32" ? "\\" : "/";
-    const cleanRoot = executionDomain === "android" ? "" : (envDesc?.rootDir ?? pathApi.dirname(project!.workspaceDir)).replace(/[\\/]+$/, "");
-    const scratchRoot = project?.scratchRoot ?? `${cleanRoot}${sep}scratch`;
-    const parent = params.parentTicketId ? existingState?.tickets[params.parentTicketId] : undefined;
-    if (params.parentTicketId && (!parent?.externalExecution || parent.status !== "running" || !parent.externalExecution.allowSubagents || parent.envId !== targetEnvId || parent.projectId !== project?.id)) throw new ProjectError(403, "external_parent_invalid", "子任务的父级执行资格或项目范围已失效。");
-    const requestedReadOnly = Boolean(reviewTarget || rolePreset?.readOnly || routing.readOnly || parent?.readOnly || params.workspaceMode === "read_only");
-    // Native clients own their tool permissions; a task's read-only request is not a host-enforced write guarantee.
-    const isReadOnly = !externalBinding && requestedReadOnly;
-    const builtInWorkspaceMode: ExternalWorkspaceMode | undefined =
-      externalBinding || executionDomain === "android" || !project
-        ? undefined
-        : requestedReadOnly
-          ? "read_only"
-          : params.workspaceMode ?? "staged";
-    const externalWorkspaceMode: ExternalWorkspaceMode | undefined = !externalBinding || !project
-      ? undefined
-      : requestedReadOnly
-        ? "read_only"
-        : params.workspaceMode ?? "staged";
-    let nativeThinking: string | undefined;
-    if (externalBinding) {
-      if (rolePreset?.thinkingLevel && rolePreset.thinkingLevel !== "auto") {
-        nativeThinking = rolePreset.thinkingLevel;
-      } else if (params.thinkingLevel) {
-        const clientId = rolePreset.externalClientId?.trim() || externalClientConnectionId(externalBinding);
-        const clientModels = this.#liveSettings.externalClients?.[clientId]?.models ?? [];
-        const targetModel = rolePreset.modelId
-          ? clientModels.find((m) => m.id === rolePreset.modelId)
-          : clientModels.find((m) => m.isDefault) ?? clientModels[0];
-        const efforts = targetModel?.efforts ?? [];
-        if (efforts.includes(params.thinkingLevel)) {
-          nativeThinking = params.thinkingLevel;
-        } else if (params.thinkingLevel === "off" && efforts.includes("none")) {
-          nativeThinking = "none";
-        }
-      }
-    }
-    const providerOverride = !externalBinding && params.providerOverride?.trim() ? params.providerOverride.trim() : undefined;
-    const modelOverride = !externalBinding && params.modelOverride?.trim() ? params.modelOverride.trim() : undefined;
-    const workerProviderOpt =
-      providerOverride || rolePreset?.provider?.trim() || this.#liveSettings.model.defaultProvider;
-    const workerModelId =
-      modelOverride || rolePreset?.modelId?.trim() || this.#liveSettings.model.defaultModel;
-    const desiredThinking: ThinkingEffort =
-      params.thinkingLevel ??
-      (rolePreset?.thinkingLevel && rolePreset.thinkingLevel !== "auto"
-        ? rolePreset.thinkingLevel
-        : this.#liveSettings.model.thinkingLevel);
-    const workerAgent = externalBinding ? undefined : resolveAgentModelAndThinking(
-      this.#models,
-      this.#providerId,
-      workerProviderOpt,
-      workerModelId,
-      desiredThinking,
-      this.#liveSettings.model,
-    );
-
-    const originConv =
-      (await this.harness.conversation(originConversationId as ConversationId, context)) ??
-      this.rootConversation;
-
-    const supersededStagedToDiscard: TicketRecord[] = [];
-    const admitted = await originConv.commit(async (tx) => {
-      const state = await tx.doc(KuloStateDoc);
-      const currentSettings = await tx.doc(SettingsAssistantDoc);
-      ensureDefaultRootTopic(state, this.#liveSettings.presentation.agentName);
-      const projectsDoc = await tx.doc(KuloProjectsDoc);
-      if (project) assertProjectBinding(projectsDoc, project.id, project.revision);
-      const isSettingsOrigin = !isOrchestratorConversation(originConversationId, state) && isActiveSettingsConversation(originConversationId, currentSettings);
-      if (!isSettingsOrigin) {
-        if (originIsSettings) throw new ProjectError(404, "topic_deleted", "会话已删除。");
-        const currentTopic = state.topics?.[state.conversationToTopic?.[String(originConversationId)] ?? "root"];
-        if (currentTopic?.deletedAt) throw new ProjectError(404, "topic_deleted", "会话已删除。");
-      }
-      const settings = await tx.doc(KuloSettingsDoc);
-      const duplicate = checkAdmission(state, settings.executor.paused);
-      if (duplicate) return cloneJson(duplicate);
-      const currentRoles = settings.roles;
-      const currentExternalClients = settings.externalClients;
-      const currentSelection = androidDeviceIds.length || executionDomain === "android" ? Object.fromEntries(Object.entries(currentRoles).map(([id, role]) => [id, role.external ? { ...role, dispatchPolicy: undefined } : role])) : currentRoles;
-      const currentRouting = resolveAgentDispatch({ roles: currentSelection, externalClients: currentExternalClients, language: settings.presentation.language, ...dispatchSource, requestedRole, taskKind: params.taskKind,
-        workspaceMode: params.workspaceMode,
-        projectId: project?.id, envId: routingEnv,
-        trustedManual: params.originToolTaskId === undefined });
-      const currentResolvedRole = resolveRoleOrDirectClient(roleId, currentRoles, currentExternalClients, settings.presentation.language);
-      if (currentRouting.role !== roleId || !isDeepStrictEqual(currentResolvedRole, rolePreset)) throw new ProjectError(409, "agent_configuration_changed", "派单期间智能体或默认承接范围已改变，请读取最新配置后重新指派。");
-      assertAgentDispatchAvailable(currentResolvedRole, { envs: this.envManager.listEnvs(), envId: agentEnv, allowOffline: waitForSource });
-      assertRecoveryGuard(state, recoveryGuard);
-      if (recoveryGuard) {
-        const failed = state.tickets[recoveryGuard.ticketId]!;
-        const topicTargetDeviceId = originIsSettings ? undefined : state.topics?.[state.conversationToTopic?.[String(originConversationId)] ?? "root"]?.targetDeviceId;
-        const allowFallbackEnv = canSwitchEnvDuringRecovery(failed, topicTargetDeviceId) && !externalBinding && !project;
-        if (!params.supersedes?.some(old => old.ticketId === failed.id) || (!allowFallbackEnv && targetEnvId !== failed.envId) ||
-            (project?.id ?? undefined) !== failed.projectId || (failed.readOnly && !isReadOnly) ||
-            executionDomain !== (failed.executionDomain ?? "computer") || androidDeviceIds.some(id => !this.#androidTargets(failed).includes(id)) ||
-            connectionIds.some(id => !failed.connectionIds?.includes(id))) {
-          throw new Error("替代方案必须关联原任务并保持原设备、项目、连接和只读授权边界。");
-        }
-        if (params.workspaceDir?.trim() && pathApi.normalize(params.workspaceDir) !== pathApi.normalize(failed.workspaceDir)) {
-          throw new Error("自动恢复不能扩大原任务的工作目录。");
-        }
-      }
-
-      const originTopicId = isSettingsOrigin
-        ? settingsTopicId(originConversationId)
-        : state.conversationToTopic?.[String(originConversationId)] ?? "root";
-      const ticketNum = state.nextTicketNumber++;
-      const ticketId = `T-${String(ticketNum).padStart(4, "0")}`;
-      const workspaceDir = executionDomain === "android" ? "" :
-        project?.workspaceDir || params.workspaceDir?.trim() || `${cleanRoot}${sep}table${sep}${ticketId}-${slugifyTitle(params.title)}`;
-      const scratchDir = executionDomain === "android" ? undefined : `${scratchRoot}${sep}${ticketId}`;
-
-      const now = Date.now();
-      const supersededIds: string[] = [];
-
-      if (params.supersedes?.length) {
-        for (const sup of params.supersedes) {
-          const old = state.tickets[sup.ticketId];
-          if (!old || !["ready", "failed"].includes(old.status) ||
-              !sameRecoveryScope(old, { originTopicId, projectId: project?.id })) {
-            throw new Error("只能替代同一会话和项目中已完成或失败的任务。");
-          }
-          if (!supersededIds.includes(old.id)) supersededIds.push(old.id);
-        }
-      }
-
-      const configuredWaitMs =
-        params.inlineWaitMs !== undefined
-          ? Math.max(0, Math.min(30_000, Math.trunc(params.inlineWaitMs)))
-          : (this.config.inlineDispatchWaitMs ?? 0);
-      const candidateWriteTicket = {
-        envId: targetEnvId,
-        workspaceDir,
-        ...(project ? { directoryId: project.directoryId } : {}),
-        readOnly: isReadOnly,
-        executionDomain,
-        ...(androidDeviceIds.length ? { androidDeviceIds } : {}),
-      } as TicketRecord;
-
-      // Supersedes deadlock breaker: discard superseded pending-merge staged copies and release their project write lock.
-      if (!isReadOnly && executionDomain !== "android" && supersededIds.length > 0) {
-        for (const oldId of supersededIds) {
-          const old = state.tickets[oldId];
-          if (!old || !hasPendingWorkspaceApply(old) || !ticketsShareWriteScope(candidateWriteTicket, old)) continue;
-          supersededStagedToDiscard.push(cloneJson(old));
-          if (old.workspaceStaging && !old.workspaceStaging.appliedAt) {
-            old.workspaceStaging.discardedAt = now;
-            delete old.workspaceStaging.stagedCwd;
-            delete old.workspaceStaging.stagedDiff;
-          }
-          if (old.externalExecution && !old.externalExecution.stagedAppliedAt) {
-            delete old.externalExecution.stagedCwd;
-            delete old.externalExecution.stagedDiff;
-          }
-          releaseProjectWrite(state, old.id, { force: true });
-          old.updatedAt = now;
-        }
-      }
-
-      const writeConflictExists =
-        executionDomain !== "android" &&
-        !isReadOnly &&
-        Object.values(state.tickets).some(
-          (other) =>
-            (other.status === "running" ||
-              other.status === "pausing" ||
-              (!supersededIds.includes(other.id) && hasPendingWorkspaceApply(other))) &&
-            ticketsShareWriteScope(candidateWriteTicket, other),
-        );
-      const eligibleInline =
-        modelDispatch &&
-        !externalBinding &&
-        configuredWaitMs > 0 &&
-        executeAt === undefined &&
-        !recoveryGuard &&
-        !settings.executor.paused &&
-        state.slots.holders.length < settings.executor.maxConcurrentWorkers &&
-        this.#ticketDevicesOnline(candidateWriteTicket) &&
-        !writeConflictExists;
-
-      const reviewTargetInTx = params.reviewTicketId?.trim()
-        ? validateReviewTargetTicket(state, projectsDoc, currentSettings, originConversationId, params.reviewTicketId)
-        : undefined;
-      const resolvedBoardId = attachDispatchedTicketToBoardInTx(
-        state,
-        projectsDoc,
-        currentSettings,
-        {
-          ticketId,
-          ticketTitle: params.title.trim(),
-          ticketGoal: params.goal.trim(),
-          ticketProjectId: project?.id,
-          originConversationId,
-          originTopicId,
-          requestedBoardId: params.boardId,
-          requestedBoardTitle: params.boardTitle,
-          reviewTicket: reviewTargetInTx,
-          now,
-        },
-        (text) => this.connectionManager.redact(text),
-      );
-      const draft: TicketDispatchDraft = {
-        id: ticketId,
-        commandId: params.commandId,
-        ...(resolvedBoardId ? { boardId: resolvedBoardId } : {}),
-        ...(reviewTargetInTx ? { reviewTicketId: reviewTargetInTx.id } : {}),
-        title: params.title.trim(),
-        ...(params.userSummary?.trim() ? { userSummary: params.userSummary.trim() } : {}),
-        goal: params.goal.trim(),
-        scope: params.scope.trim(),
-        ...(params.acceptance?.trim() ? { acceptance: params.acceptance.trim() } : {}),
-        ...(params.assignment?.trim() ? { assignment: params.assignment.trim() } : {}),
-        ...(contextSummary ? { contextSummary } : {}),
-        ...(inputAttachmentIds.length ? { inputAttachmentIds } : {}),
-        role: roleId,
-        ...(providerOverride ? { providerOverride } : {}),
-        ...(modelOverride ? { modelOverride } : {}),
-        ...(routing.source !== "legacy" ? { agentAssignment: { agentId: roleId, source: routing.source,
-          ...(routing.taskKind ? { taskKind: routing.taskKind } : {}), ...(routing.requestedName ? { requestedName: routing.requestedName } : {}),
-          ...((dispatchSource.inheritedAssignment?.sourceEntryId ?? dispatchSource.entryId) === undefined ? {} : { sourceEntryId: dispatchSource.inheritedAssignment?.sourceEntryId ?? dispatchSource.entryId }) } } : {}),
-        ...(params.parentTicketId ? { parentTicketId: params.parentTicketId } : {}),
-        ...(builtInWorkspaceMode === "staged" || builtInWorkspaceMode === "direct"
-          ? { workspaceStaging: { mode: builtInWorkspaceMode } }
-          : {}),
-        ...(externalBinding ? { externalExecution: { binding: cloneJson(externalBinding),
-          ...(externalWorkspaceMode ? { workspaceMode: externalWorkspaceMode } : {}),
-          ...(rolePreset?.modelId?.trim() ? { modelId: rolePreset.modelId.trim() } : {}),
-          ...(nativeThinking && nativeThinking !== "auto" ? { thinkingLevel: nativeThinking } : {}),
-          ...(rolePreset?.serviceTier?.trim() ? { serviceTier: rolePreset.serviceTier.trim() } : {}),
-          instructions: [rolePreset?.prompt?.trim(), requestedReadOnly ? "Read-only assignment: inspect and analyze only; do not modify workspace files." : ""].filter(Boolean).join("\n\n"),
-          allowSubagents: Boolean(rolePreset?.allowSubagents) } } : {}),
-        status: executeAt === undefined ? "queued" : "waiting",
-        envId: targetEnvId,
-        envBinding,
-        ...(sender.source ? { senderSource: { deviceId: sender.source.deviceId, name: sender.source.name } } : {}),
-        executionDomain,
-        ...(androidDeviceIds.length ? { androidDeviceIds } : {}),
-        workspaceDir,
-        ...(scratchDir ? { scratchDir } : {}),
-        readOnly: isReadOnly,
-        ...(connectionIds.length ? { connectionIds, connectionRevisions } : {}),
-        ...(project ? { projectId: project.id, projectRevision: project.revision, directoryId: project.directoryId, grantRevision: project.grantRevision } : {}),
-        runEpoch: 1,
-        createdAt: now,
-        updatedAt: now,
-        queuedAt: now,
-        accumulatedRunningMs: 0,
-        ...(executeAt !== undefined ? {
-          schedule: { executeAt, nextRunAt: executeAt, ...(params.repeatEverySeconds !== undefined ? { repeatEverySeconds: params.repeatEverySeconds } : {}) },
-          waiting: { reason: "time" as const, since: now, until: executeAt, detail: "等待定时执行" },
-        } : {}),
-        ...(supersededIds.length > 0 ? { supersedes: supersededIds } : {}),
-        ...(supersededIds.map(id => state.tickets[id]?.recovery).find(value => value?.state === "recovering")
-          ? { recovery: { ...supersededIds.map(id => state.tickets[id]?.recovery).find(value => value?.state === "recovering")! } } : {}),
-        deliveryClaim: eligibleInline ? "inline_waiting" : "escalated",
-        originTopicId,
-        originConversationId,
-      };
-
-      if (params.parentTicketId) {
-        const request = params.parentExternalRequest;
-        if (!request) throw new Error("外部协作缺少已认证的父任务请求。");
-        const currentParent = this.#externalAgentScope({ envId: targetEnvId, taskId: params.parentTicketId, runId: request.runId, runEpoch: request.runEpoch }, state);
-        const currentRole = this.#liveSettings.roles[currentParent.role];
-        const childRole = this.#liveSettings.roles[roleId];
-        if (!currentParent.externalExecution!.allowSubagents || !currentRole?.allowSubagents || currentRole.enabled === false ||
-            !childRole || childRole.enabled === false || currentParent.readOnly && !isReadOnly ||
-            currentParent.projectId !== draft.projectId || currentParent.workspaceDir !== workspaceDir ||
-            connectionIds.some((id) => !currentParent.connectionIds?.includes(id))) throw new Error("协作请求超出父任务当前的授权范围。");
-        const children = currentParent.externalExecution!.children ?? {};
-        const prior = children[request.requestId];
-        if (prior) throw new Error(prior.fingerprint === request.fingerprint ? "该协作请求已有子任务，请读取原任务。" : "该协作编号已用于另一份任务。");
-        if (Object.keys(children).length >= this.#liveSettings.executor.maxSubagentsPerTicket) throw new Error("当前任务已达到子智能体上限。");
-        currentParent.externalExecution!.children = { ...children, [request.requestId]: { taskId: ticketId, fingerprint: request.fingerprint } };
-      }
-
-      if (!externalBinding && executionDomain !== "android" && builtInWorkspaceMode !== "staged" && this.envManager.getEnvDescriptor(targetEnvId)?.online) {
-        this.envManager.createWorkerExecutionEnv(targetEnvId, workspaceDir, {
-          scratchDir, projectId: project?.id, grantRevision: project?.grantRevision, readOnly: isReadOnly,
-        });
-      }
-      const created = await createDispatchedTicket(tx, state, draft, this.#workerTicketTask, workerAgent ? {
-        model: workerAgent.model,
-        thinkingLevel: workerAgent.thinkingLevel,
-        ...this.#workerTools({
-          executionDomain,
-          androidTargetIds: androidDeviceIds,
-          allowSubagents: Boolean(rolePreset?.allowSubagents),
-          readOnly: isReadOnly,
-        }),
-        ...(executionDomain !== "android" ? { cwd: workspaceDir } : {}),
-        maxTurns: 40,
-      } : undefined);
-      if (connectionIds.length > 0 && created.workerConversationId && executionDomain !== "android") {
-        await injectEventToolsInTx(tx, created.workerConversationId, ["kulo_connections", "kulo_connection_use"]);
-      }
-      return created;
-    }, context);
-
-    if (supersededStagedToDiscard.length > 0) {
-      await Promise.allSettled(supersededStagedToDiscard.map((old) => this.#discardTicketStagedWorkspace(old)));
-    }
-    bindDispatchedAttachments(this.uploads, admitted);
-    this.#runtimeGates.resumeIfNotRecovering();
-    await this.#broadcastTickets(context);
-    return toTicketCardView(admitted, activeRoles, activeExternalClients);
+    return this.#ticketDispatch.dispatchTicket(params, context);
   }
 
   #notifyInlineWaiters(ticketId: string): void {
@@ -5143,221 +4458,19 @@ export class KuloHub implements OrchestratorController {
     params: DispatchTicketParams,
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<DispatchTicketModelOutcome> {
-    const card = await this.dispatchTicket(params, context);
-    const initialState = await this.harness.snapshot(KuloStateDoc, context);
-    const initialTicket = initialState?.tickets[card.id];
-    const configuredWaitMs = initialTicket?.externalExecution
-      ? 0
-      : params.inlineWaitMs !== undefined
-        ? Math.max(0, Math.min(30_000, Math.trunc(params.inlineWaitMs)))
-        : (this.config.inlineDispatchWaitMs ?? 0);
-    const findPendingMergeBlocker = (
-      state: Readonly<KuloDurableState> | undefined,
-      current: Readonly<TicketRecord> | undefined,
-    ): { ticketId: string; title: string } | undefined => {
-      if (!state || !current || current.readOnly || current.executionDomain === "android" || current.status !== "queued") {
-        return undefined;
-      }
-      const blocker = Object.values(state.tickets).find(
-        (other) =>
-          other.id !== current.id &&
-          hasPendingWorkspaceApply(other) &&
-          ticketsShareWriteScope(current, other),
-      );
-      return blocker ? { ticketId: blocker.id, title: blocker.title } : undefined;
-    };
-    const initialBlocker = findPendingMergeBlocker(initialState, initialTicket);
-    if (initialTicket?.deliveryClaim === "claimed_inline" && initialTicket.inlineResult) {
-      return {
-        ticket: toTicketCardView(initialTicket, this.#liveSettings.roles),
-        inlineDelivery: cloneJson(initialTicket.inlineResult),
-      };
-    }
-    if (initialTicket?.deliveryClaim !== "inline_waiting" || configuredWaitMs <= 0) {
-      return {
-        ticket: card,
-        ...(initialBlocker ? { blockedByPendingMerge: initialBlocker } : {}),
-      };
-    }
-
-    await this.#inlineWaiters.wait({
-      ticketId: card.id,
-      timeoutMs: configuredWaitMs,
-      abortSignal: context.abortSignal,
-      isClosed: () => this.#closed,
-      shouldWakeImmediately: async () => {
-        const snap = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-        const cur = snap?.tickets[card.id];
-        return !cur || cur.deliveryClaim !== "inline_waiting" || cur.status === "stopped" || cur.status === "closed" || cur.status === "failed";
-      },
-    });
-
-    const outcome = await this.harness.commit(async (tx) => {
-      const state = await tx.doc(KuloStateDoc);
-      const current = state.tickets[card.id];
-      if (!current) {
-        return { ticket: card, escalatedNow: false };
-      }
-      if (current.deliveryClaim === "claimed_inline" && current.inlineResult) {
-        return {
-          ticket: toTicketCardView(current, this.#liveSettings.roles),
-          inlineDelivery: cloneJson(current.inlineResult),
-          escalatedNow: false,
-        };
-      }
-      let escalatedNow = false;
-      if (current.deliveryClaim === "inline_waiting") {
-        current.deliveryClaim = "escalated";
-        current.updatedAt = Date.now();
-        escalatedNow = true;
-      }
-      return {
-        ticket: toTicketCardView(current, this.#liveSettings.roles),
-        escalatedNow,
-        blockedByPendingMerge: findPendingMergeBlocker(state, current),
-      };
-    }, withoutAbortSignal(context));
-
-    if (outcome.escalatedNow && !this.#closed) {
-      await this.#broadcastTickets(withoutAbortSignal(context));
-    }
-    if (outcome.inlineDelivery) {
-      return { ticket: outcome.ticket, inlineDelivery: outcome.inlineDelivery };
-    }
-    return {
-      ticket: outcome.ticket,
-      ...(outcome.blockedByPendingMerge ? { blockedByPendingMerge: outcome.blockedByPendingMerge } : {}),
-    };
+    return this.#ticketDispatch.dispatchTicketForModel(params, context);
   }
 
-  async #readEntryAgentIntent(
-    conversation: Awaited<ReturnType<Harness["conversation"]>>,
-    sourceEntryId: number,
-    context: Context,
-  ): Promise<AgentDispatchIntent | undefined> {
-    if (!conversation || !Number.isSafeInteger(sourceEntryId) || sourceEntryId < 1) return undefined;
-    const page = await conversation.entries(
-      { minEntryId: sourceEntryId as EntryId, maxEntryId: sourceEntryId as EntryId },
-      1,
-      undefined,
-      context,
-    );
-    const entry = page.items.find((item) => Number(item.id) === sourceEntryId);
-    if (!entry) return undefined;
-    const data = entry.data as Record<string, unknown> | undefined;
-    if (data && Object.hasOwn(data, "agentDispatchIntent")) {
-      return capturedAgentIntent(data.agentDispatchIntent);
-    }
-    const message = entry.model?.find((item) => item.role === "user");
-    const text = typeof data?.text === "string"
-      ? data.text
-      : message?.role === "user"
-        ? parseUserEntryContent(message.content).text
-        : "";
-    return text ? extractAgentDispatchIntent(text, this.#liveSettings.roles, this.envManager.listEnvs(), this.#liveSettings.externalClients) : undefined;
-  }
-
-  async #agentDispatchSource(conversationId: number | undefined, toolTaskId: number | undefined, context: Context, selectedInput?: EntryId): Promise<{
-    intent?: AgentDispatchIntent; entryId?: number; inheritedAssignment?: AgentAssignment; relaySettledReady?: boolean; input?: EntryRecord; continuing?: boolean;
-  }> {
-    if (conversationId === undefined) return {};
-    const conversation = await this.harness.conversation(conversationId as ConversationId, context);
-    if (!conversation) throw new ProjectError(409, "agent_assignment_source_missing", "无法核对这次任务的原始用户消息，请重新发起指派。");
-    let assistant: number | undefined = selectedInput;
-    if (toolTaskId !== undefined && assistant === undefined) {
-      let current = toolTaskId;
-      for (let depth = 0; depth < 16; depth++) {
-        const task = await this.harness.commit((tx) => tx.task(current as never), context);
-        const input = task?.input as { kind?: string; assistant?: number; parent?: number } | undefined;
-        if (input?.kind === "model" && typeof input.assistant === "number") { assistant = input.assistant; break; }
-        if (input?.kind !== "nested" || typeof input.parent !== "number") throw new ProjectError(409, "agent_assignment_source_missing", "无法核对派单工具对应的用户消息。");
-        current = input.parent;
-      }
-      if (assistant === undefined) throw new ProjectError(409, "agent_assignment_source_missing", "派单上下文层级无效，请重新发起指派。");
-    }
-    // Original journal entries survive compaction. Limit to this tool's assistant entry so a later queued user turn cannot rebind it.
-    let cursor: Parameters<typeof conversation.entries>[2];
-    let continuing = false;
-    let input: EntryRecord | undefined;
-    for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
-      const page = await conversation.entries(assistant === undefined ? {} : { maxEntryId: assistant as EntryId }, 200, cursor, context);
-      for (const entry of [...page.items].sort((a, b) => Number(b.id) - Number(a.id))) {
-        if (!isRecoveryInputBoundary(entry)) continue;
-        if (WorkerRelayEntry.is(entry) || WorkerRecoveryEntry.is(entry) || WorkerWatchdogEntry.is(entry)) {
-          const state = await this.harness.snapshot(KuloStateDoc, context);
-          let ticket = state?.tickets[entry.data.ticketId];
-          const ancestors = new Set<string>();
-          while (ticket?.parentTicketId && !ancestors.has(ticket.id)) { ancestors.add(ticket.id); ticket = state?.tickets[ticket.parentTicketId] ?? ticket; if (ancestors.has(ticket.id)) break; }
-          const relaySettledReady = WorkerRelayEntry.is(entry) && entry.data.state === "ready";
-          const assignment = ticket?.agentAssignment;
-          if (relaySettledReady && assignment?.source === "explicit" && assignment.sourceEntryId !== undefined) {
-            const originIntent = await this.#readEntryAgentIntent(conversation, assignment.sourceEntryId, context);
-            if (originIntent && originIntent.targets.length > 1) {
-              return { entryId: Number(entry.id), intent: originIntent, input, continuing, relaySettledReady: true };
-            }
-          }
-          const shouldInherit = Boolean(
-            assignment && (assignment.source === "explicit" || assignment.source === "manual"),
-          );
-          return {
-            entryId: Number(entry.id),
-            input,
-            continuing,
-            ...(relaySettledReady ? { relaySettledReady: true } : {}),
-            ...(shouldInherit && assignment ? { inheritedAssignment: cloneJson(assignment) } : {}),
-          };
-        }
-        input ??= entry;
-        const data = entry.data as Record<string, unknown> | undefined;
-        const message = entry.model?.find((item) => item.role === "user");
-        const text = typeof data?.text === "string" ? data.text : message?.role === "user" ? parseUserEntryContent(message.content).text : "";
-        const intent = data && Object.hasOwn(data, "agentDispatchIntent") ? capturedAgentIntent(data.agentDispatchIntent)
-          : extractAgentDispatchIntent(text, this.#liveSettings.roles, this.envManager.listEnvs(), this.#liveSettings.externalClients);
-        if (!intent && !continuing && /^(?:请|帮我)?\s*(?:继续(?:执行|处理|推进|完成|原任务|这个任务)?|接着(?:做|执行|处理)?|重试(?:一下|这个任务)?|再试(?:一次|一下)?|continue|retry)[\s,，。.!！]*$/i.test(text.trim())) { continuing = true; continue; }
-        if (!intent && continuing) {
-          const state = await this.harness.snapshot(KuloStateDoc, context);
-          const assignments = Object.values(state?.tickets ?? {}).filter((ticket) => ticket.originConversationId === conversationId && ticket.agentAssignment?.sourceEntryId === Number(entry.id)).flatMap((ticket) => ticket.agentAssignment ? [ticket.agentAssignment] : []);
-          const byAgent = new Map(assignments.map((assignment) => [assignment.agentId, assignment]));
-          if (byAgent.size > 1) throw new ProjectError(409, "agent_selection_required", "此前任务由多个 Agent 分工，请明确要继续哪一个任务或 Agent。");
-          const inheritedAssignment = byAgent.values().next().value as AgentAssignment | undefined;
-          if (inheritedAssignment) return { entryId: Number(entry.id), inheritedAssignment: cloneJson(inheritedAssignment), input, continuing };
-        }
-        return { entryId: Number(entry.id), intent, input, continuing };
-      }
-      if (!page.next) {
-        if (toolTaskId !== undefined) throw new ProjectError(409, "agent_assignment_source_missing", "原始派发消息已不可用，请重新说明任务和指定 Agent。");
-        return {};
-      }
-      cursor = page.next;
-    }
-    throw new ProjectError(409, "agent_assignment_source_missing", "原始指派消息过远，无法安全核对，请重新说明要使用的 Agent。");
+  async #agentDispatchSource(conversationId: number | undefined, toolTaskId: number | undefined, context: Context, selectedInput?: EntryId) {
+    return this.#ticketDispatch.agentDispatchSource(conversationId, toolTaskId, context, selectedInput);
   }
 
   #ticketAgentBlock(ticket: Readonly<TicketRecord>): string | undefined {
-    if (!ticket.agentAssignment && !ticket.externalExecution) return;
-    const role = resolveRoleOrDirectClient(ticket.role, this.#liveSettings.roles, this.#liveSettings.externalClients, this.#liveSettings.presentation.language);
-    if (!role) return "原任务绑定的 Agent 已被移除，请明确选择其他 Agent 后新建任务。";
-    if (ticket.agentAssignment && ticket.agentAssignment.agentId !== ticket.role) return "任务的 Agent 绑定已改变，请重新指派。";
-    if (role.enabled === false) return `任务指定的 Agent「${role.label}」已停用，请启用它或明确选择其他 Agent。`;
-    if (ticket.externalExecution) {
-      const old = ticket.externalExecution;
-      if (!role.external || role.external.kind !== old.binding.kind || role.external.envId !== old.binding.envId ||
-          role.external.executable !== old.binding.executable || role.external.agentRef !== old.binding.agentRef ||
-          JSON.stringify(role.external.acpArgs ?? []) !== JSON.stringify(old.binding.acpArgs ?? []) ||
-          role.modelId !== old.modelId || role.serviceTier !== old.serviceTier) {
-        return `任务指定的 Agent「${role.label}」配置已改变，请核对后重新指派。`;
-      }
-      if (!role.external.verifiedAt || isPersonalExternalAgentKind(role.external.kind)) return `任务指定的 Agent「${role.label}」尚未完成可用性验证，请先在智能体设置页完成验证。`;
-    }
+    return evaluateTicketAgentBlock(ticket, this.#liveSettings.roles, this.#liveSettings.externalClients, this.#liveSettings.presentation.language);
   }
 
   #externalAgentScope(scope: ExternalAgentToolScope, state: Readonly<KuloDurableState> | undefined): TicketRecord {
-    const ticket = state?.tickets[scope.taskId];
-    if (!ticket || ticket.envId !== scope.envId || ticket.runEpoch !== scope.runEpoch || ticket.status !== "running" || ticket.waiting ||
-        !ticket.externalExecution || ticket.externalExecution.runId !== scope.runId || ticket.externalExecution.binding.envId !== scope.envId) {
-      throw new Error("外部任务已结束、暂停或执行资格已改变。");
-    }
-    return ticket;
+    return assertExternalAgentScope(scope, state?.tickets);
   }
 
   async #confirmCustomizationValidate(

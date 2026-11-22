@@ -1,10 +1,10 @@
 import {
   AGENT_TASK_KINDS, EXTERNAL_AGENT_KINDS, LEGACY_ROLE_ALIASES, SUPPORTED_EXTERNAL_AGENT_KINDS,
   directExternalClientRoleId, externalClientDisplayName, isBundledClaudeSdkExecutable,
-  isDirectExternalClientRoleId, parseDirectExternalClientRoleId, redactSensitiveText,
+  isDirectExternalClientRoleId, isPersonalExternalAgentKind, parseDirectExternalClientRoleId, redactSensitiveText,
   type AgentAssignment, type AgentDispatchIntent, type AgentDispatchPolicy, type AgentRoutingTarget, type AgentTaskKind,
   type EnvNodeDescriptor, type ExternalAgentBinding, type ExternalAgentKind, type ExternalClientConnection,
-  type KuloLanguage, type RolePreset,
+  type KuloLanguage, type RolePreset, type TicketRecord,
 } from "@kulo/protocol";
 import { defaultExternalAgentRolePrompt, defaultExternalAgentWhenToUse } from "./prompts/worker.js";
 
@@ -619,4 +619,49 @@ export function assertAgentDispatchAvailable(role: RolePreset | undefined, optio
   if (!env) fail("agent_device_unavailable", `${name} 绑定的设备 ${binding.envId} 尚未接入。`);
   if (env.executionKind === "native-device" || !["darwin", "linux", "win32"].includes(env.platform)) fail("agent_device_invalid", `${name} 绑定的 ${env.name} 不是支持本地智能体的电脑设备。`);
   if (!env.online && !options.allowOffline) fail("agent_device_offline", `${name} 绑定的设备 ${env.name} 当前离线，请恢复设备连接后重试。`);
+}
+
+export function capturedAgentIntent(value: unknown): AgentDispatchIntent | undefined {
+  if (value === undefined) return;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    fail("agent_assignment_invalid", "无法核对原消息中的 Agent 指派，请重新说明要使用的智能体。");
+  }
+  const intent = value as Record<string, unknown>;
+  if (intent.version !== 1 || !Array.isArray(intent.targets) || intent.targets.length > 16 || intent.targets.some((target: unknown) => {
+    if (!target || typeof target !== "object" || Array.isArray(target)) return true;
+    const item = target as Record<string, unknown>;
+    return typeof item.name !== "string" || !item.name.trim() || item.name.length > 200 ||
+      item.agentId !== undefined && (typeof item.agentId !== "string" || !item.agentId.trim() || item.agentId.length > 200) ||
+      item.kind !== undefined && !(EXTERNAL_AGENT_KINDS as readonly unknown[]).includes(item.kind) ||
+      item.envId !== undefined && (typeof item.envId !== "string" || !item.envId.trim() || item.envId.length > 256);
+  })) {
+    fail("agent_assignment_invalid", "原消息的 Agent 指派记录无效，请重新说明要使用的智能体。");
+  }
+  return intent.targets.length ? JSON.parse(JSON.stringify(intent)) as AgentDispatchIntent : undefined;
+}
+
+export function evaluateTicketAgentBlock(
+  ticket: Readonly<TicketRecord>,
+  roles: Roles,
+  externalClients?: ExternalClients,
+  language?: KuloLanguage,
+): string | undefined {
+  if (!ticket.agentAssignment && !ticket.externalExecution) return;
+  const role = resolveRoleOrDirectClient(ticket.role, roles, externalClients, language);
+  if (!role) return "原任务绑定的 Agent 已被移除，请明确选择其他 Agent 后新建任务。";
+  if (ticket.agentAssignment && ticket.agentAssignment.agentId !== ticket.role) return "任务的 Agent 绑定已改变，请重新指派。";
+  if (role.enabled === false) return `任务指定的 Agent「${role.label}」已停用，请启用它或明确选择其他 Agent。`;
+  if (ticket.externalExecution) {
+    const old = ticket.externalExecution;
+    if (!role.external || role.external.kind !== old.binding.kind || role.external.envId !== old.binding.envId ||
+        role.external.executable !== old.binding.executable || role.external.agentRef !== old.binding.agentRef ||
+        JSON.stringify(role.external.acpArgs ?? []) !== JSON.stringify(old.binding.acpArgs ?? []) ||
+        role.modelId !== old.modelId || role.serviceTier !== old.serviceTier) {
+      return `任务指定的 Agent「${role.label}」配置已改变，请核对后重新指派。`;
+    }
+    if (!role.external.verifiedAt || isPersonalExternalAgentKind(role.external.kind)) {
+      return `任务指定的 Agent「${role.label}」尚未完成可用性验证，请先在智能体设置页完成验证。`;
+    }
+  }
+  return undefined;
 }

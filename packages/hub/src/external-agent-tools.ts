@@ -12,6 +12,26 @@ export interface ExternalAgentToolScope {
   runEpoch: number;
 }
 
+export function assertExternalAgentScope(
+  scope: ExternalAgentToolScope,
+  tickets: Readonly<Record<string, TicketRecord>> | undefined,
+): TicketRecord {
+  const ticket = tickets?.[scope.taskId];
+  if (
+    !ticket ||
+    ticket.envId !== scope.envId ||
+    ticket.runEpoch !== scope.runEpoch ||
+    ticket.status !== "running" ||
+    ticket.waiting ||
+    !ticket.externalExecution ||
+    ticket.externalExecution.runId !== scope.runId ||
+    ticket.externalExecution.binding.envId !== scope.envId
+  ) {
+    throw new Error("外部任务已结束、暂停或执行资格已改变。");
+  }
+  return ticket;
+}
+
 export interface ExternalAgentToolCall extends ExternalAgentToolScope {
   name: string;
   args: Record<string, unknown>;
