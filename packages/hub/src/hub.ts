@@ -14,7 +14,6 @@ import { BACKGROUND_CONTEXT, withoutAbortSignal, type Context } from "@earendil-
 import type { Credential, CredentialStore, Models } from "@earendil-works/pi-ai";
 import {
   AssistantEntry,
-  CompactionEntry,
   Harness,
   InboxDoc,
   LiveDoc,
@@ -29,7 +28,6 @@ import {
   type Conversation,
   type ConversationId,
   type ConversationView,
-  type ConversationWatch,
   type EntryRecord,
   type EntryId,
   type JsonObject,
@@ -98,11 +96,9 @@ import { createMemorySetupExtension } from "./tools-memory-setup.js";
 import { KuloExtensions, createExtensionsExtension, type ExtensionPackageExecutor } from "./extensions.js";
 import { createExtensionSetupExtension } from "./tools-extensions.js";
 import { KuloConversationHistory } from "./conversation-history.js";
-import { ConversationQueries } from "./conversation-query.js";
 import { deriveConnectedExternalClients, type ConversationSearchInput, type MainSessionNotificationEvent, type MemoryServiceJob } from "@kulo/protocol";
 import { ExternalAgentQuotaService } from "./external-agent-quotas.js";
 import { topicActivity } from "./topic-activity.js";
-import { createTopicNotificationBaseline, detectMainSessionNotification, type TopicNotificationBaseline } from "./session-notifications.js";
 import { KuloSubagentRunner, buildTicketSubagentViews, pruneClosedSubagentsInTx, settlePendingSubagentsInTx } from "./subagent-runner.js";
 import { attachDispatchedTicketToBoardInTx, formatTaskBoardWorkerContext, readTaskBoard, resolveReplyTaskAnchor, searchTaskBoards, writeTaskBoardInTx } from "./task-boards.js";
 import { collectReviewPackAssets, formatReviewPromptSection, validateReviewTargetTicket, writeReviewPackToScratchEnv } from "./ticket-review-pack.js";
@@ -215,7 +211,7 @@ import {
 } from "./config.js";
 import { KuloIdentityFiles } from "./identity-files.js";
 import { KuloPersonality } from "./personality.js";
-import { KuloTopicTitles, createTopicTitleJob } from "./topic-titles.js";
+import { createTopicTitleJob } from "./topic-titles.js";
 import { buildRecentWorkSnapshot } from "./recent-work.js";
 import {
   SettingsAssistant,
@@ -296,6 +292,7 @@ import {
   type HubRuntimeGates,
 } from "./hub-kernel-ports.js";
 import { HubDeliveryCoordinator } from "./hub-delivery-coordinator.js";
+import { HubTopicManager, requireTopic, type TopicView, type WatchedTopicCache } from "./hub-topic-manager.js";
 import { HubFailureRecovery, HubWatchdog } from "./hub-watchdog.js";
 import { createOrchestratorCodingGuardExtension } from "./orchestrator-coding-guard.js";
 import type { HostActionCaller, HostActionController, HostActionDecideOutcome, HostActionRunOutcome } from "./tools-host-action.js";
@@ -367,9 +364,6 @@ import {
   toTicketCardView,
   transitionTicketStatus,
   applyTopicPreview,
-  closeSettledTicketsForDeletedTopic,
-  discardPendingTopicStagedTickets,
-  findBlockingTopicTickets,
   summarizeTopicPreview,
   type KuloDurableState,
 } from "./state.js";
@@ -629,24 +623,6 @@ export interface HubEventListener {
   onNotification?: (event: MainSessionNotificationEvent) => void;
 }
 
-interface WatchedTopicCache {
-  topicId: string;
-  conversation: Conversation;
-  watch: ConversationWatch;
-  messages: ChatDisplayItem[];
-  live: LiveStreamState;
-  notificationBaseline: TopicNotificationBaseline;
-}
-
-type TopicView = Pick<WatchedTopicCache, "topicId" | "messages" | "live"> & { historyBefore?: number };
-
-function requireTopic(state: Readonly<KuloDurableState> | undefined, topicId: string) {
-  const topic = state?.topics && Object.hasOwn(state.topics, topicId) ? state.topics[topicId] : undefined;
-  if (topic?.deletedAt) throw new ProjectError(404, "topic_deleted", "会话已删除。");
-  if (!topic) throw new ProjectError(404, "topic_not_found", "会话不存在。");
-  return topic;
-}
-
 const MediaNoticesDoc = defineDoc<{ notices: Record<string, boolean> } & JsonObject>({
   kind: "kulo.media-notices", version: 1, scope: "session", initial: () => ({ notices: {} }) as { notices: Record<string, boolean> } & JsonObject,
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
@@ -767,15 +743,11 @@ export class KuloHub implements OrchestratorController {
   readonly #parkingTickets = new Map<string, Promise<void>>();
   readonly #subagentRunner: KuloSubagentRunner;
   readonly #listeners = new Set<HubEventListener>();
-  readonly #topicCaches = new Map<string, WatchedTopicCache>();
-  readonly #topicTitleCache = new Map<string, string>();
-  readonly #topicPreviewCache = new Map<string, { preview: string; at?: number }>();
-  #queryService?: ConversationQueries;
+  readonly #topics: HubTopicManager;
   readonly #delivery: HubDeliveryCoordinator;
   readonly #inlineWaiters = new InlineDispatchWaiters();
   readonly #turnContext: TurnContextReader;
   readonly #runtimeGates: HubRuntimeGates;
-  readonly #topicTitles: KuloTopicTitles;
   readonly #cardSnapshots = new Map<string, UiCardSnapshot>();
   readonly #searchHistories = new Map<number, SearchEvidenceHistory>();
   readonly #watchdog: HubWatchdog;
@@ -789,10 +761,7 @@ export class KuloHub implements OrchestratorController {
   readonly assistantEchoSuppressor = new AssistantEchoSuppressor();
   #deviceController: HubDeviceController | undefined;
 
-  #topicAutoArchiveTimer: ReturnType<typeof setInterval> | null = null;
   #uploadCleanupTimer: ReturnType<typeof setInterval> | null = null;
-  #topicAutoArchiveRun: Promise<TopicSummary[]> | null = null;
-  readonly #topicActivityUpdates = new Map<string, Promise<void>>();
   #cleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
   #cleanupRetryDelayMs = 500;
   readonly #settingsStore: LiveSettingsStore;
@@ -917,13 +886,6 @@ export class KuloHub implements OrchestratorController {
     this.connectionManager.setOnPersist(() => this.#notifyClusterDirty("files"));
     this.connectionManager.localVault?.setOnChange(() => this.#notifyClusterDirty("vault"));
     this.envManager.setAndroidNotificationClassifier((request, signal) => this.#androidNotifications.classify(request, signal));
-    this.#topicTitles = new KuloTopicTitles({
-      harness: this.harness,
-      agent: () => this.#resolveOrchestratorAgent(),
-      publish: (topics) => this.#emitTopics(topics),
-      extensions: () => [this.#redactionExt],
-      redact: (text) => this.connectionManager.redact(text),
-    });
     this.#subagentRunner = new KuloSubagentRunner({
       harness: this.harness,
       envManager: this.envManager,
@@ -1114,10 +1076,7 @@ export class KuloHub implements OrchestratorController {
       envDisplayName: (envId) => this.envManager.getEnvDescriptor(envId)?.name,
       isForegroundBusy: () => {
         if (this.voiceCalls.hasActiveCalls()) return true;
-        for (const cache of this.#topicCaches.values()) {
-          if (cache.live.busy) return true;
-        }
-        return false;
+        return this.#topics.inspectBusyTopics().length > 0;
       },
       shouldSkipCloudModel: async () => this.usageCaps.isCappedFor("assistant").capped && (await this.ambientModel.willUseCloudModel(true)),
       redact: redactAssistantText,
@@ -1142,8 +1101,7 @@ export class KuloHub implements OrchestratorController {
       onItemsChanged: (revision, items) => this.#emitAssistantItems(revision, items),
       onTopicsChanged: (topics) => this.#emitTopics(topics),
       onTopicContentChanged: (topicId) => {
-        const cache = this.#topicCaches.get(topicId);
-        if (cache) this.#refreshTopicContent(cache);
+        this.#topics.refreshTopic(topicId);
       },
       materializeSnapshot: async (snapshotRef, conversationId) => {
         const snap = this.homeAssistant.sentinel?.readTemporarySnapshot(snapshotRef);
@@ -1678,9 +1636,7 @@ export class KuloHub implements OrchestratorController {
     }, onChange: (card) => {
       this.#cardSnapshots.set(card.cardId, card);
       for (const listener of this.#listeners) listener.onUiCard?.(card);
-      for (const cache of this.#topicCaches.values()) {
-        if (Number(cache.conversation.id) === card.originConversationId) this.#refreshTopicContent(cache);
-      }
+      this.#topics.refreshByConversation(card.originConversationId);
       void this.settingsAssistant.refreshIfConversation(card.originConversationId);
     } });
     this.actionConfirmations = new KuloActionConfirmations({ harness: this.harness, uiCards: this.uiCards });
@@ -1790,6 +1746,42 @@ export class KuloHub implements OrchestratorController {
         await this.#broadcastTickets(BACKGROUND_CONTEXT);
       },
       emit: (snapshot) => { for (const listener of this.#listeners) listener.onSettingsAssistant?.(snapshot); },
+    });
+    this.#topics = new HubTopicManager({
+      harness: this.harness,
+      settingsStore: this.#settingsStore,
+      runtimeGates: this.#runtimeGates,
+      uploads: this.uploads,
+      projects: this.projects,
+      connectionManager: this.connectionManager,
+      listeners: this.#listeners,
+      voiceCalls: this.voiceCalls,
+      contextCompaction: {
+        align: (conversationId, ctx) => this.#alignContextCompaction(conversationId, ctx),
+        pruneCommittedBaseline: (conversationId, ctx, force) =>
+          this.#contextCompaction.pruneCommittedBaseline(conversationId, ctx, force),
+      },
+      orchestrator: {
+        resolveAgent: () => this.#resolveOrchestratorAgent(),
+        extensions: (isRoot) => this.#orchestratorExtensions(isRoot),
+        tools: (isRoot) => this.#orchestratorTools(isRoot),
+        redactionExt: this.#redactionExt,
+        mainWorkspaceDir: this.#mainWorkspaceDir,
+      },
+      projection: {
+        hydrateMessages: (entries, conversationId, ctx) =>
+          this.#hydrateMessages(entries, conversationId, undefined, ctx),
+        projectTopicMessages: (value, conversationId) =>
+          this.#projectTopicMessages(value, conversationId),
+        projectTopicLiveState: (value, conversationId) =>
+          this.#projectTopicLiveState(value, conversationId),
+      },
+      cleanup: {
+        closeOrchestratorBrowserSession: (topicId) =>
+          this.#closeOrchestratorBrowserSession(topicId),
+        discardTicketStagedWorkspace: (ticket) =>
+          this.#discardTicketStagedWorkspace(ticket),
+      },
     });
     this.#orchestratorBrowserIdleMs = params.orchestratorBrowserIdleMs;
   }
@@ -2558,8 +2550,7 @@ export class KuloHub implements OrchestratorController {
           await tx.appendEntry(ContentPublicationEntry, topic.conversationId as ConversationId, { data: { parts: [{ partId: key, type: "audio", assetId: asset.id, asset }], fallbackText: "", createdAt: Date.now(), source: { conversationId: source.conversationId, callId } } as unknown as ContentPublicationData & JsonObject });
           notices.notices[key] = true;
         }, BACKGROUND_CONTEXT);
-        const cache = hubRef!.#topicCaches.get(source.topicId);
-        if (cache) hubRef!.#refreshTopicContent(cache);
+        hubRef!.#topics.refreshTopic(source.topicId);
       } });
     const mediaExportExt = createMediaExportExtension({ harness: () => hubRef!.harness, uploads: () => hubRef!.uploads,
       scope: (api) => hubRef!.mediaSource(Number(api.conversationId)), validateInput: (id, source) => hubRef!.#validateMediaInput(id, source),
@@ -2925,8 +2916,8 @@ export class KuloHub implements OrchestratorController {
     ]);
     const activeConversations = new Set(unfinished.submissions.map((submission) => Number(submission.conversationId)));
     for (const topic of Object.values(topicState?.topics ?? {})) {
-      if (!topic.deletedAt && topic.title) hub.#topicTitleCache.set(topic.id, topic.title);
-      if (topic.deletedAt || !activeConversations.has(topic.conversationId) || hub.#topicCaches.has(topic.id)) continue;
+      if (!topic.deletedAt && topic.title) hub.#topics.setCachedTitle(topic.id, topic.title);
+      if (topic.deletedAt || !activeConversations.has(topic.conversationId) || hub.#topics.hasCache(topic.id)) continue;
       const conversation = await harness.conversation(topic.conversationId as ConversationId, context);
       if (conversation) await hub.#ensureTopicWatched(topic.id, conversation, context);
     }
@@ -2966,19 +2957,11 @@ export class KuloHub implements OrchestratorController {
     await hub.personality.start();
     hub.#watchdog.start();
     harness.resume();
-    for (const topicId of await hub.#topicTitles.start()) {
-      try {
-        const cache = await hub.#resolveWatchedTopic(topicId, context);
-        hub.#topicTitles.observe(topicId, cache.messages, cache.live.busy || Boolean(cache.live.runFailure));
-      } catch (error) {
-        // A pending project binding may temporarily block its source view, not the Hub itself.
-        console.warn("[KuloTopicTitle] Source unavailable during recovery", topicId, error instanceof ProjectError ? error.code : error instanceof Error ? error.name : "error");
-      }
-    }
+    await hub.#topics.startTitles(context);
     await hub.settingsAssistant.start();
 
     await hub.archiveInactiveTopics(context);
-    hub.#startTopicAutoArchive();
+    hub.#topics.startAutoArchive();
     hub.#startUploadCleanup();
     return hub;
     } catch (error) {
@@ -3557,7 +3540,7 @@ export class KuloHub implements OrchestratorController {
       ...(event.id ? { requestId: `voice-transcript:${callId}:${event.role}:${event.id}` } : {}) }, BACKGROUND_CONTEXT);
     this.#refreshTopicContent(cache);
     const preview = summarizeTopicPreview([{ role: event.role, text, createdAt }]);
-    if (preview) this.#recordTopicActivity(cache.topicId, preview);
+    if (preview) this.#topics.recordTopicActivity(cache.topicId, preview);
   }
 
   async transcribeVoiceAsset(assetId: string, options: { topicId?: string; principalId: string }, context: Context = BACKGROUND_CONTEXT): Promise<ChatAttachment> {
@@ -3574,7 +3557,7 @@ export class KuloHub implements OrchestratorController {
       const recognized = await this.voice.transcribe(loaded.filePath, context.abortSignal);
       const text = (await this.connectionManager.processText(recognized)).text;
       const attachment = this.uploads.saveTranscript(assetId, { text, status: "ready" });
-      for (const current of this.#topicCaches.values()) this.#refreshTopicContent(current);
+      this.#topics.refreshAll();
       return attachment;
     })();
     this.#voiceTranscriptions.set(assetId, job);
@@ -3903,8 +3886,7 @@ export class KuloHub implements OrchestratorController {
         }
       }
     }, BACKGROUND_CONTEXT);
-    const cache = this.#topicCaches.get(job.source.topicId);
-    if (cache) await this.#refreshTopicContent(cache);
+    this.#topics.refreshTopic(job.source.topicId);
     if (settingsConvId !== null && isActiveSettingsConversation(settingsConvId, settingsSnapshot)) {
       await this.settingsAssistant.refreshIfConversation(settingsConvId);
     }
@@ -3937,8 +3919,7 @@ export class KuloHub implements OrchestratorController {
       await this.uiCards.publishAsset({ path: `media-job:${job.id}:${asset.id}`, name: asset.name },
         { conversationId, callId: `media-result:${job.id}:${asset.id}`, topicId: job.source.topicId }, async () => asset);
     }
-    const cache = this.#topicCaches.get(job.source.topicId);
-    if (cache) await this.#refreshTopicContent(cache);
+    this.#topics.refreshTopic(job.source.topicId);
     if (settingsConvId !== null) await this.settingsAssistant.refreshIfConversation(settingsConvId);
     if (ticket) {
       await this.harness.commit(async (tx) => {
@@ -4000,13 +3981,7 @@ export class KuloHub implements OrchestratorController {
     for (const listener of this.#listeners) listener.onProjects?.(projects);
     this.#emitTopics(topics);
     const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-    for (const [id, cache] of this.#topicCaches) {
-      if (!state?.topics?.[id]?.deletedAt) continue;
-      await this.#closeOrchestratorBrowserSession(id);
-      await cache.conversation.abort(BACKGROUND_CONTEXT, { background: true });
-      await cache.watch.stop();
-      this.#topicCaches.delete(id);
-    }
+    await this.#topics.unwatchDeletedTopics(state, BACKGROUND_CONTEXT);
   }
 
   #queueWaitReconcile(): Promise<void> {
@@ -4458,62 +4433,11 @@ export class KuloHub implements OrchestratorController {
   }
 
   async listTopics(context: Context = BACKGROUND_CONTEXT): Promise<TopicSummary[]> {
-    const state = await this.harness.snapshot(KuloStateDoc, context);
-    if (!state) return [];
-    return this.#enrichTopicsWithPreviews(listSortedTopics(state));
+    return this.#topics.listTopics(context);
   }
 
   async archiveInactiveTopics(context: Context = BACKGROUND_CONTEXT): Promise<TopicSummary[]> {
-    if (this.#closed) return [];
-    if (this.#topicAutoArchiveRun) return this.#topicAutoArchiveRun;
-    const run = this.#archiveInactiveTopics(context);
-    this.#topicAutoArchiveRun = run;
-    try { return await run; }
-    finally { if (this.#topicAutoArchiveRun === run) this.#topicAutoArchiveRun = null; }
-  }
-
-  async #archiveInactiveTopics(context: Context): Promise<TopicSummary[]> {
-    const { archived, allTopics } = await this.harness.commit(async (tx) => {
-      const settings = await tx.doc(KuloSettingsDoc);
-      if (this.#closed || settings.executor.autoArchiveEnabled === false) return { archived: [], allTopics: [] };
-      const state = await tx.doc(KuloStateDoc);
-      const cutoff = Date.now() - (settings.executor.autoArchiveDays ?? 7) * 86_400_000;
-      const archived: TopicSummary[] = [];
-      const protectedTopics = new Set<string>();
-      const protectedConversations = new Set<number>();
-      for (const ticket of Object.values(state.tickets)) {
-        if (!isTicketUnfinished(ticket) && !ticket.cleanupPending && !hasPendingWorkspaceApply(ticket) && ticket.updatedAt < cutoff) continue;
-        if (ticket.originTopicId) protectedTopics.add(ticket.originTopicId);
-        if (ticket.originConversationId !== undefined) protectedConversations.add(ticket.originConversationId);
-      }
-      for (const topic of Object.values(state.topics ?? {})) {
-        // The reserved identity remains protected even if an older record lost its master flag.
-        if (topic.id === "root" || topic.master || topic.conversationId === Number(ROOT_CONVERSATION_ID) ||
-          topic.deletedAt || topic.archived || topic.updatedAt >= cutoff || this.#topicActivityUpdates.has(topic.id) ||
-          this.#topicCaches.get(topic.id)?.live.busy || protectedTopics.has(topic.id) || protectedConversations.has(topic.conversationId)) continue;
-        const conversationId = topic.conversationId as ConversationId;
-        const live = await tx.doc(LiveDoc, conversationId);
-        const inbox = await tx.doc(InboxDoc, conversationId);
-        if (live.run || inbox.items.length || state.pausedChats?.[String(conversationId)]?.length) continue;
-        const recent = await tx.scanEntries({ conversationId }, 32);
-        const timestamps = recent.items.flatMap((entry) => {
-          const at = entryTimestamp(entry) ?? chatReceiptData(entry.data).createdAt;
-          return at === undefined ? [] : [at];
-        });
-        // Do not guess at an undated tail that may hide recent automatic activity.
-        if (timestamps.some((at) => at >= cutoff) || recent.next && timestamps.length === 0) continue;
-        topic.archived = true;
-        archived.push(cloneJson(topic));
-      }
-      return { archived, allTopics: archived.length ? listSortedTopics(state) : [] };
-    }, context);
-    if (archived.length) {
-      for (const topic of archived) {
-        await this.#closeOrchestratorBrowserSession(topic.id);
-      }
-      this.#emitTopics(allTopics);
-    }
-    return archived;
+    return this.#topics.archiveInactiveTopics(context);
   }
 
   async createTopic(
@@ -4521,50 +4445,7 @@ export class KuloHub implements OrchestratorController {
     context: Context = BACKGROUND_CONTEXT,
     projectId?: string | null,
   ): Promise<TopicSummary> {
-    const project = projectId ? await this.projects.get(projectId, context) : undefined;
-    const orchestratorAgent = this.#resolveOrchestratorAgent();
-    const conv = await this.harness.createConversation(
-      {
-        ownership: { kind: "ownerless" },
-        agent: {
-          model: orchestratorAgent.model,
-          thinkingLevel: orchestratorAgent.thinkingLevel,
-          extensions: this.#orchestratorExtensions(false),
-          tools: this.#orchestratorTools(false),
-          cwd: project?.workspaceDir ?? this.#mainWorkspaceDir,
-          maxTurns: 25,
-        },
-      },
-      context,
-    );
-
-    const cleanTitle = title?.trim();
-    const topicId = `topic-${conv.id as number}`;
-    const now = Date.now();
-
-    const { topic, allTopics } = await this.harness.commit(async (tx) => {
-      const state = await tx.doc(KuloStateDoc);
-      ensureDefaultRootTopic(state, this.#liveSettings.presentation.agentName);
-      const projectsDoc = await tx.doc(KuloProjectsDoc);
-      if (project) assertProjectBinding(projectsDoc, project.id, project.revision);
-      const record: TopicSummary = {
-        id: topicId,
-        conversationId: conv.id as number,
-        title: cleanTitle || "新对话",
-        ...(cleanTitle ? {} : { draft: true }),
-        createdAt: now,
-        updatedAt: now,
-        ...(project ? { projectId: project.id } : {}),
-      };
-      state.topics![topicId] = record;
-      state.conversationToTopic![String(conv.id)] = topicId;
-      return { topic: cloneJson(record), allTopics: listSortedTopics(state) };
-    }, context);
-
-    await this.#alignContextCompaction(conv.id, context);
-    await this.#ensureTopicWatched(topicId, conv, context);
-    this.#emitTopics(allTopics);
-    return topic;
+    return this.#topics.createTopic(title, context, projectId);
   }
 
   async patchTopic(
@@ -4572,42 +4453,7 @@ export class KuloHub implements OrchestratorController {
     patch: { title?: string; pinned?: boolean; archived?: boolean },
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<TopicSummary> {
-    const stagedToDiscard: TicketRecord[] = [];
-    const { updated, allTopics } = await this.harness.commit(async (tx) => {
-      const state = await tx.doc(KuloStateDoc);
-      ensureDefaultRootTopic(state, this.#liveSettings.presentation.agentName);
-      const t = state.topics?.[topicId];
-      if (!t || t.deletedAt) throw new ProjectError(404, "topic_not_found", "会话不存在或已删除。");
-
-      if (patch.title !== undefined && patch.title.trim()) {
-        t.title = patch.title.trim().slice(0, 120);
-        delete t.draft;
-        const titleJob = state.topicTitles?.[topicId];
-        if (titleJob?.status === "pending" || titleJob?.status === "failed") titleJob.status = "cancelled";
-      }
-      if (patch.pinned !== undefined) {
-        t.pinned = Boolean(patch.pinned);
-      }
-      if (patch.archived !== undefined) {
-        if ((t.master || t.id === "root" || t.conversationId === Number(ROOT_CONVERSATION_ID)) && patch.archived) {
-          throw new Error("默认主对话不可归档");
-        }
-        t.archived = Boolean(patch.archived);
-        if (t.archived) {
-          stagedToDiscard.push(...discardPendingTopicStagedTickets(state, topicId, Date.now()));
-        }
-      }
-      t.updatedAt = Date.now();
-      return { updated: cloneJson(t), allTopics: listSortedTopics(state) };
-    }, context);
-
-    if (stagedToDiscard.length > 0) {
-      await Promise.allSettled(stagedToDiscard.map((ticket) => this.#discardTicketStagedWorkspace(ticket)));
-      this.#runtimeGates.resumeIfNotRecovering();
-      await this.#broadcastTickets(context);
-    }
-    this.#emitTopics(allTopics);
-    return updated;
+    return this.#topics.patchTopic(topicId, patch, context);
   }
 
   async deleteTopic(
@@ -4615,135 +4461,38 @@ export class KuloHub implements OrchestratorController {
     context: Context = BACKGROUND_CONTEXT,
     options: { stopTasks?: boolean } = {},
   ): Promise<{ deleted: string; topics: TopicSummary[] }> {
-    if (topicId === "root") throw new ProjectError(400, "default_topic", "默认主对话不可删除。");
-    const snap = await this.harness.snapshot(KuloStateDoc, context);
-    const topic = snap?.topics?.[topicId];
-    if (!topic || topic.deletedAt) throw new ProjectError(404, "topic_not_found", "会话不存在或已删除。");
-    const active = snap ? findBlockingTopicTickets(snap, topicId, topic.conversationId) : [];
-    if (active.length && !options.stopTasks) {
-      throw new ProjectError(409, "topic_tasks_running", "会话仍有进行中或待合入的任务，请停止或合并相关任务后删除。", { activeTickets: active.map((t) => t.id) });
-    }
-    const stagedToDiscard: TicketRecord[] = [];
-    let ticketsChanged = false, hadUnfinished = false, targetConversationId: number | undefined;
-    // The tombstone and cancel intents commit together before any asynchronous cleanup.
-    await this.harness.commit(async (tx) => {
-      const state = await tx.doc(KuloStateDoc);
-      const target = state.topics?.[topicId];
-      if (!target || target.master) throw new ProjectError(400, "default_topic", "默认主对话不可删除。");
-      const unfinished = findBlockingTopicTickets(state, topicId, target.conversationId);
-      if (unfinished.length && !options.stopTasks) throw new ProjectError(409, "topic_tasks_running", "会话仍有进行中或待合入的任务，请停止或合并相关任务后删除。");
-      target.deletedAt = Date.now();
-      target.deletionId = randomUUID();
-      target.updatedAt = target.deletedAt;
-      targetConversationId = target.conversationId;
-      const titleJob = state.topicTitles?.[topicId];
-      if (titleJob?.status === "pending" || titleJob?.status === "failed") titleJob.status = "cancelled";
-      const projects = await tx.doc(KuloProjectsDoc);
-      projects.cancellations ??= {};
-      for (const ticket of unfinished) {
-        transitionTicketStatus(ticket, "stopped", target.deletedAt);
-        ticket.stoppedReason = "会话已删除"; ticket.updatedAt = target.deletedAt; ticket.cleanupPending = true;
-        projects.cancellations[ticket.id] = { ...(ticket.projectId ? { projectId: ticket.projectId } : {}), reason: "会话已删除", requestedAt: target.deletedAt };
-      }
-      const settled = closeSettledTicketsForDeletedTopic(state, topicId, target.deletedAt, target.conversationId);
-      stagedToDiscard.push(...settled.stagedToDiscard);
-      hadUnfinished = unfinished.length > 0;
-      if (hadUnfinished || settled.closedCount > 0) ticketsChanged = true;
-    }, context);
-    await this.projects.reconcileCancellations(context);
-    if (hadUnfinished) {
-      await this.harness.commit(async (tx) => {
-        const settled = closeSettledTicketsForDeletedTopic(await tx.doc(KuloStateDoc), topicId, Date.now(), targetConversationId);
-        stagedToDiscard.push(...settled.stagedToDiscard);
-        if (settled.closedCount > 0) ticketsChanged = true;
-      }, context);
-    }
-    if (stagedToDiscard.length > 0) await Promise.allSettled(stagedToDiscard.map((ticket) => this.#discardTicketStagedWorkspace(ticket)));
-    await this.#closeOrchestratorBrowserSession(topicId);
-    const cache = this.#topicCaches.get(topicId);
-    if (cache) { await cache.conversation.abort(context, { background: true }); await cache.watch.stop(); this.#topicCaches.delete(topicId); }
-    if (ticketsChanged) await this.#broadcastTickets(context);
-    const topics = await this.listTopics(context);
-    this.#emitTopics(topics);
-    return { deleted: topicId, topics };
+    return this.#topics.deleteTopic(topicId, context, options);
   }
 
   async getTopicView(
     topicId = "root",
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<TopicView> {
-    const cache = await this.#resolveWatchedTopic(topicId, context);
-    return this.#readTopicView(cache);
+    return this.#topics.getTopicView(topicId, context);
   }
 
-  // A full snapshot can spend time loading other domains after it has read this conversation.
-  // Check the current scope, then publish from the live watch without yielding to newer messages.
   async publishCurrentTopicView(topicId: string, publish: (view: TopicView) => void, context: Context = BACKGROUND_CONTEXT): Promise<void> {
-    const [state, projects] = await Promise.all([
-      this.harness.snapshot(KuloStateDoc, context),
-      this.harness.snapshot(KuloProjectsDoc, context),
-    ]);
-    if (this.#closed) throw new Error("Hub is closed");
-    const topic = requireTopic(state, topicId);
-    if (topic.projectId) assertProjectBinding(projects, topic.projectId);
-    const cache = this.#topicCaches.get(topicId);
-    if (!cache || Number(cache.conversation.id) !== topic.conversationId) throw new ProjectError(404, "topic_not_found", "会话不存在。");
-    publish(this.#readTopicView(cache));
-  }
-
-  #readTopicView(cache: WatchedTopicCache): TopicView {
-    return { topicId: cache.topicId, messages: cache.messages, historyBefore: this.getTopicHistoryBefore(cache.topicId), live: cache.live };
+    return this.#topics.publishCurrentTopicView(topicId, publish, context);
   }
 
   getTopicHistoryBefore(topicId: string): number | undefined {
-    const view = this.#topicCaches.get(topicId)?.watch.value;
-    return view?.before !== undefined && view.entries[0] ? Number(view.entries[0].id) : undefined;
+    return this.#topics.getTopicHistoryBefore(topicId);
   }
 
   async getTopicHistory(topicId: string, before: number, context: Context = BACKGROUND_CONTEXT) {
-    if (!Number.isSafeInteger(before) || before < 1) throw Object.assign(new Error("历史位置无效。"), { status: 400 });
-    const cache = await this.#resolveWatchedTopic(topicId, context);
-    const page = await cache.conversation.entries({ maxEntryId: (before - 1) as EntryId }, 120, undefined, context);
-    const entries = [...page.items].reverse();
-    return { messages: await this.#hydrateMessages(entries, Number(cache.conversation.id)),
-      ...(page.next && entries[0] ? { beforeEntryId: Number(entries[0].id) } : {}), hasMore: Boolean(page.next) };
-  }
-
-  #conversationQueries(): ConversationQueries {
-    return this.#queryService ??= new ConversationQueries({
-      redactionRevision: () => this.connectionManager.redactionRevision,
-      topics: async (context) => {
-        const [state, projects] = await Promise.all([
-          this.harness.snapshot(KuloStateDoc, context), this.harness.snapshot(KuloProjectsDoc, context),
-        ]);
-        if (!state) return [];
-        return listSortedTopics(state).filter((topic) => {
-          if (!isOrchestratorConversation(topic.conversationId, state) || state.conversationToTopic?.[String(topic.conversationId)] !== topic.id) return false;
-          if (!topic.projectId) return true;
-          const project = projects?.projects && Object.hasOwn(projects.projects, topic.projectId) ? projects.projects[topic.projectId] : undefined;
-          return project !== undefined && project.deletedAt === undefined;
-        }).map((topic) => ({ ...topic, title: this.connectionManager.redact(topic.title) }));
-      },
-      conversation: (id, context) => this.harness.conversation(id as ConversationId, context),
-      project: (entries, id, context) => this.#hydrateMessages(entries, id, undefined, context),
-      attachment: (assetId, conversationId) => {
-        const loaded = this.uploads.getUpload(assetId);
-        if (!loaded || loaded.record.ownerId !== undefined && !loaded.record.referenceScopes?.includes(`conversation:${conversationId}`)) return undefined;
-        return redactCredentialData(this.uploads.toChatAttachment(loaded.record), (text) => this.connectionManager.redact(text));
-      },
-    });
+    return this.#topics.getTopicHistory(topicId, before, context);
   }
 
   searchConversations(input: ConversationSearchInput, context: Context = BACKGROUND_CONTEXT) {
-    return this.#conversationQueries().search(input, context);
+    return this.#topics.searchConversations(input, context);
   }
 
   getTopicMessageWindow(topicId: string, messageId: number, context: Context = BACKGROUND_CONTEXT) {
-    return this.#conversationQueries().messageWindow(topicId, messageId, context);
+    return this.#topics.getTopicMessageWindow(topicId, messageId, context);
   }
 
   listTopicFiles(topicId: string, input: { cursor?: string; limit?: number } = {}, context: Context = BACKGROUND_CONTEXT) {
-    return this.#conversationQueries().files(topicId, input, context);
+    return this.#topics.listTopicFiles(topicId, input, context);
   }
 
   async updateSettingsBlock(
@@ -5495,8 +5244,7 @@ export class KuloHub implements OrchestratorController {
             await bindChatAttachments(tx, this.uploads, { topicId: key, conversationId: Number(record.conversationId) }, attachments, principalId);
             await writeDeliveryReceipt(tx, intent, receipt.ack as DeliveryAck, "complete", { attachmentsBound: true });
           }, context);
-          const cache = this.#topicCaches.get(key);
-          if (cache) this.#refreshTopicContent(cache);
+          this.#topics.refreshTopic(key);
         }
         return submission;
       });
@@ -5714,7 +5462,7 @@ export class KuloHub implements OrchestratorController {
     }, context);
     this.#emitTopics(allTopics);
 
-    if (pendingTitle) this.#topicTitles.track(cache.topicId);
+    if (pendingTitle) this.#topics.trackTitle(cache.topicId);
     this.#runtimeGates.resumeIfNotRecovering();
     const submission = await this.harness.submission(submissionId, context);
     if (!submission) throw new Error("Admitted request has no submission");
@@ -8973,10 +8721,7 @@ export class KuloHub implements OrchestratorController {
     activeSettingsTurns: number;
     activeMediaJobs: number;
   }> {
-    let activeTurns = 0;
-    for (const cache of this.#topicCaches.values()) {
-      if (cache.live.busy) activeTurns += 1;
-    }
+    const activeTurns = this.#topics.inspectBusyTopics().length;
     const board = await this.getBoardSnapshot();
     const activeTickets = board.tickets.filter((t) => ["running", "queued", "pausing"].includes(t.status)).length;
     const activeVoiceCalls = this.voiceCalls.hasActiveCalls() ? 1 : 0;
@@ -8996,10 +8741,8 @@ export class KuloHub implements OrchestratorController {
 
   async abortActiveWorkForHandover(timeoutMs = 10_000): Promise<void> {
     const localId = this.envManager.localEnvId;
-    for (const [topicId, cache] of this.#topicCaches) {
-      if (cache.live.busy) {
-        await this.deliverClientMessage({ type: "chat.abort", topicId }, localId).catch(() => undefined);
-      }
+    for (const topicId of this.#topics.inspectBusyTopics()) {
+      await this.deliverClientMessage({ type: "chat.abort", topicId }, localId).catch(() => undefined);
     }
     const board = await this.getBoardSnapshot();
     for (const ticket of board.tickets) {
@@ -9073,10 +8816,7 @@ export class KuloHub implements OrchestratorController {
       this.#cleanupRetryTimer = null;
     }
     this.#watchdog.stopTimer();
-    if (this.#topicAutoArchiveTimer) {
-      clearInterval(this.#topicAutoArchiveTimer);
-      this.#topicAutoArchiveTimer = null;
-    }
+    this.#topics.stopAutoArchiveTimer();
     if (this.#uploadCleanupTimer) {
       clearInterval(this.#uploadCleanupTimer);
       this.#uploadCleanupTimer = null;
@@ -9095,22 +8835,18 @@ export class KuloHub implements OrchestratorController {
     await finish(() => this.ambientModel.close());
     await finish(() => this.assistantLedger.close());
     await finish(() => this.#androidNotifications.close());
-    await finish(() => this.#topicTitles.close());
+    await finish(() => this.#topics.closeTitles());
     await finish(() => this.personality.close());
     await finish(() => this.usageCaps.close());
     this.#computerHandoffs.closeAll();
     await finish(() => this.mediaJobs.close());
     await finish(() => this.extensions.close());
-    await finish(() => this.#topicAutoArchiveRun);
-    await finish(() => Promise.all(this.#topicActivityUpdates.values()));
+    await finish(() => this.#topics.drainPendingActivity());
     for (const detach of this.#watchdog.drainDetachers()) {
       await finish(detach);
     }
     await finish(() => this.settingsAssistant.close());
-    for (const cache of this.#topicWatchesList()) {
-      await finish(() => cache.watch.stop());
-    }
-    this.#topicCaches.clear();
+    await this.#topics.stopAllWatches(finish);
     // A cancelled caller may stop waiting on Durable before admitted writes have drained.
     await finish(() => this.#delivery.close());
     await finish(() => this.harness.close(withoutAbortSignal(context)));
@@ -9140,44 +8876,14 @@ export class KuloHub implements OrchestratorController {
   }
 
   #topicWatchesList(): WatchedTopicCache[] {
-    return [...this.#topicCaches.values()];
+    return this.#topics.listWatchedCaches();
   }
 
   async #resolveWatchedTopic(
     topicId: string,
     context: Context,
   ): Promise<WatchedTopicCache> {
-    const state = await this.harness.snapshot(KuloStateDoc, context);
-    const topic = requireTopic(state, topicId);
-    const existing = this.#topicCaches.get(topicId);
-    if (existing) {
-      await this.#alignContextCompaction(existing.conversation.id, context);
-      return existing;
-    }
-    const conv = await this.harness.conversation(
-      topic.conversationId as ConversationId,
-      context,
-    );
-    if (!conv) {
-      throw new ProjectError(500, "conversation_missing", "会话引用的对话记录不存在。");
-    }
-
-    const isRoot = topicId === "root";
-    const orchestratorAgent = this.#resolveOrchestratorAgent();
-    await conv.configure(
-      {
-        model: orchestratorAgent.model,
-        thinkingLevel: orchestratorAgent.thinkingLevel,
-        extensions: this.#orchestratorExtensions(isRoot),
-        tools: this.#orchestratorTools(isRoot),
-        cwd: topic.projectId ? (await this.projects.get(topic.projectId, context)).workspaceDir : this.#mainWorkspaceDir,
-        maxTurns: 25,
-      },
-      context,
-    );
-
-    await this.#alignContextCompaction(conv.id, context);
-    return this.#ensureTopicWatched(topicId, conv, context);
+    return this.#topics.resolveWatchedTopic(topicId, context);
   }
 
   async #ensureTopicWatched(
@@ -9185,52 +8891,11 @@ export class KuloHub implements OrchestratorController {
     conversation: Conversation,
     context: Context,
   ): Promise<WatchedTopicCache> {
-    const existing = this.#topicCaches.get(topicId);
-    if (existing) return existing;
-
-    const watch = await conversation.watch(context, { min: 80, max: 160 });
-    try {
-      await repairHistoricalChatAttachments(this.harness, this.uploads, queuedChatEntries(watch.value).entries, Number(conversation.id), context);
-      await this.#hydrateMessages(watch.value.entries, Number(conversation.id));
-      if (this.#closed) throw new Error("Hub is closed");
-    } catch (error) {
-      await watch.stop();
-      throw error;
-    }
-    // Another selection of this cold topic may have attached its watch during hydration.
-    const attached = this.#topicCaches.get(topicId);
-    if (attached) { await watch.stop(); return attached; }
-    const initialMessages = this.#projectTopicMessages(watch.value, Number(conversation.id));
-    const initialLive = redactCredentialData(this.#projectTopicLiveState(watch.value, Number(conversation.id)), (text) => this.connectionManager.redact(text));
-    const cache: WatchedTopicCache = {
-      topicId,
-      conversation,
-      watch,
-      messages: initialMessages,
-      live: initialLive,
-      notificationBaseline: createTopicNotificationBaseline(initialMessages, initialLive),
-    };
-    this.#topicCaches.set(topicId, cache);
-
-    watch.start(async (call) => {
-      if (call.kind !== "value") return;
-      this.#refreshTopicContent(cache, call.value);
-    });
-
-    return cache;
+    return this.#topics.ensureTopicWatched(topicId, conversation, context);
   }
 
   async #ensureTopicWatchedByConversation(conversationId: number, context: Context): Promise<void> {
-    if (this.#closed) return;
-    const state = await this.harness.snapshot(KuloStateDoc, context);
-    const topicId = state?.conversationToTopic?.[String(conversationId)];
-    if (!topicId) return;
-    const topic = state?.topics?.[topicId];
-    if (!topic || topic.deletedAt) return;
-    if (topic.title) this.#topicTitleCache.set(topicId, topic.title);
-    if (this.#topicCaches.has(topicId)) return;
-    const conversation = await this.harness.conversation(conversationId as ConversationId, context);
-    if (conversation) await this.#ensureTopicWatched(topicId, conversation, context);
+    return this.#topics.ensureTopicWatchedByConversation(conversationId, context);
   }
 
   async submitUiAction(input: UiActionInput): Promise<UiActionReceipt> {
@@ -10089,66 +9754,7 @@ export class KuloHub implements OrchestratorController {
   }
 
   #refreshTopicContent(cache: WatchedTopicCache, value = cache.watch.value): void {
-    if (this.#closed || this.#topicCaches.get(cache.topicId) !== cache) return;
-    const messages = this.#projectTopicMessages(value, Number(cache.conversation.id));
-    cache.messages = messages;
-    const latestPreview = summarizeTopicPreview(messages);
-    if (latestPreview) this.#topicPreviewCache.set(cache.topicId, latestPreview);
-    const wasBusy = cache.live.busy;
-    cache.live = redactCredentialData(this.#projectTopicLiveState(value, Number(cache.conversation.id)), (text) => this.connectionManager.redact(text));
-    if (wasBusy && !cache.live.busy) {
-      this.#recordTopicActivity(cache.topicId, latestPreview);
-    }
-    if (!cache.live.busy && value.entries.some((entry) => CompactionEntry.is(entry))) {
-      void this.#contextCompaction.pruneCommittedBaseline(cache.conversation.id, BACKGROUND_CONTEXT, false).catch(() => {});
-    }
-    const notification = detectMainSessionNotification({
-      topicId: cache.topicId,
-      topicTitle: cache.topicId === "root" ? undefined : this.#topicTitleCache.get(cache.topicId),
-      previous: cache.notificationBaseline,
-      messages,
-      live: cache.live,
-      redact: (text) => this.connectionManager.redact(text),
-    });
-    cache.notificationBaseline = notification.next;
-    this.voiceCalls.topicUpdated(cache.topicId, messages, cache.live);
-    this.#topicTitles.observe(cache.topicId, messages, cache.live.busy || Boolean(cache.live.runFailure));
-    for (const listener of this.#listeners) {
-      listener.onTopicView?.(cache.topicId, messages, cache.live);
-      if (cache.topicId === "root") listener.onRootView?.(messages, cache.live);
-      if (notification.event && !this.#recovering) listener.onNotification?.(notification.event);
-    }
-  }
-
-  #recordTopicActivity(topicId: string, latestPreview?: { preview: string; at?: number }): void {
-    const at = Date.now();
-    const previous = this.#topicActivityUpdates.get(topicId);
-    const update = (async () => {
-      await previous;
-      const topics = await this.harness.commit(async (tx) => {
-        const state = await tx.doc(KuloStateDoc);
-        const topic = state.topics?.[topicId];
-        if (!topic || topic.deletedAt) return undefined;
-        let changed = false;
-        if (!topic.master && topic.id !== "root") {
-          const nextUpdatedAt = Math.max(topic.updatedAt, at);
-          if (nextUpdatedAt !== topic.updatedAt) {
-            topic.updatedAt = nextUpdatedAt;
-            changed = true;
-          }
-        }
-        if (applyTopicPreview(topic, latestPreview, at)) {
-          changed = true;
-        }
-        return changed ? listSortedTopics(state) : undefined;
-      }, BACKGROUND_CONTEXT);
-      if (topics) this.#emitTopics(topics);
-    })().catch((error) => {
-      console.warn("[KuloTopicArchive] Could not record completed conversation activity", topicId, error);
-    }).finally(() => {
-      if (this.#topicActivityUpdates.get(topicId) === update) this.#topicActivityUpdates.delete(topicId);
-    });
-    this.#topicActivityUpdates.set(topicId, update);
+    this.#topics.refreshContent(cache, value);
   }
 
   async #migrateNativeSearchPlan(plan: { providerId: string; modelId: string; enabled: boolean }): Promise<boolean> {
@@ -10851,17 +10457,6 @@ export class KuloHub implements OrchestratorController {
     return this.#turnContext.currentControlInputs(conversationId, context, toolTaskId);
   }
 
-  #startTopicAutoArchive(): void {
-    if (this.#topicAutoArchiveTimer || this.#closed) return;
-    this.#topicAutoArchiveTimer = setInterval(() => {
-      if (this.#handoverBarrierActive) return;
-      void this.archiveInactiveTopics().catch((error) => {
-        console.warn("[KuloTopicArchive] Automatic archive check failed", error);
-      });
-    }, 60_000);
-    this.#topicAutoArchiveTimer.unref?.();
-  }
-
   #startUploadCleanup(): void {
     if (this.#uploadCleanupTimer || this.#closed) return;
     this.#uploadCleanupTimer = setInterval(() => {
@@ -10876,28 +10471,8 @@ export class KuloHub implements OrchestratorController {
     this.#uploadCleanupTimer.unref?.();
   }
 
-  #enrichTopicsWithPreviews(topics: TopicSummary[]): TopicSummary[] {
-    return topics.map((topic) => {
-      const cached = this.#topicPreviewCache.get(topic.id);
-      if (!cached) return topic;
-      if (topic.lastMessagePreview && (topic.lastMessageAt ?? 0) >= (cached.at ?? 0)) return topic;
-      return {
-        ...topic,
-        lastMessagePreview: cached.preview,
-        ...(cached.at ? { lastMessageAt: cached.at } : {}),
-      };
-    });
-  }
-
   #emitTopics(topics: TopicSummary[]): void {
-    const enriched = this.#enrichTopicsWithPreviews(topics);
-    this.#topicTitleCache.clear();
-    for (const topic of enriched) {
-      if (!topic.deletedAt && topic.title) this.#topicTitleCache.set(topic.id, topic.title);
-    }
-    for (const listener of this.#listeners) {
-      listener.onTopics?.(enriched);
-    }
+    this.#topics.emitTopics(topics);
   }
 
   #emitAssistantItems(assistantRevision: number, items: AssistantItemView[]): void {
