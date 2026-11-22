@@ -288,6 +288,13 @@ import {
 } from "./hub-display-projection.js";
 export { extractDisplayMessages, extractLiveState };
 import { computeHubUsageStats } from "./hub-usage-stats.js";
+import { migrateLegacyLocalReferences } from "./cluster-migration.js";
+import {
+  InlineDispatchWaiters,
+  LiveSettingsStore,
+  TurnContextReader,
+  type HubRuntimeGates,
+} from "./hub-kernel-ports.js";
 import { HubFailureRecovery, HubWatchdog } from "./hub-watchdog.js";
 import { createOrchestratorCodingGuardExtension } from "./orchestrator-coding-guard.js";
 import type { HostActionCaller, HostActionController, HostActionDecideOutcome, HostActionRunOutcome } from "./tools-host-action.js";
@@ -766,7 +773,9 @@ export class KuloHub implements OrchestratorController {
   readonly #chatAdmissions = new Map<string, Promise<unknown>>();
   readonly #deliveryAdmissions = new Map<string, Promise<unknown>>();
   readonly #ticketAdmissions = new Map<string, Promise<unknown>>();
-  readonly #inlineDispatchWaiters = new Map<string, Set<() => void>>();
+  readonly #inlineWaiters = new InlineDispatchWaiters();
+  readonly #turnContext: TurnContextReader;
+  readonly #runtimeGates: HubRuntimeGates;
   readonly #topicTitles: KuloTopicTitles;
   readonly #cardSnapshots = new Map<string, UiCardSnapshot>();
   readonly #searchHistories = new Map<number, SearchEvidenceHistory>();
@@ -787,7 +796,7 @@ export class KuloHub implements OrchestratorController {
   readonly #topicActivityUpdates = new Map<string, Promise<void>>();
   #cleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
   #cleanupRetryDelayMs = 500;
-  #liveSettings: KuloDurableSettings;
+  readonly #settingsStore: LiveSettingsStore;
   #recovering = true;
   #closed = false;
   #closing?: Promise<void>;
@@ -812,7 +821,7 @@ export class KuloHub implements OrchestratorController {
     providerManager: KuloProviderManager | null;
     defaultIdentityDir: string;
     mainWorkspaceDir: string;
-    liveSettings: KuloDurableSettings;
+    settingsStore: LiveSettingsStore;
     workerTicketTask: ReturnType<typeof createWorkerTicketTask>;
     failureRecoveryTask: ReturnType<typeof createFailureRecoveryTask>;
     codingToolsExt: ReturnType<typeof createCodingTools>;
@@ -886,7 +895,19 @@ export class KuloHub implements OrchestratorController {
     this.#providerManager = params.providerManager;
     this.#defaultIdentityDir = params.defaultIdentityDir;
     this.#mainWorkspaceDir = params.mainWorkspaceDir;
-    this.#liveSettings = params.liveSettings;
+    this.#settingsStore = params.settingsStore;
+    this.#turnContext = new TurnContextReader(this.harness);
+    this.#runtimeGates = {
+      isClosed: () => this.#closed,
+      isRecovering: () => this.#recovering,
+      isHandoverBarrierActive: () => this.#handoverBarrierActive,
+      resumeIfNotRecovering: () => {
+        if (!this.#recovering && !this.#closed) this.harness.resume();
+      },
+      broadcastTickets: (ctx) => this.#broadcastTickets(ctx),
+      recordTicketOutwardAction: (ticketId, runEpoch, kind, label) =>
+        this.#recordTicketOutwardAction(ticketId, runEpoch, kind, label),
+    };
     this.#androidNotifications = new KuloAndroidNotifications({ stateDir: this.config.stateDir, models: this.#models,
       agent: () => this.#resolveOrchestratorAgent(), hubId: () => this.#androidHubId,
       redact: text => this.connectionManager.redact(text) });
@@ -1773,6 +1794,21 @@ export class KuloHub implements OrchestratorController {
     this.#orchestratorBrowserIdleMs = params.orchestratorBrowserIdleMs;
   }
 
+  get #liveSettings(): KuloDurableSettings {
+    return this.#settingsStore.get();
+  }
+
+  async refreshLiveSettings(context: Context = BACKGROUND_CONTEXT): Promise<void> {
+    const next = await this.harness.snapshot(KuloSettingsDoc, context);
+    if (next) await this.#applyLiveSettings(cloneJson(next) as KuloDurableSettings, context);
+  }
+
+  async migrateLegacyLocalNode(legacyLocalNodeId: string, context: Context = BACKGROUND_CONTEXT): Promise<void> {
+    await migrateLegacyLocalReferences(this.harness, legacyLocalNodeId);
+    await this.refreshLiveSettings(context);
+    this.uploads.setLegacyLocalPrincipal(legacyLocalNodeId);
+  }
+
   bindDeviceController(controller: HubDeviceController | undefined): void {
     this.#deviceController = controller;
     if (!this.#closed && !this.#recovering) {
@@ -1837,7 +1873,7 @@ export class KuloHub implements OrchestratorController {
     fs.mkdirSync(mainWorkspaceDir, { recursive: true });
     fs.mkdirSync(defaultIdentityDir, { recursive: true, mode: 0o700 });
 
-    let bootSettings: KuloDurableSettings | null = null;
+    const settingsStore = new LiveSettingsStore(config, defaultIdentityDir);
 
     const envManager = new EnvManager({
       enableLocal: config.enableLocalEnv,
@@ -1852,9 +1888,8 @@ export class KuloHub implements OrchestratorController {
         config.identityDir,
         ...(config.extraProtectedPaths ?? []),
         ...protectedRuntime,
-        ...(bootSettings?.identity.directory ? [bootSettings.identity.directory] : []),
+        ...settingsStore.getProtectedSettingsPaths(),
         path.resolve(".env"),
-        ...(bootSettings?.memory.authFile ? [path.resolve(bootSettings.memory.authFile)] : []),
         ...(config.memory.authFile ? [path.resolve(config.memory.authFile)] : []),
       ],
       onChange: (envs) => {
@@ -1886,30 +1921,26 @@ export class KuloHub implements OrchestratorController {
       fetch: proxyFetch,
       getNativeTools: (provider, id) => {
         if (providerManager && !providerManager.isOfficialNativeSearchAllowed(provider)) return undefined;
-        const modelConfig = hubRef ? hubRef.#liveSettings.model : bootSettings?.model ?? config.model;
+        const modelConfig = settingsStore.getModel();
         return (provider === KULO_GATEWAY_PROVIDER_ID ? modelConfig.gatewayModels?.find((model) => model.id === id) :
           modelConfig.subscriptionModels?.[provider]?.find((model) => model.id === id) ??
           modelConfig.customProviders?.find((item) => item.id === provider)?.models.find((model) => model.id === id))?.nativeTools;
       },
     });
 
-    const getLiveRoles = () => bootSettings?.roles ?? config.roles;
+    const getLiveRoles = () => settingsStore.getRoles();
     const getLiveMemory = () => {
-      const mem = bootSettings?.memory ?? config.memory;
+      const mem = settingsStore.getMemory();
       return hubRef ? hubRef.#effectiveMemoryConfig(mem) : mem;
     };
-    const getLiveIdentityDir = () =>
-      bootSettings ? resolveEffectiveIdentityDir(bootSettings, defaultIdentityDir) : defaultIdentityDir;
+    const getLiveIdentityDir = () => settingsStore.getIdentityDir();
     const getLiveIdentityState = () => ({
-      directory: getLiveIdentityDir(),
-      directoryRevision: bootSettings?.identity.directoryRevision ?? 1,
+      directory: settingsStore.getIdentityDir(),
+      directoryRevision: settingsStore.getIdentityDirectoryRevision(),
     });
-    const getMaxConcurrentWorkers = () =>
-      bootSettings?.executor.maxConcurrentWorkers ?? config.maxConcurrentWorkers;
-    const getAgentName = () =>
-      bootSettings?.presentation.agentName ?? config.presentation.agentName;
-    const getLiveLanguage = (): KuloLanguage | undefined =>
-      bootSettings?.presentation.language ?? config.presentation.language;
+    const getMaxConcurrentWorkers = () => settingsStore.getMaxConcurrentWorkers();
+    const getAgentName = () => settingsStore.getAgentName();
+    const getLiveLanguage = (): KuloLanguage | undefined => settingsStore.getLanguage();
 
     if (providerManager) {
       providerManager.syncProviders(config.model, config.roles);
@@ -2109,9 +2140,7 @@ export class KuloHub implements OrchestratorController {
       getMemoryConfig: getLiveMemory,
       getRoles: getLiveRoles,
       getLanguage: getLiveLanguage,
-      getMaxSubagentsPerTicket: () =>
-        (hubRef ? hubRef.#liveSettings.executor.maxSubagentsPerTicket : bootSettings?.executor.maxSubagentsPerTicket) ??
-        config.maxSubagentsPerTicket,
+      getMaxSubagentsPerTicket: () => settingsStore.getMaxSubagentsPerTicket(),
       getMediaCapabilities: () =>
         hubRef
           ? hubRef.capabilities.snapshot()
@@ -2227,7 +2256,7 @@ export class KuloHub implements OrchestratorController {
       getAgentName,
       getLanguage: getLiveLanguage,
       getRoles: getLiveRoles,
-      getExternalClients: () => (hubRef ? hubRef.#liveSettings.externalClients : undefined) ?? {},
+      getExternalClients: () => settingsStore.getExternalClients(),
       getEnvs: () => envManager.listEnvs(),
       getIdentityDir: getLiveIdentityDir,
       getMemoryConfig: getLiveMemory,
@@ -2591,7 +2620,7 @@ export class KuloHub implements OrchestratorController {
       getHarness: () => hubRef!.harness,
       getKernel: () => hubRef!.#getContextKernel(),
       isActive: () => hubRef ? hubRef.#contextEnabled : false,
-      getReserveTokens: () => ((hubRef ? hubRef.#liveSettings.model.compaction : undefined) ?? bootSettings?.model.compaction ?? config.model.compaction ?? DEFAULT_COMPACTION_CONFIG).reserveTokens,
+      getReserveTokens: () => settingsStore.getCompactionConfig().reserveTokens,
       onCompactionBaseline: async (conversationId, firstKept, ctx) => {
         if (hubRef) await hubRef.#pruneCompactedConversationTools(conversationId, firstKept, ctx);
       },
@@ -2641,11 +2670,7 @@ export class KuloHub implements OrchestratorController {
         registry,
         identity: { attribution: null },
         settings: () => {
-          const liveComp =
-            (hubRef ? hubRef.#liveSettings.model.compaction : undefined) ??
-            bootSettings?.model.compaction ??
-            config.model.compaction ??
-            DEFAULT_COMPACTION_CONFIG;
+          const liveComp = settingsStore.getCompactionConfig();
           return {
             toolExecution: "parallel",
             steeringMode: "all",
@@ -2746,8 +2771,8 @@ export class KuloHub implements OrchestratorController {
       return cloneJson(settingsDoc) as KuloDurableSettings;
     }, context);
 
-    bootSettings = hydratedSettings;
-    const effectiveIdentityDir = resolveEffectiveIdentityDir(hydratedSettings, defaultIdentityDir);
+    settingsStore.hydrate(hydratedSettings);
+    const effectiveIdentityDir = settingsStore.getIdentityDir();
     try {
       fs.mkdirSync(effectiveIdentityDir, { recursive: true, mode: 0o700 });
     } catch {
@@ -2806,7 +2831,7 @@ export class KuloHub implements OrchestratorController {
       providerManager,
       defaultIdentityDir,
       mainWorkspaceDir,
-      liveSettings: hydratedSettings,
+      settingsStore,
       workerTicketTask,
       failureRecoveryTask,
       codingToolsExt,
@@ -2891,7 +2916,6 @@ export class KuloHub implements OrchestratorController {
       });
     }
     void hub.assistantLedger.pruneExpiredBodies().catch(() => {});
-    bootSettings = hub.#liveSettings;
 
     await hub.#ensureTopicWatched("root", rootConversation, context);
 
@@ -4331,7 +4355,7 @@ export class KuloHub implements OrchestratorController {
           });
         }, context);
         }
-        if (!this.#recovering) this.harness.resume();
+        this.#runtimeGates.resumeIfNotRecovering();
       }
     }
     if (preservedWait.reason === "connection") await this.#relayConnectionRequest(ticketId);
@@ -4579,7 +4603,7 @@ export class KuloHub implements OrchestratorController {
 
     if (stagedToDiscard.length > 0) {
       await Promise.allSettled(stagedToDiscard.map((ticket) => this.#discardTicketStagedWorkspace(ticket)));
-      if (!this.#recovering) this.harness.resume();
+      this.#runtimeGates.resumeIfNotRecovering();
       await this.#broadcastTickets(context);
     }
     this.#emitTopics(allTopics);
@@ -5291,7 +5315,7 @@ export class KuloHub implements OrchestratorController {
       return cloneJson(doc) as KuloDurableSettings;
     }, context);
 
-    this.#liveSettings.expression = nextDoc.expression;
+    this.#settingsStore.setExpression(nextDoc.expression);
     for (const listener of this.#listeners) {
       listener.onExpression?.(nextExpr);
     }
@@ -5731,7 +5755,7 @@ export class KuloHub implements OrchestratorController {
     this.#emitTopics(allTopics);
 
     if (pendingTitle) this.#topicTitles.track(cache.topicId);
-    if (!this.#recovering) this.harness.resume();
+    this.#runtimeGates.resumeIfNotRecovering();
     const submission = await this.harness.submission(submissionId, context);
     if (!submission) throw new Error("Admitted request has no submission");
     await this.#resumePausedChat(cache.conversation, context);
@@ -6507,22 +6531,13 @@ export class KuloHub implements OrchestratorController {
       await Promise.allSettled(supersededStagedToDiscard.map((old) => this.#discardTicketStagedWorkspace(old)));
     }
     bindDispatchedAttachments(this.uploads, admitted);
-    if (!this.#recovering) this.harness.resume();
+    this.#runtimeGates.resumeIfNotRecovering();
     await this.#broadcastTickets(context);
     return toTicketCardView(admitted, activeRoles, activeExternalClients);
   }
 
   #notifyInlineWaiters(ticketId: string): void {
-    const waiters = this.#inlineDispatchWaiters.get(ticketId);
-    if (!waiters) return;
-    this.#inlineDispatchWaiters.delete(ticketId);
-    for (const wake of waiters) {
-      try {
-        wake();
-      } catch {
-        // Ignore individual listener errors
-      }
-    }
+    this.#inlineWaiters.notify(ticketId);
   }
 
   async dispatchTicketForModel(
@@ -6566,40 +6581,16 @@ export class KuloHub implements OrchestratorController {
       };
     }
 
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        context.abortSignal?.removeEventListener("abort", finish);
-        const set = this.#inlineDispatchWaiters.get(card.id);
-        if (set) {
-          set.delete(finish);
-          if (set.size === 0) this.#inlineDispatchWaiters.delete(card.id);
-        }
-        resolve();
-      };
-      const timer = setTimeout(finish, configuredWaitMs);
-      timer.unref?.();
-      let set = this.#inlineDispatchWaiters.get(card.id);
-      if (!set) {
-        set = new Set();
-        this.#inlineDispatchWaiters.set(card.id, set);
-      }
-      set.add(finish);
-      if (context.abortSignal?.aborted || this.#closed) {
-        finish();
-        return;
-      }
-      context.abortSignal?.addEventListener("abort", finish, { once: true });
-      // Re-check snapshot after registering waiter so we cannot miss an immediate completion.
-      void this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT).then((snap) => {
+    await this.#inlineWaiters.wait({
+      ticketId: card.id,
+      timeoutMs: configuredWaitMs,
+      abortSignal: context.abortSignal,
+      isClosed: () => this.#closed,
+      shouldWakeImmediately: async () => {
+        const snap = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         const cur = snap?.tickets[card.id];
-        if (!cur || cur.deliveryClaim !== "inline_waiting" || cur.status === "stopped" || cur.status === "closed" || cur.status === "failed") {
-          finish();
-        }
-      }).catch(() => finish());
+        return !cur || cur.deliveryClaim !== "inline_waiting" || cur.status === "stopped" || cur.status === "closed" || cur.status === "failed";
+      },
     });
 
     const outcome = await this.harness.commit(async (tx) => {
@@ -7297,7 +7288,7 @@ export class KuloHub implements OrchestratorController {
         }
         current.updatedAt = now;
       }, context);
-      if (unlockedOrScheduled && !this.#recovering) this.harness.resume();
+      if (unlockedOrScheduled) this.#runtimeGates.resumeIfNotRecovering();
       await this.#broadcastTickets(context);
       return applied;
     });
@@ -7701,7 +7692,7 @@ export class KuloHub implements OrchestratorController {
             }
             return toTicketCardView(live, this.#liveSettings.roles);
           }, context);
-          if (!this.#recovering) this.harness.resume();
+          this.#runtimeGates.resumeIfNotRecovering();
           await this.#broadcastTickets(context);
           return updatedCard;
         }
@@ -7867,7 +7858,7 @@ export class KuloHub implements OrchestratorController {
     if (interruptTarget && this.envManager.getEnvDescriptor(interruptTarget.envId)?.online) {
       await this.envManager.requestExternalAgent(interruptTarget.envId, { operation: "cancel", runId: interruptTarget.runId }).catch(() => {});
     }
-    if ((created || injected) && !this.#recovering) this.harness.resume();
+    if (created || injected) this.#runtimeGates.resumeIfNotRecovering();
     if (!created && !injected && card.status === "waiting" && this.envManager.getEnvDescriptor(card.envId)?.online) {
       void this.#queueEnvReconcile();
     }
@@ -7917,7 +7908,7 @@ export class KuloHub implements OrchestratorController {
       },
       releaseTicketExecution: (t: Readonly<TicketRecord>) => this.#releaseTicketExecution(t),
       untrackWorker: (id: string, prevEpoch: number) => { this.#watchdog.untrack(id, prevEpoch); },
-      resumeIfReady: (cleanupPending: boolean) => { if (!cleanupPending && !this.#recovering) this.harness.resume(); },
+      resumeIfReady: (cleanupPending: boolean) => { if (!cleanupPending) this.#runtimeGates.resumeIfNotRecovering(); },
       broadcastTickets: (ctx: Context) => this.#broadcastTickets(ctx),
     };
   }
@@ -8232,7 +8223,7 @@ export class KuloHub implements OrchestratorController {
 
     if (stagedToDiscard) {
       await this.#discardTicketStagedWorkspace(stagedToDiscard);
-      if (!this.#recovering) this.harness.resume();
+      this.#runtimeGates.resumeIfNotRecovering();
     }
     if (changed) {
       await this.actionConfirmations.settlePendingForTicket(params.ticketId, "任务已关闭", undefined, context);
@@ -9112,9 +9103,7 @@ export class KuloHub implements OrchestratorController {
       try { await work(); } catch (error) { errors.push(error); }
     };
     await finish(() => this.#clusterCloseHook?.());
-    for (const id of [...this.#inlineDispatchWaiters.keys()]) {
-      this.#notifyInlineWaiters(id);
-    }
+    this.#inlineWaiters.notifyAll();
     for (const topicId of [...this.#orchestratorBrowserSessions.keys()]) {
       await this.#closeOrchestratorBrowserSession(topicId, true);
     }
@@ -9609,7 +9598,7 @@ export class KuloHub implements OrchestratorController {
         requestId: `kulo:host-action-request:${confirmation.id}`,
       });
     }, BACKGROUND_CONTEXT);
-    if (!this.#recovering) this.harness.resume();
+    this.#runtimeGates.resumeIfNotRecovering();
     await this.#broadcastTickets(BACKGROUND_CONTEXT);
   }
 
@@ -10234,20 +10223,15 @@ export class KuloHub implements OrchestratorController {
     nextDoc: KuloDurableSettings,
     context: Context,
   ): Promise<void> {
-    const oldIdentityDir = resolveEffectiveIdentityDir(this.#liveSettings, this.#defaultIdentityDir);
-    const oldAuthFile = this.#liveSettings.memory.authFile;
-    for (const key of Object.keys(this.#liveSettings)) {
-      if (!Object.hasOwn(nextDoc, key)) delete (this.#liveSettings as Record<string, unknown>)[key];
-    }
-    Object.assign(this.#liveSettings, nextDoc);
+    const update = this.#settingsStore.replace(nextDoc);
+    if (!update.applied) return;
     this.externalClientQuotas.reconcileFromSettings(this.#liveSettings.roles, this.#liveSettings.externalClients);
 
-    const effectiveIdentityDir = resolveEffectiveIdentityDir(this.#liveSettings, this.#defaultIdentityDir);
-    if (oldIdentityDir !== effectiveIdentityDir || oldAuthFile !== nextDoc.memory.authFile) {
+    if (update.protectedPathsChanged) {
       this.envManager.invalidateWorkerEnvironments();
     }
-    if (effectiveIdentityDir === this.#defaultIdentityDir) {
-      fs.mkdirSync(effectiveIdentityDir, { recursive: true, mode: 0o700 });
+    if (update.newIdentityDir === this.#defaultIdentityDir) {
+      fs.mkdirSync(update.newIdentityDir, { recursive: true, mode: 0o700 });
     }
 
     if (this.#providerManager) {
@@ -10578,12 +10562,11 @@ export class KuloHub implements OrchestratorController {
   }
 
   async #currentRecoveryGuard(conversationId: number | undefined, context: Context, toolTaskId?: number): Promise<WorkerRecoveryEntryData | undefined> {
-    const input = await this.#currentControlInput(conversationId, context, toolTaskId);
-    return input && WorkerRecoveryEntry.is(input) ? input.data : undefined;
+    return this.#turnContext.currentRecoveryGuard(conversationId, context, toolTaskId);
   }
 
   async #currentControlInput(conversationId: number | undefined, context: Context, toolTaskId?: number): Promise<EntryRecord | undefined> {
-    return (await this.#currentControlInputs(conversationId, context, toolTaskId))[0];
+    return this.#turnContext.currentControlInput(conversationId, context, toolTaskId);
   }
 
   #touchOrchestratorBrowserSession(
@@ -10900,63 +10883,11 @@ export class KuloHub implements OrchestratorController {
     excludeIds: ReadonlySet<EntryId>,
     limit = 12,
   ): Promise<PriorUserDeviceTurn[]> {
-    if (conversationId === undefined) return [];
-    const conversation = await this.harness.conversation(conversationId as ConversationId, context);
-    if (!conversation) return [];
-    let assistant: EntryId | undefined;
-    if (toolTaskId !== undefined) {
-      let next = toolTaskId;
-      for (let depth = 0; depth < 16; depth++) {
-        const task = await this.harness.commit((tx) => tx.task(next as never), context);
-        const input = task?.input as { kind?: string; assistant?: number; parent?: number } | undefined;
-        if (input?.kind === "model" && input.assistant !== undefined) {
-          assistant = input.assistant as EntryId;
-          break;
-        }
-        if (input?.kind !== "nested" || input.parent === undefined) break;
-        next = input.parent;
-      }
-    }
-    const entries = (await conversation.context(context, assistant === undefined ? undefined : { at: assistant })).entries;
-    const turns: PriorUserDeviceTurn[] = [];
-    for (const entry of [...entries].reverse()) {
-      if (excludeIds.has(entry.id)) continue;
-      if (!KuloUserEntry.is(entry)) continue;
-      const routing = chatRoutingData(entry);
-      turns.push({
-        text: routing.text,
-        targetDeviceId: routing.targetDeviceId || undefined,
-        sourceDeviceId: routing.source?.deviceId,
-      });
-      if (turns.length >= limit) break;
-    }
-    return turns;
+    return this.#turnContext.recentPriorUserTurns(conversationId, context, toolTaskId, excludeIds, limit);
   }
 
   async #currentControlInputs(conversationId: number | undefined, context: Context, toolTaskId?: number): Promise<EntryRecord[]> {
-    if (conversationId === undefined) return [];
-    const conversation = await this.harness.conversation(conversationId as ConversationId, context);
-    let assistant: EntryId | undefined;
-    if (toolTaskId !== undefined) {
-      let next = toolTaskId;
-      for (let depth = 0; depth < 16; depth++) {
-        const task = await this.harness.commit(tx => tx.task(next as never), context);
-        const input = task?.input as { kind?: string; assistant?: number; parent?: number } | undefined;
-        if (input?.kind === "model" && input.assistant !== undefined) { assistant = input.assistant as EntryId; break; }
-        if (input?.kind !== "nested" || input.parent === undefined) throw new Error("无法核对主脑工具的任务上下文。");
-        next = input.parent;
-      }
-      if (assistant === undefined) throw new Error("主脑工具嵌套层级超出上下文核对范围。");
-    }
-    const entries = conversation ? (await conversation.context(context, assistant === undefined ? undefined : { at: assistant })).entries : [];
-    const inputs: EntryRecord[] = [];
-    for (const entry of [...entries].reverse()) {
-      if (inputs.length && AssistantEntry.is(entry)) break;
-      if (!isRecoveryInputBoundary(entry)) continue;
-      if (WorkerRelayEntry.is(entry) || WorkerRecoveryEntry.is(entry) || WorkerWatchdogEntry.is(entry)) return inputs.length ? inputs : [entry];
-      inputs.push(entry);
-    }
-    return inputs;
+    return this.#turnContext.currentControlInputs(conversationId, context, toolTaskId);
   }
 
   #startTopicAutoArchive(): void {

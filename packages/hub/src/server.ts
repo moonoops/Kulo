@@ -47,7 +47,6 @@ import {
   type ExtensionOperationRequest,
 } from "@kulo/protocol";
 import type { ConnectionVaultKeyStore } from "./connection-vault.js";
-import { migrateLegacyLocalReferences } from "./cluster-migration.js";
 import { ClusterSyncHttpError, ClusterSyncService, ensureLocalClusterKeys } from "./cluster-sync.js";
 import {
   ClusterFenceMonitor,
@@ -1768,8 +1767,7 @@ export async function startKuloHubServer(
             origin: requestOrigin(req),
           });
           if (result.legacyLocalNodeId) {
-            await migrateLegacyLocalReferences(hub.harness, result.legacyLocalNodeId);
-            hub.uploads.setLegacyLocalPrincipal(result.legacyLocalNodeId);
+            await hub.migrateLegacyLocalNode(result.legacyLocalNodeId);
           }
           hub.setClusterHostContext({
             localNodeId: devices.localNodeId,
