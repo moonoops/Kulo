@@ -4,7 +4,7 @@ import type { ChatAttachment, MessagePart } from "@kulo/protocol";
 import { KuloMarkdown, markdownUrlTransform } from "../../kulo-markdown";
 import { AssetImageGallery, safeContentUrl } from "./asset-preview";
 import { CodeBlock } from "./code-block";
-import { MessageContent, groupMessageParts } from "./message-content";
+import { MessageContent, groupMessageParts, stableUserParts } from "./message-content";
 import { ConnectedMessageContent } from "./connected-message-content";
 import { MediaMessage, pauseOtherMedia, registerMedia } from "./media-message";
 
@@ -95,6 +95,20 @@ describe("chat rich content", () => {
     expect(html).not.toContain("<strong>");
     expect(html.match(/<img /g)).toHaveLength(1);
     expect(html.indexOf("<img ")).toBeLessThan(html.indexOf("**原文**"));
+  });
+
+  it("keeps user part IDs stable across local negative ID and server positive ID replacement", () => {
+    const localParts: MessagePart[] = [
+      { partId: "-9007199254740991:asset:image", type: "image", assetId: "image", asset: image },
+      { partId: "-9007199254740991:text", type: "markdown", text: "发一张图" },
+    ];
+    const serverParts: MessagePart[] = [
+      { partId: "101:asset:image", type: "image", assetId: "image", asset: image },
+      { partId: "101:text", type: "markdown", text: "发一张图" },
+    ];
+    expect(stableUserParts({ role: "user", requestId: "web:abc" }, localParts).map((p) => p.partId))
+      .toEqual(stableUserParts({ role: "user", requestId: "web:abc" }, serverParts).map((p) => p.partId));
+    expect(stableUserParts({ role: "assistant", requestId: "web:abc" }, serverParts)).toBe(serverParts);
   });
 
   it("uses structured parts instead of duplicating legacy fallback text and supports UI fallback", () => {

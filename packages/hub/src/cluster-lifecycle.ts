@@ -1107,19 +1107,14 @@ export function createStandbyHostBridge(options: CreateStandbyHostBridgeOptions)
         keyStore: options.keyStore,
       });
     },
+    readConflictNotice: () => readConflictBackupNotice(paths),
+    clearConflictNotice: () => clearConflictBackupNotice(paths),
     async wipeStandby(_reason: string) {
-      if (replicator) {
-        await replicator.wipeStandby();
-        replicator = null;
-      } else {
-        fs.rmSync(paths.standbyDir, { recursive: true, force: true });
-      }
+      if (replicator) { await replicator.wipeStandby(); replicator = null; }
+      else fs.rmSync(paths.standbyDir, { recursive: true, force: true });
     },
     async close() {
-      if (replicator) {
-        await replicator.stop();
-        replicator = null;
-      }
+      if (replicator) { await replicator.stop(); replicator = null; }
     },
   };
 }

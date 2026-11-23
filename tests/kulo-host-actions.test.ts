@@ -25,7 +25,9 @@ import {
 import { KuloStateDoc, type KuloHub } from "@kulo/hub";
 import { WebSocketServer } from "ws";
 import { buildHostActionConfirmCard, type PendingActionConfirmation } from "../packages/hub/src/action-confirmations.js";
+import { resolveHostActionTargetEnv } from "../packages/hub/src/env-routing-policy.js";
 import { executeApprovedHostAction } from "../packages/hub/src/host-action-execution.js";
+import type { EnvNodeDescriptor } from "@kulo/protocol";
 import { openTestHub } from "./helpers/secure-hub.js";
 
 const dirs: string[] = [];
@@ -723,5 +725,78 @@ describe("Host action Main-Agent authority, smart judgment, escalation cards & c
     );
     expect(failRes.status).toBe("failed");
     expect(outcomes).toEqual(["unknown"]);
+  });
+
+  it("enforces six-tier host-action routing: explicit, project lock, multi-turn context, sender computer, offline sender guard, and phone proactive Hub fallback", () => {
+    const hubEnv: EnvNodeDescriptor = {
+      id: "local", name: "MacMini", kind: "local", online: true,
+      platform: "darwin", arch: "arm64", rootDir: "/hub", capabilities: ["fs", "bash", "host-actions"], connectedAt: 1, lastSeenAt: 1,
+    };
+    const macbookOnline: EnvNodeDescriptor = {
+      id: "macbook", name: "MacBook", kind: "reverse-ws", online: true,
+      platform: "darwin", arch: "arm64", rootDir: "/mb", capabilities: ["fs", "bash", "host-actions"], connectedAt: 1, lastSeenAt: 1,
+    };
+    const macbookOffline: EnvNodeDescriptor = { ...macbookOnline, online: false };
+    const phoneEnv: EnvNodeDescriptor = {
+      id: "pixel", name: "K90Ultra", kind: "reverse-ws", online: true,
+      platform: "android", arch: "arm64", rootDir: "", executionKind: "native-device", capabilities: ["android-native-v1"], connectedAt: 1, lastSeenAt: 1,
+    };
+    const resolve = (envs: EnvNodeDescriptor[], overrides: Partial<Parameters<typeof resolveHostActionTargetEnv>[0]>) =>
+      resolveHostActionTargetEnv({
+        envs,
+        getEnvDescriptor: (id) => envs.find((e) => e.id === id),
+        localEnvId: "local",
+        pickDefaultEnvId: () => "local",
+        ...overrides,
+      });
+
+    // Tier 1: explicit env_id wins over sender
+    expect(resolve([hubEnv, macbookOnline], {
+      requestedEnvId: "local",
+      sourceDeviceId: "macbook",
+      currentText: "检查主机上的服务",
+    })).toMatchObject({ ok: true, envId: "local" });
+
+    // Tier 2: project lock enforces project device and rejects conflicting named computer
+    expect(resolve([hubEnv, macbookOnline], {
+      projectDeviceId: "macbook",
+      sourceDeviceId: "local",
+      currentText: "检查进程",
+    })).toMatchObject({ ok: true, envId: "macbook" });
+    expect(resolve([hubEnv, macbookOnline], {
+      projectDeviceId: "macbook",
+      sourceDeviceId: "local",
+      currentText: "检查 MacMini 上的进程",
+    })).toMatchObject({ ok: false });
+
+    // Tier 4: multi-turn contextual continuation keeps MacBook when phone follows up without renaming
+    expect(resolve([hubEnv, macbookOnline, phoneEnv], {
+      sourceDeviceId: "pixel",
+      currentText: "再看下内存占用",
+      priorUserTurns: [{ text: "帮我查一下 MacBook 上的 Node 进程", sourceDeviceId: "pixel" }],
+    })).toMatchObject({ ok: true, envId: "macbook" });
+
+    // Tier 4 offline guard: prior named MacBook offline MUST NOT silently drift to Hub
+    expect(resolve([hubEnv, macbookOffline, phoneEnv], {
+      sourceDeviceId: "pixel",
+      currentText: "再看下内存占用",
+      priorUserTurns: [{ text: "帮我查一下 MacBook 上的 Node 进程", sourceDeviceId: "pixel" }],
+    })).toMatchObject({ ok: false, message: expect.stringContaining("当前离线") });
+
+    // Tier 5: online sender computer routes to itself; offline sender computer returns error (never silently drifts to Hub)
+    expect(resolve([hubEnv, macbookOnline], {
+      sourceDeviceId: "macbook",
+      currentText: "查一下本机端口占用",
+    })).toMatchObject({ ok: true, envId: "macbook" });
+    expect(resolve([hubEnv, macbookOffline], {
+      sourceDeviceId: "macbook",
+      currentText: "查一下本机端口占用",
+    })).toMatchObject({ ok: false, message: expect.stringContaining("执行通道离线") });
+
+    // Tier 6: phone sender with no prior computer context proactively falls back to Hub with routedToHubFallback=true
+    expect(resolve([hubEnv, macbookOnline, phoneEnv], {
+      sourceDeviceId: "pixel",
+      currentText: "查一下后台服务运行状态",
+    })).toMatchObject({ ok: true, envId: "local", routedToHubFallback: true });
   });
 });

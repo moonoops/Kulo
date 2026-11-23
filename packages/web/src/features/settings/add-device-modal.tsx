@@ -1,18 +1,68 @@
 import { getLanguage, translate as t, useI18n } from "../../kulo-i18n";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Disclosure, FieldError, Input, Label, ListBox, Modal, Select, Spinner, Tabs, TextField, toast } from "@heroui/react";
-import type { DeviceInterconnectionView, DeviceInvitation, DeviceSshScan } from "@kulo/protocol";
+import type { ConnectionRecordView, ConnectionWorkspaceSnapshot, DeviceInterconnectionView, DeviceInvitation } from "@kulo/protocol";
 import { KuloApiError } from "../../kulo-api";
 import { KuloIcon } from "../../kulo-icon";
-import { buildDeviceSshRequest, deviceApi, isShareableHubUrl } from "./device-api";
+import { buildDeviceSshAddRequest, deviceApi, isShareableHubUrl } from "./device-api";
 import { copyDeviceText } from "./device-clipboard";
 import { MobilePairingPanel } from "./mobile-pairing-panel";
 import "./add-device-modal.css";
 
-export function AddDeviceModal({ open, view, pollError, onClose, onRefresh }: {
+function formatSshEndpoint(connection: ConnectionRecordView): string {
+  if (!connection.host) return "";
+  const userPart = connection.username ? `${connection.username}@` : "";
+  const portPart = connection.port && connection.port !== 22 ? `:${connection.port}` : "";
+  return `${userPart}${connection.host}${portPart}`;
+}
+
+function formatSshLabel(connection: ConnectionRecordView): string {
+  const endpoint = formatSshEndpoint(connection);
+  return endpoint ? `${connection.name} (${endpoint})` : connection.name;
+}
+
+export function classifySshCredentialsForDevice(
+  connections: readonly ConnectionRecordView[],
+  boundConnectionIds: ReadonlySet<string>,
+) {
+  const all = connections.filter((item) => item.kind === "ssh");
+  const isEligible = (item: ConnectionRecordView) =>
+    item.status === "verified" &&
+    item.hasCredential &&
+    Boolean(item.host && item.username) &&
+    Boolean(item.hostFingerprint) &&
+    !boundConnectionIds.has(item.id);
+  const eligible = all.filter(isEligible);
+  const disabledKeys = all.filter((item) => !isEligible(item)).map((item) => item.id);
+  const unverifiedCount = all.filter((item) => !boundConnectionIds.has(item.id) && !isEligible(item)).length;
+  return { all, eligible, disabledKeys, unverifiedCount };
+}
+
+function sshDisabledTag(item: ConnectionRecordView, boundIds: ReadonlySet<string>): string | null {
+  if (boundIds.has(item.id)) return t("已接入", "Added");
+  if (item.status === "error") return t("需要处理", "Needs attention");
+  if (item.status !== "verified" || !item.hasCredential || !item.host || !item.username || !item.hostFingerprint) {
+    return t("待验证", "Unverified");
+  }
+  return null;
+}
+
+export function AddDeviceModal({
+  open,
+  view,
+  pollError,
+  connections,
+  connectionsLoading = false,
+  onOpenSshCredentials,
+  onClose,
+  onRefresh,
+}: {
   open: boolean;
   view: DeviceInterconnectionView;
   pollError?: string;
+  connections?: ConnectionWorkspaceSnapshot | null;
+  connectionsLoading?: boolean;
+  onOpenSshCredentials?: (action: "create" | "verify") => void;
   onClose: () => void;
   onRefresh: () => Promise<void>;
 }) {
@@ -22,12 +72,9 @@ export function AddDeviceModal({ open, view, pollError, onClose, onRefresh }: {
   const [hubUrl, setHubUrl] = useState("");
   const [customAddress, setCustomAddress] = useState(false);
   const [name, setName] = useState("");
-  const [host, setHost] = useState("");
-  const [user, setUser] = useState("");
-  const [port, setPort] = useState("22");
+  const [selectedConnectionId, setSelectedConnectionId] = useState("");
   const [rootDir, setRootDir] = useState("");
   const [invitation, setInvitation] = useState<DeviceInvitation>();
-  const [scan, setScan] = useState<DeviceSshScan>();
   const [sshDeviceId, setSshDeviceId] = useState<string>();
   const [mobileDeviceId, setMobileDeviceId] = useState<string>();
   const [busy, setBusy] = useState<string>();
@@ -41,6 +88,17 @@ export function AddDeviceModal({ open, view, pollError, onClose, onRefresh }: {
   const connected = target?.status === "online";
   const expired = !!invitation && now >= invitation.expiresAt && !connected;
   const addressValid = isShareableHubUrl(hubUrl.trim());
+
+  const boundSshIds = useMemo(
+    () => new Set(view.devices.map((device) => device.sshConnectionId).filter((id): id is string => Boolean(id))),
+    [view.devices],
+  );
+  const sshState = useMemo(
+    () => classifySshCredentialsForDevice(connections?.connections ?? [], boundSshIds),
+    [connections?.connections, boundSshIds],
+  );
+  const selectedSsh = sshState.eligible.find((item) => item.id === selectedConnectionId);
+  const vaultUnavailable = Boolean(connections && !connections.vault.available);
 
   const cancelInvitation = async () => {
     const current = inviteRef.current;
@@ -59,20 +117,24 @@ export function AddDeviceModal({ open, view, pollError, onClose, onRefresh }: {
     setHubUrl(initial);
     setCustomAddress(!initial);
     setName("");
-    setHost("");
-    setUser("");
-    setPort("22");
+    setSelectedConnectionId(sshState.eligible[0]?.id ?? "");
     setRootDir("");
     setMode("command");
     setPlatform("posix");
     setInvitation(undefined);
-    setScan(undefined);
     setSshDeviceId(undefined);
     setMobileDeviceId(undefined);
     setBusy(undefined);
     setError(undefined);
     setNow(Date.now());
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (!selectedConnectionId || !sshState.eligible.some((item) => item.id === selectedConnectionId)) {
+      setSelectedConnectionId(sshState.eligible[0]?.id ?? "");
+    }
+  }, [open, selectedConnectionId, sshState.eligible]);
 
   useEffect(() => {
     if (!open || !invitation || connected) return;
@@ -106,6 +168,12 @@ export function AddDeviceModal({ open, view, pollError, onClose, onRefresh }: {
     }
   };
 
+  const openSshCredentials = async (action: "create" | "verify") => {
+    if (busy || !onOpenSshCredentials) return;
+    await close();
+    onOpenSshCredentials(action);
+  };
+
   const validateAddress = () => {
     if (addressValid) return true;
     setError(t("请输入其他设备可访问的主机地址，不能使用 localhost 或回环地址。", "Enter a host URL reachable by other devices. Do not use localhost or a loopback address."));
@@ -134,39 +202,21 @@ export function AddDeviceModal({ open, view, pollError, onClose, onRefresh }: {
     }
   };
 
-  const scanSsh = async () => {
-    if (busy) return;
-    setBusy("scan");
-    setError(undefined);
-    const controller = new AbortController();
-    requestRef.current = controller;
-    try {
-      const request = buildDeviceSshRequest({ host, port, user, name, rootDir }, window.location.origin);
-      const next = await deviceApi.scanSsh(request, controller.signal);
-      if (!controller.signal.aborted) setScan(next);
-    } catch (err) {
-      if (!controller.signal.aborted) setError(err instanceof Error ? err.message : t("SSH 连接失败", "SSH connection failed"));
-    } finally {
-      if (!controller.signal.aborted) setBusy(undefined);
-    }
-  };
-
   const addSsh = async () => {
-    if (busy || !scan) return;
+    if (busy || !selectedSsh) return;
     setBusy("ssh");
     setError(undefined);
     const controller = new AbortController();
     requestRef.current = controller;
     try {
-      const device = await deviceApi.addSsh(scan.scanId, controller.signal);
+      const request = buildDeviceSshAddRequest({ connectionId: selectedSsh.id, name, rootDir });
+      const device = await deviceApi.addSsh(request, controller.signal);
       if (!controller.signal.aborted) {
         setSshDeviceId(device.id);
-        setScan(undefined);
         await onRefresh();
       }
     } catch (err) {
       if (!controller.signal.aborted) {
-        setScan(undefined);
         setError(err instanceof Error ? err.message : t("添加 SSH 设备失败", "Failed to add SSH device"));
       }
     } finally {
@@ -186,7 +236,6 @@ export function AddDeviceModal({ open, view, pollError, onClose, onRefresh }: {
 
   const changeTarget = (set: (value: string) => void, value: string) => {
     set(value);
-    setScan(undefined);
     setError(undefined);
   };
 
@@ -267,34 +316,105 @@ export function AddDeviceModal({ open, view, pollError, onClose, onRefresh }: {
                     {open && mode === "mobile" && <MobilePairingPanel view={view} onInvitation={setMobileDeviceId} onRefresh={onRefresh} />}
                   </Tabs.Panel>
                   <Tabs.Panel id="ssh" className="kulo-add-device-panel kulo-form-stack">
-                    <form id="kulo-device-ssh" className="kulo-form-stack" onSubmit={(event) => { event.preventDefault(); if (scan) void addSsh(); else void scanSsh(); }}>
-                      <div className="kulo-form-grid kulo-form-grid--port">
-                        <TextField className="kulo-form-field" variant="secondary" fullWidth value={host} onChange={(value) => changeTarget(setHost, value)} isRequired isDisabled={!!busy || !!sshDeviceId}>
-                          <Label>{t("SSH 主机", "SSH host")}</Label><Input placeholder={t("IP、域名或 SSH 别名", "IP, domain, or SSH alias")} autoCapitalize="off" autoCorrect="off" spellCheck={false} />
-                        </TextField>
-                        <TextField className="kulo-form-field" variant="secondary" fullWidth value={port} onChange={(value) => changeTarget(setPort, value)} isRequired isDisabled={!!busy || !!sshDeviceId}>
-                          <Label>{t("端口", "Port")}</Label><Input inputMode="numeric" pattern="[0-9]+" />
-                        </TextField>
+                    {connectionsLoading && !connections ? (
+                      <div className="kulo-add-device-status" role="status">
+                        <span className="kulo-add-device-status-label"><Spinner size="sm" />{t("正在读取 SSH 凭据…", "Loading SSH credentials…")}</span>
                       </div>
-                      <Disclosure className="kulo-add-device-options">
-                        <Disclosure.Heading><Disclosure.Trigger className="kulo-add-device-options-trigger">{t("更多选项", "More options")}<Disclosure.Indicator /></Disclosure.Trigger></Disclosure.Heading>
-                        <Disclosure.Content><Disclosure.Body className="kulo-form-stack kulo-add-device-option-fields">
-                          <TextField className="kulo-form-field" variant="secondary" fullWidth value={user} onChange={(value) => changeTarget(setUser, value)} isDisabled={!!busy || !!sshDeviceId}>
-                            <Label>{t("用户名", "Username")}</Label><Input placeholder={t("使用 SSH 配置", "Use SSH config")} autoCapitalize="off" autoCorrect="off" spellCheck={false} />
-                          </TextField>
-                          <TextField className="kulo-form-field" variant="secondary" fullWidth value={rootDir} onChange={(value) => changeTarget(setRootDir, value)} isDisabled={!!busy || !!sshDeviceId}>
-                            <Label>{t("工作目录", "Working directory")}</Label><Input placeholder={t("使用默认目录", "Use default directory")} autoCapitalize="off" autoCorrect="off" spellCheck={false} />
-                          </TextField>
-                          <TextField className="kulo-form-field" variant="secondary" fullWidth value={name} onChange={(value) => changeTarget(setName, value)} isDisabled={!!busy || !!sshDeviceId} maxLength={100}>
-                            <Label>{t("设备名称", "Device name")}</Label><Input placeholder={t("自动识别", "Detect automatically")} />
-                          </TextField>
-                        </Disclosure.Body></Disclosure.Content>
-                      </Disclosure>
-                    </form>
-                    {scan && <div className="kulo-add-device-fingerprints">
-                      <span className="kulo-add-device-fingerprint-title"><KuloIcon name="shield" size={16} />{t("核对主机指纹", "Verify host fingerprint")}</span>
-                      {scan.fingerprints.map((fingerprint) => <code className="kulo-add-device-fingerprint" key={fingerprint}>{fingerprint}</code>)}
-                    </div>}
+                    ) : vaultUnavailable ? (
+                      <Alert status="warning">
+                        <Alert.Indicator />
+                        <Alert.Content><Alert.Title>{t("本地凭据库不可用", "Local credential vault unavailable")}</Alert.Title></Alert.Content>
+                      </Alert>
+                    ) : sshState.eligible.length > 0 ? (
+                      <form id="kulo-device-ssh" className="kulo-form-stack" onSubmit={(event) => { event.preventDefault(); void addSsh(); }}>
+                        <Select
+                          className="kulo-form-field"
+                          variant="secondary"
+                          fullWidth
+                          isRequired
+                          value={selectedConnectionId || null}
+                          disabledKeys={sshState.disabledKeys}
+                          isDisabled={!!busy || !!sshDeviceId}
+                          onChange={(value) => { setSelectedConnectionId(value ? String(value) : ""); setError(undefined); }}
+                        >
+                          <Label>{t("SSH 凭据", "SSH credential")}</Label>
+                          <Select.Trigger>
+                            <Select.Value className="kulo-add-device-address-value">
+                              {() => selectedSsh ? formatSshLabel(selectedSsh) : t("选择已验证的 SSH 凭据", "Select a verified SSH credential")}
+                            </Select.Value>
+                            <Select.Indicator />
+                          </Select.Trigger>
+                          <Select.Popover>
+                            <ListBox aria-label={t("SSH 凭据", "SSH credential")}>
+                              {sshState.all.map((item) => {
+                                const endpoint = formatSshEndpoint(item);
+                                const tag = sshDisabledTag(item, boundSshIds);
+                                return (
+                                  <ListBox.Item key={item.id} id={item.id} textValue={formatSshLabel(item)}>
+                                    <div className="kulo-add-device-ssh-option">
+                                      <span className="kulo-add-device-ssh-option-name">{item.name}</span>
+                                      {(endpoint || tag) && (
+                                        <span className="kulo-add-device-ssh-option-meta">
+                                          {endpoint}{endpoint && tag ? " · " : ""}{tag ?? ""}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <ListBox.ItemIndicator />
+                                  </ListBox.Item>
+                                );
+                              })}
+                            </ListBox>
+                          </Select.Popover>
+                        </Select>
+                        {onOpenSshCredentials && !sshDeviceId && (
+                          <div className="kulo-add-device-ssh-links">
+                            <Button size="sm" variant="ghost" isDisabled={!!busy} onPress={() => void openSshCredentials("create")}>
+                              <KuloIcon name="add" size={14} />
+                              {t("添加 SSH 凭据", "Add SSH credential")}
+                            </Button>
+                            {sshState.unverifiedCount > 0 && (
+                              <Button size="sm" variant="ghost" isDisabled={!!busy} onPress={() => void openSshCredentials("verify")}>
+                                {t("前往验证", "Verify credentials")}
+                              </Button>
+                            )}
+                          </div>
+                        )}
+                        <Disclosure className="kulo-add-device-options">
+                          <Disclosure.Heading><Disclosure.Trigger className="kulo-add-device-options-trigger">{t("更多选项", "More options")}<Disclosure.Indicator /></Disclosure.Trigger></Disclosure.Heading>
+                          <Disclosure.Content><Disclosure.Body className="kulo-form-stack kulo-add-device-option-fields">
+                            <TextField className="kulo-form-field" variant="secondary" fullWidth value={rootDir} onChange={(value) => changeTarget(setRootDir, value)} isDisabled={!!busy || !!sshDeviceId}>
+                              <Label>{t("工作目录", "Working directory")}</Label><Input placeholder={t("使用默认目录", "Use default directory")} autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+                            </TextField>
+                            <TextField className="kulo-form-field" variant="secondary" fullWidth value={name} onChange={(value) => changeTarget(setName, value)} isDisabled={!!busy || !!sshDeviceId} maxLength={100}>
+                              <Label>{t("设备名称", "Device name")}</Label><Input placeholder={selectedSsh?.name ?? t("自动识别", "Detect automatically")} />
+                            </TextField>
+                          </Disclosure.Body></Disclosure.Content>
+                        </Disclosure>
+                      </form>
+                    ) : (
+                      <div className="kulo-add-device-ssh-empty">
+                        <span className="kulo-add-device-ssh-empty-title">
+                          {sshState.all.length === 0
+                            ? t("尚未添加 SSH 凭据", "No SSH credentials added")
+                            : sshState.unverifiedCount > 0
+                              ? t("暂无已验证的 SSH 凭据", "No verified SSH credentials")
+                              : t("已有 SSH 凭据均已接入", "All SSH credentials are already added")}
+                        </span>
+                        {onOpenSshCredentials && (
+                          <div className="kulo-add-device-ssh-empty-actions">
+                            {sshState.unverifiedCount > 0 && (
+                              <Button size="sm" variant="secondary" isDisabled={!!busy} onPress={() => void openSshCredentials("verify")}>
+                                {t("前往验证", "Verify credentials")}
+                              </Button>
+                            )}
+                            <Button size="sm" variant="secondary" isDisabled={!!busy} onPress={() => void openSshCredentials("create")}>
+                              <KuloIcon name="add" size={14} />
+                              {t("添加 SSH 凭据", "Add SSH credential")}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     {waiting && !pollError && <div className="kulo-add-device-status" role="status"><span className="kulo-add-device-status-label"><Spinner size="sm" />{t("等待设备上线", "Waiting for device to come online")}</span></div>}
                   </Tabs.Panel>
                   {target?.error && <Alert status="danger" className="kulo-add-device-alert"><Alert.Indicator /><Alert.Content><Alert.Title>{target.error}</Alert.Title></Alert.Content></Alert>}
@@ -307,7 +427,11 @@ export function AddDeviceModal({ open, view, pollError, onClose, onRefresh }: {
                 <Button variant="secondary" isDisabled={!!busy} onPress={() => void copy(invitation.agentInstructions)}>{t("复制给 Agent", "Copy for agent")}</Button>
                 <Button variant="primary" isDisabled={!!busy} onPress={() => command && void copy(command)}><KuloIcon name="copy" size={16} />{t("复制命令", "Copy command")}</Button>
               </> : <Button variant="primary" isPending={busy === "invite"} isDisabled={!!busy || !addressValid} onPress={() => void generate()}>{expired ? t("重新生成", "Regenerate") : t("生成接入命令", "Generate connection command")}</Button>)}
-              {!connected && mode === "ssh" && !sshDeviceId && <Button type="submit" form="kulo-device-ssh" variant="primary" isPending={busy === "scan" || busy === "ssh"} isDisabled={!!busy || !host.trim()}>{scan ? t("信任并添加", "Trust and add") : t("测试连接", "Test connection")}</Button>}
+              {!connected && mode === "ssh" && !sshDeviceId && sshState.eligible.length > 0 && (
+                <Button type="submit" form="kulo-device-ssh" variant="primary" isPending={busy === "ssh"} isDisabled={!!busy || !selectedSsh}>
+                  {t("添加设备", "Add device")}
+                </Button>
+              )}
             </Modal.Footer>
           </Modal.Dialog>
         </Modal.Container>

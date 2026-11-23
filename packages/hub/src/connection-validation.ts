@@ -158,3 +158,9 @@ export function informationRequest(text: string): { name: string; value: string 
   }
   return { name, value };
 }
+
+export function requiresCustomSecretFallback(secrets: ConnectionSecrets): boolean {
+  return Object.entries(secrets).some(
+    ([key, value]) => key !== "privateKey" && typeof value === "string" && (/[\r\n]/.test(value) || value.length > 16_384),
+  );
+}

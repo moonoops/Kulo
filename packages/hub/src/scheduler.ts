@@ -297,7 +297,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             materialized,
             localEnvId: deps.envManager.localEnvId,
             hasConnections: Boolean(deps.hasTicketConnections?.(ticket)),
-            memoryEnabled: Boolean(deps.isExternalMemoryEnabled?.()),
+            memoryEnabled: Boolean(ticket.projectId && deps.isExternalMemoryEnabled?.()),
             envCapabilities: deps.envManager.getEnvDescriptor(ticket.envId)?.capabilities,
           });
           await runtime.commit(async (tx) => {

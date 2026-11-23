@@ -80,7 +80,9 @@ import { SettingsUpdateError } from "./settings.js";
 import { createMediaHttpHandler } from "./media-http.js";
 import { snapshotChatUploadScope } from "./chat-attachment-deliveries.js";
 import type { HubHttpRouteContext } from "./http/context.js";
+import { authenticateHttpPrincipal, isDirectLocalHttpRequest, resolveHubRequestAuthority } from "./http/authority.js";
 import { handleCapabilitiesRoutes } from "./http/capabilities-routes.js";
+import { handleDevicesAndClusterRoutes } from "./http/devices-cluster-routes.js";
 import { handleProjectsRoutes } from "./http/projects-routes.js";
 import { handleSettingsProvidersRoutes } from "./http/settings-providers-routes.js";
 import { handleVoiceAssistantConnectionsRoutes } from "./http/voice-assistant-connections-routes.js";
@@ -89,7 +91,7 @@ import { MAINSTREAM_PROVIDER_PRESETS } from "./providers.js";
 import { UiCardError } from "./ui-cards.js";
 import { DeviceConnectionError, DeviceInterconnectionManager } from "./devices.js";
 import { isTicketUnfinished } from "./state.js";
-import { DeviceSshConnector } from "./device-ssh.js";
+import { createDeviceSshRuntime } from "./http/device-ssh-routes.js";
 import { ProjectError } from "./projects.js";
 import { TaskDeliverableError } from "./task-deliverables.js";
 import { MobileConnector, type MobileConnectorOptions, type MobileConnectorStatus } from "./mobile-connector.js";
@@ -459,16 +461,13 @@ export async function startKuloHubServer(
     ...(options.clusterFenceIntervalMs !== undefined ? { intervalMs: options.clusterFenceIntervalMs } : {}),
   });
   const deviceClients = new Map<WebSocket, string>();
-  const sshDevices = new DeviceSshConnector({
-    stateDir: hub.config.stateDir,
+  const sshDeviceRuntime = createDeviceSshRuntime({
+    connections: hub.connectionManager,
+    devices,
     hubPort: () => actualPort,
-    createInvitation: async (request) => {
-      const result = devices.createInvitation({ ...request, allowLoopback: true });
-      return { deviceId: result.invitation.deviceId, inviteToken: result.inviteToken };
-    },
-    onError: (id, message) => devices.setError(id, message),
-    onAddFailed: (id) => devices.remove(id),
+    ensureEnabled: async () => { await applyInterconnectionEnabled(true, false, false); },
   });
+  const sshDevices = sshDeviceRuntime.connector;
   hub.envManager.protectPaths([webDistDir]);
 
   const clientTopics = new Map<WebSocket, string>();
@@ -567,21 +566,11 @@ export async function startKuloHubServer(
     ws.once("close", () => clearTimeout(timeout));
   });
 
-  const authenticatedDevice = (req: http.IncomingMessage, parsedUrl: URL): string | undefined => {
-    const headerToken = /^Bearer\s+(\S+)$/i.exec(req.headers.authorization ?? "")?.[1];
-    const queryToken = parsedUrl.searchParams.get("token");
-    const expected = Buffer.from(authToken);
-    for (const token of [headerToken, queryToken]) {
-      if (!token || token.length > 8192) continue;
-      const supplied = Buffer.from(token);
-      if (supplied.length === expected.length && timingSafeEqual(supplied, expected)) return devices.localNodeId;
-    }
-    for (const token of [headerToken, queryToken]) {
-      const id = devices.authenticateClient(token ?? undefined);
-      if (id) return id;
-    }
-    return undefined;
-  };
+  const requestOrigin = (req: http.IncomingMessage): string => `${req.headers["x-forwarded-proto"] === "https" ? "https" : "http"}://${req.headers.host ?? `localhost:${actualPort}`}`;
+  const requestAuthority = (req: http.IncomingMessage, url: URL) =>
+    resolveHubRequestAuthority({ req, parsedUrl: url, hubAdminToken: authToken, devices, requestOrigin });
+  const authenticatedDevice = (req: http.IncomingMessage, parsedUrl: URL): string | undefined =>
+    authenticateHttpPrincipal(req, parsedUrl, authToken, devices).principalId;
   const isAuthorizedHttp = (req: http.IncomingMessage, parsedUrl: URL): boolean => authenticatedDevice(req, parsedUrl) !== undefined;
 
   const mediaHttp = createMediaHttpHandler({
@@ -592,20 +581,21 @@ export async function startKuloHubServer(
   });
 
   const currentDevice = (req: http.IncomingMessage, url: URL): string => authenticatedDevice(req, url) ?? devices.localNodeId;
-  const requestOrigin = (req: http.IncomingMessage): string => `${req.headers["x-forwarded-proto"] === "https" ? "https" : "http"}://${req.headers.host ?? `localhost:${actualPort}`}`;
-  const isDirectLocalRequest = (req: http.IncomingMessage) => !req.headers.forwarded && !req.headers["x-forwarded-for"] && !req.headers["x-real-ip"] &&
-    req.headers["sec-fetch-site"] !== "cross-site" && ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress ?? "");
-  const hasLocalDeviceControl = (req: http.IncomingMessage, url: URL) => {
-    if (!isDirectLocalRequest(req)) return false;
-    const id = authenticatedDevice(req, url);
-    return id !== undefined && devices.isLocalPrincipal(id);
-  };
+  const isDirectLocalRequest = isDirectLocalHttpRequest;
+  const hasLocalDeviceControl = (req: http.IncomingMessage, url: URL) => requestAuthority(req, url).isHubLocalDisplay;
+  const hasOwnerHubControl = (req: http.IncomingMessage, url: URL) => requestAuthority(req, url).hasOwnerHubControl;
   const deviceView = (req: http.IncomingMessage, url: URL) => {
-    const id = currentDevice(req, url);
+    const auth = requestAuthority(req, url);
+    const id = auth.principalId ?? devices.localNodeId;
     const currentDeviceKnown = !devices.isLocalPrincipal(id) || isDirectLocalRequest(req);
     const canSwitchRole = roleTransitions.canJoin && devices.isLocalPrincipal(id) && currentDeviceKnown;
-    const canManageStandby = hasLocalDeviceControl(req, url);
-    return { ...devices.view(actualPort, requestOrigin(req), id), currentDeviceKnown, canSwitchRole, canManageStandby };
+    return {
+      ...devices.view(actualPort, requestOrigin(req), id),
+      currentDeviceKnown,
+      canSwitchRole,
+      canManageHub: auth.hasOwnerHubControl,
+      canManageStandby: auth.canManageStandby,
+    };
   };
   const guardRemoteTasks = async (ids: string[] | undefined, force: boolean) => {
     const board = await hub.getBoardSnapshot();
@@ -725,10 +715,14 @@ export async function startKuloHubServer(
   hub.bindDeviceController({
     view: (clientId) => {
       const principal = resolvePrincipalForClient(clientId);
+      const isLocal = devices.isLocalPrincipal(principal);
+      const hasControl = isLocal || devices.isActivePairedPrincipal(principal);
       return {
         ...devices.view(actualPort, `http://127.0.0.1:${actualPort}`, principal),
         currentDeviceKnown: true,
-        canSwitchRole: roleTransitions.canJoin && devices.isLocalPrincipal(principal),
+        canSwitchRole: roleTransitions.canJoin && isLocal,
+        canManageHub: hasControl,
+        canManageStandby: hasControl && !devices.isSshPrincipal(principal),
       };
     },
     setEnabled: async (enabled, force = false) => {
@@ -755,12 +749,8 @@ export async function startKuloHubServer(
       const { invitation } = devices.createInvitation({ hubUrl: targetUrl, name });
       return { id: invitation.id, deviceId: invitation.deviceId, hubUrl: targetUrl, expiresAt: invitation.expiresAt };
     },
-    scanSsh: async (req) => sshDevices.scan(req),
-    addSsh: async (scanId) => {
-      const record = await sshDevices.add(scanId);
-      devices.recordSsh(record);
-      return devices.view(actualPort, `http://127.0.0.1:${actualPort}`, devices.localNodeId).devices.find((d) => d.id === record.deviceId);
-    },
+    inspectSshCredential: (connectionId) => sshDeviceRuntime.inspectSshCredential(connectionId),
+    addSsh: (request) => sshDeviceRuntime.addSshFromController(request),
     removeDevice: async (deviceId, force = false) => {
       await performRemoveDevice(deviceId, force);
     },
@@ -1484,9 +1474,10 @@ export async function startKuloHubServer(
           sendJson(res, 503, { error: "主机正在切换，请稍候。", code: "cluster_handover_in_progress" });
           return;
         }
+        const authority = requestAuthority(req, parsedUrl);
         const routeCtx: HubHttpRouteContext = {
-          hub, req, res, parsedUrl, pathname, readJsonObject, readJsonBody, sendJson,
-          requestOrigin, currentDevice, hasLocalDeviceControl, conversationQueryContext,
+          hub, req, res, parsedUrl, pathname, authority, readJsonObject, readJsonBody, sendJson,
+          requestOrigin, currentDevice, hasLocalDeviceControl, hasOwnerHubControl, conversationQueryContext,
           isHubSecret: (candidate) => [authToken, ...Object.values(hub.config.envTokens ?? {})].some((token) => Boolean(token) && token === candidate.trim()),
           openNativePermissionSettings: (kind) => options.openNativePermissionSettings ? options.openNativePermissionSettings(kind) : openNativePermissionSettings(kind),
         };
@@ -1571,53 +1562,6 @@ export async function startKuloHubServer(
           return;
         }
         if (await handleVoiceAssistantConnectionsRoutes(routeCtx)) return;
-
-        if (pathname === "/api/mobile/connection" && req.method === "GET") {
-          if (!devices.enabled) throw new DeviceConnectionError("请先开启设备互联。", 409);
-          const deviceId = currentDevice(req, parsedUrl);
-          if (!devices.isLocalPrincipal(deviceId)) requireMobileConnector(req);
-          const status = await mobileConnector.status();
-          const metadata = mobileMetadata(status);
-          sendJson(res, 200, { ...(devices.isLocalPrincipal(deviceId) ? metadata : devices.mobileProfile(deviceId, metadata)), tailscale: status.tailscale });
-          return;
-        }
-        if (pathname === "/api/mobile/connection/login" && req.method === "POST") {
-          if (!devices.isLocalPrincipal(currentDevice(req, parsedUrl))) throw new DeviceConnectionError("请在主脑设备上配置远程连接。", 403);
-          if (!devices.enabled) throw new DeviceConnectionError("请先开启设备互联。", 409);
-          sendJson(res, 200, { authURL: await mobileConnector.login() });
-          return;
-        }
-        if (pathname === "/api/mobile/invitations" && req.method === "POST") {
-          if (!devices.isLocalPrincipal(currentDevice(req, parsedUrl))) throw new DeviceConnectionError("请在主脑设备上添加手机。", 403);
-          if (!devices.enabled) throw new DeviceConnectionError("请先开启设备互联。", 409);
-          const body = await readJsonObject(req);
-          const metadata = mobileMetadata(await mobileConnector.status());
-          sendJson(res, 201, devices.createMobileInvitation({ name: body.name, ...metadata }));
-          return;
-        }
-        if (pathname.startsWith("/api/mobile/invitations/") && req.method === "DELETE") {
-          if (!devices.isLocalPrincipal(currentDevice(req, parsedUrl))) throw new DeviceConnectionError("请在主脑设备上管理手机邀请。", 403);
-          devices.cancelMobileInvitation(decodeURIComponent(pathname.slice("/api/mobile/invitations/".length)));
-          sendJson(res, 200, { ok: true });
-          return;
-        }
-        if (pathname === "/api/mobile/connection/lease" && req.method === "POST") {
-          requireMobileConnector(req);
-          const id = currentDevice(req, parsedUrl);
-          devices.mobileProfile(id, mobileMetadata(await mobileConnector.status()));
-          if (res.destroyed || req.aborted) return;
-          const lease = randomBytes(32).toString("base64url");
-          hub.envManager.setDeviceConnectionLease(id, lease);
-          sendJson(res, 200, { lease });
-          return;
-        }
-        if (pathname === "/api/mobile/probe/media" && req.method === "GET") {
-          requireMobileConnector(req);
-          res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store" });
-          res.end("Kulo mobile transport media probe.\n".repeat(2048));
-          return;
-        }
-
         const uiRoute = /^\/api\/ui\/cards\/([^/]+)(\/actions)?$/.exec(pathname);
         if (uiRoute) {
           const cardId = decodeURIComponent(uiRoute[1]!);
@@ -1634,364 +1578,14 @@ export async function startKuloHubServer(
             return;
           }
         }
-
-        if (pathname === "/api/devices" && req.method === "GET") {
-          sendJson(res, 200, deviceView(req, parsedUrl));
-          return;
-        }
-        if (pathname === "/api/devices" && req.method === "PATCH") {
-          if (!devices.isLocalPrincipal(currentDevice(req, parsedUrl))) throw new DeviceConnectionError("请在主脑设备上管理互联开关。", 403);
-          const body = await readJsonBody(req) as { enabled?: unknown; force?: unknown };
-          if (typeof body?.enabled !== "boolean") throw new DeviceConnectionError("互联开关状态无效。");
-          await setInterconnectionFromHttp(res, body.enabled, body.force === true);
-          sendJson(res, 200, deviceView(req, parsedUrl));
-          return;
-        }
-        if (pathname === "/api/devices/chat-invitations" && req.method === "POST") {
-          if (!hasLocalDeviceControl(req, parsedUrl)) {
-            throw new DeviceConnectionError("请在主机上的 Kulo 复制接入指令。", 403);
-          }
-          const body = await readJsonObject(req, 4 * 1024);
-          if (typeof body.enable !== "boolean" || typeof body.hubId !== "string") throw new DeviceConnectionError("接入邀请请求无效。");
-          if (body.hubId !== devices.hubId) throw new DeviceConnectionError("这条邀请卡属于其他主机。", 409, "device_host_changed");
-          if (!devices.enabled && !body.enable) throw new DeviceConnectionError("请开启设备互联后复制。", 409, "device_interconnection_disabled");
-          const localView = devices.view(actualPort, `http://127.0.0.1:${actualPort}`);
-          const hubUrl = localView.hubUrls[0];
-          if (!hubUrl) throw new DeviceConnectionError("未找到其他设备可访问的本机网络地址。", 409, "device_address_unavailable");
-          if (!devices.enabled) await setInterconnectionFromHttp(res, true);
-          const { invitation, inviteToken } = devices.createInvitation({ hubUrl });
-          const instruction = formatDeviceChatInvitation({ hubUrl, inviteToken, hubId: devices.hubId, hubName: hub.connectionManager.redact(localView.hubName) });
-          sendJson(res, 201, { instruction, expiresAt: invitation.expiresAt });
-          return;
-        }
-        if (pathname === "/api/devices/role-transition" && req.method === "GET") {
-          if (!hasLocalDeviceControl(req, parsedUrl)) throw new DeviceConnectionError("请在本机查看角色切换。", 403);
-          const transition = roleTransitions.lookup(parsedUrl.searchParams.get("id") ?? "");
-          if (!transition) throw new DeviceConnectionError("未找到这次运行模式切换。", 404);
-          sendJson(res, 200, transition);
-          return;
-        }
-        if (pathname === "/api/devices/join" && req.method === "POST") {
-          if (!hasLocalDeviceControl(req, parsedUrl)) throw new DeviceConnectionError("请在本地客户端执行主机接入操作。", 403);
-          const body = await readJsonBody(req) as { input?: unknown; token?: unknown; force?: unknown; rootDir?: unknown };
-          if (typeof body?.input !== "string" || !body.input.trim()) throw new DeviceConnectionError("请粘贴设备接入命令或输入主机地址。");
-          let parsed: DeviceChatInvitation;
-          try {
-            parsed = parseDeviceJoinInput(body.input, typeof body.token === "string" ? body.token : undefined);
-          } catch (error) {
-            throw new DeviceConnectionError(error instanceof Error ? error.message : "无效的设备接入命令。", 400);
-          }
-          const id = req.headers["x-kulo-transition-id"];
-          if (body.rootDir !== undefined && (typeof body.rootDir !== "string" || !body.rootDir.trim() || body.rootDir.length > 4096 || body.rootDir.includes("\0"))) throw new DeviceConnectionError("设备工作目录无效。", 400);
-          const change = await prepareJoinPeer(parsed, body.force === true, typeof id === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(id) ? id : undefined, body.rootDir as string | undefined);
-          res.shouldKeepAlive = false;
-          res.setHeader("Connection", "close");
-          res.once("finish", change.start);
-          res.once("close", change.start);
-          if (res.destroyed) change.start();
-          else sendJson(res, 202, change.receipt);
-          return;
-        }
-        if (pathname === "/api/devices/invitations" && req.method === "POST") {
-          const body = await readJsonBody(req) as { name?: unknown; hubUrl?: unknown };
-          if (!body || typeof body !== "object") throw new DeviceConnectionError("添加设备请求无效。");
-          sendJson(res, 201, devices.createInvitation({ name: body.name, hubUrl: body.hubUrl }).invitation);
-          return;
-        }
-        if (pathname.startsWith("/api/devices/invitations/") && req.method === "DELETE") {
-          devices.cancelInvitation(decodeURIComponent(pathname.slice("/api/devices/invitations/".length)));
-          sendJson(res, 200, { ok: true });
-          return;
-        }
-        if (pathname === "/api/devices/ssh/scan" && req.method === "POST") {
-          if (!devices.enabled) throw new DeviceConnectionError("请先开启设备互联。", 409);
-          sendJson(res, 200, await sshDevices.scan(await readJsonBody(req) as never));
-          return;
-        }
-        if (pathname === "/api/devices/ssh" && req.method === "POST") {
-          if (!devices.enabled) throw new DeviceConnectionError("请先开启设备互联。", 409);
-          const body = await readJsonBody(req) as { scanId?: unknown };
-          if (typeof body?.scanId !== "string") throw new DeviceConnectionError("请选择已验证指纹的 SSH 设备。");
-          const record = await sshDevices.add(body.scanId);
-          devices.recordSsh(record);
-          sendJson(res, 201, deviceView(req, parsedUrl).devices.find((d) => d.id === record.deviceId));
-          return;
-        }
-        if (pathname === "/api/devices/cluster-status" && req.method === "GET") {
-          const localView = devices.view(actualPort, requestOrigin(req));
-          const failbackOffer = devices.getFailbackOffer();
-          const conflictNotice = readConflictBackupNotice(clusterPaths);
-          const statusView: ClusterLocalStatusView = {
-            enabled: isClusterActive(),
-            hubId: devices.hubId,
-            nodeId: devices.localNodeId,
-            role: isClusterActive() ? "primary" : "standalone",
-            epoch: devices.clusterEpoch,
-            primaryNodeId: devices.primaryNodeId,
-            preferredPrimaryNodeId: devices.preferredPrimaryNodeId,
-            primaryOnline: true,
-            primaryName: localView.hubName,
-            ...(failbackOffer ? { failbackOffer } : {}),
-            ...(conflictNotice ? { conflictBackupNotice: conflictNotice } : {}),
-          };
-          sendJson(res, 200, statusView);
-          return;
-        }
-        if (pathname === "/api/devices/cluster-conflict-notice" && req.method === "DELETE") {
-          if (!hasLocalDeviceControl(req, parsedUrl)) {
-            throw new DeviceConnectionError("请在本机清除该提示。", 403);
-          }
-          clearConflictBackupNotice(clusterPaths);
-          sendJson(res, 200, { ok: true });
-          return;
-        }
-        const standbyRoute = /^\/api\/devices\/([^/]+)\/standby$/.exec(pathname);
-        if (standbyRoute && req.method === "POST") {
-          if (!hasLocalDeviceControl(req, parsedUrl)) {
-            throw new DeviceConnectionError("请在当前主机上管理备用主机。", 403, "standby_local_control_required");
-          }
-          const targetId = decodeURIComponent(standbyRoute[1]!);
-          const body = await readJsonObject(req, 4 * 1024);
-          if (typeof body.enabled !== "boolean") {
-            throw new DeviceConnectionError("备用主机开关参数无效。");
-          }
-          const keys = await ensurePrimaryClusterKeys();
-          const myNodeId = devices.localNodeId !== "local"
-            ? devices.localNodeId
-            : readOrCreateNodeIdentity(clusterPaths.nodeIdentityPath);
-          const result = devices.setDeviceStandby(targetId, body.enabled, {
-            nodeId: myNodeId,
-            standbyPublicKey: keys.x25519PublicKey,
-            identityPublicKey: keys.ed25519PublicKey,
-            listenPort: actualPort,
-            origin: requestOrigin(req),
-          });
-          if (result.legacyLocalNodeId) {
-            await hub.migrateLegacyLocalNode(result.legacyLocalNodeId);
-          }
-          hub.setClusterHostContext({
-            localNodeId: devices.localNodeId,
-            legacyLocalNodeId: devices.legacyLocalNodeId,
-          });
-          persistPrimaryClusterMembership(requestOrigin(req));
-          if (body.enabled) {
-            clusterSync.start();
-            fenceMonitor.start();
-            void clusterSync.triggerBaseline().catch((error) => {
-              console.error("[ClusterSync] baseline after setStandby failed:", error instanceof Error ? error.message : String(error));
-            });
-          }
-          sendJson(res, 200, deviceView(req, parsedUrl));
-          return;
-        }
-        if (pathname === "/api/cluster/handover" && req.method === "POST") {
-          if (!roleTransitions.canJoin) {
-            throw new DeviceConnectionError("当前运行模式不支持切换主机。", 409, "handover_unsupported");
-          }
-          const body = await readJsonObject(req, 8 * 1024);
-          const force = body.force === true;
-          const targetNodeId =
-            typeof body.targetNodeId === "string" && body.targetNodeId.trim()
-              ? body.targetNodeId.trim()
-              : (devices.preferredPrimaryNodeId !== devices.primaryNodeId ? devices.preferredPrimaryNodeId : "");
-          if (!targetNodeId || devices.isLocalPrincipal(targetNodeId)) {
-            throw new DeviceConnectionError("请选择要切换的目标备用主机。", 400, "invalid_handover_target");
-          }
-          const targetRecord = devices.getStandbyRecord(targetNodeId);
-          if (!targetRecord || !targetRecord.syncToken) {
-            throw new DeviceConnectionError("目标设备不是已启用的备用主机。", 404, "standby_not_found");
-          }
-          const targetEnv = hub.envManager.getEnvDescriptor(targetNodeId);
-          if (!targetEnv?.online) {
-            throw new DeviceConnectionError("目标备用主机当前离线，无法无损切换。", 409, "standby_offline");
-          }
-          const topology = devices.buildClusterTopology(actualPort, requestOrigin(req));
-          const targetHub = topology.hubs.find((h) => h.nodeId === targetNodeId);
-          const targetUrls = targetHub?.urls ?? [];
-          if (targetUrls.length === 0) {
-            throw new DeviceConnectionError("未找到目标备用主机的可访问地址。", 409, "standby_address_unavailable");
-          }
-          const activeWork = await hub.inspectActiveWorkForHandover();
-          if (activeWork.busy && !force) {
-            sendJson(res, 409, {
-              error: "当前有正在进行的对话或任务，是否停止并切换主机？",
-              code: "handover_busy",
-              ...activeWork,
-            });
-            return;
-          }
-          if (activeWork.busy && force) {
-            await hub.abortActiveWorkForHandover(10_000);
-          }
-
-          await ensurePrimaryClusterKeys();
-          const targetEpoch = devices.clusterEpoch + 1;
-          const primaryUrl = devices.localHubUrls(actualPort, requestOrigin(req))[0] ?? `http://127.0.0.1:${actualPort}`;
-          fenceMonitor.stop();
-          hub.beginHandoverBarrier(30_000);
-          try {
-            const finalManifest = await clusterSync.flushNow();
-            const acceptBody = JSON.stringify({
-              hubId: devices.hubId,
-              targetEpoch,
-              finalGeneration: finalManifest.generation,
-              primaryUrl,
-            });
-            const acceptPath = "/_kulo/cluster/handover-accept";
-            const accepted = await probeUrlsHappyEyeballs(
-              targetUrls,
-              async (origin, signal) => {
-                const { header } = createClusterAuthHeader({
-                  secret: targetRecord.syncToken!,
-                  nodeId: devices.localNodeId,
-                  method: "POST",
-                  pathWithQuery: acceptPath,
-                  body: acceptBody,
-                });
-                const r = await fetch(`${origin}${acceptPath}`, {
-                  method: "POST",
-                  headers: { "content-type": "application/json", [CLUSTER_AUTH_HEADER]: header },
-                  body: acceptBody,
-                  signal,
-                });
-                if (!r.ok) {
-                  const errText = await r.text().catch(() => "");
-                  throw new Error(errText || `HTTP ${r.status}`);
-                }
-                return origin;
-              },
-              { timeoutMs: 25_000, staggerMs: 150 },
-            );
-            if (!accepted) {
-              throw new DeviceConnectionError("目标备用主机未能完成切回前同步，原主机已恢复服务。", 502, "handover_accept_failed");
-            }
-            const newPrimaryUrl = accepted.url;
-
-            // Wait up to 15s for the new primary to start and report active at targetEpoch
-            const selfRec = devices.getSelfDeviceRecord();
-            if (!selfRec?.syncToken) {
-              throw new DeviceConnectionError("本机缺少集群同步凭证，无法切回。", 500, "handover_self_credentials_missing");
-            }
-            const deadline = Date.now() + 15_000;
-            let confirmed = false;
-            while (Date.now() < deadline) {
-              try {
-                const statusPath = "/_kulo/cluster/status";
-                const { header } = createClusterAuthHeader({
-                  secret: selfRec.clientToken,
-                  nodeId: devices.localNodeId,
-                  method: "GET",
-                  pathWithQuery: statusPath,
-                });
-                const check = await fetch(`${newPrimaryUrl}${statusPath}`, {
-                  method: "GET",
-                  headers: { [CLUSTER_AUTH_HEADER]: header },
-                  signal: AbortSignal.timeout(2_500),
-                });
-                if (check.ok) {
-                  const st = (await check.json()) as Partial<ClusterNodeStatus>;
-                  if (st.hubId === devices.hubId && st.role === "primary" && st.active && (st.epoch ?? 0) >= targetEpoch) {
-                    confirmed = true;
-                    break;
-                  }
-                }
-              } catch {
-                // Retry until new primary listener comes up
-              }
-              await new Promise((resolve) => setTimeout(resolve, 250));
-            }
-            if (!confirmed) {
-              throw new DeviceConnectionError("目标主机启动确认超时，原主机已恢复服务。", 504, "handover_activation_timeout");
-            }
-
-            // New primary is live! Notify all other peers to hot-switch immediately.
-            hub.envManager.broadcastClusterHandover({
-              hubId: devices.hubId,
-              epoch: targetEpoch,
-              newPrimaryNodeId: targetNodeId,
-              newPrimaryUrls: [newPrimaryUrl, ...targetUrls.filter((u) => u !== newPrimaryUrl)],
-            });
-
-            // Demote self cleanly to Standby Peer
-            const nextHubs = topology.hubs.map((h) => ({
-              ...h,
-              role: (h.nodeId === targetNodeId ? "primary" : "standby") as "primary" | "standby",
-              priority: h.nodeId === targetNodeId ? 0 : Math.max(1, h.priority),
-            }));
-            const nextTopology = {
-              ...topology,
-              epoch: targetEpoch,
-              primaryNodeId: targetNodeId,
-              updatedAt: Date.now(),
-              hubs: nextHubs,
-            };
-            const peerConfig: DevicePeerConfig = {
-              version: 1,
-              deviceId: devices.localNodeId,
-              name: selfRec.name,
-              hubUrl: newPrimaryUrl,
-              envToken: selfRec.envToken,
-              clientToken: selfRec.clientToken,
-              rootDir: selfRec.rootDir || options.peerRootDir || hub.config.localEnvRoot || hub.config.stateDir,
-              cluster: nextTopology,
-              ...(selfRec.standbyPublicKey ? {
-                standby: {
-                  enabled: true,
-                  syncToken: selfRec.syncToken,
-                  publicKey: selfRec.standbyPublicKey,
-                  ...(selfRec.identityPublicKey ? { identityPublicKey: selfRec.identityPublicKey } : {}),
-                },
-              } : {}),
-            };
-            saveClusterMembership(clusterPaths.clusterMembershipPath, {
-              version: 1,
-              hubId: devices.hubId,
-              nodeId: devices.localNodeId,
-              myRole: "standby",
-              epoch: targetEpoch,
-              primaryNodeId: targetNodeId,
-              preferredPrimaryNodeId: devices.preferredPrimaryNodeId,
-              selfTokens: { envToken: selfRec.envToken, clientToken: selfRec.clientToken, syncToken: selfRec.syncToken },
-              hubs: nextHubs,
-              updatedAt: Date.now(),
-            });
-            await clusterSync.close();
-            const change = roleTransitions.demoteToPeer(peerConfig);
-            let demoteScheduled = false;
-            const startDemote = () => {
-              if (demoteScheduled) return;
-              demoteScheduled = true;
-              res.off("finish", startDemote);
-              res.off("close", startDemote);
-              setTimeout(() => { void change.start(); }, 25);
-            };
-            res.shouldKeepAlive = false;
-            res.setHeader("Connection", "close");
-            res.once("finish", startDemote);
-            res.once("close", startDemote);
-            if (res.destroyed) startDemote();
-            else sendJson(res, 202, { ok: true, targetNodeId, newPrimaryUrl, epoch: targetEpoch, receipt: change.receipt });
-            return;
-          } catch (error) {
-            hub.releaseHandoverBarrier();
-            if (isClusterActive()) fenceMonitor.start();
-            throw error;
-          }
-        }
-        if (/^\/api\/devices\/[^/]+$/.test(pathname)) {
-          const id = decodeURIComponent(pathname.slice("/api/devices/".length));
-          if (req.method === "PATCH") {
-            const body = await readJsonBody(req) as { name?: unknown };
-            devices.rename(id, body?.name);
-            sendJson(res, 200, deviceView(req, parsedUrl));
-            return;
-          }
-          if (req.method === "DELETE") {
-            await performRemoveDevice(id, parsedUrl.searchParams.get("force") === "true");
-            sendJson(res, 200, { ok: true });
-            return;
-          }
-        }
+        if (await handleDevicesAndClusterRoutes(routeCtx, {
+          devices, sshDevices, mobileConnector, roleTransitions, clusterSync, fenceMonitor, clusterPaths,
+          peerRootDir: options.peerRootDir,
+          getActualPort: () => actualPort,
+          isClusterActive, ensurePrimaryClusterKeys, persistPrimaryClusterMembership,
+          requireMobileConnector, mobileMetadata, deviceView, setInterconnectionFromHttp,
+          prepareJoinPeer, performRemoveDevice,
+        })) return;
 
         if (await handleCapabilitiesRoutes(routeCtx)) return;
         if (await handleProjectsRoutes(routeCtx)) return;

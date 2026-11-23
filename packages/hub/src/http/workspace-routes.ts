@@ -103,11 +103,21 @@ export async function handleWorkspaceRoutes(ctx: HubHttpRouteContext): Promise<b
   }
   if (req.method === "PATCH" && pathname.startsWith("/api/topics/")) {
     const id = decodeURIComponent(pathname.slice("/api/topics/".length));
-    const body = (await readJsonBody(req)) as {
+    const body = (await readJsonObject(req)) as {
       title?: string;
       pinned?: boolean;
       archived?: boolean;
+      targetDeviceId?: string | null;
     };
+    if (
+      body.targetDeviceId !== undefined &&
+      body.targetDeviceId !== null &&
+      (typeof body.targetDeviceId !== "string" ||
+        body.targetDeviceId.length > 256 ||
+        /[\u0000-\u001f]/.test(body.targetDeviceId))
+    ) {
+      throw new ProjectError(400, "invalid_target_device", "目标设备标识无效。");
+    }
     const updated = await hub.patchTopic(id, body);
     sendJson(res, 200, updated);
     return true;

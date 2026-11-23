@@ -252,6 +252,9 @@ describe("trusted connection SSH execution", () => {
     expect(classifySshExecutionFailure({ exitCode: 1, stderr: "Permission denied (publickey)", host: "10.0.0.10", platform: "darwin" })).toMatchObject({
       code: "connection_execution_failed",
     });
+    expect(classifySshExecutionFailure({ exitCode: 255, stderr: "Error: remote port forwarding failed for listen port 43120", host: "10.0.0.10", platform: "darwin" })).toMatchObject({
+      code: "connection_execution_failed", message: expect.stringContaining("转发端口"),
+    });
   });
   it("rejects a symlinked runtime directory before trusting a host", async () => {
     const f = fixture(), connection = card({ kind: "ssh", host: "server.example.test", username: "kulo", url: undefined });
@@ -261,5 +264,55 @@ describe("trusted connection SSH execution", () => {
     const scan = await f.executor.scan(connection);
     await expect(f.executor.trust(connection, scan)).rejects.toMatchObject({ code: "connection_storage_invalid" });
     expect(fs.readdirSync(target)).toEqual([]);
+  });
+  it("cleans up temporary directory and kills ssh-agent when ssh-add fails inside prepareSshAuthSession", async () => {
+    const { prepareSshAuthSession } = await import("../packages/hub/src/connection-ssh-auth.js");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "kulo-connection-auth-fail-"));
+    directories.push(root);
+    const knownHostsPath = path.join(root, "trusted.known-hosts");
+    fs.writeFileSync(knownHostsPath, "192.0.2.50 ssh-ed25519 AAAA\n");
+    let createdSocketDir = "";
+    let agentKill: ReturnType<typeof vi.fn> | undefined;
+    spawnMock.mockImplementation((binary: string, args: string[]) => {
+      const child = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough; stdio: Array<PassThrough | null>; kill: ReturnType<typeof vi.fn>; exitCode: number | null; killed: boolean };
+      child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+      child.stdio = [child.stdin, child.stdout, child.stderr];
+      child.exitCode = null;
+      child.killed = false;
+      child.kill = vi.fn(() => {
+        child.killed = true;
+        child.exitCode = 0;
+        queueMicrotask(() => child.emit("close", 0));
+        return true;
+      });
+      if (binary === "ssh-agent") {
+        const sockArg = args[args.indexOf("-a") + 1] ?? "";
+        createdSocketDir = path.dirname(sockArg);
+        agentKill = child.kill;
+        fs.writeFileSync(sockArg, "");
+      } else if (binary === "ssh-add") {
+        setImmediate(() => {
+          child.stdout.end("");
+          child.stderr.end("Error loading key\n");
+          child.emit("close", 1);
+        });
+      }
+      return child;
+    });
+    await expect(
+      prepareSshAuthSession({
+        host: "192.0.2.50",
+        port: 22,
+        username: "demo",
+        secrets: { privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nZmFrZQ==\n-----END OPENSSH PRIVATE KEY-----\n" },
+        knownHostsPath,
+        forwardingMode: "none",
+        timeoutMs: 10_000,
+        platform: "darwin",
+      }),
+    ).rejects.toMatchObject({ code: "connection_key_invalid" });
+    expect(createdSocketDir).toContain("kulo-connection-");
+    expect(fs.existsSync(createdSocketDir)).toBe(false);
+    expect(agentKill).toHaveBeenCalledWith("SIGTERM");
   });
 });

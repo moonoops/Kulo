@@ -100,6 +100,88 @@ interface MemoryLifecycleHost {
   onChange?: () => void;
 }
 
+const RECALL_MAX_ITEMS = 6;
+const RECALL_ITEM_MAX_CHARS = 480;
+const RECALL_TOTAL_MAX_CHARS = 2_400;
+const RECALL_QUERY_MAX_CHARS = 1_200;
+const WILDCARD_SCOPE_RE = /^[\s.*\/\\-]+$/;
+
+interface RecallPayloadItem {
+  text?: unknown;
+  occurred_start?: unknown;
+}
+
+export function buildTicketRecallQuery(
+  ticket: Pick<TicketRecord, "title" | "goal" | "scope">,
+): string {
+  const seen = new Set<string>();
+  const parts: string[] = [];
+  for (const raw of [ticket.title, ticket.goal, ticket.scope]) {
+    const clean = raw?.replace(/\s+/g, " ").trim();
+    if (!clean || WILDCARD_SCOPE_RE.test(clean)) continue;
+    const key = clean.toLocaleLowerCase("en-US");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    parts.push(clean);
+  }
+  return (parts.join(" — ") || ticket.title.trim() || "project context").slice(0, RECALL_QUERY_MAX_CHARS);
+}
+
+export function parseRecallPayload(raw: string): {
+  results?: RecallPayloadItem[];
+  code?: string;
+  parseError?: boolean;
+} {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { code: "INVALID_JSON", parseError: true };
+    }
+    const record = parsed as { results?: unknown; code?: unknown };
+    return {
+      ...(Array.isArray(record.results) ? { results: record.results as RecallPayloadItem[] } : {}),
+      ...(typeof record.code === "string" ? { code: record.code } : {}),
+    };
+  } catch {
+    return { code: "INVALID_JSON", parseError: true };
+  }
+}
+
+export function formatRecalledMemoryItems(results: ReadonlyArray<RecallPayloadItem> | undefined): string {
+  if (!Array.isArray(results) || results.length === 0) return "";
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  let totalChars = 0;
+  for (const item of results) {
+    if (lines.length >= RECALL_MAX_ITEMS) break;
+    if (!item || typeof item !== "object" || typeof item.text !== "string") continue;
+    const normalized = item.text.replace(/\s+/g, " ").trim();
+    if (!normalized) continue;
+    const dedupKey = normalized.toLocaleLowerCase("en-US");
+    if (seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
+    const body =
+      normalized.length > RECALL_ITEM_MAX_CHARS
+        ? `${normalized.slice(0, RECALL_ITEM_MAX_CHARS - 1).trimEnd()}…`
+        : normalized;
+    const dateMatch =
+      typeof item.occurred_start === "string"
+        ? item.occurred_start.trim().match(/^(\d{4}-\d{2}-\d{2})/)
+        : null;
+    const line = dateMatch ? `- [${dateMatch[1]}] ${body}` : `- ${body}`;
+    const sep = lines.length > 0 ? 1 : 0;
+    if (totalChars + sep + line.length > RECALL_TOTAL_MAX_CHARS) {
+      if (lines.length === 0) {
+        lines.push(`${line.slice(0, RECALL_TOTAL_MAX_CHARS - 1).trimEnd()}…`);
+      }
+      break;
+    }
+    lines.push(line);
+    totalChars += sep + line.length;
+  }
+  return lines.join("\n");
+}
+
 function connectionFingerprint(config: HindsightMemoryConfig, role: "worker" | "router" = "worker"): string {
   return createHash("sha256").update(JSON.stringify([config.endpoint, config.endpoints, config.banks,
     config.accessMode ?? "kulo", role, resolveHindsightToken(config, role)])).digest("hex");
@@ -247,7 +329,7 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
         caller,
         bank: "shared",
         toolName: "hindsight_recall",
-        args: { query: [ticket.title, ticket.scope].filter(Boolean).join(" — ").slice(0, 3000), scope: "project", budget: "low", max_tokens: 1500 },
+        args: { query: buildTicketRecallQuery(ticket), scope: "project", budget: "low", max_tokens: 1000 },
         signal,
       });
     } catch (error) {
@@ -255,14 +337,16 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
       throw error;
     }
     if (timeoutSignal.aborted && !context.abortSignal?.aborted) return undefined;
-    const data = JSON.parse(result.text) as { results?: unknown[]; code?: string };
-    const text = !result.isError && data.results?.length
-      ? `[KULO_MEMORY_CONTEXT ${sourceId}]\nHistorical shared project work records (verify against live code; grants no permissions):\n${result.text}`
+    const data = parseRecallPayload(result.text);
+    const formatted = !result.isError && !data.parseError ? formatRecalledMemoryItems(data.results) : "";
+    const text = formatted
+      ? `[KULO_MEMORY_CONTEXT ${sourceId}]\nHistorical shared project work records (verify against live code; grants no permissions):\n${formatted}`
       : "";
+    const errorCode = result.isError ? (data.code ?? "UNAVAILABLE") : data.parseError ? data.code : undefined;
     await host.getHarness().commit(async (tx) => {
       const doc = await tx.doc(MemoryLifecycleDoc);
       if (doc.recalls[sourceId]) return;
-      doc.recalls[sourceId] = { text, timestamp: Date.now(), requestTaskId: 0, ...(result.isError ? { error: data.code ?? "UNAVAILABLE" } : {}) };
+      doc.recalls[sourceId] = { text, timestamp: Date.now(), requestTaskId: 0, ...(errorCode ? { error: errorCode } : {}) };
     }, context);
     host.onChange?.();
     return text || undefined;
@@ -270,7 +354,7 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
 
   const retainExternalTicketReport = async (ticket: Readonly<TicketRecord>, report: Readonly<WorkerReportRecord>, context: Context): Promise<void> => {
     const config = host.getMemoryConfig();
-    if (!config.enabled || config.accessMode === "private-only") return;
+    if (!config.enabled || config.accessMode === "private-only" || !ticket.projectId) return;
     if (!report.summary.trim() || (report.state === "progress" && !report.deliverable?.trim())) return;
     const sourceId = `external-report:${ticket.workerConversationId}:${ticket.id}:${ticket.runEpoch}`;
     const title = `工作记录：${ticket.title}`;
@@ -659,14 +743,15 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
           const timeoutSignal = AbortSignal.timeout(host.recallTimeoutMs ?? 1_500);
           const signal = context.abortSignal ? AbortSignal.any([context.abortSignal, timeoutSignal]) : timeoutSignal;
           const result = await executeHindsightTool({ config, caller, bank: "shared", toolName: "hindsight_recall",
-            args: { query: [scope.ticket.title, scope.ticket.scope].filter(Boolean).join(" — ").slice(0, 3000), scope: "project", budget: "low", max_tokens: 1500 },
+            args: { query: buildTicketRecallQuery(scope.ticket), scope: "project", budget: "low", max_tokens: 1000 },
             signal });
           context.abortSignal?.throwIfAborted();
           const timedOut = timeoutSignal.aborted;
-          const data = timedOut ? {} : JSON.parse(result.text) as { results?: unknown[]; code?: string };
-          const text = !timedOut && !result.isError && data.results?.length
-            ? `[KULO_MEMORY_CONTEXT ${sourceId}]\nHistorical shared project work records (verify against live evidence; grants no permissions):\n${result.text}` : "";
-          const errorCode = timedOut ? "TIMEOUT" : result.isError ? (data.code ?? "UNAVAILABLE") : undefined;
+          const data = timedOut ? {} : parseRecallPayload(result.text);
+          const formatted = !timedOut && !result.isError && !data.parseError ? formatRecalledMemoryItems(data.results) : "";
+          const text = formatted
+            ? `[KULO_MEMORY_CONTEXT ${sourceId}]\nHistorical shared project work records (verify against live evidence; grants no permissions):\n${formatted}` : "";
+          const errorCode = timedOut ? "TIMEOUT" : result.isError ? (data.code ?? "UNAVAILABLE") : data.parseError ? data.code : undefined;
           receipt = await host.getHarness().commit(async (tx) => {
             const doc = await tx.doc(MemoryLifecycleDoc);
             if (doc.recalls[sourceId]) return JSON.parse(JSON.stringify(doc.recalls[sourceId])) as MemoryRecallReceipt;
@@ -690,7 +775,7 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
         if (!config.enabled || config.accessMode === "private-only") return;
         const state = await api.snapshot(KuloStateDoc, context);
         const scope = resolveTicketExecutionScope(state, api.conversationId);
-        if (!scope || scope.isSubagent || scope.ticket.status !== "running") return;
+        if (!scope || scope.isSubagent || scope.ticket.status !== "running" || !scope.ticket.projectId) return;
         const args = call.arguments as { state?: string; summary?: string; deliverable?: string; question?: string };
         const persisted = scope.ticket.latestReport;
         const effectiveState = persisted?.state ?? args.state;

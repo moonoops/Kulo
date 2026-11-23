@@ -147,6 +147,9 @@ export class TicketExternalRuntime {
       memory: async (scope, toolName, args) => {
         const state = await harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         const ticket = assertExternalAgentScope(scope, state?.tickets);
+        if (!ticket.projectId) {
+          throw new Error("非项目独立任务不访问共享项目记忆库。");
+        }
         const memory = liveSettings.get().memory;
         if (!memory.enabled || memory.accessMode === "private-only") {
           throw new Error("Hindsight 共享记忆库当前未开启。");

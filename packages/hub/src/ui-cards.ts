@@ -303,6 +303,13 @@ export class KuloUiCards {
     return updated ? clone(updated) : undefined;
   }
 
+  async hasPublishedOperation(source: UiCardSource, visibility: "chat" | "review" = "chat"): Promise<boolean> {
+    checkSource(source);
+    const key = visibility === "review" ? `review:${sourceKey(source)}` : sourceKey(source);
+    const doc = await this.#host.harness.snapshot(UiCardsDoc, BACKGROUND_CONTEXT);
+    return Boolean(doc?.operations[key]);
+  }
+
   async stageAsset(input: UiAssetPublicationInput, source: UiCardSource, importAsset: () => Promise<ChatAttachment>, finalize?: (tx: Tx, asset: ChatAttachment) => Promise<void>): Promise<ChatAttachment> {
     return this.publishAsset(input, source, importAsset, finalize, "review");
   }

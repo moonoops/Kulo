@@ -20,6 +20,7 @@ import { DEFAULT_COMPACTION_CONFIG, type KuloHubConfig } from "./config.js";
 import type { PriorUserDeviceTurn } from "./env-routing-policy.js";
 import { resolveEffectiveIdentityDir, type KuloDurableSettings } from "./settings.js";
 import {
+  MediaRelayEntry,
   WorkerRecoveryEntry,
   WorkerRelayEntry,
   WorkerWatchdogEntry,
@@ -318,7 +319,8 @@ export class TurnContextReader {
       if (
         WorkerRelayEntry.is(entry) ||
         WorkerRecoveryEntry.is(entry) ||
-        WorkerWatchdogEntry.is(entry)
+        WorkerWatchdogEntry.is(entry) ||
+        MediaRelayEntry.is(entry)
       ) {
         return inputs.length ? inputs : [entry];
       }

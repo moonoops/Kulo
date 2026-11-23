@@ -328,11 +328,80 @@ describe("task scoped connection access", () => {
     expect(reTrustedNew.revision).toBe(card.revision + 1);
     expect(f.manager.hasGrant("T-ssh-3", 1, card.id)).toBe(false);
 
-    // 6. Changing host or removing card cleans up known-hosts
-    await f.manager.save({ ...reTrustedNew, expectedRevision: reTrustedNew.revision, host: "10.0.0.11" });
+    // 6. Changing host without re-entering secrets fails cleanly without deleting vault secret; with new secret it cleans up known-hosts
+    await expect(f.manager.save({ ...reTrustedNew, expectedRevision: reTrustedNew.revision, host: "10.0.0.11" })).rejects.toMatchObject({
+      code: "connection_ssh_secret_required_on_target_change",
+      status: 400,
+    });
+    expect((await f.vault.get(`connection:${card.id}`))?.privateKey).toContain("BEGIN OPENSSH PRIVATE KEY");
+    await f.manager.save({ ...reTrustedNew, expectedRevision: reTrustedNew.revision, host: "10.0.0.11", secrets: { password: "new-host-password" } });
     expect(clearTrustedHost).toHaveBeenCalledTimes(1);
     await f.manager.remove(card.id);
     expect(clearTrustedHost).toHaveBeenCalledTimes(2);
+  });
+  it("preserves verified status on SSH rename, enforces in-use guard on remove and kind change, and resolves verified SSH credentials for devices", async () => {
+    const f = fixture();
+    let knownHostReady = false;
+    const knownHostsPath = path.join(f.stateDir, "connection-runtime", "trusted.known-hosts");
+    f.executor.hasTrustedHost = vi.fn(() => knownHostReady);
+    f.executor.trustedHostPath = vi.fn(() => knownHostReady ? knownHostsPath : undefined);
+    f.executor.probeSsh = vi.fn(async () => ({ exitCode: 0, stderr: "", output: "" }));
+    const events: Array<{ type: string; connectionId: string }> = [];
+    f.manager.setOnSshChangedHook((event) => events.push(event));
+
+    const card = await f.manager.save({
+      name: "Workstation", kind: "ssh", host: "192.0.2.50", port: 22, username: "demo",
+      secrets: { password: "station-password-1" },
+    });
+    // Unverified credential is rejected for device onboarding (1B)
+    await expect(f.manager.resolveSshForDevice(card.id)).rejects.toMatchObject({ code: "connection_ssh_unverified", status: 409 });
+
+    const scan = await f.manager.test(card.id);
+    await f.manager.trust(card.id, scan.fingerprint!);
+    knownHostReady = true;
+    const verified = await f.manager.test(card.id);
+    expect(verified.connection.status).toBe("verified");
+    expect(events.at(-1)).toEqual({ type: "verified", connectionId: card.id });
+
+    // Pure display-name edit keeps verified status
+    const renamed = await f.manager.save({
+      ...verified.connection,
+      expectedRevision: verified.connection.revision,
+      name: "KuloStation 主机",
+    });
+    expect(renamed.status).toBe("verified");
+
+    // Verified + trusted credential resolves cleanly for devices
+    const resolved = await f.manager.resolveSshForDevice(card.id);
+    expect(resolved.knownHostsPath).toBe(knownHostsPath);
+    expect(resolved.secrets.password).toBe("station-password-1");
+
+    // Missing known-hosts file blocks resolution even when status is verified
+    knownHostReady = false;
+    await expect(f.manager.resolveSshForDevice(card.id)).rejects.toMatchObject({ code: "connection_host_untrusted", status: 409 });
+    knownHostReady = true;
+
+    // In-use guard blocks both remove() and cross-kind save()
+    f.manager.setSshInUseGuard((id) => {
+      if (id === card.id) throw Object.assign(new Error("设备正在使用"), { code: "connection_in_use_by_device", status: 409 });
+    });
+    await expect(f.manager.remove(card.id)).rejects.toMatchObject({ code: "connection_in_use_by_device", status: 409 });
+    await expect(f.manager.save({
+      name: renamed.name, id: card.id, expectedRevision: renamed.revision, kind: "account",
+      url: "https://example.test", username: "demo", secrets: { password: "other-password" },
+    })).rejects.toMatchObject({ code: "connection_in_use_by_device", status: 409 });
+
+    // Rotating password emits credentials-rotated
+    const rotated = await f.manager.save({
+      ...renamed,
+      expectedRevision: renamed.revision,
+      secrets: { password: "station-password-2" },
+    });
+    expect(rotated.status).toBe("saved");
+    expect(events.at(-1)).toEqual({ type: "credentials-rotated", connectionId: card.id });
+    // Restore resolution still works with rotated password when host key remains trusted
+    const restored = await f.manager.resolveSshForDevice(card.id, { requireVerified: false });
+    expect(restored.secrets.password).toBe("station-password-2");
   });
   it("rejects a stale authorization when a user edit lands after the parent's preflight snapshot", async () => {
     const f = fixture(), card = await f.manager.save(api());

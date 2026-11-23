@@ -5,7 +5,7 @@ import { executeHindsightTool } from "./hindsight.js";
 import { buildVoiceCallInstructions } from "./prompts.js";
 import { isContextSyncEntry, isContextSyncMessageText } from "./recent-work-sync.js";
 import { memoryCallerFromState } from "./tools-memory.js";
-import { WorkerRecoveryEntry, WorkerRelayEntry, WorkerWatchdogEntry, isRecoveryInputBoundary, type KuloDurableState } from "./state.js";
+import { MediaRelayEntry, WorkerRecoveryEntry, WorkerRelayEntry, WorkerWatchdogEntry, isRecoveryInputBoundary, type KuloDurableState } from "./state.js";
 import { VoiceTranscriptEntry } from "./voice-transcripts.js";
 
 interface VoiceHistoryMessage { role: "user" | "assistant"; text: string }
@@ -58,6 +58,7 @@ export function voiceHistory(view: ContextView, redact: (text: string) => string
     if (
       WorkerRelayEntry.is(entry) ||
       WorkerWatchdogEntry.is(entry) ||
+      MediaRelayEntry.is(entry) ||
       entry.kind === "kulo.voice.delegation" ||
       entry.kind === "kulo.memory-context" ||
       isContextSyncEntry(entry)
@@ -103,7 +104,7 @@ export async function createVoiceContext(options: {
   if (memory.enabled) {
     const caller = memoryCallerFromState(options.state, conversation.id);
     const query = `User preferred name, background, durable preferences, working relationship with Kulo, and historical context relevant to the active conversation: ${history.filter((item) => item.role === "user").slice(-3).map((item) => item.text).join("\n").slice(-2000)}`;
-    const banks = memory.accessMode === "private-only" ? ["private" as const] : ["private" as const, "shared" as const];
+    const banks = memory.accessMode === "private-only" || !caller.projectId ? ["private" as const] : ["private" as const, "shared" as const];
     const signal = context.abortSignal ? AbortSignal.any([context.abortSignal, AbortSignal.timeout(3000)]) : AbortSignal.timeout(3000);
     const results = await Promise.all(banks.map(async (bank) => {
       const result = await executeHindsightTool({ config: memory, caller, bank, toolName: "hindsight_recall",

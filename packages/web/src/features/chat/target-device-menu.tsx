@@ -8,6 +8,17 @@ import { deviceApi } from "../settings/device-api";
 
 const AUTO_DEVICE_KEY = "auto";
 
+export function normalizeTargetDeviceId(selectedDeviceId: string): string {
+  return selectedDeviceId === AUTO_DEVICE_KEY ? "" : selectedDeviceId;
+}
+
+export function resolveTargetDeviceFallbackName(
+  deviceId: string,
+  knownNames?: ReadonlyMap<string, string>,
+): string {
+  return knownNames?.get(deviceId) ?? deviceId;
+}
+
 export function sortTargetDevices(envs: readonly EnvNodeDescriptor[], currentDeviceId?: string): EnvNodeDescriptor[] {
   return orderDevices(envs, { currentDeviceId, preferHub: true, sortByName: true });
 }
@@ -29,8 +40,9 @@ export function ChatTargetDeviceMenu({
 }) {
   const { t } = useI18n();
   const [deviceView, setDeviceView] = useState<DeviceInterconnectionView>();
+  const normalizedSelectedId = normalizeTargetDeviceId(selectedDeviceId);
   const envKey = envs.map((env) => `${env.id}:${env.name}:${env.online}`).join("|");
-  const shouldResolveDevice = connected && currentDeviceId === undefined && (envs.length > 1 || Boolean(selectedDeviceId));
+  const shouldResolveDevice = connected && currentDeviceId === undefined && (envs.length > 1 || Boolean(normalizedSelectedId));
 
   useEffect(() => {
     if (!shouldResolveDevice) return;
@@ -47,30 +59,33 @@ export function ChatTargetDeviceMenu({
   const knownNames = new Map(deviceView?.devices.map((device) => [device.id, device.name]) ?? []);
   const displayEnvs = envs.map((env) => ({ ...env, name: knownNames.get(env.id) ?? env.name }));
   const sorted = sortTargetDevices(displayEnvs, resolvedCurrentDeviceId);
-  const selectedDevice = selectedDeviceId ? sorted.find((env) => env.id === selectedDeviceId) : undefined;
-  if (sorted.length <= 1 && !selectedDeviceId) return null;
+  const selectedDevice = normalizedSelectedId ? sorted.find((env) => env.id === normalizedSelectedId) : undefined;
+  if (sorted.length <= 1 && !normalizedSelectedId) return null;
 
   const isCurrent = (id: string) => Boolean(resolvedCurrentDeviceId && id === resolvedCurrentDeviceId);
+  const fallbackDeviceName = normalizedSelectedId
+    ? resolveTargetDeviceFallbackName(normalizedSelectedId, knownNames)
+    : "";
   const selectedLabel = selectedDevice
     ? formatDeviceLabel(selectedDevice.name, isCurrent(selectedDevice.id))
-    : selectedDeviceId || t("自动", "Auto");
+    : fallbackDeviceName || t("自动", "Auto");
   const triggerTitle = selectedDevice
     ? `${selectedLabel} · ${selectedDevice.online ? t("在线", "Online") : t("离线", "Offline")}`
-    : selectedDeviceId
-      ? `${selectedDeviceId} · ${t("离线", "Offline")}`
+    : fallbackDeviceName
+      ? `${fallbackDeviceName} · ${t("离线", "Offline")}`
       : t("自动", "Auto");
-  const selectedKey = selectedDeviceId ? `device:${selectedDeviceId}` : AUTO_DEVICE_KEY;
+  const selectedKey = normalizedSelectedId ? `device:${normalizedSelectedId}` : AUTO_DEVICE_KEY;
   const disabledKeys = sorted
-    .filter((env) => !env.online && env.id !== selectedDeviceId)
+    .filter((env) => !env.online && env.id !== normalizedSelectedId)
     .map((env) => `device:${env.id}`);
 
   return (
     <Dropdown>
       <Button
         size="sm"
-        variant={selectedDeviceId ? "secondary" : "ghost"}
+        variant={normalizedSelectedId ? "secondary" : "ghost"}
         isDisabled={disabled}
-        className="kulo-target-device-trigger min-w-0 max-w-36 sm:max-w-56 shrink-0 gap-1.5 px-2"
+        className="kulo-window-control kulo-target-device-trigger min-w-0 max-w-36 sm:max-w-56 shrink-0 gap-1.5 px-2"
         aria-label={t("执行设备", "Target device")}
       >
         <span className="flex min-w-0 items-center gap-1.5" title={triggerTitle}>
@@ -80,8 +95,8 @@ export function ChatTargetDeviceMenu({
               <DeviceName name={selectedDevice.name} isCurrent={isCurrent(selectedDevice.id)} singleLine />
             </span>
             <DevicePresence online={selectedDevice.online} showOnlineText={false} />
-          </> : selectedDeviceId ? <>
-            <span className="hidden min-w-0 truncate sm:inline">{selectedDeviceId}</span>
+          </> : normalizedSelectedId ? <>
+            <span className="hidden min-w-0 truncate sm:inline">{fallbackDeviceName}</span>
             <DevicePresence online={false} showOnlineText={false} />
           </> : (
             <span className="hidden min-w-0 truncate sm:inline">{t("自动", "Auto")}</span>
@@ -106,15 +121,15 @@ export function ChatTargetDeviceMenu({
             <Label className="kulo-navigation-menu-label">{t("自动", "Auto")}</Label>
           </Dropdown.Item>
           <Separator />
-          {selectedDeviceId && !selectedDevice && (
+          {normalizedSelectedId && !selectedDevice && (
             <Dropdown.Item
-              id={`device:${selectedDeviceId}`}
-              textValue={selectedDeviceId}
+              id={`device:${normalizedSelectedId}`}
+              textValue={fallbackDeviceName}
               className="kulo-navigation-menu-item"
             >
               <Dropdown.ItemIndicator />
               <Label className="kulo-navigation-menu-label min-w-0 flex-1 whitespace-normal break-words">
-                {selectedDeviceId}
+                {fallbackDeviceName}
               </Label>
               <DevicePresence online={false} className="ml-auto" />
             </Dropdown.Item>

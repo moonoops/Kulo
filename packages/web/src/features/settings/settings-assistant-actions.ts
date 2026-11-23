@@ -43,6 +43,15 @@ export function getSettingsAssistantShortcuts(
     { id: "connect-provider", label: t("自动接入供应商", "Connect a provider"), kind: "model", action: "connect" },
     { id: "calibrate-models", label: t("校准模型配置", "Calibrate model settings"), kind: "model", action: "calibrate", prompt: t("校准已有模型配置", "Calibrate my configured models") },
     { id: "diagnose-models", label: t("排查调用失败", "Diagnose model calls"), kind: "model", action: "diagnose" },
+    {
+      id: "recommend-local-model",
+      label: t("推荐本机模型", "Recommend local model"),
+      kind: "ask",
+      prompt: t(
+        "请分析后台处理所在主机的硬件配置，为后台处理模型推荐合适的托管本机方案（如 oMLX / Ollama）与模型，说明将部署在哪台设备并待我确认后再执行部署。",
+        "Analyze the host running Kulo Hub and recommend a managed local background model setup (such as oMLX or Ollama). State which host it will be installed on and wait for my confirmation before installing.",
+      ),
+    },
   ];
   if (module === "workers") return [
     { id: "connect-agent-client", label: t("连接 Agent 客户端", "Connect an agent client"), kind: "agent", action: "client" },
@@ -77,4 +86,5 @@ export interface SettingsAssistantEntryIntent {
   id: string;
   module: SettingsAssistantModule;
   intent?: SettingsAssistantIntent;
+  tab?: "app" | "credential" | "information";
 }

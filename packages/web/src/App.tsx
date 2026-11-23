@@ -8,6 +8,7 @@ import {
 } from "@kulo/protocol";
 import { ConfirmDialog } from "./components/confirm-dialog";
 import { KuloTurnErrorCard } from "./features/chat/turn-error-card";
+import { useTargetDeviceSelection } from "./features/chat/use-target-device-selection";
 import { ComputerPreviewModal } from "./features/computer-preview/computer-preview";
 import { useComputerPreview } from "./features/computer-preview/use-computer-preview";
 import { describeLocalizedKuloError } from "./kulo-error";
@@ -56,12 +57,13 @@ import { KuloIcon } from "./kulo-icon";
 import { ConnectedMessageContent } from "./features/chat/connected-message-content";
 import { liveResponseMessageId, mergeResponseMessages } from "./features/chat/response-messages";
 import { KuloLiveWaitRow } from "./features/chat/live-wait-row";
-import { chatDeliveryLabel, mergeChatSubmissions, splitChatTimeline, submissionKey, type ChatViewItem, type PendingSubmissionBackup } from "./features/chat/chat-submissions";
+import { mergeChatSubmissions, splitChatTimeline, submissionKey, type ChatViewItem, type PendingSubmissionBackup } from "./features/chat/chat-submissions";
+import { UserDeliveryStatus, useDeliveryStatusClock, visibleChatDeliveryLabel, visibleTaskSubmissionStatus } from "./features/chat/delivery-status";
+import { computeChatScrollState, useChatAutoScroll } from "./features/chat/use-chat-autoscroll";
 import { blockerDraftKey, consumedOutboxReceipts, outboxSubmissions } from "./features/chat/outbox-submissions";
 import { newDeliveryId } from "./features/chat/reliable-intents";
 import { useChatDeviceJoin } from "./features/chat/use-chat-device-join";
 import { useChatSubmission } from "./features/chat/use-chat-submission";
-import { legacyInvitationCode } from "./features/chat/device-invitation-outbox";
 import { restoreReplyDraft, type ReplyDrafts } from "./features/chat/reply-reference";
 import { ConversationOutline } from "./features/chat/conversation-outline";
 import { ConversationScene } from "./features/chat/conversation-scene";
@@ -421,7 +423,9 @@ function AppShell() {
   const returnChatScrollRef = useRef<TaskChatReturn | null>(null);
   const skipChatAnchorRef = useRef(false);
   const nearBottomRef = useRef(true);
+  const scrollingToLatestRef = useRef(false);
   const [showToBottom, setShowToBottom] = useState(false);
+  const deliveryStatusNow = useDeliveryStatusClock(pendingSubmissions, connected);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const navigationViewRef = useRef("");
   navigationViewRef.current = `${deliveryScope ?? ""}:${activeTopicId}:${settingsMode}:${settingsModule}:${projectedTicketId ?? ""}`;
@@ -626,8 +630,9 @@ function AppShell() {
       setSettingsMode(true);
       setSettingsDirty(false);
       setSettingsModule(destination.id);
+      setVoiceSettingsRequested(false);
       setSettingsTarget(undefined);
-      setSettingsEntryIntent(entry.intent ? entry : null);
+      setSettingsEntryIntent(entry.intent || entry.tab ? entry : null);
       setProjectedTicketId(undefined);
       setSheet(undefined);
       resolve();
@@ -699,14 +704,6 @@ function AppShell() {
     if (sizeClass !== "expanded") setSheet("right");
     void settingsAssistantControls.send(prompt, null);
   }, [settingsAssistantControls.send, sizeClass]);
-  const requestAssistantAcceleration = useCallback(() => {
-    requestAssistantPrompt(
-      t(
-        "请分析这台主机的硬件配置，推荐合适的本机后台加速方案（如 oMLX）与模型，待我确认后再执行部署。",
-        "Analyze this host's hardware and recommend a local background acceleration setup (such as oMLX) and model. Wait for my confirmation before installing.",
-      ),
-    );
-  }, [requestAssistantPrompt]);
   const requestConnectionPrepare: ConnectionPrepare = useCallback(async (fields) => {
     if (!connected) throw new Error(t("与中枢连接已断开。", "Disconnected from the hub."));
     setConnectionPreparing(true);
@@ -750,30 +747,23 @@ function AppShell() {
     ? mainChatTitle
     : activeTopic?.title || t(`与 ${agentName} 对话`, `Chat with ${agentName}`);
   const activeProject = projects.find((project) => project.id === activeTopic?.projectId);
-  const [topicTargetOverrides, setTopicTargetOverrides] = useState<Record<string, string>>({});
-  const persistedTargetDeviceId = activeTopic?.projectId ? "" : (activeTopic?.targetDeviceId ?? "");
-  const selectedTargetDeviceId = activeTopic?.projectId
-    ? ""
-    : Object.hasOwn(topicTargetOverrides, activeTopicId)
-      ? topicTargetOverrides[activeTopicId]!
-      : persistedTargetDeviceId;
-  useEffect(() => {
-    setTopicTargetOverrides((current) => {
-      const entries = Object.entries(current);
-      if (!entries.length) return current;
-      let changed = false;
-      const next: Record<string, string> = {};
-      for (const [topicId, value] of entries) {
-        const topic = topics.find((item) => item.id === topicId);
-        if (topic && (topic.targetDeviceId ?? "") === value) {
-          changed = true;
-          continue;
-        }
-        next[topicId] = value;
-      }
-      return changed ? next : current;
-    });
-  }, [topics]);
+  const {
+    persistedTargetDeviceId,
+    selectedTargetDeviceId,
+    savingTargetDevice,
+    topicTargetOverrides,
+    setTopicTargetOverrides,
+    selectTargetDevice,
+    waitForPendingTargetDevice,
+  } = useTargetDeviceSelection({
+    activeTopicId,
+    activeTopic,
+    topics,
+    setTopics,
+    isLocalTopic: (topicId) => topicDrafts.isLocal(topicId),
+    patchTopicTarget: (topicId, targetDeviceId) => kuloRest.patchTopic(topicId, { targetDeviceId }),
+    onError: (message) => { toast.danger(message); },
+  });
   useEffect(() => {
     if (topicDrafts.isLocal(activeTopicId)) return;
     if (topics.length && !topics.some((topic) => topic.id === activeTopicId && !topic.deletedAt)) selectTopic("root");
@@ -873,32 +863,24 @@ function AppShell() {
   }, [activeTopicId, settingsMode, projectedTicketId]);
 
   // Returning from a task restores the reading position before live anchoring resumes.
-  useEffect(() => {
-    if (settingsMode || projectedTicketId) return;
-    if (skipChatAnchorRef.current) {
-      skipChatAnchorRef.current = false;
-      return;
-    }
-    const el = chatScrollRef.current;
-    if (!el || !nearBottomRef.current) return;
-    el.scrollTop = el.scrollHeight;
-  }, [
-    messages.length,
-    live.streamingText,
-    activeRunFailure?.key,
-    activeTopicId,
-    viewingHistory,
-    settingsMode,
-    projectedTicketId,
-  ]);
+  useChatAutoScroll(
+    { scrollRef: chatScrollRef, nearBottomRef, enabled: !settingsMode && !projectedTicketId, skipRef: skipChatAnchorRef, scrollingToLatestRef },
+    [messages.length, live.busy, live.streamingText, Boolean(live.streamingThinking), live.activeTools.length, live.retrying?.attempt, activeRunFailure?.key, activeTopicId, viewingHistory],
+  );
 
   const handleChatScroll = () => {
     const el = chatScrollRef.current;
     if (!el) return;
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const isNear = distance < 120;
-    nearBottomRef.current = isNear && !chatNavigatingRef.current;
-    setShowToBottom(distance > 180);
+    const next = computeChatScrollState({
+      metrics: { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight },
+      nearThreshold: 120,
+      showButtonThreshold: 180,
+      navigating: chatNavigatingRef.current,
+      scrollingToLatest: scrollingToLatestRef.current,
+    });
+    nearBottomRef.current = next.nearBottom;
+    scrollingToLatestRef.current = next.scrollingToLatest;
+    setShowToBottom(next.showToBottom);
   };
 
   const scrollToLatest = () => {
@@ -910,10 +892,9 @@ function AppShell() {
     messageNavigationRequest.current?.abort();
     nearBottomRef.current = true;
     setShowToBottom(false);
-    el.scrollTo({
-      top: el.scrollHeight,
-      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-    });
+    const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    scrollingToLatestRef.current = smooth && el.scrollHeight - el.scrollTop - el.clientHeight > 2;
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
   };
 
   const togglePanel = (side: "left" | "right") => {
@@ -1054,6 +1035,7 @@ function AppShell() {
     setActionError(null);
     clearError();
     try {
+      await waitForPendingTargetDevice(activeTopicId);
       await sendWsWithAck({ type: "chat.retry", topicId: activeTopicId });
     } catch (err) {
       setActionError(err instanceof Error ? err.message : t("重试请求失败", "Could not retry the request"));
@@ -1095,6 +1077,7 @@ function AppShell() {
     persistedTargetDeviceId,
     topicTargetOverrides,
     setTopicTargetOverrides,
+    waitForPendingTargetDevice,
     viewingHistory,
     clearMessageWindow: () => setMessageWindow(undefined),
     nearBottomRef,
@@ -1443,19 +1426,13 @@ function AppShell() {
       if (!isConversationTurn(item)) return null;
       const backup = item.clientSubmission ? pendingSubmissions.find((submission) => submissionKey(submission) === item.clientSubmission!.key) : undefined;
       const state = item.clientSubmission?.state;
-      const status = chatDeliveryLabel(item);
-      const name = item.text.trim().slice(0, 24) || item.attachments?.[0]?.name || t("附件消息", "Attachment message");
+      const status = visibleChatDeliveryLabel(item, connected, deliveryStatusNow);
       return (
         <div key={messageMotionKey(item)} id={conversationTurnId(activeTopicId, item.id)} data-message-id={item.id} data-role="user" tabIndex={-1} data-request-id={item.requestId} data-delivery={state ?? item.delivery} className="kulo-message-target flex flex-col items-end gap-1.5">
           <MessageMotion className="w-full" scopeKey={messageMotionKey(item)} animateEntry={animateMessageEntry(item)}>
             <ConnectedMessageContent item={item} connected={connected} conversationKey={activeTopicId} deliveryScope={deliveryScope} onPreviewImage={setLightboxImage} onReply={replyToMessage} onNavigateReply={navigateReply} />
           </MessageMotion>
-          {status && <div className="flex max-w-full flex-wrap items-center justify-end gap-1.5 text-xs text-muted">
-            <span className={state === "failed" ? "min-w-0 max-w-full break-words text-danger" : undefined} role={state === "failed" ? "alert" : "status"}>{status}</span>
-            {backup && state === "failed" && item.clientSubmission?.errorCode !== "request_intent_conflict" && item.clientSubmission?.errorCode !== legacyInvitationCode && <Button size="sm" variant="ghost" isDisabled={!outboxReady || editingSubmissionRef.current.has(scopedDraftKey(backup.draftKey, backup.outboxScope))} aria-label={t(`重试发送：${name}`, `Retry sending: ${name}`)} onPress={() => { void dispatchSubmissionWithAck(backup).catch((error: unknown) => setActionError(error instanceof Error ? error.message : t("无法恢复待发消息", "Could not restore the pending message"))); }}>{t("重试发送", "Retry sending")}</Button>}
-            {backup && state === "failed" && <Button size="sm" variant="ghost" aria-label={t(`编辑未发送的消息：${name}`, `Edit unsent message: ${name}`)} onPress={() => { void recoverPendingSubmission(backup); }}>{t("编辑", "Edit")}</Button>}
-            {item.delivery === "paused" && item.id === lastPausedMessageId && <Button size="sm" variant="secondary" isPending={resumingQueuedTopic === activeTopicId} isDisabled={!outboxReady || live.busy || resumingQueuedTopic === activeTopicId} onPress={() => resumeQueuedMessages(activeTopicId)}>{t("继续处理", "Resume")}</Button>}
-          </div>}
+          <UserDeliveryStatus item={item} status={status} backup={backup} outboxReady={outboxReady} editing={Boolean(backup && editingSubmissionRef.current.has(scopedDraftKey(backup.draftKey, backup.outboxScope)))} isLastPaused={item.id === lastPausedMessageId} resumingPaused={resumingQueuedTopic === activeTopicId} liveBusy={live.busy} onRetry={(target) => { void dispatchSubmissionWithAck(target).catch((error: unknown) => setActionError(error instanceof Error ? error.message : t("无法恢复待发消息", "Could not restore the pending message"))); }} onEdit={(target) => { void recoverPendingSubmission(target); }} onResumePaused={() => resumeQueuedMessages(activeTopicId)} />
         </div>
       );
     }
@@ -1550,10 +1527,11 @@ function AppShell() {
       locatingMessage={locatingMessage}
       envs={envs}
       selectedTargetDeviceId={selectedTargetDeviceId}
+      targetDeviceSaving={savingTargetDevice}
       connected={connected}
       liveBusy={live.busy}
       liveContext={live.context}
-      onSelectTargetDevice={(deviceId) => setTopicTargetOverrides((current) => ({ ...current, [activeTopicId]: deviceId }))}
+      onSelectTargetDevice={selectTargetDevice}
       onOpenConversationSearch={() => openConversationSearch("all")}
       deliveryScope={deliveryScope}
       filesRevision={`${persistedMessages.at(-1)?.id ?? 0}:${persistedMessages.length}`}
@@ -1702,20 +1680,9 @@ function AppShell() {
           onConnectionsRefresh={() => void connectionsWorkspace.refresh()}
           assistantWorkspace={assistantWorkspace.snapshot}
           onAssistantWorkspaceUpdated={assistantWorkspace.setSnapshot}
-          onRequestAssistantAcceleration={requestAssistantAcceleration}
+          assistantBusy={settingsAssistant.live.busy}
           onRequestAssistantPrompt={requestAssistantPrompt}
-          onOpenModels={() => {
-            runGuardedNavigation(() => {
-              if (settingsDirty) setSettingsEditorEpoch((epoch) => epoch + 1);
-              setSettingsMode(true);
-              setSettingsDirty(false);
-              setSettingsModule("models");
-              setVoiceSettingsRequested(false);
-              setSettingsTarget(undefined);
-              setProjectedTicketId(undefined);
-              setSheet(undefined);
-            });
-          }}
+          onNavigateSettings={navigateFromSettingsAssistant}
         />
       ) : projectedTicketId ? (
         projectedDetail ? (
@@ -1793,7 +1760,7 @@ function AppShell() {
                   <KuloIcon name="close" size={12} />
                 </Button>
               </div>
-              {pendingTaskSubmission && <div className="flex min-w-0 items-center gap-2 text-xs text-muted" role="status"><span>{pendingTaskSubmission.state === "sending" ? t("发送中", "Sending") : pendingTaskSubmission.state === "queued" ? t("待发送", "Queued") : t("待确认", "Awaiting confirmation")}</span><span className="truncate">{pendingTaskSubmission.rawUserText}</span></div>}
+              {pendingTaskSubmission && visibleTaskSubmissionStatus(pendingTaskSubmission, connected, deliveryStatusNow) && <div className="flex min-w-0 items-center gap-2 text-xs text-muted" role="status"><span>{visibleTaskSubmissionStatus(pendingTaskSubmission, connected, deliveryStatusNow)}</span><span className="truncate">{pendingTaskSubmission.rawUserText}</span></div>}
               <KuloComposer
                 textareaRef={composerRef}
                 draftText={currentDraft}
@@ -1861,7 +1828,7 @@ function AppShell() {
         <ConversationScene
           conversationKey={currentDraftKey}
           empty={messages.length === 0 && !live.busy && !activeRunFailure && !canLoadHistory && !historyLoading}
-          ready={Boolean(localTopics.selected) || Boolean(viewingHistory) || conversationLoaded}
+          ready={Boolean(localTopics.selected) || Boolean(viewingHistory) || conversationLoaded || messages.length > 0}
           onChooseRecommendation={(task) => {
             setCurrentDraft(task.prompt);
             requestAnimationFrame(() => composerRef.current?.focus());
@@ -1872,11 +1839,11 @@ function AppShell() {
               ref={chatScrollRef}
               className="mc-chat-scroll flex-1 overflow-y-auto px-4 py-4"
               onScroll={handleChatScroll}
-              onScrollEnd={() => { chatNavigatingRef.current = false; handleChatScroll(); }}
+              onScrollEnd={() => { chatNavigatingRef.current = false; scrollingToLatestRef.current = false; handleChatScroll(); }}
               onWheel={() => { chatNavigatingRef.current = false; }}
               onTouchStart={() => { chatNavigatingRef.current = false; }}
             >
-              <div key={activeTopicId} className="kulo-conversation-stream">
+              <div key={topicDrafts.draftTopicId(activeTopicId)} className="kulo-conversation-stream">
                 {canLoadHistory && <Button variant="ghost" size="sm" className="self-center" isDisabled={historyLoading || messageWindowLoading} onPress={() => {
                   const node = chatScrollRef.current;
                   const previousHeight = node?.scrollHeight ?? 0;

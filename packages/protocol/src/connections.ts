@@ -155,6 +155,7 @@ export interface ConnectionWorkspaceSnapshot {
   applications?: ConnectionApplicationView[];
   mcpPresets?: McpPresetDefinition[];
   localHost?: boolean;
+  canManageHub?: boolean;
 }
 export interface ConnectionApplicationDefinition {
   id: ConnectionApplicationId;

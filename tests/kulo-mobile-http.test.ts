@@ -228,4 +228,53 @@ describe.skipIf(!fs.existsSync(executable))("real mobile TLS Hub integration", (
     const reenabled = await waitForTlsConnection(origin, profile.clientToken);
     expect((JSON.parse(reenabled.data) as MobilePublicProfile).deviceId).toBe(profile.deviceId);
   });
+
+  it("lets paired desktop peers manage mobile pairing while preserving mobile plaintext TLS enforcement", async () => {
+    const f = await fixture();
+    // 1. Pair mobile device via TLS, then verify plaintext HTTP /api/mobile/connection still enforces 403 mobile_tls_required
+    const mobileProfile = JSON.parse((await tlsRequest(f.origin, "/api/mobile/pair", "POST", f.pairBody)).data) as MobilePairingProfile;
+    const mobilePlaintext = await f.request("/api/mobile/connection", "GET", undefined, mobileProfile.clientToken);
+    expect(mobilePlaintext.status).toBe(403);
+    expect(await mobilePlaintext.json()).toMatchObject({ code: "mobile_tls_required" });
+    // Mobile principal cannot issue new mobile invitations
+    expect((await f.request("/api/mobile/invitations", "POST", { name: "Nested mobile" }, mobileProfile.clientToken)).status).toBe(403);
+
+    // 2. Pair a desktop Peer via standard device invitation
+    const desktopInviteRes = await f.request("/api/devices/invitations", "POST", { name: "MacBook Peer", hubUrl: "https://hub.example.test" });
+    expect(desktopInviteRes.status).toBe(201);
+    const desktopInvite = await desktopInviteRes.json() as { command: string };
+    const inviteToken = /'([A-Za-z0-9_-]+)'$/.exec(desktopInvite.command)?.[1];
+    expect(inviteToken).toBeTruthy();
+    const desktopPairRes = await f.request("/api/devices/pair", "POST", {
+      inviteToken,
+      info: { hostname: "macbook-peer", platform: process.platform, arch: process.arch, release: "test", cpu: "test", memoryBytes: 1024, ips: [] },
+    }, "");
+    expect(desktopPairRes.status).toBe(200);
+    const desktopPeer = await desktopPairRes.json() as { clientToken: string };
+
+    // 3. Paired desktop Peer can read Hub mobile connection metadata, create and cancel mobile invitations
+    const connRes = await f.request("/api/mobile/connection", "GET", undefined, desktopPeer.clientToken);
+    expect(connRes.status).toBe(200);
+    const connData = await connRes.json() as { hubId: string; tailscale?: unknown };
+    expect(connData.hubId).toBe(f.data.hubId);
+    expect(connData.tailscale).toBeDefined();
+
+    const createdRes = await f.request("/api/mobile/invitations", "POST", { name: "Peer Invited Phone" }, desktopPeer.clientToken);
+    expect(createdRes.status).toBe(201);
+    const createdInvite = await createdRes.json() as MobileInvitation;
+    expect(createdInvite.qrValue).toContain("data=");
+    expect((await f.request(`/api/mobile/invitations/${createdInvite.id}`, "DELETE", undefined, desktopPeer.clientToken)).status).toBe(200);
+
+    // 4. Proxied or query-token requests from desktop Peer remain forbidden (403)
+    const proxiedConn = await fetch(`${f.server.url}/api/mobile/connection`, {
+      headers: { authorization: `Bearer ${desktopPeer.clientToken}`, "x-forwarded-for": "203.0.113.5" },
+    });
+    expect(proxiedConn.status).toBe(403);
+    const queryInvite = await fetch(`${f.server.url}/api/mobile/invitations?token=${encodeURIComponent(desktopPeer.clientToken)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Blocked Query Invite" }),
+    });
+    expect(queryInvite.status).toBe(403);
+  });
 });

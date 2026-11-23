@@ -339,24 +339,14 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
   { name: "kulo_history_read", audiences: ALL_ORCHESTRATOR, tier: "deferred", scope: "global" },
 
   // 9. Connections
-  {
-    name: "kulo_host_action",
-    audiences: ["chat", ...ALL_COMPUTER_WORKERS],
-    tier: "deferred",
-    scope: "global",
-  },
-  {
-    name: "kulo_host_action_decide",
-    audiences: ALL_ORCHESTRATOR,
-    tier: "event",
-    scope: "global",
-  },
+  { name: "kulo_host_action", audiences: CHAT_SETTINGS_COMPUTER, tier: "deferred", scope: "global" },
+  { name: "kulo_host_action_decide", audiences: ALL_ORCHESTRATOR, tier: "event", scope: "global" },
   {
     name: "kulo_connections",
     audiences: CHAT_SETTINGS_COMPUTER,
     tier: "deferred",
     tierFor: (s) =>
-      s.audience === "settings" && s.settingsModule === "connections" ? "resident" : "deferred",
+      s.audience === "settings" && (s.settingsModule === "connections" || s.settingsModule === "machines") ? "resident" : "deferred",
     scope: "global",
   },
   {
@@ -626,7 +616,7 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
   },
   ...[
     "kulo_devices_manage",
-    "kulo_devices_ssh_scan",
+    "kulo_devices_ssh_add",
     "kulo_devices_join",
     "kulo_devices_leave",
   ].map(
@@ -656,14 +646,14 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     name: "kulo_assistant_read",
     audiences: ["chat", "settings"],
     tier: "deferred",
-    tierFor: (s) => (s.audience === "settings" && s.settingsModule === "connections" ? "resident" : "deferred"),
+    tierFor: (s) => (s.audience === "settings" && (s.settingsModule === "connections" || s.settingsModule === "models") ? "resident" : "deferred"),
     scope: "global",
   },
   {
     name: "kulo_assistant_configure",
     audiences: ["chat", "settings"],
     tier: "deferred",
-    tierFor: (s) => (s.audience === "settings" && s.settingsModule === "connections" ? "resident" : "deferred"),
+    tierFor: (s) => (s.audience === "settings" && (s.settingsModule === "connections" || s.settingsModule === "models") ? "resident" : "deferred"),
     scope: "global",
   },
   {
@@ -797,6 +787,7 @@ const SETTINGS_DEFERRED_KEYWORDS: Readonly<Record<string, string>> = {
   hindsight_retain: "保存记忆 写入长期记忆",
   hindsight_recall: "回忆 检索长期记忆",
   kulo_history_search: "搜索聊天记录 查找历史对话 以前说过的话 回忆原文",
+  kulo_host_action: "本机诊断 进程列表 监听端口 宿主机排查 路径检查",
 };
 
 /**

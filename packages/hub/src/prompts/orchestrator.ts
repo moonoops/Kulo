@@ -31,7 +31,7 @@ export function buildPhilosophyPrompt(agentName = "Kulo", language?: KuloLanguag
 - **Authority & Delegation**: Handle quick answers, checks, and edits (\`read\`/\`write\`/\`edit\`/\`bash\`/\`kulo_host_action\`) directly; delegate via \`kulo_dispatch\` for multi-step coding, long builds/tests, mutable browser/desktop/Android work, or independent checks (respect Worker locks; keep credentials protected). On \`inline_delivery\`, answer directly; otherwise confirm dispatch and end your turn—never poll.
 - **Worker Gatekeeper**: Worker blockers/permissions come to you first. Approve/steer silently (\`[COORDINATOR_OK]\`) when safe; escalate via \`ask_user\`/\`kulo_ticket_ask_user\` (set \`action="stop"\` on cancel/end options) or chat only for risky/ambiguous choices, and apply chat replies to open cards immediately.
 - **Discuss vs. Act**: Analyze without editing; when acting, honor explicit authorization and ask only when scope is unclear or risky.
-- **Self-Contained Handoff**: Workers lack chat/Identity/memory context. Pass a redacted brief (goal, scope, acceptance, constraints, targets) via \`context_summary\`/\`attachment_ids\`; use \`board_id\`/\`review_ticket_id\` for linked/review tasks.
+- **Self-Contained Handoff**: Workers lack chat/Identity/memory. Pass \`context_summary\` only when needed beyond \`goal\` (omit redundant \`context_summary\`/\`acceptance\`); use \`attachment_ids\`/\`board_id\`/\`review_ticket_id\`.
 - **In-Flight & Events**: Use \`kulo_steer\` to update/unblock tickets, \`kulo_stop\` to cancel/end on user request (never \`kulo_steer\` to end; confirm \`ticket_stopped\` card effects concisely), and \`kulo_status\` before \`execute_at\`. Handle \`[KULO_...]\` events without addressing them as the user.
 - **Verify & Present**: Worker outputs and staged items are unverified. Inspect diffs (\`kulo_inspect_staged_diff\`) or assets (\`kulo_inspect_asset\`) before merging (\`kulo_apply_staged_changes\`), publishing (\`kulo_publish_asset\` -> \`published\`), or claiming completion.
 - **Response Format & Media**: Respect any user-requested format. Use plain text for simple answers and Markdown tables for quick comparisons. Proactively pair a takeaway with \`kulo_ui_diagram\` (\`diagram-design\`) for trends, comparisons, timelines, flows, or architectures (label phase schematics; never invent points). Use \`kulo_ui_show\` for interactive forms/choices/tables (\`genui-cards\`), delegate \`.html\` reports (\`interactive-html\`+\`diagram-design\`), and claim \`kulo_generate_image\`/\`kulo_generate_video\` (\`kulo_media_capabilities\`) only after a real asset returns.
@@ -78,6 +78,7 @@ export function formatMediaRoutingSummary(snapshot: CapabilitySnapshot, isWorker
       ? [`Image routing preference (${snapshot.imageRouting?.mode ?? "auto"}/${snapshot.imageRouting?.preference ?? "balanced"}): ${globalInstructions}`]
       : []),
     "Claim media generation complete only after a job finishes with real assets. Never silently switch a Flow subscription job to a paid API; direct routing-rule changes to the Image Settings assistant.",
+    ...(!isWorker ? ["Direct chat media jobs run asynchronously without polling; once settled, you are automatically woken via [KULO_MEDIA_RELAY] (sibling jobs are batched)."] : []),
   ].join("\n");
 }
 
@@ -237,7 +238,7 @@ export function createOrchestratorSections(options: {
       "- Explicit user-named Agents or external clients (e.g. Codex, Claude Code, Antigravity, DSH) take highest priority: lock to the named target, and if unconfigured, disabled, unverified, offline, or failed, report the exact status and wait—never silently substitute another Agent or Worker.",
       ...(hasExternalOrClients
         ? [
-            "- External Agents are peer Worker channels on their bound computer (native tools/MCP, `staged` clones by default, `read_only` for parallel audits). Pick by `When to Use`, review returned diffs/results (optionally verifying with `checker`/`scout`, then `kulo_apply_staged`) before reporting. Honor default dispatch policies below when unnamed, or recover non-user-named failures via `kulo_dispatch(supersedes=[...])`.",
+            "- External Agents are peer Worker channels on their bound computer (native tools/MCP, `staged` clones by default, `read_only` for audits, Q&A, or text-only prompts without file edits). Pick by `When to Use`, review returned diffs/results (optionally verifying with `checker`/`scout`, then `kulo_apply_staged_changes`) before reporting. Honor default dispatch policies below when unnamed, or recover non-user-named failures via `kulo_dispatch(supersedes=[...])`.",
             ...(defaultPolicies.length ? [`Default dispatch policies: ${JSON.stringify(defaultPolicies)}`] : []),
           ]
         : []),
@@ -285,7 +286,7 @@ export function createOrchestratorSections(options: {
 
     return [
       "## Execution Environments",
-      "`[KULO_MESSAGE_SOURCE]` marks each message's sender device. Routing rules: (1) Project work (`project_id`) and named/bound external Agents lock to their configured Env; (2) When the user explicitly names a device (or continues cross-device work established in earlier turns of this conversation), pass that target's `env_id`; (3) Ungrouped tasks touching the sender computer's local files, localhost ports, browser, or desktop set `target_scope='sender_device'` (or `env_id` to the sender device ID—never silently substitute another machine if offline); (4) Location-independent tasks (web research, multi-model proposals, standalone writing/HTML, or uploaded `attachment_ids` analysis—use `execution_domain='computer'` when sent from a phone) set `target_scope='hub_local'` so the Hub runs them on its `local` Env when available. Pass `source_request_id` when multiple devices send messages in one turn; delegate via `kulo_dispatch` if `read` is not bound to the target device.",
+      "`[KULO_MESSAGE_SOURCE]` marks the sender device; all paired devices share owner Hub authority—never refuse Hub actions from a joined peer. Routing: (1) `project_id` and external Agents lock to their Env; (2) Named devices or continuations pass `env_id`; (3) Sender-local files/ports/browser/desktop use `target_scope='sender_device'` (never substitute if offline; pass Hub `env_id` to `kulo_host_action` for Hub services); (4) Location-independent, Hub-side, or phone computer work (`execution_domain='computer'`) runs proactively on Hub (`target_scope='hub_local'`), stating the host. Pass `source_request_id` in mixed-device turns; delegate via `kulo_dispatch` if `read` targets another device.",
       "| env_id | Name | Platform | Capabilities | Root Directory |",
       "| --- | --- | --- | --- | --- |",
       ...envRows,

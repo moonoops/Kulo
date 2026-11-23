@@ -51,7 +51,7 @@ describe("response ownership", () => {
     expect(ids.get(5)).toBe(1);
   });
 
-  it.each(["kulo.user", "pi.user", "kulo.worker_relay", "kulo.worker_watchdog", "kulo.voice.delegation"])("starts a new response at a placed %s input and forgets earlier calls", (kind) => {
+  it.each(["kulo.user", "pi.user", "kulo.worker_relay", "kulo.worker_watchdog", "kulo.media_relay", "kulo.voice.delegation"])("starts a new response at a placed %s input and forgets earlier calls", (kind) => {
     const ids = resolveResponseContext([input(1), assistant(2, [{ id: "publish", name: "kulo_publish_asset" }]), input(3, kind),
       publication(4, legacyPartId("publish")), assistant(5)]).responseIds;
     expect(ids.has(4)).toBe(false);

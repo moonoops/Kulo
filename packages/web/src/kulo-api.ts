@@ -82,9 +82,7 @@ import type {
   AssistantWorkspaceSnapshot,
 } from "@kulo/protocol";
 
-export interface AssistantWorkspaceView extends AssistantWorkspaceSnapshot {
-  localHost?: boolean;
-}
+export type AssistantWorkspaceView = AssistantWorkspaceSnapshot;
 
 export const EMPTY_SETTINGS_ASSISTANT: SettingsAssistantSnapshot = {
   topicId: null,
@@ -321,7 +319,7 @@ export const kuloRest = {
       requiresConfirmation?: boolean;
       proposal?: Record<string, unknown>;
       snapshot: AssistantWorkspaceSnapshot;
-      localHost?: boolean;
+      localHost?: boolean; canManageHub?: boolean;
     }>("/api/assistant/background-model", { method: "POST", body }),
   configureAssistantSpark: (body: { enabled: boolean }) =>
     apiRequest<AssistantWorkspaceView>("/api/assistant/spark", { method: "POST", body }),
@@ -342,7 +340,7 @@ export const kuloRest = {
       xiaomiHomeInstalled?: boolean;
       url?: string;
       snapshot: AssistantWorkspaceSnapshot;
-      localHost?: boolean;
+      localHost?: boolean; canManageHub?: boolean;
     }>("/api/assistant/home-assistant", { method: "POST", body: { deployLocal: true, ...body } }),
   configureAssistantLark: (body: { enabled?: boolean; selectedProfiles?: string[]; syncNow?: boolean }) =>
     apiRequest<AssistantWorkspaceView>("/api/assistant/lark", { method: "POST", body }),
@@ -437,7 +435,7 @@ export const kuloRest = {
     }),
   patchTopic: (
     topicId: string,
-    body: { title?: string; pinned?: boolean; archived?: boolean },
+    body: { title?: string; pinned?: boolean; archived?: boolean; targetDeviceId?: string | null },
   ) =>
     apiRequest<TopicSummary>(`/api/topics/${encodeURIComponent(topicId)}`, {
       method: "PATCH",

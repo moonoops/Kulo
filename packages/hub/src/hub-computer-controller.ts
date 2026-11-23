@@ -152,6 +152,10 @@ export class HubComputerController {
     return this.#computerHandoffs.clear(ticketId);
   }
 
+  activeOrchestratorBrowserEnvId(topicId: string): string | undefined {
+    return this.#orchestratorBrowserSessions.get(topicId)?.envId;
+  }
+
   async configureComputerUse(
     input: ComputerUseConfigurationInput,
   ): Promise<{ computerUse: ComputerUseSettings; revision: number }> {

@@ -1,9 +1,10 @@
 import { BACKGROUND_CONTEXT, withCancel, type Context } from "@earendil-works/chord/context";
 import {
   AgentDoc, defineExtension, defineTool, section, UserEntry, ToolResultEntry, AssistantEntry,
-  type Conversation, type ConversationId, type ConversationWatch,
+  type Conversation, type ConversationId,
   type Harness, type JsonObject, type ConversationView, type EntryRecord, type ToolRegistration,
 } from "@earendil-works/pi-durable";
+import { attachSettingsConversationObservation, type SettingsConversationObservation } from "./settings-assistant-observation.js";
 import { arr, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import type { UserMessage } from "@earendil-works/pi-ai";
 import type {
@@ -21,6 +22,7 @@ import { validateConfigurationModel } from "./model-configuration.js";
 import { supportsNativeWebSearch } from "./model-native-tools.js";
 import { KuloSettingsDoc, applySettingsBlockUpdate, sanitizeCustomModelList, type KuloDurableSettings } from "./settings.js";
 import { KuloStateDoc, isOrchestratorConversation, type TopicTitleJob } from "./state.js";
+import { KuloUserEntry } from "./ui-cards.js";
 import { completedTopicTitle, createTopicTitleJob, parseTopicTitle, retryFailedTopicTitle, titleGenerationFailure } from "./topic-titles.js";
 import { SETTINGS_TITLE_INSTRUCTIONS, buildSettingsAssistantPrompt } from "./prompts.js";
 import {
@@ -42,6 +44,7 @@ import {
   type WorkspaceUndoSupport,
 } from "./settings-doc.js";
 import type { DeviceAssistantHost, DeviceJoinStaging, HubDeviceController } from "./tools-devices.js";
+import { buildSettingsUserEntry, formatSettingsPromptContext, resolveSettingsDeviceContext, validateSettingsContextInput } from "./settings-client-context.js";
 import { resolveDeferredAddTools } from "./tool-surface.js";
 import type { PreparedDeviceRoleChange } from "@kulo/env";
 
@@ -61,7 +64,7 @@ export {
 };
 
 const MODULES = ["models", "workers", "identity", "machines", "appearance", "capabilities", "connections", "permissions", "schedules", "archives"] as const;
-const INTENTS = ["add-api", "add-oauth", "edit-identity", "configure-memory", "add-connection", "add-device", "join-device"] as const;
+const INTENTS = ["add-api", "add-oauth", "edit-identity", "configure-memory", "add-connection", "add-ssh-credential", "add-device", "join-device"] as const;
 const BLOCK_MODULE: Record<SettingsBlockName, SettingsAssistantModule> = {
   model: "models", executor: "workers", roles: "workers", presentation: "identity",
   memory: "identity", identity: "identity",
@@ -149,19 +152,7 @@ function assignField(object: Record<string, unknown>, key: string, value: unknow
   else target[parts.at(-1)!] = clone(value);
 }
 
-export function validateSettingsAssistantContext(raw: SettingsAssistantContext): SettingsAssistantContext {
-  if (!raw || !MODULES.some((module) => module === raw.module) || typeof raw.hasUnsavedChanges !== "boolean" ||
-    !["system", "light", "dark"].includes(raw.appearance) ||
-    typeof raw.clientId !== "string" || !raw.clientId.trim() || raw.clientId.length > 120) {
-    throw new Error("无效的设置助手页面上下文。");
-  }
-  if (raw.active !== undefined && typeof raw.active !== "boolean" || raw.pageGeneration !== undefined && (!Number.isSafeInteger(raw.pageGeneration) || raw.pageGeneration < 1)) throw new Error("无效的设置页面状态。");
-  if (raw.target && (!["capability", "skill", "connection", "extension", "external-agent"].includes(raw.target.kind) || typeof raw.target.id !== "string" || !raw.target.id.trim() || raw.target.id.length > 200)) throw new Error("无效的配置目标。");
-  return { module: raw.module, hasUnsavedChanges: raw.hasUnsavedChanges, appearance: raw.appearance, clientId: raw.clientId,
-    ...(raw.active !== undefined ? { active: raw.active } : {}), ...(raw.pageGeneration !== undefined ? { pageGeneration: raw.pageGeneration } : {}),
-    ...(raw.appearanceCustomization !== undefined ? { appearanceCustomization: raw.appearanceCustomization === null ? null : validateAppearanceCustomization(raw.appearanceCustomization) } : {}),
-    ...(raw.target ? { target: { ...raw.target } } : {}) };
-}
+export const validateSettingsAssistantContext = validateSettingsContextInput;
 
 interface AssistantHost {
   harness: Harness;
@@ -209,7 +200,8 @@ export class SettingsAssistant implements DeviceAssistantHost {
   readonly #host: AssistantHost;
   readonly #contexts = new Map<string, SettingsAssistantContext>();
   #conversation: Conversation | null = null;
-  #watch: ConversationWatch | null = null;
+  #observation: SettingsConversationObservation | null = null;
+  #emitSeq = 0; #lastEmittedSeq = 0;
   #restore: Promise<Conversation | null> | null = null;
   #queue: Promise<unknown> = Promise.resolve();
   readonly #titleWork = new Map<number, Promise<void>>();
@@ -318,7 +310,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
         if (!foundUser && entry.kind === "kulo.user" && entry.data && typeof entry.data === "object" && !Array.isArray(entry.data) && Array.isArray(entry.data.attachments)) {
           attachmentNames = entry.data.attachments.flatMap((item) => item && typeof item === "object" && !Array.isArray(item) && typeof item.name === "string" ? [item.name] : []);
         }
-        if (UserEntry.is(entry)) {
+        if (UserEntry.is(entry) || KuloUserEntry.is(entry)) {
           if (foundUser) return { userText, attachmentNames, complete: true };
           const message = entry.model?.[0];
           if (message?.role !== "user") continue;
@@ -423,7 +415,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
 
   async getSnapshot(): Promise<SettingsAssistantSnapshot> {
     // Reconnects and stop controls must remain usable while a tool awaits external I/O.
-    const snapshot = this.#conversation && this.#watch ? await this.#snapshot() : await this.#serialize(async () => {
+    const snapshot = this.#conversation && this.#observation ? await this.#snapshot() : await this.#serialize(async () => {
       await this.#ensureHistory();
       await this.#ensureConversation(false);
       return this.#snapshot();
@@ -453,7 +445,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
         entries.push(...page.items);
         cursor = page.next;
       } while (cursor);
-      const user = entries.find(UserEntry.is)?.model?.find((message) => message.role === "user");
+      const user = entries.find((entry) => UserEntry.is(entry) || KuloUserEntry.is(entry))?.model?.find((message) => message.role === "user");
       const title = user?.role === "user" ? typeof user.content === "string" ? user.content : user.content.flatMap((part) => part.type === "text" ? [part.text] : []).join(" ") : "";
       const timestamps = entries.flatMap((entry) => entry.model?.map((message) => message.timestamp).filter((time) => Number.isFinite(time) && time > 0) ?? []);
       const view: SettingsAssistantConversation = {
@@ -489,11 +481,11 @@ export class SettingsAssistant implements DeviceAssistantHost {
   async #snapshot(): Promise<SettingsAssistantSnapshot> {
     const doc = await this.#host.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
     const convId = doc?.conversationId ?? undefined;
-    const watch = Number(this.#conversation?.id) === convId ? this.#watch : null;
-    if (watch && convId !== undefined) await this.#host.hydrateConversation?.(convId);
+    const view = Number(this.#conversation?.id) === convId ? this.#observation?.view ?? null : null;
+    if (view && convId !== undefined) await this.#host.hydrateConversation?.(convId);
     return {
       topicId: topicId(doc?.conversationId),
-      ...(watch ? this.#host.display(watch.value, convId) : { messages: [], live: { busy: false, activeTools: [], queuedCount: 0 } }),
+      ...(view ? this.#host.display(view, convId) : { messages: [], live: { busy: false, activeTools: [], queuedCount: 0 } }),
       actions: clone(doc?.actions.map((action) => this.#deviceActionView(action)) ?? []),
       conversations: clone(Object.values(doc?.conversations ?? {}).filter((item) => !doc?.deletedConversationIds?.includes(Number(item.view.topicId.slice(9)))).map((item) => item.view).sort((left, right) => right.updatedAt - left.updatedAt || right.createdAt - left.createdAt || Number(right.topicId.slice(9)) - Number(left.topicId.slice(9)))),
     };
@@ -535,9 +527,12 @@ export class SettingsAssistant implements DeviceAssistantHost {
     return { id: updated.topicId, conversationId: id, title: updated.title, createdAt: updated.createdAt, updatedAt: updated.updatedAt };
   }
 
-  async #emit(source?: ConversationWatch): Promise<void> {
+  async #emit(source?: SettingsConversationObservation): Promise<void> {
+    const seq = ++this.#emitSeq;
     const snapshot = await this.#snapshot();
-    if (!this.#closed && (!source || this.#watch === source)) this.#host.emit(snapshot);
+    if (this.#closed || (source && this.#observation !== source) || seq < this.#lastEmittedSeq) return;
+    this.#lastEmittedSeq = seq;
+    this.#host.emit(snapshot);
   }
 
   #serialize<T>(run: () => Promise<T>): Promise<T> {
@@ -573,17 +568,17 @@ export class SettingsAssistant implements DeviceAssistantHost {
     if (!conversation) return null;
     const convNum = Number(conversation.id);
     await this.#host.hydrateConversation?.(convNum);
-    const watch = await conversation.watch(BACKGROUND_CONTEXT, { min: 80, max: 160 });
-    if (!this.#host.display(watch.value, convNum).live.busy) {
-      await this.#configureConversation(conversation, doc?.turnContext ?? undefined, false, BACKGROUND_CONTEXT);
-    }
-    this.#conversation = conversation;
-    this.#watch = watch;
-    watch.start(async (call) => {
-      if (call.kind !== "value" || this.#watch !== watch) return;
-      await this.#emit(watch);
-      if (this.#watch === watch) this.#observeTitle({ topicId: topicId(convNum), ...this.#host.display(watch.value, convNum), actions: [], conversations: [] });
+    const attached = await attachSettingsConversationObservation(this.#host.harness, conversation.id, { min: 80, max: 160 }, (view, source) => {
+      if (this.#observation !== source || this.#closed) return;
+      void this.#emit(source).catch(() => {});
+      this.#observeTitle({ topicId: topicId(convNum), ...this.#host.display(view, convNum), actions: [], conversations: [] });
     });
+    if (!this.#host.display(attached.view, convNum).live.busy) {
+      try { await this.#configureConversation(conversation, doc?.turnContext ?? undefined, false, BACKGROUND_CONTEXT); }
+      catch (error) { attached.detach(); throw error; }
+    }
+    if (this.#closed) { attached.detach(); return null; }
+    this.#conversation = conversation; this.#observation = attached; attached.activate();
     return conversation;
   }
 
@@ -602,18 +597,20 @@ export class SettingsAssistant implements DeviceAssistantHost {
       }
       await this.#ensureHistory();
       const conversation = (await this.#ensureConversation(true))!;
-      // Read a fresh durable view; the streamed watch can still lag the last admission.
-      const current = await conversation.watch(BACKGROUND_CONTEXT, { min: 1, max: 1 });
-      const busy = this.#host.display(current.value).live.busy;
-      await current.stop();
-      if (busy) throw new Error("设置助手正在处理上一条请求。");
+      if (await this.#isBusy(conversation)) throw new Error("设置助手正在处理上一条请求。");
       const text = this.#host.processText ? (await this.#host.processText(content, requestId ? `settings:${context.clientId}:${requestId}` : undefined)).text : content;
       const prepared = this.#host.prepareInput(text.trim(), attachments, principalId);
+      const { sourceDevice } = resolveSettingsDeviceContext({
+        principalId,
+        deviceView: this.#host.deviceController?.()?.view(context.clientId),
+        envs: this.#host.envs(),
+      });
+      const displayEntry = buildSettingsUserEntry({ text: text.trim(), attachments: prepared.attachments, source: sourceDevice, requestId });
       await this.#configureConversation(conversation, context, false, BACKGROUND_CONTEXT);
       await this.#host.harness.commit(async (tx) => {
         const state = await tx.doc(SettingsAssistantDoc);
         const settings = await tx.doc(KuloSettingsDoc);
-        await conversation.submit(tx, { type: "input", content: prepared.content, whenBusy: "reject", ...(requestId ? { requestId } : {}) });
+        await conversation.submit(tx, { type: "input", content: prepared.content, entry: displayEntry, whenBusy: "reject", ...(requestId ? { requestId } : {}) });
         state.turnContext = clone(context);
         state.observedRevisions = clone(settings.revisions);
         delete state.observedWorkspace;
@@ -640,12 +637,14 @@ export class SettingsAssistant implements DeviceAssistantHost {
     await conversation.abort(BACKGROUND_CONTEXT);
   }
 
+  async #isBusy(conversation: Conversation, context: Context = BACKGROUND_CONTEXT): Promise<boolean> {
+    if (Number(this.#conversation?.id) === Number(conversation.id) && this.#observation) return this.#host.display(this.#observation.view, Number(conversation.id)).live.busy;
+    const probe = await conversation.watch(context, { min: 1, max: 1 });
+    try { return this.#host.display(probe.value, Number(conversation.id)).live.busy; } finally { await probe.stop(); }
+  }
+
   async #assertIdle(conversation: Conversation | null): Promise<void> {
-    if (!conversation) return;
-    const current = await conversation.watch(BACKGROUND_CONTEXT, { min: 1, max: 1 });
-    const busy = this.#host.display(current.value).live.busy;
-    await current.stop();
-    if (busy) throw new Error("请先停止当前请求，再切换设置对话。");
+    if (conversation && await this.#isBusy(conversation)) throw new Error("请先停止当前请求，再切换设置对话。");
   }
 
   #sessionReplay(state: Readonly<SettingsAssistantState> | undefined, kind: SessionCommand["kind"], expectedTopicId: string | null, requestId?: string, targetTopicId?: string): boolean {
@@ -670,10 +669,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
   }
 
   async #watchSelected(): Promise<void> {
-    const watch = this.#watch;
-    this.#watch = null;
-    this.#conversation = null;
-    if (watch) await watch.stop();
+    this.#observation?.detach(); this.#observation = null; this.#conversation = null;
     await this.#ensureConversation(false);
     await this.#emit();
     this.#observeTitle(await this.#snapshot());
@@ -783,7 +779,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
   async close(): Promise<void> {
     this.#closed = true;
     this.#titleLifetime.cancel();
-    if (this.#watch) await this.#watch.stop();
+    this.#observation?.detach(); this.#observation = null;
     await Promise.allSettled([...this.#titleWork.values(), ...this.#titleStops.values()]);
     this.#contexts.clear();
   }
@@ -796,9 +792,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
       ? this.#conversation
       : await this.#host.harness.conversation(doc.conversationId as ConversationId, context);
     if (!conv) return;
-    const probe = await conv.watch(context, { min: 1, max: 1 });
-    const busy = this.#host.display(probe.value, doc.conversationId).live.busy;
-    await probe.stop();
+    const busy = await this.#isBusy(conv, context);
     await this.#configureConversation(conv, doc.turnContext ?? undefined, busy, context);
   }
 
@@ -1062,9 +1056,9 @@ export class SettingsAssistant implements DeviceAssistantHost {
     const isMcp = input.kind === "mcp" || Boolean(input.mcpPresetId) || existing?.kind === "mcp";
     if (isMcp) {
       if (input.mcpPresetId === "composio" || existing?.mcpPresetId === "composio") throw new Error("Composio 连接请通过左侧「添加应用 → Composio」或该行的「编辑 / 管理应用」配置。");
-      if (input.mcpTransport === "stdio" || input.mcpCommand !== undefined || input.mcpArgs !== undefined || input.mcpCwd !== undefined || existing?.mcpTransport === "stdio") throw new Error("本机 Stdio MCP 命令必须由用户在本机页面手动填写，不能由助手预填。");
+      if (input.mcpTransport === "stdio" || input.mcpCommand !== undefined || input.mcpArgs !== undefined || input.mcpCwd !== undefined || existing?.mcpTransport === "stdio") throw new Error("Stdio MCP 命令必须在左侧「添加应用 → 自定义 MCP」表单中手动填写，不支持由助手自动预填。");
       const targetUrl = input.url ?? existing?.url;
-      if (targetUrl && (!targetUrl.startsWith("https://") || isNonPublicMcpUrl(targetUrl))) throw new Error("助手只能预填公开的 HTTPS MCP 地址，环回或内网地址请由用户在本机页面手动配置。");
+      if (targetUrl && (!targetUrl.startsWith("https://") || isNonPublicMcpUrl(targetUrl))) throw new Error("助手只能预填公开的 HTTPS MCP 地址，环回或内网地址请在左侧「添加应用 → 自定义 MCP」表单中手动配置。");
     }
     if (current.module !== "connections") await this.clientAction("navigate", { module: "connections" }, `connection-page:${commandId}`);
     return this.#host.connections.prepare({ ...input, clientId: context.clientId });
@@ -1199,7 +1193,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
           models: { settings: settings.blocks.model, providers: await this.#host.providers() },
           workers: { executor: settings.blocks.executor, roles: settings.blocks.roles },
           identity: { presentation: settings.blocks.presentation, memory: settings.blocks.memory, identity: settings.blocks.identity },
-          machines: controller ? { ...controller.view(), machines: this.#host.envs() } : { machines: this.#host.envs() },
+          machines: controller ? { ...controller.view(clientId), machines: this.#host.envs() } : { machines: this.#host.envs() },
         };
       }
       case "models": return { settings: settings.blocks.model, providers: await this.#host.providers() };
@@ -1242,17 +1236,19 @@ export class SettingsAssistant implements DeviceAssistantHost {
     }
   }
 
-  async promptContext(): Promise<string> {
-    const context = await this.#turn();
-    return JSON.stringify({ module: context.module, ...(context.target ? { target: context.target } : {}), appearance: this.#contexts.get(context.clientId)?.appearance ?? context.appearance });
+  async promptContext(context?: SettingsAssistantContext): Promise<string> {
+    const active = context ?? (await this.#turn());
+    return formatSettingsPromptContext({
+      context: active,
+      appearance: this.#contexts.get(active.clientId)?.appearance ?? active.appearance,
+      deviceView: this.#host.deviceController?.()?.view(active.clientId),
+      envs: this.#host.envs(),
+    });
   }
 
   async promptTurn(): Promise<{ promptContext: string; module: SettingsAssistantModule }> {
     const context = await this.#turn();
-    return {
-      promptContext: JSON.stringify({ module: context.module, ...(context.target ? { target: context.target } : {}), appearance: this.#contexts.get(context.clientId)?.appearance ?? context.appearance }),
-      module: context.module,
-    };
+    return { promptContext: await this.promptContext(context), module: context.module };
   }
 
   async update(block: SettingsBlockName, rawChanges: string, title: string, commandId: string, callerConversationId?: number): Promise<SettingsAssistantAction> {
@@ -1881,7 +1877,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
     const existing = await this.#existingAction(commandId);
     if (existing) return existing;
     if (kind === "navigate" && values.intent) {
-      const expectedModule = values.intent === "add-connection"
+      const expectedModule = values.intent === "add-connection" || values.intent === "add-ssh-credential"
         ? "connections"
         : values.intent === "add-api" || values.intent === "add-oauth"
           ? "models"
@@ -1988,7 +1984,8 @@ export class SettingsAssistant implements DeviceAssistantHost {
             await controller.removeDevice(op.deviceId, true);
             result = { removed: op.deviceId };
           } else if (op.kind === "device-ssh-add") {
-            result = await controller.addSsh(op.scanId);
+            if (!op.connectionId) throw new Error("旧版 SSH 接入确认已失效，请先在「授权凭据」验证 SSH 凭据后重新发起。");
+            result = await controller.addSsh({ connectionId: op.connectionId, ...(op.name ? { name: op.name } : {}), ...(op.rootDir ? { rootDir: op.rootDir } : {}) });
           } else if (op.kind === "device-join") {
             if (!controller.canSwitchRole() || !controller.view(clientId).canSwitchRole || !controller.joinPeer || !this.#host.joinStaging) {
               throw new Error("当前运行模式不支持直接切换接入其他主机。");

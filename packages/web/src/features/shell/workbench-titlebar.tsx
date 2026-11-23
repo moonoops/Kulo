@@ -33,6 +33,7 @@ export interface WorkbenchTitlebarProps {
   locatingMessage: boolean;
   envs: EnvNodeDescriptor[];
   selectedTargetDeviceId: string;
+  targetDeviceSaving?: boolean;
   connected: boolean;
   liveBusy: boolean;
   liveContext?: LiveContextState;
@@ -68,6 +69,7 @@ export function WorkbenchTitlebar({
   locatingMessage,
   envs,
   selectedTargetDeviceId,
+  targetDeviceSaving = false,
   connected,
   liveBusy,
   liveContext,
@@ -135,7 +137,7 @@ export function WorkbenchTitlebar({
               envs={envs}
               selectedDeviceId={selectedTargetDeviceId}
               connected={connected}
-              disabled={!connected || liveBusy}
+              disabled={!connected || liveBusy || targetDeviceSaving}
               onSelect={onSelectTargetDevice}
             />
           )}

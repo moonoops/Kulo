@@ -260,18 +260,52 @@ describe("3-node multi-hub warm-standby failover, pre-start fence, and zero-loss
       ownerId: "local",
     });
 
-    // 4. Security check: remote Peer C MUST NOT be able to grant standby (403)
-    const forbiddenStandby = await fetch(`${lanA}/api/devices/${cfgB.deviceId}/standby`, {
+    // 4. Security check: proxied, cross-origin, and query-token standby mutations MUST be rejected (403)
+    const proxiedStandby = await fetch(`${lanA}/api/devices/${cfgB.deviceId}/standby`, {
       method: "POST",
-      headers: { authorization: `Bearer ${cfgC.clientToken}`, "content-type": "application/json" },
+      headers: {
+        authorization: `Bearer ${cfgC.clientToken}`,
+        "content-type": "application/json",
+        "x-forwarded-for": "203.0.113.10",
+      },
       body: JSON.stringify({ enabled: true }),
     });
-    expect(forbiddenStandby.status).toBe(403);
+    expect(proxiedStandby.status).toBe(403);
 
-    // 5. Local Primary A grants warm-standby to Node B
-    const grantRes = await fetch(`${localA}/api/devices/${cfgB.deviceId}/standby`, {
+    const crossSiteStandby = await fetch(`${lanA}/api/devices/${cfgB.deviceId}/standby`, {
       method: "POST",
-      headers: { authorization: `Bearer ${HUB_TEST_ADMIN_TOKEN}`, "content-type": "application/json" },
+      headers: {
+        authorization: `Bearer ${cfgC.clientToken}`,
+        "content-type": "application/json",
+        origin: "https://evil.example",
+      },
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(crossSiteStandby.status).toBe(403);
+
+    const queryTokenStandby = await fetch(
+      `${lanA}/api/devices/${cfgB.deviceId}/standby?token=${encodeURIComponent(cfgC.clientToken)}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: true }),
+      },
+    );
+    expect(queryTokenStandby.status).toBe(403);
+
+    // Paired desktop Peer C sees canManageHub/canManageStandby and shares owner Hub standby control
+    const peerCViewRes = await fetch(`${lanA}/api/devices`, {
+      headers: { authorization: `Bearer ${cfgC.clientToken}` },
+    });
+    expect(peerCViewRes.status).toBe(200);
+    const peerCView = (await peerCViewRes.json()) as DeviceInterconnectionView;
+    expect(peerCView.canManageHub).toBe(true);
+    expect(peerCView.canManageStandby).toBe(true);
+
+    // 5. Paired desktop Peer C grants warm-standby to Node B on Primary A
+    const grantRes = await fetch(`${lanA}/api/devices/${cfgB.deviceId}/standby`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${cfgC.clientToken}`, "content-type": "application/json" },
       body: JSON.stringify({ enabled: true }),
     });
     expect(grantRes.status).toBe(200);

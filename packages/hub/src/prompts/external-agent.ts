@@ -1,11 +1,77 @@
 import {
   EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY,
   isEffectiveExternalReadOnly,
+  isPersonalExternalAgentKind,
   type ExternalAgentInputAttachment,
+  type ExternalAgentKind,
   type ExternalAgentRequest,
   type ExternalWorkspaceMode,
+  type KuloLanguage,
   type TicketRecord,
 } from "@kulo/protocol";
+
+export const DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT =
+  "Follow repository conventions, verify changes with real checks, report actual outcomes and file paths, and hand back to Kulo if scope expansion or cross-agent collaboration is needed.";
+const DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT_ZH =
+  "遵循仓库既有约定与任务边界，完成改动后执行真实检查验证，向主 Agent 汇报具体结论、改动路径与验证证据；若需扩大范围或跨智能体协作，及时交回主 Agent 决策。";
+
+export function defaultExternalAgentRolePrompt(language?: KuloLanguage): string {
+  return language === "en" ? DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT : DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT_ZH;
+}
+
+export function isDefaultExternalAgentRolePrompt(raw: string | undefined): boolean {
+  const trimmed = raw?.trim();
+  return Boolean(
+    trimmed &&
+      (trimmed === DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT || trimmed === DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT_ZH),
+  );
+}
+
+export function defaultExternalAgentWhenToUse(kind: string, language?: KuloLanguage): string {
+  const personal = isPersonalExternalAgentKind(kind);
+  if (language === "en") {
+    return personal
+      ? "Tasks explicitly assigned to this agent by the user."
+      : "Code implementation, refactoring, debugging, and verification delegated and reviewed by the coordinator.";
+  }
+  return personal
+    ? "仅在用户明确点名该智能体时委派执行。"
+    : "复杂代码实现、重构排障与终端验证，由主 Agent 拆解派发并在交卷后验收。";
+}
+
+export function isEphemeralTableWorkspaceDir(
+  workspaceDir: string | undefined,
+  ticketId: string | undefined,
+): boolean {
+  const cleanDir = workspaceDir?.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  const cleanId = ticketId?.trim();
+  if (!cleanDir || !cleanId) return false;
+  const escapedId = cleanId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|/)table/${escapedId}(?:-[a-z0-9-]{1,28})?$`, "i").test(cleanDir);
+}
+
+export function isLightweightStandaloneExternalTask(params: {
+  ticket: Readonly<TicketRecord>;
+  effectiveReadOnly: boolean;
+  allowSubagents: boolean;
+  memoryEnabled: boolean;
+  hasConnections: boolean;
+}): boolean {
+  const { ticket, effectiveReadOnly, allowSubagents, memoryEnabled, hasConnections } = params;
+  return (
+    !ticket.projectId &&
+    !ticket.schedule &&
+    effectiveReadOnly &&
+    !ticket.parentTicketId &&
+    !ticket.reviewTicketId &&
+    !ticket.boardId &&
+    !(ticket.inputAttachmentIds?.length) &&
+    !allowSubagents &&
+    !memoryEnabled &&
+    !hasConnections &&
+    isEphemeralTableWorkspaceDir(ticket.workspaceDir, ticket.id)
+  );
+}
 
 export interface MaterializedExternalAttachment {
   id?: string;
@@ -18,6 +84,7 @@ export interface MaterializedExternalAttachment {
 
 export interface ExternalAgentPromptInput {
   ticket: Readonly<TicketRecord>;
+  bindingKind?: ExternalAgentKind;
   instructions?: string;
   workspaceMode: ExternalWorkspaceMode;
   projectName?: string;
@@ -178,7 +245,11 @@ function buildWorkspaceSection(
   return `Workspace Mode: standalone task directory (${ticket.workspaceDir}).`;
 }
 
-function buildCrossDeviceGuard(ticket: Readonly<TicketRecord>, localEnvId = "local"): string {
+function buildCrossDeviceGuard(
+  ticket: Readonly<TicketRecord>,
+  localEnvId = "local",
+  taskTools = true,
+): string {
   const isHubHost = (id: string | undefined) => id === localEnvId || (localEnvId === "local" && id === "local");
   const crossDeviceSender =
     isHubHost(ticket.envId) &&
@@ -188,11 +259,15 @@ function buildCrossDeviceGuard(ticket: Readonly<TicketRecord>, localEnvId = "loc
       ? ticket.senderSource
       : undefined;
   if (!crossDeviceSender) return "";
-  return `Cross-Device Guard: Requested from user device "${crossDeviceSender.name}" (${crossDeviceSender.deviceId}), executing on Hub "local". Never read Hub host personal folders (e.g. ~/Desktop, ~/Downloads) as user files; if the task requires "${crossDeviceSender.name}" local files, ports, apps, or browser state, immediately report blocked.`;
+  const blockedAction = taskTools
+    ? "immediately report blocked"
+    : `immediately stop and state what prerequisite on "${crossDeviceSender.name}" is blocking you`;
+  return `Cross-Device Guard: Requested from user device "${crossDeviceSender.name}" (${crossDeviceSender.deviceId}), executing on Hub "local". Never read Hub host personal folders (e.g. ~/Desktop, ~/Downloads) as user files; if the task requires "${crossDeviceSender.name}" local files, ports, apps, or browser state, ${blockedAction}.`;
 }
 
 function buildDeveloperInstructions(params: {
   ticket: Readonly<TicketRecord>;
+  bindingKind?: ExternalAgentKind;
   instructions?: string;
   workspaceMode: ExternalWorkspaceMode;
   projectName?: string;
@@ -201,15 +276,45 @@ function buildDeveloperInstructions(params: {
   memoryEnabled: boolean;
   hasConnections: boolean;
   taskTools: boolean;
+  lightweight: boolean;
 }): string {
-  const { ticket, instructions, workspaceMode, projectName, localEnvId, allowSubagents, memoryEnabled, hasConnections, taskTools } = params;
+  const {
+    ticket,
+    bindingKind,
+    instructions,
+    workspaceMode,
+    projectName,
+    localEnvId,
+    allowSubagents,
+    memoryEnabled,
+    hasConnections,
+    taskTools,
+    lightweight,
+  } = params;
+  const isGrokBot = bindingKind === "grok-bot";
+  const effectiveReadOnly = workspaceMode === "read_only" || isEffectiveExternalReadOnly(ticket);
+  if (isGrokBot || lightweight) {
+    const sections: string[] = [
+      effectiveReadOnly
+        ? "Read-only mode: delegated task from Kulo. Reply directly without modifying files."
+        : "Delegated task from Kulo. Reply directly with your findings or answer.",
+    ];
+    const rolePrompt = instructions?.trim();
+    if (rolePrompt && !isDefaultExternalAgentRolePrompt(rolePrompt)) sections.push(rolePrompt);
+    const crossDeviceGuard = buildCrossDeviceGuard(ticket, localEnvId, false);
+    if (crossDeviceGuard) sections.push(crossDeviceGuard);
+    const compact = sections.filter(Boolean).join("\n\n");
+    if (compact.length <= DEVELOPER_INSTRUCTIONS_MAX) return compact;
+    return `${compact.slice(0, DEVELOPER_INSTRUCTIONS_MAX - 16).trimEnd()}\n[Truncated]`;
+  }
+
   const sections: string[] = [
     "You are an external specialist agent executing a bounded task delegated by Kulo's coordinator. Your final output and any workspace changes will be reviewed by the coordinator before final delivery.",
   ];
   const rolePrompt = instructions?.trim();
   if (rolePrompt) sections.push(rolePrompt);
   sections.push(buildWorkspaceSection(ticket, workspaceMode, projectName));
-  const crossDeviceGuard = buildCrossDeviceGuard(ticket, localEnvId);
+  const crossDeviceGuard = buildCrossDeviceGuard(ticket, localEnvId, taskTools);
   if (crossDeviceGuard) sections.push(crossDeviceGuard);
 
   const reportingLines = [
@@ -261,6 +366,7 @@ function formatAttachmentBlock(materialized: ReadonlyArray<MaterializedExternalA
 export function buildExternalAgentPrompt(params: ExternalAgentPromptInput): BuiltExternalAgentPrompt {
   const {
     ticket,
+    bindingKind = ticket.externalExecution?.binding.kind,
     instructions,
     workspaceMode,
     projectName,
@@ -275,17 +381,34 @@ export function buildExternalAgentPrompt(params: ExternalAgentPromptInput): Buil
     hasConnections = Boolean(ticket.connectionIds?.length),
     taskTools = true,
   } = params;
+  const effectiveReadOnly = workspaceMode === "read_only" || isEffectiveExternalReadOnly(ticket);
+  const clientSupportsMcp = bindingKind !== "grok-bot";
+  const effectiveAllowSubagents = clientSupportsMcp && allowSubagents;
+  const effectiveMemoryEnabled = clientSupportsMcp && Boolean(ticket.projectId) && memoryEnabled;
+  const effectiveHasConnections = clientSupportsMcp && hasConnections;
+  const lightweight =
+    clientSupportsMcp &&
+    isLightweightStandaloneExternalTask({
+      ticket,
+      effectiveReadOnly,
+      allowSubagents: effectiveAllowSubagents,
+      memoryEnabled: effectiveMemoryEnabled,
+      hasConnections: effectiveHasConnections,
+    });
+  const effectiveTaskTools = clientSupportsMcp && !lightweight && taskTools;
 
   const developerInstructions = buildDeveloperInstructions({
     ticket,
+    bindingKind,
     instructions,
     workspaceMode,
     projectName,
     localEnvId,
-    allowSubagents,
-    memoryEnabled,
-    hasConnections,
-    taskTools,
+    allowSubagents: effectiveAllowSubagents,
+    memoryEnabled: effectiveMemoryEnabled,
+    hasConnections: effectiveHasConnections,
+    taskTools: effectiveTaskTools,
+    lightweight,
   });
 
   const budgeted = budgetExternalContextSections({
@@ -293,12 +416,13 @@ export function buildExternalAgentPrompt(params: ExternalAgentPromptInput): Buil
     boardContext,
     contextSummary: ticket.contextSummary,
     recalledMemory,
-    memoryEnabled,
+    memoryEnabled: effectiveMemoryEnabled,
   });
 
+  const scopeLabel = lightweight || !clientSupportsMcp ? "Scope" : "Authorized Scope";
   const taskLines = [
     `Goal: ${escapeXmlContent(ticket.goal)}`,
-    `Authorized Scope: ${escapeXmlContent(ticket.scope)}`,
+    `${scopeLabel}: ${escapeXmlContent(ticket.scope)}`,
     ...(ticket.acceptance ? [`Acceptance Criteria: ${escapeXmlContent(ticket.acceptance)}`] : []),
     ...(ticket.assignment ? [`Specific Instructions: ${escapeXmlContent(ticket.assignment)}`] : []),
   ];
@@ -339,15 +463,19 @@ export function formatExternalAgentFollowUpPrompt(params: {
   ticket: Readonly<TicketRecord>;
   followUp: string;
   materialized?: ReadonlyArray<MaterializedExternalAttachment>;
+  taskTools?: boolean;
 }): string {
-  const { ticket, followUp, materialized = [] } = params;
+  const { ticket, followUp, materialized = [], taskTools = true } = params;
   const effectiveReadOnly = isEffectiveExternalReadOnly(ticket);
   const attachmentsBlock = formatAttachmentBlock(materialized);
+  const footer = taskTools
+    ? `Continue in your existing native session within authorized scope${effectiveReadOnly ? " (read-only)" : ""}, verify any changes with real checks, and report concrete results via your final response or kulo_task_report.`
+    : `Continue in your existing session${effectiveReadOnly ? " (read-only)" : ""} and reply directly.`;
   return [
     `[Follow-up on Ticket ${ticket.id}: ${ticket.title}]`,
     followUp,
     attachmentsBlock,
-    `Continue in your existing native session within authorized scope${effectiveReadOnly ? " (read-only)" : ""}, verify any changes with real checks, and report concrete results via your final response or kulo_task_report.`,
+    footer,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -402,8 +530,23 @@ export function buildExternalAgentRunRequest(params: {
         ? "read_only"
         : "staged";
   const supportsStructured = Boolean(params.envCapabilities?.includes(EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY));
+  const clientSupportsMcp = external.binding.kind !== "grok-bot";
+  const effectiveAllowSubagents = clientSupportsMcp && Boolean(external.allowSubagents);
+  const effectiveMemoryEnabled = clientSupportsMcp && Boolean(params.ticket.projectId) && params.memoryEnabled;
+  const effectiveHasConnections = clientSupportsMcp && params.hasConnections;
+  const lightweight =
+    clientSupportsMcp &&
+    isLightweightStandaloneExternalTask({
+      ticket: params.ticket,
+      effectiveReadOnly,
+      allowSubagents: effectiveAllowSubagents,
+      memoryEnabled: effectiveMemoryEnabled,
+      hasConnections: effectiveHasConnections,
+    });
+  const effectiveTaskTools = clientSupportsMcp && !lightweight;
   const built = buildExternalAgentPrompt({
     ticket: params.ticket,
+    bindingKind: external.binding.kind,
     instructions: external.instructions,
     workspaceMode,
     projectName: params.projectName,
@@ -413,16 +556,17 @@ export function buildExternalAgentRunRequest(params: {
     materialized: params.materialized,
     followUp: params.followUpText,
     localEnvId: params.localEnvId,
-    allowSubagents: Boolean(external.allowSubagents),
-    memoryEnabled: params.memoryEnabled,
-    hasConnections: params.hasConnections,
-    taskTools: true,
+    allowSubagents: effectiveAllowSubagents,
+    memoryEnabled: effectiveMemoryEnabled,
+    hasConnections: effectiveHasConnections,
+    taskTools: effectiveTaskTools,
   });
   const followUpPrompt = params.isResumingNativeSession
     ? formatExternalAgentFollowUpPrompt({
         ticket: params.ticket,
         followUp: params.followUpText!.trim(),
         materialized: params.materialized,
+        taskTools: effectiveTaskTools,
       })
     : undefined;
   const imageAttachments = supportsStructured ? selectImageAttachmentCandidates(params.materialized) : [];
@@ -448,10 +592,10 @@ export function buildExternalAgentRunRequest(params: {
     ...(external.serviceTier ? { serviceTier: external.serviceTier } : {}),
     ...(external.sessionId ? { sessionId: external.sessionId } : {}),
     readOnly: effectiveReadOnly,
-    allowSubagents: Boolean(external.allowSubagents),
-    taskTools: true,
-    ...(params.hasConnections ? { hasConnections: true } : {}),
-    ...(params.memoryEnabled ? { memoryEnabled: true } : {}),
+    allowSubagents: effectiveAllowSubagents,
+    taskTools: effectiveTaskTools,
+    ...(effectiveHasConnections ? { hasConnections: true } : {}),
+    ...(effectiveMemoryEnabled ? { memoryEnabled: true } : {}),
     projectId: params.ticket.projectId,
     directoryId: params.ticket.directoryId,
     grantRevision: params.ticket.grantRevision,

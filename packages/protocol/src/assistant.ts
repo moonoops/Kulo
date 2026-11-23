@@ -288,6 +288,8 @@ export interface AssistantWorkspaceSnapshot {
   spark?: SparkConnectorSnapshot;
   homeAssistant?: HomeAssistantSnapshot;
   lark?: LarkConnectorSnapshot;
+  localHost?: boolean;
+  canManageHub?: boolean;
 }
 
 const ONE_TIME_CODE_PATTERN =

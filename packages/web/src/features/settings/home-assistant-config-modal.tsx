@@ -40,7 +40,7 @@ export function HomeAssistantConfigModal({
     setBaseUrl(snapshot.baseUrl ?? "http://127.0.0.1:8123");
     setToken("");
     setClearToken(false);
-    setError(null);
+    setError(snapshot.enabled && !snapshot.connected && snapshot.error ? redactSensitiveText(snapshot.error) : null);
     setConfirmDeployOpen(false);
     setMigration(snapshot.migration ?? null);
 
@@ -59,7 +59,7 @@ export function HomeAssistantConfigModal({
       };
     }
     return undefined;
-  }, [open, snapshot.baseUrl, snapshot.connected, snapshot.enabled, snapshot.migration, localHost]);
+  }, [open, snapshot.baseUrl, snapshot.connected, snapshot.enabled, snapshot.error, snapshot.migration, localHost]);
 
   const busy = saving || deploying;
   const close = () => {
@@ -122,11 +122,11 @@ export function HomeAssistantConfigModal({
       setMigration(result.advice);
       setConfirmDeployOpen(false);
       if (result.url) setBaseUrl(result.url);
-      onUpdated?.({ ...result.snapshot, localHost: result.localHost });
+      onUpdated?.({ ...result.snapshot, localHost: result.localHost, canManageHub: result.canManageHub });
       toast.success(
         result.xiaomiHomeInstalled
-          ? t("本机 Home Assistant 已启动并预装小米官方集成", "Local Home Assistant started with Xiaomi Home")
-          : t("本机 Home Assistant 已启动（http://127.0.0.1:8123）", "Local Home Assistant started (http://127.0.0.1:8123)"),
+          ? t("主机 Home Assistant 已启动并预装小米官方集成", "Host Home Assistant started with Xiaomi Home")
+          : t("主机 Home Assistant 已启动（http://127.0.0.1:8123）", "Host Home Assistant started (http://127.0.0.1:8123)"),
       );
     } catch (cause) {
       setConfirmDeployOpen(false);
@@ -310,13 +310,13 @@ export function HomeAssistantConfigModal({
           <AlertDialog.Container placement="center" size="sm">
             <AlertDialog.Dialog>
               <AlertDialog.Header>
-                <AlertDialog.Heading>{t("启动本机 Home Assistant？", "Start local Home Assistant?")}</AlertDialog.Heading>
+                <AlertDialog.Heading>{t("在主机启动 Home Assistant？", "Start Home Assistant on host?")}</AlertDialog.Heading>
               </AlertDialog.Header>
               <AlertDialog.Body>
                 <p className="text-sm text-muted">
                   {t(
-                    "将在本机 127.0.0.1:8123 启动官方稳定镜像，并自动预装小米官方无损集成（数据保存在 ~/.kulo-homeassistant）。",
-                    "Starts the official stable container on 127.0.0.1:8123 with official Xiaomi Home pre-installed (~/.kulo-homeassistant).",
+                    "将在主机 127.0.0.1:8123 启动官方稳定镜像，并自动预装小米官方无损集成（数据保存在 ~/.kulo-homeassistant）。",
+                    "Starts the official stable container on host 127.0.0.1:8123 with official Xiaomi Home pre-installed (~/.kulo-homeassistant).",
                   )}
                 </p>
               </AlertDialog.Body>

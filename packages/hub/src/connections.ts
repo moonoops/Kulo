@@ -1,10 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
 import {
   inspectSensitiveText, redactDeviceInvitationText, redactSensitiveText, SENSITIVE_TEXT_REDACTION,
-  type ConnectionAccessRequest, type ConnectionApplicationView, type ConnectionCategory, type ConnectionDescribeRequest, type ConnectionFields, type ConnectionKind, type ConnectionPrepareRequest,
+  type ConnectionAccessRequest, type ConnectionApplicationView, type ConnectionDescribeRequest, type ConnectionFields, type ConnectionKind, type ConnectionPrepareRequest,
   type ConnectionRecordView, type ConnectionSaveRequest, type ConnectionSecrets, type ConnectionSetupInput,
   type ConnectionTestResult, type ConnectionUseOperation, type ConnectionUseResult, type ConnectionWorkspaceSnapshot,
 } from "@kulo/protocol";
@@ -12,18 +11,29 @@ import { LocalConnectionVault } from "./connection-vault.js";
 import { LocalConnectionExecutor, type ConnectionExecutionBackend, type ConnectionHostScan } from "./connection-execution.js";
 import { classifySshExecutionFailure, classifySshScanFailure } from "./connection-ssh-diagnostics.js";
 import {
-  KNOWN_KINDS, MAX_CREDENTIAL_FIELDS, SECRET_FIELDS, allowedSecretKeyFor, credentialKey, credentialSchema,
-  fieldLabel, identifier, informationRequest, instructionsField, normalizedSecrets, textField,
+  MAX_CREDENTIAL_FIELDS, SECRET_FIELDS, allowedSecretKeyFor, credentialKey, credentialSchema,
+  fieldLabel, identifier, informationRequest, normalizedSecrets, requiresCustomSecretFallback, textField,
 } from "./connection-validation.js";
+import { binding, completesIdentity, normalizeFields, usable } from "./connection-fields.js";
 import { CONNECTION_APPLICATIONS, getConnectionApplication, LocalConnectionApplications, type ConnectionApplicationBackend } from "./connection-applications.js";
 import { closeMcpHttpAgents } from "./mcp-fetch.js";
 import { McpConnectionPool, type McpDiscoverySnapshot, type McpTransportFactoryContext } from "./mcp-connections.js";
 import { McpOAuthRefreshLockManager, McpOAuthSessionManager, extractMcpOAuthSecrets, mcpOAuthVaultRef, parseMcpOAuthVaultEntry } from "./mcp-oauth.js";
-import { MCP_PRESET_CATALOG, getMcpPreset, isLoopbackHost, normalizeMcpConnectionFields } from "./mcp-presets.js";
-import { COMPOSIO_PRESET_ID, composioBinding, createComposioSession } from "./composio-bridge.js";
+import { MCP_PRESET_CATALOG, getMcpPreset, isLoopbackHost } from "./mcp-presets.js";
+import { COMPOSIO_PRESET_ID, createComposioSession } from "./composio-bridge.js";
 import type { McpTransport } from "@earendil-works/pi-mcp";
 
 export type { ConnectionTestResult };
+export interface ResolvedDeviceSshCredential {
+  connection: ConnectionRecordView;
+  secrets: ConnectionSecrets;
+  knownHostsPath: string;
+  revision: number;
+}
+export type DeviceSshConnectionEvent = {
+  type: "identity-changed" | "credentials-rotated" | "host-mismatch" | "verified";
+  connectionId: string;
+};
 export interface ConnectionVault {
   get(ref: string): Promise<Record<string, string> | undefined>;
   set(ref: string, fields: Record<string, string>): Promise<void>;
@@ -50,94 +60,6 @@ const MAX_RECORDS = 256;
 const MAX_INPUT_AGE = 30 * 60_000;
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 function fail(message: string, code = "invalid_connection", status = 400): never { throw Object.assign(new Error(message), { code, status }); }
-function normalizeFields(input: ConnectionFields, stateDir?: string): ConnectionFields {
-  if (!input || typeof input !== "object" || !KNOWN_KINDS.includes(input.kind)) fail("请选择连接类型。");
-  if (input.kind === "app") {
-    const app = getConnectionApplication(input.appId);
-    if (input.category !== undefined && input.category !== "app" || input.host !== undefined || input.port !== undefined || input.url !== undefined || input.authType !== undefined || input.headerName !== undefined) fail("应用连接类型或地址不能修改。");
-    const schema = credentialSchema(input.credentialFields);
-    if (schema?.some((field) => app.authentication !== "token" || field.key !== "apiKey")) fail("此应用不支持该凭据字段。");
-    return { name: app.name, kind: "app", category: "app", appId: app.id,
-      ...(input.username ? { username: textField(input.username, "应用账号", 256) } : {}),
-      instructions: app.instructions.join("\n"), credentialFields: app.authentication === "token" ? [{ key: "apiKey", label: "访问令牌" }] : [] };
-  }
-  if (input.kind === "mcp") {
-    return normalizeMcpConnectionFields(input, { stateDir, textField, instructionsField, credentialSchema, allowedSecretKeyFor });
-  }
-  if (input.appId !== undefined || input.category === "app") fail("请从预置应用入口连接应用。");
-  const category: ConnectionCategory = input.category ?? "credential";
-  if (category !== "credential" && category !== "information" || category === "information" && input.kind !== "custom") fail("此连接类型不支持该分类。");
-  const name = textField(input.name, "连接名称", 120);
-  if (!name) fail("请填写连接名称。");
-  const username = textField(input.username, "用户名", 256);
-  const typeLabel = textField(input.typeLabel, "连接类型名称", 120), instructions = instructionsField(input.instructions), schema = credentialSchema(input.credentialFields);
-  if (input.kind !== "custom" && schema?.some((field) => !SECRET_FIELDS.includes(field.key as typeof SECRET_FIELDS[number]))) fail("此连接类型不支持该凭据字段。");
-  const fields: ConnectionFields = { name, kind: input.kind, category, ...(username ? { username } : {}), ...(typeLabel ? { typeLabel } : {}), ...(instructions ? { instructions } : {}), ...(schema ? { credentialFields: schema } : {}) };
-  if (input.kind === "ssh") {
-    const rawHost = textField(input.host, "主机地址", 253);
-    const host = rawHost?.startsWith("[") && rawHost.endsWith("]") ? rawHost.slice(1, -1) : rawHost;
-    if (host && !net.isIP(host) && !/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(host)) fail("主机地址无效。");
-    if (username && !/^[a-zA-Z0-9_][a-zA-Z0-9_.@\\-]{0,127}$/.test(username)) fail("SSH 用户名无效。");
-    const port = input.port ?? 22;
-    if (!Number.isInteger(port) || port < 1 || port > 65_535) fail("SSH 端口必须在 1 到 65535 之间。");
-    if (host) fields.host = host;
-    fields.port = port;
-  } else {
-    const rawUrl = textField(input.url, "站点地址", 2_048);
-    if (rawUrl) {
-      let url: URL;
-      try { url = new URL(rawUrl); } catch { fail("请输入完整的 HTTPS 地址。"); }
-      if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) fail("站点地址必须使用 HTTPS，且不能包含账号、密码或查询参数。");
-      fields.url = url.href;
-    }
-    if (input.kind === "custom") return fields;
-    const authType = input.authType ?? (input.kind === "account" ? "basic" : "bearer");
-    if (!["bearer", "basic", "header"].includes(authType)) fail("认证类型无效。");
-    fields.authType = authType;
-    if (authType === "header") {
-      const header = textField(input.headerName, "认证请求头", 80) ?? "X-API-Key";
-      if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(header) || /^(host|cookie|set-cookie|proxy-authorization|connection|content-length|transfer-encoding)$/i.test(header)) fail("认证请求头无效。");
-      fields.headerName = header;
-    }
-  }
-  return fields;
-}
-function binding(fields: ConnectionFields): string {
-  if (fields.kind === "app") return JSON.stringify(["app", fields.appId, "app"]);
-  if (fields.kind === "mcp") {
-    if (fields.mcpTransport === "stdio") {
-      return JSON.stringify(["mcp", "stdio", fields.mcpCommand ?? "", fields.mcpArgs ?? [], fields.mcpCwd ?? ""]);
-    }
-    if (fields.mcpPresetId === COMPOSIO_PRESET_ID) return composioBinding(fields);
-    const u = fields.url ? new URL(fields.url) : undefined;
-    return JSON.stringify(["mcp", "http", u ? `${u.origin}${u.pathname}` : "", fields.mcpAuthMode ?? "oauth", fields.headerName?.toLowerCase() ?? "", fields.mcpOAuthClientId ?? ""]);
-  }
-  if (fields.kind === "custom") return JSON.stringify(["custom", fields.url ? new URL(fields.url).origin : "", fields.username ?? ""]);
-  return JSON.stringify(fields.kind === "ssh"
-    ? [fields.kind, fields.host ?? "", fields.port ?? 22, fields.username ?? ""]
-    : [fields.kind, fields.url ? new URL(fields.url).origin : "", fields.username ?? "", fields.authType ?? "", fields.headerName?.toLowerCase() ?? ""]);
-}
-function completesIdentity(previous: ConnectionFields, next: ConnectionFields): boolean {
-  if (previous.kind !== next.kind) return false;
-  if (previous.kind === "app") return previous.appId === next.appId && previous.category === next.category;
-  if (previous.kind === "mcp") return binding(previous) === binding(next);
-  if (previous.kind === "ssh") return (!previous.host || previous.host === next.host) && (!previous.username || previous.username === next.username) && (!previous.host || (previous.port ?? 22) === (next.port ?? 22));
-  return (!previous.url || Boolean(next.url) && new URL(previous.url).origin === new URL(next.url!).origin) && (!previous.username || previous.username === next.username) &&
-    previous.authType === next.authType && previous.headerName === next.headerName;
-}
-function usable(record: ConnectionFields, fields: ConnectionSecrets, mcpOAuthAuthorized = false): boolean {
-  if (record.kind === "app") return getConnectionApplication(record.appId).authentication === "macos" || Boolean(fields.apiKey);
-  if (record.kind === "mcp") {
-    if (record.mcpTransport === "stdio") return Boolean(record.mcpCommand);
-    if ((record.mcpAuthMode ?? "oauth") === "none") return Boolean(record.url);
-    if ((record.mcpAuthMode ?? "oauth") === "oauth") return Boolean(record.url && mcpOAuthAuthorized);
-    return Boolean(record.url && fields.apiKey);
-  }
-  if (record.kind === "custom") return Object.values(fields).some((value) => typeof value === "string" && value.length > 0);
-  return record.kind === "ssh" ? Boolean(record.host && record.username && (fields.password || fields.privateKey))
-    : record.kind === "account" || record.authType === "basic" ? Boolean(record.url && record.username && fields.password)
-      : Boolean(record.url && fields.apiKey);
-}
 
 /** Public records contain descriptions and opaque references; only the vault contains authentication material. */
 export class KuloConnections {
@@ -149,6 +71,8 @@ export class KuloConnections {
   readonly #platform: NodeJS.Platform;
   readonly #onChanged?: () => void | Promise<void>;
   #onPersist?: () => void;
+  #sshInUseGuard?: (connectionId: string) => void;
+  #onSshChanged?: (event: DeviceSshConnectionEvent) => void;
   #clusterHostContext?: { localNodeId: string; legacyLocalNodeId?: string };
   readonly #mcpLocks: McpOAuthRefreshLockManager;
   readonly #mcpBaseFetch?: typeof fetch;
@@ -285,6 +209,8 @@ export class KuloConnections {
     } finally { fs.rmSync(temporary, { force: true }); }
   }
   setOnPersist(hook: (() => void) | undefined): void { this.#onPersist = hook; }
+  setSshInUseGuard(guard: ((connectionId: string) => void) | undefined): void { this.#sshInUseGuard = guard; }
+  setOnSshChangedHook(hook: ((event: DeviceSshConnectionEvent) => void) | undefined): void { this.#onSshChanged = hook; }
   setClusterHostContext(ctx: { localNodeId: string; legacyLocalNodeId?: string } | undefined): void {
     this.#clusterHostContext = ctx;
   }
@@ -549,6 +475,7 @@ export class KuloConnections {
       }
     } else if (request.kind !== "mcp" && draft.credentialFields === undefined && previous?.credentialFields) draft.credentialFields = previous.credentialFields;
     const fields = normalizeFields(draft, this.#stateDir);
+    if (previous?.kind === "ssh" && fields.kind !== "ssh") this.#sshInUseGuard?.(previous.id);
     if (fields.kind === "app") {
       const app = getConnectionApplication(fields.appId);
       if (app.authentication === "macos" && this.#platform !== "darwin") fail("此应用需要在 Mac 上连接。", "connection_application_unavailable", 503);
@@ -588,6 +515,9 @@ export class KuloConnections {
     for (const arg of [...(fields.mcpArgs ?? []), ...(fields.mcpAllowedToolkits ?? [])]) if (arg && metadataHasSecret(arg)) fail("MCP 参数中包含凭据，请通过专用凭据字段安全录入。");
     for (const field of fields.credentialFields ?? []) if (metadataHasSecret(field.key) || metadataHasSecret(field.label)) fail("字段名称中包含凭据，请使用普通名称。");
     const secretFields = fields.kind === "custom" || fields.kind === "mcp" ? [...schemaKeys].filter((key) => Boolean(secrets[key])) : SECRET_FIELDS.filter((key) => Boolean(secrets[key]));
+    if (fields.kind === "ssh" && previous?.kind === "ssh" && previous.hasCredential && !sameIdentity && secretFields.length === 0) {
+      fail("修改 SSH 服务器地址、端口或用户名时，请重新输入密码或私钥。", "connection_ssh_secret_required_on_target_change");
+    }
     if (fields.kind === "app") {
       const app = getConnectionApplication(fields.appId);
       if (app.authentication === "token" && !secrets.apiKey) fail("请填写应用访问令牌。", "connection_credential_missing", 409);
@@ -627,6 +557,7 @@ export class KuloConnections {
       this.#assertOpen(); options.signal?.throwIfAborted();
       const now = Date.now();
       const keepMcpMeta = fields.kind === "mcp" && sameIdentity && previous?.kind === "mcp";
+      const keepSshVerified = fields.kind === "ssh" && sameIdentity && !valueChanged && previous?.status === "verified" && Boolean(previous.trustedHostFingerprint);
       const oauthAuthorized = fields.kind === "mcp" && sameIdentity && this.#mcpOAuthAuthorized.has(id);
       const isLocalBoundMcp = fields.kind === "mcp" && (fields.mcpTransport === "stdio" || (fields.url ? (() => {
         try { return isLoopbackHost(new URL(fields.url).hostname); } catch { return false; }
@@ -637,7 +568,7 @@ export class KuloConnections {
             : previous?.boundNodeId)
         : undefined;
       const record: StoredConnection = { ...fields, id, revision: (previous?.revision ?? 0) + 1,
-        status: fields.kind === "app" ? "verified" : usable(fields, secrets, oauthAuthorized) ? (keepMcpMeta && previous.status === "verified" ? "verified" : "saved") : "incomplete",
+        status: fields.kind === "app" ? "verified" : usable(fields, secrets, oauthAuthorized) ? ((keepMcpMeta || keepSshVerified) && previous?.status === "verified" ? "verified" : "saved") : "incomplete",
         hasCredential: secretFields.length > 0, secretFields,
         createdAt: previous?.createdAt ?? now, updatedAt: now, source: previous?.source ?? source,
         ...(boundNodeId ? { boundNodeId } : {}),
@@ -649,6 +580,11 @@ export class KuloConnections {
       this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: record } });
       committed = true;
       if (previous?.kind === "ssh" && !sameIdentity) this.#executor.clearTrustedHost?.(this.#view(previous));
+      if (previous?.kind === "ssh" && (fields.kind !== "ssh" || !sameIdentity || !record.hasCredential)) {
+        this.#onSshChanged?.({ type: "identity-changed", connectionId: id });
+      } else if (fields.kind === "ssh" && previous?.kind === "ssh" && sameIdentity && valueChanged) {
+        this.#onSshChanged?.({ type: "credentials-rotated", connectionId: id });
+      }
       if (informationReadable) this.#readableInformation.add(id); else this.#readableInformation.delete(id);
       if (fields.kind === "app") this.#applicationProbes.set(id, { revision: record.revision, at: Date.now(), connected: true });
       this.#scans.delete(id);
@@ -692,10 +628,12 @@ export class KuloConnections {
     });
   }
   async remove(id: string): Promise<void> {
+    if (this.#doc.connections[id]?.kind === "ssh") this.#sshInUseGuard?.(id);
     await this.mcpOAuth.cancelForConnection(id);
     await this.#mcpPool.invalidate(id);
     await this.#serialize(async () => {
       const record = this.#record(id);
+      if (record.kind === "ssh") this.#sshInUseGuard?.(id);
       this.#revokeConnection(id);
       if (record.kind === "mcp") {
         await this.#mcpLocks.withLock(id, async () => {
@@ -844,16 +782,20 @@ export class KuloConnections {
             else if (secrets[typedKey] !== item.value && !extras.some((extra) => extra[typedKey] === item.value)) extras.push({ [typedKey]: item.value });
           }
           const metadata = inspection.metadata;
-          const kind: ConnectionKind = metadata.kind ?? (secrets.privateKey || metadata.host ? "ssh" : secrets.apiKey ? "api-key" : "account");
-          const name = metadata.name || (kind === "ssh" ? metadata.host || "SSH 连接" : metadata.url ? new URL(metadata.url).hostname : kind === "api-key" ? "API 连接" : "账号连接");
-          const fields: ConnectionFields = { name: this.redact(name), kind, ...(metadata.host ? { host: metadata.host } : {}), ...(metadata.port ? { port: metadata.port } : {}), ...(metadata.username ? { username: metadata.username } : {}), ...(metadata.url ? { url: metadata.url } : {}) };
+          const fallbackCustom = requiresCustomSecretFallback(secrets);
+          const kind: ConnectionKind = fallbackCustom ? "custom" : metadata.kind ?? (secrets.privateKey || metadata.host ? "ssh" : secrets.apiKey ? "api-key" : "account");
+          const name = metadata.name || (kind === "ssh" ? metadata.host || "SSH 连接" : metadata.url ? new URL(metadata.url).hostname : kind === "api-key" ? "API 连接" : kind === "custom" ? "自定义凭据" : "账号连接");
+          const fields: ConnectionFields = fallbackCustom
+            ? { name: this.redact(name), kind: "custom", category: "credential", credentialFields: Object.keys(secrets).map((key) => ({ key, label: fieldLabel(key) })) }
+            : { name: this.redact(name), kind, ...(metadata.host ? { host: metadata.host } : {}), ...(metadata.port ? { port: metadata.port } : {}), ...(metadata.username ? { username: metadata.username } : {}), ...(metadata.url ? { url: metadata.url } : {}) };
           // Only a definite endpoint and account identify a previous connection. Ambiguous secrets stay on incomplete cards.
-          const candidate = (fields.host || fields.url) && Object.values(this.#doc.connections).find((record) => binding(record) === binding(normalizeFields(fields)));
+          const candidate = !fallbackCustom && (fields.host || fields.url) && Object.values(this.#doc.connections).find((record) => binding(record) === binding(normalizeFields(fields)));
           const saved = await this.#save({ ...fields, ...(candidate ? { id: candidate.id, expectedRevision: candidate.revision } : {}), secrets }, "chat");
           ids = [saved.id];
           for (const [index, extra] of extras.entries()) {
-            const extraKind = extra.privateKey ? "ssh" : extra.apiKey ? "api-key" : "account";
-            const extraCard = await this.#save({ name: `${extraKind === "ssh" ? "SSH" : extraKind === "api-key" ? "API" : "账号"}凭据 ${index + 2}`, kind: extraKind, secrets: extra }, "chat");
+            const extraCustom = requiresCustomSecretFallback(extra);
+            const extraKind: ConnectionKind = extraCustom ? "custom" : extra.privateKey ? "ssh" : extra.apiKey ? "api-key" : "account";
+            const extraCard = await this.#save({ name: `${extraKind === "ssh" ? "SSH" : extraKind === "api-key" ? "API" : extraKind === "custom" ? "自定义" : "账号"}凭据 ${index + 2}`, kind: extraKind, ...(extraCustom ? { category: "credential" as const, credentialFields: Object.keys(extra).map((key) => ({ key, label: fieldLabel(key) })) } : {}), secrets: extra }, "chat");
             ids.push(extraCard.id);
           }
         }
@@ -1120,7 +1062,10 @@ export class KuloConnections {
         const current = this.#record(id);
         if (current.revision !== revision) fail("连接已被修改，请重新测试。", "connection_conflict", 409);
         const hostMismatch = Boolean(current.trustedHostFingerprint && scan.fingerprint !== current.trustedHostFingerprint);
-        if (hostMismatch) this.#revokeConnection(id);
+        if (hostMismatch) {
+          this.#revokeConnection(id);
+          this.#onSshChanged?.({ type: "host-mismatch", connectionId: id });
+        }
         this.#scans.set(id, { revision, value: scan, at: Date.now() });
         const updated: StoredConnection = {
           ...current, hostFingerprint: scan.fingerprint, status: hostMismatch ? "error" : "incomplete",
@@ -1159,6 +1104,7 @@ export class KuloConnections {
       if (ok) {
         const updated: StoredConnection = { ...current, status: "verified", error: undefined, updatedAt: Date.now() };
         this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: updated } });
+        if (record.kind === "ssh") this.#onSshChanged?.({ type: "verified", connectionId: id });
         await this.#changed();
         return { connection: this.#view(updated) };
       }
@@ -1167,7 +1113,10 @@ export class KuloConnections {
           error: caught, exitCode, stderr, output, host: current.host,
           authMethod: secrets.privateKey ? "private-key" : "password", platform: this.#platform,
         });
-        if (diag.hostMismatch) this.#revokeConnection(id);
+        if (diag.hostMismatch) {
+          this.#revokeConnection(id);
+          this.#onSshChanged?.({ type: "host-mismatch", connectionId: id });
+        }
         const updated: StoredConnection = { ...current, status: "error", error: diag.message, updatedAt: Date.now() };
         this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: updated } });
         await this.#changed();
@@ -1198,6 +1147,32 @@ export class KuloConnections {
       await this.#changed();
       return this.#view(updated);
     });
+  }
+  async resolveSshForDevice(
+    connectionId: string,
+    options: { requireVerified?: boolean } = {},
+  ): Promise<ResolvedDeviceSshCredential> {
+    this.#assertOpen();
+    const record = this.#record(connectionId);
+    if (record.kind !== "ssh") fail("所选凭据不是 SSH 服务器。", "invalid_connection", 400);
+    if (!record.hasCredential || !record.host || !record.username) {
+      fail("此 SSH 凭据信息不完整，请先在「授权凭据」补全。", "connection_credential_missing", 409);
+    }
+    if (options.requireVerified !== false && record.status !== "verified") {
+      fail("请先在「授权凭据」中测试并验证此 SSH 凭据。", "connection_ssh_unverified", 409);
+    }
+    const view = this.#view(record);
+    const knownHostsPath = record.trustedHostFingerprint
+      ? this.#executor.trustedHostPath?.(view, record.trustedHostFingerprint)
+      : undefined;
+    if (!record.trustedHostFingerprint || !knownHostsPath) {
+      fail("此 SSH 凭据的主机指纹尚未信任或已失效，请在「授权凭据」重新验证。", "connection_host_untrusted", 409);
+    }
+    const secrets = await this.#secrets(record);
+    if (!secrets.password && !secrets.privateKey) {
+      fail("此 SSH 凭据缺少登录密码或私钥。", "connection_credential_missing", 409);
+    }
+    return { connection: view, secrets, knownHostsPath, revision: record.revision };
   }
   async closeAsync(): Promise<void> {
     await this.mcpOAuth.close().catch(() => undefined);

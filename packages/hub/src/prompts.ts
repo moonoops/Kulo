@@ -44,6 +44,7 @@ export {
   formatConnectionRequestMessage,
   formatExternalPermissionMessage,
   formatHostActionRequestMessage,
+  formatMediaRelayMessage,
   formatRecoveryExhaustedRelayMessage,
   formatStagedDiffRelayLines,
   formatWorkerRecoveryMessage,

@@ -5,6 +5,7 @@ import {
   type Conversation, type ConversationId, type ConversationView, type ConversationWatch,
   type EntryId, type EntryRecord, type Extension, type Harness, type ToolRegistration,
 } from "@earendil-works/pi-durable";
+import type { EnvManager } from "@kulo/env";
 import type {
   BuiltinThinkingEffort, ChatDisplayItem, ConversationSearchInput,
   LiveStreamState, MainSessionNotificationEvent, TicketRecord, TopicSummary,
@@ -66,6 +67,7 @@ export interface HubTopicManagerDeps {
   harness: Harness;
   settingsStore: LiveSettingsStore;
   runtimeGates: Pick<HubRuntimeGates, "isClosed" | "isRecovering" | "isHandoverBarrierActive" | "resumeIfNotRecovering" | "broadcastTickets">;
+  envManager: Pick<EnvManager, "getEnvDescriptor">;
   uploads: KuloUploadStore;
   projects: KuloProjects;
   connectionManager: Pick<KuloConnections, "redact" | "redactionRevision">;
@@ -76,6 +78,7 @@ export interface HubTopicManagerDeps {
     pruneCommittedBaseline: (conversationId: ConversationId, context: Context, force: boolean) => Promise<unknown>;
   };
   onTopicIdle?: (topicId: string, conversationId: number, live: LiveStreamState, value: ConversationView) => void;
+  hasPendingMediaRelay?: (conversationId: number) => boolean;
   orchestrator: {
     resolveAgent: () => { model: { provider: string; modelId: string }; thinkingLevel: BuiltinThinkingEffort };
     extensions: (isRoot: boolean) => Extension[];
@@ -311,9 +314,18 @@ export class HubTopicManager {
 
   async patchTopic(
     topicId: string,
-    patch: { title?: string; pinned?: boolean; archived?: boolean },
+    patch: { title?: string; pinned?: boolean; archived?: boolean; targetDeviceId?: string | null },
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<TopicSummary> {
+    if (
+      patch.targetDeviceId !== undefined &&
+      patch.targetDeviceId !== null &&
+      (typeof patch.targetDeviceId !== "string" ||
+        patch.targetDeviceId.length > 256 ||
+        /[\u0000-\u001f]/.test(patch.targetDeviceId))
+    ) {
+      throw new ProjectError(400, "invalid_target_device", "目标设备标识无效。");
+    }
     const stagedToDiscard: TicketRecord[] = [];
     const { updated, allTopics } = await this.#deps.harness.commit(async (tx) => {
       const state = await tx.doc(KuloStateDoc);
@@ -333,6 +345,29 @@ export class HubTopicManager {
         }
         t.archived = Boolean(patch.archived);
         if (t.archived) stagedToDiscard.push(...discardPendingTopicStagedTickets(state, topicId, Date.now()));
+      }
+      if (patch.targetDeviceId !== undefined) {
+        const target = (patch.targetDeviceId ?? "").trim();
+        const changed = target !== (t.targetDeviceId ?? "");
+        if (t.projectId) {
+          if (target || changed) {
+            throw new ProjectError(409, "project_topic_device_locked", "项目会话已绑定项目所在设备，不能单独修改目标设备。");
+          }
+        } else if (changed) {
+          if (target && !this.#deps.envManager.getEnvDescriptor(target)?.online) {
+            throw new ProjectError(409, "target_device_unavailable", "目标设备尚未连接。");
+          }
+          const convId = t.conversationId as ConversationId;
+          const [live, inbox] = await Promise.all([
+            tx.doc(LiveDoc, convId),
+            tx.doc(InboxDoc, convId),
+          ]);
+          if (live.run || inbox.items.length) {
+            throw new ProjectError(409, "target_device_busy", "请等待当前回复结束，再切换目标设备。");
+          }
+          if (target) t.targetDeviceId = target;
+          else delete t.targetDeviceId;
+        }
       }
       t.updatedAt = Date.now();
       return { updated: cloneJson(t), allTopics: listSortedTopics(state) };
@@ -581,6 +616,7 @@ export class HubTopicManager {
       previous: cache.notificationBaseline,
       messages,
       live: cache.live,
+      deferReplyNotification: this.#deps.hasPendingMediaRelay?.(Number(cache.conversation.id)) ?? false,
       redact: (text) => this.#deps.connectionManager.redact(text),
     });
     cache.notificationBaseline = notification.next;

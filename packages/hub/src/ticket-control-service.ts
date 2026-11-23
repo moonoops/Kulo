@@ -47,6 +47,7 @@ import { classifyTicketOutcome, recordTicketOutcomeToWorkingMemory } from "./wor
 import {
   isTicketUnfinished,
   KuloStateDoc,
+  MediaRelayEntry,
   recordProcessedCommand,
   toTicketCardView,
   WorkerRecoveryEntry,
@@ -460,7 +461,7 @@ export class TicketControlService {
     if (controlInput && WorkerRecoveryEntry.is(controlInput)) {
       throw new ProjectError(409, "recovery_stop_denied", "自动恢复回合不能自行停止任务，请保留现有执行或请求用户决定。");
     }
-    if (controlInput && (WorkerWatchdogEntry.is(controlInput) || WorkerRelayEntry.is(controlInput))) {
+    if (controlInput && (WorkerWatchdogEntry.is(controlInput) || WorkerRelayEntry.is(controlInput) || MediaRelayEntry.is(controlInput))) {
       throw new ProjectError(409, "automatic_stop_denied", "后台巡检和回报不能代替用户停止任务。请纠偏，或让 Worker 汇报实际阻塞与所需权限。");
     }
     const snapshot = await harness.snapshot(KuloStateDoc, context);

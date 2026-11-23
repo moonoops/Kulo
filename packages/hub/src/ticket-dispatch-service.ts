@@ -25,6 +25,7 @@ import { capturedAgentIntent, extractAgentDispatchIntent } from "./agent-routing
 import { chatRoutingData } from "./chat-submissions.js";
 import type { KuloConnections } from "./connections.js";
 import { redactCredentialData } from "./credential-redaction.js";
+import { reconcileTopicRoutingTarget } from "./env-routing-policy.js";
 import type {
   HubRuntimeGates,
   InlineDispatchWaiters,
@@ -46,6 +47,7 @@ import {
   isOrchestratorConversation,
   isRecoveryInputBoundary,
   KuloStateDoc,
+  MediaRelayEntry,
   ticketsShareWriteScope,
   toTicketCardView,
   WorkerRecoveryEntry,
@@ -84,6 +86,7 @@ export interface TicketDispatchWorkerOps {
     androidTargetIds: readonly string[];
     allowSubagents: boolean;
     readOnly?: boolean;
+    hasProject?: boolean;
   }) => Pick<AgentChange, "extensions" | "tools">;
   discardTicketStagedWorkspace: (ticket: Readonly<TicketRecord>) => Promise<unknown>;
 }
@@ -153,7 +156,7 @@ export class TicketDispatchService {
           params.sourceRequestId ? selectedInput?.id : undefined,
         )
       : { intent: undefined, entryId: undefined, inheritedAssignment: undefined, input: undefined, continuing: false };
-    const sender = chatRoutingData(modelDispatch ? selectedInput ?? dispatchSource.input : undefined);
+    const rawSender = chatRoutingData(modelDispatch ? selectedInput ?? dispatchSource.input : undefined);
 
     const prior = checkDispatchAdmission({
       state: existingState,
@@ -210,6 +213,9 @@ export class TicketDispatchService {
       : existingState?.conversationToTopic?.[String(originConversationId)] ?? "root";
     const originTopic = originIsSettings ? undefined : existingState?.topics?.[resolvedOriginTopicId];
     if (originTopic?.deletedAt) throw new ProjectError(404, "topic_deleted", "会话已删除。");
+    const sender = originTopic
+      ? { ...rawSender, targetDeviceId: reconcileTopicRoutingTarget(rawSender.targetDeviceId, originTopic.targetDeviceId, true) }
+      : rawSender;
     if (
       sender.source &&
       dispatchSource.continuing &&
@@ -355,6 +361,7 @@ export class TicketDispatchService {
             androidTargetIds: domain.androidDeviceIds,
             allowSubagents: Boolean(plan.rolePreset?.allowSubagents),
             readOnly: workspace.isReadOnly,
+            hasProject: Boolean(project),
           }),
           maxTurns: 40,
         }
@@ -547,6 +554,9 @@ export class TicketDispatchService {
       const page = await conversation.entries(assistant === undefined ? {} : { maxEntryId: assistant as EntryId }, 200, cursor, context);
       for (const entry of [...page.items].sort((a, b) => Number(b.id) - Number(a.id))) {
         if (!isRecoveryInputBoundary(entry)) continue;
+        if (MediaRelayEntry.is(entry)) {
+          return { entryId: Number(entry.id), input, continuing };
+        }
         if (WorkerRelayEntry.is(entry) || WorkerRecoveryEntry.is(entry) || WorkerWatchdogEntry.is(entry)) {
           const state = await harness.snapshot(KuloStateDoc, context);
           let ticket = state?.tickets[entry.data.ticketId];

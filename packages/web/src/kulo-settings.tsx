@@ -76,11 +76,12 @@ export function KuloSettingsBoard({
   onConnectionsRefresh,
   assistantWorkspace,
   onAssistantWorkspaceUpdated,
-  onRequestAssistantAcceleration,
+  assistantBusy = false,
   onRequestAssistantPrompt,
   permissionEntry,
   onPermissionEntryHandled,
   onOpenModels,
+  onNavigateSettings,
   clusterStatus,
   suppressHubOfflineAlert = false,
   onPromoteCandidate,
@@ -125,11 +126,12 @@ export function KuloSettingsBoard({
   onConnectionsRefresh?: () => void;
   assistantWorkspace?: AssistantWorkspaceView | null;
   onAssistantWorkspaceUpdated?: (next: AssistantWorkspaceView) => void;
-  onRequestAssistantAcceleration?: () => void;
+  assistantBusy?: boolean;
   onRequestAssistantPrompt?: (prompt: string) => void;
   permissionEntry?: SystemPermissionEntry | null;
   onPermissionEntryHandled?: (id: string) => void;
   onOpenModels?: () => void;
+  onNavigateSettings?: (entry: SettingsAssistantEntryIntent) => Promise<void>;
   clusterStatus?: ClusterLocalStatusView | null;
   suppressHubOfflineAlert?: boolean;
   onPromoteCandidate?: (candidate: ClusterFailoverCandidate) => void;
@@ -138,6 +140,17 @@ export function KuloSettingsBoard({
   useI18n();
   const needsHubSettings = module === "models" || module === "workers" || module === "identity";
   const localEnvId = envs.find((device) => device.kind === "local")?.id;
+  const openModels = onOpenModels ?? (onNavigateSettings ? () => { void onNavigateSettings({ id: crypto.randomUUID(), module: "models" }).catch(() => {}); } : undefined);
+  const openSshCredentials = onNavigateSettings
+    ? (action: "create" | "verify") => {
+        void onNavigateSettings({
+          id: crypto.randomUUID(),
+          module: "connections",
+          tab: "credential",
+          ...(action === "create" ? { intent: "add-ssh-credential" as const } : {}),
+        }).catch(() => {});
+      }
+    : undefined;
   return (
     <div className="kulo-settings-board" data-settings-module={module} data-kulo-navigation-key={`settings:${module}`} data-kulo-navigation="content">
       <div key={module} className="kulo-settings-page">
@@ -154,10 +167,10 @@ export function KuloSettingsBoard({
             </Alert>
           </div>
         )}
-        {module === "connections" && <ConnectionsModule clientId={clientId} snapshot={connections ?? null} loading={connectionsLoading} error={connectionsError} connected={connected} localEnvId={localEnvId} preparing={connectionPreparing} onPrepare={onConnectionPrepare ?? (async () => {})} onRefresh={onConnectionsRefresh ?? (() => {})} entryIntent={entryIntent} onIntentHandled={onIntentHandled} assistant={assistantWorkspace} onAssistantUpdated={onAssistantWorkspaceUpdated} onRequestAssistantAcceleration={onRequestAssistantAcceleration} onRequestAssistantPrompt={onRequestAssistantPrompt} />}
-        {module === "capabilities" && <CapabilitiesModule clientId={clientId} snapshot={capabilities ?? null} settings={settings} loading={capabilitiesLoading} error={capabilitiesError} connected={connected} requestsDisabled={capabilityRequestsDisabled} envs={envs} target={capabilityTarget} view={capabilityView} onViewChange={onCapabilityViewChange} voiceSettingsRequested={voiceSettingsRequested} onRequest={onCapabilityRequest ?? (() => {})} onRefresh={onCapabilitiesRefresh ?? (() => {})} onDirtyChange={onDirtyChange} onOpenModels={onOpenModels} />}
+        {module === "connections" && <ConnectionsModule clientId={clientId} snapshot={connections ?? null} loading={connectionsLoading} error={connectionsError} connected={connected} localEnvId={localEnvId} preparing={connectionPreparing} onPrepare={onConnectionPrepare ?? (async () => {})} onRefresh={onConnectionsRefresh ?? (() => {})} entryIntent={entryIntent} onIntentHandled={onIntentHandled} assistant={assistantWorkspace} onAssistantUpdated={onAssistantWorkspaceUpdated} onRequestAssistantPrompt={onRequestAssistantPrompt} />}
+        {module === "capabilities" && <CapabilitiesModule clientId={clientId} snapshot={capabilities ?? null} settings={settings} loading={capabilitiesLoading} error={capabilitiesError} connected={connected} requestsDisabled={capabilityRequestsDisabled} envs={envs} target={capabilityTarget} view={capabilityView} onViewChange={onCapabilityViewChange} voiceSettingsRequested={voiceSettingsRequested} onRequest={onCapabilityRequest ?? (() => {})} onRefresh={onCapabilitiesRefresh ?? (() => {})} onDirtyChange={onDirtyChange} onOpenModels={openModels} />}
         {module === "models" && settings && (
-          <ModelsModule settings={settings} onSettingsUpdated={onSettingsUpdated} onDirtyChange={onDirtyChange} entryIntent={entryIntent} onIntentHandled={onIntentHandled} />
+          <ModelsModule settings={settings} connected={connected} assistantBusy={assistantBusy} onSettingsUpdated={onSettingsUpdated} onDirtyChange={onDirtyChange} entryIntent={entryIntent} onIntentHandled={onIntentHandled} />
         )}
         {module === "workers" && settings && (
           <AgentsModule
@@ -191,6 +204,9 @@ export function KuloSettingsBoard({
             suppressHubOfflineAlert={suppressHubOfflineAlert}
             onPromoteCandidate={onPromoteCandidate}
             onRequestHandover={onRequestHandover}
+            connections={connections ?? null}
+            connectionsLoading={connectionsLoading}
+            onOpenSshCredentials={openSshCredentials}
           />
         )}
         {module === "permissions" && <SystemPermissionsModule envs={envs} connected={connected} entry={permissionEntry} onEntryHandled={onPermissionEntryHandled} />}

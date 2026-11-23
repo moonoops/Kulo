@@ -1,6 +1,5 @@
 import {
   isFactoryRoleText,
-  isPersonalExternalAgentKind,
   localizeDefaultRolePreset,
   resolveRolePresetFromPool,
   type CapabilitySnapshot,
@@ -468,7 +467,7 @@ export function createWorkerSections(options: {
     const scope = resolveTicketExecutionScope(state, input.conversationId);
     if (!scope) return undefined;
     const roles = options.getRoles();
-    const memoryEnabled = options.getMemoryEnabled();
+    const memoryEnabled = options.getMemoryEnabled() && Boolean(scope.ticket.projectId);
     const language = options.getLanguage?.();
     const localEnvId = options.getLocalEnvId?.();
     const enabledTools = collectEnabledAgentTools(input.agent);
@@ -569,7 +568,9 @@ export function formatWorkerInitialPrompt(
   }
   parts.push(
     ticket.externalExecution
-      ? "Report concrete results in your final response or via kulo_task_report."
+      ? ticket.externalExecution.binding.kind === "grok-bot"
+        ? "Report concrete results directly in your final response."
+        : "Report concrete results in your final response or via kulo_task_report."
       : ticket.executionDomain === "android"
         ? "Verify permissions and observe screen state first, then report via kulo_report."
         : "Call kulo_report when ready, blocked, or failed.",
@@ -578,13 +579,19 @@ export function formatWorkerInitialPrompt(
 }
 
 export {
+  DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT,
   buildExternalAgentPrompt,
   buildExternalAgentRunRequest,
   budgetExternalContextSections,
+  defaultExternalAgentRolePrompt,
+  defaultExternalAgentWhenToUse,
   escapeXmlAttr,
   escapeXmlContent,
   formatExternalAgentFollowUpPrompt,
   formatExternalAgentHandoffPrompt,
+  isDefaultExternalAgentRolePrompt,
+  isEphemeralTableWorkspaceDir,
+  isLightweightStandaloneExternalTask,
   reconcileConsumedResumeState,
   selectImageAttachmentCandidates,
   stripMemoryContextHeader,
@@ -593,24 +600,3 @@ export {
   type ExternalAgentPromptInput,
   type MaterializedExternalAttachment,
 } from "./external-agent.js";
-
-export const DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT =
-  "Follow repository conventions, verify changes with real checks, report actual outcomes and file paths, and hand back to Kulo if scope expansion or cross-agent collaboration is needed.";
-
-export function defaultExternalAgentRolePrompt(language?: KuloLanguage): string {
-  return language === "en"
-    ? DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT
-    : "遵循仓库既有约定与任务边界，完成改动后执行真实检查验证，向主 Agent 汇报具体结论、改动路径与验证证据；若需扩大范围或跨智能体协作，及时交回主 Agent 决策。";
-}
-
-export function defaultExternalAgentWhenToUse(kind: string, language?: KuloLanguage): string {
-  const personal = isPersonalExternalAgentKind(kind);
-  if (language === "en") {
-    return personal
-      ? "Tasks explicitly assigned to this agent by the user."
-      : "Code implementation, refactoring, debugging, and verification delegated and reviewed by the coordinator.";
-  }
-  return personal
-    ? "仅在用户明确点名该智能体时委派执行。"
-    : "复杂代码实现、重构排障与终端验证，由主 Agent 拆解派发并在交卷后验收。";
-}

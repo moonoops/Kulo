@@ -387,7 +387,19 @@ function readSecretValue(text: string, from: number, allowBare: boolean, quotedE
     if (literal) return literal.kind === "number"
       ? { ...parsed, end: literal.end, value: text.slice(literal.start, literal.end) } : undefined;
     const string = json.ranges.find((range) => parsed.start >= range.start && parsed.start < range.end);
-    if (string) return { ...parsed, end: string.end, value: decodeQuoted(text.slice(parsed.start, string.end), '"') };
+    if (string) {
+      let end = string.end;
+      for (let pos = parsed.start; pos < string.end; pos++) {
+        if (text[pos] === "\\" && pos + 1 < string.end) {
+          const escaped = text[pos + 1];
+          if (escaped === "n" || escaped === "r") { end = pos; break; }
+          pos++;
+        }
+      }
+      while (end > parsed.start && /[\t ]/u.test(text[end - 1]!)) end--;
+      if (end <= parsed.start) return undefined;
+      return { ...parsed, end, value: decodeQuoted(text.slice(parsed.start, end), '"') };
+    }
   }
   let end = text.length;
   for (let position = parsed.start; position < text.length; position++) {
@@ -636,7 +648,11 @@ export function inspectSensitiveText(text: string, options: SensitiveTextOptions
       if (protectedRange && match.index >= protectedRange.start && match.index < protectedRange.end) continue;
       const chinese = /[\u3400-\u9fff]/u.test(match[0]);
       const bareArgument = /--$/u.test(text.slice(Math.max(0, match.index - 2), match.index));
-      const parsed = readSecretValue(text, match.index + match[0].length, chinese || explicitSave || bareArgument, quotedEnds, json);
+      let valueFrom = match.index + match[0].length;
+      if (match.index >= 2 && text.slice(match.index - 2, match.index) === "**" && text.startsWith("**", valueFrom)) {
+        valueFrom += 2;
+      }
+      const parsed = readSecretValue(text, valueFrom, chinese || explicitSave || bareArgument, quotedEnds, json);
       if (!parsed) continue;
       handledUntil = parsed.end;
       let value = parsed.value;
@@ -753,7 +769,7 @@ export function inspectSensitiveText(text: string, options: SensitiveTextOptions
       ? "ssh" : secrets.some((secret) => secret.kind === "apiKey" || secret.kind === "token") ? "api-key" : "account";
   }
   // An explicitly pasted account form implies a request to keep the connection, unless declined.
-  const fieldsContext = !options.definiteOnly && secrets.length > 0 && Boolean(metadata.username || metadata.host) && /[:：=]|账号|帐号|用户名/iu.test(text);
+  const fieldsContext = !options.definiteOnly && !/^\s*[\[{]/u.test(text) && secrets.length > 0 && Boolean(metadata.username || metadata.host) && /[:：=]|账号|帐号|用户名/iu.test(text);
   const saveRequested = !options.definiteOnly && !SAVE_NEGATION.test(text) && (explicitSave || fieldsContext);
   const values = secrets.map((secret) => secret.value);
   const literalForms = spans.map((span) => text.slice(span.start, span.end));

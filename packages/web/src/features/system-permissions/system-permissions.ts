@@ -89,7 +89,7 @@ export async function openNativeAppPermissionSettings(
   kind: NativeAppPermissionKind,
   options: { localHost?: boolean } = {},
 ): Promise<"opened" | "remote"> {
-  if (options.localHost === false) return "remote";
+  if (options.localHost !== true) return "remote";
   const desktop = desktopSystemPermissionBridge();
   const openViaHub = () => apiRequest<{ ok: true }>("/api/connections/permission-settings", { method: "POST", body: { kind } });
   if (desktop) {

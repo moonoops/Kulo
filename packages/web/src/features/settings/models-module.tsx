@@ -9,6 +9,7 @@ import {
 } from "@heroui/react";
 import {
   isConversationModel,
+  type AssistantBackgroundModelStatus,
   type CustomModelConfig,
   type CustomProviderApi,
   type CustomProviderConfig,
@@ -27,6 +28,8 @@ import {
 } from "./api-provider-modal";
 import { OAuthSubscriptionModal } from "./oauth-modal";
 import { UsageCapsSection } from "./usage-caps-section";
+import { BackgroundModelSection } from "./background-model-section";
+import { backgroundModelApi } from "./background-model-api";
 import { ModelSelectionFields } from "./model-selection-fields";
 import { SettingsList } from "./settings-layout";
 import { ProviderConnectionTable, type ProviderConnectionItem } from "./provider-connection-table";
@@ -49,12 +52,16 @@ type DeleteConfirmState =
 
 export function ModelsModule({
   settings,
+  connected = true,
+  assistantBusy = false,
   onSettingsUpdated,
   onDirtyChange,
   entryIntent,
   onIntentHandled,
 }: {
   settings: KuloSettingsView;
+  connected?: boolean;
+  assistantBusy?: boolean;
   onSettingsUpdated: (next: KuloSettingsView) => void;
   onDirtyChange?: (dirty: boolean) => void;
   entryIntent?: SettingsAssistantEntryIntent | null;
@@ -71,6 +78,8 @@ export function ModelsModule({
   const [error, setError] = useState<string>();
   const [providerModalError, setProviderModalError] = useState<string>();
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirmState | null>(null);
+  const [backgroundModelStatus, setBackgroundModelStatus] = useState<AssistantBackgroundModelStatus | null>(null);
+  const [bgRefreshToken, setBgRefreshToken] = useState(0);
 
   const [oauthModal, setOauthModal] = useState<{
     open: boolean;
@@ -441,7 +450,23 @@ export function ModelsModule({
     [providerCatalogById],
   );
 
+  const providersSignature = useMemo(
+    () =>
+      providers
+        .map((p) => `${p.id}:${p.authenticated ? 1 : 0}:${p.authType ?? ""}:${p.models.length}`)
+        .join("|"),
+    [providers],
+  );
+
+  const resetBackgroundIfProviderMatches = async (providerId: string) => {
+    if (backgroundModelStatus?.mode === "kulo-provider" && backgroundModelStatus.providerId === providerId) {
+      await backgroundModelApi.configure({ mode: "auto" }).catch(() => {});
+      setBgRefreshToken((v) => v + 1);
+    }
+  };
+
   const handleDeleteCustomProvider = async (cpId: string) => {
+    await resetBackgroundIfProviderMatches(cpId);
     const remaining = customProviders.filter((cp) => cp.id !== cpId);
     const patch: Record<string, unknown> = { customProviders: remaining };
     if (defaultProvider === cpId) {
@@ -455,6 +480,7 @@ export function ModelsModule({
   };
 
   const handleDeleteGateway = async () => {
+    await resetBackgroundIfProviderMatches("kulo-gateway");
     const patch: Record<string, unknown> = {
       gatewayDisabled: true,
       clearApiKey: true,
@@ -564,6 +590,7 @@ export function ModelsModule({
     setAuthBusyId(providerId);
     setError(undefined);
     try {
+      await resetBackgroundIfProviderMatches(providerId);
       await kuloRest.logoutProvider(providerId);
       if (defaultProvider === providerId) {
         await persistModelBlock({ defaultProvider: "", defaultModel: "" });
@@ -648,6 +675,17 @@ export function ModelsModule({
           />
         </SettingsList>
       </section>
+
+      <BackgroundModelSection
+        groups={providerModelGroups}
+        connected={connected}
+        loadingProviders={loadingProviders}
+        assistantBusy={assistantBusy}
+        modelRevision={modelBlock.revision}
+        providersSignature={providersSignature}
+        refreshToken={bgRefreshToken}
+        onStatusChange={setBackgroundModelStatus}
+      />
 
       <section className="kulo-settings-section" aria-labelledby="model-connections-heading">
         <div className="kulo-settings-section-head">
@@ -747,11 +785,20 @@ export function ModelsModule({
             ? t(`移除订阅接入「${deleteConfirm.label}」？`, `Remove subscription “${deleteConfirm.label}”?`)
             : t(`删除 API 接入「${deleteConfirm?.label ?? ""}」？`, `Delete API connection “${deleteConfirm?.label ?? ""}”?`)
         }
-        description={
-          deleteConfirm?.kind === "oauth"
-            ? t(`将清除本地保存的「${deleteConfirm.label}」OAuth 登录凭据；若当前默认模型来自该订阅，将清空默认模型选择。`, `This will clear the locally saved OAuth credentials for “${deleteConfirm.label}”. If the default model uses this subscription, the default model selection will be cleared.`)
-            : t(`将移除「${deleteConfirm?.label ?? ""}」及其已保存的 API 密钥配置；此操作不可恢复。`, `This will remove “${deleteConfirm?.label ?? ""}” and its saved API key. This cannot be undone.`)
-        }
+        description={(() => {
+          const targetProviderId = deleteConfirm?.kind === "gateway" ? "kulo-gateway" : deleteConfirm?.id;
+          const affectsBg = Boolean(
+            targetProviderId &&
+              backgroundModelStatus?.mode === "kulo-provider" &&
+              backgroundModelStatus.providerId === targetProviderId,
+          );
+          const bgSuffix = affectsBg
+            ? t(" 同时会将后台处理模型切回跟随默认模型。", " The background processing model will also reset to follow the default model.")
+            : "";
+          return deleteConfirm?.kind === "oauth"
+            ? `${t(`将清除本地保存的「${deleteConfirm.label}」OAuth 登录凭据；若当前默认模型来自该订阅，将清空默认模型选择。`, `This will clear the locally saved OAuth credentials for “${deleteConfirm.label}”. If the default model uses this subscription, the default model selection will be cleared.`)}${bgSuffix}`
+            : `${t(`将移除「${deleteConfirm?.label ?? ""}」及其已保存的 API 密钥配置；此操作不可恢复。`, `This will remove “${deleteConfirm?.label ?? ""}” and its saved API key. This cannot be undone.`)}${bgSuffix}`;
+        })()}
         confirmLabel={t("确认删除", "Confirm removal")}
         status="danger"
         isPending={savingModelBlock || Boolean(authBusyId)}

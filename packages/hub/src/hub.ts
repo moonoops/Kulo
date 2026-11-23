@@ -345,9 +345,11 @@ import { createProjectToolsExtension, type ProjectController } from "./tools-pro
 import {
   inspectChatReadTarget,
   preflightOrchestratorTargetEnv,
+  reconcileTopicRoutingTarget,
   resolveOrchestratorCatalogSkillTarget,
   resolveOrchestratorConflictSkillTarget,
   resolveOrchestratorTargetEnv,
+  resolvePriorContextualComputerId,
   verifyChatReadTargetEnv,
   type ChatRoutingSignals,
   type PriorUserDeviceTurn,
@@ -758,13 +760,7 @@ export class KuloHub implements OrchestratorController {
         return resolveAgentModelAndThinking(this.#models, this.#providerId, subProviderOpt, subModelId, desiredThinking, this.#liveSettings.model);
       },
       buildSubagentTools: (ticket, readOnly) =>
-        this.#workerTools({
-          executionDomain: ticket.executionDomain,
-          androidTargetIds: this.#androidTargets(ticket),
-          allowSubagents: false,
-          isSubagent: true,
-          readOnly,
-        }),
+        this.#workerTools({ executionDomain: ticket.executionDomain, androidTargetIds: this.#androidTargets(ticket), allowSubagents: false, isSubagent: true, readOnly, hasProject: Boolean(ticket.projectId) }),
       syncSubagentConversation: (conv, ticket, sub, ctx) => this.#syncSingleSubagentConversation(conv, ticket, sub, ctx),
       touchParentActivity: (ticketId) => {
         this.#watchdog.touchActivity(ticketId);
@@ -826,10 +822,8 @@ export class KuloHub implements OrchestratorController {
       stateDir: this.config.stateDir,
       models: this.#models,
       defaultModel: () => this.#resolveOrchestratorAgent().model,
-      persistedConfig: async () => {
-        const snap = await this.harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT);
-        return snap?.backgroundModel ?? { mode: "auto", revision: 1 };
-      },
+      modelConfig: () => this.#liveSettings.model,
+      persistedConfig: async () => (await this.harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT))?.backgroundModel ?? { mode: "auto", revision: 1 },
       saveConfig: async (next) => {
         await this.harness.commit(async (tx) => {
           const doc = await tx.doc(AssistantDoc);
@@ -1097,6 +1091,7 @@ export class KuloHub implements OrchestratorController {
       redact: redactAssistantText,
       echoSuppressor: this.assistantEchoSuppressor,
       shouldSkipCloudModel: async () => this.usageCaps.isCappedFor("assistant").capped && (await this.ambientModel.willUseCloudModel(false)),
+      isCloudCapped: () => this.usageCaps.isCappedFor("assistant").capped,
       onNotifyBrain: (payload) => this.assistantCoordinator.enqueueEscalation(payload),
     });
     this.envManager.setConnectorHandlers({
@@ -1467,6 +1462,7 @@ export class KuloHub implements OrchestratorController {
       harness: this.harness,
       settingsStore: this.#settingsStore,
       runtimeGates: this.#runtimeGates,
+      envManager: this.envManager,
       uploads: this.uploads,
       projects: this.projects,
       connectionManager: this.connectionManager,
@@ -1479,7 +1475,9 @@ export class KuloHub implements OrchestratorController {
       },
       onTopicIdle: (topicId, conversationId, live, value) => {
         void this.#contextGuard.maybeTriggerEarlyCompaction(topicId, conversationId, live.context, value, BACKGROUND_CONTEXT).catch(() => {});
+        this.#mediaDelivery?.onConversationIdle(conversationId);
       },
+      hasPendingMediaRelay: (conversationId) => this.#mediaDelivery?.hasPendingRelay(conversationId) ?? false,
       orchestrator: {
         resolveAgent: () => this.#resolveOrchestratorAgent(),
         extensions: (isRoot) => this.#orchestratorExtensions(isRoot),
@@ -1495,7 +1493,7 @@ export class KuloHub implements OrchestratorController {
       cleanup: {
         closeOrchestratorBrowserSession: (topicId) => this.#computer.closeOrchestratorBrowserSession(topicId),
         discardTicketStagedWorkspace: (ticket) => this.#discardTicketStagedWorkspace(ticket),
-        onTopicDeleted: (topicId, convId, ctx) => this.memoryRuntime.onTopicDeleted(topicId, convId, ctx),
+        onTopicDeleted: async (topicId, convId, ctx) => { await this.memoryRuntime.onTopicDeleted(topicId, convId, ctx); await this.#mediaDelivery?.onConversationDeleted(convId); },
       },
     });
     this.#chat = new HubChatPipeline({
@@ -1528,6 +1526,7 @@ export class KuloHub implements OrchestratorController {
       connectionManager: this.connectionManager,
       inlineWaiters: this.#inlineWaiters,
       runtimeGates: this.#runtimeGates,
+      turnContext: this.#turnContext,
       steerTicket: (req, ctx) => this.steerTicket(req, ctx),
     });
     this.#stagedApply = new TicketStagedApplyService({
@@ -1573,6 +1572,7 @@ export class KuloHub implements OrchestratorController {
       uploads: this.uploads,
       uiCards: this.uiCards,
       mediaJobs: () => this.mediaJobs,
+      capabilities: this.capabilities, liveSettings: this.#settingsStore, redact: (text: string) => this.connectionManager.redact(text),
       projects: this.projects,
       settingsAssistant: this.settingsAssistant,
       topics: this.#topics,
@@ -1874,8 +1874,8 @@ export class KuloHub implements OrchestratorController {
       getLiveMemoryAuthFile: () => getLiveMemory().authFile,
       envManager,
       redact,
-      assertChatReadTarget: (conversationId, toolTaskId, envId, context) =>
-        hubRef!.#assertChatReadTarget(conversationId, toolTaskId, envId, context),
+      assertChatReadTarget: (conversationId, toolTaskId, envId, context, topic) =>
+        hubRef!.#assertChatReadTarget(conversationId, toolTaskId, envId, context, topic),
       getProject: (projectId, context) => hubRef!.projects.get(projectId, context),
     });
 
@@ -2257,7 +2257,7 @@ export class KuloHub implements OrchestratorController {
             executionDomain: "computer",
             mediaKinds,
             androidAvailable,
-            memoryKnowledgeEnabled: memoryKnowledgeForWorker,
+            memoryKnowledgeEnabled: Boolean(scope.ticket.projectId) && memoryKnowledgeForWorker,
           };
         }
         try {
@@ -2267,7 +2267,7 @@ export class KuloHub implements OrchestratorController {
             executionDomain: "computer",
             mediaKinds,
             androidAvailable,
-            memoryKnowledgeEnabled: memoryKnowledgeForWorker,
+            memoryKnowledgeEnabled: Boolean(scope.ticket.projectId) && memoryKnowledgeForWorker,
           };
         } catch (error) {
           context.abortSignal?.throwIfAborted();
@@ -2278,7 +2278,7 @@ export class KuloHub implements OrchestratorController {
             executionDomain: "computer",
             mediaKinds,
             androidAvailable,
-            memoryKnowledgeEnabled: memoryKnowledgeForWorker,
+            memoryKnowledgeEnabled: Boolean(scope.ticket.projectId) && memoryKnowledgeForWorker,
             diagnostics: [`React 项目检测失败（${error.code}），前端预置 Skill 暂不可用。`],
           };
         }
@@ -2755,6 +2755,7 @@ export class KuloHub implements OrchestratorController {
     harness.resume();
     await hub.#topics.startTitles(context);
     await hub.settingsAssistant.start();
+    await hub.#mediaDelivery.reconcilePendingRelays();
 
     await hub.archiveInactiveTopics(context);
     hub.#topics.startAutoArchive();
@@ -2836,6 +2837,8 @@ export class KuloHub implements OrchestratorController {
   async configureComputerUse(input: ComputerUseConfigurationInput): Promise<{ computerUse: ComputerUseSettings; revision: number }> {
     return this.#computer.configureComputerUse(input);
   }
+
+  setMediaRelayTimingForTest(options: { batchCoalesceMaxMs?: number; busyRecheckMs?: number }): void { this.#mediaDelivery.setRelayTimingForTest(options); }
 
   async testImageCapability(id: string, input: { clientId: string; commandId: string; prompt?: string }): Promise<MediaJob> {
     const clientId = imageSetupIdentifier(input.clientId, "窗口标识");
@@ -3137,11 +3140,8 @@ export class KuloHub implements OrchestratorController {
   }
 
   #workerTools(options: {
-    executionDomain: "computer" | "android" | undefined;
-    androidTargetIds: readonly string[];
-    allowSubagents: boolean;
-    isSubagent?: boolean;
-    readOnly?: boolean;
+    executionDomain: "computer" | "android" | undefined; androidTargetIds: readonly string[];
+    allowSubagents: boolean; isSubagent?: boolean; readOnly?: boolean; hasProject?: boolean;
   }): { extensions: ReturnType<typeof defineExtension>[]; tools: ToolRegistration[] } {
     const extensions = this.#workerExtensions(options.executionDomain, options.androidTargetIds);
     const audience: ToolSurfaceAudience =
@@ -3157,11 +3157,7 @@ export class KuloHub implements OrchestratorController {
       .filter((desc): desc is EnvNodeDescriptor => Boolean(desc));
     const tools = this.#resolveExtensionsTools(
       extensions,
-      this.#surfaceRuntimeState(audience, {
-        allowSubagents: options.allowSubagents,
-        readOnly: options.readOnly,
-        androidTargets,
-      }),
+      this.#surfaceRuntimeState(audience, { allowSubagents: options.allowSubagents, readOnly: options.readOnly, androidTargets, ...(options.hasProject ? {} : { sharedMemoryEnabled: false }) }),
     );
     return { extensions, tools };
   }
@@ -3274,7 +3270,7 @@ export class KuloHub implements OrchestratorController {
   }
 
   async createTopic(title?: string, context: Context = BACKGROUND_CONTEXT, projectId?: string | null): Promise<TopicSummary> { return this.#topics.createTopic(title, context, projectId); }
-  async patchTopic(topicId: string, patch: { title?: string; pinned?: boolean; archived?: boolean }, context: Context = BACKGROUND_CONTEXT): Promise<TopicSummary> { return this.#topics.patchTopic(topicId, patch, context); }
+  async patchTopic(topicId: string, patch: { title?: string; pinned?: boolean; archived?: boolean; targetDeviceId?: string | null }, context: Context = BACKGROUND_CONTEXT): Promise<TopicSummary> { return this.#topics.patchTopic(topicId, patch, context); }
   async deleteTopic(topicId: string, context: Context = BACKGROUND_CONTEXT, options: { stopTasks?: boolean } = {}): Promise<{ deleted: string; topics: TopicSummary[] }> { return this.#topics.deleteTopic(topicId, context, options); }
   async compactTopic(topicId: string, context: Context = BACKGROUND_CONTEXT) { return this.#contextGuard.compactTopic(topicId, context); }
   async getTopicView(topicId = "root", context: Context = BACKGROUND_CONTEXT): Promise<TopicView> { return this.#topics.getTopicView(topicId, context); }
@@ -4663,7 +4659,7 @@ export class KuloHub implements OrchestratorController {
     const settingsSnap = await this.settingsAssistant.getSnapshot().catch(() => null);
     const activeSettingsTurns = settingsSnap?.live?.busy ? 1 : 0;
     const mediaList = await this.mediaJobs.list().catch(() => []);
-    const activeMediaJobs = mediaList.filter((j) => j.status === "queued" || j.status === "running").length;
+    const activeMediaJobs = mediaList.filter((j) => ["queued", "submitting", "running", "collecting"].includes(j.status)).length + this.#mediaDelivery.pendingRelayCount();
     return {
       busy: activeTurns + activeTickets + activeVoiceCalls + activeSettingsTurns + activeMediaJobs > 0,
       activeTurns,
@@ -4772,6 +4768,7 @@ export class KuloHub implements OrchestratorController {
     await finish(() => this.usageCaps.close());
     this.#computer.closeAllHandoffs();
     await finish(() => this.mediaJobs.close());
+    await finish(() => this.#mediaDelivery.close());
     await finish(() => this.extensions.close());
     await finish(() => this.#topics.drainPendingActivity());
     for (const detach of this.#watchdog.drainDetachers()) {
@@ -5389,15 +5386,8 @@ export class KuloHub implements OrchestratorController {
         if (pending.kind === "external_permission") retained.add("kulo_external_permission");
         if (pending.kind === "ticket_decision") retained.add("kulo_ticket_ask_user");
       }
-      if (
-        connSnap.requests.some(
-          (req) =>
-            req.status === "pending" &&
-            (state?.tickets[req.ticketId]?.originConversationId ?? Number(ROOT_CONVERSATION_ID)) === convNum,
-        )
-      ) {
-        retained.add("kulo_connection_decide");
-      }
+      if (this.#mediaDelivery.hasPendingRelay(convNum)) { retained.add("kulo_media_job"); retained.add("kulo_inspect_asset"); }
+      if (connSnap.requests.some((req) => req.status === "pending" && (state?.tickets[req.ticketId]?.originConversationId ?? Number(ROOT_CONVERSATION_ID)) === convNum)) retained.add("kulo_connection_decide");
     }
     await this.harness.commit((tx) => pruneIdleDeferredToolsInTx(tx, conversationId, retained), context);
   }
@@ -5507,12 +5497,7 @@ export class KuloHub implements OrchestratorController {
       {
         model: workerAgent.model,
         ...(rolePreset?.thinkingLevel !== "auto" ? { thinkingLevel: workerAgent.thinkingLevel } : {}),
-        ...this.#workerTools({
-          executionDomain: ticket.executionDomain,
-          androidTargetIds: androidTargets,
-          allowSubagents: Boolean(rolePreset?.allowSubagents),
-          readOnly: Boolean(ticket.readOnly),
-        }),
+        ...this.#workerTools({ executionDomain: ticket.executionDomain, androidTargetIds: androidTargets, allowSubagents: Boolean(rolePreset?.allowSubagents), readOnly: Boolean(ticket.readOnly), hasProject: Boolean(ticket.projectId) }),
         ...(ticket.executionDomain !== "android" ? { cwd: effectiveWorkspaceDir } : {}),
       },
       context,
@@ -5548,13 +5533,7 @@ export class KuloHub implements OrchestratorController {
       {
         model: subAgent.model,
         ...(subPreset?.thinkingLevel !== "auto" ? { thinkingLevel: subAgent.thinkingLevel } : {}),
-        ...this.#workerTools({
-          executionDomain: ticket.executionDomain,
-          androidTargetIds: androidTargets,
-          allowSubagents: false,
-          isSubagent: true,
-          readOnly: effectiveReadOnly,
-        }),
+        ...this.#workerTools({ executionDomain: ticket.executionDomain, androidTargetIds: androidTargets, allowSubagents: false, isSubagent: true, readOnly: effectiveReadOnly, hasProject: Boolean(ticket.projectId) }),
         ...(ticket.executionDomain !== "android" ? { cwd: effectiveWorkspaceDir } : {}),
       },
       context,
@@ -5618,10 +5597,10 @@ export class KuloHub implements OrchestratorController {
     this.#refreshTicketState(true);
   }
 
-  #toRoutingSignals(inputs: readonly EntryRecord[]): ChatRoutingSignals[] {
+  #toRoutingSignals(inputs: readonly EntryRecord[], topic?: { targetDeviceId?: string }): ChatRoutingSignals[] {
     return inputs.map((inp) => {
       const r = chatRoutingData(inp);
-      return { text: r.text, targetDeviceId: r.targetDeviceId, sourceDeviceId: r.source?.deviceId };
+      return { text: r.text, targetDeviceId: reconcileTopicRoutingTarget(r.targetDeviceId, topic?.targetDeviceId, Boolean(topic)), sourceDeviceId: r.source?.deviceId };
     });
   }
 
@@ -5646,17 +5625,27 @@ export class KuloHub implements OrchestratorController {
 
     const inputs = await this.#currentControlInputs(conversationId, context, toolTaskId);
     const preflight = preflightOrchestratorTargetEnv({
-      routings: this.#toRoutingSignals(inputs),
+      routings: this.#toRoutingSignals(inputs, topic),
       topicTargetDeviceId: topic.targetDeviceId,
       envs: this.envManager.listEnvs(),
     });
     if (!preflight.ok) throw new ProjectError(409, preflight.code, preflight.message);
 
     const projectDeviceId = topic.projectId ? (await this.projects.get(topic.projectId, context)).deviceId : undefined;
+    const envs = this.envManager.listEnvs();
+    const priorContextualComputerId = !projectDeviceId && !preflight.explicitTarget
+      ? resolvePriorContextualComputerId({
+          currentText: this.#toRoutingSignals(inputs, topic)[0]?.text,
+          priorUserTurns: await this.#recentPriorUserTurns(conversationId, context, toolTaskId, new Set(inputs.map((entry) => entry.id))),
+          envs,
+        })
+      : undefined;
     const resolved = resolveOrchestratorTargetEnv({
       explicitTarget: preflight.explicitTarget,
       sourceId: preflight.sourceId,
       projectDeviceId,
+      priorContextualComputerId,
+      activeTopicBrowserEnvId: this.#computer.activeOrchestratorBrowserEnvId(topicId),
       getEnvDescriptor: (id) => this.envManager.getEnvDescriptor(id),
       isLocalEnv: (id) => this.envManager.isLocalEnv(id),
       localEnvId: this.envManager.localEnvId,
@@ -5678,7 +5667,7 @@ export class KuloHub implements OrchestratorController {
     const inputs = await this.#currentControlInputs(conversationId, context, toolTaskId);
     const projectDeviceId = await this.#resolveOptionalProjectDeviceId(topic.projectId, context);
     return resolveOrchestratorCatalogSkillTarget({
-      routings: this.#toRoutingSignals(inputs),
+      routings: this.#toRoutingSignals(inputs, topic),
       topicTargetDeviceId: topic.targetDeviceId,
       projectDeviceId,
       envs: this.envManager.listEnvs(),
@@ -5709,7 +5698,7 @@ export class KuloHub implements OrchestratorController {
       const projectDeviceId = await this.#resolveOptionalProjectDeviceId(topic.projectId, context);
       return resolveOrchestratorConflictSkillTarget({
         errorCode: error.code,
-        routings: this.#toRoutingSignals(inputs),
+        routings: this.#toRoutingSignals(inputs, topic),
         topicTargetDeviceId: topic.targetDeviceId,
         projectDeviceId,
         envs: this.envManager.listEnvs(),
@@ -5718,12 +5707,13 @@ export class KuloHub implements OrchestratorController {
     }
   }
 
-  async #assertChatReadTarget(conversationId: number, toolTaskId: number, environment: string | undefined, context: Context) {
+  async #assertChatReadTarget(conversationId: number, toolTaskId: number, environment: string | undefined, context: Context, topic?: { targetDeviceId?: string }) {
     const inputs = await this.#currentControlInputs(conversationId, context, toolTaskId);
     const envs = this.envManager.listEnvs();
     const localEnvId = this.envManager.localEnvId;
     const preflight = inspectChatReadTarget({
-      routings: this.#toRoutingSignals(inputs),
+      routings: this.#toRoutingSignals(inputs, topic),
+      topicTargetDeviceId: topic?.targetDeviceId,
       envs,
       environment,
       localEnvId,

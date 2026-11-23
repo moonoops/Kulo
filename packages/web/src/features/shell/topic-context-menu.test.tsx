@@ -25,7 +25,7 @@ describe("TopicContextMenu and WorkbenchTitlebar context entry", () => {
       activeTopic: { id: "root", conversationId: 1, title: "与 Kulo 对话", master: true, createdAt: 1, updatedAt: 1 },
       locatingMessage: false,
       envs: [],
-      selectedTargetDeviceId: "auto",
+      selectedTargetDeviceId: "",
       connected: true,
       liveBusy: false,
       liveContext: { tokens: 38_000, source: "usage" as const, window: 256_000, softLimit: 72_000, warnLimit: 108_000 },
@@ -82,5 +82,94 @@ describe("TopicContextMenu and WorkbenchTitlebar context entry", () => {
     );
     expect(errorHtml).toContain("上下文整理异常");
     expect(errorHtml).toContain("text-danger");
+  });
+
+  it("marks every interactive WorkbenchTitlebar button as kulo-window-control across conversation and projected views", () => {
+    const envs = [
+      {
+        id: "local",
+        name: "Macmini.local",
+        kind: "local" as const,
+        online: true,
+        platform: "darwin",
+        arch: "arm64",
+        rootDir: "/workspace",
+        capabilities: ["fs", "bash"],
+        connectedAt: 1,
+        lastSeenAt: 1,
+      },
+      {
+        id: "device-macbook",
+        name: "MacBook Pro",
+        kind: "reverse-ws" as const,
+        online: true,
+        platform: "darwin",
+        arch: "arm64",
+        rootDir: "/workspace",
+        capabilities: ["fs", "bash"],
+        connectedAt: 1,
+        lastSeenAt: 1,
+      },
+    ];
+    const previewSessions = [
+      {
+        id: "preview-1",
+        ticketId: "T-1",
+        envId: "local",
+        deviceName: "Macmini.local",
+        title: "浏览器检查",
+        tool: "browser" as const,
+      },
+    ];
+    const sharedProps = {
+      settingsMode: false,
+      settingsModule: "models" as const,
+      language: "zh-CN" as const,
+      projectedTitle: "",
+      onCloseProjection: () => {},
+      activeTopicId: "topic-1",
+      activeTopicTitle: "跨设备排查",
+      activeTopic: { id: "topic-1", conversationId: 2, title: "跨设备排查", master: false, createdAt: 1, updatedAt: 1 },
+      locatingMessage: false,
+      envs,
+      selectedTargetDeviceId: "",
+      connected: true,
+      liveBusy: false,
+      liveContext: { tokens: 12_000, source: "usage" as const, window: 256_000, softLimit: 72_000, warnLimit: 108_000 },
+      onSelectTargetDevice: () => {},
+      onOpenConversationSearch: () => {},
+      filesRevision: "1:1",
+      isLocalTopic: false,
+      onNavigateConversation: () => {},
+      onPatchTopic: () => {},
+      activeTopicTaskCount: 2,
+      rightExpanded: false,
+      onToggleRightPanel: () => {},
+      previewSessions,
+      onOpenPreviewModal: () => {},
+    };
+
+    const conversationHtml = renderToStaticMarkup(<WorkbenchTitlebar {...sharedProps} />);
+    const conversationButtons = conversationHtml.match(/<button\b[^>]*>/g) ?? [];
+    // Target device, search, conversation files, topic context, topic actions, collapsed task count, live preview
+    expect(conversationButtons).toHaveLength(7);
+    expect(conversationHtml).toContain('aria-label="执行设备"');
+    for (const button of conversationButtons) {
+      expect(button).toMatch(/\bkulo-window-control\b/);
+    }
+
+    const projectedHtml = renderToStaticMarkup(
+      <WorkbenchTitlebar
+        {...sharedProps}
+        projectedTicketId="T-1"
+        projectedTitle="后台任务详情"
+      />,
+    );
+    const projectedButtons = projectedHtml.match(/<button\b[^>]*>/g) ?? [];
+    // Back to chat, live preview
+    expect(projectedButtons).toHaveLength(2);
+    for (const button of projectedButtons) {
+      expect(button).toMatch(/\bkulo-window-control\b/);
+    }
   });
 });

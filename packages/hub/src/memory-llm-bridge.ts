@@ -2,7 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import type http from "node:http";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { clampThinkingLevel, type Api, type AssistantMessage, type Context, type ImageContent, type Message, type Model, type Models, type ModelThinkingLevel, type TextContent } from "@earendil-works/pi-ai";
+import { type Api, type AssistantMessage, type Context, type ImageContent, type Message, type Model, type Models, type TextContent } from "@earendil-works/pi-ai";
+import {
+  ZERO_TOOL_THINKING_HEADROOM_TOKENS,
+  isGoogleThinkingApi,
+  resolveZeroToolThinkingLevel,
+  suppressGoogleThoughtSummaries,
+} from "./zero-tool-thinking.js";
 
 export const MEMORY_LLM_BRIDGE_OWNER = "kulo-memory-llm-bridge-v1";
 export const MEMORY_LLM_BRIDGE_FILENAME = "memory-llm-bridge.json";
@@ -247,49 +253,6 @@ function buildContext(
   };
 }
 
-const MEMORY_THINKING_HEADROOM_TOKENS = 2048;
-const BUILTIN_THINKING_MAP_PROVIDERS = ["google-vertex", "google", "anthropic", "openai", "openai-codex"] as const;
-
-function resolveMemoryThinkingLevel(model: Model<Api>, models: Models): ModelThinkingLevel {
-  if (!model.reasoning) return "off";
-  let effectiveModel: Model<Api> = model;
-  if (!effectiveModel.thinkingLevelMap) {
-    for (const builtinProvider of BUILTIN_THINKING_MAP_PROVIDERS) {
-      const candidate = models.getModel(builtinProvider, model.id);
-      if (candidate?.thinkingLevelMap) {
-        effectiveModel = { ...model, thinkingLevelMap: candidate.thinkingLevelMap };
-        break;
-      }
-    }
-  }
-  if (!effectiveModel.thinkingLevelMap && (model.api === "google-vertex" || model.api === "google-generative-ai")) {
-    const id = model.id.toLowerCase();
-    if (/^gemini-(?:3\.[7-9]|3\.1-pro|[4-9])/.test(id)) {
-      effectiveModel = { ...model, thinkingLevelMap: { off: null, minimal: null, low: "low" } };
-    } else if (/^gemini-3(?:\.\d+)?-flash|^gemma-?4/.test(id)) {
-      effectiveModel = { ...model, thinkingLevelMap: { off: null, minimal: "minimal" } };
-    }
-  }
-  return clampThinkingLevel(effectiveModel, "off");
-}
-
-function suppressGoogleThoughtSummaries(api: Api, payload: unknown): unknown {
-  if (api !== "google-vertex" && api !== "google-generative-ai") return payload;
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
-  const copy = { ...(payload as Record<string, unknown>) };
-  if (!copy.config || typeof copy.config !== "object" || Array.isArray(copy.config)) return copy;
-  const config = { ...(copy.config as Record<string, unknown>) };
-  if (!config.thinkingConfig || typeof config.thinkingConfig !== "object" || Array.isArray(config.thinkingConfig)) {
-    return copy;
-  }
-  config.thinkingConfig = {
-    ...(config.thinkingConfig as Record<string, unknown>),
-    includeThoughts: false,
-  };
-  copy.config = config;
-  return copy;
-}
-
 function supportsNativeSchema(api: Api): boolean {
   return api === "google-vertex"
     || api === "google-generative-ai"
@@ -469,9 +432,9 @@ export class MemoryLlmBridge {
       });
     }
 
-    const minThinkingLevel = resolveMemoryThinkingLevel(model, this.#models);
-    const thinkingHeadroom = minThinkingLevel !== "off" ? MEMORY_THINKING_HEADROOM_TOKENS : 0;
-    const isGoogleApi = model.api === "google-vertex" || model.api === "google-generative-ai";
+    const minThinkingLevel = resolveZeroToolThinkingLevel(model, this.#models);
+    const thinkingHeadroom = minThinkingLevel !== "off" ? ZERO_TOOL_THINKING_HEADROOM_TOKENS : 0;
+    const isGoogleApi = isGoogleThinkingApi(model.api);
 
     const invoke = async (useNativeSchema: boolean): Promise<AssistantMessage> => {
       const schemaPromptSuffix = request.responseSchema && !useNativeSchema

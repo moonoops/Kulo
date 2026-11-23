@@ -30,6 +30,7 @@ export interface InterconnectedDevice {
   info?: DeviceSystemInfo;
   lastSeenAt?: number;
   error?: string;
+  sshConnectionId?: string;
   clusterRole?: import("./cluster.js").ClusterRole;
   isPreferredPrimary?: boolean;
   warmStandbyCapable?: boolean;
@@ -44,6 +45,7 @@ export interface DeviceInterconnectionView {
   currentDeviceId: string;
   currentDeviceKnown?: boolean;
   canSwitchRole?: boolean;
+  canManageHub?: boolean;
   canManageStandby?: boolean;
   primaryNodeId?: string;
   preferredPrimaryNodeId?: string;
@@ -287,18 +289,10 @@ export interface DeviceInvitation {
   agentInstructions: string;
 }
 
-export interface DeviceSshRequest {
-  host: string;
-  port?: number;
-  user?: string;
+export interface DeviceSshAddRequest {
+  connectionId: string;
   name?: string;
   rootDir?: string;
-  hubUrl: string;
-}
-
-export interface DeviceSshScan {
-  scanId: string;
-  fingerprints: string[];
 }
 
 /** Stored on the joined device, readable only by its owner. Never sent in a device-list response. */

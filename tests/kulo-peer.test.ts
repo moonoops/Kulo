@@ -698,4 +698,113 @@ describe("joined device local access", () => {
       primaryName: "MacMini",
     });
   });
+
+  it("masks canManageHub/canManageStandby on proxied GET /api/devices, merges upstream cluster notices, and clears local notice before proxying DELETE", async () => {
+    let upstreamCleared = false;
+    let localCleared = false;
+    const hub = await fakeHub({
+      onRequest(request, response) {
+        if (request.url === "/api/devices" && request.method === "GET") {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({
+            enabled: true,
+            role: "joined",
+            hubId: "hub-real-uuid",
+            hubName: "MacMini",
+            currentDeviceId: "peer-clustered",
+            canManageHub: true,
+            canManageStandby: true,
+            hubUrls: ["http://192.0.2.2:7788"],
+            devices: [],
+          }));
+          return true;
+        }
+        if (request.url === "/api/devices/cluster-status" && request.method === "GET") {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({
+            enabled: true,
+            role: "primary",
+            primaryOnline: true,
+            failbackOffer: { preferredNodeId: "local", preferredName: "MacMini", currentPrimaryNodeId: "peer-clustered", currentPrimaryName: "MacBook" },
+            conflictBackupNotice: { backupPath: "/tmp/hub-conflict-backup", createdAt: 123, formerEpoch: 2, activeEpoch: 3, activePrimaryName: "MacMini" },
+          }));
+          return true;
+        }
+        if (request.url === "/api/devices/cluster-conflict-notice" && request.method === "DELETE") {
+          upstreamCleared = true;
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({ ok: true }));
+          return true;
+        }
+        return false;
+      },
+    });
+    const clusteredConfig: DevicePeerConfig = {
+      ...peerConfig(hub.url),
+      deviceId: "peer-clustered",
+      cluster: {
+        version: 1,
+        hubId: "hub-real-uuid",
+        epoch: 3,
+        primaryNodeId: "local",
+        preferredPrimaryNodeId: "local",
+        updatedAt: Date.now(),
+        hubs: [
+          { nodeId: "local", name: "MacMini", role: "primary", priority: 0, online: true, urls: [hub.url] },
+          { nodeId: "peer-clustered", name: "MacBook", role: "standby", priority: 10, online: true, urls: [] },
+        ],
+      },
+    };
+    const peer = await startDevicePeer(clusteredConfig, {
+      allowLeave: true,
+      standbyHost: {
+        getStandbyPublicKey: () => undefined,
+        getIdentityPublicKey: () => undefined,
+        ensureSyncKeys: async () => ({ standbyPublicKey: "", identityPublicKey: "" }),
+        configureStandby: () => {},
+        notifySyncAvailable: () => {},
+        syncForHandover: async () => {},
+        getSyncStatus: () => ({ state: "synced", syncedGeneration: 1 }),
+        canPromote: () => true,
+        resolveClusterClientSecret: () => undefined,
+        resolveClusterSyncSecret: () => undefined,
+        isRevokedDevice: () => false,
+        preparePromotion: async () => {},
+        readConflictNotice: () => null,
+        clearConflictNotice: () => { localCleared = true; },
+        wipeStandby: async () => {},
+        close: async () => {},
+      },
+    });
+    cleanup.push(() => peer.close());
+    await peer.ready;
+
+    // 1. Direct loopback GET /api/devices preserves canManageHub & canManageStandby
+    const localDevices = await fetch(`${peer.url}/api/devices`, {
+      headers: { authorization: `Bearer ${peer.authToken}` },
+    }).then((r) => r.json()) as { canManageHub?: boolean; canManageStandby?: boolean; canSwitchRole?: boolean };
+    expect(localDevices).toMatchObject({ canManageHub: true, canManageStandby: true });
+
+    // 2. Proxied GET /api/devices masks canManageHub and canManageStandby to false
+    const proxiedDevices = await fetch(`${peer.url}/api/devices`, {
+      headers: { authorization: `Bearer ${peer.authToken}`, "x-forwarded-for": "203.0.113.42" },
+    }).then((r) => r.json()) as { canManageHub?: boolean; canManageStandby?: boolean; canSwitchRole?: boolean };
+    expect(proxiedDevices).toMatchObject({ canManageHub: false, canManageStandby: false });
+
+    // 3. GET /api/devices/cluster-status merges upstream failbackOffer & conflictBackupNotice while primaryOnline=true
+    const status = await fetch(`${peer.url}/api/devices/cluster-status`, {
+      headers: { authorization: `Bearer ${peer.authToken}` },
+    }).then((r) => r.json()) as ClusterLocalStatusView;
+    expect(status.failbackOffer).toMatchObject({ preferredNodeId: "local", preferredName: "MacMini" });
+    expect(status.conflictBackupNotice).toMatchObject({ backupPath: "/tmp/hub-conflict-backup", activePrimaryName: "MacMini" });
+
+    // 4. DELETE /api/devices/cluster-conflict-notice clears local standby notice before proxying to Hub
+    const clearRes = await fetch(`${peer.url}/api/devices/cluster-conflict-notice`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${peer.authToken}` },
+    });
+    expect(clearRes.status).toBe(200);
+    expect(localCleared).toBe(true);
+    expect(upstreamCleared).toBe(true);
+  });
 });

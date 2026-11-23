@@ -5,6 +5,7 @@ import type {
   ClusterFailoverCandidate,
   ClusterLocalStatusView,
   ClusterSyncStatus,
+  ConnectionWorkspaceSnapshot,
   DeviceInterconnectionView,
   EnvNodeDescriptor,
   InterconnectedDevice,
@@ -132,7 +133,7 @@ function DeviceCard({
       : t("设备", "Device");
   const role = isCurrent ? `${roleBase} · ${t("本机", "This device")}` : roleBase;
   const canGrantStandby = Boolean(!isPrimary && !isStandby && view.canManageStandby && !view.hubError && device.status === "online" && device.warmStandbyCapable);
-  const canHandover = Boolean(isStandby && !view.hubError && device.status === "online");
+  const canHandover = Boolean(isStandby && view.canManageStandby && !view.hubError && device.status === "online");
   const canRevokeStandby = Boolean(isStandby && view.canManageStandby && !view.hubError);
   const canPromoteOffline = Boolean(isStandby && view.hubError && promoteCandidate?.reachable && promoteCandidate?.canPromote && onPromote);
 
@@ -203,6 +204,9 @@ export function MachinesModule({
   suppressHubOfflineAlert = false,
   onPromoteCandidate,
   onRequestHandover,
+  connections,
+  connectionsLoading = false,
+  onOpenSshCredentials,
 }: {
   envs: EnvNodeDescriptor[];
   entryIntent?: SettingsAssistantEntryIntent | null;
@@ -212,6 +216,9 @@ export function MachinesModule({
   suppressHubOfflineAlert?: boolean;
   onPromoteCandidate?: (candidate: ClusterFailoverCandidate) => void;
   onRequestHandover?: (targetNodeId: string, targetName: string) => void;
+  connections?: ConnectionWorkspaceSnapshot | null;
+  connectionsLoading?: boolean;
+  onOpenSshCredentials?: (action: "create" | "verify") => void;
 }) {
   useI18n();
   const [view, setView] = useState<DeviceInterconnectionView>();
@@ -288,9 +295,9 @@ export function MachinesModule({
     onIntentHandled?.(entryIntent.id);
     if (entryIntent.intent === "join-device" && view.role === "hub" && view.canSwitchRole) {
       setJoinOpen(true);
-    } else if (entryIntent.intent === "add-device" && view.role === "hub") {
+    } else if (entryIntent.intent === "add-device" && !view.hubError && (view.canManageHub ?? true)) {
       if (view.enabled) setAddOpen(true);
-      else void setEnabled(true).then((ok) => { if (ok) setAddOpen(true); });
+      else if (view.role === "hub") void setEnabled(true).then((ok) => { if (ok) setAddOpen(true); });
     }
   }, [entryIntent, view, onIntentHandled]);
 
@@ -465,7 +472,7 @@ export function MachinesModule({
           {view.enabled && <SettingsSection title={t("设备", "Device")}>
             <div className="kulo-device-grid" role="list" aria-label={t("设备列表", "Devices")}>
               {remoteDevices.map(renderDevice)}
-              {!view.hubError && <Card className="kulo-device-add-card" variant="transparent" role="listitem" aria-label={t("添加设备", "Add device")}>
+              {!view.hubError && (view.canManageHub ?? true) && <Card className="kulo-device-add-card" variant="transparent" role="listitem" aria-label={t("添加设备", "Add device")}>
                 <Card.Content className="kulo-device-add-content">
                   <div className="kulo-device-empty-icon"><KuloIcon name="devices" size={26} /></div>
                   {remoteDevices.length === 0 && <p className="text-sm text-muted">{t("尚未添加设备", "No devices added")}</p>}
@@ -474,7 +481,16 @@ export function MachinesModule({
               </Card>}
             </div>
           </SettingsSection>}
-          <AddDeviceModal open={addOpen} view={view} pollError={loadingError} onClose={() => setAddOpen(false)} onRefresh={refresh} />
+          <AddDeviceModal
+            open={addOpen}
+            view={view}
+            pollError={loadingError}
+            connections={connections}
+            connectionsLoading={connectionsLoading}
+            onOpenSshCredentials={onOpenSshCredentials}
+            onClose={() => setAddOpen(false)}
+            onRefresh={refresh}
+          />
           <JoinDeviceModal open={joinOpen} onClose={() => setJoinOpen(false)} onJoined={handleJoined} />
         </>
       )}

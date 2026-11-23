@@ -115,9 +115,37 @@
   line-height: var(--kulo-leading-caption);
 }
 
-.kulo-add-device-fingerprints {
+.kulo-add-device-ssh-option {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.kulo-add-device-ssh-option-name {
+  color: var(--foreground);
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
+}
+
+.kulo-add-device-ssh-option-meta {
+  color: var(--muted);
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
+  overflow-wrap: anywhere;
+}
+
+.kulo-add-device-ssh-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--kulo-control-gap);
+}
+
+.kulo-add-device-ssh-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   gap: var(--kulo-space-3);
   padding: var(--kulo-space-4);
   border: 1px solid var(--border);
@@ -125,22 +153,17 @@
   background: var(--surface-secondary);
 }
 
-.kulo-add-device-fingerprint-title {
-  display: flex;
-  align-items: center;
-  gap: var(--kulo-control-gap);
+.kulo-add-device-ssh-empty-title {
   color: var(--foreground);
   font-size: var(--kulo-text-body);
   line-height: var(--kulo-leading-body);
   font-weight: 500;
 }
 
-.kulo-add-device-fingerprint {
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: var(--kulo-text-caption);
-  line-height: var(--kulo-leading-caption);
-  overflow-wrap: anywhere;
+.kulo-add-device-ssh-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--kulo-control-gap);
 }
 
 .kulo-add-device-alert {

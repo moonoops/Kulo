@@ -108,7 +108,8 @@ async function main(): Promise<void> {
   process.env.KULO_PEER_CONFIG = configPath;
   if (command === "install") {
     const hubUrl = flag(args, "--hub");
-    const inviteToken = flag(args, "--invite");
+    const inviteToken = flag(args, "--invite") || process.env.KULO_PEER_INVITE;
+    delete process.env.KULO_PEER_INVITE;
     if (!hubUrl || !inviteToken) throw new Error("设备接入需要主脑地址和配对凭证。");
     const oldConfig = readPeerConfig(configPath);
     const previous = oldConfig ? await existingPeer(oldConfig, { ignoreReadinessError: true }) : null;

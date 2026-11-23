@@ -13,8 +13,8 @@
 .kulo-settings-assistant-suggestions {
   display: flex;
   min-width: 0;
-  flex-direction: column;
-  align-items: flex-start;
+  flex-wrap: wrap;
+  align-items: center;
   gap: var(--kulo-control-gap);
 }
 
@@ -23,6 +23,7 @@
   height: auto;
   min-height: var(--kulo-control-height-compact);
   max-width: 100%;
+  padding-block: var(--kulo-space-1);
   white-space: normal;
   text-align: start;
 }

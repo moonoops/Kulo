@@ -22,7 +22,7 @@ export type WorkspaceOperation =
 export type DeviceAssistantOperation =
   | { kind: "device-disable" }
   | { kind: "device-remove"; deviceId: string }
-  | { kind: "device-ssh-add"; scanId: string }
+  | { kind: "device-ssh-add"; connectionId?: string; name?: string; rootDir?: string; scanId?: string }
   | { kind: "device-join"; hubUrl: string; joinRef: string; force?: boolean }
   | { kind: "device-leave" };
 

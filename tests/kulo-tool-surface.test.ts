@@ -20,6 +20,7 @@ import {
   TOOL_SURFACE_BY_NAME,
   TOOL_SURFACE_ENTRIES,
   assertUniqueExtensionTools,
+  resolveSettingsPreloadedTools,
   resolveSurfaceTools,
   type ToolSurfaceRuntimeState,
 } from "../packages/hub/src/tool-surface.js";
@@ -102,6 +103,17 @@ describe("Kulo declarative tool surface & Step 1–2 invariants", () => {
     ).map((tool) => tool.name);
     expect(settingsTools).not.toContain("kulo_device_invite");
     expect(settingsTools).toContain("kulo_devices_manage");
+
+    // Settings preloads kulo_assistant_read & kulo_assistant_configure on BOTH models and connections pages, not workers
+    const modelsPreloaded = resolveSettingsPreloadedTools(baseSurfaceState("settings", { settingsModule: "models" }));
+    const connectionsPreloaded = resolveSettingsPreloadedTools(baseSurfaceState("settings", { settingsModule: "connections" }));
+    const workersPreloaded = resolveSettingsPreloadedTools(baseSurfaceState("settings", { settingsModule: "workers" }));
+    expect(modelsPreloaded).toContain("kulo_assistant_read");
+    expect(modelsPreloaded).toContain("kulo_assistant_configure");
+    expect(connectionsPreloaded).toContain("kulo_assistant_read");
+    expect(connectionsPreloaded).toContain("kulo_assistant_configure");
+    expect(workersPreloaded).not.toContain("kulo_assistant_read");
+    expect(workersPreloaded).not.toContain("kulo_assistant_configure");
 
     // Read-only computer worker hides kulo_media_export and kulo_synthesize_speech
     const readOnlyWorker = resolveSurfaceTools(
@@ -353,21 +365,40 @@ describe("Kulo declarative tool surface & Step 1–2 invariants", () => {
     });
     expect(seenSettingsTools[0]).not.toContain("kulo_device_invite");
 
-    // 3. Dispatch a Worker that suspends via kulo_wait; memory tools are initially absent
+    // 3. Dispatch a project-bound Worker (suspends via kulo_wait) + an ungrouped waiting Worker; memory tools are initially absent
+    const projectDir = path.join(dir, "live-sync-project");
+    fs.mkdirSync(projectDir, { recursive: true });
+    const project = await hub.projects.create({
+      commandId: "proj-live-sync",
+      name: "Live Sync Repo",
+      deviceId: "local",
+      workspaceDir: projectDir,
+    });
     const dispatched = await hub.dispatchTicket({
       commandId: "live-sync-worker",
       title: "检查热同步",
       goal: "挂起等待配置变更后恢复",
       scope: "仅检查工具可见性",
       role: "coder",
+      projectId: project.id,
+    });
+    const ungroupedWaiting = await hub.dispatchTicket({
+      commandId: "live-sync-ungrouped-waiting",
+      title: "无项目对照组",
+      goal: "保持非项目等待态以验证不暴露共享记忆工具",
+      scope: "仅验证工具面隔离",
+      role: "coder",
+      executeAt: "2099-01-01T00:00:00Z",
     });
     await vi.waitFor(async () => {
       const state = await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
       expect(state?.tickets[dispatched.id]?.status).toBe("waiting");
+      expect(state?.tickets[ungroupedWaiting.id]?.status).toBe("waiting");
     });
     expect(seenWorkerTools[0]).not.toContain("hindsight_recall");
 
-    // 4. Enable memory in live settings -> Main Chat, active Settings conversation, AND waiting Worker immediately sync!
+    // 4. Enable memory in live settings -> Main Chat, active Settings conversation, AND project waiting Worker immediately sync;
+    // ungrouped waiting Worker stays strictly isolated from shared memory tools!
     const view = hub.getSettingsView();
     await hub.updateSettingsBlock("memory", view.blocks.memory.revision, {
       ...view.blocks.memory.value,
@@ -379,6 +410,13 @@ describe("Kulo declarative tool surface & Step 1–2 invariants", () => {
     const workerConv = (await hub.harness.conversation(workerConvId, BACKGROUND_CONTEXT))!;
     const workerAgentAfter = await workerConv.agent(BACKGROUND_CONTEXT);
     expect(workerAgentAfter.tools.map((t) => t.name).concat(workerAgentAfter.deferred.map((t) => t.name))).toContain("hindsight_recall");
+
+    const ungroupedConvId = stateAfter!.tickets[ungroupedWaiting.id]!.workerConversationId as ConversationId;
+    const ungroupedConv = (await hub.harness.conversation(ungroupedConvId, BACKGROUND_CONTEXT))!;
+    const ungroupedAgentAfter = await ungroupedConv.agent(BACKGROUND_CONTEXT);
+    const ungroupedToolNames = ungroupedAgentAfter.tools.map((t) => t.name).concat(ungroupedAgentAfter.deferred.map((t) => t.name));
+    expect(ungroupedToolNames).not.toContain("hindsight_recall");
+    expect(ungroupedToolNames).not.toContain("hindsight_retain");
 
     const settingsDoc = await hub.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
     const settingsConv = (await hub.harness.conversation(settingsDoc!.conversationId as ConversationId, BACKGROUND_CONTEXT))!;

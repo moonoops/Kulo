@@ -14,7 +14,7 @@ import { resolveTicketExecutionScope } from "./state.js";
 import { isMainOrchestratorApi } from "./settings-doc.js";
 
 export type HostActionCaller =
-  | { kind: "orchestrator"; conversationId: number; callId: string }
+  | { kind: "orchestrator"; conversationId: number; callId: string; toolTaskId?: number; isSettings?: boolean }
   | {
       kind: "worker";
       conversationId: number;
@@ -28,7 +28,7 @@ export type HostActionCaller =
     };
 
 export type HostActionRunOutcome =
-  | { status: "executed"; envId: string; envName: string; result: HostActionResult }
+  | { status: "executed"; envId: string; envName: string; routedToHubFallback?: boolean; result: HostActionResult }
   | { status: "awaiting_orchestrator_decision"; requestId: string; envId: string; envName: string; message: string }
   | { status: "awaiting_user_confirmation"; cardId: string; envId: string; envName: string; message: string };
 
@@ -49,7 +49,7 @@ export interface HostActionController {
       limit?: number;
     },
     context: Context,
-  ): Promise<{ envId: string; envName: string; result: HostActionResult }>;
+  ): Promise<{ envId: string; envName: string; routedToHubFallback?: boolean; result: HostActionResult }>;
   run(
     caller: HostActionCaller,
     input: {
@@ -94,7 +94,14 @@ async function resolveCaller(
         throw new Error("当前会话已删除。");
       }
     }
-    return { kind: "orchestrator", conversationId, callId: String(api.callId) };
+    const parsedTaskId = Number(api.taskId);
+    return {
+      kind: "orchestrator",
+      conversationId,
+      callId: String(api.callId),
+      ...(Number.isSafeInteger(parsedTaskId) ? { toolTaskId: parsedTaskId } : {}),
+      ...(main.isSettings ? { isSettings: true } : {}),
+    };
   }
   if (audience !== "worker") {
     throw new Error("本机操作调用入口不匹配。");
@@ -131,7 +138,7 @@ export function createHostActionTool(
         : "Read-only host diagnostics (`action='inspect'`: cross-platform process list without env vars, listening ports, real user home path, and non-sensitive path existence/listing—no approval required) and credential-isolated host maintenance outside the project workspace (`action='run'`: e.g. package install/uninstall, cleanup, user service control; submitted to the main Agent for smart approval before execution, never escalates to sudo/root or exposes credentials). Group related maintenance steps into one `run` call. 关键词：本机诊断 进程列表 监听端口 宿主机排查 本机运维 安装卸载 清理软件",
     parameters: obj({
       action: oneOf(["inspect", "run"]),
-      env_id: opt(str({ description: "Target device env ID (orchestrator only; Workers are locked to their bound device)." })),
+      env_id: opt(str({ description: "Target device env ID (orchestrator only; Workers lock to their bound device). When omitted, targets the user's current computer (or falls back to the Hub host when sent from a phone). Explicitly pass the Hub host's env_id when inspecting Hub-hosted services such as Hindsight, Home Assistant, or connection bridges." })),
       scope: opt(oneOf(["summary", "processes", "ports"], { description: "For action='inspect': summary (default), processes, or ports." })),
       filter: opt(str({ description: "Optional case-insensitive filter keyword for processes or ports (e.g. 'hindsight' or '3000')." })),
       paths: opt(arr(str(), { description: "Optional host paths (up to 32, supports '~/' for real user home) to check existence/listing while respecting protected credential paths." })),
@@ -187,6 +194,12 @@ export function createHostActionTool(
         }
 
         // action === "run"
+        if (caller.kind === "orchestrator" && caller.isSettings) {
+          return {
+            isError: true,
+            output: [{ type: "text" as const, text: "设置助手仅支持 action='inspect' 只读诊断；如需变更宿主机请使用受控设置工具或主会话任务。" }],
+          };
+        }
         if (caller.kind === "worker" && caller.readOnly) {
           return {
             isError: true,

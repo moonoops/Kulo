@@ -92,6 +92,15 @@ function ResolvedAssets({ parts, conversationKey, onPreviewImage, role }: {
   </>;
 }
 
+export function stableUserParts(item: Pick<ChatDisplayItem, "role" | "requestId">, parts: MessagePart[]): MessagePart[] {
+  if (item.role !== "user" || !item.requestId) return parts;
+  const prefix = `request:${item.requestId}`;
+  return parts.map((part) => {
+    const match = /^-?\d+:(text|asset:.+)$/.exec(part.partId);
+    return match ? { ...part, partId: `${prefix}:${match[1]}` } : part;
+  });
+}
+
 export function MessageContent({ item, onPreviewImage, renderUiPart, renderDeviceInvitation, conversationKey, animateEntry = false, onNavigateReply }: {
   item: ChatDisplayItem;
   onPreviewImage?: (image: PreviewableImage) => void;
@@ -102,8 +111,11 @@ export function MessageContent({ item, onPreviewImage, renderUiPart, renderDevic
   onNavigateReply?: (messageId: number) => void;
 }) {
   useI18n();
-  const groups = useMemo(() => groupMessageParts(getMessageParts(item)), [item.id, item.role, item.text, item.parts, item.attachments]);
-  const scope = `${conversationKey ?? ""}:${item.id}`;
+  const groups = useMemo(
+    () => groupMessageParts(stableUserParts(item, getMessageParts(item))),
+    [item.id, item.role, item.requestId, item.text, item.parts, item.attachments],
+  );
+  const scope = `${conversationKey ?? ""}:${item.role === "user" && item.requestId ? `request:${item.requestId}` : item.id}`;
   const [snapshot, setSnapshot] = useState(() => ({ scope, rows: groups.map((group) => ({ group, present: true, animateEntry })) as ContentRow[] }));
   useLayoutEffect(() => {
     setSnapshot((previous) => previous.scope === scope ? { scope, rows: reconcileRows(previous.rows, groups) } : { scope, rows: groups.map((group) => ({ group, present: true, animateEntry: false })) });

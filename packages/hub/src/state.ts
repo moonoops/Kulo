@@ -253,9 +253,29 @@ export type WorkerRecoveryEntryData = {
 };
 export const WorkerRecoveryEntry = defineEntry<WorkerRecoveryEntryData>("kulo.worker_recovery");
 
+export type MediaRelayJobSummary = {
+  jobId: string;
+  operationId: string;
+  capabilityId: string;
+  capabilityName?: string;
+  modelId: string;
+  kind: "image" | "video";
+  status: "completed" | "failed" | "needs_user" | "needs_reconciliation";
+  assetIds: string[];
+  error?: string;
+};
+
+export type MediaRelayEntryData = {
+  batchKey: string;
+  jobs: MediaRelayJobSummary[];
+  createdAt: number;
+};
+
+export const MediaRelayEntry = defineEntry<MediaRelayEntryData>("kulo.media_relay");
+
 export function isRecoveryInputBoundary(entry: EntryRecord): boolean {
   return WorkerRecoveryEntry.is(entry) || WorkerRelayEntry.is(entry) || WorkerWatchdogEntry.is(entry) ||
-    UserEntry.is(entry) || entry.kind === "kulo.user" || entry.kind === "kulo.voice.delegation";
+    MediaRelayEntry.is(entry) || UserEntry.is(entry) || entry.kind === "kulo.user" || entry.kind === "kulo.voice.delegation";
 }
 
 function ensureHolders(state: KuloDurableState): string[] {

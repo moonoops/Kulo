@@ -20,7 +20,7 @@ import { PersonalityDoc } from "./personality.js";
 import { KuloProjectsDoc } from "./projects.js";
 import { isContextSyncEntry } from "./recent-work-sync.js";
 import { SettingsAssistantDoc, isActiveSettingsConversation } from "./settings-doc.js";
-import { KuloStateDoc, isOrchestratorConversation } from "./state.js";
+import { KuloStateDoc, MediaRelayEntry, isOrchestratorConversation } from "./state.js";
 import { ContentPublicationEntry, KuloUserEntry } from "./ui-cards.js";
 import { VoiceTranscriptEntry } from "./voice-transcripts.js";
 import {
@@ -104,6 +104,7 @@ function extractEntryTextAndRole(
     SystemEntry.is(entry) ||
     CompactionEntry.is(entry) ||
     isContextSyncEntry(entry) ||
+    MediaRelayEntry.is(entry) ||
     entry.kind === MemoryContextEntry.kind
   ) {
     return undefined;

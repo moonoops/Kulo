@@ -4,8 +4,7 @@ import type {
   DeviceInterconnectionView,
   DeviceInvitation,
   DeviceRoleTransition,
-  DeviceSshRequest,
-  DeviceSshScan,
+  DeviceSshAddRequest,
   InterconnectedDevice,
   MobileInvitation,
 } from "@kulo/protocol";
@@ -155,10 +154,8 @@ export const deviceApi = {
     apiRequest<DeviceInvitation>(`${base}/invitations`, { method: "POST", body: { hubUrl, name }, signal }),
   cancelInvite: (id: string) =>
     apiRequest<void>(`${base}/invitations/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  scanSsh: (request: DeviceSshRequest, signal?: AbortSignal) =>
-    apiRequest<DeviceSshScan>(`${base}/ssh/scan`, { method: "POST", body: request, signal }),
-  addSsh: (scanId: string, signal?: AbortSignal) =>
-    apiRequest<InterconnectedDevice>(`${base}/ssh`, { method: "POST", body: { scanId }, signal }),
+  addSsh: (request: DeviceSshAddRequest, signal?: AbortSignal) =>
+    apiRequest<InterconnectedDevice>(`${base}/ssh`, { method: "POST", body: request, signal }),
   rename: (id: string, name: string) =>
     apiRequest<DeviceInterconnectionView>(`${base}/${encodeURIComponent(id)}`, { method: "PATCH", body: { name } }),
   remove: (id: string, force = false) =>
@@ -169,25 +166,19 @@ export const deviceApi = {
     submitRoleChange("leave", {}, signal),
 };
 
-export function buildDeviceSshRequest(fields: {
-  host: string;
-  port: string;
-  user: string;
+export function buildDeviceSshAddRequest(fields: {
+  connectionId: string;
   name: string;
   rootDir: string;
-}, hubOrigin: string): DeviceSshRequest {
-  const port = Number(fields.port);
-  if (!fields.host.trim()) throw new Error(t("请输入 SSH 主机或配置别名。", "Enter an SSH host or config alias."));
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(t("SSH 端口须为 1–65535。", "SSH port must be between 1 and 65535."));
-  const hub = new URL(hubOrigin);
-  if (hub.protocol !== "http:" && hub.protocol !== "https:") throw new Error(t("当前界面不是有效的 HTTP 地址。", "The current interface does not have a valid HTTP URL."));
+}): DeviceSshAddRequest {
+  const connectionId = fields.connectionId.trim();
+  if (!/^connection-[a-f0-9-]{16,64}$/.test(connectionId)) {
+    throw new Error(t("请选择已验证的 SSH 凭据。", "Select a verified SSH credential."));
+  }
   return {
-    host: fields.host.trim(),
-    port,
-    user: fields.user.trim() || undefined,
-    name: fields.name.trim() || undefined,
-    rootDir: fields.rootDir.trim() || undefined,
-    hubUrl: hub.origin,
+    connectionId,
+    ...(fields.name.trim() ? { name: fields.name.trim() } : {}),
+    ...(fields.rootDir.trim() ? { rootDir: fields.rootDir.trim() } : {}),
   };
 }
 

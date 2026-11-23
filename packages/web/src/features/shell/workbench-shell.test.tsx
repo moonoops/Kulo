@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkbenchShell, type WindowSizeClass, type WorkbenchRailResizeConfig } from "./workbench-shell";
@@ -134,5 +137,28 @@ describe("shared window toolbar", () => {
     const conversation = renderShell("expanded", false, false);
     expect(conversation).not.toContain('role="separator"');
     expect(conversation).not.toContain("--kulo-rail-custom-width");
+  });
+
+  it("keeps Electron native titlebar drag and interactive/overlay no-drag CSS contracts intact", () => {
+    const cssPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../kulo.css");
+    const css = fs.readFileSync(cssPath, "utf8");
+    expect(css).toMatch(/\.kulo-workbench\[data-native-titlebar="true"\]\s+\.kulo-window-titlebar\s*\{[^}]*-webkit-app-region:\s*drag;/);
+    const noDragBlock = css.match(/([^{}]*\.kulo-window-control[^{}]*)\{([^}]*)\}/);
+    expect(noDragBlock).not.toBeNull();
+    const [, selectors = "", body = ""] = noDragBlock!;
+    expect(body).toMatch(/-webkit-app-region:\s*no-drag;/);
+    expect(selectors).toContain('.kulo-workbench[data-native-titlebar="true"] .kulo-window-titlebar :is(');
+    for (const overlay of [
+      ".modal__backdrop",
+      ".drawer__backdrop",
+      ".alert-dialog__backdrop",
+      ".popover",
+      ".dropdown__popover",
+      ".select__popover",
+      ".combo-box__popover",
+      ".toast",
+    ]) {
+      expect(selectors).toContain(overlay);
+    }
   });
 });

@@ -118,6 +118,7 @@ export interface OrchestratorCodingGuardDeps extends ProtectedPathCheckerConfig 
     toolTaskId: number,
     envId: string | undefined,
     context: Context,
+    topic?: { targetDeviceId?: string },
   ) => Promise<void>;
   getProject: (projectId: string, context: Context) => Promise<ProjectRecord>;
 }
@@ -144,16 +145,15 @@ export function createOrchestratorCodingGuardExtension(deps: OrchestratorCodingG
         if (activeSettings && toolName !== "read") {
           return blockResult("设置助手仅支持只读读取操作。");
         }
-        try {
-          await deps.assertChatReadTarget(Number(api.conversationId), Number(api.taskId), api.env?.id, context);
-        } catch (error) {
-          return blockResult(deps.redact(error instanceof Error ? error.message : String(error)));
-        }
-
         const topicId = activeSettings ? undefined : (state?.conversationToTopic?.[String(api.conversationId)] ?? "root");
         const topic = topicId ? state?.topics?.[topicId] : undefined;
         if (topic?.deletedAt) {
           return blockResult("会话已删除。");
+        }
+        try {
+          await deps.assertChatReadTarget(Number(api.conversationId), Number(api.taskId), api.env?.id, context, topic);
+        } catch (error) {
+          return blockResult(deps.redact(error instanceof Error ? error.message : String(error)));
         }
         let authorizedProject: ProjectRecord | undefined;
         if (topic?.projectId) {

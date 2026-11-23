@@ -24,6 +24,7 @@ import { isContextSyncEntry } from "./recent-work-sync.js";
 import { resolveResponseContext } from "./response-context.js";
 import { nativeSearchEvidence, sanitizeSearchSources, selectCitedSources } from "./search-sources.js";
 import {
+  MediaRelayEntry,
   WorkerRecoveryEntry,
   WorkerRelayEntry,
   WorkerWatchdogEntry,
@@ -218,7 +219,7 @@ export function extractDisplayMessages(
       continue;
     }
 
-    if (WorkerWatchdogEntry.is(entry)) {
+    if (WorkerWatchdogEntry.is(entry) || MediaRelayEntry.is(entry)) {
       continue;
     }
 

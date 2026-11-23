@@ -807,8 +807,9 @@ describe("MCP Hub, HTTP management gates, settings assistant, and external agent
     const snap = (await snapRes.json()) as ConnectionWorkspaceSnapshot;
     expect(snap.mcpPresets?.length).toBe(MCP_PRESET_CATALOG.length);
     expect(snap.localHost).toBe(true);
+    expect(snap.canManageHub).toBe(true);
 
-    // 2. Cross-origin and remote non-localHost rejected on local stdio / loopback HTTP MCP
+    // 2. Cross-origin and proxied requests rejected on local stdio / loopback HTTP MCP
     const crossOrigin = await req(
       "/api/connections",
       "POST",
@@ -832,6 +833,72 @@ describe("MCP Hub, HTTP management gates, settings assistant, and external agent
       { "X-Forwarded-For": "203.0.113.5" },
     );
     expect(remoteLoopback.status).toBe(403);
+
+    // 2b. Paired desktop peer gets localHost=false, canManageHub=true, can configure Hub Stdio/loopback MCP,
+    //     but remains blocked on physical OS permission settings and on proxied/query-token requests.
+    expect((await req("/api/devices", "PATCH", { enabled: true })).status).toBe(200);
+    const peerInvRes = await req("/api/devices/invitations", "POST", { name: "MCP Peer", hubUrl: "https://hub.example.test" });
+    expect(peerInvRes.status).toBe(201);
+    const peerInvToken = /'([A-Za-z0-9_-]+)'$/.exec(((await peerInvRes.json()) as { command: string }).command)?.[1];
+    expect(peerInvToken).toBeTruthy();
+    const peerPairRes = await fetch(`${server.url}/api/devices/pair`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        inviteToken: peerInvToken,
+        info: { hostname: "mcp-peer", platform: process.platform, arch: process.arch, release: "test", cpu: "test", memoryBytes: 1024, ips: [] },
+      }),
+    });
+    expect(peerPairRes.status).toBe(200);
+    const { clientToken: peerToken } = (await peerPairRes.json()) as { clientToken: string };
+    const peerReq = (endpoint: string, method = "GET", body?: unknown, extraHeaders?: Record<string, string>) =>
+      fetch(`${server.url}${endpoint}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${peerToken}`,
+          ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+          ...extraHeaders,
+        },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
+
+    const peerSnap = (await (await peerReq("/api/connections")).json()) as ConnectionWorkspaceSnapshot;
+    expect(peerSnap.localHost).toBe(false);
+    expect(peerSnap.canManageHub).toBe(true);
+    const peerAssistantRes = await peerReq("/api/assistant");
+    expect(peerAssistantRes.status).toBe(200);
+    const peerAssistant = (await peerAssistantRes.json()) as { localHost?: boolean; canManageHub?: boolean };
+    expect(peerAssistant.localHost).toBe(false);
+    expect(peerAssistant.canManageHub).toBe(true);
+    expect((await peerReq("/api/connections", "POST", {
+      name: "Peer Stdio MCP",
+      kind: "mcp",
+      category: "app",
+      mcpTransport: "stdio",
+      mcpCommand: "echo",
+    })).status).toBe(201);
+    expect((await peerReq("/api/connections", "POST", {
+      name: "Peer Loopback MCP",
+      kind: "mcp",
+      category: "app",
+      mcpTransport: "http",
+      url: "http://127.0.0.1:8787/mcp",
+      mcpAuthMode: "none",
+    })).status).toBe(201);
+    expect((await peerReq("/api/connections", "POST", {
+      name: "Proxied Peer Stdio",
+      kind: "mcp",
+      category: "app",
+      mcpTransport: "stdio",
+      mcpCommand: "echo",
+    }, { "X-Forwarded-For": "203.0.113.8" })).status).toBe(403);
+    expect((await fetch(`${server.url}/api/connections?token=${encodeURIComponent(peerToken)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Query Peer Stdio", kind: "mcp", category: "app", mcpTransport: "stdio", mcpCommand: "echo" }),
+    })).status).toBe(403);
+    // Physical OS System Settings opener stays strictly localHost-only
+    expect((await peerReq("/api/connections/permission-settings", "POST", { permission: "accessibility" })).status).toBe(403);
 
     // 3. Create public HTTP MCP and test discovery (16 tools)
     const createdRes = await req("/api/connections", "POST", {

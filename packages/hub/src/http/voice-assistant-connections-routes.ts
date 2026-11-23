@@ -23,13 +23,14 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
     res,
     parsedUrl,
     pathname,
+    authority,
     readJsonObject,
     sendJson,
     currentDevice,
-    hasLocalDeviceControl,
     isHubSecret,
     openNativePermissionSettings,
   } = ctx;
+  const hostFlags = () => ({ localHost: authority.isHubLocalDisplay, canManageHub: authority.hasOwnerHubControl });
 
   if (pathname === "/api/voice" || pathname.startsWith("/api/voice/")) {
     res.setHeader("cache-control", "no-store");
@@ -146,7 +147,7 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
   if (pathname === "/api/assistant" || pathname.startsWith("/api/assistant/")) {
     res.setHeader("cache-control", "no-store");
     if (pathname === "/api/assistant" && req.method === "GET") {
-      sendJson(res, 200, { ...(await hub.getAssistantWorkspace()), localHost: hasLocalDeviceControl(req, parsedUrl) });
+      sendJson(res, 200, { ...(await hub.getAssistantWorkspace()), ...hostFlags() });
       return true;
     }
     if (pathname === "/api/assistant/configure" && req.method === "POST") {
@@ -157,25 +158,90 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
           ...(typeof body.muteApp === "string" ? { muteApp: body.muteApp } : {}),
           ...(typeof body.unmuteApp === "string" ? { unmuteApp: body.unmuteApp } : {}),
         })),
-        localHost: hasLocalDeviceControl(req, parsedUrl),
+        ...hostFlags(),
+      });
+      return true;
+    }
+    if (pathname === "/api/assistant/background-model" && req.method === "GET") {
+      if (!authority.hasOwnerHubControl || authority.isSshPrincipal) {
+        throw Object.assign(new Error("请通过受信任的 Kulo 客户端查看后台处理模型。"), { status: 403 });
+      }
+      const includeAdvice = parsedUrl.searchParams.get("includeAdvice") === "1";
+      const backgroundModel = await hub.ambientModel.status();
+      sendJson(res, 200, {
+        backgroundModel,
+        ...(includeAdvice ? { advice: hub.ambientModel.advise() } : {}),
+        ...hostFlags(),
       });
       return true;
     }
     if (pathname === "/api/assistant/background-model" && req.method === "POST") {
+      assertHttpSameOrigin(ctx, {
+        code: "assistant_origin_required",
+        message: "请在 Kulo 中修改后台处理模型。",
+      });
+      if (!authority.hasOwnerHubControl || authority.isSshPrincipal) {
+        throw Object.assign(new Error("请通过受信任的 Kulo 客户端修改后台处理模型。"), { status: 403 });
+      }
       const body = await readJsonObject(req, 64 * 1024);
       const mode = body.mode;
       if (mode !== "auto" && mode !== "local-managed" && mode !== "kulo-provider") {
         throw Object.assign(new Error("后台模型模式无效。"), { status: 400 });
       }
+      const includeWorkspace = parsedUrl.searchParams.get("includeWorkspace") === "1";
       const engine = body.engine === "omlx" || body.engine === "ollama" ? body.engine : undefined;
-      const result = await hub.configureAssistantBackgroundModel({
+      if (mode === "local-managed") {
+        const advice = hub.ambientModel.advise();
+        const targetEngine = engine ?? advice.recommendedEngine ?? "omlx";
+        const targetModelId =
+          (typeof body.modelId === "string" ? body.modelId.trim() : "") ||
+          advice.recommendedModelId ||
+          "mlx-community/Qwen3-4B-Instruct-2507-4bit";
+        if (body.confirmed !== true) {
+          const backgroundModel = await hub.ambientModel.status();
+          sendJson(res, 200, {
+            requiresConfirmation: true,
+            proposal: {
+              host: advice.hostName,
+              engine: targetEngine,
+              modelId: targetModelId,
+              estimatedRamGb: advice.estimatedRamGb,
+              reason: advice.reason,
+            },
+            backgroundModel,
+            ...(includeWorkspace ? { snapshot: await hub.getAssistantWorkspace() } : {}),
+            ...hostFlags(),
+          });
+          return true;
+        }
+        const backgroundModel = await hub.ambientModel.deployLocalManaged({
+          engine: targetEngine,
+          modelId: targetModelId,
+        });
+        sendJson(res, 200, {
+          backgroundModel,
+          ...(includeWorkspace ? { snapshot: await hub.getAssistantWorkspace() } : {}),
+          ...hostFlags(),
+        });
+        return true;
+      }
+      if (mode === "kulo-provider") {
+        const providerId = typeof body.providerId === "string" ? body.providerId.trim() : "";
+        const modelId = typeof body.modelId === "string" ? body.modelId.trim() : "";
+        if (!providerId || !modelId) {
+          throw Object.assign(new Error("请选择有效的供应商与对话模型。"), { status: 400 });
+        }
+      }
+      const backgroundModel = await hub.ambientModel.configureAutoOrProvider({
         mode,
-        ...(engine ? { engine } : {}),
-        ...(typeof body.modelId === "string" ? { modelId: body.modelId } : {}),
         ...(typeof body.providerId === "string" ? { providerId: body.providerId } : {}),
-        confirmed: body.confirmed === true,
+        ...(typeof body.modelId === "string" ? { modelId: body.modelId } : {}),
       });
-      sendJson(res, 200, { ...result, localHost: hasLocalDeviceControl(req, parsedUrl) });
+      sendJson(res, 200, {
+        backgroundModel,
+        ...(includeWorkspace ? { snapshot: await hub.getAssistantWorkspace() } : {}),
+        ...hostFlags(),
+      });
       return true;
     }
     if (pathname === "/api/assistant/spark" && req.method === "POST") {
@@ -184,14 +250,18 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
         throw Object.assign(new Error("缺少 Spark Mail 开关参数。"), { status: 400 });
       }
       await hub.configureAssistantSpark({ enabled: body.enabled });
-      sendJson(res, 200, { ...(await hub.getAssistantWorkspace()), localHost: hasLocalDeviceControl(req, parsedUrl) });
+      sendJson(res, 200, { ...(await hub.getAssistantWorkspace()), ...hostFlags() });
       return true;
     }
     if (pathname === "/api/assistant/home-assistant" && req.method === "POST") {
       const body = await readJsonObject(req, 64 * 1024);
       if (body.deployLocal === true) {
-        if (!hasLocalDeviceControl(req, parsedUrl)) {
-          throw Object.assign(new Error("仅可在运行 Kulo 中枢的本机部署本地 Home Assistant 容器。"), { status: 403 });
+        assertHttpSameOrigin(ctx, {
+          code: "assistant_origin_required",
+          message: "请在 Kulo 中部署 Home Assistant 容器。",
+        });
+        if (!authority.hasOwnerHubControl) {
+          throw Object.assign(new Error("请通过受信任的 Kulo 客户端在主机上部署 Home Assistant 容器。"), { status: 403 });
         }
         const deployed = await hub.homeAssistant.deployLocalContainer({
           confirmed: body.confirmed === true,
@@ -200,7 +270,7 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
         sendJson(res, 200, {
           ...deployed,
           snapshot: await hub.getAssistantWorkspace(),
-          localHost: hasLocalDeviceControl(req, parsedUrl),
+          ...hostFlags(),
         });
         return true;
       }
@@ -216,7 +286,7 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
           ? { announce: body.announce as Partial<HomeAssistantAnnounceConfig> }
           : {}),
       });
-      sendJson(res, 200, { ...(await hub.getAssistantWorkspace()), localHost: hasLocalDeviceControl(req, parsedUrl) });
+      sendJson(res, 200, { ...(await hub.getAssistantWorkspace()), ...hostFlags() });
       return true;
     }
     if (pathname === "/api/assistant/home-assistant/migration" && req.method === "GET") {
@@ -244,7 +314,7 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
       const body = await readJsonObject(req, 32 * 1024);
       if (body.syncNow === true) {
         const sync = await hub.larkConnector.syncNow();
-        sendJson(res, 200, { sync, snapshot: await hub.getAssistantWorkspace(), localHost: hasLocalDeviceControl(req, parsedUrl) });
+        sendJson(res, 200, { sync, snapshot: await hub.getAssistantWorkspace(), ...hostFlags() });
         return true;
       }
       await hub.configureAssistantLark({
@@ -253,7 +323,7 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
           ? { selectedProfiles: body.selectedProfiles.filter((item): item is string => typeof item === "string") }
           : {}),
       });
-      sendJson(res, 200, { ...(await hub.getAssistantWorkspace()), localHost: hasLocalDeviceControl(req, parsedUrl) });
+      sendJson(res, 200, { ...(await hub.getAssistantWorkspace()), ...hostFlags() });
       return true;
     }
     if (pathname === "/api/assistant/items" && req.method === "GET") {
@@ -309,8 +379,8 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
     ) => {
       if (!requiresLocalHostForMcp(payload, existing)) return;
       assertSameOrigin();
-      if (!hasLocalDeviceControl(req, parsedUrl)) {
-        throw Object.assign(new Error("本机命令（Stdio）或内网/环回地址的 MCP 连接仅可在主脑本机配置。"), {
+      if (!authority.hasOwnerHubControl) {
+        throw Object.assign(new Error("本机命令（Stdio）或内网/环回地址的 MCP 连接请通过受信任的 Kulo 客户端配置。"), {
           status: 403,
           code: "connection_mcp_local_host_required",
         });
@@ -323,7 +393,7 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
       }
       sendJson(res, 200, {
         ...(await hub.connectionManager.snapshot(clientId)),
-        localHost: hasLocalDeviceControl(req, parsedUrl),
+        ...hostFlags(),
       });
       return true;
     }
@@ -354,7 +424,7 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
         code: "connection_permission_settings_origin_required",
         message: "请在 Kulo 中打开系统权限设置。",
       });
-      if (!hasLocalDeviceControl(req, parsedUrl)) {
+      if (!authority.isHubLocalDisplay) {
         throw Object.assign(new Error("请在主脑 Mac 上打开系统设置完成授权。"), {
           status: 403,
           code: "connection_permission_settings_remote",

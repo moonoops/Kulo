@@ -705,7 +705,7 @@ describe("settings assistant through the client protocol", () => {
       setEnabled: async () => { throw new Error("unused"); },
       rename: async () => { throw new Error("unused"); },
       createInvitation: async () => { throw new Error("unused"); },
-      scanSsh: async () => { throw new Error("unused"); },
+      inspectSshCredential: () => ({ eligible: false, reason: "unused" }),
       addSsh: async () => undefined,
       removeDevice: async () => {},
       canSwitchRole: () => true,
@@ -732,5 +732,219 @@ describe("settings assistant through the client protocol", () => {
     await vi.waitFor(() => expect(joinedWith).toEqual({ hubUrl: "http://host.example.test:7788", inviteToken: secretToken }));
     const after = await hub.settingsAssistant.getSnapshot();
     expect(after.actions.find((item) => item.id === action.id)?.status).toBe("submitted");
+  });
+
+  it("emits a fresh settings snapshot with prior history and live.busy before acknowledging send", async () => {
+    const { provider, init } = makeFixture();
+    let releaseSecond!: () => void;
+    const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    provider.setResponses([
+      () => fauxAssistantMessage([fauxText("第一轮回复。")]),
+      async () => {
+        await secondGate;
+        return fauxAssistantMessage([fauxText("第二轮回复。")]);
+      },
+    ]);
+    const hub = await openHub(init);
+    const client = await openClient(hub);
+    client.send({ type: "settings.assistant.subscribe", context, requestId: "sub-fresh" });
+    await client.wait("hub.settings_assistant", (message) => message.requestId === "sub-fresh");
+
+    client.send({ type: "settings.assistant.send", content: "第一轮问题", context, requestId: "send-1" });
+    await client.wait("hub.ack", (message) => message.requestId === "send-1");
+    await settled(hub, (snapshot) => snapshot.messages.some((item) => item.text.includes("第一轮回复")));
+
+    const beforeSecondCount = client.received.length;
+    client.send({ type: "settings.assistant.send", content: "第二轮问题", context, requestId: "send-2" });
+    await client.wait("hub.ack", (message) => message.requestId === "send-2");
+
+    const framesForSecond = client.received.slice(beforeSecondCount);
+    const ackIndex = framesForSecond.findIndex((message) => message.type === "hub.ack" && message.requestId === "send-2");
+    expect(ackIndex).toBeGreaterThan(0);
+    const snapshotsBeforeAck = framesForSecond
+      .slice(0, ackIndex)
+      .filter((message): message is Extract<HubToClientMessage, { type: "hub.settings_assistant" }> => message.type === "hub.settings_assistant");
+    expect(snapshotsBeforeAck.length).toBeGreaterThan(0);
+    const latestBeforeAck = snapshotsBeforeAck.at(-1)!.snapshot;
+    expect(latestBeforeAck.live.busy).toBe(true);
+    expect(latestBeforeAck.messages.map((item) => item.text)).toEqual(
+      expect.arrayContaining(["第一轮问题", "第一轮回复。", "第二轮问题"]),
+    );
+
+    releaseSecond();
+    await settled(hub, (snapshot) => snapshot.messages.some((item) => item.text.includes("第二轮回复")));
+  });
+
+  it("allows joined peers to add SSH devices through the Hub, resolves section=current per client, isolates per-turn KuloUserEntry source, and restricts settings kulo_host_action to read-only inspect", async () => {
+    const { provider, init } = makeFixture();
+    const seenPrompts: string[] = [];
+    const seenToolResults: Array<{ name: string; isError: boolean; text: string }> = [];
+    let turn = 0;
+
+    const extractSystemPrompt = (ctx: TranscriptContext) => {
+      const kuloSections = ctx.messages
+        .filter((m): m is Extract<typeof m, { role: "system" }> => m.role === "system")
+        .map((m) => m.sections?.kulo_settings)
+        .filter((value): value is string => typeof value === "string");
+      return kuloSections.at(-1) ?? ctx.systemPrompt ?? "";
+    };
+
+    provider.setResponses([
+      // Turn 1 (Macbook joined peer): read current, check enable idempotency, try disable (blocked), propose ssh add
+      (ctx) => {
+        turn += 1;
+        seenPrompts.push(extractSystemPrompt(ctx));
+        return fauxAssistantMessage([
+          fauxToolCall("kulo_settings_read", { section: "current" }),
+          fauxToolCall("kulo_devices_manage", { action: "enable" }),
+          fauxToolCall("kulo_devices_manage", { action: "disable" }),
+          fauxToolCall("kulo_devices_ssh_add", { connection_id: "connection-kulostation", name: "KuloStation" }),
+        ], { stopReason: "toolUse" });
+      },
+      (ctx) => {
+        for (const msg of ctx.messages) {
+          if (msg.role === "toolResult") {
+            const text = typeof msg.content === "string"
+              ? msg.content
+              : Array.isArray(msg.content)
+                ? msg.content.map((part) => ("text" in part && typeof part.text === "string" ? part.text : JSON.stringify(part))).join("\n")
+                : JSON.stringify(msg.content);
+            seenToolResults.push({ name: msg.toolName, isError: Boolean(msg.isError), text });
+          }
+        }
+        return fauxAssistantMessage([fauxText("已通过主机 MacMini 准备接入 KuloStation，请确认卡片。")]);
+      },
+      // Turn 2 (MacMini hub window): discover kulo_host_action, run read-only inspect (allowed) + mutating run (rejected)
+      (ctx) => {
+        turn += 1;
+        seenPrompts.push(extractSystemPrompt(ctx));
+        return fauxAssistantMessage([
+          fauxToolCall("tool_search", { query: "kulo_host_action", limit: 3 }),
+        ], { stopReason: "toolUse" });
+      },
+      () => fauxAssistantMessage([
+        fauxToolCall("kulo_host_action", { action: "inspect", scope: "summary", filter: String(process.pid), limit: 5 }),
+        fauxToolCall("kulo_host_action", { action: "run", summary: "非法变更", commands: ["echo nope"] }),
+      ], { stopReason: "toolUse" }),
+      (ctx) => {
+        for (const msg of ctx.messages) {
+          if (msg.role === "toolResult" && msg.toolName === "kulo_host_action") {
+            const text = typeof msg.content === "string"
+              ? msg.content
+              : Array.isArray(msg.content)
+                ? msg.content.map((part) => ("text" in part && typeof part.text === "string" ? part.text : JSON.stringify(part))).join("\n")
+                : JSON.stringify(msg.content);
+            seenToolResults.push({ name: msg.toolName, isError: Boolean(msg.isError), text });
+          }
+        }
+        return fauxAssistantMessage([fauxText("只读诊断完成。")]);
+      },
+    ]);
+
+    const hub = await openHub(init);
+    const macbookContext: SettingsAssistantContext = {
+      module: "machines", hasUnsavedChanges: false, appearance: "dark", clientId: "win-macbook",
+    };
+    const macminiContext: SettingsAssistantContext = {
+      module: "machines", hasUnsavedChanges: false, appearance: "light", clientId: "win-macmini",
+    };
+
+    hub.bindDeviceController({
+      view: (clientId) => {
+        const isMacbook = clientId === "win-macbook";
+        return {
+          enabled: true,
+          role: isMacbook ? "joined" : "hub",
+          hubId: "hub-macmini",
+          hubName: "MacMini",
+          primaryNodeId: "local",
+          currentDeviceId: isMacbook ? "macbook-peer" : "local",
+          currentDeviceKnown: true,
+          canSwitchRole: true,
+          canManageHub: true,
+          canManageStandby: true,
+          hubUrls: ["http://192.0.2.2:7788"],
+          devices: [
+            { id: "local", name: "MacMini", kind: "local", status: "online", rootDir: init.config.localEnvRoot },
+            { id: "macbook-peer", name: "Macbook", kind: "peer", status: "online", rootDir: "/Users/demo/Kulo" },
+          ],
+        };
+      },
+      setEnabled: async () => { throw new Error("should not call setEnabled"); },
+      rename: async () => { throw new Error("unused"); },
+      createInvitation: async () => { throw new Error("unused"); },
+      inspectSshCredential: (connectionId) => (
+        connectionId === "connection-kulostation"
+          ? {
+              eligible: true,
+              connection: {
+                id: "connection-kulostation",
+                name: "KuloStation",
+                kind: "ssh",
+                category: "server",
+                status: "verified",
+                hasCredential: true,
+                host: "192.0.2.50",
+                port: 22,
+                username: "demo",
+                hostFingerprint: "SHA256:test",
+                createdAt: 1,
+                updatedAt: 1,
+              },
+            }
+          : { eligible: false, reason: "not found" }
+      ),
+      addSsh: async () => undefined,
+      removeDevice: async () => {},
+      canSwitchRole: () => true,
+    });
+
+    // Turn 1 from joined peer Macbook
+    await hub.settingsAssistant.send("在 KuloStation 安装 kulo，并连接上本机", macbookContext, "peer-ssh-1", [], "macbook-peer");
+    const afterPeerTurn = await settled(hub, (snapshot) =>
+      snapshot.messages.some((item) => item.role === "assistant" && item.text.includes("已通过主机 MacMini")),
+    );
+
+    const pendingSsh = afterPeerTurn.actions.find((a) => a.status === "pending" && a.title.includes("KuloStation"));
+    expect(pendingSsh).toBeDefined();
+    expect(pendingSsh?.title).toContain("通过主机 MacMini");
+    expect(pendingSsh?.changes).toContain("执行主机：MacMini");
+
+    const readCurrent = seenToolResults.find((r) => r.name === "kulo_settings_read");
+    expect(readCurrent?.isError).toBe(false);
+    expect(readCurrent?.text).toContain('"role":"joined"');
+    expect(readCurrent?.text).toContain('"currentDeviceId":"macbook-peer"');
+
+    const enableRes = seenToolResults.find((r) => r.name === "kulo_devices_manage" && !r.isError);
+    expect(enableRes?.text).toContain("设备互联已开启");
+    const disableRes = seenToolResults.find((r) => r.name === "kulo_devices_manage" && r.isError);
+    expect(disableRes?.text).toContain("kulo_devices_leave");
+
+    // promptContext reflects Macbook client + MacMini Hub host
+    expect(seenPrompts[0]).toContain('"clientDevice":{"id":"macbook-peer","name":"Macbook"');
+    expect(seenPrompts[0]).toContain('"hubHost":{"id":"local","name":"MacMini"}');
+
+    // Turn 2 from Hub MacMini in the same settings conversation
+    await hub.settingsAssistant.send("查一下本机进程并尝试执行命令", macminiContext, "hub-inspect-2", [], "local");
+    await settled(hub, (snapshot) =>
+      snapshot.messages.some((item) => item.role === "assistant" && item.text.includes("只读诊断完成")),
+    );
+    expect(turn).toBe(2);
+    expect(seenPrompts[1]).toContain('"clientDevice":{"id":"local","name":"MacMini"');
+
+    // kulo_host_action inspect succeeds while mutating run is rejected in Settings Assistant
+    const hostActionResults = seenToolResults.filter((r) => r.name === "kulo_host_action");
+    expect(hostActionResults.some((r) => !r.isError && r.text.includes('"ok":true'))).toBe(true);
+    expect(hostActionResults.some((r) => r.isError && r.text.includes("只读诊断"))).toBe(true);
+
+    // Per-turn immutable KuloUserEntry source metadata does not clobber earlier turns across windows
+    const settingsDoc = await hub.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
+    const conv = (await hub.harness.conversation(settingsDoc!.conversationId as never, BACKGROUND_CONTEXT))!;
+    const entries = await conv.entries({}, 50, undefined, BACKGROUND_CONTEXT);
+    const userEntries = entries.items.filter((e) => e.kind === "kulo.user");
+    const turn1Entry = userEntries.find((e) => (e.data as { requestId?: string } | undefined)?.requestId === "peer-ssh-1");
+    const turn2Entry = userEntries.find((e) => (e.data as { requestId?: string } | undefined)?.requestId === "hub-inspect-2");
+    expect(turn1Entry?.data).toMatchObject({ source: { deviceId: "macbook-peer", name: "Macbook", kind: "computer" } });
+    expect(turn2Entry?.data).toMatchObject({ source: { deviceId: "local", name: "MacMini", kind: "computer" } });
   });
 });

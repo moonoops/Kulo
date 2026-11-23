@@ -23,6 +23,7 @@ import { consumePersistedDraft } from "./outbox-submissions";
 import { newDeliveryId } from "./reliable-intents";
 import type { ReliableOutboxMetadata, ReliableOutboxRecord } from "./reliable-outbox";
 import { consumeReplyDraft, type ReplyDrafts } from "./reply-reference";
+import { resolveFailedChatRetryEnvelope } from "./use-target-device-selection";
 import type { TranscribeVoice } from "./voice-recorder";
 import { transcribeVoiceRecording } from "./voice-transcription";
 
@@ -50,6 +51,7 @@ export interface UseChatSubmissionParams {
   persistedTargetDeviceId: string;
   topicTargetOverrides: Record<string, string>;
   setTopicTargetOverrides: Dispatch<SetStateAction<Record<string, string>>>;
+  waitForPendingTargetDevice?: (topicId: string) => Promise<void>;
   viewingHistory: boolean;
   clearMessageWindow: () => void;
   nearBottomRef: MutableRefObject<boolean>;
@@ -82,16 +84,32 @@ export function useChatSubmission(params: UseChatSubmissionParams) {
   const dispatchSubmissionWithAck = async (
     input: SubmissionBackupInput | PendingSubmissionBackup,
   ) => {
+    await params.waitForPendingTargetDevice?.(input.topicId);
     const key = submissionKey(input);
-    const replacesFailed =
+    const replacementEnvelope =
       "localMessageId" in input
+        ? resolveFailedChatRetryEnvelope({
+            backup: input,
+            activeTopicId: params.activeTopicId,
+            isProjectTopic: Boolean(params.activeTopic?.projectId),
+            selectedTargetDeviceId: params.selectedTargetDeviceId,
+            persistedTargetDeviceId: params.persistedTargetDeviceId,
+          })
+        : null;
+    const replacesFailed = replacementEnvelope
+      ? {
+          id: key,
+          sequence: (input as PendingSubmissionBackup).localSequence!,
+          scope: (input as PendingSubmissionBackup).outboxScope!,
+        }
+      : "localMessageId" in input
         ? undefined
         : params.editingSubmissionRef.current.get(params.currentDraftKey);
     const record =
-      "localMessageId" in input
+      "localMessageId" in input && !replacementEnvelope
         ? await params.retryQueuedWs(key, input.outboxScope)
         : await params.enqueueWs(
-            input.envelope,
+            replacementEnvelope ?? input.envelope,
             {
               topicId: input.topicId,
               draftKey: input.draftKey,
@@ -99,9 +117,9 @@ export function useChatSubmission(params: UseChatSubmissionParams) {
               draftAttachments: input.draftAttachments,
               ...(replacesFailed ? { replacesFailed } : {}),
             },
-            params.deliveryScope,
+            "localMessageId" in input && replacementEnvelope ? input.outboxScope : params.deliveryScope,
           );
-    if (replacesFailed) {
+    if (replacesFailed && !replacementEnvelope) {
       params.editingSubmissionRef.current.delete(params.currentDraftKey);
     }
     void params.waitForQueuedAck(record).catch((error: unknown) => {
@@ -121,8 +139,10 @@ export function useChatSubmission(params: UseChatSubmissionParams) {
     if (!params.outboxReady || resumeFlightsRef.current.has(topicId)) return;
     resumeFlightsRef.current.add(topicId);
     setResumingQueuedTopic(topicId);
-    void params
-      .sendWsWithAck({ type: "chat.retry", topicId })
+    void (async () => {
+      await params.waitForPendingTargetDevice?.(topicId);
+      await params.sendWsWithAck({ type: "chat.retry", topicId });
+    })()
       .catch((error) =>
         params.setActionError(
           error instanceof Error

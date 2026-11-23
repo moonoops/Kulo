@@ -247,7 +247,7 @@ export function createOrchestratorToolsExtension(
       assignment: opt(str({ description: "Extra Worker instructions." })),
       context_summary: opt(str({ description: "Redacted task context (no private identity or secrets)." })),
       attachment_ids: opt(arr(str(), { maxItems: 16, description: "Chat attachment IDs (att_...) to pass." })),
-      workspace_mode: opt(oneOf(["staged", "read_only"], { description: "Workspace mode: 'staged' (default) or 'read_only'." })),
+      workspace_mode: opt(oneOf(["staged", "read_only"], { description: "Workspace mode: 'staged' (default) or 'read_only' (audits/Q&A)." })),
       target_scope: opt(oneOf(["hub_local", "sender_device"], { description: "For ungrouped tasks without env_id: 'hub_local' (research/writing/attachments) or 'sender_device' (sender files/ports/browser/desktop)." })),
       execute_at: opt(str({ description: "ISO 8601 timestamp with timezone for scheduled execution." })),
       repeat_every_seconds: opt(num({ description: "Positive integer interval in seconds (requires execute_at)." })),

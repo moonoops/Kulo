@@ -20,6 +20,7 @@ export interface AssistantSorterOptions {
   onNotifyBrain: (input: { digest: StoredAssistantDigest; events: StoredAssistantEvent[] }) => void;
   echoSuppressor?: AssistantEchoSuppressor;
   shouldSkipCloudModel?: () => Promise<boolean>;
+  isCloudCapped?: () => boolean;
   coalesceWindowMs?: number;
   maxCoalesceMs?: number;
   maxCallsPerMinute?: number;
@@ -271,6 +272,7 @@ export class AssistantSorter {
         userContent: `<untrusted_events>\n${safeJsonForXmlTag(payload)}\n</untrusted_events>`,
         maxTokens: 400,
         signal: controller.signal,
+        allowCloudFallback: !this.#options.isCloudCapped?.(),
       });
       parsed = parseSorterOutput(raw, {
         appId: sample.appId,

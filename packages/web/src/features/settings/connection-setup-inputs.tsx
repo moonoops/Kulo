@@ -19,6 +19,7 @@ import {
 } from "@kulo/protocol";
 import { kuloRest } from "../../kulo-api";
 import { openNativeAppPermissionSettings } from "../system-permissions/system-permissions";
+import { CredentialFormFields, isSshTargetChanged } from "./credential-form-fields";
 
 export const CONNECTION_KIND_LABEL: Record<ConnectionKind, string> = { ssh: "SSH 服务器", account: "账号", "api-key": "API Key", custom: "自定义凭据", app: "预置应用", mcp: "MCP 应用" };
 const CREDENTIAL_TEMPLATES = (["account", "ssh", "api-key", "custom"] as const).map((id) => ({ id, label: CONNECTION_KIND_LABEL[id] }));
@@ -310,7 +311,7 @@ export function visibleConnectionInputs(inputs: ConnectionSetupInput[], clientId
   return inputs.filter((input) => input.status === "pending" && input.clientId === clientId);
 }
 
-export function ConnectionSetupForm({ input, existing, application, clientId, connected, available, localHost, initialPermissionPrompt = null, onChanged, onCompleted, onCancelled }: {
+export function ConnectionSetupForm({ input, existing, application, clientId, connected, available, localHost, canManageHub, initialPermissionPrompt = null, onChanged, onCompleted, onCancelled }: {
   input: ConnectionSetupInput;
   existing?: ConnectionRecordView;
   application?: ConnectionApplicationView;
@@ -318,6 +319,7 @@ export function ConnectionSetupForm({ input, existing, application, clientId, co
   connected: boolean;
   available: boolean;
   localHost?: boolean;
+  canManageHub?: boolean;
   initialPermissionPrompt?: NativePermissionPrompt | null;
   onChanged: () => void;
   onCompleted?: (connection: ConnectionRecordView) => void;
@@ -389,7 +391,11 @@ export function ConnectionSetupForm({ input, existing, application, clientId, co
       if (cancel) { await kuloRest.cancelConnectionInput(input.id, clientId); onCancelled?.(); }
       else {
         if (!maySave) throw new Error(t("本地凭据库暂不可用。", "The local credential vault is unavailable."));
-        const saved = await kuloRest.submitConnectionInput(input.id, { ...connectionSaveRequest(draft, input), clientId });
+        const payload = connectionSaveRequest(draft, input);
+        if (isSshTargetChanged(draft, existing) && !payload.secrets?.password && !payload.secrets?.privateKey) {
+          throw new Error(t("修改 SSH 服务器地址、端口或用户名时，请重新输入密码或私钥。", "Re-enter the password or private key when changing the SSH host, port, or username."));
+        }
+        const saved = await kuloRest.submitConnectionInput(input.id, { ...payload, clientId });
         onCompleted?.(saved.connection);
       }
       if (!mountedRef.current) return;
@@ -414,7 +420,6 @@ export function ConnectionSetupForm({ input, existing, application, clientId, co
   if (finished) return null;
   const isMcp = draft.kind === "mcp";
   const secretPlaceholder = existing?.hasCredential ? t("已保存，留空保留", "Saved; leave blank to keep") : "";
-  const isPassword = draft.kind === "account" || draft.kind === "ssh" && draft.sshAuth === "password" || draft.kind === "api-key" && draft.authType === "basic";
   return <Card variant="secondary" className="min-w-0 gap-3 rounded-2xl p-3" aria-label={input.connectionId ? t("编辑连接授权", "Edit credentials & access") : t("添加连接授权", "Add credentials & access")}>
     <Card.Header><Card.Title ref={nativeHeadingRef} tabIndex={nativeApp ? -1 : undefined} className="rounded-sm text-sm outline-offset-4">{isApp ? t(`连接${application?.name ?? draft.name}`, `Connect ${application?.name ?? draft.name}`) : isMcp ? (input.connectionId ? t("编辑 MCP 应用", "Edit MCP app") : t("连接 MCP 应用", "Connect MCP app")) : draft.category === "information" ? input.connectionId ? t("编辑信息", "Edit information") : t("记住其他信息", "Save other information") : input.connectionId ? t("编辑登录凭据", "Edit login credentials") : t("添加登录凭据", "Add login credentials")}</Card.Title></Card.Header>
     <form ref={formRef} autoComplete="off" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
@@ -437,7 +442,7 @@ export function ConnectionSetupForm({ input, existing, application, clientId, co
         </>}
         {!isMcp && <TextField className="kulo-form-field" variant="primary" value={draft.instructions} onChange={(value) => change("instructions", value)} isDisabled={disabled} fullWidth><Label>{t("用途", "Purpose")}</Label><TextArea rows={2} className="scrollbar" maxLength={8000} autoComplete="off" /></TextField>}
         {isMcp ? <>
-          {!input.connectionId && localHost && <Select className="kulo-form-field" variant="primary" value={draft.mcpTransport} onChange={(value) => { if (value === "http" || value === "stdio") setDraft((current) => clearConnectionDraftSecrets({ ...current, mcpTransport: value, credentialFields: value === "stdio" ? current.credentialFields : [] })); }} isDisabled={disabled} fullWidth>
+          {!input.connectionId && Boolean(canManageHub ?? localHost) && <Select className="kulo-form-field" variant="primary" value={draft.mcpTransport} onChange={(value) => { if (value === "http" || value === "stdio") setDraft((current) => clearConnectionDraftSecrets({ ...current, mcpTransport: value, credentialFields: value === "stdio" ? current.credentialFields : [] })); }} isDisabled={disabled} fullWidth>
             <Label>{t("接入方式", "Transport")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
             <Select.Popover><ListBox><ListBox.Item id="http" textValue={t("远程服务 (HTTP)", "Remote server (HTTP)")}>{t("远程服务 (HTTP)", "Remote server (HTTP)")}<ListBox.ItemIndicator /></ListBox.Item><ListBox.Item id="stdio" textValue={t("本机命令 (Stdio)", "Local command (Stdio)")}>{t("本机命令 (Stdio)", "Local command (Stdio)")}<ListBox.ItemIndicator /></ListBox.Item></ListBox></Select.Popover>
           </Select>}
@@ -474,43 +479,20 @@ export function ConnectionSetupForm({ input, existing, application, clientId, co
             </div>)}
             <Button ref={addFieldRef} size="sm" variant="secondary" isDisabled={disabled || draft.credentialFields.length >= 32} onPress={addField}>{t("添加环境变量", "Add env var")}</Button>
           </>}
-        </> : draft.kind === "custom" ? <>
-          {draft.credentialFields.map((field, index) => <div key={field.key} role="group" aria-label={field.label.trim() || t(`字段 ${index + 1}`, `Field ${index + 1}`)} className="kulo-form-stack rounded-xl border border-border p-3">
-            <div className="kulo-field-action-row">
-              <TextField variant="primary" className="kulo-form-field min-w-0 flex-1" value={field.label} onChange={(value) => changeField(field.key, { label: value })} isRequired isDisabled={disabled} fullWidth><Label>{t(`字段 ${index + 1} 名称`, `Field ${index + 1} name`)}</Label><Input className="kulo-field-action-input" data-credential-field-name={field.key} maxLength={120} autoComplete="off" /></TextField>
-              <Button size="sm" variant="ghost" className="kulo-field-action-button" aria-label={t(`移除${field.label.trim() || `字段 ${index + 1}`}`, `Remove ${field.label.trim() || `field ${index + 1}`}`)} isDisabled={disabled} onPress={() => removeField(field.key)}>{t("移除", "Remove")}</Button>
-            </div>
-            <TextField className="kulo-form-field" variant="primary" value={field.value} onChange={(value) => changeField(field.key, { value })} isDisabled={disabled} fullWidth>
-              <Label>{field.label.trim() || t(`字段 ${index + 1} 内容`, `Field ${index + 1} content`)}</Label>
-              <TextArea rows={3} className="scrollbar font-mono [-webkit-text-security:disc]" autoComplete="off" spellCheck={false} placeholder={existing?.secretFields.includes(field.key) ? t("已保存，留空保留", "Saved; leave blank to keep") : draft.category === "information" ? t("填写内容", "Enter content") : t("填写凭据", "Enter credentials")} />
-            </TextField>
-          </div>)}
-          <Button ref={addFieldRef} size="sm" variant="secondary" isDisabled={disabled || draft.credentialFields.length >= 32} onPress={addField}>{t("添加字段", "Add field")}</Button>
-        </> : draft.kind === "ssh" ? <>
-          <TextField className="kulo-form-field" variant="primary" value={draft.host} onChange={(value) => change("host", value)} isRequired isDisabled={disabled} fullWidth><Label>{t("服务器地址", "Server address")}</Label><Input autoComplete="off" spellCheck={false} placeholder={t("服务器 IP 或域名", "Server IP or domain")} /></TextField>
-          <div className="kulo-form-grid kulo-form-grid--port">
-            <TextField className="kulo-form-field" variant="primary" value={draft.username} onChange={(value) => change("username", value)} isDisabled={disabled} fullWidth><Label>{t("用户名", "Username")}</Label><Input autoComplete="off" spellCheck={false} /></TextField>
-            <TextField className="kulo-form-field" variant="primary" value={draft.port} onChange={(value) => change("port", value)} isRequired isDisabled={disabled} fullWidth><Label>{t("端口", "Port")}</Label><Input inputMode="numeric" autoComplete="off" /></TextField>
-          </div>
-          <Select className="kulo-form-field" variant="primary" value={draft.sshAuth} onChange={(value) => { if (value) setDraft((current) => clearConnectionDraftSecrets({ ...current, sshAuth: String(value) as ConnectionDraft["sshAuth"] })); }} isDisabled={disabled} fullWidth>
-            <Label>{t("认证方式", "Authentication")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-            <Select.Popover><ListBox><ListBox.Item id="password" textValue={t("密码", "Password")}>{t("密码", "Password")}<ListBox.ItemIndicator /></ListBox.Item><ListBox.Item id="private-key" textValue={t("SSH 私钥", "SSH private key")}>{t("SSH 私钥", "SSH private key")}<ListBox.ItemIndicator /></ListBox.Item></ListBox></Select.Popover>
-          </Select>
-          {draft.sshAuth === "private-key" && <>
-            <TextField className="kulo-form-field" variant="primary" value={draft.privateKey} onChange={(value) => change("privateKey", value)} isDisabled={disabled} fullWidth><Label>{t("SSH 私钥", "SSH private key")}</Label><TextArea rows={4} className="scrollbar font-mono [-webkit-text-security:disc]" autoComplete="off" spellCheck={false} placeholder={secretPlaceholder || t("粘贴 SSH 私钥", "Paste SSH private key")} /></TextField>
-            <TextField className="kulo-form-field" variant="primary" type="password" value={draft.passphrase} onChange={(value) => change("passphrase", value)} isDisabled={disabled} fullWidth><Label>{t("私钥口令", "Key passphrase")}</Label><Input autoComplete="new-password" spellCheck={false} placeholder={secretPlaceholder} /></TextField>
-          </>}
-        </> : <>
-          <TextField className="kulo-form-field" variant="primary" value={draft.url} onChange={(value) => change("url", value)} isDisabled={disabled} fullWidth><Label>{draft.kind === "account" ? t("网站地址", "Website URL") : t("API 地址", "API URL")}</Label><Input type="url" autoComplete="off" spellCheck={false} placeholder="https://" /></TextField>
-          {draft.kind === "api-key" && <Select className="kulo-form-field" variant="primary" value={draft.authType} onChange={(value) => { if (value) setDraft((current) => clearConnectionDraftSecrets({ ...current, authType: String(value) as ConnectionAuthType })); }} isDisabled={disabled} fullWidth>
-            <Label>{t("认证方式", "Authentication")}</Label><Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-            <Select.Popover><ListBox><ListBox.Item id="bearer" textValue="Bearer Token">Bearer Token<ListBox.ItemIndicator /></ListBox.Item><ListBox.Item id="header" textValue={t("API Key 请求头", "API key header")}>{t("API Key 请求头", "API key header")}<ListBox.ItemIndicator /></ListBox.Item><ListBox.Item id="basic" textValue="HTTP Basic">HTTP Basic<ListBox.ItemIndicator /></ListBox.Item></ListBox></Select.Popover>
-          </Select>}
-          {draft.kind === "api-key" && draft.authType === "header" && <TextField className="kulo-form-field" variant="primary" value={draft.headerName} onChange={(value) => change("headerName", value)} isDisabled={disabled} fullWidth><Label>{t("请求头名称", "Header name")}</Label><Input autoComplete="off" spellCheck={false} /></TextField>}
-          {isPassword && <TextField className="kulo-form-field" variant="primary" value={draft.username} onChange={(value) => change("username", value)} isDisabled={disabled} fullWidth><Label>{t("账号", "Account")}</Label><Input autoComplete="off" spellCheck={false} /></TextField>}
-          {!isPassword && <TextField className="kulo-form-field" variant="primary" type="password" value={draft.apiKey} onChange={(value) => change("apiKey", value)} isDisabled={disabled} fullWidth><Label>API Key</Label><Input autoComplete="new-password" spellCheck={false} placeholder={secretPlaceholder} /></TextField>}
-        </>}
-        {isPassword && <TextField className="kulo-form-field" variant="primary" type="password" value={draft.password} onChange={(value) => change("password", value)} isDisabled={disabled} fullWidth><Label>{t("密码", "Password")}</Label><Input autoComplete="new-password" spellCheck={false} placeholder={secretPlaceholder} /></TextField>}
+        </> : (
+          <CredentialFormFields
+            draft={draft}
+            existing={existing}
+            disabled={disabled}
+            fieldVariant="primary"
+            addFieldRef={addFieldRef}
+            onChange={change}
+            onSetDraft={setDraft}
+            onChangeField={changeField}
+            onAddField={addField}
+            onRemoveField={removeField}
+          />
+        )}
         </>}
         {permissionPrompt && <Alert status="warning" role="status">
           <Alert.Indicator />
@@ -530,7 +512,7 @@ export function ConnectionSetupForm({ input, existing, application, clientId, co
   </Card>;
 }
 
-export function ConnectionSetupInputs({ inputs, connections, applications, clientId, localHost, ...props }: {
+export function ConnectionSetupInputs({ inputs, connections, applications, clientId, localHost, canManageHub, ...props }: {
   inputs: ConnectionSetupInput[];
   connections: ConnectionRecordView[];
   applications?: ConnectionApplicationView[];
@@ -538,10 +520,11 @@ export function ConnectionSetupInputs({ inputs, connections, applications, clien
   connected: boolean;
   available: boolean;
   localHost?: boolean;
+  canManageHub?: boolean;
   onChanged: () => void;
   onCompleted?: (connection: ConnectionRecordView) => void;
   onCancelled?: () => void;
 }) {
   useI18n();
-  return <>{visibleConnectionInputs(inputs, clientId).map((input) => <ConnectionSetupForm key={`${input.id}:${input.expectedRevision ?? 0}`} input={input} existing={connections.find((connection) => connection.id === input.connectionId)} application={applications?.find((application) => application.id === input.appId)} clientId={clientId} localHost={localHost} {...props} />)}</>;
+  return <>{visibleConnectionInputs(inputs, clientId).map((input) => <ConnectionSetupForm key={`${input.id}:${input.expectedRevision ?? 0}`} input={input} existing={connections.find((connection) => connection.id === input.connectionId)} application={applications?.find((application) => application.id === input.appId)} clientId={clientId} localHost={localHost} canManageHub={canManageHub} {...props} />)}</>;
 }

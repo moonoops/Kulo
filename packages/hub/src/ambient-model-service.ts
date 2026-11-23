@@ -4,20 +4,40 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import type { Models } from "@earendil-works/pi-ai";
-import type {
-  AmbientLocalEngine,
-  AssistantBackgroundModelAdvice,
-  AssistantBackgroundModelJob,
-  AssistantBackgroundModelStatus,
+import type { Api, Model, Models } from "@earendil-works/pi-ai";
+import {
+  isConversationModel,
+  type AmbientLocalEngine,
+  type AssistantBackgroundModelAdvice,
+  type AssistantBackgroundModelJob,
+  type AssistantBackgroundModelStatus,
+  type CustomModelConfig,
+  type CustomProviderConfig,
 } from "@kulo/protocol";
 import type { AssistantBackgroundModelPersisted } from "./assistant-state.js";
 import { buildAugmentedHostPath, findHostExecutable } from "./host-path.js";
 import { isLoopbackBaseUrl } from "./usage-caps.js";
+import {
+  ZERO_TOOL_THINKING_HEADROOM_TOKENS,
+  isGoogleThinkingApi,
+  resolveZeroToolThinkingLevel,
+  suppressGoogleThoughtSummaries,
+} from "./zero-tool-thinking.js";
 
 const GIB = 1024 ** 3;
 const DEFAULT_OMLX_PORT = 18_741;
 const DEFAULT_OLLAMA_PORT = 11_434;
+const NON_CONVERSATION_MODEL_RE =
+  /(?:^|[/-])(?:text-embedding|gemini-embedding|embedding-\d|embed-|bge-(?:large|base|small|m3|reranker)|jina-(?:embeddings|reranker)|rerank-|text-moderation|omni-moderation)/i;
+
+export interface AmbientModelConfigSlice {
+  gatewayDisabled?: boolean;
+  gatewayModels?: CustomModelConfig[];
+  customProviders?: CustomProviderConfig[];
+  subscriptionModels?: Record<string, CustomModelConfig[]>;
+  defaultProvider?: string;
+  defaultModel?: string;
+}
 
 interface ManagedOwnerRecord {
   pid: number;
@@ -32,12 +52,18 @@ export interface AmbientModelServiceHost {
   stateDir: string;
   models: Models;
   defaultModel(): { provider: string; modelId: string };
+  modelConfig?: () => AmbientModelConfigSlice;
   persistedConfig(): Promise<AssistantBackgroundModelPersisted>;
   saveConfig(next: AssistantBackgroundModelPersisted): Promise<void>;
   redact(text: string): string;
   onStatusChanged?: () => void;
   /** Injectable command runner for tests. */
-  commandRunner?: (command: string, args: string[], env: NodeJS.ProcessEnv) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
+  commandRunner?: (
+    command: string,
+    args: string[],
+    env: NodeJS.ProcessEnv,
+    signal?: AbortSignal,
+  ) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
   /** Injectable hardware probe for tests. */
   hardwareProbe?: () => {
     hostName: string;
@@ -178,6 +204,8 @@ export class AmbientModelService {
   #lastError?: string;
   #job?: AssistantBackgroundModelJob;
   #closed = false;
+  #opSeq = 0;
+  #execAbort: AbortController | null = null;
 
   constructor(host: AmbientModelServiceHost) {
     this.#host = host;
@@ -188,16 +216,22 @@ export class AmbientModelService {
 
   async start(): Promise<void> {
     this.#cleanupOrphanProcess();
+    const mySeq = ++this.#opSeq;
     const cfg = await this.#host.persistedConfig();
+    if (this.#closed || mySeq !== this.#opSeq) return;
     if (cfg.mode === "local-managed" && cfg.engine && cfg.modelId) {
       this.#bearerToken = this.#ensureBearerToken();
       const port = cfg.port ?? (cfg.engine === "omlx" ? DEFAULT_OMLX_PORT : DEFAULT_OLLAMA_PORT);
       if (await loopbackHealthCheck(port, this.#bearerToken)) {
+        if (this.#closed || mySeq !== this.#opSeq) return;
         this.#running = true;
         this.#endpoint = `http://127.0.0.1:${port}`;
       } else {
-        void this.#spawnManagedProcess(cfg.engine, cfg.modelId, port).catch((err) => {
+        if (this.#closed || mySeq !== this.#opSeq) return;
+        void this.#spawnManagedProcess(cfg.engine, cfg.modelId, port, mySeq).catch((err) => {
+          if (this.#closed || mySeq !== this.#opSeq) return;
           this.#lastError = this.#host.redact(err instanceof Error ? err.message : "本机模型启动失败");
+          this.#host.onStatusChanged?.();
         });
       }
     }
@@ -264,29 +298,130 @@ export class AmbientModelService {
     };
   }
 
+  async #resolveActiveKuloProviderModel(
+    providerId: string | undefined,
+    modelId: string | undefined,
+  ): Promise<{ model: Model<Api> } | { reason: string }> {
+    const pid = providerId?.trim() ?? "";
+    const mid = modelId?.trim() ?? "";
+    if (!pid || !mid) {
+      return { reason: "请选择有效的供应商与对话模型。" };
+    }
+    if (!isConversationModel({ id: mid }) || NON_CONVERSATION_MODEL_RE.test(mid)) {
+      return { reason: "仅支持选择对话文本模型作为后台处理模型。" };
+    }
+    const mc = this.#host.modelConfig?.();
+    let isBuiltinProvider = false;
+    if (mc) {
+      if (pid === "kulo-gateway") {
+        if (mc.gatewayDisabled) return { reason: "默认兼容网关已禁用。" };
+        const entry = mc.gatewayModels?.find((m) => m.id === mid);
+        if (entry) {
+          if (!isConversationModel(entry)) return { reason: "所选模型不是对话文本模型。" };
+        } else if (!(mc.defaultProvider === "kulo-gateway" && mc.defaultModel === mid)) {
+          return { reason: "所选模型未在兼容网关中配置。" };
+        }
+      } else {
+        const cp = mc.customProviders?.find((p) => p.id === pid);
+        if (cp) {
+          const entry = cp.models.find((m) => m.id === mid);
+          if (!entry) return { reason: "所选模型未在该供应商中配置。" };
+          if (!isConversationModel(entry)) return { reason: "所选模型不是对话文本模型。" };
+        } else {
+          isBuiltinProvider = true;
+          const subEntry = mc.subscriptionModels?.[pid]?.find((m) => m.id === mid);
+          if (subEntry && !isConversationModel(subEntry)) {
+            return { reason: "所选模型不是对话文本模型。" };
+          }
+        }
+      }
+    }
+    const model = this.#host.models.getModel(pid, mid);
+    if (!model) {
+      return { reason: "所选后台模型不可用或尚未注册。" };
+    }
+    if (typeof this.#host.models.checkAuth === "function") {
+      let auth: Awaited<ReturnType<Models["checkAuth"]>> | undefined;
+      try {
+        auth = await this.#host.models.checkAuth(pid);
+      } catch {
+        auth = undefined;
+      }
+      if (!auth) {
+        return { reason: "所选供应商尚未认证或密钥已失效。" };
+      }
+      if (isBuiltinProvider && auth.type !== "oauth") {
+        return { reason: "内置供应商需通过 OAuth 订阅登录后使用。" };
+      }
+    }
+    return { model };
+  }
+
+  async #resolveActiveKuloModel(
+    cfg: AssistantBackgroundModelPersisted,
+    preferMainModel: boolean,
+  ): Promise<Model<Api> | undefined> {
+    if (!preferMainModel && cfg.mode === "kulo-provider" && cfg.providerId && cfg.modelId) {
+      const resolved = await this.#resolveActiveKuloProviderModel(cfg.providerId, cfg.modelId);
+      if ("model" in resolved) return resolved.model;
+    }
+    const fallback = this.#host.defaultModel();
+    return this.#host.models.getModel(fallback.provider, fallback.modelId);
+  }
+
   async status(): Promise<AssistantBackgroundModelStatus> {
     const cfg = await this.#host.persistedConfig();
+    let running = cfg.mode === "local-managed" ? this.#running : true;
+    let error = cfg.mode === "local-managed" ? this.#lastError : undefined;
+    if (cfg.mode === "kulo-provider") {
+      const resolved = await this.#resolveActiveKuloProviderModel(cfg.providerId, cfg.modelId);
+      if ("reason" in resolved) {
+        running = false;
+        error = "已选后台模型不可用，当前临时回退至默认模型";
+      }
+    }
     return {
       mode: cfg.mode,
       ...(cfg.engine ? { engine: cfg.engine } : {}),
       ...(cfg.modelId ? { modelId: cfg.modelId } : {}),
       ...(cfg.providerId ? { providerId: cfg.providerId } : {}),
-      running: cfg.mode === "local-managed" ? this.#running : true,
+      running,
       ...(this.#endpoint && cfg.mode === "local-managed" ? { endpoint: this.#endpoint } : {}),
-      ...(this.#lastError ? { error: this.#lastError } : {}),
+      ...(error ? { error } : {}),
       ...(this.#job ? { job: { ...this.#job } } : {}),
       revision: cfg.revision,
     };
   }
 
   async configureAutoOrProvider(input: { mode: "auto" | "kulo-provider"; providerId?: string; modelId?: string }): Promise<AssistantBackgroundModelStatus> {
+    const providerId = input.providerId?.trim();
+    const modelId = input.modelId?.trim();
+    if (input.mode === "kulo-provider") {
+      const resolved = await this.#resolveActiveKuloProviderModel(providerId, modelId);
+      if ("reason" in resolved) {
+        throw Object.assign(new Error(resolved.reason), { status: 400 });
+      }
+    }
+    const mySeq = ++this.#opSeq;
+    this.#execAbort?.abort();
+    this.#execAbort = null;
+    if (this.#job && (this.#job.status === "queued" || this.#job.status === "running")) {
+      this.#job = {
+        ...this.#job,
+        status: "failed",
+        error: "已取消本地模型部署",
+        updatedAt: Date.now(),
+      };
+    }
     await this.#stopManagedProcess();
+    if (this.#closed || mySeq !== this.#opSeq) return this.status();
     const prev = await this.#host.persistedConfig();
+    if (this.#closed || mySeq !== this.#opSeq) return this.status();
     this.#lastError = undefined;
     await this.#host.saveConfig({
       mode: input.mode,
-      ...(input.mode === "kulo-provider" && input.providerId ? { providerId: input.providerId } : {}),
-      ...(input.mode === "kulo-provider" && input.modelId ? { modelId: input.modelId } : {}),
+      ...(input.mode === "kulo-provider" && providerId ? { providerId } : {}),
+      ...(input.mode === "kulo-provider" && modelId ? { modelId } : {}),
       revision: prev.revision + 1,
     });
     this.#host.onStatusChanged?.();
@@ -295,6 +430,13 @@ export class AmbientModelService {
 
   async deployLocalManaged(input: { engine: AmbientLocalEngine; modelId: string }): Promise<AssistantBackgroundModelStatus> {
     if (this.#closed) throw new Error("Ambient model service is closed");
+    if (this.#job?.status === "running" || this.#job?.status === "queued") {
+      throw Object.assign(new Error("本机模型正在配置中，请等待完成或先取消当前部署。"), { status: 409 });
+    }
+    const mySeq = ++this.#opSeq;
+    const abort = new AbortController();
+    this.#execAbort = abort;
+    const isPreempted = () => this.#closed || mySeq !== this.#opSeq || abort.signal.aborted;
     const job: AssistantBackgroundModelJob = {
       id: `amb-${randomUUID()}`,
       operation: "deploy",
@@ -308,6 +450,7 @@ export class AmbientModelService {
 
     try {
       await this.#stopManagedProcess();
+      if (isPreempted()) return this.status();
       const exe = findExecutable(input.engine);
       if (!exe) {
         job.progress = `未检测到 ${input.engine}，尝试安装…`;
@@ -319,7 +462,11 @@ export class AmbientModelService {
         if (!installCmd) {
           throw new Error(`未找到 ${input.engine}，且本机缺少自动安装器（brew/uv）。请先手动安装 ${input.engine} 后重试。`);
         }
-        const installRes = await this.#execCommand(installCmd[0], [...installCmd[1]]);
+        const installRes = await this.#execCommand(installCmd[0], [...installCmd[1]], abort.signal);
+        if (isPreempted()) {
+          await this.#stopManagedProcess();
+          return this.status();
+        }
         if (!installRes.ok) {
           throw new Error(`安装 ${input.engine} 失败：${this.#host.redact(installRes.stderr || installRes.stdout).slice(0, 240)}`);
         }
@@ -330,8 +477,16 @@ export class AmbientModelService {
       job.updatedAt = Date.now();
       this.#host.onStatusChanged?.();
 
-      await this.#spawnManagedProcess(input.engine, input.modelId, port);
+      await this.#spawnManagedProcess(input.engine, input.modelId, port, mySeq, abort.signal);
+      if (isPreempted()) {
+        await this.#stopManagedProcess();
+        return this.status();
+      }
       const prev = await this.#host.persistedConfig();
+      if (isPreempted()) {
+        await this.#stopManagedProcess();
+        return this.status();
+      }
       await this.#host.saveConfig({
         mode: "local-managed",
         engine: input.engine,
@@ -346,6 +501,10 @@ export class AmbientModelService {
       this.#host.onStatusChanged?.();
       return this.status();
     } catch (error) {
+      if (isPreempted()) {
+        await this.#stopManagedProcess();
+        return this.status();
+      }
       const msg = this.#host.redact(error instanceof Error ? error.message : "本机模型部署失败").slice(0, 300);
       this.#lastError = msg;
       job.status = "failed";
@@ -353,6 +512,8 @@ export class AmbientModelService {
       job.updatedAt = Date.now();
       this.#host.onStatusChanged?.();
       throw error;
+    } finally {
+      if (this.#execAbort === abort) this.#execAbort = null;
     }
   }
 
@@ -365,10 +526,7 @@ export class AmbientModelService {
     if (!preferMainModel && cfg.mode === "local-managed" && cfg.modelId && this.#running && this.#endpoint) {
       return false;
     }
-    const chosen = !preferMainModel && cfg.mode === "kulo-provider" && cfg.providerId && cfg.modelId
-      ? { provider: cfg.providerId, modelId: cfg.modelId }
-      : this.#host.defaultModel();
-    const model = this.#host.models.getModel(chosen.provider, chosen.modelId);
+    const model = await this.#resolveActiveKuloModel(cfg, preferMainModel);
     if (!model) return false;
     return !isLoopbackBaseUrl(model.baseUrl);
   }
@@ -417,10 +575,7 @@ export class AmbientModelService {
       }
     }
 
-    const chosen = !input.preferMainModel && cfg.mode === "kulo-provider" && cfg.providerId && cfg.modelId
-      ? { provider: cfg.providerId, modelId: cfg.modelId }
-      : this.#host.defaultModel();
-    const model = this.#host.models.getModel(chosen.provider, chosen.modelId);
+    const model = await this.#resolveActiveKuloModel(cfg, Boolean(input.preferMainModel));
     if (!model) throw new Error("assistant_model_unavailable");
     if (input.allowCloudFallback === false && !isLoopbackBaseUrl(model.baseUrl)) {
       throw Object.assign(new Error("ambient_cloud_fallback_disallowed"), {
@@ -428,19 +583,28 @@ export class AmbientModelService {
       });
     }
 
+    const minThinking = resolveZeroToolThinkingLevel(model, this.#host.models);
+    const needsHeadroom = minThinking !== "off" || (Boolean(model.reasoning) && model.api !== "anthropic-messages");
+    const baseTokens = input.maxTokens ?? 1_200;
+    const targetTokens = baseTokens + (needsHeadroom ? ZERO_TOOL_THINKING_HEADROOM_TOKENS : 0);
+    const maxTokens = model.maxTokens ? Math.min(targetTokens, model.maxTokens) : targetTokens;
+    const isGoogle = isGoogleThinkingApi(model.api);
+
     const message = await this.#host.models.completeSimple(
       model,
       {
+        systemPrompt: input.systemPrompt,
         messages: [
-          { role: "system", content: input.systemPrompt, timestamp: Date.now() },
           { role: "user", content: this.#host.redact(input.userContent), timestamp: Date.now() },
         ],
       },
       {
         signal: input.signal,
-        maxTokens: Math.min(input.maxTokens ?? 1_200, model.maxTokens || 1_200),
+        maxTokens,
         cacheRetention: "none",
         disableNativeTools: true,
+        ...(minThinking !== "off" ? { reasoning: minThinking } : {}),
+        ...(isGoogle ? { onPayload: (payload: unknown) => suppressGoogleThoughtSummaries(model.api, payload) } : {}),
       } as Parameters<Models["completeSimple"]>[2],
     );
     if (message.stopReason !== "stop" || message.content.some((part) => part.type === "toolCall")) {
@@ -507,6 +671,9 @@ export class AmbientModelService {
 
   async close(): Promise<void> {
     this.#closed = true;
+    ++this.#opSeq;
+    this.#execAbort?.abort();
+    this.#execAbort = null;
     await this.#stopManagedProcess();
   }
 
@@ -523,37 +690,67 @@ export class AmbientModelService {
     return token;
   }
 
-  #execCommand(command: string, args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  #execCommand(
+    command: string,
+    args: string[],
+    signal?: AbortSignal,
+  ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
     const env = cleanRuntimeEnv();
+    if (signal?.aborted) {
+      return Promise.resolve({ ok: false, stdout: "", stderr: "aborted" });
+    }
     if (this.#host.commandRunner) {
-      return this.#host.commandRunner(command, args, env);
+      return this.#host.commandRunner(command, args, env, signal);
     }
     return new Promise((resolve) => {
       const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
       const out: Buffer[] = [];
       const err: Buffer[] = [];
+      let settled = false;
+      const finish = (result: { ok: boolean; stdout: string; stderr: string }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        resolve(result);
+      };
+      const onAbort = () => {
+        try { child.kill("SIGTERM"); } catch { /* ignore */ }
+        setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* ignore */ } }, 1_000).unref();
+        finish({ ok: false, stdout: Buffer.concat(out).toString("utf8"), stderr: "aborted" });
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
       const timer = setTimeout(() => child.kill("SIGKILL"), 300_000);
       timer.unref();
       child.stdout.on("data", (c: Buffer) => { if (out.length < 64) out.push(c); });
       child.stderr.on("data", (c: Buffer) => { if (err.length < 64) err.push(c); });
-      child.once("error", (e) => { clearTimeout(timer); resolve({ ok: false, stdout: "", stderr: e.message }); });
+      child.once("error", (e) => finish({ ok: false, stdout: "", stderr: e.message }));
       child.once("close", (code) => {
-        clearTimeout(timer);
-        resolve({ ok: code === 0, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
+        finish({ ok: code === 0, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
       });
     });
   }
 
-  async #spawnManagedProcess(engine: AmbientLocalEngine, modelId: string, port: number): Promise<void> {
+  async #spawnManagedProcess(
+    engine: AmbientLocalEngine,
+    modelId: string,
+    port: number,
+    opSeq: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const isStale = () => this.#closed || opSeq !== this.#opSeq || Boolean(signal?.aborted);
+    if (isStale()) return;
     this.#bearerToken = this.#ensureBearerToken();
     const exe = findExecutable(engine);
     if (!exe) throw new Error(`未找到可执行程序 ${engine}`);
 
     if (engine === "ollama") {
       // Ensure the requested model is pulled before serving.
-      const pull = await this.#execCommand(exe, ["pull", modelId]);
+      const pull = await this.#execCommand(exe, ["pull", modelId], signal);
+      if (isStale()) return;
       if (!pull.ok) throw new Error(`拉取模型 ${modelId} 失败：${pull.stderr.slice(0, 200)}`);
     }
+    if (isStale()) return;
 
     const args = engine === "omlx"
       ? ["serve", "--host", "127.0.0.1", "--port", String(port), "--api-key", this.#bearerToken, "--no-proxy", "localhost,127.0.0.1"]
@@ -580,13 +777,18 @@ export class AmbientModelService {
       if (this.#child === child) {
         this.#child = null;
         this.#running = false;
+        this.#host.onStatusChanged?.();
       }
     });
 
     // Wait briefly for local loopback readiness.
     const deadline = Date.now() + 20_000;
-    while (Date.now() < deadline && !this.#closed) {
+    while (Date.now() < deadline && !isStale()) {
       if (await loopbackHealthCheck(port, this.#bearerToken)) {
+        if (isStale()) {
+          await this.#stopManagedProcess();
+          return;
+        }
         this.#running = true;
         this.#endpoint = `http://127.0.0.1:${port}`;
         return;
@@ -594,6 +796,7 @@ export class AmbientModelService {
       await new Promise((r) => setTimeout(r, 400));
     }
     await this.#stopManagedProcess();
+    if (isStale()) return;
     throw new Error(`${engine} 启动超时，请检查端口 ${port} 或本机日志`);
   }
 

@@ -201,6 +201,7 @@ export function detectMainSessionNotification(input: {
   previous: TopicNotificationBaseline;
   messages: readonly ChatDisplayItem[];
   live: LiveStreamState;
+  deferReplyNotification?: boolean;
   now?: number;
   createId?: () => string;
   redact?: (text: string) => string;
@@ -271,6 +272,9 @@ export function detectMainSessionNotification(input: {
   }
 
   if (newVisibleItems.length > 0 && !isPureDispatchTurn(messages, newVisibleItems)) {
+    if (input.deferReplyNotification) {
+      return { next: { ...next, lastVisibleAssistantId: previous.lastVisibleAssistantId }, event: null };
+    }
     const replySummary = extractReplySummary(newVisibleItems, messages, redact);
     return {
       next,

@@ -9,8 +9,8 @@ import {
   compareAuthorityTuples,
   isAuthorityHigher,
   isClusterTopology,
-  parseDeviceJoinInput,
   type AuthorityTuple,
+  type ClusterConflictBackupNotice,
   type ClusterFailoverCandidate,
   type ClusterFailoverOffer,
   type ClusterHandoverDirective,
@@ -22,7 +22,6 @@ import {
   type DeviceChatInvitation,
   type DeviceInterconnectionView,
   type DevicePeerConfig,
-  type InterconnectedDevice,
 } from "@kulo/protocol";
 import { DeviceRoleTransitions, type PreparedDeviceRoleChange } from "./device-role-transitions.js";
 import { LocalInstanceOwner } from "./local-instance.js";
@@ -40,13 +39,22 @@ import {
 } from "./peer-config.js";
 export { getPeerConfigPath, readPeerConfig, savePeerConfig, removePeerConfig, installDevicePeer, normalizePeerHubUrl, updatePeerConfig } from "./peer-config.js";
 import { KuloEnvAgent } from "./agent.js";
-import { collectDeviceSystemInfo } from "./device-info.js";
 import {
   ClusterNonceGuard,
   createClusterAuthHeader,
   isLoopbackSocket,
   probeUrlsHappyEyeballs,
 } from "./cluster-security.js";
+import {
+  buildOfflineJoinedDeviceView,
+  buildPeerLocalClusterStatus,
+  equalPeerToken,
+  forwardPeerRequestHeaders,
+  readPeerBoundedBody,
+  readPeerJoinRequest,
+  schedulePeerAfterResponse as scheduleAfterResponse,
+  startPeerAfterResponse,
+} from "./peer-http-helpers.js";
 import { tryServeLocalWebAsset } from "./peer-static.js";
 
 const CLUSTER_AUTH_HEADER = "x-kulo-cluster-auth";
@@ -89,6 +97,8 @@ export interface StandbyHostBridge {
   resolveClusterSyncSecret(nodeId: string): string | undefined;
   isRevokedDevice(nodeId: string): boolean;
   preparePromotion(input: { targetEpoch: number; reason: "failover" | "handover" }): Promise<void>;
+  readConflictNotice?(): ClusterConflictBackupNotice | null;
+  clearConflictNotice?(): void;
   wipeStandby(reason: string): Promise<void>;
   close(): Promise<void>;
 }
@@ -106,72 +116,11 @@ export interface DevicePeerRuntime {
   close(): Promise<void>;
 }
 
-function equalToken(actual: string | undefined, expected: string): boolean {
-  if (!actual) return false;
-  const left = Buffer.from(actual);
-  const right = Buffer.from(expected);
-  return left.length === right.length && timingSafeEqual(left, right);
-}
-
-async function readBoundedBody(request: http.IncomingMessage, maxBytes = 256 * 1024): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let length = 0;
-  for await (const chunk of request) {
-    const data = Buffer.from(chunk);
-    length += data.length;
-    if (length > maxBytes) throw Object.assign(new Error("请求体过长。"), { status: 413 });
-    chunks.push(data);
-  }
-  return Buffer.concat(chunks);
-}
-
-async function readPeerJoin(request: http.IncomingMessage) {
-  const raw = await readBoundedBody(request, 256 * 1024);
-  let body: Record<string, unknown>;
-  try { body = JSON.parse(raw.toString("utf8")); }
-  catch { throw Object.assign(new Error("接入请求格式无效。"), { status: 400 }); }
-  if (!body || typeof body.input !== "string") throw Object.assign(invalidDeviceInvitation(), { status: 400 });
-  if (body.rootDir !== undefined && (typeof body.rootDir !== "string" || !body.rootDir.trim() || body.rootDir.length > 4096 || /[\x00-\x1f]/.test(body.rootDir))) {
-    throw Object.assign(new Error("设备工作目录无效。"), { status: 400 });
-  }
-  let input: DeviceChatInvitation;
-  try { input = parseDeviceJoinInput(body.input, typeof body.token === "string" ? body.token : undefined); }
-  catch { throw Object.assign(invalidDeviceInvitation(), { status: 400 }); }
-  return { input, force: body.force === true, rootDir: body.rootDir as string | undefined };
-}
-
-function scheduleAfterResponse(response: http.ServerResponse, start: () => unknown): void {
-  let scheduled = false;
-  const trigger = () => {
-    if (scheduled) return;
-    scheduled = true;
-    response.off("finish", trigger);
-    response.off("close", trigger);
-    setTimeout(() => { void start(); }, 25);
-  };
-  response.shouldKeepAlive = false;
-  response.once("finish", trigger);
-  response.once("close", trigger);
-  if (response.destroyed) trigger();
-}
-
-function startAfterResponse(response: http.ServerResponse, change: PreparedDeviceRoleChange): void {
-  scheduleAfterResponse(response, change.start);
-  if (response.destroyed) return;
-  response.writeHead(202, { "content-type": "application/json", "cache-control": "no-store", connection: "close" });
-  response.end(JSON.stringify(change.receipt));
-}
-
-function requestHeaders(headers: http.IncomingHttpHeaders, hub: URL, token: string): http.OutgoingHttpHeaders {
-  const forwarded = { ...headers };
-  for (const name of ["authorization", "cookie", "proxy-authorization", "proxy-connection", "x-forwarded-host", "x-forwarded-proto"]) {
-    delete forwarded[name];
-  }
-  forwarded.host = hub.host;
-  forwarded.authorization = `Bearer ${token}`;
-  if (forwarded.origin) forwarded.origin = hub.origin;
-  return forwarded;
-}
+const equalToken = equalPeerToken;
+const readBoundedBody = readPeerBoundedBody;
+const readPeerJoin = readPeerJoinRequest;
+const startAfterResponse = startPeerAfterResponse;
+const requestHeaders = forwardPeerRequestHeaders;
 
 export interface StartDevicePeerOptions {
   runtimeOwner?: LocalInstanceOwner;
@@ -272,6 +221,7 @@ async function listenDevicePeer(
   };
   const isLocalControl = (request: http.IncomingMessage): boolean =>
     !request.headers.forwarded && !request.headers["x-forwarded-for"] && !request.headers["x-real-ip"] &&
+    !request.headers["x-forwarded-host"] && !request.headers["x-forwarded-proto"] &&
     isLoopbackSocket(request.socket.remoteAddress);
 
   const allowedLocalRequest = (request: http.IncomingMessage): boolean => {
@@ -689,110 +639,31 @@ async function listenDevicePeer(
     return { epoch: expectedEpoch, url };
   };
 
-  const buildLocalClusterStatus = (): ClusterLocalStatusView => {
-    const cluster = currentConfig.cluster;
-    const standbyEnabled = isStandbyEnabled();
-    const clusterActive = Boolean(cluster || standbyEnabled);
-    const primaryOnline = agent.registered && !readinessError;
-    const primaryHub = cluster?.hubs.find((entry) => entry.nodeId === cluster.primaryNodeId);
-    const primaryName = primaryHub?.name ?? (clusterActive ? activeHub.host : undefined);
-    return {
-      enabled: clusterActive,
-      ...(cluster?.hubId ? { hubId: cluster.hubId } : {}),
-      nodeId: currentConfig.deviceId,
-      role: standbyEnabled ? "standby" : "peer",
-      epoch: cluster?.epoch ?? 1,
-      primaryNodeId: cluster?.primaryNodeId,
-      preferredPrimaryNodeId: cluster?.preferredPrimaryNodeId,
-      primaryOnline,
-      ...(primaryName ? { primaryName } : {}),
-      ...(!primaryOnline && failoverOffer ? { failoverOffer } : {}),
-      ...(standbyEnabled ? { syncStatus: standbyHost?.getSyncStatus() ?? standbySyncStatus } : {}),
-    };
-  };
+  const buildLocalClusterStatus = (): ClusterLocalStatusView =>
+    buildPeerLocalClusterStatus({
+      currentConfig,
+      activeHub,
+      standbyEnabled: isStandbyEnabled(),
+      primaryOnline: agent.registered && !readinessError,
+      failoverOffer,
+      syncStatus: standbyHost?.getSyncStatus() ?? standbySyncStatus,
+      conflictBackupNotice: standbyHost?.readConflictNotice?.() ?? null,
+    });
 
-  const offlineJoinedView = (reason: string, local: boolean): DeviceInterconnectionView => {
-    const cluster = currentConfig.cluster;
-    const devices: InterconnectedDevice[] = [];
-    if (cluster) {
-      for (const hubEntry of cluster.hubs) {
-        const isSelf = hubEntry.nodeId === currentConfig.deviceId;
-        const observed = observedClusterNodes.get(hubEntry.nodeId);
-        const selfSync = isSelf && isStandbyEnabled() ? (standbyHost?.getSyncStatus() ?? standbySyncStatus) : undefined;
-        const status: InterconnectedDevice["status"] = isSelf
-          ? "online"
-          : observed && Date.now() - observed.observedAt < 30_000
-            ? "online"
-            : "offline";
-        devices.push({
-          id: hubEntry.nodeId,
-          name: hubEntry.name,
-          kind: hubEntry.role === "primary" ? "local" : "reverse-ws",
-          status,
-          rootDir: isSelf ? currentConfig.rootDir : "",
-          ...(isSelf ? { info: collectDeviceSystemInfo() } : {}),
-          clusterRole: hubEntry.role,
-          isPreferredPrimary: hubEntry.nodeId === cluster.preferredPrimaryNodeId,
-          warmStandbyCapable: true,
-          ...(selfSync
-            ? { syncStatus: selfSync }
-            : observed?.status.syncState
-              ? {
-                  syncStatus: {
-                    state: observed.status.syncState,
-                    syncedAt: observed.status.syncedAt,
-                    syncedGeneration: observed.status.syncedGeneration,
-                  },
-                }
-              : hubEntry.syncState
-                ? {
-                    syncStatus: {
-                      state: hubEntry.syncState,
-                      syncedAt: hubEntry.lastSyncedAt,
-                      syncedGeneration: hubEntry.syncedGeneration,
-                      ...(hubEntry.syncError ? { error: hubEntry.syncError } : {}),
-                    },
-                  }
-                : {}),
-        });
-      }
-      if (!devices.some((entry) => entry.id === currentConfig.deviceId)) {
-        devices.push({
-          id: currentConfig.deviceId,
-          name: currentConfig.name,
-          kind: "reverse-ws",
-          status: "online",
-          rootDir: currentConfig.rootDir,
-          info: collectDeviceSystemInfo(),
-          clusterRole: "peer",
-          warmStandbyCapable: Boolean(standbyHost),
-        });
-      }
-    } else {
-      devices.push(
-        { id: "hub", name: activeHub.host, kind: "local", status: "offline", rootDir: "", clusterRole: "primary" },
-        { id: currentConfig.deviceId, name: currentConfig.name, kind: "reverse-ws", status: "offline", rootDir: currentConfig.rootDir, info: collectDeviceSystemInfo(), clusterRole: "peer" },
-      );
-    }
-    const primaryHub = cluster?.hubs.find((entry) => entry.nodeId === cluster.primaryNodeId);
-    return {
-      enabled: true,
-      role: "joined",
-      hubId: cluster?.hubId ?? activeHub.origin,
-      hubName: primaryHub?.name ?? activeHub.host,
-      currentDeviceId: currentConfig.deviceId,
-      currentDeviceKnown: local,
-      canSwitchRole: canSwitchRole && local,
-      canManageStandby: false,
-      primaryNodeId: cluster?.primaryNodeId,
-      preferredPrimaryNodeId: cluster?.preferredPrimaryNodeId,
-      clusterEpoch: cluster?.epoch,
-      hubError: reason,
-      hubUrls: currentPrimaryUrls(),
-      devices,
-      ...(failoverOffer ? { failoverOffer } : {}),
-    };
-  };
+  const offlineJoinedView = (reason: string, local: boolean): DeviceInterconnectionView =>
+    buildOfflineJoinedDeviceView({
+      currentConfig,
+      activeHub,
+      standbyEnabled: isStandbyEnabled(),
+      hasStandbyHost: Boolean(standbyHost),
+      syncStatus: standbyHost?.getSyncStatus() ?? standbySyncStatus,
+      observedClusterNodes,
+      reason,
+      local,
+      canSwitchRole,
+      primaryUrls: currentPrimaryUrls(),
+      failoverOffer,
+    });
 
   const runClusterMonitorSweep = async (): Promise<void> => {
     if (closed || promoting) return;
@@ -1208,9 +1079,52 @@ async function listenDevicePeer(
       return;
     }
     if (request.method === "GET" && target.pathname === "/api/devices/cluster-status") {
-      response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-      response.end(JSON.stringify(buildLocalClusterStatus()));
+      const localStatus = buildLocalClusterStatus();
+      if (!localStatus.primaryOnline) {
+        response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        response.end(JSON.stringify(localStatus));
+        return;
+      }
+      void (async () => {
+        let merged = localStatus;
+        try {
+          const upstreamRes = await fetch(new URL("/api/devices/cluster-status", activeHub), {
+            method: "GET",
+            redirect: "error",
+            headers: { authorization: `Bearer ${currentConfig.clientToken}` },
+            signal: AbortSignal.timeout(3_000),
+          });
+          if (upstreamRes.ok) {
+            const upstream = await upstreamRes.json() as Partial<ClusterLocalStatusView>;
+            merged = {
+              ...localStatus,
+              ...(upstream.failbackOffer ? { failbackOffer: upstream.failbackOffer } : {}),
+              ...(!localStatus.conflictBackupNotice && upstream.conflictBackupNotice
+                ? { conflictBackupNotice: upstream.conflictBackupNotice }
+                : {}),
+            };
+          }
+        } catch {
+          // Non-fatal: keep local status view if upstream status probe fails.
+        }
+        response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        response.end(JSON.stringify(merged));
+      })();
       return;
+    }
+    if (request.method === "DELETE" && target.pathname === "/api/devices/cluster-conflict-notice") {
+      if (!isLocalControl(request)) {
+        response.writeHead(403, { "content-type": "application/json", "cache-control": "no-store" });
+        response.end(JSON.stringify({ error: "请在本机操作设备连接。" }));
+        return;
+      }
+      standbyHost?.clearConflictNotice?.();
+      if (!agent.registered || readinessError) {
+        response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        response.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      // Fall through to proxy DELETE to upstream Hub so Hub's notice is also cleared.
     }
     if (request.method === "POST" && target.pathname === "/api/devices/promote") {
       void (async () => {
@@ -1288,7 +1202,7 @@ async function listenDevicePeer(
       });
       return;
     }
-    if (request.method === "GET" && target.pathname === "/api/devices" && (canSwitchRole || Boolean(options.webDistDir))) {
+    if (request.method === "GET" && target.pathname === "/api/devices") {
       const local = isLocalControl(request);
       const upstreamUrl = new URL(target.toString());
       upstreamUrl.searchParams.delete("token");
@@ -1303,7 +1217,13 @@ async function listenDevicePeer(
           if (upstreamRes.ok) {
             const data = await upstreamRes.json() as DeviceInterconnectionView;
             response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-            response.end(JSON.stringify({ ...data, currentDeviceKnown: local, canSwitchRole: canSwitchRole && local }));
+            response.end(JSON.stringify({
+              ...data,
+              currentDeviceKnown: local,
+              canSwitchRole: canSwitchRole && local,
+              canManageHub: Boolean(data.canManageHub) && local,
+              canManageStandby: Boolean(data.canManageStandby) && local,
+            }));
             return;
           }
           if (upstreamRes.status === 401 || upstreamRes.status === 403) {
@@ -1657,7 +1577,7 @@ export async function runInstalledPeer(configPath = getPeerConfigPath()): Promis
 
 export function renderPeerInstaller(platform: "posix" | "powershell"): string {
   if (platform === "powershell") {
-    return `param([Parameter(Mandatory=$true)][string]$HubUrl, [Parameter(Mandatory=$true)][string]$InviteToken)\n$ErrorActionPreference = 'Stop'\n& node -e "if(process.versions.node.split('.').map(Number)[0]<22||(process.versions.node.startsWith('22.')&&Number(process.versions.node.split('.')[1])<19))process.exit(1)"\nif ($LASTEXITCODE -ne 0) { throw 'Kulo requires Node.js 22.19 or newer.' }\n$Runtime = Join-Path $HOME '.kulo/runtime'\nNew-Item -ItemType Directory -Force $Runtime | Out-Null\nInvoke-WebRequest -MaximumRedirection 0 -Uri ($HubUrl.TrimEnd('/') + '/connect/peer.mjs') -OutFile (Join-Path $Runtime 'peer.mjs.download')\nMove-Item -Force (Join-Path $Runtime 'peer.mjs.download') (Join-Path $Runtime 'peer.mjs')\n& npm install --prefix $Runtime --omit=dev --ignore-scripts --no-audit --no-fund 'undici@8.12.4' '@anthropic-ai/claude-agent-sdk@0.3.326' '@earendil-works/pi-env@1.5.2' 'ws@8.22.2' 'agent-browser@0.43.0' 'agent-desktop@1.3.1'\nif ($LASTEXITCODE -ne 0) { throw 'Kulo runtime dependency installation failed.' }\n& node (Join-Path $Runtime 'peer.mjs') install --hub $HubUrl --invite $InviteToken\nif ($LASTEXITCODE -ne 0) { throw 'Kulo device pairing failed.' }\n`;
+    return `param([Parameter(Mandatory=$true)][string]$HubUrl, [string]$InviteToken = $env:KULO_PEER_INVITE)\nif (-not $InviteToken) { throw 'Missing invitation' }\n$ErrorActionPreference = 'Stop'\n& node -e "if(process.versions.node.split('.').map(Number)[0]<22||(process.versions.node.startsWith('22.')&&Number(process.versions.node.split('.')[1])<19))process.exit(1)"\nif ($LASTEXITCODE -ne 0) { throw 'Kulo requires Node.js 22.19 or newer.' }\n$Runtime = Join-Path $HOME '.kulo/runtime'\nNew-Item -ItemType Directory -Force $Runtime | Out-Null\nInvoke-WebRequest -MaximumRedirection 0 -Uri ($HubUrl.TrimEnd('/') + '/connect/peer.mjs') -OutFile (Join-Path $Runtime 'peer.mjs.download')\nMove-Item -Force (Join-Path $Runtime 'peer.mjs.download') (Join-Path $Runtime 'peer.mjs')\n& npm install --prefix $Runtime --omit=dev --ignore-scripts --no-audit --no-fund 'undici@8.12.4' '@anthropic-ai/claude-agent-sdk@0.3.326' '@earendil-works/pi-env@1.5.2' 'ws@8.22.2' 'agent-browser@0.43.0' 'agent-desktop@1.3.1'\nif ($LASTEXITCODE -ne 0) { throw 'Kulo runtime dependency installation failed.' }\n$env:KULO_PEER_INVITE = $InviteToken\n& node (Join-Path $Runtime 'peer.mjs') install --hub $HubUrl\nif ($LASTEXITCODE -ne 0) { throw 'Kulo device pairing failed.' }\n`;
   }
-  return `#!/bin/sh\nset -eu\numask 077\nKULO_PEER_HUB_URL=\${1:?Missing Hub URL}\nKULO_PEER_INVITE=\${2:?Missing invitation}\ncommand -v node >/dev/null 2>&1 || { echo 'Kulo requires Node.js 22.19 or newer.' >&2; exit 1; }\nnode -e "if(process.versions.node.split('.').map(Number)[0]<22||(process.versions.node.startsWith('22.')&&Number(process.versions.node.split('.')[1])<19))process.exit(1)" || { echo 'Kulo requires Node.js 22.19 or newer.' >&2; exit 1; }\nKULO_PEER_RUNTIME=\"\$HOME/.kulo/runtime\"\nmkdir -p \"\$KULO_PEER_RUNTIME\"\nchmod 700 \"\$HOME/.kulo\" \"\$KULO_PEER_RUNTIME\"\ncurl -fsS \"\$KULO_PEER_HUB_URL/connect/peer.mjs\" -o \"\$KULO_PEER_RUNTIME/peer.mjs.download\"\nmv \"\$KULO_PEER_RUNTIME/peer.mjs.download\" \"\$KULO_PEER_RUNTIME/peer.mjs\"\nnpm install --prefix \"\$KULO_PEER_RUNTIME\" --omit=dev --ignore-scripts --no-audit --no-fund 'undici@8.12.4' '@anthropic-ai/claude-agent-sdk@0.3.326' '@earendil-works/pi-env@1.5.2' 'ws@8.22.2' 'agent-browser@0.43.0' 'agent-desktop@1.3.1'\nnode \"\$KULO_PEER_RUNTIME/peer.mjs\" install --hub \"\$KULO_PEER_HUB_URL\" --invite \"\$KULO_PEER_INVITE\"\n`;
+  return `#!/bin/sh\nset -eu\numask 077\nKULO_PEER_HUB_URL=\${1:?Missing Hub URL}\nKULO_PEER_INVITE=\${2:-\${KULO_PEER_INVITE:?Missing invitation}}\nexport KULO_PEER_INVITE\ncommand -v node >/dev/null 2>&1 || { echo 'Kulo requires Node.js 22.19 or newer.' >&2; exit 1; }\nnode -e "if(process.versions.node.split('.').map(Number)[0]<22||(process.versions.node.startsWith('22.')&&Number(process.versions.node.split('.')[1])<19))process.exit(1)" || { echo 'Kulo requires Node.js 22.19 or newer.' >&2; exit 1; }\nKULO_PEER_RUNTIME=\"\$HOME/.kulo/runtime\"\nmkdir -p \"\$KULO_PEER_RUNTIME\"\nchmod 700 \"\$HOME/.kulo\" \"\$KULO_PEER_RUNTIME\"\ncurl -fsS \"\$KULO_PEER_HUB_URL/connect/peer.mjs\" -o \"\$KULO_PEER_RUNTIME/peer.mjs.download\"\nmv \"\$KULO_PEER_RUNTIME/peer.mjs.download\" \"\$KULO_PEER_RUNTIME/peer.mjs\"\nnpm install --prefix \"\$KULO_PEER_RUNTIME\" --omit=dev --ignore-scripts --no-audit --no-fund 'undici@8.12.4' '@anthropic-ai/claude-agent-sdk@0.3.326' '@earendil-works/pi-env@1.5.2' 'ws@8.22.2' 'agent-browser@0.43.0' 'agent-desktop@1.3.1'\nnode \"\$KULO_PEER_RUNTIME/peer.mjs\" install --hub \"\$KULO_PEER_HUB_URL\"\n`;
 }

@@ -17,6 +17,8 @@ import { AddAppModal } from "./mcp-add-modal";
 import { McpOAuthModal } from "./mcp-oauth-modal";
 import { ComposioConfigModal } from "./composio-config-modal";
 import { ComposioAppsModal } from "./composio-apps-modal";
+import { CredentialConfigModal } from "./credential-config-modal";
+import { CredentialFormFields, isSshTargetChanged } from "./credential-form-fields";
 import { HomeAssistantConfigModal } from "./home-assistant-config-modal";
 import { ConnectionFollowupActions, ConnectionFollowupBody, checkConnectionFollowup, connectionFollowupResult } from "./connection-followup";
 import { kuloRest } from "../../kulo-api";
@@ -544,15 +546,15 @@ describe("ambient awareness controls inside connections", () => {
         onPrepare={async () => {}}
         onRefresh={() => {}}
         assistant={assistant}
-        onRequestAssistantAcceleration={() => {}}
       />,
     );
     expect(localHtml).toContain("实时感知");
     expect(localHtml).toContain("macOS 通知中心");
     expect(localHtml).toContain("需要完全磁盘访问权限");
     expect(localHtml).toContain("打开系统设置");
-    expect(localHtml).toContain("本机免费加速");
-    expect(localHtml).toContain("跟随当前模型");
+    expect(localHtml).not.toContain("本机免费加速");
+    expect(localHtml).not.toContain("跟随当前模型");
+    expect(localHtml).not.toContain("后台处理");
     expect(localHtml).toContain("已屏蔽应用");
     expect(localHtml).toContain('aria-label="取消屏蔽 com.example.ads"');
 
@@ -598,7 +600,6 @@ describe("ambient awareness controls inside connections", () => {
             selectedProfiles: ["personal", "enterprise"],
           },
         }}
-        onRequestAssistantAcceleration={() => {}}
         onRequestAssistantPrompt={() => {}}
       />,
     );
@@ -609,6 +610,81 @@ describe("ambient awareness controls inside connections", () => {
     expect(fullEcosystemHtml).toContain("飞书 (lark-cli)");
     expect(fullEcosystemHtml).toContain("已连接 · 2 个组织");
     expect(fullEcosystemHtml).toContain('aria-label="管理米家 / Home Assistant"');
+    expect(fullEcosystemHtml).not.toContain("Spark Mail 未就绪");
+    expect(fullEcosystemHtml).not.toContain("未检测到 lark-cli");
+    expect(fullEcosystemHtml).not.toContain("米家 / Home Assistant 连接异常");
+
+    // Enabled but unavailable connectors surface actionable alerts and re-check / configure buttons.
+    const connectorErrorsHtml = renderToStaticMarkup(
+      <ConnectionsModule
+        snapshot={snapshot}
+        loading={false}
+        error={null}
+        connected
+        onPrepare={async () => {}}
+        onRefresh={() => {}}
+        assistant={{
+          ...assistant,
+          enabled: false,
+          spark: {
+            enabled: true,
+            available: false,
+            error: "未检测到 Spark CLI，请在 Spark Desktop「设置 → AI Agents → Setup CLI」中启用。",
+          },
+          homeAssistant: {
+            enabled: true,
+            connected: false,
+            hasToken: true,
+            error: "无法连接到 http://127.0.0.1:8123",
+          },
+          lark: {
+            enabled: true,
+            cliAvailable: false,
+            profiles: [],
+            selectedProfiles: [],
+          },
+        }}
+      />,
+    );
+    expect(connectorErrorsHtml).toContain("需开启 Spark CLI");
+    expect(connectorErrorsHtml).toContain("Spark Mail 未就绪");
+    expect(connectorErrorsHtml).toContain("Spark Desktop「设置 → AI Agents → Setup CLI」");
+    expect(connectorErrorsHtml).toContain('aria-label="重新检测 Spark Mail"');
+    expect(connectorErrorsHtml).toContain("米家 / Home Assistant 连接异常");
+    expect(connectorErrorsHtml).toContain("无法连接到 http://127.0.0.1:8123");
+    expect(connectorErrorsHtml).toContain('aria-label="检查米家 / Home Assistant 配置"');
+    expect(connectorErrorsHtml).toContain("未检测到 lark-cli，请先在主机上安装并登录飞书 CLI。");
+    expect(connectorErrorsHtml).toContain('aria-label="重新检测飞书连接"');
+
+    // Lark installed without sign-in surfaces sign-in guidance; disabled Spark hides error alert.
+    const larkSignInHtml = renderToStaticMarkup(
+      <ConnectionsModule
+        snapshot={snapshot}
+        loading={false}
+        error={null}
+        connected
+        onPrepare={async () => {}}
+        onRefresh={() => {}}
+        assistant={{
+          ...assistant,
+          enabled: false,
+          spark: {
+            enabled: false,
+            available: false,
+            error: "未检测到 Spark CLI",
+          },
+          lark: {
+            enabled: true,
+            cliAvailable: true,
+            profiles: [{ name: "default", ready: false }],
+            selectedProfiles: [],
+          },
+        }}
+      />,
+    );
+    expect(larkSignInHtml).not.toContain("Spark Mail 未就绪");
+    expect(larkSignInHtml).toContain("飞书待登录授权");
+    expect(larkSignInHtml).toContain("lark-cli auth login");
 
     // Minimal HomeAssistantConfigModal mounts cleanly without throwing (Portal renders in browser DOM).
     expect(() =>
@@ -896,5 +972,61 @@ describe("MCP app connections UI", () => {
         <ComposioAppsModal open connection={composioConn} connected onClose={() => {}} />,
       ),
     ).not.toThrow();
+  });
+
+  it("renders CredentialConfigModal for SSH create/edit and detects SSH target changes requiring secret re-entry", () => {
+    const existingSsh: ConnectionRecordView = {
+      ...connection,
+      status: "verified",
+      hostFingerprint: "ssh-ed25519 SHA256:demo",
+    };
+    expect(isSshTargetChanged(createConnectionDraft(input, existingSsh), existingSsh)).toBe(false);
+    expect(isSshTargetChanged({ ...createConnectionDraft(input, existingSsh), port: "2222" }, existingSsh)).toBe(true);
+    expect(isSshTargetChanged({ ...createConnectionDraft(input, existingSsh), host: "10.0.1.51" }, existingSsh)).toBe(true);
+    expect(isSshTargetChanged({ ...createConnectionDraft(input, existingSsh), name: "只改名字" }, existingSsh)).toBe(false);
+
+    expect(() =>
+      renderToStaticMarkup(
+        <CredentialConfigModal open mode="create" initialKind="ssh" connected available localHost onSaved={() => {}} onClose={() => {}} />,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      renderToStaticMarkup(
+        <CredentialConfigModal open mode="edit" existing={existingSsh} connected available localHost onSaved={() => {}} onClose={() => {}} />,
+      ),
+    ).not.toThrow();
+
+    const baseDraft = createConnectionDraft(input, existingSsh);
+    const noopRef = { current: null };
+    const noopFormCallbacks = {
+      disabled: false,
+      fieldVariant: "secondary" as const,
+      addFieldRef: noopRef,
+      onChange: () => {},
+      onSetDraft: () => {},
+      onChangeField: () => {},
+      onAddField: () => {},
+      onRemoveField: () => {},
+    };
+    const unchangedHtml = renderToStaticMarkup(
+      <CredentialFormFields
+        draft={baseDraft}
+        existing={existingSsh}
+        {...noopFormCallbacks}
+      />,
+    );
+    expect(unchangedHtml).toContain("服务器地址");
+    expect(unchangedHtml).toContain("端口");
+    expect(unchangedHtml).toContain("用户名");
+    expect(unchangedHtml).toContain("已保存，留空保留");
+
+    const changedTargetHtml = renderToStaticMarkup(
+      <CredentialFormFields
+        draft={{ ...baseDraft, host: "10.0.1.51", sshAuth: "password" }}
+        existing={existingSsh}
+        {...noopFormCallbacks}
+      />,
+    );
+    expect(changedTargetHtml).toContain("地址或账号已修改，请重新输入");
   });
 });

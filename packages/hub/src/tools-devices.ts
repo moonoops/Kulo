@@ -1,13 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
-import { bool, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
+import { obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import {
   SENSITIVE_TEXT_REDACTION,
   extractDeviceJoinMatches,
+  type ConnectionRecordView,
   type DeviceInterconnectionView,
   type DeviceRoleTransition,
-  type DeviceSshRequest,
-  type DeviceSshScan,
+  type DeviceSshAddRequest,
   type InterconnectedDevice,
   type SettingsAssistantAction,
 } from "@kulo/protocol";
@@ -94,12 +94,17 @@ export class DeviceJoinStaging {
 }
 
 export interface HubDeviceController {
-  view(principalId?: string): DeviceInterconnectionView;
+  view(clientId?: string): DeviceInterconnectionView;
   setEnabled(enabled: boolean, force?: boolean): Promise<DeviceInterconnectionView>;
   rename(deviceId: string, name: string): Promise<DeviceInterconnectionView>;
   createInvitation(input: { hubUrl?: string; name?: string }): Promise<{ id: string; deviceId: string; hubUrl: string; expiresAt: number }>;
-  scanSsh(input: DeviceSshRequest): Promise<DeviceSshScan>;
-  addSsh(scanId: string): Promise<InterconnectedDevice | undefined>;
+  inspectSshCredential?(connectionId: string): {
+    connection?: ConnectionRecordView;
+    boundDevice?: { id: string; name: string };
+    eligible: boolean;
+    reason?: string;
+  };
+  addSsh(request: DeviceSshAddRequest): Promise<InterconnectedDevice | undefined>;
   removeDevice(deviceId: string, force?: boolean): Promise<void>;
   canSwitchRole(): boolean;
   joinPeer?(input: { hubUrl: string; inviteToken: string }, force: boolean, id: string): Promise<PreparedDeviceRoleChange>;
@@ -172,10 +177,18 @@ export function createDeviceToolsExtension(host: () => DeviceAssistantHost) {
           }
           return jsonResult(await host().applyImmediateDeviceChange(api.callId, async (controller) => {
             if (args.action === "enable") {
+              const current = await host().readDevices();
+              if (!("unavailable" in current) && current.role === "joined" && current.enabled) {
+                return { title: "设备互联已开启", changes: [`主机「${current.hubName}」设备互联已开启`], result: current };
+              }
               const view = await controller.setEnabled(true);
               return { title: "开启设备互联", changes: ["设备互联：关闭 → 开启"], result: view };
             }
             if (args.action === "disable") {
+              const current = await host().readDevices();
+              if (!("unavailable" in current) && current.role === "joined") {
+                throw new Error(`关闭主机「${current.hubName}」的设备互联会立即断开当前设备连接且无法远程恢复；如需断开当前设备请使用 kulo_devices_leave，如需彻底关闭互联请在主机「${current.hubName}」上操作。`);
+              }
               try {
                 const view = await controller.setEnabled(false, false);
                 return { title: "关闭设备互联", changes: ["设备互联：开启 → 关闭"], result: view };
@@ -213,39 +226,47 @@ export function createDeviceToolsExtension(host: () => DeviceAssistantHost) {
         },
       }),
       defineTool({
-        name: "kulo_devices_ssh_scan",
-        description: "Scan a remote host's SSH fingerprint and create a user confirmation card before pairing (requires key/agent SSH access; applied only after user confirms the fingerprint).",
+        name: "kulo_devices_ssh_add",
+        description: "Propose adding a remote device over SSH onto the Hub host using a verified SSH credential from `kulo_connections` (creates a user confirmation card; if no verified SSH credential exists, guide the user to Credentials via `module='connections', intent='add-ssh-credential'`).",
         parameters: obj({
-          host: str({ description: "SSH host address or `~/.ssh/config` alias." }),
-          port: opt(num({ description: "SSH port (default 22)." })),
-          user: opt(str({ description: "Optional SSH username." })),
-          name: opt(str({ description: "Optional device display name." })),
+          connection_id: str({ description: "Verified SSH credential ID (`connection-...`) from `kulo_connections`." }),
+          name: opt(str({ description: "Optional device display name (defaults to the SSH credential name)." })),
           root_dir: opt(str({ description: "Optional remote workspace directory (default `~/Kulo`)." })),
-          hub_url: opt(str({ description: "Hub URL reachable from the remote machine (defaults to first LAN/Tailscale URL)." })),
         }),
         execute: async (args, api) => {
           const current = await host().readDevices();
           if ("unavailable" in current) throw new Error("当前环境不支持设备互联管理。");
-          if (current.role === "joined") throw new Error("当前客户端已接入其他主机，请在主机设备上添加新设备。");
-          const hubUrl = args.hub_url?.trim() || current.hubUrls[0];
-          if (!hubUrl) throw new Error("未找到可供其他设备访问的本机网络地址，请检查网络连接。");
-          const res = await host().applyImmediateDeviceChange(`${api.callId}:scan`, async (controller) => {
-            if (!current.enabled) await controller.setEnabled(true);
-            const scan = await controller.scanSsh({
-              host: args.host.trim(),
-              port: args.port ?? 22,
-              ...(args.user?.trim() ? { user: args.user.trim() } : {}),
-              ...(args.name?.trim() ? { name: args.name.trim() } : {}),
-              ...(args.root_dir?.trim() ? { rootDir: args.root_dir.trim() } : {}),
-              hubUrl,
-            });
+          const connectionId = args.connection_id.trim();
+          const res = await host().applyImmediateDeviceChange(`${api.callId}:inspect`, async (controller) => {
+            const check = controller.inspectSshCredential?.(connectionId);
+            if (!check?.eligible || !check.connection) {
+              throw new Error(check?.reason ?? "请先在「授权凭据」中添加并验证该 SSH 凭据。");
+            }
+            const target = check.connection;
+            const endpoint = `${target.username ? `${target.username}@` : ""}${target.host ?? ""}:${target.port ?? 22}`;
+            const displayName = args.name?.trim() || target.name;
+            const hostPrefix = current.role === "joined" ? `通过主机 ${current.hubName} ` : "";
             return {
-              title: `确认 SSH 主机指纹并接入 ${args.name?.trim() || args.host.trim()}`,
-              changes: [`SSH 目标：${args.user?.trim() ? `${args.user.trim()}@` : ""}${args.host.trim()}:${args.port ?? 22}`, ...scan.fingerprints.map((fp) => `指纹：${fp}`)],
-              result: { scanId: scan.scanId, fingerprints: scan.fingerprints, status: "awaiting_user_confirmation" },
+              title: `${hostPrefix}通过 SSH 凭据接入 ${displayName}`,
+              changes: [
+                ...(current.role === "joined" ? [`执行主机：${current.hubName}`] : []),
+                `SSH 凭据：${target.name}（${endpoint}）`,
+                ...(args.root_dir?.trim() ? [`工作目录：${args.root_dir.trim()}`] : []),
+              ],
+              result: {
+                connectionId,
+                name: displayName,
+                hubName: current.hubName,
+                status: "awaiting_user_confirmation",
+              },
               pendingOperation: {
-                description: "请核对以上 SSH 主机指纹无误后确认接入。",
-                operation: { kind: "device-ssh-add", scanId: scan.scanId },
+                description: `确认后将使用已验证的 SSH 凭据在远端安装并接入主机「${current.hubName}」。`,
+                operation: {
+                  kind: "device-ssh-add",
+                  connectionId,
+                  ...(args.name?.trim() ? { name: args.name.trim() } : {}),
+                  ...(args.root_dir?.trim() ? { rootDir: args.root_dir.trim() } : {}),
+                },
               },
             };
           });

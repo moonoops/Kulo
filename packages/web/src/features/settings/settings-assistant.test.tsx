@@ -48,16 +48,19 @@ describe("settings assistant action boundaries", () => {
     expect(appearance.some((shortcut) => shortcut.kind === "appearance" || shortcut.kind === "navigate")).toBe(false);
   });
 
-  it.each([true, false])("offers direct model setup cards and concise calibration with model availability %s", (hasModel) => {
+  it.each([true, false])("offers direct model setup cards, calibration, and local background model recommendation with model availability %s", (hasModel) => {
     const shortcuts = getSettingsAssistantShortcuts("models", hasModel, "dark");
-    expect(shortcuts.map((shortcut) => shortcut.label)).toEqual(["自动接入供应商", "校准模型配置", "排查调用失败"]);
-    expect(shortcuts.map((shortcut) => shortcut.kind === "model" && shortcut.action)).toEqual(["connect", "calibrate", "diagnose"]);
+    expect(shortcuts.map((shortcut) => shortcut.label)).toEqual(["自动接入供应商", "校准模型配置", "排查调用失败", "推荐本机模型"]);
+    expect(shortcuts.slice(0, 3).map((shortcut) => shortcut.kind === "model" && shortcut.action)).toEqual(["connect", "calibrate", "diagnose"]);
     const connect = shortcuts.find((shortcut) => shortcut.id === "connect-provider");
     const calibrate = shortcuts.find((shortcut) => shortcut.id === "calibrate-models");
     const diagnose = shortcuts.find((shortcut) => shortcut.id === "diagnose-models");
+    const recommendLocal = shortcuts.find((shortcut) => shortcut.id === "recommend-local-model");
     expect(connect?.kind === "model" && connect.prompt).toBeUndefined();
     expect(diagnose?.kind === "model" && diagnose.prompt).toBeUndefined();
     expect(calibrate?.kind === "model" && calibrate.prompt).toBe("校准已有模型配置");
+    expect(recommendLocal?.kind).toBe("ask");
+    expect(recommendLocal?.kind === "ask" && recommendLocal.prompt).toContain("后台处理所在主机");
   });
 
   it.each(SETTINGS_MODULES.filter((module) => module.id !== "appearance" && module.id !== "models" && module.id !== "workers" && module.id !== "capabilities"))("keeps $id task suggestions hidden until that capability is connected", ({ id }) => {
@@ -103,6 +106,7 @@ describe("settings assistant visible states", () => {
       const html = renderToStaticMarkup(<SettingsAssistantPanel module="models" agentName="Kulo" settings={settings} envs={[]} snapshot={EMPTY_SETTINGS_ASSISTANT} loaded connected error={null} controls={controls()} />);
       expect(html).toContain("重试确认保存");
       expect(html).not.toContain('class="kulo-settings-assistant-intro"');
+      expect(html).toMatch(/class="kulo-settings-assistant-footer[^"]*"[^>]*data-separated="true"/);
       const otherClient = renderToStaticMarkup(<SettingsAssistantPanel module="models" agentName="Kulo" settings={settings} envs={[]} snapshot={EMPTY_SETTINGS_ASSISTANT} loaded connected error={null} controls={{ ...controls(), clientId: "tab-b" }} />);
       expect(otherClient).not.toContain("重试确认保存");
     } finally { vi.unstubAllGlobals(); }
@@ -200,7 +204,7 @@ describe("settings assistant visible states", () => {
     expect(html).toContain("flex-wrap");
   });
 
-  it("uses the shared composer with a page introduction and footer-only ghost text tasks", () => {
+  it("uses the shared composer with a page introduction and footer-only secondary task buttons", () => {
     const configured: KuloSettingsView = {
       ...settings,
       blocks: { ...settings.blocks, model: { ...settings.blocks.model, value: { ...settings.blocks.model.value, defaultModel: "test-model" } } },
@@ -225,20 +229,27 @@ describe("settings assistant visible states", () => {
     const suggestionsStart = html.indexOf('class="kulo-settings-assistant-suggestions');
     const composerStart = html.indexOf('class="kulo-composer"');
     expect(footerStart).toBeGreaterThan(0);
+    expect(html).not.toMatch(/class="kulo-settings-assistant-footer[^"]*"[^>]*data-separated="true"/);
     expect(suggestionsStart).toBeGreaterThan(footerStart);
     expect(composerStart).toBeGreaterThan(suggestionsStart);
     expect(html.slice(0, footerStart)).not.toContain("kulo-settings-assistant-suggestion");
     const taskButtons = html.match(/<button\b[^>]*class="[^"]*kulo-settings-assistant-suggestion[^"]*"[^>]*>/g) ?? [];
-    expect(taskButtons).toHaveLength(3);
-    for (const button of taskButtons) expect(button).toContain("button--ghost");
+    expect(taskButtons).toHaveLength(4);
+    for (const button of taskButtons) {
+      expect(button).toContain("button--secondary");
+      expect(button).not.toContain("button--ghost");
+    }
+    // 4th button ("推荐本机模型", kind="ask") is enabled once a default model is configured.
+    expect(taskButtons[3]).not.toContain("disabled");
     expect(html).not.toMatch(/<h[1-6]\b/);
   });
 
-  it("keeps the same footer suggestions while the settings conversation is active", () => {
+  it("keeps the same footer suggestions separated from the active settings conversation", () => {
     const html = renderToStaticMarkup(<SettingsAssistantPanel module="appearance" agentName="Kulo" settings={settings} envs={[]}
       snapshot={{ ...EMPTY_SETTINGS_ASSISTANT, messages: [{ id: 1, role: "user", text: "我喜欢偏暖的配色" }] }} loaded connected error={null} controls={controls()} />);
     expect(html).toContain("我喜欢偏暖的配色");
     expect(html).not.toContain("kulo-settings-assistant-intro");
+    expect(html).toMatch(/class="kulo-settings-assistant-footer[^"]*"[^>]*data-separated="true"/);
     expect(html.indexOf("创建我的配色")).toBeGreaterThan(html.indexOf('class="kulo-settings-assistant-footer'));
     expect(html.indexOf("创建我的配色")).toBeLessThan(html.indexOf('class="kulo-composer"'));
   });
@@ -282,6 +293,10 @@ describe("settings assistant visible states", () => {
     expect(html).toContain('accept="image/png,image/jpeg,image/webp,image/gif"');
     expect(html).not.toContain('accept="audio/*"');
     expect(html).not.toContain('accept="video/*"');
+    // Without a configured default model, the conversational "推荐本机模型" shortcut stays disabled.
+    const unconfiguredButtons = html.match(/<button\b[^>]*class="[^"]*kulo-settings-assistant-suggestion[^"]*"[^>]*>/g) ?? [];
+    expect(unconfiguredButtons).toHaveLength(4);
+    expect(unconfiguredButtons[3]).toContain("disabled");
     expect(html).not.toContain('aria-label="语音输入"');
     expect(html).not.toContain("kulo-composer-call");
   });
@@ -437,5 +452,35 @@ describe("settings assistant visible states", () => {
     expect(cardIndex).toBeGreaterThan(pinnedIndex);
     expect(scrollIndex).toBeGreaterThan(cardIndex);
     expect(messageIndex).toBeGreaterThan(scrollIndex);
+  });
+
+  it("omits empty MessageMotion wrappers for tool-only assistant entries without bound actions", () => {
+    const html = renderToStaticMarkup(
+      <SettingsAssistantPanel
+        module="models"
+        agentName="Kulo"
+        settings={settings}
+        envs={[]}
+        snapshot={{
+          ...EMPTY_SETTINGS_ASSISTANT,
+          topicId: "settings-5",
+          messages: [
+            { id: 1, role: "user", text: "帮我查一下配置" },
+            { id: 2, role: "assistant", text: "   ", toolCalls: [{ id: "call-read", name: "kulo_read", argsSummary: "{}" }] },
+            { id: 3, role: "assistant", text: "", toolCalls: [{ id: "call-act", name: "kulo_settings_update", argsSummary: "{}" }] },
+          ],
+          actions: [{ ...appearanceAction, id: "call-act", title: "切换为深色" }],
+          live: { busy: true, activeTools: [], queuedCount: 0 },
+        }}
+        loaded
+        connected
+        error={null}
+        controls={controls()}
+      />,
+    );
+    expect(html.match(/kulo-message-motion/g)).toHaveLength(2);
+    expect(html).toContain("帮我查一下配置");
+    expect(html).toContain("切换为深色");
+    expect(html).toContain("思考中");
   });
 });

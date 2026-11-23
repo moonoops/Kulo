@@ -395,7 +395,7 @@ export class ExternalAgentService {
     const scratchNotesDir=path.join(taskScratch,"notes");
     fs.mkdirSync(scratchNotesDir,{recursive:true,mode:0o700});
     this.#options.projectRegistry.validateScratch(scratchNotesDir);
-    if(!request.projectId||!mode||mode==="direct")return{executionCwd:sourceCwd,scratchNotesDir,workspaceMode:mode};
+    if(!request.projectId||!mode||mode==="direct"||request.binding.kind==="grok-bot")return{executionCwd:sourceCwd,scratchNotesDir,workspaceMode:mode};
     const stagedDir=path.join(taskScratch,"staged");
     const prior=this.#staged.get(request.taskId);
     if(prior&&!prior.appliedAt&&prior.sourceDir===sourceCwd&&prior.workspaceMode===mode&&fs.existsSync(stagedDir)){
@@ -455,7 +455,7 @@ export class ExternalAgentService {
     const kind=request.binding.kind;
     if(["dots","muse"].includes(kind))throw new Error(`${kind} is reserved; no supported local task-control interface is configured`);
     if(kind!=="grok-bot"&&!live.stored.executable)throw new Error("Local agent client is not installed or its executable is unavailable");
-    if((request.taskTools||request.allowSubagents||request.hasConnections||request.memoryEnabled)&&this.#handler&&request.runEpoch>=1){
+    if(kind!=="grok-bot"&&(request.taskTools||request.allowSubagents||request.hasConnections||request.memoryEnabled)&&this.#handler&&request.runEpoch>=1){
       live.mcp=await startExternalAgentMcp({runId:live.stored.run.id,taskId:request.taskId,runEpoch:request.runEpoch,cwd:live.stored.cwd,allowSubagents:Boolean(request.allowSubagents),hasConnections:Boolean(request.hasConnections),memoryEnabled:Boolean(request.memoryEnabled),redact:value=>this.#redact(value),handler:async invocation=>{
         if(this.#closed||this.#live.get(live.stored.run.id)!==live||terminal(live.stored.run.state))throw new Error("External collaboration scope has expired");
         this.#workspace(request);

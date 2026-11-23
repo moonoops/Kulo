@@ -42,6 +42,8 @@ const ORCHESTRATOR_BENCHMARK: readonly BenchmarkCase[] = [
   { query: "跳转到长期记忆设置页配置", expectedAnyOf: ["kulo_settings_navigate"] },
   { query: "检查本机是否安装了 Hindsight 长期记忆服务", expectedAnyOf: ["kulo_memory_service_read"] },
   { query: "卸载删除本机 Hindsight 记忆服务", expectedAnyOf: ["kulo_memory_service_prepare"] },
+  { query: "查看后台处理模型和本机小模型硬件建议", expectedAnyOf: ["kulo_assistant_read"] },
+  { query: "切换后台处理模型到已接入的 kulo-provider 或部署本机小模型", expectedAnyOf: ["kulo_assistant_configure"] },
 
   // Persisted Chat History
   { query: "搜索以前聊过的历史聊天记录", expectedAnyOf: ["kulo_history_search"] },
@@ -169,7 +171,7 @@ describe("Step 3: tool_search bilingual recall, deterministic event injection & 
       canSwitchRole: () => false,
       setEnabled: async () => ({} as never),
       removeDevice: async () => {},
-      scanSsh: async () => ({} as never),
+      inspectSshCredential: () => ({ eligible: false, reason: "unused" }),
       addSsh: async () => ({} as never),
     });
     const view = hub.getSettingsView();

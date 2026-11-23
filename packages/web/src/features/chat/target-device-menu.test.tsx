@@ -2,7 +2,16 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Dropdown } from "@heroui/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EnvNodeDescriptor } from "@kulo/protocol";
-import { ChatTargetDeviceMenu, sortTargetDevices } from "./target-device-menu";
+import {
+  ChatTargetDeviceMenu,
+  normalizeTargetDeviceId,
+  resolveTargetDeviceFallbackName,
+  sortTargetDevices,
+} from "./target-device-menu";
+
+function extractButtonOpeningTags(html: string): string[] {
+  return html.match(/<button\b[^>]*>/g) ?? [];
+}
 
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -95,5 +104,40 @@ describe("ChatTargetDeviceMenu", () => {
     expect(html).toContain('<span class="flex min-w-0 items-center gap-1.5" title="本机 · Alpha Studio · 在线">');
     expect(html).toContain('class="hidden min-w-0 items-center sm:flex"');
     expect(html).toContain('class="mc-icon hidden shrink-0 text-muted sm:inline"');
+  });
+
+  it("marks the trigger button as a non-draggable window control in both auto and selected states", () => {
+    const autoButtons = extractButtonOpeningTags(
+      renderToStaticMarkup(<ChatTargetDeviceMenu envs={[local, studioOnline]} selectedDeviceId="" onSelect={vi.fn()} />),
+    );
+    expect(autoButtons).toHaveLength(1);
+    expect(autoButtons[0]).toMatch(/\bkulo-window-control\b/);
+    expect(autoButtons[0]).toMatch(/\bbutton--ghost\b/);
+
+    const selectedButtons = extractButtonOpeningTags(
+      renderToStaticMarkup(
+        <ChatTargetDeviceMenu envs={[local, studioOnline]} currentDeviceId="device-studio" selectedDeviceId="device-studio" onSelect={vi.fn()} />,
+      ),
+    );
+    expect(selectedButtons).toHaveLength(1);
+    expect(selectedButtons[0]).toMatch(/\bkulo-window-control\b/);
+    expect(selectedButtons[0]).toMatch(/\bbutton--secondary\b/);
+  });
+
+  it("normalizes legacy auto key to empty auto mode and resolves known fallback names for offline paired devices", () => {
+    expect(normalizeTargetDeviceId("auto")).toBe("");
+    expect(normalizeTargetDeviceId("device-macbook")).toBe("device-macbook");
+    expect(
+      renderToStaticMarkup(<ChatTargetDeviceMenu envs={[local]} selectedDeviceId="auto" onSelect={vi.fn()} />),
+    ).toBe("");
+    const multiAutoHtml = renderToStaticMarkup(
+      <ChatTargetDeviceMenu envs={[local, studioOnline]} selectedDeviceId="auto" onSelect={vi.fn()} />,
+    );
+    expect(multiAutoHtml).toContain("自动");
+    expect(multiAutoHtml).not.toContain('data-online="false"');
+
+    const knownNames = new Map([["device-missing", "MacBook Pro"]]);
+    expect(resolveTargetDeviceFallbackName("device-missing", knownNames)).toBe("MacBook Pro");
+    expect(resolveTargetDeviceFallbackName("device-unknown", knownNames)).toBe("device-unknown");
   });
 });

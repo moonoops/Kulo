@@ -2,6 +2,7 @@ import { defineExtension, defineTool, type ToolExecutionApi } from "@earendil-wo
 import { arr, int, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import type { CapabilitySnapshot, MediaJob, MediaJobRequest, MediaJobSource } from "@kulo/protocol";
 import { MediaJobError, type KuloMediaJobs } from "./media-jobs.js";
+import { parseSettingsTopicConversationId } from "./settings-doc.js";
 import { resolveDeferredAddTools } from "./tool-surface.js";
 
 export interface MediaToolsOptions {
@@ -59,8 +60,14 @@ export function createMediaToolsExtension(options: MediaToolsOptions) {
     };
     await options.authorize?.(request, api);
     const job = await options.get().create(request);
-    return result({ job, ...(source.ticketId && !["completed", "failed", "stopped"].includes(job.status)
-      ? { nextStep: "If waiting for completion, the parent Worker must suspend via kulo_wait(reason='external', job_id=...) rather than polling or resubmitting; subagents should return job_id to their parent Worker." } : {}) });
+    const unfinished = !["completed", "failed", "stopped"].includes(job.status);
+    const nextStep =
+      source.ticketId && unfinished
+        ? "If waiting for completion, the parent Worker must suspend via kulo_wait(reason='external', job_id=...) rather than polling or resubmitting; subagents should return job_id to their parent Worker."
+        : !source.ticketId && !source.setupClientId && parseSettingsTopicConversationId(source.topicId) === null && unfinished
+          ? "Job is running in the background; do not poll. Assets will be published to chat automatically and you will be woken via [KULO_MEDIA_RELAY] once your current turn and sibling media jobs settle."
+          : undefined;
+    return result({ job, ...(nextStep ? { nextStep } : {}) });
   };
   return defineExtension({
     name: "kulo-media",

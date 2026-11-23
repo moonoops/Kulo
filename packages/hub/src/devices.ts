@@ -1,13 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isIP } from "node:net";
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { collectDeviceSystemInfo, type EnvManager } from "@kulo/env";
 import {
   WARM_STANDBY_CAPABILITY,
-  filterDeviceIps,
   formatDeviceInstallerInstructions,
-  isDeviceSystemInfo,
   type ClusterFailbackOffer,
   type ClusterHubEndpoint,
   type ClusterSyncStatus,
@@ -22,7 +20,29 @@ import {
   type MobilePairingProfile,
   type MobilePublicProfile,
 } from "@kulo/protocol";
-import type { DeviceSshRecord } from "./device-ssh.js";
+import {
+  isCredentialDeviceSshRecord,
+  type DeviceSshRecord,
+  type StoredDeviceSshRecord,
+} from "./device-ssh.js";
+import {
+  BASE64URL_KEY_RE,
+  DeviceConnectionError,
+  NODE_ID_RE,
+  addressPriority,
+  buildUrlsFromIps,
+  deviceName,
+  digest,
+  equalSecret,
+  isDeviceName,
+  isLegacyEnvId,
+  isValidStoredDeviceSshRecord,
+  mobileInput,
+  normalizedHubUrl,
+  parseDeviceInfo,
+  peerConfig,
+  secret,
+} from "./device-helpers.js";
 import type { ChatMessageSource } from "./chat-submissions.js";
 import {
   encodeMobileInvitation,
@@ -31,13 +51,14 @@ import {
   MOBILE_INVITATION_TTL_MS,
   MOBILE_PAIRING_RECOVERY_TTL_MS,
   mobileSecretHash,
-  MobilePairingValidationError,
   parseMobileInvitationInput,
   parseMobileMetadata,
   parseMobilePairingRequest,
   sameMobileHash,
   type StoredMobileInvitation,
 } from "./mobile-pairing.js";
+
+export { DeviceConnectionError, normalizedHubUrl, parseDeviceInfo };
 
 export interface StoredDevice {
   id: string;
@@ -49,7 +70,7 @@ export interface StoredDevice {
   pairedAt?: number;
   info?: DeviceSystemInfo;
   lastSeenAt?: number;
-  ssh?: DeviceSshRecord;
+  ssh?: StoredDeviceSshRecord;
   error?: string;
   mobile?: { invitationId: string; installationHash: string };
   pairingRecovery?: { proofHash: string; hubUrl: string; expiresAt: number };
@@ -77,108 +98,6 @@ export interface DeviceState {
   devices: StoredDevice[];
   revokedIds?: string[];
   mobileInvitations?: StoredMobileInvitation[];
-}
-
-export class DeviceConnectionError extends Error {
-  constructor(message: string, readonly status = 400, readonly code = "device_connection_error") { super(message); }
-}
-
-const NODE_ID_RE = /^[a-zA-Z0-9_-]{1,100}$/;
-const BASE64URL_KEY_RE = /^[A-Za-z0-9_-]{32,256}$/;
-
-function secret(): string { return randomBytes(32).toString("base64url"); }
-function digest(value: string): string { return createHash("sha256").update(value).digest("hex"); }
-function equalSecret(actual: string, expected: string): boolean {
-  const a = Buffer.from(actual), b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
-function addressPriority(ip: string): number {
-  return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip)
-    ? 0
-    : /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip)
-      ? 1
-      : ip.includes(":")
-        ? 3
-        : 2;
-}
-
-function buildUrlsFromIps(ips: readonly string[], port: number): string[] {
-  const urls: string[] = [];
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return urls;
-  for (const ip of [...filterDeviceIps(ips)].sort((a, b) => addressPriority(a) - addressPriority(b))) {
-    try {
-      const origin = normalizedHubUrl(`http://${ip.includes(":") ? `[${ip}]` : ip}:${port}`);
-      if (!urls.includes(origin)) urls.push(origin);
-    } catch {
-      // Skip non-shareable addresses
-    }
-  }
-  return urls;
-}
-
-function peerConfig(device: StoredDevice, hubUrl: string, cluster?: ClusterTopology): DevicePeerConfig {
-  return {
-    version: 1,
-    deviceId: device.id,
-    name: device.name,
-    hubUrl,
-    envToken: device.envToken,
-    clientToken: device.clientToken,
-    rootDir: device.rootDir,
-    ...(cluster ? { cluster } : {}),
-  };
-}
-
-function mobileInput<T>(parse: () => T): T {
-  try { return parse(); }
-  catch (error) {
-    if (error instanceof MobilePairingValidationError) throw new DeviceConnectionError(error.message, error.status, error.code);
-    throw error;
-  }
-}
-
-export function normalizedHubUrl(raw: unknown, allowLoopback = false): string {
-  if (typeof raw !== "string" || raw.length > 2048) throw new DeviceConnectionError("请输入有效的主脑地址。");
-  let url: URL;
-  try { url = new URL(raw); } catch { throw new DeviceConnectionError("请输入完整的主脑地址（http:// 或 https://）。"); }
-  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/" || url.port === "0") {
-    throw new DeviceConnectionError("主脑地址必须是没有凭证和路径的 HTTP 或 HTTPS 地址。");
-  }
-  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
-  if (!allowLoopback && (host === "localhost" || host.endsWith(".localhost") || /^127\./.test(host) || ["::1", "0.0.0.0", "::"].includes(host) || /^::ffff:(?:127\.|7f)/.test(host))) {
-    throw new DeviceConnectionError("请选择其他设备能够访问的主脑地址。");
-  }
-  return url.origin;
-}
-
-export function parseDeviceInfo(value: unknown): DeviceSystemInfo {
-  if (!isDeviceSystemInfo(value)) throw new DeviceConnectionError("设备信息无效。");
-  const info = value;
-  return {
-    hostname: info.hostname,
-    platform: info.platform,
-    arch: info.arch,
-    release: info.release,
-    cpu: info.cpu,
-    memoryBytes: info.memoryBytes,
-    ips: filterDeviceIps(info.ips),
-    ...(info.model ? { model: info.model } : {}),
-  };
-}
-
-function isDeviceName(raw: unknown): raw is string {
-  return typeof raw === "string" && !!raw.trim() && raw.trim().length <= 100 && !/[\x00-\x1f\x7f]/.test(raw);
-}
-
-function isLegacyEnvId(raw: unknown): raw is string {
-  return typeof raw === "string" && raw.length > 0 && raw.length <= 256 && raw === raw.trim() && raw !== "local" && !/[\x00-\x1f\x7f]/.test(raw);
-}
-
-function deviceName(raw: unknown, fallback?: string): string {
-  if ((raw === undefined || raw === "") && fallback !== undefined) return fallback;
-  if (!isDeviceName(raw)) throw new DeviceConnectionError("设备名称须为 1–100 个字符。");
-  return raw.trim();
 }
 
 export class DeviceInterconnectionManager {
@@ -211,6 +130,7 @@ export class DeviceInterconnectionManager {
             (d.standbyPublicKey !== undefined && (typeof d.standbyPublicKey !== "string" || !BASE64URL_KEY_RE.test(d.standbyPublicKey))) ||
             (d.identityPublicKey !== undefined && (typeof d.identityPublicKey !== "string" || !BASE64URL_KEY_RE.test(d.identityPublicKey))) ||
             (d.listenPort !== undefined && (!Number.isInteger(d.listenPort) || d.listenPort < 1 || d.listenPort > 65535)) ||
+            (d.ssh !== undefined && !isValidStoredDeviceSshRecord(d.ssh)) ||
             d.pairingRecovery !== undefined && (!d.pairingRecovery || !/^[a-f0-9]{64}$/.test(d.pairingRecovery.proofHash) || typeof d.pairingRecovery.hubUrl !== "string" || !Number.isSafeInteger(d.pairingRecovery.expiresAt)))) {
         throw new Error("设备互联配置已损坏，请检查 devices.json。");
       }
@@ -254,7 +174,13 @@ export class DeviceInterconnectionManager {
   get primaryNodeId(): string { return this.#state.primaryNodeId ?? this.localNodeId; }
   get preferredPrimaryNodeId(): string { return this.#state.preferredPrimaryNodeId ?? this.primaryNodeId; }
   get identityPublicKey(): string | undefined { return this.#state.identityPublicKey; }
-  get sshRecords(): DeviceSshRecord[] { return this.#state.devices.flatMap((d) => d.ssh ? [d.ssh] : []); }
+  get sshRecords(): StoredDeviceSshRecord[] { return this.#state.devices.flatMap((d) => d.ssh ? [d.ssh] : []); }
+
+  findSshDevicesByConnectionId(connectionId: string): Array<{ id: string; name: string }> {
+    return this.#state.devices
+      .filter((d) => !this.isRevoked(d.id) && d.ssh && isCredentialDeviceSshRecord(d.ssh) && d.ssh.connectionId === connectionId)
+      .map((d) => ({ id: d.id, name: d.name }));
+  }
 
   hasMobileClients(): boolean {
     const now = Date.now();
@@ -262,41 +188,34 @@ export class DeviceInterconnectionManager {
       || Boolean(this.#state.mobileInvitations?.some((invite) => now < (invite.binding?.recoveryExpiresAt ?? invite.expiresAt)));
   }
 
-  isLocalPrincipal(id: string): boolean {
-    return id === "local" || id === this.localNodeId;
+  isLocalPrincipal(id: string): boolean { return id === "local" || id === this.localNodeId; }
+  isRevoked(id: string): boolean { return Boolean(this.#state.revokedIds?.includes(id)); }
+  #activeRemoteDevice(id: string): StoredDevice | undefined {
+    if (!id || this.isLocalPrincipal(id) || this.isRevoked(id)) return undefined;
+    return this.#state.devices.find((d) => d.id === id && Boolean(d.pairedAt));
   }
-
-  isRevoked(id: string): boolean {
-    return Boolean(this.#state.revokedIds?.includes(id));
-  }
+  isActivePairedPrincipal(id: string): boolean { return Boolean(this.enabled && this.#activeRemoteDevice(id)); }
+  isMobilePrincipal(id: string): boolean { return Boolean(this.#activeRemoteDevice(id)?.mobile); }
+  isSshPrincipal(id: string): boolean { return this.#activeRemoteDevice(id)?.kind === "ssh"; }
 
   hasRemoteStandbys(): boolean {
     return this.#state.devices.some((d) => d.pairedAt && d.standby && d.id !== this.#state.localNodeId && !this.isRevoked(d.id));
   }
-
   listRemoteStandbys(): StoredDevice[] {
-    return this.#state.devices
-      .filter((d) => d.pairedAt && d.standby && d.id !== this.#state.localNodeId && !this.isRevoked(d.id))
-      .sort((a, b) => (a.standbyPriority ?? 999) - (b.standbyPriority ?? 999));
+    return this.#state.devices.filter((d) => d.pairedAt && d.standby && d.id !== this.#state.localNodeId && !this.isRevoked(d.id)).sort((a, b) => (a.standbyPriority ?? 999) - (b.standbyPriority ?? 999));
   }
-
   getStandbyRecord(deviceId: string): StoredDevice | undefined {
-    return this.#state.devices.find((d) => d.id === deviceId && d.pairedAt && d.standby && !this.isRevoked(d.id));
+    const device = this.#activeRemoteDevice(deviceId);
+    return device?.standby ? device : undefined;
   }
-
   getSelfDeviceRecord(): StoredDevice | undefined {
-    if (!this.#state.localNodeId) return undefined;
-    return this.#state.devices.find((d) => d.id === this.#state.localNodeId && d.pairedAt);
+    return this.#state.localNodeId ? this.#state.devices.find((d) => d.id === this.#state.localNodeId && d.pairedAt) : undefined;
   }
-
-  resolveClientSecret(nodeId: string): string | undefined {
-    if (!this.enabled || this.isRevoked(nodeId) || nodeId === this.#state.localNodeId) return undefined;
-    return this.#state.devices.find((d) => d.id === nodeId && d.pairedAt)?.clientToken;
-  }
-
+  resolveClientSecret(nodeId: string): string | undefined { return this.enabled ? this.#activeRemoteDevice(nodeId)?.clientToken : undefined; }
   resolveSyncSecret(nodeId: string): string | undefined {
-    if (!this.enabled || this.isRevoked(nodeId) || nodeId === this.#state.localNodeId) return undefined;
-    return this.#state.devices.find((d) => d.id === nodeId && d.pairedAt && d.standby && d.syncToken)?.syncToken;
+    if (!this.enabled) return undefined;
+    const device = this.#activeRemoteDevice(nodeId);
+    return device?.standby ? device.syncToken : undefined;
   }
 
   authenticateClient(token: string | undefined): string | undefined {
@@ -629,6 +548,7 @@ export class DeviceInterconnectionManager {
             info: info ? parseDeviceInfo(info) : undefined,
             lastSeenAt: env?.lastSeenAt ?? d.lastSeenAt,
             ...(d.error ? { error: d.error } : {}),
+            ...(d.ssh && isCredentialDeviceSshRecord(d.ssh) ? { sshConnectionId: d.ssh.connectionId } : {}),
             clusterRole: isStandby ? "standby" as const : "peer" as const,
             isPreferredPrimary: d.id === this.preferredPrimaryNodeId,
             warmStandbyCapable,

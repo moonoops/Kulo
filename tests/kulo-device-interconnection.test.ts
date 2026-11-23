@@ -163,7 +163,7 @@ async function seedTask(hub: KuloHub, deviceId: string) {
 }
 
 describe("device interconnection onboarding", () => {
-  it("issues fresh chat invitations only on a local copy action for the owning Hub", async () => {
+  it("issues fresh chat invitations for Hub and paired desktop peers while blocking proxied and query-token mutations", async () => {
     const f = await fixture({ bindHost: false });
     const route = "/api/devices/chat-invitations";
     const view = await (await f.request("/api/devices")).json() as DeviceInterconnectionView;
@@ -175,6 +175,12 @@ describe("device interconnection onboarding", () => {
       headers: { authorization: `Bearer ${HUB_TEST_ADMIN_TOKEN}`, "content-type": "application/json", "x-forwarded-for": "192.0.2.1" },
       body: JSON.stringify(copy) });
     expect(proxied.status).toBe(403);
+    const queryAuth = await fetch(`${f.server.url}${route}?token=${encodeURIComponent(HUB_TEST_ADMIN_TOKEN)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(copy),
+    });
+    expect(queryAuth.status).toBe(403);
     const before = await (await f.request("/api/devices")).json() as DeviceInterconnectionView;
     expect(before.enabled).toBe(false);
     expect(before.devices).toHaveLength(1);
@@ -200,10 +206,79 @@ describe("device interconnection onboarding", () => {
     const paired = await f.request("/api/devices/pair", "POST", payload, "");
     expect(paired.status).toBe(200);
     const { clientToken } = await paired.json() as DevicePeerConfig;
-    expect((await f.request(route, "POST", copy, clientToken)).status).toBe(403);
+    const fromPeer = await f.request(route, "POST", copy, clientToken);
+    expect(fromPeer.status).toBe(201);
+    const fromPeerParsed = parseStandaloneDeviceInvitation((await fromPeer.json() as { instruction: string }).instruction);
+    expect(fromPeerParsed?.hubId).toBe(view.hubId);
+    expect(view.hubUrls.includes(fromPeerParsed?.hubUrl ?? "")).toBe(true);
+    const peerProxied = await fetch(`${f.server.url}${route}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${clientToken}`, "content-type": "application/json", "x-forwarded-for": "192.0.2.2" },
+      body: JSON.stringify(copy),
+    });
+    expect(peerProxied.status).toBe(403);
+    const peerQuery = await fetch(`${f.server.url}${route}?token=${encodeURIComponent(clientToken)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(copy),
+    });
+    expect(peerQuery.status).toBe(403);
     const used = await f.request("/api/devices/pair", "POST", payload, "");
     expect(used.status).toBe(401);
     expect(await used.json()).toMatchObject({ code: "device_invitation_invalid" });
+  });
+
+  it("grants unified owner Hub authority to paired desktop peers while enforcing proxy, query-token, local-only, and headless-SSH boundaries", async () => {
+    const first = await fixture();
+    await first.enable();
+    const desktop = await first.pair("桌面从属机");
+    const sshPeer = await first.pair("无头服务器");
+
+    // Paired desktop peer sees canManageHub & canManageStandby; proxy header masks both to false
+    const peerView = await (await first.request("/api/devices", "GET", undefined, desktop.config.clientToken)).json() as DeviceInterconnectionView;
+    expect(peerView.canManageHub).toBe(true);
+    expect(peerView.canManageStandby).toBe(true);
+    const proxiedView = await (await fetch(`${first.server.url}/api/devices`, {
+      headers: { authorization: `Bearer ${desktop.config.clientToken}`, "x-forwarded-for": "203.0.113.9" },
+    })).json() as DeviceInterconnectionView;
+    expect(proxiedView.canManageHub).toBe(false);
+    expect(proxiedView.canManageStandby).toBe(false);
+
+    // Paired desktop peer can create/cancel invitations and clear cluster conflict notices over clean Bearer auth
+    const peerInvite = await first.request("/api/devices/invitations", "POST", { name: "通过从属机添加", hubUrl: first.origin }, desktop.config.clientToken);
+    expect(peerInvite.status).toBe(201);
+    const peerInvitation = await peerInvite.json() as DeviceInvitation;
+    expect((await first.request(`/api/devices/invitations/${peerInvitation.id}`, "DELETE", undefined, desktop.config.clientToken)).status).toBe(200);
+    expect((await first.request("/api/devices/cluster-conflict-notice", "DELETE", undefined, desktop.config.clientToken)).status).toBe(200);
+
+    // Proxy forwarding headers and URL query-token mutations are blocked with 403
+    expect((await fetch(`${first.server.url}/api/devices/cluster-conflict-notice`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${desktop.config.clientToken}`, forwarded: "for=192.0.2.10" },
+    })).status).toBe(403);
+    expect((await fetch(`${first.server.url}/api/devices/cluster-conflict-notice?token=${encodeURIComponent(desktop.config.clientToken)}`, {
+      method: "DELETE",
+    })).status).toBe(403);
+
+    // Turning off Hub interconnection globally stays Hub-local-only to prevent remote self-lockout
+    expect((await first.request("/api/devices", "PATCH", { enabled: false }, desktop.config.clientToken)).status).toBe(403);
+
+    // Reopen with second device marked as headless kind="ssh": keeps Hub control but cannot manage standby/handover/mobile pairing
+    await first.close();
+    const devicesPath = path.join(first.stateDir, "devices.json");
+    const stored = JSON.parse(fs.readFileSync(devicesPath, "utf8")) as { devices: Array<{ id: string; kind: string }> };
+    const sshRecord = stored.devices.find((d) => d.id === sshPeer.config.deviceId);
+    expect(sshRecord).toBeDefined();
+    sshRecord!.kind = "ssh";
+    fs.writeFileSync(devicesPath, JSON.stringify(stored, null, 2));
+
+    const reopened = await fixture({ stateDir: first.stateDir });
+    const sshView = await (await reopened.request("/api/devices", "GET", undefined, sshPeer.config.clientToken)).json() as DeviceInterconnectionView;
+    expect(sshView.canManageHub).toBe(true);
+    expect(sshView.canManageStandby).toBe(false);
+    expect((await reopened.request(`/api/devices/${desktop.config.deviceId}/standby`, "POST", { enabled: true }, sshPeer.config.clientToken)).status).toBe(403);
+    expect((await reopened.request("/api/cluster/handover", "POST", { targetNodeId: desktop.config.deviceId }, sshPeer.config.clientToken)).status).toBe(403);
+    expect((await reopened.request("/api/mobile/invitations", "POST", { name: "Blocked Mobile" }, sshPeer.config.clientToken)).status).toBe(403);
   });
 
   it("renames the main brain through the device API and restores that name for every client", async () => {

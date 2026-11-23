@@ -8,6 +8,13 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall, type TranscriptContext } from "@earendil-works/pi-ai";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { KuloStateDoc, startKuloHubServer } from "@kulo/hub";
+import {
+  inspectChatReadTarget,
+  reconcileTopicRoutingTarget,
+  resolveOrchestratorTargetEnv,
+  resolvePriorContextualComputerId,
+  verifyChatReadTargetEnv,
+} from "../packages/hub/src/env-routing-policy.js";
 import type { DeviceInvitation, DevicePeerConfig, EnvNodeDescriptor, HubToClientMessage } from "@kulo/protocol";
 import { HUB_TEST_ADMIN_TOKEN } from "./helpers/hub-auth.js";
 import { openTestHub } from "./helpers/secure-hub.js";
@@ -149,7 +156,7 @@ async function fixture() {
     await vi.waitFor(async () => expect((await hub.getTopicView("root")).live.busy).toBe(false), waitOptions);
   }
   const board = () => hub.harness.snapshot(KuloStateDoc, context);
-  return { hub, actions, routerInputs, execution, pair, connectExecution, connectChat, board, idle };
+  return { hub, request, actions, routerInputs, execution, pair, connectExecution, connectChat, board, idle };
 }
 
 function dispatch(commandId: string, sourceRequestId?: string): ToolCall {
@@ -361,4 +368,237 @@ it("binds a mixed-source follow-up batch to its current messages", async () => {
   await f.idle();
   expect(await ticket(f, "batch-stale-input")).toBeUndefined();
   expect(await ticket(f, "batch-ambiguous-input")).toBeUndefined();
+});
+
+it("persists targetDeviceId immediately via PATCH /api/topics/:id with online, busy, and project guards, and honors it on retry", async () => {
+  const f = await fixture();
+  const a = await f.pair("执行设备甲");
+  const b = await f.pair("执行设备乙");
+  const envA = await f.connectExecution(a);
+  const envB = await f.connectExecution(b);
+
+  // Rejects invalid control-char / non-string targetDeviceId
+  const invalidRes = await f.request("/api/topics/root", "PATCH", { targetDeviceId: "bad\u0000id" });
+  expect(invalidRes.status).toBe(400);
+  expect(await invalidRes.json()).toMatchObject({ code: "invalid_target_device" });
+
+  // Rejects offline/unknown device
+  const offlineRes = await f.request("/api/topics/root", "PATCH", { targetDeviceId: "device-missing" });
+  expect(offlineRes.status).toBe(409);
+  expect(await offlineRes.json()).toMatchObject({ code: "target_device_unavailable" });
+
+  // Persists online target device immediately before any chat.send
+  const bindRes = await f.request("/api/topics/root", "PATCH", { targetDeviceId: a.deviceId });
+  expect(bindRes.status).toBe(200);
+  expect(await bindRes.json()).toMatchObject({ id: "root", targetDeviceId: a.deviceId });
+  expect((await f.board())?.topics?.root?.targetDeviceId).toBe(a.deviceId);
+
+  // Rejects patching targetDeviceId on a project-bound topic
+  vi.spyOn(f.hub.envManager, "authorizeProjectDirectory").mockResolvedValue({
+    directoryId: "dir-lock", workspaceDir: a.rootDir, revision: 1,
+  });
+  const project = await f.hub.projects.create({ commandId: "cmd-project-lock", name: "锁定项目", deviceId: a.deviceId, workspaceDir: a.rootDir }, context);
+  const projectTopic = await f.hub.createTopic("项目话题", context, project.id);
+  const projectPatchRes = await f.request(`/api/topics/${encodeURIComponent(projectTopic.id)}`, "PATCH", { targetDeviceId: b.deviceId });
+  expect(projectPatchRes.status).toBe(409);
+  expect(await projectPatchRes.json()).toMatchObject({ code: "project_topic_device_locked" });
+
+  // Rejects switching targetDeviceId while the topic has an active run, then fails the turn cleanly
+  const held = Promise.withResolvers<void>();
+  cleanups.push(() => held.resolve());
+  f.actions.set("[busy-lock]", async () => {
+    await held.promise;
+    throw new Error("simulated failure on device A");
+  });
+  const chatA = await f.connectChat(a);
+  await chatA.send("busy-lock-1", "[busy-lock] 等待中不要切换。");
+  await vi.waitFor(() => expect(f.routerInputs.has("[busy-lock]")).toBe(true), waitOptions);
+  const busyRes = await f.request("/api/topics/root", "PATCH", { targetDeviceId: b.deviceId });
+  expect(busyRes.status).toBe(409);
+  expect(await busyRes.json()).toMatchObject({ code: "target_device_busy" });
+  held.resolve();
+  await f.idle();
+
+  // After turn fails on device A, switching to device B via PATCH and retrying honors device B (not stale message target A)
+  const retryToBRes = await f.request("/api/topics/root", "PATCH", { targetDeviceId: b.deviceId });
+  expect(retryToBRes.status).toBe(200);
+  expect((await f.board())?.topics?.root?.targetDeviceId).toBe(b.deviceId);
+
+  f.routerInputs.delete("[busy-lock]");
+  f.actions.set("[busy-lock]", dispatch("retry-honors-patched-target"));
+  expect(await f.hub.retryTurn("root", "retry-after-patch")).toEqual({ retried: true });
+  await ready(f, "retry-honors-patched-target", b);
+  await f.idle();
+
+  // Clearing back to Auto ("") succeeds even after the currently bound device goes offline
+  await envA.close();
+  await envB.close();
+  await vi.waitFor(() => expect(f.hub.envManager.getEnvDescriptor(b.deviceId)?.online).toBe(false), waitOptions);
+  const clearRes = await f.request("/api/topics/root", "PATCH", { targetDeviceId: "" });
+  expect(clearRes.status).toBe(200);
+  const clearedTopic = await clearRes.json() as { targetDeviceId?: string };
+  expect(clearedTopic.targetDeviceId).toBeUndefined();
+  expect((await f.board())?.topics?.root?.targetDeviceId).toBeUndefined();
+});
+
+it("enforces topicTargetDeviceId in main-agent read guard during continuation turns without a user target entry", async () => {
+  const remoteEnv: EnvNodeDescriptor = {
+    id: "remote-mac", name: "远端电脑", kind: "reverse-ws", online: true,
+    platform: "darwin", arch: "arm64", rootDir: "/remote", capabilities: ["fs", "bash"], connectedAt: 1, lastSeenAt: 1,
+  };
+  const localEnv: EnvNodeDescriptor = {
+    id: "local", name: "中枢主机", kind: "local", online: true,
+    platform: "darwin", arch: "arm64", rootDir: "/local", capabilities: ["fs", "bash"], connectedAt: 1, lastSeenAt: 1,
+  };
+
+  // Pure policy unit checks for inspectChatReadTarget + reconcileTopicRoutingTarget
+  expect(reconcileTopicRoutingTarget("stale-device", undefined, true)).toBeUndefined();
+  expect(reconcileTopicRoutingTarget("stale-device", "remote-mac", true)).toBe("remote-mac");
+  expect(reconcileTopicRoutingTarget("settings-device", undefined, false)).toBe("settings-device");
+
+  const emptyRelayPreflight = inspectChatReadTarget({
+    routings: [],
+    topicTargetDeviceId: "remote-mac",
+    envs: [localEnv, remoteEnv],
+    environment: "node:local",
+    localEnvId: "local",
+  });
+  expect(emptyRelayPreflight).toMatchObject({ status: "env", explicitTarget: "remote-mac", envTargetId: "local" });
+  expect(
+    verifyChatReadTargetEnv({
+      ...(emptyRelayPreflight as Extract<typeof emptyRelayPreflight, { status: "env" }>),
+      envs: [localEnv, remoteEnv],
+      localEnvId: "local",
+      isLocalEnv: (id) => id === "local",
+      hasLocalEnv: true,
+      environment: "node:local",
+    }),
+  ).toMatchObject({ ok: false, code: "read_device_mismatch" });
+
+  expect(
+    inspectChatReadTarget({
+      routings: [{ text: "请读取中枢主机上的文件" }],
+      topicTargetDeviceId: "remote-mac",
+      envs: [localEnv, remoteEnv],
+      environment: "node:local",
+      localEnvId: "local",
+    }),
+  ).toMatchObject({ status: "error", code: "target_device_conflict" });
+
+  // End-to-end Hub check: fail a turn sent in Auto mode (no message targetDeviceId), then bind root topic to remote via PATCH and retry.
+  // Main agent attempting direct `read` on Hub's `node:local` env must be blocked before touching disk.
+  const f = await fixture();
+  const remote = await f.pair("远端目标机");
+  await f.connectExecution(remote);
+  const localDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kulo-hub-read-guard-")));
+  cleanups.push(() => fs.rmSync(localDir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(localDir, "secret.txt"), "hub-local-only");
+  const hubLocalEnv = Object.assign(new NodeExecutionEnv({ cwd: localDir }), { id: "node:local" });
+  vi.spyOn(f.hub.envManager, "createExecutionEnv").mockImplementation(() => hubLocalEnv);
+  const fileRead = vi.spyOn(hubLocalEnv, "openBinaryReader");
+
+  f.actions.set("[read-after-patch]", async () => { throw new Error("temporary failure before patch"); });
+  await (await f.hub.sendUserMessage("[read-after-patch] 检查文件。", { requestId: "auto-initial" })).wait(context);
+  await f.idle();
+
+  const patchRes = await f.request("/api/topics/root", "PATCH", { targetDeviceId: remote.deviceId });
+  expect(patchRes.status).toBe(200);
+
+  f.routerInputs.delete("[read-after-patch]");
+  f.actions.set("[read-after-patch]", { name: "read", args: { path: "secret.txt" } });
+  expect(await f.hub.retryTurn("root", "retry-read-guard")).toEqual({ retried: true });
+  await f.idle();
+
+  const history = await f.hub.rootConversation.entries({}, 40, undefined, context);
+  const result = history.items.flatMap(entry => entry.model ?? []).find(message => message.role === "toolResult" && message.toolName === "read");
+  expect(result).toMatchObject({ isError: true });
+  expect(result?.content).toEqual(expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("kulo_dispatch") })]));
+  expect(fileRead).not.toHaveBeenCalled();
+});
+
+it("proactively falls back phone computer requests to Hub while preserving prior contextual computer and active browser target", () => {
+  const hubEnv: EnvNodeDescriptor = {
+    id: "local", name: "MacMini", kind: "local", online: true,
+    platform: "darwin", arch: "arm64", rootDir: "/hub", capabilities: ["fs", "bash", "browser"], connectedAt: 1, lastSeenAt: 1,
+  };
+  const macbookOnline: EnvNodeDescriptor = {
+    id: "macbook", name: "MacBook", kind: "reverse-ws", online: true,
+    platform: "darwin", arch: "arm64", rootDir: "/mb", capabilities: ["fs", "bash", "browser"], connectedAt: 1, lastSeenAt: 1,
+  };
+  const macbookOffline: EnvNodeDescriptor = { ...macbookOnline, online: false };
+  const phoneEnv: EnvNodeDescriptor = {
+    id: "pixel", name: "K90Ultra", kind: "reverse-ws", online: true,
+    platform: "android", arch: "arm64", rootDir: "", executionKind: "native-device", capabilities: ["android-native-v1"], connectedAt: 1, lastSeenAt: 1,
+  };
+
+  // 1. Phone single-turn request with no prior computer context falls back proactively to Hub
+  const singleTurn = resolveOrchestratorTargetEnv({
+    sourceId: phoneEnv.id,
+    getEnvDescriptor: (id) => [hubEnv, macbookOnline, phoneEnv].find((e) => e.id === id),
+    isLocalEnv: (id) => id === "local",
+    localEnvId: "local",
+    pickDefaultEnvId: () => "local",
+  });
+  expect(singleTurn).toMatchObject({ ok: true, envId: "local" });
+
+  // Single-turn read from phone on Hub local sandbox is permitted
+  expect(verifyChatReadTargetEnv({
+    sourceId: phoneEnv.id,
+    currentText: "打开那个笔记文件看看",
+    envs: [hubEnv, macbookOnline, phoneEnv],
+    localEnvId: "local",
+    isLocalEnv: (id) => id === "local",
+    hasLocalEnv: true,
+    environment: "node:local",
+  })).toEqual({ ok: true });
+
+  // 2. Phone multi-turn follow-up after naming MacBook preserves MacBook instead of drifting to Hub
+  const priorTurns = [{ text: "打开 MacBook 上的浏览器查一下文档", sourceDeviceId: phoneEnv.id }];
+  const priorId = resolvePriorContextualComputerId({
+    currentText: "再截个图给我看看",
+    priorUserTurns: priorTurns,
+    envs: [hubEnv, macbookOnline, phoneEnv],
+  });
+  expect(priorId).toBe("macbook");
+
+  expect(resolveOrchestratorTargetEnv({
+    sourceId: phoneEnv.id,
+    priorContextualComputerId: priorId,
+    getEnvDescriptor: (id) => [hubEnv, macbookOnline, phoneEnv].find((e) => e.id === id),
+    isLocalEnv: (id) => id === "local",
+    localEnvId: "local",
+    pickDefaultEnvId: () => "local",
+  })).toMatchObject({ ok: true, envId: "macbook" });
+
+  // Active topic browser on MacBook is also preserved when phone follows up
+  expect(resolveOrchestratorTargetEnv({
+    sourceId: phoneEnv.id,
+    activeTopicBrowserEnvId: "macbook",
+    getEnvDescriptor: (id) => [hubEnv, macbookOnline, phoneEnv].find((e) => e.id === id),
+    isLocalEnv: (id) => id === "local",
+    localEnvId: "local",
+    pickDefaultEnvId: () => "local",
+  })).toMatchObject({ ok: true, envId: "macbook" });
+
+  // If prior named MacBook went offline, phone follow-up returns browser_device_unavailable instead of silently drifting to Hub
+  expect(resolveOrchestratorTargetEnv({
+    sourceId: phoneEnv.id,
+    priorContextualComputerId: "macbook",
+    getEnvDescriptor: (id) => [hubEnv, macbookOffline, phoneEnv].find((e) => e.id === id),
+    isLocalEnv: (id) => id === "local",
+    localEnvId: "local",
+    pickDefaultEnvId: () => "local",
+  })).toMatchObject({ ok: false, code: "browser_device_unavailable" });
+
+  // Multi-turn read from phone after naming MacBook blocks direct Hub node:local read (read_device_mismatch)
+  expect(verifyChatReadTargetEnv({
+    sourceId: phoneEnv.id,
+    currentText: "顺便看下同目录的 README.md",
+    priorUserTurns: priorTurns,
+    envs: [hubEnv, macbookOnline, phoneEnv],
+    localEnvId: "local",
+    isLocalEnv: (id) => id === "local",
+    hasLocalEnv: true,
+    environment: "node:local",
+  })).toMatchObject({ ok: false, code: "read_device_mismatch" });
 });

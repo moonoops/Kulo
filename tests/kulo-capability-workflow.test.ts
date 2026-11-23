@@ -127,7 +127,10 @@ describe("capability workflow through real Hub", () => {
     phase = 0;
     f.respond((ctx) => {
       if (phase === 0 && !hasTool(ctx, "kulo_media_capabilities")) return call("tool_search", { query: "kulo_media_capabilities", limit: 3 });
-      return ++phase === 1 ? call("kulo_media_capabilities", {}) : phase === 2 ? call("kulo_generate_image", { operation_id: "hero-image-v1", capability_id: capability.id, prompt: "一朵花" }) : answer("图片已提交生成。");
+      if (++phase === 1) return call("kulo_media_capabilities", {});
+      if (phase === 2) return call("kulo_generate_image", { operation_id: "hero-image-v1", capability_id: capability.id, prompt: "一朵花" });
+      if (phase === 3) return answer("图片已提交生成。");
+      return answer("[COORDINATOR_OK]");
     });
     await f.hub.sendUserMessage("生成一张花的图片", { requestId: "image-chat" });
     await until(async () => (await f.hub.mediaJobs.list()).some((job) => job.status === "completed" && !!job.deliveredAt));
@@ -137,7 +140,7 @@ describe("capability workflow through real Hub", () => {
     const repeated = await f.hub.mediaJobs.create({ operationId: "hero-image-v1", capabilityId: capability.id, kind: "image", prompt: "一朵花", source: job.source });
     expect(repeated.id).toBe(job.id);
     expect(api.generated()).toBe(1);
-    await until(async () => (await f.hub.getTopicView("root")).messages.some((item) => item.parts?.some((part) => part.type === "image" && part.assetId === job.assets[0]?.id)));
+    await until(async () => phase >= 4 && !(await f.hub.getTopicView("root")).live.busy && (await f.hub.getTopicView("root")).messages.some((item) => item.parts?.some((part) => part.type === "image" && part.assetId === job.assets[0]?.id)));
     expect(JSON.stringify(await f.hub.getCapabilitiesSnapshot(settingsContext.clientId))).not.toContain(dummyKey);
     expect(f.transcripts.join("\n")).not.toContain(dummyKey);
   });

@@ -1,5 +1,5 @@
 import { translate as t, useI18n } from "../../kulo-i18n";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Chip } from "@heroui/react";
 import { inspectSensitiveText, redactSecrets, redactSensitiveText, type CapabilitiesWorkspaceSnapshot, type ConnectionRecordView, type ConnectionWorkspaceSnapshot, type EnvNodeDescriptor, type KuloSettingsView, type MemoryServiceSnapshot, type SettingsAssistantAction, type SettingsAssistantSnapshot, type SetupInputRequest, type TicketCardView } from "@kulo/protocol";
 import { kuloRest } from "../../kulo-api";
@@ -10,6 +10,7 @@ import { KuloMarkdown } from "../../kulo-markdown";
 import { KuloIcon } from "../../kulo-icon";
 import { TaskDispatchCard } from "../../kulo-tasks";
 import { ConnectedMessageContent } from "../chat/connected-message-content";
+import { useChatAutoScroll } from "../chat/use-chat-autoscroll";
 import { cardAdjustmentDraft } from "../genui/card-value-summary";
 import type { SettingsModuleId } from "./settings-helpers";
 import { getSettingsAssistantShortcuts, settingsAssistantGreeting, type SettingsAssistantShortcut } from "./settings-assistant-actions";
@@ -20,7 +21,7 @@ import { MessageMotion, StreamingMessage } from "../chat/message-motion";
 import "./settings-assistant-initial-state.css";
 import type { SettingsAssistantControls } from "./use-settings-assistant";
 import type { CapabilityView, ImageAssistantRequest } from "./capability-views";
-import { CapabilitySetupInputs } from "./capability-setup-inputs";
+import { CapabilitySetupInputs, visibleSetupInputs } from "./capability-setup-inputs";
 import { MemoryServiceDialogue } from "./memory-service-dialogue";
 import { MEMORY_ASSISTANT_PREFILL_EVENT, takeMemoryAssistantPrefill } from "./memory-service-events";
 import { ConnectionSetupInputs } from "./connection-setup-inputs";
@@ -35,6 +36,7 @@ import { ImageRoutingEditor } from "./image-routing-editor";
 import { ExternalAgentConnectCard } from "./external-agent-connect-card";
 
 type LocalInfo = { title: string; text: string; error?: boolean; scope?: SettingsModuleId };
+const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 const UPLOAD_MENU_KINDS = ["image", "file"] as const;
 const noop = () => {};
 const appearanceName = (mode: string) => mode === "system" ? t("跟随系统", "System") : mode === "light" ? t("浅色", "Light") : t("深色", "Dark");
@@ -92,6 +94,7 @@ export function SettingsAssistantPanel({
   const imageCardRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const nearBottomRef = useRef(true);
+  const imageAnchorActiveRef = useRef(false);
   const messageEntries = useRef({ topicId: snapshot.topicId, ready: loaded, ids: new Set(snapshot.messages.map((message) => message.id)) });
   const previousInfoTopic = useRef(snapshot.topicId);
   const previousStreaming = useRef(false);
@@ -99,8 +102,10 @@ export function SettingsAssistantPanel({
   if (loaded && messageEntries.current.ready && messageEntries.current.topicId === snapshot.topicId) {
     for (const message of snapshot.messages) if (!messageEntries.current.ids.has(message.id) && !(message.role === "assistant" && previousStreaming.current)) animateMessages.add(message.id);
   }
-  messageEntries.current = { topicId: snapshot.topicId, ready: loaded, ids: new Set(snapshot.messages.map((message) => message.id)) };
-  previousStreaming.current = Boolean(snapshot.live.busy && snapshot.live.streamingText);
+  useIsomorphicLayoutEffect(() => {
+    messageEntries.current = { topicId: snapshot.topicId, ready: loaded, ids: new Set(snapshot.messages.map((message) => message.id)) };
+    previousStreaming.current = Boolean(snapshot.live.busy && snapshot.live.streamingText);
+  }, [snapshot.topicId, loaded, snapshot.messages, snapshot.live.busy, snapshot.live.streamingText]);
   const hasModel = Boolean(settings?.blocks.model.value.defaultModel.trim());
   const hasConversation = snapshot.messages.length > 0 || snapshot.actions.length > 0 || snapshot.live.busy;
   const modelRecoveryKey = modelPendingSaveKey ? `save:${modelPendingSaveKey}` : modelDraftKey;
@@ -118,6 +123,15 @@ export function SettingsAssistantPanel({
   const activeConnectionInput = connections?.inputs.find((input) => input.clientId === controls.clientId && input.status === "pending");
   const pendingConnectionInput = activeConnectionInput?.id;
   const nativeConnectionInput = connections?.applications?.some((application) => application.id === activeConnectionInput?.appId && application.authentication === "macos") ? pendingConnectionInput : undefined;
+  const hasVisibleSetupInputs = module === "capabilities" && visibleSetupInputs(capabilityInputs, controls.clientId, controls.target).length > 0;
+  const hasScrollContent = hasConversation
+    || showModelCard
+    || (imageView && (imagePanel !== null || imagePreparing !== null || imageError !== null))
+    || (module === "workers" && agentPanel !== null)
+    || Boolean(controls.localAppearance)
+    || Boolean(localInfo && (!localInfo.scope || localInfo.scope === module))
+    || (module === "connections" && (Boolean(activeConnectionInput) || applicationPicker || connectionFollowup !== null))
+    || (module === "capabilities" && (hasVisibleSetupInputs || setupCompletion !== null));
   const runFailure = !snapshot.live.busy && snapshot.live.runFailure
     ? describeLocalizedKuloError({
       reason: snapshot.live.runFailure.reason,
@@ -142,16 +156,17 @@ export function SettingsAssistantPanel({
     return { message, actions };
   });
 
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el && nearBottomRef.current) el.scrollTop = el.scrollHeight;
-  }, [snapshot.messages, snapshot.actions, snapshot.live.streamingText, snapshot.live.busy, localInfo, controls.localAppearance, capabilityInputs, controls.target, setupCompletion, connections?.inputs, applicationPicker, connectionFollowup, imageKey, imagePanel, imagePreparing, imageError, agentPanel]);
+  useChatAutoScroll(
+    { scrollRef, nearBottomRef },
+    [snapshot.messages, snapshot.actions, snapshot.live.streamingText, snapshot.live.busy, Boolean(snapshot.live.streamingThinking), snapshot.live.activeTools.length, localInfo, controls.localAppearance, capabilityInputs, controls.target, setupCompletion, connections?.inputs, applicationPicker, connectionFollowup, imageKey, imagePanel, imagePreparing, imageError, agentPanel],
+  );
 
-  useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     const scroll = scrollRef.current; const card = imageCardRef.current;
     if (!imageView || !imagePanel || imagePreparing || !scroll || !card) return;
     scroll.scrollTop += card.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
     nearBottomRef.current = false;
+    imageAnchorActiveRef.current = true;
   }, [imageView, imageKey, imagePanel, imagePreparing]);
 
   useEffect(() => {
@@ -327,7 +342,7 @@ export function SettingsAssistantPanel({
     }
   };
 
-  const shortcutButtons = (compact: boolean) => (
+  const shortcutButtons = () => (
     <div className="kulo-settings-assistant-suggestions" aria-label={imageView ? t("图像配置", "Image configuration") : t("可以交给 Kulo 的任务", "Tasks for Kulo")}>
       {shortcuts.map((shortcut) => {
         const directModel = shortcut.kind === "model" && (shortcut.action === "connect" || shortcut.action === "diagnose" || !hasModel);
@@ -342,7 +357,7 @@ export function SettingsAssistantPanel({
         return (
           <Button
             key={shortcut.id}
-            variant="ghost"
+            variant="secondary"
             size="sm"
             className="kulo-settings-assistant-suggestion"
             isPending={shortcut.kind === "image" && imagePreparing === shortcut.action}
@@ -409,6 +424,7 @@ export function SettingsAssistantPanel({
         />
       )}
       <div ref={scrollRef} className="kulo-settings-assistant-scroll" onScroll={() => {
+        if (imageAnchorActiveRef.current) { imageAnchorActiveRef.current = false; return; }
         const el = scrollRef.current;
         if (el) nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
       }}>
@@ -424,8 +440,12 @@ export function SettingsAssistantPanel({
             disabled={controls.switchingConversation || snapshot.live.busy || controls.sending || controls.unconfirmedSend}
             initialAction={modelAction ?? "calibrate"} refreshKey={`${snapshot.messages.length}:${snapshot.live.busy}:${modelRefresh}`}
             onChanged={() => { setModelRefresh((value) => value + 1); }} onClose={() => { setModelAction(null); setDismissedModelDraft(modelRecoveryKey); }} />}
-          {timeline.map(({ message, actions }) => (
-            message.role === "relay" && actions.length === 0 ? null : (
+          {timeline.map(({ message, actions }) => {
+            const hasBody = message.role === "user"
+              || (message.role === "dispatch" && Boolean(message.dispatch))
+              || (message.role !== "relay" && (Boolean(message.parts?.length || message.attachments?.length) || Boolean(message.text.trim())));
+            if (!hasBody && actions.length === 0) return null;
+            return (
               <MessageMotion key={message.id} scopeKey={snapshot.topicId ?? "settings"} animateEntry={animateMessages.has(message.id)}>
                 {message.role === "user" ? (
                   <div className="flex justify-end">
@@ -454,15 +474,15 @@ export function SettingsAssistantPanel({
                       }}
                     />
                   </article>
-                ) : message.text ? (
+                ) : message.text.trim() ? (
                   <article className={message.role === "system_note" ? "text-xs text-muted" : "min-w-0"}>
                     <KuloMarkdown text={message.text} />
                   </article>
                 ) : null}
                 {actions.map(renderAction)}
               </MessageMotion>
-            )
-          ))}
+            );
+          })}
           {snapshot.live.busy && (snapshot.live.streamingText ? <StreamingMessage text={snapshot.live.streamingText} /> : (
             <div className="flex items-center gap-2 py-1 text-xs text-muted"><KuloThinkingIndicator aria-label={t("设置助手思考中", "Settings assistant is thinking")} />{snapshot.live.retrying ? t("正在重试…", "Retrying…") : t("思考中…", "Thinking…")}</div>
           ))}
@@ -480,7 +500,7 @@ export function SettingsAssistantPanel({
               onClose={() => { setAgentPanel(null); composerRef.current?.focus(); }}
             />
           )}
-          {module === "connections" && connections && <ConnectionSetupInputs inputs={connections.inputs} connections={connections.connections} clientId={controls.clientId} connected={connected} available={connections.vault.available} localHost={connections.localHost} onChanged={() => {
+          {module === "connections" && connections && <ConnectionSetupInputs inputs={connections.inputs} connections={connections.connections} clientId={controls.clientId} connected={connected} available={connections.vault.available} localHost={connections.localHost} canManageHub={connections.canManageHub} onChanged={() => {
             onConnectionsRefresh?.();
           }} applications={connections.applications} onCancelled={() => requestAnimationFrame(() => composerRef.current?.focus())} onCompleted={(connection) => {
             setApplicationPicker(false);
@@ -523,7 +543,7 @@ export function SettingsAssistantPanel({
         </div>
       </div>
 
-      <div className="kulo-settings-assistant-footer flex shrink-0 flex-col gap-3">
+      <div className="kulo-settings-assistant-footer flex shrink-0 flex-col gap-3" data-separated={hasScrollContent || undefined}>
         {(safeError || failure || !connected) && <Alert status={connected ? "danger" : "warning"} className="flex flex-col gap-2 rounded-2xl p-3">
           <Alert.Content className="flex flex-col gap-1 break-words text-xs">
             {safeError || !connected ? safeError || t("与中枢连接已断开，草稿已保留。", "Disconnected from the hub. Your draft is preserved.") : failure && <>
@@ -538,7 +558,7 @@ export function SettingsAssistantPanel({
             {failure?.suggestModelSettings && <Button size="sm" variant="ghost" onPress={() => { void controls.navigate({ id: `repair-${Date.now()}`, module: "models" }).catch((err) => setLocalInfo({ title: t("未打开设置", "Settings did not open"), text: err instanceof Error ? err.message : t("打开设置失败", "Failed to open settings"), error: true })); }}>{t("模型", "Models")}</Button>}
           </div>
         </Alert>}
-        {shortcuts.length > 0 && shortcutButtons(true)}
+        {shortcuts.length > 0 && shortcutButtons()}
         <div className="flex flex-wrap items-center justify-end gap-2">
           <div className="ml-auto flex shrink-0 items-center gap-2">
             <Button size="sm" variant="ghost" isIconOnly aria-label={t("新建设置对话", "New settings conversation")}

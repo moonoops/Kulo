@@ -118,6 +118,11 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
     }
     return snapshot;
   };
+  const requireProjectMemory = (snapshot: ExternalAgentToolSnapshot) => {
+    if (!host.memory) fail("external_memory_unavailable", "共享记忆服务未启用。");
+    if (!snapshot.ticket.projectId) fail("external_memory_project_required", "非项目独立任务不访问共享项目记忆库。");
+    return host.memory;
+  };
   const collaboration = (snapshot: ExternalAgentToolSnapshot) => {
     if (!snapshot.role?.allowSubagents || snapshot.role.enabled === false) fail("external_collaboration_disabled", "该智能体未开启 Hub 协作，请向主 Agent 报告协作需求。");
   };
@@ -173,7 +178,7 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
         return cleanResult(await host.report(scope, report, files));
       }
       case "kulo_memory_recall": {
-        if (!host.memory) fail("external_memory_unavailable", "共享记忆服务未启用。");
+        const memory = requireProjectMemory(snapshot);
         const args = argumentsObject(call.args, ["query", "budget", "max_tokens"]);
         const query = publicText(args.query, "检索词", 3000)!;
         const budget = args.budget === undefined ? undefined : String(args.budget);
@@ -183,44 +188,44 @@ export function createExternalAgentToolHandler(host: ExternalAgentToolHost): (ca
           fail("invalid_task_tool_arguments", "检索长度上限无效。");
         }
         await read(scope);
-        return cleanResult(await host.memory(scope, "hindsight_recall", {
+        return cleanResult(await memory(scope, "hindsight_recall", {
           query,
-          scope: snapshot.ticket.projectId ? "project" : "global",
+          scope: "project",
           ...(budget ? { budget } : {}),
           ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
         }));
       }
       case "kulo_memory_search_pages": {
-        if (!host.memory) fail("external_memory_unavailable", "共享记忆服务未启用。");
+        const memory = requireProjectMemory(snapshot);
         const args = argumentsObject(call.args, ["query"]);
         const query = publicText(args.query, "搜索词", 2000)!;
         await read(scope);
-        return cleanResult(await host.memory(scope, "hindsight_search_pages", { query }));
+        return cleanResult(await memory(scope, "hindsight_search_pages", { query }));
       }
       case "kulo_memory_read_page": {
-        if (!host.memory) fail("external_memory_unavailable", "共享记忆服务未启用。");
+        const memory = requireProjectMemory(snapshot);
         const args = argumentsObject(call.args, ["page_id"]);
         const pageId = publicText(args.page_id, "知识页面编号", 240)!;
         await read(scope);
-        return cleanResult(await host.memory(scope, "hindsight_get_page", { page_id: pageId }));
+        return cleanResult(await memory(scope, "hindsight_get_page", { page_id: pageId }));
       }
       case "kulo_memory_ingest": {
-        if (!host.memory) fail("external_memory_unavailable", "共享记忆服务未启用。");
+        const memory = requireProjectMemory(snapshot);
         const args = argumentsObject(call.args, ["title", "content"]);
         const title = publicText(args.title, "记忆标题", 240)!;
         const content = publicText(args.content, "记忆正文", 24000)!;
         if (redact(title) !== title || redact(content) !== content) fail("external_memory_secret", "共享记忆禁止写入凭据或密钥明文。");
         await read(scope);
-        return cleanResult(await host.memory(scope, "hindsight_retain", { title, content }));
+        return cleanResult(await memory(scope, "hindsight_retain", { title, content }));
       }
       case "kulo_memory_reflect": {
-        if (!host.memory) fail("external_memory_unavailable", "共享记忆服务未启用。");
+        const memory = requireProjectMemory(snapshot);
         const args = argumentsObject(call.args, ["query", "budget"]);
         const query = publicText(args.query, "推理问题", 2000)!;
         const budget = args.budget === undefined ? undefined : String(args.budget);
         if (budget !== undefined && !["low", "mid", "high"].includes(budget)) fail("invalid_task_tool_arguments", "推理预算无效。");
         await read(scope);
-        return cleanResult(await host.memory(scope, "hindsight_reflect", { query, ...(budget ? { budget } : {}) }));
+        return cleanResult(await memory(scope, "hindsight_reflect", { query, ...(budget ? { budget } : {}) }));
       }
       case "kulo_connections": {
         argumentsObject(call.args, []);

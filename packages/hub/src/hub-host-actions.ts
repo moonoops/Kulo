@@ -14,7 +14,9 @@ import {
   type PendingActionConfirmation,
 } from "./action-confirmations.js";
 import { submitAutomaticChatInput } from "./chat-control.js";
+import { chatRoutingData } from "./chat-submissions.js";
 import type { KuloConnections } from "./connections.js";
+import { reconcileTopicRoutingTarget, resolveHostActionTargetEnv } from "./env-routing-policy.js";
 import {
   executeApprovedHostAction,
   type ExecuteApprovedHostActionDeps,
@@ -22,6 +24,7 @@ import {
 import type {
   HubRuntimeGates,
   InlineDispatchWaiters,
+  TurnContextReader,
 } from "./hub-kernel-ports.js";
 import type { KuloProjects } from "./projects.js";
 import { formatHostActionRequestMessage } from "./prompts.js";
@@ -35,12 +38,13 @@ import type {
 
 export interface HubHostActionsDeps {
   harness: Harness;
-  envManager: Pick<EnvManager, "getEnvDescriptor" | "pickDefaultEnvId" | "requestHostAction">;
+  envManager: Pick<EnvManager, "getEnvDescriptor" | "listEnvs" | "localEnvId" | "pickDefaultEnvId" | "requestHostAction">;
   projects: Pick<KuloProjects, "get">;
   actionConfirmations: KuloActionConfirmations;
   connectionManager: Pick<KuloConnections, "redact">;
   inlineWaiters: Pick<InlineDispatchWaiters, "notify">;
   runtimeGates: Pick<HubRuntimeGates, "resumeIfNotRecovering" | "broadcastTickets" | "recordTicketOutwardAction">;
+  turnContext?: TurnContextReader;
   steerTicket: (
     params: { ticketId: string; commandId: string; text: string; originConversationId?: number },
     context?: Context,
@@ -68,32 +72,64 @@ export class HubHostActions {
     caller: HostActionCaller,
     requestedEnvId: string | undefined,
     context: Context,
-  ): Promise<{ envId: string; envName: string }> {
-    let envId: string;
+  ): Promise<{ envId: string; envName: string; routedToHubFallback?: boolean }> {
     if (caller.kind === "worker") {
-      envId = caller.envId;
-    } else if (requestedEnvId?.trim()) {
-      envId = requestedEnvId.trim();
-    } else {
-      const state = await this.#deps.harness.snapshot(KuloStateDoc, context);
-      const topicId = state?.conversationToTopic?.[String(caller.conversationId)];
-      const topic = topicId ? state?.topics?.[topicId] : undefined;
-      if (topic?.projectId) {
-        const project = await this.#deps.projects.get(topic.projectId, context).catch(() => undefined);
-        envId = project?.deviceId ?? this.#deps.envManager.pickDefaultEnvId();
-      } else if (topic?.targetDeviceId) {
-        envId = topic.targetDeviceId;
-      } else {
-        envId = this.#deps.envManager.pickDefaultEnvId();
+      const descriptor = this.#deps.envManager.getEnvDescriptor(caller.envId);
+      if (!descriptor) throw new Error(`找不到执行设备 '${caller.envId}'。`);
+      if (!descriptor.online) throw new Error(`目标设备 '${descriptor.name}' (${caller.envId}) 当前离线。`);
+      if (descriptor.executionKind === "native-device") {
+        throw new Error(`设备 '${descriptor.name}' 是 Android 手机，不支持电脑本机操作。`);
+      }
+      return { envId: descriptor.id, envName: descriptor.name || descriptor.id };
+    }
+    const state = await this.#deps.harness.snapshot(KuloStateDoc, context);
+    const topicId = caller.isSettings ? undefined : state?.conversationToTopic?.[String(caller.conversationId)];
+    const topic = topicId ? state?.topics?.[topicId] : undefined;
+    const projectDeviceId = topic?.projectId
+      ? (await this.#deps.projects.get(topic.projectId, context).catch(() => undefined))?.deviceId
+      : undefined;
+    let messageTargetDeviceId: string | undefined;
+    let sourceDeviceId: string | undefined;
+    let currentText: string | undefined;
+    let priorUserTurns: Awaited<ReturnType<TurnContextReader["recentPriorUserTurns"]>> | undefined;
+    if (!requestedEnvId?.trim() && this.#deps.turnContext) {
+      const inputs = await this.#deps.turnContext
+        .currentControlInputs(caller.conversationId, context, caller.toolTaskId)
+        .catch(() => []);
+      const first = chatRoutingData(inputs[0]);
+      messageTargetDeviceId = reconcileTopicRoutingTarget(first.targetDeviceId, topic?.targetDeviceId, Boolean(topic));
+      sourceDeviceId = first.source?.deviceId;
+      currentText = first.text;
+      if (!projectDeviceId && !messageTargetDeviceId && !topic?.targetDeviceId) {
+        priorUserTurns = await this.#deps.turnContext
+          .recentPriorUserTurns(
+            caller.conversationId,
+            context,
+            caller.toolTaskId,
+            new Set(inputs.map((entry) => entry.id)),
+          )
+          .catch(() => []);
       }
     }
-    const descriptor = this.#deps.envManager.getEnvDescriptor(envId);
-    if (!descriptor) throw new Error(`找不到执行设备 '${envId}'。`);
-    if (!descriptor.online) throw new Error(`目标设备 '${descriptor.name}' (${envId}) 当前离线。`);
-    if (descriptor.executionKind === "native-device") {
-      throw new Error(`设备 '${descriptor.name}' 是 Android 手机，不支持电脑本机操作。`);
-    }
-    return { envId, envName: descriptor.name || envId };
+    const resolved = resolveHostActionTargetEnv({
+      requestedEnvId,
+      projectDeviceId,
+      messageTargetDeviceId,
+      topicTargetDeviceId: topic?.targetDeviceId,
+      sourceDeviceId,
+      currentText,
+      priorUserTurns,
+      envs: this.#deps.envManager.listEnvs(),
+      getEnvDescriptor: (id) => this.#deps.envManager.getEnvDescriptor(id),
+      localEnvId: this.#deps.envManager.localEnvId,
+      pickDefaultEnvId: () => this.#deps.envManager.pickDefaultEnvId(),
+    });
+    if (!resolved.ok) throw new Error(resolved.message);
+    return {
+      envId: resolved.envId,
+      envName: resolved.descriptor.name || resolved.envId,
+      ...(resolved.routedToHubFallback ? { routedToHubFallback: true } : {}),
+    };
   }
 
   async inspect(
@@ -107,7 +143,7 @@ export class HubHostActions {
     },
     context: Context,
   ) {
-    const { envId, envName } = await this.#resolveTargetEnv(caller, input.envId, context);
+    const { envId, envName, routedToHubFallback } = await this.#resolveTargetEnv(caller, input.envId, context);
     const result = await this.#deps.envManager.requestHostAction(
       envId,
       {
@@ -119,7 +155,7 @@ export class HubHostActions {
       },
       context.abortSignal,
     );
-    return { envId, envName, result };
+    return { envId, envName, ...(routedToHubFallback ? { routedToHubFallback: true } : {}), result };
   }
 
   async run(
@@ -137,7 +173,7 @@ export class HubHostActions {
       throw new Error("当前角色为只读模式，不能执行本机变更命令。");
     }
     validateHostMaintenanceCommands(input.commands);
-    const { envId, envName } = await this.#resolveTargetEnv(caller, input.envId, context);
+    const { envId, envName, routedToHubFallback } = await this.#resolveTargetEnv(caller, input.envId, context);
 
     // Main Agent holds full personal-assistant authority and executes host actions directly.
     if (caller.kind === "orchestrator") {
@@ -151,7 +187,7 @@ export class HubHostActions {
         },
         context.abortSignal,
       );
-      return { status: "executed", envId, envName, result };
+      return { status: "executed", envId, envName, ...(routedToHubFallback ? { routedToHubFallback: true } : {}), result };
     }
 
     if (caller.isSubagent) {

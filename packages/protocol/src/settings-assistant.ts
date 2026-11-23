@@ -15,7 +15,7 @@ export interface SettingsAssistantContext {
   target?: { kind: "capability" | "skill" | "connection" | "extension" | "external-agent"; id: string };
 }
 
-export type SettingsAssistantIntent = "add-api" | "add-oauth" | "edit-identity" | "configure-memory" | "add-connection" | "add-device" | "join-device";
+export type SettingsAssistantIntent = "add-api" | "add-oauth" | "edit-identity" | "configure-memory" | "add-connection" | "add-ssh-credential" | "add-device" | "join-device";
 
 export interface SettingsAssistantAction {
   id: string;

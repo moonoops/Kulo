@@ -187,6 +187,7 @@ export {
 } from "./orchestrator-tool-overflow.js";
 export {
   KuloStateDoc,
+  MediaRelayEntry,
   WorkerRelayEntry,
   WorkerWatchdogEntry,
   closeSettledTicketsForDeletedTopic,
@@ -194,6 +195,8 @@ export {
   getEffectiveWorkspaceDir,
   hasPendingWorkspaceApply,
   type KuloDurableState,
+  type MediaRelayEntryData,
+  type MediaRelayJobSummary,
   type WorkerRelayEntryData,
   type WorkerWatchdogEntryData,
 } from "./state.js";

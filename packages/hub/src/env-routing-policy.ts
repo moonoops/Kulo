@@ -413,11 +413,18 @@ export function resolveOrchestratorTargetEnv(input: {
   explicitTarget?: string;
   sourceId?: string;
   projectDeviceId?: string;
+  priorContextualComputerId?: string;
+  activeTopicBrowserEnvId?: string;
   getEnvDescriptor: (id: string) => EnvNodeDescriptor | undefined;
   isLocalEnv: (id: string) => boolean;
   localEnvId: string;
   pickDefaultEnvId: () => string;
 }): OrchestratorTargetEnvResolution | RoutingPolicyError {
+  const isOnlineComputer = (id: string | undefined): boolean => {
+    if (!id) return false;
+    const desc = input.getEnvDescriptor(id);
+    return Boolean(desc?.online && desc.executionKind !== "native-device");
+  };
   let envId: string;
   if (input.projectDeviceId) {
     if (input.explicitTarget && input.explicitTarget !== input.projectDeviceId) {
@@ -427,7 +434,18 @@ export function resolveOrchestratorTargetEnv(input: {
   } else if (input.explicitTarget) {
     envId = input.explicitTarget;
   } else if (input.sourceId && !(input.isLocalEnv(input.sourceId) && !input.getEnvDescriptor(input.localEnvId))) {
-    envId = input.sourceId;
+    const sourceDesc = input.getEnvDescriptor(input.sourceId);
+    if (sourceDesc?.executionKind === "native-device") {
+      envId = input.priorContextualComputerId
+        ? input.priorContextualComputerId
+        : input.activeTopicBrowserEnvId
+          ? input.activeTopicBrowserEnvId
+          : isOnlineComputer(input.localEnvId)
+            ? input.localEnvId
+            : input.pickDefaultEnvId();
+    } else {
+      envId = input.sourceId;
+    }
   } else {
     envId = input.pickDefaultEnvId();
   }
@@ -531,8 +549,24 @@ export type ChatReadTargetPreflight =
   | { status: "env"; explicitTarget?: string; envTargetId?: string; sourceId?: string; currentText?: string }
   | ({ status: "error" } & Omit<RoutingPolicyError, "ok">);
 
+/**
+ * Reconciles a historical control entry's stamped `targetDeviceId` against the
+ * topic's current durable `targetDeviceId`. During an admitted turn the two
+ * are kept identical by `#bindChatTarget`; they only diverge when the user
+ * updates or clears the topic target while idle (e.g. via `PATCH /api/topics/:id`)
+ * before triggering `chat.retry` or a continuation turn.
+ */
+export function reconcileTopicRoutingTarget(
+  entryTargetDeviceId: string | undefined,
+  topicTargetDeviceId: string | undefined,
+  hasTopic: boolean,
+): string | undefined {
+  return hasTopic ? (topicTargetDeviceId || undefined) : (entryTargetDeviceId || undefined);
+}
+
 export function inspectChatReadTarget(input: {
   routings: readonly ChatRoutingSignals[];
+  topicTargetDeviceId?: string;
   envs: readonly EnvNodeDescriptor[];
   environment?: string;
   localEnvId: string;
@@ -542,14 +576,15 @@ export function inspectChatReadTarget(input: {
   if (namedTargets.length > 1) {
     return { status: "error", code: "target_device_conflict", message: "消息中提到多台设备，请用 kulo_dispatch 指定文件所在的设备。" };
   }
-  const explicitTarget = message.targetDeviceId || namedTargets[0];
-  if (message.targetDeviceId && namedTargets[0] && message.targetDeviceId !== namedTargets[0]) {
+  const boundTarget = message.targetDeviceId || input.topicTargetDeviceId;
+  const explicitTarget = boundTarget || namedTargets[0];
+  if (boundTarget && namedTargets[0] && boundTarget !== namedTargets[0]) {
     return { status: "error", code: "target_device_conflict", message: "消息中指定的设备与会话选定的设备不同，请确认文件所在设备。" };
   }
   if (input.environment?.startsWith("kulo-project:")) {
     return { status: "project", projectId: input.environment.slice("kulo-project:".length), explicitTarget };
   }
-  if (input.routings.some((inp) => inp.sourceDeviceId !== message.sourceDeviceId) && !message.targetDeviceId) {
+  if (input.routings.some((inp) => inp.sourceDeviceId !== message.sourceDeviceId) && !boundTarget) {
     return { status: "error", code: "source_device_ambiguous", message: "本轮有来自不同设备的消息，请用 kulo_dispatch 并填写对应的 source_request_id。" };
   }
   const envTargetId = input.environment === "node:local"
@@ -558,6 +593,120 @@ export function inspectChatReadTarget(input: {
       ? input.environment.slice("pi-env:".length)
       : undefined;
   return { status: "env", explicitTarget, envTargetId, sourceId: message.sourceDeviceId, currentText: message.text };
+}
+
+/**
+ * Infer the most recent unambiguous computer device established in earlier turns of the
+ * conversation when the current turn does not pivot back to the sender device or name another device.
+ */
+export function resolvePriorContextualComputerId(input: {
+  currentText?: string;
+  priorUserTurns?: readonly PriorUserDeviceTurn[];
+  envs: readonly EnvNodeDescriptor[];
+}): string | undefined {
+  const { currentText, priorUserTurns = [], envs } = input;
+  if (hasExplicitSenderReference(currentText)) return undefined;
+  const currentNamed = namedDispatchDevices(currentText, envs);
+  if (currentNamed.some((ids) => ids.length > 0)) return undefined;
+  const isComputer = (id: string) => {
+    const desc = envs.find((env) => env.id === id);
+    return Boolean(desc && desc.executionKind !== "native-device");
+  };
+  for (const turn of priorUserTurns) {
+    if (turn.targetDeviceId) return isComputer(turn.targetDeviceId) ? turn.targetDeviceId : undefined;
+    const priorNamed = namedDispatchDevices(turn.text, envs);
+    const priorUnambiguous = [...new Set(priorNamed.filter((ids) => ids.length === 1).map((ids) => ids[0]!))];
+    if (priorUnambiguous.length === 1) return isComputer(priorUnambiguous[0]!) ? priorUnambiguous[0] : undefined;
+    if (priorUnambiguous.length > 1) return undefined;
+    if (hasExplicitSenderReference(turn.text)) {
+      return turn.sourceDeviceId && isComputer(turn.sourceDeviceId) ? turn.sourceDeviceId : undefined;
+    }
+  }
+  return undefined;
+}
+
+export type HostActionTargetResolution =
+  | { ok: true; envId: string; descriptor: EnvNodeDescriptor; routedToHubFallback?: boolean }
+  | { ok: false; message: string };
+
+/**
+ * Six-tier deterministic routing for orchestrator `kulo_host_action`:
+ * 1) explicit envId -> 2) bound project device -> 3) message/topic target device ->
+ * 4) named or multi-turn contextual computer -> 5) sender computer (never silently drift if offline) ->
+ * 6) proactive Hub fallback when sender is a phone (`native-device`) or no sender device exists.
+ */
+export function resolveHostActionTargetEnv(input: {
+  requestedEnvId?: string;
+  projectDeviceId?: string;
+  messageTargetDeviceId?: string;
+  topicTargetDeviceId?: string;
+  sourceDeviceId?: string;
+  currentText?: string;
+  priorUserTurns?: readonly PriorUserDeviceTurn[];
+  envs: readonly EnvNodeDescriptor[];
+  getEnvDescriptor: (id: string) => EnvNodeDescriptor | undefined;
+  localEnvId: string;
+  pickDefaultEnvId: () => string;
+}): HostActionTargetResolution {
+  const isOnlineComputer = (id: string | undefined): EnvNodeDescriptor | undefined => {
+    if (!id) return undefined;
+    const desc = input.getEnvDescriptor(id);
+    return desc?.online && desc.executionKind !== "native-device" ? desc : undefined;
+  };
+  const namedAll = input.currentText ? namedDispatchDevices(input.currentText, input.envs) : [];
+  const namedUnambiguous = [...new Set(namedAll.filter((ids) => ids.length === 1).map((ids) => ids[0]!))];
+  const singleNamed = namedAll.length === 1 && namedUnambiguous.length === 1 ? namedUnambiguous[0] : undefined;
+
+  let envId: string | undefined;
+  let routedToHubFallback = false;
+
+  if (input.requestedEnvId?.trim()) {
+    envId = input.requestedEnvId.trim();
+  } else if (input.projectDeviceId) {
+    if (singleNamed && singleNamed !== input.projectDeviceId) {
+      return { ok: false, message: "消息中指定的设备与当前项目绑定设备不同，请显式传入 env_id。" };
+    }
+    envId = input.projectDeviceId;
+  } else if (input.messageTargetDeviceId || input.topicTargetDeviceId) {
+    envId = input.messageTargetDeviceId || input.topicTargetDeviceId;
+  } else if (singleNamed && !hasExplicitSenderReference(input.currentText)) {
+    envId = singleNamed;
+  } else {
+    const priorComputer = resolvePriorContextualComputerId({
+      currentText: input.currentText,
+      priorUserTurns: input.priorUserTurns,
+      envs: input.envs,
+    });
+    if (priorComputer) {
+      envId = priorComputer;
+    } else if (input.sourceDeviceId) {
+      const sourceDesc = input.getEnvDescriptor(input.sourceDeviceId);
+      if (sourceDesc?.executionKind === "native-device") {
+        envId = isOnlineComputer(input.localEnvId) ? input.localEnvId : input.pickDefaultEnvId();
+        routedToHubFallback = true;
+      } else {
+        envId = input.sourceDeviceId;
+      }
+    } else {
+      envId = input.pickDefaultEnvId();
+    }
+  }
+
+  const descriptor = envId ? input.getEnvDescriptor(envId) : undefined;
+  if (!descriptor) return { ok: false, message: `找不到执行设备 '${envId ?? ""}'。` };
+  if (!descriptor.online) {
+    const isSender = Boolean(input.sourceDeviceId && envId === input.sourceDeviceId && !input.requestedEnvId);
+    return {
+      ok: false,
+      message: isSender
+        ? `当前设备 '${descriptor.name}' (${envId}) 执行通道离线；如需在主机执行请显式指定 env_id。`
+        : `目标设备 '${descriptor.name}' (${envId}) 当前离线。`,
+    };
+  }
+  if (descriptor.executionKind === "native-device") {
+    return { ok: false, message: `设备 '${descriptor.name}' 是 Android 手机，不支持电脑本机操作。` };
+  }
+  return { ok: true, envId: descriptor.id, descriptor, ...(routedToHubFallback ? { routedToHubFallback: true } : {}) };
 }
 
 export function verifyChatReadTargetEnv(input: {
@@ -580,10 +729,23 @@ export function verifyChatReadTargetEnv(input: {
         proposedEnvId: input.envTargetId,
       })?.envId
     : undefined;
+  const sourceDesc = input.sourceId ? input.envs.find((env) => env.id === input.sourceId) : undefined;
+  const phoneSourceTarget =
+    !input.explicitTarget && !contextualTarget && sourceDesc?.executionKind === "native-device"
+      ? resolvePriorContextualComputerId({
+          currentText: input.currentText,
+          priorUserTurns: input.priorUserTurns,
+          envs: input.envs,
+        })
+      : undefined;
   const target =
     input.explicitTarget ||
     contextualTarget ||
-    (input.sourceId && input.isLocalEnv(input.sourceId) && !input.hasLocalEnv ? undefined : input.sourceId);
+    (sourceDesc?.executionKind === "native-device"
+      ? phoneSourceTarget
+      : input.sourceId && input.isLocalEnv(input.sourceId) && !input.hasLocalEnv
+        ? undefined
+        : input.sourceId);
   const expectedEnv = target && input.isLocalEnv(target) ? "node:local" : target ? `pi-env:${target}` : undefined;
   if (target && input.environment !== expectedEnv) {
     return { ok: false, code: "read_device_mismatch", message: "请用 kulo_dispatch 在这条消息对应的设备上读取文件。" };

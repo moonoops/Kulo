@@ -137,6 +137,9 @@ export function classifySshExecutionFailure(input: {
   if (/Connection timed out|Operation timed out/i.test(diag)) {
     return { code: "connection_cancelled", message: "SSH 连接超时，请检查地址、端口和网络。" };
   }
+  if (/remote port forwarding failed/i.test(diag)) {
+    return { code: "connection_execution_failed", message: "远端转发端口正被旧会话占用，请稍候或等待自动重连。" };
+  }
   const denied = /Permission denied(?:\s*\(([^)]+)\))?|Authentication failed/i.exec(diag);
   if (denied) {
     const methods = denied[1]?.toLowerCase().split(",").map((m) => m.trim());

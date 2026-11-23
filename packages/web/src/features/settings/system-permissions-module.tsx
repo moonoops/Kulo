@@ -49,9 +49,8 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
   onEntryHandled?: (id: string) => void;
 }) {
   const { t } = useI18n();
-  const localEnvId = envs.find((device) => device.kind === "local")?.id ?? "local";
   const [selectedId, setSelectedId] = useState(() => {
-    const known = currentDeviceId ?? (desktopSystemPermissionBridge() ? localEnvId : undefined);
+    const known = currentDeviceId;
     const knownTarget = known && envs.some((device) => device.id === known) ? known : CLIENT_TARGET_ID;
     if (entry?.kind === "microphone") return knownTarget;
     if (entry?.envId) return entry.envId;
@@ -72,8 +71,7 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
   const userSelectedTarget = useRef(false);
 
   const resolvedCurrentDeviceId = currentDeviceId
-    ?? (deviceView ? (deviceView.currentDeviceKnown === true ? deviceView.currentDeviceId : undefined)
-      : desktopSystemPermissionBridge() ? localEnvId : undefined);
+    ?? (deviceView?.currentDeviceKnown === true ? deviceView.currentDeviceId : undefined);
   const currentClientEnv = resolvedCurrentDeviceId ? envs.find((device) => device.id === resolvedCurrentDeviceId) : undefined;
   const clientTargetId = currentClientEnv?.id ?? CLIENT_TARGET_ID;
   const isClientOnly = selectedId === CLIENT_TARGET_ID;

@@ -142,7 +142,9 @@
   padding-inline-start: 80px;
 }
 
-.kulo-window-control {
+.kulo-window-control,
+.kulo-workbench[data-native-titlebar="true"] .kulo-window-titlebar :is(button, a, input, select, textarea, label, [role="button"], [role="link"], [role="tab"], [role="combobox"], [role="switch"], [role="checkbox"]),
+.kulo-ui :is(.modal__backdrop, .drawer__backdrop, .alert-dialog__backdrop, .popover, .dropdown__popover, .select__popover, .combo-box__popover, .toast) {
   -webkit-app-region: no-drag;
 }
 
@@ -373,6 +375,11 @@
   max-width: calc(var(--kulo-conversation-width) + 32px);
   margin-inline: auto;
   padding: 6px 16px max(12px, env(safe-area-inset-bottom));
+}
+
+.kulo-settings-assistant-footer[data-separated="true"] {
+  padding-top: var(--kulo-space-3);
+  border-top: 1px solid var(--separator);
 }
 
 .kulo-conversation-stream {

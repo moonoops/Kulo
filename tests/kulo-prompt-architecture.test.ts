@@ -212,6 +212,10 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
     expect(mainDefault).toMatch(/never split yourself from Kulo/i);
     expect(mainRenamed).toContain("You are 小墨, the user's personal assistant");
     expect(settingsConn).toContain("kulo_assistant_read");
+    const settingsModels = buildSettingsAssistantPrompt({ promptContext: "activeModule=models", module: "models" });
+    expect(settingsModels).toContain("kulo_assistant_read");
+    expect(settingsModels).toContain("kulo_assistant_configure");
+    expect(settingsModels).toContain("kulo_settings_read(section='models')");
     expect(KULO_IDENTITY_TEMPLATES_ZH["identity-agreement.md"]).toContain("统一身份表述");
     expect(KULO_IDENTITY_TEMPLATES["identity-agreement.md"]).toContain("Unified self-reference");
   });

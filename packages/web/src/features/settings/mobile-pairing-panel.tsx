@@ -111,7 +111,7 @@ export function MobilePairingPanel({ view, onInvitation, onRefresh }: {
   const target = view.devices.find((device) => device.id === invitation?.deviceId);
   const paired = !!target && target.status !== "pending";
   const expired = !!invitation && now >= invitation.expiresAt && !paired;
-  const owner = view.role === "hub";
+  const owner = Boolean(view.canManageHub ?? view.role === "hub");
 
   const generate = async () => {
     const current = session.current;

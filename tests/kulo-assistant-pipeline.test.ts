@@ -3,7 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createModels,
   fauxAssistantMessage,
@@ -280,6 +280,231 @@ describe("AmbientModelService", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+
+  it("enforces 3-layer kulo-provider validation, consistent fallback on auth/config loss, and UsageCaps accuracy", async () => {
+    const stateDir = makeTempDir("ambient-validate");
+    let cfg: { mode: "auto" | "local-managed" | "kulo-provider"; providerId?: string; modelId?: string; revision: number } = {
+      mode: "auto",
+      revision: 1,
+    };
+    let customAuthenticated = true;
+    let builtinAuth: { type: "api_key" | "oauth" } | undefined = { type: "api_key" };
+    let customModels: Array<{ id: string; purpose?: "chat" | "image" }> = [
+      { id: "deepseek-chat", purpose: "chat" },
+      { id: "flux-custom", purpose: "image" },
+      { id: "BAAI/bge-m3", purpose: "chat" },
+    ];
+    const completedModels: string[] = [];
+    const fakeModels = {
+      getModel(provider: string, id: string) {
+        if (provider === "api-cloud" && id === "main-1") {
+          return { id, provider, api: "openai-completions", baseUrl: "https://api.example.com/v1", reasoning: false, maxTokens: 4096 };
+        }
+        if (provider === "api-local" && (id === "deepseek-chat" || id === "flux-custom" || id === "BAAI/bge-m3" || id === "cached-deleted")) {
+          return { id, provider, api: "openai-completions", baseUrl: "http://127.0.0.1:11434/v1", reasoning: false, maxTokens: 4096 };
+        }
+        if (provider === "openai" && id === "gpt-5.4") {
+          return { id, provider, api: "openai-responses", baseUrl: "https://api.openai.com/v1", reasoning: true, maxTokens: 8192 };
+        }
+        return undefined;
+      },
+      async checkAuth(provider: string) {
+        if (provider === "api-cloud") return { type: "api_key" as const };
+        if (provider === "api-local") return customAuthenticated ? { type: "api_key" as const } : undefined;
+        if (provider === "openai") return builtinAuth;
+        return undefined;
+      },
+      async completeSimple(model: { provider: string; id: string }) {
+        completedModels.push(`${model.provider}/${model.id}`);
+        return fauxAssistantMessage(fauxText('{"ok":true}'));
+      },
+    };
+    const svc = new AmbientModelService({
+      stateDir,
+      models: fakeModels as never,
+      defaultModel: () => ({ provider: "api-cloud", modelId: "main-1" }),
+      modelConfig: () => ({
+        gatewayDisabled: true,
+        customProviders: [
+          {
+            id: "api-local",
+            name: "Local Ollama",
+            api: "openai-completions",
+            baseUrl: "http://127.0.0.1:11434/v1",
+            models: customModels,
+          },
+        ],
+        defaultProvider: "api-cloud",
+        defaultModel: "main-1",
+      }),
+      persistedConfig: async () => cfg,
+      saveConfig: async (next) => { cfg = next; },
+      redact: (t) => t,
+    });
+
+    // Rejects image model, embedding model, cached-but-deleted model, and non-OAuth builtin provider.
+    await expect(svc.configureAutoOrProvider({ mode: "kulo-provider", providerId: "api-local", modelId: "flux-custom" })).rejects.toMatchObject({ status: 400 });
+    await expect(svc.configureAutoOrProvider({ mode: "kulo-provider", providerId: "api-local", modelId: "BAAI/bge-m3" })).rejects.toMatchObject({ status: 400 });
+    await expect(svc.configureAutoOrProvider({ mode: "kulo-provider", providerId: "api-local", modelId: "cached-deleted" })).rejects.toMatchObject({ status: 400 });
+    await expect(svc.configureAutoOrProvider({ mode: "kulo-provider", providerId: "openai", modelId: "gpt-5.4" })).rejects.toMatchObject({ status: 400 });
+
+    // Accepts valid configured conversation model (loopback => willUseCloudModel is false).
+    const active = await svc.configureAutoOrProvider({ mode: "kulo-provider", providerId: "api-local", modelId: "deepseek-chat" });
+    expect(active.mode).toBe("kulo-provider");
+    expect(active.running).toBe(true);
+    expect(active.error).toBeUndefined();
+    expect(await svc.willUseCloudModel(false)).toBe(false);
+
+    // When auth expires or model is removed, status reports unavailable AND willUseCloudModel + completeZeroToolJson consistently fall back to cloud defaultModel.
+    customAuthenticated = false;
+    const stale = await svc.status();
+    expect(stale.running).toBe(false);
+    expect(stale.error).toContain("已选后台模型不可用");
+    expect(await svc.willUseCloudModel(false)).toBe(true);
+    await expect(svc.completeZeroToolJson({ systemPrompt: "sys", userContent: "hi", allowCloudFallback: false })).rejects.toMatchObject({ code: "ambient_cloud_fallback_disallowed" });
+    await svc.completeZeroToolJson({ systemPrompt: "sys", userContent: "hi" });
+    expect(completedModels).toEqual(["api-cloud/main-1"]);
+
+    // Restoring auth but removing model from customProviders also flags stale.
+    customAuthenticated = true;
+    customModels = [];
+    expect((await svc.status()).running).toBe(false);
+
+    // Builtin OAuth subscription passes when auth.type === "oauth".
+    builtinAuth = { type: "oauth" };
+    const oauthStatus = await svc.configureAutoOrProvider({ mode: "kulo-provider", providerId: "openai", modelId: "gpt-5.4" });
+    expect(oauthStatus.running).toBe(true);
+    await svc.close();
+  });
+
+  it("clamps zero-tool thinking level, adds +2048 headroom, suppresses Google thoughts, and keeps Anthropic off", async () => {
+    const stateDir = makeTempDir("ambient-thinking");
+    const calls: Array<{ options: Record<string, unknown>; payload?: unknown }> = [];
+    const fakeModels = {
+      getModel(provider: string, id: string) {
+        if (provider === "api-vertex" && id === "gemini-3.8-flash") {
+          return { id, provider, api: "google-vertex", baseUrl: "https://aiplatform.googleapis.com", reasoning: true, maxTokens: 65536 };
+        }
+        if (provider === "api-anthropic" && id === "claude-sonnet-4-5") {
+          return { id, provider, api: "anthropic-messages", baseUrl: "https://api.anthropic.com", reasoning: true, maxTokens: 8192 };
+        }
+        if (provider === "api-openai" && id === "deepseek-reasoner") {
+          return { id, provider, api: "openai-completions", baseUrl: "https://api.deepseek.com/v1", reasoning: true, maxTokens: 8192 };
+        }
+        return undefined;
+      },
+      async checkAuth() { return { type: "api_key" as const }; },
+      async completeSimple(model: { api: string }, _ctx: unknown, options: Record<string, unknown>) {
+        const onPayload = options.onPayload as ((p: unknown) => unknown) | undefined;
+        const payload = onPayload
+          ? onPayload({ config: { thinkingConfig: { includeThoughts: true, thinkingLevel: "LOW" } } })
+          : undefined;
+        calls.push({ options, payload });
+        return fauxAssistantMessage(fauxText('{"ok":true}'));
+      },
+    };
+    let current = { provider: "api-vertex", modelId: "gemini-3.8-flash" };
+    const svc = new AmbientModelService({
+      stateDir,
+      models: fakeModels as never,
+      defaultModel: () => current,
+      persistedConfig: async () => ({ mode: "auto", revision: 1 }),
+      saveConfig: async () => {},
+      redact: (t) => t,
+    });
+
+    await svc.completeZeroToolJson({ systemPrompt: "sys", userContent: "hi", maxTokens: 400 });
+    expect(calls[0]!.options.reasoning).toBe("low");
+    expect(calls[0]!.options.maxTokens).toBe(400 + 2048);
+    expect((calls[0]!.payload as { config: { thinkingConfig: { includeThoughts: boolean } } }).config.thinkingConfig.includeThoughts).toBe(false);
+
+    current = { provider: "api-anthropic", modelId: "claude-sonnet-4-5" };
+    await svc.completeZeroToolJson({ systemPrompt: "sys", userContent: "hi", maxTokens: 400 });
+    expect(calls[1]!.options.reasoning).toBeUndefined();
+    expect(calls[1]!.options.maxTokens).toBe(400);
+
+    current = { provider: "api-openai", modelId: "deepseek-reasoner" };
+    await svc.completeZeroToolJson({ systemPrompt: "sys", userContent: "hi", maxTokens: 400 });
+    expect(calls[2]!.options.reasoning).toBe("low");
+    expect(calls[2]!.options.maxTokens).toBe(400 + 2048);
+    await svc.close();
+  });
+
+  it("blocks concurrent deploy with 409, allows configureAutoOrProvider to preempt & abort in-flight install, and passes allowCloudFallback in AssistantSorter", async () => {
+    const stateDir = makeTempDir("ambient-cancel");
+    let cfg: { mode: "auto" | "local-managed" | "kulo-provider"; revision: number } = { mode: "auto", revision: 1 };
+    let abortedInstall = false;
+    let releaseInstall: (() => void) | null = null;
+    const models = createModels();
+    const svc = new AmbientModelService({
+      stateDir,
+      models,
+      defaultModel: () => ({ provider: "openai", modelId: "faux-1" }),
+      persistedConfig: async () => cfg,
+      saveConfig: async (next) => { cfg = next; },
+      redact: (t) => t,
+      commandRunner: (_cmd, _args, _env, signal) =>
+        new Promise((resolve) => {
+          signal?.addEventListener("abort", () => {
+            abortedInstall = true;
+            resolve({ ok: false, stdout: "", stderr: "aborted" });
+          }, { once: true });
+          releaseInstall = () => resolve({ ok: true, stdout: "ok", stderr: "" });
+        }),
+    });
+
+    // Trigger deploy in background; if executable isn't installed locally, commandRunner blocks until aborted.
+    // Either way, test concurrent guard + preemption cleanly when commandRunner is reached.
+    const deployPromise = svc.deployLocalManaged({ engine: "omlx", modelId: "mlx-community/Qwen3-4B-Instruct-2507-4bit" }).catch(() => null);
+    await new Promise((r) => setTimeout(r, 30));
+    if (releaseInstall) {
+      await expect(svc.deployLocalManaged({ engine: "omlx", modelId: "mlx-community/Qwen3-4B-Instruct-2507-4bit" })).rejects.toMatchObject({ status: 409 });
+      const resetStatus = await svc.configureAutoOrProvider({ mode: "auto" });
+      expect(resetStatus.mode).toBe("auto");
+      expect(abortedInstall).toBe(true);
+    }
+    await deployPromise;
+    await svc.close();
+
+    // P1-4: AssistantSorter forwards allowCloudFallback: false when UsageCaps is active.
+    const ledger = new AssistantLedger({ stateDir });
+    const seenFallbackFlags: Array<boolean | undefined> = [];
+    const sorter = new AssistantSorter({
+      ledger,
+      ambientModel: {
+        completeZeroToolJson: async (input: { allowCloudFallback?: boolean }) => {
+          seenFallbackFlags.push(input.allowCloudFallback);
+          return JSON.stringify({ digest: "d", category: "work", disposition: "archive", urgency: "low", situationKey: "k", title: "t" });
+        },
+      } as never,
+      redact: (t) => t,
+      isCloudCapped: () => true,
+      coalesceWindowMs: 5,
+      maxCoalesceMs: 10,
+      onNotifyBrain: () => {},
+    });
+    const ing = await ledger.ingestBatch("local", {
+      batchId: "b-cap",
+      driverId: "macos-notifications",
+      streamId: "s-cap",
+      sourceEpoch: "v1",
+      cursorAfter: "1",
+      events: [{
+        nativeEventId: "e-cap-1",
+        eventVersion: "v1",
+        appId: "com.apple.mail",
+        appLabel: "Mail",
+        title: "Cap Check",
+        body: "Test body",
+        occurredAt: Date.now(),
+        fidelity: "notification",
+      }],
+    }, (t) => t);
+    sorter.enqueue(ing.inserted);
+    await vi.waitFor(() => expect(seenFallbackFlags).toEqual([false]));
+    await sorter.close();
+    ledger.close();
+  });
 });
 
 describe("Assistant end-to-end Hub pipeline (sorter -> coordinator -> WS/REST)", () => {
@@ -468,8 +693,43 @@ describe("Assistant end-to-end Hub pipeline (sorter -> coordinator -> WS/REST)",
         body: JSON.stringify({ mode: "local-managed", confirmed: false }),
       });
       expect(unconfirmedRes.status).toBe(200);
-      const unconfirmedJson = (await unconfirmedRes.json()) as { requiresConfirmation?: boolean };
+      const unconfirmedJson = (await unconfirmedRes.json()) as {
+        requiresConfirmation?: boolean;
+        backgroundModel?: { mode: string };
+        snapshot?: unknown;
+      };
       expect(unconfirmedJson.requiresConfirmation).toBe(true);
+      expect(unconfirmedJson.backgroundModel?.mode).toBe("auto");
+      // Lightweight POST omits full workspace snapshot unless ?includeWorkspace=1 is requested.
+      expect(unconfirmedJson.snapshot).toBeUndefined();
+
+      // Lightweight GET returns backgroundModel without advice by default, and includes advice with ?includeAdvice=1.
+      const bgGetDefault = await fetchWithHubAuth(`http://127.0.0.1:${server.port}/api/assistant/background-model`);
+      expect(bgGetDefault.status).toBe(200);
+      const bgGetDefaultJson = (await bgGetDefault.json()) as { backgroundModel?: { mode: string }; advice?: unknown };
+      expect(bgGetDefaultJson.backgroundModel?.mode).toBe("auto");
+      expect(bgGetDefaultJson.advice).toBeUndefined();
+
+      const bgGetAdvice = await fetchWithHubAuth(`http://127.0.0.1:${server.port}/api/assistant/background-model?includeAdvice=1`);
+      expect(bgGetAdvice.status).toBe(200);
+      const bgGetAdviceJson = (await bgGetAdvice.json()) as { advice?: { hostName?: string } };
+      expect(bgGetAdviceJson.advice?.hostName).toBeTruthy();
+
+      // Cross-origin POST is rejected (P0-3).
+      const crossOriginRes = await fetchWithHubAuth(`http://127.0.0.1:${server.port}/api/assistant/background-model`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "https://evil.example" },
+        body: JSON.stringify({ mode: "auto" }),
+      });
+      expect(crossOriginRes.status).toBe(403);
+
+      // Invalid kulo-provider missing modelId is rejected with 400 (P0-1).
+      const missingModelRes = await fetchWithHubAuth(`http://127.0.0.1:${server.port}/api/assistant/background-model`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "kulo-provider", providerId: "api-fake" }),
+      });
+      expect(missingModelRes.status).toBe(400);
 
       // Speed up sorter coalesce window by testing direct ingestion into hub's ledger + fast sorter OR pushing a batch.
       // Let's push a real connector batch via hub's ingest path and verify the real AssistantSorter -> AssistantCoordinator -> WS flow!

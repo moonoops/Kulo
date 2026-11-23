@@ -142,7 +142,7 @@ export function createAssistantToolsExtension(get: () => AssistantToolsHost) {
       }),
       defineTool({
         name: "kulo_assistant_read",
-        description: "Read personal assistant notification sources status across Macs, muted apps, 24h digest count, and Hub host hardware advice for optional local oMLX/Ollama acceleration. 关键词：通知中心 个人助理 连接状态 本机加速 oMLX 本地小模型 硬件建议",
+        description: "Read personal assistant notification sources status across Macs, muted apps, 24h digest count, background processing model status, and Hub host hardware advice for optional local oMLX/Ollama acceleration. 关键词：通知中心 个人助理 连接状态 本机加速 oMLX 本地小模型 本机小模型 后台处理模型 硬件建议",
         parameters: obj({}),
         deferred: true,
         replay: "safe",
@@ -157,7 +157,7 @@ export function createAssistantToolsExtension(get: () => AssistantToolsHost) {
       }),
       defineTool({
         name: "kulo_assistant_configure",
-        description: "Toggle macOS Notification Center capture, mute/unmute an app, or configure Hub local background model acceleration (oMLX/Ollama or auto cloud model). Deploying a local runtime requires explicit user confirmation (`confirmed=true`) after presenting the hardware recommendation. 关键词：开启通知中心 关闭通知 静音应用 配置oMLX 部署本地小模型 本机加速",
+        description: "Toggle macOS Notification Center capture, mute/unmute an app, or configure the background processing model (Hub local oMLX/Ollama, a configured kulo-provider conversation model, or auto default model). Deploying a local runtime requires explicit user confirmation (`confirmed=true`) after presenting the hardware recommendation. 关键词：开启通知中心 关闭通知 静音应用 配置oMLX 部署本地小模型 本机加速 后台处理模型 切换后台模型 本机小模型 kulo-provider",
         parameters: obj({
           enabled: opt(bool({ description: "Enable or disable macOS notification capture." })),
           mute_app: opt(str({ description: "App bundle ID to mute." })),

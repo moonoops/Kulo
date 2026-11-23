@@ -42,6 +42,45 @@ export function memoryCallerFromState(
   };
 }
 
+function hasUnassignedProjectTag(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const tags = (value as { tags?: unknown }).tags;
+  return Array.isArray(tags) && tags.includes("project:unassigned");
+}
+
+function filterLegacyUnassignedSharedPayload(
+  toolName: OfficialHindsightToolName,
+  rawText: string,
+): { isError?: boolean; text: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    return { text: rawText };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { text: rawText };
+  const record = parsed as Record<string, unknown>;
+  if (toolName === "hindsight_recall" && Array.isArray(record.results)) {
+    const filtered = record.results.filter((item) => !hasUnassignedProjectTag(item));
+    if (filtered.length === record.results.length) return { text: rawText };
+    return { text: JSON.stringify({ ...record, results: filtered }) };
+  }
+  if (toolName === "hindsight_list_mental_models" && Array.isArray(record.items)) {
+    const filtered = record.items.filter((item) => !hasUnassignedProjectTag(item));
+    if (filtered.length === record.items.length) return { text: rawText };
+    return { text: JSON.stringify({ ...record, items: filtered }, null, 2) };
+  }
+  if (
+    (toolName === "hindsight_get_page" ||
+      toolName === "hindsight_read_knowledge_page" ||
+      toolName === "hindsight_get_mental_model") &&
+    hasUnassignedProjectTag(record)
+  ) {
+    return { isError: true, text: "已跳过历史未分组共享记忆条目。" };
+  }
+  return { text: rawText };
+}
+
 export function createHindsightTools(options: {
   getMemoryConfig: () => HindsightMemoryConfig;
   defaultBank: MemoryBank;
@@ -81,7 +120,25 @@ export function createHindsightTools(options: {
           ? "shared"
           : options.defaultBank;
 
-    const { bank: _b, ...rest } = rawArgs;
+    const { bank: _b, ...rawRest } = rawArgs;
+    const rest: Record<string, unknown> = { ...rawRest };
+    if (caller.role === "worker" && requestedBank === "shared" && !caller.projectId) {
+      return {
+        isError: true,
+        output: [{ type: "text" as const, text: "非项目独立任务不访问共享项目记忆库。" }],
+      };
+    }
+    if (caller.role === "router" && requestedBank === "shared" && !caller.projectId && toolName === "hindsight_recall") {
+      if (rest.scope === "project") {
+        return {
+          isError: true,
+          output: [{ type: "text" as const, text: "当前为未分组对话，未绑定项目；如需跨项目检索共享记忆，请传入 scope='global'。" }],
+        };
+      }
+      if (rest.scope === undefined) {
+        rest.scope = "global";
+      }
+    }
     if (
       requestedBank === "private" &&
       (toolName === "hindsight_retain" || toolName === "hindsight_ingest_document") &&
@@ -105,15 +162,19 @@ export function createHindsightTools(options: {
       caller,
       signal: context.abortSignal,
     });
+    const cleaned =
+      !res.isError && requestedBank === "shared"
+        ? filterLegacyUnassignedSharedPayload(toolName, res.text)
+        : res;
 
     const addTools =
-      !res.isError && followUpCandidates?.length
+      !cleaned.isError && followUpCandidates?.length
         ? await resolveDeferredAddTools(api, context, followUpCandidates)
         : [];
 
     return {
-      ...(res.isError ? { isError: true } : {}),
-      output: [{ type: "text" as const, text: res.text }],
+      ...(cleaned.isError ? { isError: true } : {}),
+      output: [{ type: "text" as const, text: cleaned.text }],
       ...(addTools.length ? { control: { addTools } } : {}),
     };
   };
