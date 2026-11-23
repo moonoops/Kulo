@@ -17,10 +17,13 @@ describe("conversation turn outline", () => {
       { id: 7, role: "system_note", text: "已保存" },
       { id: 8, role: "user", text: "接下来添加动画" },
       { id: 9, role: "user", text: "[KULO_WORKER_WATCHDOG] internal" },
+      { id: 10, role: "user", text: "[KULO_MEDIA_RELAY] internal" },
+      { id: 11, role: "user", requestId: "req-user-paste", text: "[KULO_HOST_ACTION_REQUEST]\n这是什么？" },
     ];
     expect(buildConversationTurns(messages)).toEqual([
       { id: 2, label: "设计优化方案 保持简洁", preview: "建议使用 分段导航，支持点击跳转。" },
       { id: 8, label: "接下来添加动画", preview: "" },
+      { id: 11, label: "[KULOHOSTACTIONREQUEST] 这是什么？", preview: "" },
     ]);
   });
 

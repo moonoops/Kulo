@@ -33,7 +33,7 @@ import {
   type KuloModelConfig,
   type OpenAIApiMode,
 } from "./config.js";
-import { proxyFetch } from "./http-transport.js";
+import { modelFetch } from "./http-transport.js";
 
 export const KULO_PROVIDER_ID = "openai";
 export const KULO_GATEWAY_PROVIDER_ID = "kulo-gateway";
@@ -445,7 +445,7 @@ export async function probeOpenAICompatibleGateway(
           : targetApi === "azure-openai-responses"
             ? `${baseUrl.replace(/\/openai\/v1$/, "")}/openai/v1/models`
             : `${baseUrl}/models`;
-      const modelsRes = await proxyFetch(modelsEndpoint, {
+      const modelsRes = await modelFetch(modelsEndpoint, {
         method: "GET",
         headers: {
           Accept: "application/json",
@@ -548,7 +548,7 @@ export async function probeOpenAICompatibleGateway(
       };
     }
 
-    const res = await proxyFetch(endpoint, {
+    const res = await modelFetch(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

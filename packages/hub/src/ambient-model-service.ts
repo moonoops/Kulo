@@ -14,6 +14,7 @@ import {
   type CustomModelConfig,
   type CustomProviderConfig,
 } from "@kulo/protocol";
+import { preserveWindowsCoreEnv } from "@kulo/env";
 import type { AssistantBackgroundModelPersisted } from "./assistant-state.js";
 import { buildAugmentedHostPath, findHostExecutable } from "./host-path.js";
 import { isLoopbackBaseUrl } from "./usage-caps.js";
@@ -98,13 +99,13 @@ function detectFreeDiskBytes(dir: string): number {
 }
 
 function cleanRuntimeEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {
+  const env: NodeJS.ProcessEnv = preserveWindowsCoreEnv({
     PATH: buildAugmentedHostPath(),
     HOME: os.homedir(),
     TMPDIR: os.tmpdir(),
     LANG: "en_US.UTF-8",
     ...extra,
-  };
+  });
   for (const proxyKey of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"]) {
     if (process.env[proxyKey]) env[proxyKey] = process.env[proxyKey];
   }

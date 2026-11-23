@@ -157,7 +157,7 @@ Every screenshot below is captured directly from **Kulo v0.1.5** (`packages/web`
 
 ### 1. macOS desktop app (macOS 14+, Apple Silicon)
 
-- **Direct install**: Download **`Kulo-v0.1.5-macOS-arm64.dmg`** from [GitHub Releases](https://github.com/moonoops/Kulo/releases/latest), open it, and drag **`Kulo.app`** into **`Applications`**.
+- **Direct install**: Download **`Kulo-v0.1.6-macOS-arm64.dmg`** from [GitHub Releases](https://github.com/moonoops/Kulo/releases/latest), open it, and drag **`Kulo.app`** into **`Applications`**.
   - *Note*: Official DMGs are signed with a Developer ID Application certificate (not yet Apple-notarized). If macOS Gatekeeper prompts on first launch, right-click **Open** or run once:
     ```sh
     xattr -cr "/Applications/Kulo.app"

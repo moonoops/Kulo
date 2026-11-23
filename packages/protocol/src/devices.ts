@@ -37,6 +37,22 @@ export interface InterconnectedDevice {
   syncStatus?: import("./cluster.js").ClusterSyncStatus;
 }
 
+export type DeviceSshOnboardingStage =
+  | "probing"
+  | "installing-node"
+  | "opening-tunnel"
+  | "downloading-peer"
+  | "installing-deps"
+  | "pairing";
+
+export interface DeviceSshOnboardingStatus {
+  connectionId: string;
+  stage: DeviceSshOnboardingStage;
+  startedAt: number;
+  updatedAt: number;
+  deviceId?: string;
+}
+
 export interface DeviceInterconnectionView {
   enabled: boolean;
   role: "hub" | "joined";
@@ -47,12 +63,14 @@ export interface DeviceInterconnectionView {
   canSwitchRole?: boolean;
   canManageHub?: boolean;
   canManageStandby?: boolean;
+  sshSupported?: boolean;
   primaryNodeId?: string;
   preferredPrimaryNodeId?: string;
   clusterEpoch?: number;
   hubError?: string;
   hubUrls: string[];
   devices: InterconnectedDevice[];
+  sshOnboarding?: DeviceSshOnboardingStatus[];
   failoverOffer?: import("./cluster.js").ClusterFailoverOffer;
   failbackOffer?: import("./cluster.js").ClusterFailbackOffer;
 }

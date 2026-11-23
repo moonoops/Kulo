@@ -12,6 +12,7 @@ export type ReliableEnvelope =
 export interface ReliableOutboxAck {
   deduplicated?: boolean;
   topicId?: string;
+  conversationId?: number;
   ticketId?: string;
   submissionId?: number;
   delivery?: "queued" | "accepted";

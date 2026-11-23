@@ -1,11 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, powerMonitor, screen, session, shell, systemPreferences, Tray } from "electron";
-import { RecoveryManager, readReleaseIdentity } from "@kulo/recovery";
+import { RecoveryManager, readReleaseIdentity, verifyReleaseIdentity } from "@kulo/recovery";
 import { buildRuntimeEnvironment } from "./runtime-config.js";
+import { tryAttachExternalHostRuntime } from "./attach-runtime.js";
 import { startNodeService, type NodeService } from "./child-service.js";
-import { desktopContentSecurityPolicy, desktopWindowChrome, externalHttpUrl, localHttpOrigin, parseDevelopmentMode, resolveDesktopAppIdentity, resolveDesktopDataDirectory, shouldAuthorizeDesktopRequest, type DevelopmentMode } from "./desktop-config.js";
+import { desktopContentSecurityPolicy, desktopWindowChrome, externalHttpUrl, localHttpOrigin, parseDevelopmentMode, resolveDesktopAppIdentity, resolveDesktopDataDirectory, resolveDesktopTrayIconChoice, resolvePackagedNodePath, resolvePackagedRescuePath, resolveWindowIconPath, shouldAuthorizeDesktopRequest, type DevelopmentMode } from "./desktop-config.js";
+import { atomicReplaceDesktopFileSync } from "./desktop-fs.js";
 import { createDesktopContextMenuTemplate, createDesktopMenuTemplate, createMainWindowCloseController, shouldRevealWindowForCommand, type DesktopAppCommand } from "./desktop-menu.js";
 import { configureDesktopDirectoryPickerHandlers, createDesktopDirectoryPicker } from "./directory-picker.js";
 import { configureDesktopPreferenceHandlers, createDesktopPreferencesStore, DESKTOP_PREFERENCES_CHANNELS } from "./desktop-preferences.js";
@@ -18,9 +22,43 @@ import { configureDesktopUiFailureHandler } from "./ui-failure.js";
 import { writeDesktopLog } from "./desktop-log.js";
 import { createDesktopWindowStateStore } from "./window-state.js";
 
+const execFileAsync = promisify(execFile);
+const DESKTOP_STATE_DATA_VERSION = 3;
+
+async function preparePackagedStateStorageIfNeeded(
+  nodePath: string,
+  appDir: string,
+  manifest: ReturnType<typeof readReleaseIdentity>,
+): Promise<void> {
+  if (manifest.dataVersion !== DESKTOP_STATE_DATA_VERSION) return;
+  const markerPath = path.join(dataDir, "hub", "state-version.json");
+  if (!fs.existsSync(markerPath)) return;
+  let diskVersion: unknown;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(markerPath, "utf8")) as { version?: unknown };
+    diskVersion = parsed?.version;
+  } catch {
+    return;
+  }
+  if (typeof diskVersion !== "number" || !Number.isSafeInteger(diskVersion) || diskVersion < 1 || diskVersion >= DESKTOP_STATE_DATA_VERSION) {
+    return;
+  }
+  await verifyReleaseIdentity(appDir, manifest);
+  const env = buildRuntimeEnvironment(process.env, {
+    dataDir,
+    webDir: path.join(appDir, manifest.webDir),
+  });
+  await execFileAsync(
+    nodePath,
+    [path.join(appDir, manifest.runtimeEntry), "--prepare-state-storage"],
+    { cwd: dataDir, env, timeout: 30_000, maxBuffer: 1024 * 1024, windowsHide: true },
+  );
+}
+
 const desktopIdentity = resolveDesktopAppIdentity();
 const desktopAppName = desktopIdentity.appName;
 app.setName(desktopAppName);
+if (process.platform === "win32") app.setAppUserModelId(desktopIdentity.bundleId);
 const dataDir = resolveDesktopDataDirectory(process.argv, path.join(app.getPath("appData"), desktopAppName));
 fs.mkdirSync(path.join(dataDir, "chromium"), { recursive: true, mode: 0o700 });
 app.setPath("userData", dataDir);
@@ -44,17 +82,13 @@ let requestId = "";
 let recovery: RecoveryManager | undefined;
 let launchAttempt: Awaited<ReturnType<RecoveryManager["prepareLaunch"]>> | undefined;
 let recoveryRequestedFor: string | undefined;
+let attachedExternalHost = false;
 const uiReady = new DesktopStartupReady();
 const closeController = createMainWindowCloseController();
-const trayIconPath = fileURLToPath(new URL("../assets/kulo-trayTemplate.png", import.meta.url));
-const trayBadgeLightIconPath = fileURLToPath(new URL("../assets/kulo-tray-badge-light.png", import.meta.url));
-const trayBadgeDarkIconPath = fileURLToPath(new URL("../assets/kulo-tray-badge-dark.png", import.meta.url));
+const assetsDir = fileURLToPath(new URL("../assets", import.meta.url));
 function resolveTrayIcon(badgeActive: boolean) {
-  if (!badgeActive) {
-    return loadDesktopTrayIcon(trayIconPath, (file) => nativeImage.createFromPath(file), process.platform, { template: true });
-  }
-  const badgePath = nativeTheme.shouldUseDarkColors ? trayBadgeDarkIconPath : trayBadgeLightIconPath;
-  return loadDesktopTrayIcon(badgePath, (file) => nativeImage.createFromPath(file), process.platform, { template: false });
+  const choice = resolveDesktopTrayIconChoice(assetsDir, process.platform, badgeActive, nativeTheme.shouldUseDarkColors);
+  return loadDesktopTrayIcon(choice.iconPath, (file) => nativeImage.createFromPath(file), process.platform, { template: choice.template });
 }
 const trayController = createDesktopTrayController({
   appName: desktopAppName,
@@ -207,7 +241,7 @@ function log(message: string): void {
 function writePrivateJson(file: string, value: unknown): void {
   const temporary = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 });
-  fs.renameSync(temporary, file);
+  atomicReplaceDesktopFileSync(temporary, file);
 }
 
 function focusWindow(): void {
@@ -263,7 +297,13 @@ function configureSession(): void {
   });
   browserSession.setPermissionCheckHandler((contents, permission, origin, details) => {
     if (contents !== window?.webContents || !trustedRenderer(origin) || !details.isMainFrame) return false;
-    if (permission === "media") return details.mediaType === "audio" && systemPreferences.getMediaAccessStatus("microphone") !== "denied";
+    if (permission === "media") {
+      if (details.mediaType !== "audio") return false;
+      if (process.platform === "darwin" || process.platform === "win32") {
+        return systemPreferences.getMediaAccessStatus("microphone") !== "denied";
+      }
+      return true;
+    }
     return permission === "fullscreen" || permission === "clipboard-sanitized-write";
   });
   browserSession.setPermissionRequestHandler((contents, permission, callback, details) => {
@@ -271,7 +311,13 @@ function configureSession(): void {
     if (permission === "media") {
       const types = "mediaTypes" in details ? details.mediaTypes : undefined;
       if (!types?.length || types.some((type) => type !== "audio")) { callback(false); return; }
-      void systemPreferences.askForMediaAccess("microphone").then(callback).catch(() => callback(false));
+      if (process.platform === "darwin") {
+        void systemPreferences.askForMediaAccess("microphone").then(callback).catch(() => callback(false));
+      } else if (process.platform === "win32") {
+        callback(systemPreferences.getMediaAccessStatus("microphone") !== "denied");
+      } else {
+        callback(true);
+      }
       return;
     }
     callback(permission === "fullscreen" || permission === "clipboard-sanitized-write");
@@ -281,8 +327,10 @@ function configureSession(): void {
 function createWindow(): BrowserWindow {
   if (window && !window.isDestroyed()) return window;
   const launch = desktopWindowState.resolveLaunchOptions(screen.getAllDisplays(), screen.getPrimaryDisplay());
+  const windowIcon = resolveWindowIconPath(assetsDir, process.platform);
   const created = new BrowserWindow({
     title: desktopAppName,
+    ...(windowIcon ? { icon: windowIcon } : {}),
     ...desktopWindowChrome(process.platform),
     ...(launch.x !== undefined && launch.y !== undefined ? { x: launch.x, y: launch.y } : {}),
     width: launch.width,
@@ -411,13 +459,14 @@ async function copyRepairInstructions(): Promise<void> {
   let instructions = `Kulo 数据目录：${dataDir}`;
   try { instructions = await (recovery ?? new RecoveryManager(dataDir)).repairInstructions(); }
   catch { instructions += "\n恢复索引无法读取，请使用独立入口检查。"; }
-  const launcher = app.isPackaged ? path.join(process.resourcesPath, "runtime/kulo-rescue") : undefined;
+  const launcher = app.isPackaged ? resolvePackagedRescuePath(process.resourcesPath, process.platform) : undefined;
   clipboard.writeText(`${instructions}${launcher ? `\n独立救援入口：${launcher}` : ""}`);
 }
 
 async function stopServices(releaseLease = true): Promise<void> {
   uiReady.cancel();
   rendererOrigin = undefined;
+  attachedExternalHost = false;
   const vite = developmentServer;
   const hub = runtime;
   developmentServer = undefined;
@@ -462,15 +511,56 @@ async function startServices(mode: DevelopmentMode | undefined): Promise<void> {
   await stopServices();
   if (quitting) return;
   const appDir = app.getAppPath();
-  const nodePath = app.isPackaged ? path.join(process.resourcesPath, "runtime/node") : process.env.KULO_DESKTOP_NODE_PATH;
+  if (!mode) {
+    const attached = await tryAttachExternalHostRuntime(dataDir);
+    if (attached) {
+      if (quitting) return;
+      attachedExternalHost = true;
+      managementToken = attached.token;
+      fileConnection = attached;
+      rendererOrigin = attached.url;
+      let html = "";
+      try {
+        const res = await fetch(`${attached.url}/`, { headers: { Authorization: `Bearer ${attached.token}` }, signal: AbortSignal.timeout(5_000) });
+        if (res.ok) html = await res.text();
+      } catch {
+        // Fall back to packaged index.html below if reading over loopback fails.
+      }
+      if (!html) {
+        const fallbackHtml = path.join(appDir, "web/dist/index.html");
+        if (fs.existsSync(fallbackHtml)) html = fs.readFileSync(fallbackHtml, "utf8");
+      }
+      contentSecurityPolicy = desktopContentSecurityPolicy(html, attached.url, false);
+      const created = createWindow();
+      created.webContents.setBackgroundThrottling(true);
+      const rendererReady = uiReady.wait(created.webContents.id, attached.url);
+      try { await Promise.all([created.loadURL(attached.url), rendererReady]); }
+      catch (error) { uiReady.cancel(error instanceof Error ? error : new Error("界面启动失败。")); throw error; }
+      if (quitting) return;
+      if (startupFailure) throw startupFailure;
+      created.setTitle(desktopAppName);
+      focusWindow();
+      updateMenu();
+      const status = { pid: process.pid, mode: "attached", hubOrigin: attached.url, rendererOrigin: attached.url };
+      writePrivateJson(path.join(dataDir, "desktop-status.json"), status);
+      booting = false;
+      log(`${desktopAppName} 已附着到外部主机服务（${attached.url}）。`);
+      return;
+    }
+  }
+  const nodePath = app.isPackaged ? resolvePackagedNodePath(process.resourcesPath, process.platform) : process.env.KULO_DESKTOP_NODE_PATH;
   if (!nodePath || !path.isAbsolute(nodePath)) throw new Error("未找到 Kulo 自带的 Node 运行环境。");
-  fs.accessSync(nodePath, fs.constants.X_OK);
-  if (app.isPackaged && !mode && !recovery) {
+  fs.accessSync(nodePath, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
+  if (app.isPackaged && !mode) {
     const manifest = readReleaseIdentity(appDir);
-    recovery = new RecoveryManager(dataDir, {
-      shellVersion: app.getVersion(), nodeMajor: manifest.nodeMajor, protocolVersion: 1, dataVersion: 2,
-    });
-    await recovery.initializeBaseline(appDir, manifest);
+    await preparePackagedStateStorageIfNeeded(nodePath, appDir, manifest);
+    if (!recovery) {
+      const manager = new RecoveryManager(dataDir, {
+        shellVersion: app.getVersion(), nodeMajor: manifest.nodeMajor, protocolVersion: 1, dataVersion: DESKTOP_STATE_DATA_VERSION,
+      });
+      await manager.initializeBaseline(appDir, manifest);
+      recovery = manager;
+    }
   }
   launchAttempt = app.isPackaged && !mode && recovery ? await recovery.prepareLaunch() : undefined;
   const selectedRoot = launchAttempt?.root ?? appDir;
@@ -644,7 +734,7 @@ if (!lock) {
     trayController.sync(desktopPreferences.get().backgroundRunning);
     nativeTheme.on("updated", () => trayController.refreshTheme());
     powerMonitor.on("resume", () => {
-      if (quitting || !runtime?.child.connected) return;
+      if (quitting || attachedExternalHost || !runtime?.child.connected) return;
       runtime.child.send({ type: "system-resume" }, () => {});
     });
     app.setAboutPanelOptions({ applicationName: desktopAppName, applicationVersion: app.getVersion(), copyright: "Kulo" });

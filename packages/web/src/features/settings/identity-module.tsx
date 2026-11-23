@@ -17,7 +17,7 @@ import { useSettingsPending } from "./settings-save-activity";
 import type { SettingsAssistantEntryIntent } from "./settings-assistant-actions";
 import { RecentWorkPanel, RelationshipUpdateControls, usePersonalityControls } from "./personality-controls";
 import { MemoryServicePanel } from "./memory-service-panel";
-import { MEMORY_CONNECTION_FOCUS_EVENT } from "./memory-service-events";
+import { MEMORY_CONNECTION_FOCUS_EVENT, requestMemoryConnectionFocus } from "./memory-service-events";
 import { recentWorkUpdateKey, type RecentWorkSource } from "./recent-work-updates";
 
 type IdentityView = "identity" | "relationship" | "memory" | "recent";
@@ -57,8 +57,10 @@ export function IdentityModule({
 
   useEffect(() => {
     if (!entryIntent || entryIntent.module !== "identity") return;
-    if (entryIntent.intent === "configure-memory") setView("memory");
-    else if (entryIntent.intent === "edit-identity") setView("identity");
+    if (entryIntent.intent === "configure-memory") {
+      setView("memory");
+      requestMemoryConnectionFocus();
+    } else if (entryIntent.intent === "edit-identity") setView("identity");
     else return;
     onIntentHandled?.(entryIntent.id);
   }, [entryIntent?.id, onIntentHandled]);

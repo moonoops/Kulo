@@ -3,6 +3,8 @@ import path from "node:path";
 import {
   compareTicketCards,
   externalClientDisplayName,
+  isAutonomousCoordinatorPromptText,
+  isInternalCoordinatorPromptText,
   parseDirectExternalClientRoleId,
   resolveRolePresetFromPool,
   type ExternalClientConnection,
@@ -55,6 +57,8 @@ export type KuloDurableState = {
   topicTitles?: Record<string, TopicTitleJob>;
   fileDeliveryFailures?: Record<string, { runEpoch: number; errors: Record<string, string> }>;
   workerArtifacts?: Record<string, import("@kulo/protocol").ChatAttachment[]>;
+  /** Durable recovery slot for post-commit main conversation archive finalization. */
+  pendingMainArchiveFinalize?: import("@kulo/protocol").MainArchiveFinalizeRecord;
   slots: {
     holders: string[];
     writeHolders?: string[];
@@ -62,7 +66,7 @@ export type KuloDurableState = {
 };
 
 const MAX_PROCESSED_COMMANDS = 256;
-export const KULO_STATE_VERSION = 2;
+export const KULO_STATE_VERSION = 3;
 
 export function recordProcessedCommand(
   state: KuloDurableState,
@@ -111,34 +115,67 @@ export const KuloStateDoc = defineDoc<KuloDurableState & JsonObject>({
       },
     }) as KuloDurableState & JsonObject,
   migrate: (value, fromVersion) => {
-    if (fromVersion !== 1) throw new Error(`Unsupported Kulo state migration from version ${fromVersion}`);
-    const state = structuredClone(value) as KuloDurableState & JsonObject;
-    ensureHolders(state);
-    for (const ticket of Object.values(state.tickets)) {
-      if (ticket.status !== "blocked") continue;
-      ticket.waiting ??= {
-        reason: "user",
-        since: ticket.updatedAt,
-        detail: ticket.latestReport?.question ?? ticket.latestReport?.summary ?? "等待用户确认",
-      };
-      const unconfirmedChildren = Object.values(state.subagents ?? {}).some((child) =>
-        child.ticketId === ticket.id && (child.state === "running" || child.state === undefined),
-      );
-      if (unconfirmedChildren) {
-        ticket.status = "pausing";
-        // A legacy summary may belong to an earlier run; only explicit child states prove quiescence.
-        const holders = ensureHolders(state);
-        if (!holders.includes(ticket.id)) holders.push(ticket.id);
-      } else {
-        ticket.status = "waiting";
-        releaseSlot(state, ticket.id);
-      }
+    if (fromVersion !== 1 && fromVersion !== 2) {
+      throw new Error(`Unsupported Kulo state migration from version ${fromVersion}`);
     }
-    ensureWriteHolders(state);
+    const state = structuredClone(value) as KuloDurableState & JsonObject;
+    if (fromVersion === 1) {
+      ensureHolders(state);
+      for (const ticket of Object.values(state.tickets)) {
+        if (ticket.status !== "blocked") continue;
+        ticket.waiting ??= {
+          reason: "user",
+          since: ticket.updatedAt,
+          detail: ticket.latestReport?.question ?? ticket.latestReport?.summary ?? "等待用户确认",
+        };
+        const unconfirmedChildren = Object.values(state.subagents ?? {}).some((child) =>
+          child.ticketId === ticket.id && (child.state === "running" || child.state === undefined),
+        );
+        if (unconfirmedChildren) {
+          ticket.status = "pausing";
+          // A legacy summary may belong to an earlier run; only explicit child states prove quiescence.
+          const holders = ensureHolders(state);
+          if (!holders.includes(ticket.id)) holders.push(ticket.id);
+        } else {
+          ticket.status = "waiting";
+          releaseSlot(state, ticket.id);
+        }
+      }
+      ensureWriteHolders(state);
+    }
+    if (state.topics?.root) {
+      state.conversationToTopic ??= {};
+      state.conversationToTopic[String(state.topics.root.conversationId)] = "root";
+    }
     return state;
   },
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
+
+export function resolveActiveRootConversationId(
+  state: Readonly<KuloDurableState> | undefined,
+): number {
+  const root = state?.topics?.root;
+  if (root && root.deletedAt === undefined && Number.isSafeInteger(root.conversationId) && root.conversationId > 0) {
+    return root.conversationId;
+  }
+  return Number(ROOT_CONVERSATION_ID);
+}
+
+export function isActiveRootConversation(
+  conversationId: unknown,
+  state: Readonly<KuloDurableState> | undefined,
+): boolean {
+  const num = Number(conversationId);
+  if (!Number.isSafeInteger(num) || num <= 0) return false;
+  const root = state?.topics?.root;
+  if (!root) return num === Number(ROOT_CONVERSATION_ID);
+  return (
+    root.deletedAt === undefined &&
+    root.conversationId === num &&
+    state?.conversationToTopic?.[String(num)] === "root"
+  );
+}
 
 export function ensureDefaultRootTopic(
   state: KuloDurableState,
@@ -160,7 +197,7 @@ export function ensureDefaultRootTopic(
     };
     state.topics.root = root;
   }
-  state.conversationToTopic[String(rootConvNum)] = "root";
+  state.conversationToTopic[String(root.conversationId)] = "root";
   return root;
 }
 
@@ -168,11 +205,12 @@ export function isOrchestratorConversation(
   conversationId: unknown,
   state: Readonly<KuloDurableState> | undefined,
 ): boolean {
-  if (conversationId === ROOT_CONVERSATION_ID) return true;
   const key = String(conversationId);
   if (state?.conversationToTicket[key]) return false;
   if (state?.conversationToSubagent?.[key]) return false;
-  return Boolean(state?.conversationToTopic?.[key]);
+  if (state?.conversationToTopic?.[key]) return true;
+  if (conversationId === ROOT_CONVERSATION_ID && !state?.topics?.root) return true;
+  return false;
 }
 
 export interface TicketExecutionScope {
@@ -273,9 +311,76 @@ export type MediaRelayEntryData = {
 
 export const MediaRelayEntry = defineEntry<MediaRelayEntryData>("kulo.media_relay");
 
+export type CoordinatorEventKind =
+  | "host_action_request"
+  | "host_action_result"
+  | "connection_request"
+  | "user_task_instruction";
+
+export type CoordinatorEventEntryData = {
+  eventKind: CoordinatorEventKind;
+  requestId?: string;
+  ticketId?: string;
+  connectionId?: string;
+  envId?: string;
+  envName?: string;
+  /** Clean user-authored text when `eventKind === "user_task_instruction"` (never includes internal envelope tags). */
+  manualText?: string;
+  createdAt: number;
+};
+
+export const CoordinatorEventEntry = defineEntry<CoordinatorEventEntryData>("kulo.coordinator_event");
+
 export function isRecoveryInputBoundary(entry: EntryRecord): boolean {
   return WorkerRecoveryEntry.is(entry) || WorkerRelayEntry.is(entry) || WorkerWatchdogEntry.is(entry) ||
-    MediaRelayEntry.is(entry) || UserEntry.is(entry) || entry.kind === "kulo.user" || entry.kind === "kulo.voice.delegation";
+    MediaRelayEntry.is(entry) || CoordinatorEventEntry.is(entry) ||
+    UserEntry.is(entry) || entry.kind === "kulo.user" || entry.kind === "kulo.voice.delegation";
+}
+
+export function isInternalCoordinatorInputEntry(entry: EntryRecord): boolean {
+  return (
+    WorkerRelayEntry.is(entry) ||
+    WorkerRecoveryEntry.is(entry) ||
+    WorkerWatchdogEntry.is(entry) ||
+    MediaRelayEntry.is(entry) ||
+    CoordinatorEventEntry.is(entry)
+  );
+}
+
+/** True for autonomous system/background wakeups (excluding explicit user Task Detail instructions). */
+export function isAutomaticSystemInputEntry(entry: EntryRecord): boolean {
+  if (CoordinatorEventEntry.is(entry)) {
+    return entry.data.eventKind !== "user_task_instruction";
+  }
+  return (
+    WorkerRelayEntry.is(entry) ||
+    WorkerRecoveryEntry.is(entry) ||
+    WorkerWatchdogEntry.is(entry) ||
+    MediaRelayEntry.is(entry)
+  );
+}
+
+export function bareUserEntryText(entry: EntryRecord): string {
+  if (!UserEntry.is(entry)) return "";
+  const msg = entry.model?.[0];
+  if (!msg || msg.role !== "user") return "";
+  if (typeof msg.content === "string") return msg.content;
+  if (Array.isArray(msg.content)) {
+    return msg.content
+      .flatMap((part) => (part && typeof part === "object" && "type" in part && part.type === "text" && typeof part.text === "string" ? [part.text] : []))
+      .join("\n");
+  }
+  return "";
+}
+
+/** Matches historical bare `pi.user` entries written before internal coordinator inputs carried `CoordinatorEventEntry`. */
+export function isLegacyInternalUserEntry(entry: EntryRecord): boolean {
+  return UserEntry.is(entry) && isInternalCoordinatorPromptText(bareUserEntryText(entry));
+}
+
+/** Matches historical autonomous bare `pi.user` entries (excluding `[KULO_USER_TASK_INSTRUCTION]`). */
+export function isLegacyAutonomousUserEntry(entry: EntryRecord): boolean {
+  return UserEntry.is(entry) && isAutonomousCoordinatorPromptText(bareUserEntryText(entry));
 }
 
 function ensureHolders(state: KuloDurableState): string[] {

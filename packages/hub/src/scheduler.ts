@@ -1,6 +1,6 @@
 import { AssistantEntry, ToolResultEntry, ROOT_CONVERSATION_ID, defineTask, type JsonObject } from "@earendil-works/pi-durable";
 import type { EnvManager } from "@kulo/env";
-import type { Context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { describeKuloError, detectOutwardShellCommandsFromToolText, isSupportedExternalAgentKind, type ExternalAgentBinding, type ExternalAgentPendingReport, type ExternalAgentQuotaProbeResult, type ExternalAgentRuntimeEvent, type ExternalAgentUncertainReason, type StagedWorkspaceDiffSummary, type TicketRecord, type TicketWait, type WorkerExecutionPhase, type WorkerReportRecord } from "@kulo/protocol";
 import { spillOversizedReport } from "./report-overflow.js";
 import { buildExternalAgentRunRequest, escapeXmlContent, formatExternalPermissionMessage, formatStagedDiffRelayLines, formatWorkerInitialPrompt, formatWorkerRelayMessage, reconcileConsumedResumeState, type MaterializedExternalAttachment } from "./prompts.js";
@@ -13,6 +13,7 @@ import { nativeSearchEvidence, sanitizeSearchSources, selectCitedSources } from 
 import { appendTicketOutwardAction, beginTicketRecovery, epochOutwardActions, formatOutwardActionsSummary, resolveSupersededTickets, type createFailureRecoveryTask } from "./task-recovery.js";
 import { submitAutomaticChatInput } from "./chat-control.js";
 import { bindDispatchedAttachments } from "./ticket-dispatch.js";
+import { evaluateInlineClaim } from "./android-delivery.js";
 
 export type WorkerTicketTaskInput = {
   ticketId: string;
@@ -59,6 +60,7 @@ export interface WorkerTicketTaskDependencies {
   consumeExternalPendingReports?: (ticket: Readonly<TicketRecord>, reports: readonly ExternalAgentPendingReport[], context: Context) => Promise<string[]>;
   hasTicketConnections?: (ticket: Readonly<TicketRecord>) => boolean;
   isExternalMemoryEnabled?: () => boolean;
+  getExternalMemoryMode?: () => "hindsight" | "builtin" | "none";
   syncWorkerConversation?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<void>;
   prepareBuiltInStagedWorkspace?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<{ stagedCwd: string; reused: boolean; warnings?: string[] }>;
   prepareWorkerCollaborationContext?: (ticket: Readonly<TicketRecord>, context: Context) => Promise<{ boardContext?: string; reviewContext?: string; reviewMaterialized?: MaterializedExternalAttachment[] }>;
@@ -298,6 +300,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             localEnvId: deps.envManager.localEnvId,
             hasConnections: Boolean(deps.hasTicketConnections?.(ticket)),
             memoryEnabled: Boolean(ticket.projectId && deps.isExternalMemoryEnabled?.()),
+            ...(deps.getExternalMemoryMode ? { memoryMode: ticket.projectId ? deps.getExternalMemoryMode() : "none" } : {}),
             envCapabilities: deps.envManager.getEnvDescriptor(ticket.envId)?.capabilities,
           });
           await runtime.commit(async (tx) => {
@@ -1027,6 +1030,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
               transitionTicketStatus(ticket, "closed", now);
               ticket.closure = { kind: "obsolete", reason: "已忽略此前问题的自动恢复", at: now };
               ticket.recovery = undefined;
+              delete ticket.finalRelayPending;
               return undefined;
             }
             const outward = epochOutwardActions(ticket, task.input.runEpoch);
@@ -1043,6 +1047,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             } else {
               const existed = Boolean(ticket.recovery);
               const recovery = beginTicketRecovery(ticket, now);
+              delete ticket.finalRelayPending;
               if (!existed && (recovery.rootTicketId ?? ticket.id) === ticket.id) {
                 await tx.createTask(deps.recoveryTask, { ticketId: ticket.id, startedAt: recovery.startedAt },
                   { ownership: { kind: "conversation" }, background: true });
@@ -1050,6 +1055,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
               return undefined;
             }
           }
+          ticket.finalRelayPending = true;
           const activeStagedDiff =
             ticket.workspaceStaging?.mode === "staged" &&
             !ticket.workspaceStaging.appliedAt &&
@@ -1164,35 +1170,20 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                 return undefined;
               }
               if (currentTicket?.deliveryClaim === "inline_waiting") {
-                const cleanSmallStagedDiff =
-                  !stagedDiff ||
-                  (stagedDiff.conflictFiles.length === 0 &&
-                    !(stagedDiff.sensitivePaths?.length) &&
-                    stagedDiff.unifiedPreview.length <= 6_000);
-                const canClaimInline =
-                  report.state === "ready" &&
-                  cleanSmallStagedDiff &&
-                  !report.overflowAsset &&
-                  !report.readOnlyViolation &&
-                  !(report.attachments?.length) &&
-                  !(state.workerArtifacts?.[ticketId]?.length);
+                const inlineEval = evaluateInlineClaim({
+                  ticket: currentTicket,
+                  report,
+                  stagedDiff,
+                  workerArtifacts: state.workerArtifacts?.[ticketId],
+                  sources,
+                });
                 notifyInlineWaiter = true;
-                if (canClaimInline) {
-                  const inlineTools = [
-                    ...(stagedDiff ? ["kulo_inspect_staged_diff", "kulo_apply_staged_changes"] : []),
-                    ...(currentTicket.boardId ? ["kulo_task_board"] : []),
-                  ];
-                  if (inlineTools.length > 0) {
-                    await injectEventToolsInTx(tx, targetConv.id, inlineTools);
+                if (inlineEval.canClaimInline && inlineEval.inlineResult) {
+                  if (inlineEval.inlineTools.length > 0) {
+                    await injectEventToolsInTx(tx, targetConv.id, inlineEval.inlineTools);
                   }
                   currentTicket.deliveryClaim = "claimed_inline";
-                  currentTicket.inlineResult = {
-                    state: report.state,
-                    summary: report.summary,
-                    deliverable: report.deliverable ?? null,
-                    ...(sources.length ? { sources } : {}),
-                    ...(stagedDiff ? { stagedDiff: JSON.parse(JSON.stringify(stagedDiff)) as StagedWorkspaceDiffSummary } : {}),
-                  };
+                  currentTicket.inlineResult = inlineEval.inlineResult;
                   return undefined;
                 }
                 currentTicket.deliveryClaim = "escalated";
@@ -1236,11 +1227,14 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           const state = await tx.doc(KuloStateDoc);
           const settingsDoc = await tx.doc(SettingsAssistantDoc);
           const ticket = state.tickets[task.input.ticketId];
+          if (ticket && ticket.runEpoch === task.input.runEpoch) {
+            delete ticket.finalRelayPending;
+          }
           const origin = ticket && state.topics?.[ticket.originTopicId ?? "root"];
           const settingsConv = parseSettingsTopicConversationId(ticket?.originTopicId);
           const originAlive = settingsConv !== null
             ? isActiveSettingsConversation(settingsConv, settingsDoc)
-            : Boolean(origin && origin.deletedAt === undefined);
+            : Boolean(origin && origin.deletedAt === undefined && !origin.archived);
           if (ticket?.runEpoch === task.input.runEpoch && ticket.status === "ready" && ticket.externalExecution &&
               ticket.wakePending && ticket.resumePrompt && !ticket.cleanupPending) {
             transitionTicketStatus(ticket, "waiting", runtime.now());
@@ -1307,8 +1301,14 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           return;
         }
         if (!deps.resumeWaitingTicket) throw new Error("Timed Worker waits require a host resumeWaitingTicket handler");
-        await deps.resumeWaitingTicket(ticket.id, context);
-        await runtime.commit(async () => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
+        let shouldResume = false;
+        await runtime.commit(async (tx) => {
+          const live = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
+          if (!live || live.runEpoch !== task.input.runEpoch || live.status !== "waiting" || live.waiting?.reason !== "time") return { status: "terminal", outcome: { status: "aborted" } };
+          live.wakePending = true; if (live.activeTaskId === Number(task.id)) live.activeTaskId = undefined; shouldResume = true;
+          return { status: "terminal", outcome: { status: "completed", result: null } };
+        }, context);
+        if (shouldResume) void deps.resumeWaitingTicket(ticket.id, BACKGROUND_CONTEXT).catch((err) => console.error("[KuloScheduleWake]", err));
       },
     },
 

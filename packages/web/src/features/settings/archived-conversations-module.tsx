@@ -84,7 +84,7 @@ export function ArchivedConversationsModule({ topics, projects, loaded, connecte
           <Table.Body renderEmptyState={() => <div className="kulo-table-empty-state">{t("暂无已归档会话", "No archived conversations")}</div>}>
             {archived.map((topic) => <Table.Row key={topic.id} id={topic.id}>
               <Table.Cell className="kulo-settings-table-cell kulo-settings-table-primary"><div className="kulo-settings-table-stack"><span className="kulo-item-title">{topic.title}</span></div></Table.Cell>
-              <Table.Cell className="kulo-settings-table-cell kulo-settings-table-detail"><span className="break-words text-sm">{topic.projectId ? projectNames.get(topic.projectId) ?? t("项目话题", "Project topic") : t("话题", "Topic")}</span></Table.Cell>
+              <Table.Cell className="kulo-settings-table-cell kulo-settings-table-detail"><span className="break-words text-sm">{topic.archivedFromRoot ? t("主对话归档", "Main chat archive") : topic.projectId ? projectNames.get(topic.projectId) ?? t("项目话题", "Project topic") : t("话题", "Topic")}</span></Table.Cell>
               <Table.Cell className="kulo-settings-table-cell kulo-settings-table-actions">
                 <Button type="button" size="sm" variant="secondary" isDisabled={!connected || pendingId !== null && pendingId !== topic.id} isPending={pendingId === topic.id}
                   ref={(button) => { if (button) buttons.current.set(topic.id, button); else buttons.current.delete(topic.id); }}

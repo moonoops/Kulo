@@ -7,9 +7,10 @@ import {
   AssistantEntry, ROOT_CONVERSATION_ID, ToolResultEntry, UserEntry,
   type Conversation, type ConversationId, type EntryId, type EntryRecord, type Harness,
 } from "@earendil-works/pi-durable";
-import type { TopicSummary } from "@kulo/protocol";
+import { isInternalCoordinatorPromptText, isSilentCoordinatorReplyText, type TopicSummary } from "@kulo/protocol";
+import { MEMORY_TOOL_ECHO_SKIP_NAMES } from "./builtin-memory-entries.js";
 import { KuloProjectsDoc } from "./projects.js";
-import { KuloStateDoc, isOrchestratorConversation } from "./state.js";
+import { CoordinatorEventEntry, KuloStateDoc, isActiveRootConversation, isOrchestratorConversation } from "./state.js";
 import { SettingsAssistantDoc, isActiveSettingsConversation, settingsTopicId } from "./settings-doc.js";
 import { ContentPublicationEntry, KuloUserEntry } from "./ui-cards.js";
 import { VoiceTranscriptEntry } from "./voice-transcripts.js";
@@ -113,17 +114,23 @@ export function historyEntryText(entry: EntryRecord): SourceText | undefined {
     text = entry.data.text;
     attachments = entry.data.attachments.map(({ id, name }) => ({ id, name }));
     role = "user";
+  } else if (CoordinatorEventEntry.is(entry)) {
+    if (entry.data.eventKind !== "user_task_instruction" || !entry.data.manualText?.trim()) return undefined;
+    text = entry.data.manualText.trim();
+    role = "user";
   } else if (UserEntry.is(entry)) {
     text = modelText(entry);
+    if (isInternalCoordinatorPromptText(text)) return undefined;
     role = "user";
   } else if (AssistantEntry.is(entry)) {
     if (entry.model?.some((message) => message.role === "assistant" && ["aborted", "error", "deferred"].includes(message.stopReason))) return undefined;
     text = modelText(entry);
+    if (isSilentCoordinatorReplyText(text)) return undefined;
     role = "assistant";
   } else if (ToolResultEntry.is(entry)) {
     const message = entry.model?.[0];
     // Recalled evidence is already indexed at its original entry; indexing it again amplifies duplicates.
-    if (message?.role !== "toolResult" || ["kulo_history_search", "kulo_history_read"].includes(message.toolName)) return undefined;
+    if (message?.role !== "toolResult" || ["kulo_history_search", "kulo_history_read"].includes(message.toolName) || MEMORY_TOOL_ECHO_SKIP_NAMES.has(message.toolName)) return undefined;
     text = modelText(entry);
     role = "tool_result";
   } else if (VoiceTranscriptEntry.is(entry)) {
@@ -248,7 +255,7 @@ export class KuloConversationHistory {
       const topics = new Map<number, TopicSummary>([[caller, synthetic]]);
       return { topics, signature: digest(JSON.stringify([caller, requested, null, [caller]])) };
     }
-    const topicId = state?.conversationToTopic?.[String(caller)] ?? (caller === Number(ROOT_CONVERSATION_ID) ? "root" : undefined);
+    const topicId = state?.conversationToTopic?.[String(caller)] ?? (isActiveRootConversation(caller, state) ? "root" : undefined);
     const own = topicId && state?.topics && Object.hasOwn(state.topics, topicId) ? state.topics[topicId] : undefined;
     if (!own || own.deletedAt !== undefined || own.conversationId !== caller) throw new HistoryError(403, "history_forbidden", "当前会话不可用。");
     const projects = await this.#harness.snapshot(KuloProjectsDoc, context);

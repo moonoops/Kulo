@@ -61,10 +61,17 @@ export async function observeChatAttachmentGrants(harness: Harness, uploads: Kul
   if (!advanced) uploads.setCommittedChatScopes(observation.value.byAsset);
 }
 
-export function assertChatDestination(state: Readonly<KuloDurableState>, draft: Pick<ChatDeliveryDraft, "topicId" | "conversationId">): void {
+export function assertChatDestination(
+  state: Readonly<KuloDurableState>,
+  draft: Pick<ChatDeliveryDraft, "topicId" | "conversationId">,
+  options?: { allowArchived?: boolean },
+): void {
   const topic = state.topics?.[draft.topicId];
   if (!topic || topic.deletedAt !== undefined || topic.conversationId !== draft.conversationId) {
     throw new ProjectError(404, "topic_deleted", "会话已删除。");
+  }
+  if (!options?.allowArchived && topic.archived) {
+    throw new ProjectError(409, "topic_archived", "会话已归档，请还原后再继续发送。");
   }
 }
 
@@ -88,9 +95,9 @@ export async function snapshotChatUploadScope(harness: Harness, context: Context
 }
 
 export async function bindChatAttachments(tx: Tx, uploads: KuloUploadStore, destination: Pick<ChatDeliveryDraft, "topicId" | "conversationId">,
-  attachments: Array<string | Pick<ChatAttachment, "id">>, principalId: string, sourceScopes?: ChatDeliveryDraft["sourceScopes"]): Promise<void> {
+  attachments: Array<string | Pick<ChatAttachment, "id">>, principalId: string, sourceScopes?: ChatDeliveryDraft["sourceScopes"], options?: { allowArchived?: boolean }): Promise<void> {
   const state = await tx.doc(KuloStateDoc);
-  assertChatDestination(state, destination);
+  assertChatDestination(state, destination, options);
   const canRead = chatUploadScope(state, await tx.doc(SettingsAssistantDoc));
   // The sender must still be able to read a forwarded file from a source authorized at admission.
   for (const [id, original] of Object.entries(sourceScopes ?? {})) {

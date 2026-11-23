@@ -29,6 +29,19 @@ export class LocalInstanceInUseError extends Error {
 function lockPath(files: LocalInstanceFiles): string { return path.join(files.directory, files.name + "-owner.sqlite"); }
 function endpointPath(files: LocalInstanceFiles): string { return path.join(files.directory, files.name + "-endpoint.json"); }
 
+/** Authoritative filenames owned by a `LocalInstanceOwner` lease (preserved across cluster promotion). */
+export function localInstanceLockFiles(name: string): readonly string[] {
+  return [
+    `${name}-owner.sqlite`,
+    `${name}-owner.sqlite-wal`,
+    `${name}-owner.sqlite-shm`,
+    `${name}-endpoint.json`,
+  ];
+}
+
+export const KULO_RUNTIME_INSTANCE_FILES: readonly string[] = localInstanceLockFiles("kulo-runtime");
+export const HUB_STATE_LOCK_FILES: readonly string[] = localInstanceLockFiles("hub");
+
 function lockDirectory(files: LocalInstanceFiles): DatabaseSync | undefined {
   const filename = lockPath(files);
   const stat = fs.lstatSync(filename, { throwIfNoEntry: false });

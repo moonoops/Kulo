@@ -77,10 +77,10 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
   const isClientOnly = selectedId === CLIENT_TARGET_ID;
   const env = isClientOnly ? undefined : envs.find((device) => device.id === selectedId);
   const showsMicrophone = isClientOnly || Boolean(env && resolvedCurrentDeviceId && env.id === resolvedCurrentDeviceId);
-  const showsDesktop = !isClientOnly;
+  const showsDesktop = !isClientOnly && (!env || env.platform === "darwin");
   const visibleKinds: readonly SystemPermissionKind[] = showsMicrophone && showsDesktop
     ? ALL_KINDS
-    : showsMicrophone ? CLIENT_KINDS : DESKTOP_KINDS;
+    : showsMicrophone ? CLIENT_KINDS : showsDesktop ? DESKTOP_KINDS : [];
   const envKey = envs.map((device) => `${device.id}:${device.name}:${device.online}`).join("|");
   const desktopError = !showsDesktop ? null
     : !env ? t("暂无执行设备", "No execution device")
@@ -127,7 +127,9 @@ export function SystemPermissionsModule({ envs, connected = true, currentDeviceI
   const rawDeviceName = (id: string, fallback: string) => deviceView?.devices.find((device) => device.id === id)?.name ?? fallback;
   const isCurrentDevice = (id: string) => Boolean(resolvedCurrentDeviceId && id === resolvedCurrentDeviceId);
   const orderedEnvs = orderDevices(
-    envs.map((device) => ({ ...device, name: rawDeviceName(device.id, device.name) })),
+    envs
+      .filter((device) => device.platform === "darwin" || isCurrentDevice(device.id) || device.id === entry?.envId)
+      .map((device) => ({ ...device, name: rawDeviceName(device.id, device.name) })),
     { currentDeviceId: resolvedCurrentDeviceId },
   );
   const selectedEnv = isClientOnly ? undefined : orderedEnvs.find((device) => device.id === selectedId);

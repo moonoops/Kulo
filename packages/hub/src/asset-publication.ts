@@ -291,7 +291,7 @@ export function createAssetPublisher(options: AssetPublisherOptions) {
     if (asset.kind === "image") {
       const agent = await api.agent(context);
       const model = agent.model && api.models.getModel(agent.model.provider, agent.model.modelId);
-      if (!model?.input.includes("image")) throw new UiCardError("asset_review_vision_required", "当前主模型不支持图片审阅，请使用支持图片的主模型。", 409);
+      if (!model?.input.includes("image")) throw new UiCardError("asset_review_vision_required", "当前主模型不支持图片审阅；如为用户明确请求的手机原图截图，可直接调用 kulo_publish_asset 发布，无需先审阅。", 409);
     }
     return inspectAssetContent({ assetId: asset.id, offset: input.offset, limit: input.limit }, options.uploads);
   };

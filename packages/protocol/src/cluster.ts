@@ -2,6 +2,7 @@ import type { MobileConnectionCandidate } from "./mobile-connect.js";
 
 export const CLUSTER_FAILOVER_CAPABILITY = "cluster-failover-v1" as const;
 export const WARM_STANDBY_CAPABILITY = "warm-standby-v1" as const;
+export const BUILTIN_MEMORY_SYNC_CAPABILITY = "builtin-memory-v1" as const;
 
 export type ClusterRole = "primary" | "standby" | "peer";
 export type ClusterSyncState = "synced" | "syncing" | "error" | "pending";

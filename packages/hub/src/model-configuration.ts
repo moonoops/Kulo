@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-durable";
-import { CUSTOM_PROVIDER_APIS, isConversationModel, MODEL_PROTOCOL_ADAPTERS, MODEL_PURPOSES, redactSensitiveText, validateCustomImageAdapter, validateImageModelProfile, type CustomModelConfig, type CustomProviderApi, type CustomProviderConfig, type DiscoverModelsRequest, type DiscoverModelsResponse, type KuloSettingsView, type ProviderCatalogItem } from "@kulo/protocol";
+import { CUSTOM_PROVIDER_APIS, isConversationModel, MODEL_PROTOCOL_ADAPTERS, MODEL_PURPOSES, redactSensitiveText, validateCustomImageAdapter, validateImageModelProfile, type CustomModelConfig, type CustomProviderApi, type CustomProviderConfig, type DiscoverModelsRequest, type DiscoverModelsResponse, type KuloSettingsView, type ProviderCatalogItem, type ResolveModelMetadataRequest, type ResolveModelMetadataResponse } from "@kulo/protocol";
 import type { ModelConfigurationCandidate, ModelConfigurationDraft, ModelConfigurationPrepareRequest, ModelConfigurationProbe, ModelConfigurationSaveResult, ModelConfigurationUpdateRequest, ModelConfigurationVerification, ModelConfigurationWorkspace } from "@kulo/protocol";
 import { normalizeProviderBaseUrl } from "./config.js";
+import { assertResolvedLocalModelEndpoint, isPrivateLocalModelEndpoint, supportsKeylessLocalModel, type LocalModelDnsLookup } from "./local-model-endpoint.js";
 import { MAINSTREAM_PROVIDER_PRESETS } from "./providers.js";
 import { sanitizeThinkingLevelMap, sanitizeThinkingLevels, SettingsUpdateError } from "./settings.js";
 
@@ -45,12 +46,37 @@ export class ModelConfigurationError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message); }
 }
 
+export interface LocalModelRegisterRequest {
+  name: string;
+  baseUrl: string;
+  api?: CustomProviderApi;
+  providerId?: string;
+  modelIds?: string[];
+  setDefaultModelId?: string;
+  verifyModelId?: string;
+  commandId: string;
+}
+export interface LocalModelRegisterResult {
+  providerId: string;
+  name: string;
+  baseUrl: string;
+  api: CustomProviderApi;
+  authMode: "api-key" | "none";
+  modelIds: string[];
+  defaultModelId?: string;
+  discoveredCount: number;
+  verification?: ModelConfigurationVerification;
+  settingsRevision: number;
+}
 export interface ModelConfigurationOptions {
   harness: Harness;
   settings: () => KuloSettingsView;
   providers: () => Promise<ProviderCatalogItem[]>;
   discover: (request: DiscoverModelsRequest) => Promise<DiscoverModelsResponse>;
   probe: ModelConfigurationProbe;
+  resolveMetadata?: (request: ResolveModelMetadataRequest) => Promise<ResolveModelMetadataResponse>;
+  hasSavedProviderKey?: (providerId: string, baseUrl: string) => Promise<boolean>;
+  lookupDns?: LocalModelDnsLookup;
   saveProvider: (input: { provider: CustomProviderConfig; expectedSettingsRevision: number; defaultModelId?: string; apiKey?: string; operationKey: string; fingerprint: string; commit: ModelConfigurationCommit }) => Promise<KuloSettingsView>;
   redact?: (text: string) => string;
   rememberSecrets?: (values: readonly string[]) => void;
@@ -136,11 +162,17 @@ export function validateConfigurationModel(raw: unknown, api?: CustomProviderApi
 export function validateConfigurationProvider(raw: unknown, allowEmptyEndpoint = false): asserts raw is CustomProviderConfig {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) fail(400, "invalid_model_provider", "供应商配置无效。");
   const provider = raw as Record<string, unknown>;
-  if (Object.keys(provider).some((key) => !["id", "name", "preset", "api", "baseUrl", "models", "vertexProject", "vertexLocation"].includes(key))) fail(400, "invalid_model_provider_field", "供应商只接收公开配置；密钥请通过保密输入填写。");
+  if (Object.keys(provider).some((key) => !["id", "name", "preset", "api", "baseUrl", "authMode", "models", "vertexProject", "vertexLocation"].includes(key))) fail(400, "invalid_model_provider_field", "供应商只接收公开配置；密钥请通过保密输入填写。");
   modelConfigurationIdentifier(provider.id); publicText(provider.name, "供应商名称", 80);
   if (!(CUSTOM_PROVIDER_APIS as readonly unknown[]).includes(provider.api)) fail(400, "invalid_model_protocol", "请选择支持的接口协议。");
   const api = provider.api as CustomProviderApi;
-  endpoint(provider.baseUrl, api, allowEmptyEndpoint);
+  const resolvedBaseUrl = endpoint(provider.baseUrl, api, allowEmptyEndpoint);
+  if (provider.authMode !== undefined && provider.authMode !== "api-key" && provider.authMode !== "none") {
+    fail(400, "invalid_model_auth_mode", "认证模式无效。");
+  }
+  if (provider.authMode === "none" && resolvedBaseUrl && !supportsKeylessLocalModel(resolvedBaseUrl, api)) {
+    fail(400, "invalid_model_auth_mode", "仅本机或私有局域网 OpenAI 兼容服务支持免密模式。");
+  }
   for (const key of ["preset", "vertexProject", "vertexLocation"]) if (provider[key] !== undefined) publicText(provider[key], key, 200);
   if (!Array.isArray(provider.models) || provider.models.length > 256) fail(400, "invalid_model_selection", "模型数量无效。");
   const ids = new Set<string>();
@@ -361,7 +393,9 @@ export class KuloModelConfiguration {
       const current = await this.#draft(clientId, input.draftId); assertRevision(current, input.expectedRevision);
       if (!current.selectedModelIds.includes(input.modelId)) fail(400, "model_not_selected", "请先选择需要测试的模型。");
       const baseUrl = endpoint(current.provider.baseUrl, current.provider.api); const secret = this.#secret(current);
-      if (!secret && (!current.existingProvider || !(await this.#public(current)).hasCredential)) fail(400, "model_test_credential_required", "请先通过保密输入提供此连接的 API Key，再执行文本测试。");
+      const hasExistingCredential = current.existingProvider && (await this.#public(current)).hasCredential;
+      const allowKeyless = !secret && !hasExistingCredential && supportsKeylessLocalModel(baseUrl, current.provider.api);
+      if (!secret && !hasExistingCredential && !allowKeyless) fail(400, "model_test_credential_required", "请先通过保密输入提供此连接的 API Key，再执行文本测试。");
       const startedAt = Date.now(); let verification: ModelConfigurationVerification;
       try {
         const result = await this.#options.probe({ ...(current.existingProvider ? { providerId: current.provider.id } : {}), api: current.provider.api, apiMode: current.provider.api, baseUrl, model: input.modelId, ...(secret ? { apiKey: secret } : {}), vertexProject: current.provider.vertexProject, vertexLocation: current.provider.vertexLocation }, signal);
@@ -404,13 +438,26 @@ export class KuloModelConfiguration {
         }
       }
       const liveModel = this.#options.settings().blocks.model.value;
-      const provider = remembered?.provider ?? { ...clone(current!.provider), models: current!.provider.models.filter((model) => current!.selectedModelIds.includes(model.id)) };
+      const secret = !remembered && current ? this.#secret(current) : undefined;
+      const provider: CustomProviderConfig = remembered?.provider ?? (() => {
+        const next: CustomProviderConfig = { ...clone(current!.provider), models: current!.provider.models.filter((model) => current!.selectedModelIds.includes(model.id)) };
+        if (secret) delete next.authMode;
+        else if (next.authMode === "none" && !supportsKeylessLocalModel(next.baseUrl, next.api)) delete next.authMode;
+        return next;
+      })();
+      if (!remembered && current && !secret && provider.authMode !== "none" && supportsKeylessLocalModel(provider.baseUrl, provider.api)) {
+        const existingHasKey = current.existingProvider
+          ? (this.#options.hasSavedProviderKey
+              ? await this.#options.hasSavedProviderKey(provider.id, provider.baseUrl)
+              : (await this.#public(current)).hasCredential)
+          : false;
+        if (!existingHasKey) provider.authMode = "none";
+      }
       const autoDefaultModelId = !remembered && !current!.defaultModelId && !liveModel.defaultModel.trim()
         ? provider.models.find((model) => isConversationModel(model))?.id
         : undefined;
       const effectiveDefaultModelId = remembered?.defaultModelId ?? current!.defaultModelId ?? autoDefaultModelId;
       const commit: ModelConfigurationCommit = remembered ?? { fingerprint, clientId, draftId: current!.id, draftRevision: current!.revision, provider, ...(effectiveDefaultModelId ? { defaultModelId: effectiveDefaultModelId } : {}), verifications: clone(current!.verifications) };
-      const secret = !remembered && current ? this.#secret(current) : undefined;
       let settings: KuloSettingsView;
       try { settings = await this.#options.saveProvider({ provider, expectedSettingsRevision: effectiveSettingsRevision, defaultModelId: commit.defaultModelId, operationKey: key, fingerprint, commit, ...(secret ? { apiKey: secret } : {}) }); }
       catch (cause) {
@@ -435,6 +482,238 @@ export class KuloModelConfiguration {
       }, BACKGROUND_CONTEXT);
       this.#secrets.delete(current.id);
       await this.#changed();
+    });
+  }
+  async registerLocalProvider(input: LocalModelRegisterRequest, signal?: AbortSignal): Promise<LocalModelRegisterResult> {
+    modelConfigurationIdentifier(input.commandId);
+    const name = publicText(input.name, "供应商名称", 80);
+    const api: CustomProviderApi = input.api ?? "openai-completions";
+    if (api !== "openai-completions" && api !== "openai-responses") {
+      fail(400, "invalid_model_protocol", "本地免密模型直连仅支持 openai-completions 或 openai-responses 协议。");
+    }
+    const baseUrl = endpoint(input.baseUrl, api);
+    if (!supportsKeylessLocalModel(baseUrl, api)) {
+      fail(400, "local_model_endpoint_required", "免密模型直连仅支持本机或私有局域网 OpenAI 兼容地址；公网或需要 API Key 的云端接口请使用模型设置页添加。");
+    }
+    const explicitProviderId = input.providerId?.trim() ? modelConfigurationIdentifier(input.providerId.trim()) : undefined;
+    if (explicitProviderId === "kulo-gateway") {
+      fail(400, "model_provider_not_custom", "不能修改默认网关连接；请使用自定义供应商 ID。");
+    }
+    const requestedModelIds = input.modelIds !== undefined
+      ? [...new Set(input.modelIds.map((id) => publicText(id, "模型 ID")))]
+      : undefined;
+    if (requestedModelIds && requestedModelIds.length > 64) {
+      fail(400, "invalid_model_selection", "单次最多注册 64 个模型。");
+    }
+    if (requestedModelIds?.some((id) => !isConversationModel({ id }))) {
+      fail(400, "invalid_model_purpose", "本地对话模型注册仅支持对话类模型（图像或语音模型请在对应能力页配置）。");
+    }
+    const setDefaultModelId = input.setDefaultModelId?.trim() ? publicText(input.setDefaultModelId.trim(), "默认模型 ID") : undefined;
+    const verifyModelId = input.verifyModelId?.trim() ? publicText(input.verifyModelId.trim(), "测试模型 ID") : undefined;
+
+    await assertResolvedLocalModelEndpoint(baseUrl, this.#options.lookupDns);
+    signal?.throwIfAborted();
+
+    const preLive = this.#options.settings().blocks.model.value;
+    const preOrigin = new URL(baseUrl).origin;
+    const preExisting = explicitProviderId
+      ? preLive.customProviders?.find((item) => item.id === explicitProviderId)
+      : preLive.customProviders?.find((item) => !item.preset && item.api === api && (() => {
+          try { return new URL(item.baseUrl).origin === preOrigin; } catch { return false; }
+        })());
+    if (explicitProviderId && !preExisting) {
+      fail(400, "model_provider_not_custom", "指定的自定义供应商不存在；请省略 provider_id 以新建连接。");
+    }
+    if (explicitProviderId && preExisting && (preExisting.preset || !isPrivateLocalModelEndpoint(preExisting.baseUrl))) {
+      fail(400, "model_provider_not_local", "不能使用本地模型注册接口覆盖云端或预设供应商；请省略 provider_id 以新建本地连接。");
+    }
+
+    const toChatModel = (item: DiscoverModelsResponse["models"][number]): CustomModelConfig => {
+      const safeNativeTools = item.nativeTools?.webSearch ? { webSearch: false } : item.nativeTools;
+      const model: CustomModelConfig = {
+        id: item.id,
+        name: item.name,
+        contextWindow: item.contextWindow,
+        maxTokens: Math.min(item.maxTokens, item.contextWindow),
+        reasoning: item.reasoning,
+        ...(item.thinkingEnabled !== undefined ? { thinkingEnabled: item.thinkingEnabled } : {}),
+        modalities: [...item.modalities],
+        vision: item.modalities.includes("image"),
+        ...(item.thinkingLevelMap ? { thinkingLevelMap: item.thinkingLevelMap } : {}),
+        ...(item.thinkingLevels ? { thinkingLevels: item.thinkingLevels } : {}),
+        ...(safeNativeTools ? { nativeTools: { ...safeNativeTools } } : {}),
+      };
+      validateConfigurationModel(model, api);
+      return model;
+    };
+
+    let discoveryError: string | undefined;
+    const discoveredChatById = new Map<string, CustomModelConfig>();
+    try {
+      const response = await this.#options.discover({
+        ...(preExisting ? { providerId: preExisting.id } : {}),
+        api,
+        baseUrl,
+        refreshMetadata: false,
+      });
+      if (response.ok) {
+        for (const item of response.models.slice(0, 256)) {
+          if (!isConversationModel(item)) continue;
+          this.#assertPublic(item);
+          discoveredChatById.set(item.id, toChatModel(item));
+        }
+      } else {
+        discoveryError = this.#safeError(response.error || "未能从 /models 读取模型列表。");
+      }
+    } catch (cause) {
+      discoveryError = this.#safeError(cause);
+    }
+
+    const targetModels: CustomModelConfig[] = [];
+    if (requestedModelIds?.length) {
+      for (const id of requestedModelIds) {
+        const discovered = discoveredChatById.get(id);
+        if (discovered) {
+          targetModels.push(discovered);
+          continue;
+        }
+        let enriched: CustomModelConfig = { id, name: id };
+        if (this.#options.resolveMetadata) {
+          try {
+            const meta = await this.#options.resolveMetadata({ api, baseUrl, modelId: id });
+            if (isConversationModel(meta.model)) {
+              enriched = toChatModel(meta.model);
+            }
+          } catch { /* Fall back to minimal valid model entry when metadata lookup fails. */ }
+        }
+        validateConfigurationModel(enriched, api);
+        targetModels.push(enriched);
+      }
+    } else {
+      targetModels.push(...discoveredChatById.values());
+    }
+
+    if (!targetModels.length) {
+      fail(400, "local_model_discovery_empty", discoveryError
+        ? `未能从 ${baseUrl} 发现可用对话模型：${discoveryError}`
+        : `目标地址 ${baseUrl} 未返回任何可用对话模型，请确认推理服务已加载模型或显式传入 model_ids。`);
+    }
+
+    const targetIds = new Set(targetModels.map((model) => model.id));
+    if (setDefaultModelId && !targetIds.has(setDefaultModelId) && !preExisting?.models.some((m) => m.id === setDefaultModelId && isConversationModel(m))) {
+      fail(400, "invalid_default_model", `默认模型「${setDefaultModelId}」不在本次注册的对话模型列表中。`);
+    }
+
+    const mustProbeReachability = discoveredChatById.size === 0;
+    const probeTargetId = verifyModelId ?? (mustProbeReachability ? targetModels[0]!.id : undefined);
+    let verification: ModelConfigurationVerification | undefined;
+    if (probeTargetId) {
+      if (!targetIds.has(probeTargetId) && !preExisting?.models.some((m) => m.id === probeTargetId && isConversationModel(m))) {
+        fail(400, "model_not_selected", `待测试模型「${probeTargetId}」不在本次注册的对话模型列表中。`);
+      }
+      const startedAt = Date.now();
+      try {
+        const probeRes = await this.#options.probe({
+          ...(preExisting ? { providerId: preExisting.id } : {}),
+          api,
+          apiMode: api,
+          baseUrl,
+          model: probeTargetId,
+        }, signal);
+        verification = {
+          modelId: probeTargetId,
+          kind: "text-call",
+          ok: probeRes.ok,
+          checkedAt: Date.now(),
+          latencyMs: probeRes.latencyMs,
+          ...(!probeRes.ok ? { error: this.#safeError(probeRes.error || probeRes.title || "文本调用未通过。") } : {}),
+        };
+      } catch (cause) {
+        if (signal?.aborted) throw cause;
+        verification = {
+          modelId: probeTargetId,
+          kind: "text-call",
+          ok: false,
+          checkedAt: Date.now(),
+          latencyMs: Date.now() - startedAt,
+          error: this.#safeError(cause),
+        };
+      }
+      if (mustProbeReachability && !verification.ok) {
+        fail(400, "local_model_unreachable", `无法连通本地模型服务 ${baseUrl}（${verification.error ?? "连通测试未通过"}），未写入模型配置。`);
+      }
+    }
+
+    return this.#serial(async () => {
+      const liveBlock = this.#options.settings().blocks.model;
+      const liveExisting = explicitProviderId
+        ? liveBlock.value.customProviders?.find((item) => item.id === explicitProviderId)
+        : liveBlock.value.customProviders?.find((item) => !item.preset && item.api === api && (() => {
+            try { return new URL(item.baseUrl).origin === preOrigin; } catch { return false; }
+          })());
+      if (explicitProviderId && !liveExisting) {
+        fail(400, "model_provider_not_custom", "指定的自定义供应商已不存在。");
+      }
+      if (explicitProviderId && liveExisting && (liveExisting.preset || !isPrivateLocalModelEndpoint(liveExisting.baseUrl))) {
+        fail(400, "model_provider_not_local", "不能使用本地模型注册接口覆盖云端或预设供应商。");
+      }
+      const providerId = liveExisting?.id ?? `api-${randomUUID()}`;
+      const hasSavedKey = liveExisting
+        ? Boolean(await this.#options.hasSavedProviderKey?.(providerId, baseUrl))
+        : false;
+      const mergedById = new Map<string, CustomModelConfig>();
+      for (const existingModel of liveExisting?.models ?? []) {
+        mergedById.set(existingModel.id, clone(existingModel));
+      }
+      for (const candidate of targetModels) {
+        const current = mergedById.get(candidate.id);
+        mergedById.set(candidate.id, current ? { ...candidate, ...current } : candidate);
+      }
+      const provider: CustomProviderConfig = {
+        id: providerId,
+        name,
+        api,
+        baseUrl,
+        ...(hasSavedKey ? {} : { authMode: "none" as const }),
+        models: [...mergedById.values()].slice(0, 256),
+      };
+      validateConfigurationProvider(provider);
+      const effectiveDefaultModelId = setDefaultModelId ?? (
+        !liveBlock.value.defaultModel.trim()
+          ? provider.models.find((m) => isConversationModel(m))?.id
+          : undefined
+      );
+      const key = `local-register:${hash([input.commandId])}`;
+      const fingerprint = hash({ providerId, name, api, baseUrl, models: provider.models.map((m) => m.id), defaultModelId: effectiveDefaultModelId });
+      const commit: ModelConfigurationCommit = {
+        fingerprint,
+        clientId: "local-register",
+        draftId: `local-register-${providerId}`,
+        draftRevision: 1,
+        provider,
+        ...(effectiveDefaultModelId ? { defaultModelId: effectiveDefaultModelId } : {}),
+        verifications: verification ? [verification] : [],
+      };
+      const savedSettings = await this.#options.saveProvider({
+        provider,
+        expectedSettingsRevision: liveBlock.revision,
+        defaultModelId: effectiveDefaultModelId,
+        operationKey: key,
+        fingerprint,
+        commit,
+      });
+      return {
+        providerId,
+        name: provider.name,
+        baseUrl: provider.baseUrl,
+        api: provider.api,
+        authMode: provider.authMode ?? "api-key",
+        modelIds: provider.models.map((m) => m.id),
+        ...(effectiveDefaultModelId ? { defaultModelId: effectiveDefaultModelId } : {}),
+        discoveredCount: discoveredChatById.size,
+        ...(verification ? { verification } : {}),
+        settingsRevision: savedSettings.blocks.model.revision,
+      };
     });
   }
 }

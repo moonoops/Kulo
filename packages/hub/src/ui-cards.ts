@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, defineEntry, type ConversationId, type Harness, type JsonObject, type Tx } from "@earendil-works/pi-durable";
+import { KuloStateDoc } from "./state.js";
 import {
   UiActionInputSchema, getUiSpecFields, messagePartFallback, validateUiActionValues, validateUiCardInput, validateUiValues,
   type ChatAttachment, type ChatReplyReference, type DiagramMotionMode, type MessagePart, type UiActionDefinition, type UiActionInput, type UiActionReceipt,
@@ -220,7 +221,7 @@ export class KuloUiCards {
     const commandKey = `command_${hash([actor.conversationId, input.commandId])}`;
     let changed = false;
     const outcome = await this.#host.harness.commit<ActionOutcome>(async (tx) => {
-      const doc = await tx.doc(UiCardsDoc);
+      const [doc, state] = await Promise.all([tx.doc(UiCardsDoc), tx.doc(KuloStateDoc)]);
       const current = doc.cards[input.cardId];
       this.#scope(current, actor.conversationId);
       const prior = doc.receipts[commandKey];
@@ -228,6 +229,10 @@ export class KuloUiCards {
         if (prior.fingerprint !== fingerprint) throw new UiCardError("ui_command_conflict", "同一操作编号不能提交不同内容。", 409, current);
         return prior.outcome.ok ? { ok: true, receipt: { ...clone(prior.outcome.receipt), deduplicated: true } } : clone(prior.outcome);
       }
+      const topicId = state.conversationToTopic?.[String(actor.conversationId)];
+      const topic = topicId ? state.topics?.[topicId] : undefined;
+      if (topic?.deletedAt !== undefined) throw new UiCardError("topic_deleted", "会话已删除。", 404, current);
+      if (topic?.archived) throw new UiCardError("topic_archived", "会话已归档，请还原后再操作卡片。", 409, current);
       const reject = (code: string, message: string, status: number): ActionOutcome => {
         const outcome: ActionOutcome = { ok: false, error: { code, message, status, card: clone(current!) } };
         doc.receipts[commandKey] = { fingerprint, outcome: clone(outcome) };

@@ -18,10 +18,10 @@ import type {
 import { DEFAULT_APPEARANCE_CUSTOMIZATION, isConversationModel, redactSensitiveText, validateAppearanceCustomization } from "@kulo/protocol";
 import type { KuloConnections } from "./connections.js";
 import { isNonPublicMcpUrl } from "./mcp-presets.js";
-import { validateConfigurationModel } from "./model-configuration.js";
+import { validateConfigurationModel, type LocalModelRegisterRequest, type LocalModelRegisterResult } from "./model-configuration.js";
 import { supportsNativeWebSearch } from "./model-native-tools.js";
 import { KuloSettingsDoc, applySettingsBlockUpdate, sanitizeCustomModelList, type KuloDurableSettings } from "./settings.js";
-import { KuloStateDoc, isOrchestratorConversation, type TopicTitleJob } from "./state.js";
+import { KuloStateDoc, isActiveRootConversation, isLegacyInternalUserEntry, isOrchestratorConversation, type TopicTitleJob } from "./state.js";
 import { KuloUserEntry } from "./ui-cards.js";
 import { completedTopicTitle, createTopicTitleJob, parseTopicTitle, retryFailedTopicTitle, titleGenerationFailure } from "./topic-titles.js";
 import { SETTINGS_TITLE_INSTRUCTIONS, buildSettingsAssistantPrompt } from "./prompts.js";
@@ -45,7 +45,6 @@ import {
 } from "./settings-doc.js";
 import type { DeviceAssistantHost, DeviceJoinStaging, HubDeviceController } from "./tools-devices.js";
 import { buildSettingsUserEntry, formatSettingsPromptContext, resolveSettingsDeviceContext, validateSettingsContextInput } from "./settings-client-context.js";
-import { resolveDeferredAddTools } from "./tool-surface.js";
 import type { PreparedDeviceRoleChange } from "@kulo/env";
 
 export {
@@ -63,8 +62,6 @@ export {
   type WorkspaceUndoSupport,
 };
 
-const MODULES = ["models", "workers", "identity", "machines", "appearance", "capabilities", "connections", "permissions", "schedules", "archives"] as const;
-const INTENTS = ["add-api", "add-oauth", "edit-identity", "configure-memory", "add-connection", "add-ssh-credential", "add-device", "join-device"] as const;
 const BLOCK_MODULE: Record<SettingsBlockName, SettingsAssistantModule> = {
   model: "models", executor: "workers", roles: "workers", presentation: "identity",
   memory: "identity", identity: "identity",
@@ -157,7 +154,7 @@ export const validateSettingsAssistantContext = validateSettingsContextInput;
 interface AssistantHost {
   harness: Harness;
   extension: ReturnType<typeof createSettingsAssistantExtension>;
-  globalExtension?: ReturnType<typeof createGlobalSettingsToolsExtension>;
+  globalExtension?: ReturnType<typeof defineExtension>;
   agent: () => { model: { provider: string; modelId: string }; thinkingLevel: BuiltinThinkingEffort };
   tools?: (context?: SettingsAssistantContext, extensions?: readonly ReturnType<typeof defineExtension>[]) => readonly ToolRegistration[] | null;
   preloadedToolNames?: (context?: SettingsAssistantContext) => readonly string[];
@@ -194,11 +191,13 @@ interface AssistantHost {
   resolveModelMetadata?: (req: ResolveModelMetadataRequest) => Promise<ResolveModelMetadataResponse>;
   refreshModelMetadata?: (force?: boolean) => Promise<{ updated: boolean; fromCache: boolean; source: string; fetchedAt?: number; error?: string }>;
   isOfficialNativeSearchAllowed?: (providerId: string) => boolean;
+  registerLocalModel?: (input: LocalModelRegisterRequest, signal?: AbortSignal) => Promise<LocalModelRegisterResult>;
 }
 
 export class SettingsAssistant implements DeviceAssistantHost {
   readonly #host: AssistantHost;
   readonly #contexts = new Map<string, SettingsAssistantContext>();
+  readonly #topicClients = new Map<string, string>();
   #conversation: Conversation | null = null;
   #observation: SettingsConversationObservation | null = null;
   #emitSeq = 0; #lastEmittedSeq = 0;
@@ -310,7 +309,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
         if (!foundUser && entry.kind === "kulo.user" && entry.data && typeof entry.data === "object" && !Array.isArray(entry.data) && Array.isArray(entry.data.attachments)) {
           attachmentNames = entry.data.attachments.flatMap((item) => item && typeof item === "object" && !Array.isArray(item) && typeof item.name === "string" ? [item.name] : []);
         }
-        if (UserEntry.is(entry) || KuloUserEntry.is(entry)) {
+        if ((UserEntry.is(entry) && !isLegacyInternalUserEntry(entry)) || KuloUserEntry.is(entry)) {
           if (foundUser) return { userText, attachmentNames, complete: true };
           const message = entry.model?.[0];
           if (message?.role !== "user") continue;
@@ -411,7 +410,29 @@ export class SettingsAssistant implements DeviceAssistantHost {
     this.#contexts.set(next.clientId, next);
   }
 
-  forgetContext(clientId: string): void { this.#contexts.delete(clientId); }
+  noteTopicClient(topicIdValue: string, clientId: string): void {
+    if (topicIdValue && clientId && this.#contexts.has(clientId)) this.#topicClients.set(topicIdValue, clientId);
+  }
+
+  forgetContext(clientId: string): void {
+    this.#contexts.delete(clientId);
+    for (const [topic, cid] of this.#topicClients) {
+      if (cid === clientId) this.#topicClients.delete(topic);
+    }
+  }
+
+  async #resolveMainChatClient(callerConversationId?: number): Promise<SettingsAssistantContext | undefined> {
+    if (callerConversationId !== undefined) {
+      const state = await this.#host.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+      const topic = state?.conversationToTopic?.[String(callerConversationId)] ?? (isActiveRootConversation(callerConversationId, state) ? "root" : undefined);
+      const boundClientId = topic ? this.#topicClients.get(topic) : undefined;
+      if (boundClientId) {
+        const bound = this.#contexts.get(boundClientId);
+        if (bound) return bound;
+      }
+    }
+    return this.#contexts.size === 1 ? [...this.#contexts.values()][0] : undefined;
+  }
 
   async getSnapshot(): Promise<SettingsAssistantSnapshot> {
     // Reconnects and stop controls must remain usable while a tool awaits external I/O.
@@ -445,7 +466,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
         entries.push(...page.items);
         cursor = page.next;
       } while (cursor);
-      const user = entries.find((entry) => UserEntry.is(entry) || KuloUserEntry.is(entry))?.model?.find((message) => message.role === "user");
+      const user = entries.find((entry) => (UserEntry.is(entry) && !isLegacyInternalUserEntry(entry)) || KuloUserEntry.is(entry))?.model?.find((message) => message.role === "user");
       const title = user?.role === "user" ? typeof user.content === "string" ? user.content : user.content.flatMap((part) => part.type === "text" ? [part.text] : []).join(" ") : "";
       const timestamps = entries.flatMap((entry) => entry.model?.map((message) => message.timestamp).filter((time) => Number.isFinite(time) && time > 0) ?? []);
       const view: SettingsAssistantConversation = {
@@ -891,7 +912,9 @@ export class SettingsAssistant implements DeviceAssistantHost {
   }
 
   async openDeviceDialog(intent: "add-device" | "join-device", commandId: string): Promise<SettingsAssistantAction> {
-    return this.clientAction("navigate", { module: "machines", intent }, commandId);
+    const res = await this.clientAction("navigate", { module: "machines", intent }, commandId);
+    if (!("id" in res)) throw new Error(res.reason);
+    return res;
   }
 
   async proposeDeviceOperation(input: {
@@ -1206,10 +1229,10 @@ export class SettingsAssistant implements DeviceAssistantHost {
       case "permissions": return { note: "OS permissions are checked and granted via the left-hand System Permissions controls (microphone applies to the current client; accessibility/screen recording apply to the selected execution device). Never infer granted permissions from device connectivity; OS prompts must be confirmed directly by the user, and the Settings assistant cannot request or confirm them on the user's behalf." };
       case "appearance": {
         if (!context) {
-          const single = this.#contexts.size === 1 ? [...this.#contexts.values()][0] : undefined;
+          const target = await this.#resolveMainChatClient(callerConversationId);
           return {
-            appearance: single?.appearance ?? "system",
-            customization: single?.appearanceCustomization ?? null,
+            appearance: target?.appearance ?? "system",
+            customization: target?.appearanceCustomization ?? null,
             defaults: DEFAULT_APPEARANCE_CUSTOMIZATION,
           };
         }
@@ -1872,33 +1895,38 @@ export class SettingsAssistant implements DeviceAssistantHost {
     });
   }
 
-  async clientAction(kind: "appearance" | "navigate", values: Pick<SettingsAssistantAction, "appearance" | "module" | "intent">, commandId: string, callerConversationId?: number): Promise<SettingsAssistantAction> {
+  async registerLocalModel(input: LocalModelRegisterRequest, callerConversationId?: number, signal?: AbortSignal): Promise<LocalModelRegisterResult> {
+    if (!this.#host.registerLocalModel) throw new Error("当前环境不支持本地模型直连注册。");
+    for (const ctx of this.#contexts.values()) {
+      if (ctx.active && ctx.module === "models" && ctx.hasUnsavedChanges) throw new Error("模型设置页有尚未保存的修改，请先保存或放弃修改后再注册本地模型。");
+    }
+    const registered = await this.#host.registerLocalModel(input, signal);
+    const fromMainChat = await this.#isMainChatCaller(callerConversationId);
+    await this.#host.harness.commit(async (tx) => {
+      const state = await tx.doc(SettingsAssistantDoc);
+      state.observedRevisions.model = registered.settingsRevision;
+      if (fromMainChat && callerConversationId !== undefined) {
+        const convKey = String(callerConversationId);
+        state.mainObservedRevisions = { ...state.mainObservedRevisions, [convKey]: { ...state.mainObservedRevisions?.[convKey], model: registered.settingsRevision } };
+      }
+    }, BACKGROUND_CONTEXT);
+    return registered;
+  }
+
+  async clientAction(kind: "appearance" | "navigate", values: Pick<SettingsAssistantAction, "appearance" | "module" | "intent">, commandId: string, callerConversationId?: number): Promise<SettingsAssistantAction | { status: "unavailable"; reason: string }> {
     const fromMainChat = await this.#isMainChatCaller(callerConversationId);
     const existing = await this.#existingAction(commandId);
     if (existing) return existing;
     if (kind === "navigate" && values.intent) {
-      const expectedModule = values.intent === "add-connection" || values.intent === "add-ssh-credential"
-        ? "connections"
-        : values.intent === "add-api" || values.intent === "add-oauth"
-          ? "models"
-          : values.intent === "add-device" || values.intent === "join-device"
-            ? "machines"
-            : "identity";
+      const expectedModule = values.intent === "add-connection" || values.intent === "add-ssh-credential" ? "connections"
+        : values.intent === "add-api" || values.intent === "add-oauth" ? "models"
+          : values.intent === "add-device" || values.intent === "join-device" ? "machines" : "identity";
       if (values.module !== expectedModule) throw new Error("该操作与目标设置页不匹配。");
     }
     if (fromMainChat) {
-      const single = this.#contexts.size === 1 ? [...this.#contexts.values()][0] : undefined;
-      if (!single) {
-        return {
-          id: commandId,
-          kind,
-          title: kind === "appearance" ? `切换为${values.appearance === "dark" ? "深色" : values.appearance === "light" ? "浅色" : "跟随系统"}` : "打开设置",
-          changes: [],
-          status: "pending",
-          requiresConfirmation: false,
-          canUndo: false,
-          ...(kind === "appearance" ? { appearance: values.appearance } : { module: values.module, ...(values.intent ? { intent: values.intent } : {}) }),
-        };
+      const target = await this.#resolveMainChatClient(callerConversationId);
+      if (!target) {
+        return { status: "unavailable", reason: this.#contexts.size > 1 ? "当前有多个客户端窗口在线，无法唯一确认目标窗口；请在要操作的窗口里直接打开对应设置页。" : "当前未检测到在线界面窗口，无法自动执行界面操作；请直接在客户端界面中打开对应设置页。" };
       }
       return this.#serialize(async () => {
         const view = await this.#host.harness.commit(async (tx) => {
@@ -1906,15 +1934,10 @@ export class SettingsAssistant implements DeviceAssistantHost {
           const repeated = state.actions.find((a) => a.view.id === commandId);
           if (repeated) return clone(repeated.view);
           const action: SettingsAssistantAction = {
-            id: commandId,
-            kind,
-            title: kind === "appearance" ? `切换为${values.appearance === "dark" ? "深色" : values.appearance === "light" ? "浅色" : "跟随系统"}` : "打开设置",
-            changes: [],
-            status: "pending",
-            requiresConfirmation: false,
-            canUndo: false,
-            clientId: single.clientId,
-            ...(kind === "appearance" ? { appearance: values.appearance, previousAppearance: single.appearance } : { module: values.module, ...(values.intent ? { intent: values.intent } : {}) }),
+            id: commandId, kind, title: kind === "appearance" ? `切换为${values.appearance === "dark" ? "深色" : values.appearance === "light" ? "浅色" : "跟随系统"}` : "打开设置",
+            changes: [], status: "pending", requiresConfirmation: false, canUndo: false, clientId: target.clientId,
+            ...(kind === "navigate" ? { fromMainChat: true } : {}),
+            ...(kind === "appearance" ? { appearance: values.appearance, previousAppearance: target.appearance } : { module: values.module, ...(values.intent ? { intent: values.intent } : {}) }),
           };
           state.actions.push({ view: action });
           return clone(action);
@@ -1952,7 +1975,8 @@ export class SettingsAssistant implements DeviceAssistantHost {
     if (!["confirm", "reject", "undo", "client-applied", "client-failed"].includes(decision)) throw new Error("无效的操作决定。");
     await this.#serialize(async () => {
       const snapshot = await this.#host.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT);
-      if (expectedTopicId !== undefined) assertExpected(snapshot, expectedTopicId);
+      const isClientReceipt = decision === "client-applied" || decision === "client-failed";
+      if (expectedTopicId !== undefined && !isClientReceipt) assertExpected(snapshot, expectedTopicId);
       const workspace = snapshot?.actions.find((item) => item.view.id === actionId);
       if (workspace?.view.historical) throw new Error("历史回执仅供查看，请重新发起设置操作。");
       if (workspace?.deviceOperation) {
@@ -2083,9 +2107,17 @@ export class SettingsAssistant implements DeviceAssistantHost {
             view.status = "undone";
             view.canUndo = false;
           } else if (view.status === "pending" && decision === "client-applied") {
+            if (view.fromMainChat && view.kind === "navigate") {
+              state.actions = state.actions.filter((item) => item.view.id !== actionId);
+              return;
+            }
             view.status = "applied";
             view.canUndo = view.kind === "appearance" || view.kind === "appearance-customization";
           } else if (view.status === "pending" && decision === "client-failed") {
+            if (view.fromMainChat && view.kind === "navigate") {
+              state.actions = state.actions.filter((item) => item.view.id !== actionId);
+              return;
+            }
             view.status = "failed";
             view.error = error?.slice(0, 300) || "操作未完成";
           }
@@ -2138,60 +2170,6 @@ export class SettingsAssistant implements DeviceAssistantHost {
       await this.#emit();
     });
   }
-}
-
-export function createGlobalSettingsToolsExtension(get: () => SettingsAssistant) {
-  const result = (value: unknown, addTools: string[] = []) => ({
-    output: [{ type: "text" as const, text: JSON.stringify(value) }],
-    ...(addTools.length ? { control: { addTools } } : {}),
-  });
-  return defineExtension({
-    name: "kulo-global-settings",
-    tools: [
-      defineTool({
-        name: "kulo_settings_read",
-        description: "Read current or specified settings section (`current`, `models`, `workers`, `identity`, `machines`, `appearance`, `capabilities`, `extensions`, `connections`, `permissions`, `schedules`, `archives`) without secrets. 关键词：读取设置 查看配置 模型并发设备外观权限定时归档扩展",
-        parameters: obj({ section: opt(oneOf(["current", ...MODULES, "extensions"] as const)) }),
-        deferred: true,
-        replay: "safe",
-        execute: async (args, api, context) => {
-          const value = await get().read(args.section, Number(api.conversationId));
-          const section = args.section ?? "current";
-          const followUps: string[] = [];
-          if (["current", "models", "workers", "identity"].includes(section)) followUps.push("kulo_settings_update");
-          if (["current", "identity"].includes(section)) followUps.push("kulo_memory_service_read");
-          if (section === "appearance") followUps.push("kulo_settings_appearance");
-          if (section === "extensions") followUps.push("kulo_extension_manage");
-          if (section === "capabilities") followUps.push("kulo_capability_manage", "kulo_skill_manage");
-          const addTools = followUps.length
-            ? await resolveDeferredAddTools(api, context, followUps)
-            : [];
-          return result(value, addTools);
-        },
-      }),
-      defineTool({
-        name: "kulo_settings_update",
-        description: "Apply allowlisted settings changes immediately (`block` in `model`/`executor`/`presentation`/`roles`; `changes` JSON object using `roleId.field` for `roles`; read settings first; excludes credentials, URLs, and Identity files—use `kulo_memory_service_read` / `kulo_memory_service_prepare` for Hindsight setup and memory enable/disable toggles). 关键词：修改设置 调整并发子智能体上限 切换默认模型 改名 角色配置 自动归档",
-        parameters: obj({ block: oneOf(["model", "executor", "presentation", "roles"]), changes: str(), title: str() }),
-        deferred: true,
-        execute: async (args, api) => result(await get().update(args.block, args.changes, args.title, api.callId, Number(api.conversationId))),
-      }),
-      defineTool({
-        name: "kulo_settings_appearance",
-        description: "Switch display mode (`system`/`light`/`dark`) on the connected browser immediately. 关键词：切换外观 深色模式 浅色模式 夜间主题 暗黑明暗跟随系统",
-        parameters: obj({ mode: oneOf(["system", "light", "dark"]) }),
-        deferred: true,
-        execute: async (args, api) => result(await get().clientAction("appearance", { appearance: args.mode }, api.callId, Number(api.conversationId))),
-      }),
-      defineTool({
-        name: "kulo_settings_navigate",
-        description: "Navigate to a target settings page or open its add-connection, subscription sign-in, Identity editor, device join, or memory setup flow (secrets are entered only in dedicated UI forms). 关键词：打开设置页面 跳转配置 添加API密钥 登录订阅 配置记忆 接入设备",
-        parameters: obj({ module: oneOf(MODULES), intent: opt(oneOf(INTENTS)) }),
-        deferred: true,
-        execute: async (args, api) => result(await get().clientAction("navigate", { module: args.module, intent: args.intent }, api.callId, Number(api.conversationId))),
-      }),
-    ],
-  });
 }
 
 export function createSettingsAssistantExtension(get: () => SettingsAssistant) {

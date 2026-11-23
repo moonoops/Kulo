@@ -348,6 +348,8 @@ describe("warm-standby tiered sync engine and crash-idempotent promotion", () =>
     // 4. Plant local host-owned files AND foreign standalone hub + stale WAL files on Standby
     fs.mkdirSync(path.join(standbyPaths.hubStateDir, "managed-hindsight"), { recursive: true });
     fs.writeFileSync(path.join(standbyPaths.hubStateDir, "managed-hindsight", "local.db"), "hindsight-local");
+    fs.mkdirSync(path.join(standbyPaths.hubStateDir, "cache", "thumbnails"), { recursive: true });
+    fs.writeFileSync(path.join(standbyPaths.hubStateDir, "cache", "thumbnails", "att_oldcache1-0000000000000000.v1.webp"), "RIFF0000WEBP");
     fs.writeFileSync(path.join(standbyPaths.hubStateDir, "memory-llm-bridge.json"), "{\"local\":true}");
     fs.writeFileSync(path.join(standbyPaths.hubStateDir, "runtime-token"), "local-standby-token");
     fs.mkdirSync(path.join(standbyPaths.hubStateDir, "mobile-connect"), { recursive: true });
@@ -371,8 +373,10 @@ describe("warm-standby tiered sync engine and crash-idempotent promotion", () =>
     expect(fs.existsSync(path.join(standbyPaths.hubStateDir, "mobile-connect"))).toBe(false);
     expect(fs.existsSync(path.join(standbyPaths.hubStateDir, "kulo.sqlite-wal"))).toBe(false);
     expect(fs.existsSync(path.join(standbyPaths.hubStateDir, "kulo.sqlite.redaction-pending"))).toBe(false);
-    // Preserved local host files remain untouched
+    // Preserved local host files remain untouched (regenerable cache is not archived into standalone-backups)
     expect(fs.readFileSync(path.join(standbyPaths.hubStateDir, "managed-hindsight", "local.db"), "utf8")).toBe("hindsight-local");
+    expect(fs.existsSync(path.join(promoted.archivedStandalonePath!, "cache"))).toBe(false);
+    expect(fs.existsSync(path.join(standbyPaths.hubStateDir, "cache", "thumbnails", "att_oldcache1-0000000000000000.v1.webp"))).toBe(true);
     expect(fs.readFileSync(path.join(standbyPaths.hubStateDir, "memory-llm-bridge.json"), "utf8")).toBe("{\"local\":true}");
     expect(fs.readFileSync(path.join(standbyPaths.hubStateDir, "runtime-token"), "utf8")).toBe("local-standby-token");
 
@@ -583,7 +587,7 @@ describe("warm-standby tiered sync engine and crash-idempotent promotion", () =>
         [oversizedId]: { id: oversizedId, kind: "ssh", name: "Huge", host: "10.0.0.13", port: 22, username: "u", revision: 1, status: "verified", hasCredential: true, secretFields: ["password"], trustedHostFingerprint: "ssh-ed25519 SHA256:h", createdAt: 1, updatedAt: 1 },
       };
       if (includeTrusted) {
-        connections[trustedId] = { id: trustedId, kind: "ssh", name: "KuloStation", host: "10.0.0.10", port: 22, username: "demo", revision: 1, status: "verified", hasCredential: true, secretFields: ["password"], trustedHostFingerprint: "ssh-ed25519 SHA256:valid", createdAt: 1, updatedAt: 1 };
+        connections[trustedId] = { id: trustedId, kind: "ssh", name: "LocalStation", host: "10.0.0.10", port: 22, username: "demo", revision: 1, status: "verified", hasCredential: true, secretFields: ["password"], trustedHostFingerprint: "ssh-ed25519 SHA256:valid", createdAt: 1, updatedAt: 1 };
       }
       fs.writeFileSync(path.join(primaryPaths.hubStateDir, "connections.json"), JSON.stringify({ version: 1, connections, inputs: {}, imports: {}, requests: {} }));
     };

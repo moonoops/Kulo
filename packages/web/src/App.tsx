@@ -17,6 +17,8 @@ import {
   type WindowSizeClass,
 } from "./features/shell/workbench-shell";
 import { WorkbenchTitlebar } from "./features/shell/workbench-titlebar";
+import { ArchivedTopicBar } from "./features/shell/archived-topic-bar";
+import { useRootRotationReset } from "./features/shell/root-rotation";
 import {
   readSettingsRailWidth,
   writeSettingsRailWidth,
@@ -96,10 +98,7 @@ import {
   SETTINGS_MODULES,
   type SettingsModuleId,
 } from "./kulo-settings";
-import {
-  KuloTaskProjection,
-  KuloTaskRail,
-} from "./kulo-tasks";
+import { KuloTaskProjection, KuloTaskRail, useTaskRailClearAllHost } from "./kulo-tasks";
 
 function subscribeWindowSize(cb: () => void) {
   window.addEventListener("resize", cb);
@@ -155,6 +154,7 @@ function AppShell() {
     waitForQueuedAck,
     retryQueuedWs,
     removeAcceptedWs,
+    discardFailedWs,
     activeTopicId: persistedActiveTopicId,
     selectTopic: selectPersistedTopic,
     topics: persistedTopics,
@@ -236,15 +236,16 @@ function AppShell() {
   const localTopics = useSyncExternalStore(topicDrafts.subscribe, topicDrafts.getSnapshot, topicDrafts.getSnapshot);
   const activeTopicId = localTopics.selected?.id ?? persistedActiveTopicId;
   const topics = useMemo(() => [...localTopics.topics, ...persistedTopics], [localTopics.topics, persistedTopics]);
-  const viewingHistory = !localTopics.selected && messageWindow?.topicId === activeTopicId;
+  const topicsRef = useRef(topics); topicsRef.current = topics;
+  const activeTopicConvId = topics.find((t) => t.id === activeTopicId)?.conversationId;
+  const rootConversationId = topics.find((t) => t.id === "root")?.conversationId;
+  const viewingHistory = !localTopics.selected && messageWindow?.topicId === activeTopicId &&
+    (messageWindow.conversationId === undefined || activeTopicConvId === undefined || messageWindow.conversationId === activeTopicConvId);
   const serverMessages = localTopics.selected ? [] : viewingHistory ? messageWindow.messages : persistedMessages;
   const live = localTopics.selected ? { busy: false, activeTools: [], queuedCount: 0 } : persistedLive;
   const canLoadHistory = !localTopics.selected && (viewingHistory ? messageWindow.hasMore : canLoadPersistedHistory);
   const selectTopic = useCallback((topicId: string) => {
-    messageNavigationRequest.current?.abort();
-    setMessageWindow(undefined);
-    setPendingMessageJump(undefined);
-    setLocatingMessage(false);
+    messageNavigationRequest.current?.abort(); setMessageWindow(undefined); setPendingMessageJump(undefined); setLocatingMessage(false);
     if (topicDrafts.isLocal(topicId)) topicDrafts.select(topicId);
     else { topicDrafts.leave(); selectPersistedTopic(topicId); }
   }, [topicDrafts, selectPersistedTopic]);
@@ -257,14 +258,14 @@ function AppShell() {
     const resolved = key.startsWith("topic:") && scope === deliveryScope ? composerDraftKey(topicDrafts.draftTopicId(key.slice(6))) : key;
     return scope && scope !== firstDraftScopeRef.current ? `scope:${scope}:${resolved}` : resolved;
   };
-  const messages = useMemo(() => mergeChatSubmissions(serverMessages, viewingHistory ? [] : pendingSubmissions, activeTopicId), [serverMessages, pendingSubmissions, activeTopicId, viewingHistory]);
+  const messages = useMemo(() => mergeChatSubmissions(serverMessages, viewingHistory ? [] : pendingSubmissions, activeTopicId, activeTopicConvId), [serverMessages, pendingSubmissions, activeTopicId, activeTopicConvId, viewingHistory]);
   const chatTimeline = useMemo(() => splitChatTimeline(messages), [messages]);
   const responseMessages = useMemo(() => mergeResponseMessages(chatTimeline.transcript), [chatTimeline.transcript]);
   const lastPausedMessageId = chatTimeline.pending.findLast((item) => item.delivery === "paused")?.id;
   useEffect(() => {
-    const ids = consumedOutboxReceipts(outboxRecords, serverMessages, activeTopicId);
+    const ids = consumedOutboxReceipts(outboxRecords, serverMessages, activeTopicId, activeTopicConvId);
     if (ids.length) void removeAcceptedWs(ids, outboxRecords[0]!.scope).catch((error: unknown) => toast.danger(error instanceof Error ? error.message : t("无法保存消息确认", "Could not save the message receipt")));
-  }, [outboxRecords, serverMessages, activeTopicId, removeAcceptedWs]);
+  }, [outboxRecords, serverMessages, activeTopicId, activeTopicConvId, removeAcceptedWs]);
 
   const sizeClass = useSyncExternalStore<WindowSizeClass>(
     subscribeWindowSize,
@@ -472,6 +473,7 @@ function AppShell() {
     setMessageWindowLoading(true);
     try {
       const page = await kuloRest.getTopicHistory(current.topicId, current.beforeEntryId!);
+      if (page.conversationId !== undefined && current.conversationId !== undefined && page.conversationId !== current.conversationId) return;
       setMessageWindow((previous) => previous === current ? { ...current, ...page, messages: mergeLocatedMessages(page.messages, current.messages) } : previous);
     } finally { setMessageWindowLoading(false); }
   };
@@ -955,17 +957,6 @@ function AppShell() {
     if (projectedTicketRef.current === ticketId) closeProjection();
   }, [sendWsWithAck, closeProjection]);
 
-  const archiveAllTickets = useCallback(async (ticketIds: readonly string[]) => {
-    const uniqueIds = Array.from(new Set(ticketIds));
-    if (!uniqueIds.length) return;
-    const results = await Promise.allSettled(uniqueIds.map((ticketId) => archiveTicket(ticketId)));
-    const failed = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
-    if (failed.length > 0) {
-      const first = failed[0]!.reason;
-      throw first instanceof Error ? first : new Error(t("部分任务删除失败，请重试。", "Some tasks could not be deleted. Try again."));
-    }
-  }, [archiveTicket]);
-
   const handleAssistantItemAction = useCallback(async (item: AssistantItemView, action: AssistantItemAction) => {
     const ack = await sendWsWithAck(
       {
@@ -1036,7 +1027,7 @@ function AppShell() {
     clearError();
     try {
       await waitForPendingTargetDevice(activeTopicId);
-      await sendWsWithAck({ type: "chat.retry", topicId: activeTopicId });
+      await sendWsWithAck({ type: "chat.retry", topicId: activeTopicId, ...(activeTopicId === "root" && rootConversationId !== undefined ? { expectedConversationId: rootConversationId } : {}) });
     } catch (err) {
       setActionError(err instanceof Error ? err.message : t("重试请求失败", "Could not retry the request"));
     } finally {
@@ -1044,57 +1035,29 @@ function AppShell() {
     }
   };
 
+  useRootRotationReset({
+    rootConversationId, deliveryScope, scopedDraftKey, outboxRecords, discardFailedWs,
+    setComposerDrafts, setReplyDrafts, restoreAttachments, setMessageWindow, setPendingMessageJump,
+    setLocatingMessage, setShowToBottom, nearBottomRef, returnChatScrollRef, messageNavigationRequest,
+  });
+
   const ticketById = useMemo(
     () => new Map(tickets.map((t) => [t.id, t])),
     [tickets],
   );
 
   const {
-    resumingQueuedTopic,
-    dispatchSubmissionWithAck,
-    resumeQueuedMessages,
-    submitMessage,
-    transcribeVoice,
+    resumingQueuedTopic, dispatchSubmissionWithAck, resumeQueuedMessages, submitMessage, transcribeVoice,
   } = useChatSubmission({
-    connected,
-    outboxReady,
-    deliveryScope,
-    activeTopicId,
-    activeTopic,
-    projectedTicketId,
-    projectedTicketRef,
-    ticketById,
-    inspectedTicket,
-    topicDrafts,
-    currentDraftKey,
-    currentConversationDraftKey,
-    currentDraft,
-    currentReply,
-    currentAttachments,
-    draftEditRevisionRef,
-    editingSubmissionRef,
-    selectedTargetDeviceId,
-    persistedTargetDeviceId,
-    topicTargetOverrides,
-    setTopicTargetOverrides,
-    waitForPendingTargetDevice,
-    viewingHistory,
-    clearMessageWindow: () => setMessageWindow(undefined),
-    nearBottomRef,
-    setShowToBottom,
-    setComposerDrafts,
-    setReplyDrafts,
-    removeAttachment,
-    setActionError,
-    clearError,
-    closeProjection,
-    selectTopic,
-    enqueueWs,
-    retryQueuedWs,
-    waitForQueuedAck,
-    sendWsWithAck,
-    deviceJoin,
-    clientId: settingsAssistantControls.clientId,
+    connected, outboxReady, deliveryScope, activeTopicId, activeTopic, rootConversationId,
+    projectedTicketId, projectedTicketRef, ticketById, inspectedTicket, topicDrafts,
+    currentDraftKey, currentConversationDraftKey, currentDraft, currentReply, currentAttachments,
+    draftEditRevisionRef, editingSubmissionRef, selectedTargetDeviceId, persistedTargetDeviceId,
+    topicTargetOverrides, setTopicTargetOverrides, waitForPendingTargetDevice, viewingHistory,
+    clearMessageWindow: () => setMessageWindow(undefined), nearBottomRef, setShowToBottom,
+    setComposerDrafts, setReplyDrafts, removeAttachment, setActionError, clearError,
+    closeProjection, selectTopic, enqueueWs, retryQueuedWs, waitForQueuedAck, sendWsWithAck,
+    deviceJoin, clientId: settingsAssistantControls.clientId,
   });
 
   const projectedCard = projectedTicketId
@@ -1193,6 +1156,10 @@ function AppShell() {
       const loaded = destination.topicId === activeTopicId && visibleMessageId(chatTimeline.transcript, responseMessages, destination.messageId!) !== undefined;
       void (loaded ? Promise.resolve(undefined) : kuloRest.getTopicMessageWindow(destination.topicId, destination.messageId!, controller.signal)).then((result) => {
         if (controller.signal.aborted || navigationViewRef.current !== sourceView) return;
+        if (result?.conversationId !== undefined) {
+          const latestConv = topicsRef.current.find((t) => t.id === destination.topicId)?.conversationId;
+          if (latestConv !== undefined && result.conversationId !== latestConv) return;
+        }
         setSettingsMode(false);
         setSettingsDirty(false);
         setProjectedTicketId(undefined);
@@ -1305,7 +1272,7 @@ function AppShell() {
         }
         case "stop-generation": {
           if (settingsMode || projectedTicketId || !live.busy) return false;
-          void sendWsWithAck({ type: "chat.abort", topicId: activeTopicId }).catch((error: unknown) => {
+          void sendWsWithAck({ type: "chat.abort", topicId: activeTopicId, ...(activeTopicId === "root" && rootConversationId !== undefined ? { expectedConversationId: rootConversationId } : {}) }).catch((error: unknown) => {
             setActionError(error instanceof Error ? error.message : t("停止生成失败", "Could not stop the response"));
           });
           return true;
@@ -1531,6 +1498,8 @@ function AppShell() {
       connected={connected}
       liveBusy={live.busy}
       liveContext={live.context}
+      hasMessages={messages.length > 0 || canLoadHistory}
+      hasPendingOutbox={outboxRecords.some((r) => r.envelope.type === "chat.send" && r.envelope.topicId === activeTopicId && (r.state === "queued" || r.state === "sending"))}
       onSelectTargetDevice={selectTargetDevice}
       onOpenConversationSearch={() => openConversationSearch("all")}
       deliveryScope={deliveryScope}
@@ -1826,7 +1795,7 @@ function AppShell() {
         )
       ) : (
         <ConversationScene
-          conversationKey={currentDraftKey}
+          conversationKey={`${currentDraftKey}:${activeTopicConvId ?? ""}`}
           empty={messages.length === 0 && !live.busy && !activeRunFailure && !canLoadHistory && !historyLoading}
           ready={Boolean(localTopics.selected) || Boolean(viewingHistory) || conversationLoaded || messages.length > 0}
           onChooseRecommendation={(task) => {
@@ -1843,7 +1812,7 @@ function AppShell() {
               onWheel={() => { chatNavigatingRef.current = false; }}
               onTouchStart={() => { chatNavigatingRef.current = false; }}
             >
-              <div key={topicDrafts.draftTopicId(activeTopicId)} className="kulo-conversation-stream">
+              <div key={`${topicDrafts.draftTopicId(activeTopicId)}:${activeTopicConvId ?? ""}`} className="kulo-conversation-stream">
                 {canLoadHistory && <Button variant="ghost" size="sm" className="self-center" isDisabled={historyLoading || messageWindowLoading} onPress={() => {
                   const node = chatScrollRef.current;
                   const previousHeight = node?.scrollHeight ?? 0;
@@ -1871,7 +1840,7 @@ function AppShell() {
                 )}
               </div>
             </div>
-            <ConversationOutline key={activeTopicId} turns={conversationTurns} topicId={activeTopicId} scrollRef={chatScrollRef} onNavigate={() => {
+            <ConversationOutline key={`${activeTopicId}:${activeTopicConvId ?? ""}`} turns={conversationTurns} topicId={activeTopicId} scrollRef={chatScrollRef} onNavigate={() => {
               chatNavigatingRef.current = true;
               nearBottomRef.current = false;
             }} />
@@ -1890,6 +1859,9 @@ function AppShell() {
                 <KuloIcon name="chevron-down" size={18} />
               </Button>
             )}
+            {activeTopic?.archived && !activeTopic.master ? (
+              <ArchivedTopicBar topicTitle={activeTopicTitle} connected={connected} onRestore={() => handlePatchTopic(activeTopic.id, { archived: false })} />
+            ) : (
             <KuloComposer
               textareaRef={composerRef}
               draftText={currentDraft}
@@ -1903,7 +1875,7 @@ function AppShell() {
               onRemoveAttachment={(localId) => removeAttachment(currentDraftKey, localId)}
               onRetryAttachment={(localId) => retryAttachment(currentDraftKey, localId)}
               onCancelAttachment={(localId) => cancelAttachment(currentDraftKey, localId)}
-              conversationKey={currentDraftKey}
+              conversationKey={`${currentDraftKey}:${activeTopicConvId ?? ""}`}
               onTranscribeVoice={transcribeVoice}
               voiceCallTarget={voiceCallTarget}
               onResolveVoiceCallTarget={resolveVoiceCallTarget}
@@ -1912,17 +1884,26 @@ function AppShell() {
               onConfigureVoice={openVoiceSettings}
               onPreviewImage={setLightboxImage}
               onSubmit={() => submitMessage()}
-              onAbort={() => { void sendWsWithAck({ type: "chat.abort", topicId: activeTopicId }).catch((error: unknown) => setActionError(error instanceof Error ? error.message : t("停止生成失败", "Could not stop the response"))); }}
+              onAbort={() => { void sendWsWithAck({ type: "chat.abort", topicId: activeTopicId, ...(activeTopicId === "root" && rootConversationId !== undefined ? { expectedConversationId: rootConversationId } : {}) }).catch((error: unknown) => setActionError(error instanceof Error ? error.message : t("停止生成失败", "Could not stop the response"))); }}
               busy={live.busy}
               connected={connected}
               canQueueMessages={outboxReady}
               placeholder={composerPlaceholder()}
             />
+            )}
           </>}
         />
       )}
     </>
   );
+
+  const taskRailClearAll = useTaskRailClearAllHost({
+    tickets,
+    completedTaskDisplayHours: settings?.blocks.executor.value.completedTaskDisplayHours,
+    projectedTicketId,
+    canQueueActions: outboxReady,
+    onArchiveTicket: archiveTicket,
+  });
 
   const rightNode =
     settingsMode ? (
@@ -1966,7 +1947,7 @@ function AppShell() {
         onRetry={retryTicket}
         onIgnore={ignoreTicket}
         onArchive={archiveTicket}
-        onArchiveAll={archiveAllTickets}
+        {...taskRailClearAll.railProps}
       />
     );
 
@@ -1982,15 +1963,12 @@ function AppShell() {
         onCloseSheet={() => setSheet(undefined)}
         leftLabel={settingsMode ? t("设置导航", "Settings navigation") : t("工作台导航", "Workspace navigation")}
         rightLabel={settingsMode ? t("设置对话", "Settings chat") : workbenchName}
-        leftControl={
-          <AgentNavigationToggle expanded={leftExpanded} onToggle={() => togglePanel("left")} />
-        }
+        leftControl={<AgentNavigationToggle expanded={leftExpanded} onToggle={() => togglePanel("left")} />}
         titlebarContent={titlebarNode}
+        rightHeaderActions={settingsMode ? undefined : taskRailClearAll.headerAction}
         rightControl={
           <Button size="sm" isIconOnly variant="ghost" className="kulo-window-control"
-            aria-label={settingsMode
-              ? rightExpanded ? t("收起设置对话", "Collapse settings chat") : t("展开设置对话", "Expand settings chat")
-              : rightExpanded ? t("收起任务栏", "Collapse task panel") : t("展开任务栏", "Expand task panel")}
+            aria-label={settingsMode ? (rightExpanded ? t("收起设置对话", "Collapse settings chat") : t("展开设置对话", "Expand settings chat")) : (rightExpanded ? t("收起任务栏", "Collapse task panel") : t("展开任务栏", "Expand task panel"))}
             aria-expanded={rightExpanded}
             onPress={() => togglePanel("right")}
           >

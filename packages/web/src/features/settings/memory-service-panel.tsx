@@ -1,9 +1,10 @@
 import { translate as t, useI18n } from "../../kulo-i18n";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Alert, Button, Checkbox, Chip, Input, Label, Spinner, Switch, TextField } from "@heroui/react";
+import { Alert, Button, Checkbox, Chip, Disclosure, Input, Label, Spinner, Switch, TextField } from "@heroui/react";
 import { redactSecrets, type HindsightAccessMode, type HindsightProbeResult, type MemoryConnectionUpdateRequest, type MemoryServiceSnapshot, type ProviderCatalogItem, type KuloSettingsView } from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { KuloApiError, kuloRest } from "../../kulo-api";
+import { BuiltinMemorySection } from "./builtin-memory-section";
 import { safeSetupInputError } from "./capability-setup-inputs";
 import { SettingsList, SettingsSaveBar, SettingsSection } from "./settings-layout";
 import { MemoryServerList } from "./memory-server-list";
@@ -24,6 +25,7 @@ import {
   publishMemoryService,
   requestMemoryAssistantPrefill,
   requestMemoryService,
+  takePendingMemoryConnectionFocus,
 } from "./memory-service-events";
 import { useSettingsPending } from "./settings-save-activity";
 
@@ -127,6 +129,7 @@ export function MemoryConnectionForm({
   error,
   enabledError,
   probe,
+  headingLevel = 2,
   onChange,
   onModelsChange,
   onLocalDeploy,
@@ -156,6 +159,7 @@ export function MemoryConnectionForm({
   error?: string;
   enabledError?: string;
   probe?: HindsightProbeResult;
+  headingLevel?: 2 | 3;
   onChange: (draft: MemoryConnectionDraft) => void;
   onModelsChange?: (draft: MemoryModelsDraft) => void;
   onLocalDeploy?: () => void;
@@ -194,6 +198,7 @@ export function MemoryConnectionForm({
   const isInProgressInstall = localPhase === "installing" || localPhase === "verifying";
   const hasManagedInstall = Boolean(snapshot?.installed) || isFailedInstall || isInProgressInstall;
   const isReadyInstall = Boolean(snapshot?.installed) && !isFailedInstall && !isInProgressInstall;
+  const showLocalService = snapshot?.platform !== "win32" || hasManagedInstall;
   const localStatusLabel = isFailedInstall
     ? t("部署失败", "Deployment failed")
     : localPhase === "installing"
@@ -216,7 +221,7 @@ export function MemoryConnectionForm({
   const change = <K extends keyof MemoryConnectionDraft>(key: K, value: MemoryConnectionDraft[K]) => onChange({ ...draft, [key]: value });
   return <div className="kulo-settings-form gap-7" aria-busy={busy || undefined}>
     <div inert={busy || undefined}>
-      <SettingsSection title={t("长期记忆", "Long-term memory")} status={<Chip size="sm" variant="soft" color={enabled ? "success" : "default"}>{enabled ? t("已启用", "Enabled") : t("未启用", "Disabled")}</Chip>} action={
+      <SettingsSection headingLevel={headingLevel} title={t("长期记忆", "Long-term memory")} status={<Chip size="sm" variant="soft" color={enabled ? "success" : "default"}>{enabled ? t("已启用", "Enabled") : t("未启用", "Disabled")}</Chip>} action={
         <div ref={enabledControlRef} className="flex items-center gap-2">{pending === "enabled" && <Spinner size="sm" aria-label={t("保存启用状态", "Saving enabled state")} />}<Switch aria-label={t("启用长期记忆", "Enable long-term memory")} isSelected={enabled} isDisabled={disabled} onChange={(next) => { restoreEnabledFocus.current = enabledControlRef.current?.contains(document.activeElement) ?? false; onEnabledChange(next); }}><Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control></Switch.Content></Switch></div>
       }>
         <SettingsList label={t("长期记忆选项", "Long-term memory options")}>
@@ -245,7 +250,7 @@ export function MemoryConnectionForm({
     {enabledError && <Alert status="danger" role="alert" className="rounded-2xl p-3"><Alert.Content className="flex-1 break-words text-sm">{enabledError}</Alert.Content>{onEnabledRetry && <Button type="button" size="sm" variant="secondary" isDisabled={busy || !connected} onPress={onEnabledRetry}>{t("重试", "Retry")}</Button>}</Alert>}
     <form className="kulo-settings-form gap-4" aria-label={t("长期记忆连接设置", "Long-term memory connection settings")} onSubmit={onSave}>
     <div inert={busy || undefined}>
-    <SettingsSection title={t("连接配置", "Connection settings")}>
+    <SettingsSection headingLevel={headingLevel} title={t("连接配置", "Connection settings")}>
       <div className="kulo-form-stack">
         <MemoryServerList addresses={[draft.endpoint, ...draft.endpoints]} disabled={disabled}
           onChange={([endpoint, ...endpoints]) => onChange({ ...draft, endpoint, endpoints })} />
@@ -268,8 +273,8 @@ export function MemoryConnectionForm({
     </div>
     <SettingsSaveBar dirty={dirty} busy={busy} saving={pending === "save"} disabled={disabled || editor.conflict} onDiscard={onDiscard} stateLabel={t("连接配置未保存", "Connection settings unsaved")} saveLabel={savedMemory.value.enabled ? t("验证并保存", "Verify and save") : t("保存连接配置", "Save connection settings")} />
     </form>
-    <div inert={busy || undefined}>
-    <SettingsSection title={t("本机服务", "Local service")}>
+    {showLocalService && <div inert={busy || undefined}>
+    <SettingsSection headingLevel={headingLevel} title={t("本机服务", "Local service")}>
       {hasManagedInstall && snapshot && <dl className="mb-5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-3 text-sm">
         <dt className="text-muted">{t("部署设备", "Deployment device")}</dt><dd className="break-words">{snapshot.deviceName}</dd>
         <dt className="text-muted">{t("服务状态", "Service status")}</dt><dd className={isFailedInstall ? "text-danger" : undefined}>{localStatusLabel}{isReadyInstall && snapshot.version ? ` · ${snapshot.version}` : ""}</dd>
@@ -292,7 +297,7 @@ export function MemoryConnectionForm({
         {activeStage && <div className="flex items-center gap-2 text-xs text-muted" role="status"><Spinner size="sm" aria-label={t("记忆服务处理中", "Memory service is processing")} /><span>{activeStage}</span></div>}
       </div>
     </SettingsSection>
-    </div>
+    </div>}
   </div>;
 }
 
@@ -319,8 +324,10 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
   activeUninstallJobIdRef.current = activeUninstallJobId;
   const [loading, setLoading] = useState(false);
   const [pending, setPending] = useState<MemoryConnectionAction>();
+  const [builtinBusy, setBuiltinBusy] = useState(false);
+  const [hindsightExpanded, setHindsightExpanded] = useState(() => Boolean(settings.blocks.memory.value.enabled));
   const pendingRef = useRef(false);
-  const busy = Boolean(pending) || modelsBusy;
+  const busy = Boolean(pending) || modelsBusy || builtinBusy;
   useSettingsPending(pending === "save" || pending === "enabled" || pending === "knowledge" || modelsBusy);
   const [error, setError] = useState<string>();
   const [enabledError, setEnabledError] = useState<string>();
@@ -425,11 +432,28 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
   }, [connected, hasPanelPendingWork, panelClientId, applyPanelSnapshot]);
 
   useEffect(() => {
+    if (savedMemory.value.enabled || snapshot?.installed || snapshot?.phase === "failed" || snapshot?.phase === "installing" || snapshot?.phase === "verifying") {
+      setHindsightExpanded(true);
+    }
+  }, [savedMemory.value.enabled, snapshot?.installed, snapshot?.phase]);
+
+  useEffect(() => {
     const changed = (event: Event) => {
       const next = (event as CustomEvent<MemoryServiceSnapshot>).detail;
       applyPanelSnapshot(next);
     };
-    const focus = () => { requestAnimationFrame(() => { formRef.current?.scrollIntoView({ block: "start" }); formRef.current?.querySelector<HTMLInputElement>('input[type="url"]')?.focus(); }); };
+    const focus = () => {
+      takePendingMemoryConnectionFocus();
+      setHindsightExpanded(true);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const urlInput = formRef.current?.querySelector<HTMLInputElement>('input[type="url"]');
+          (urlInput ?? formRef.current)?.scrollIntoView({ block: "center" });
+          urlInput?.focus();
+        });
+      });
+    };
+    if (takePendingMemoryConnectionFocus()) focus();
     window.addEventListener(MEMORY_SERVICE_CHANGED_EVENT, changed);
     window.addEventListener(MEMORY_CONNECTION_FOCUS_EVENT, focus);
     return () => { window.removeEventListener(MEMORY_SERVICE_CHANGED_EVENT, changed); window.removeEventListener(MEMORY_CONNECTION_FOCUS_EVENT, focus); };
@@ -583,37 +607,55 @@ export function MemoryServicePanel({ settings, connected = true, onSettingsUpdat
 
   const isIncompleteInstall = snapshot?.phase === "failed" || snapshot?.phase === "installing" || snapshot?.phase === "verifying";
 
-  return <div ref={formRef}>
-    <MemoryConnectionForm
-      settings={settings}
-      savedMemory={savedMemory}
-      snapshot={snapshot}
-      providers={providers}
-      editor={editor}
-      modelsDraft={modelsDraft}
-      modelsError={modelsError}
-      modelsBusy={modelsBusy}
-      activeStage={activeUninstallJob?.stage}
-      pending={pending}
-      loading={loading}
+  return <div ref={formRef} className="kulo-settings-form gap-7">
+    <BuiltinMemorySection
       connected={connected}
-      error={error ?? loadError}
-      enabledError={enabledError}
-      probe={probe}
-      onEnabledChange={(enabled) => void toggleEnabled(enabled)}
-      onEnabledRetry={enabledRetry ? () => void retryEnabled() : undefined}
-      onKnowledgeGuidanceChange={(enabled) => void toggleKnowledgeGuidance(enabled)}
-      onChange={(draft) => { setEditor((current) => ({ ...current, draft })); setError(undefined); setProbe(undefined); }}
-      onModelsChange={(next) => { setModelsDraft(next); setModelsError(undefined); }}
-      onLocalDeploy={() => prefillLocalOperation("deploy")}
-      onLocalConfigure={() => prefillLocalOperation("configure")}
-      onLocalUninstall={() => { setUninstallDeleteData(false); setUninstallOpen(true); }}
-      onSave={(event) => { event.preventDefault(); void submit(false); }}
-      onProbe={() => void submit(true)}
-      onDiscard={() => reset()}
-      onReload={() => void reload()}
-      onRetry={!error && loadError ? () => setRefresh((value) => value + 1) : undefined}
+      hindsightEnabled={savedMemory.value.enabled}
+      onBusyChange={setBuiltinBusy}
     />
+    <Disclosure isExpanded={hindsightExpanded} onExpandedChange={setHindsightExpanded} className="min-w-0">
+      <Disclosure.Heading level={2}>
+        <Disclosure.Trigger className="flex w-full min-w-0 cursor-pointer items-center justify-between gap-3 rounded-xl py-2 text-left">
+          <span className="kulo-section-title">{t("Hindsight 记忆服务（高级）", "Hindsight memory service (Advanced)")}</span>
+          <Disclosure.Indicator />
+        </Disclosure.Trigger>
+      </Disclosure.Heading>
+      <Disclosure.Content>
+        <Disclosure.Body className="pt-4">
+          <MemoryConnectionForm
+            headingLevel={3}
+            settings={settings}
+            savedMemory={savedMemory}
+            snapshot={snapshot}
+            providers={providers}
+            editor={editor}
+            modelsDraft={modelsDraft}
+            modelsError={modelsError}
+            modelsBusy={modelsBusy}
+            activeStage={activeUninstallJob?.stage}
+            pending={pending}
+            loading={loading}
+            connected={connected}
+            error={error ?? loadError}
+            enabledError={enabledError}
+            probe={probe}
+            onEnabledChange={(enabled) => void toggleEnabled(enabled)}
+            onEnabledRetry={enabledRetry ? () => void retryEnabled() : undefined}
+            onKnowledgeGuidanceChange={(enabled) => void toggleKnowledgeGuidance(enabled)}
+            onChange={(draft) => { setEditor((current) => ({ ...current, draft })); setError(undefined); setProbe(undefined); }}
+            onModelsChange={(next) => { setModelsDraft(next); setModelsError(undefined); }}
+            onLocalDeploy={() => prefillLocalOperation("deploy")}
+            onLocalConfigure={() => prefillLocalOperation("configure")}
+            onLocalUninstall={() => { setUninstallDeleteData(false); setUninstallOpen(true); }}
+            onSave={(event) => { event.preventDefault(); void submit(false); }}
+            onProbe={() => void submit(true)}
+            onDiscard={() => reset()}
+            onReload={() => void reload()}
+            onRetry={!error && loadError ? () => setRefresh((value) => value + 1) : undefined}
+          />
+        </Disclosure.Body>
+      </Disclosure.Content>
+    </Disclosure>
     <ConfirmDialog
       open={uninstallOpen}
       title={isIncompleteInstall ? t("清理未完成的本机 Hindsight 安装？", "Clean up incomplete local Hindsight install?") : t("卸载本机 Hindsight？", "Uninstall local Hindsight?")}

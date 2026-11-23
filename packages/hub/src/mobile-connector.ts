@@ -40,7 +40,10 @@ function tailnetIp(value: unknown): value is string {
 /** Read the existing daemon; this never runs up/login or modifies its preferences. */
 export async function discoverSystemTailscale(): Promise<{ known: boolean; origins: string[] }> {
   const commands = process.platform === "darwin"
-    ? ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "tailscale"] : ["tailscale"];
+    ? ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "tailscale"]
+    : process.platform === "win32"
+      ? [path.win32.join(process.env.ProgramFiles ?? "C:\\Program Files", "Tailscale", "tailscale.exe"), "tailscale.exe", "tailscale"]
+      : ["tailscale"];
   for (const command of commands) {
     const result = await new Promise<string | undefined>((resolve) => {
       execFile(command, ["status", "--json"], { timeout: 3_000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, env: { ...process.env, PATH: buildAugmentedHostPath() } },

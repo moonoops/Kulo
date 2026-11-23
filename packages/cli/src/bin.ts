@@ -8,7 +8,7 @@ import { createInterface } from "node:readline/promises";
 import { KULO_VERSION, type DevicePeerConfig } from "@kulo/protocol";
 import {
   activateStagedPeer, claimKuloRuntime, DeviceRoleTransitions, discoverDevicePeer, discoverKuloRuntime, getPeerConfigPath, LocalInstanceInUseError, KuloEnvAgent,
-  normalizePeerHubUrl, readPeerConfig, stageDevicePeer, startDevicePeer, type DevicePeerRuntime, type LocalInstanceOwner,
+  normalizePeerHubUrl, readExistingHostRuntimeToken, readPeerConfig, stageDevicePeer, startDevicePeer, type DevicePeerRuntime, type HostAppChannel, type LocalInstanceOwner,
 } from "@kulo/env";
 import {
   createStandbyHostBridge, findRunningHub, getClusterProtectedPaths, HubStateInUseError, KuloHub, loadDotEnv,
@@ -16,6 +16,7 @@ import {
 } from "@kulo/hub";
 import { runTuiChatClient } from "./tui-chat.js";
 import { confirmRunningPeer, findRunningDevicePeer, joinRunningHub, resolveChatConnection, runJoinedDeviceCommand } from "./device-launch.js";
+import { startHeadlessHost } from "./headless-host.js";
 
 function resolveOptionalWebDistDir(): string | undefined {
   const candidate = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
@@ -49,6 +50,9 @@ Kulo v${KULO_VERSION} — Low-attention SuperAgent built on Pi Durable + Pi Env
 
   kulo open [--no-open]
       启动 Kulo 并打开 Web 控制台
+
+  kulo host [--data-dir <数据目录>] [--port <端口>] [--host 127.0.0.1] [--channel release|dev] [--no-local-env]
+      启动无头常驻主/备宿主机服务（与桌面端共享标准数据目录，支持角色自动热切换）
 
   kulo hub [--host 0.0.0.0] [--port 7788] [--state-dir ./.kulo-state] [--no-local-env]
       独立启动常驻大脑中枢服务（管理 Pi Durable SQLite 与调度池）
@@ -112,6 +116,30 @@ async function main(runtime: { owner?: LocalInstanceOwner }): Promise<void> {
   }
 
   const cliWebDistDir = resolveOptionalWebDistDir();
+  if (subcommand === "host") {
+    const portRaw = getFlag(rest, "--port");
+    const port = portRaw !== undefined ? Number.parseInt(portRaw, 10) : undefined;
+    const channelRaw = getFlag(rest, "--channel");
+    const channel: HostAppChannel = channelRaw === "dev" ? "dev" : "release";
+    const handle = await startHeadlessHost({
+      dataDir: getFlag(rest, "--data-dir"),
+      channel,
+      host: getFlag(rest, "--host"),
+      ...(port !== undefined && Number.isInteger(port) ? { port } : {}),
+      webDistDir: getFlag(rest, "--web-dir") ?? cliWebDistDir,
+      noLocalEnv: hasFlag(rest, "--no-local-env"),
+    });
+    const shutdown = () => {
+      void handle.close().then(
+        () => process.exit(0),
+        () => process.exit(1),
+      );
+    };
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+    return;
+  }
+
   if (subcommand === "hub" || subcommand === "dev" || subcommand === "open" || subcommand === "join") {
     const host = getFlag(rest, "--host");
     const portStr = getFlag(rest, "--port");
@@ -123,8 +151,14 @@ async function main(runtime: { owner?: LocalInstanceOwner }): Promise<void> {
       peerConfigPath,
     });
     const clusterProtectedPaths = getClusterProtectedPaths(clusterPaths);
-    await recoverInterruptedClusterTransition(clusterPaths);
     const claimRuntime = () => runtime.owner ??= claimKuloRuntime(directory);
+    let clusterRecovered = false;
+    const ensureClusterRecovered = async (): Promise<void> => {
+      if (clusterRecovered) return;
+      claimRuntime();
+      await recoverInterruptedClusterTransition(clusterPaths);
+      clusterRecovered = true;
+    };
     const noLocalEnv = hasFlag(rest, "--no-local-env");
     const noTui = subcommand !== "dev" || hasFlag(rest, "--no-tui") || !process.stdin.isTTY;
     const allowRoleSwitch = subcommand !== "hub" && noTui;
@@ -133,11 +167,11 @@ async function main(runtime: { owner?: LocalInstanceOwner }): Promise<void> {
     let activeServer: KuloHubServer | undefined;
     let activePeer: DevicePeerRuntime | undefined;
     let boundPort = portStr ? Number.parseInt(portStr, 10) : undefined;
-    let localToken = process.env.KULO_AUTH_TOKEN?.trim() || undefined;
+    let localToken = process.env.KULO_AUTH_TOKEN?.trim() || readExistingHostRuntimeToken(path.join(directory, "runtime-token")) || undefined;
     let roles: DeviceRoleTransitions;
 
     const startCliHub = async (): Promise<{ hub: KuloHub; server: KuloHubServer }> => {
-      claimRuntime();
+      await ensureClusterRecovered();
       if (activePeer) {
         await activePeer.close();
         activePeer = undefined;
@@ -149,12 +183,13 @@ async function main(runtime: { owner?: LocalInstanceOwner }): Promise<void> {
           ...(host ? { host } : {}),
           ...(boundPort !== undefined ? { port: boundPort } : {}),
           ...(stateDir ? { stateDir: path.resolve(stateDir) } : {}),
+          ...(localToken ? { authToken: localToken } : {}),
           enableLocalEnv: !noLocalEnv,
           extraProtectedPaths: clusterProtectedPaths,
         },
       });
       activeHub = nextHub;
-      localToken = nextHub.config.authToken;
+      localToken = nextHub.config.authToken ?? localToken;
       let nextServer: KuloHubServer;
       try {
         nextServer = await startKuloHubServer(nextHub, {
@@ -174,7 +209,7 @@ async function main(runtime: { owner?: LocalInstanceOwner }): Promise<void> {
     };
 
     const startCliPeer = async (config: DevicePeerConfig): Promise<DevicePeerRuntime> => {
-      claimRuntime();
+      await ensureClusterRecovered();
       if (activePeer) { await activePeer.close(); activePeer = undefined; }
       if (activeServer) { await activeServer.close(); activeServer = undefined; }
       if (activeHub) { await activeHub.close(); activeHub = undefined; }
@@ -269,13 +304,18 @@ async function main(runtime: { owner?: LocalInstanceOwner }): Promise<void> {
       if (!activePeer && !activeHub) runtime.owner?.close();
       return;
     }
+    await ensureClusterRecovered();
     const fence = await runPreStartFence(clusterPaths, { defaultRootDir: process.cwd() });
     if (fence.action === "start_peer") {
       const peer = await startCliPeer(fence.peerConfig);
       localToken = peer.authToken;
       registerDeviceShutdown(closeRuntime);
       console.log(`已检测到更新的主机（${fence.activePrimaryUrl}），本机自动切为备用主机同步。Web 控制台：${peer.url}`);
-      if (subcommand === "open" && !hasFlag(rest, "--no-open")) await openBrowser(peer.url);
+      if (subcommand === "open" && !hasFlag(rest, "--no-open")) {
+        const browserUrl = new URL(peer.url);
+        if (localToken) browserUrl.searchParams.set("token", localToken);
+        await openHubConsole(browserUrl);
+      }
       return;
     }
     const { hub, server } = await startCliHub();
@@ -376,7 +416,8 @@ async function launch(): Promise<void> {
       runtime.owner?.close();
       if (error instanceof LocalInstanceInUseError && ["open", "join"].includes(process.argv[2] ?? "")) continue;
       if (!(error instanceof HubStateInUseError) || process.argv[2] !== "open") throw error;
-      const url = await findRunningHub(error.stateDir, process.env.KULO_AUTH_TOKEN?.trim());
+      const fallbackToken = process.env.KULO_AUTH_TOKEN?.trim() || readExistingHostRuntimeToken(path.join(error.stateDir, "runtime-token"));
+      const url = await findRunningHub(error.stateDir, fallbackToken);
       if (!url) continue;
       console.log(`Kulo 已在运行，Web 控制台：${url.origin}`);
       if (!hasFlag(process.argv.slice(3), "--no-open")) await openHubConsole(url);

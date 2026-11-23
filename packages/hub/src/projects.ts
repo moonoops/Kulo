@@ -4,11 +4,12 @@ import {
   AssistantEntry, UserEntry, defineDoc,
   type ConversationId, type Harness, type JsonObject,
 } from "@earendil-works/pi-durable";
-import type {
-  CreateProjectInput, ProjectDirectoryGrant, ProjectDirectoryListing, ProjectRecord,
-  ProjectView, TicketRecord, TopicSummary,
+import {
+  isSilentCoordinatorReplyText,
+  type CreateProjectInput, type ProjectDirectoryGrant, type ProjectDirectoryListing, type ProjectRecord,
+  type ProjectView, type TicketRecord, type TopicSummary,
 } from "@kulo/protocol";
-import { KuloStateDoc, hasPendingWorkspaceApply, transitionTicketStatus } from "./state.js";
+import { KuloStateDoc, hasPendingWorkspaceApply, isLegacyInternalUserEntry, transitionTicketStatus } from "./state.js";
 import { KuloUserEntry } from "./ui-cards.js";
 
 export class ProjectError extends Error {
@@ -65,6 +66,7 @@ export interface KuloProjectsDependencies {
   stopTicket: (id: string, reason: string) => Promise<unknown>;
   onChanged?: () => void | Promise<void>;
   onProjectDeleted?: (projectId: string, conversationIds: readonly number[], context: Context) => Promise<void>;
+  onTopicMoved?: (topicId: string, projectId: string | null, context: Context) => Promise<void>;
 }
 
 const UNFINISHED = new Set(["queued", "running", "pausing", "waiting", "blocked"]);
@@ -109,7 +111,7 @@ export class KuloProjects {
       : state?.bindings[project.id] ? "项目目录正在重新关联。"
       : state?.errors[project.id]
       ?? (state?.needsAuthorization[project.id] ? "项目目录需要重新授权。" : undefined)
-      ?? (device && (!device.capabilities.includes("worker-isolation") || device.capabilities.includes("worker-isolation-unavailable")) ? "设备执行隔离尚未就绪。" : undefined)
+      ?? (device && (!(device.capabilities.includes("worker-isolation") || device.capabilities.includes("worker-isolation-basic")) || device.capabilities.includes("worker-isolation-unavailable")) ? "设备执行隔离尚未就绪。" : undefined)
       ?? (device?.capabilities.includes("worker-network-unavailable") ? "设备执行网络尚未就绪。" : undefined);
     return {
       ...clone(project), deviceName: device?.name ?? project.deviceId,
@@ -520,6 +522,7 @@ export class KuloProjects {
         current.projectId = projectId; current.updatedAt = Date.now();
         return clone(current);
       }, context);
+      await this.#deps.onTopicMoved?.(topicId, projectId, context).catch(() => {});
       await this.#changed(); return topic;
     });
   }
@@ -553,12 +556,14 @@ export class KuloProjects {
       for (;;) {
         context.abortSignal?.throwIfAborted();
         for (const entry of page.items) {
+          if (isLegacyInternalUserEntry(entry)) continue;
           const isUser = UserEntry.is(entry) || KuloUserEntry.is(entry);
           if (!isUser && !AssistantEntry.is(entry)) continue;
           const model = entry.model?.[0] as { content?: unknown } | undefined;
           const storedText = KuloUserEntry.is(entry) ? entry.data.text : undefined;
           const text = typeof storedText === "string" ? storedText : typeof model?.content === "string" ? model.content : Array.isArray(model?.content)
             ? model.content.flatMap((block) => block && typeof block === "object" && "type" in block && block.type === "text" && "text" in block && typeof block.text === "string" ? [block.text] : []).join("\n") : "";
+          if (!isUser && isSilentCoordinatorReplyText(text)) continue;
           const at = text.toLocaleLowerCase().indexOf(search);
           if (at < 0) continue;
           matches.push({ topicId: topic.id, title: topic.title, entryId: Number(entry.id), role: isUser ? "user" : "assistant", excerpt: text.slice(Math.max(0, at - 120), at + 480) });

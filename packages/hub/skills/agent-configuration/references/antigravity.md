@@ -1,6 +1,6 @@
 # Antigravity Local Integration
 
-Verified: 2026-11-21. Requires the Antigravity CLI `agy` (on macOS, Kulo auto-discovers `agy` on `PATH` as well as `/Applications/Gemini.app/Contents/Helpers/agy`, `/Applications/Antigravity.app/Contents/Resources/app/bin/agy`, and `~/.gemini/antigravity/bin/agy`).
+Verified: 2026-11-23. Requires the Antigravity CLI `agy` (on macOS, Kulo auto-discovers `agy` on `PATH` / `~/.local/bin/agy`, `/Applications/Gemini.app/Contents/Helpers/agy`, `/Applications/Antigravity.app/Contents/Resources/app/bin/agy`, and `~/.gemini/antigravity{,-cli}/bin/agy`). Note: the standalone Antigravity 2.0 desktop GUI app (`/Applications/Antigravity.app`) does not bundle `agy`; install the Antigravity CLI separately if `Gemini.app` is not present.
 
 - Native protocol entrypoint: `agy acp --process-per-session` over JSON-RPC stdio—do not guess deprecated experimental flags or inject Kulo-specific sandboxes.
 - Reuses the client's existing account, native auth (`agy acp --login`), `HOME`, tools, MCP, plugins, network, permissions, and internal subagents on the bound device—never request credentials in chat or force a Gemini API key.

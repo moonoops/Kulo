@@ -31,7 +31,7 @@ function makeEnv(overrides: Partial<EnvNodeDescriptor> & { id: string; name: str
 
 describe("ChatTargetDeviceMenu", () => {
   const local = makeEnv({ id: "local", name: "Macmini.local", kind: "local", online: true });
-  const macbookOffline = makeEnv({ id: "device-macbook", name: "iKoomas-Macboom-Pro.local", online: false });
+  const macbookOffline = makeEnv({ id: "device-macbook", name: "Dev-Laptop.local", online: false });
   const studioOnline = makeEnv({ id: "device-studio", name: "Alpha Studio", online: true });
 
   it("hides itself when there is only one device and no target is selected", () => {
@@ -76,7 +76,7 @@ describe("ChatTargetDeviceMenu", () => {
 
     const menuSlice = selectedOnline.slice(selectedOnline.indexOf('role="menu"'));
     expect(menuSlice.indexOf("Alpha Studio")).toBeLessThan(menuSlice.indexOf("Macmini.local"));
-    expect(menuSlice.indexOf("Macmini.local")).toBeLessThan(menuSlice.indexOf("iKoomas-Macboom-Pro.local"));
+    expect(menuSlice.indexOf("Macmini.local")).toBeLessThan(menuSlice.indexOf("Dev-Laptop.local"));
     expect(menuSlice.indexOf('<span class="kulo-device-local-tag">本机</span>')).toBeLessThan(menuSlice.indexOf(">Alpha Studio</span>"));
   });
 
@@ -91,7 +91,7 @@ describe("ChatTargetDeviceMenu", () => {
     const selectedOffline = renderToStaticMarkup(
       <ChatTargetDeviceMenu envs={[local, macbookOffline]} selectedDeviceId="device-macbook" onSelect={vi.fn()} />,
     );
-    expect(selectedOffline).toContain("iKoomas-Macboom-Pro.local");
+    expect(selectedOffline).toContain("Dev-Laptop.local");
     expect(selectedOffline).toContain('data-online="false"');
     expect(selectedOffline).toContain("离线");
   });

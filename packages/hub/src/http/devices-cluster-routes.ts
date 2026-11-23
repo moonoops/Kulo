@@ -9,6 +9,7 @@ import {
   type PreparedDeviceRoleChange,
 } from "@kulo/env";
 import {
+  BUILTIN_MEMORY_SYNC_CAPABILITY,
   formatDeviceChatInvitation,
   parseDeviceJoinInput,
   type ClusterLocalStatusView,
@@ -70,6 +71,11 @@ export async function handleDevicesAndClusterRoutes(
   const assertOwnerHubControl = (message: string, code = "device_owner_control_required") => {
     if (!authority.hasOwnerHubControl) throw new DeviceConnectionError(message, 403, code);
   };
+  const withSshOnboarding = (view: DeviceInterconnectionView): DeviceInterconnectionView => {
+    if (!authority.hasOwnerHubControl) return view;
+    const sshOnboarding = sshDevices.listOnboardingProgress();
+    return sshOnboarding.length > 0 ? { ...view, sshOnboarding } : view;
+  };
   const assertDesktopOrHostOwner = (message: string, code = "device_owner_control_required") => {
     if (!authority.hasOwnerHubControl || authority.isMobilePrincipal || authority.isSshPrincipal) {
       throw new DeviceConnectionError(message, 403, code);
@@ -129,7 +135,7 @@ export async function handleDevicesAndClusterRoutes(
   }
 
   if (pathname === "/api/devices" && req.method === "GET") {
-    sendJson(res, 200, deviceView(req, parsedUrl));
+    sendJson(res, 200, withSshOnboarding(deviceView(req, parsedUrl)));
     return true;
   }
   if (pathname === "/api/devices" && req.method === "PATCH") {
@@ -137,7 +143,7 @@ export async function handleDevicesAndClusterRoutes(
     const body = await readJsonBody(req) as { enabled?: unknown; force?: unknown };
     if (typeof body?.enabled !== "boolean") throw new DeviceConnectionError("互联开关状态无效。");
     await setInterconnectionFromHttp(res, body.enabled, body.force === true);
-    sendJson(res, 200, deviceView(req, parsedUrl));
+    sendJson(res, 200, withSshOnboarding(deviceView(req, parsedUrl)));
     return true;
   }
   if (pathname === "/api/devices/chat-invitations" && req.method === "POST") {
@@ -198,13 +204,30 @@ export async function handleDevicesAndClusterRoutes(
   if (pathname === "/api/devices/ssh" && req.method === "POST") {
     assertOwnerHubControl("请通过受信任的 Kulo 客户端添加 SSH 设备。");
     if (!devices.enabled) throw new DeviceConnectionError("请先开启设备互联。", 409);
+    // First-time onboarding may auto-install standalone Node.js + peer runtime over SSH.
+    res.setTimeout?.(600_000);
     const body = await readJsonBody(req) as DeviceSshAddRequest;
+    const controller = new AbortController();
+    const onAborted = () => controller.abort();
+    const onClose = () => { if (!res.writableEnded) controller.abort(); };
+    req.once("aborted", onAborted);
+    res.once("close", onClose);
+    if (req.aborted || res.destroyed || res.writableEnded) controller.abort();
     try {
-      const record = await sshDevices.add(body);
+      const record = await sshDevices.add(body, { signal: controller.signal });
+      if (controller.signal.aborted || res.destroyed || res.writableEnded) {
+        sshDevices.remove(record.deviceId);
+        devices.remove(record.deviceId);
+        return true;
+      }
       devices.recordSsh(record);
       sendJson(res, 201, deviceView(req, parsedUrl).devices.find((d) => d.id === record.deviceId));
     } catch (error) {
+      if (controller.signal.aborted && (res.destroyed || res.writableEnded)) return true;
       throw toDeviceSshHttpError(error);
+    } finally {
+      req.removeListener("aborted", onAborted);
+      res.removeListener("close", onClose);
     }
     return true;
   }
@@ -263,7 +286,7 @@ export async function handleDevicesAndClusterRoutes(
         console.error("[ClusterSync] baseline after setStandby failed:", error instanceof Error ? error.message : String(error));
       });
     }
-    sendJson(res, 200, deviceView(req, parsedUrl));
+    sendJson(res, 200, withSshOnboarding(deviceView(req, parsedUrl)));
     return true;
   }
   if (pathname === "/api/cluster/handover" && req.method === "POST") {
@@ -283,6 +306,9 @@ export async function handleDevicesAndClusterRoutes(
     if (!targetRecord || !targetRecord.syncToken) throw new DeviceConnectionError("目标设备不是已启用的备用主机。", 404, "standby_not_found");
     const targetEnv = hub.envManager.getEnvDescriptor(targetNodeId);
     if (!targetEnv?.online) throw new DeviceConnectionError("目标备用主机当前离线，无法无损切换。", 409, "standby_offline");
+    if (!targetEnv.capabilities?.includes(BUILTIN_MEMORY_SYNC_CAPABILITY)) {
+      throw new DeviceConnectionError("目标备用主机版本过旧，不支持内置记忆同步，请升级后重试。", 409, "standby_capability_required");
+    }
     const topology = devices.buildClusterTopology(actualPort, requestOrigin(req));
     const targetHub = topology.hubs.find((h) => h.nodeId === targetNodeId);
     const targetUrls = targetHub?.urls ?? [];
@@ -387,7 +413,7 @@ export async function handleDevicesAndClusterRoutes(
       assertOwnerHubControl("请通过受信任的 Kulo 客户端重命名设备。");
       const body = await readJsonBody(req) as { name?: unknown };
       devices.rename(id, body?.name);
-      sendJson(res, 200, deviceView(req, parsedUrl));
+      sendJson(res, 200, withSshOnboarding(deviceView(req, parsedUrl)));
       return true;
     }
     if (req.method === "DELETE") {

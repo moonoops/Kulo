@@ -5,7 +5,7 @@ import net from "node:net";
 import { spawnSync } from "node:child_process";
 import { localDaemon } from "@earendil-works/pi-env";
 import { supervisedCommand, cleanSupervisedExecution, processFingerprint } from "./worker-supervisor.js";
-import { createWindowsSandboxCommand, createWindowsSandboxSetupCommand, cleanupWindowsSandboxCommand } from "./isolation-windows.js";
+import { createWindowsBasicSandboxSetupCommand, createWindowsSandboxCommand, createWindowsSandboxSetupCommand, cleanupWindowsSandboxCommand } from "./isolation-windows.js";
 import { createLinuxSandboxCommand, linuxSandboxAvailable } from "./isolation-linux.js";
 import { createMacSandboxCleanupCommand, macSandboxCleanupAvailable } from "./isolation-macos.js";
 import { randomBytes } from "node:crypto";
@@ -159,13 +159,20 @@ export function defaultProtectedPaths(homeDir = os.homedir()): string[] {
     path.join(homeDir, ".kiro"),
     path.join(homeDir, ".copilot"),
     ...SENSITIVE_CONFIG_SUBDIRS.map((entry) => path.join(homeDir, ".config", entry)),
+    path.join(homeDir, ".config", "Kulo"),
+    path.join(homeDir, ".config", "Kulo Dev"),
+    path.join(homeDir, ".kulo"),
     path.join(homeDir, ".dsh"),
     path.join(homeDir, ".aws"),
     path.join(homeDir, ".azure"),
     path.join(homeDir, ".netrc"),
     path.join(homeDir, ".git-credentials"),
+    path.join(homeDir, "AppData/Roaming/Kulo"),
+    path.join(homeDir, "AppData/Roaming/Kulo Dev"),
     path.join(homeDir, "AppData/Roaming/Microsoft/Credentials"),
     path.join(homeDir, "AppData/Local/Microsoft/Credentials"),
+    path.join(homeDir, "Library/Application Support/Kulo"),
+    path.join(homeDir, "Library/Application Support/Kulo Dev"),
     path.join(homeDir, "Library/Keychains"),
     path.join(homeDir, "Library/Cookies"),
     path.join(homeDir, "Library/Group Containers/2BUA8C4S2C.com.1password"),
@@ -535,7 +542,27 @@ export function createWorkerSandbox(options: WorkerSandboxOptions): WorkerSandbo
       sandboxIdentity,
     });
     if (process.platform === "win32") {
-      innerCommand = createWindowsSandboxCommand({ ...options, workspaceDir, temporaryDir, executable, protectedPaths: [...protectedPaths, controlDir], writeDeniedPaths, port, network });
+      const caps = workerIsolationCapabilities();
+      const hasWfp = caps.includes("worker-wfp-network");
+      const requiresStrictNetwork = Boolean(options.network?.offline || options.network?.localConnectPorts?.length);
+      if (requiresStrictNetwork && !hasWfp) {
+        throw new Error("Strict network isolation on Windows requires WFP setup; initialize Windows WFP sandbox or target another isolated device.");
+      }
+      if (!hasWfp && !caps.includes("worker-isolation-basic")) {
+        throw new Error("Worker execution requires a configured native OS isolation backend; unrestricted host execution is disabled.");
+      }
+      const networkBackend = hasWfp ? "wfp" : "basic";
+      innerCommand = createWindowsSandboxCommand({
+        ...options,
+        workspaceDir,
+        temporaryDir,
+        executable,
+        protectedPaths: [...protectedPaths, controlDir],
+        writeDeniedPaths,
+        port,
+        networkBackend,
+        network: networkBackend === "basic" ? {} : network,
+      });
     } else if (process.platform === "linux") {
       innerCommand = createLinuxSandboxCommand({ ...options, workspaceDir, temporaryDir, controlDir, executable, protectedPaths: [...protectedPaths, controlDir], writeDeniedPaths, port, network });
     } else {
@@ -577,21 +604,40 @@ export function createWorkerSandbox(options: WorkerSandboxOptions): WorkerSandbo
 
 let windowsIsolationCapabilities: string[] | undefined;
 
+export function hasWorkerBasicOrFullIsolation(capabilities: readonly string[]): boolean {
+  if (capabilities.includes("worker-isolation-unavailable")) return false;
+  return capabilities.includes("worker-isolation") || capabilities.includes("worker-isolation-basic");
+}
+
+export function hasWorkerStrictNetworkIsolation(capabilities: readonly string[]): boolean {
+  if (capabilities.includes("worker-isolation-unavailable")) return false;
+  return capabilities.includes("worker-isolation");
+}
+
+function probeWindowsSandboxCommand(command: readonly string[]): boolean {
+  let ready = false;
+  try {
+    const result = spawnSync(command[0]!, command.slice(1), { encoding: "utf8", timeout: 15_000, windowsHide: true });
+    ready = !result.error && result.status === 0;
+  } finally {
+    try { cleanupWindowsSandboxCommand(command); }
+    catch { ready = false; }
+  }
+  return ready;
+}
+
 export function workerIsolationCapabilities(): string[] {
   if (process.platform === "darwin") return fs.existsSync("/usr/bin/sandbox-exec") && macSandboxCleanupAvailable() ? ["worker-isolation"] : ["worker-isolation-unavailable"];
   if (process.platform === "linux") return linuxSandboxAvailable() ? ["worker-isolation", "worker-http-network"] : ["worker-isolation-unavailable"];
   if (process.platform === "win32") {
     if (windowsIsolationCapabilities) return [...windowsIsolationCapabilities];
-    const command = createWindowsSandboxSetupCommand();
-    let ready = false;
-    try {
-      const result = spawnSync(command[0]!, command.slice(1), { encoding: "utf8", timeout: 15_000, windowsHide: true });
-      ready = !result.error && result.status === 0;
-    } finally {
-      try { cleanupWindowsSandboxCommand(command); }
-      catch { ready = false; }
+    if (probeWindowsSandboxCommand(createWindowsSandboxSetupCommand())) {
+      windowsIsolationCapabilities = ["worker-isolation", "worker-wfp-network"];
+    } else if (probeWindowsSandboxCommand(createWindowsBasicSandboxSetupCommand())) {
+      windowsIsolationCapabilities = ["worker-isolation-basic", "worker-wfp-setup-required"];
+    } else {
+      windowsIsolationCapabilities = ["worker-isolation-unavailable", "worker-wfp-setup-required"];
     }
-    windowsIsolationCapabilities = ready ? ["worker-isolation", "worker-wfp-network"] : ["worker-isolation-unavailable", "worker-wfp-setup-required"];
     return [...windowsIsolationCapabilities];
   }
   return ["worker-isolation-unavailable"];

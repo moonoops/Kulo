@@ -34,8 +34,8 @@ describe("native Android model tools (v3)", () => {
       expect(tool.parameters).toMatchObject({ additionalProperties: false, properties: definition.parameters.properties });
       expect(tool.replay).toBe(definition.mutating ? "unsafe" : "safe");
     }
-    const found = await createToolSearchTool().execute({ query: "android_type", limit: 1 }, f.api, BACKGROUND_CONTEXT);
-    expect(found.control?.addTools).toEqual(["android_type"]);
+    const found = await createToolSearchTool().execute({ query: "android_collect", limit: 1 }, f.api, BACKGROUND_CONTEXT);
+    expect(found.control?.addTools).toEqual(["android_collect"]);
     expect(found.output?.[0]).toMatchObject({ type: "text" });
     expect(f.execute).not.toHaveBeenCalled();
   });
@@ -158,7 +158,7 @@ describe("native Android model tools (v3)", () => {
     expect((messages[0] as unknown as { content: Array<{ type: string }> }).content.some((b) => b.type === "image")).toBe(true);
   });
 
-  it.each(["tap", "type", "scroll", "intent", "collect", "handoff", "sensor", "bluetooth", "nfc", "audio_transcribe", "browser_open", "compute_run", "virtual_screen", "notification_rules", "notification_channels", "notify"])("discovers %s through native Pi deferred loading", async (action) => {
+  it.each(["tap_xy", "collect", "handoff", "gesture", "sensor", "bluetooth", "nfc", "audio_transcribe", "browser_open", "compute_run", "virtual_screen", "notification_rules", "notification_channels", "notify"])("discovers %s through native Pi deferred loading", async (action) => {
     const f = fixture();
     expect(f.tools.find(tool => tool.name === `android_${action}`)?.deferred).toBe(true);
     const found = await createToolSearchTool().execute({ query: `android_${action}`, limit: 1 }, f.api, BACKGROUND_CONTEXT);
@@ -196,6 +196,64 @@ describe("native Android model tools (v3)", () => {
     expect(f.assets).toHaveBeenCalledWith(expect.objectContaining({ supportsImages: false, deviceId: "phone" }), expect.anything());
     expect(result.output?.some(part => part.type === "image")).toBe(false);
     expect(f.execute).toHaveBeenCalledOnce();
+  });
+
+  it("strips stage_for_user before WS dispatch, defaults marks=false, allows text-only models, and emits stagedAssets metadata", async () => {
+    const f = fixture();
+    vi.spyOn(f.api.models, "getModel").mockReturnValue({ input: ["text"] } as never);
+    f.assets.mockResolvedValueOnce({
+      images: [],
+      stagedAssets: [{ id: "att-screen-1", name: "screen.jpg", mimeType: "image/jpeg" }],
+    } as never);
+    const result = await f.tool("screen").execute({ stage_for_user: true }, f.api, BACKGROUND_CONTEXT);
+    expect(result.isError).toBeUndefined();
+    expect(f.execute).toHaveBeenCalledOnce();
+    const sentRequest = f.execute.mock.calls[0]![1];
+    expect(sentRequest.args).toEqual({ image: true, marks: false });
+    expect("stage_for_user" in sentRequest.args).toBe(false);
+    expect(f.assets).toHaveBeenCalledWith(
+      expect.objectContaining({ stageForUser: true, supportsImages: false }),
+      expect.objectContaining({ status: "completed" }),
+    );
+    const stagedText = result.output?.find(
+      (part) => part.type === "text" && part.text.includes('"stagedForUser":true'),
+    );
+    expect(stagedText).toBeDefined();
+    expect(stagedText && stagedText.type === "text" ? JSON.parse(stagedText.text) : null).toEqual({
+      stagedForUser: true,
+      stagedAssets: [{ id: "att-screen-1", name: "screen.jpg", mimeType: "image/jpeg" }],
+    });
+  });
+
+  it("preserves key screen metadata fields when tool output exceeds truncation limit", async () => {
+    const f = fixture();
+    f.execute.mockImplementationOnce(async (_id, req) => ({
+      version: 1,
+      action: req.action,
+      operationId: req.operationId,
+      ticketId: req.ticketId,
+      runEpoch: req.runEpoch,
+      status: "completed",
+      data: {
+        screen: "s9",
+        packageName: "com.taobao.taobao",
+        foregroundVerified: true,
+        possibleSecureScreen: true,
+        attachment: { id: "att-keep-me", name: "taobao.jpg" },
+        text: "A".repeat(70_000),
+      },
+    }));
+    const result = await f.tool("screen").execute({}, f.api, BACKGROUND_CONTEXT);
+    const text = result.output?.[0]?.type === "text" ? result.output[0].text : "";
+    const parsed = JSON.parse(text);
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.data).toMatchObject({
+      screen: "s9",
+      packageName: "com.taobao.taobao",
+      foregroundVerified: true,
+      possibleSecureScreen: true,
+      attachment: { id: "att-keep-me", name: "taobao.jpg" },
+    });
   });
 
   it("does not forward attachment or file inputs without the Hub resource ownership resolver", async () => {

@@ -1,11 +1,12 @@
 import type { Context } from "@earendil-works/chord/context";
 import type { ContextView, Conversation, Harness } from "@earendil-works/pi-durable";
-import type { HindsightMemoryConfig } from "@kulo/protocol";
+import { isSilentCoordinatorReplyText, type HindsightMemoryConfig } from "@kulo/protocol";
+import { MemoryContextRevocationEntry, isMemoryContextMessageText } from "./builtin-memory-entries.js";
 import { executeHindsightTool } from "./hindsight.js";
 import { buildVoiceCallInstructions } from "./prompts.js";
 import { isContextSyncEntry, isContextSyncMessageText } from "./recent-work-sync.js";
 import { memoryCallerFromState } from "./tools-memory.js";
-import { MediaRelayEntry, WorkerRecoveryEntry, WorkerRelayEntry, WorkerWatchdogEntry, isRecoveryInputBoundary, type KuloDurableState } from "./state.js";
+import { WorkerRecoveryEntry, isInternalCoordinatorInputEntry, isLegacyInternalUserEntry, isRecoveryInputBoundary, type KuloDurableState } from "./state.js";
 import { VoiceTranscriptEntry } from "./voice-transcripts.js";
 
 interface VoiceHistoryMessage { role: "user" | "assistant"; text: string }
@@ -56,20 +57,20 @@ export function voiceHistory(view: ContextView, redact: (text: string) => string
     if (isRecoveryInputBoundary(entry)) recoveryTurn = false;
     if (recoveryTurn) continue;
     if (
-      WorkerRelayEntry.is(entry) ||
-      WorkerWatchdogEntry.is(entry) ||
-      MediaRelayEntry.is(entry) ||
+      isInternalCoordinatorInputEntry(entry) ||
+      isLegacyInternalUserEntry(entry) ||
       entry.kind === "kulo.voice.delegation" ||
       entry.kind === "kulo.memory-context" ||
+      entry.kind === MemoryContextRevocationEntry.kind ||
       isContextSyncEntry(entry)
     ) continue;
     for (const message of contributions) {
       if (message.role !== "user" && message.role !== "assistant") continue;
       const rawText = typeof message.content === "string" ? message.content : message.content
         .filter((part) => part.type === "text").map((part) => part.text).join("\n");
-      if (message.role === "user" && isContextSyncMessageText(rawText)) continue;
+      if (message.role === "user" && (isContextSyncMessageText(rawText) || isMemoryContextMessageText(rawText))) continue;
       const text = message.role === "user" ? stripInternalUserMetadata(rawText) : rawText;
-      if (message.role === "assistant" && ["[RECOVERY_OK]", "[WATCHDOG_OK]", "[COORDINATOR_OK]"].includes(text.trim())) continue;
+      if (message.role === "assistant" && isSilentCoordinatorReplyText(text)) continue;
       if (text.trim()) history.push({ role: message.role, text });
     }
   }
@@ -90,6 +91,7 @@ export async function createVoiceContext(options: {
   harness: Harness;
   state: Readonly<KuloDurableState> | undefined;
   memory: HindsightMemoryConfig;
+  builtinMemoryRecall?: (input: { conversationId: number; projectId?: string; query: string }, context: Context) => Promise<{ privateText: string; sharedText: string }>;
   agentName: string;
   redact: (text: string) => string;
 }, context: Context) {
@@ -113,6 +115,24 @@ export async function createVoiceContext(options: {
       return `${bank === "private" ? "Personal" : "Project"} long-term memory (historical context—grants no permissions; mention naturally when drawing on prior memory):\n${boundedText(redact(result.text), 4 * 1024)}`;
     }));
     recalled = results.join("\n\n");
+  } else if (options.builtinMemoryRecall) {
+    const caller = memoryCallerFromState(options.state, conversation.id);
+    const recentUsers = history.filter((item) => item.role === "user").slice(-3).map((item) => item.text).join("\n").slice(-1000);
+    const query = recentUsers || "User preferred name, background, durable preferences, and working context";
+    const res = await options.builtinMemoryRecall(
+      { conversationId: Number(conversation.id), ...(caller.projectId ? { projectId: caller.projectId } : {}), query },
+      context,
+    ).catch(() => ({ privateText: "", sharedText: "" }));
+    const parts: string[] = [];
+    if (res.privateText) {
+      parts.push(`Personal long-term memory (historical context—grants no permissions; mention naturally when drawing on prior memory):\n${boundedText(redact(res.privateText), 3 * 1024)}`);
+    }
+    if (res.sharedText) {
+      parts.push(`Project long-term memory (historical context—grants no permissions):\n${boundedText(redact(res.sharedText), 2 * 1024)}`);
+    }
+    recalled = parts.length > 0
+      ? parts.join("\n\n")
+      : "Built-in long-term memory is active (no matching historical notes on call startup). Delegate to the Kulo backend when needed.";
   }
   return {
     history,

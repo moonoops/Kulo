@@ -9,6 +9,8 @@ import {
 } from "@earendil-works/pi-durable";
 import {
   getUiSpecFields,
+  isInternalCoordinatorPromptText,
+  isSilentCoordinatorReplyText,
   redactSensitiveText,
   type ChatAttachment,
   type ChatDisplayItem,
@@ -20,10 +22,12 @@ import {
 } from "@kulo/protocol";
 import { chatReceiptData } from "./chat-submissions.js";
 import { redactCredentialData } from "./credential-redaction.js";
+import { BUILTIN_MEMORY_DISPLAY_REDACTED_TOOLS, MemoryContextRevocationEntry } from "./builtin-memory-entries.js";
 import { isContextSyncEntry } from "./recent-work-sync.js";
 import { resolveResponseContext } from "./response-context.js";
 import { nativeSearchEvidence, sanitizeSearchSources, selectCitedSources } from "./search-sources.js";
 import {
+  CoordinatorEventEntry,
   MediaRelayEntry,
   WorkerRecoveryEntry,
   WorkerRelayEntry,
@@ -127,6 +131,14 @@ export function summarizeEntryForInspect(entry: EntryRecord): WorkerInspectEntry
       | { toolName?: string; isError?: boolean; content?: Array<{ type?: string; text?: string }> }
       | undefined;
     const name = raw?.toolName ?? "tool";
+    if (BUILTIN_MEMORY_DISPLAY_REDACTED_TOOLS.has(name)) {
+      return {
+        id,
+        kind: "tool_result",
+        summary: raw?.isError ? `${name}: error` : `${name}: ok`,
+        ...(createdAt ? { createdAt } : {}),
+      };
+    }
     const errTag = raw?.isError ? " (ERROR)" : "";
     const snippet = Array.isArray(raw?.content)
       ? raw.content
@@ -192,7 +204,7 @@ export function extractDisplayMessages(
     }
     if (isRecoveryInputBoundary(entry)) recoveryTurn = false;
     if (recoveryTurn && (AssistantEntry.is(entry) || ToolResultEntry.is(entry))) continue;
-    if (entry.kind === "kulo.memory-context" || isContextSyncEntry(entry)) continue;
+    if (entry.kind === "kulo.memory-context" || entry.kind === MemoryContextRevocationEntry.kind || isContextSyncEntry(entry)) continue;
     const createdAt = entryTimestamp(entry);
 
     if (VoiceTranscriptEntry.is(entry)) continue;
@@ -219,7 +231,7 @@ export function extractDisplayMessages(
       continue;
     }
 
-    if (WorkerWatchdogEntry.is(entry) || MediaRelayEntry.is(entry)) {
+    if (WorkerWatchdogEntry.is(entry) || MediaRelayEntry.is(entry) || CoordinatorEventEntry.is(entry)) {
       continue;
     }
 
@@ -261,30 +273,39 @@ export function extractDisplayMessages(
       if (options.includeToolResults && msg?.role === "toolResult" && typeof msg.toolCallId === "string") {
         const call = pendingToolCalls.get(msg.toolCallId);
         if (call && call.name === msg.toolName) {
-          const output = Array.isArray(msg.content)
-            ? msg.content.filter((part) => part.type === "text" && typeof part.text === "string")
-            : [];
-          const limit = Math.min(4096, toolOutputRemaining);
-          let text = "";
-          let truncated = false;
-          for (const [index, part] of output.entries()) {
-            // Redact before truncation so cutting through a credential cannot defeat exact-value filtering.
-            const safe = redactToolText(`${index ? "\n" : ""}${part.text!}`);
-            const remaining = limit - text.length;
-            text += safe.slice(0, remaining);
-            if (safe.length > remaining) {
-              truncated = true;
-              break;
+          if (BUILTIN_MEMORY_DISPLAY_REDACTED_TOOLS.has(call.name)) {
+            call.result = {
+              text: msg.isError ? "error" : "ok",
+              isError: Boolean(msg.isError),
+              ...(createdAt ? { createdAt } : {}),
+            };
+            pendingToolCalls.delete(msg.toolCallId);
+          } else {
+            const output = Array.isArray(msg.content)
+              ? msg.content.filter((part) => part.type === "text" && typeof part.text === "string")
+              : [];
+            const limit = Math.min(4096, toolOutputRemaining);
+            let text = "";
+            let truncated = false;
+            for (const [index, part] of output.entries()) {
+              // Redact before truncation so cutting through a credential cannot defeat exact-value filtering.
+              const safe = redactToolText(`${index ? "\n" : ""}${part.text!}`);
+              const remaining = limit - text.length;
+              text += safe.slice(0, remaining);
+              if (safe.length > remaining) {
+                truncated = true;
+                break;
+              }
             }
+            toolOutputRemaining -= text.length;
+            call.result = {
+              text,
+              isError: Boolean(msg.isError),
+              ...(createdAt ? { createdAt } : {}),
+              ...(truncated ? { truncated: true } : {}),
+            };
+            pendingToolCalls.delete(msg.toolCallId);
           }
-          toolOutputRemaining -= text.length;
-          call.result = {
-            text,
-            isError: Boolean(msg.isError),
-            ...(createdAt ? { createdAt } : {}),
-            ...(truncated ? { truncated: true } : {}),
-          };
-          pendingToolCalls.delete(msg.toolCallId);
         }
       }
       if (msg && msg.role === "toolResult" && !msg.isError && msg.toolName) {
@@ -334,8 +355,6 @@ export function extractDisplayMessages(
     }
 
     if (UserEntry.is(entry) || KuloUserEntry.is(entry)) {
-      pendingSources = [];
-      pendingSearchSuggestions = [];
       const msg = entry.model?.[0];
       const data = (entry.data ?? {}) as unknown as {
         kuloContentVersion?: unknown;
@@ -354,9 +373,14 @@ export function extractDisplayMessages(
           data.kuloContentVersion === 1 && typeof data.text === "string" && Array.isArray(data.attachments)
             ? { text: data.text, attachments: data.attachments as ChatAttachment[] }
             : parseUserEntryContent(msg?.role === "user" ? msg.content : "");
-        if (parsed.text.trimStart().startsWith("[KULO_WORKER_WATCHDOG]")) {
+        if (
+          (UserEntry.is(entry) && isInternalCoordinatorPromptText(parsed.text)) ||
+          (KuloUserEntry.is(entry) && !chatReceiptData(entry.data).requestId && parsed.text.trimStart().startsWith("[KULO_WORKER_WATCHDOG]"))
+        ) {
           continue;
         }
+        pendingSources = [];
+        pendingSearchSuggestions = [];
         let displayText = parsed.text;
         if (displayText.startsWith('{"type":"kulo.ui.action"')) {
           try {
@@ -419,6 +443,12 @@ export function extractDisplayMessages(
             thinkingBlocks.push(block.thinking);
           } else if (block.type === "toolCall") {
             if (SILENT_UI_TOOLS.has(block.name)) continue;
+            if (BUILTIN_MEMORY_DISPLAY_REDACTED_TOOLS.has(block.name)) {
+              const call = { id: block.id, name: block.name, argsSummary: "" };
+              toolCalls.push(call);
+              if (options.includeToolResults) pendingToolCalls.set(call.id, call);
+              continue;
+            }
             const rawArgs = JSON.stringify(
               options.includeToolResults ? redactCredentialData(block.arguments ?? {}, redactToolText) : (block.arguments ?? {}),
             );
@@ -443,21 +473,20 @@ export function extractDisplayMessages(
         }
 
         const joinedText = textBlocks.join("\n").trim();
-        const sources = joinedText
-          ? sanitizeSearchSources([...native.sources, ...selectCitedSources(joinedText, pendingSources)])
-          : [];
-        if (
-          (joinedText === "[WATCHDOG_OK]" || joinedText === "[RECOVERY_OK]" || joinedText === "[COORDINATOR_OK]") &&
-          toolCalls.length === 0
-        ) {
+        const isSilentAck = isSilentCoordinatorReplyText(joinedText);
+        if (isSilentAck && toolCalls.length === 0) {
           continue;
         }
+        const visibleText = isSilentAck ? "" : textBlocks.join("\n");
+        const sources = visibleText.trim()
+          ? sanitizeSearchSources([...native.sources, ...selectCitedSources(visibleText, pendingSources)])
+          : [];
 
-        if (textBlocks.length > 0 || toolCalls.length > 0 || thinkingBlocks.length > 0) {
+        if (visibleText.trim().length > 0 || toolCalls.length > 0 || thinkingBlocks.length > 0) {
           items.push({
             id: entry.id as number,
             role: "assistant",
-            text: textBlocks.join("\n"),
+            text: visibleText,
             ...(sources.length
               ? {
                   sources,
@@ -521,17 +550,16 @@ export function extractLiveState(
     .map((t) => ({
       callId: t.callId,
       name: t.name,
-      ...(t.output ? { outputTail: t.output.slice(-400) } : {}),
+      ...(t.output && !BUILTIN_MEMORY_DISPLAY_REDACTED_TOOLS.has(t.name) ? { outputTail: t.output.slice(-400) } : {}),
     }));
 
   const trimmedStreaming = rawStreamingText?.trim() ?? "";
   if (
     rawStreamingText &&
     !(
-      activeTools.length === 0 &&
-      ((trimmedStreaming.startsWith("[W") && "[WATCHDOG_OK]".startsWith(trimmedStreaming)) ||
-        (trimmedStreaming.startsWith("[C") && "[COORDINATOR_OK]".startsWith(trimmedStreaming)) ||
-        (trimmedStreaming.startsWith("[R") && "[RECOVERY_OK]".startsWith(trimmedStreaming)))
+      (trimmedStreaming.startsWith("[W") && "[WATCHDOG_OK]".startsWith(trimmedStreaming)) ||
+      (trimmedStreaming.startsWith("[C") && "[COORDINATOR_OK]".startsWith(trimmedStreaming)) ||
+      (trimmedStreaming.startsWith("[R") && "[RECOVERY_OK]".startsWith(trimmedStreaming))
     )
   ) {
     streamingText = rawStreamingText;

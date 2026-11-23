@@ -2,11 +2,13 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { app, clipboard, dialog } from "electron";
-import { resolveDesktopAppIdentity, resolveDesktopDataDirectory } from "./desktop-config.js";
+import { resolveDesktopAppIdentity, resolveDesktopDataDirectory, resolvePackagedRescuePath } from "./desktop-config.js";
 
-const { appName: desktopAppName } = resolveDesktopAppIdentity();
+const desktopIdentity = resolveDesktopAppIdentity();
+const desktopAppName = desktopIdentity.appName;
 let dataDir: string | undefined;
 app.setName(desktopAppName);
+if (process.platform === "win32") app.setAppUserModelId(desktopIdentity.bundleId);
 void app.whenReady().then(() => {
   app.dock?.setIcon(fileURLToPath(new URL("../assets/kulo-icon.png", import.meta.url)));
 });
@@ -26,7 +28,7 @@ try {
   }
   await app.whenReady();
   let instructions = dataDir ? `Kulo 数据目录：${dataDir}` : "Kulo 数据目录参数无效，请检查启动参数。";
-  const launcher = app.isPackaged ? path.join(process.resourcesPath, "runtime/kulo-rescue") : undefined;
+  const launcher = app.isPackaged ? resolvePackagedRescuePath(process.resourcesPath, process.platform) : undefined;
   let diagnostic = error instanceof Error ? error.name : "Error";
   if (dataDir) {
     try {

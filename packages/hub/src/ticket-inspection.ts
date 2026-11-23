@@ -15,6 +15,7 @@ import type {
   TicketRecord,
   WorkerInspectResult,
 } from "@kulo/protocol";
+import { BUILTIN_MEMORY_DISPLAY_REDACTED_TOOLS } from "./builtin-memory-entries.js";
 import type { KuloConnections } from "./connections.js";
 import { redactCredentialData } from "./credential-redaction.js";
 import {
@@ -372,7 +373,7 @@ export class TicketInspectionService {
 
     const activeTools = (live?.tools ?? [])
       .filter((t) => t.status !== "done")
-      .map((t) => ({ callId: t.callId, name: t.name, status: t.status, ...(t.output ? { outputTail: t.output.slice(-300) } : {}) }));
+      .map((t) => ({ callId: t.callId, name: t.name, status: t.status, ...(t.output && !BUILTIN_MEMORY_DISPLAY_REDACTED_TOOLS.has(t.name) ? { outputTail: t.output.slice(-300) } : {}) }));
 
     const builtInProjection = inferBuiltInWorkerPhaseAndFiles({
       activeTools,

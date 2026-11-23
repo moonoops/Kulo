@@ -1,5 +1,5 @@
 import { translate as tr } from "../../kulo-i18n";
-import { getMessageParts, type ChatDisplayItem } from "@kulo/protocol";
+import { getMessageParts, isLegacyRelayDisplayText, type ChatDisplayItem } from "@kulo/protocol";
 
 export interface ConversationTurn {
   id: number;
@@ -10,9 +10,7 @@ export interface ConversationTurn {
 export const TURN_SCROLL_PADDING = 24;
 
 export function isConversationTurn(item: ChatDisplayItem): boolean {
-  return item.role === "user" &&
-    !item.text.startsWith("[KULO_WORKER_RELAY]") &&
-    !item.text.startsWith("[KULO_WORKER_WATCHDOG]");
+  return item.role === "user" && !(!item.requestId && isLegacyRelayDisplayText(item.text));
 }
 
 function plainText(text: string): string {

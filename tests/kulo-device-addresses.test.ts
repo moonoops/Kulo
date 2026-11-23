@@ -3,7 +3,7 @@ import { filterDeviceIps, normalizeDeviceIp } from "@kulo/protocol";
 
 describe("shareable device IP addresses", () => {
   it("retains LAN and Tailscale IPv4 and both global and unique-local IPv6", () => {
-    for (const address of ["10.0.1.10", "172.16.3.4", "192.168.1.2", "100.100.1.10", "2001:db8:10:1::1", "fd00:db8:1::1", "fd7a:115c:a1e0::10"]) {
+    for (const address of ["10.0.0.10", "172.16.3.4", "192.168.1.2", "100.100.1.10", "2001:db8:10:1::1", "fd00:db8:1::1", "fd7a:115c:a1e0::10"]) {
       expect(normalizeDeviceIp(address)).toBe(address);
     }
   });
@@ -13,6 +13,6 @@ describe("shareable device IP addresses", () => {
   );
 
   it("deduplicates equivalent IPv6 spellings", () => {
-    expect(filterDeviceIps(["FD7A:115C:A1E0:0000:0000:0000:0000:0010", "fd7a:115c:a1e0::10", "10.0.1.10", "10.0.1.10", "fe80::1"])).toEqual(["fd7a:115c:a1e0::10", "10.0.1.10"]);
+    expect(filterDeviceIps(["FD7A:115C:A1E0:0000:0000:0000:0000:0010", "fd7a:115c:a1e0::10", "10.0.0.10", "10.0.0.10", "fe80::1"])).toEqual(["fd7a:115c:a1e0::10", "10.0.0.10"]);
   });
 });

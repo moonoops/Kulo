@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ChatAttachment, MessagePart } from "@kulo/protocol";
 import { KuloMarkdown, markdownUrlTransform } from "../../kulo-markdown";
-import { AssetImageGallery, safeContentUrl } from "./asset-preview";
+import { AssetImage, AssetImageGallery, resolveImageThumbUrl, safeContentUrl } from "./asset-preview";
 import { CodeBlock } from "./code-block";
 import { MessageContent, groupMessageParts, stableUserParts } from "./message-content";
 import { ConnectedMessageContent } from "./connected-message-content";
@@ -83,9 +83,20 @@ describe("chat rich content", () => {
   it("limits an image gallery to four previews while preserving the remaining count", () => {
     const html = renderToStaticMarkup(<AssetImageGallery assets={Array.from({ length: 6 }, (_, index) => ({ ...image, id: `image-${index}` }))} />);
     expect(html.match(/<img /g)).toHaveLength(4);
+    expect(html).toContain('src="/api/uploads/image?variant=thumb"');
     expect(html).toContain("+2");
     expect(html).toContain('width="800"');
     expect(html).toContain('aria-label="预览图片：会议草图.png"');
+  });
+
+  it("derives thumbnail URLs only for clean local upload paths while preserving originals elsewhere", () => {
+    expect(resolveImageThumbUrl("/api/uploads/att_abc123")).toBe("/api/uploads/att_abc123?variant=thumb");
+    expect(resolveImageThumbUrl("/api/uploads/att_abc123?download=1")).toBe("/api/uploads/att_abc123?download=1");
+    expect(resolveImageThumbUrl("/api/uploads/att_abc123/preview")).toBe("/api/uploads/att_abc123/preview");
+    expect(resolveImageThumbUrl("https://cdn.example.com/photo.png")).toBe("https://cdn.example.com/photo.png");
+    expect(resolveImageThumbUrl("blob:https://kulo.example/draft")).toBe("blob:https://kulo.example/draft");
+    const externalHtml = renderToStaticMarkup(<AssetImage image={{ src: "https://cdn.example.com/photo.png", name: "外链图.png" }} />);
+    expect(externalHtml).toContain('src="https://cdn.example.com/photo.png"');
   });
 
   it("preserves legacy user bubbles and renders attachments exactly once", () => {

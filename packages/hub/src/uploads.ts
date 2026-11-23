@@ -524,15 +524,19 @@ export class KuloUploadStore {
     return this.toChatAttachment(record);
   }
 
+  isUploadOwner(record: Pick<StoredUploadRecord, "ownerId">, principalId: string): boolean {
+    if (!principalId) return false;
+    return (
+      record.ownerId === undefined ||
+      record.ownerId === principalId ||
+      (record.ownerId === "local" && Boolean(this.legacyLocalPrincipal && principalId === this.legacyLocalPrincipal))
+    );
+  }
+
   canReadUpload(id: string, principalId: string, canReadScope: (scope: string) => boolean = () => true): boolean {
     const loaded = this.getUpload(id);
     if (!loaded || !principalId) return false;
-    const record = loaded.record;
-    const ownerMatches =
-      record.ownerId === undefined ||
-      record.ownerId === principalId ||
-      (record.ownerId === "local" && Boolean(this.legacyLocalPrincipal && principalId === this.legacyLocalPrincipal));
-    return ownerMatches || Boolean(record.referenceScopes?.some(canReadScope));
+    return this.isUploadOwner(loaded.record, principalId) || Boolean(loaded.record.referenceScopes?.some(canReadScope));
   }
 
   attachmentsForBinding(refs: Array<Pick<ChatAttachment, "id"> | string> | undefined, ownerId?: string, canReadScope: (scope: string) => boolean = () => true): LoadedUpload[] {

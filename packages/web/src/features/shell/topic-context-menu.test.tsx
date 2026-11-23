@@ -1,5 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { ArchivedTopicBar } from "./archived-topic-bar";
+import { evaluateTopicConversationFrame } from "./root-rotation";
 import { TopicContextMenu, formatContextTokens } from "./topic-context-menu";
 import { WorkbenchTitlebar } from "./workbench-titlebar";
 
@@ -171,5 +173,49 @@ describe("TopicContextMenu and WorkbenchTitlebar context entry", () => {
     for (const button of projectedButtons) {
       expect(button).toMatch(/\bkulo-window-control\b/);
     }
+  });
+
+  it("renders read-only ArchivedTopicBar with accessible restore action and evaluates conversation generation frames", () => {
+    const barHtml = renderToStaticMarkup(
+      <ArchivedTopicBar topicTitle="主对话归档 · 2026-11-23" connected={true} onRestore={() => {}} />,
+    );
+    expect(barHtml).toContain("此会话已归档，当前为只读");
+    expect(barHtml).toContain('aria-label="还原“主对话归档 · 2026-11-23”"');
+    expect(barHtml).toContain("还原会话");
+
+    // Rejects stale old-root frame after rotation; accepts forward root rotation; accepts matching generation.
+    expect(
+      evaluateTopicConversationFrame({
+        frameTopicId: "root",
+        frameConversationId: 1,
+        activeTopicId: "root",
+        activeConversationId: 5,
+        selectionVersion: 1,
+        versionedSelections: true,
+        changingTopic: false,
+      }),
+    ).toEqual({ accept: false });
+    expect(
+      evaluateTopicConversationFrame({
+        frameTopicId: "root",
+        frameConversationId: 5,
+        activeTopicId: "root",
+        activeConversationId: 1,
+        selectionVersion: 1,
+        versionedSelections: true,
+        changingTopic: false,
+      }),
+    ).toEqual({ accept: true, rotatedTo: 5 });
+    expect(
+      evaluateTopicConversationFrame({
+        frameTopicId: "root",
+        frameConversationId: 5,
+        activeTopicId: "root",
+        activeConversationId: 5,
+        selectionVersion: 1,
+        versionedSelections: true,
+        changingTopic: false,
+      }),
+    ).toEqual({ accept: true });
   });
 });

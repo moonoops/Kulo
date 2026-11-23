@@ -8,6 +8,7 @@ export type MemoryDialogueOperation = Extract<MemoryServiceOperation, "deploy" |
 export const isMemoryDialogueOperation = (operation: MemoryServiceOperation): operation is MemoryDialogueOperation => ["deploy", "configure", "uninstall"].includes(operation);
 let pendingIntent: MemoryServiceOperation | null = null;
 let pendingPrefill: string | null = null;
+let pendingConnectionFocus = false;
 
 export function requestMemoryService(operation: MemoryServiceOperation): void {
   if (!isMemoryDialogueOperation(operation)) { requestMemoryConnectionFocus(); return; }
@@ -27,7 +28,14 @@ export function takeMemoryAssistantPrefill(): string | null {
 }
 
 export function requestMemoryConnectionFocus(): void {
+  pendingConnectionFocus = true;
   if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(MEMORY_CONNECTION_FOCUS_EVENT));
+}
+
+export function takePendingMemoryConnectionFocus(): boolean {
+  const value = pendingConnectionFocus;
+  pendingConnectionFocus = false;
+  return value;
 }
 
 export function takeMemoryServiceIntent(): MemoryServiceOperation | null {

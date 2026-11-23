@@ -530,11 +530,87 @@ describe("asset HTTP authentication and media responses", () => {
     expect(head.status).toBe(200);
     expect(head.headers.get("content-length")).toBe("10");
     expect(await head.text()).toBe("");
-    expect((await fetch(url, { headers: { ...bearer, "if-none-match": etag } })).status).toBe(304);
+    const notModified = await fetch(url, { headers: { ...bearer, "if-none-match": etag } });
+    expect(notModified.status).toBe(304);
+    expect(notModified.headers.get("content-length")).toBeNull();
+    expect(notModified.headers.get("content-type")).toBeNull();
+    expect((await fetch(url, { headers: { ...bearer, "if-none-match": `"other", W/${etag}` } })).status).toBe(304);
     const staleRange = await fetch(url, { headers: { ...bearer, range: "bytes=2-5", "if-range": '"old-version"' } });
     expect(staleRange.status).toBe(200);
     expect(await staleRange.text()).toBe("0123456789");
     expect(errors).toEqual([]);
+  });
+
+  it("caches inline images with private no-cache without Vary Cookie while enforcing auth before 304", async () => {
+    let active = true;
+    const scopeSnapshots = vi.fn(async () => (scope: string) => scope === "shared");
+    const store = makeStore();
+    const authenticate = (req: http.IncomingMessage, url: URL): string | undefined => {
+      const token = req.headers.authorization?.replace(/^Bearer /, "") ?? url.searchParams.get("token");
+      return token === "synthetic-media-owner" ? "owner" : token === "synthetic-media-peer" ? "peer" : undefined;
+    };
+    const handler = createMediaHttpHandler({
+      uploads: store,
+      authenticate,
+      sessionTtlMs: 5000,
+      isPrincipalActive: () => active,
+      resolveScopeChecker: scopeSnapshots,
+    });
+    handlers.push(handler);
+    const server = http.createServer(async (req, res) => {
+      const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+      if (!await handler(req, res, url)) { res.writeHead(404); res.end(); }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing test server address");
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const image = store.saveUpload({ name: "photo.png", bytes: png, ownerId: "owner" });
+    const audio = store.saveUpload({ name: "voice.wav", bytes: wav(), ownerId: "owner" });
+    store.bindAttachments([image], "private", "owner");
+    store.bindAttachments([image], "shared", "owner");
+
+    // Empty principal never matches owner even for legacy ownerId === undefined records.
+    const legacy = store.saveUpload({ name: "legacy.png", bytes: png });
+    expect(store.isUploadOwner(store.getUpload(legacy.id)!.record, "")).toBe(false);
+
+    const first = await fetch(`${origin}/api/uploads/${image.id}`, { headers: bearer });
+    expect(first.status).toBe(200);
+    expect(first.headers.get("cache-control")).toBe("private, no-cache");
+    expect(first.headers.get("vary")).toBeNull();
+    const etag = first.headers.get("etag")!;
+    // Owner short-circuits without taking Durable scope snapshots.
+    expect(scopeSnapshots).toHaveBeenCalledTimes(0);
+
+    // Explicit download and audio stay private, no-store.
+    const download = await fetch(`${origin}/api/uploads/${image.id}?download=1`, { headers: bearer });
+    expect(download.headers.get("cache-control")).toBe("private, no-store");
+    expect(download.headers.get("vary")).toBe("Authorization, Cookie");
+    const audioRes = await fetch(`${origin}/api/uploads/${audio.id}`, { headers: bearer });
+    expect(audioRes.headers.get("cache-control")).toBe("private, no-store");
+
+    // Non-owner reading multi-scope asset invokes resolveScopeChecker only once per request.
+    const peerHeaders = { authorization: "Bearer synthetic-media-peer" };
+    const peer304 = await fetch(`${origin}/api/uploads/${image.id}`, { headers: { ...peerHeaders, "if-none-match": etag } });
+    expect(peer304.status).toBe(304);
+    expect(peer304.headers.get("cache-control")).toBe("private, no-cache");
+    expect(peer304.headers.get("content-length")).toBeNull();
+    expect(peer304.headers.get("content-type")).toBeNull();
+    expect(scopeSnapshots).toHaveBeenCalledTimes(1);
+
+    // Revoking principal immediately yields 401 even with matching If-None-Match.
+    active = false;
+    expect((await fetch(`${origin}/api/uploads/${image.id}`, { headers: { ...peerHeaders, "if-none-match": etag } })).status).toBe(401);
+    active = true;
+
+    // Missing scope authorization immediately yields 403 even with matching If-None-Match.
+    const privateOnly = store.saveUpload({ name: "secret.png", bytes: png, ownerId: "owner" });
+    store.bindAttachments([privateOnly], "private", "owner");
+    const ownerRes = await fetch(`${origin}/api/uploads/${privateOnly.id}`, { headers: bearer });
+    const secretEtag = ownerRes.headers.get("etag")!;
+    expect((await fetch(`${origin}/api/uploads/${privateOnly.id}`, { headers: { ...peerHeaders, "if-none-match": secretEtag } })).status).toBe(403);
   });
 
   it("only inlines verified raster/media types and offers explicit downloads", async () => {

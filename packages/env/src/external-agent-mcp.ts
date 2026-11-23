@@ -10,6 +10,7 @@ export interface ExternalAgentMcpScope {
   allowSubagents: boolean;
   hasConnections?: boolean;
   memoryEnabled?: boolean;
+  memoryMode?: "hindsight" | "builtin";
 }
 
 export interface ExternalAgentMcpInvocation extends ExternalAgentMcpScope {
@@ -91,7 +92,7 @@ export const EXTERNAL_AGENT_MCP_TOOLS = [
   },
   {
     name: "kulo_memory_recall",
-    description: "Recall relevant project facts and past work observations from Kulo's Hindsight shared memory bank. Private main-agent memory is never accessible.",
+    description: "Recall relevant project facts and past work observations from Kulo's shared project memory bank. Private main-agent memory is never accessible.",
     inputSchema: object({
       query: text("Natural language recall query", 3000),
       budget: { type: "string", enum: ["low", "mid", "high"], description: "Optional recall budget" },
@@ -113,7 +114,7 @@ export const EXTERNAL_AGENT_MCP_TOOLS = [
   },
   {
     name: "kulo_memory_ingest",
-    description: "Retain newly verified project facts or an evidence-backed 'Correction: <topic>' into Hindsight shared memory. Never include secrets or re-ingest recalled text.",
+    description: "Retain newly verified project facts or an evidence-backed 'Correction: <topic>' into Kulo's shared project memory. Never include secrets or re-ingest recalled text.",
     inputSchema: object({
       title: text("Document title (or 'Correction: <topic>')", 240),
       content: text("Verified factual text without secrets", 24000),
@@ -161,6 +162,7 @@ void _verifyAllProtocolMcpToolsDefined;
 const CORE_TOOL_NAMES = new Set(["kulo_task_context", "kulo_task_report"]);
 const COLLAB_TOOL_NAMES = new Set(["kulo_agents", "kulo_request_collaboration", "kulo_child_task"]);
 const MEMORY_TOOL_NAMES = new Set(["kulo_memory_recall", "kulo_memory_search_pages", "kulo_memory_read_page", "kulo_memory_ingest", "kulo_memory_reflect"]);
+const BUILTIN_MEMORY_TOOL_NAMES = new Set(["kulo_memory_recall", "kulo_memory_ingest"]);
 const CONNECTION_TOOL_NAMES = new Set(["kulo_connections", "kulo_connection_use"]);
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -211,10 +213,11 @@ function validArguments(name: string, value: unknown): value is Record<string, u
 export async function startExternalAgentMcp(options: ExternalAgentMcpOptions): Promise<ExternalAgentMcpServer> {
   if (!options.runId || !options.taskId || !Number.isSafeInteger(options.runEpoch) || options.runEpoch < 1 || !options.cwd) throw new Error("Invalid external agent MCP scope");
   const bearer = Buffer.from(`Bearer ${randomBytes(32).toString("base64url")}`);
+  const allowedMemoryTools = options.memoryMode === "builtin" ? BUILTIN_MEMORY_TOOL_NAMES : MEMORY_TOOL_NAMES;
   const tools = EXTERNAL_AGENT_MCP_TOOLS.filter((tool) =>
     CORE_TOOL_NAMES.has(tool.name) ||
     (Boolean(options.allowSubagents) && COLLAB_TOOL_NAMES.has(tool.name)) ||
-    (Boolean(options.memoryEnabled) && MEMORY_TOOL_NAMES.has(tool.name)) ||
+    (Boolean(options.memoryEnabled) && allowedMemoryTools.has(tool.name)) ||
     (Boolean(options.hasConnections) && CONNECTION_TOOL_NAMES.has(tool.name)),
   );
   const names = new Set<string>(tools.map((tool) => tool.name));

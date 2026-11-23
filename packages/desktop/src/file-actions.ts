@@ -8,6 +8,7 @@ import {
   HTML_ARTIFACT_BROWSER_CSP, HTML_DIAGRAM_BROWSER_CSP,
   htmlArtifactBrowserDocument, htmlDiagramBrowserDocument, isHtmlArtifact,
 } from "@kulo/protocol";
+import { atomicReplaceDesktopFile, hasDesktopForbiddenPosixPermissions, safeDesktopChmod } from "./desktop-fs.js";
 
 const ASSET_ID = /^att_[a-z0-9_]{6,48}$/;
 const DOCUMENT_EXTENSIONS = new Set([
@@ -75,7 +76,7 @@ async function privateDirectory(directory: string): Promise<void> {
   try { await fs.mkdir(directory, { mode: 0o700 }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
   const stat = await fs.lstat(directory);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || (typeof process.getuid === "function" && stat.uid !== process.getuid()) || (stat.mode & 0o077)) {
+  if (!stat.isDirectory() || stat.isSymbolicLink() || (typeof process.getuid === "function" && stat.uid !== process.getuid()) || hasDesktopForbiddenPosixPermissions(stat)) {
     throw new Error("文件缓存目录不可用。");
   }
 }
@@ -89,7 +90,7 @@ async function saveBytes(file: string, bytes: Buffer): Promise<void> {
   const temporary = path.join(path.dirname(file), `.kulo-save-${randomBytes(16).toString("hex")}`);
   try {
     await fs.writeFile(temporary, bytes, { flag: "wx", mode: 0o600 });
-    await fs.rename(temporary, file);
+    await atomicReplaceDesktopFile(temporary, file);
   } finally { await fs.rm(temporary, { force: true }); }
 }
 
@@ -141,7 +142,7 @@ export function createDesktopFileActions(options: DesktopFileActionsOptions) {
     await privateDirectory(root);
     // A fresh open copy preserves edits made in the default app and never overwrites a previous document.
     const directory = await fs.mkdtemp(path.join(root, `${file.metadata.id}-`));
-    await fs.chmod(directory, 0o700);
+    await safeDesktopChmod(directory, 0o700);
     const target = path.join(directory, filename(file.metadata.name));
     await fs.writeFile(target, bytes, { flag: "wx", mode: 0o600 });
     return target;
@@ -157,7 +158,7 @@ export function createDesktopFileActions(options: DesktopFileActionsOptions) {
         if (!html || !["GET", "HEAD"].includes(req.method ?? "")) { res.writeHead(404); res.end(); return; }
         let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
         try {
-          handle = await fs.open(html.file, constants.O_RDONLY | constants.O_NOFOLLOW);
+          handle = await fs.open(html.file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
           const stat = await handle.stat();
           if (!stat.isFile() || stat.size !== html.size) throw new Error("预览文件已变化。");
           res.writeHead(200, {

@@ -1,6 +1,11 @@
 import path from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import type { DeviceSshAddRequest } from "@kulo/protocol";
+import { INSTALL_STAGE_MARKER } from "@kulo/env";
+import type {
+  DeviceSshAddRequest,
+  DeviceSshOnboardingStage,
+  DeviceSshOnboardingStatus,
+} from "@kulo/protocol";
 import {
   captureSshProcess,
   prepareSshAuthSession,
@@ -8,11 +13,25 @@ import {
 } from "./connection-ssh-auth.js";
 import { classifySshExecutionFailure } from "./connection-ssh-diagnostics.js";
 import type { DeviceSshConnectionEvent, ResolvedDeviceSshCredential } from "./connections.js";
+import {
+  NO_NODE_MARKER,
+  POSIX_PREPARE_COMMAND,
+  PREPARE_MARKER,
+  WINDOWS_PREPARE_COMMAND,
+  buildPosixNodeBootstrapCommand,
+  buildWindowsNodeBootstrapCommand,
+  extractBootstrapError,
+  parseNoNodeMarker,
+  resolveManagedNodeTarget,
+} from "./device-ssh-node.js";
 
 const CONNECTION_ID_RE = /^connection-[a-f0-9-]{16,64}$/;
 const TUNNEL_READY = "KULO-TUNNEL-READY";
-const PREPARE_MARKER = "KULO-PREPARE-JSON:";
 const TUNNEL_READY_EXPR = `console.log('${TUNNEL_READY}');process.stdin.resume()`;
+const NODE_BOOTSTRAP_TIMEOUT_MS = 240_000;
+const INSTALL_REMOTE_TIMEOUT_MS = 330_000;
+const CANCELLING_WAIT_MS = 3_500;
+const INSTALL_STAGE_SET = new Set<DeviceSshOnboardingStage>(["downloading-peer", "installing-deps", "pairing"]);
 
 export type RemoteSshShell = "cmd" | "powershell" | "git-bash";
 
@@ -68,6 +87,13 @@ interface Tunnel {
   stopped: boolean;
   pausedForReverify: boolean;
   connected: boolean;
+}
+
+interface ActiveAdd {
+  controller: AbortController;
+  cancelling: boolean;
+  done: Promise<void>;
+  progress: DeviceSshOnboardingStatus;
 }
 
 const PAUSED_REVERIFY_CODES = new Set([
@@ -151,70 +177,90 @@ export function buildRemoteNodeBase64Command(nodePath: string, script: string, s
   return buildRemoteNodeEvalCommand(nodePath, `eval(Buffer.from('${b64}','base64').toString())`, shell);
 }
 
-const PREPARE_REMOTE = `
-const net=require('node:net');
-const [major,minor]=process.versions.node.split('.').map(Number);
-if(major<22||(major===22&&minor<19)){console.error('接入设备需要 Node.js 22.19 或更新版本。');process.exit(1);}
-const s=net.createServer();
-s.once('error',e=>{console.error(e.message);process.exit(1);});
-s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>console.log('${PREPARE_MARKER}'+JSON.stringify({port:p,nodePath:process.execPath,platform:process.platform})));});
-`.trim();
-
-const PREPARE_REMOTE_HEX = Buffer.from(PREPARE_REMOTE, "utf8").toString("hex");
-
-// Uses regex .source with hex so the outer `sh -c '...'` contains zero nested single quotes across sh/bash/zsh/fish/csh.
-const POSIX_PREPARE_COMMAND = [
-  "sh -c '",
-  'N=$(command -v node 2>/dev/null || true); ',
-  'if [ -z "$N" ]; then for p in /opt/homebrew/bin/node /usr/local/bin/node "$HOME/.volta/bin/node" "$HOME/.local/share/mise/shims/node" "$HOME/.asdf/shims/node"; do [ -x "$p" ] && N="$p" && break; done; fi; ',
-  'if [ -z "$N" ] && [ -n "${SHELL:-}" ] && [ -x "$SHELL" ]; then N=$("$SHELL" -l -c "command -v node" </dev/null 2>/dev/null | tail -n 1 || true); fi; ',
-  'if [ -z "$N" ]; then echo "KULO-NO-NODE" >&2; exit 127; fi; ',
-  `exec "$N" -e "eval(Buffer.from(/${PREPARE_REMOTE_HEX}/.source,/hex/.source).toString())"'`,
-].join("");
-
-function powershellEncodedCommand(script: string): string {
-  return `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`;
-}
-
-const WINDOWS_PREPARE_COMMAND = powershellEncodedCommand([
-  "$ErrorActionPreference = 'Stop'",
-  "$n = Get-Command node -ErrorAction SilentlyContinue",
-  "if (-not $n) { [Console]::Error.WriteLine('KULO-NO-NODE'); exit 127 }",
-  `& $n.Source -e "eval(Buffer.from(/${PREPARE_REMOTE_HEX}/.source,/hex/.source).toString())"`,
-  "exit $LASTEXITCODE",
-].join("; "));
-
 /**
  * Reads a single `\n`-delimited JSON line from stdin (never waiting for EOF, which Windows sshd may omit),
- * creates its own private temp dir, fetches the installer over the reverse tunnel, passes inviteToken via
- * KULO_PEER_INVITE env var (zero argv exposure), and cleans up the temp dir in finally.
+ * optionally watches stdin EOF/close (`watchStdin: true`) so SSH timeout or cancel cleanly terminates the entire
+ * installer process group, fetches the installer over the reverse tunnel, passes inviteToken via KULO_PEER_INVITE
+ * env var (zero argv exposure), and cleans up the temp dir in finally.
  */
 export const INSTALL_REMOTE = `
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),cp=require('node:child_process');
-function readLine(){return new Promise((res,rej)=>{let buf='',done=false;const t=setTimeout(()=>{if(!done){done=true;process.stdin.destroy();rej(new Error('等待设备配对参数超时。'));}},10000);const onData=c=>{if(done)return;buf+=c.toString('utf8');if(Buffer.byteLength(buf,'utf8')>16384){done=true;clearTimeout(t);process.stdin.destroy();rej(new Error('设备配对参数过长。'));return;}const i=buf.indexOf('\\n');if(i!==-1){done=true;clearTimeout(t);process.stdin.off('data',onData);process.stdin.pause();process.stdin.destroy();res(buf.slice(0,i).replace(/\\r$/,''));}};process.stdin.on('data',onData);process.stdin.once('end',()=>{if(!done){done=true;clearTimeout(t);if(buf.trim())res(buf.trim());else rej(new Error('未收到设备配对参数。'));}});process.stdin.once('error',e=>{if(!done){done=true;clearTimeout(t);rej(e);}});process.stdin.resume();});}
+function readLine(){return new Promise((res,rej)=>{let buf='',done=false;const t=setTimeout(()=>{if(!done){done=true;process.stdin.destroy();rej(new Error('等待设备配对参数超时。'));}},10000);const onEnd=()=>{if(!done){done=true;clearTimeout(t);if(buf.trim())res(buf.trim());else rej(new Error('未收到设备配对参数。'));}};const onErr=e=>{if(!done){done=true;clearTimeout(t);rej(e);}};const onData=c=>{if(done)return;buf+=c.toString('utf8');if(Buffer.byteLength(buf,'utf8')>16384){done=true;clearTimeout(t);process.stdin.destroy();rej(new Error('设备配对参数过长。'));return;}const i=buf.indexOf('\\n');if(i!==-1){done=true;clearTimeout(t);process.stdin.off('data',onData);process.stdin.off('end',onEnd);process.stdin.off('error',onErr);res(buf.slice(0,i).replace(/\\r$/,''));}};process.stdin.on('data',onData);process.stdin.once('end',onEnd);process.stdin.once('error',onErr);process.stdin.resume();});}
 (async()=>{
   const raw=await readLine();
   const cfg=JSON.parse(raw);
   if(!cfg||typeof cfg.hubUrl!=='string'||typeof cfg.inviteToken!=='string')throw new Error('设备配对参数无效。');
   const win=process.platform==='win32';
+  const watchStdin=cfg.watchStdin===true;
+  const drain=()=>{};
+  const fetchAc=new AbortController();
+  let cancelled=false,finished=false,activeChild=null,killTimer=null;
+  const killChild=()=>{
+    const ch=activeChild;
+    if(!ch||!ch.pid||ch.exitCode!==null||ch.signalCode!==null)return;
+    if(win){
+      const root=process.env.SystemRoot||process.env.windir;
+      const tk=root?path.join(root,'System32','taskkill.exe'):'taskkill.exe';
+      const k=cp.spawn(tk,['/pid',String(ch.pid),'/T','/F'],{stdio:'ignore',windowsHide:true});
+      k.on('error',()=>{try{ch.kill();}catch{}});
+      return;
+    }
+    try{process.kill(-ch.pid,'SIGTERM');}catch{try{ch.kill('SIGTERM');}catch{}}
+    if(!killTimer){
+      killTimer=setTimeout(()=>{try{process.kill(-ch.pid,'SIGKILL');}catch{try{ch.kill('SIGKILL');}catch{}}},1000);
+      killTimer.unref();
+    }
+  };
+  const cancel=()=>{if(finished||cancelled)return;cancelled=true;fetchAc.abort();killChild();};
+  process.on('SIGTERM',cancel);
+  process.on('SIGINT',cancel);
+  process.on('SIGHUP',cancel);
+  if(watchStdin){
+    process.stdin.on('data',drain);
+    process.stdin.once('end',cancel);
+    process.stdin.once('close',cancel);
+    process.stdin.once('error',cancel);
+    if(typeof process.stdin.unref==='function')process.stdin.unref();
+    if(process.stdin.readableEnded||process.stdin.destroyed)cancel();
+  }else{
+    process.stdin.pause();
+    process.stdin.destroy();
+  }
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'kulo-join-'));
   try{
+    if(cancelled)throw new Error('设备安装已取消。');
     if(!win)fs.chmodSync(dir,0o700);
     const installer=path.join(dir,win?'install.ps1':'install.sh');
-    const resp=await fetch(new URL(win?'/connect/install.ps1':'/connect/install.sh',cfg.hubUrl),{redirect:'error',signal:AbortSignal.timeout(30000)});
+    const resp=await fetch(new URL(win?'/connect/install.ps1':'/connect/install.sh',cfg.hubUrl),{redirect:'error',signal:AbortSignal.any([AbortSignal.timeout(30000),fetchAc.signal])});
     if(!resp.ok)throw new Error('无法下载设备安装程序：HTTP '+resp.status);
     fs.writeFileSync(installer,await resp.text(),{mode:0o700});
+    if(cancelled)throw new Error('设备安装已取消。');
     const cmd=win?'powershell.exe':'sh';
     const args=win?['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',installer,cfg.hubUrl]:[installer,cfg.hubUrl];
-    const env={...process.env,KULO_PEER_INVITE:cfg.inviteToken};
+    const env={...process.env,KULO_PEER_INVITE:cfg.inviteToken,KULO_INSTALL_PROGRESS:'1'};
     const pk=Object.keys(env).find(k=>k.toLowerCase()==='path')||'PATH';
     env[pk]=path.dirname(process.execPath)+path.delimiter+(env[pk]||'');
-    const child=cp.spawn(cmd,args,{stdio:['ignore','pipe','pipe'],windowsHide:true,env});
+    const child=cp.spawn(cmd,args,{stdio:['ignore','pipe','pipe'],detached:!win,windowsHide:true,env});
+    activeChild=child;
     child.stdout.pipe(process.stdout);
     child.stderr.pipe(process.stderr);
+    if(cancelled)killChild();
     const code=await new Promise((r,j)=>{child.once('error',j);child.once('close',r);});
+    finished=true;
+    if(killTimer){clearTimeout(killTimer);killTimer=null;}
+    if(cancelled)throw new Error('设备安装已取消。');
     if(code!==0)throw new Error('设备安装程序退出：'+code);
   }finally{
+    finished=true;
+    if(killTimer){clearTimeout(killTimer);killTimer=null;}
+    process.off('SIGTERM',cancel);
+    process.off('SIGINT',cancel);
+    process.off('SIGHUP',cancel);
+    process.stdin.off('data',drain);
+    process.stdin.off('end',cancel);
+    process.stdin.off('close',cancel);
+    process.stdin.off('error',cancel);
+    try{process.stdin.destroy();}catch{}
     fs.rmSync(dir,{recursive:true,force:true});
   }
 })().catch(e=>{console.error(e&&e.message?e.message:String(e));process.exitCode=1;});
@@ -241,7 +287,7 @@ export class DeviceSshConnector {
   readonly #options: DeviceSshConnectorOptions;
   readonly #platform: NodeJS.Platform;
   readonly #tunnels = new Map<string, Tunnel>();
-  readonly #addingConnections = new Set<string>();
+  readonly #activeAdds = new Map<string, ActiveAdd>();
   readonly #bootstraps = new Set<AbortController>();
   #generation = 0;
   #closed = false;
@@ -252,11 +298,45 @@ export class DeviceSshConnector {
   }
 
   isAddingConnection(connectionId: string): boolean {
-    return this.#addingConnections.has(connectionId);
+    return this.#activeAdds.has(connectionId);
   }
 
-  #assertGeneration(generation: number): void {
-    if (this.#closed || generation !== this.#generation) fail("设备接入已取消。", "device_ssh_cancelled", 409);
+  listOnboardingProgress(): DeviceSshOnboardingStatus[] {
+    const entries: DeviceSshOnboardingStatus[] = [];
+    for (const active of this.#activeAdds.values()) {
+      if (!active.cancelling) entries.push({ ...active.progress });
+    }
+    return entries;
+  }
+
+  #assertActive(generation: number, signal?: AbortSignal): void {
+    if (this.#closed || generation !== this.#generation || signal?.aborted) {
+      fail("设备接入已取消。", "device_ssh_cancelled", 409);
+    }
+  }
+
+  async #waitForCancelling(existing: ActiveAdd, signal?: AbortSignal): Promise<void> {
+    if (!existing.cancelling) fail("正在通过此 SSH 凭据接入设备，请稍候。", "device_ssh_adding", 409);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    try {
+      await Promise.race([
+        existing.done,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, CANCELLING_WAIT_MS);
+          timer.unref();
+          if (signal) {
+            if (signal.aborted) { resolve(); return; }
+            onAbort = () => resolve();
+            signal.addEventListener("abort", onAbort, { once: true });
+          }
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+    }
+    if (signal?.aborted) fail("设备接入已取消。", "device_ssh_cancelled", 409);
   }
 
   #redact(text: string, inviteToken?: string): string {
@@ -283,7 +363,14 @@ export class DeviceSshConnector {
   async #execSsh(
     resolved: ResolvedDeviceSshCredential,
     remoteCommand: string,
-    options: { timeoutMs: number; input?: string; rawInput?: boolean; signal?: AbortSignal },
+    options: {
+      timeoutMs: number;
+      input?: string;
+      rawInput?: boolean;
+      keepStdinOpen?: boolean;
+      onStdoutLine?: (line: string) => void;
+      signal?: AbortSignal;
+    },
   ) {
     const auth = await prepareSshAuthSession({
       host: resolved.connection.host!,
@@ -303,6 +390,8 @@ export class DeviceSshConnector {
         timeoutMs: options.timeoutMs,
         input: options.input,
         rawInput: options.rawInput,
+        keepStdinOpen: options.keepStdinOpen,
+        onStdoutLine: options.onStdoutLine,
         signal: options.signal,
       });
     } finally {
@@ -321,29 +410,85 @@ export class DeviceSshConnector {
     return "git-bash";
   }
 
+  async #bootstrapWindowsNode(
+    resolved: ResolvedDeviceSshCredential,
+    signal: AbortSignal,
+    onStage?: (stage: DeviceSshOnboardingStage) => void,
+    priorPosix?: { stdout: string; stderr: string },
+  ): Promise<{ port: number; nodePath: string; platform: string }> {
+    const win = await this.#execSsh(resolved, WINDOWS_PREPARE_COMMAND, { timeoutMs: 30_000, signal });
+    if (win.exitCode === 255) throw this.#classifyTransportFailure(resolved, win);
+    if (win.exitCode === 0 && win.stdout.includes(PREPARE_MARKER)) {
+      return parsePreparedPayload(win.stdout);
+    }
+    if (win.exitCode === 127 && win.stderr.includes("KULO-NO-NODE")) {
+      const probe = parseNoNodeMarker(win.stderr);
+      if (!probe) fail("远端主机未找到 Node.js，请先安装 Node.js 22.19 或更新版本。", "device_ssh_node_missing", 400);
+      const target = resolveManagedNodeTarget(probe);
+      onStage?.("installing-node");
+      const boot = await this.#execSsh(resolved, buildWindowsNodeBootstrapCommand(target), {
+        timeoutMs: NODE_BOOTSTRAP_TIMEOUT_MS,
+        signal,
+      });
+      if (boot.exitCode === 255) throw this.#classifyTransportFailure(resolved, boot);
+      if (boot.exitCode !== 0 || !boot.stdout.includes(PREPARE_MARKER)) {
+        const reason = extractBootstrapError(boot.stderr) ?? summarizeScriptFailure(
+          boot.stdout,
+          boot.stderr,
+          "自动安装远端 Node.js 失败，请检查远端主机网络后重试，或手动安装 Node.js 22.19 或更新版本。",
+        );
+        fail(reason, "device_ssh_node_bootstrap_failed", 400);
+      }
+      return parsePreparedPayload(boot.stdout);
+    }
+    const fallback = summarizeScriptFailure(
+      win.stdout,
+      win.stderr,
+      "无法读取设备的 Node.js 环境信息，请确认已安装 Node.js 22.19 或更新版本。",
+    );
+    const reason = priorPosix ? summarizeScriptFailure(priorPosix.stdout, priorPosix.stderr, fallback) : fallback;
+    fail(reason, "device_ssh_prepare_failed", 400);
+  }
+
   async #prepareRemote(
     resolved: ResolvedDeviceSshCredential,
     signal: AbortSignal,
+    onStage?: (stage: DeviceSshOnboardingStage) => void,
   ): Promise<{ port: number; nodePath: string; remoteShell?: RemoteSshShell }> {
     const posix = await this.#execSsh(resolved, POSIX_PREPARE_COMMAND, { timeoutMs: 30_000, signal });
     if (posix.exitCode === 255) throw this.#classifyTransportFailure(resolved, posix);
     let prepared: { port: number; nodePath: string; platform: string };
     if (posix.exitCode === 0 && posix.stdout.includes(PREPARE_MARKER)) {
       prepared = parsePreparedPayload(posix.stdout);
-    } else if (posix.exitCode === 127 && posix.stderr.includes("KULO-NO-NODE")) {
-      fail("远端主机未找到 Node.js，请先安装 Node.js 22.19 或更新版本。", "device_ssh_node_missing", 400);
-    } else {
-      // Fallback for Windows sshd whose DefaultShell is cmd.exe or PowerShell (no `sh`).
-      const win = await this.#execSsh(resolved, WINDOWS_PREPARE_COMMAND, { timeoutMs: 30_000, signal });
-      if (win.exitCode === 255) throw this.#classifyTransportFailure(resolved, win);
-      if (win.exitCode === 127 && win.stderr.includes("KULO-NO-NODE")) {
+    } else if (posix.exitCode === 127 && (posix.stderr.includes(NO_NODE_MARKER) || posix.stderr.includes("KULO-NO-NODE"))) {
+      const probe = parseNoNodeMarker(posix.stderr);
+      if (!probe) {
         fail("远端主机未找到 Node.js，请先安装 Node.js 22.19 或更新版本。", "device_ssh_node_missing", 400);
       }
-      if (win.exitCode !== 0 || !win.stdout.includes(PREPARE_MARKER)) {
-        const reason = summarizeScriptFailure(posix.stdout, posix.stderr, summarizeScriptFailure(win.stdout, win.stderr, "无法读取设备的 Node.js 环境信息，请确认已安装 Node.js 22.19 或更新版本。"));
-        fail(reason, "device_ssh_prepare_failed", 400);
+      if (probe.os === "win32") {
+        // Git Bash sshd on Windows: check Windows paths first, then bootstrap managed Windows Node if still missing.
+        prepared = await this.#bootstrapWindowsNode(resolved, signal, onStage);
+      } else {
+        const target = resolveManagedNodeTarget(probe);
+        onStage?.("installing-node");
+        const boot = await this.#execSsh(resolved, buildPosixNodeBootstrapCommand(target), {
+          timeoutMs: NODE_BOOTSTRAP_TIMEOUT_MS,
+          signal,
+        });
+        if (boot.exitCode === 255) throw this.#classifyTransportFailure(resolved, boot);
+        if (boot.exitCode !== 0 || !boot.stdout.includes(PREPARE_MARKER)) {
+          const reason = extractBootstrapError(boot.stderr) ?? summarizeScriptFailure(
+            boot.stdout,
+            boot.stderr,
+            "自动安装远端 Node.js 失败，请检查远端主机网络后重试，或手动安装 Node.js 22.19 或更新版本。",
+          );
+          fail(reason, "device_ssh_node_bootstrap_failed", 400);
+        }
+        prepared = parsePreparedPayload(boot.stdout);
       }
-      prepared = parsePreparedPayload(win.stdout);
+    } else {
+      // Fallback for Windows sshd whose DefaultShell is cmd.exe or PowerShell (no `sh`).
+      prepared = await this.#bootstrapWindowsNode(resolved, signal, onStage, posix);
     }
     const remoteShell = prepared.platform === "win32"
       ? await this.#detectWindowsShell(resolved, signal)
@@ -352,27 +497,54 @@ export class DeviceSshConnector {
     return { port: prepared.port, nodePath: prepared.nodePath, ...(remoteShell ? { remoteShell } : {}) };
   }
 
-  async add(raw: DeviceSshAddRequest): Promise<DeviceSshRecord> {
+  async add(raw: DeviceSshAddRequest, options?: { signal?: AbortSignal }): Promise<DeviceSshRecord> {
     if (this.#closed) fail("设备连接服务已关闭。", "device_ssh_closed", 503);
     const generation = this.#generation;
     const request = validateDeviceSshAddRequest(raw);
-    if (this.#addingConnections.has(request.connectionId)) {
-      fail("正在通过此 SSH 凭据接入设备，请稍候。", "device_ssh_adding", 409);
+    if (options?.signal?.aborted) fail("设备接入已取消。", "device_ssh_cancelled", 409);
+    const existing = this.#activeAdds.get(request.connectionId);
+    if (existing) {
+      await this.#waitForCancelling(existing, options?.signal);
+      if (this.#closed || generation !== this.#generation) fail("设备接入已取消。", "device_ssh_cancelled", 409);
+      if (this.#activeAdds.has(request.connectionId)) {
+        fail("正在通过此 SSH 凭据接入设备，请稍候。", "device_ssh_adding", 409);
+      }
     }
     const bound = this.#options.findBoundDevice?.(request.connectionId);
     if (bound) {
       fail(`此 SSH 凭据已关联设备「${bound.name}」，请勿重复添加。`, "device_ssh_credential_bound", 409);
     }
-    this.#addingConnections.add(request.connectionId);
     const bootstrapController = new AbortController();
+    let resolveDone!: () => void;
+    const done = new Promise<void>((resolve) => { resolveDone = resolve; });
+    const startedAt = Date.now();
+    const active: ActiveAdd = {
+      controller: bootstrapController,
+      cancelling: false,
+      done,
+      progress: { connectionId: request.connectionId, stage: "probing", startedAt, updatedAt: startedAt },
+    };
+    this.#activeAdds.set(request.connectionId, active);
     this.#bootstraps.add(bootstrapController);
+    const setStage = (stage: DeviceSshOnboardingStage, nextDeviceId?: string) => {
+      active.progress.stage = stage;
+      active.progress.updatedAt = Date.now();
+      if (nextDeviceId) active.progress.deviceId = nextDeviceId;
+    };
+    const onExternalAbort = () => {
+      active.cancelling = true;
+      bootstrapController.abort();
+    };
+    options?.signal?.addEventListener("abort", onExternalAbort, { once: true });
+    if (options?.signal?.aborted) onExternalAbort();
     let deviceId: string | undefined;
     let inviteToken: string | undefined;
     try {
+      this.#assertActive(generation, bootstrapController.signal);
       const resolved = await this.#options.credentials.resolveVerified(request.connectionId);
-      this.#assertGeneration(generation);
-      const prepared = await this.#prepareRemote(resolved, bootstrapController.signal);
-      this.#assertGeneration(generation);
+      this.#assertActive(generation, bootstrapController.signal);
+      const prepared = await this.#prepareRemote(resolved, bootstrapController.signal, setStage);
+      this.#assertActive(generation, bootstrapController.signal);
       const hubUrl = `http://127.0.0.1:${prepared.port}`;
       const displayName = request.name ?? resolved.connection.name;
       const invitation = await this.#options.createInvitation({
@@ -383,7 +555,8 @@ export class DeviceSshConnector {
       });
       deviceId = invitation.deviceId;
       inviteToken = invitation.inviteToken;
-      this.#assertGeneration(generation);
+      this.#assertActive(generation, bootstrapController.signal);
+      setStage("opening-tunnel", deviceId);
       const record: DeviceSshRecord = {
         deviceId,
         connectionId: request.connectionId,
@@ -402,31 +575,44 @@ export class DeviceSshConnector {
         connected: false,
       };
       this.#tunnels.set(deviceId, tunnel);
-      await this.#openTunnel(tunnel, resolved);
-      this.#assertGeneration(generation);
+      await this.#openTunnel(tunnel, resolved, bootstrapController.signal);
+      this.#assertActive(generation, bootstrapController.signal);
+      setStage("downloading-peer");
       const installCmd = buildRemoteNodeBase64Command(record.remoteNodePath, INSTALL_REMOTE, record.remoteShell);
       const installResult = await this.#execSsh(resolved, installCmd, {
-        timeoutMs: 300_000,
-        input: `${JSON.stringify({ hubUrl, inviteToken })}\n`,
+        timeoutMs: INSTALL_REMOTE_TIMEOUT_MS,
+        input: `${JSON.stringify({ hubUrl, inviteToken, watchStdin: true })}\n`,
         rawInput: true,
+        keepStdinOpen: true,
+        onStdoutLine: (line) => {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith(INSTALL_STAGE_MARKER)) return;
+          const stage = trimmed.slice(INSTALL_STAGE_MARKER.length).trim() as DeviceSshOnboardingStage;
+          if (INSTALL_STAGE_SET.has(stage)) setStage(stage);
+        },
         signal: bootstrapController.signal,
       });
       if (installResult.exitCode === 255) throw this.#classifyTransportFailure(resolved, installResult);
       if (installResult.exitCode !== 0) {
         fail(summarizeScriptFailure(installResult.stdout, installResult.stderr, `设备安装程序退出：${installResult.exitCode}`), "device_ssh_install_failed", 400);
       }
-      this.#assertGeneration(generation);
+      this.#assertActive(generation, bootstrapController.signal);
       if (tunnel.stopped) fail("设备接入已取消。", "device_ssh_cancelled", 409);
       tunnel.reconnect = true;
       return record;
     } catch (error) {
       if (deviceId) this.remove(deviceId);
-      const code = errorCodeOf(error);
-      const rawMessage = messageOf(error);
+      const aborted = bootstrapController.signal.aborted || options?.signal?.aborted || this.#closed || generation !== this.#generation
+        || (error instanceof Error && error.name === "AbortError");
+      const code = aborted ? "device_ssh_cancelled" : errorCodeOf(error);
+      const rawMessage = aborted ? "设备接入已取消。" : messageOf(error);
       const safeDetail = this.#redact(rawMessage, inviteToken);
       if (deviceId) {
         if (this.#options.onAddFailed) this.#options.onAddFailed(deviceId, safeDetail);
         else this.#options.onError?.(deviceId, safeDetail);
+      }
+      if (aborted) {
+        throw Object.assign(new Error(safeDetail), { code: "device_ssh_cancelled", status: 409 });
       }
       if (code && (code.startsWith("connection_") || code.startsWith("device_ssh_"))) {
         const status = error && typeof error === "object" && "status" in error && typeof error.status === "number" ? error.status : 400;
@@ -434,17 +620,21 @@ export class DeviceSshConnector {
       }
       throw Object.assign(new Error(`SSH 设备接入失败：${safeDetail}`), { code: "device_ssh_add_failed", status: 400 });
     } finally {
+      options?.signal?.removeEventListener("abort", onExternalAbort);
       this.#bootstraps.delete(bootstrapController);
-      this.#addingConnections.delete(request.connectionId);
+      if (this.#activeAdds.get(request.connectionId) === active) {
+        this.#activeAdds.delete(request.connectionId);
+      }
+      resolveDone();
     }
   }
 
-  async #openTunnel(tunnel: Tunnel, initialResolved?: ResolvedDeviceSshCredential): Promise<void> {
-    if (this.#closed || tunnel.stopped) fail("设备连接已取消。", "device_ssh_cancelled", 409);
+  async #openTunnel(tunnel: Tunnel, initialResolved?: ResolvedDeviceSshCredential, signal?: AbortSignal): Promise<void> {
+    if (this.#closed || tunnel.stopped || signal?.aborted) fail("设备连接已取消。", "device_ssh_cancelled", 409);
     const hubPort = typeof this.#options.hubPort === "function" ? this.#options.hubPort() : this.#options.hubPort;
     if (!validPort(tunnel.record.remotePort) || !validPort(hubPort)) fail("SSH 转发端口无效。", "device_ssh_invalid_port", 400);
     const resolved = initialResolved ?? await this.#options.credentials.resolveForRestore(tunnel.record.connectionId);
-    if (this.#closed || tunnel.stopped || this.#tunnels.get(tunnel.record.deviceId) !== tunnel) {
+    if (this.#closed || tunnel.stopped || signal?.aborted || this.#tunnels.get(tunnel.record.deviceId) !== tunnel) {
       fail("设备连接已取消。", "device_ssh_cancelled", 409);
     }
     const remoteCommand = buildRemoteNodeEvalCommand(tunnel.record.remoteNodePath, TUNNEL_READY_EXPR, tunnel.record.remoteShell);
@@ -461,8 +651,9 @@ export class DeviceSshConnector {
       serverAliveIntervalSec: 15,
       serverAliveCountMax: 3,
       platform: this.#platform,
+      signal,
     });
-    if (this.#closed || tunnel.stopped || this.#tunnels.get(tunnel.record.deviceId) !== tunnel) {
+    if (this.#closed || tunnel.stopped || signal?.aborted || this.#tunnels.get(tunnel.record.deviceId) !== tunnel) {
       await auth.cleanup();
       fail("设备连接已取消。", "device_ssh_cancelled", 409);
     }
@@ -478,13 +669,25 @@ export class DeviceSshConnector {
       let stdout = "";
       let stderr = "";
       const finishAuth = () => { void auth.cleanup(); };
-      const failStart = (error: Error) => {
+      const cleanupListeners = () => {
         clearTimeout(timer);
+        if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+      };
+      const failStart = (error: Error) => {
+        cleanupListeners();
         finishAuth();
         if (settled) return;
         settled = true;
         reject(error);
       };
+      const onAbort = signal
+        ? () => {
+            child.stdin.end();
+            child.kill();
+            failStart(Object.assign(new Error("设备接入已取消。"), { code: "device_ssh_cancelled", status: 409 }));
+          }
+        : undefined;
+      if (signal && onAbort) signal.addEventListener("abort", onAbort, { once: true });
       const timer = setTimeout(() => {
         child.kill();
         failStart(Object.assign(new Error("SSH 反向隧道建立超时。"), { code: "connection_cancelled", status: 408 }));
@@ -497,7 +700,7 @@ export class DeviceSshConnector {
           settled = true;
           tunnel.connected = true;
           tunnel.attempts = 0;
-          clearTimeout(timer);
+          cleanupListeners();
           // Authentication and -R forwarding succeeded; destroy temporary askpass/ssh-agent immediately.
           finishAuth();
           resolve();
@@ -508,7 +711,7 @@ export class DeviceSshConnector {
         failStart(Object.assign(new Error(`无法启动 SSH：${error.message}`), { code: "connection_program_unavailable", status: 503 }));
       });
       child.once("close", (code) => {
-        clearTimeout(timer);
+        cleanupListeners();
         finishAuth();
         if (tunnel.child === child) tunnel.child = undefined;
         tunnel.connected = false;
@@ -521,6 +724,7 @@ export class DeviceSshConnector {
           this.#scheduleReconnect(tunnel);
         }
       });
+      if (signal?.aborted) onAbort?.();
     });
   }
 
@@ -634,6 +838,7 @@ export class DeviceSshConnector {
 
   cancelPending(): void {
     this.#generation++;
+    for (const active of this.#activeAdds.values()) active.cancelling = true;
     for (const controller of this.#bootstraps) controller.abort();
     this.#bootstraps.clear();
     for (const id of [...this.#tunnels.keys()]) this.remove(id);

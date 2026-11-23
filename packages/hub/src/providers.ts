@@ -83,6 +83,7 @@ import {
 } from "./model-metadata-parser.js";
 import { KuloModelMetadataRegistry, type ModelMetadataRegistryOptions } from "./model-metadata-registry.js";
 import { allowedThinkingWireValuesForApi } from "./settings.js";
+import { LOCAL_KEYLESS_SYNTHETIC_API_KEY, supportsKeylessLocalModel } from "./local-model-endpoint.js";
 import {
   KULO_GATEWAY_PROVIDER_ID,
   openAIResponsesCompat,
@@ -1051,12 +1052,11 @@ export class KuloProviderManager {
             name: `${cp.name} API Key`,
             resolve: async ({ credential }) => {
               const key = apiKeyForOrigin(credential, normalizedBaseUrl);
-              if (!key) return undefined;
-              return {
-                auth: { apiKey: key, baseUrl: modelBaseUrl },
-                env: credential?.env,
-                source: "已保存密钥",
-              };
+              if (key) return { auth: { apiKey: key, baseUrl: modelBaseUrl }, env: credential?.env, source: "已保存密钥" };
+              if (cp.authMode === "none" && supportsKeylessLocalModel(normalizedBaseUrl, cp.api)) {
+                return { auth: { apiKey: LOCAL_KEYLESS_SYNTHETIC_API_KEY, baseUrl: modelBaseUrl }, source: "本地免密服务" };
+              }
+              return undefined;
             },
           },
         },

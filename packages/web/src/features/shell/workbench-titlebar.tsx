@@ -37,6 +37,9 @@ export interface WorkbenchTitlebarProps {
   connected: boolean;
   liveBusy: boolean;
   liveContext?: LiveContextState;
+  hasMessages?: boolean;
+  hasPendingOutbox?: boolean;
+  longTermMemoryActive?: boolean;
   onSelectTargetDevice: (deviceId: string) => void;
   onOpenConversationSearch: () => void;
   deliveryScope?: string;
@@ -73,6 +76,9 @@ export function WorkbenchTitlebar({
   connected,
   liveBusy,
   liveContext,
+  hasMessages = true,
+  hasPendingOutbox = false,
+  longTermMemoryActive,
   onSelectTargetDevice,
   onOpenConversationSearch,
   deliveryScope,
@@ -153,16 +159,22 @@ export function WorkbenchTitlebar({
           </Button>
           <ConversationFilesButton
             topicId={activeTopicId}
-            scopeKey={deliveryScope}
+            scopeKey={`${deliveryScope ?? ""}:${activeTopic?.conversationId ?? ""}`}
             revision={filesRevision}
             isLocal={isLocalTopic}
             onNavigate={onNavigateConversation}
           />
           <TopicContextMenu
             topicId={activeTopicId}
+            conversationId={activeTopic?.conversationId}
+            isMasterTopic={Boolean(activeTopic?.master || activeTopicId === "root")}
+            isArchivedTopic={Boolean(activeTopic?.archived && !activeTopic?.master)}
             isLocalTopic={isLocalTopic}
             connected={connected}
             liveBusy={liveBusy}
+            hasMessages={hasMessages}
+            hasPendingOutbox={hasPendingOutbox}
+            longTermMemoryActive={longTermMemoryActive}
             context={liveContext}
           />
         </>

@@ -39,7 +39,7 @@ export async function runRecoveryCli(args: readonly string[]): Promise<{ exitCod
     manager = new RecoveryManager(dataDir, {
       shellVersion: flags.get("--shell-version") ?? baseline?.shellVersion ?? "1",
       protocolVersion: baseline?.protocolVersion ?? 1,
-      dataVersion: baseline?.dataVersion ?? 2,
+      dataVersion: baseline?.dataVersion ?? 3,
     });
     const inspection = await manager.inspect();
     let result: unknown;

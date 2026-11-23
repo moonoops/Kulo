@@ -8,6 +8,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { HttpsProxyAgent } from "https-proxy-agent";
+import { resolveSystemTarExecutable } from "@kulo/env";
 import { serviceApiFetch } from "./web-content.js";
 
 const require = createRequire(import.meta.url);
@@ -279,7 +280,7 @@ export class LocalVoiceAsr {
       await this.#download(archive);
       aborted(this.#lifetime.signal);
       this.#setStatus({ status: "preparing", progress: 92 });
-      await this.#run("tar", ["-xjf", archive, "-C", temporary, ...["model.int8.onnx", "tokens.txt", "LICENSE", "README.md"].map((name) => `${MODEL_DIRECTORY}/${name}`)], {
+      await this.#run(resolveSystemTarExecutable(), ["-xjf", archive, "-C", temporary, ...["model.int8.onnx", "tokens.txt", "LICENSE", "README.md"].map((name) => `${MODEL_DIRECTORY}/${name}`)], {
         signal: this.#lifetime.signal, timeoutMs: 120_000, maxOutputBytes: 16 * 1024,
       });
       const extracted = path.join(temporary, MODEL_DIRECTORY);

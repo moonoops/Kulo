@@ -14,6 +14,17 @@ export interface AndroidToolScope {
   assertActive(): Promise<void>;
 }
 
+export interface StagedAndroidAssetSummary {
+  id: string;
+  name: string;
+  mimeType: string;
+}
+
+export interface AndroidResolvedAssets {
+  images: NonNullable<ToolExecutionResult["output"]>;
+  stagedAssets: StagedAndroidAssetSummary[];
+}
+
 export interface AndroidToolsOptions {
   hubId(): string;
   scope(api: ToolExecutionApi): Promise<AndroidToolScope>;
@@ -21,19 +32,25 @@ export interface AndroidToolsOptions {
   /** Canonicalize only references already authorized to this live task; never forward arbitrary file paths. */
   resolveInput?(scope: AndroidToolScope & { deviceId: string }, action: AndroidAction, args: Record<string, unknown>): Promise<Record<string, unknown>>;
   /** Resolve only Hub-owned assets already checked against the target device and ticket. */
-  resolveAssets?(scope: AndroidToolScope & { deviceId: string; supportsImages: boolean }, result: AndroidResult): Promise<NonNullable<ToolExecutionResult["output"]>>;
+  resolveAssets?(
+    scope: AndroidToolScope & { deviceId: string; supportsImages: boolean; stageForUser?: boolean },
+    result: AndroidResult,
+  ): Promise<NonNullable<ToolExecutionResult["output"]> | AndroidResolvedAssets>;
 }
 
-type AndroidArguments = Record<string, unknown> & { device_id?: string };
+type AndroidArguments = Record<string, unknown> & { device_id?: string; stage_for_user?: boolean };
 
 export function androidOperationId(scope: Pick<AndroidToolScope, "ticketId" | "conversationId" | "runEpoch">,
-  api: Pick<ToolExecutionApi, "taskId" | "callId" | "conversationId">, action: AndroidAction, deviceId: string): string {
+  api: Pick<ToolExecutionApi, "taskId" | "callId" | "conversationId">, action: AndroidAction, deviceId: string,
+  options?: { stageForUser?: boolean }): string {
   if (api.taskId === undefined || typeof api.callId !== "string" || !api.callId || Number(api.conversationId) !== scope.conversationId) {
     throw new Error("Android operation has no stable Pi tool identity");
   }
-  return "android-" + createHash("sha256").update(JSON.stringify([
+  const parts: unknown[] = [
     scope.ticketId, scope.conversationId, scope.runEpoch, String(api.taskId), api.callId, action, deviceId,
-  ])).digest("hex");
+  ];
+  if (options?.stageForUser) parts.push("stage_for_user");
+  return "android-" + createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 }
 
 function parametersFor(definition: AndroidToolDefinition): Schema<AndroidArguments> {
@@ -41,16 +58,35 @@ function parametersFor(definition: AndroidToolDefinition): Schema<AndroidArgumen
     ...definition.parameters.properties,
     device_id: { type: "string", minLength: 1, maxLength: 100,
       description: "Target phone ID (omit when single phone; required when multiple)." },
+    ...(definition.action === "screen" ? {
+      stage_for_user: {
+        type: "boolean",
+        description: "设为 true 时自动截取无编号角标的高清纯净截图（自动启用 image=true、marks=false）并直接暂存为待交付用户的附件；纯文本模型也可调用。",
+      },
+    } : {}),
   }, additionalProperties: false });
 }
+
+const PRESERVED_TRUNCATED_FIELDS = [
+  "screen", "packageName", "appLabel", "foregroundVerified", "attachment", "attachments",
+  "writeProtectedCategory", "afterScreenError", "secureScreenDetected", "possibleSecureScreen",
+] as const;
 
 function output(result: AndroidResult, deviceId: string): NonNullable<ToolExecutionResult["output"]> {
   const encoded = JSON.stringify({ deviceId, ...result });
   if (encoded.length <= 64_000) return [{ type: "text", text: encoded }];
+  const preserved: Record<string, unknown> = {};
+  if (result.data && typeof result.data === "object" && !Array.isArray(result.data)) {
+    const raw = result.data as Record<string, unknown>;
+    for (const key of PRESERVED_TRUNCATED_FIELDS) {
+      if (raw[key] !== undefined) preserved[key] = raw[key];
+    }
+    if (typeof raw.text === "string") preserved.text = raw.text.slice(0, 48_000);
+  }
   return [{ type: "text", text: JSON.stringify({ deviceId, version: result.version, operationId: result.operationId,
     ticketId: result.ticketId, runEpoch: result.runEpoch, action: result.action, status: result.status,
     ...(result.error ? { error: result.error } : {}), truncated: true,
-    data: JSON.stringify(result.data ?? null).slice(0, 56_000) }) }];
+    data: Object.keys(preserved).length > 0 ? preserved : JSON.stringify(result.data ?? null).slice(0, 56_000) }) }];
 }
 
 const SCREEN_BEARING_TOOLS = new Set([
@@ -221,8 +257,11 @@ export function createAndroidTools(options: AndroidToolsOptions) {
       replay: definition.mutating ? "unsafe" : "safe",
       execute: async (input, api, context) => {
         if (!valid.check(input)) throw new Error("Android 工具参数无效；请使用当前工具定义及最新观察。");
-        const { device_id: selectedDevice, ...rawArgs } = input;
-        let args = rawArgs;
+        const { device_id: selectedDevice, stage_for_user: rawStageForUser, ...rawArgs } = input;
+        const stageForUser = definition.action === "screen" && rawStageForUser === true;
+        let args: Record<string, unknown> = stageForUser
+          ? { ...rawArgs, image: true, ...(rawArgs.marks === undefined ? { marks: false } : {}) }
+          : rawArgs;
         if (!isAndroidArgs(definition.action, args)) throw new Error("Android 工具参数无效。");
         const scope = await options.scope(api);
         const deviceIds = [...new Set(scope.deviceIds)];
@@ -245,14 +284,14 @@ export function createAndroidTools(options: AndroidToolsOptions) {
           const agent = await api.agent(context);
           return supportsImages = Boolean(agent.model && api.models.getModel(agent.model.provider, agent.model.modelId)?.input.includes("image"));
         };
-        if (definition.action === "screen" && args.image === true) {
+        if (definition.action === "screen" && args.image === true && !stageForUser) {
           if (!await modelSupportsImages()) {
-            throw new Error("当前模型不支持图片，请省略 image 或传 image=false 使用紧凑语义文本观察屏幕，或选择支持图片的模型。");
+            throw new Error("当前模型不支持图片，请省略 image 或传 image=false 使用紧凑语义文本观察屏幕；如需截取手机画面直接交付给用户，请传 stage_for_user=true。");
           }
         }
         const candidate: AndroidRequest = { version: 1, hubId: options.hubId(), deviceId, ticketId: scope.ticketId,
           conversationId: scope.conversationId, runEpoch: scope.runEpoch,
-          operationId: androidOperationId(scope, api, definition.action, deviceId),
+          operationId: androidOperationId(scope, api, definition.action, deviceId, stageForUser ? { stageForUser: true } : undefined),
           action: definition.action, args, deadline: api.now() + 120_000 };
         const request = await api.memo("kulo.android.intent", candidate as unknown as JsonObject, context) as unknown as AndroidRequest;
         if (!isAndroidRequest(request) || request.operationId !== candidate.operationId || request.hubId !== candidate.hubId ||
@@ -269,8 +308,13 @@ export function createAndroidTools(options: AndroidToolsOptions) {
         const content = output(result, deviceId);
         if (result.status === "completed" && options.resolveAssets) {
           const images = await modelSupportsImages();
-          const assets = await options.resolveAssets({ ...scope, deviceId, supportsImages: images }, result);
-          content.push(...assets.filter((item) => item.type !== "image" || images));
+          const resolved = await options.resolveAssets({ ...scope, deviceId, supportsImages: images, ...(stageForUser ? { stageForUser: true } : {}) }, result);
+          const mediaItems = Array.isArray(resolved) ? resolved : resolved.images;
+          const stagedAssets = Array.isArray(resolved) ? [] : resolved.stagedAssets;
+          content.push(...mediaItems.filter((item) => item.type !== "image" || images));
+          if (stagedAssets.length > 0) {
+            content.push({ type: "text", text: JSON.stringify({ stagedForUser: true, stagedAssets }) });
+          }
         }
         await scope.assertActive();
         context.abortSignal?.throwIfAborted();

@@ -88,6 +88,7 @@ export {
   type MemoryLlmBridgeResponse,
 } from "./memory-llm-bridge.js";
 export { findRunningHub, HubStateInUseError } from "./state-owner.js";
+export { prepareStateStorage } from "./state-storage.js";
 export { DeviceJoinStaging, type HubDeviceController } from "./tools-devices.js";
 export { KuloPersonality, PersonalityDoc, PersonalityError, defaultPersonalitySettings, nextRelationshipRun } from "./personality.js";
 export { buildRecentWorkSnapshot } from "./recent-work.js";
@@ -186,6 +187,7 @@ export {
   type OrchestratorToolOverflowOptions,
 } from "./orchestrator-tool-overflow.js";
 export {
+  CoordinatorEventEntry,
   KuloStateDoc,
   MediaRelayEntry,
   WorkerRelayEntry,
@@ -194,6 +196,8 @@ export {
   getActiveStagedCwd,
   getEffectiveWorkspaceDir,
   hasPendingWorkspaceApply,
+  type CoordinatorEventEntryData,
+  type CoordinatorEventKind,
   type KuloDurableState,
   type MediaRelayEntryData,
   type MediaRelayJobSummary,
@@ -238,7 +242,22 @@ export {
   type McpDiscoverySnapshot,
   type McpTransportFactoryContext,
 } from "./mcp-connections.js";
-export { AssistantDoc, ensureAssistantState, upsertAssistantCardInDoc, dismissAssistantItemInDoc } from "./assistant-state.js";
+export {
+  AssistantDoc,
+  ensureAssistantState,
+  upsertAssistantCardInDoc,
+  dismissAssistantItemInDoc,
+  dismissAssistantItemsInDoc,
+  muteAssistantAppInDoc,
+  pruneExpiredAssistantItemsInDoc,
+  selectActiveAssistantItems,
+} from "./assistant-state.js";
+export {
+  isPassiveDevToolApp,
+  isSameAssistantAppFamily,
+  normalizeSorterDisposition,
+  fallbackCoordinatorDecision,
+} from "./assistant-card-policy.js";
 export { AssistantLedger, type StoredAssistantEvent, type StoredAssistantDigest } from "./assistant-ledger.js";
 export { AmbientModelService, loopbackJsonPost } from "./ambient-model-service.js";
 export { AssistantSorter, parseSorterOutput } from "./assistant-sorter.js";

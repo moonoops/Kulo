@@ -3,6 +3,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import type { StagedWorkspaceApplyResult, StagedWorkspaceDiffDetail, StagedWorkspaceDiffSummary } from "@kulo/protocol";
+import { resolveCrossPlatformSpawn } from "./platform-process.js";
 
 export interface ManifestEntry {
   sha256: string;
@@ -517,32 +518,19 @@ export function preflightNonCowWorkspace(
 }
 
 function tryOfflinePnpmInstall(sourceDir: string, stagedDir: string, onWarning?: (message: string) => void): void {
-  const hasLockfile = fs.existsSync(path.join(stagedDir, "pnpm-lock.yaml"));
-  const hasSourceNodeModules = fs.existsSync(path.join(sourceDir, "node_modules"));
-  if (!hasLockfile || !hasSourceNodeModules) return;
-
-  const storeCheck = spawnSync("pnpm", ["store", "path"], {
-    cwd: stagedDir,
-    encoding: "utf8",
-    timeout: 10_000,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  if (!fs.existsSync(path.join(stagedDir, "pnpm-lock.yaml")) || !fs.existsSync(path.join(sourceDir, "node_modules"))) return;
+  const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+  const runPnpm = (args: string[], timeout: number) => {
+    const spec = resolveCrossPlatformSpawn(pnpmBin, args);
+    return spawnSync(spec.command, spec.args, { cwd: stagedDir, encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, ...(spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}) });
+  };
+  const storeCheck = runPnpm(["store", "path"], 10_000);
   const storePath = storeCheck.status === 0 ? storeCheck.stdout.trim() : "";
   if (!storePath || !fs.existsSync(storePath)) {
     onWarning?.("Staged workspace excluded node_modules on non-CoW platform and no local pnpm store was found; dependencies may need to be installed if tests require them.");
     return;
   }
-
-  const install = spawnSync(
-    "pnpm",
-    ["install", "--offline", "--frozen-lockfile", "--ignore-scripts"],
-    {
-      cwd: stagedDir,
-      encoding: "utf8",
-      timeout: 60_000,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
+  const install = runPnpm(["install", "--offline", "--frozen-lockfile", "--ignore-scripts"], 60_000);
   if (install.status !== 0) {
     onWarning?.(`Offline pnpm install in staged workspace failed (exit ${install.status ?? "unknown"}); proceeding without node_modules.`);
   }

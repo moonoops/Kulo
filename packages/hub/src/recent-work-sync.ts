@@ -296,7 +296,7 @@ export function createRecentWorkSyncHook(options: RecentWorkSyncOptions): HookRe
       if (!recentWorkDelta && !workingMemoryDelta) {
         const needsEpochSeed =
           !sameEpoch &&
-          (baselineRecentWorkRev !== undefined || (baselineWorkingMemoryRev !== undefined && shownWorkingMemory !== undefined));
+          (baselineRecentWorkRev !== undefined || baselineWorkingMemoryRev !== undefined);
         if (needsEpochSeed) {
           await harness.commit(async (tx) => {
             const doc = await tx.doc(RecentWorkSyncDoc, api.conversationId);

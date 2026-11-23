@@ -324,7 +324,7 @@ export async function startKuloHubServer(
     getClusterEpoch: () => devices.clusterEpoch,
     hasRemoteStandbys: () => devices.hasRemoteStandbys(),
     getEffectiveIdentityDir: () => hub.getEffectiveIdentityDir(),
-    backupAssistantLedger: (destPath) => hub.assistantLedger.backupTo(destPath),
+    backupSqliteDb: (name, destPath) => hub.backupSyncSqlite(name, destPath), getBuiltinMemoryMeta: () => hub.memoryRuntime.builtinMemory.getClusterMeta(),
     readVaultEntries: async () => (await hub.connectionManager.localVault?.entries()) ?? [],
     getSenderKeys: () => {
       if (!clusterKeys) throw new ClusterSyncHttpError(503, "cluster_keys_unavailable", "主机同步密钥尚未就绪。");
@@ -348,7 +348,7 @@ export async function startKuloHubServer(
     ...(options.clusterSyncMaxDelayMs !== undefined ? { maxDelayMs: options.clusterSyncMaxDelayMs } : {}),
   });
 
-  hub.setOnClusterDirty((kind) => clusterSync.markDirty(kind));
+  hub.setOnClusterDirty((kind) => clusterSync.markDirty(kind), () => devices.hasRemoteStandbys());
   devices.setOnWrite(() => clusterSync.markDirty("files"));
   hub.setClusterCloseHook(async () => {
     await clusterSync.close();
@@ -365,7 +365,7 @@ export async function startKuloHubServer(
       };
     },
     onSyncStatus: (envId, status) => {
-      devices.updateStandbySyncStatus(envId, status);
+      devices.updateStandbySyncStatus(envId, status); if (devices.hasRemoteStandbys() && devices.listRemoteStandbys().every((s) => { const st = devices.getStandbySyncStatus(s.id); return st?.state === "synced" && st.syncedGeneration !== undefined && clusterSync.getClearEpochForGeneration(st.syncedGeneration) >= hub.memoryRuntime.builtinMemory.getClusterMeta().clearTargetEpoch; })) hub.memoryRuntime.builtinMemory.setReplicaClearConfirmed(true);
     },
     onPeerRegistered: (envId) => {
       if (!isClusterActive()) return;
@@ -568,16 +568,16 @@ export async function startKuloHubServer(
 
   const requestOrigin = (req: http.IncomingMessage): string => `${req.headers["x-forwarded-proto"] === "https" ? "https" : "http"}://${req.headers.host ?? `localhost:${actualPort}`}`;
   const requestAuthority = (req: http.IncomingMessage, url: URL) =>
-    resolveHubRequestAuthority({ req, parsedUrl: url, hubAdminToken: authToken, devices, requestOrigin });
+    resolveHubRequestAuthority({ req, parsedUrl: url, hubAdminToken: authToken, devices, requestOrigin, isMobileConnector: isMobileConnector(req) });
   const authenticatedDevice = (req: http.IncomingMessage, parsedUrl: URL): string | undefined =>
     authenticateHttpPrincipal(req, parsedUrl, authToken, devices).principalId;
   const isAuthorizedHttp = (req: http.IncomingMessage, parsedUrl: URL): boolean => authenticatedDevice(req, parsedUrl) !== undefined;
 
   const mediaHttp = createMediaHttpHandler({
-    uploads: hub.uploads,
+    uploads: hub.uploads, thumbnailsDir: path.join(hub.config.stateDir, "cache", "thumbnails"),
     authenticate: authenticatedDevice,
-    isPrincipalActive: (principal) => devices.isLocalPrincipal(principal) || (devices.enabled && devices.view(actualPort, `http://localhost:${actualPort}`).devices.some((device) => device.id === principal)),
-    canReadScope: async (_principal, scope) => (await snapshotChatUploadScope(hub.harness, BACKGROUND_CONTEXT))(scope),
+    isPrincipalActive: (principal) => devices.isLocalPrincipal(principal) || devices.isActivePairedPrincipal(principal),
+    resolveScopeChecker: () => snapshotChatUploadScope(hub.harness, BACKGROUND_CONTEXT),
   });
 
   const currentDevice = (req: http.IncomingMessage, url: URL): string => authenticatedDevice(req, url) ?? devices.localNodeId;
@@ -809,7 +809,7 @@ export async function startKuloHubServer(
 
   const unsubscribeHub = hub.subscribe({
     onVoice: (snapshot) => broadcastToAllClients({ type: "hub.voice", snapshot }),
-    onCapabilities: (snapshot) => broadcastToAllClients({ type: "hub.capabilities", snapshot: { ...snapshot, inputs: [] } }),
+    onCapabilities: (snapshot) => broadcastToAllClients({ type: "hub.capabilities", snapshot: { ...snapshot, inputs: [] } }), onBuiltinMemory: (state) => broadcastToAllClients({ type: "hub.builtin_memory", state }),
     onUiCard: (card) => {
       const encoded = JSON.stringify({ type: "hub.ui_card", card });
       for (const [ws, topicId] of clientTopics) {
@@ -821,18 +821,15 @@ export async function startKuloHubServer(
         }
       }
     },
-    onTopicView: (topicId, messages, live) => {
+    onTopicView: (topicId, messages, live, conversationId) => {
       const activity = topicActivity(messages, live);
       const signature = JSON.stringify(activity);
       if (lastTopicActivities.get(topicId) !== signature) {
         lastTopicActivities.set(topicId, signature);
         broadcastToAllClients({ type: "hub.topic_activity", topicId, activity });
       }
-      broadcastTopicView(
-        topicId,
-        { type: "hub.messages", topicId, messages, historyBefore: hub.getTopicHistoryBefore(topicId) },
-        { type: "hub.live", topicId, live },
-      );
+      const convField = conversationId === undefined ? {} : { conversationId };
+      broadcastTopicView(topicId, { type: "hub.messages", topicId, ...convField, messages, historyBefore: hub.getTopicHistoryBefore(topicId) }, { type: "hub.live", topicId, ...convField, live });
     },
     onNotification: (event) => {
       broadcastToAllClients({ type: "hub.notification", event });
@@ -916,7 +913,7 @@ export async function startKuloHubServer(
         clientTopics.set(ws, view.topicId);
         const clusterSummary = buildClusterClientSummary();
         send({
-          type: "hub.snapshot", ...snapshot, ...board, messages: view.messages, live: view.live, historyBefore: view.historyBefore,
+          type: "hub.snapshot", ...snapshot, ...board, activeConversationId: view.conversationId, messages: view.messages, live: view.live, historyBefore: view.historyBefore,
           topicActivities: { ...snapshot.topicActivities, [view.topicId]: topicActivity(view.messages, view.live) },
           selectionVersion: requested.version, supportsPing: true,
           deliveryIdentity: { hubId: devices.hubId, principalId: deviceClients.get(ws)! },
@@ -989,25 +986,16 @@ export async function startKuloHubServer(
           ? msg.ticketId.trim()
           : undefined;
 
-      const sendAck = (extra?: {
-        topicId?: string;
-        ticketId?: string;
-        deduplicated?: boolean;
-        submissionId?: number;
-        delivery?: "queued" | "accepted";
-      }) => {
+      const sendAck = (extra?: { topicId?: string; conversationId?: number; ticketId?: string; deduplicated?: boolean; submissionId?: number; delivery?: "queued" | "accepted" }) => {
         if (!reqId && !cmdId) return;
         send({
           type: "hub.ack",
           action,
           ...(reqId ? { requestId: reqId } : {}),
           ...(cmdId ? { commandId: cmdId } : {}),
-          ...(extra?.topicId ?? ctxTopicId
-            ? { topicId: extra?.topicId ?? ctxTopicId }
-            : {}),
-          ...(extra?.ticketId ?? ctxTicketId
-            ? { ticketId: extra?.ticketId ?? ctxTicketId }
-            : {}),
+          ...(extra?.topicId ?? ctxTopicId ? { topicId: extra?.topicId ?? ctxTopicId } : {}),
+          ...(extra?.conversationId === undefined ? {} : { conversationId: extra.conversationId }),
+          ...(extra?.ticketId ?? ctxTicketId ? { ticketId: extra?.ticketId ?? ctxTicketId } : {}),
           ...(extra?.deduplicated ? { deduplicated: true } : {}),
           ...(extra?.submissionId === undefined ? {} : { submissionId: extra.submissionId }),
           ...(extra?.delivery ? { delivery: extra.delivery } : {}),
@@ -1092,8 +1080,8 @@ export async function startKuloHubServer(
                 if (!isCurrent(requested)) return;
                 clientTopics.set(ws, view.topicId);
                 send({ type: "hub.topic_activity", topicId: view.topicId, activity: topicActivity(view.messages, view.live) });
-                send({ type: "hub.messages", topicId: view.topicId, messages: view.messages, historyBefore: view.historyBefore, selectionVersion: requested.version });
-                send({ type: "hub.live", topicId: view.topicId, live: view.live, selectionVersion: requested.version });
+                send({ type: "hub.messages", topicId: view.topicId, conversationId: view.conversationId, messages: view.messages, historyBefore: view.historyBefore, selectionVersion: requested.version });
+                send({ type: "hub.live", topicId: view.topicId, conversationId: view.conversationId, live: view.live, selectionVersion: requested.version });
               });
             }
             catch (error) {
@@ -1110,7 +1098,7 @@ export async function startKuloHubServer(
               throw new ProjectError(400, "invalid_device_target", "设备目标无效。");
             }
             const targetTopic = msg.topicId || selection.topicId;
-            ctxTopicId = targetTopic;
+            ctxTopicId = targetTopic; const sendCid = settingsClients.get(ws); if (sendCid) hub.settingsAssistant.noteTopicClient(targetTopic, sendCid);
             const source = sourceDeviceKnown ? devices.chatMessageSource(principal) : undefined;
             if (!devices.isLocalPrincipal(principal) && !source) throw new DeviceConnectionError("设备互联已关闭或配对已失效。", 403);
             const [deduplicated, receipt] = await Promise.all([
@@ -1123,7 +1111,7 @@ export async function startKuloHubServer(
           case "chat.abort":
           case "chat.retry": {
             const targetTopic = msg.topicId || selection.topicId;
-            ctxTopicId = targetTopic;
+            ctxTopicId = targetTopic; if (msg.type === "chat.retry") { const retryCid = settingsClients.get(ws); if (retryCid) hub.settingsAssistant.noteTopicClient(targetTopic, retryCid); }
             sendAck(await hub.deliverClientMessage({ ...msg, topicId: targetTopic }, deviceClients.get(ws) ?? devices.localNodeId));
             break;
           }

@@ -3,10 +3,10 @@ import { deviceAddresses } from "./device-addresses";
 
 describe("device address overview", () => {
   it("prioritizes LAN addresses and retains every unique IPv4 and IPv6 address", () => {
-    const addresses = ["fe80::1", "198.18.0.1", "2001:db8::1", "100.100.1.10", "10.0.1.10", "192.168.1.2", "10.0.1.10"];
+    const addresses = ["fe80::1", "198.18.0.1", "2001:db8::1", "100.100.1.10", "10.0.0.10", "192.168.1.2", "10.0.0.10"];
     const result = deviceAddresses(addresses);
-    expect(result.preview).toEqual(["10.0.1.10", "192.168.1.2"]);
-    expect(result.ipv4).toEqual(["10.0.1.10", "192.168.1.2", "100.100.1.10", "198.18.0.1"]);
+    expect(result.preview).toEqual(["10.0.0.10", "192.168.1.2"]);
+    expect(result.ipv4).toEqual(["10.0.0.10", "192.168.1.2", "100.100.1.10", "198.18.0.1"]);
     expect(result.ipv6).toEqual(["2001:db8::1", "fe80::1"]);
     expect(new Set(result.all)).toEqual(new Set(addresses));
   });

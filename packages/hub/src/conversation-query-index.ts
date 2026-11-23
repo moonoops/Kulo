@@ -1,6 +1,6 @@
 import type { Context } from "@earendil-works/chord/context";
 import { AssistantEntry, ToolResultEntry, UserEntry, type Conversation, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
-import { getMessageParts, messagePartFallback, type ChatDisplayItem, type TopicSummary } from "@kulo/protocol";
+import { getMessageParts, isLegacyRelayDisplayText, messagePartFallback, type ChatDisplayItem, type TopicSummary } from "@kulo/protocol";
 import { isRecoveryInputBoundary, WorkerRecoveryEntry } from "./state.js";
 import { ContentPublicationEntry, KuloUserEntry } from "./ui-cards.js";
 import { parseUserEntryContent } from "./uploads.js";
@@ -11,7 +11,7 @@ const BIT_MASK = FILTER_WORDS * 32 - 1;
 
 export type VisibleMessage = ChatDisplayItem & { role: "user" | "assistant" };
 export function isVisibleMessage(item: ChatDisplayItem): item is VisibleMessage {
-  if (item.role === "user") return !item.text.startsWith("[KULO_WORKER_RELAY]") && !item.text.startsWith("[KULO_WORKER_WATCHDOG]") && !item.text.startsWith("[KULO_MEDIA_RELAY]");
+  if (item.role === "user") return !(!item.requestId && isLegacyRelayDisplayText(item.text));
   if (item.role === "assistant") return Boolean(item.text || item.parts?.length || item.attachments?.length);
   return false;
 }

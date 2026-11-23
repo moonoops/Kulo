@@ -42,6 +42,8 @@ export interface HubRequestAuthority {
   readonly hasOwnerHubControl: boolean;
   /** Authenticated principal is a paired mobile device. */
   readonly isMobilePrincipal: boolean;
+  /** Request arrived directly over the verified loopback mobile TLS connector without extra proxy headers. */
+  readonly isVerifiedMobileConnector: boolean;
   /** Authenticated principal is a headless SSH-managed device. */
   readonly isSshPrincipal: boolean;
   /** Warm-standby cluster topology management (excludes headless SSH principals). */
@@ -107,10 +109,18 @@ export function resolveHubRequestAuthority(input: {
   hubAdminToken: string;
   devices: HubAuthorityDevices;
   requestOrigin: (req: IncomingMessage) => string;
+  isMobileConnector?: boolean;
 }): HubRequestAuthority {
-  const { req, parsedUrl, hubAdminToken, devices, requestOrigin } = input;
+  const { req, parsedUrl, hubAdminToken, devices, requestOrigin, isMobileConnector } = input;
   const { principalId, authSource } = authenticateHttpPrincipal(req, parsedUrl, hubAdminToken, devices);
   const proxied = hasProxyForwardingHeaders(req);
+  const hasNonProtoProxyHeaders = UNTRUSTED_PROXY_HEADERS.some(
+    (header) => header !== "x-forwarded-proto" && req.headers[header] !== undefined,
+  );
+  const isVerifiedMobileConnector =
+    isMobileConnector === true &&
+    !hasNonProtoProxyHeaders &&
+    isLoopbackSocketAddress(req.socket.remoteAddress);
   const isSameOrigin = isSameOriginHttpRequest(req, requestOrigin);
   const isDirectLoopback = !proxied && isSameOrigin && isLoopbackSocketAddress(req.socket.remoteAddress);
   const isMutation = MUTATION_METHODS.has((req.method ?? "GET").toUpperCase());
@@ -134,6 +144,7 @@ export function resolveHubRequestAuthority(input: {
     isTrustedPairedPeer,
     hasOwnerHubControl,
     isMobilePrincipal,
+    isVerifiedMobileConnector,
     isSshPrincipal,
     canManageStandby,
   };

@@ -116,7 +116,7 @@ const LOCAL_COLLOQUIAL_PATTERNS: readonly RegExp[] = [
 export function hasWorkerIsolation(desc: EnvNodeDescriptor | undefined): boolean {
   if (!desc || desc.executionKind === "native-device") return false;
   const caps = new Set(desc.capabilities);
-  return caps.has("worker-isolation") && !caps.has("worker-isolation-unavailable");
+  return (caps.has("worker-isolation") || caps.has("worker-isolation-basic")) && !caps.has("worker-isolation-unavailable");
 }
 
 export function detectSenderLocalSignals(input: {

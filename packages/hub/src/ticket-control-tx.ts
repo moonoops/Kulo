@@ -29,6 +29,7 @@ import {
   getActiveStagedCwd,
   hasActiveSubagents,
   hasPendingWorkspaceApply,
+  isActiveRootConversation,
   isTicketUnfinished,
   KuloStateDoc,
   recordProcessedCommand,
@@ -224,7 +225,7 @@ export async function admitTicketCloseInTx(
   if (params.originConversationId !== undefined) {
     const callerTopicId = state.conversationToTopic?.[String(params.originConversationId)];
     const callerTopic = callerTopicId ? state.topics?.[callerTopicId] : undefined;
-    const isGlobalCaller = params.originConversationId === Number(ROOT_CONVERSATION_ID) || Boolean(callerTopic?.master);
+    const isGlobalCaller = isActiveRootConversation(params.originConversationId, state) || Boolean(callerTopic?.master && callerTopic.deletedAt === undefined);
     const sameConv = (t.originConversationId ?? Number(ROOT_CONVERSATION_ID)) === params.originConversationId;
     const sameProject = Boolean(callerTopic?.projectId && t.projectId === callerTopic.projectId);
     if (!isGlobalCaller && !sameConv && !sameProject) {

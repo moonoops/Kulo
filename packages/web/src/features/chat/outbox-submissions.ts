@@ -24,14 +24,22 @@ export function outboxSubmissions(records: readonly ReliableOutboxRecord[]): Pen
       ...(record.error ? { error: record.error } : {}),
       ...(record.errorCode ? { errorCode: record.errorCode } : {}),
       ...(record.ack?.submissionId ? { submissionId: record.ack.submissionId } : {}),
+      ...((record.ack?.conversationId ?? (message.type === "chat.send" ? message.expectedConversationId : undefined)) !== undefined
+        ? { conversationId: record.ack?.conversationId ?? (message.type === "chat.send" ? message.expectedConversationId : undefined) }
+        : {}),
     }];
   });
 }
 
-export function consumedOutboxReceipts(records: readonly ReliableOutboxRecord[], messages: ChatDisplayItem[], topicId: string): string[] {
+export function consumedOutboxReceipts(records: readonly ReliableOutboxRecord[], messages: ChatDisplayItem[], topicId: string, activeConversationId?: number): string[] {
   const received = new Set(messages.filter((item) => item.role === "user" && item.requestId).map((item) => item.requestId));
-  return records.filter((record) => record.state === "accepted" &&
-    (record.envelope.type !== "chat.send" || record.envelope.topicId !== topicId || received.has(record.id))).map((record) => record.id);
+  return records.filter((record) => {
+    if (record.state !== "accepted") return false;
+    if (record.envelope.type !== "chat.send" || record.envelope.topicId !== topicId) return true;
+    const recConvId = record.ack?.conversationId ?? record.envelope.expectedConversationId;
+    if (activeConversationId !== undefined && recConvId !== undefined && recConvId !== activeConversationId) return true;
+    return received.has(record.id);
+  }).map((record) => record.id);
 }
 
 export function consumePersistedDraft(drafts: Record<string, string>, key: string, original: string): Record<string, string> {

@@ -246,7 +246,7 @@ describe("scheduled Worker tickets using native durable waits", () => {
 
   it("keeps stopped entries visible, deletes only the schedule entry, and never revives either after restart", async () => {
     const f = await fixture();
-    const due = Date.now() + 700;
+    const due = Date.now() + 1200;
     const stopped = await f.dispatch("stop", due, 1);
     const deleted = await f.dispatch("delete", due, 1);
     await f.hub.stopScheduledTask(stopped.id);

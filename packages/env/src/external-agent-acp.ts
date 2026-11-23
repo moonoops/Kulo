@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { KULO_VERSION, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentQuotaProbeResult } from "@kulo/protocol";
 import { ExternalAgentRpc, type ExternalAgentPipeFactory, type RpcValue } from "./external-agent-rpc.js";
+import { preserveWindowsCoreEnv, resolveCrossPlatformSpawn } from "./platform-process.js";
 import {
   isGrokNotSignedInText,
   isGrokShellRouteUnavailableText,
@@ -98,10 +99,13 @@ export function parseGrokModelsOutput(output: string): {
 
 function runQuickProbeCommand(executable: string, args: readonly string[], pathEnv: string, timeoutMs = 10_000): Promise<{ code: number | null; output: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, [...args], {
-      env: { HOME: os.homedir(), PATH: pathEnv, ...(process.env.XAI_API_KEY ? { XAI_API_KEY: process.env.XAI_API_KEY } : {}) },
+    const spec = resolveCrossPlatformSpawn(executable, args);
+    const env = preserveWindowsCoreEnv({ HOME: os.homedir(), PATH: pathEnv, ...(process.env.XAI_API_KEY ? { XAI_API_KEY: process.env.XAI_API_KEY } : {}) });
+    const child = spawn(spec.command, spec.args, {
+      env,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      ...(spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     });
     let output = "";
     let settled = false;
@@ -166,17 +170,19 @@ function runGrokQuotaCli(
       reject(new Error("Quota check aborted"));
       return;
     }
-    const env: NodeJS.ProcessEnv = {
+    const env: NodeJS.ProcessEnv = preserveWindowsCoreEnv({
       HOME: os.homedir(),
       PATH: pathEnv,
-    };
+    });
     for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"]) {
       if (process.env[key]) env[key] = process.env[key];
     }
-    const child = spawn(executable, [...args], {
+    const spec = resolveCrossPlatformSpawn(executable, args);
+    const child = spawn(spec.command, spec.args, {
       env,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      ...(spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     });
     let stdout = "";
     let stderr = "";
@@ -475,6 +481,15 @@ export function isSensitiveCredentialFilename(filePath: string): boolean {
   return SENSITIVE_CREDENTIAL_FILENAME_PATTERN.test(base);
 }
 
+export function isAcpAuthRequiredError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  if (/\b(?:authentication required|auth_required|not signed in|not authenticated|not logged in|please sign in|login required)\b/i.test(message)) {
+    return true;
+  }
+  return code === -32000 && (!message.trim() || /auth|sign.?in|log.?in|unauthoriz|credential|token/i.test(message));
+}
+
 export const ACP_FLAVORS: Partial<Record<ExternalAgentKind, AcpFlavorSpec>> = {
   antigravity: {
     kind: "antigravity",
@@ -489,14 +504,17 @@ export const ACP_FLAVORS: Partial<Record<ExternalAgentKind, AcpFlavorSpec>> = {
       path.join(home, "Applications", "Gemini.app", "Contents", "Helpers", "agy"),
       path.join(home, "Applications", "Antigravity.app", "Contents", "Resources", "app", "bin", "agy"),
       path.join(home, ".gemini", "antigravity", "bin", "agy"),
+      path.join(home, ".gemini", "antigravity-cli", "bin", "agy"),
       path.join(home, "Library", "Application Support", "Antigravity", "bin", "agy"),
     ],
     extraToolDirs: (home) => [
       path.join(home, ".gemini", "antigravity", "bin"),
+      path.join(home, ".gemini", "antigravity-cli", "bin"),
       path.join(home, "Library", "Application Support", "Antigravity", "bin"),
     ],
     readableSkillSubdirs: [
       ".gemini/antigravity/builtin/skills",
+      ".gemini/antigravity-cli/builtin/skills",
       ".gemini/config/skills",
       ".gemini/skills",
     ],

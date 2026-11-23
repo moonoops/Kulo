@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { RecentWorkSnapshot, TicketRecord } from "@kulo/protocol";
-import { isOrchestratorConversation, type KuloDurableState } from "./state.js";
+import { isActiveRootConversation, isOrchestratorConversation, type KuloDurableState } from "./state.js";
 import { isActiveSettingsConversation, isSettingsTopicDeleted, type SettingsAssistantState } from "./settings-doc.js";
 import type { KuloProjectsState } from "./projects.js";
 import { formatRecentWorkTaskBoardsSection, RECENT_WORK_BOARD_BUDGET_CHARS } from "./task-boards.js";
@@ -78,8 +78,8 @@ export function buildRecentWorkSnapshot(input: RecentWorkInput): RecentWorkSnaps
   const missingProject = Boolean(currentTopic?.projectId && !currentProject);
   const isGlobalScope =
     activeSettings ||
-    conversationId === Number(ROOT_CONVERSATION_ID) ||
-    Boolean(currentTopic?.master);
+    isActiveRootConversation(conversationId, state) ||
+    Boolean(currentTopic?.master && currentTopic.deletedAt === undefined);
 
   const tickets = Object.values(state?.tickets ?? {}).filter((ticket) => {
     if (ticket.status === "closed") return false;

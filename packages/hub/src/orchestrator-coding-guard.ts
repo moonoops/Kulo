@@ -238,11 +238,20 @@ export function createOrchestratorCodingGuardExtension(deps: OrchestratorCodingG
           return blockResult(`主脑安全护栏拦截了毁灭性 Shell 命令（${floor.reason ?? "catastrophic"}）："${cmd.slice(0, 120)}"。`);
         }
         const liveIdentityDir = deps.getLiveIdentityDir();
+        const sensitiveStateTargets = [
+          path.join(deps.stateDir, "kulo.sqlite"),
+          path.join(deps.stateDir, "credentials.json"),
+          path.join(deps.stateDir, "connection-vault.json"),
+          path.join(deps.stateDir, "devices.json"),
+          path.join(deps.stateDir, "runtime-token"),
+          path.join(deps.stateDir, ".secure"),
+        ];
         if (
           (liveIdentityDir && cmd.includes(liveIdentityDir)) ||
           (deps.defaultIdentityDir && cmd.includes(deps.defaultIdentityDir)) ||
-          cmd.includes(path.join(deps.stateDir, "kulo.sqlite")) ||
-          cmd.includes(path.join(deps.stateDir, "credentials.json"))
+          sensitiveStateTargets.some((target) => cmd.includes(target)) ||
+          /\b(?:systemd-creds|secret-tool)\b/.test(cmd) ||
+          /\.secure[/\\]linux-keystore\b/.test(cmd)
         ) {
           return blockResult("主脑沙箱禁止通过 bash 访问私有身份目录或 Kulo 状态凭据文件。");
         }

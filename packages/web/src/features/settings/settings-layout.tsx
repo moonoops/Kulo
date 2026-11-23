@@ -9,23 +9,26 @@ export function SettingsList({ label, children }: { label: string; children: Rea
 
 export function SettingsSection({
   title,
+  headingLevel = 2,
   status,
   action,
   children,
   className = "",
 }: {
   title: string;
+  headingLevel?: 2 | 3;
   status?: ReactNode;
   action?: ReactNode;
   children?: ReactNode;
   className?: string;
 }) {
   const headingId = useId();
+  const Heading = headingLevel === 3 ? "h3" : "h2";
   return (
     <section className={`kulo-settings-section ${className}`} aria-labelledby={headingId}>
       <div className="kulo-settings-section-head">
         <div className="kulo-settings-section-title-group">
-          <h2 id={headingId} className="kulo-section-title">{title}</h2>
+          <Heading id={headingId} className="kulo-section-title">{title}</Heading>
           {status}
         </div>
         {action}

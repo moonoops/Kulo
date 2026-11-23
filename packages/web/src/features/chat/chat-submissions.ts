@@ -8,7 +8,7 @@ export interface SubmissionBackupInput {
   topicId: string;
   draftKey: string;
   envelope:
-    | { type: "chat.send"; topicId: string; content: string; attachments?: ChatAttachment[]; replyTo?: ChatReplyReference; requestId: string; whenBusy: "steer"; targetDeviceId?: string }
+    | { type: "chat.send"; topicId: string; expectedConversationId?: number; content: string; attachments?: ChatAttachment[]; replyTo?: ChatReplyReference; requestId: string; whenBusy: "steer"; targetDeviceId?: string }
     | { type: "ticket.steer"; ticketId: string; text: string; attachments?: ChatAttachment[]; replyTo?: ChatReplyReference; decisionOptionId?: string; commandId: string };
   rawUserText: string;
   draftAttachments: DraftAttachment[];
@@ -23,6 +23,7 @@ export interface PendingSubmissionBackup extends SubmissionBackupInput {
   error?: string;
   errorCode?: string;
   submissionId?: number;
+  conversationId?: number;
 }
 
 export interface ChatViewItem extends ChatDisplayItem {
@@ -81,20 +82,34 @@ function validSubmissionId(value: number | undefined): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
-export function reconcileSubmissions(current: PendingSubmissionBackup[], messages: ChatDisplayItem[], topicId: string): PendingSubmissionBackup[] {
+function submissionConversationId(item: PendingSubmissionBackup): number | undefined {
+  if (item.conversationId !== undefined) return item.conversationId;
+  return item.envelope.type === "chat.send" ? item.envelope.expectedConversationId : undefined;
+}
+
+export function reconcileSubmissions(current: PendingSubmissionBackup[], messages: ChatDisplayItem[], topicId: string, activeConversationId?: number): PendingSubmissionBackup[] {
   const received = receivedSubmissions(messages);
   const next = current.filter((item) => {
     if (item.envelope.type !== "chat.send") return true;
     // Confirmed offscreen messages belong to durable topic history, beyond the recent-message window too.
     if (item.topicId !== topicId) return item.state !== "accepted";
+    const itemConvId = submissionConversationId(item);
+    if (activeConversationId !== undefined && itemConvId !== undefined && itemConvId !== activeConversationId) {
+      return item.state !== "accepted";
+    }
     return !received(item);
   });
   return next.length === current.length ? current : next;
 }
 
-export function mergeChatSubmissions(messages: ChatDisplayItem[], submissions: PendingSubmissionBackup[], topicId: string): ChatViewItem[] {
+export function mergeChatSubmissions(messages: ChatDisplayItem[], submissions: PendingSubmissionBackup[], topicId: string, activeConversationId?: number): ChatViewItem[] {
   const received = receivedSubmissions(messages);
-  const pending = submissions.filter((item) => item.topicId === topicId && item.envelope.type === "chat.send" && !received(item))
+  const pending = submissions.filter((item) => {
+    if (item.topicId !== topicId || item.envelope.type !== "chat.send" || received(item)) return false;
+    const itemConvId = submissionConversationId(item);
+    if (activeConversationId !== undefined && itemConvId !== undefined && itemConvId !== activeConversationId) return false;
+    return true;
+  })
     .sort((first, second) => first.localSequence !== undefined && second.localSequence !== undefined
       ? first.localSequence - second.localSequence : first.createdAt - second.createdAt);
   const merged: ChatViewItem[] = [...messages];

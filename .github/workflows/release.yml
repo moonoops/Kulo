@@ -1,0 +1,294 @@
+name: Release Desktop & Runtime
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.2.0)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-macos-cleanup:
+    name: Build universal macOS cleanup helper
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile universal macos-worker-cleanup
+        run: |
+          mkdir -p dist/prebuilt
+          /usr/bin/clang -O2 -Wall -Wextra -Werror \
+            -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
+            packages/env/native/macos-worker-cleanup.c \
+            -o dist/prebuilt/macos-worker-cleanup
+          file dist/prebuilt/macos-worker-cleanup
+          shasum -a 256 dist/prebuilt/macos-worker-cleanup
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-worker-cleanup
+          path: dist/prebuilt/macos-worker-cleanup
+          if-no-files-found: error
+
+  build-desktop:
+    name: Build (${{ matrix.label }})
+    needs: build-macos-cleanup
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS arm64
+            os: macos-15
+            platform: darwin
+            arch: arm64
+            extra_flags: "--dmg"
+          - label: Windows x64
+            os: windows-latest
+            platform: win32
+            arch: x64
+            extra_flags: "--require-installer"
+          - label: Linux x64
+            os: ubuntu-24.04
+            platform: linux
+            arch: x64
+            extra_flags: "--require-deb"
+          - label: Linux arm64
+            os: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+            extra_flags: "--require-deb"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.20.0"
+
+      - name: Enable Corepack pnpm
+        run: corepack enable
+
+      - name: Download prebuilt macOS cleanup helper
+        if: matrix.platform != 'darwin'
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-worker-cleanup
+          path: dist/prebuilt
+
+      - name: Install Linux packaging prerequisites
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap dpkg-dev desktop-file-utils libsecret-1-0
+
+      - name: Install Windows NSIS
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue)) {
+            choco install nsis -y --no-progress
+          }
+
+      - name: Import macOS signing certificate (when configured)
+        if: matrix.platform == 'darwin' && secrets.KULO_MAC_CERT_P12 != ''
+        env:
+          KULO_MAC_CERT_P12: ${{ secrets.KULO_MAC_CERT_P12 }}
+          KULO_MAC_CERT_PASSWORD: ${{ secrets.KULO_MAC_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/kulo-signing.keychain-db"
+          KEYCHAIN_PASS="$(openssl rand -hex 24)"
+          P12_PATH="$RUNNER_TEMP/kulo-cert.p12"
+          printf '%s' "$KULO_MAC_CERT_P12" | base64 --decode > "$P12_PATH"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security import "$P12_PATH" -P "$KULO_MAC_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          rm -f "$P12_PATH"
+          echo "KULO_CI_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Prepare Windows signing certificate (when configured)
+        if: matrix.platform == 'win32' && secrets.KULO_WIN_CERT_PFX != ''
+        shell: pwsh
+        env:
+          KULO_WIN_CERT_PFX_B64: ${{ secrets.KULO_WIN_CERT_PFX }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP "kulo-win-cert.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:KULO_WIN_CERT_PFX_B64))
+          "KULO_WIN_CERT_PFX_FILE=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Prepare update trust file (when configured)
+        if: secrets.KULO_UPDATE_TRUST_JSON != ''
+        shell: bash
+        env:
+          KULO_UPDATE_TRUST_JSON: ${{ secrets.KULO_UPDATE_TRUST_JSON }}
+        run: |
+          TRUST_PATH="$RUNNER_TEMP/kulo-update-trust.json"
+          printf '%s\n' "$KULO_UPDATE_TRUST_JSON" > "$TRUST_PATH"
+          echo "KULO_UPDATE_TRUST_FILE=$TRUST_PATH" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace packages
+        env:
+          KULO_MACOS_CLEANUP_PREBUILT: ${{ matrix.platform != 'darwin' && format('{0}/dist/prebuilt/macos-worker-cleanup', github.workspace) || '' }}
+        run: pnpm build
+
+      - name: Package release artifacts
+        env:
+          KULO_DESKTOP_CHANNEL: release
+          KULO_MAC_SIGN_IDENTITY: ${{ secrets.KULO_MAC_SIGN_IDENTITY }}
+          KULO_WIN_CERT_PFX: ${{ env.KULO_WIN_CERT_PFX_FILE }}
+          KULO_WIN_CERT_PASSWORD: ${{ secrets.KULO_WIN_CERT_PASSWORD }}
+          KULO_UPDATE_TRUST_FILE: ${{ env.KULO_UPDATE_TRUST_FILE }}
+        run: node packages/desktop/scripts/package.mjs --release ${{ matrix.extra_flags }}
+
+      - name: Clean up temporary signing material
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${KULO_CI_KEYCHAIN:-}" ] && [ -f "$KULO_CI_KEYCHAIN" ]; then
+            security delete-keychain "$KULO_CI_KEYCHAIN" || true
+          fi
+          rm -f "${KULO_WIN_CERT_PFX_FILE:-}" "${KULO_UPDATE_TRUST_FILE:-}" "$RUNNER_TEMP/kulo-cert.p12" || true
+
+      - name: Collect distributables
+        shell: bash
+        run: |
+          mkdir -p dist/release-upload dist/unsigned-preview
+          shopt -s nullglob
+          for f in dist/desktop/*.dmg; do
+            if /usr/bin/codesign -dvv "$f" 2>&1 | grep -q "Authority=Developer ID Application:"; then
+              cp -f "$f" dist/release-upload/
+              [ -f "${f}.sha256" ] && cp -f "${f}.sha256" dist/release-upload/
+            else
+              echo "::warning::Skipping ad-hoc macOS DMG from GitHub Release upload (configure KULO_MAC_CERT_P12 for CI Developer ID signing): $f"
+              cp -f "$f" dist/unsigned-preview/
+              [ -f "${f}.sha256" ] && cp -f "${f}.sha256" dist/unsigned-preview/
+            fi
+          done
+          for f in \
+            dist/desktop/*-Setup-*.exe \
+            dist/desktop/*-Setup-*.exe.sha256 \
+            dist/desktop/*.deb \
+            dist/desktop/*.deb.sha256 \
+            dist/desktop/*.AppImage \
+            dist/desktop/*.AppImage.sha256 \
+            dist/desktop/Kulo-Runtime-*.tar.gz \
+            dist/desktop/Kulo-Runtime-*.tar.gz.sha256; do
+            cp -f "$f" dist/release-upload/
+          done
+          ls -lh dist/release-upload/ dist/unsigned-preview/ || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/release-upload/*
+          if-no-files-found: ignore
+
+      - name: Upload unsigned macOS preview artifact (when Developer ID secret is absent)
+        if: matrix.platform == 'darwin'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-preview-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/unsigned-preview/*
+          if-no-files-found: ignore
+
+  publish-release:
+    name: Assemble catalog & publish release
+    needs: build-desktop
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.20.0"
+
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist/release-final
+
+      - name: Generate runtime-catalog.json and optional signature
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          KULO_RELEASE_SIGNING_KEY: ${{ secrets.KULO_RELEASE_SIGNING_KEY }}
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const crypto = require("node:crypto");
+            const dir = path.resolve("dist/release-final");
+            fs.mkdirSync(dir, { recursive: true });
+            const files = fs.readdirSync(dir).filter((f) => !f.endsWith(".sha256") && f !== "runtime-catalog.json" && f !== "runtime-catalog.json.sig").sort();
+            const entries = files.map((name) => {
+              const full = path.join(dir, name);
+              const bytes = fs.readFileSync(full);
+              return {
+                name,
+                size: bytes.byteLength,
+                sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+              };
+            });
+            const catalog = {
+              formatVersion: 1,
+              tag: process.env.RELEASE_TAG,
+              generatedAt: new Date().toISOString(),
+              artifacts: entries,
+            };
+            const payload = JSON.stringify(catalog, null, 2) + "\n";
+            fs.writeFileSync(path.join(dir, "runtime-catalog.json"), payload);
+            if (process.env.KULO_RELEASE_SIGNING_KEY && process.env.KULO_RELEASE_SIGNING_KEY.trim()) {
+              const sig = crypto.sign(null, Buffer.from(payload, "utf8"), process.env.KULO_RELEASE_SIGNING_KEY);
+              fs.writeFileSync(path.join(dir, "runtime-catalog.json.sig"), sig.toString("base64") + "\n");
+            }
+            console.log("Generated runtime-catalog.json with " + entries.length + " artifacts.");
+          '
+
+      - name: Upload assembled release bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle-${{ inputs.tag || github.ref_name }}
+          path: dist/release-final/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          shopt -s nullglob
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            existing_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+            for f in dist/release-final/*; do
+              base="$(basename "$f")"
+              if printf '%s\n' "$existing_assets" | grep -Fxq "$base"; then
+                echo "Preserving existing release asset: $base"
+              else
+                gh release upload "$RELEASE_TAG" "$f"
+              fi
+            done
+          else
+            gh release create "$RELEASE_TAG" dist/release-final/* \
+              --title "Kulo $RELEASE_TAG" \
+              --generate-notes
+          fi

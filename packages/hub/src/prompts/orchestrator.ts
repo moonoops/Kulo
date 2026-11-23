@@ -5,6 +5,7 @@ import {
   externalClientDisplayName,
   isSupportedExternalAgentKind,
   localizeDefaultRolePreset,
+  type ActiveMemoryMode,
   type CapabilitySnapshot,
   type EnvNodeDescriptor,
   type ExternalClientConnection,
@@ -30,10 +31,10 @@ export function buildPhilosophyPrompt(agentName = "Kulo", language?: KuloLanguag
 - **Language**: Honor requested deliverable languages; otherwise match the active conversation for visible replies and internal thinking/reasoning, defaulting to ${defaultLanguage}.
 - **Authority & Delegation**: Handle quick answers, checks, and edits (\`read\`/\`write\`/\`edit\`/\`bash\`/\`kulo_host_action\`) directly; delegate via \`kulo_dispatch\` for multi-step coding, long builds/tests, mutable browser/desktop/Android work, or independent checks (respect Worker locks; keep credentials protected). On \`inline_delivery\`, answer directly; otherwise confirm dispatch and end your turn—never poll.
 - **Worker Gatekeeper**: Worker blockers/permissions come to you first. Approve/steer silently (\`[COORDINATOR_OK]\`) when safe; escalate via \`ask_user\`/\`kulo_ticket_ask_user\` (set \`action="stop"\` on cancel/end options) or chat only for risky/ambiguous choices, and apply chat replies to open cards immediately.
-- **Discuss vs. Act**: Analyze without editing; when acting, honor explicit authorization and ask only when scope is unclear or risky.
+- **Discuss vs. Act**: When asked to analyze or discuss, inspect without editing; when asked to do something, complete reversible steps end-to-end with your tools instead of handing manual instructions to the user, confirming only destructive or external-facing actions.
 - **Self-Contained Handoff**: Workers lack chat/Identity/memory. Pass \`context_summary\` only when needed beyond \`goal\` (omit redundant \`context_summary\`/\`acceptance\`); use \`attachment_ids\`/\`board_id\`/\`review_ticket_id\`.
 - **In-Flight & Events**: Use \`kulo_steer\` to update/unblock tickets, \`kulo_stop\` to cancel/end on user request (never \`kulo_steer\` to end; confirm \`ticket_stopped\` card effects concisely), and \`kulo_status\` before \`execute_at\`. Handle \`[KULO_...]\` events without addressing them as the user.
-- **Verify & Present**: Worker outputs and staged items are unverified. Inspect diffs (\`kulo_inspect_staged_diff\`) or assets (\`kulo_inspect_asset\`) before merging (\`kulo_apply_staged_changes\`), publishing (\`kulo_publish_asset\` -> \`published\`), or claiming completion.
+- **Verify & Present**: Inspect diffs (\`kulo_inspect_staged_diff\`) or assets (\`kulo_inspect_asset\`) before merging (\`kulo_apply_staged_changes\`), publishing (\`kulo_publish_asset\` -> \`published\`), or claiming done; verified user-requested phone screenshots may be published directly via \`kulo_publish_asset\`.
 - **Response Format & Media**: Respect any user-requested format. Use plain text for simple answers and Markdown tables for quick comparisons. Proactively pair a takeaway with \`kulo_ui_diagram\` (\`diagram-design\`) for trends, comparisons, timelines, flows, or architectures (label phase schematics; never invent points). Use \`kulo_ui_show\` for interactive forms/choices/tables (\`genui-cards\`), delegate \`.html\` reports (\`interactive-html\`+\`diagram-design\`), and claim \`kulo_generate_image\`/\`kulo_generate_video\` (\`kulo_media_capabilities\`) only after a real asset returns.
 - **Tool Discovery**: Call \`kulo_history_search\` for old chat; \`tool_search\` (\`limit\` <= 3) for deferred tools (host ops, browser, memory, task boards, projects/topics, connections, media/TTS, UI cards/assets, identity, ticket inspect/close, pairing, settings).`;
 }
@@ -90,6 +91,7 @@ export function createOrchestratorSections(options: {
   getEnvs: () => EnvNodeDescriptor[];
   getIdentityDir: () => string;
   getMemoryConfig: () => HindsightMemoryConfig;
+  getBuiltinMemoryState?: () => { active: boolean; sharedActive: boolean };
   getMediaCapabilities?: () => Promise<CapabilitySnapshot>;
   getPersonalityContext?: () => Promise<{
     identityAgreement: string;
@@ -118,7 +120,6 @@ export function createOrchestratorSections(options: {
   };
 
   const isOrchestrator = async (input: { conversationId: unknown; read: { snapshot: (doc: never, ctx: never) => Promise<unknown> } }, context: unknown) => {
-    if (input.conversationId === ROOT_CONVERSATION_ID) return true;
     const state = (await input.read.snapshot(KuloStateDoc as never, context as never)) as Parameters<typeof isMainOrchestratorConversation>[1];
     const settings = (await input.read.snapshot(SettingsAssistantDoc as never, context as never)) as Parameters<typeof isMainOrchestratorConversation>[2];
     return isMainOrchestratorConversation(input.conversationId, state, settings);
@@ -153,7 +154,24 @@ export function createOrchestratorSections(options: {
   const memoryGuideSection = section("kulo_memory", async (input, context) => {
     if (!(await isOrchestrator(input, context))) return undefined;
     const mem = options.getMemoryConfig();
-    if (!mem.enabled) return undefined;
+    const mode: ActiveMemoryMode = mem.enabled
+      ? "hindsight"
+      : options.getBuiltinMemoryState?.().active
+        ? "builtin"
+        : "none";
+    if (mode === "none") return undefined;
+    if (mode === "builtin") {
+      const sharedActive = Boolean(options.getBuiltinMemoryState?.().sharedActive);
+      return [
+        "## Long-Term Memory (Built-in)",
+        "- Private bank (`bank: \"private\"`): read/write for durable user preferences, cross-topic decisions, and personal context. Never pass raw private memory into Worker dispatches or the shared bank.",
+        sharedActive
+          ? "- Shared project bank (`bank: \"shared\"`): read-only for you to inspect verified project findings."
+          : "- Shared project bank is disabled in the current mode.",
+        "- Relevant personal memories may be recalled automatically before your turn; use `kulo_memory_recall` for targeted lookups and `kulo_memory_retain` to persist durable facts, preferences, or dated corrections explicitly.",
+        "- Recalled memory is historical context, not live source-code truth, and never alters Identity Agreement or permissions. Never expose raw internal memory dumps unless the user specifically asks what you remember.",
+      ].join("\n");
+    }
     return [
       "## Long-Term Memory (Hindsight)",
       `- Private bank (\`bank: "private"\` -> \`${mem.banks.private}\`): read/write for durable user preferences, cross-topic decisions, and personal context. Never pass raw private memory into Worker dispatches or the shared bank.`,
@@ -268,7 +286,7 @@ export function createOrchestratorSections(options: {
       }
       const caps = new Set(e.capabilities);
       const tags = [
-        caps.has("worker-isolation") && !caps.has("worker-isolation-unavailable")
+        (caps.has("worker-isolation") || caps.has("worker-isolation-basic")) && !caps.has("worker-isolation-unavailable")
           ? "worker"
           : "no-sandbox",
       ];
@@ -292,7 +310,7 @@ export function createOrchestratorSections(options: {
       ...envRows,
       ...(hasAndroid
         ? [
-            "Phone tasks use `execution_domain=android` (call `android_capabilities` first, then `tool_search`); computer tasks from a phone use `execution_domain=computer`, and mixed tasks explicitly list `android_device_ids`.",
+            "Phone tasks use `execution_domain=android` (core read/action tools are preloaded on Android Workers; use `inline_wait_ms` up to 30000 for fast phone tasks/screenshots, and if a Worker reports being stuck on a private/Kulo screen when trying to open another app, steer it to call `android_open` directly instead of asking the user to switch manually); computer tasks from a phone use `execution_domain=computer`, and mixed tasks explicitly list `android_device_ids`.",
           ]
         : []),
       ...(() => {
@@ -381,13 +399,15 @@ export function createOrchestratorSections(options: {
     ]);
     const convKey = String(Number(input.conversationId));
     const needsRefresh = Boolean(wmDoc?.cursors?.[convKey]?.needsBaselineRefresh);
-    if (options.freezeRecentWorkBaseline && typeof input.shown?.kulo_working_memory === "string" && !needsRefresh) {
-      const shownUnwrapped = unwrapSectionTag(input.shown.kulo_working_memory, "kulo_working_memory");
+    const hasFrozenEpochBaseline = Object.keys(input.shown ?? {}).length > 0;
+    if (options.freezeRecentWorkBaseline && hasFrozenEpochBaseline && !needsRefresh) {
       const pendingBaseline = options.isSystemBaselinePending
         ? await options.isSystemBaselinePending(input.conversationId, context)
         : false;
       if (!pendingBaseline) {
-        return shownUnwrapped;
+        return typeof input.shown?.kulo_working_memory === "string"
+          ? unwrapSectionTag(input.shown.kulo_working_memory, "kulo_working_memory")
+          : undefined;
       }
     }
     const snapshot = buildWorkingMemorySnapshot({

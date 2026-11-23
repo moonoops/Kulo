@@ -156,6 +156,7 @@ export interface ConnectionWorkspaceSnapshot {
   mcpPresets?: McpPresetDefinition[];
   localHost?: boolean;
   canManageHub?: boolean;
+  sshSupported?: boolean;
 }
 export interface ConnectionApplicationDefinition {
   id: ConnectionApplicationId;

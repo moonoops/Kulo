@@ -42,17 +42,18 @@ import type {
 import type { HubWatchdog } from "./hub-watchdog.js";
 import type { KuloMediaJobs } from "./media-jobs.js";
 import { KuloProjects, ProjectError } from "./projects.js";
+import { formatUserTaskInstructionMessage } from "./prompts.js";
 import type { createWorkerTicketTask } from "./scheduler.js";
 import { classifyTicketOutcome, recordTicketOutcomeToWorkingMemory } from "./working-memory.js";
 import {
+  CoordinatorEventEntry,
+  isAutomaticSystemInputEntry,
+  isLegacyAutonomousUserEntry,
   isTicketUnfinished,
   KuloStateDoc,
-  MediaRelayEntry,
   recordProcessedCommand,
   toTicketCardView,
   WorkerRecoveryEntry,
-  WorkerRelayEntry,
-  WorkerWatchdogEntry,
 } from "./state.js";
 import { assertRecoveryGuard } from "./task-recovery.js";
 import { admitTicketCloseInTx, admitTicketSteerInTx } from "./ticket-control-tx.js";
@@ -154,6 +155,7 @@ export class TicketControlService {
         ticketId,
         text: "The user requested a retry of this ticket. Diagnose the prior failure or blocker, continue execution within scope, and report verified results.",
         resetRecovery: true,
+        internalResume: true,
       }, context, intent)),
       (receipt) => this.receiptTicket(receipt, context),
     );
@@ -259,7 +261,10 @@ export class TicketControlService {
           effectiveText = `用户拒绝了在 ${payload.envName} (${payload.envId}) 上执行的本机操作「${payload.summary}」。请勿再次尝试同一操作，改用其他方案或直接向主智能体汇报。`;
         } else {
           // User typed custom manual text in Task Detail for a pending host_action -> hand off to Main Agent!
-          const manualText = connectionManager.redact(params.text.trim());
+          const protectedManual = await connectionManager.processText(params.text.trim(), {
+            requestId: cleanCmdId ? `task-manual:${pending.id}:${cleanCmdId}` : undefined,
+          });
+          const manualText = connectionManager.redact(protectedManual.text.trim());
           if (pending.cardId) {
             await uiCards.settle(pending.cardId, { status: "submitted", resultSummary: "已在任务详情补充说明" });
             await actionConfirmations.resolveFromUiSubmit(
@@ -277,18 +282,36 @@ export class TicketControlService {
             if (!liveTicket) throw new Error(`Ticket '${params.ticketId}' not found`);
             recordProcessedCommand(state, cleanCmdId, liveTicket.id, "steer");
             await writeDeliveryReceipt(tx, intent, { ticketId: liveTicket.id });
+            const now = Date.now();
             liveTicket.waiting = {
-              reason: "coordinator", since: Date.now(), detail: manualText || liveTicket.waiting?.detail,
+              reason: "coordinator", since: now, detail: manualText || liveTicket.waiting?.detail,
               waitToken: `host-action-req:${pending.id}`, requestId: pending.id,
             };
-            liveTicket.updatedAt = Date.now();
+            liveTicket.updatedAt = now;
             if (originConv) {
               await injectEventToolsInTx(tx, originConv.id, ["kulo_host_action_decide"]);
               await submitAutomaticChatInput(tx, originConv, {
                 type: "input",
-                content: `[KULO_USER_TASK_INSTRUCTION]\n用户在任务「${liveTicket.title}」（${liveTicket.id}）的待确认本机操作（request_id="${pending.id}"）中手动输入了说明：\n${manualText}\n请结合用户说明调用 kulo_host_action_decide(approve/deny) 或 kulo_steer 处理。`,
+                content: connectionManager.redact(
+                  formatUserTaskInstructionMessage({
+                    title: liveTicket.title,
+                    ticketId: liveTicket.id,
+                    requestId: pending.id,
+                    manualText,
+                  }),
+                ),
                 whenBusy: "followUp",
                 requestId: `kulo:task-manual:${pending.id}:${cleanCmdId ?? randomUUID()}`,
+                entry: {
+                  kind: CoordinatorEventEntry.kind,
+                  data: {
+                    eventKind: "user_task_instruction",
+                    requestId: pending.id,
+                    ticketId: liveTicket.id,
+                    manualText,
+                    createdAt: now,
+                  },
+                },
               });
             }
             return toTicketCardView(liveTicket, live.roles);
@@ -314,9 +337,16 @@ export class TicketControlService {
       }
     }
 
-    const assignmentSource = params.originConversationId === undefined
-      ? { intent: extractAgentDispatchIntent(effectiveText, live.roles, envManager.listEnvs(), live.externalClients) }
-      : await ports.ticketDispatch.agentDispatchSource(params.originConversationId, params.originToolTaskId, context);
+    const isUserFreeTextSteer =
+      params.originConversationId === undefined &&
+      !params.internalResume &&
+      !params.decisionOptionId &&
+      effectiveText === params.text;
+    const assignmentSource = params.originConversationId !== undefined
+      ? await ports.ticketDispatch.agentDispatchSource(params.originConversationId, params.originToolTaskId, context)
+      : isUserFreeTextSteer
+        ? { intent: extractAgentDispatchIntent(effectiveText, live.roles, envManager.listEnvs(), live.externalClients) }
+        : {};
     if (assignmentSource.intent) {
       const choice = resolveAgentDispatch({
         roles: live.roles, externalClients: live.externalClients, language: live.presentation.language,
@@ -461,7 +491,7 @@ export class TicketControlService {
     if (controlInput && WorkerRecoveryEntry.is(controlInput)) {
       throw new ProjectError(409, "recovery_stop_denied", "自动恢复回合不能自行停止任务，请保留现有执行或请求用户决定。");
     }
-    if (controlInput && (WorkerWatchdogEntry.is(controlInput) || WorkerRelayEntry.is(controlInput) || MediaRelayEntry.is(controlInput))) {
+    if (controlInput && (isAutomaticSystemInputEntry(controlInput) || isLegacyAutonomousUserEntry(controlInput))) {
       throw new ProjectError(409, "automatic_stop_denied", "后台巡检和回报不能代替用户停止任务。请纠偏，或让 Worker 汇报实际阻塞与所需权限。");
     }
     const snapshot = await harness.snapshot(KuloStateDoc, context);

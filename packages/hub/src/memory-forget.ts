@@ -188,6 +188,7 @@ export interface MemoryForgetHost {
   addForgottenTerm: (term: string, reason?: string) => Promise<{ added: boolean; entry: ForgottenTermEntry; total: number }>;
   forgetFromRelationship: (term: string, reason?: string) => Promise<{ removedLines: number }>;
   forgetFromWorkingMemory?: (term: string, reason?: string) => Promise<{ removedRecords: number }>;
+  forgetFromBuiltinMemory?: (term: string) => Promise<{ removedRecords: number }>;
   getMemoryConfig: () => HindsightMemoryConfig;
 }
 
@@ -197,6 +198,7 @@ export interface MemoryForgetOutcome {
   totalForgottenTerms: number;
   relationshipRemovedLines: number;
   workingMemoryRemovedRecords?: number;
+  builtinMemoryRemovedRecords?: number;
   privateMemoriesScanned: number;
   privateMemoriesInvalidated: number;
   hindsightSkipped?: string;
@@ -226,6 +228,9 @@ export async function executeMemoryForget(options: {
   const wm = options.host.forgetFromWorkingMemory
     ? await options.host.forgetFromWorkingMemory(term, cleanReason)
     : undefined;
+  const builtin = options.host.forgetFromBuiltinMemory
+    ? await options.host.forgetFromBuiltinMemory(term)
+    : undefined;
 
   const memoryConfig = options.host.getMemoryConfig();
   if (!memoryConfig.enabled) {
@@ -235,6 +240,7 @@ export async function executeMemoryForget(options: {
       totalForgottenTerms: tombstone.total,
       relationshipRemovedLines: rel.removedLines,
       ...(wm ? { workingMemoryRemovedRecords: wm.removedRecords } : {}),
+      ...(builtin ? { builtinMemoryRemovedRecords: builtin.removedRecords } : {}),
       privateMemoriesScanned: 0,
       privateMemoriesInvalidated: 0,
       hindsightSkipped: "memory_disabled",
@@ -289,6 +295,7 @@ export async function executeMemoryForget(options: {
     totalForgottenTerms: tombstone.total,
     relationshipRemovedLines: rel.removedLines,
     ...(wm ? { workingMemoryRemovedRecords: wm.removedRecords } : {}),
+    ...(builtin ? { builtinMemoryRemovedRecords: builtin.removedRecords } : {}),
     privateMemoriesScanned: scanned,
     privateMemoriesInvalidated: invalidated,
     ...(hindsightSkipped ? { hindsightSkipped } : {}),

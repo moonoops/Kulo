@@ -20,6 +20,7 @@ export async function runTuiChatClient(options: TuiChatOptions): Promise<void> {
     ? { headers: { Authorization: `Bearer ${options.authToken}` } }
     : {});
   let printedUpToId = 0;
+  let rootConversationId: number | undefined;
   let latestTickets: TicketCardView[] = [];
   let latestSlots: SlotSummary | null = null;
   let latestEnvs: EnvNodeDescriptor[] = [];
@@ -71,11 +72,32 @@ export async function runTuiChatClient(options: TuiChatOptions): Promise<void> {
     }
 
     if (msg.type === "hub.snapshot") {
+      const nextRootConvId =
+        msg.activeConversationId ?? msg.topics.find((t) => t.id === "root")?.conversationId;
+      if (nextRootConvId !== undefined && rootConversationId !== undefined && nextRootConvId !== rootConversationId) {
+        printedUpToId = 0;
+        printLineAbovePrompt("\x1b[36m[系统] 主对话已归档并开启新对话。\x1b[0m");
+      }
+      if (nextRootConvId !== undefined) rootConversationId = nextRootConvId;
       latestTickets = msg.tickets;
       latestSlots = msg.slots;
       latestEnvs = msg.envs;
       renderNewMessages(msg.messages, true);
+    } else if (msg.type === "hub.topics") {
+      const nextRootConvId = msg.topics.find((t) => t.id === "root")?.conversationId;
+      if (nextRootConvId !== undefined && rootConversationId !== undefined && nextRootConvId !== rootConversationId) {
+        rootConversationId = nextRootConvId;
+        printedUpToId = 0;
+        printLineAbovePrompt("\x1b[36m[系统] 主对话已归档并开启新对话。\x1b[0m");
+      } else if (nextRootConvId !== undefined) {
+        rootConversationId = nextRootConvId;
+      }
     } else if (msg.type === "hub.messages") {
+      if (msg.conversationId !== undefined && rootConversationId !== undefined && msg.conversationId !== rootConversationId) {
+        if (msg.conversationId < rootConversationId) return;
+        rootConversationId = msg.conversationId;
+        printedUpToId = 0;
+      }
       renderNewMessages(msg.messages, false);
     } else if (msg.type === "hub.tickets") {
       latestTickets = msg.tickets;
@@ -179,15 +201,21 @@ export async function runTuiChatClient(options: TuiChatOptions): Promise<void> {
     }
 
     if (line === "/abort") {
-      send({ type: "chat.abort" });
+      send({
+        type: "chat.abort",
+        topicId: "root",
+        ...(rootConversationId !== undefined ? { expectedConversationId: rootConversationId } : {}),
+      });
       rl.prompt();
       return;
     }
 
     send({
       type: "chat.send",
+      topicId: "root",
       content: line,
       requestId: `cli-${Date.now()}`,
+      ...(rootConversationId !== undefined ? { expectedConversationId: rootConversationId } : {}),
     });
     rl.prompt();
   });

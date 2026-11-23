@@ -9,6 +9,7 @@ import { ExternalAgentRpc, type ExternalAgentPipeFactory, type RpcValue } from "
 import { isBlockedCustomAcpExecutableName, isBundledClaudeSdkExecutable, isSupportedExternalAgentKind, KULO_VERSION, validateCustomAcpArgs, type ExternalAgentBinding, type ExternalAgentCapabilities, type ExternalAgentInputAttachment, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentQuotaProbeResult, type ExternalWorkspaceMode } from "@kulo/protocol";
 import { ACP_FLAVORS, acpReadableSkillSubdirs, extractModelsFromAcpInitialize, extractModelsFromAcpModelState, getAcpFlavor, isSensitiveCredentialFilename, sortEffortTokens } from "./external-agent-acp.js";
 import { filterNativeAgentEnvironment, type NativeAgentEnvOptions } from "./external-agent-env.js";
+import { resolveCrossPlatformSpawn } from "./platform-process.js";
 import { prependKuloInstructions, resolveSafeExternalImages } from "./external-agent-validation.js";
 
 export interface ExternalDriverContext {
@@ -188,6 +189,7 @@ function wellKnownUserToolDirs(): string[] {
         path.join(home, ".cursor", "bin"),
         path.join(home, ".kiro", "bin"),
         path.join(home, ".gemini", "antigravity", "bin"),
+        path.join(home, ".gemini", "antigravity-cli", "bin"),
         path.join(home, "Library", "Application Support", "Antigravity", "bin"),
         ...listVersionedNodeDirs(path.join(home, ".nvm", "versions", "node"), ["bin"]),
         ...listVersionedNodeDirs(path.join(home, "Library", "Application Support", "fnm", "node-versions"), ["installation", "bin"]),
@@ -292,7 +294,7 @@ export function resolveExternalExecutable(kind:ExternalAgentKind,requested?:stri
     : (kind === "claude-code" ? (nativeApps[kind] ?? []) : []);
   const candidates = effectiveRequested
     ? [effectiveRequested]
-    : [...directories.flatMap(dir => process.platform === "win32" ? [path.join(dir, binary + ".exe"), path.join(dir, binary)] : [path.join(dir, binary)]), ...extraPaths];
+    : [...directories.flatMap(dir => process.platform === "win32" ? [path.join(dir, binary + ".exe"), path.join(dir, binary + ".cmd"), path.join(dir, binary)] : [path.join(dir, binary)]), ...extraPaths];
   for (const value of candidates) {
     if (!path.isAbsolute(value) || /[\x00-\x1f\x7f]/.test(value)) {
       if (effectiveRequested) throw new Error("Agent executable must be an absolute native executable path");
@@ -301,7 +303,7 @@ export function resolveExternalExecutable(kind:ExternalAgentKind,requested?:stri
     try {
       const actual = fs.realpathSync(value);
       if (!fs.statSync(actual).isFile()) continue;
-      fs.accessSync(actual, fs.constants.X_OK);
+      fs.accessSync(actual, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
       if (kind === "claude-code" && (isBundledClaudeSdkExecutable(value) || isBundledClaudeSdkExecutable(actual))) {
         if (effectiveRequested) throw new Error("Bundled Claude SDK executable cannot be configured as a native client");
         continue;
@@ -348,7 +350,8 @@ export function managedNativeProcess(options:{executable:string;args:string[];cw
   const control=fs.mkdtempSync(path.join(options.controlRoot,"kulo-worker-control-"));
   const temporaryDir=fs.mkdtempSync(path.join(os.tmpdir(),"kulo-worker-native-"));
   fs.writeFileSync(path.join(control,"owner.json"),JSON.stringify({ownerPid:process.pid,ownerIdentity:processFingerprint(process.pid),workspaceDir:options.cwd,projectId:options.projectId,temporaryDir,cleanupModel:"process-group"}),{mode:0o600});
-  const command=supervisedCommand([options.executable,...options.args],control);
+  const spec=resolveCrossPlatformSpawn(options.executable,options.args,{env:options.env});
+  const command=supervisedCommand([spec.command,...spec.args],control,undefined,{windowsVerbatimArguments:spec.windowsVerbatimArguments});
   const child=spawn(command[0]!,command.slice(1),{cwd:options.cwd,env:options.env,stdio:"pipe",windowsHide:true});
   const exited=new Promise<void>(resolve=>{child.once("exit",()=>resolve());child.once("error",()=>resolve());});
   let cleaning:Promise<boolean>|undefined;
@@ -406,7 +409,7 @@ function isWithinAcpDir(target: string, root: string): boolean {
 export function isProtectedAcpPath(canonicalTarget: string, includeGitControl: boolean, currentKind?: ExternalAgentKind): boolean {
   const normalized = canonicalTarget.replace(/\\/g, "/");
   if (/(?:^|\/)(?:\.kulo-state|\.secure)(?:\/|$)/.test(normalized)) return true;
-  if (/(?:^|\/)(?:connection\.json|devices\.json|runtime-token|node-identity\.json|cluster-membership\.json|cluster-transition\.json|cluster-sync-meta\.json|sync-key\.enc|vault-envelope\.enc|(?:kulo|assistant)\.sqlite(?:-wal|-shm)?)$/.test(normalized)) return true;
+  if (/(?:^|\/)(?:connection\.json|devices\.json|runtime-token|node-identity\.json|cluster-membership\.json|cluster-transition\.json|cluster-sync-meta\.json|sync-key\.enc|vault-envelope\.enc|(?:kulo|assistant|memory)\.sqlite(?:-wal|-shm|\.(?:failover-paused|redaction-pending))?)$/.test(normalized)) return true;
   if (/\/Library\/Group Containers\/group\.com\.apple\.usernoted(?:\/|$)/.test(normalized)) return true;
   if (/^\/(?:private\/)?var\/folders\/[^/]+\/[^/]+\/0\/com\.apple\.notificationcenter(?:\/|$)/.test(normalized)) return true;
   if (includeGitControl && /(?:^|\/)\.git\/(?:hooks(?:\/|$)|config$)/.test(normalized)) return true;

@@ -160,7 +160,9 @@ function unavailableCommand(error: unknown): boolean {
 function discoverSystemTailscaleIps(platform: string, run: (file: string, args: string[]) => string): Set<string> | undefined {
   const commands = platform === "darwin"
     ? ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "tailscale"]
-    : ["tailscale"];
+    : platform === "win32"
+      ? [`${process.env.ProgramFiles ?? "C:\\Program Files"}\\Tailscale\\tailscale.exe`, "tailscale.exe", "tailscale"]
+      : ["tailscale"];
   for (const command of commands) {
     try {
       const output = run(command, ["status", "--json"]);

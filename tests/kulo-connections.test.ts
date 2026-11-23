@@ -269,7 +269,7 @@ describe("task scoped connection access", () => {
     f.executor.clearTrustedHost = clearTrustedHost;
 
     const card = await f.manager.save({
-      name: "KuloStation",
+      name: "LocalStation",
       kind: "ssh",
       host: "10.0.0.10",
       username: "demo",
@@ -367,7 +367,7 @@ describe("task scoped connection access", () => {
     const renamed = await f.manager.save({
       ...verified.connection,
       expectedRevision: verified.connection.revision,
-      name: "KuloStation 主机",
+      name: "LocalStation 主机",
     });
     expect(renamed.status).toBe("verified");
 
@@ -723,5 +723,89 @@ describe("ordinary information cards", () => {
     await reopened.initialize();
     expect((await reopened.snapshot()).connections[0]).toMatchObject({ kind: "custom", category: "credential", hasCredential: true });
     expect((await f.vault.get(`connection:${saved.id}`))?.customField).toBe("opaque-legacy-value");
+  });
+
+  it("returns actionable connection_not_found guidance and injects kulo_connections for stale IDs across use/grant/describe/request", async () => {
+    const { createConnectionTools } = await import("../packages/hub/src/tools-connections.js");
+    const { KuloStateDoc } = await import("../packages/hub/src/state.js");
+    const { SettingsAssistantDoc } = await import("../packages/hub/src/settings-doc.js");
+    const { AgentDoc } = await import("@earendil-works/pi-durable");
+
+    const notFoundErr = (id: string) => Object.assign(new Error("此连接已取消或不存在。"), { code: "connection_not_found", status: 404, connectionId: id });
+    const controller = {
+      list: vi.fn(async () => ({ connections: [] })),
+      describe: vi.fn(async (_c: unknown, input: { id: string }) => { throw notFoundErr(input.id); }),
+      request: vi.fn(async (_c: unknown, input: { connectionId: string }) => { throw notFoundErr(input.connectionId); }),
+      decide: vi.fn(async () => ({})),
+      grant: vi.fn(async (_c: unknown, input: { connectionIds: string[] }) => { throw notFoundErr(input.connectionIds[0]!); }),
+      use: vi.fn(async (_c: unknown, input: { connectionId: string }) => { throw notFoundErr(input.connectionId); }),
+    };
+
+    const orchestratorTools = Object.fromEntries(createConnectionTools(controller, "orchestrator").map((t) => [t.name, t]));
+    const workerTools = Object.fromEntries(createConnectionTools(controller, "worker").map((t) => [t.name, t]));
+
+    const makeApi = (conversationId: number, deferred: string[]) => ({
+      conversationId,
+      callId: `call-${conversationId}`,
+      agent: async () => ({ deferred: deferred.map((name) => ({ name })) }),
+      snapshot: async (doc: { kind: string }) => {
+        if (doc.kind === KuloStateDoc.kind) {
+          return {
+            tickets: {
+              "T-1": { id: "T-1", status: "running", workerConversationId: 42, runEpoch: 1, readOnly: false },
+            },
+            conversationToTicket: { "42": "T-1" },
+            conversationToTopic: {},
+            topics: {},
+          };
+        }
+        if (doc.kind === SettingsAssistantDoc.kind) return { conversationId: null };
+        if (doc.kind === AgentDoc.kind) return { deferred, tools: [], modelTools: { add: [] } };
+        return undefined;
+      },
+    }) as never;
+
+    const useRes = await orchestratorTools.kulo_connection_use!.execute(
+      { connection_id: "connection-stale-1", operation: "ssh", command: "ls" },
+      makeApi(1, ["kulo_connections"]),
+      {} as never,
+    );
+    expect(useRes.isError).toBe(true);
+    expect(useRes.control).toEqual({ addTools: ["kulo_connections"] });
+    expect(JSON.stringify(useRes.output)).toContain("connection_not_found");
+    expect(JSON.stringify(useRes.output)).toContain("kulo_connections");
+
+    const grantRes = await orchestratorTools.kulo_connection_grant!.execute(
+      { ticket_id: "T-1", connection_ids: ["connection-stale-a", "connection-stale-b"] },
+      makeApi(1, ["kulo_connections"]),
+      {} as never,
+    );
+    expect(grantRes.isError).toBe(true);
+    expect(grantRes.control).toEqual({ addTools: ["kulo_connections"] });
+    expect(JSON.stringify(grantRes.output)).toContain("connection-stale-a");
+
+    const descRes = await orchestratorTools.kulo_connection_describe!.execute(
+      { connection_id: "connection-stale-desc", expected_revision: 1, name: "New" },
+      makeApi(1, ["kulo_connections"]),
+      {} as never,
+    );
+    expect(descRes.isError).toBe(true);
+    expect(descRes.control).toEqual({ addTools: ["kulo_connections"] });
+
+    // Worker kulo_connection_request must NOT set control.terminate when connection_not_found occurs
+    const reqRes = await workerTools.kulo_connection_request!.execute(
+      { connection_id: "connection-stale-worker", reason: "inspect server" },
+      makeApi(42, ["kulo_connections"]),
+      {} as never,
+    );
+    expect(reqRes.isError).toBe(true);
+    expect(reqRes.control).toEqual({ addTools: ["kulo_connections"] });
+    expect((reqRes.control as { terminate?: boolean } | undefined)?.terminate).toBeUndefined();
+
+    // Untrusted SSH fingerprint error uses unified 「授权凭据」 wording
+    const f = fixture();
+    const ssh = await f.manager.save({ name: "LocalStation", kind: "ssh", host: "192.168.1.50", port: 22, username: "alice", secrets: { password: "pw" } });
+    f.manager.grant("T-ssh", 1, [ssh.id]);
+    await expect(f.manager.use("T-ssh", 1, ssh.id, { kind: "ssh", command: "id" })).rejects.toThrow("「授权凭据」");
   });
 });

@@ -606,40 +606,40 @@ describe("offline agent rescue and history quotas", () => {
 
   it("rejects a new data write format even when its declared read range includes the current database", async () => {
     const f = fixture();
-    const baseline = await payload(f.directory, "native-v2");
+    const baseline = await payload(f.directory, "native-v3");
     await f.manager.initializeBaseline(baseline.root, baseline.manifest);
     fs.mkdirSync(path.join(f.dataDir, "hub"), { recursive: true });
     const marker = path.join(f.dataDir, "hub", "state-version.json");
     const database = path.join(f.dataDir, "hub", "kulo.sqlite");
-    const markerText = JSON.stringify({ version: 2, preparedAt: 123 });
+    const markerText = JSON.stringify({ version: 3, preparedAt: 123 });
     fs.writeFileSync(marker, markerText);
-    fs.writeFileSync(database, "preserve-format-2-data");
-    const incoming = await payload(f.directory, "official-v3", "v3", { kind: "official", dataVersion: 3, minDataVersion: 2, maxDataVersion: 3 });
+    fs.writeFileSync(database, "preserve-format-3-data");
+    const incoming = await payload(f.directory, "official-v4", "v4", { kind: "official", dataVersion: 4, minDataVersion: 3, maxDataVersion: 4 });
     await expect(f.manager.stageRelease(incoming.root, incoming.manifest, { schedule: true })).rejects.toMatchObject({ code: "incompatible_release" });
     expect((await f.manager.inspect()).current?.id).toBe(baseline.manifest.id);
     expect((await f.manager.inspect()).pending).toBeNull();
     expect(fs.readFileSync(marker, "utf8")).toBe(markerText);
-    expect(fs.readFileSync(database, "utf8")).toBe("preserve-format-2-data");
+    expect(fs.readFileSync(database, "utf8")).toBe("preserve-format-3-data");
   });
 
   it("blocks legacy staged cross-format payloads through scheduling, CLI rollback and automatic launch", async () => {
     const f = fixture();
-    const baseline = await payload(f.directory, "native-v2");
+    const baseline = await payload(f.directory, "native-v3");
     await f.manager.initializeBaseline(baseline.root, baseline.manifest);
     fs.mkdirSync(path.join(f.dataDir, "hub"), { recursive: true });
     const marker = path.join(f.dataDir, "hub", "state-version.json");
-    const incoming = await payload(f.directory, "official-v3", "v3", { kind: "official", dataVersion: 3, minDataVersion: 2, maxDataVersion: 3 });
-    fs.writeFileSync(marker, JSON.stringify({ version: 3, preparedAt: 0 }));
-    const oldHost = new RecoveryManager(f.dataDir, { shellVersion: "test-shell", dataVersion: 3, isProcessAlive: () => false });
+    const incoming = await payload(f.directory, "official-v4", "v4", { kind: "official", dataVersion: 4, minDataVersion: 3, maxDataVersion: 4 });
+    fs.writeFileSync(marker, JSON.stringify({ version: 4, preparedAt: 0 }));
+    const oldHost = new RecoveryManager(f.dataDir, { shellVersion: "test-shell", dataVersion: 4, isProcessAlive: () => false });
     await oldHost.stageRelease(incoming.root, incoming.manifest);
-    const markerText = JSON.stringify({ version: 2, preparedAt: 456 });
+    const markerText = JSON.stringify({ version: 3, preparedAt: 456 });
     fs.writeFileSync(marker, markerText);
     await expect(f.manager.schedule(incoming.manifest.id)).rejects.toMatchObject({ code: "incompatible_release" });
     await expect(f.manager.rollback(incoming.manifest.id)).rejects.toMatchObject({ code: "incompatible_release" });
     const command = await runRecoveryCli(["rollback", "--data-dir", f.dataDir, "--release", incoming.manifest.id, "--json"]);
     expect(command.exitCode).toBe(1);
     expect(JSON.parse(command.output).error.code).toBe("incompatible_release");
-    expect((await f.manager.inspect()).warnings.some((warning) => warning.includes(incoming.manifest.id) && warning.includes("写入格式为 3"))).toBe(true);
+    expect((await f.manager.inspect()).warnings.some((warning) => warning.includes(incoming.manifest.id) && warning.includes("写入格式为 4"))).toBe(true);
     const catalogPath = path.join(f.dataDir, "recovery", "catalog.json");
     const catalog = JSON.parse(fs.readFileSync(catalogPath, "utf8"));
     catalog.pending = incoming.manifest.id;
@@ -654,15 +654,15 @@ describe("offline agent rescue and history quotas", () => {
 
   it("does not let old code write a newer database even when its read range includes that format", async () => {
     const f = fixture();
-    const baseline = await payload(f.directory, "native-v2", "v2", { dataVersion: 2, minDataVersion: 2, maxDataVersion: 3 });
+    const baseline = await payload(f.directory, "native-v3", "v3", { dataVersion: 3, minDataVersion: 3, maxDataVersion: 4 });
     await f.manager.initializeBaseline(baseline.root, baseline.manifest);
     fs.mkdirSync(path.join(f.dataDir, "hub"), { recursive: true });
     const marker = path.join(f.dataDir, "hub", "state-version.json");
-    fs.writeFileSync(marker, JSON.stringify({ version: 3, preparedAt: 0 }));
+    fs.writeFileSync(marker, JSON.stringify({ version: 4, preparedAt: 0 }));
     await expect(f.manager.prepareLaunch()).rejects.toMatchObject({ code: "incompatible_release" });
     const state = await f.manager.inspect();
-    expect(state.warnings.some((warning) => warning.includes("磁盘为 3") && warning.includes("写入格式为 2"))).toBe(true);
-    expect(JSON.parse(fs.readFileSync(marker, "utf8")).version).toBe(3);
+    expect(state.warnings.some((warning) => warning.includes("磁盘为 4") && warning.includes("写入格式为 3"))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(marker, "utf8")).version).toBe(4);
   });
 
   it("retries an unchanged sole baseline once after an unknown pre-ready interruption", async () => {

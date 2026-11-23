@@ -243,8 +243,8 @@ export class KuloConnections {
       } : {}) });
   }
   #record(id: string): StoredConnection {
-    const record = this.#doc.connections[identifier(id)];
-    if (!record) fail("此连接已取消或不存在。", "connection_not_found", 404);
+    const cleanId = identifier(id), record = this.#doc.connections[cleanId];
+    if (!record) throw Object.assign(new Error("此连接已取消或不存在。"), { code: "connection_not_found", status: 404, connectionId: cleanId });
     return record;
   }
   #assertOpen(): void { if (this.#closed) fail("连接服务已关闭。", "connection_manager_closed", 503); }
@@ -347,7 +347,7 @@ export class KuloConnections {
         return application?.status === "needs_attention" || application?.status === "unavailable" ? { ...view, status: "error" as const, error: application.error } : view;
       }).sort((a, b) => b.updatedAt - a.updatedAt),
       inputs: clientId ? Object.values(this.#doc.inputs).filter((input) => input.clientId === clientId && Date.now() - input.createdAt < MAX_INPUT_AGE).map(clone) : [],
-      requests: [...this.#requests.values()].map(clone), vault, applications, mcpPresets: clone([...MCP_PRESET_CATALOG]) };
+      requests: [...this.#requests.values()].map(clone), vault, applications, mcpPresets: clone([...MCP_PRESET_CATALOG]), sshSupported: this.#platform !== "win32" };
   }
   async #updateMcpDiscoveryCache(id: string, expectedRevision: number, discovery: McpDiscoverySnapshot): Promise<void> {
     await this.#serialize(async () => {
@@ -865,6 +865,12 @@ export class KuloConnections {
     return clone(request);
   }
   getRequest(id: string): ConnectionAccessRequest | undefined { const request = this.#requests.get(id); return request ? clone(request) : undefined; }
+  hasPendingAccessRequest(conversationId: number, ticketIds?: ReadonlySet<string>): boolean {
+    for (const r of this.#requests.values()) {
+      if (r.status === "pending" && (r.conversationId === conversationId || (ticketIds?.has(r.ticketId) ?? false))) return true;
+    }
+    return false;
+  }
   decide(id: string, approve: boolean): ConnectionAccessRequest {
     const request = this.#requests.get(id);
     if (!request) fail("连接申请已失效。", "connection_request_not_found", 404);
@@ -918,13 +924,13 @@ export class KuloConnections {
     } else if (record.kind === "mcp") {
       if (operation.kind !== "mcp") fail("MCP 连接请使用 operation='mcp' 执行 list_tools 或 call_tool。", "connection_mcp_operation_invalid", 400);
       if (record.mcpTransport === "http" && (record.mcpAuthMode ?? "oauth") === "oauth" && !this.#mcpOAuthAuthorized.has(record.id)) {
-        fail("请先在连接设置中完成此 MCP 应用的 OAuth 授权登录。", "connection_mcp_auth_required", 401);
+        fail("请先在「授权凭据」中完成此 MCP 应用的 OAuth 授权登录。", "connection_mcp_auth_required", 401);
       }
     } else {
       if (operation.kind === "app" || operation.kind === "mcp") fail("此连接不支持该应用操作。", "connection_application_action_invalid", 400);
       if (options.readOnly && (operation.kind === "ssh" || operation.kind === "http" && !["GET", "HEAD"].includes(operation.method ?? "GET"))) fail("只读任务不能执行此连接操作。", "connection_read_only", 403);
     }
-    if (record.kind === "ssh" && !record.trustedHostFingerprint) fail("请先在连接授权页确认服务器指纹。", "connection_host_untrusted", 409);
+    if (record.kind === "ssh" && !record.trustedHostFingerprint) fail("请先在「授权凭据」中确认服务器指纹。", "connection_host_untrusted", 409);
     // A stop must fence this attempt even if an older parent snapshot later restores its grant.
     const controller = new AbortController();
     this.#active.set(controller, { ticketId, connectionId });
@@ -1175,18 +1181,12 @@ export class KuloConnections {
     return { connection: view, secrets, knownHostsPath, revision: record.revision };
   }
   async closeAsync(): Promise<void> {
-    await this.mcpOAuth.close().catch(() => undefined);
-    await this.#mcpPool.close().catch(() => undefined);
-    await closeMcpHttpAgents().catch(() => undefined);
-    this.close();
+    await this.mcpOAuth.close().catch(() => undefined); await this.#mcpPool.close().catch(() => undefined);
+    await closeMcpHttpAgents().catch(() => undefined); this.close();
   }
   close(): void {
-    this.#closed = true;
-    for (const controller of this.#active.keys()) controller.abort();
-    void this.mcpOAuth.close().catch(() => undefined);
-    void this.#mcpPool.close().catch(() => undefined);
-    this.#grants.clear();
-    this.#requests.clear();
-    this.#scans.clear();
+    this.#closed = true; for (const controller of this.#active.keys()) controller.abort();
+    void this.mcpOAuth.close().catch(() => undefined); void this.#mcpPool.close().catch(() => undefined);
+    this.#grants.clear(); this.#requests.clear(); this.#scans.clear();
   }
 }

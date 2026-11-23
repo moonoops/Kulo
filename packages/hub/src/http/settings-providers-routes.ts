@@ -18,6 +18,7 @@ import { getIdentityTemplate } from "../identity-files.js";
 import { MemoryServiceError } from "../memory-service.js";
 import { ProjectError } from "../projects.js";
 import { MAINSTREAM_PROVIDER_PRESETS } from "../providers.js";
+import { handleBuiltinMemoryRoutes } from "./builtin-memory-routes.js";
 import type { HubHttpRouteContext } from "./context.js";
 
 const VALID_BLOCKS: readonly SettingsBlockName[] = [
@@ -37,6 +38,7 @@ const VALID_BLOCKS: readonly SettingsBlockName[] = [
  * matches before the generic `POST /api/settings/:block` handler.
  */
 export async function handleSettingsProvidersRoutes(ctx: HubHttpRouteContext): Promise<boolean> {
+  if (await handleBuiltinMemoryRoutes(ctx)) return true;
   const { hub, req, res, parsedUrl, pathname, readJsonBody, readJsonObject, sendJson, requestOrigin } = ctx;
 
   // Settings API

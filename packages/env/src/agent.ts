@@ -24,7 +24,7 @@ import {
   STREAM_RESUME_CAPABILITY,
   STREAM_RESUME_GRACE_MS,
   CONNECTORS_CAPABILITY,
-  CLUSTER_FAILOVER_CAPABILITY,
+  BUILTIN_MEMORY_SYNC_CAPABILITY, CLUSTER_FAILOVER_CAPABILITY,
   WARM_STANDBY_CAPABILITY,
   type ClusterHandoverDirective,
   type ClusterSyncAvailableNotification,
@@ -78,7 +78,7 @@ const DEFAULT_HEARTBEAT_TIMEOUT_MS = 10_000;
 export interface KuloEnvAgentOptions {
   /** Hub WebSocket URL, e.g. `ws://127.0.0.1:7788/ws/env` or `wss://hub.example.com/ws/env` */
   hubUrl: string;
-  /** Unique environment ID, e.g. `macbook`, `mac-mini`, `mostation` */
+  /** Unique environment ID, e.g. `macbook`, `mac-mini`, `workstation` */
   envId: string;
   /** Human-readable label shown in UI */
   name?: string;
@@ -459,7 +459,7 @@ export class KuloEnvAgent {
           ...defaultCaps,
           STREAM_RESUME_CAPABILITY,
           CLUSTER_FAILOVER_CAPABILITY,
-          ...(this.#options.warmStandbyCapable ? [WARM_STANDBY_CAPABILITY] : []),
+          ...(this.#options.warmStandbyCapable ? [WARM_STANDBY_CAPABILITY, BUILTIN_MEMORY_SYNC_CAPABILITY] : []),
           ...EXTERNAL_AGENT_NODE_CAPABILITIES,
           "host-actions",
           ...workerIsolationCapabilities(),

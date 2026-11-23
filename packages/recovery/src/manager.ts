@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { RecoveryInspection, RecoveryLaunch, RecoveryManagerOptions, RecoveryReleaseIdentity, RecoveryReleaseManifest, RecoveryReleaseRecord, RecoverySession, RecoveryTransaction } from "./types.js";
-import { alive, atomicJson, dataDirectory, fail, inside, operationLock, privateDirectory, readJson, readText, redact } from "./files.js";
+import { alive, atomicJson, clearWindowsReadonlyTreeSync, dataDirectory, fail, inside, operationLock, privateDirectory, readJson, readText, redact } from "./files.js";
 import { releaseId, releaseIdentity, validateReleaseIdentity, validateReleaseManifest, verifyRelease, verifyReleaseIdentity, writeReleaseManifest } from "./manifest.js";
 
 interface StoredRelease {
@@ -246,7 +246,10 @@ export class RecoveryManager {
       if (stat.isDirectory() && !stat.isSymbolicLink() && fs.readdirSync(directory).length === 0) { fs.rmdirSync(directory); return; }
       fail("unsafe_managed_directory", "制品目录缺少归属记录，已保留未知内容。");
     }
-    if (this.#owned(directory, id, intentId)) await fsp.rm(directory, { recursive: true, force: true });
+    if (this.#owned(directory, id, intentId)) {
+      clearWindowsReadonlyTreeSync(directory);
+      await fsp.rm(directory, { recursive: true, force: true });
+    }
   }
   async #resumeFileIntents(catalog: Catalog): Promise<void> {
     for (const intent of this.#readFileIntents()) {
@@ -284,7 +287,7 @@ export class RecoveryManager {
 
   #dataVersion(): number {
     const filename = path.join(this.dataDir, "hub", "state-version.json");
-    if (!fs.existsSync(filename)) return this.#options.dataVersion ?? 2;
+    if (!fs.existsSync(filename)) return this.#options.dataVersion ?? 3;
     const marker = object(readJson(filename, 4096));
     return integer(marker.version, 1);
   }
@@ -296,7 +299,7 @@ export class RecoveryManager {
       manifest.nodeMajor === (this.#options.nodeMajor ?? Number(process.versions.node.split(".")[0])) &&
       manifest.shellVersion === (this.#options.shellVersion ?? "1") &&
       manifest.protocolVersion === (this.#options.protocolVersion ?? 1) &&
-      manifest.dataVersion === (this.#options.dataVersion ?? 2) &&
+      manifest.dataVersion === (this.#options.dataVersion ?? 3) &&
       manifest.dataVersion === dataVersion &&
       dataVersion >= manifest.minDataVersion && dataVersion <= manifest.maxDataVersion;
   }
@@ -407,13 +410,15 @@ export class RecoveryManager {
           if (entry.kind === "symlink") await fsp.symlink(entry.target!, target);
           else {
             await fsp.copyFile(path.join(source, entry.path), target, fs.constants.COPYFILE_FICLONE);
-            await fsp.chmod(target, entry.executable ? 0o555 : 0o444);
+            if (process.platform !== "win32") await fsp.chmod(target, entry.executable ? 0o555 : 0o444);
           }
         }
         await verifyRelease(payload, manifest);
         writeReleaseManifest(payload, manifest);
-        await fsp.chmod(path.join(payload, "kulo-release.json"), 0o444);
-        await fsp.chmod(path.join(payload, "kulo-release.identity.json"), 0o444);
+        if (process.platform !== "win32") {
+          await fsp.chmod(path.join(payload, "kulo-release.json"), 0o444);
+          await fsp.chmod(path.join(payload, "kulo-release.identity.json"), 0o444);
+        }
         atomicJson(this.#manifestPath(manifest.id), manifest);
         const identityHash = this.#saveIdentity(releaseIdentity(manifest));
         await fsp.rename(stage, final);
@@ -616,7 +621,7 @@ export class RecoveryManager {
       try { releases.push(this.#record(catalog, id)); }
       catch (error) { warnings.push("无法读取版本 " + id + "：" + redact(error instanceof Error ? error.message : "未知错误")); }
     }
-    const hostDataVersion = this.#options.dataVersion ?? 2;
+    const hostDataVersion = this.#options.dataVersion ?? 3;
     let diskDataVersion: number | undefined;
     try { diskDataVersion = this.#dataVersion(); }
     catch (error) { warnings.push("无法核对磁盘数据格式，版本切换保持关闭：" + redact(error instanceof Error ? error.message : "未知错误")); }

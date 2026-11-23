@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { safeDesktopChmodSync, safeDesktopFchmodSync } from "./desktop-fs.js";
 
 export interface DesktopRuntimeOptions {
   dataDir: string;
@@ -80,7 +81,7 @@ export function buildRuntimeEnvironment(
     if (value === undefined || /^KULO_/i.test(name) ||
         /^(?:AWS|GOOGLE|GCLOUD|AZURE|ANTHROPIC|OPENAI|OPENROUTER|PI)_/i.test(name) ||
         /(?:^|_)(?:API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS?|ACCESS_KEY|PRIVATE_KEY)(?:_|$)/i.test(name) ||
-        /^(?:NODE_OPTIONS|NODE_PATH|NODE_CHANNEL_FD|NODE_CHANNEL_SERIALIZATION_MODE|ELECTRON_RUN_AS_NODE)$/i.test(name)) continue;
+        /^(?:NODE_OPTIONS|NODE_PATH|NODE_CHANNEL_FD|NODE_CHANNEL_SERIALIZATION_MODE|ELECTRON_RUN_AS_NODE|SSH_CLIENT|SSH_CONNECTION|SSH_TTY)$/i.test(name)) continue;
     env[name] = value;
   }
   Object.assign(env, {
@@ -109,7 +110,7 @@ function privateDirectory(directory: string): void {
       (typeof process.getuid === "function" && stat.uid !== process.getuid())) {
     throw new Error("开发版数据目录不可用。");
   }
-  fs.chmodSync(directory, 0o700);
+  safeDesktopChmodSync(directory, 0o700);
 }
 
 /** Publishes a complete token atomically so another launch never observes a partial secret. */
@@ -125,13 +126,13 @@ export function prepareDesktopRuntime(paths: DesktopRuntimePaths): string {
   } finally {
     fs.rmSync(temporary, { force: true });
   }
-  const descriptor = fs.openSync(paths.tokenPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  const descriptor = fs.openSync(paths.tokenPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
     const stat = fs.fstatSync(descriptor);
     if (!stat.isFile() || (typeof process.getuid === "function" && stat.uid !== process.getuid())) {
       throw new Error("开发版管理凭据不可用。");
     }
-    fs.fchmodSync(descriptor, 0o600);
+    safeDesktopFchmodSync(descriptor, 0o600);
     const token = fs.readFileSync(descriptor, "utf8");
     if (!/^[a-f0-9]{64}$/.test(token)) throw new Error("开发版管理凭据不可用。");
     return token;
@@ -143,7 +144,7 @@ export function prepareDesktopRuntime(paths: DesktopRuntimePaths): string {
 /** A stable origin preserves browser preferences across desktop launches. */
 export function readDesktopRuntimePort(paths: DesktopRuntimePaths): number {
   let descriptor: number;
-  try { descriptor = fs.openSync(paths.portPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); }
+  try { descriptor = fs.openSync(paths.portPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0)); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
     throw error;
@@ -159,7 +160,7 @@ export function readDesktopRuntimePort(paths: DesktopRuntimePaths): number {
     if (!/^[1-9][0-9]{0,4}\n?$/.test(value) || !Number.isInteger(port) || port > 65535) {
       throw new Error("开发版服务端口不可用。");
     }
-    fs.fchmodSync(descriptor, 0o600);
+    safeDesktopFchmodSync(descriptor, 0o600);
     return port;
   } finally { fs.closeSync(descriptor); }
 }

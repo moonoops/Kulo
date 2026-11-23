@@ -218,7 +218,7 @@ describe("trusted connection SSH execution", () => {
       setImmediate(() => { child.stdout.end(""); child.stderr.end(""); child.emit("close", 1); });
       return child;
     });
-    for (const lanHost of ["10.0.0.10", "::ffff:10.0.0.10", "kulostation", "nas.lan", "macmini.local"]) {
+    for (const lanHost of ["10.0.0.10", "::ffff:10.0.0.10", "localstation", "nas.lan", "macmini.local"]) {
       expect(isLocalNetworkHost(lanHost)).toBe(true);
       await expect(darwinExec.scan(card({ kind: "ssh", host: lanHost, username: "kulo", url: undefined }))).rejects.toMatchObject({
         code: "connection_local_network_blocked",

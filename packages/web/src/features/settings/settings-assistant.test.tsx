@@ -483,4 +483,41 @@ describe("settings assistant visible states", () => {
     expect(html).toContain("切换为深色");
     expect(html).toContain("思考中");
   });
+
+  it("hides main-chat one-shot navigate actions so SettingsAssistantPanel never renders a ghost card or hides welcome state", () => {
+    const html = renderToStaticMarkup(
+      <SettingsAssistantPanel
+        module="models"
+        agentName="Kulo"
+        settings={settings}
+        envs={[]}
+        snapshot={{
+          ...EMPTY_SETTINGS_ASSISTANT,
+          topicId: null,
+          messages: [],
+          actions: [{
+            id: "main-nav-1",
+            kind: "navigate",
+            title: "打开设置",
+            changes: [],
+            status: "pending",
+            requiresConfirmation: false,
+            canUndo: false,
+            clientId: "tab-a",
+            fromMainChat: true,
+            module: "models",
+            intent: "add-api",
+          }],
+          live: { busy: false, activeTools: [], queuedCount: 0 },
+        }}
+        loaded
+        connected
+        error={null}
+        controls={controls()}
+      />,
+    );
+    expect(html).not.toContain("打开设置");
+    expect(html).toContain("kulo-settings-assistant-intro");
+    expect(html).toContain("想要构建什么样的能力？");
+  });
 });

@@ -1,7 +1,11 @@
 import type { ChatDisplayItem, LiveStreamState } from "./domain.js";
 import type { AppearanceCustomization } from "./appearance.js";
 
-export type SettingsAssistantModule = "models" | "workers" | "identity" | "machines" | "appearance" | "capabilities" | "connections" | "permissions" | "schedules" | "archives";
+export const SETTINGS_ASSISTANT_MODULES = [
+  "models", "workers", "identity", "machines", "appearance",
+  "capabilities", "connections", "permissions", "schedules", "archives",
+] as const;
+export type SettingsAssistantModule = (typeof SETTINGS_ASSISTANT_MODULES)[number];
 export type SettingsAssistantAppearance = "system" | "light" | "dark";
 
 export interface SettingsAssistantContext {
@@ -15,7 +19,11 @@ export interface SettingsAssistantContext {
   target?: { kind: "capability" | "skill" | "connection" | "extension" | "external-agent"; id: string };
 }
 
-export type SettingsAssistantIntent = "add-api" | "add-oauth" | "edit-identity" | "configure-memory" | "add-connection" | "add-ssh-credential" | "add-device" | "join-device";
+export const SETTINGS_ASSISTANT_INTENTS = [
+  "add-api", "add-oauth", "edit-identity", "configure-memory",
+  "add-connection", "add-ssh-credential", "add-device", "join-device",
+] as const;
+export type SettingsAssistantIntent = (typeof SETTINGS_ASSISTANT_INTENTS)[number];
 
 export interface SettingsAssistantAction {
   id: string;
@@ -29,6 +37,7 @@ export interface SettingsAssistantAction {
   error?: string;
   historical?: boolean;
   clientId?: string;
+  fromMainChat?: boolean;
   appearance?: SettingsAssistantAppearance;
   previousAppearance?: SettingsAssistantAppearance;
   customization?: AppearanceCustomization;

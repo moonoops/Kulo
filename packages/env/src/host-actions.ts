@@ -21,13 +21,17 @@ import {
   buildHostMaintenanceSandboxProfile,
   canonicalExecutionPath,
   defaultProtectedPaths,
+  hasWorkerBasicOrFullIsolation,
   isApplicationPrivatePath,
   nativeProtectedPaths,
   workerExecutionPath,
+  workerIsolationCapabilities,
   workerProxyEnvironment,
 } from "./isolation.js";
 import { createMacSandboxCleanupCommand, macSandboxCleanupAvailable } from "./isolation-macos.js";
 import { createLinuxHostMaintenanceCommand, linuxSandboxAvailable } from "./isolation-linux.js";
+import { cleanupWindowsSandboxCommand, createWindowsSandboxCommand } from "./isolation-windows.js";
+import { removeReadonlyTreeSync, safeChmodSync } from "./platform-fs.js";
 import { cleanSupervisedExecution, processFingerprint, supervisedCommand } from "./worker-supervisor.js";
 
 const execFileAsync = promisify(execFile);
@@ -473,6 +477,9 @@ export class HostActionService {
     if (process.platform === "linux" && !linuxSandboxAvailable()) {
       throw new Error("当前 Linux 设备缺少 bubblewrap 原生沙箱后端，拒绝无隔离执行本机运维命令。");
     }
+    if (process.platform === "win32" && !hasWorkerBasicOrFullIsolation(workerIsolationCapabilities())) {
+      throw new Error("当前 Windows 设备缺少原生沙箱隔离后端，拒绝无隔离执行本机运维命令。");
+    }
 
     const totalTimeoutMs = request.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
     const deadline = Date.now() + totalTimeoutMs;
@@ -555,72 +562,88 @@ export class HostActionService {
   }): Promise<{ exitCode: number; stdout: string; stderr: string; truncated: boolean }> {
     fs.mkdirSync(this.#controlRoot, { recursive: true, mode: 0o700 });
     const controlDir = fs.realpathSync(fs.mkdtempSync(path.join(this.#controlRoot, "kulo-host-action-")));
-    fs.chmodSync(controlDir, 0o700);
-    fs.writeFileSync(
-      path.join(controlDir, "owner.json"),
-      JSON.stringify({
-        ownerPid: process.pid,
-        ownerIdentity: processFingerprint(process.pid),
-        workspaceDir: params.cwd,
-        temporaryDir: controlDir,
-        cleanupModel: process.platform === "darwin" ? "macos-seatbelt" : "os-container",
-      }),
-      { mode: 0o600 },
-    );
-
-    const allProtected = [...params.protectedPaths, controlDir];
-    const homeDir = os.homedir();
-    const pathEnv = workerExecutionPath(allProtected);
-    const proxyEnv = workerProxyEnvironment();
-
-    let wrappedCommand: readonly string[];
-    if (process.platform === "darwin") {
-      const sandboxIdentity = {
-        marker: `kulo.worker.${randomBytes(24).toString("hex")}`,
-        negative: `kulo.unowned.${randomBytes(24).toString("hex")}`,
-      };
-      const sandboxCleanup = createMacSandboxCleanupCommand(controlDir, sandboxIdentity.marker, sandboxIdentity.negative);
-      const profile = buildHostMaintenanceSandboxProfile({
-        protectedPaths: allProtected,
-        sandboxIdentity,
-      });
-      const innerCommand: readonly string[] = [
-        "/usr/bin/env",
-        "-i",
-        `PATH=${pathEnv}`,
-        `HOME=${homeDir}`,
-        `KULO_HOST_HOME=${homeDir}`,
-        `TMPDIR=${os.tmpdir()}`,
-        `USER=${os.userInfo().username}`,
-        "LANG=en_US.UTF-8",
-        "SHELL=/bin/bash",
-        ...proxyEnv,
-        "/usr/bin/sandbox-exec",
-        "-p",
-        profile,
-        "/bin/bash",
-        "-c",
-        params.command,
-      ];
-      wrappedCommand = supervisedCommand(innerCommand, controlDir, sandboxCleanup);
-    } else if (process.platform === "linux") {
-      const innerCommand = createLinuxHostMaintenanceCommand({
-        cwd: params.cwd,
-        controlDir,
-        protectedPaths: allProtected,
-        pathEnv,
-        proxyEnv,
-        command: params.command,
-      });
-      wrappedCommand = supervisedCommand(innerCommand, controlDir);
-    } else {
-      const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
-      const powershell = path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-      const innerCommand = [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", params.command];
-      wrappedCommand = supervisedCommand(innerCommand, controlDir);
-    }
+    safeChmodSync(controlDir, 0o700);
+    let sandboxTempDir: string | undefined;
+    let windowsSandboxCmd: readonly string[] | undefined;
 
     try {
+      if (process.platform === "win32") {
+        sandboxTempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kulo-host-action-tmp-")));
+      }
+      fs.writeFileSync(
+        path.join(controlDir, "owner.json"),
+        JSON.stringify({
+          ownerPid: process.pid,
+          ownerIdentity: processFingerprint(process.pid),
+          workspaceDir: params.cwd,
+          temporaryDir: sandboxTempDir ?? controlDir,
+          cleanupModel: process.platform === "darwin" ? "macos-seatbelt" : "os-container",
+        }),
+        { mode: 0o600 },
+      );
+
+      const allProtected = [...params.protectedPaths, controlDir];
+      const homeDir = os.homedir();
+      const pathEnv = workerExecutionPath(allProtected);
+      const proxyEnv = workerProxyEnvironment();
+
+      let wrappedCommand: readonly string[];
+      if (process.platform === "darwin") {
+        const sandboxIdentity = {
+          marker: `kulo.worker.${randomBytes(24).toString("hex")}`,
+          negative: `kulo.unowned.${randomBytes(24).toString("hex")}`,
+        };
+        const sandboxCleanup = createMacSandboxCleanupCommand(controlDir, sandboxIdentity.marker, sandboxIdentity.negative);
+        const profile = buildHostMaintenanceSandboxProfile({
+          protectedPaths: allProtected,
+          sandboxIdentity,
+        });
+        const innerCommand: readonly string[] = [
+          "/usr/bin/env",
+          "-i",
+          `PATH=${pathEnv}`,
+          `HOME=${homeDir}`,
+          `KULO_HOST_HOME=${homeDir}`,
+          `TMPDIR=${os.tmpdir()}`,
+          `USER=${os.userInfo().username}`,
+          "LANG=en_US.UTF-8",
+          "SHELL=/bin/bash",
+          ...proxyEnv,
+          "/usr/bin/sandbox-exec",
+          "-p",
+          profile,
+          "/bin/bash",
+          "-c",
+          params.command,
+        ];
+        wrappedCommand = supervisedCommand(innerCommand, controlDir, sandboxCleanup);
+      } else if (process.platform === "linux") {
+        const innerCommand = createLinuxHostMaintenanceCommand({
+          cwd: params.cwd,
+          controlDir,
+          protectedPaths: allProtected,
+          pathEnv,
+          proxyEnv,
+          command: params.command,
+        });
+        wrappedCommand = supervisedCommand(innerCommand, controlDir);
+      } else {
+        const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+        const powershell = path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+        const isolatedTemp = sandboxTempDir!;
+        const sandboxWorkspace = params.cwd.toLowerCase() === homeDir.toLowerCase() ? isolatedTemp : params.cwd;
+        windowsSandboxCmd = createWindowsSandboxCommand({
+          workspaceDir: sandboxWorkspace,
+          temporaryDir: isolatedTemp,
+          executable: powershell,
+          protectedPaths: allProtected,
+          port: 1,
+          networkBackend: "basic",
+        });
+        const innerCommand = [...windowsSandboxCmd, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", params.command];
+        wrappedCommand = supervisedCommand(innerCommand, controlDir);
+      }
+
       return await new Promise<{ exitCode: number; stdout: string; stderr: string; truncated: boolean }>((resolve, reject) => {
         const [exe, ...args] = wrappedCommand;
         const child = spawn(exe!, args, {
@@ -753,8 +776,16 @@ export class HostActionService {
         });
       });
     } finally {
-      await cleanSupervisedExecution(controlDir).catch(() => false);
-      fs.rmSync(controlDir, { recursive: true, force: true });
+      const pending = await cleanSupervisedExecution(controlDir).catch(() => true);
+      if (windowsSandboxCmd) {
+        try { cleanupWindowsSandboxCommand(windowsSandboxCmd); } catch { /* retain native cleanup helper for retry */ }
+      }
+      if (!pending) {
+        if (sandboxTempDir) {
+          try { removeReadonlyTreeSync(sandboxTempDir); } catch { /* best-effort */ }
+        }
+        removeReadonlyTreeSync(controlDir);
+      }
     }
   }
 }

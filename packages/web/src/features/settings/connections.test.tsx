@@ -982,7 +982,7 @@ describe("MCP app connections UI", () => {
     };
     expect(isSshTargetChanged(createConnectionDraft(input, existingSsh), existingSsh)).toBe(false);
     expect(isSshTargetChanged({ ...createConnectionDraft(input, existingSsh), port: "2222" }, existingSsh)).toBe(true);
-    expect(isSshTargetChanged({ ...createConnectionDraft(input, existingSsh), host: "10.0.1.51" }, existingSsh)).toBe(true);
+    expect(isSshTargetChanged({ ...createConnectionDraft(input, existingSsh), host: "192.168.1.51" }, existingSsh)).toBe(true);
     expect(isSshTargetChanged({ ...createConnectionDraft(input, existingSsh), name: "只改名字" }, existingSsh)).toBe(false);
 
     expect(() =>
@@ -1022,7 +1022,7 @@ describe("MCP app connections UI", () => {
 
     const changedTargetHtml = renderToStaticMarkup(
       <CredentialFormFields
-        draft={{ ...baseDraft, host: "10.0.1.51", sshAuth: "password" }}
+        draft={{ ...baseDraft, host: "192.168.1.51", sshAuth: "password" }}
         existing={existingSsh}
         {...noopFormCallbacks}
       />,

@@ -517,6 +517,7 @@ export class DeviceInterconnectionManager {
       primaryNodeId: this.primaryNodeId,
       preferredPrimaryNodeId: this.preferredPrimaryNodeId,
       clusterEpoch: this.clusterEpoch,
+      sshSupported: process.platform !== "win32",
       hubUrls: urls,
       ...(failbackOffer ? { failbackOffer } : {}),
       devices: [

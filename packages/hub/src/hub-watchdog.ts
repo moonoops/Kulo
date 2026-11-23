@@ -41,7 +41,7 @@ export interface TrackedWorkerRuntime {
 
 export interface HubWatchdogDeps {
   harness: Harness;
-  rootConversation: Conversation;
+  getRootConversation: () => Conversation;
   revokeTicketConnections: (ticketId: string) => void;
   isClosed: () => boolean;
   isHandoverBarrierActive: () => boolean;
@@ -254,7 +254,7 @@ export class HubWatchdog {
           Number(ROOT_CONVERSATION_ID)) as ConversationId;
         const originConv =
           (await this.#deps.harness.conversation(originConvId, BACKGROUND_CONTEXT)) ??
-          this.#deps.rootConversation;
+          this.#deps.getRootConversation();
 
         const watchdogPrompt = formatWorkerWatchdogMessage({
           ticketId: ticket.id,
@@ -300,7 +300,7 @@ export class HubWatchdog {
 
 export interface HubFailureRecoveryDeps {
   harness: Harness;
-  rootConversation: Conversation;
+  getRootConversation: () => Conversation;
   failureRecoveryTask: ReturnType<typeof createFailureRecoveryTask>;
   isClosed: () => boolean;
   isRecovering: () => boolean;
@@ -369,7 +369,7 @@ export class HubFailureRecovery {
         (root.originConversationId ??
           Number(ROOT_CONVERSATION_ID)) as ConversationId,
         context,
-      )) ?? this.#deps.rootConversation;
+      )) ?? this.#deps.getRootConversation();
     let nextAt: number | null = Date.now() + 30_000;
     await origin.commit(async (tx) => {
       const state = await tx.doc(KuloStateDoc);

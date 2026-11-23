@@ -12,6 +12,7 @@ import type {
 } from "@kulo/protocol";
 import { repairHistoricalChatAttachments } from "./chat-attachment-deliveries.js";
 import { chatReceiptData, queuedChatEntries } from "./chat-submissions.js";
+import { abortConversationSafely } from "./conversation-abort.js";
 import type { KuloConnections } from "./connections.js";
 import { ConversationQueries } from "./conversation-query.js";
 import { redactCredentialData } from "./credential-redaction.js";
@@ -46,6 +47,7 @@ export interface WatchedTopicCache {
 }
 
 export type TopicView = Pick<WatchedTopicCache, "topicId" | "messages" | "live"> & {
+  conversationId: number;
   historyBefore?: number;
 };
 
@@ -57,7 +59,7 @@ export function requireTopic(state: Readonly<KuloDurableState> | undefined, topi
 }
 
 export interface TopicEventListener {
-  onTopicView?: (topicId: string, messages: ChatDisplayItem[], live: LiveStreamState) => void;
+  onTopicView?: (topicId: string, messages: ChatDisplayItem[], live: LiveStreamState, conversationId?: number) => void;
   onRootView?: (messages: ChatDisplayItem[], live: LiveStreamState) => void;
   onTopics?: (topics: TopicSummary[]) => void;
   onNotification?: (event: MainSessionNotificationEvent) => void;
@@ -159,6 +161,10 @@ export class HubTopicManager {
 
   async closeTitles(): Promise<void> { await this.#topicTitles.close(); }
 
+  async drainTopicActivity(topicId: string): Promise<void> {
+    await this.#topicActivityUpdates.get(topicId);
+  }
+
   async drainPendingActivity(): Promise<void> {
     await this.#topicAutoArchiveRun;
     await Promise.all(this.#topicActivityUpdates.values());
@@ -197,7 +203,7 @@ export class HubTopicManager {
   async unwatchTopic(topicId: string, context: Context = BACKGROUND_CONTEXT): Promise<void> {
     const cache = this.#topicCaches.get(topicId);
     if (!cache) return;
-    await cache.conversation.abort(context, { background: true });
+    await abortConversationSafely(this.#deps.harness, cache.conversation, context);
     await cache.watch.stop();
     this.#topicCaches.delete(topicId);
   }
@@ -206,10 +212,29 @@ export class HubTopicManager {
     for (const [id, cache] of this.#topicCaches) {
       if (!state?.topics?.[id]?.deletedAt) continue;
       await this.#deps.cleanup.closeOrchestratorBrowserSession(id);
-      await cache.conversation.abort(context, { background: true });
+      await abortConversationSafely(this.#deps.harness, cache.conversation, context);
       await cache.watch.stop();
       this.#topicCaches.delete(id);
     }
+  }
+
+  /**
+   * Swaps the watched conversation for an existing topic (e.g. after rotating `"root"`),
+   * stopping the previous watch without aborting background tasks on the old conversation,
+   * clearing stale preview cache, attaching the new watch, and broadcasting the live snapshot.
+   */
+  async replaceWatchedTopic(topicId: string, conversation: Conversation, context: Context = BACKGROUND_CONTEXT): Promise<WatchedTopicCache> {
+    const previous = this.#topicCaches.get(topicId);
+    if (previous && Number(previous.conversation.id) !== Number(conversation.id)) {
+      this.#topicCaches.delete(topicId);
+      await previous.watch.stop().catch(() => {});
+    }
+    this.#topicPreviewCache.delete(topicId);
+    const cache = await this.ensureTopicWatched(topicId, conversation, context);
+    const topics = await this.listTopics(context);
+    this.emitTopics(topics);
+    this.refreshContent(cache);
+    return cache;
   }
 
   async listTopics(context: Context = BACKGROUND_CONTEXT): Promise<TopicSummary[]> {
@@ -242,8 +267,8 @@ export class HubTopicManager {
         if (ticket.originConversationId !== undefined) protectedConversations.add(ticket.originConversationId);
       }
       for (const topic of Object.values(state.topics ?? {})) {
-        // The reserved identity remains protected even if an older record lost its master flag.
-        if (topic.id === "root" || topic.master || topic.conversationId === Number(ROOT_CONVERSATION_ID) ||
+        // Only the live master/root topic is exempt from auto-archive; archived former-root snapshots behave as normal topics.
+        if (topic.id === "root" || topic.master ||
           topic.deletedAt || topic.archived || topic.updatedAt >= cutoff || this.#topicActivityUpdates.has(topic.id) ||
           this.#topicCaches.get(topic.id)?.live.busy || protectedTopics.has(topic.id) || protectedConversations.has(topic.conversationId)) continue;
         const conversationId = topic.conversationId as ConversationId;
@@ -340,7 +365,7 @@ export class HubTopicManager {
       }
       if (patch.pinned !== undefined) t.pinned = Boolean(patch.pinned);
       if (patch.archived !== undefined) {
-        if ((t.master || t.id === "root" || t.conversationId === Number(ROOT_CONVERSATION_ID)) && patch.archived) {
+        if ((t.master || t.id === "root") && patch.archived) {
           throw new Error("默认主对话不可归档");
         }
         t.archived = Boolean(patch.archived);
@@ -435,10 +460,10 @@ export class HubTopicManager {
     await this.#deps.cleanup.closeOrchestratorBrowserSession(topicId);
     const wasWatched = this.#topicCaches.has(topicId);
     await this.unwatchTopic(topicId, context);
-    // Also abort background tasks on uncached deleted topic conversations.
+    // Also abort background tasks on uncached deleted topic conversations (protecting root system tasks).
     if (!wasWatched && targetConversationId !== undefined) {
       const conv = await this.#deps.harness.conversation(targetConversationId as ConversationId, context).catch(() => undefined);
-      await conv?.abort(context, { background: true }).catch(() => {});
+      if (conv) await abortConversationSafely(this.#deps.harness, conv, context).catch(() => {});
     }
     if (targetConversationId !== undefined) {
       await this.#deps.cleanup.onTopicDeleted?.(topicId, targetConversationId, context).catch(() => {});
@@ -467,7 +492,13 @@ export class HubTopicManager {
   }
 
   #readTopicView(cache: WatchedTopicCache): TopicView {
-    return { topicId: cache.topicId, messages: cache.messages, historyBefore: this.getTopicHistoryBefore(cache.topicId), live: cache.live };
+    return {
+      topicId: cache.topicId,
+      conversationId: Number(cache.conversation.id),
+      messages: cache.messages,
+      historyBefore: this.getTopicHistoryBefore(cache.topicId),
+      live: cache.live,
+    };
   }
 
   getTopicHistoryBefore(topicId: string): number | undefined {
@@ -481,6 +512,7 @@ export class HubTopicManager {
     const page = await cache.conversation.entries({ maxEntryId: (before - 1) as EntryId }, 120, undefined, context);
     const entries = [...page.items].reverse();
     return {
+      conversationId: Number(cache.conversation.id),
       messages: await this.#deps.projection.hydrateMessages(entries, Number(cache.conversation.id)),
       ...(page.next && entries[0] ? { beforeEntryId: Number(entries[0].id) } : {}),
       hasMore: Boolean(page.next),
@@ -529,9 +561,13 @@ export class HubTopicManager {
     const state = await this.#deps.harness.snapshot(KuloStateDoc, context);
     const topic = requireTopic(state, topicId);
     const existing = this.#topicCaches.get(topicId);
-    if (existing) {
+    if (existing && Number(existing.conversation.id) === topic.conversationId) {
       await this.#deps.contextCompaction.align(existing.conversation.id, context);
       return existing;
+    }
+    if (existing) {
+      this.#topicCaches.delete(topicId);
+      await existing.watch.stop().catch(() => {});
     }
     const conv = await this.#deps.harness.conversation(topic.conversationId as ConversationId, context);
     if (!conv) throw new ProjectError(500, "conversation_missing", "会话引用的对话记录不存在。");
@@ -553,7 +589,11 @@ export class HubTopicManager {
 
   async ensureTopicWatched(topicId: string, conversation: Conversation, context: Context): Promise<WatchedTopicCache> {
     const existing = this.#topicCaches.get(topicId);
-    if (existing) return existing;
+    if (existing && Number(existing.conversation.id) === Number(conversation.id)) return existing;
+    if (existing) {
+      this.#topicCaches.delete(topicId);
+      await existing.watch.stop().catch(() => {});
+    }
 
     const watch = await conversation.watch(context, { min: 80, max: 160 });
     try {
@@ -566,7 +606,11 @@ export class HubTopicManager {
     }
     // Another selection of this cold topic may have attached its watch during hydration.
     const attached = this.#topicCaches.get(topicId);
-    if (attached) { await watch.stop(); return attached; }
+    if (attached && Number(attached.conversation.id) === Number(conversation.id)) { await watch.stop(); return attached; }
+    if (attached) {
+      this.#topicCaches.delete(topicId);
+      await attached.watch.stop().catch(() => {});
+    }
     const initialMessages = this.#deps.projection.projectTopicMessages(watch.value, Number(conversation.id));
     const initialLive = redactCredentialData(this.#deps.projection.projectTopicLiveState(watch.value, Number(conversation.id), conversation), (text) => this.#deps.connectionManager.redact(text));
     const cache: WatchedTopicCache = {
@@ -590,22 +634,24 @@ export class HubTopicManager {
     const topic = state?.topics?.[topicId];
     if (!topic || topic.deletedAt) return;
     if (topic.title) this.#topicTitleCache.set(topicId, topic.title);
-    if (this.#topicCaches.has(topicId)) return;
+    const existing = this.#topicCaches.get(topicId);
+    if (existing && Number(existing.conversation.id) === conversationId) return;
     const conversation = await this.#deps.harness.conversation(conversationId as ConversationId, context);
     if (conversation) await this.ensureTopicWatched(topicId, conversation, context);
   }
 
   refreshContent(cache: WatchedTopicCache, value = cache.watch.value): void {
     if (this.#deps.runtimeGates.isClosed() || this.#topicCaches.get(cache.topicId) !== cache) return;
-    const messages = this.#deps.projection.projectTopicMessages(value, Number(cache.conversation.id));
+    const convId = Number(cache.conversation.id);
+    const messages = this.#deps.projection.projectTopicMessages(value, convId);
     cache.messages = messages;
     const latestPreview = summarizeTopicPreview(messages);
     if (latestPreview) this.#topicPreviewCache.set(cache.topicId, latestPreview);
     const wasBusy = cache.live.busy;
-    cache.live = redactCredentialData(this.#deps.projection.projectTopicLiveState(value, Number(cache.conversation.id), cache.conversation), (text) => this.#deps.connectionManager.redact(text));
+    cache.live = redactCredentialData(this.#deps.projection.projectTopicLiveState(value, convId, cache.conversation), (text) => this.#deps.connectionManager.redact(text));
     if (wasBusy && !cache.live.busy) {
-      this.recordTopicActivity(cache.topicId, latestPreview);
-      this.#deps.onTopicIdle?.(cache.topicId, Number(cache.conversation.id), cache.live, value);
+      this.recordTopicActivity(cache.topicId, latestPreview, convId);
+      this.#deps.onTopicIdle?.(cache.topicId, convId, cache.live, value);
     }
     if (!cache.live.busy && value.entries.some((entry) => CompactionEntry.is(entry))) {
       void this.#deps.contextCompaction.pruneCommittedBaseline(cache.conversation.id, BACKGROUND_CONTEXT, false).catch(() => {});
@@ -616,7 +662,7 @@ export class HubTopicManager {
       previous: cache.notificationBaseline,
       messages,
       live: cache.live,
-      deferReplyNotification: this.#deps.hasPendingMediaRelay?.(Number(cache.conversation.id)) ?? false,
+      deferReplyNotification: this.#deps.hasPendingMediaRelay?.(convId) ?? false,
       redact: (text) => this.#deps.connectionManager.redact(text),
     });
     cache.notificationBaseline = notification.next;
@@ -624,13 +670,13 @@ export class HubTopicManager {
     this.#topicTitles.observe(cache.topicId, messages, cache.live.busy || Boolean(cache.live.runFailure));
     const recovering = this.#deps.runtimeGates.isRecovering();
     for (const listener of this.#deps.listeners) {
-      listener.onTopicView?.(cache.topicId, messages, cache.live);
+      listener.onTopicView?.(cache.topicId, messages, cache.live, convId);
       if (cache.topicId === "root") listener.onRootView?.(messages, cache.live);
       if (notification.event && !recovering) listener.onNotification?.(notification.event);
     }
   }
 
-  recordTopicActivity(topicId: string, latestPreview?: { preview: string; at?: number }): void {
+  recordTopicActivity(topicId: string, latestPreview?: { preview: string; at?: number }, expectedConversationId?: number): void {
     const at = Date.now();
     const previous = this.#topicActivityUpdates.get(topicId);
     const update = (async () => {
@@ -639,6 +685,7 @@ export class HubTopicManager {
         const state = await tx.doc(KuloStateDoc);
         const topic = state.topics?.[topicId];
         if (!topic || topic.deletedAt) return undefined;
+        if (expectedConversationId !== undefined && topic.conversationId !== expectedConversationId) return undefined;
         let changed = false;
         if (!topic.master && topic.id !== "root") {
           const nextUpdatedAt = Math.max(topic.updatedAt, at);

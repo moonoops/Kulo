@@ -36,7 +36,11 @@ function microphoneFromSnapshot(snapshot: { permissions: SystemPermissionStatus[
 
 export async function readMicrophonePermission(): Promise<SystemPermissionStatus> {
   const desktop = desktopSystemPermissionBridge();
-  if (desktop) return microphoneFromSnapshot(await desktop.status());
+  if (desktop) {
+    const snapshot = await desktop.status();
+    const mic = microphoneFromSnapshot(snapshot);
+    if (snapshot.platform === "darwin" || mic.state !== "unsupported") return mic;
+  }
   if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia || typeof window !== "undefined" && !window.isSecureContext) {
     return { kind: "microphone", state: "unsupported", detail: t("请使用 HTTPS 或本机地址访问", "Use HTTPS or a localhost address") };
   }
@@ -54,7 +58,13 @@ export async function readMicrophonePermission(): Promise<SystemPermissionStatus
 
 export async function authorizeMicrophone(): Promise<SystemPermissionStatus> {
   const desktop = desktopSystemPermissionBridge();
-  if (desktop) return microphoneFromSnapshot(await desktop.requestMicrophone());
+  if (desktop) {
+    const snapshot = await desktop.status();
+    const mic = microphoneFromSnapshot(snapshot);
+    if (snapshot.platform === "darwin" || mic.state !== "unsupported") {
+      return microphoneFromSnapshot(await desktop.requestMicrophone());
+    }
+  }
   const current = await readMicrophonePermission();
   if (current.state === "unsupported") throw new Error(current.detail);
   if (current.state === "denied" || current.state === "restricted") throw new Error(t("请在浏览器的网站设置中允许麦克风访问", "Allow microphone access in your browser's site settings"));

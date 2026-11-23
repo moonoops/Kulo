@@ -7,8 +7,9 @@ import {
   CompactionTask, defineExtension, GenerationTask, hook, ToolTask,
   AssistantEntry, UserEntry, type DocumentId, type JsonObject, type Storage, type StorageWrite,
 } from "@earendil-works/pi-durable";
-import { inspectSensitiveText, mayContainDeviceInvitation, redactDeviceInvitationText } from "@kulo/protocol";
+import { inspectSensitiveText, mayContainDeviceInvitation, redactDeviceInvitationText, redactSensitiveText } from "@kulo/protocol";
 import { invalidateDeviceInvitationSearchIndex } from "./conversation-history.js";
+import { CoordinatorEventEntry } from "./state.js";
 import { KuloUserEntry } from "./ui-cards.js";
 import { nativeAssistantOpaqueFields, nativeWireOpaqueFields, type NativeOpaqueField } from "./model-native-replay.js";
 
@@ -465,8 +466,14 @@ async function scrubDatabase(filename: string, redact: (text: string) => string,
 function historicalUserText(value: unknown): { conversationId: number; text: string } | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const entry = value as Record<string, unknown>;
-  if (entry.kind !== UserEntry.kind && entry.kind !== KuloUserEntry.kind) return undefined;
+  if (entry.kind !== UserEntry.kind && entry.kind !== KuloUserEntry.kind && entry.kind !== CoordinatorEventEntry.kind) return undefined;
   if (!Number.isSafeInteger(entry.conversationId) || Number(entry.conversationId) < 1) throw new Error("Invalid historical user conversation");
+  if (entry.kind === CoordinatorEventEntry.kind) {
+    const data = entry.data as { eventKind?: unknown; manualText?: unknown } | undefined;
+    return data?.eventKind === "user_task_instruction" && typeof data.manualText === "string" && data.manualText
+      ? { conversationId: Number(entry.conversationId), text: data.manualText }
+      : undefined;
+  }
   if (entry.kind === KuloUserEntry.kind) {
     const data = entry.data as { text?: unknown } | undefined;
     if (typeof data?.text === "string") return { conversationId: Number(entry.conversationId), text: data.text };
@@ -565,7 +572,7 @@ export async function scrubStoredConversationSecrets(
   if (fs.existsSync(backups)) {
     if (!fs.lstatSync(backups).isDirectory()) throw new Error("Conversation backup directory is invalid");
     for (const entry of fs.readdirSync(backups)) {
-      if (/^kulo-[a-zA-Z0-9_.-]+\.sqlite$/.test(entry) || /^kulo-before-state-v2\.sqlite\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(entry)) {
+      if (/^kulo-[a-zA-Z0-9_.-]+\.sqlite$/.test(entry) || /^kulo-before-state-v[23]\.sqlite\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/.test(entry)) {
         files.push(path.join(backups, entry));
       }
     }
@@ -610,4 +617,87 @@ export async function scrubStoredConversationSecrets(
     // SQLite/JSON diagnostics may embed stored text; the caller receives only a safe readiness failure.
     throw Object.assign(new Error("未能安全清理对话中的凭据，请确认没有其他 Kulo 进程占用本地记录。"), { code: "credential_history_unavailable" });
   }
+}
+
+export const BUILTIN_MEMORY_REDACTION_PENDING_FILE = "memory.sqlite.redaction-pending";
+
+/**
+ * Physically scrubs any row in `memory.sqlite` (including embedding blob and FTS5 index via
+ * `PRAGMA secure_delete = ON` + FTS5 `'secure-delete'`) that contains recognized secrets or
+ * device invitations, followed by outside-transaction `VACUUM` + `wal_checkpoint(TRUNCATE)`.
+ */
+export async function scrubBuiltinMemorySecrets(
+  stateDir: string,
+  redact: (text: string) => string,
+  options: { isKnownSecret?: (text: string) => boolean } = {},
+): Promise<{ deletedRows: number }> {
+  const dbPath = path.join(stateDir, "memory.sqlite");
+  const markerPath = path.join(stateDir, BUILTIN_MEMORY_REDACTION_PENDING_FILE);
+  const hadPendingMarker = fs.existsSync(markerPath);
+  if (!fs.existsSync(dbPath) || fs.statSync(dbPath).size === 0) {
+    try { fs.rmSync(markerPath, { force: true }); } catch { /* ignore */ }
+    return { deletedRows: 0 };
+  }
+  const database = new DatabaseSync(dbPath);
+  let deletedRows = 0;
+  try {
+    database.exec("PRAGMA busy_timeout = 5000;");
+    database.exec("PRAGMA secure_delete = ON;");
+    const integrity = database.prepare("PRAGMA quick_check").get() as { quick_check?: string } | undefined;
+    if (integrity?.quick_check !== "ok") throw new Error("Built-in memory storage integrity check failed");
+    const hasMemories = Boolean(
+      database.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'memories'").get(),
+    );
+    if (hasMemories) {
+      const hasFts = Boolean(
+        database.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'memories_fts'").get(),
+      );
+      if (hasFts) {
+        try { database.exec("INSERT INTO memories_fts(memories_fts, rank) VALUES('secure-delete', 1);"); } catch { /* older sqlite */ }
+      }
+      const matchedIds: string[] = [];
+      for (const row of database.prepare("SELECT id, content FROM memories").iterate() as Iterable<{ id: string; content: string }>) {
+        const text = String(row.content ?? "");
+        const hasSecret =
+          redact(text) !== text ||
+          redactSensitiveText(text) !== text ||
+          redactDeviceInvitationText(text) !== text ||
+          Boolean(options.isKnownSecret?.(text));
+        if (hasSecret) matchedIds.push(String(row.id));
+      }
+      const needsCompact = matchedIds.length > 0 || hadPendingMarker;
+      if (needsCompact && !hadPendingMarker) {
+        fs.writeFileSync(markerPath, `${Date.now()}\n`, { mode: 0o600 });
+      }
+      if (matchedIds.length > 0 || (hasFts && hadPendingMarker)) {
+        database.exec("BEGIN IMMEDIATE;");
+        try {
+          if (matchedIds.length > 0) {
+            const del = database.prepare("DELETE FROM memories WHERE id = ?");
+            const delFts = hasFts ? database.prepare("DELETE FROM memories_fts WHERE memory_id = ?") : null;
+            for (const id of matchedIds) {
+              del.run(id);
+              delFts?.run(id);
+            }
+          }
+          if (hasFts) {
+            database.exec("DELETE FROM memories_fts WHERE memory_id NOT IN (SELECT id FROM memories)");
+          }
+          database.exec("COMMIT;");
+          deletedRows = matchedIds.length;
+        } catch (err) {
+          try { database.exec("ROLLBACK;"); } catch { /* ignore */ }
+          throw err;
+        }
+      }
+      if (needsCompact) {
+        database.exec("VACUUM;");
+        database.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+      }
+    }
+  } finally {
+    database.close();
+  }
+  try { fs.rmSync(markerPath, { force: true }); } catch { /* ignore */ }
+  return { deletedRows };
 }

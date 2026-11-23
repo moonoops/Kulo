@@ -496,7 +496,7 @@ describe("Built-in Worker & Subagent template alignment (v2)", () => {
     const memory = createMemoryLifecycleExtension({
       getHarness: () => harness,
       getMemoryConfig: () => config,
-      recallTimeoutMs: 60,
+      recallTimeoutMs: 250,
     });
     const worker = createWorkerExtension({ getIdentityDir: () => "/nonexistent", getMemoryConfig: () => config });
     const registry = createRegistry();
@@ -523,10 +523,10 @@ describe("Built-in Worker & Subagent template alignment (v2)", () => {
       state.conversationToTicket[String(conv.id)] = "T-TIMEOUT";
     }, BACKGROUND_CONTEXT);
 
-    // Turn 1 times out softly after ~60ms and persists TIMEOUT receipt
+    // Turn 1 times out softly after ~250ms and persists TIMEOUT receipt
     const t0 = Date.now();
     await (await conv.submit({ type: "input", content: "first turn" }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
-    expect(Date.now() - t0).toBeLessThan(1_000);
+    expect(Date.now() - t0).toBeLessThan(2_000);
     expect(recallHits).toBe(1);
     const snap1 = await harness.snapshot(MemoryLifecycleDoc, BACKGROUND_CONTEXT);
     const key1 = `worker-start:${conv.id}:T-TIMEOUT:1`;

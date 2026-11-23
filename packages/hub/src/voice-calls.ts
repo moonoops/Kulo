@@ -27,6 +27,7 @@ export interface KuloVoiceCallsOptions {
   transcript(topicId: string, event: Transcript, callId: string): Promise<void>;
   delegate(input: { topicId: string; principalId: string; callId: string; delegationId: string; text: string }): Promise<void>;
   openLive?: typeof openVoiceLive;
+  canCreateCall?: (topicId: string) => Promise<void> | void;
   pendingTimeoutMs?: number;
   now?: () => number;
 }
@@ -77,6 +78,7 @@ export class KuloVoiceCalls {
   readonly #commands = new Map<string, { id: string; topicId: string; at: number }>();
   readonly #topicMessages = new Map<string, ChatDisplayItem[]>();
   readonly #topicTasks = new Map<string, Map<string, string>>();
+  readonly #creatingTopics = new Set<string>();
   #tail: Promise<unknown> = Promise.resolve();
   #closed = false;
   constructor(options: KuloVoiceCallsOptions) { this.#options = options; }
@@ -101,8 +103,16 @@ export class KuloVoiceCalls {
       }
       if ([...this.#calls.values()].some((call) => !call.ended && call.scope.principalId === scope.principalId)) throw new VoiceCallsError(409, "voice_call_active", "已有正在进行的通话。");
       await Promise.all([...this.#calls.values()].filter((call) => call.ended && call.scope.principalId === scope.principalId).map((call) => call.finishing));
-      const config = await this.#options.voice.liveConfig();
-      const context = await this.#options.context(scope.topicId, scope.principalId);
+      await this.#options.canCreateCall?.(scope.topicId);
+      this.#creatingTopics.add(scope.topicId);
+      let config: VoiceCallConfiguration;
+      let context: Awaited<ReturnType<KuloVoiceCallsOptions["context"]>>;
+      try {
+        config = await this.#options.voice.liveConfig();
+        context = await this.#options.context(scope.topicId, scope.principalId);
+      } finally {
+        this.#creatingTopics.delete(scope.topicId);
+      }
       if (this.#closed) throw new VoiceCallsError(503, "voice_calls_closed", "语音服务已关闭。");
       const id = `call_${randomUUID().replaceAll("-", "")}`;
       const inputSampleRate = config.provider === "openai" ? 24000 : 16000;
@@ -350,6 +360,15 @@ export class KuloVoiceCalls {
 
   hasActiveCalls(): boolean {
     return [...this.#calls.values()].some((call) => !call.ended);
+  }
+
+  /** True while a call on `topicId` is being created, live, or still draining `finishing`/`effects` (never inspects `#topicTasks` dedup cache). */
+  hasActiveOrPendingCallForTopic(topicId: string): boolean {
+    if (this.#creatingTopics.has(topicId)) return true;
+    for (const call of this.#calls.values()) {
+      if (call.scope.topicId === topicId && (!call.ended || Boolean(call.finishing))) return true;
+    }
+    return false;
   }
 
   async close(): Promise<void> {

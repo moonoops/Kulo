@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { redactDiagnosticText } from "@kulo/recovery";
+import { atomicReplaceDesktopFileSync } from "./desktop-fs.js";
 
 export const DESKTOP_LOG_FILE_BYTES = 4 * 1024 * 1024;
 const ENTRY_BYTES = 64 * 1024;
@@ -17,7 +18,7 @@ function regularFile(file: string): fs.Stats | undefined {
 }
 
 function tail(file: string, size: number): Buffer {
-  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
     const bytes = Math.min(size, DESKTOP_LOG_FILE_BYTES);
     const result = Buffer.alloc(bytes);
@@ -30,7 +31,7 @@ function replace(file: string, bytes: Buffer): void {
   const temporary = file + "." + randomUUID() + ".tmp";
   try {
     fs.writeFileSync(temporary, bytes, { flag: "wx", mode: 0o600 });
-    fs.renameSync(temporary, file);
+    atomicReplaceDesktopFileSync(temporary, file);
   } finally { fs.rmSync(temporary, { force: true }); }
 }
 
@@ -46,7 +47,7 @@ export function writeDesktopLog(dataDir: string, message: string, managementToke
     replace(previous, tail(file, current.size));
     fs.unlinkSync(file);
   }
-  const descriptor = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+  const descriptor = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW ?? 0), 0o600);
   try { fs.writeSync(descriptor, line); }
   finally { fs.closeSync(descriptor); }
 }

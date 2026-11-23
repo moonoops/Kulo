@@ -12,10 +12,21 @@ export async function buildPeer(options = {}) {
   const sourceFile = path.join(packageDirectory, "native", "macos-worker-cleanup.c");
   const macCleanupSource = fs.readFileSync(sourceFile, "utf8");
   let macCleanupBinary = "";
+  const prebuiltCleanupPath = options.macCleanupPrebuilt ?? process.env.KULO_MACOS_CLEANUP_PREBUILT;
   if (process.platform === "darwin") {
     const helper = path.join(path.dirname(outfile), "macos-worker-cleanup");
     execFileSync("/usr/bin/clang", ["-O2", "-Wall", "-Wextra", "-Werror", "-arch", "arm64", "-arch", "x86_64", "-mmacosx-version-min=11.0", sourceFile, "-o", helper]);
     macCleanupBinary = fs.readFileSync(helper).toString("base64");
+  } else if (prebuiltCleanupPath && prebuiltCleanupPath.trim()) {
+    const resolvedPrebuilt = path.resolve(prebuiltCleanupPath.trim());
+    const bytes = fs.readFileSync(resolvedPrebuilt);
+    if (bytes.length < 4) throw new Error(`预构建 macOS 清理程序无效：${resolvedPrebuilt}`);
+    const magic = bytes.readUInt32BE(0);
+    // Accept Mach-O universal fat (0xcafebabe / 0xcafebabf) or 64-bit Mach-O (0xcffaedfe / 0xfeedfacf).
+    if (![0xcafebabe, 0xcafebabf, 0xcffaedfe, 0xfeedfacf].includes(magic)) {
+      throw new Error(`预构建 macOS 清理程序不是有效的 Mach-O 二进制：${resolvedPrebuilt}`);
+    }
+    macCleanupBinary = bytes.toString("base64");
   }
 
   await build({

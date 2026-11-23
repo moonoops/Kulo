@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkbenchShell, type WindowSizeClass, type WorkbenchRailResizeConfig } from "./workbench-shell";
@@ -11,19 +12,25 @@ function renderShell(
   sizeClass: WindowSizeClass,
   collapsed = false,
   rightCollapsed = collapsed,
-  extra?: { settingsMode?: boolean; rightResize?: WorkbenchRailResizeConfig },
+  extra?: {
+    settingsMode?: boolean;
+    rightResize?: WorkbenchRailResizeConfig;
+    rightHeaderActions?: ReactNode;
+    sheet?: "left" | "right";
+  },
 ) {
   return renderToStaticMarkup(
     <WorkbenchShell
       sizeClass={sizeClass}
       leftCollapsed={collapsed}
       rightCollapsed={rightCollapsed}
-      sheet={undefined}
+      sheet={extra?.sheet}
       onCloseSheet={() => {}}
       leftLabel="导航"
       rightLabel="任务"
       leftControl={<button aria-label="切换导航" />}
       titlebarContent={<h1>当前话题</h1>}
+      rightHeaderActions={extra?.rightHeaderActions}
       rightControl={<button aria-label="切换任务栏" />}
       leftContent={<p>话题列表</p>}
       centerContent={<p>对话内容</p>}
@@ -137,6 +144,21 @@ describe("shared window toolbar", () => {
     const conversation = renderShell("expanded", false, false);
     expect(conversation).not.toContain('role="separator"');
     expect(conversation).not.toContain("--kulo-rail-custom-width");
+  });
+
+  it("renders rightHeaderActions next to the right window toggle only while the inline rail is visible", () => {
+    const action = <button type="button" className="kulo-window-control" aria-label="一键全删所有任务卡片" />;
+    const expandedOpen = renderShell("expanded", false, false, { rightHeaderActions: action });
+    const railSlot = expandedOpen.match(/<div class="kulo-window-rail-control">([\s\S]*?)<\/div>/)?.[1] ?? "";
+    expect(railSlot).toContain('aria-label="一键全删所有任务卡片"');
+    expect(railSlot).toContain('aria-label="切换任务栏"');
+    expect(railSlot.indexOf("一键全删所有任务卡片")).toBeLessThan(railSlot.indexOf("切换任务栏"));
+
+    const expandedCollapsed = renderShell("expanded", false, true, { rightHeaderActions: action });
+    expect(expandedCollapsed).not.toContain('aria-label="一键全删所有任务卡片"');
+
+    const mediumClosed = renderShell("medium", false, false, { rightHeaderActions: action });
+    expect(mediumClosed).not.toContain('aria-label="一键全删所有任务卡片"');
   });
 
   it("keeps Electron native titlebar drag and interactive/overlay no-drag CSS contracts intact", () => {

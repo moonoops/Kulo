@@ -107,7 +107,8 @@ export function SettingsAssistantPanel({
     previousStreaming.current = Boolean(snapshot.live.busy && snapshot.live.streamingText);
   }, [snapshot.topicId, loaded, snapshot.messages, snapshot.live.busy, snapshot.live.streamingText]);
   const hasModel = Boolean(settings?.blocks.model.value.defaultModel.trim());
-  const hasConversation = snapshot.messages.length > 0 || snapshot.actions.length > 0 || snapshot.live.busy;
+  const visibleActions = snapshot.actions.filter((action) => !(action.fromMainChat && action.kind === "navigate"));
+  const hasConversation = snapshot.messages.length > 0 || visibleActions.length > 0 || snapshot.live.busy;
   const modelRecoveryKey = modelPendingSaveKey ? `save:${modelPendingSaveKey}` : modelDraftKey;
   const showModelCard = module === "models" && (modelAction !== null || (modelHasDraft || Boolean(modelPendingSaveKey)) && dismissedModelDraft !== modelRecoveryKey);
   const conversationChangeDisabled = !connected || !loaded || controls.sending || controls.switchingConversation || snapshot.live.busy || controls.unconfirmedSend || controls.pendingActionId !== null;
@@ -141,7 +142,7 @@ export function SettingsAssistantPanel({
     : null;
   const failure = runFailure?.isUserAbort ? null : runFailure;
   const safeError = error ? redactSecrets(error) : null;
-  const remainingActions = new Map(snapshot.actions.map((action) => [action.id, action]));
+  const remainingActions = new Map(visibleActions.map((action) => [action.id, action]));
   const timeline = snapshot.messages.map((message) => {
     const actions: SettingsAssistantAction[] = [];
     if (message.role === "assistant") {

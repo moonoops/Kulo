@@ -12,14 +12,15 @@ describe("archived conversations settings", () => {
   it("lists ordinary and project topics with independent named restore actions and excludes the primary conversation", () => {
     const html = renderToStaticMarkup(<ArchivedConversationsModule loaded connected topics={[
       topic("普通归档话题"), topic("项目归档话题", { projectId: "project-1" }),
+      topic("主对话归档 · 2026-11-23", { archivedFromRoot: true }),
       topic("活跃话题", { archived: false }), topic("已删除话题", { deletedAt: 3 }),
       topic("root", { title: "主会话" }), topic("其他主会话", { master: true }),
     ]} projects={[{ id: "project-1", name: "照明项目" }]} />);
-    for (const text of ["标题", "所属", "操作", "普通归档话题", "项目归档话题", "照明项目"]) expect(html).toContain(text);
+    for (const text of ["标题", "所属", "操作", "普通归档话题", "项目归档话题", "照明项目", "主对话归档 · 2026-11-23", "主对话归档"]) expect(html).toContain(text);
     for (const text of ["活跃话题", "已删除话题", "主会话", "其他主会话"]) expect(html).not.toContain(text);
     const buttons = html.match(/<button\b[^>]*>/g) ?? [];
-    expect(buttons).toHaveLength(2);
-    for (const name of ["普通归档话题", "项目归档话题"]) {
+    expect(buttons).toHaveLength(3);
+    for (const name of ["普通归档话题", "项目归档话题", "主对话归档 · 2026-11-23"]) {
       expect(buttons.find((button) => button.includes(`还原“${name}”`))).not.toContain('disabled=""');
     }
     expect(html).toContain("kulo-settings-table-scroll");

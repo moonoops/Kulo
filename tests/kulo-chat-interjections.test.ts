@@ -10,7 +10,7 @@ import type { ClientToHubMessage, HubToClientMessage } from "@kulo/protocol";
 import WebSocket from "ws";
 import { queuedChatEntries } from "../packages/hub/src/chat-submissions.js";
 import { submitAutomaticChatInput } from "../packages/hub/src/chat-control.js";
-import { KuloStateDoc } from "../packages/hub/src/state.js";
+import { CoordinatorEventEntry, KuloStateDoc, WorkerRecoveryEntry, WorkerRelayEntry } from "../packages/hub/src/state.js";
 import { openTestHub } from "./helpers/secure-hub.js";
 import { HUB_TEST_ADMIN_TOKEN } from "./helpers/hub-auth.js";
 
@@ -166,9 +166,36 @@ describe("durable chat interjections", () => {
     expect(record.status).toBe("queued");
     await settled(f.hub, (view) => expect(view.messages.find((message) => message.requestId === "kept")).toMatchObject({ delivery: "paused", submissionId: Number(record.id) }));
     expect(calls).toBe(1);
-    const automatic = ["result", "blocked", "permission", "recovery"].map((name) => ({ type: "input" as const,
-      content: `deferred-${name}`, requestId: `automatic-${name}`, whenBusy: "followUp" as const,
-    }));
+    const automatic = [
+      {
+        type: "input" as const,
+        content: "deferred-result",
+        requestId: "automatic-result",
+        whenBusy: "followUp" as const,
+        entry: { kind: WorkerRelayEntry.kind, data: { ticketId: "T-1", title: "r", role: "coder", state: "ready", summary: "ok", deliverable: null, question: null } },
+      },
+      {
+        type: "input" as const,
+        content: "deferred-blocked",
+        requestId: "automatic-blocked",
+        whenBusy: "followUp" as const,
+        entry: { kind: WorkerRelayEntry.kind, data: { ticketId: "T-2", title: "b", role: "coder", state: "blocked", summary: "q", deliverable: null, question: "q" } },
+      },
+      {
+        type: "input" as const,
+        content: "deferred-permission",
+        requestId: "automatic-permission",
+        whenBusy: "followUp" as const,
+        entry: { kind: CoordinatorEventEntry.kind, data: { eventKind: "host_action_request", requestId: "cfm-1", ticketId: "T-3", createdAt: Date.now() } },
+      },
+      {
+        type: "input" as const,
+        content: "deferred-recovery",
+        requestId: "automatic-recovery",
+        whenBusy: "followUp" as const,
+        entry: { kind: WorkerRecoveryEntry.kind, data: { ticketId: "T-4", rootTicketId: "T-4", startedAt: Date.now(), attempt: 1, runEpoch: 1 } },
+      },
+    ];
     for (const draft of [...automatic, automatic[0]!]) await f.hub.harness.commit((tx) => submitAutomaticChatInput(tx, f.hub.rootConversation, draft), BACKGROUND_CONTEXT);
     expect((await f.hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))?.pausedChats?.[String(f.hub.rootConversation.id)]).toHaveLength(4);
     await f.hub.sendUserMessage("keep-this", { requestId: "kept" });

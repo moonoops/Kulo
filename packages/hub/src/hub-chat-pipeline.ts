@@ -13,6 +13,7 @@ import {
   chatRequestTargetKey, removePendingChatAttachments, snapshotChatUploadScope,
   stageChatAttachments, type ChatDeliveryDraft,
 } from "./chat-attachment-deliveries.js";
+import { normalizePausedAutomaticDraft } from "./chat-control.js";
 import type { ChatMessageSource } from "./chat-submissions.js";
 import type { KuloConnections } from "./connections.js";
 import {
@@ -40,6 +41,7 @@ function cloneJson<T>(val: T): T {
 
 export type MessageSubmissionOptions = {
   topicId?: string;
+  expectedConversationId?: number;
   requestId?: string;
   whenBusy?: "steer" | "followUp";
   attachments?: ChatAttachment[];
@@ -198,6 +200,7 @@ export class HubChatPipeline {
     const state = await this.#deps.harness.snapshot(KuloStateDoc, context);
     const topic = state?.topics?.[topicId];
     if (!topic || topic.deletedAt) throw new ProjectError(404, "topic_deleted", "会话已删除。");
+    if (topic.archived) throw new ProjectError(409, "topic_archived", "会话已归档，请还原后再继续发送。");
     const key = requestKey ? chatRequestTargetKey(conversationId, requestKey) : undefined;
     const recorded = key === undefined ? undefined : state?.chatRequestTargets?.[key];
     const clean = requested?.trim();
@@ -223,6 +226,7 @@ export class HubChatPipeline {
       const next = await tx.doc(KuloStateDoc);
       const current = next.topics?.[topicId];
       if (!current || current.deletedAt) throw new ProjectError(404, "topic_deleted", "会话已删除。");
+      if (current.archived) throw new ProjectError(409, "topic_archived", "会话已归档，请还原后再继续发送。");
       if (key) {
         next.chatRequestTargets ??= {};
         const prior = next.chatRequestTargets[key];
@@ -249,6 +253,7 @@ export class HubChatPipeline {
     const intent = options.deliveryIntent ?? clientDeliveryIntent({
       type: "chat.send",
       topicId: key,
+      ...(options.expectedConversationId !== undefined ? { expectedConversationId: options.expectedConversationId } : {}),
       requestId: options.requestId,
       content,
       attachments: options.attachments,
@@ -264,6 +269,7 @@ export class HubChatPipeline {
       (receipt) => this.#deps.delivery.queueChat(key, async () => {
         if (receipt?.phase === "admitted" && intent) {
           if (receipt.continuation.error === "topic_deleted") throw new ProjectError(404, "topic_deleted", "会话已删除。");
+          if (receipt.continuation.error === "topic_archived") throw new ProjectError(409, "topic_archived", "会话已归档，请还原后再继续发送。");
           if (receipt.continuation.error === "attachment_forbidden") throw new ProjectError(403, "attachment_forbidden", "无权引用此附件。");
           const pending = (await this.#deps.harness.snapshot(PendingChatAttachmentsDoc, context))?.messages[intent.key];
           if (!pending) throw new Error("Missing admitted chat attachment delivery");
@@ -282,7 +288,17 @@ export class HubChatPipeline {
             legacyDeliveryConflict();
           }
           await this.#deps.harness.commit(async (tx) => {
-            await bindChatAttachments(tx, this.#deps.uploads, { topicId: key, conversationId: Number(record.conversationId) }, attachments, principalId);
+            const state = await tx.doc(KuloStateDoc);
+            const resolvedTopicId = state.conversationToTopic?.[String(record.conversationId)] ?? key;
+            await bindChatAttachments(
+              tx,
+              this.#deps.uploads,
+              { topicId: resolvedTopicId, conversationId: Number(record.conversationId) },
+              attachments,
+              principalId,
+              undefined,
+              { allowArchived: true },
+            );
             await writeDeliveryReceipt(tx, intent, receipt.ack as DeliveryAck, "complete", { attachmentsBound: true });
           }, context);
           this.#deps.topics.refreshTopic(key);
@@ -301,6 +317,13 @@ export class HubChatPipeline {
   ) {
     const targetTopicId = options.topicId || "root";
     const cache = await this.#deps.topics.resolveWatchedTopic(targetTopicId, context);
+    if (options.expectedConversationId !== undefined && Number(cache.conversation.id) !== options.expectedConversationId) {
+      throw new ProjectError(409, "root_conversation_rotated", "主对话已归档并开启新对话，请确认后再发送。");
+    }
+    const topicState = await this.#deps.harness.snapshot(KuloStateDoc, context);
+    if (topicState?.topics?.[cache.topicId]?.archived) {
+      throw new ProjectError(409, "topic_archived", "会话已归档，请还原后再继续发送。");
+    }
     const cleanReqId = options.requestId?.trim();
     const repeated = cleanReqId
       ? await this.#deps.harness.commit((tx) => tx.submissionByRequest(cache.conversation.id, cleanReqId), context)
@@ -340,6 +363,7 @@ export class HubChatPipeline {
         }
         await writeDeliveryReceipt(tx, intent, {
           topicId: cache.topicId,
+          conversationId: Number(cache.conversation.id),
           submissionId: Number(current.id),
           delivery: current.status === "queued" ? "queued" : "accepted",
         }, "complete", options.attachments?.length ? { attachmentsBound: true } : {});
@@ -420,11 +444,11 @@ export class HubChatPipeline {
       try {
         await this.#replayChatDraft(draft, key, context);
       } catch (error) {
-        if (error instanceof ProjectError && ["topic_deleted", "topic_not_found", "attachment_forbidden"].includes(error.code)) {
+        if (error instanceof ProjectError && ["topic_deleted", "topic_archived", "topic_not_found", "attachment_forbidden"].includes(error.code)) {
           await this.#deps.harness.commit(async (tx) => {
             await removePendingChatAttachments(tx, key);
-            await writeDeliveryReceipt(tx, draft.receipt, { topicId: draft.topicId }, "admitted", {
-              error: error.code === "attachment_forbidden" ? error.code : "topic_deleted",
+            await writeDeliveryReceipt(tx, draft.receipt, { topicId: draft.topicId, conversationId: draft.conversationId }, "admitted", {
+              error: error.code === "attachment_forbidden" || error.code === "topic_archived" ? error.code : "topic_deleted",
             });
           }, context);
           continue;
@@ -526,6 +550,7 @@ export class HubChatPipeline {
       });
       await writeDeliveryReceipt(tx, draft.receipt, {
         topicId: cache.topicId,
+        conversationId: Number(cache.conversation.id),
         submissionId: Number(submissionId),
         delivery: queued ? "queued" : "accepted",
       }, "complete", draft.attachmentIds.length ? { attachmentsBound: true } : {});
@@ -546,25 +571,41 @@ export class HubChatPipeline {
     topicId = "root",
     context: Context = BACKGROUND_CONTEXT,
     intent?: DeliveryIntent,
+    expectedConversationId?: number,
   ): Promise<void> {
     return this.#deps.delivery.withDelivery(
       intent,
       context,
-      (receipt) => this.#deps.delivery.queueChat(topicId, () => this.#abortForegroundTurn(topicId, context, intent, receipt)),
+      (receipt) => this.#deps.delivery.queueChat(topicId, () => this.#abortForegroundTurn(topicId, context, intent, receipt, expectedConversationId)),
       async () => {},
     );
   }
 
-  async #abortForegroundTurn(topicId: string, context: Context, intent?: DeliveryIntent, prior?: Readonly<DeliveryReceipt>): Promise<void> {
+  async #abortForegroundTurn(
+    topicId: string,
+    context: Context,
+    intent?: DeliveryIntent,
+    prior?: Readonly<DeliveryReceipt>,
+    expectedConversationId?: number,
+  ): Promise<void> {
     const cache = await this.#deps.topics.resolveWatchedTopic(topicId, context);
+    if (prior?.phase !== "admitted" && expectedConversationId !== undefined && Number(cache.conversation.id) !== expectedConversationId) {
+      throw new ProjectError(409, "root_conversation_rotated", "主对话已归档并开启新对话，旧停止指令已忽略。");
+    }
+    const convId = Number(cache.conversation.id);
     const taskId = prior?.phase === "admitted" ? prior.continuation.taskId : await this.#deps.harness.commit(async (tx) => {
       if (intent && await tx.submissionByRequest(cache.conversation.id, intent.id)) legacyDeliveryConflict();
       const state = await tx.doc(KuloStateDoc);
+      const topic = state.topics?.[topicId];
+      if (!topic || topic.deletedAt !== undefined) throw new ProjectError(404, "topic_deleted", "会话已删除。");
+      if (expectedConversationId !== undefined && topic.conversationId !== expectedConversationId) {
+        throw new ProjectError(409, "root_conversation_rotated", "主对话已归档并开启新对话，旧停止指令已忽略。");
+      }
       const live = await tx.doc(LiveDoc, cache.conversation.id);
       state.pausedChats ??= {};
       state.pausedChats[String(cache.conversation.id)] ??= [];
       const taskId = live.run?.taskId;
-      await writeDeliveryReceipt(tx, intent, { topicId }, taskId === undefined ? "complete" : "admitted",
+      await writeDeliveryReceipt(tx, intent, { topicId, conversationId: convId }, taskId === undefined ? "complete" : "admitted",
         taskId === undefined ? {} : { taskId: Number(taskId) });
       return taskId;
     }, context);
@@ -574,7 +615,7 @@ export class HubChatPipeline {
       await this.#deps.harness.abortTask(taskId as never, context);
       await this.#deps.harness.waitForTask(taskId as never, context);
     }
-    await this.#deps.harness.commit((tx) => writeDeliveryReceipt(tx, intent, { topicId }), context);
+    await this.#deps.harness.commit((tx) => writeDeliveryReceipt(tx, intent, { topicId, conversationId: convId }), context);
     this.#deps.topics.refreshContent(cache);
   }
 
@@ -583,30 +624,53 @@ export class HubChatPipeline {
     requestId?: string,
     context: Context = BACKGROUND_CONTEXT,
     suppliedIntent?: DeliveryIntent,
+    expectedConversationId?: number,
   ): Promise<{ retried: boolean }> {
-    const intent = suppliedIntent ?? clientDeliveryIntent({ type: "chat.retry", topicId, requestId });
+    const intent = suppliedIntent ?? clientDeliveryIntent({
+      type: "chat.retry",
+      topicId,
+      requestId,
+      ...(expectedConversationId !== undefined ? { expectedConversationId } : {}),
+    });
     return this.#deps.delivery.withDelivery(
       intent,
       context,
-      () => this.#deps.delivery.queueChat(topicId, () => this.#retryTurn(topicId, requestId, context, intent)),
+      () => this.#deps.delivery.queueChat(topicId, () => this.#retryTurn(topicId, requestId, context, intent, expectedConversationId)),
       async (receipt) => ({ retried: receipt.continuation.retried === true }),
     );
   }
 
-  async #retryTurn(topicId: string, requestId: string | undefined, context: Context, intent?: DeliveryIntent): Promise<{ retried: boolean }> {
+  async #retryTurn(
+    topicId: string,
+    requestId: string | undefined,
+    context: Context,
+    intent?: DeliveryIntent,
+    expectedConversationId?: number,
+  ): Promise<{ retried: boolean }> {
     const cache = await this.#deps.topics.resolveWatchedTopic(topicId, context);
+    if (expectedConversationId !== undefined && Number(cache.conversation.id) !== expectedConversationId) {
+      throw new ProjectError(409, "root_conversation_rotated", "主对话已归档并开启新对话，旧重试指令已忽略。");
+    }
+    const convId = Number(cache.conversation.id);
     const retried = await this.#deps.harness.commit(async (tx) => {
+      const state = await tx.doc(KuloStateDoc);
+      const topic = state.topics?.[topicId];
+      if (!topic || topic.deletedAt !== undefined) throw new ProjectError(404, "topic_deleted", "会话已删除。");
+      if (topic.archived) throw new ProjectError(409, "topic_archived", "会话已归档，请还原后再重试。");
+      if (expectedConversationId !== undefined && topic.conversationId !== expectedConversationId) {
+        throw new ProjectError(409, "root_conversation_rotated", "主对话已归档并开启新对话，旧重试指令已忽略。");
+      }
       const prior = requestId ? await tx.submissionByRequest(cache.conversation.id, requestId) : undefined;
       if (prior && prior.type !== "continue") {
         throw Object.assign(new Error("消息标识已用于另一项操作。"), { code: "request_intent_conflict", status: 409 });
       }
       const live = await tx.doc(LiveDoc, cache.conversation.id);
       if (!prior && live.run) {
-        await writeDeliveryReceipt(tx, intent, { topicId }, "complete", { retried: false });
+        await writeDeliveryReceipt(tx, intent, { topicId, conversationId: convId }, "complete", { retried: false });
         return false;
       }
       if (!prior) await cache.conversation.submit(tx, { type: "continue", ...(requestId ? { requestId } : {}) });
-      await writeDeliveryReceipt(tx, intent, { topicId }, "complete", { retried: true });
+      await writeDeliveryReceipt(tx, intent, { topicId, conversationId: convId }, "complete", { retried: true });
       return true;
     }, context);
     if (retried) {
@@ -627,7 +691,7 @@ export class HubChatPipeline {
         const draft = deferred[0];
         if (!draft) { delete state.pausedChats![key]; return false; }
         // Each native admission and removal share a commit, so recovery cannot lose or repeat a report.
-        await conversation.submit(tx, draft);
+        await conversation.submit(tx, normalizePausedAutomaticDraft(draft));
         deferred.shift();
         return true;
       }, context);

@@ -150,7 +150,10 @@ export class HubConnectionsBridge {
       throw new Error("尚未获得这个连接的使用权限，请向主模型申请。");
     }
     const connection = (await this.#deps.connectionManager.snapshot()).connections.find((entry) => entry.id === input.connectionId);
-    if (!connection || scope!.ticket.connectionRevisions?.[input.connectionId] !== connection.revision) {
+    if (!connection) {
+      throw Object.assign(new Error("此连接已取消或不存在。"), { code: "connection_not_found", status: 404, connectionId: input.connectionId });
+    }
+    if (scope!.ticket.connectionRevisions?.[input.connectionId] !== connection.revision) {
       throw new Error("连接已修改，请重新向主模型申请授权。");
     }
     await this.assertCaller(caller, context);

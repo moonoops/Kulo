@@ -10,11 +10,13 @@ import {
   isSupportedExternalAgentKind,
   type ChatAttachment,
   type ExternalAgentPendingReport,
+  type HindsightMemoryConfig,
   type TicketCardView,
   type TicketRecord,
   type WorkerInspectResult,
   type WorkerReportRecord,
 } from "@kulo/protocol";
+import type { BuiltinMemoryService } from "./builtin-memory-service.js";
 import { resolveRoleOrDirectClient } from "./agent-routing.js";
 import type { KuloConnections } from "./connections.js";
 import { publishExecutionAsset } from "./content-assets.js";
@@ -60,6 +62,8 @@ export interface TicketExternalRuntimeDeps {
   runtimeGates: HubRuntimeGates;
   stateDir: string;
   defaultIdentityDir: string;
+  getEffectiveMemoryConfig?: () => HindsightMemoryConfig;
+  getBuiltinMemory?: () => Pick<BuiltinMemoryService, "isSharedEffectiveActive" | "recallForWorkerTicket" | "retainExternalMcpMemory"> | undefined;
   ports: TicketExternalRuntimePorts;
 }
 
@@ -150,27 +154,53 @@ export class TicketExternalRuntime {
         if (!ticket.projectId) {
           throw new Error("非项目独立任务不访问共享项目记忆库。");
         }
-        const memory = liveSettings.get().memory;
-        if (!memory.enabled || memory.accessMode === "private-only") {
-          throw new Error("Hindsight 共享记忆库当前未开启。");
+        const memory = this.#deps.getEffectiveMemoryConfig ? this.#deps.getEffectiveMemoryConfig() : liveSettings.get().memory;
+        if (memory.enabled) {
+          if (memory.accessMode === "private-only") {
+            throw new Error("Hindsight 共享记忆库当前未开启。");
+          }
+          const argHash = createHash("sha256").update(JSON.stringify({ runId: scope.runId, toolName, args })).digest("hex").slice(0, 24);
+          const res = await executeHindsightTool({
+            config: memory,
+            bank: "shared",
+            caller: {
+              role: "worker",
+              conversationId: String(ticket.workerConversationId),
+              ticketId: ticket.id,
+              runEpoch: ticket.runEpoch,
+              ...(ticket.projectId ? { projectId: ticket.projectId } : {}),
+              workerRole: ticket.role,
+              sourceId: `external-mcp:${scope.runId}:${argHash}`,
+            },
+            toolName,
+            args,
+          });
+          if (res.isError) throw new Error(res.text);
+          try { return JSON.parse(res.text); } catch { return { text: res.text }; }
         }
-        const res = await executeHindsightTool({
-          config: memory,
-          bank: "shared",
-          caller: {
-            role: "worker",
-            conversationId: String(ticket.workerConversationId),
-            ticketId: ticket.id,
-            runEpoch: ticket.runEpoch,
-            ...(ticket.projectId ? { projectId: ticket.projectId } : {}),
-            workerRole: ticket.role,
-            sourceId: `external-mcp:${scope.runId}:${Date.now()}`,
-          },
-          toolName,
-          args,
-        });
-        if (res.isError) throw new Error(res.text);
-        try { return JSON.parse(res.text); } catch { return { text: res.text }; }
+        const builtin = this.#deps.getBuiltinMemory?.();
+        if (!builtin?.isSharedEffectiveActive()) {
+          throw new Error("共享项目记忆当前未开启。");
+        }
+        if (toolName === "hindsight_recall") {
+          const hits = await builtin.recallForWorkerTicket(ticket, String(args.query ?? ""), 6, BACKGROUND_CONTEXT);
+          return {
+            results: hits.map((h) => ({
+              id: h.id,
+              text: h.content,
+              score: h.score,
+              occurred_start: new Date(h.updatedAt || h.createdAt).toISOString().slice(0, 10),
+            })),
+          };
+        }
+        if (toolName === "hindsight_retain") {
+          const retained = await builtin.retainExternalMcpMemory(
+            { ticket, runId: scope.runId, title: String(args.title ?? ""), content: String(args.content ?? "") },
+            BACKGROUND_CONTEXT,
+          );
+          return { status: "completed", id: retained.id, bank: retained.bank };
+        }
+        throw new Error("内置记忆不支持该高级知识页操作。");
       },
       connectionsList: async (scope) => {
         const ticket = assertExternalAgentScope(scope, (await harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))?.tickets);

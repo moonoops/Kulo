@@ -490,7 +490,7 @@ export class KuloIdentityFiles {
     );
     try {
       if (!sameObject(stat, await handle.stat())) throw unavailable();
-      if (create) await handle.chmod(0o700);
+      if (create && process.platform !== "win32") await handle.chmod(0o700);
     } finally {
       await handle.close();
     }
@@ -603,7 +603,7 @@ export class KuloIdentityFiles {
     );
     created.push(filePath);
     try {
-      await handle.chmod(0o600);
+      if (process.platform !== "win32") await handle.chmod(0o600);
       await handle.writeFile(bytes);
       await handle.sync();
     } finally {

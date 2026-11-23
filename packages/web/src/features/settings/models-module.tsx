@@ -9,6 +9,7 @@ import {
 } from "@heroui/react";
 import {
   isConversationModel,
+  supportsKeylessLocalModel,
   type AssistantBackgroundModelStatus,
   type CustomModelConfig,
   type CustomProviderApi,
@@ -214,7 +215,7 @@ export function ModelsModule({
       baseUrl: cp.baseUrl,
       vertexProject: cp.vertexProject,
       vertexLocation: cp.vertexLocation,
-      hasSavedKey: Boolean(cat?.authenticated),
+      hasSavedKey: Boolean(cat?.authenticated && cp.authMode !== "none"),
       initialModels: cp.models,
     });
   };
@@ -370,12 +371,17 @@ export function ModelsModule({
         targetId = allocateCustomProviderId(slugBase, existingIds, builtinIdsSet);
       }
 
+      const existingProvider = customProviders.find((cp) => cp.id === targetId);
+      const keylessLocal = !draft.apiKey?.trim()
+        && (providerModal.mode === "create" || existingProvider?.authMode === "none")
+        && supportsKeylessLocalModel(draft.baseUrl, draft.api);
       const nextEntry: CustomProviderConfig = {
         id: targetId,
         name: draft.name,
         ...(draft.providerKind === "preset" ? { preset: draft.presetId } : {}),
         api: draft.api,
         baseUrl: draft.baseUrl,
+        ...(keylessLocal ? { authMode: "none" as const } : {}),
         ...(draft.api === "google-vertex" ? {
           vertexProject: draft.vertexProject,
           vertexLocation: draft.vertexLocation,

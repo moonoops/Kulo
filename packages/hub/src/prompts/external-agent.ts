@@ -1,10 +1,12 @@
 import {
+  EXTERNAL_AGENT_MEMORY_MODE_CAPABILITY,
   EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY,
   isEffectiveExternalReadOnly,
   isPersonalExternalAgentKind,
   type ExternalAgentInputAttachment,
   type ExternalAgentKind,
   type ExternalAgentRequest,
+  type ExternalMemoryMode,
   type ExternalWorkspaceMode,
   type KuloLanguage,
   type TicketRecord,
@@ -96,6 +98,7 @@ export interface ExternalAgentPromptInput {
   localEnvId?: string;
   allowSubagents?: boolean;
   memoryEnabled?: boolean;
+  memoryMode?: ExternalMemoryMode;
   hasConnections?: boolean;
   taskTools?: boolean;
 }
@@ -274,6 +277,7 @@ function buildDeveloperInstructions(params: {
   localEnvId?: string;
   allowSubagents: boolean;
   memoryEnabled: boolean;
+  memoryMode?: ExternalMemoryMode;
   hasConnections: boolean;
   taskTools: boolean;
   lightweight: boolean;
@@ -287,6 +291,7 @@ function buildDeveloperInstructions(params: {
     localEnvId,
     allowSubagents,
     memoryEnabled,
+    memoryMode,
     hasConnections,
     taskTools,
     lightweight,
@@ -340,7 +345,9 @@ function buildDeveloperInstructions(params: {
   }
   if (taskTools && memoryEnabled) {
     optionalTools.push(
-      "- Shared Project Memory (`kulo_memory_recall`, `kulo_memory_search_pages`, `kulo_memory_read_page`, `kulo_memory_ingest`, `kulo_memory_reflect`): query shared project history when needed or record newly verified non-secret project findings.",
+      memoryMode === "builtin"
+        ? "- Shared Project Memory (`kulo_memory_recall`, `kulo_memory_ingest`): query shared project history when needed or record newly verified non-secret project findings."
+        : "- Shared Project Memory (`kulo_memory_recall`, `kulo_memory_search_pages`, `kulo_memory_read_page`, `kulo_memory_ingest`, `kulo_memory_reflect`): query shared project history when needed or record newly verified non-secret project findings.",
     );
   }
   if (taskTools && hasConnections) {
@@ -378,6 +385,7 @@ export function buildExternalAgentPrompt(params: ExternalAgentPromptInput): Buil
     localEnvId,
     allowSubagents = Boolean(ticket.externalExecution?.allowSubagents),
     memoryEnabled = false,
+    memoryMode,
     hasConnections = Boolean(ticket.connectionIds?.length),
     taskTools = true,
   } = params;
@@ -406,6 +414,7 @@ export function buildExternalAgentPrompt(params: ExternalAgentPromptInput): Buil
     localEnvId,
     allowSubagents: effectiveAllowSubagents,
     memoryEnabled: effectiveMemoryEnabled,
+    ...(effectiveMemoryEnabled && memoryMode ? { memoryMode } : {}),
     hasConnections: effectiveHasConnections,
     taskTools: effectiveTaskTools,
     lightweight,
@@ -518,6 +527,7 @@ export function buildExternalAgentRunRequest(params: {
   localEnvId?: string;
   hasConnections: boolean;
   memoryEnabled: boolean;
+  memoryMode?: ExternalMemoryMode | "none";
   envCapabilities?: readonly string[];
   timeoutMs?: number;
 }): Extract<ExternalAgentRequest, { operation: "run" }> {
@@ -530,9 +540,21 @@ export function buildExternalAgentRunRequest(params: {
         ? "read_only"
         : "staged";
   const supportsStructured = Boolean(params.envCapabilities?.includes(EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY));
+  const supportsMemoryMode = Boolean(params.envCapabilities?.includes(EXTERNAL_AGENT_MEMORY_MODE_CAPABILITY));
   const clientSupportsMcp = external.binding.kind !== "grok-bot";
   const effectiveAllowSubagents = clientSupportsMcp && Boolean(external.allowSubagents);
-  const effectiveMemoryEnabled = clientSupportsMcp && Boolean(params.ticket.projectId) && params.memoryEnabled;
+  const requestedMemoryMode: ExternalMemoryMode | "none" = params.memoryMode ?? (params.memoryEnabled ? "hindsight" : "none");
+  // Old Env nodes without `external-memory-mode-v1` reject unknown `memoryMode` fields and would expose Hindsight-only tools;
+  // omit `memoryMode` and keep `memoryEnabled: false` when built-in memory is active on an older Env.
+  const canUseRequestedMemory =
+    requestedMemoryMode === "hindsight"
+      ? true
+      : requestedMemoryMode === "builtin"
+        ? supportsMemoryMode
+        : false;
+  const effectiveMemoryEnabled = clientSupportsMcp && Boolean(params.ticket.projectId) && canUseRequestedMemory;
+  const wireMemoryMode: ExternalMemoryMode | undefined =
+    effectiveMemoryEnabled && supportsMemoryMode && requestedMemoryMode !== "none" ? requestedMemoryMode : undefined;
   const effectiveHasConnections = clientSupportsMcp && params.hasConnections;
   const lightweight =
     clientSupportsMcp &&
@@ -558,6 +580,7 @@ export function buildExternalAgentRunRequest(params: {
     localEnvId: params.localEnvId,
     allowSubagents: effectiveAllowSubagents,
     memoryEnabled: effectiveMemoryEnabled,
+    ...(effectiveMemoryEnabled && requestedMemoryMode !== "none" ? { memoryMode: requestedMemoryMode } : {}),
     hasConnections: effectiveHasConnections,
     taskTools: effectiveTaskTools,
   });
@@ -596,6 +619,7 @@ export function buildExternalAgentRunRequest(params: {
     taskTools: effectiveTaskTools,
     ...(effectiveHasConnections ? { hasConnections: true } : {}),
     ...(effectiveMemoryEnabled ? { memoryEnabled: true } : {}),
+    ...(wireMemoryMode ? { memoryMode: wireMemoryMode } : {}),
     projectId: params.ticket.projectId,
     directoryId: params.ticket.directoryId,
     grantRevision: params.ticket.grantRevision,

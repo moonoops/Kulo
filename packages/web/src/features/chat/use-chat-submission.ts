@@ -33,6 +33,7 @@ export interface UseChatSubmissionParams {
   deliveryScope?: string;
   activeTopicId: string;
   activeTopic?: TopicSummary;
+  rootConversationId?: number;
   projectedTicketId?: string;
   projectedTicketRef: MutableRefObject<string | undefined>;
   ticketById: Map<string, TicketCardView>;
@@ -141,7 +142,12 @@ export function useChatSubmission(params: UseChatSubmissionParams) {
     setResumingQueuedTopic(topicId);
     void (async () => {
       await params.waitForPendingTargetDevice?.(topicId);
-      await params.sendWsWithAck({ type: "chat.retry", topicId });
+      const expectedConversationId = topicId === "root" ? params.rootConversationId : undefined;
+      await params.sendWsWithAck({
+        type: "chat.retry",
+        topicId,
+        ...(expectedConversationId !== undefined ? { expectedConversationId } : {}),
+      });
     })()
       .catch((error) =>
         params.setActionError(
@@ -244,12 +250,14 @@ export function useChatSubmission(params: UseChatSubmissionParams) {
         if (card?.status === "stopped" || card?.status === "closed") {
           const composed = `[关于任务「${card.title}」]${raw ? `\n${raw}` : ""}`;
           const reqId = newDeliveryId("web");
+          const expectedConversationId = targetTopic === "root" ? params.rootConversationId : undefined;
           await dispatchSubmissionWithAck({
             topicId: targetTopic,
             draftKey: composerDraftKey(targetTopic),
             envelope: {
               type: "chat.send",
               topicId: targetTopic,
+              ...(expectedConversationId !== undefined ? { expectedConversationId } : {}),
               content: composed,
               ...(replyTo ? { replyTo } : {}),
               ...(attachmentsToSend.length > 0
@@ -295,6 +303,9 @@ export function useChatSubmission(params: UseChatSubmissionParams) {
       }
 
       const reqId = newDeliveryId("web");
+      const expectedConversationId = targetTopic === "root"
+        ? (params.activeTopic?.id === "root" ? params.activeTopic.conversationId : params.rootConversationId)
+        : undefined;
       const messageTargetDeviceId =
         !params.activeTopic?.projectId &&
         (params.selectedTargetDeviceId !== "" ||
@@ -307,6 +318,7 @@ export function useChatSubmission(params: UseChatSubmissionParams) {
         envelope: {
           type: "chat.send",
           topicId: targetTopic,
+          ...(expectedConversationId !== undefined ? { expectedConversationId } : {}),
           content: raw,
           ...(replyTo ? { replyTo } : {}),
           ...(attachmentsToSend.length > 0

@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.1.6 (2026-11-24)
+
+新增零配置内置长期记忆、主对话归档与平滑轮转、跨平台宿主机/桌面打包与附着模式、免密局域网/本机模型直连注册、右侧助理降噪治理、聊天媒体缩略图，以及升级自愈、Windows 沙箱/命令执行、SQLite 并发安全与移动端网关权限收口修复（`v0.1.6`）。
+
+### Built-in Long-Term Memory & Main Conversation Archiving
+
+- **内置长期记忆引擎（`@kulo/hub`、`@kulo/protocol`、`@kulo/web`）**
+  - 新增本地 SQLite + FTS5 + 向量混合检索的开箱即用内置长期记忆（`memory.sqlite`），支持与 Hindsight 自动切换/接管、清空屏障与崩溃恢复、启动脱敏清理与热备集群增量同步。
+  - 修复启动脱敏清理与集群同步/状态读取并发时的 `SQLITE_BUSY` 阻塞风险；完善 flush `supersedesId` 与 `resolved` 状态回写，统一 `project`/`topic` 作用域在 FTS、精确匹配与向量召回下的过滤语义；修复内置记忆面板在未加载/无权限时的状态展示与嵌套标题层级。
+- **主对话归档与根会话轮转（`@kulo/hub`、`@kulo/protocol`、`@kulo/web`）**
+  - 支持将主对话一键归档为只读历史话题并在后台提取工作记忆后无缝开启新主对话，支持归档话题还原与多端实时同步。
+
+### Cross-Platform Host, Packaging & Local Model Connectivity
+
+- **macOS / Windows / Linux 宿主机收敛与多平台打包（`@kulo/desktop`、`@kulo/env`、`@kulo/cli`）**
+  - 新增统一宿主机数据目录布局、`kulo host` 无头常驻宿主模式、桌面端 Attach Mode 自动附着外部宿主、Linux 凭据三层密钥库（Secret Service / `systemd-creds` / 加密密封文件）、Windows NSIS 安装包与 Linux `.deb` / AppImage / 无头运行时构建及 GitHub Release 工作流。
+  - 修复桌面端从 `v0.1.5`（状态格式 v2）升级到 `v0.1.6`（状态格式 v3）时因启动前未先执行状态升级而触发 `incompatible_release` 锁死的问题（升级前自动备份 `kulo.sqlite` 并保留降级保护）。
+  - 修复 Windows `HostActionService` 沙箱临时目录与受保护目录重叠报错、Windows `.cmd`/`.bat` `%~dp0` 与 `worker-supervisor` 传参不一致、POSIX 节点安装脚本末尾斜杠兼容，以及 Linux dev `.deb` 图标与 AppArmor 路径引号问题。
+- **免密本机/局域网模型接入与媒体缩略图（`@kulo/hub`、`@kulo/protocol`、`@kulo/web`）**
+  - 支持直接发现并免密接入本机/私有局域网 OpenAI 兼容模型服务（含 DNS 重绑定校验与云端预设防覆盖守卫）；新增聊天媒体缩略图与 ETag 缓存；强化 Android 设备工具分级与下发校验。
+
+### Proactive Assistant Noise Control & Security Hardening
+
+- **右侧助理提醒降噪与权限一致性（`@kulo/hub`、`@kulo/web`）**
+  - 新增开发工具静默归档与卡片分级治理、右侧栏一键批量已读及决策卡片保护；统一所有 `/api/assistant/*` 写接口的同源与权限校验，同时完整放行经受信任本地 TLS `kulo-connector` 接入的已配对移动端执行提醒动作。
+
 ## v0.1.5 (2026-11-23)
 
 新增多智能体任务交接板与跨工单评审包、外部与内置智能体提示词及协议协同优化、长上下文守卫与工作记忆体系、Hub 架构模块化瘦身与反熵增守卫，以及 SSH 连接诊断、图像路由和 macOS 桌面打包权限持久化升级（`v0.1.5`）。

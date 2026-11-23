@@ -18,7 +18,24 @@ export function privateDirectory(directory: string): void {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const stat = fs.lstatSync(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink() || typeof process.getuid === "function" && stat.uid !== process.getuid()) fail("unsafe_directory", "恢复目录不可用。");
-  if ((stat.mode & 0o777) !== 0o700) fs.chmodSync(directory, 0o700);
+  if (process.platform !== "win32" && (stat.mode & 0o777) !== 0o700) fs.chmodSync(directory, 0o700);
+}
+
+/** Self-contained Windows NTFS read-only bit cleaner (keeps `@kulo/recovery` zero-dependency). */
+export function clearWindowsReadonlyTreeSync(targetPath: string): void {
+  if (process.platform !== "win32" || !fs.existsSync(targetPath)) return;
+  const clear = (current: string) => {
+    let st: fs.Stats;
+    try { st = fs.lstatSync(current); } catch { return; }
+    if (st.isSymbolicLink()) return;
+    try { fs.chmodSync(current, st.isDirectory() ? 0o777 : 0o666); } catch { /* best effort */ }
+    if (st.isDirectory()) {
+      try {
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) clear(path.join(current, entry.name));
+      } catch { /* best effort */ }
+    }
+  };
+  clear(targetPath);
 }
 
 export function dataDirectory(value: string): string {

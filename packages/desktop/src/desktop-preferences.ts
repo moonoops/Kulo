@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import type { IpcMain, IpcMainInvokeEvent } from "electron";
 import { isTrustedFileActionSender } from "./file-actions.js";
+import { atomicReplaceDesktopFileSync } from "./desktop-fs.js";
 
 export interface DesktopNotificationPreferences {
   enabled: boolean;
@@ -110,7 +111,7 @@ export function parseDesktopPreferencesPatch(raw: unknown): DesktopPreferencesPa
 export function readDesktopPreferencesFile(file: string): DesktopPreferences {
   let descriptor: number;
   try {
-    descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return clonePreferences(DEFAULT_DESKTOP_PREFERENCES);
     throw error;
@@ -171,7 +172,7 @@ export function writeDesktopPreferencesFile(file: string, preferences: DesktopPr
         mode: 0o600,
       },
     );
-    fs.renameSync(temporary, file);
+    atomicReplaceDesktopFileSync(temporary, file);
   } catch {
     throw new Error("无法保存桌面偏好设置，请检查数据目录权限。");
   } finally {

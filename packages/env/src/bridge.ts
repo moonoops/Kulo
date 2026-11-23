@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { canonicalExecutionPath, createWorkerSandbox, workerIsolationCapabilities, type WorkerExecutionOptions, type WorkerNetworkPolicy, type WorkerSandbox } from "./isolation.js";
+import { canonicalExecutionPath, createWorkerSandbox, hasWorkerBasicOrFullIsolation, hasWorkerStrictNetworkIsolation, workerIsolationCapabilities, type WorkerExecutionOptions, type WorkerNetworkPolicy, type WorkerSandbox } from "./isolation.js";
 import { EXTERNAL_AGENT_NODE_CAPABILITIES, ExternalAgentService, isExternalAgentRequest, isExternalAgentResponse, type ExternalAgentToolHandler } from "./external-agents.js";
 import { ProjectDirectoryRegistry, type AuthorizeDirectoryInput } from "./project-directories.js";
 import { StagedWorkspaceService } from "./staged-workspace-service.js";
@@ -2090,14 +2090,14 @@ export class EnvManager {
 
   pickDefaultWorkerEnvId(): string {
     if (this.#closed) throw new Error("Env manager is closed");
-    if (this.#localDescriptor?.online && this.#localDescriptor.capabilities.includes("worker-isolation")) return this.#localEnvId;
+    if (this.#localDescriptor?.online && hasWorkerBasicOrFullIsolation(this.#localDescriptor.capabilities)) return this.#localEnvId;
     for (const envId of this.#options.workerEnvIds ?? []) {
       const descriptor = this.getEnvDescriptor(envId);
-      if (descriptor?.online && descriptor.executionKind !== "native-device" && descriptor.capabilities.includes("worker-isolation")) return envId;
+      if (descriptor?.online && descriptor.executionKind !== "native-device" && hasWorkerBasicOrFullIsolation(descriptor.capabilities)) return envId;
     }
     for (const envId of this.#deviceTokens.keys()) {
       const descriptor = this.getEnvDescriptor(envId);
-      if (descriptor?.online && descriptor.executionKind !== "native-device" && descriptor.capabilities.includes("worker-isolation")) return envId;
+      if (descriptor?.online && descriptor.executionKind !== "native-device" && hasWorkerBasicOrFullIsolation(descriptor.capabilities)) return envId;
     }
     throw new Error("No isolated Worker Env is available. Register an approved sandboxed Env before starting a Worker.");
   }
@@ -2126,7 +2126,7 @@ export class EnvManager {
     }
     const descriptor = this.getEnvDescriptor(envId);
     if (!descriptor?.online) throw new Error(`Worker Env '${envId}' is offline`);
-    if (!descriptor.capabilities.includes("worker-isolation")) throw new Error(`Worker Env '${envId}' has no ready native isolation backend; update or configure the Env before execution`);
+    if (!(network.offline || network.localConnectPorts?.length ? hasWorkerStrictNetworkIsolation(descriptor.capabilities) : hasWorkerBasicOrFullIsolation(descriptor.capabilities))) throw new Error(`Worker Env '${envId}' has no ready native isolation backend; update or configure the Env before execution`);
     if (options.projectId && this.#revokedProjects.has(JSON.stringify([envId, options.projectId]))) throw new Error("Project execution has been revoked");
     const previousExecutions = [...this.#workerConnections.values()].filter((entry) => entry.envId === envId && entry.cwd === cwd && entry.cleaning);
     const cacheKey = JSON.stringify([envId, cwd, options.scratchDir, network, options.projectId, options.grantRevision, options.stagedTaskId, Boolean(options.readOnly), protection]);
@@ -2211,7 +2211,7 @@ export class EnvManager {
         throw new Error("Local execution environment is not enabled on this Hub");
       }
       if (options?.sandboxed) {
-        if (!this.#localDescriptor.capabilities.includes("worker-isolation") || !this.#localProjects) {
+        if (!(options.offline ? hasWorkerStrictNetworkIsolation(this.#localDescriptor.capabilities) : hasWorkerBasicOrFullIsolation(this.#localDescriptor.capabilities)) || !this.#localProjects) {
           throw new Error("Sandboxed execution requires native worker isolation on local Env; refusing unsandboxed fallback.");
         }
         const canonicalCwd = canonicalExecutionPath(cwd);
@@ -2270,7 +2270,7 @@ export class EnvManager {
       }
       if (options?.sandboxed) {
         if (
-          !wsPeer.descriptor.capabilities.includes("worker-isolation") ||
+          !(options.offline ? hasWorkerStrictNetworkIsolation(wsPeer.descriptor.capabilities) : hasWorkerBasicOrFullIsolation(wsPeer.descriptor.capabilities)) ||
           !(this.#options.workerEnvIds?.includes(envId) || this.#deviceTokens.has(envId))
         ) {
           throw new Error(`Sandboxed execution requires native worker isolation on Env '${envId}'; refusing unsandboxed fallback.`);

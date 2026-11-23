@@ -26,6 +26,7 @@ export interface ConversationSearchPage {
 
 export interface ConversationMessageWindow {
   topicId: string;
+  conversationId?: number;
   messageId: number;
   messages: ChatDisplayItem[];
   beforeEntryId?: number;

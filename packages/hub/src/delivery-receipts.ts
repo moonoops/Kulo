@@ -8,6 +8,7 @@ export type ReliableClientMessage = Extract<ClientToHubMessage, {
 
 export interface DeliveryAck {
   topicId?: string;
+  conversationId?: number;
   ticketId?: string;
   itemId?: string;
   submissionId?: number;
@@ -107,6 +108,8 @@ export function validateReliableClientMessage(message: ReliableClientMessage): v
   const invalid = () => { throw Object.assign(new Error("消息内容或操作参数无效。"), { code: "invalid_message", status: 400 }); };
   const identifier = (value: unknown) => typeof value === "string" && value.trim().length > 0 && value.length <= 256 && !/[\u0000-\u001f]/.test(value);
   if ("topicId" in message && message.topicId !== undefined && !identifier(message.topicId)) invalid();
+  if ("expectedConversationId" in message && message.expectedConversationId !== undefined &&
+      (!Number.isSafeInteger(message.expectedConversationId) || message.expectedConversationId < 1)) invalid();
   if ("ticketId" in message && !identifier(message.ticketId)) invalid();
   if ("attachments" in message && message.attachments !== undefined && (!Array.isArray(message.attachments) || message.attachments.length > 16)) invalid();
   if (message.type === "chat.send" || message.type === "ticket.steer") assertValidReplyReference(message.replyTo);

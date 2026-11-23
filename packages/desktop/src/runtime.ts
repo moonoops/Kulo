@@ -32,6 +32,24 @@ export function createRuntimeShutdown(resources: RuntimeResources): () => Promis
   })();
 }
 
+export async function runDesktopPrepareStateStorage(): Promise<void> {
+  const options = loadDesktopRuntimeOptions(process.env);
+  const env = buildRuntimeEnvironment(process.env, options);
+  for (const name of Object.keys(process.env)) if (!(name in env)) delete process.env[name];
+  Object.assign(process.env, env);
+
+  const paths = resolveDesktopRuntimePaths(options.dataDir);
+  if (process.platform !== "win32") process.umask(0o077);
+  const { claimKuloRuntime } = await import("@kulo/env");
+  const { prepareStateStorage } = await import("@kulo/hub");
+  const runtimeOwner = claimKuloRuntime(paths.stateDir);
+  try {
+    await prepareStateStorage(paths.stateDir);
+  } finally {
+    runtimeOwner.close();
+  }
+}
+
 export async function runDesktopRuntime(): Promise<void> {
   if (!process.send) throw new Error("Kulo 后台服务需要由桌面客户端启动。");
   const options = loadDesktopRuntimeOptions(process.env);
@@ -40,7 +58,7 @@ export async function runDesktopRuntime(): Promise<void> {
   Object.assign(process.env, env);
 
   const paths = resolveDesktopRuntimePaths(options.dataDir);
-  process.umask(0o077);
+  if (process.platform !== "win32") process.umask(0o077);
   const token = prepareDesktopRuntime(paths);
   let activePort = readDesktopRuntimePort(paths);
   process.chdir(paths.dataDir);
@@ -230,7 +248,10 @@ export async function runDesktopRuntime(): Promise<void> {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  void runDesktopRuntime().catch((error: unknown) => {
+  const task = process.argv.includes("--prepare-state-storage")
+    ? runDesktopPrepareStateStorage()
+    : runDesktopRuntime();
+  void task.catch((error: unknown) => {
     // Before the private token exists, validation errors contain paths and field names only.
     const message = error instanceof Error ? error.message : "Kulo 后台服务启动失败。";
     if (process.connected) process.send?.({ type: "error", message }, () => process.exit(1));

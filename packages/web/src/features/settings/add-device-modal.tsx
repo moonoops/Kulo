@@ -1,7 +1,13 @@
 import { getLanguage, translate as t, useI18n } from "../../kulo-i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Disclosure, FieldError, Input, Label, ListBox, Modal, Select, Spinner, Tabs, TextField, toast } from "@heroui/react";
-import type { ConnectionRecordView, ConnectionWorkspaceSnapshot, DeviceInterconnectionView, DeviceInvitation } from "@kulo/protocol";
+import type {
+  ConnectionRecordView,
+  ConnectionWorkspaceSnapshot,
+  DeviceInterconnectionView,
+  DeviceInvitation,
+  DeviceSshOnboardingStage,
+} from "@kulo/protocol";
 import { KuloApiError } from "../../kulo-api";
 import { KuloIcon } from "../../kulo-icon";
 import { buildDeviceSshAddRequest, deviceApi, isShareableHubUrl } from "./device-api";
@@ -47,6 +53,31 @@ function sshDisabledTag(item: ConnectionRecordView, boundIds: ReadonlySet<string
   return null;
 }
 
+export function sshOnboardingStageLabel(stage?: DeviceSshOnboardingStage): string {
+  switch (stage) {
+    case "installing-node":
+      return t("正在安装远端 Node.js…", "Installing remote Node.js…");
+    case "opening-tunnel":
+      return t("正在建立安全隧道…", "Opening secure tunnel…");
+    case "downloading-peer":
+      return t("正在下载接入程序…", "Downloading peer runtime…");
+    case "installing-deps":
+      return t("正在安装远端运行依赖…", "Installing remote dependencies…");
+    case "pairing":
+      return t("正在启动并配对设备…", "Starting and pairing device…");
+    case "probing":
+    default:
+      return t("正在检查远端环境…", "Checking remote environment…");
+  }
+}
+
+export function formatOnboardingElapsed(elapsedMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1_000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
 export function AddDeviceModal({
   open,
   view,
@@ -76,6 +107,8 @@ export function AddDeviceModal({
   const [rootDir, setRootDir] = useState("");
   const [invitation, setInvitation] = useState<DeviceInvitation>();
   const [sshDeviceId, setSshDeviceId] = useState<string>();
+  const [submittingConnectionId, setSubmittingConnectionId] = useState<string>();
+  const [sshStartedAt, setSshStartedAt] = useState<number>();
   const [mobileDeviceId, setMobileDeviceId] = useState<string>();
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<string>();
@@ -88,6 +121,9 @@ export function AddDeviceModal({
   const connected = target?.status === "online";
   const expired = !!invitation && now >= invitation.expiresAt && !connected;
   const addressValid = isShareableHubUrl(hubUrl.trim());
+  const sshProgress = busy === "ssh" && submittingConnectionId
+    ? view.sshOnboarding?.find((item) => item.connectionId === submittingConnectionId)
+    : undefined;
 
   const boundSshIds = useMemo(
     () => new Set(view.devices.map((device) => device.sshConnectionId).filter((id): id is string => Boolean(id))),
@@ -99,6 +135,7 @@ export function AddDeviceModal({
   );
   const selectedSsh = sshState.eligible.find((item) => item.id === selectedConnectionId);
   const vaultUnavailable = Boolean(connections && !connections.vault.available);
+  const sshSupported = view.sshSupported !== false;
 
   const cancelInvitation = async () => {
     const current = inviteRef.current;
@@ -112,6 +149,10 @@ export function AddDeviceModal({
   };
 
   useEffect(() => {
+    if (!sshSupported && mode === "ssh") setMode("command");
+  }, [sshSupported, mode]);
+
+  useEffect(() => {
     if (!open) return;
     const initial = view.hubUrls.find(isShareableHubUrl) ?? "";
     setHubUrl(initial);
@@ -123,6 +164,8 @@ export function AddDeviceModal({
     setPlatform("posix");
     setInvitation(undefined);
     setSshDeviceId(undefined);
+    setSubmittingConnectionId(undefined);
+    setSshStartedAt(undefined);
     setMobileDeviceId(undefined);
     setBusy(undefined);
     setError(undefined);
@@ -137,10 +180,16 @@ export function AddDeviceModal({
   }, [open, selectedConnectionId, sshState.eligible]);
 
   useEffect(() => {
-    if (!open || !invitation || connected) return;
+    if (!open || !((invitation && !connected) || busy === "ssh")) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
-  }, [open, invitation, connected]);
+  }, [open, invitation, connected, busy]);
+
+  useEffect(() => {
+    if (!open || busy !== "ssh") return;
+    const timer = window.setInterval(() => { void onRefresh(); }, 1_500);
+    return () => window.clearInterval(timer);
+  }, [open, busy, onRefresh]);
 
   useEffect(() => () => {
     requestRef.current?.abort();
@@ -154,7 +203,17 @@ export function AddDeviceModal({
   }, []);
 
   const close = async () => {
-    if (busy) return;
+    if (busy && busy !== "ssh") return;
+    if (busy === "ssh") {
+      requestRef.current?.abort();
+      requestRef.current = null;
+      setSubmittingConnectionId(undefined);
+      setSshStartedAt(undefined);
+      setBusy(undefined);
+      onClose();
+      void onRefresh();
+      return;
+    }
     setBusy("close");
     try {
       await cancelInvitation();
@@ -204,23 +263,34 @@ export function AddDeviceModal({
 
   const addSsh = async () => {
     if (busy || !selectedSsh) return;
+    const started = Date.now();
     setBusy("ssh");
+    setSubmittingConnectionId(selectedSsh.id);
+    setSshStartedAt(started);
+    setNow(started);
     setError(undefined);
     const controller = new AbortController();
     requestRef.current = controller;
     try {
       const request = buildDeviceSshAddRequest({ connectionId: selectedSsh.id, name, rootDir });
       const device = await deviceApi.addSsh(request, controller.signal);
-      if (!controller.signal.aborted) {
+      if (requestRef.current === controller && !controller.signal.aborted) {
         setSshDeviceId(device.id);
         await onRefresh();
       }
     } catch (err) {
-      if (!controller.signal.aborted) {
+      if (requestRef.current === controller && !controller.signal.aborted) {
         setError(err instanceof Error ? err.message : t("添加 SSH 设备失败", "Failed to add SSH device"));
       }
     } finally {
-      if (!controller.signal.aborted) setBusy(undefined);
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+        if (!controller.signal.aborted) {
+          setBusy(undefined);
+          setSubmittingConnectionId(undefined);
+          setSshStartedAt(undefined);
+        }
+      }
     }
   };
 
@@ -251,7 +321,7 @@ export function AddDeviceModal({
           <Modal.Dialog aria-label={t("添加设备", "Add device")} className="kulo-add-device-dialog">
             <Modal.Header className="kulo-add-device-header">
               <Modal.Heading>{t("添加设备", "Add device")}</Modal.Heading>
-              <Modal.CloseTrigger aria-label={t("关闭添加设备", "Close add device")} className="kulo-add-device-close" isDisabled={!!busy} />
+              <Modal.CloseTrigger aria-label={t("关闭添加设备", "Close add device")} className="kulo-add-device-close" isDisabled={!!busy && busy !== "ssh"} />
             </Modal.Header>
             <Modal.Body className="kulo-add-device-body">
               {connected ? (
@@ -261,7 +331,7 @@ export function AddDeviceModal({
                   <Tabs.ListContainer className="w-fit max-w-full min-w-0 shrink-0"><Tabs.List aria-label={t("设备接入方式", "Device connection method")} className="w-max">
                     <Tabs.Tab id="command" className="w-auto shrink-0 whitespace-nowrap" isDisabled={!!busy || !!sshDeviceId}>{t("运行命令", "Run command")}<Tabs.Indicator /></Tabs.Tab>
                     <Tabs.Tab id="mobile" className="w-auto shrink-0 whitespace-nowrap" isDisabled={!!busy || !!invitation || !!sshDeviceId}>{t("安卓扫码", "Scan with Android")}<Tabs.Indicator /></Tabs.Tab>
-                    <Tabs.Tab id="ssh" className="w-auto shrink-0 whitespace-nowrap" isDisabled={!!busy || !!invitation}>{t("SSH 连接", "SSH connection")}<Tabs.Indicator /></Tabs.Tab>
+                    {sshSupported && <Tabs.Tab id="ssh" className="w-auto shrink-0 whitespace-nowrap" isDisabled={!!busy || !!invitation}>{t("SSH 连接", "SSH connection")}<Tabs.Indicator /></Tabs.Tab>}
                   </Tabs.List></Tabs.ListContainer>
                   {(error || pollError) && <Alert status="danger" className="kulo-add-device-alert"><Alert.Indicator /><Alert.Content><Alert.Title>{error ?? pollError}</Alert.Title></Alert.Content>
                     {!error && <Button variant="tertiary" size="sm" onPress={() => void onRefresh()}>{t("刷新", "Refresh")}</Button>}
@@ -315,7 +385,7 @@ export function AddDeviceModal({
                   <Tabs.Panel id="mobile" className="kulo-add-device-panel kulo-form-stack">
                     {open && mode === "mobile" && <MobilePairingPanel view={view} onInvitation={setMobileDeviceId} onRefresh={onRefresh} />}
                   </Tabs.Panel>
-                  <Tabs.Panel id="ssh" className="kulo-add-device-panel kulo-form-stack">
+                  {sshSupported && <Tabs.Panel id="ssh" className="kulo-add-device-panel kulo-form-stack">
                     {connectionsLoading && !connections ? (
                       <div className="kulo-add-device-status" role="status">
                         <span className="kulo-add-device-status-label"><Spinner size="sm" />{t("正在读取 SSH 凭据…", "Loading SSH credentials…")}</span>
@@ -415,19 +485,30 @@ export function AddDeviceModal({
                         )}
                       </div>
                     )}
+                    {busy === "ssh" && (
+                      <div className="kulo-add-device-status" role="status">
+                        <span className="kulo-add-device-status-label">
+                          <Spinner size="sm" />
+                          {sshOnboardingStageLabel(sshProgress?.stage)}
+                        </span>
+                        <span className="kulo-add-device-expiry" aria-hidden="true">
+                          {formatOnboardingElapsed(now - (sshProgress?.startedAt ?? sshStartedAt ?? now))}
+                        </span>
+                      </div>
+                    )}
                     {waiting && !pollError && <div className="kulo-add-device-status" role="status"><span className="kulo-add-device-status-label"><Spinner size="sm" />{t("等待设备上线", "Waiting for device to come online")}</span></div>}
-                  </Tabs.Panel>
+                  </Tabs.Panel>}
                   {target?.error && <Alert status="danger" className="kulo-add-device-alert"><Alert.Indicator /><Alert.Content><Alert.Title>{target.error}</Alert.Title></Alert.Content></Alert>}
                 </Tabs>
               )}
             </Modal.Body>
             <Modal.Footer className="kulo-add-device-footer">
-              <Button variant={connected ? "primary" : "tertiary"} isDisabled={!!busy} onPress={() => void close()}>{connected ? t("完成", "Done") : t("取消", "Cancel")}</Button>
+              <Button variant={connected ? "primary" : "tertiary"} isDisabled={!!busy && busy !== "ssh"} onPress={() => void close()}>{connected ? t("完成", "Done") : t("取消", "Cancel")}</Button>
               {!connected && mode === "command" && (invitation && !expired ? <>
                 <Button variant="secondary" isDisabled={!!busy} onPress={() => void copy(invitation.agentInstructions)}>{t("复制给 Agent", "Copy for agent")}</Button>
                 <Button variant="primary" isDisabled={!!busy} onPress={() => command && void copy(command)}><KuloIcon name="copy" size={16} />{t("复制命令", "Copy command")}</Button>
               </> : <Button variant="primary" isPending={busy === "invite"} isDisabled={!!busy || !addressValid} onPress={() => void generate()}>{expired ? t("重新生成", "Regenerate") : t("生成接入命令", "Generate connection command")}</Button>)}
-              {!connected && mode === "ssh" && !sshDeviceId && sshState.eligible.length > 0 && (
+              {!connected && sshSupported && mode === "ssh" && !sshDeviceId && sshState.eligible.length > 0 && (
                 <Button type="submit" form="kulo-device-ssh" variant="primary" isPending={busy === "ssh"} isDisabled={!!busy || !selectedSsh}>
                   {t("添加设备", "Add device")}
                 </Button>

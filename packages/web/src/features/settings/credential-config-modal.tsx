@@ -107,6 +107,7 @@ export function CredentialConfigModal({
   connected,
   available,
   localHost,
+  sshSupported = true,
   onSaved,
   onClose,
 }: {
@@ -117,14 +118,17 @@ export function CredentialConfigModal({
   connected: boolean;
   available: boolean;
   localHost?: boolean;
+  sshSupported?: boolean;
   onSaved: (saved: ConnectionRecordView) => void;
   onClose: () => void;
 }) {
   useI18n();
+  const availableKinds = sshSupported ? MODAL_CREDENTIAL_KINDS : MODAL_CREDENTIAL_KINDS.filter((kind) => kind !== "ssh");
+  const normalizedInitialKind: CredentialModalKind = !sshSupported && initialKind === "ssh" ? "account" : initialKind;
   const effectiveKind: CredentialModalKind =
     existing && (existing.kind === "ssh" || existing.kind === "account" || existing.kind === "api-key" || existing.kind === "custom")
       ? existing.kind
-      : initialKind;
+      : normalizedInitialKind;
   const syntheticInput = buildSyntheticInput(mode, effectiveKind, existing);
   const [draft, setDraft] = useState<ConnectionDraft>(() => createConnectionDraft(syntheticInput, existing));
   const [busy, setBusy] = useState(false);
@@ -284,7 +288,7 @@ export function CredentialConfigModal({
                         <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
                         <Select.Popover>
                           <ListBox>
-                            {MODAL_CREDENTIAL_KINDS.map((kind) => (
+                            {availableKinds.map((kind) => (
                               <ListBox.Item key={kind} id={kind} textValue={credentialKindLabel(kind)}>
                                 {credentialKindLabel(kind)}
                                 <ListBox.ItemIndicator />

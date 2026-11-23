@@ -39,7 +39,12 @@ function listExistingVersionedDirs(parent: string, suffix: readonly string[], pl
 
 function wellKnownToolDirs(homeDir: string, platform: NodeJS.Platform): string[] {
   if (platform === "win32") {
+    const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
+    const appData = process.env.APPDATA ?? path.win32.join(homeDir, "AppData", "Roaming");
     return [
+      path.win32.join(appData, "npm"),
+      path.win32.join(programFiles, "nodejs"),
+      path.win32.join(programFiles, "Git", "cmd"),
       path.win32.join(homeDir, ".local", "bin"),
       path.win32.join(homeDir, ".cargo", "bin"),
       path.win32.join(homeDir, ".bun", "bin"),

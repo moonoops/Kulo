@@ -84,7 +84,7 @@ export function formatWorkerRelayMessage(params: {
       ? [
           "Staged artifacts (pending review — NOT yet published to the user):",
           JSON.stringify(attachmentItems),
-          "Metadata only proves the file exists: when comparing multiple proposals or long reports, start from concise summaries and paginate real text/image contents on demand via kulo_inspect_asset(asset_id, offset, limit) (audio may also use transcript evidence); verify against acceptance criteria before calling kulo_publish_asset(asset_id). Only a `published` receipt confirms delivery to chat (never directly publish internal overflowAsset); steer the Worker to revise if unverified or incomplete.",
+          "Metadata only proves the file exists: when comparing multiple proposals or long reports, start from concise summaries and paginate real text/image contents on demand via kulo_inspect_asset(asset_id, offset, limit) (audio may also use transcript evidence); verify against acceptance criteria before calling kulo_publish_asset(asset_id) (for user-requested phone screenshots already captured in the verified target app, non-vision main models may call kulo_publish_asset directly). Only a `published` receipt confirms delivery to chat (never directly publish internal overflowAsset); steer the Worker to revise if unverified or incomplete.",
         ]
       : []),
     ...(report.question ? [`Blocking Question: ${escapeUntrustedText(report.question)}`] : []),
@@ -206,7 +206,7 @@ export function formatWorkerWatchdogMessage(params: {
 }): string {
   return [
     "[KULO_WORKER_WATCHDOG]",
-    `Ticket: ${params.title} (ticket_id=${params.ticketId}, role=${params.role}${params.externalKind ? `, external=${params.externalKind}` : ""})`,
+    `Ticket: ${escapeUntrustedText(params.title)} (ticket_id=${params.ticketId}, role=${params.role}${params.externalKind ? `, external=${params.externalKind}` : ""})`,
     `Reason: ${
       params.reason === "stalled"
         ? `no new output or tool activity for ${params.idleSec}s (total runtime ${params.runningSec}s)`
@@ -262,6 +262,31 @@ export function formatHostActionRequestMessage(params: {
     `- If safe and aligned with the user's request, call kulo_host_action_decide(request_id="${params.requestId}", decision="approve") and reply [COORDINATOR_OK] if no user message is needed.`,
     `- If out of scope, unsafe, or better handled differently, call kulo_host_action_decide(request_id="${params.requestId}", decision="deny", reason=...) to redirect the Worker.`,
     `- If risky, destructive, or genuinely requiring user consent, call kulo_host_action_decide(request_id="${params.requestId}", decision="ask_user", reason=...) to pop an interactive card (允许 / 拒绝 / 手动输入), or ask concisely in chat—when the user replies in chat you can immediately call kulo_host_action_decide to execute and settle the card.`,
+  ].join("\n");
+}
+
+export function formatHostActionResultMessage(params: {
+  body: string;
+  instruction: string;
+}): string {
+  return [
+    "[KULO_HOST_ACTION_RESULT]",
+    escapeUntrustedText(params.body),
+    params.instruction,
+  ].join("\n");
+}
+
+export function formatUserTaskInstructionMessage(params: {
+  title: string;
+  ticketId: string;
+  requestId: string;
+  manualText: string;
+}): string {
+  return [
+    "[KULO_USER_TASK_INSTRUCTION]",
+    `用户在任务「${escapeUntrustedText(params.title)}」（${params.ticketId}）的待确认本机操作（request_id="${params.requestId}"）中手动输入了说明：`,
+    escapeUntrustedText(params.manualText),
+    "请结合用户说明调用 kulo_host_action_decide(approve/deny) 或 kulo_steer 处理。",
   ].join("\n");
 }
 

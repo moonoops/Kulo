@@ -435,3 +435,74 @@ export function isConnectorCallRequest(value: unknown): value is ConnectorCallRe
 export function isAssistantItemAction(value: unknown): value is AssistantItemAction {
   return value === "acknowledge" || value === "mute_app" || value === "promote_to_topic" || value === "confirm_action";
 }
+
+export const ASSISTANT_FYI_TTL_MS = 2 * 60 * 60 * 1_000;
+export const ASSISTANT_ALERT_TTL_MS = 12 * 60 * 60 * 1_000;
+export const ASSISTANT_HA_ALERT_TTL_MS = 24 * 60 * 60 * 1_000;
+
+export interface AssistantDismissTarget {
+  id: string;
+  expectedRevision: number;
+  expectedUpdatedAt: number;
+}
+
+export function isAssistantDismissTarget(value: unknown): value is AssistantDismissTarget {
+  if (!plainObject(value)) return false;
+  return safeId(value.id, 160) &&
+    typeof value.expectedRevision === "number" &&
+    Number.isSafeInteger(value.expectedRevision) &&
+    value.expectedRevision >= 1 &&
+    typeof value.expectedUpdatedAt === "number" &&
+    Number.isSafeInteger(value.expectedUpdatedAt) &&
+    value.expectedUpdatedAt >= 0;
+}
+
+export function isAssistantDecisionItem(
+  item: Pick<AssistantItemView, "kind" | "pendingAction">,
+): boolean {
+  return item.kind === "decision" || Boolean(item.pendingAction);
+}
+
+export function defaultAssistantItemTtlMs(kind: AssistantItemKind, sourceApp: string): number | undefined {
+  if (kind === "decision") return undefined;
+  if (kind === "alert") {
+    return sourceApp === "home-assistant" ? ASSISTANT_HA_ALERT_TTL_MS : ASSISTANT_ALERT_TTL_MS;
+  }
+  return ASSISTANT_FYI_TTL_MS;
+}
+
+export function effectiveAssistantItemExpiresAt(
+  item: Pick<AssistantItemView, "kind" | "sourceApp" | "pendingAction" | "updatedAt" | "expiresAt">,
+): number | undefined {
+  if (isAssistantDecisionItem(item)) return undefined;
+  if (typeof item.expiresAt === "number" && Number.isFinite(item.expiresAt)) {
+    return item.expiresAt;
+  }
+  const ttl = defaultAssistantItemTtlMs(item.kind, item.sourceApp);
+  return ttl === undefined ? undefined : item.updatedAt + ttl;
+}
+
+export function isAssistantItemExpired(
+  item: Pick<AssistantItemView, "kind" | "sourceApp" | "pendingAction" | "updatedAt" | "expiresAt">,
+  now: number,
+): boolean {
+  const expiresAt = effectiveAssistantItemExpiresAt(item);
+  return expiresAt !== undefined && now >= expiresAt;
+}
+
+/** 0: L2 decision -> 1: Home Assistant alert -> 2: ordinary alert -> 3: fyi */
+export function assistantItemPriorityRank(
+  item: Pick<AssistantItemView, "kind" | "sourceApp" | "pendingAction">,
+): number {
+  if (isAssistantDecisionItem(item)) return 0;
+  if (item.kind === "alert") return item.sourceApp === "home-assistant" ? 1 : 2;
+  return 3;
+}
+
+export function compareAssistantItems(a: AssistantItemView, b: AssistantItemView): number {
+  return (
+    assistantItemPriorityRank(a) - assistantItemPriorityRank(b) ||
+    b.updatedAt - a.updatedAt ||
+    a.id.localeCompare(b.id)
+  );
+}

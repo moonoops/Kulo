@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { removeReadonlyTreeSync, safeChmodSync } from "./platform-fs.js";
 
 declare const KULO_WINDOWS_SANDBOX_SOURCE: string | undefined;
 
@@ -19,6 +20,7 @@ export interface WindowsSandboxOptions {
   protectedPaths: readonly string[];
   writeDeniedPaths?: readonly string[];
   port: number;
+  networkBackend?: "wfp" | "basic";
   network?: { localConnectPorts?: readonly number[]; localListenPorts?: readonly number[]; offline?: boolean };
 }
 
@@ -35,7 +37,7 @@ export interface WindowsSandboxPolicy {
   protectedPaths: string[];
   writeDeniedPaths?: string[];
   port: number;
-  network: { backend: "wfp"; localConnectPorts: number[]; localListenPorts: number[]; offline?: boolean };
+  network: { backend: "wfp" | "basic"; localConnectPorts: number[]; localListenPorts: number[]; offline?: boolean };
 }
 
 const controlDirectories = new Map<string, string>();
@@ -70,6 +72,11 @@ function ports(values: readonly number[]): number[] {
 
 export function buildWindowsSandboxPolicy(options: WindowsSandboxOptions): WindowsSandboxPolicy {
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) throw new Error("Invalid Worker development port");
+  const backend = options.networkBackend ?? "wfp";
+  const connectPorts = ports(options.network?.localConnectPorts ?? []);
+  if (backend === "basic" && (options.network?.offline || connectPorts.length > 0)) {
+    throw new Error("Strict network policy requires Windows WFP sandbox backend");
+  }
   return {
     version: 1,
     workspaceDir: localWindowsPath(options.workspaceDir),
@@ -84,10 +91,10 @@ export function buildWindowsSandboxPolicy(options: WindowsSandboxOptions): Windo
     ...(options.writeDeniedPaths?.length ? { writeDeniedPaths: windowsProtectedPaths(options.writeDeniedPaths) } : {}),
     port: options.port,
     network: {
-      backend: "wfp",
-      localConnectPorts: ports(options.network?.localConnectPorts ?? []),
-      localListenPorts: ports([options.port, ...(options.network?.localListenPorts ?? [])]),
-      ...(options.network?.offline ? { offline: true } : {}),
+      backend,
+      localConnectPorts: backend === "basic" ? [] : connectPorts,
+      localListenPorts: backend === "basic" ? [] : ports([options.port, ...(options.network?.localListenPorts ?? [])]),
+      ...(backend === "wfp" && options.network?.offline ? { offline: true } : {}),
     },
   };
 }
@@ -140,14 +147,13 @@ function launcherCommand(policyArgument: string): readonly string[] {
   const directory = privateControlDirectory();
   const script = path.join(directory, "windows-sandbox.ps1");
   try {
-    fs.chmodSync(directory, 0o700);
-    fs.writeFileSync(script, source, { flag: "wx", mode: 0o400 });
+    safeChmodSync(directory, 0o700);
+    fs.writeFileSync(script, source, { flag: "wx", mode: 0o600 });
     controlDirectories.set(script, directory);
     // The helper is outside Worker-writable temp and denies its control directory to every launched SID.
-    // Host ExecutionPolicy remains in force. The child receives only an explicit environment whitelist.
     return [nativePowerShell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", script, policyArgument];
   } catch (error) {
-    fs.rmSync(directory, { recursive: true, force: true });
+    removeReadonlyTreeSync(directory);
     throw error;
   }
 }
@@ -158,21 +164,27 @@ export function createWindowsSandboxCommand(options: WindowsSandboxOptions): rea
   return launcherCommand(policy);
 }
 
-/** Runs the native prerequisites check; the caller must report its exit status and output. */
+/** Runs the native prerequisites check (LPAC + Job Object + WFP). */
 export function createWindowsSandboxSetupCommand(): readonly string[] {
   return launcherCommand("--setup");
 }
 
+/** Runs the basic non-UAC prerequisites check (LPAC + Job Object, without WFP). */
+export function createWindowsBasicSandboxSetupCommand(): readonly string[] {
+  return launcherCommand("--setup-basic");
+}
+
 /** Call only after the trusted launcher has exited, including failed startup. */
 export function cleanupWindowsSandboxCommand(command: readonly string[]): void {
-  const script = command[5];
+  const fileIndex = command.indexOf("-File");
+  const script = fileIndex >= 0 ? command[fileIndex + 1] : undefined;
   if (!script) return;
   const directory = controlDirectories.get(script);
   if (!directory) return;
   if (process.platform === "win32") {
-    const result = spawnSync(command[0]!, [...command.slice(1, 6), "--cleanup"], { encoding: "utf8", timeout: 30_000, windowsHide: true });
+    const result = spawnSync(command[0]!, [...command.slice(1, fileIndex + 2), "--cleanup"], { encoding: "utf8", timeout: 30_000, windowsHide: true });
     if (result.error || result.status !== 0) throw new Error("Windows sandbox permissions cleanup is pending; retained the native cleanup helper for retry");
   }
-  fs.rmSync(directory, { recursive: true, force: true });
+  removeReadonlyTreeSync(directory);
   controlDirectories.delete(script);
 }

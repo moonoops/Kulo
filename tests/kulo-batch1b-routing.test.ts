@@ -224,8 +224,8 @@ describe("Batch 1b — R3 & R1.5 Pure Routing & Recovery Policy", () => {
       ...onlineLocal,
       id: "device-mbp",
       kind: "reverse-ws",
-      name: "iKoomas-Macboom-Pro.local",
-      info: { hostname: "iKoomas-Macboom-Pro.local", platform: "darwin", arch: "arm64", release: "24", cpu: "Apple", memoryBytes: 0, ips: [] },
+      name: "Dev-Laptop.local",
+      info: { hostname: "Dev-Laptop.local", platform: "darwin", arch: "arm64", release: "24", cpu: "Apple", memoryBytes: 0, ips: [] },
     };
     const envs = [macMini, macBook];
 
@@ -244,7 +244,7 @@ describe("Batch 1b — R3 & R1.5 Pure Routing & Recovery Policy", () => {
 
   it("supports multi-turn contextual carry-over for explicitly named devices while respecting explicit sender pivots", () => {
     const macMini: EnvNodeDescriptor = { ...onlineLocal, id: "local", name: "Macmini.local" };
-    const macBook: EnvNodeDescriptor = { ...onlineLocal, id: "device-mbp", kind: "reverse-ws", name: "iKoomas-Macboom-Pro.local" };
+    const macBook: EnvNodeDescriptor = { ...onlineLocal, id: "device-mbp", kind: "reverse-ws", name: "Dev-Laptop.local" };
     const office: EnvNodeDescriptor = { ...onlineLocal, id: "device-office", kind: "reverse-ws", name: "办公室工作站" };
     const envs = [macMini, macBook, office];
 
@@ -320,19 +320,19 @@ describe("Batch 1b — R3 & R1.5 Pure Routing & Recovery Policy", () => {
   });
 
   it("parses macOS hardware models and derives device aliases even when hostname has a typo", () => {
-    expect(parseMacHardwareModelOutput({ ioregProduct: '"product-name" = <"MacBook Pro (16-inch, M5 Max)">' })).toBe("MacBook Pro (16-inch, M5 Max)");
+    expect(parseMacHardwareModelOutput({ ioregProduct: '"product-name" = <"MacBook Pro (14-inch, M3 Pro)">' })).toBe("MacBook Pro (14-inch, M3 Pro)");
     expect(parseMacHardwareModelOutput({ systemProfiler: "  Model Name: Mac mini\n  Model Identifier: Mac14,3" })).toBe("Mac mini");
     expect(parseMacHardwareModelOutput({ sysctlHwModel: "MacBookPro18,1\n" })).toBe("MacBookPro18,1");
 
     expect(isDeviceSystemInfo({
-      hostname: "iKoomas-Macboom-Pro.local",
+      hostname: "Dev-Laptop.local",
       platform: "darwin",
       arch: "arm64",
       release: "24",
       cpu: "Apple",
       memoryBytes: 1024,
       ips: [],
-      model: "MacBook Pro (16-inch, M5 Max)",
+      model: "MacBook Pro (14-inch, M3 Pro)",
     })).toBe(true);
     expect(isDeviceSystemInfo({
       hostname: "bad",
@@ -355,8 +355,8 @@ describe("Batch 1b — R3 & R1.5 Pure Routing & Recovery Policy", () => {
       ...onlineLocal,
       id: "device-mbp",
       kind: "reverse-ws",
-      name: "iKoomas-Macboom-Pro.local",
-      info: { hostname: "iKoomas-Macboom-Pro.local", platform: "darwin", arch: "arm64", release: "24", cpu: "Apple", memoryBytes: 0, ips: [], model: "MacBook Pro (16-inch, M5 Max)" },
+      name: "Dev-Laptop.local",
+      info: { hostname: "Dev-Laptop.local", platform: "darwin", arch: "arm64", release: "24", cpu: "Apple", memoryBytes: 0, ips: [], model: "MacBook Pro (14-inch, M3 Pro)" },
     };
     expect(namedDispatchDevices("在 MacMini 和 Macbook 上测试一下浏览器自动化", [macMini, macBookWithTypoHostname])).toEqual([["local"], ["device-mbp"]]);
     expect(namedDispatchDevices("在 MacBook Pro 上打开计算器", [macMini, macBookWithTypoHostname])).toEqual([["device-mbp"]]);
@@ -366,7 +366,7 @@ describe("Batch 1b — R3 & R1.5 Pure Routing & Recovery Policy", () => {
       ...onlineLocal,
       id: "local",
       name: "客厅主脑",
-      info: { hostname: "server.local", platform: "darwin", arch: "arm64", release: "24", cpu: "Apple", memoryBytes: 0, ips: [], model: "MacBook Pro (16-inch, M5 Max)" },
+      info: { hostname: "server.local", platform: "darwin", arch: "arm64", release: "24", cpu: "Apple", memoryBytes: 0, ips: [], model: "MacBook Pro (14-inch, M3 Pro)" },
     };
     const explicitMacBook: EnvNodeDescriptor = {
       ...onlineLocal,
@@ -678,7 +678,7 @@ describe("Batch 1b — Live Hub E2E Routing, Cross-Device Guard, Phone Attachmen
     expect((await apiReq("/api/devices", "PATCH", { enabled: true })).status).toBe(200);
 
     // Pair MacBook and leave its Env OFFLINE while its chat client stays connected
-    const invite = await apiReq("/api/devices/invitations", "POST", { name: "iKoomas-Macboom-Pro.local", hubUrl: "https://hub.test" });
+    const invite = await apiReq("/api/devices/invitations", "POST", { name: "Dev-Laptop.local", hubUrl: "https://hub.test" });
     const invitation = (await invite.json()) as DeviceInvitation;
     const token = /'([A-Za-z0-9_-]+)'$/.exec(invitation.command)![1]!;
     const macbookRoot = path.join(dir, invitation.deviceId);
@@ -689,7 +689,7 @@ describe("Batch 1b — Live Hub E2E Routing, Cross-Device Guard, Phone Attachmen
       {
         inviteToken: token,
         rootDir: macbookRoot,
-        info: { hostname: "iKoomas-Macboom-Pro.local", platform: "darwin", arch: "arm64", release: "test", cpu: "test", memoryBytes: 0, ips: [] },
+        info: { hostname: "Dev-Laptop.local", platform: "darwin", arch: "arm64", release: "test", cpu: "test", memoryBytes: 0, ips: [] },
       },
       false,
     );
@@ -856,7 +856,7 @@ describe("Batch 1b — Live Hub E2E Routing, Cross-Device Guard, Phone Attachmen
     expect((await apiReq("/api/devices", "PATCH", { enabled: true })).status).toBe(200);
 
     // Pair MacBook with the real typo hostname and NO hardware model (worst-case legacy peer)
-    const invite = await apiReq("/api/devices/invitations", "POST", { name: "iKoomas-Macboom-Pro.local", hubUrl: "https://hub.test" });
+    const invite = await apiReq("/api/devices/invitations", "POST", { name: "Dev-Laptop.local", hubUrl: "https://hub.test" });
     const invitation = (await invite.json()) as DeviceInvitation;
     const token = /'([A-Za-z0-9_-]+)'$/.exec(invitation.command)![1]!;
     const macbookRoot = path.join(dir, invitation.deviceId);
@@ -867,7 +867,7 @@ describe("Batch 1b — Live Hub E2E Routing, Cross-Device Guard, Phone Attachmen
       {
         inviteToken: token,
         rootDir: macbookRoot,
-        info: { hostname: "iKoomas-Macboom-Pro.local", platform: process.platform, arch: process.arch, release: "test", cpu: "test", memoryBytes: 0, ips: [] },
+        info: { hostname: "Dev-Laptop.local", platform: process.platform, arch: process.arch, release: "test", cpu: "test", memoryBytes: 0, ips: [] },
       },
       false,
     );

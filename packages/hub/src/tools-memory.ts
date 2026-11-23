@@ -25,7 +25,7 @@ export function memoryCallerFromState(
     const projectId = topicId ? state?.topics?.[topicId]?.projectId : undefined;
     return {
       role: "router",
-      conversationId: conversationId === ROOT_CONVERSATION_ID ? "root" : String(conversationId),
+      conversationId: topicId === "root" ? "root" : String(conversationId),
       ...(projectId ? { projectId } : {}),
       ...(sourceId ? { sourceId } : {}),
       isValidTicket: (ticketId) => Boolean(state?.tickets[ticketId]),

@@ -38,9 +38,9 @@ async function fixture(options: { textOnly?: boolean } = {}) {
     const results = context.messages.filter(message => message.role === "toolResult");
     if (!results.length) initial.push(tools);
     const call = (name: string, args: Record<string, unknown>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
-    if (results.some(result => result.toolName === "android_open")) return call("kulo_report", { state: "ready", summary: "手机任务已经过新观察验证。" });
-    if (tools.includes("android_open")) return call("android_open", { packageName: "io.kulo.fixture" });
-    if (results.some(result => result.toolName === "android_system_info")) return call("tool_search", { query: "android_open", limit: 1 });
+    if (results.some(result => result.toolName === "android_collect")) return call("kulo_report", { state: "ready", summary: "手机任务已经过新观察验证。" });
+    if (tools.includes("android_collect")) return call("android_collect", { screen: "s1" });
+    if (results.some(result => result.toolName === "android_system_info")) return call("tool_search", { query: "android_collect", limit: 1 });
     return call("android_system_info", { sections: ["battery"] });
   }));
   const config = {
@@ -94,28 +94,32 @@ describe("Hub-hosted Android Workers", () => {
     expect(card).toMatchObject({ executionDomain: "android", androidDeviceIds: ["phone-a"], workspaceDir: "" });
     expect(ticket.scratchDir).toBeUndefined();
     expect(f.filesystem).not.toHaveBeenCalled(); expect(f.releaseFilesystem).not.toHaveBeenCalled();
-    expect(f.initial[0]).toEqual(expect.arrayContaining(["android_capabilities", "android_system_info", "android_screen", "tool_search", "kulo_report"]));
-    expect(f.initial[0]).not.toEqual(expect.arrayContaining(["android_open"]));
+    expect(f.initial[0]).toEqual(expect.arrayContaining([
+      "android_capabilities", "android_system_info", "android_screen", "android_apps", "android_wait_for",
+      "android_open", "android_tap", "android_type", "android_scroll", "android_key", "android_intent",
+      "tool_search", "kulo_report",
+    ]));
+    expect(f.initial[0]).not.toEqual(expect.arrayContaining(["android_collect"]));
     for (const forbidden of ["bash", "read", "write", "edit", "kulo_browser", "kulo_desktop", "kulo_publish_asset"]) expect(f.initial[0]).not.toContain(forbidden);
-    expect(f.native.mock.calls.map(([device, request]) => [device, request.action])).toEqual([["phone-a", "system_info"], ["phone-a", "open"]]);
+    expect(f.native.mock.calls.map(([device, request]) => [device, request.action])).toEqual([["phone-a", "system_info"], ["phone-a", "collect"]]);
     expect(f.cancel.mock.calls[0]?.[0]).toBe("phone-a");
     const conversation = await f.hub.harness.conversation(ticket.workerConversationId as ConversationId, BACKGROUND_CONTEXT);
-    expect((await conversation!.agent(BACKGROUND_CONTEXT)).tools.map(tool => tool.name)).toContain("android_open");
+    expect((await conversation!.agent(BACKGROUND_CONTEXT)).tools.map(tool => tool.name)).toContain("android_collect");
     const settings = f.hub.getSettingsView();
     await f.hub.updateSettingsBlock("presentation", settings.blocks.presentation.revision,
       { ...settings.blocks.presentation.value, workbenchName: "Android verification" });
-    expect((await conversation!.agent(BACKGROUND_CONTEXT)).tools.map(tool => tool.name)).toContain("android_open");
+    expect((await conversation!.agent(BACKGROUND_CONTEXT)).tools.map(tool => tool.name)).toContain("android_collect");
     await f.hub.retryTicket(ticket.id);
     await f.complete(ticket.id);
-    expect((await conversation!.agent(BACKGROUND_CONTEXT)).tools.map(tool => tool.name)).toContain("android_open");
+    expect((await conversation!.agent(BACKGROUND_CONTEXT)).tools.map(tool => tool.name)).toContain("android_collect");
     await f.complete((await f.dispatch("android-second")).id);
-    expect(f.initial[1]).not.toContain("android_open");
+    expect(f.initial[1]).not.toContain("android_collect");
     await f.hub.close();
     const restored = await openTestHub({ models: f.models, config: f.config });
     cleanup.push(() => restored.close());
     restored.setAndroidHubIdentity("test-android-hub");
     const branch = await restored.harness.conversation(ticket.workerConversationId as ConversationId, BACKGROUND_CONTEXT);
-    expect((await branch!.agent(BACKGROUND_CONTEXT)).tools.map(tool => tool.name)).toContain("android_open");
+    expect((await branch!.agent(BACKGROUND_CONTEXT)).tools.map(tool => tool.name)).toContain("android_collect");
   });
 
   it("keeps message target intent immutable and rejects a different phone at dispatch", async () => {
@@ -240,23 +244,25 @@ describe("Hub-hosted Android Workers", () => {
         : call("kulo_subagent", { tasks: [{ name: "phone-observer", role: "scout", goal: "只读检查手机", scope: "仅当前手机" }] });
       if (!tools.includes("android_system_info")) return fauxAssistantMessage([fauxText("已收到。")]);
       if (!results.length) childInitial.push(tools);
-      if (results.some(result => result.toolName === "android_open")) return fauxAssistantMessage([fauxText("只读边界已拒绝改变手机状态。")]);
-      if (tools.includes("android_open")) return call("android_open", { packageName: "io.kulo.fixture" });
-      return call("tool_search", { query: "android_open", limit: 1 });
+      if (results.some(result => result.toolName === "android_collect")) return fauxAssistantMessage([fauxText("只读边界已拒绝改变手机状态。")]);
+      if (tools.includes("android_collect")) return call("android_collect", { screen: "s1" });
+      return call("tool_search", { query: "android_collect", limit: 1 });
     }));
     const ticket = await f.complete((await f.dispatch("android-child")).id);
-    expect(childInitial[0]).toContain("tool_search");
-    for (const name of ["android_open", "kulo_report", "kulo_subagent", "bash", "read", "write"]) expect(childInitial[0]).not.toContain(name);
+    expect(childInitial[0]).toEqual(expect.arrayContaining([
+      "android_capabilities", "android_system_info", "android_screen", "android_apps", "android_wait_for", "tool_search",
+    ]));
+    for (const name of ["android_open", "android_tap", "android_collect", "kulo_report", "kulo_subagent", "bash", "read", "write"]) expect(childInitial[0]).not.toContain(name);
     expect(f.native).not.toHaveBeenCalled();
     expect(f.filesystem).not.toHaveBeenCalled();
     const state = await f.hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const child = Object.values(state?.subagents ?? {}).find(sub => sub.ticketId === ticket.id)!;
     expect(child.readOnly).toBe(true);
     const parent = await f.hub.harness.conversation(ticket.workerConversationId as ConversationId, BACKGROUND_CONTEXT);
-    expect((await parent!.agent(BACKGROUND_CONTEXT)).tools.map(tool => tool.name)).not.toContain("android_open");
+    expect((await parent!.agent(BACKGROUND_CONTEXT)).tools.map(tool => tool.name)).not.toContain("android_collect");
     const conversation = await f.hub.harness.conversation(child.conversationId as ConversationId, BACKGROUND_CONTEXT);
     const transcript = await conversation!.context(BACKGROUND_CONTEXT);
-    expect(transcript.messages.find(message => message.role === "toolResult" && message.toolName === "android_open")).toMatchObject({ isError: true });
+    expect(transcript.messages.find(message => message.role === "toolResult" && message.toolName === "android_collect")).toMatchObject({ isError: true });
   });
 
   it.each(["phone-a", "phone-b"])("accepts screenshot assets only from the actual responding phone (%s)", async ownerId => {
@@ -336,6 +342,55 @@ describe("Hub-hosted Android Workers", () => {
     expect(modelSawImage).toBe(true);
     // Ephemeral observation screenshot must NOT appear in ticket report attachments / staged artifacts
     expect(ticket.latestReport?.attachments ?? []).toHaveLength(0);
+  });
+
+  it("stages user-requested screenshots via stage_for_user even when ephemeralObservation=true and claims inline with kulo_publish_asset", async () => {
+    const f = await fixture();
+    const attachment = f.hub.uploads.saveUpload({
+      name: "taobao.jpg", mimeType: "image/jpeg", ownerId: "phone-a",
+      bytes: Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0xFF, 0xD9]),
+    });
+    f.native.mockImplementation(async (_id, request) => ({
+      version: 1, operationId: request.operationId, action: request.action,
+      ticketId: request.ticketId, runEpoch: request.runEpoch, status: "completed",
+      data: { screen: "s2", packageName: "com.taobao.taobao", text: "淘宝首页", attachment, ephemeralObservation: true },
+    }));
+    f.provider.setResponses(Array.from({ length: 40 }, () => (context: TranscriptContext) => {
+      const tools = names(context);
+      const call = (name: string, args: Record<string, unknown>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
+      if (!tools.includes("kulo_report")) return fauxAssistantMessage([fauxText("已收到。")]);
+      const result = context.messages.find(message => message.role === "toolResult" && message.toolName === "android_screen");
+      if (result?.role === "toolResult") {
+        return call("kulo_report", {
+          state: "ready",
+          summary: "已打开淘宝并完成高清截屏。",
+          files: [{ asset_id: attachment.id }],
+        });
+      }
+      return call("android_screen", { image: true, marks: false, stage_for_user: true });
+    }));
+    const outcome = await f.hub.dispatchTicketForModel({
+      commandId: "inline-android-screenshot",
+      title: "打开手机淘宝并截屏",
+      goal: "打开手机淘宝并截屏",
+      scope: "仅操作 phone-a",
+      role: "coder",
+      envId: "phone-a",
+      executionDomain: "android",
+      originToolTaskId: 1,
+      inlineWaitMs: 10_000,
+    });
+    expect(outcome.inlineDelivery).toMatchObject({
+      state: "ready",
+      stagedAssets: [{ id: attachment.id, name: "taobao.jpg", mimeType: "image/jpeg" }],
+    });
+    const sentArgs = f.native.mock.calls[0]![1].args;
+    expect("stage_for_user" in sentArgs).toBe(false);
+    expect(sentArgs).toEqual({ image: true, marks: false });
+    const rootAgent = await f.hub.rootConversation.agent(BACKGROUND_CONTEXT);
+    const rootToolNames = rootAgent.tools.map((tool) => tool.name);
+    expect(rootToolNames).toContain("kulo_publish_asset");
+    expect(rootToolNames).toContain("kulo_inspect_asset");
   });
 
   it("serializes overlapping phone targets without treating empty workspaces as computer roots", () => {

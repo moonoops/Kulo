@@ -1,13 +1,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage, Model, Models } from "@earendil-works/pi-ai";
 import { defineDoc, type Harness, type JsonObject } from "@earendil-works/pi-durable";
-import type {
-  UsageBucketTotals,
-  UsageCapReason,
-  UsageCapsConfig,
-  UsageCapsScope,
-  UsageCapsSnapshot,
-} from "@kulo/protocol";
+import { isPrivateLocalModelEndpoint, type UsageBucketTotals, type UsageCapReason, type UsageCapsConfig, type UsageCapsScope, type UsageCapsSnapshot } from "@kulo/protocol";
 
 const FLUSH_ENABLED_MS = 60_000;
 const FLUSH_DISABLED_MS = 5 * 60_000;
@@ -77,15 +71,16 @@ export function nextLocalWeekStart(timestamp: number): number {
 }
 
 /**
- * Returns true when `baseUrl` points to a local loopback endpoint
- * (manually configured Ollama / LM Studio / oMLX / vLLM), which is exempt from cloud caps.
+ * Returns true when `baseUrl` points to a self-hosted local/LAN endpoint
+ * (loopback or private RFC1918/Tailscale Ollama / LM Studio / oMLX / vLLM),
+ * which is exempt from cloud usage caps.
  */
 export function isLoopbackBaseUrl(baseUrl?: string): boolean {
   if (!baseUrl) return false;
+  if (isPrivateLocalModelEndpoint(baseUrl)) return true;
   try {
-    const parsed = new URL(baseUrl);
-    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-    return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0" || host.endsWith(".localhost");
+    const host = new URL(baseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return host === "0.0.0.0";
   } catch {
     return false;
   }

@@ -1,4 +1,4 @@
-import { ROOT_CONVERSATION_ID, ToolResultEntry, UserEntry, type EntryRecord } from "@earendil-works/pi-durable";
+import { ROOT_CONVERSATION_ID, ToolResultEntry, type EntryRecord } from "@earendil-works/pi-durable";
 import {
   redactSensitiveText,
   type TaskBoardEntry,
@@ -13,6 +13,8 @@ import { ProjectError, type KuloProjectsState } from "./projects.js";
 import { isActiveSettingsConversation, type SettingsAssistantState } from "./settings-doc.js";
 import {
   hasPendingWorkspaceApply,
+  isActiveRootConversation,
+  isRecoveryInputBoundary,
   recordProcessedCommand,
   type KuloDurableState,
 } from "./state.js";
@@ -73,7 +75,7 @@ export function resolveBoardCallerScope(
   const missingProject = Boolean(currentTopic?.projectId && !currentProject);
   const isGlobalChatScope =
     !isActiveSettings &&
-    (conversationId === Number(ROOT_CONVERSATION_ID) || Boolean(currentTopic?.master));
+    (isActiveRootConversation(conversationId, state) || Boolean(currentTopic?.master && currentTopic.deletedAt === undefined));
   return {
     conversationId,
     ...(currentTopic ? { topicId: currentTopic.id, currentTopic } : {}),
@@ -774,7 +776,7 @@ export function resolveReplyTaskAnchor(
   let matchedTicketId: string | undefined;
   for (let i = targetIdx; i >= Math.max(0, targetIdx - 6); i -= 1) {
     const entry = entries[i]!;
-    if (i < targetIdx && UserEntry.is(entry)) break;
+    if (i < targetIdx && isRecoveryInputBoundary(entry)) break;
     if (ToolResultEntry.is(entry)) {
       const msg = entry.model?.[0];
       if (msg && msg.role === "toolResult" && msg.toolName === "kulo_dispatch") {

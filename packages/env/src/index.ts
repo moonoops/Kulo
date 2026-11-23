@@ -6,13 +6,14 @@ export { FlowBrowserService, flowBrowserExecutable, type FlowBrowserDriver, type
 export { KuloEnvAgent, type KuloEnvAgentOptions } from "./agent.js";
 export { ComputerUseService, computerUseConfiguration } from "./computer-use.js";
 export { HostActionService, expandHostPath, validateHostMaintenanceCommands } from "./host-actions.js";
-export { buildHostMaintenanceSandboxProfile, buildWorkerSandboxProfile, canonicalExecutionPath, createWorkerSandbox, defaultProtectedPaths, discoverGitWriteDeniedPaths, isApplicationPrivatePath, type WorkerExecutionOptions, type WorkerNetworkPolicy } from "./isolation.js";
+export { buildHostMaintenanceSandboxProfile, buildWorkerSandboxProfile, canonicalExecutionPath, createWorkerSandbox, defaultProtectedPaths, discoverGitWriteDeniedPaths, hasWorkerBasicOrFullIsolation, hasWorkerStrictNetworkIsolation, isApplicationPrivatePath, workerIsolationCapabilities, type WorkerExecutionOptions, type WorkerNetworkPolicy } from "./isolation.js";
 export { buildLinuxSandboxArguments, isRestrictedLinuxProxyAddress } from "./isolation-linux.js";
-export { buildWindowsSandboxPolicy } from "./isolation-windows.js";
+export { buildWindowsSandboxPolicy, cleanupWindowsSandboxCommand, createWindowsBasicSandboxSetupCommand, createWindowsSandboxCommand } from "./isolation-windows.js";
 export { createMacSandboxCleanupCommand } from "./isolation-macos.js";
 export { collectDeviceSystemInfo } from "./device-info.js";
 export { ProjectDirectoryRegistry, type AuthorizeDirectoryInput } from "./project-directories.js";
-export { getPeerConfigPath, readPeerConfig, savePeerConfig, removePeerConfig, updatePeerConfig, installDevicePeer, startDevicePeer, runInstalledPeer, renderPeerInstaller, normalizePeerHubUrl, type DevicePeerRuntime, type StartDevicePeerOptions, type StandbyHostBridge } from "./peer.js";
+export { getPeerConfigPath, readPeerConfig, savePeerConfig, removePeerConfig, updatePeerConfig, installDevicePeer, startDevicePeer, runInstalledPeer, normalizePeerHubUrl, type DevicePeerRuntime, type StartDevicePeerOptions, type StandbyHostBridge } from "./peer.js";
+export { INSTALL_STAGE_MARKER, PEER_RUNTIME_DEPS, renderPeerInstaller, type PeerInstallerRenderOptions } from "./peer-installer.js";
 export {
   CLUSTER_AUTH_HEADER,
   ClusterNonceGuard,
@@ -70,7 +71,49 @@ export { probeGrokQuota, type GrokQuotaCliRunner } from "./external-agent-acp.js
 export { SAFE_HOST_GIT_ARGS, STAGED_NON_COW_MAX_BYTES, STAGED_NON_COW_MAX_FILES, StagedWorkspaceConflictError, StagedWorkspaceOversizedError, applyStagedChanges, cloneStagedWorkspace, computeStagedDiff, preflightNonCowWorkspace, safeHostGitEnv, scanWorkspaceManifest, type CloneStagedWorkspaceOptions } from "./staged-workspace.js";
 export { StagedWorkspaceService, type StagedWorkspaceServiceOptions } from "./staged-workspace-service.js";
 export { EXTERNAL_AGENT_MCP_DEFINED_TOOL_NAMES, EXTERNAL_AGENT_MCP_TOOLS, type ExternalAgentMcpInvocation, type ExternalAgentMcpScope } from "./external-agent-mcp.js";
-export { LocalInstanceOwner, LocalInstanceInUseError, discoverLocalInstance, localListenerOrigin, claimKuloRuntime, discoverKuloRuntime } from "./local-instance.js";
+export {
+  HUB_STATE_LOCK_FILES,
+  KULO_RUNTIME_INSTANCE_FILES,
+  LocalInstanceOwner,
+  LocalInstanceInUseError,
+  claimKuloRuntime,
+  discoverKuloRuntime,
+  discoverLocalInstance,
+  localInstanceLockFiles,
+  localListenerOrigin,
+} from "./local-instance.js";
+export {
+  ensureHostRuntimeToken,
+  readExistingHostRuntimeToken,
+  readHostRuntimePort,
+  resolveDefaultHostAppName,
+  resolveDefaultHostDataDir,
+  resolveKuloHostLayout,
+  saveHostRuntimePort,
+  type HostAppChannel,
+  type KuloHostLayout,
+} from "./host-layout.js";
+export {
+  atomicReplaceFile,
+  atomicReplaceFileSync,
+  hasForbiddenPosixPermissions,
+  isOwnerMismatch,
+  isWindowsPlatform,
+  removeReadonlyTree,
+  removeReadonlyTreeSync,
+  safeChmodSync,
+  safeFchmodSync,
+  safeHandleChmod,
+} from "./platform-fs.js";
+export {
+  WINDOWS_CORE_ENV_KEYS,
+  preserveWindowsCoreEnv,
+  quoteWindowsCmdArg,
+  resolveCrossPlatformSpawn,
+  resolveSystemTarExecutable,
+  resolveWindowsNpmCmdTarget,
+  type CrossPlatformSpawnSpec,
+} from "./platform-process.js";
 export { discoverDevicePeer, DevicePeerInUseError } from "./peer-runtime-owner.js";
 export { parseBinaryPlist, extractNotificationPlist, type ParsedNotificationPlist, type PlistValue } from "./connectors/bplist.js";
 export { MacOsNotificationSensor, friendlyAppLabel, resolveMacOsNotificationDbPath, type MacOsNotificationSensorOptions } from "./connectors/macos-notifications.js";

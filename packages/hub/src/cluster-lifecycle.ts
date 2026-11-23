@@ -19,6 +19,8 @@ import {
 } from "@kulo/protocol";
 import {
   CLUSTER_AUTH_HEADER,
+  HUB_STATE_LOCK_FILES,
+  KULO_RUNTIME_INSTANCE_FILES,
   createClusterAuthHeader,
   probeUrlsHappyEyeballs,
   readClusterMembership,
@@ -46,7 +48,15 @@ import {
   type ClusterSyncVaultPayload,
 } from "./cluster-sync.js";
 import { MANAGED_IDENTITY_DIRECTORY_KEY } from "./identity-files.js";
-import { enforceConnectionRuntimePermissions } from "./cluster-sync-paths.js";
+import {
+  BUILTIN_MEMORY_FAILOVER_PAUSE_FILE,
+  CLUSTER_CONFLICT_CORE_FILES,
+  CLUSTER_SYNC_SQLITE_DBS,
+  CLUSTER_SYNC_SQLITE_WAL_SHM,
+  CLUSTER_SYNC_STALE_SQLITE_ARTIFACTS,
+  enforceConnectionRuntimePermissions,
+  verifyReplicaBuiltinMemoryMeta,
+} from "./cluster-sync-paths.js";
 
 const MAX_ARCHIVED_BACKUPS = 3;
 const PRE_START_PROBE_TIMEOUT_MS = 3_000;
@@ -54,30 +64,10 @@ const FENCE_INTERVAL_MS = 15_000;
 
 /** Local host-owned Hub entries that must NEVER be overwritten or deleted during promotion. */
 const PRESERVED_LOCAL_HUB_ENTRIES = new Set([
-  ".secure",
-  "managed-hindsight",
-  "memory-llm-bridge.json",
-  "voice",
-  "runtime-token",
-  "device-id",
-  "workspace",
-  ".kulo-hub.lock",
+  ".secure", "managed-hindsight", "memory-llm-bridge.json", "voice", "cache",
+  "runtime-token", "device-id", "workspace", "extensions", ".kulo-hub.lock",
+  ...KULO_RUNTIME_INSTANCE_FILES, ...HUB_STATE_LOCK_FILES,
 ]);
-
-/** Stale SQLite journal/cache/backup files always removed before copying replica DBs (P0-3). */
-const STALE_SQLITE_ARTIFACTS = [
-  "kulo.sqlite",
-  "kulo.sqlite-wal",
-  "kulo.sqlite-shm",
-  "kulo.sqlite.redaction-pending",
-  "assistant.sqlite",
-  "assistant.sqlite-wal",
-  "assistant.sqlite-shm",
-  "conversation-history.sqlite",
-  "conversation-history.sqlite-wal",
-  "conversation-history.sqlite-shm",
-  "backups",
-] as const;
 
 export interface ClusterPaths {
   dataDir: string;
@@ -311,13 +301,14 @@ export async function applyReplicaForPromotion(
     throw new Error("本地备用同步数据尚未就绪，无法提升为主机。");
   }
   const replicaDb = path.join(replicaDir, "kulo.sqlite");
-  if (!fs.existsSync(replicaDb)) {
-    throw new Error("备用副本缺少核心数据库，无法提升为主机。");
+  if (!fs.existsSync(replicaDb)) throw new Error("备用副本缺少核心数据库，无法提升为主机。");
+  for (const dbName of CLUSTER_SYNC_SQLITE_DBS) {
+    const dbFile = path.join(replicaDir, dbName);
+    if (fs.existsSync(dbFile)) verifySqliteFile(dbFile);
   }
-  verifySqliteFile(replicaDb);
-  const replicaAssistantDb = path.join(replicaDir, "assistant.sqlite");
-  if (fs.existsSync(replicaAssistantDb)) {
-    verifySqliteFile(replicaAssistantDb);
+  const memoryMetaCheck = verifyReplicaBuiltinMemoryMeta(replicaDir, replicaState.builtinMemoryMeta);
+  if (!memoryMetaCheck.ok && options.reason === "handover") {
+    throw new Error(`备用副本内置记忆状态未同步完成（${memoryMetaCheck.reason}），请等待同步完成后重试。`);
   }
   const replicaDevices = readDevicesFile(path.join(replicaDir, "devices.json"));
   if (!replicaDevices || replicaDevices.hubId !== replicaState.hubId) {
@@ -373,7 +364,7 @@ export async function applyReplicaForPromotion(
 
   // Stage 2: Clean stale SQLite WAL/SHM/cache/backups & non-destructively copy replica -> hub/
   writeTransition("copying");
-  for (const stale of STALE_SQLITE_ARTIFACTS) {
+  for (const stale of CLUSTER_SYNC_STALE_SQLITE_ARTIFACTS) {
     fs.rmSync(path.join(paths.hubStateDir, stale), { recursive: true, force: true });
   }
   // Remove stale managed identity/skills/connection-runtime directories before copying exact replicated snapshot
@@ -381,9 +372,14 @@ export async function applyReplicaForPromotion(
 
   const skipOnCopy = new Set([
     "replica-state.json", "connection-vault.json", "vault-envelope.enc", ".connection-vault.lock",
-    "devices.json", "uploads", "kulo.sqlite-wal", "kulo.sqlite-shm", "assistant.sqlite-wal", "assistant.sqlite-shm",
+    "devices.json", "uploads", ...CLUSTER_SYNC_SQLITE_WAL_SHM,
   ]);
   copyTreeNonDestructive(replicaDir, paths.hubStateDir, { skipNames: skipOnCopy });
+  if (!memoryMetaCheck.ok) {
+    fs.writeFileSync(path.join(paths.hubStateDir, BUILTIN_MEMORY_FAILOVER_PAUSE_FILE), `${memoryMetaCheck.reason ?? "unverified"}\n`, { mode: 0o600 });
+  } else {
+    fs.rmSync(path.join(paths.hubStateDir, BUILTIN_MEMORY_FAILOVER_PAUSE_FILE), { force: true });
+  }
   normalizeManagedIdentityBackups(path.join(paths.hubStateDir, "identity"));
   enforceConnectionRuntimePermissions(paths.hubStateDir);
 
@@ -596,18 +592,7 @@ export function archiveDivergedHubForConflict(
   const backupDir = path.join(paths.clusterConflictBackupsDir, `conflict-${stamp}`);
   fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
   // Archive only compact core state files (NO duplicate `uploads/` copies, P2-1).
-  const coreFiles = [
-    "kulo.sqlite",
-    "kulo.sqlite-wal",
-    "kulo.sqlite-shm",
-    "assistant.sqlite",
-    "assistant.sqlite-wal",
-    "assistant.sqlite-shm",
-    "devices.json",
-    "connections.json",
-    "cluster-sync-meta.json",
-  ];
-  for (const name of coreFiles) {
+  for (const name of CLUSTER_CONFLICT_CORE_FILES) {
     const src = path.join(paths.hubStateDir, name);
     if (!fs.existsSync(src)) continue;
     try {

@@ -1,5 +1,5 @@
 import type { LiveContextState } from "./context-state.js";
-export const KULO_VERSION = "0.1.5";
+export const KULO_VERSION = "0.1.6";
 
 export type TicketStatus =
   | "queued"
@@ -190,8 +190,8 @@ export interface TicketRecord {
   /** Real harness-recorded outward side effects (never model text) used to block blind auto-retry. */
   outwardActions?: TicketOutwardAction[];
   supersedes?: string[];
-  originTopicId?: string;
-  originConversationId?: number;
+  originTopicId?: string; originConversationId?: number;
+  finalRelayPending?: boolean;
   projectId?: string;
   projectRevision?: number;
   directoryId?: string;
@@ -209,11 +209,10 @@ export interface TicketRecord {
   /** Durable single-delivery CAS state for A2-lite inline dispatch fast lane. */
   deliveryClaim?: "inline_waiting" | "claimed_inline" | "escalated";
   inlineResult?: {
-    state: WorkerReportRecord["state"];
-    summary: string;
-    deliverable?: string | null;
+    state: WorkerReportRecord["state"]; summary: string; deliverable?: string | null;
     sources?: import("./search.js").WebSource[];
     stagedDiff?: import("./external-agents.js").StagedWorkspaceDiffSummary;
+    stagedAssets?: Array<{ id: string; name: string; mimeType: string }>;
   };
   /** Optional TaskBoard ID linking multi-ticket collaborative work. */
   boardId?: string;
@@ -281,7 +280,7 @@ export interface TopicSummary {
   title: string;
   master?: boolean;
   pinned?: boolean;
-  archived?: boolean;
+  archived?: boolean; archivedFromRoot?: boolean;
   draft?: boolean;
   origin?: "user" | "proactive";
   situationId?: string;
@@ -338,7 +337,7 @@ export interface EnvNodeDescriptor {
   rootDir: string;
   /** Omitted by legacy nodes, which speak the Pi Env daemon protocol. */
   executionKind?: "pi-env" | "native-device";
-  android?: import("./android.js").AndroidEnvStatus;
+  android?: import("./android-validation.js").AndroidEnvStatus;
   capabilities: string[];
   connectedAt: number;
   lastSeenAt: number;
@@ -733,8 +732,8 @@ export interface CustomProviderConfig {
   preset?: string;
   api: CustomProviderApi;
   baseUrl: string;
-  vertexProject?: string;
-  vertexLocation?: string;
+  authMode?: "api-key" | "none";
+  vertexProject?: string; vertexLocation?: string;
   models: CustomModelConfig[];
 }
 

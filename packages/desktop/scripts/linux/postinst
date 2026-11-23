@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+if [ -f /etc/apparmor.d/kulo ] && command -v apparmor_parser >/dev/null 2>&1; then
+  if [ -d /sys/kernel/security/apparmor ]; then
+    apparmor_parser -r -W /etc/apparmor.d/kulo || true
+  fi
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database -q /usr/share/applications || true
+fi
+exit 0

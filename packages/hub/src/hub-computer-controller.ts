@@ -57,7 +57,7 @@ export interface HubComputerShellOptions {
 
 export interface HubComputerRuntimeDeps {
   harness: Harness;
-  rootConversationId: number;
+  getRootConversationId: () => number;
   capabilities: Pick<KuloCapabilities, "configureComputerUse">;
   actionConfirmations: KuloActionConfirmations;
   connectionManager: Pick<KuloConnections, "redact">;
@@ -432,7 +432,7 @@ export class HubComputerController {
     }
     const now = Date.now();
     const expiresAt = now + COMPUTER_HANDOFF_TTL_MS;
-    const originConversationId = ticket.originConversationId ?? rt.rootConversationId;
+    const originConversationId = ticket.originConversationId ?? rt.getRootConversationId();
     const key = `${scope.ticketId}:${input.target}:${input.sessionId}`;
     if (!this.#computerSessions.has(key)) {
       this.#computerSessions.set(key, {
@@ -586,8 +586,19 @@ export class HubComputerController {
   async closeOrchestratorBrowserSession(topicId: string, allowDuringClose = false): Promise<void> {
     const existing = this.#orchestratorBrowserSessions.get(topicId);
     if (!existing) return;
+    await this.#closeBrowserEntry(existing, allowDuringClose);
+  }
+
+  async closeOrchestratorBrowserSessionByConversation(conversationId: number, allowDuringClose = false): Promise<void> {
+    const matching = [...this.#orchestratorBrowserSessions.values()].filter((s) => s.conversationId === conversationId);
+    for (const entry of matching) await this.#closeBrowserEntry(entry, allowDuringClose);
+  }
+
+  async #closeBrowserEntry(existing: OrchestratorBrowserSession, allowDuringClose: boolean): Promise<void> {
+    if (this.#orchestratorBrowserSessions.get(existing.topicId) === existing) {
+      this.#orchestratorBrowserSessions.delete(existing.topicId);
+    }
     clearTimeout(existing.idleTimer);
-    this.#orchestratorBrowserSessions.delete(topicId);
     const isClosed = this.#runtime?.runtimeGates.isClosed() ?? false;
     if ((!isClosed || allowDuringClose) && this.#envManager.getEnvDescriptor(existing.envId)?.online) {
       await this.#envManager

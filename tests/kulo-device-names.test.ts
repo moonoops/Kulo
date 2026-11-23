@@ -11,7 +11,7 @@ import { DeviceInterconnectionManager } from "../packages/hub/src/devices.js";
 
 const directories: string[] = [];
 const resources: Array<() => Promise<void>> = [];
-const systemInfo: DeviceSystemInfo = { hostname: "System-Mac.local", platform: "darwin", arch: "arm64", release: "test", cpu: "test", memoryBytes: 8 * 1024 ** 3, ips: ["10.0.1.5"] };
+const systemInfo: DeviceSystemInfo = { hostname: "System-Mac.local", platform: "darwin", arch: "arm64", release: "test", cpu: "test", memoryBytes: 8 * 1024 ** 3, ips: ["10.0.0.5"] };
 
 afterEach(async () => {
   for (const close of resources.splice(0).reverse()) await close();
@@ -83,7 +83,7 @@ describe("device display names", () => {
     const onChange = vi.fn();
     const f = fixture({ envTokens: { [legacyId]: legacyToken }, onChange });
     f.manager.setEnabled(true);
-    const invitation = f.manager.createInvitation({ name: "配对默认名称", hubUrl: "http://10.0.1.5:7788" });
+    const invitation = f.manager.createInvitation({ name: "配对默认名称", hubUrl: "http://10.0.0.5:7788" });
     const config = f.manager.pair({ inviteToken: invitation.inviteToken, info: systemInfo });
     const connect = await startNodeConnections(f.env);
     const node = await connect(config.deviceId, config.envToken, "Raw paired system name");
@@ -159,7 +159,7 @@ describe("device display names", () => {
   it("retains automatic paired-device names and credentials when renamed", () => {
     const f = fixture();
     f.manager.setEnabled(true);
-    const invitation = f.manager.createInvitation({ hubUrl: "http://10.0.1.5:7788" });
+    const invitation = f.manager.createInvitation({ hubUrl: "http://10.0.0.5:7788" });
     const config = f.manager.pair({ inviteToken: invitation.inviteToken, info: { ...systemInfo, hostname: "Remote-Mac.local" } });
     expect(f.view().devices.find((device) => device.id === config.deviceId)?.name).toBe("Remote-Mac.local");
     f.manager.rename(config.deviceId, "  远程开发机  ");

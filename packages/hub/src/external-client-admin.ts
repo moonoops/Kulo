@@ -72,6 +72,9 @@ export class ExternalClientAdminService {
     if (!response.detection.installed || response.detection.error) {
       throw new SettingsUpdateError(409, connectionManager.redact(response.detection.error || "未能读取客户端原生模型列表。"));
     }
+    if (response.detection.authenticated === false) {
+      throw new SettingsUpdateError(409, "本地客户端尚未完成登录，请先在原客户端登录后再刷新模型列表。");
+    }
     const now = Date.now();
     const { nextDoc, updated } = await harness.commit(async (tx) => {
       const doc = await tx.doc(KuloSettingsDoc);

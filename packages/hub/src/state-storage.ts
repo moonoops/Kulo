@@ -11,7 +11,29 @@ interface StateStorageVersion {
 }
 
 const VERSION_FILE = "state-version.json";
-const BACKUP_FILE = "backups/kulo-before-state-v2.sqlite";
+const BACKUP_FILE = `backups/kulo-before-state-v${KULO_STATE_VERSION}.sqlite`;
+const VALID_BACKUP_FILES = new Set(["backups/kulo-before-state-v2.sqlite", BACKUP_FILE]);
+const WINDOWS_RETRYABLE_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+
+function renameSyncWithWindowsRetry(tempPath: string, targetPath: string): void {
+  const maxAttempts = process.platform === "win32" ? 5 : 1;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      fs.renameSync(tempPath, targetPath);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt < maxAttempts && code && WINDOWS_RETRYABLE_CODES.has(code)) {
+        const deadline = Date.now() + 20 * attempt;
+        while (Date.now() < deadline) {
+          // Brief spin wait for transient Windows AV / indexer file lock release.
+        }
+        continue;
+      }
+      throw error;
+    }
+  }
+}
 
 function readVersion(filename: string): StateStorageVersion | undefined {
   if (!fs.existsSync(filename)) return undefined;
@@ -24,7 +46,7 @@ function readVersion(filename: string): StateStorageVersion | undefined {
     throw new Error(`Kulo state storage has newer version ${value.version} than ${KULO_STATE_VERSION}`);
   }
   if (!("preparedAt" in value) || typeof value.preparedAt !== "number" || !Number.isSafeInteger(value.preparedAt) || value.preparedAt < 0 ||
-      ("backupFile" in value && value.backupFile !== BACKUP_FILE)) {
+      ("backupFile" in value && (typeof value.backupFile !== "string" || !VALID_BACKUP_FILES.has(value.backupFile)))) {
     throw new Error("Invalid Kulo state storage version marker");
   }
   return value as StateStorageVersion;
@@ -85,7 +107,7 @@ export async function prepareStateStorage(stateDir: string): Promise<void> {
           // The SQLite backup API includes committed WAL pages; copying the main file does not.
           await backup(source, temporary);
           checkBackup(temporary);
-          fs.renameSync(temporary, backupPath);
+          renameSyncWithWindowsRetry(temporary, backupPath);
         } finally {
           fs.rmSync(temporary, { force: true });
         }
@@ -97,7 +119,7 @@ export async function prepareStateStorage(stateDir: string): Promise<void> {
     const value: StateStorageVersion = { version: KULO_STATE_VERSION, preparedAt: Date.now(), ...(backupFile ? { backupFile } : {}) };
     try {
       fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-      fs.renameSync(temporary, markerPath);
+      renameSyncWithWindowsRetry(temporary, markerPath);
     } finally {
       fs.rmSync(temporary, { force: true });
     }

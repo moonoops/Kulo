@@ -30,6 +30,7 @@ import {
 import { isMainOrchestratorApi } from "./settings-doc.js";
 import { resolveDeferredAddTools } from "./tool-surface.js";
 import { createHindsightTools } from "./tools-memory.js";
+import type { ToolRegistration } from "@earendil-works/pi-durable";
 import type { MemoryCallerContext } from "./hindsight.js";
 import type { ForgottenTermEntry, MemoryForgetOutcome } from "./memory-forget.js";
 import { createWebSearchTool } from "./tools-search.js";
@@ -101,6 +102,7 @@ export interface DispatchTicketModelOutcome {
     deliverable?: string | null;
     sources?: import("@kulo/protocol").WebSource[];
     stagedDiff?: import("@kulo/protocol").StagedWorkspaceDiffSummary;
+    stagedAssets?: Array<{ id: string; name: string; mimeType: string }>;
   };
   blockedByPendingMerge?: {
     ticketId: string;
@@ -120,6 +122,8 @@ export interface SteerTicketParams {
   originToolTaskId?: number;
   resetRecovery?: boolean;
   interrupt?: boolean;
+  /** Internal Hub-initiated system resume (never exposed to HTTP/WS/LLM); bypasses free-text agent-intent parsing. */
+  internalResume?: boolean;
 }
 
 export interface ApplyStagedChangesParams {
@@ -216,6 +220,7 @@ export function createOrchestratorToolsExtension(
   sections: ReturnType<typeof import("./prompts.js").createOrchestratorSections>,
   getMemoryConfig: () => HindsightMemoryConfig,
   getSearch?: () => KuloSearch,
+  builtinMemoryTools: readonly ToolRegistration[] = [],
 ) {
   const deviceInviteTool = defineTool({
     name: "kulo_device_invite",
@@ -263,7 +268,7 @@ export function createOrchestratorToolsExtension(
       project_id: opt(str({ description: "Target project ID." })),
       connection_ids: opt(arr(str({ description: "Saved connection IDs to grant (never secret values)." }))),
       workspace_dir: opt(str({ description: "Explicit absolute working directory; omit for isolated table/<ticket>." })),
-      inline_wait_ms: opt(num({ description: "Inline wait (0–15000 ms) for fast built-in Workers; ignored for external Agents." })),
+      inline_wait_ms: opt(num({ description: "Inline wait (0–30000 ms) for fast built-in Workers; ignored for external Agents." })),
       supersedes: opt(arr(obj({ ticket_id: str(), reason: str() }), { description: "Failed/obsolete tickets replaced once this ticket succeeds." })),
       board_id: opt(str({ description: "TaskBoard ID to link." })),
       board_title: opt(str({ description: "New TaskBoard title (multi-ticket only)." })),
@@ -828,6 +833,7 @@ export function createOrchestratorToolsExtension(
       createWebFetchTool(getSearch),
       createWebSearchTool(getSearch),
       ...hindsightTools,
+      ...builtinMemoryTools,
       ...(controller.connections ? createConnectionTools(controller.connections, "orchestrator") : []),
       ...(controller.hostActions
         ? [createHostActionTool(controller.hostActions, "orchestrator"), createHostActionDecideTool(controller.hostActions)]

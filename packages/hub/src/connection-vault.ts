@@ -4,28 +4,16 @@ import { fileURLToPath } from "node:url";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 
+import {
+  ConnectionVaultError,
+  type ConnectionVaultKeyStore,
+} from "./connection-vault-errors.js";
+import { LinuxConnectionKeyStore } from "./linux-keystore.js";
+
+export { ConnectionVaultError, type ConnectionVaultKeyStore };
+export { LinuxConnectionKeyStore, type LinuxConnectionKeyStoreOptions, type LinuxKeyStoreBackend } from "./linux-keystore.js";
+
 export type ConnectionSecretFields = Record<string, string>;
-
-export interface ConnectionVaultKeyStore {
-  /** `create=false` must never replace a missing master key for an existing vault. */
-  getOrCreateKey(namespace: string, create?: boolean): Promise<Buffer>;
-  checkAvailability?(): Promise<void>;
-}
-
-export class ConnectionVaultError extends Error {
-  constructor(readonly code: "connection_vault_unavailable" | "connection_vault_locked" | "connection_vault_key_missing" | "connection_vault_corrupt" | "connection_vault_io" | "connection_vault_invalid_input" | "connection_vault_busy") {
-    super({
-      connection_vault_unavailable: "本机安全凭证存储不可用。",
-      connection_vault_locked: "系统密钥库已锁定或未授权，请解锁后重试。",
-      connection_vault_key_missing: "本地凭证主密钥不可用，请恢复系统密钥库。",
-      connection_vault_corrupt: "本地凭证库校验失败，未读取或覆盖凭据。",
-      connection_vault_io: "无法访问本地凭证库，请检查目录权限和磁盘状态。",
-      connection_vault_invalid_input: "凭证内容无效。",
-      connection_vault_busy: "本地凭证库正被其他进程使用，请稍后重试。",
-    }[code]);
-    this.name = "ConnectionVaultError";
-  }
-}
 
 interface EncryptedEntry { iv: string; tag: string; data: string }
 interface VaultDocument {
@@ -63,7 +51,7 @@ function bytes(value: unknown, size?: number): Buffer {
 
 function processEnvironment(): NodeJS.ProcessEnv {
   const result: NodeJS.ProcessEnv = { PATH: process.platform === "win32" ? process.env.PATH : "/usr/bin:/bin", LANG: "C.UTF-8" };
-  for (const name of ["HOME", "SystemRoot", "SYSTEMROOT", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"]) if (process.env[name]) result[name] = process.env[name];
+  for (const name of ["HOME", "SystemRoot", "SYSTEMROOT", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME"]) if (process.env[name]) result[name] = process.env[name];
   return result;
 }
 
@@ -152,34 +140,6 @@ class MacConnectionKeyStore implements ConnectionVaultKeyStore {
   }
 }
 
-class LinuxConnectionKeyStore implements ConnectionVaultKeyStore {
-  #executable(): string {
-    const executable = ["/usr/bin/secret-tool", "/bin/secret-tool"].find((candidate) => fs.existsSync(candidate));
-    if (!executable || !process.env.DBUS_SESSION_BUS_ADDRESS) throw new ConnectionVaultError("connection_vault_unavailable");
-    return executable;
-  }
-
-  async checkAvailability(): Promise<void> { this.#executable(); }
-
-  async getOrCreateKey(namespace: string, create = true): Promise<Buffer> {
-    const executable = this.#executable();
-    const attributes = ["kulo-service", "connection-vault", "kulo-instance", namespace];
-    const result = await privateProcess(executable, ["lookup", ...attributes]);
-    if (result.status === 0) {
-      const encoded = result.output.toString("utf8").trim();
-      const decoded = Buffer.from(encoded, "base64");
-      if (decoded.length !== 32 || decoded.toString("base64") !== encoded) throw new ConnectionVaultError("connection_vault_unavailable");
-      return decoded;
-    }
-    if (result.status !== 1) throw new ConnectionVaultError("connection_vault_unavailable");
-    if (!create) throw new ConnectionVaultError("connection_vault_key_missing");
-    const key = randomBytes(32);
-    const stored = await privateProcess(executable, ["store", "--label=Kulo connection vault master key", ...attributes], key.toString("base64"));
-    if (stored.status !== 0) { key.fill(0); throw new ConnectionVaultError("connection_vault_unavailable"); }
-    return key;
-  }
-}
-
 // The script is fixed code; only a non-secret namespace and operation arrive on stdin.
 const WINDOWS_KEYSTORE_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -260,9 +220,9 @@ class WindowsConnectionKeyStore implements ConnectionVaultKeyStore {
   }
 }
 
-function systemKeyStore(stateDir: string): ConnectionVaultKeyStore {
+function systemKeyStore(stateDir: string, dataDir?: string): ConnectionVaultKeyStore {
   if (process.platform === "darwin") return new MacConnectionKeyStore(stateDir);
-  if (process.platform === "linux") return new LinuxConnectionKeyStore();
+  if (process.platform === "linux") return new LinuxConnectionKeyStore({ stateDir, dataDir });
   if (process.platform === "win32") return new WindowsConnectionKeyStore();
   return { async getOrCreateKey() { throw new ConnectionVaultError("connection_vault_unavailable"); }, async checkAvailability() { throw new ConnectionVaultError("connection_vault_unavailable"); } };
 }
@@ -349,7 +309,7 @@ export async function getOrCreateClusterKek(options: {
     .update("kulo-standby-kek-v1\0")
     .update(path.resolve(options.dataDir))
     .digest("hex");
-  const store = options.keyStore ?? systemKeyStore(path.resolve(options.hubStateDir));
+  const store = options.keyStore ?? systemKeyStore(path.resolve(options.hubStateDir), path.resolve(options.dataDir));
   let key: Buffer;
   try {
     key = await store.getOrCreateKey(namespace, options.create ?? true);
@@ -360,6 +320,20 @@ export async function getOrCreateClusterKek(options: {
     throw new ConnectionVaultError("connection_vault_unavailable");
   }
   return Buffer.from(key);
+}
+
+/**
+ * Serializes cluster sync-key check/generate/persist across processes and in-process callers
+ * so concurrent initializations can never publish diverging node public keys.
+ */
+export async function runWithClusterKeyLock<T>(
+  options: { dataDir: string; hubStateDir: string; keyStore?: ConnectionVaultKeyStore },
+  operation: () => Promise<T>,
+): Promise<T> {
+  const hubStateDir = path.resolve(options.hubStateDir);
+  const store = options.keyStore ?? systemKeyStore(hubStateDir, path.resolve(options.dataDir));
+  const exec = () => (store.runExclusive ? store.runExclusive(operation) : operation());
+  return runWithLocalCredentialLock(hubStateDir, exec);
 }
 
 export class LocalConnectionVault {

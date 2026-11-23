@@ -141,7 +141,8 @@ export function createDesktopTrayController(options: DesktopTrayControllerOption
       }
     },
     refreshTheme(): void {
-      if (disposed || badgeCount <= 0) return;
+      if (disposed) return;
+      if (options.platform === "darwin" && badgeCount <= 0) return;
       if (tray && !tray.isDestroyed()) {
         applyBadgeVisual(tray);
       }

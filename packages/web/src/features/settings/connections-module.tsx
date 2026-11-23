@@ -122,13 +122,14 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
   const [remove, setRemove] = useState<{ id: string; name: string; category: ConnectionCategory; isComposio?: boolean } | null>(null);
   const rootRef = useRef<HTMLElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
+  const sshSupported = snapshot?.sshSupported !== false;
   useEffect(() => {
     if (!entryIntent || entryIntent.module !== "connections") return;
     if (entryIntent.tab) setView(entryIntent.tab);
     if (entryIntent.intent === "add-ssh-credential") {
       setView("credential");
       setActionError(null);
-      setCredentialModal({ mode: "create", initialKind: "ssh" });
+      setCredentialModal({ mode: "create", initialKind: sshSupported ? "ssh" : "account" });
       onIntentHandled?.(entryIntent.id);
       return;
     }
@@ -451,7 +452,7 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
                     }
                   }}
                 >
-                  <Dropdown.Item id="ssh" textValue={t("SSH 服务器", "SSH server")}><Label>{t("SSH 服务器", "SSH server")}</Label></Dropdown.Item>
+                  {sshSupported && <Dropdown.Item id="ssh" textValue={t("SSH 服务器", "SSH server")}><Label>{t("SSH 服务器", "SSH server")}</Label></Dropdown.Item>}
                   <Dropdown.Item id="account" textValue={t("账号", "Account")}><Label>{t("账号", "Account")}</Label></Dropdown.Item>
                   <Dropdown.Item id="api-key" textValue="API Key"><Label>API Key</Label></Dropdown.Item>
                   <Dropdown.Item id="custom" textValue={t("自定义凭据", "Custom credentials")}><Label>{t("自定义凭据", "Custom credentials")}</Label></Dropdown.Item>
@@ -580,6 +581,7 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
         connected={connected}
         available={snapshot.vault.available}
         localHost={snapshot.localHost}
+        sshSupported={sshSupported}
         onSaved={() => onRefresh()}
         onClose={() => { setCredentialModal(null); onRefresh(); restoreFocus(); }}
       />

@@ -242,6 +242,8 @@ describe.skipIf(!nativeWorkers)("connection permissions across real Hub Worker l
       const ticket = (await f.hub.inspectTicketDetail(card.id)).ticket;
       expect(ticket.connectionIds?.includes(f.connection.id) ?? false).toBe(approved);
       expect(f.transcripts.join("\n")).not.toContain(credential);
+      const topicView = await f.hub.getTopicView(topic.id);
+      expect(topicView.messages.some((m) => m.text.includes("[KULO_CONNECTION_REQUEST]"))).toBe(false);
     });
   }
 

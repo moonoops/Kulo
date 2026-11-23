@@ -1,7 +1,84 @@
 import fs from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 export const SYNC_META_FILE = "cluster-sync-meta.json";
+
+export const CLUSTER_SYNC_SQLITE_DBS = ["kulo.sqlite", "assistant.sqlite", "memory.sqlite"] as const;
+export type ClusterSyncSqliteDbName = (typeof CLUSTER_SYNC_SQLITE_DBS)[number];
+export const CLUSTER_SYNC_SQLITE_SET: ReadonlySet<string> = new Set(CLUSTER_SYNC_SQLITE_DBS);
+export const CLUSTER_SYNC_SQLITE_WAL_SHM: readonly string[] = CLUSTER_SYNC_SQLITE_DBS.flatMap((n) => [`${n}-wal`, `${n}-shm`]);
+export const CLUSTER_SYNC_STALE_SQLITE_ARTIFACTS: readonly string[] = [
+  ...CLUSTER_SYNC_SQLITE_DBS,
+  ...CLUSTER_SYNC_SQLITE_WAL_SHM,
+  "kulo.sqlite.redaction-pending",
+  "memory.sqlite.redaction-pending",
+  "conversation-history.sqlite",
+  "conversation-history.sqlite-wal",
+  "conversation-history.sqlite-shm",
+  "backups",
+];
+export const CLUSTER_CONFLICT_CORE_FILES: readonly string[] = [
+  ...CLUSTER_SYNC_SQLITE_DBS,
+  ...CLUSTER_SYNC_SQLITE_WAL_SHM,
+  "devices.json",
+  "connections.json",
+  SYNC_META_FILE,
+];
+export const CLUSTER_BUILTIN_MEMORY_CAPABILITY = "builtin-memory-v1";
+export const BUILTIN_MEMORY_FAILOVER_PAUSE_FILE = "memory.sqlite.failover-paused";
+export const SUPPORTED_STANDBY_SYNC_CAPABILITIES: ReadonlySet<string> = new Set([CLUSTER_BUILTIN_MEMORY_CAPABILITY]);
+
+export function parseReplicaBuiltinMemoryMeta(raw: unknown): { clearTargetEpoch: number; appliedClearEpoch: number; lastAppliedSeq: number } | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.clearTargetEpoch !== "number" || typeof r.appliedClearEpoch !== "number" || typeof r.lastAppliedSeq !== "number") return undefined;
+  return { clearTargetEpoch: r.clearTargetEpoch, appliedClearEpoch: r.appliedClearEpoch, lastAppliedSeq: r.lastAppliedSeq };
+}
+
+export function verifyStagedManifestBuiltinMemory(
+  stageDir: string,
+  manifest: { requiredCapabilities?: string[]; builtinMemoryMeta?: { clearTargetEpoch: number; appliedClearEpoch: number } },
+): void {
+  for (const cap of manifest.requiredCapabilities ?? []) {
+    if (!SUPPORTED_STANDBY_SYNC_CAPABILITIES.has(cap)) {
+      throw new Error(`当前备用主机不支持同步能力：${cap}`);
+    }
+  }
+  const check = verifyReplicaBuiltinMemoryMeta(stageDir, manifest.builtinMemoryMeta);
+  if (!check.ok) {
+    throw new Error(`同步快照内置记忆校验失败（${check.reason ?? "unverified"}）。`);
+  }
+}
+
+/** Verifies that a replicated `memory.sqlite` matches the expected clear epoch when present in replica metadata. */
+export function verifyReplicaBuiltinMemoryMeta(
+  replicaDir: string,
+  meta?: { clearTargetEpoch: number; appliedClearEpoch: number },
+): { ok: boolean; reason?: string } {
+  if (!meta) return { ok: true };
+  if (meta.appliedClearEpoch < meta.clearTargetEpoch) {
+    return { ok: false, reason: "primary_clear_incomplete" };
+  }
+  const dbPath = path.join(replicaDir, "memory.sqlite");
+  if (!fs.existsSync(dbPath)) {
+    return meta.clearTargetEpoch === 0 ? { ok: true } : { ok: false, reason: "memory_db_missing" };
+  }
+  let db: DatabaseSync | null = null;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const row = db.prepare("SELECT value FROM meta WHERE key = 'applied_clear_epoch'").get() as { value?: string } | undefined;
+    const applied = Number(row?.value ?? 0);
+    if (!Number.isSafeInteger(applied) || applied < meta.clearTargetEpoch) {
+      return { ok: false, reason: "replica_clear_epoch_behind" };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: "memory_db_unreadable" };
+  } finally {
+    try { db?.close(); } catch { /* ignore */ }
+  }
+}
 
 export const TIER3_FIXED_FILES = [
   "devices.json",
@@ -163,7 +240,7 @@ export function enforceConnectionRuntimePermissions(rootDir: string): void {
   } catch {
     return;
   }
-  if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) return;
+  if (!dirStat.isDirectory() || dirStat.isSymbolicLink() || process.platform === "win32") return;
   fs.chmodSync(runtimeDir, 0o700);
   for (const entry of fs.readdirSync(runtimeDir, { withFileTypes: true })) {
     if (!CONNECTION_KNOWN_HOSTS_FILENAME.test(entry.name)) continue;

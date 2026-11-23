@@ -9,9 +9,11 @@ import {
   hook,
   type JsonObject,
   type ToolExecutionApi,
+  type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { arr, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import type {
+  ActiveMemoryMode,
   CapabilitySnapshot,
   HindsightMemoryConfig,
   ChatAttachment,
@@ -144,6 +146,8 @@ export function createWorkerExtension(options: {
   publishAsset?: (input: UiAssetPublicationInput, api: ToolExecutionApi, context: Context) => Promise<ChatAttachment>;
   getIdentityDir: () => string;
   getMemoryConfig: () => HindsightMemoryConfig;
+  getSharedMemoryMode?: () => ActiveMemoryMode;
+  builtinMemoryTools?: readonly ToolRegistration[];
   getRoles?: () => Record<string, RolePreset>;
   getLanguage?: () => KuloLanguage | undefined;
   getMaxSubagentsPerTicket?: () => number;
@@ -605,6 +609,7 @@ export function createWorkerExtension(options: {
         const mem = options.getMemoryConfig();
         return mem.enabled && mem.accessMode !== "private-only";
       },
+      ...(options.getSharedMemoryMode ? { getMemoryMode: options.getSharedMemoryMode } : {}),
       getMaxSubagentsPerTicket: options.getMaxSubagentsPerTicket ?? (() => 4),
       getMediaCapabilities: options.getMediaCapabilities,
       getLocalEnvId: options.getLocalEnvId,
@@ -617,6 +622,7 @@ export function createWorkerExtension(options: {
       createWebFetchTool(options.search),
       createWebSearchTool(options.search),
       ...workerHindsightTools,
+      ...(options.builtinMemoryTools ?? []),
       ...(options.computerUse ? createComputerUseTools(options.computerUse) : []),
       ...(options.connections ? createConnectionTools(options.connections, "worker") : []),
       ...(options.hostActions ? [createHostActionTool(options.hostActions, "worker")] : []),

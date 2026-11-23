@@ -23,7 +23,7 @@ import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { DatabaseSync, backup as sqliteBackup } from "node:sqlite";
-import type { ClusterSyncStatus } from "@kulo/protocol";
+import type { BuiltinMemoryClusterMeta, ClusterSyncStatus } from "@kulo/protocol";
 import {
   CLUSTER_AUTH_HEADER,
   createClusterAuthHeader,
@@ -40,20 +40,16 @@ import {
   LocalConnectionVault,
   createStandbyVaultNamespace,
   getOrCreateClusterKek,
+  runWithClusterKeyLock,
   type ConnectionSecretFields,
   type ConnectionVaultKeyStore,
 } from "./connection-vault.js";
 import {
-  SYNC_META_FILE,
-  TIER3_FIXED_FILES,
-  collectTrustedSshConnectionIds,
-  collectTrustedSshKnownHostsFiles,
-  enforceConnectionRuntimePermissions,
-  isSafeSyncRelativePath,
-  isTrustedSshKnownHostsPath,
-  shouldSkipTempFile,
-  shouldSkipUploadEntry,
-  walkRegularFiles,
+  CLUSTER_BUILTIN_MEMORY_CAPABILITY, CLUSTER_SYNC_SQLITE_DBS, CLUSTER_SYNC_SQLITE_SET,
+  SYNC_META_FILE, TIER3_FIXED_FILES, collectTrustedSshConnectionIds, collectTrustedSshKnownHostsFiles,
+  enforceConnectionRuntimePermissions, isSafeSyncRelativePath, isTrustedSshKnownHostsPath,
+  parseReplicaBuiltinMemoryMeta, shouldSkipTempFile, shouldSkipUploadEntry, verifyStagedManifestBuiltinMemory,
+  walkRegularFiles, type ClusterSyncSqliteDbName,
 } from "./cluster-sync-paths.js";
 
 export { isSafeSyncRelativePath };
@@ -84,7 +80,7 @@ export interface ClusterSyncMeta {
 }
 
 export interface ClusterSyncSqliteEntry {
-  name: "kulo.sqlite" | "assistant.sqlite";
+  name: ClusterSyncSqliteDbName;
   size: number;
   sha256: string;
   pageSize: number;
@@ -111,11 +107,14 @@ export interface ClusterSyncManifest {
   sqlite: ClusterSyncSqliteEntry[];
   files: ClusterSyncFileEntry[];
   uploads: ClusterSyncFileEntry[];
+  requiredCapabilities?: string[];
+  requiredDbs?: ClusterSyncSqliteDbName[];
+  builtinMemoryMeta?: BuiltinMemoryClusterMeta;
 }
 
 export interface ClusterSyncSqlitePagesResponse {
   generation: number;
-  db: "kulo.sqlite" | "assistant.sqlite";
+  db: ClusterSyncSqliteDbName;
   pageSize: number;
   totalSize: number;
   chunks: Array<{ page: number; dataBase64: string }>;
@@ -147,6 +146,7 @@ export interface StandbyReplicaState {
   syncedAt: number;
   pendingVaultEnvelope: boolean;
   uploadsComplete: boolean;
+  builtinMemoryMeta?: BuiltinMemoryClusterMeta;
 }
 
 export interface EnsureClusterKeysOptions {
@@ -181,28 +181,20 @@ export async function ensureLocalClusterKeys(options: EnsureClusterKeysOptions):
   const dataDir = path.resolve(options.dataDir);
   const keyFile = path.join(path.resolve(options.standbyDir), "sync-key.enc");
   const aadContext = `sync-key:${dataDir}`;
-  const kek = await getOrCreateClusterKek({
-    dataDir,
-    hubStateDir: options.hubStateDir,
-    keyStore: options.keyStore,
-    create: true,
-  });
-  try {
-    if (fs.existsSync(keyFile)) {
-      const stat = fs.lstatSync(keyFile);
-      if (!stat.isFile() || stat.isSymbolicLink()) {
-        throw new Error("节点同步密钥文件类型无效。");
+  return runWithClusterKeyLock({ dataDir, hubStateDir: options.hubStateDir, keyStore: options.keyStore }, async () => {
+    const exists = fs.existsSync(keyFile);
+    const kek = await getOrCreateClusterKek({ dataDir, hubStateDir: options.hubStateDir, keyStore: options.keyStore, create: !exists });
+    try {
+      if (exists) {
+        const stat = fs.lstatSync(keyFile);
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("节点同步密钥文件类型无效。");
+        return decryptKeyMaterialWithKek(fs.readFileSync(keyFile, "utf8"), kek, aadContext);
       }
-      const raw = fs.readFileSync(keyFile, "utf8");
-      return decryptKeyMaterialWithKek(raw, kek, aadContext);
-    }
-    const generated = generateClusterNodeKeyMaterial();
-    const sealed = encryptKeyMaterialWithKek(generated, kek, aadContext);
-    writeFileAtomic(keyFile, sealed, 0o600);
-    return generated;
-  } finally {
-    kek.fill(0);
-  }
+      const generated = generateClusterNodeKeyMaterial();
+      writeFileAtomic(keyFile, encryptKeyMaterialWithKek(generated, kek, aadContext), 0o600);
+      return generated;
+    } finally { kek.fill(0); }
+  });
 }
 
 export function readSyncMeta(stateDir: string): ClusterSyncMeta {
@@ -248,6 +240,7 @@ export function readReplicaState(replicaDir: string): StandbyReplicaState | null
     ) {
       return null;
     }
+    const builtinMemoryMeta = parseReplicaBuiltinMemoryMeta(parsed.builtinMemoryMeta);
     return {
       version: 1,
       hubId: parsed.hubId,
@@ -258,6 +251,7 @@ export function readReplicaState(replicaDir: string): StandbyReplicaState | null
       syncedAt: parsed.syncedAt,
       pendingVaultEnvelope: Boolean(parsed.pendingVaultEnvelope),
       uploadsComplete: Boolean(parsed.uploadsComplete),
+      ...(builtinMemoryMeta ? { builtinMemoryMeta } : {}),
     };
   } catch {
     return null;
@@ -354,7 +348,9 @@ export interface ClusterSyncServiceOptions {
   getClusterEpoch: () => number;
   hasRemoteStandbys: () => boolean;
   getEffectiveIdentityDir: () => string;
-  backupAssistantLedger: (destPath: string) => Promise<boolean>;
+  backupAssistantLedger?: (destPath: string) => Promise<boolean>;
+  backupSqliteDb?: (name: Exclude<ClusterSyncSqliteDbName, "kulo.sqlite">, destPath: string) => Promise<boolean>;
+  getBuiltinMemoryMeta?: () => BuiltinMemoryClusterMeta | undefined;
   readVaultEntries: () => Promise<Array<{ ref: string; fields: ConnectionSecretFields }>>;
   getSenderKeys: () => ClusterNodeKeyMaterial;
   resolveStandbyPublicKey: (nodeId: string) => string | undefined;
@@ -388,6 +384,8 @@ export class ClusterSyncService {
     this.#cleanupOrphanSnapshots();
   }
 
+  #generationClearEpochs = new Map<number, number>();
+  getClearEpochForGeneration(generation: number): number { return this.#generationClearEpochs.get(generation) ?? -1; }
   get currentGeneration(): number {
     return this.#meta.generation;
   }
@@ -409,7 +407,7 @@ export class ClusterSyncService {
     }
   }
 
-  markDirty(kind: "sqlite" | "assistant" | "vault" | "files" | "uploads"): void {
+  markDirty(kind: "sqlite" | "assistant" | "memory" | "vault" | "files" | "uploads"): void {
     if (this.#closed) return;
     if (kind === "vault") {
       this.#meta = { ...this.#meta, vaultRevision: this.#meta.vaultRevision + 1 };
@@ -495,7 +493,7 @@ export class ClusterSyncService {
   ): Promise<ClusterEncryptedEnvelope> {
     const pubKey = this.#requireStandbyPublicKey(targetNodeId);
     const generation = typeof body.generation === "number" && Number.isSafeInteger(body.generation) ? body.generation : -1;
-    const dbName = body.db === "kulo.sqlite" || body.db === "assistant.sqlite" ? body.db : null;
+    const dbName = typeof body.db === "string" && CLUSTER_SYNC_SQLITE_SET.has(body.db) ? (body.db as ClusterSyncSqliteDbName) : null;
     if (!dbName || !Array.isArray(body.pages) || body.pages.length === 0 || body.pages.length > CLUSTER_SYNC_MAX_PAGES_PER_REQUEST) {
       throw new ClusterSyncHttpError(400, "invalid_sqlite_pages_request", "无效的数据库增量页请求。");
     }
@@ -744,33 +742,27 @@ export class ClusterSyncService {
 
       // 2. Online SQLite backups via node:sqlite `backup()` (WAL-safe, P0-3 / P1-3).
       const sqliteEntries: ClusterSyncSqliteEntry[] = [];
+      const pushSqlite = (name: ClusterSyncSqliteDbName, dst: string) => {
+        const hashed = computeSqlitePageHashes(dst, CLUSTER_SYNC_PAGE_SIZE);
+        sqliteEntries.push({
+          name, size: hashed.size, sha256: hashed.sha256, pageSize: CLUSTER_SYNC_PAGE_SIZE,
+          pageCount: hashed.pageCount, pageHashesGzipBase64: gzipSync(hashed.pageHashes).toString("base64"),
+        });
+      };
       const kuloDbSrc = path.join(this.#opts.stateDir, "kulo.sqlite");
       if (fs.existsSync(kuloDbSrc)) {
-        const kuloDbDst = path.join(snapDir, "kulo.sqlite");
-        await backupSqliteFileOnline(kuloDbSrc, kuloDbDst);
-        const hashed = computeSqlitePageHashes(kuloDbDst, CLUSTER_SYNC_PAGE_SIZE);
-        sqliteEntries.push({
-          name: "kulo.sqlite",
-          size: hashed.size,
-          sha256: hashed.sha256,
-          pageSize: CLUSTER_SYNC_PAGE_SIZE,
-          pageCount: hashed.pageCount,
-          pageHashesGzipBase64: gzipSync(hashed.pageHashes).toString("base64"),
-        });
+        const dst = path.join(snapDir, "kulo.sqlite");
+        await backupSqliteFileOnline(kuloDbSrc, dst);
+        pushSqlite("kulo.sqlite", dst);
       }
-
-      const assistantDbDst = path.join(snapDir, "assistant.sqlite");
-      const backedUpAssistant = await this.#opts.backupAssistantLedger(assistantDbDst);
-      if (backedUpAssistant && fs.existsSync(assistantDbDst)) {
-        const hashed = computeSqlitePageHashes(assistantDbDst, CLUSTER_SYNC_PAGE_SIZE);
-        sqliteEntries.push({
-          name: "assistant.sqlite",
-          size: hashed.size,
-          sha256: hashed.sha256,
-          pageSize: CLUSTER_SYNC_PAGE_SIZE,
-          pageCount: hashed.pageCount,
-          pageHashesGzipBase64: gzipSync(hashed.pageHashes).toString("base64"),
-        });
+      for (const extraDb of ["assistant.sqlite", "memory.sqlite"] as const) {
+        const dst = path.join(snapDir, extraDb);
+        const backed = this.#opts.backupSqliteDb
+          ? await this.#opts.backupSqliteDb(extraDb, dst)
+          : extraDb === "assistant.sqlite" && this.#opts.backupAssistantLedger
+            ? await this.#opts.backupAssistantLedger(dst)
+            : false;
+        if (backed && fs.existsSync(dst)) pushSqlite(extraDb, dst);
       }
 
       // 3. Tier 3 point-in-time files (fixed allowlist + identity/** + skills/**).
@@ -839,6 +831,8 @@ export class ClusterSyncService {
       }
       uploadEntries.sort((a, b) => b.mtimeMs - a.mtimeMs || a.path.localeCompare(b.path));
 
+      const builtinMemoryMeta = this.#opts.getBuiltinMemoryMeta?.();
+      const hasMemoryDb = sqliteEntries.some((s) => s.name === "memory.sqlite");
       const manifest: ClusterSyncManifest = {
         version: 1,
         hubId: this.#opts.getHubId(),
@@ -851,6 +845,8 @@ export class ClusterSyncService {
         sqlite: sqliteEntries,
         files: tier3Entries,
         uploads: uploadEntries,
+        ...(hasMemoryDb ? { requiredCapabilities: [CLUSTER_BUILTIN_MEMORY_CAPABILITY], requiredDbs: sqliteEntries.map((s) => s.name) } : {}),
+        ...(builtinMemoryMeta ? { builtinMemoryMeta } : {}),
       };
 
       const now = Date.now();
@@ -864,6 +860,8 @@ export class ClusterSyncService {
         vaultEntries,
         refCount: 0,
       });
+      this.#generationClearEpochs.set(nextGeneration, manifest.builtinMemoryMeta?.appliedClearEpoch ?? 0);
+      if (this.#generationClearEpochs.size > 32) this.#generationClearEpochs.delete(this.#generationClearEpochs.keys().next().value!);
       this.#evictExpiredSnapshots();
       this.#opts.notifySyncAvailable(nextGeneration, nextMeta.vaultRevision);
       return manifest;
@@ -1341,15 +1339,16 @@ export class StandbyReplicator {
       }
 
       // 4. Commit staged generation into `standby/replica/`
+      verifyStagedManifestBuiltinMemory(stageDir, manifest);
       fs.mkdirSync(this.#replicaDir, { recursive: true, mode: 0o700 });
       const presentDbs = new Set(manifest.sqlite.map((s) => s.name));
-      for (const dbName of ["kulo.sqlite", "assistant.sqlite"] as const) {
+      for (const reqDb of manifest.requiredDbs ?? []) {
+        if (!presentDbs.has(reqDb)) throw new Error(`同步快照缺少必需数据库：${reqDb}`);
+      }
+      for (const dbName of CLUSTER_SYNC_SQLITE_DBS) {
         const dst = path.join(this.#replicaDir, dbName);
-        if (presentDbs.has(dbName)) {
-          fs.renameSync(path.join(stageDir, dbName), dst);
-        } else {
-          fs.rmSync(dst, { force: true });
-        }
+        if (presentDbs.has(dbName)) fs.renameSync(path.join(stageDir, dbName), dst);
+        else fs.rmSync(dst, { force: true });
       }
 
       const presentTier3 = new Set(manifest.files.map((f) => f.path));
@@ -1400,6 +1399,7 @@ export class StandbyReplicator {
         syncedAt: Date.now(),
         pendingVaultEnvelope,
         uploadsComplete: this.#countMissingUploads(manifest) === 0,
+        ...(manifest.builtinMemoryMeta ? { builtinMemoryMeta: manifest.builtinMemoryMeta } : {}),
       };
       writeFileAtomic(path.join(this.#replicaDir, "replica-state.json"), `${JSON.stringify(nextState, null, 2)}\n`, 0o600);
       return nextState;

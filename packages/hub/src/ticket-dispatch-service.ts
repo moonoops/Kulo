@@ -44,6 +44,8 @@ import {
   settingsTopicId,
 } from "./settings-assistant.js";
 import {
+  CoordinatorEventEntry,
+  isLegacyInternalUserEntry,
   isOrchestratorConversation,
   isRecoveryInputBoundary,
   KuloStateDoc,
@@ -93,7 +95,7 @@ export interface TicketDispatchWorkerOps {
 
 export interface TicketDispatchServiceDeps {
   harness: Harness;
-  rootConversation: Conversation;
+  getRootConversation: () => Conversation;
   inlineDispatchWaitMs: number;
   envManager: EnvManager;
   projects: KuloProjects;
@@ -120,7 +122,7 @@ export class TicketDispatchService {
   ): Promise<TicketCardView> {
     const {
       harness,
-      rootConversation,
+      getRootConversation,
       inlineDispatchWaitMs,
       envManager,
       projects,
@@ -135,7 +137,7 @@ export class TicketDispatchService {
     params = redactCredentialData(params, (text) => connectionManager.redact(text));
     const inputs = await turnContext.currentControlInputs(params.originConversationId, context, params.originToolTaskId);
     const recoveryGuard = inputs[0] && WorkerRecoveryEntry.is(inputs[0]) ? inputs[0].data : undefined;
-    const originConversationId = params.originConversationId ?? Number(ROOT_CONVERSATION_ID);
+    const originConversationId = params.originConversationId ?? Number(getRootConversation().id);
     const settingsSnapshotLive = liveSettings.get();
     const activeRoles = settingsSnapshotLive.roles;
     const activeExternalClients = settingsSnapshotLive.externalClients;
@@ -367,7 +369,7 @@ export class TicketDispatchService {
         }
       : undefined;
 
-    const originConv = (await harness.conversation(originConversationId as ConversationId, context)) ?? rootConversation;
+    const originConv = (await harness.conversation(originConversationId as ConversationId, context)) ?? getRootConversation();
     const supersededStagedToDiscard: TicketRecord[] = [];
     const admitted = await originConv.commit(
       (tx) =>
@@ -501,6 +503,12 @@ export class TicketDispatchService {
     );
     const entry = page.items.find((item) => Number(item.id) === sourceEntryId);
     if (!entry) return undefined;
+    if (isLegacyInternalUserEntry(entry)) return undefined;
+    if (CoordinatorEventEntry.is(entry)) {
+      const manualText = entry.data.eventKind === "user_task_instruction" ? (entry.data.manualText ?? "") : "";
+      const live = this.#deps.liveSettings.get();
+      return manualText ? extractAgentDispatchIntent(manualText, live.roles, this.#deps.envManager.listEnvs(), live.externalClients) : undefined;
+    }
     const data = entry.data as Record<string, unknown> | undefined;
     if (data && Object.hasOwn(data, "agentDispatchIntent")) {
       return capturedAgentIntent(data.agentDispatchIntent);
@@ -554,7 +562,38 @@ export class TicketDispatchService {
       const page = await conversation.entries(assistant === undefined ? {} : { maxEntryId: assistant as EntryId }, 200, cursor, context);
       for (const entry of [...page.items].sort((a, b) => Number(b.id) - Number(a.id))) {
         if (!isRecoveryInputBoundary(entry)) continue;
-        if (MediaRelayEntry.is(entry)) {
+        if (MediaRelayEntry.is(entry) || isLegacyInternalUserEntry(entry)) {
+          return { entryId: Number(entry.id), input, continuing };
+        }
+        if (CoordinatorEventEntry.is(entry)) {
+          const live = liveSettings.get();
+          if (entry.data.eventKind === "user_task_instruction") {
+            const manualText = entry.data.manualText?.trim() ?? "";
+            const intent = manualText
+              ? extractAgentDispatchIntent(manualText, live.roles, envManager.listEnvs(), live.externalClients)
+              : undefined;
+            if (intent) {
+              return { entryId: Number(entry.id), intent, input: input ?? entry, continuing };
+            }
+          }
+          if (entry.data.ticketId) {
+            const state = await harness.snapshot(KuloStateDoc, context);
+            let ticket = state?.tickets[entry.data.ticketId];
+            const ancestors = new Set<string>();
+            while (ticket?.parentTicketId && !ancestors.has(ticket.id)) {
+              ancestors.add(ticket.id);
+              ticket = state?.tickets[ticket.parentTicketId] ?? ticket;
+              if (ancestors.has(ticket.id)) break;
+            }
+            const assignment = ticket?.agentAssignment;
+            const shouldInherit = Boolean(assignment && (assignment.source === "explicit" || assignment.source === "manual"));
+            return {
+              entryId: Number(entry.id),
+              input,
+              continuing,
+              ...(shouldInherit && assignment ? { inheritedAssignment: cloneJson(assignment) } : {}),
+            };
+          }
           return { entryId: Number(entry.id), input, continuing };
         }
         if (WorkerRelayEntry.is(entry) || WorkerRecoveryEntry.is(entry) || WorkerWatchdogEntry.is(entry)) {

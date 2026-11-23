@@ -5,6 +5,7 @@ import {
   defineDoc,
   type Harness,
   type JsonObject,
+  type Tx,
 } from "@earendil-works/pi-durable";
 import {
   redactSensitiveText,
@@ -16,7 +17,7 @@ import { isSafeMemoryText } from "./hindsight.js";
 import { matchesForgottenTerm, type ForgottenTermEntry } from "./memory-forget.js";
 import type { KuloProjectsState } from "./projects.js";
 import { isActiveSettingsConversation, type SettingsAssistantState } from "./settings-doc.js";
-import { isOrchestratorConversation, isTicketUnfinished, type KuloDurableState } from "./state.js";
+import { KuloStateDoc, isOrchestratorConversation, isTicketUnfinished, resolveActiveRootConversationId, type KuloDurableState } from "./state.js";
 
 export type WorkingMemoryScope =
   | { kind: "global" }
@@ -76,6 +77,9 @@ export interface ConversationMemoryCursor {
   nextFlushEligibleAt?: number;
   lastIdleAttemptTailId?: number;
   nextIdleEligibleAt?: number;
+  pendingTargetMaxEntryId?: number;
+  pendingObservedCompactionHeadId?: number;
+  pendingTrigger?: "compaction" | "archive";
   needsBaselineRefresh?: boolean;
 }
 
@@ -190,21 +194,26 @@ export async function commitWorkingMemory<T>(
   redact: (text: string) => string,
   mutator: (doc: KuloWorkingMemoryState) => T,
   context: Context = BACKGROUND_CONTEXT,
+  afterInTx?: (tx: Tx, result: T) => Promise<void> | void,
+  beforeInTx?: (tx: Tx) => Promise<boolean | void> | boolean | void,
 ): Promise<{ committed: boolean; result: T }> {
   let result!: T;
   let committed = false;
   await harness.commit(async (tx) => {
+    if (beforeInTx && (await beforeInTx(tx)) === false) return;
     const doc = await tx.doc(KuloWorkingMemoryDoc);
     const before = JSON.stringify(doc);
     const workingCopy = JSON.parse(before) as KuloWorkingMemoryState;
     result = mutator(workingCopy);
     sanitizeWorkingMemoryDocInPlace(workingCopy, redact);
     const after = JSON.stringify(workingCopy);
-    if (after === before) return;
-    doc.version = workingCopy.version;
-    doc.buckets = workingCopy.buckets;
-    doc.cursors = workingCopy.cursors;
-    committed = true;
+    if (after !== before) {
+      doc.version = workingCopy.version;
+      doc.buckets = workingCopy.buckets;
+      doc.cursors = workingCopy.cursors;
+      committed = true;
+    }
+    if (afterInTx) await afterInTx(tx, result);
   }, context);
   return { committed, result };
 }
@@ -473,7 +482,12 @@ function resolveLiveRecordVisibility(
         return { visible: true, directReadable: true };
       }
       if (provTopicId === callerTopicId) {
-        return { visible: true, directReadable: true };
+        const sameConv = record.provenance.conversationId === callerConversationId;
+        return {
+          visible: true,
+          directReadable: sameConv,
+          sourceHint: sameConv ? undefined : buildNonDirectSourceHint(record, provTopic?.title, effectiveProjectId, projects),
+        };
       }
       if (isRootCaller) {
         return {
@@ -511,7 +525,12 @@ function resolveLiveRecordVisibility(
       }
     }
     if (bucketTopicId === callerTopicId) {
-      return { visible: true, directReadable: true };
+      const sameConv = record.provenance.conversationId === callerConversationId;
+      return {
+        visible: true,
+        directReadable: sameConv,
+        sourceHint: sameConv ? undefined : buildNonDirectSourceHint(record, bucketTopic.title, bucketTopicProjectId, projects),
+      };
     }
     if (callerProjectId && bucketTopicProjectId === callerProjectId) {
       return { visible: true, directReadable: true };
@@ -730,7 +749,9 @@ export async function revokeWorkingMemoryTerm(
   redact: (text: string) => string,
   term: string,
   context: Context = BACKGROUND_CONTEXT,
+  activeRootConvId?: number,
 ): Promise<{ removedRecords: number; flaggedConversationIds: number[] }> {
+  const resolvedRootId = activeRootConvId ?? resolveActiveRootConversationId(await harness.snapshot(KuloStateDoc, context));
   const { result } = await commitWorkingMemory(
     harness,
     redact,
@@ -750,12 +771,12 @@ export async function revokeWorkingMemoryTerm(
         if (kept.length === 0) delete doc.buckets[bucketKey];
         else doc.buckets[bucketKey] = kept;
       }
-      // Flag all known cursors + affected conversations so derived baselines refresh immediately.
+      // Flag all known cursors + affected conversations + active root so derived baselines refresh immediately.
       for (const key of Object.keys(doc.cursors)) {
         const convId = Number(key);
         if (Number.isSafeInteger(convId) && convId > 0) affectedConvs.add(convId);
       }
-      affectedConvs.add(Number(ROOT_CONVERSATION_ID));
+      affectedConvs.add(resolvedRootId);
       for (const convId of affectedConvs) {
         const key = String(convId);
         const existing = doc.cursors[key] ?? { lastFlushedEntryId: 0 };
@@ -771,14 +792,17 @@ export async function revokeWorkingMemoryTerm(
 
 /**
  * Purges working memory buckets/records belonging to a deleted topic or project and marks
- * active conversations (including root) for derived baseline refresh.
+ * active conversations (including the active root, never resurrecting a deleted conv#1 cursor)
+ * for derived baseline refresh.
  */
 export async function purgeDeletedScopeWorkingMemory(
   harness: Harness,
   redact: (text: string) => string,
   scope: { topicId?: string; projectId?: string; conversationIds?: readonly number[] },
   context: Context = BACKGROUND_CONTEXT,
+  activeRootConvId?: number,
 ): Promise<{ removedRecords: number; flaggedConversationIds: number[] }> {
+  const resolvedRootId = activeRootConvId ?? resolveActiveRootConversationId(await harness.snapshot(KuloStateDoc, context));
   const res = await tryCommitWorkingMemory(
     harness,
     redact,
@@ -812,10 +836,11 @@ export async function purgeDeletedScopeWorkingMemory(
       for (const convId of convSet) {
         delete doc.cursors[String(convId)];
       }
-      const flagged = new Set<number>([Number(ROOT_CONVERSATION_ID)]);
+      const flagged = new Set<number>();
+      if (!convSet.has(resolvedRootId)) flagged.add(resolvedRootId);
       for (const key of Object.keys(doc.cursors)) {
         const cid = Number(key);
-        if (Number.isSafeInteger(cid) && cid > 0) flagged.add(cid);
+        if (Number.isSafeInteger(cid) && cid > 0 && !convSet.has(cid)) flagged.add(cid);
       }
       if (removedRecords > 0) {
         for (const cid of flagged) {

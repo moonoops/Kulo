@@ -17,6 +17,7 @@ import {
 import {
   detectGrokAuthenticated,
   extractModelsFromAcpInitialize,
+  isAcpAuthRequiredError,
   isSensitiveCredentialFilename,
   parseGrokModelsOutput,
   sortEffortTokens,
@@ -449,6 +450,74 @@ describe("ACP flavors, Grok Build, OpenCode, Kiro, and custom ACP drivers", () =
       await service.close();
     }
   });
+
+  it("classifies ACP auth-required probe errors as authenticated: false without misclassifying non-auth -32000 errors", async () => {
+    expect(isAcpAuthRequiredError(Object.assign(new Error("Authentication required"), { code: -32000 }))).toBe(true);
+    expect(isAcpAuthRequiredError(Object.assign(new Error(""), { code: -32000 }))).toBe(true);
+    expect(isAcpAuthRequiredError(new Error("Please sign in to view available models"))).toBe(true);
+    expect(isAcpAuthRequiredError(Object.assign(new Error("HTTP 404: session not found"), { code: -32000 }))).toBe(false);
+
+    const dir = tempDir("kulo-acp-auth-probe-");
+    const fakeAgy = path.join(dir, "agy");
+    fs.writeFileSync(fakeAgy, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "1.5.15"; exit 0; fi\nexit 0\n`, { mode: 0o755 });
+    const makeService = (sessionNewError: { code: number; message: string }) => {
+      const pipeFactory = vi.fn(async (spec: ExternalAgentPipeOptions) => {
+        let resolveExit!: (code: number) => void;
+        const exited = new Promise<number>((resolve) => { resolveExit = resolve; });
+        return {
+          exited,
+          close: () => resolveExit(0),
+          cleanup: async () => true,
+          write: (raw: string) => {
+            const msg = JSON.parse(raw) as Record<string, unknown>;
+            if (msg.method === "initialize") {
+              spec.onStdout(Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`));
+            } else if (msg.method === "session/new") {
+              spec.onStdout(Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: msg.id, error: sessionNewError })}\n`));
+            }
+          },
+        };
+      });
+      const registry = new ProjectDirectoryRegistry({
+        deviceId: "local",
+        filePath: path.join(dir, ".kulo-env", "projects.json"),
+        scratchRoot: path.join(dir, ".kulo-env", "scratch"),
+      });
+      return new ExternalAgentService({ envId: "local", rootDir: dir, projectRegistry: registry, pipeFactory });
+    };
+
+    const unauthService = makeService({ code: -32000, message: "Authentication required" });
+    try {
+      const response = await unauthService.request({
+        operation: "probe",
+        binding: { kind: "antigravity", envId: "local", executable: fakeAgy },
+      });
+      expect(response.type).toBe("detection");
+      if (response.type === "detection") {
+        expect(response.detection.installed).toBe(true);
+        expect(response.detection.authenticated).toBe(false);
+        expect(response.detection.error).toBeUndefined();
+      }
+    } finally {
+      await unauthService.close();
+    }
+
+    const otherErrService = makeService({ code: -32000, message: "Workspace root rejected" });
+    try {
+      const response = await otherErrService.request({
+        operation: "probe",
+        binding: { kind: "antigravity", envId: "local", executable: fakeAgy },
+      });
+      expect(response.type).toBe("detection");
+      if (response.type === "detection") {
+        expect(response.detection.installed).toBe(true);
+        expect(response.detection.authenticated).toBe(null);
+        expect(response.detection.error).toContain("Workspace root rejected");
+      }
+    } finally {
+      await otherErrService.close();
+    }
+  });
 });
 
 describe("isolation boundaries and ACP skill read allowlist", () => {
@@ -461,6 +530,7 @@ describe("isolation boundaries and ACP skill read allowlist", () => {
 
     const home = os.homedir();
     // Own public skill files (including oauth/auth/state named skill folders!) are readable by antigravity
+    expect(isProtectedAcpPath(path.join(home, ".gemini", "antigravity-cli", "builtin", "skills", "guide", "SKILL.md"), false, "antigravity")).toBe(false);
     expect(isProtectedAcpPath(path.join(home, ".gemini", "config", "skills", "oauth-setup", "SKILL.md"), false, "antigravity")).toBe(false);
     expect(isProtectedAcpPath(path.join(home, ".gemini", "config", "skills", "state-machine", "SKILL.md"), false, "antigravity")).toBe(false);
     // Writes inside protected directories remain strictly denied

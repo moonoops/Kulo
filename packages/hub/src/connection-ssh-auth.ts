@@ -3,10 +3,12 @@ import path from "node:path";
 import net from "node:net";
 import { createHash, randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import type { ConnectionSecrets } from "@kulo/protocol";
 import { normalizeSshPrivateKey } from "./connection-ssh-diagnostics.js";
 
 export const MAX_SSH_CAPTURE_OUTPUT = 128_000;
+const MAX_SSH_LINE_BUFFER = 4_096;
 
 export interface SshCaptureOptions {
   signal?: AbortSignal;
@@ -15,6 +17,10 @@ export interface SshCaptureOptions {
   input?: string;
   /** Keep input verbatim instead of appending a trailing newline (e.g. single-line JSON protocol). */
   rawInput?: boolean;
+  /** Keep stdin open after writing input so EOF on stop/abort signals the remote process to clean up. */
+  keepStdinOpen?: boolean;
+  /** Optional streaming callback invoked for each newline-delimited stdout line. */
+  onStdoutLine?: (line: string) => void;
 }
 
 export interface SshCaptureResult {
@@ -80,16 +86,29 @@ export function captureSshProcess(
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, {
       env: options.environment ?? safeSshProcessEnv(),
-      stdio: [options.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
+      stdio: [options.input !== undefined || options.keepStdinOpen ? "pipe" : "ignore", "pipe", "pipe"],
       windowsHide: true,
     });
     let stdout = "", stderr = "", output = "", settled = false, stopped = false;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
-    const stop = () => {
-      stopped = true;
+    const stdoutDecoder = options.onStdoutLine ? new StringDecoder("utf8") : undefined;
+    let stdoutLineBuffer = "";
+    const terminate = () => {
       child.kill("SIGTERM");
       killTimer = setTimeout(() => child.kill("SIGKILL"), 1_000);
       killTimer.unref();
+    };
+    const stop = () => {
+      if (stopped || settled) return;
+      stopped = true;
+      if (options.keepStdinOpen && child.stdin && !child.stdin.destroyed && !child.stdin.writableEnded) {
+        child.stdin.end();
+        graceTimer = setTimeout(terminate, 2_500);
+        graceTimer.unref();
+        return;
+      }
+      terminate();
     };
     const timer = setTimeout(stop, options.timeoutMs);
     timer.unref();
@@ -97,6 +116,7 @@ export function captureSshProcess(
     options.signal?.addEventListener("abort", abort, { once: true });
     const cleanup = () => {
       clearTimeout(timer);
+      if (graceTimer) clearTimeout(graceTimer);
       if (killTimer) clearTimeout(killTimer);
       options.signal?.removeEventListener("abort", abort);
     };
@@ -104,6 +124,11 @@ export function captureSshProcess(
       const text = data.toString("utf8");
       stdout = (stdout + text).slice(-MAX_SSH_CAPTURE_OUTPUT);
       output = (output + text).slice(-MAX_SSH_CAPTURE_OUTPUT);
+      if (options.onStdoutLine && stdoutDecoder) {
+        const parts = (stdoutLineBuffer + stdoutDecoder.write(data)).split(/\r?\n/);
+        stdoutLineBuffer = (parts.pop() ?? "").slice(-MAX_SSH_LINE_BUFFER);
+        for (const line of parts) options.onStdoutLine(line);
+      }
     });
     child.stderr?.on("data", (data: Buffer) => {
       const text = data.toString("utf8");
@@ -120,6 +145,11 @@ export function captureSshProcess(
       if (settled) return;
       settled = true;
       cleanup();
+      if (options.onStdoutLine && stdoutDecoder) {
+        const tail = (stdoutLineBuffer + stdoutDecoder.end()).trim();
+        stdoutLineBuffer = "";
+        if (tail) options.onStdoutLine(tail);
+      }
       if (stopped || options.signal?.aborted) {
         reject(Object.assign(new Error("连接操作已取消或超时。"), { code: "connection_cancelled", status: 409 }));
       } else {
@@ -129,7 +159,8 @@ export function captureSshProcess(
     if (options.input !== undefined) {
       child.stdin?.on("error", () => { /* The remote or auth program may exit before reading all stdin. */ });
       const payload = options.rawInput || options.input.endsWith("\n") ? options.input : `${options.input}\n`;
-      child.stdin?.end(payload);
+      if (options.keepStdinOpen) child.stdin?.write(payload);
+      else child.stdin?.end(payload);
     }
     // Abort may arrive between the preflight and listener registration.
     if (options.signal?.aborted) stop();
@@ -177,7 +208,7 @@ export async function prepareSshAuthSession(options: PrepareSshAuthOptions): Pro
     if (!rf || !validPort(rf.remotePort) || !validPort(rf.hubPort)) fail("SSH 转发端口无效。");
   }
   if (!fs.existsSync(options.knownHostsPath) || fs.lstatSync(options.knownHostsPath).isSymbolicLink()) {
-    fail("请先在连接授权页确认服务器指纹。", "connection_host_untrusted", 409);
+    fail("请先在「授权凭据」中确认服务器指纹。", "connection_host_untrusted", 409);
   }
   const knownHostsOption = sshConfigPath("SSH 已知主机路径", options.knownHostsPath);
 

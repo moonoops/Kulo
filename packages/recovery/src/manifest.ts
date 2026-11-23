@@ -112,8 +112,8 @@ async function fileDigest(filename: string): Promise<{ size: number; sha256: str
     for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk);
     const after = await handle.stat();
     if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) fail("release_changed", "版本在校验期间发生变化。");
-    if ((before.mode & 0o111) !== (after.mode & 0o111)) fail("release_changed", "版本权限在校验期间发生变化。");
-    return { size: after.size, sha256: hash.digest("hex"), executable: Boolean(after.mode & 0o111) };
+    if (process.platform !== "win32" && (before.mode & 0o111) !== (after.mode & 0o111)) fail("release_changed", "版本权限在校验期间发生变化。");
+    return { size: after.size, sha256: hash.digest("hex"), executable: process.platform === "win32" ? false : Boolean(after.mode & 0o111) };
   } finally { await handle.close(); }
 }
 
@@ -152,7 +152,7 @@ async function tree(root: string): Promise<RecoveryFileEntry[]> {
 
 export async function createReleaseManifest(root: string, options: RecoveryManifestOptions): Promise<RecoveryReleaseManifest> {
   const files = await tree(path.resolve(root));
-  const dataVersion = options.dataVersion ?? 2;
+  const dataVersion = options.dataVersion ?? 3;
   const body: Omit<RecoveryReleaseManifest, "id"> = {
     formatVersion: 1, version: options.version, kind: options.kind,
     ...(options.sourceCommit === undefined ? {} : { sourceCommit: options.sourceCommit }),

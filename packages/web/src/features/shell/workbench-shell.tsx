@@ -50,6 +50,7 @@ export function WorkbenchShell({
   rightLabel,
   leftControl,
   titlebarContent,
+  rightHeaderActions,
   rightControl,
   leftContent,
   centerContent,
@@ -66,6 +67,7 @@ export function WorkbenchShell({
   rightLabel: string;
   leftControl: ReactNode;
   titlebarContent: ReactNode;
+  rightHeaderActions?: ReactNode;
   rightControl: ReactNode;
   leftContent: ReactNode;
   centerContent: ReactNode;
@@ -283,7 +285,10 @@ export function WorkbenchShell({
       <header className="kulo-window-titlebar" aria-label={t("窗口工具栏", "Window toolbar")}>
         <div className="kulo-window-navigation-control">{leftControl}</div>
         {titlebarContent}
-        <div className="kulo-window-rail-control">{rightControl}</div>
+        <div className="kulo-window-rail-control">
+          {rightVisible ? rightHeaderActions : null}
+          {rightControl}
+        </div>
       </header>
       <div className="kulo-workbench-panes">
         {showInlineLeft && (
@@ -384,8 +389,9 @@ export function WorkbenchShell({
         >
           <Drawer.Content placement="right" className={settingsMode ? "w-full max-w-[420px]" : "max-w-[332px]"}>
             <Drawer.Dialog data-kulo-overlay="workbench-drawer" aria-label={rightLabel} className="flex h-full flex-col">
-              <div className="mb-2 flex shrink-0 items-center justify-end">
+              <div className="mb-2 flex shrink-0 items-center justify-end gap-2">
                 <Drawer.Heading className="sr-only">{rightLabel}</Drawer.Heading>
+                {rightDrawerOpen ? rightHeaderActions : null}
                 <Drawer.CloseTrigger className="static" aria-label={settingsMode ? t("关闭设置对话", "Close settings chat") : t("关闭任务栏", "Close task panel")} />
               </div>
               <Drawer.Body className="min-h-0 flex-1 overflow-hidden p-0">

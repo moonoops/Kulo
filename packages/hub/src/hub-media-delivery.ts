@@ -9,7 +9,7 @@ import {
   type JsonObject,
   type SubmissionId,
 } from "@earendil-works/pi-durable";
-import type { ChatAttachment, MediaJob, MediaJobSource } from "@kulo/protocol";
+import { escapeUntrustedText, type ChatAttachment, type MediaJob, type MediaJobSource } from "@kulo/protocol";
 import type { KuloCapabilities } from "./capabilities.js";
 import { submitAutomaticChatInput } from "./chat-control.js";
 import type { HubRuntimeGates, LiveSettingsStore } from "./hub-kernel-ports.js";
@@ -70,7 +70,7 @@ export const MediaNoticesDoc = defineDoc<MediaNoticesState & JsonObject>({
 
 export interface HubMediaDeliveryDeps {
   harness: Harness;
-  rootConversationId: number;
+  getRootConversationId: () => number;
   uploads: KuloUploadStore;
   uiCards: KuloUiCards;
   mediaJobs: () => KuloMediaJobs;
@@ -238,9 +238,11 @@ export class HubMediaDelivery {
   async validateMediaSource(source: MediaJobSource, job?: MediaJob): Promise<void> {
     if (source.setupClientId) {
       imageSetupIdentifier(source.setupClientId, "窗口标识");
-      if (source.conversationId !== this.#deps.rootConversationId || source.topicId !== "root" || source.ticketId) {
+      if (source.topicId !== "root" || source.ticketId) {
         throw new Error("图像测试来源无效。");
       }
+      // Setup image test jobs stay valid across main-conversation rotations.
+      return;
     }
     const state = await this.#deps.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const settingsConvId = parseSettingsTopicConversationId(source.topicId);
@@ -302,16 +304,25 @@ export class HubMediaDelivery {
       const settingsDoc = await tx.doc(SettingsAssistantDoc);
       const notices = await tx.doc(MediaNoticesDoc);
       if (notices.notices[noticeKey]) return;
-      const topic = state.topics?.[job.source.topicId];
+      const ticket = job.source.ticketId ? state.tickets[job.source.ticketId] : undefined;
+      const directTopicId = !ticket && settingsConvId === null ? state.conversationToTopic?.[String(job.source.conversationId)] : undefined;
+      const topic = ticket
+        ? state.topics?.[ticket.originTopicId ?? job.source.topicId]
+        : directTopicId
+          ? state.topics?.[directTopicId]
+          : state.topics?.[job.source.topicId];
       const targetConvId =
         settingsConvId !== null
           ? isActiveSettingsConversation(settingsConvId, settingsDoc)
             ? settingsConvId
             : undefined
-          : !topic || topic.deletedAt
-            ? undefined
-            : Number(topic.conversationId);
-      const ticket = job.source.ticketId ? state.tickets[job.source.ticketId] : undefined;
+          : ticket
+            ? !topic || topic.deletedAt || topic.archived || (ticket.originConversationId !== undefined && Number(topic.conversationId) !== ticket.originConversationId)
+              ? undefined
+              : Number(topic.conversationId)
+            : !topic || topic.deletedAt || topic.archived || Number(topic.conversationId) !== job.source.conversationId
+              ? undefined
+              : Number(topic.conversationId);
       if (targetConvId === undefined || (job.source.ticketId && (!ticket || ["stopped", "closed"].includes(ticket.status)))) {
         notices.notices[noticeKey] = true;
         pruneMediaNotices(notices);
@@ -357,7 +368,7 @@ export class HubMediaDelivery {
           type: "input",
           whenBusy: "followUp",
           requestId: `kulo:media-review:${noticeKey}`,
-          content: `[KULO_WORKER_RELAY]\nBackground media job requires coordinator attention: ${message}\nVerify the actual issue first before deciding whether to inform the user; this notice grants no extra execution permissions.`,
+          content: `[KULO_WORKER_RELAY]\nBackground media job requires coordinator attention: ${escapeUntrustedText(message)}\nVerify the actual issue first before deciding whether to inform the user; this notice grants no extra execution permissions.`,
           entry: {
             kind: WorkerRelayEntry.kind,
             data: {
@@ -414,16 +425,25 @@ export class HubMediaDelivery {
       this.#deps.harness.snapshot(SettingsAssistantDoc, BACKGROUND_CONTEXT),
     ]);
     const settingsConvId = parseSettingsTopicConversationId(job.source.topicId);
-    const topic = state?.topics?.[job.source.topicId];
+    const ticket = job.source.ticketId ? state?.tickets[job.source.ticketId] : undefined;
+    const directTopicId = !ticket && settingsConvId === null ? state?.conversationToTopic?.[String(job.source.conversationId)] : undefined;
+    const topic = ticket
+      ? state?.topics?.[ticket.originTopicId ?? job.source.topicId]
+      : directTopicId
+        ? state?.topics?.[directTopicId]
+        : state?.topics?.[job.source.topicId];
     const targetConvId =
       settingsConvId !== null
         ? isActiveSettingsConversation(settingsConvId, settingsDoc)
           ? settingsConvId
           : undefined
-        : !topic || topic.deletedAt
-          ? undefined
-          : Number(topic.conversationId);
-    const ticket = job.source.ticketId ? state?.tickets[job.source.ticketId] : undefined;
+        : ticket
+          ? !topic || topic.deletedAt || topic.archived || (ticket.originConversationId !== undefined && Number(topic.conversationId) !== ticket.originConversationId)
+            ? undefined
+            : Number(topic.conversationId)
+          : !topic || topic.deletedAt || topic.archived || Number(topic.conversationId) !== job.source.conversationId
+            ? undefined
+            : Number(topic.conversationId);
     if (targetConvId === undefined || (job.source.ticketId && (!ticket || ["stopped", "closed"].includes(ticket.status)))) {
       await this.#deps.mediaJobs().markDelivered(job.id);
       return;

@@ -196,7 +196,7 @@ describe("rich chat through real Hub and HTTP/WS", () => {
     expect((await f.request("/api/topics/root/messages")).status).toBe(400);
     for (const token of ["", NODE_TOKEN]) expect((await f.request(`/api/topics/root/messages?before=${snapshot.historyBefore}`, "GET", undefined, token)).status).toBe(401);
     const beginning = await f.request("/api/topics/root/messages?before=1");
-    expect(beginning.status).toBe(200); expect(await beginning.json()).toEqual({ messages: [], hasMore: false });
+    expect(beginning.status).toBe(200); expect(await beginning.json()).toEqual({ conversationId: Number(f.hub.rootConversation.id), messages: [], hasMore: false });
   });
 
   it.each(["root", "topic"])("offers a durable copy action in the %s chat without issuing a credential", async (target) => {

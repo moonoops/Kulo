@@ -16,6 +16,11 @@ async function fixture() {
   directories.push(root);
   const dist = path.join(root, "dist"), native = path.join(root, "native"), stateDir = path.join(root, "state");
   await Promise.all([dist, native, stateDir].map((directory) => fs.mkdir(directory)));
+  for (const sibling of ["connection-vault-errors", "linux-keystore"]) {
+    const siblingSource = await fs.readFile(new URL(`../packages/hub/src/${sibling}.ts`, import.meta.url), "utf8");
+    const siblingTransformed = await transform(siblingSource, { loader: "ts", format: "esm", target: "node22" });
+    await fs.writeFile(path.join(dist, `${sibling}.js`), siblingTransformed.code);
+  }
   const source = await fs.readFile(new URL("../packages/hub/src/connection-vault.ts", import.meta.url), "utf8");
   const { code } = await transform(source, { loader: "ts", format: "esm", target: "node22" });
   const module = path.join(dist, "connection-vault.mjs");

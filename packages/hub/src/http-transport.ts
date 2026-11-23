@@ -1,10 +1,15 @@
 import { resolveHttpProxyUrlForTarget } from "@earendil-works/pi-ai/utils/node-http-proxy";
 import { Agent, Dispatcher1Wrapper, EnvHttpProxyAgent, ProxyAgent, getGlobalDispatcher, setGlobalDispatcher, type Dispatcher } from "undici";
+import { isPrivateLocalModelEndpoint } from "./local-model-endpoint.js";
 
 let direct: Agent | undefined;
 const processFetch = globalThis.fetch;
 const proxies = new Map<string, ProxyAgent>();
 let installation: { owners: number; previous: Dispatcher; agent: Dispatcher; transport?: EnvHttpProxyAgent } | undefined;
+
+export function getDirectDispatcher(): Dispatcher {
+  return new Dispatcher1Wrapper(direct ??= new Agent());
+}
 
 const preventGoogleKeyRedirects: Dispatcher.DispatcherComposeInterceptor = (dispatch) => (options, handler) => {
   const headers = options.headers;
@@ -33,11 +38,14 @@ const preventGoogleKeyRedirects: Dispatcher.DispatcherComposeInterceptor = (disp
 };
 
 /** Keep response bodies streaming; model SSE and MCP must not wait for the whole body. */
-export const proxyFetch: typeof fetch = async (input, init) => {
+async function runTransportFetch(input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1], bypassPrivateLocal: boolean): Promise<Response> {
   const request = new Request(input, init);
   let proxy: URL | undefined;
-  try { proxy = resolveHttpProxyUrlForTarget(request.url); }
-  catch { throw new Error("HTTP 代理配置无效，请检查代理地址。"); }
+  try {
+    proxy = bypassPrivateLocal && isPrivateLocalModelEndpoint(request.url)
+      ? undefined
+      : resolveHttpProxyUrlForTarget(request.url);
+  } catch { throw new Error("HTTP 代理配置无效，请检查代理地址。"); }
   let dispatcher: Dispatcher;
   if (proxy) {
     const key = proxy.href;
@@ -48,7 +56,11 @@ export const proxyFetch: typeof fetch = async (input, init) => {
   // Service credentials must never follow a redirect to a different connection.
   // Node 22's bundled fetch uses the legacy handler contract; Undici 8 agents use v2.
   return processFetch(request, { dispatcher: new Dispatcher1Wrapper(dispatcher), redirect: "error" } as RequestInit & { dispatcher: Dispatcher });
-};
+}
+
+export const proxyFetch: typeof fetch = (input, init) => runTransportFetch(input, init, false);
+/** Model inference and probe transport: bypasses HTTP_PROXY/ALL_PROXY for self-hosted local/LAN endpoints. */
+export const modelFetch: typeof fetch = (input, init) => runTransportFetch(input, init, true);
 
 /** Google SDKs use the process fetch and reject Pi's per-request fetch override. */
 export function retainEnvironmentProxy(): () => Promise<void> {

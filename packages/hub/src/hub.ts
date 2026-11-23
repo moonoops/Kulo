@@ -17,7 +17,6 @@ import {
   ROOT_CONVERSATION_ID,
   UserEntry,
   createRegistry,
-  defineDoc,
   defineExtension,
   type Conversation,
   type ConversationId,
@@ -39,6 +38,8 @@ import {
 import { EnvManager, canonicalExecutionPath } from "@kulo/env";
 import { lazyProjectEnvironment } from "./project-env.js";
 import { createAndroidToolsExtension, type AndroidToolScope } from "./tools-android.js";
+import { createComputerMixedAndroidTierExtension, createReadOnlyAndroidTierExtension } from "./android-tool-tier.js";
+import { resolveAndroidToolAssets } from "./android-delivery.js";
 import { KuloAndroidNotifications } from "./android-notifications.js";
 import { appendTicketOutwardAction, createFailureRecoveryTask, isSilentRecoveryFailure } from "./task-recovery.js";
 import { prepareStateStorage } from "./state-storage.js";
@@ -52,7 +53,7 @@ import type { ConnectionToolController } from "./tools-connections.js";
 import { KuloSkills } from "./skills.js";
 import { KuloCapabilities, type SyncedProviderImageSource } from "./capabilities.js";
 import { KuloSearch } from "./search.js";
-import { proxyFetch, retainEnvironmentProxy } from "./http-transport.js";
+import { modelFetch, retainEnvironmentProxy } from "./http-transport.js";
 import { withNativeToolsModels } from "./model-native-tools.js";
 import { LocalVoiceAsr } from "./voice-asr.js";
 import { KuloVoiceService, VoiceError, type SyncedVoiceModelCandidate, type VoiceAsrEngine } from "./voice-service.js";
@@ -79,14 +80,14 @@ import { createMemorySetupExtension } from "./tools-memory-setup.js";
 import { KuloExtensions, createExtensionsExtension, type ExtensionPackageExecutor } from "./extensions.js";
 import { createExtensionSetupExtension } from "./tools-extensions.js";
 import { KuloConversationHistory } from "./conversation-history.js";
-import { deriveConnectedExternalClients, type ConversationSearchInput, type MainSessionNotificationEvent, type MemoryServiceJob } from "@kulo/protocol";
+import { deriveConnectedExternalClients, type BuiltinMemoryStateView, type ConversationSearchInput, type MainSessionNotificationEvent, type MemoryServiceJob } from "@kulo/protocol";
 import { ExternalAgentQuotaService } from "./external-agent-quotas.js";
 import { topicActivity } from "./topic-activity.js";
 import { KuloSubagentRunner } from "./subagent-runner.js";
 import { formatTaskBoardWorkerContext, readTaskBoard, searchTaskBoards, writeTaskBoardInTx } from "./task-boards.js";
 import { collectReviewPackAssets, formatReviewPromptSection, writeReviewPackToScratchEnv } from "./ticket-review-pack.js";
 import { createHistoryToolsExtension } from "./tools-history.js";
-import { AssistantDoc, ensureAssistantState } from "./assistant-state.js";
+import { AssistantDoc, ensureAssistantState, muteAssistantAppInDoc, selectActiveAssistantItems } from "./assistant-state.js";
 import { AssistantLedger } from "./assistant-ledger.js";
 import { AmbientModelService } from "./ambient-model-service.js";
 import { AssistantSorter } from "./assistant-sorter.js";
@@ -169,6 +170,8 @@ import {
   type ComputerPreviewSessionView,
   type ComputerPreviewInputEvent,
   type ComputerPreviewUpdate,
+  type ArchiveMainConversationInput,
+  type ArchiveMainConversationResult,
 } from "@kulo/protocol";
 import {
   DEFAULT_COMPACTION_CONFIG,
@@ -185,15 +188,14 @@ import { buildRecentWorkSnapshot } from "./recent-work.js";
 import {
   SettingsAssistant,
   SettingsAssistantDoc,
-  createGlobalSettingsToolsExtension,
   createSettingsAssistantExtension,
   isActiveSettingsConversation,
   parseSettingsTopicConversationId,
   settingsTopicId,
 } from "./settings-assistant.js";
+import { createGlobalSettingsToolsExtension } from "./tools-global-settings.js";
 import {
   assertUniqueExtensionTools,
-  createComputerMixedAndroidTierExtension,
   createSettingsTierExtension,
   injectEventToolsInTx,
   pruneIdleDeferredToolsInTx,
@@ -235,12 +237,13 @@ import {
   type AdmittedTicketStop,
 } from "./ticket-stop.js";
 import {
-  entryTimestamp,
   extractDisplayMessages,
   extractLiveState,
   type DisplayMessageOptions,
 } from "./hub-display-projection.js";
 export { extractDisplayMessages, extractLiveState };
+import { MainConversationArchiveService } from "./main-conversation-archive.js";
+import { RelationshipReviewsDoc, collectRelationshipInput } from "./relationship-evidence.js";
 import { computeHubUsageStats } from "./hub-usage-stats.js";
 import { migrateLegacyLocalReferences } from "./cluster-migration.js";
 import {
@@ -253,7 +256,7 @@ import { HubChatPipeline, type MessageSubmissionOptions } from "./hub-chat-pipel
 import { HubComputerController } from "./hub-computer-controller.js";
 import { HubConnectionsBridge } from "./hub-connections-bridge.js";
 import { HubDeliveryCoordinator } from "./hub-delivery-coordinator.js";
-import { HubHostActions } from "./hub-host-actions.js";
+import { HubHostActions, buildHostActionResultDraft } from "./hub-host-actions.js";
 import { HubMediaDelivery, MediaNoticesDoc } from "./hub-media-delivery.js";
 import { HubTopicManager, type TopicView, type WatchedTopicCache } from "./hub-topic-manager.js";
 import { ExternalClientAdminService } from "./external-client-admin.js";
@@ -268,7 +271,7 @@ import { createOrchestratorCodingGuardExtension } from "./orchestrator-coding-gu
 import type { HostActionController } from "./tools-host-action.js";
 import type { AskUserForTicketParams } from "./tools-router.js";
 import { API_KEY_ORIGIN_ENV } from "./providers.js";
-import { isSafeMemoryText, probeHindsightConnection, resolveHindsightToken, resolveHindsightSharedReadToken } from "./hindsight.js";
+import { probeHindsightConnection, resolveHindsightToken, resolveHindsightSharedReadToken } from "./hindsight.js";
 import {
   KULO_GATEWAY_PROVIDER_ID,
   KULO_PROVIDER_ID,
@@ -310,7 +313,9 @@ import {
   KuloStateDoc,
   WorkerRelayEntry,
   ensureDefaultRootTopic,
+  isActiveRootConversation,
   isOrchestratorConversation,
+  resolveActiveRootConversationId,
   getActiveStagedCwd,
   getEffectiveWorkspaceDir,
   isTicketUnfinished,
@@ -461,7 +466,8 @@ export interface KuloHubInitOptions {
 export interface HubEventListener {
   onVoice?: (snapshot: VoiceSnapshot) => void;
   onCapabilities?: (snapshot: CapabilitiesWorkspaceSnapshot) => void;
-  onTopicView?: (topicId: string, messages: ChatDisplayItem[], live: LiveStreamState) => void;
+  onBuiltinMemory?: (state: BuiltinMemoryStateView) => void;
+  onTopicView?: (topicId: string, messages: ChatDisplayItem[], live: LiveStreamState, conversationId?: number) => void;
   onRootView?: (messages: ChatDisplayItem[], live: LiveStreamState) => void;
   onTopics?: (topics: TopicSummary[]) => void;
   onProjects?: (projects: ProjectView[]) => void;
@@ -476,25 +482,6 @@ export interface HubEventListener {
   onNotification?: (event: MainSessionNotificationEvent) => void;
 }
 
-const RelationshipReviewsDoc = defineDoc<{ conversationIds: number[] } & JsonObject>({
-  kind: "kulo.relationship-reviews", version: 1, scope: "session",
-  initial: () => ({ conversationIds: [] }),
-  checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 16,
-});
-
-interface RelationshipEvidenceProgress {
-  cursor: number;
-  entries: Record<string, number>;
-  reports: Record<string, string>;
-}
-const RelationshipEvidenceDoc = defineDoc<(RelationshipEvidenceProgress & {
-  pending: RelationshipEvidenceProgress | null;
-}) & JsonObject>({
-  kind: "kulo.relationship-evidence", version: 1, scope: "session",
-  initial: () => ({ cursor: 0, entries: {}, reports: {}, pending: null }),
-  checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 16,
-});
-
 /**
  * KuloHub: Durable SuperAgent Engine combining Pi Durable (SQLite) + Pi Env + Identity Documents + Hindsight.
  */
@@ -503,7 +490,8 @@ export class KuloHub implements OrchestratorController {
   readonly config: KuloHubConfig;
   readonly envManager: EnvManager;
   readonly harness: Harness;
-  readonly rootConversation: Conversation;
+  #activeRootConversation: Conversation;
+  get rootConversation(): Conversation { return this.#activeRootConversation; }
   readonly identityFiles: KuloIdentityFiles;
   readonly personality: KuloPersonality;
   readonly uploads: KuloUploadStore;
@@ -555,6 +543,7 @@ export class KuloHub implements OrchestratorController {
   readonly #toolSearchExt: ReturnType<typeof createToolSearchExtension>;
   readonly #settingsTierExt: ReturnType<typeof createSettingsTierExtension>;
   readonly #computerMixedAndroidTierExt: ReturnType<typeof createComputerMixedAndroidTierExtension>;
+  readonly #readOnlyAndroidTierExt: ReturnType<typeof createReadOnlyAndroidTierExtension>;
   readonly #orchestratorGuardExt: ReturnType<typeof defineExtension>;
   readonly #computerUseExt: ReturnType<typeof createComputerUseExtension>;
   readonly #routerReadExt: ReturnType<typeof defineExtension>;
@@ -590,6 +579,7 @@ export class KuloHub implements OrchestratorController {
   readonly #subagentRunner: KuloSubagentRunner;
   readonly #listeners = new Set<HubEventListener>();
   readonly #topics: HubTopicManager;
+  readonly #mainArchive: MainConversationArchiveService;
   readonly #contextGuard: HubContextGuard;
   readonly #chat: HubChatPipeline;
   readonly #connectionsBridge: HubConnectionsBridge;
@@ -623,7 +613,8 @@ export class KuloHub implements OrchestratorController {
   #closed = false;
   #closing?: Promise<void>;
   #androidHubId = "";
-  #onClusterDirty?: (kind: "sqlite" | "assistant" | "vault" | "files" | "uploads") => void;
+  #onClusterDirty?: (kind: "sqlite" | "assistant" | "memory" | "vault" | "files" | "uploads") => void;
+  #hasRemoteStandbys?: () => boolean;
   #clusterCloseHook?: () => Promise<void>;
   #clusterHostContext?: { localNodeId: string; legacyLocalNodeId?: string };
   #handoverBarrierActive = false;
@@ -651,6 +642,7 @@ export class KuloHub implements OrchestratorController {
     toolSearchExt: ReturnType<typeof createToolSearchExtension>;
     settingsTierExt: ReturnType<typeof createSettingsTierExtension>;
     computerMixedAndroidTierExt: ReturnType<typeof createComputerMixedAndroidTierExtension>;
+    readOnlyAndroidTierExt: ReturnType<typeof createReadOnlyAndroidTierExtension>;
     orchestratorGuardExt: ReturnType<typeof defineExtension>;
     computerController: HubComputerController;
     computerUseExt: ReturnType<typeof createComputerUseExtension>;
@@ -703,7 +695,7 @@ export class KuloHub implements OrchestratorController {
     this.#redactionExt = params.redactionExt;
     this.#toolOverflowExt = params.toolOverflowExt;
     this.memoryRuntime = params.memoryRuntime;
-    this.rootConversation = params.rootConversation;
+    this.#activeRootConversation = params.rootConversation;
     this.identityFiles = params.identityFiles;
     this.usageCaps = new KuloUsageCaps({ harness: params.harness });
     this.personality = new KuloPersonality({
@@ -770,7 +762,7 @@ export class KuloHub implements OrchestratorController {
     this.#failureRecoveryTask = params.failureRecoveryTask;
     this.#watchdog = new HubWatchdog({
       harness: this.harness,
-      rootConversation: this.rootConversation,
+      getRootConversation: () => this.#activeRootConversation,
       revokeTicketConnections: (ticketId) => { void this.connectionManager.revoke(ticketId); },
       isClosed: () => this.#closed,
       isHandoverBarrierActive: () => this.#handoverBarrierActive,
@@ -780,7 +772,7 @@ export class KuloHub implements OrchestratorController {
     });
     this.#failureRecovery = new HubFailureRecovery({
       harness: this.harness,
-      rootConversation: this.rootConversation,
+      getRootConversation: () => this.#activeRootConversation,
       failureRecoveryTask: this.#failureRecoveryTask,
       isClosed: () => this.#closed,
       isRecovering: () => this.#recovering,
@@ -792,6 +784,7 @@ export class KuloHub implements OrchestratorController {
     this.#toolSearchExt = params.toolSearchExt;
     this.#settingsTierExt = params.settingsTierExt;
     this.#computerMixedAndroidTierExt = params.computerMixedAndroidTierExt;
+    this.#readOnlyAndroidTierExt = params.readOnlyAndroidTierExt;
     this.#orchestratorGuardExt = params.orchestratorGuardExt;
     this.#computer = params.computerController;
     this.#computerUseExt = params.computerUseExt;
@@ -925,10 +918,8 @@ export class KuloHub implements OrchestratorController {
       ambientModel: this.ambientModel,
       agentName: () => this.#liveSettings.presentation.agentName,
       envDisplayName: (envId) => this.envManager.getEnvDescriptor(envId)?.name,
-      isForegroundBusy: () => {
-        if (this.voiceCalls.hasActiveCalls()) return true;
-        return this.#topics.inspectBusyTopics().length > 0;
-      },
+      isForegroundBusy: () => this.voiceCalls.hasActiveCalls() || this.#topics.inspectBusyTopics().length > 0,
+      canMutateState: () => !this.#closed && !this.#recovering && !this.#handoverBarrierActive,
       shouldSkipCloudModel: async () => this.usageCaps.isCappedFor("assistant").capped && (await this.ambientModel.willUseCloudModel(true)),
       redact: redactAssistantText,
       createDetachedOrchestratorConversation: async (ctx) => {
@@ -1143,6 +1134,7 @@ export class KuloHub implements OrchestratorController {
       settings: () => this.getSettingsView(), providers: () => this.listProviders(),
       redact: (value) => this.connectionManager.redact(value), rememberSecrets: (values) => this.connectionManager.rememberSecrets(values),
       discover: (request) => this.discoverProviderModels(request), probe: (request, signal) => this.probeModel(request, signal),
+      resolveMetadata: (request) => this.resolveModelMetadata(request), hasSavedProviderKey: async (id, url) => Boolean(await this.#providerManager?.resolveProbeApiKey(id, url)),
       saveProvider: async ({ provider, expectedSettingsRevision, defaultModelId, apiKey, operationKey, fingerprint, commit }) => {
         let previousCredential: Credential | undefined;
         let wroteCredential = false;
@@ -1297,6 +1289,15 @@ export class KuloHub implements OrchestratorController {
         onStatus: () => { void this.#broadcastVoice().catch((error: unknown) => console.error("[KuloVoice]", this.connectionManager.redact(error instanceof Error ? error.message : String(error)))); } }),
       onChanged: () => this.#broadcastVoice() });
     this.voiceCalls = new KuloVoiceCalls({ voice: this.voice, openLive: params.voiceOpenLive,
+      canCreateCall: async (topicId) => {
+        if (topicId === "root" && this.#mainArchive?.isArchivingRoot()) {
+          throw new VoiceError(409, "main_archive_in_progress", "主对话正在归档，请稍后再发起语音通话。");
+        }
+        const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
+        const topic = state?.topics && Object.hasOwn(state.topics, topicId) ? state.topics[topicId] : undefined;
+        if (!topic || topic.deletedAt) throw new VoiceError(404, "voice_topic_not_found", "通话所属会话不存在或已删除。");
+        if (topic.archived) throw new VoiceError(409, "topic_archived", "会话已归档，请还原后再发起语音通话。");
+      },
       context: async (topicId, principalId) => {
         const cache = await this.#voiceTopic(topicId);
         const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
@@ -1306,7 +1307,8 @@ export class KuloHub implements OrchestratorController {
             this.connectionManager.redact(ticket.latestReport.summary), ticket.status);
         }
         const voiceContext = await createVoiceContext({ conversation: cache.conversation, harness: this.harness, state,
-          memory: this.#liveSettings.memory, agentName: this.#liveSettings.presentation.agentName,
+          memory: this.#effectiveMemoryConfig(this.#liveSettings.memory), agentName: this.#liveSettings.presentation.agentName,
+          builtinMemoryRecall: this.memoryRuntime.builtinMemory.isEffectiveActive() ? (input, ctx) => this.memoryRuntime.builtinMemory.recallForVoice(input, ctx) : undefined,
           redact: (text) => this.connectionManager.redact(text) }, BACKGROUND_CONTEXT);
         return { ...voiceContext, ...(cache.live.runFailure ? { priorFailureTaskId: cache.live.runFailure.taskId ?? "router" } : {}) };
       },
@@ -1326,7 +1328,7 @@ export class KuloHub implements OrchestratorController {
     this.projects = new KuloProjects({
       harness: this.harness, envManager: this.envManager, stopTicket: (id, reason) => this.stopTicket(id, reason),
       onChanged: () => { void this.#broadcastProjects().catch((error) => console.error("[KuloProjects]", error)); },
-      onProjectDeleted: (id, convIds, ctx) => this.memoryRuntime.onProjectDeleted(id, convIds, ctx),
+      onProjectDeleted: (id, convIds, ctx) => this.memoryRuntime.onProjectDeleted(id, convIds, ctx), onTopicMoved: (id, pId, ctx) => this.memoryRuntime.onTopicMoved(id, pId, ctx),
     });
     this.uiCards = new KuloUiCards({ harness: this.harness, validateAssetReferences: (spec) => {
       for (const element of Object.values(spec.elements)) {
@@ -1358,6 +1360,7 @@ export class KuloHub implements OrchestratorController {
         params.projectExt,
         params.skillExt,
         params.orchestratorTailExt,
+        params.memoryRuntime.builtinMemoryRecallExt,
         params.mediaExt,
         params.voiceExt,
         params.memoryServiceExt,
@@ -1370,6 +1373,7 @@ export class KuloHub implements OrchestratorController {
       memoryExtensions: [params.memorySetupExt],
       appearanceExtensions: [params.appearanceCustomizationExt],
       modelExtensions: [params.modelConfigurationExt],
+      registerLocalModel: (input, signal) => this.modelConfiguration.registerLocalProvider(input, signal),
       agentConfigurationExtensions: [params.agentConfigurationExt],
       deviceExtensions: [params.deviceToolsExt],
       securityExtensions: [params.redactionExt],
@@ -1456,6 +1460,7 @@ export class KuloHub implements OrchestratorController {
       models: this.#models,
       settingsStore: this.#settingsStore,
       runtimeGates: this.#runtimeGates,
+      isArchivingRoot: () => this.#mainArchive?.isArchivingRoot() ?? false,
       onContextUpdated: (conversationId) => this.#topics?.refreshByConversation(conversationId),
     });
     this.#topics = new HubTopicManager({
@@ -1541,7 +1546,7 @@ export class KuloHub implements OrchestratorController {
     });
     this.#ticketDispatch = new TicketDispatchService({
       harness: this.harness,
-      rootConversation: this.rootConversation,
+      getRootConversation: () => this.#activeRootConversation,
       inlineDispatchWaitMs: this.config.inlineDispatchWaitMs ?? 0,
       envManager: this.envManager,
       projects: this.projects,
@@ -1568,7 +1573,7 @@ export class KuloHub implements OrchestratorController {
     });
     this.#mediaDelivery = new HubMediaDelivery({
       harness: this.harness,
-      rootConversationId: Number(this.rootConversation.id),
+      getRootConversationId: () => Number(this.#activeRootConversation.id),
       uploads: this.uploads,
       uiCards: this.uiCards,
       mediaJobs: () => this.mediaJobs,
@@ -1584,7 +1589,7 @@ export class KuloHub implements OrchestratorController {
     });
     this.#computer.attachRuntime({
       harness: this.harness,
-      rootConversationId: Number(this.rootConversation.id),
+      getRootConversationId: () => Number(this.#activeRootConversation.id),
       capabilities: this.capabilities,
       actionConfirmations: this.actionConfirmations,
       connectionManager: this.connectionManager,
@@ -1600,6 +1605,31 @@ export class KuloHub implements OrchestratorController {
       stopTicket: (ticketId, reason, ctx, commandId) =>
         this.stopTicket(ticketId, reason, ctx, commandId),
       steerTicket: (req, ctx) => this.steerTicket(req, ctx),
+    });
+    this.#mainArchive = new MainConversationArchiveService({
+      harness: this.harness,
+      runtimeGates: this.#runtimeGates,
+      delivery: this.#delivery,
+      topics: this.#topics,
+      voiceCalls: this.voiceCalls,
+      contextGuard: this.#contextGuard,
+      memoryRuntime: this.memoryRuntime,
+      connectionManager: this.connectionManager,
+      orchestrator: {
+        resolveAgent: () => this.#resolveOrchestratorAgent(),
+        extensions: (isRoot) => this.#orchestratorExtensions(isRoot),
+        tools: (isRoot) => this.#orchestratorTools(isRoot),
+        mainWorkspaceDir: this.#mainWorkspaceDir,
+        alignContextCompaction: (cid, ctx) => this.#alignContextCompaction(cid, ctx),
+      },
+      hooks: {
+        getAgentName: () => this.#liveSettings.presentation.agentName,
+        isLongTermMemoryActive: () =>
+          Boolean(this.#effectiveMemoryConfig(this.#liveSettings.memory).enabled || this.memoryRuntime.builtinMemory.isEffectiveActive()),
+        closeOrchestratorBrowserSessionByConversation: (cid) => this.#computer.closeOrchestratorBrowserSessionByConversation(cid),
+        onActiveRootChanged: (conv) => { this.#activeRootConversation = conv; },
+        broadcastTicketsAndBoards: (ctx) => this.#broadcastTickets(ctx),
+      },
     });
     this.#ticketReconciler = new TicketReconciler({
       harness: this.harness,
@@ -1665,6 +1695,7 @@ export class KuloHub implements OrchestratorController {
       runtimeGates: this.#runtimeGates,
       stateDir: this.config.stateDir,
       defaultIdentityDir: this.#defaultIdentityDir,
+      getEffectiveMemoryConfig: () => this.#effectiveMemoryConfig(this.#liveSettings.memory), getBuiltinMemory: () => this.memoryRuntime.builtinMemory,
       ports: {
         connectionsBridge: this.#connectionsBridge,
         stageWorkerArtifact: (asset, meta, callId) => this.#stageWorkerArtifact(asset, meta, callId),
@@ -1819,7 +1850,7 @@ export class KuloHub implements OrchestratorController {
     const models: Models = withNativeToolsModels(
       withUsageMeterModels(withThinkingLevelModels(init.models ?? providerManager!.models), () => hubRef?.usageCaps),
       {
-      fetch: proxyFetch,
+      fetch: modelFetch,
       getNativeTools: (provider, id) => {
         if (providerManager && !providerManager.isOfficialNativeSearchAllowed(provider)) return undefined;
         const modelConfig = settingsStore.getModel();
@@ -1908,6 +1939,10 @@ export class KuloHub implements OrchestratorController {
       run: (caller, input, ctx) => hubRef!.#hostActions.run(caller, input, ctx),
       decide: (caller, input, ctx) => hubRef!.#hostActions.decide(caller, input, ctx),
     };
+    const memoryRuntime = new HubMemoryRuntime({
+      stateDir: config.stateDir, getHarness: () => hubRef!.harness, getModels: () => hubRef!.#models, getSettingsStore: () => hubRef!.#settingsStore, getContextGuard: () => hubRef!.#contextGuard, getRuntimeGates: () => hubRef!.#runtimeGates, getMemoryLifecycle: () => memoryLifecycleExt, getEffectiveMemoryConfig: getLiveMemory, getRawMemoryConfig: () => settingsStore.get().memory, onBuiltinMemoryModeChanged: (state) => { if (hubRef) return hubRef.#onBuiltinMemoryModeChanged(state); }, onBuiltinMemoryStoreWrite: () => { if (hubRef) hubRef.#notifyClusterDirty("memory"); }, isClusterStandbyActive: () => Boolean(hubRef && hubRef.#hasRemoteStandbys?.()), redact,
+      isPersonalityCapped: () => { const c = hubRef!.usageCaps.isCappedFor("personality"); return { capped: c.capped, ...(c.resetAt !== null ? { resetAt: c.resetAt } : {}) }; }, willUseCloudModel: () => hubRef!.ambientModel.willUseCloudModel(false), completeZeroToolJson: (input) => hubRef!.ambientModel.completeZeroToolJson(input),
+    });
     const workerExt = createWorkerExtension({
       connections,
       hostActions,
@@ -1918,7 +1953,7 @@ export class KuloHub implements OrchestratorController {
       onStateChanged: notifyTicketsChanged,
       onOutwardAction: (ticketId, runEpoch, label) => hubRef ? hubRef.#recordTicketOutwardAction(ticketId, runEpoch, "shell", label) : undefined,
       getIdentityDir: getLiveIdentityDir,
-      getMemoryConfig: getLiveMemory,
+      getMemoryConfig: getLiveMemory, getSharedMemoryMode: () => memoryRuntime.builtinMemory.getExternalMemoryMode(), builtinMemoryTools: memoryRuntime.createBuiltinMemoryTools("shared"),
       getRoles: getLiveRoles,
       getLanguage: getLiveLanguage,
       getMaxSubagentsPerTicket: () => settingsStore.getMaxSubagentsPerTicket(),
@@ -1940,7 +1975,7 @@ export class KuloHub implements OrchestratorController {
       },
     });
 
-    const memoryLifecycleExt = createMemoryLifecycleExtension({ getHarness: () => hubRef!.harness, getMemoryConfig: getLiveMemory });
+    const memoryLifecycleExt = createMemoryLifecycleExtension({ getHarness: () => hubRef!.harness, getMemoryConfig: getLiveMemory, getBuiltinMemory: () => memoryRuntime.builtinMemory, redact });
     const failureRecoveryTask = createFailureRecoveryTask({
       review: (ticketId, startedAt, ctx) => hubRef!.#failureRecovery.review(ticketId, startedAt, ctx),
       onChanged: ctx => hubRef!.#broadcastTickets(ctx),
@@ -1968,7 +2003,7 @@ export class KuloHub implements OrchestratorController {
       retainExternalMemory: (ticket, report, ctx) => memoryLifecycleExt.retainExternalTicketReport(ticket, report, ctx),
       consumeExternalPendingReports: (ticket, reports, ctx) => hubRef ? hubRef.#consumeExternalPendingReports(ticket, reports, ctx) : Promise.resolve([]),
       hasTicketConnections: (ticket) => Boolean(ticket.connectionIds?.length),
-      isExternalMemoryEnabled: () => { const m = getLiveMemory(); return Boolean(m.enabled && m.accessMode !== "private-only"); },
+      isExternalMemoryEnabled: () => memoryRuntime.builtinMemory.getExternalMemoryMode() !== "none", getExternalMemoryMode: () => memoryRuntime.builtinMemory.getExternalMemoryMode(),
       syncWorkerConversation: async (ticket, ctx) => { if (hubRef) await hubRef.#syncSingleWorkerConversation(ticket, ctx); },
       prepareBuiltInStagedWorkspace: (ticket, ctx) => hubRef!.#prepareBuiltInStagedWorkspace(ticket, ctx),
       prepareWorkerCollaborationContext: (ticket, ctx) => hubRef!.#prepareWorkerCollaborationContext(ticket, ctx),
@@ -2025,7 +2060,7 @@ export class KuloHub implements OrchestratorController {
       proposeIdentity: (content, summary) => hubRef!.personality.proposeIdentity(content, summary),
       updateRelationship: (request) => hubRef!.personality.saveRelationship(request),
       getForgottenTerms: () => hubRef!.personality.getForgottenTerms(),
-      forgetMemory: (term, reason, caller, signal) => executeMemoryForget({ term, reason, caller, signal, host: { addForgottenTerm: (t, r) => hubRef!.personality.addForgottenTerm(t, r), forgetFromRelationship: (t, r) => hubRef!.personality.forgetFromRelationship(t, r), forgetFromWorkingMemory: (t, r) => hubRef!.memoryRuntime.forgetFromWorkingMemory(t, r), getMemoryConfig: getLiveMemory } }),
+      forgetMemory: (term, reason, caller, signal) => executeMemoryForget({ term, reason, caller, signal, host: { addForgottenTerm: (t, r) => hubRef!.personality.addForgottenTerm(t, r), forgetFromRelationship: (t, r) => hubRef!.personality.forgetFromRelationship(t, r), forgetFromWorkingMemory: (t, r) => hubRef!.memoryRuntime.forgetFromWorkingMemory(t, r), forgetFromBuiltinMemory: (t) => hubRef!.memoryRuntime.forgetFromBuiltinMemory(t), getMemoryConfig: getLiveMemory } }),
       setAgentExpression: (face, cue, ctx) => hubRef!.setAgentExpression(face, cue, ctx),
       handleBoardTool: (params, source, ctx) => hubRef!.#handleBoardTool(params, source, ctx),
     };
@@ -2037,7 +2072,7 @@ export class KuloHub implements OrchestratorController {
       getExternalClients: () => settingsStore.getExternalClients(),
       getEnvs: () => envManager.listEnvs(),
       getIdentityDir: getLiveIdentityDir,
-      getMemoryConfig: getLiveMemory,
+      getMemoryConfig: getLiveMemory, getBuiltinMemoryState: () => ({ active: memoryRuntime.builtinMemory.isEffectiveActive(), sharedActive: memoryRuntime.builtinMemory.isSharedEffectiveActive() }),
       getMediaCapabilities: () =>
         hubRef
           ? hubRef.capabilities.snapshot()
@@ -2060,6 +2095,7 @@ export class KuloHub implements OrchestratorController {
       headSections,
       getLiveMemory,
       () => hubRef!.search,
+      memoryRuntime.createBuiltinMemoryTools("private"),
     );
     const orchestratorTailExt = defineExtension({
       name: "kulo-orchestrator-tail",
@@ -2393,6 +2429,7 @@ export class KuloHub implements OrchestratorController {
     });
     const settingsTierExt = createSettingsTierExtension();
     const computerMixedAndroidTierExt = createComputerMixedAndroidTierExtension();
+    const readOnlyAndroidTierExt = createReadOnlyAndroidTierExtension();
     const contextCompaction = createContextCompactionController({
       getHarness: () => hubRef!.harness,
       getKernel: () => hubRef!.#getContextKernel(),
@@ -2402,23 +2439,17 @@ export class KuloHub implements OrchestratorController {
         if (hubRef) { await hubRef.#pruneCompactedConversationTools(conversationId, firstKept, ctx); void hubRef.memoryRuntime.onCompactionCommitted(conversationId, firstKept, BACKGROUND_CONTEXT).catch(() => {}); }
       },
     });
-    const memoryRuntime = new HubMemoryRuntime({
-      getHarness: () => hubRef!.harness, getModels: () => hubRef!.#models, getSettingsStore: () => hubRef!.#settingsStore,
-      getContextGuard: () => hubRef!.#contextGuard, getRuntimeGates: () => hubRef!.#runtimeGates, getMemoryLifecycle: () => memoryLifecycleExt,
-      redact, isPersonalityCapped: () => { const c = hubRef!.usageCaps.isCappedFor("personality"); return { capped: c.capped, ...(c.resetAt !== null ? { resetAt: c.resetAt } : {}) }; },
-      willUseCloudModel: () => hubRef!.ambientModel.willUseCloudModel(false), completeZeroToolJson: (input) => hubRef!.ambientModel.completeZeroToolJson(input),
-    });
-
     const registry = createRegistry();
     registry.install(redactionExt);
     registry.install(toolOverflowExt);
-    registry.install(memoryRuntime.memoryFlushExt);
+    registry.install(memoryRuntime.memoryFlushExt); registry.install(memoryRuntime.builtinMemoryRecallExt);
     registry.install(schedulerExt);
     registry.install(codingToolsExt);
     registry.install(androidExt);
     registry.install(toolSearchExt);
     registry.install(settingsTierExt);
     registry.install(computerMixedAndroidTierExt);
+    registry.install(readOnlyAndroidTierExt);
     registry.install(orchestratorGuardExt);
     registry.install(computerUseExt);
     registry.install(routerReadExt);
@@ -2581,26 +2612,20 @@ export class KuloHub implements OrchestratorController {
       activeModel.thinkingLevel,
       activeModel,
     );
-    const rootConversation = await harness.root(context, {
-      agent: {
-        model: orchestratorAgent.model,
-        thinkingLevel: orchestratorAgent.thinkingLevel,
-        extensions: [redactionExt, toolOverflowExt, orchestratorExt, codingToolsExt, orchestratorGuardExt, computerUseExt, toolSearchExt, contentExt, projectExt, skillExt, orchestratorTailExt, mediaExt, voiceExt, memoryServiceExt, memorySetupExt, historyExt, assistantToolsExt, globalSettingsExt, ...(customizationExt ? [customizationExt] : []), contextCompaction.extension],
-        cwd: mainWorkspaceDir,
-        maxTurns: 25,
-      },
-    });
-
-    await rootConversation.configure(
-      {
-        model: orchestratorAgent.model,
-        thinkingLevel: orchestratorAgent.thinkingLevel,
-        extensions: [redactionExt, toolOverflowExt, orchestratorExt, codingToolsExt, orchestratorGuardExt, computerUseExt, toolSearchExt, contentExt, projectExt, skillExt, orchestratorTailExt, mediaExt, voiceExt, memoryServiceExt, memorySetupExt, historyExt, assistantToolsExt, globalSettingsExt, ...(customizationExt ? [customizationExt] : []), contextCompaction.extension],
-        cwd: mainWorkspaceDir,
-        maxTurns: 25,
-      },
-      context,
-    );
+    const bootState = await harness.snapshot(KuloStateDoc, context);
+    const activeRootConvId = resolveActiveRootConversationId(bootState);
+    const rootAgent = {
+      model: orchestratorAgent.model,
+      thinkingLevel: orchestratorAgent.thinkingLevel,
+      extensions: [redactionExt, toolOverflowExt, orchestratorExt, codingToolsExt, orchestratorGuardExt, computerUseExt, toolSearchExt, contentExt, projectExt, skillExt, orchestratorTailExt, memoryRuntime.builtinMemoryRecallExt, mediaExt, voiceExt, memoryServiceExt, memorySetupExt, historyExt, assistantToolsExt, globalSettingsExt, ...(customizationExt ? [customizationExt] : []), contextCompaction.extension],
+      cwd: mainWorkspaceDir,
+      maxTurns: 25,
+    };
+    const initialRoot = await harness.root(context, activeRootConvId === Number(ROOT_CONVERSATION_ID) ? { agent: rootAgent } : undefined);
+    const rootConversation = activeRootConvId === Number(ROOT_CONVERSATION_ID)
+      ? initialRoot
+      : (await harness.conversation(activeRootConvId as ConversationId, context)) ?? initialRoot;
+    await rootConversation.configure(rootAgent, context);
 
     const hub = new KuloHub({
       releaseProxy,
@@ -2624,6 +2649,7 @@ export class KuloHub implements OrchestratorController {
       toolSearchExt,
       settingsTierExt,
       computerMixedAndroidTierExt,
+      readOnlyAndroidTierExt,
       orchestratorGuardExt,
       computerController,
       computerUseExt,
@@ -2705,6 +2731,9 @@ export class KuloHub implements OrchestratorController {
     void hub.assistantLedger.pruneExpiredBodies().catch(() => {});
 
     await hub.#ensureTopicWatched("root", rootConversation, context);
+    await hub.#mainArchive.finalizeMainArchive(context).catch((err) => {
+      console.warn("[KuloMainArchive] Startup finalize deferred", err);
+    });
 
     // Reattach only unfinished topic sources before Durable resumes them; idle histories stay unloaded.
     const [unfinished, topicState] = await Promise.all([
@@ -2744,7 +2773,7 @@ export class KuloHub implements OrchestratorController {
     await hub.#queueEnvReconcile();
     await hub.extensions.initialize();
     await hub.#chat.recoverChatAttachments(context);
-    await hub.assistantCoordinator.reconcileDispatchedActions(context);
+    await hub.assistantCoordinator.start(context);
     hub.#recovering = false;
     await hub.#reconcileDispatchedConfirmations(context);
     await hub.#failureRecovery.startLegacyRecovery(context);
@@ -2760,7 +2789,7 @@ export class KuloHub implements OrchestratorController {
     await hub.archiveInactiveTopics(context);
     hub.#topics.startAutoArchive();
     hub.#startUploadCleanup();
-    hub.memoryRuntime.start();
+    await hub.memoryRuntime.start({ hasCustomStorage: Boolean(init.storage), isKnownSecret });
     return hub;
     } catch (error) {
       const cleanup = hubRef ? [() => hubRef!.close(BACKGROUND_CONTEXT)] :
@@ -2925,10 +2954,11 @@ export class KuloHub implements OrchestratorController {
     for (const listener of this.#listeners) listener.onVoice?.(snapshot);
   }
 
-  async #voiceTopic(topicId: string) {
+  async #voiceTopic(topicId: string, allowArchived = false) {
     const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const topic = state?.topics && Object.hasOwn(state.topics, topicId) ? state.topics[topicId] : undefined;
     if (!topic || topic.deletedAt) throw new VoiceError(404, "voice_topic_not_found", "通话所属会话不存在或已删除。");
+    if (!allowArchived && topic.archived) throw new VoiceError(409, "topic_archived", "会话已归档，请还原后再发起语音通话。");
     if (topic.projectId) await this.projects.ensureAuthorized(topic.projectId, BACKGROUND_CONTEXT);
     return this.#resolveWatchedTopic(topicId, BACKGROUND_CONTEXT);
   }
@@ -2944,11 +2974,11 @@ export class KuloHub implements OrchestratorController {
       ...(event.id ? { requestId: `voice-transcript:${callId}:${event.role}:${event.id}` } : {}) }, BACKGROUND_CONTEXT);
     this.#refreshTopicContent(cache);
     const preview = summarizeTopicPreview([{ role: event.role, text, createdAt }]);
-    if (preview) this.#topics.recordTopicActivity(cache.topicId, preview);
+    if (preview) this.#topics.recordTopicActivity(cache.topicId, preview, Number(cache.conversation.id));
   }
 
   async transcribeVoiceAsset(assetId: string, options: { topicId?: string; principalId: string }, context: Context = BACKGROUND_CONTEXT): Promise<ChatAttachment> {
-    const cache = await this.#voiceTopic(options.topicId || "root");
+    const cache = await this.#voiceTopic(options.topicId || "root", true);
     const loaded = this.uploads.getUpload(assetId);
     if (!loaded || loaded.record.kind !== "audio") throw new VoiceError(404, "voice_asset_not_found", "语音资源不存在。");
     if (!this.uploads.canReadUpload(assetId, options.principalId, (scope) => scope === `conversation:${Number(cache.conversation.id)}`)) throw new VoiceError(403, "voice_asset_forbidden", "无权读取这段语音。");
@@ -3013,36 +3043,19 @@ export class KuloHub implements OrchestratorController {
       bytes: record.size, size: record.size, kind: record.kind, sha256 } };
   }
 
-  async #resolveAndroidAssets(scope: AndroidToolScope & { deviceId: string; supportsImages: boolean }, result: import("@kulo/protocol").AndroidResult) {
-    const output: Array<import("@earendil-works/pi-ai").ImageContent> = [];
-    if (!result.data || typeof result.data !== "object" || Array.isArray(result.data)) return output;
-    const data = result.data as Record<string, unknown>;
-    const assets = [...(data.attachment ? [data.attachment] : []), ...(Array.isArray(data.attachments) ? data.attachments : [])];
-    if (assets.length > 8) throw new Error("手机返回的资源数量过多。");
-    await scope.assertActive();
-    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-    const ticket = state?.tickets[scope.ticketId];
-    if (!ticket || ticket.runEpoch !== scope.runEpoch) throw new Error("手机资源所属任务已失效。");
-    for (const asset of assets) {
-      if (!asset || typeof asset !== "object" || !("id" in asset) || typeof asset.id !== "string") throw new Error("手机资源引用无效。");
-      const loaded = this.uploads.getUpload(asset.id);
-      if (!loaded || loaded.record.ownerId !== scope.deviceId) throw new Error("手机资源不属于本次操作的目标设备。");
-      for (const id of new Set([scope.conversationId, ticket.workerConversationId])) {
-        this.uploads.bindAttachments([asset.id], `conversation:${id}`, loaded.record.ownerId);
-      }
-      this.uploads.bindAttachments([asset.id], `ticket:${ticket.id}`, loaded.record.ownerId);
-      if (data.ephemeralObservation !== true) {
-        await this.#stageWorkerArtifact(this.uploads.toChatAttachment(loaded.record), {
-          conversationId: scope.conversationId, topicId: ticket.originTopicId ?? "root", ticketId: ticket.id, runEpoch: ticket.runEpoch, envId: scope.deviceId,
-        }, `android-result:${asset.id}`);
-      }
-      if (loaded.record.kind === "image" && scope.supportsImages) {
-        if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(loaded.record.mimeType)) throw new Error("手机图片格式不受支持。");
-        output.push({ type: "image", mimeType: loaded.record.mimeType, data: fs.readFileSync(loaded.filePath).toString("base64") });
-      }
-    }
-    await scope.assertActive();
-    return output;
+  async #resolveAndroidAssets(
+    scope: AndroidToolScope & { deviceId: string; supportsImages: boolean; stageForUser?: boolean },
+    result: import("@kulo/protocol").AndroidResult,
+  ) {
+    return resolveAndroidToolAssets(
+      {
+        uploads: this.uploads,
+        snapshotState: () => this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT),
+        stageWorkerArtifact: (asset, source, callId) => this.#stageWorkerArtifact(asset, source, callId),
+      },
+      scope,
+      result,
+    );
   }
 
   #androidTargets(ticket: Readonly<TicketRecord>): string[] {
@@ -3057,13 +3070,14 @@ export class KuloHub implements OrchestratorController {
     audience: ToolSurfaceAudience,
     extra: Partial<Omit<ToolSurfaceRuntimeState, "audience">> = {},
   ): ToolSurfaceRuntimeState {
-    const sharedMemoryEnabled =
-      this.#liveSettings.memory.enabled && this.#liveSettings.memory.accessMode !== "private-only";
+    const effMem = this.#effectiveMemoryConfig(this.#liveSettings.memory);
+    const sharedMemoryEnabled = effMem.enabled && effMem.accessMode !== "private-only";
     const deviceView = this.#deviceController?.view();
     return {
       audience,
-      memoryEnabled: this.#liveSettings.memory.enabled,
+      memoryEnabled: effMem.enabled,
       sharedMemoryEnabled,
+      builtinMemoryEnabled: this.memoryRuntime.builtinMemory.isEffectiveActive(), builtinSharedMemoryEnabled: this.memoryRuntime.builtinMemory.isSharedEffectiveActive(),
       ttsEnabled: this.#ttsEnabled,
       webSearchAvailable: this.#webSearchAvailable,
       customizationEnabled: Boolean(this.config.customization),
@@ -3098,6 +3112,7 @@ export class KuloHub implements OrchestratorController {
       this.#projectExt,
       this.#skillExt,
       this.#orchestratorTailExt,
+      this.memoryRuntime.builtinMemoryRecallExt,
       this.#mediaExt,
       this.#voiceExt,
       ...(isRoot ? [this.#memoryServiceExt] : []),
@@ -3118,9 +3133,19 @@ export class KuloHub implements OrchestratorController {
   #workerExtensions(
     executionDomain: "computer" | "android" | undefined,
     androidTargetIds: readonly string[],
+    readOnly = false,
   ): ReturnType<typeof defineExtension>[] {
     if (executionDomain === "android") {
-      return [this.#redactionExt, this.#androidExt, this.#toolSearchExt, this.#workerExt, this.#contentExt, this.#skillExt, this.#contextCompaction.extension];
+      return [
+        this.#redactionExt,
+        this.#androidExt,
+        ...(readOnly ? [this.#readOnlyAndroidTierExt] : []),
+        this.#toolSearchExt,
+        this.#workerExt,
+        this.#contentExt,
+        this.#skillExt,
+        this.#contextCompaction.extension,
+      ];
     }
     return [
       this.#redactionExt,
@@ -3143,7 +3168,7 @@ export class KuloHub implements OrchestratorController {
     executionDomain: "computer" | "android" | undefined; androidTargetIds: readonly string[];
     allowSubagents: boolean; isSubagent?: boolean; readOnly?: boolean; hasProject?: boolean;
   }): { extensions: ReturnType<typeof defineExtension>[]; tools: ToolRegistration[] } {
-    const extensions = this.#workerExtensions(options.executionDomain, options.androidTargetIds);
+    const extensions = this.#workerExtensions(options.executionDomain, options.androidTargetIds, Boolean(options.readOnly));
     const audience: ToolSurfaceAudience =
       options.executionDomain === "android"
         ? options.isSubagent
@@ -3157,7 +3182,7 @@ export class KuloHub implements OrchestratorController {
       .filter((desc): desc is EnvNodeDescriptor => Boolean(desc));
     const tools = this.#resolveExtensionsTools(
       extensions,
-      this.#surfaceRuntimeState(audience, { allowSubagents: options.allowSubagents, readOnly: options.readOnly, androidTargets, ...(options.hasProject ? {} : { sharedMemoryEnabled: false }) }),
+      this.#surfaceRuntimeState(audience, { allowSubagents: options.allowSubagents, readOnly: options.readOnly, androidTargets, ...(options.hasProject ? {} : { sharedMemoryEnabled: false, builtinSharedMemoryEnabled: false }) }),
     );
     return { extensions, tools };
   }
@@ -3471,68 +3496,7 @@ export class KuloHub implements OrchestratorController {
   }
 
   async #collectRelationshipInput(since: number): Promise<{ cursor: number; content: string }> {
-    const progress = await this.harness.commit(async (tx) => {
-      const doc = await tx.doc(RelationshipEvidenceDoc);
-      if (doc.pending?.cursor === since) {
-        doc.cursor = since;
-        doc.entries = doc.pending.entries;
-        doc.reports = doc.pending.reports;
-        doc.pending = null;
-      }
-      if (doc.cursor !== since) throw new Error("协作关系的来源进度不一致，请重新检查。");
-      return { cursor: doc.cursor, entries: { ...doc.entries }, reports: { ...doc.reports } };
-    }, BACKGROUND_CONTEXT);
-    const state = await this.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-    const candidates: Array<{ at: number; text: string; conversationId?: string; entryId?: number; ticketId?: string; reportKey?: string }> = [];
-    for (const topic of Object.values(state?.topics ?? {}).filter((item) => !item.deletedAt && !item.archived)) {
-      const conversation = await this.harness.conversation(topic.conversationId as ConversationId, BACKGROUND_CONTEXT);
-      if (!conversation) continue;
-      const conversationId = String(topic.conversationId);
-      let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
-      let scanned = 0;
-      do {
-        const page = await conversation.entries({ minEntryId: ((progress.entries[conversationId] ?? 0) + 1) as EntryId, order: "ascending" }, 100, cursor, BACKGROUND_CONTEXT);
-        for (const entry of page.items) {
-          const relevant = UserEntry.is(entry) || KuloUserEntry.is(entry) || AssistantEntry.is(entry) || WorkerRelayEntry.is(entry);
-          const evidence = VoiceTranscriptEntry.is(entry) ? [{ role: entry.data.role, text: entry.data.text }]
-            : relevant ? extractDisplayMessages([entry]) : [];
-          const messages = evidence.filter((item) =>
-            ["user", "assistant", "relay"].includes(item.role) && item.text.trim() && isSafeMemoryText(item.text));
-          const at = entryTimestamp(entry) ?? 0;
-          candidates.push({ at, conversationId, entryId: Number(entry.id), text: messages.map((item) =>
-            `[${topic.title} / ${item.role}${at ? ` / ${new Date(at).toISOString()}` : ""}]\n${item.text.slice(0, 2500)}`).join("\n\n") });
-        }
-        scanned += page.items.length;
-        cursor = page.next;
-      } while (cursor && scanned < 2000);
-    }
-    for (const ticket of Object.values(state?.tickets ?? {})) {
-      const report = ticket.latestReport;
-      const topic = ticket.originTopicId ? state?.topics?.[ticket.originTopicId] : undefined;
-      if (topic?.deletedAt || topic?.archived || !report) continue;
-      const reportKey = createHash("sha256").update(JSON.stringify([report.at, report.state, report.summary])).digest("hex");
-      if (progress.reports[ticket.id] === reportKey) continue;
-      candidates.push({ at: report.at, ticketId: ticket.id, reportKey, text: isSafeMemoryText(report.summary)
-        ? `[任务 ${ticket.title} / ${report.state}]\n${report.summary.slice(0, 1200)}` : "" });
-    }
-    // Each conversation advances in committed-entry order. Generation-start timestamps
-    // cannot be a completion cursor: an answer can commit after an earlier review.
-    candidates.sort((a, b) => (a.conversationId ?? `~${a.ticketId}`).localeCompare(b.conversationId ?? `~${b.ticketId}`) ||
-      (a.entryId ?? 0) - (b.entryId ?? 0));
-    const selected: string[] = [];
-    let size = 0;
-    for (const candidate of candidates) {
-      if (size + candidate.text.length > 48_000 && selected.length) break;
-      if (candidate.conversationId && candidate.entryId !== undefined) progress.entries[candidate.conversationId] = candidate.entryId;
-      if (candidate.ticketId && candidate.reportKey) progress.reports[candidate.ticketId] = candidate.reportKey;
-      if (candidate.text) { selected.push(candidate.text); size += candidate.text.length; }
-    }
-    const nextCursor = Math.max(Date.now(), since + 1);
-    await this.harness.commit(async (tx) => {
-      const doc = await tx.doc(RelationshipEvidenceDoc);
-      doc.pending = { cursor: nextCursor, entries: progress.entries, reports: progress.reports };
-    }, BACKGROUND_CONTEXT);
-    return { cursor: nextCursor, content: selected.join("\n\n") };
+    return collectRelationshipInput(this.harness, since);
   }
 
   async #canReviewRelationship(): Promise<boolean> {
@@ -3657,16 +3621,18 @@ export class KuloHub implements OrchestratorController {
     switch (message.type) {
       case "chat.send": {
         const submission = await this.sendUserMessage(message.content, { topicId: message.topicId || "root", requestId: message.requestId,
-          attachments: message.attachments, replyTo: message.replyTo, whenBusy: message.whenBusy, targetDeviceId: message.targetDeviceId, principalId, source, deliveryIntent: intent }, context);
+          attachments: message.attachments, replyTo: message.replyTo, whenBusy: message.whenBusy, targetDeviceId: message.targetDeviceId,
+          ...(message.expectedConversationId !== undefined ? { expectedConversationId: message.expectedConversationId } : {}),
+          principalId, source, deliveryIntent: intent }, context);
         const status = await submission.status(context);
-        fallback = { topicId: message.topicId || "root", submissionId: Number(status.id), delivery: status.status === "queued" ? "queued" : "accepted" };
+        fallback = { topicId: message.topicId || "root", conversationId: Number(status.conversationId), submissionId: Number(status.id), delivery: status.status === "queued" ? "queued" : "accepted" };
         break;
       }
       case "chat.abort":
-        await this.abortForegroundTurn(message.topicId || "root", context, intent);
+        await this.abortForegroundTurn(message.topicId || "root", context, intent, message.expectedConversationId);
         fallback = { topicId: message.topicId || "root" }; break;
       case "chat.retry":
-        await this.retryTurn(message.topicId || "root", message.requestId, context, intent);
+        await this.retryTurn(message.topicId || "root", message.requestId, context, intent, message.expectedConversationId);
         fallback = { topicId: message.topicId || "root" }; break;
       case "ticket.steer":
         await this.steerTicket({ ticketId: message.ticketId, text: message.text, attachments: message.attachments,
@@ -3733,8 +3699,9 @@ export class KuloHub implements OrchestratorController {
     topicId = "root",
     context: Context = BACKGROUND_CONTEXT,
     intent?: DeliveryIntent,
+    expectedConversationId?: number,
   ): Promise<void> {
-    return this.#chat.abortForegroundTurn(topicId, context, intent);
+    return this.#chat.abortForegroundTurn(topicId, context, intent, expectedConversationId);
   }
 
   /** Retry the most recent unanswered turn in an idle topic without re-sending user input. */
@@ -3743,8 +3710,17 @@ export class KuloHub implements OrchestratorController {
     requestId?: string,
     context: Context = BACKGROUND_CONTEXT,
     suppliedIntent?: DeliveryIntent,
+    expectedConversationId?: number,
   ): Promise<{ retried: boolean }> {
-    return this.#chat.retryTurn(topicId, requestId, context, suppliedIntent);
+    return this.#chat.retryTurn(topicId, requestId, context, suppliedIntent, expectedConversationId);
+  }
+
+  /** Atomically archive the current main conversation ("root") and rotate to a fresh empty conversation. */
+  async archiveMainConversation(
+    input: ArchiveMainConversationInput,
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<ArchiveMainConversationResult> {
+    return this.#mainArchive.archiveMainConversation(input, context);
   }
 
   /** Dispatch a durable Worker Ticket onto Kulo's table. */
@@ -4241,6 +4217,7 @@ export class KuloHub implements OrchestratorController {
     ]);
     return {
       activeTopicId: topicView.topicId,
+      activeConversationId: topicView.conversationId,
       topics,
       messages: topicView.messages,
       topicActivities: Object.fromEntries(this.#topicWatchesList().filter((cache) => topics.some((topic) => topic.id === cache.topicId))
@@ -4248,7 +4225,7 @@ export class KuloHub implements OrchestratorController {
       historyBefore: topicView.historyBefore,
       live: topicView.live,
       ...board,
-      assistantItems: assistantDoc?.items ? cloneJson(assistantDoc.items) : [],
+      assistantItems: selectActiveAssistantItems(assistantDoc?.items, Date.now()),
       assistantRevision: assistantDoc?.assistantRevision ?? 1,
       projects,
       expression: this.getActiveExpression(),
@@ -4286,7 +4263,7 @@ export class KuloHub implements OrchestratorController {
     const snap = await this.harness.snapshot(AssistantDoc, context);
     return {
       assistantRevision: snap?.assistantRevision ?? 1,
-      items: snap?.items ? cloneJson(snap.items) : [],
+      items: selectActiveAssistantItems(snap?.items, Date.now()),
     };
   }
 
@@ -4380,11 +4357,7 @@ export class KuloHub implements OrchestratorController {
       ensureAssistantState(doc);
       if (typeof input.enabled === "boolean") doc.enabled = input.enabled;
       const mute = input.muteApp?.trim();
-      if (mute && mute.length <= 255 && !doc.mutedApps.includes(mute)) {
-        doc.mutedApps = [...doc.mutedApps, mute].slice(0, 256);
-        doc.items = doc.items.filter((item) => item.sourceApp !== mute);
-        doc.assistantRevision += 1;
-      }
+      if (mute && mute.length <= 255) muteAssistantAppInDoc(doc, mute, Date.now());
       const unmute = input.unmuteApp?.trim();
       if (unmute) {
         doc.mutedApps = doc.mutedApps.filter((app) => app !== unmute);
@@ -4609,8 +4582,12 @@ export class KuloHub implements OrchestratorController {
     return this.#providerManager?.cancelOAuthSession(sessionId) ?? null;
   }
 
-  setOnClusterDirty(hook: ((kind: "sqlite" | "assistant" | "vault" | "files" | "uploads") => void) | undefined): void {
-    this.#onClusterDirty = hook;
+  setOnClusterDirty(hook: ((kind: "sqlite" | "assistant" | "memory" | "vault" | "files" | "uploads") => void) | undefined, hasRemoteStandbys?: () => boolean): void { this.#onClusterDirty = hook; this.#hasRemoteStandbys = hasRemoteStandbys; }
+  backupSyncSqlite(name: "assistant.sqlite" | "memory.sqlite", destPath: string): Promise<boolean> { return name === "memory.sqlite" ? this.memoryRuntime.builtinMemory.store.backupTo(destPath) : this.assistantLedger.backupTo(destPath); }
+  async #onBuiltinMemoryModeChanged(state: BuiltinMemoryStateView): Promise<void> {
+    if (this.#closed) return;
+    await this.#reconfigureOrchestratorConversations(BACKGROUND_CONTEXT); await this.settingsAssistant.reconfigureActiveConversation(BACKGROUND_CONTEXT); await this.#reconfigureWorkerConversations(BACKGROUND_CONTEXT);
+    for (const listener of this.#listeners) listener.onBuiltinMemory?.(state);
   }
 
   setClusterCloseHook(hook: (() => Promise<void>) | undefined): void {
@@ -4716,7 +4693,7 @@ export class KuloHub implements OrchestratorController {
     return this.#defaultIdentityDir;
   }
 
-  #notifyClusterDirty(kind: "sqlite" | "assistant" | "vault" | "files" | "uploads"): void {
+  #notifyClusterDirty(kind: "sqlite" | "assistant" | "memory" | "vault" | "files" | "uploads"): void {
     try {
       this.#onClusterDirty?.(kind);
     } catch {
@@ -4747,7 +4724,7 @@ export class KuloHub implements OrchestratorController {
     }
     this.#watchdog.stopTimer();
     this.#topics.stopAutoArchiveTimer();
-    this.memoryRuntime.close();
+    await finish(() => this.memoryRuntime.close());
     if (this.#uploadCleanupTimer) { clearInterval(this.#uploadCleanupTimer); this.#uploadCleanupTimer = null; }
     await finish(() => this.#customizationInstance?.close());
     await finish(() => this.voiceCalls.close());
@@ -4944,17 +4921,10 @@ export class KuloHub implements OrchestratorController {
     for (const record of recovered) {
       const payload = record.payload;
       if (payload.kind === "host_action") {
-        const notice = `服务在执行已批准的本机操作「${payload.summary}」（设备 ${payload.envName} / ${payload.envId}）期间发生重启或切换，操作已发出但未收到最终回执（未自动重放）。请先通过只读方式核验实际状态，切勿盲目重复执行具有副作用的命令。`;
+        const notice = this.connectionManager.redact(`服务在执行已批准的本机操作「${payload.summary}」（设备 ${payload.envName} / ${payload.envId}）期间发生重启或切换，操作已发出但未收到最终回执（未自动重放）。请先通过只读方式核验实际状态，切勿盲目重复执行具有副作用的命令。`);
         if (payload.ticketId) {
           try {
-            await this.steerTicket(
-              {
-                ticketId: payload.ticketId,
-                commandId: `action-recovery:${record.id}:unknown`,
-                text: notice,
-              },
-              context,
-            );
+            await this.steerTicket({ ticketId: payload.ticketId, commandId: `action-recovery:${record.id}:unknown`, text: notice, internalResume: true }, context);
           } catch (error) {
             console.warn("[KuloConfirmation] Startup unknown host_action wake skipped", error instanceof Error ? error.message : String(error));
           }
@@ -4962,16 +4932,8 @@ export class KuloHub implements OrchestratorController {
           try {
             const origin = await this.harness.conversation(record.conversationId as ConversationId, context);
             if (origin) {
-              await this.harness.commit(
-                (tx) =>
-                  submitAutomaticChatInput(tx, origin, {
-                    type: "input",
-                    content: `[KULO_HOST_ACTION_RESULT]\n${notice}\n请用当前对话语言简洁告知用户需要核实，不要暴露内部卡片或工单编号。`,
-                    whenBusy: "followUp",
-                    requestId: `kulo:action-recovery:${record.id}:unknown`,
-                  }),
-                context,
-              );
+              const draft = buildHostActionResultDraft({ requestId: `kulo:action-recovery:${record.id}:unknown`, refId: record.id, envId: payload.envId, envName: payload.envName, body: notice, instruction: "请用当前对话语言简洁告知用户需要核实，不要暴露内部卡片或工单编号。", redact: (text) => this.connectionManager.redact(text) });
+              await this.harness.commit((tx) => submitAutomaticChatInput(tx, origin, draft), context);
             }
           } catch (error) {
             console.warn("[KuloConfirmation] Startup unknown host_action chat notice skipped", error instanceof Error ? error.message : String(error));
@@ -4986,6 +4948,7 @@ export class KuloHub implements OrchestratorController {
               ticketId: payload.ticketId,
               commandId: `action-recovery:${record.id}:unknown`,
               text: "服务在应用已批准操作期间发生重启或切换，当前结果未知且未自动重放。请先只读检查工作区或外部任务现状后再决定下一步。",
+              internalResume: true,
             },
             context,
           );
@@ -5274,8 +5237,11 @@ export class KuloHub implements OrchestratorController {
     nextDoc: KuloDurableSettings,
     context: Context,
   ): Promise<void> {
+    const prevMemEnabled = this.#effectiveMemoryConfig(this.#liveSettings.memory).enabled;
+    const prevRawMem = this.#liveSettings.memory;
     const update = this.#settingsStore.replace(nextDoc);
     if (!update.applied) return;
+    if (prevMemEnabled !== this.#effectiveMemoryConfig(this.#liveSettings.memory).enabled || prevRawMem.enabled !== this.#liveSettings.memory.enabled || prevRawMem.accessMode !== this.#liveSettings.memory.accessMode) await this.memoryRuntime.builtinMemory.onExternalEngineChanged(context);
     this.externalClientQuotas.reconcileFromSettings(this.#liveSettings.roles, this.#liveSettings.externalClients);
 
     if (update.protectedPathsChanged) {
@@ -5452,12 +5418,12 @@ export class KuloHub implements OrchestratorController {
 
   async #reconfigureOrchestratorConversations(context: Context): Promise<void> {
     const orchestratorAgent = this.#resolveOrchestratorAgent();
-    const topicState = await this.harness.snapshot(KuloStateDoc, context);
-    for (const cache of this.#topicWatchesList()) {
+    const configureOne = async (cache: WatchedTopicCache) => {
+      const topicState = await this.harness.snapshot(KuloStateDoc, context);
       const topic = topicState?.topics?.[cache.topicId];
-      if (topic?.deletedAt) continue;
-      const isRoot = cache.topicId === "root";
-      const cwd = topic?.projectId ? (await this.projects.get(topic.projectId, context)).workspaceDir : this.#mainWorkspaceDir;
+      if (!topic || topic.deletedAt || topic.conversationId !== Number(cache.conversation.id)) return;
+      const isRoot = isActiveRootConversation(Number(cache.conversation.id), topicState);
+      const cwd = topic.projectId ? (await this.projects.get(topic.projectId, context)).workspaceDir : this.#mainWorkspaceDir;
       await cache.conversation.configure(
         {
           model: orchestratorAgent.model,
@@ -5469,6 +5435,16 @@ export class KuloHub implements OrchestratorController {
         },
         context,
       );
+    };
+    for (const cache of this.#topicWatchesList()) {
+      if (cache.topicId === "root") {
+        await this.#delivery.queueChat("root", async () => {
+          const liveRoot = this.#topics.getCache("root");
+          if (liveRoot) await configureOne(liveRoot);
+        });
+      } else {
+        await configureOne(cache);
+      }
     }
   }
 
@@ -5759,7 +5735,7 @@ export class KuloHub implements OrchestratorController {
     this.#uploadCleanupTimer.unref?.();
   }
   #emitTopics(topics: TopicSummary[]): void { this.#topics.emitTopics(topics); }
-  #emitAssistantItems(assistantRevision: number, items: AssistantItemView[]): void { for (const l of this.#listeners) l.onAssistantItems?.(assistantRevision, items); }
+  #emitAssistantItems(assistantRevision: number, items: AssistantItemView[]): void { const active = selectActiveAssistantItems(items, Date.now()); for (const l of this.#listeners) l.onAssistantItems?.(assistantRevision, active); }
   #emitEnvs(envs: EnvNodeDescriptor[]): void { for (const l of this.#listeners) l.onEnvs?.(envs); }
   #emitSettings(settings: KuloSettingsView): void { for (const l of this.#listeners) l.onSettings?.(settings); }
 }

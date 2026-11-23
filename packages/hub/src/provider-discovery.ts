@@ -4,6 +4,8 @@ import { brotliDecompressSync, gunzipSync, inflateSync } from "node:zlib";
 import { resolveHttpProxyUrlForTarget } from "@earendil-works/pi-ai/utils/node-http-proxy";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { inferModelPurpose, isImageGenerationModel, isOfficialVertexBaseUrl, MODEL_PURPOSES, redactSensitiveText, type CustomProviderApi, type ModelModality, type ModelPurpose } from "@kulo/protocol";
+import { getDirectDispatcher } from "./http-transport.js";
+import { isPrivateLocalModelEndpoint } from "./local-model-endpoint.js";
 import { fetchVertexPublicModels } from "./vertex-public-catalog.js";
 
 export interface RawDiscoveredModel {
@@ -21,19 +23,16 @@ const MAX_PAGES = 100;
 const MAX_MODELS = 50_000;
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
-function loopbackTarget(url: URL): boolean {
-  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
-  return host === "localhost" || host.endsWith(".localhost") || host === "::1" ||
-    /^127(?:\.\d{1,3}){3}$/.test(host) || /^::ffff:7f[\da-f]{2}:/.test(host);
-}
-
 async function fetchModelListPage(url: URL, headers: Record<string, string>, signal: AbortSignal): Promise<Response> {
   signal.throwIfAborted();
+  const localDirect = isPrivateLocalModelEndpoint(url.href);
   let proxy: URL | undefined;
-  try { proxy = loopbackTarget(url) ? undefined : resolveHttpProxyUrlForTarget(url); }
+  try { proxy = localDirect ? undefined : resolveHttpProxyUrlForTarget(url); }
   catch { throw new Error("HTTP 代理配置无效或不支持，请检查代理地址。"); }
-  const requestOptions = { method: "GET", headers, cache: "no-store", redirect: "error" as const, signal };
-  if (!proxy) return globalThis.fetch(url, requestOptions);
+  const requestOptions = { method: "GET", headers, cache: "no-store" as const, redirect: "error" as const, signal };
+  if (!proxy) {
+    return globalThis.fetch(url, localDirect ? ({ ...requestOptions, dispatcher: getDirectDispatcher() } as unknown as RequestInit) : requestOptions);
+  }
 
   // Node 22 fetch does not consistently honor the Hub's HTTP proxy environment.
   let agent: HttpsProxyAgent<string>;

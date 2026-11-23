@@ -36,6 +36,13 @@ export function safeContentUrl(value: string, allowBlob = false): string | undef
   return undefined;
 }
 
+const LOCAL_UPLOAD_IMAGE_RE = /^\/api\/uploads\/[^/?#]+$/;
+
+/** Requests a compact server-side WebP thumbnail for inline chat previews without changing lightbox originals. */
+export function resolveImageThumbUrl(url: string): string {
+  return LOCAL_UPLOAD_IMAGE_RE.test(url) ? `${url}?variant=thumb` : url;
+}
+
 export function AssetImage({
   image,
   onPreviewImage,
@@ -50,15 +57,16 @@ export function AssetImage({
   const [attempt, setAttempt] = useState(0);
   const [preview, setPreview] = useState<PreviewableImage | null>(null);
   const src = safeContentUrl(image.src, true);
+  const displaySrc = src ? resolveImageThumbUrl(src) : undefined;
   useEffect(() => { setFailed(false); setAttempt(0); }, [image.src]);
   return <span className="kulo-chat-image">
-    {src && !failed ? <Button
+    {displaySrc && !failed ? <Button
       aria-label={tr(`预览图片：${image.name}`, `Preview image: ${image.name}`)}
       className="kulo-chat-image-trigger"
       variant="ghost"
       onPress={() => onPreviewImage ? onPreviewImage(image) : setPreview(image)}
     >
-      <img key={attempt} src={src} alt={image.name} width={image.width} height={image.height} loading="lazy" decoding="async" onError={() => setFailed(true)} />
+      <img key={attempt} src={displaySrc} alt={image.name} width={image.width} height={image.height} loading="lazy" decoding="async" onError={() => setFailed(true)} />
       {count !== undefined && count > 0 && <span className="kulo-chat-image-count">+{count}</span>}
     </Button> : <span className="kulo-chat-image-error" role="status">
       <KuloIcon name="image" size={24} />

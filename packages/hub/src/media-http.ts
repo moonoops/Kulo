@@ -13,12 +13,16 @@ import {
   KuloUploadStore, UploadError, VISION_IMAGE_MIMES,
   type LoadedUpload, type UploadPresentationInput,
 } from "./uploads.js";
+import { MediaThumbnailCache } from "./media-thumbnails.js";
 
 export interface MediaHttpOptions {
   uploads: KuloUploadStore;
+  thumbnailsDir?: string;
+  thumbnailCache?: MediaThumbnailCache;
   authenticate: (req: IncomingMessage, url: URL) => string | undefined;
   isPrincipalActive?: (principalId: string) => boolean;
   canReadScope?: (principalId: string, scopeId: string) => boolean | Promise<boolean>;
+  resolveScopeChecker?: (principalId: string) => Promise<(scopeId: string) => boolean>;
   sessionTtlMs?: number;
   now?: () => number;
 }
@@ -53,35 +57,100 @@ export function parseMediaRange(value: string, size: number): { start: number; e
   return { start, end: Math.min(end, size - 1) };
 }
 
+interface MediaFileTarget {
+  filePath: string;
+  expectedSize?: number;
+  mimeType: string;
+  dispositionName: string;
+  inline: boolean;
+  etag: string;
+  cacheControl: string;
+  vary?: string;
+}
+
 function encodedFilename(name: string): string {
   return encodeURIComponent(name).replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
-export async function serveUploadedAsset(req: IncomingMessage, res: ServerResponse, loaded: LoadedUpload, download = false): Promise<void> {
-  const handle = await fs.promises.open(loaded.filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+function thumbnailFilename(name: string): string {
+  const base = name.replace(/\.[^.]+$/, "") || "image";
+  return `${base}.webp`;
+}
+
+function ifNoneMatchHeader(req: IncomingMessage): string | undefined {
+  const value = req.headers["if-none-match"];
+  return Array.isArray(value) ? value.join(", ") : value;
+}
+
+export function matchesIfNoneMatch(header: string | undefined, etag: string): boolean {
+  if (!header) return false;
+  const trimmed = header.trim();
+  if (trimmed === "*") return true;
+  const target = etag.startsWith("W/") ? etag.slice(2).trim() : etag;
+  for (const part of trimmed.split(",")) {
+    const candidate = part.trim();
+    if (!candidate) continue;
+    const opaque = candidate.startsWith("W/") ? candidate.slice(2).trim() : candidate;
+    if (opaque === target) return true;
+  }
+  return false;
+}
+
+function writeNotModified(
+  res: ServerResponse,
+  options: { etag: string; cacheControl: string; vary?: string },
+): void {
+  const headers: Record<string, string> = {
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "default-src 'none'; sandbox",
+    "cross-origin-resource-policy": "same-origin",
+    "cache-control": options.cacheControl,
+    etag: options.etag,
+    ...(options.vary ? { vary: options.vary } : {}),
+  };
+  res.writeHead(304, headers);
+  res.end();
+}
+
+function originalMediaTarget(loaded: LoadedUpload, download: boolean): MediaFileTarget {
+  const { record } = loaded;
+  const cacheableImage = !download && record.kind === "image" && VISION_IMAGE_MIMES.has(record.mimeType);
+  const inline = !download && (cacheableImage || record.kind === "audio" || record.kind === "video");
+  return {
+    filePath: loaded.filePath,
+    expectedSize: record.size,
+    mimeType: record.mimeType,
+    dispositionName: record.name,
+    inline,
+    etag: `"${record.sha256 ?? `${record.id}-${record.size}`}"`,
+    cacheControl: cacheableImage ? "private, no-cache" : "private, no-store",
+    ...(cacheableImage ? {} : { vary: "Authorization, Cookie" }),
+  };
+}
+
+async function serveMediaFile(req: IncomingMessage, res: ServerResponse, target: MediaFileTarget): Promise<void> {
+  const handle = await fs.promises.open(target.filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   try {
     const stat = await handle.stat();
-    if (!stat.isFile() || stat.size !== loaded.record.size) throw new UploadError("资源文件不可用", 500);
-    const { record } = loaded;
-    const inline = !download && ((record.kind === "image" && VISION_IMAGE_MIMES.has(record.mimeType)) || record.kind === "audio" || record.kind === "video");
-    const etag = `"${record.sha256 ?? `${record.id}-${stat.size}`}"`;
+    if (!stat.isFile() || (target.expectedSize !== undefined ? stat.size !== target.expectedSize : stat.size <= 0)) {
+      throw new UploadError("资源文件不可用", 500);
+    }
+    if (!req.headers.range && matchesIfNoneMatch(ifNoneMatchHeader(req), target.etag)) {
+      writeNotModified(res, target);
+      return;
+    }
     const headers: Record<string, string> = {
-      "content-type": record.mimeType,
-      "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodedFilename(record.name)}`,
+      "content-type": target.mimeType,
+      "content-disposition": `${target.inline ? "inline" : "attachment"}; filename*=UTF-8''${encodedFilename(target.dispositionName)}`,
       "x-content-type-options": "nosniff",
       "content-security-policy": "default-src 'none'; sandbox",
       "cross-origin-resource-policy": "same-origin",
-      "cache-control": "private, no-store",
+      "cache-control": target.cacheControl,
       "accept-ranges": "bytes",
-      etag,
-      vary: "Authorization, Cookie",
+      etag: target.etag,
+      ...(target.vary ? { vary: target.vary } : {}),
     };
-    if (req.headers["if-none-match"] === etag && !req.headers.range) {
-      res.writeHead(304, headers);
-      res.end();
-      return;
-    }
-    const rangeHeader = req.method === "GET" && (!req.headers["if-range"] || req.headers["if-range"] === etag) ? req.headers.range : undefined;
+    const rangeHeader = req.method === "GET" && (!req.headers["if-range"] || req.headers["if-range"] === target.etag) ? req.headers.range : undefined;
     const range = rangeHeader === undefined ? undefined : parseMediaRange(rangeHeader, stat.size);
     if (range === null) {
       res.writeHead(416, { ...headers, "content-range": `bytes */${stat.size}`, "content-length": "0" });
@@ -92,12 +161,16 @@ export async function serveUploadedAsset(req: IncomingMessage, res: ServerRespon
     headers["content-length"] = String(range ? range.end - range.start + 1 : stat.size);
     res.writeHead(range ? 206 : 200, headers);
     if (req.method === "HEAD") { res.end(); return; }
-    const stream = fs.createReadStream(loaded.filePath, { fd: handle.fd, autoClose: false, ...(range ?? {}) });
+    const stream = fs.createReadStream(target.filePath, { fd: handle.fd, autoClose: false, ...(range ?? {}) });
     try { await pipeline(stream, res); } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (!req.aborted && code !== "ERR_STREAM_PREMATURE_CLOSE" && code !== "ECONNRESET" && code !== "EPIPE") throw error;
     }
   } finally { await handle.close(); }
+}
+
+export async function serveUploadedAsset(req: IncomingMessage, res: ServerResponse, loaded: LoadedUpload, download = false): Promise<void> {
+  await serveMediaFile(req, res, originalMediaTarget(loaded, download));
 }
 
 async function serveHtmlPreview(req: IncomingMessage, res: ServerResponse, loaded: LoadedUpload, browser = false): Promise<void> {
@@ -154,7 +227,27 @@ export function createMediaHttpHandler(options: MediaHttpOptions): MediaHttpHand
   const ttl = options.sessionTtlMs ?? 30 * 60 * 1000;
   if (!Number.isFinite(ttl) || ttl < 1000 || ttl > 24 * 60 * 60 * 1000) throw new Error("Invalid media session lifetime");
   const sessions = new Map<string, MediaSession>();
+  const ownsThumbnails = !options.thumbnailCache && Boolean(options.thumbnailsDir);
+  const thumbnails = options.thumbnailCache ?? (options.thumbnailsDir
+    ? new MediaThumbnailCache({ dir: options.thumbnailsDir, uploadsDir: options.uploads.dir, now })
+    : undefined);
   const active = (principal: string) => options.isPrincipalActive?.(principal) ?? true;
+  const authorizeRead = async (loaded: LoadedUpload, principal: string): Promise<boolean> => {
+    if (options.uploads.isUploadOwner(loaded.record, principal)) return true;
+    const scopes = loaded.record.referenceScopes ?? [];
+    if (scopes.length === 0) return false;
+    if (options.resolveScopeChecker) {
+      const canRead = await options.resolveScopeChecker(principal);
+      return scopes.some(canRead);
+    }
+    if (options.canReadScope) {
+      for (const scope of scopes) {
+        if (await options.canReadScope(principal, scope)) return true;
+      }
+      return false;
+    }
+    return true;
+  };
   const fromCookie = (req: IncomingMessage): string | undefined => {
     const raw = req.headers.cookie;
     if (!raw || raw.length > 8192) return undefined;
@@ -250,8 +343,7 @@ export function createMediaHttpHandler(options: MediaHttpOptions): MediaHttpHand
       const loaded = options.uploads.getUpload(id);
       if (!loaded) { json(res, 404, { error: "Attachment not found" }); return true; }
       if (loaded.record.internalOnly) { json(res, 403, { error: "内部资源不可直接访问" }); return true; }
-      const allowedScopes = options.canReadScope ? new Set((await Promise.all((loaded.record.referenceScopes ?? []).map(async (scope) => await options.canReadScope!(principal, scope) ? scope : undefined))).filter((scope): scope is string => scope !== undefined)) : undefined;
-      if (!options.uploads.canReadUpload(id, principal, (scope) => !allowedScopes || allowedScopes.has(scope))) {
+      if (!await authorizeRead(loaded, principal)) {
         json(res, 403, { error: "无权访问此资源" });
         return true;
       }
@@ -264,7 +356,49 @@ export function createMediaHttpHandler(options: MediaHttpOptions): MediaHttpHand
         else json(res, 200, { attachment: options.uploads.toChatAttachment(loaded.record) });
         return true;
       }
-      await serveUploadedAsset(req, res, loaded, url.searchParams.get("download") === "1");
+      const download = url.searchParams.get("download") === "1";
+      const wantThumb = !download && url.searchParams.get("variant") === "thumb" && thumbnails !== undefined;
+      const original = originalMediaTarget(loaded, download);
+      const ifNoneMatch = ifNoneMatchHeader(req);
+      if (!req.headers.range && ifNoneMatch) {
+        if (!wantThumb) {
+          if (matchesIfNoneMatch(ifNoneMatch, original.etag)) {
+            writeNotModified(res, original);
+            return true;
+          }
+        } else {
+          const fastThumbEtag = thumbnails.fastEtag(loaded.record);
+          if (fastThumbEtag && matchesIfNoneMatch(ifNoneMatch, fastThumbEtag)) {
+            writeNotModified(res, { etag: fastThumbEtag, cacheControl: "private, no-cache" });
+            return true;
+          }
+          if (thumbnails.isDeterministicBypass(loaded.record) && matchesIfNoneMatch(ifNoneMatch, original.etag)) {
+            writeNotModified(res, original);
+            return true;
+          }
+        }
+      }
+      if (wantThumb) {
+        const hit = await thumbnails.getOrCreate(loaded);
+        if (req.aborted) return true;
+        if (hit) {
+          const thumbTarget: MediaFileTarget = {
+            filePath: hit.filePath,
+            mimeType: hit.mimeType,
+            dispositionName: thumbnailFilename(loaded.record.name),
+            inline: true,
+            etag: hit.etag,
+            cacheControl: "private, no-cache",
+          };
+          try {
+            await serveMediaFile(req, res, thumbTarget);
+            return true;
+          } catch (error) {
+            if (res.headersSent) throw error;
+          }
+        }
+      }
+      await serveMediaFile(req, res, original);
       return true;
     } catch (error) {
       if (req.aborted) return true;
@@ -284,7 +418,10 @@ export function createMediaHttpHandler(options: MediaHttpOptions): MediaHttpHand
     revoke(principalId?: string) {
       for (const [id, session] of sessions) if (principalId === undefined || session.principalId === principalId) sessions.delete(id);
     },
-    close() { sessions.clear(); },
+    close() {
+      sessions.clear();
+      if (ownsThumbnails) thumbnails?.close();
+    },
   });
   return handler;
 }

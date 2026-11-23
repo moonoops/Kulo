@@ -28,6 +28,8 @@ export interface ToolSurfaceRuntimeState {
   isRootTopic?: boolean;
   memoryEnabled: boolean;
   sharedMemoryEnabled: boolean;
+  builtinMemoryEnabled?: boolean;
+  builtinSharedMemoryEnabled?: boolean;
   ttsEnabled: boolean;
   webSearchAvailable: boolean;
   customizationEnabled: boolean;
@@ -96,6 +98,8 @@ function memoryGate(state: ToolSurfaceRuntimeState): boolean {
   }
   return state.memoryEnabled;
 }
+const builtinMemoryGate = (s: ToolSurfaceRuntimeState): boolean =>
+  s.audience === "computer-worker" || s.audience === "computer-subagent" ? Boolean(s.builtinSharedMemoryEnabled) : Boolean(s.builtinMemoryEnabled);
 
 const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
   // 1. Pi Official Tools (upstream schema/descriptions untouched)
@@ -428,6 +432,10 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     scope: "global",
     requires: memoryGate,
   },
+  ...["kulo_memory_retain", "kulo_memory_recall"].map((name): ToolSurfaceEntry => ({
+    name, audiences: CHAT_SETTINGS_COMPUTER, tier: "resident",
+    tierFor: (s) => (s.audience === "settings" ? "deferred" : "resident"), scope: "global", requires: builtinMemoryGate,
+  })),
   // Legacy / compatibility aliases & advanced Hindsight tools
   ...[
     "hindsight_ingest_document",
@@ -485,13 +493,7 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
   },
 
   // 13. Global Settings Tools (discoverable in main chat; preloaded in Settings)
-  {
-    name: "kulo_settings_read",
-    audiences: ALL_ORCHESTRATOR,
-    tier: "deferred",
-    tierFor: (s) => (s.audience === "settings" ? "resident" : "deferred"),
-    scope: "global",
-  },
+  { name: "kulo_settings_read", audiences: ALL_ORCHESTRATOR, tier: "deferred", tierFor: (s) => (s.audience === "settings" ? "resident" : "deferred"), scope: "global" },
   {
     name: "kulo_settings_update",
     audiences: ALL_ORCHESTRATOR,
@@ -505,13 +507,8 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
         : "deferred",
     scope: "global",
   },
-  {
-    name: "kulo_settings_navigate",
-    audiences: ALL_ORCHESTRATOR,
-    tier: "deferred",
-    tierFor: (s) => (s.audience === "settings" ? "resident" : "deferred"),
-    scope: "global",
-  },
+  { name: "kulo_local_model_register", audiences: ALL_ORCHESTRATOR, tier: "deferred", scope: "global" },
+  { name: "kulo_settings_navigate", audiences: ALL_ORCHESTRATOR, tier: "deferred", tierFor: (s) => (s.audience === "settings" ? "resident" : "deferred"), scope: "global" },
   {
     name: "kulo_settings_appearance",
     audiences: ALL_ORCHESTRATOR,
@@ -687,7 +684,7 @@ const ANDROID_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = ANDROID_TOOL_CATALOG.m
     audiences: [...ALL_ANDROID_WORKERS, ...ALL_COMPUTER_WORKERS],
     tier: isInitial ? "resident" : "deferred",
     tierFor: (s) =>
-      (s.audience === "android-worker" || s.audience === "android-subagent") && isInitial
+      (s.audience === "android-worker" || s.audience === "android-subagent") && isInitial && (!s.readOnly || !definition.mutating)
         ? "resident"
         : "deferred",
     scope: "global",
@@ -786,6 +783,8 @@ const SETTINGS_DEFERRED_KEYWORDS: Readonly<Record<string, string>> = {
   kulo_stop: "停止工单 终止任务",
   hindsight_retain: "保存记忆 写入长期记忆",
   hindsight_recall: "回忆 检索长期记忆",
+  kulo_memory_retain: "保存记忆 写入内置长期记忆",
+  kulo_memory_recall: "回忆 检索内置长期记忆",
   kulo_history_search: "搜索聊天记录 查找历史对话 以前说过的话 回忆原文",
   kulo_host_action: "本机诊断 进程列表 监听端口 宿主机排查 路径检查",
 };
@@ -815,20 +814,6 @@ export function createSettingsTierExtension() {
         },
       })),
     ],
-  });
-}
-
-/**
- * Extension selected on mixed Computer + Android Workers/Subagents so the 3 initial Android tools
- * remain deferred on Computer Workers while staying resident on pure Android Workers.
- */
-export function createComputerMixedAndroidTierExtension() {
-  return defineExtension({
-    name: "kulo-computer-mixed-android-tier",
-    wraps: ANDROID_INITIAL_TOOLS.map((name) => ({
-      tool: name,
-      wrap: (tool: ToolRegistration): ToolRegistration => ({ ...tool, deferred: true }),
-    })),
   });
 }
 

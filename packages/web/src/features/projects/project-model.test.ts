@@ -49,7 +49,7 @@ describe("project navigation boundaries", () => {
     const known = [
       { id: "local", name: "Macmini.local", online: true, rootDir: "/hub" },
       { id: "studio", name: "Office-Studio.local", online: false, rootDir: "/studio" },
-      { id: "macbook", name: "iKoomas-Macboom-Pro.local", online: true, rootDir: "/mbp" },
+      { id: "macbook", name: "Dev-Laptop.local", online: true, rootDir: "/mbp" },
     ];
     expect(projectDevices([], [], known, "macbook").map((device) => device.id)).toEqual(["macbook", "local", "studio"]);
     expect(projectDevices([], [], known).map((device) => device.id)).toEqual(["local", "macbook", "studio"]);
@@ -86,12 +86,12 @@ describe("project navigation boundaries", () => {
   });
 
   it("extracts safe default project names from directory paths without using roots or oversized names", () => {
-    expect(projectDirectoryBasename("/Users/ekaka/Documents/Moco")).toBe("Moco");
-    expect(projectDirectoryBasename("/Users/ekaka/Documents/Moco/")).toBe("Moco");
+    expect(projectDirectoryBasename("/Users/alice/projects/demo")).toBe("demo");
+    expect(projectDirectoryBasename("/Users/alice/projects/demo/")).toBe("demo");
     expect(projectDirectoryBasename("C:\\Projects\\Kulo\\")).toBe("Kulo");
     expect(projectDirectoryBasename("\\\\nas\\share\\app")).toBe("app");
-    expect(projectDirectoryBasename("/Users/ekaka/ My App /")).toBe("My App");
-    for (const rootOrEmpty of ["", "   ", "/", "///", "C:", "C:\\", "C:/", "\\\\nas", "\\\\nas\\share", "\\\\nas\\share\\", "/Users/ekaka/.", "/Users/ekaka/..", "/Users/ekaka/   ", "/Users/ekaka/bad\nname"]) {
+    expect(projectDirectoryBasename("/Users/alice/ My App /")).toBe("My App");
+    for (const rootOrEmpty of ["", "   ", "/", "///", "C:", "C:\\", "C:/", "\\\\nas", "\\\\nas\\share", "\\\\nas\\share\\", "/Users/alice/.", "/Users/alice/..", "/Users/alice/   ", "/Users/alice/bad\nname"]) {
       expect(projectDirectoryBasename(rootOrEmpty)).toBe("");
     }
     expect(projectDirectoryBasename(`/projects/${"a".repeat(200)}`)).toBe("a".repeat(120));

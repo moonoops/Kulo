@@ -7,7 +7,7 @@ describe("device identity helpers", () => {
     const list = [
       { id: "local", name: "Macmini.local", online: true },
       { id: "studio", name: "Office-Studio.local", online: false },
-      { id: "macbook", name: "iKoomas-Macboom-Pro.local", online: true },
+      { id: "macbook", name: "Dev-Laptop.local", online: true },
       { id: "mini-2", name: "Lab-Mini.local", online: true },
     ];
     expect(orderDevices(list, { currentDeviceId: "macbook" }).map((d) => d.id)).toEqual([
@@ -31,12 +31,12 @@ describe("device identity helpers", () => {
   });
 
   it("places the local tag before the device name and formats plain-text labels with a leading marker", () => {
-    expect(formatDeviceLabel("iKoomas-Macboom-Pro.local", true)).toBe("本机 · iKoomas-Macboom-Pro.local");
+    expect(formatDeviceLabel("Dev-Laptop.local", true)).toBe("本机 · Dev-Laptop.local");
     expect(formatDeviceLabel("Macmini.local", false)).toBe("Macmini.local");
 
-    const currentHtml = renderToStaticMarkup(<DeviceName name="iKoomas-Macboom-Pro.local" isCurrent singleLine />);
+    const currentHtml = renderToStaticMarkup(<DeviceName name="Dev-Laptop.local" isCurrent singleLine />);
     expect(currentHtml).toContain("kulo-device-local-tag");
-    expect(currentHtml.indexOf("本机")).toBeLessThan(currentHtml.indexOf("iKoomas-Macboom-Pro.local"));
+    expect(currentHtml.indexOf("本机")).toBeLessThan(currentHtml.indexOf("Dev-Laptop.local"));
     expect(currentHtml).not.toContain("（本机）");
 
     const remoteHtml = renderToStaticMarkup(<DeviceName name="Macmini.local" isCurrent={false} />);

@@ -92,7 +92,7 @@ export function isExternalAgentRequest(value: unknown): value is ExternalAgentRe
     detect: ["operation", "kind", "executable"],
     probe: ["operation", "binding", "modelId"],
     quota: ["operation", "binding"],
-    run: ["operation", "binding", "taskId", "runEpoch", "requestId", "prompt", "developerInstructions", "attachments", "cwd", "workspaceMode", "modelId", "thinkingLevel", "serviceTier", "sessionId", "readOnly", "allowSubagents", "taskTools", "hasConnections", "memoryEnabled", "projectId", "directoryId", "grantRevision", "timeoutMs", "mcpServers"],
+    run: ["operation", "binding", "taskId", "runEpoch", "requestId", "prompt", "developerInstructions", "attachments", "cwd", "workspaceMode", "modelId", "thinkingLevel", "serviceTier", "sessionId", "readOnly", "allowSubagents", "taskTools", "hasConnections", "memoryEnabled", "memoryMode", "projectId", "directoryId", "grantRevision", "timeoutMs", "mcpServers"],
     inspect: ["operation", "runId", "afterSequence", "compact", "ackReportIds"],
     diff: ["operation", "taskId", "filePath"],
     apply: ["operation", "taskId", "projectId", "directoryId", "grantRevision", "paths", "allowConflicts"],
@@ -123,6 +123,7 @@ export function isExternalAgentRequest(value: unknown): value is ExternalAgentRe
     return false;
   }
   if ((value.taskTools !== undefined && typeof value.taskTools !== "boolean") || (value.hasConnections !== undefined && typeof value.hasConnections !== "boolean") || (value.memoryEnabled !== undefined && typeof value.memoryEnabled !== "boolean")) return false;
+  if (value.memoryMode !== undefined && value.memoryMode !== "hindsight" && value.memoryMode !== "builtin") return false;
   if (value.workspaceMode !== undefined && !["staged", "direct", "read_only"].includes(String(value.workspaceMode))) return false;
   if (!optionalString(value.modelId, 512) || !optionalString(value.thinkingLevel, 512) || !optionalString(value.serviceTier, 128) || !optionalString(value.sessionId, 512) || (value.projectId !== undefined && !id(value.projectId)) || (value.directoryId !== undefined && !id(value.directoryId)) || (value.grantRevision !== undefined && (!Number.isSafeInteger(value.grantRevision) || Number(value.grantRevision) < 1))) return false;
   // Only Env creates task-scoped MCP endpoints; arbitrary URLs/credentials are not accepted from control messages.

@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fork, type ChildProcess } from "node:child_process";
+import { execFile, fork, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
@@ -45,6 +46,8 @@ describe("desktop runtime isolation", () => {
     const dataDir = root();
     const source = {
       PATH: "/usr/bin:/bin", HOME: os.homedir(), HTTPS_PROXY: "http://127.0.0.1:7890", NODE_EXTRA_CA_CERTS: "/certificate.pem",
+      SSH_AUTH_SOCK: "/var/run/com.apple.launchd.test/Listeners",
+      SSH_CLIENT: "100.64.0.1 54321 22", SSH_CONNECTION: "100.64.0.1 54321 100.64.0.2 22", SSH_TTY: "/dev/ttys001",
       KULO_STATE_DIR: "/production", KULO_IDENTITY_DIR: "/production/identity", KULO_PEER_CONFIG: "/production/peer.json",
       KULO_AUTH_TOKEN: "production-management", KULO_HUB_HOST: "0.0.0.0", KULO_HUB_PORT: "7788",
       KULO_ENV_TOKENS: "unrelated", KULO_HINDSIGHT_ENABLED: "true", OPENAI_API_KEY: "existing-key",
@@ -57,6 +60,7 @@ describe("desktop runtime isolation", () => {
     const env = buildRuntimeEnvironment(source, { dataDir, webDir: "/Application Resources/web", viteUrl: "http://127.0.0.1:5174" });
     expect(env).toEqual({
       PATH: source.PATH, HOME: source.HOME, HTTPS_PROXY: source.HTTPS_PROXY, NODE_EXTRA_CA_CERTS: source.NODE_EXTRA_CA_CERTS,
+      SSH_AUTH_SOCK: source.SSH_AUTH_SOCK,
       KULO_DESKTOP_DATA_DIR: dataDir, KULO_DESKTOP_WEB_DIR: "/Application Resources/web",
       KULO_STATE_DIR: path.join(dataDir, "hub"), KULO_IDENTITY_DIR: path.join(dataDir, "hub", "identity"),
       KULO_PEER_CONFIG: path.join(dataDir, "peer", "connection.json"), KULO_HUB_HOST: "127.0.0.1",
@@ -646,5 +650,42 @@ describe("desktop runtime with a real Node backend", () => {
       for (const client of wss.clients) client.terminate();
       await new Promise<void>((resolve) => wss.close(() => server.close(() => resolve())));
     }
+  }, 30_000);
+
+  it("upgrades existing v2 state-version.json to v3 via --prepare-state-storage without creating runtime-token or workspace, and refuses v4 downgrade", async () => {
+    const execFileAsync = promisify(execFile);
+    const dataDir = root();
+    const webDir = root();
+    fs.writeFileSync(path.join(webDir, "index.html"), "<!doctype html><title>upgrade</title>");
+    const hubDir = path.join(dataDir, "hub");
+    fs.mkdirSync(hubDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(hubDir, "state-version.json"), JSON.stringify({ version: 2, preparedAt: 1000 }));
+
+    const runtimeEntry = fileURLToPath(new URL("../packages/desktop/dist/runtime.js", import.meta.url));
+    const env = buildRuntimeEnvironment(process.env, { dataDir, webDir });
+    await execFileAsync(process.execPath, [runtimeEntry, "--prepare-state-storage"], {
+      cwd: dataDir,
+      env,
+      timeout: 20_000,
+    });
+
+    const upgraded = JSON.parse(fs.readFileSync(path.join(hubDir, "state-version.json"), "utf8")) as { version: number };
+    expect(upgraded.version).toBe(3);
+    expect(fs.existsSync(path.join(hubDir, "runtime-token"))).toBe(false);
+    expect(fs.existsSync(path.join(dataDir, "workspace"))).toBe(false);
+
+    // Downgrade guard: newer on-disk v4 storage must fail without mutating state-version.json
+    const newerDataDir = root();
+    const newerHubDir = path.join(newerDataDir, "hub");
+    fs.mkdirSync(newerHubDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(newerHubDir, "state-version.json"), JSON.stringify({ version: 4, preparedAt: 2000 }));
+    await expect(
+      execFileAsync(process.execPath, [runtimeEntry, "--prepare-state-storage"], {
+        cwd: newerDataDir,
+        env: buildRuntimeEnvironment(process.env, { dataDir: newerDataDir, webDir }),
+        timeout: 20_000,
+      }),
+    ).rejects.toThrow(/newer version 4/i);
+    expect(JSON.parse(fs.readFileSync(path.join(newerHubDir, "state-version.json"), "utf8")).version).toBe(4);
   }, 30_000);
 });

@@ -44,6 +44,7 @@ const ORCHESTRATOR_BENCHMARK: readonly BenchmarkCase[] = [
   { query: "卸载删除本机 Hindsight 记忆服务", expectedAnyOf: ["kulo_memory_service_prepare"] },
   { query: "查看后台处理模型和本机小模型硬件建议", expectedAnyOf: ["kulo_assistant_read"] },
   { query: "切换后台处理模型到已接入的 kulo-provider 或部署本机小模型", expectedAnyOf: ["kulo_assistant_configure"] },
+  { query: "注册局域网自建推理服务的免密 OpenAI 兼容模型（Ollama / vLLM）", expectedAnyOf: ["kulo_local_model_register"] },
 
   // Persisted Chat History
   { query: "搜索以前聊过的历史聊天记录", expectedAnyOf: ["kulo_history_search"] },
@@ -94,9 +95,9 @@ const ORCHESTRATOR_BENCHMARK: readonly BenchmarkCase[] = [
 ];
 
 const ANDROID_BENCHMARK: readonly BenchmarkCase[] = [
-  { query: "定一个明天早上7点的手机闹钟或计时器", expectedAnyOf: ["android_intent"] },
-  { query: "在手机上打开启动微信应用", expectedAnyOf: ["android_open", "android_apps"] },
-  { query: "按名称查找搜索手机里安装的软件包应用", expectedAnyOf: ["android_apps", "android_app_info"] },
+  { query: "翻页滚动自动采集收集手机长列表里的多页内容", expectedAnyOf: ["android_collect"] },
+  { query: "在后台虚拟屏幕创建管理虚拟屏运行手机应用不打扰主屏", expectedAnyOf: ["android_virtual_screen"] },
+  { query: "查询手机里某个安装软件应用的包名版本和详细信息", expectedAnyOf: ["android_app_info"] },
   { query: "查看手机通知栏里的最新消息提醒", expectedAnyOf: ["android_notifications_query"] },
   { query: "查询手机日历里的今天会议日程安排", expectedAnyOf: ["android_calendar_query"] },
   { query: "在手机通讯录里查找联系人的电话号码", expectedAnyOf: ["android_contacts_query"] },
@@ -104,10 +105,10 @@ const ANDROID_BENCHMARK: readonly BenchmarkCase[] = [
   { query: "获取手机当前的 GPS 定位经纬度位置", expectedAnyOf: ["android_location"] },
   { query: "扫描附近的 WiFi 无线网络热点", expectedAnyOf: ["android_wifi"] },
   { query: "蓝牙扫描并连接蓝牙耳机设备", expectedAnyOf: ["android_bluetooth"] },
-  { query: "在手机输入框里打字输入一段文字", expectedAnyOf: ["android_type"] },
-  { query: "点击手机屏幕上的指定坐标位置", expectedAnyOf: ["android_tap_xy", "android_tap"] },
-  { query: "在手机屏幕上向上滑动翻页", expectedAnyOf: ["android_scroll"] },
-  { query: "按手机返回键回到上一页", expectedAnyOf: ["android_key"] },
+  { query: "在手机屏幕上执行双指缩放或多点手势滑动操作", expectedAnyOf: ["android_gesture"] },
+  { query: "按精确像素坐标点击手机屏幕上的指定坐标位置", expectedAnyOf: ["android_tap_xy"] },
+  { query: "遇到验证码或密码登录页面请求人工接管操作手机", expectedAnyOf: ["android_handoff"] },
+  { query: "向手机推送发送一条本地通知消息提醒", expectedAnyOf: ["android_notify"] },
   { query: "调节手机媒体音量和屏幕亮度勿扰模式", expectedAnyOf: ["android_settings_set", "android_settings_get"] },
   { query: "浏览列出手机授权文件夹里的文件列表", expectedAnyOf: ["android_file_list", "android_file_grants"] },
   { query: "把手机里的照片文档导出提取出来", expectedAnyOf: ["android_file_export"] },

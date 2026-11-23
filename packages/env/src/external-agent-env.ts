@@ -129,6 +129,9 @@ export function filterNativeAgentEnvironment(
 
   const terminalMode = options?.terminal === true;
   const isolateVendorKeys = !terminalMode && kind !== undefined && !MULTI_VENDOR_AGENT_KINDS.has(kind);
+  // Desktop GUI runtimes launched via `open -a` from SSH inherit stale SSH session markers that
+  // cause local CLIs (e.g. Antigravity `agy`) to skip the unlocked OS keychain.
+  const stripStaleDesktopSshSession = Boolean(sourceEnv.KULO_DESKTOP_DATA_DIR);
 
   const filtered: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(sourceEnv)) {
@@ -137,6 +140,12 @@ export function filterNativeAgentEnvironment(
 
     if (KULO_OR_MEMORY_SECRET_RE.test(name)) continue;
     if (HOST_PRODUCTION_SECRET_EXACT.has(upper) || HOST_PRODUCTION_SECRET_RE.test(name)) continue;
+    if (
+      stripStaleDesktopSshSession &&
+      (upper === "SSH_CLIENT" || upper === "SSH_CONNECTION" || upper === "SSH_TTY")
+    ) {
+      continue;
+    }
 
     if ((upper === "AWS_SECRET_ACCESS_KEY" || upper === "AWS_SESSION_TOKEN") && !allowAwsForBedrock) {
       continue;

@@ -83,6 +83,9 @@ importers:
 
   packages/desktop:
     dependencies:
+      '@kulo/cli':
+        specifier: workspace:*
+        version: link:../cli
       '@kulo/env':
         specifier: workspace:*
         version: link:../env

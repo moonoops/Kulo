@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  ANDROID_ACTIONS, ANDROID_CATALOG_VERSION, ANDROID_PERMISSION_GROUPS, ANDROID_INITIAL_TOOLS, ANDROID_MAX_RESULT, ANDROID_TOOL_CATALOG, androidOperationPolicy,
+  ANDROID_ACTIONS, ANDROID_CATALOG_VERSION, ANDROID_PERMISSION_GROUPS,
+  ANDROID_INITIAL_READ_TOOLS, ANDROID_INITIAL_ACTION_TOOLS, ANDROID_INITIAL_TOOLS,
+  ANDROID_MAX_RESULT, ANDROID_TOOL_CATALOG, androidOperationPolicy,
   isAndroidArgs, isAndroidCancel, isAndroidControlResult, isAndroidEnvStatus,
   isAndroidRequest, isAndroidResult, type AndroidEnvStatus, type AndroidRequest,
 } from "@kulo/protocol";
@@ -36,22 +38,31 @@ describe("Android Env protocol and deferred tool catalog (v3)", () => {
     }
   });
 
-  it("starts with three native discovery and screen tools, deferring the rest", () => {
-    expect(ANDROID_INITIAL_TOOLS).toEqual(["android_capabilities", "android_system_info", "android_screen"]);
+  it("starts with 11 native discovery and core action tools, deferring the rest", () => {
+    expect(ANDROID_INITIAL_READ_TOOLS).toEqual([
+      "android_capabilities", "android_system_info", "android_screen", "android_apps", "android_wait_for",
+    ]);
+    expect(ANDROID_INITIAL_ACTION_TOOLS).toEqual([
+      "android_tap", "android_type", "android_scroll", "android_key", "android_open", "android_intent",
+    ]);
+    expect(ANDROID_INITIAL_TOOLS).toHaveLength(11);
+    expect([...ANDROID_INITIAL_TOOLS].sort()).toEqual(
+      [...ANDROID_INITIAL_READ_TOOLS, ...ANDROID_INITIAL_ACTION_TOOLS].sort(),
+    );
     expect(ANDROID_TOOL_CATALOG.filter((tool) => !tool.deferred).map((tool) => tool.name))
       .toEqual(expect.arrayContaining([...ANDROID_INITIAL_TOOLS]));
-    expect(ANDROID_TOOL_CATALOG.filter((tool) => !tool.deferred)).toHaveLength(3);
+    expect(ANDROID_TOOL_CATALOG.filter((tool) => !tool.deferred)).toHaveLength(11);
     expect(ANDROID_TOOL_CATALOG.find((tool) => tool.action === "tap")).toMatchObject({
-      mutating: true, screen: true, permissions: ["observe", "control"], deferred: true,
+      mutating: true, screen: true, permissions: ["observe", "control"], deferred: false,
     });
     expect(ANDROID_TOOL_CATALOG.find((tool) => tool.action === "collect")).toMatchObject({
       mutating: true, screen: true, permissions: ["observe", "control"], deferred: true,
     });
     expect(ANDROID_TOOL_CATALOG.find((tool) => tool.action === "open")).toMatchObject({
-      mutating: true, screen: false, permissionSelector: "display", deferred: true,
+      mutating: true, screen: false, permissionSelector: "display", deferred: false,
     });
     expect(ANDROID_TOOL_CATALOG.find((tool) => tool.action === "intent")).toMatchObject({
-      mutating: true, screen: false, permissionSelector: "kind", deferred: true,
+      mutating: true, screen: false, permissionSelector: "kind", deferred: false,
     });
     expect(ANDROID_TOOL_CATALOG.find((tool) => tool.action === "settings_get")?.mutating).toBe(false);
     for (const tool of ANDROID_TOOL_CATALOG) {

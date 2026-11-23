@@ -4,6 +4,7 @@ import os from "node:os";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { BrowserWindowConstructorOptions } from "electron";
+import { hasDesktopForbiddenPosixPermissions, safeDesktopChmodSync } from "./desktop-fs.js";
 
 export const DESKTOP_APP_NAME = "Kulo Dev";
 export const DESKTOP_BUNDLE_ID = "io.kulo.desktop.dev";
@@ -55,8 +56,48 @@ export function resolveDesktopDataDirectory(args: readonly string[], defaultDire
   if (!stat.isDirectory() || stat.isSymbolicLink() || typeof process.getuid === "function" && stat.uid !== process.getuid()) {
     throw new Error("数据目录必须是当前用户的普通目录。");
   }
-  fs.chmodSync(directory, 0o700);
+  safeDesktopChmodSync(directory, 0o700);
   return fs.realpathSync(directory);
+}
+
+export function resolvePackagedNodePath(resourcesPath: string, platform: NodeJS.Platform = process.platform): string {
+  return path.join(resourcesPath, "runtime", platform === "win32" ? "node.exe" : "node");
+}
+
+export function resolvePackagedRescuePath(resourcesPath: string, platform: NodeJS.Platform = process.platform): string {
+  return path.join(resourcesPath, "runtime", platform === "win32" ? "kulo-rescue.cmd" : "kulo-rescue");
+}
+
+export function resolveWindowIconPath(assetsDir: string, platform: NodeJS.Platform = process.platform): string | undefined {
+  if (platform === "darwin") return undefined;
+  if (platform === "win32") {
+    const ico = path.join(assetsDir, "kulo.ico");
+    if (fs.existsSync(ico)) return ico;
+  }
+  const png = path.join(assetsDir, "kulo-icon.png");
+  return fs.existsSync(png) ? png : undefined;
+}
+
+export function resolveDesktopTrayIconChoice(
+  assetsDir: string,
+  platform: NodeJS.Platform,
+  badgeActive: boolean,
+  shouldUseDarkColors: boolean,
+): { iconPath: string; template: boolean } {
+  if (badgeActive) {
+    return {
+      iconPath: path.join(assetsDir, shouldUseDarkColors ? "kulo-tray-badge-dark.png" : "kulo-tray-badge-light.png"),
+      template: false,
+    };
+  }
+  if (platform === "darwin") {
+    return { iconPath: path.join(assetsDir, "kulo-trayTemplate.png"), template: true };
+  }
+  const themed = path.join(assetsDir, shouldUseDarkColors ? "kulo-tray-dark.png" : "kulo-tray-light.png");
+  if (fs.existsSync(themed)) {
+    return { iconPath: themed, template: false };
+  }
+  return { iconPath: path.join(assetsDir, "kulo-trayTemplate.png"), template: false };
 }
 
 export function desktopWindowChrome(platform: NodeJS.Platform): Pick<BrowserWindowConstructorOptions, "titleBarStyle" | "trafficLightPosition"> {
@@ -97,7 +138,7 @@ export function parseDevelopmentMode(args: readonly string[]): DevelopmentMode |
   }
   const stat = fs.lstatSync(controlDir);
   if (!stat.isDirectory() || stat.isSymbolicLink() ||
-      (typeof process.getuid === "function" && stat.uid !== process.getuid()) || (stat.mode & 0o077)) {
+      (typeof process.getuid === "function" && stat.uid !== process.getuid()) || hasDesktopForbiddenPosixPermissions(stat)) {
     throw new Error("开发模式控制目录必须是本用户的私有目录。");
   }
   return { root: fs.realpathSync(root), controlDir: fs.realpathSync(controlDir) };

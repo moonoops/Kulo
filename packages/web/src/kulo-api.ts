@@ -8,6 +8,7 @@ import { sendWithAcknowledgement, type PendingWsAcknowledgement } from "./featur
 import { createIndexedDbOutboxStorage, isReliableEnvelope, ReliableOutbox, withReliableId, type ReliableOutboxMetadata, type ReliableOutboxRecord } from "./features/chat/reliable-outbox";
 import { deliveryIntentKey } from "./features/chat/reliable-intents";
 import { updateAgentTerminal, type AgentTerminalState } from "./features/topics/agent-terminal-state";
+import { evaluateTopicConversationFrame, findRootConversationId } from "./features/shell/root-rotation";
 import { ProviderCatalogCache } from "./features/settings/provider-catalog";
 import type {
   AgentExpressionState, ChatAttachment, ChatDisplayItem, ClusterClientSummary, SubagentCardView,
@@ -159,7 +160,7 @@ export function resolveAssetUrl(url: string): string {
   } catch { return ""; }
 }
 
-export interface ChatHistoryPage { messages: ChatDisplayItem[]; beforeEntryId?: number; hasMore: boolean }
+export interface ChatHistoryPage { conversationId?: number; messages: ChatDisplayItem[]; beforeEntryId?: number; hasMore: boolean }
 
 export interface MediaSession {
   expiresAt: number;
@@ -448,6 +449,7 @@ export const kuloRest = {
     ),
   retryTopic: (topicId: string) => apiRequest<{ retried: boolean }>(`/api/topics/${encodeURIComponent(topicId)}/retry`, { method: "POST" }),
   compactTopic: (topicId: string) => apiRequest<import("@kulo/protocol").TopicCompactResult>(`/api/topics/${encodeURIComponent(topicId)}/compact`, { method: "POST" }),
+  archiveMainConversation: (expectedConversationId: number) => apiRequest<import("@kulo/protocol").ArchiveMainConversationResult>("/api/topics/root/archive", { method: "POST", body: { expectedConversationId } }),
   getUsage: (range: "today" | "7" | "30") =>
     apiRequest<UsageStatsView>(`/api/usage?range=${range}`),
   getExternalClientQuotas: (options?: { signal?: AbortSignal }) =>
@@ -713,12 +715,7 @@ export class KuloWsDisconnectedError extends Error {
 }
 
 export interface KuloWsAckResult {
-  deduplicated?: boolean;
-  topicId?: string;
-  ticketId?: string;
-  itemId?: string;
-  submissionId?: number;
-  delivery?: "queued" | "accepted";
+  deduplicated?: boolean; topicId?: string; conversationId?: number; ticketId?: string; itemId?: string; submissionId?: number; delivery?: "queued" | "accepted";
 }
 
 const COMMAND_ID_MESSAGE_TYPES = new Set<ClientToHubMessage["type"]>([
@@ -824,6 +821,8 @@ export function useKuloHubConnection() {
   const wsRef = useRef<WebSocket | null>(null);
   const readySocketRef = useRef<WebSocket | null>(null);
   const activeTopicRef = useRef(activeTopicId);
+  const activeConversationIdRef = useRef<number | undefined>(undefined);
+  const rootConversationIdRef = useRef<number | undefined>(undefined);
   const selectionVersionRef = useRef(0);
   const topicsLoadedRef = useRef(topicsLoaded);
   topicsLoadedRef.current = topicsLoaded;
@@ -927,7 +926,7 @@ export function useKuloHubConnection() {
       if (outboxRef.current !== next) return;
       setOutboxRecords(next.getSnapshot());
       setOutboxReady(next.getError() === undefined);
-      const failedCommand = next.getSnapshot().find((record) => record.state === "failed" && record.envelope.type !== "chat.send" && (record.envelope.type !== "ticket.steer" || record.metadata?.draftKey?.startsWith("answer:")));
+      const failedCommand = next.getSnapshot().find((record) => record.state === "failed" && record.errorCode !== "root_conversation_rotated" && record.envelope.type !== "chat.send" && (record.envelope.type !== "ticket.steer" || record.metadata?.draftKey?.startsWith("answer:")));
       if (failedCommand?.error) setGlobalError(failedCommand.error);
     };
     outboxUnsubscribeRef.current = next.subscribe(publish);
@@ -1023,6 +1022,7 @@ export function useKuloHubConnection() {
     (topicId: string) => {
       if (topicId === activeTopicRef.current && !changingTopicRef.current) return;
       activeTopicRef.current = topicId;
+      activeConversationIdRef.current = undefined;
       selectionVersionRef.current++;
       changingTopicRef.current = true;
       setConversationLoaded(false);
@@ -1128,10 +1128,30 @@ export function useKuloHubConnection() {
       const wsUrl = `${proto}://${window.location.host}/ws/client${qs ? `?${qs}` : ""}`;
       const ws = new WebSocket(wsUrl);
       let versionedSelections = false;
-      const acceptsTopicFrame = (topicId?: string, version?: number) =>
-        (!topicId || topicId === activeTopicRef.current) && (version === undefined
-          ? !versionedSelections || !changingTopicRef.current
-          : version === selectionVersionRef.current);
+      const resetRootViewState = (nextRootConvId: number) => {
+        activeConversationIdRef.current = nextRootConvId;
+        rootConversationIdRef.current = nextRootConvId;
+        changingTopicRef.current = false;
+        seenMessageIdsRef.current = new Set();
+        setNewMessageIds(new Set());
+        setHistoryBefore(undefined);
+        setHistoryLoading(false);
+        setHistoryPage({ topicId: "root", messages: [], hasMore: true });
+        setMessages([]);
+        setLive({ busy: false, activeTools: [], queuedCount: 0 });
+        setConversationLoaded(true);
+        setAgentTerminal((previous) => (previous?.topicId === "root" ? null : previous));
+      };
+      const acceptsTopicFrame = (topicId?: string, version?: number, conversationId?: number) => {
+        const res = evaluateTopicConversationFrame({
+          frameTopicId: topicId, frameVersion: version, frameConversationId: conversationId,
+          activeTopicId: activeTopicRef.current, activeConversationId: activeConversationIdRef.current,
+          selectionVersion: selectionVersionRef.current, versionedSelections, changingTopic: changingTopicRef.current,
+        });
+        if (res.rotatedTo !== undefined) resetRootViewState(res.rotatedTo);
+        else if (res.accept && conversationId !== undefined && activeConversationIdRef.current === undefined) activeConversationIdRef.current = conversationId;
+        return res.accept;
+      };
       let boardRevision: number | undefined;
       let boardTickets: TicketCardView[] = [];
       let resyncingBoard = false;
@@ -1159,9 +1179,8 @@ export function useKuloHubConnection() {
             case "hub.voice":
               setVoiceSnapshot(msg.snapshot);
               break;
-            case "hub.capabilities":
-              setCapabilitiesUpdateVersion((version) => version + 1);
-              break;
+            case "hub.capabilities": setCapabilitiesUpdateVersion((version) => version + 1); break;
+            case "hub.builtin_memory": window.dispatchEvent(new CustomEvent("kulo:builtin-memory-changed", { detail: msg.state })); break;
             case "hub.ui_card": {
               const update = (items: ChatDisplayItem[]) => items.map((item) => item.parts?.some((part) => part.type === "ui" && part.cardId === msg.card.cardId)
                 ? { ...item, parts: item.parts.map((part) => part.type === "ui" && part.cardId === msg.card.cardId ? { ...part, card: msg.card } : part) } : item);
@@ -1235,11 +1254,21 @@ export function useKuloHubConnection() {
                 outboxRef.current?.setConnected(false);
                 setGlobalError(t("请更新中枢以启用可靠消息交付", "Update the Hub to enable reliable message delivery"));
               }
+              const nextRootConv = findRootConversationId(msg.topics);
+              const rootRotated = nextRootConv !== undefined && rootConversationIdRef.current !== undefined && nextRootConv !== rootConversationIdRef.current;
+              if (nextRootConv !== undefined) rootConversationIdRef.current = nextRootConv;
               if (useSnapshotTopic) {
+                const nextActiveConv = msg.activeConversationId ?? msg.topics.find((topic) => topic.id === msg.activeTopicId)?.conversationId;
+                const convChanged = nextActiveConv !== undefined && activeConversationIdRef.current !== undefined && nextActiveConv !== activeConversationIdRef.current;
                 activeTopicRef.current = msg.activeTopicId;
+                activeConversationIdRef.current = nextActiveConv;
                 setActiveTopicIdState(msg.activeTopicId);
                 writeStored("kulo:active-topic", msg.activeTopicId);
-                setAgentTerminal((previous) => updateAgentTerminal(previous, {
+                if (convChanged || (rootRotated && msg.activeTopicId === "root")) {
+                  setHistoryPage({ topicId: msg.activeTopicId, messages: [], hasMore: true });
+                  setHistoryLoading(false);
+                }
+                setAgentTerminal((previous) => updateAgentTerminal(convChanged ? null : previous, {
                   topicId: msg.activeTopicId, messages: msg.messages, live: msg.live, tickets: msg.tickets,
                 }));
                 setMessages(msg.messages);
@@ -1280,13 +1309,21 @@ export function useKuloHubConnection() {
               if (msg.settings) setSettings(msg.settings);
               break;
             }
-            case "hub.topics":
+            case "hub.topics": {
+              const nextRootConv = findRootConversationId(msg.topics);
+              if (nextRootConv !== undefined && rootConversationIdRef.current !== undefined && nextRootConv !== rootConversationIdRef.current) {
+                rootConversationIdRef.current = nextRootConv;
+                if (activeTopicRef.current === "root") resetRootViewState(nextRootConv);
+              } else if (nextRootConv !== undefined) {
+                rootConversationIdRef.current = nextRootConv;
+              }
               setTopics(msg.topics);
               setTopicsLoaded(true);
               setSnapshotError(null);
               setTopicActivities((current) => Object.fromEntries(Object.entries(current).filter(([topicId]) => msg.topics.some((topic) => topic.id === topicId && !topic.deletedAt))));
               if (!msg.topics.some((topic) => topic.id === activeTopicRef.current && !topic.deletedAt)) selectTopic("root");
               break;
+            }
             case "hub.projects":
               setProjects(msg.projects);
               break;
@@ -1299,7 +1336,7 @@ export function useKuloHubConnection() {
               }
               break;
             case "hub.messages":
-              if (acceptsTopicFrame(msg.topicId, msg.selectionVersion)) {
+              if (acceptsTopicFrame(msg.topicId, msg.selectionVersion, msg.conversationId)) {
                 setAgentTerminal((previous) => updateAgentTerminal(previous, {
                   topicId: msg.topicId ?? activeTopicRef.current, messages: msg.messages,
                 }));
@@ -1313,7 +1350,7 @@ export function useKuloHubConnection() {
               }
               break;
             case "hub.live":
-              if (acceptsTopicFrame(msg.topicId, msg.selectionVersion)) {
+              if (acceptsTopicFrame(msg.topicId, msg.selectionVersion, msg.conversationId)) {
                 setAgentTerminal((previous) => updateAgentTerminal(previous, {
                   topicId: msg.topicId ?? activeTopicRef.current, live: msg.live,
                 }));
@@ -1391,12 +1428,8 @@ export function useKuloHubConnection() {
                   clearTimeout(pending.timer);
                   pendingAcksRef.current.delete(key);
                   pending.resolve({
-                    deduplicated: msg.deduplicated,
-                    topicId: msg.topicId,
-                    ticketId: msg.ticketId,
-                    itemId: msg.itemId,
-                    submissionId: msg.submissionId,
-                    delivery: msg.delivery,
+                    deduplicated: msg.deduplicated, topicId: msg.topicId, conversationId: msg.conversationId,
+                    ticketId: msg.ticketId, itemId: msg.itemId, submissionId: msg.submissionId, delivery: msg.delivery,
                   });
                 }
               }
@@ -1523,15 +1556,17 @@ export function useKuloHubConnection() {
     const before = historyPage.topicId === activeTopicId && historyPage.messages.length ? historyPage.beforeEntryId : historyBefore;
     if (historyLoading || before === undefined) return;
     const topicId = activeTopicId;
+    const convId = activeConversationIdRef.current;
     const selection = selectionVersionRef.current;
     const socket = wsRef.current;
     setHistoryLoading(true);
     try {
       const page = await kuloRest.getTopicHistory(topicId, before);
-      if (activeTopicRef.current !== topicId || selectionVersionRef.current !== selection || wsRef.current !== socket) return;
+      if (activeTopicRef.current !== topicId || activeConversationIdRef.current !== convId || selectionVersionRef.current !== selection || wsRef.current !== socket) return;
+      if (page.conversationId !== undefined && convId !== undefined && page.conversationId !== convId) return;
       setHistoryPage((previous) => ({ ...page, topicId, messages: mergeChatHistory(page.messages, previous.topicId === topicId ? previous.messages : []) }));
     } finally {
-      if (selectionVersionRef.current === selection) setHistoryLoading(false);
+      if (selectionVersionRef.current === selection && activeConversationIdRef.current === convId) setHistoryLoading(false);
     }
   };
 
@@ -1578,61 +1613,15 @@ export function useKuloHubConnection() {
   }, [transmitWsWithAck]);
 
   return {
-    connected,
-    subscriptionsReady,
-    deliveryScope,
-    outboxReady,
-    outboxRecords,
-    enqueueWs,
-    waitForQueuedAck,
-    retryQueuedWs,
-    removeAcceptedWs,
-    discardFailedWs,
-    activeTopicId,
-    selectTopic,
-    topics,
-    topicsLoaded,
-    topicActivities,
-    setTopics,
-    projects,
-    setProjects,
-    messages,
-    conversationLoaded,
-    newMessageIds,
-    canLoadHistory,
-    historyLoading,
-    loadEarlierMessages,
-    live,
-    terminalEntries: agentTerminal?.topicId === activeTopicId ? agentTerminal.entries : [],
-    tickets,
-    assistantItems,
-    ticketsLoaded,
-    schedulesLoaded,
-    snapshotError,
-    refreshSnapshot,
-    ticketSnapshotVersion,
-    slots,
-    envs,
-    cluster,
-    expression,
-    settings,
-    setSettings,
-    settingsAssistant,
-    settingsAssistantLoaded,
-    settingsAssistantError,
-    capabilitiesUpdateVersion,
-    voiceSnapshot,
-    setSettingsAssistantError,
-    inspectedTicket,
-    setInspectedTicket,
-    inspectError,
-    clearInspectError,
-    showProcess,
-    setShowProcess,
-    lastError,
-    clearError,
-    sendWs,
-    sendWsWithAck,
-    subscribeNotification,
+    connected, subscriptionsReady, deliveryScope, outboxReady, outboxRecords,
+    enqueueWs, waitForQueuedAck, retryQueuedWs, removeAcceptedWs, discardFailedWs,
+    activeTopicId, selectTopic, topics, topicsLoaded, topicActivities, setTopics, projects, setProjects,
+    messages, conversationLoaded, newMessageIds, canLoadHistory, historyLoading, loadEarlierMessages,
+    live, terminalEntries: agentTerminal?.topicId === activeTopicId ? agentTerminal.entries : [],
+    tickets, assistantItems, ticketsLoaded, schedulesLoaded, snapshotError, refreshSnapshot, ticketSnapshotVersion,
+    slots, envs, cluster, expression, settings, setSettings,
+    settingsAssistant, settingsAssistantLoaded, settingsAssistantError, setSettingsAssistantError,
+    capabilitiesUpdateVersion, voiceSnapshot, inspectedTicket, setInspectedTicket, inspectError, clearInspectError,
+    showProcess, setShowProcess, lastError, clearError, sendWs, sendWsWithAck, subscribeNotification,
   };
 }

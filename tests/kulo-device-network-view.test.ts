@@ -26,11 +26,11 @@ function fixture() {
 
 describe("filtered device network view", () => {
   it("updates local addresses and join candidates after a network change", () => {
-    const collect = vi.spyOn(envModule, "collectDeviceSystemInfo").mockReturnValue(info(["10.0.1.10", "fd00:db8:1::1", "2001:db8:10::1", "100.100.1.10", "fd7a:115c:a1e0::1"]));
+    const collect = vi.spyOn(envModule, "collectDeviceSystemInfo").mockReturnValue(info(["10.0.0.10", "fd00:db8:1::1", "2001:db8:10::1", "100.100.1.10", "fd7a:115c:a1e0::1"]));
     const { manager } = fixture();
     const before = manager.view(7788, "http://127.0.0.1:7788");
     expect(before.devices[0]?.info?.ips).toHaveLength(5);
-    expect(before.hubUrls).toEqual(["http://10.0.1.10:7788", "http://100.100.1.10:7788", "http://[fd00:db8:1::1]:7788", "http://[2001:db8:10::1]:7788", "http://[fd7a:115c:a1e0::1]:7788"]);
+    expect(before.hubUrls).toEqual(["http://10.0.0.10:7788", "http://100.100.1.10:7788", "http://[fd00:db8:1::1]:7788", "http://[2001:db8:10::1]:7788", "http://[fd7a:115c:a1e0::1]:7788"]);
 
     collect.mockReturnValue(info(["192.168.2.20", "fd22::20"]));
     const after = manager.view(7788, "http://127.0.0.1:7788");
@@ -39,20 +39,20 @@ describe("filtered device network view", () => {
   });
 
   it("does not reintroduce an excluded IP through the request origin", () => {
-    vi.spyOn(envModule, "collectDeviceSystemInfo").mockReturnValue(info(["10.0.1.196"]));
+    vi.spyOn(envModule, "collectDeviceSystemInfo").mockReturnValue(info(["10.0.0.196"]));
     const { manager } = fixture();
-    expect(manager.view(7788, "http://198.18.0.1:7788").hubUrls).toEqual(["http://10.0.1.196:7788"]);
-    expect(manager.view(7788, "not-a-url").hubUrls).toEqual(["http://10.0.1.196:7788"]);
-    expect(manager.view(7788, "https://kulo.example.test").hubUrls).toEqual(["https://kulo.example.test", "http://10.0.1.196:7788"]);
+    expect(manager.view(7788, "http://198.18.0.1:7788").hubUrls).toEqual(["http://10.0.0.196:7788"]);
+    expect(manager.view(7788, "not-a-url").hubUrls).toEqual(["http://10.0.0.196:7788"]);
+    expect(manager.view(7788, "https://kulo.example.test").hubUrls).toEqual(["https://kulo.example.test", "http://10.0.0.196:7788"]);
   });
 
   it("sanitizes legacy peer reports in pairing, live and stored views without repeated saves", () => {
-    vi.spyOn(envModule, "collectDeviceSystemInfo").mockReturnValue(info(["10.0.1.196"]));
+    vi.spyOn(envModule, "collectDeviceSystemInfo").mockReturnValue(info(["10.0.0.196"]));
     const { manager, env } = fixture();
     manager.setEnabled(true);
     const legacy = info(["10.23.0.8", "FE80::1", "198.18.0.1", "fd00::8", "fd00:0:0:0:0:0:0:8", "::1"]);
     expect(parseDeviceInfo(legacy).ips).toEqual(["10.23.0.8", "fd00::8"]);
-    const invitation = manager.createInvitation({ hubUrl: "http://10.0.1.196:7788" });
+    const invitation = manager.createInvitation({ hubUrl: "http://10.0.0.196:7788" });
     const config = manager.pair({ inviteToken: invitation.inviteToken, info: legacy });
     const descriptor: EnvNodeDescriptor = { id: config.deviceId, name: config.name, kind: "reverse-ws", online: true, platform: "darwin", arch: "arm64", rootDir: config.rootDir, capabilities: ["fs"], connectedAt: Date.now(), lastSeenAt: Date.now(), info: legacy };
     const list = vi.spyOn(env, "listEnvs").mockReturnValue([descriptor]);

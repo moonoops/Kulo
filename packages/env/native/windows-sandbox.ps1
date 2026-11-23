@@ -1,10 +1,11 @@
 $ErrorActionPreference = 'Stop'
 if ($args.Length -lt 1) { throw 'Missing Windows sandbox policy.' }
 $setup = [string]$args[0] -eq '--setup'
+$setupBasic = [string]$args[0] -eq '--setup-basic'
 $cleanup = [string]$args[0] -eq '--cleanup'
-if (-not $setup -and -not $cleanup) {
+if (-not $setup -and -not $setupBasic -and -not $cleanup) {
   $policy = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$args[0])) | ConvertFrom-Json
-  if ($policy.version -ne 1 -or $policy.network.backend -ne 'wfp') { throw 'Unsupported Windows sandbox policy.' }
+  if ($policy.version -ne 1 -or ($policy.network.backend -ne 'wfp' -and $policy.network.backend -ne 'basic')) { throw 'Unsupported Windows sandbox policy.' }
 }
 $childArguments = @()
 if ($args.Length -gt 1) { $childArguments = [string[]]$args[1..($args.Length - 1)] }
@@ -48,6 +49,7 @@ namespace KuloSandbox {
     public string backend { get; set; }
     public int[] localConnectPorts { get; set; }
     public int[] localListenPorts { get; set; }
+    public bool offline { get; set; }
   }
 
   // Values and layouts follow fwpmtypes.h/fwptypes.h. This controller is never inherited by the LPAC.
@@ -441,7 +443,7 @@ namespace KuloSandbox {
       return Marshal.StringToHGlobalUni(block.ToString());
     }
 
-    public static void Setup() {
+    public static void Setup(bool requireWfp) {
       Cleanup();
       IntPtr list = IntPtr.Zero, policy = IntPtr.Zero, job = IntPtr.Zero;
       bool initialized = false;
@@ -460,6 +462,7 @@ namespace KuloSandbox {
         if (list != IntPtr.Zero) Marshal.FreeHGlobal(list);
         if (policy != IntPtr.Zero) Marshal.FreeHGlobal(policy);
       }
+      if (!requireWfp) return;
       // No persistent firewall change or broad loopback exemption: test the actual dynamic WFP path.
       IntPtr memory = IntPtr.Zero;
       try {
@@ -476,7 +479,8 @@ namespace KuloSandbox {
 
     public static int Run(string json, string[] arguments) {
       Policy policy = Json.Deserialize<Policy>(json);
-      if (policy == null || policy.version != 1 || policy.network == null || policy.network.backend != "wfp" || policy.port < 1 || policy.port > 65535) throw new InvalidOperationException("Invalid Windows sandbox policy.");
+      if (policy == null || policy.version != 1 || policy.network == null || (policy.network.backend != "wfp" && policy.network.backend != "basic") || policy.port < 1 || policy.port > 65535) throw new InvalidOperationException("Invalid Windows sandbox policy.");
+      if (policy.network.backend == "basic" && (policy.network.offline || (policy.network.localConnectPorts != null && policy.network.localConnectPorts.Length > 0))) throw new InvalidOperationException("Strict network policy requires WFP Windows sandbox backend.");
       policy.workspaceDir = Normalize(policy.workspaceDir); policy.temporaryDir = Normalize(policy.temporaryDir); policy.executable = Normalize(policy.executable);
       if (!String.IsNullOrEmpty(policy.scratchDir)) policy.scratchDir = Normalize(policy.scratchDir);
       if (!String.IsNullOrEmpty(policy.workspaceRoot)) policy.workspaceRoot = Normalize(policy.workspaceRoot);
@@ -488,7 +492,7 @@ namespace KuloSandbox {
       string journals = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kulo", "SandboxLeases");
       List<string> privatePaths = new List<string>(policy.protectedPaths ?? new string[0]);
       string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-      foreach (string name in new string[] { ".ssh", ".aws", ".azure", ".gnupg", ".kube", ".kulo", ".codex", ".config\\gcloud" }) privatePaths.Add(Path.Combine(userProfile, name));
+      foreach (string name in new string[] { ".ssh", ".aws", ".azure", ".gnupg", ".kube", ".kulo", ".codex", ".config\\gcloud", "AppData\\Roaming\\Kulo", "AppData\\Roaming\\Kulo Dev" }) privatePaths.Add(Path.Combine(userProfile, name));
       privatePaths.Add(Normalize(policy.controlDirectory));
       // Every Worker protects the journal's authorized ancestors before it can execute, including
       // when another controller later creates a lease beneath an already-authorized LocalAppData.
@@ -552,14 +556,23 @@ namespace KuloSandbox {
             Grant(ancestor, sid, FileSystemRights.Delete, AccessControlType.Deny, lease, journal, false);
           }
         }
-        Grant(policy.executable, sid, FileSystemRights.ReadAndExecute, AccessControlType.Allow, lease, journal);
+        string systemDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        if (!Inside(policy.executable, systemDirectory)) {
+          try { Grant(policy.executable, sid, FileSystemRights.ReadAndExecute, AccessControlType.Allow, lease, journal); }
+          catch (UnauthorizedAccessException) { if (policy.network.backend == "wfp") throw; }
+        }
         foreach (string runtimePath in policy.runtimePaths ?? new string[0]) {
           string runtime = Normalize(runtimePath);
           RejectReparseAncestors(runtime);
           Grant(runtime, sid, FileSystemRights.ReadAndExecute, AccessControlType.Allow, lease, journal);
         }
-        foreach (string directory in ToolchainDirectories()) Grant(directory, sid, FileSystemRights.ReadAndExecute, AccessControlType.Allow, lease, journal);
-        network = new NetworkLease(sidPointer, policy.network);
+        foreach (string directory in ToolchainDirectories()) {
+          try { Grant(directory, sid, FileSystemRights.ReadAndExecute, AccessControlType.Allow, lease, journal); }
+          catch (UnauthorizedAccessException) { if (policy.network.backend == "wfp") throw; }
+        }
+        if (policy.network.backend == "wfp") {
+          network = new NetworkLease(sidPointer, policy.network);
+        }
 
         jobHandle = CreateJobObject(IntPtr.Zero, lease.JobName);
         Check(jobHandle != IntPtr.Zero, "Create sandbox process tree");
@@ -630,8 +643,13 @@ namespace KuloSandbox {
 
 if ($cleanup) { [KuloSandbox.Launcher]::Cleanup(); exit 0 }
 if ($setup) {
-  [KuloSandbox.Launcher]::Setup()
+  [KuloSandbox.Launcher]::Setup($true)
   [Console]::Out.WriteLine('Windows AppContainer controller prerequisites are ready. Each Worker still validates its own WFP and LPAC launch.')
+  exit 0
+}
+if ($setupBasic) {
+  [KuloSandbox.Launcher]::Setup($false)
+  [Console]::Out.WriteLine('Windows basic AppContainer + Job Object prerequisites are ready (without WFP network enforcement).')
   exit 0
 }
 $policy | Add-Member -NotePropertyName controlDirectory -NotePropertyValue $PSScriptRoot

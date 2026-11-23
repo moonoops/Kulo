@@ -61,13 +61,17 @@ export async function executeApprovedHostAction(
     );
     await deps.actionConfirmations.markOutcome(resolved.id, "confirmed", undefined, context);
     const safeOut = deps.redact(JSON.stringify(result));
+    const safeEnvName = deps.redact(payload.envName);
+    const safeSummary = deps.redact(payload.summary);
     return {
       status: "executed",
       result,
-      summaryText: `${actorLabel}已批准并在 ${payload.envName} (${payload.envId}) 上执行完成本机操作「${payload.summary}」。执行结果：\n${safeOut}`,
+      summaryText: `${actorLabel}已批准并在 ${safeEnvName} (${payload.envId}) 上执行完成本机操作「${safeSummary}」。执行结果：\n${safeOut}`,
     };
   } catch (error) {
     const errMsg = deps.redact(error instanceof Error ? error.message : "本机操作执行失败");
+    const safeEnvName = deps.redact(payload.envName);
+    const safeSummary = deps.redact(payload.summary);
     const errCode = (error as { code?: unknown })?.code;
     const preDispatch = errCode === "env_offline" || errCode === "env_unavailable";
     await deps.actionConfirmations.markOutcome(
@@ -77,8 +81,8 @@ export async function executeApprovedHostAction(
       context,
     );
     const summaryText = preDispatch
-      ? `${actorLabel}已批准在 ${payload.envName} (${payload.envId}) 上执行本机操作「${payload.summary}」，但目标设备当时离线未发出：${errMsg}`
-      : `${actorLabel}已批准在 ${payload.envName} (${payload.envId}) 上执行本机操作「${payload.summary}」，命令已发出但回执未决（未自动重放）：${errMsg}。请先通过只读命令核验实际状态，切勿盲目重复执行。`;
+      ? `${actorLabel}已批准在 ${safeEnvName} (${payload.envId}) 上执行本机操作「${safeSummary}」，但目标设备当时离线未发出：${errMsg}`
+      : `${actorLabel}已批准在 ${safeEnvName} (${payload.envId}) 上执行本机操作「${safeSummary}」，命令已发出但回执未决（未自动重放）：${errMsg}。请先通过只读命令核验实际状态，切勿盲目重复执行。`;
     return {
       status: "failed",
       preDispatch,

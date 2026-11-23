@@ -159,8 +159,8 @@ export function useSettingsAssistant({
   }, [enabled, subscribe]);
 
   useEffect(() => {
-    if (subscribedRef.current && connected) sendWs({ type: "settings.assistant.context", context });
-  }, [context, connected, sendWs]);
+    if (connected && (subscribedRef.current || !enabled)) sendWs({ type: "settings.assistant.context", context });
+  }, [context, connected, enabled, sendWs]);
 
   useEffect(() => {
     const registration = ++pageRegistrationRef.current;
@@ -343,7 +343,7 @@ export function useSettingsAssistant({
     if (!connected) return;
     for (const action of snapshot.actions) {
       if (!canExecuteSettingsClientAction(action, clientId) || clientActionsRef.current.has(action.id)) continue;
-      if (action.kind === "navigate" && !enabled) continue;
+      if (action.kind === "navigate" && !enabled && !action.fromMainChat) continue;
       clientActionsRef.current.add(action.id);
       void (async () => {
         let failure: string | undefined;

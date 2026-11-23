@@ -15,7 +15,7 @@ import {
   inferModelPurpose,
   isBlockedCustomAcpExecutableName,
   isBundledClaudeSdkExecutable,
-  isConversationModel,
+  isConversationModel, supportsKeylessLocalModel,
   isImageGenerationModel,
   isPersonalExternalAgentKind,
   isValidCustomAcpAgentRef,
@@ -571,21 +571,20 @@ function sanitizeCustomProviders(raw: unknown): CustomProviderConfig[] {
       throw new SettingsUpdateError(400, `自定义提供商 "${name}" 的接口地址格式无效。`);
     }
 
-    const presetRaw =
-      typeof obj.preset === "string" && /^[a-z0-9_-]{1,48}$/i.test(obj.preset.trim())
-        ? obj.preset.trim().toLowerCase()
-        : undefined;
-    const models = sanitizeCustomModelList(obj.models, apiRaw);
-    const vertex = sanitizeVertexConfig(obj, apiRaw, baseUrl);
-
+    const presetRaw = typeof obj.preset === "string" && /^[a-z0-9_-]{1,48}$/i.test(obj.preset.trim())
+      ? obj.preset.trim().toLowerCase() : undefined;
+    const rawAuthMode = obj.authMode;
+    if (rawAuthMode !== undefined && rawAuthMode !== "api-key" && rawAuthMode !== "none") {
+      throw new SettingsUpdateError(400, `自定义提供商 "${name}" 的认证模式无效。`);
+    }
+    if (rawAuthMode === "none" && !supportsKeylessLocalModel(baseUrl, apiRaw)) {
+      throw new SettingsUpdateError(400, `自定义提供商 "${name}" 仅本机或私有局域网 OpenAI 兼容服务支持免密模式。`);
+    }
+    const models = sanitizeCustomModelList(obj.models, apiRaw), vertex = sanitizeVertexConfig(obj, apiRaw, baseUrl);
     out.push({
-      id,
-      name,
-      ...(presetRaw ? { preset: presetRaw } : {}),
-      api: apiRaw,
-      baseUrl,
-      ...vertex,
-      models,
+      id, name, ...(presetRaw ? { preset: presetRaw } : {}),
+      api: apiRaw, baseUrl, ...(rawAuthMode === "none" ? { authMode: "none" as const } : {}),
+      ...vertex, models,
     });
   }
   return out;

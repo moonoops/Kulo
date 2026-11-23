@@ -113,6 +113,7 @@
 .kulo-add-device-expiry {
   font-size: var(--kulo-text-caption);
   line-height: var(--kulo-leading-caption);
+  font-variant-numeric: tabular-nums;
 }
 
 .kulo-add-device-ssh-option {

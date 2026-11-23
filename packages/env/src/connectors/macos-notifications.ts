@@ -67,6 +67,8 @@ const KNOWN_APP_LABELS: Readonly<Record<string, string>> = {
   "com.tinyspeck.slackmacgap": "Slack",
   "ru.keepcoder.Telegram": "Telegram",
   "com.hnc.Discord": "Discord",
+  "com.google.antigravity": "Antigravity",
+  "com.todesktop.230313mzl4w4u92": "Cursor",
 };
 
 export function friendlyAppLabel(appId: string): string {

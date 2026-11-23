@@ -7,7 +7,8 @@ import http from "node:http";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi-ai";
-import { KuloHub, startKuloHubServer } from "@kulo/hub";
+import { KuloHub, startKuloHubServer, AssistantDoc, situationIdFromKey, upsertAssistantCardInDoc } from "@kulo/hub";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import WebSocket from "ws";
 import type { MobileInvitation, MobileInvitationData, MobilePairingProfile, MobilePublicProfile } from "@kulo/protocol";
 import { HUB_TEST_ADMIN_TOKEN } from "./helpers/hub-auth.js";
@@ -276,5 +277,61 @@ describe.skipIf(!fs.existsSync(executable))("real mobile TLS Hub integration", (
       body: JSON.stringify({ name: "Blocked Query Invite" }),
     });
     expect(queryInvite.status).toBe(403);
+  });
+
+  it("F-09: allows verified mobile connector TLS clients to act on/dismiss assistant items while blocking config mutations", async () => {
+    const f = await fixture();
+    const mobileProfile = JSON.parse((await tlsRequest(f.origin, "/api/mobile/pair", "POST", f.pairBody)).data) as MobilePairingProfile;
+    const now = Date.now();
+    await f.hub.harness.commit(async (tx) => {
+      const doc = await tx.doc(AssistantDoc);
+      upsertAssistantCardInDoc(doc, {
+        situationId: situationIdFromKey("lark:mobile-1"),
+        situationKey: "lark:mobile-1",
+        kind: "fyi",
+        sourceApp: "com.electron.lark",
+        sourceLabel: "飞书",
+        title: "移动端待办提醒",
+        summary: "测试移动端 connector 操作",
+        now,
+      });
+      upsertAssistantCardInDoc(doc, {
+        situationId: situationIdFromKey("lark:mobile-2"),
+        situationKey: "lark:mobile-2",
+        kind: "fyi",
+        sourceApp: "com.electron.lark",
+        sourceLabel: "飞书",
+        title: "移动端批量已读提醒",
+        summary: "测试移动端 connector 批量已读",
+        now,
+      });
+    }, BACKGROUND_CONTEXT);
+    const items = (await f.hub.getAssistantItemsSnapshot()).items;
+    expect(items).toHaveLength(2);
+    const first = items[0]!;
+    const second = items[1]!;
+
+    // Mobile client over TLS connector cannot mutate host connector config
+    const cfgBlocked = await tlsRequest(f.origin, "/api/assistant/configure", "POST", { enabled: false }, mobileProfile.clientToken);
+    expect(cfgBlocked.status).toBe(403);
+
+    // Mobile client over TLS connector CAN execute item action and batch dismiss
+    const actionRes = await tlsRequest(
+      f.origin,
+      `/api/assistant/items/${encodeURIComponent(first.id)}/action`,
+      "POST",
+      { expectedRevision: first.revision, action: "acknowledge" },
+      mobileProfile.clientToken,
+    );
+    expect(actionRes.status).toBe(200);
+
+    const dismissRes = await tlsRequest(
+      f.origin,
+      "/api/assistant/items/dismiss",
+      "POST",
+      { items: [{ id: second.id, expectedRevision: second.revision, expectedUpdatedAt: second.updatedAt }] },
+      mobileProfile.clientToken,
+    );
+    expect(dismissRes.status).toBe(200);
   });
 });

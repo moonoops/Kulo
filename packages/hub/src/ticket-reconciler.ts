@@ -6,7 +6,7 @@ import {
   type Harness,
 } from "@earendil-works/pi-durable";
 import type { EnvManager } from "@kulo/env";
-import type { TicketCardView, TicketRecord } from "@kulo/protocol";
+import { escapeUntrustedText, type TicketCardView, type TicketRecord } from "@kulo/protocol";
 import { submitAutomaticChatInput } from "./chat-control.js";
 import type { KuloConnections } from "./connections.js";
 import type { HubComputerController } from "./hub-computer-controller.js";
@@ -24,6 +24,7 @@ import {
 import type { createWorkerTicketTask } from "./scheduler.js";
 import { isSettingsTopicDeleted, SettingsAssistantDoc } from "./settings-assistant.js";
 import {
+  CoordinatorEventEntry,
   getEffectiveWorkspaceDir,
   hasPendingWorkspaceApply,
   isTicketUnfinished,
@@ -216,6 +217,16 @@ export class TicketReconciler {
         content: connectionManager.redact(formatConnectionRequestMessage(JSON.stringify({ requestId: request.id, ticketId, connectionId: request.connectionId, reason: request.reason }))),
         whenBusy: "followUp",
         requestId: `kulo:connection-request:${request.id}`,
+        entry: {
+          kind: CoordinatorEventEntry.kind,
+          data: {
+            eventKind: "connection_request",
+            requestId: request.id,
+            ticketId,
+            connectionId: request.connectionId,
+            createdAt: Date.now(),
+          },
+        },
       });
     }, BACKGROUND_CONTEXT);
     await runtimeGates.broadcastTickets(BACKGROUND_CONTEXT);
@@ -343,7 +354,7 @@ export class TicketReconciler {
                     ticketId, title: current.title, role: current.role,
                     report: report ?? { state: "blocked", summary: question, question, at: Date.now() },
                   })
-                : `[KULO_WORKER_RELAY]\nTicket ${ticket.title} is waiting on user confirmation: ${question}\nRelay this single question concisely in the active conversation language without exposing internal IDs.`,
+                : `[KULO_WORKER_RELAY]\nTicket ${escapeUntrustedText(ticket.title)} is waiting on user confirmation: ${escapeUntrustedText(question)}\nRelay this single question concisely in the active conversation language without exposing internal IDs.`,
               whenBusy: "followUp",
               requestId: isBlockedCoordinatorWait ? `kulo:relay:${ticketId}:${epoch}` : `kulo:wait-user:${ticketId}:${epoch}`,
               entry: {

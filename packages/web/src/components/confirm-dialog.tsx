@@ -11,6 +11,7 @@ export function ConfirmDialog({
   status = "danger",
   isPending = false,
   isConfirmDisabled = false,
+  isKeyboardDismissDisabled = true,
   onConfirm,
   onCancel,
   onCloseComplete,
@@ -23,6 +24,7 @@ export function ConfirmDialog({
   status?: "danger" | "warning" | "accent" | "default";
   isPending?: boolean;
   isConfirmDisabled?: boolean;
+  isKeyboardDismissDisabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
   onCloseComplete?: () => void;
@@ -35,7 +37,12 @@ export function ConfirmDialog({
   }, []);
   return (
     <AlertDialog isOpen={open} onOpenChange={(next) => !next && !isPending && onCancel()}>
-      <AlertDialog.Backdrop ref={backdropRef} isOpen={open} onOpenChange={(next) => !next && !isPending && onCancel()}>
+      <AlertDialog.Backdrop
+        ref={backdropRef}
+        isOpen={open}
+        isKeyboardDismissDisabled={isKeyboardDismissDisabled || isPending}
+        onOpenChange={(next) => !next && !isPending && onCancel()}
+      >
         <AlertDialog.Container placement="center" size="sm">
           <AlertDialog.Dialog>
             <AlertDialog.Header>

@@ -358,7 +358,7 @@ export class AssistantLedger {
       const cleanDigest = redact(input.digest).slice(0, 400);
       const cleanThread = input.threadHint ? redact(input.threadHint).slice(0, 256) : undefined;
       const cleanCategory = input.category.slice(0, 64);
-      const cleanSituationKey = input.situationKey.slice(0, 160);
+      const cleanSituationKey = redact(input.situationKey).slice(0, 160);
       db.exec("BEGIN");
       try {
         db.prepare(`

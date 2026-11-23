@@ -17,7 +17,7 @@ import { redactSecrets, type ChatAttachment, type ChatReplyReference } from "@ku
 import { kuloRest, resolveAssetUrl } from "./kulo-api";
 import { useKuloAppearance } from "./kulo-appearance";
 import { KuloIcon } from "./kulo-icon";
-import { AssetImageGallery, AssetPreview, type PreviewableImage } from "./features/chat/asset-preview";
+import { AssetImageGallery, AssetPreview, resolveImageThumbUrl, type PreviewableImage } from "./features/chat/asset-preview";
 import { filePreviewKind, isOfficePreviewKind } from "./features/chat/file-preview-model";
 import { MediaMessage, formatMediaTime } from "./features/chat/media-message";
 import { composerEnterAction, insertComposerNewline, isMacComposerPlatform } from "./features/chat/composer-keyboard";
@@ -480,7 +480,7 @@ export function KuloComposer({
       {attachments.map((item) => {
         const imageSrc = item.kind === "image" ? item.previewUrl || (item.attachment ? resolveAssetUrl(item.attachment.url) : "") : "";
         return <div key={item.localId} role="listitem" className="kulo-composer-media-item" data-status={item.status} data-kind={item.kind} title={`${item.name}\n${formatByteSize(item.size)}`}>
-          {imageSrc ? <Button isIconOnly variant="ghost" className="kulo-composer-thumbnail" aria-label={tr(`预览 ${item.name}`, `Preview ${item.name}`)} onPress={() => onPreviewImage?.({ src: imageSrc, name: item.name, size: item.size })}><img src={imageSrc} alt={item.name} /></Button> : <span className="kulo-composer-type" aria-hidden="true">{item.kind === "audio" ? <MicrophoneGlyph /> : <KuloIcon name={item.kind === "image" ? "image" : item.kind === "video" ? "video" : "document"} size={20} />}</span>}
+          {imageSrc ? <Button isIconOnly variant="ghost" className="kulo-composer-thumbnail" aria-label={tr(`预览 ${item.name}`, `Preview ${item.name}`)} onPress={() => onPreviewImage?.({ src: imageSrc, name: item.name, size: item.size })}><img src={resolveImageThumbUrl(imageSrc)} alt={item.name} /></Button> : <span className="kulo-composer-type" aria-hidden="true">{item.kind === "audio" ? <MicrophoneGlyph /> : <KuloIcon name={item.kind === "image" ? "image" : item.kind === "video" ? "video" : "document"} size={20} />}</span>}
           <div className="kulo-composer-media-info">
             <span className="kulo-composer-media-name" title={item.name}>{item.name}</span>
             <span className="kulo-composer-media-status text-xs text-muted">{item.status === "error" ? item.error : item.kind === "image" && item.status === "uploading" ? item.progress === 100 ? tr("处理中", "Processing") : item.progress !== undefined ? `${item.progress}%` : tr("上传中", "Uploading") : [formatByteSize(item.size), item.duration !== undefined ? formatMediaTime(item.duration) : undefined, item.status === "uploading" ? item.progress === 100 ? tr("正在处理…", "Processing…") : tr(`上传中${item.progress !== undefined ? ` ${item.progress}%` : "…"}`, `Uploading${item.progress !== undefined ? ` ${item.progress}%` : "…"}`) : undefined].filter(Boolean).join(" · ")}</span>

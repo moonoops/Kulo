@@ -260,7 +260,7 @@ describe("managed self-customization and official update flow", () => {
   });
 
   it("refuses a signed update that changes the data writer format before starting its runtime", async () => {
-    const f = await fixture(); await signedUpdate(f, "new-data-format", { dataVersion: 3 });
+    const f = await fixture(); await signedUpdate(f, "new-data-format", { dataVersion: 4 });
     await expect(f.service.installOfficial("new-data-format", caller)).rejects.toMatchObject({ code: "customization_data_migration_unsupported" });
     expect(f.buildRunner.probe).not.toHaveBeenCalled(); expect((await f.recovery.inspect()).pending).toBeNull();
     await f.service.close();

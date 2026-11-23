@@ -10,6 +10,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import { buildFacet, discoverPlugins, evaluateFacet } from "@earendil-works/chord/plugins";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
 import { redactSecrets } from "@kulo/protocol";
+import { resolveWindowsNpmCmdTarget } from "@kulo/env";
 
 export const BILLION_CONTEXT_KERNEL_VERSION = "0.0.101";
 export const BILLION_CONTEXT_ADAPTER_VERSION = "0.1.0";
@@ -281,7 +282,8 @@ export async function resolveExtensionNpmCommand(
   const pathLib = platform === "win32" ? path.win32 : path.posix;
   const delimiter = platform === "win32" ? ";" : ":";
   const binary = platform === "win32" ? "npm.cmd" : "npm";
-  const execDir = pathLib.dirname(options.execPath ?? process.execPath);
+  const execPath = options.execPath ?? process.execPath;
+  const execDir = pathLib.dirname(execPath);
   const home = parent.HOME ?? parent.USERPROFILE;
   const candidates = [
     ...(parent.PATH ?? "").split(delimiter),
@@ -297,6 +299,11 @@ export async function resolveExtensionNpmCommand(
     const fullPath = pathLib.join(trimmed, binary);
     if (await check(fullPath)) {
       const extraPathDirs = [execDir, trimmed].filter((entry, index, list) => Boolean(entry) && list.indexOf(entry) === index);
+      if (platform === "win32") {
+        const bundledCli = pathLib.join(trimmed, "node_modules", "npm", "bin", "npm-cli.js");
+        const resolvedShim = (await check(bundledCli)) ? { scriptPath: bundledCli } : resolveWindowsNpmCmdTarget(fullPath);
+        if (resolvedShim) return { command: [execPath, resolvedShim.scriptPath], extraPathDirs };
+      }
       return { command: [fullPath], extraPathDirs };
     }
   }
@@ -409,7 +416,7 @@ await installDependencies(plugin,context,{npmCommand:input.npmCommand});`;
       installEnv.PATH = merged.join(path.delimiter);
     }
     const child = spawn(process.execPath, ["--input-type=module", "-e", script],
-      { cwd: path.dirname(fileURLToPath(import.meta.url)), env: installEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
+      { cwd: path.dirname(fileURLToPath(import.meta.url)), env: installEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true });
     let termination: Promise<void> | undefined, stopFailure: unknown;
     const stop = () => {
       if (child.pid === undefined || child.exitCode !== null) return;

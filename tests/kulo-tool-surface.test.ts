@@ -182,6 +182,14 @@ describe("Kulo declarative tool surface & Step 1–2 invariants", () => {
     for (const highRisk of Object.keys(ANDROID_HIGH_RISK_PERMISSIONS)) {
       expect(androidGranted).toContain(highRisk);
     }
+
+    // Core action Android tools are resident on writable android-worker, but deferred when readOnly=true
+    const openEntry = TOOL_SURFACE_BY_NAME.get("android_open")!;
+    const appsEntry = TOOL_SURFACE_BY_NAME.get("android_apps")!;
+    expect(openEntry.tierFor(baseSurfaceState("android-worker", { readOnly: false }))).toBe("resident");
+    expect(openEntry.tierFor(baseSurfaceState("android-worker", { readOnly: true }))).toBe("deferred");
+    expect(appsEntry.tierFor(baseSurfaceState("android-worker", { readOnly: true }))).toBe("resident");
+    expect(openEntry.tierFor(baseSurfaceState("computer-worker", { readOnly: false }))).toBe("deferred");
   });
 
   it("enforces running ticket scope on Worker web_fetch without /usr/bin/curl and rejects private IPs", async () => {

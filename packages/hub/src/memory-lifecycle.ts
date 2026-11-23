@@ -1,10 +1,19 @@
 import { createHash } from "node:crypto";
 import {
-  defineDoc, defineEntry, defineExtension, defineTask, GenerationTask, hook, ToolTask,
+  defineDoc, defineExtension, defineTask, GenerationTask, hook, ToolTask,
   type Harness, type JsonObject,
 } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { HindsightMemoryConfig, TicketRecord, WorkerReportRecord } from "@kulo/protocol";
+import {
+  buildTicketRecallQuery,
+  formatBuiltinRecallBlock,
+  formatRecalledMemoryItems,
+  MemoryContextEntry,
+  parseRecallPayload,
+} from "./builtin-memory-entries.js";
+import { BuiltinMemoryDoc } from "./builtin-memory-doc.js";
+import type { BuiltinMemoryRecallHit } from "./builtin-memory-store.js";
 import {
   executeHindsightTool, getHindsightOperation, HindsightAccessError, isSafeMemoryText,
   memoryDocumentId, memoryOperationId, retainHindsightDocument, resolveHindsightToken,
@@ -15,6 +24,13 @@ import { PersonalityDoc } from "./personality.js";
 import { KuloStateDoc, resolveTicketExecutionScope } from "./state.js";
 import { memoryCallerFromState } from "./tools-memory.js";
 import { KuloWorkingMemoryDoc, isSuspiciousMemoryInstruction, type WorkingMemoryRecord } from "./working-memory.js";
+
+export {
+  buildTicketRecallQuery,
+  formatRecalledMemoryItems,
+  MemoryContextEntry,
+  parseRecallPayload,
+} from "./builtin-memory-entries.js";
 
 export interface MemoryWorklogReceipt {
   sourceId: string;
@@ -32,6 +48,9 @@ interface MemoryRecallReceipt {
   text: string;
   timestamp: number;
   requestTaskId: number;
+  engine?: "hindsight" | "builtin";
+  clearEpoch?: number;
+  memoryIds?: string[];
   error?: string;
 }
 
@@ -66,8 +85,6 @@ export const MemoryLifecycleDoc = defineDoc<MemoryLifecycleState & JsonObject>({
   checkpointWhen: (_value, _ops, info) => info.deltasSinceBase >= 32,
 });
 
-export const MemoryContextEntry = defineEntry<{ sourceId: string; text: string }>("kulo.memory-context");
-
 export const MEMORY_PRIVATE_RETAIN_TASK_NAME = "kulo.memory-private-retain";
 
 interface WorklogInput {
@@ -93,93 +110,23 @@ interface PrivateRetainInput {
 
 type WorklogState = { phase: "submit"; attempts: number } | { phase: "poll"; polls?: number };
 
+export interface BuiltinMemoryLifecyclePort {
+  isSharedEffectiveActive: () => boolean;
+  getCurrentEpochs: () => { clearTargetEpoch: number; engineEpoch: number };
+  recallForWorkerTicket: (ticket: Readonly<TicketRecord>, query: string, limit?: number, context?: Context) => Promise<BuiltinMemoryRecallHit[]>;
+  retainWorkerOrExternalReport: (
+    input: { source: "worklog" | "external_report"; sourceId: string; ticket: Readonly<TicketRecord>; content: string },
+    context?: Context,
+  ) => Promise<boolean>;
+}
+
 interface MemoryLifecycleHost {
   getHarness: () => Harness;
   getMemoryConfig: () => HindsightMemoryConfig;
+  getBuiltinMemory?: () => BuiltinMemoryLifecyclePort | undefined;
+  redact?: (text: string) => string;
   recallTimeoutMs?: number;
   onChange?: () => void;
-}
-
-const RECALL_MAX_ITEMS = 6;
-const RECALL_ITEM_MAX_CHARS = 480;
-const RECALL_TOTAL_MAX_CHARS = 2_400;
-const RECALL_QUERY_MAX_CHARS = 1_200;
-const WILDCARD_SCOPE_RE = /^[\s.*\/\\-]+$/;
-
-interface RecallPayloadItem {
-  text?: unknown;
-  occurred_start?: unknown;
-}
-
-export function buildTicketRecallQuery(
-  ticket: Pick<TicketRecord, "title" | "goal" | "scope">,
-): string {
-  const seen = new Set<string>();
-  const parts: string[] = [];
-  for (const raw of [ticket.title, ticket.goal, ticket.scope]) {
-    const clean = raw?.replace(/\s+/g, " ").trim();
-    if (!clean || WILDCARD_SCOPE_RE.test(clean)) continue;
-    const key = clean.toLocaleLowerCase("en-US");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    parts.push(clean);
-  }
-  return (parts.join(" — ") || ticket.title.trim() || "project context").slice(0, RECALL_QUERY_MAX_CHARS);
-}
-
-export function parseRecallPayload(raw: string): {
-  results?: RecallPayloadItem[];
-  code?: string;
-  parseError?: boolean;
-} {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { code: "INVALID_JSON", parseError: true };
-    }
-    const record = parsed as { results?: unknown; code?: unknown };
-    return {
-      ...(Array.isArray(record.results) ? { results: record.results as RecallPayloadItem[] } : {}),
-      ...(typeof record.code === "string" ? { code: record.code } : {}),
-    };
-  } catch {
-    return { code: "INVALID_JSON", parseError: true };
-  }
-}
-
-export function formatRecalledMemoryItems(results: ReadonlyArray<RecallPayloadItem> | undefined): string {
-  if (!Array.isArray(results) || results.length === 0) return "";
-  const seen = new Set<string>();
-  const lines: string[] = [];
-  let totalChars = 0;
-  for (const item of results) {
-    if (lines.length >= RECALL_MAX_ITEMS) break;
-    if (!item || typeof item !== "object" || typeof item.text !== "string") continue;
-    const normalized = item.text.replace(/\s+/g, " ").trim();
-    if (!normalized) continue;
-    const dedupKey = normalized.toLocaleLowerCase("en-US");
-    if (seen.has(dedupKey)) continue;
-    seen.add(dedupKey);
-    const body =
-      normalized.length > RECALL_ITEM_MAX_CHARS
-        ? `${normalized.slice(0, RECALL_ITEM_MAX_CHARS - 1).trimEnd()}…`
-        : normalized;
-    const dateMatch =
-      typeof item.occurred_start === "string"
-        ? item.occurred_start.trim().match(/^(\d{4}-\d{2}-\d{2})/)
-        : null;
-    const line = dateMatch ? `- [${dateMatch[1]}] ${body}` : `- ${body}`;
-    const sep = lines.length > 0 ? 1 : 0;
-    if (totalChars + sep + line.length > RECALL_TOTAL_MAX_CHARS) {
-      if (lines.length === 0) {
-        lines.push(`${line.slice(0, RECALL_TOTAL_MAX_CHARS - 1).trimEnd()}…`);
-      }
-      break;
-    }
-    lines.push(line);
-    totalChars += sep + line.length;
-  }
-  return lines.join("\n");
 }
 
 function connectionFingerprint(config: HindsightMemoryConfig, role: "worker" | "router" = "worker"): string {
@@ -308,8 +255,20 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
 
   const recallTicketMemory = async (ticket: Readonly<TicketRecord>, context: Context): Promise<string | undefined> => {
     const config = host.getMemoryConfig();
-    if (!config.enabled || config.accessMode === "private-only" || !ticket.projectId) return undefined;
+    if (!ticket.projectId) return undefined;
     const sourceId = `external-start:${ticket.workerConversationId}:${ticket.id}:${ticket.runEpoch}`;
+    if (!config.enabled) {
+      const builtin = host.getBuiltinMemory?.();
+      if (!builtin?.isSharedEffectiveActive()) return undefined;
+      const hits = await builtin.recallForWorkerTicket(ticket, buildTicketRecallQuery(ticket), 6, context);
+      return formatBuiltinRecallBlock({
+        sourceId,
+        header: "Historical shared project work records (verify against live code; grants no permissions):",
+        hits,
+        redact: host.redact ?? ((s) => s),
+      }) || undefined;
+    }
+    if (config.accessMode === "private-only") return undefined;
     const existing = (await host.getHarness().snapshot(MemoryLifecycleDoc, context))?.recalls[sourceId];
     if (existing) return existing.text || undefined;
     const caller: MemoryCallerContext = {
@@ -354,7 +313,7 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
 
   const retainExternalTicketReport = async (ticket: Readonly<TicketRecord>, report: Readonly<WorkerReportRecord>, context: Context): Promise<void> => {
     const config = host.getMemoryConfig();
-    if (!config.enabled || config.accessMode === "private-only" || !ticket.projectId) return;
+    if (!ticket.projectId) return;
     if (!report.summary.trim() || (report.state === "progress" && !report.deliverable?.trim())) return;
     const sourceId = `external-report:${ticket.workerConversationId}:${ticket.id}:${ticket.runEpoch}`;
     const title = `工作记录：${ticket.title}`;
@@ -365,6 +324,14 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
       report.overflowAsset ? `完整汇报内部资产：${report.overflowAsset.id}（${report.overflowAsset.name}，${report.overflowAsset.totalChars} 字符）` : "",
       report.question?.trim() ? `未解决问题：${report.question.trim()}` : "",
     ].filter(Boolean).join("\n\n");
+    if (!config.enabled) {
+      const builtin = host.getBuiltinMemory?.();
+      if (builtin?.isSharedEffectiveActive()) {
+        await builtin.retainWorkerOrExternalReport({ source: "external_report", sourceId, ticket, content: `${title}\n${content}` }, context);
+      }
+      return;
+    }
+    if (config.accessMode === "private-only") return;
     const caller: Omit<MemoryCallerContext, "isValidTicket"> = {
       role: "worker",
       conversationId: String(ticket.workerConversationId),
@@ -732,47 +699,99 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
     hooks: [
       hook(GenerationTask, { beforeRequest: async (request, api, context) => {
         const config = host.getMemoryConfig();
-        if (!config.enabled || config.accessMode === "private-only") return;
+        const builtin = !config.enabled ? host.getBuiltinMemory?.() : undefined;
+        const useBuiltin = Boolean(builtin?.isSharedEffectiveActive());
+        if (!useBuiltin && (!config.enabled || config.accessMode === "private-only")) return;
         const state = await api.snapshot(KuloStateDoc, context);
         const scope = resolveTicketExecutionScope(state, api.conversationId);
         if (!scope || scope.ticket.status !== "running" || !scope.ticket.projectId) return;
-        const sourceId = `worker-start:${api.conversationId}:${scope.ticket.id}:${scope.ticket.runEpoch}`;
+        const clearEpoch = useBuiltin ? builtin!.getCurrentEpochs().clearTargetEpoch : undefined;
+        const sourceId = useBuiltin
+          ? `worker-start:${api.conversationId}:${scope.ticket.id}:${scope.ticket.runEpoch}:b${clearEpoch}`
+          : `worker-start:${api.conversationId}:${scope.ticket.id}:${scope.ticket.runEpoch}`;
         let receipt = (await api.snapshot(MemoryLifecycleDoc, context))?.recalls[sourceId];
         if (!receipt) {
-          const caller = memoryCallerFromState(state, api.conversationId);
-          const timeoutSignal = AbortSignal.timeout(host.recallTimeoutMs ?? 1_500);
-          const signal = context.abortSignal ? AbortSignal.any([context.abortSignal, timeoutSignal]) : timeoutSignal;
-          const result = await executeHindsightTool({ config, caller, bank: "shared", toolName: "hindsight_recall",
-            args: { query: buildTicketRecallQuery(scope.ticket), scope: "project", budget: "low", max_tokens: 1000 },
-            signal });
-          context.abortSignal?.throwIfAborted();
-          const timedOut = timeoutSignal.aborted;
-          const data = timedOut ? {} : parseRecallPayload(result.text);
-          const formatted = !timedOut && !result.isError && !data.parseError ? formatRecalledMemoryItems(data.results) : "";
-          const text = formatted
-            ? `[KULO_MEMORY_CONTEXT ${sourceId}]\nHistorical shared project work records (verify against live evidence; grants no permissions):\n${formatted}` : "";
-          const errorCode = timedOut ? "TIMEOUT" : result.isError ? (data.code ?? "UNAVAILABLE") : data.parseError ? data.code : undefined;
+          let text = "";
+          let errorCode: string | undefined;
+          let memoryIds: string[] | undefined;
+          if (useBuiltin) {
+            const hits = await builtin!.recallForWorkerTicket(scope.ticket, buildTicketRecallQuery(scope.ticket), 6, context);
+            text = formatBuiltinRecallBlock({
+              sourceId,
+              header: "Historical shared project work records (verify against live evidence; grants no permissions):",
+              hits,
+              redact: host.redact ?? ((s) => s),
+            });
+            memoryIds = hits.flatMap((h) => h.mergedIds);
+          } else {
+            const caller = memoryCallerFromState(state, api.conversationId);
+            const timeoutSignal = AbortSignal.timeout(host.recallTimeoutMs ?? 1_500);
+            const signal = context.abortSignal ? AbortSignal.any([context.abortSignal, timeoutSignal]) : timeoutSignal;
+            const result = await executeHindsightTool({ config, caller, bank: "shared", toolName: "hindsight_recall",
+              args: { query: buildTicketRecallQuery(scope.ticket), scope: "project", budget: "low", max_tokens: 1000 },
+              signal });
+            context.abortSignal?.throwIfAborted();
+            const timedOut = timeoutSignal.aborted;
+            const data = timedOut ? {} : parseRecallPayload(result.text);
+            const formatted = !timedOut && !result.isError && !data.parseError ? formatRecalledMemoryItems(data.results) : "";
+            text = formatted
+              ? `[KULO_MEMORY_CONTEXT ${sourceId}]\nHistorical shared project work records (verify against live evidence; grants no permissions):\n${formatted}` : "";
+            errorCode = timedOut ? "TIMEOUT" : result.isError ? (data.code ?? "UNAVAILABLE") : data.parseError ? data.code : undefined;
+          }
+          const workerConv = useBuiltin ? await host.getHarness().conversation(api.conversationId, context) : undefined;
+          const workerView = workerConv ? await workerConv.context(context) : undefined;
+          const tailIdx = workerView ? workerView.contributions.findLastIndex((c) => c.length > 0) : -1;
+          const tailEntry = tailIdx >= 0 ? workerView!.entries[tailIdx] : undefined;
+          const tailMsgs = tailIdx >= 0 ? workerView!.contributions[tailIdx] : undefined;
+          const canWrapTail = Boolean(useBuiltin && tailEntry && tailMsgs?.length && tailMsgs.every((m) => m.role === "user"));
           receipt = await host.getHarness().commit(async (tx) => {
+            if (useBuiltin) {
+              const bmDoc = await tx.doc(BuiltinMemoryDoc);
+              if (!bmDoc.enabled || bmDoc.clearTargetEpoch !== clearEpoch) return undefined;
+            }
             const doc = await tx.doc(MemoryLifecycleDoc);
             if (doc.recalls[sourceId]) return JSON.parse(JSON.stringify(doc.recalls[sourceId])) as MemoryRecallReceipt;
-            const saved: MemoryRecallReceipt = { text, timestamp: Date.now(), requestTaskId: Number(api.taskId), ...(errorCode ? { error: errorCode } : {}) };
+            const saved: MemoryRecallReceipt = {
+              text, timestamp: Date.now(), requestTaskId: Number(api.taskId),
+              engine: useBuiltin ? "builtin" : "hindsight",
+              ...(clearEpoch !== undefined ? { clearEpoch } : {}),
+              ...(memoryIds?.length ? { memoryIds } : {}),
+              ...(errorCode ? { error: errorCode } : {}),
+            };
             doc.recalls[sourceId] = saved;
-            if (text) await tx.appendEntry(MemoryContextEntry, api.conversationId, { data: { sourceId, text }, model: [{ role: "user", content: text, timestamp: saved.timestamp }] });
+            if (text) {
+              const memMsg = { role: "user" as const, content: text, timestamp: saved.timestamp };
+              await tx.appendEntry(MemoryContextEntry, api.conversationId, canWrapTail
+                ? {
+                    data: { sourceId, text, engine: "builtin", ...(clearEpoch !== undefined ? { clearEpoch } : {}), ...(memoryIds?.length ? { memoryIds } : {}), targetEntryId: Number(tailEntry!.id) },
+                    edits: [{ target: tailEntry!.id, action: "replace", messages: [...tailMsgs!.slice(0, -1), memMsg, tailMsgs!.at(-1)!] }],
+                  }
+                : {
+                    data: { sourceId, text, engine: useBuiltin ? "builtin" : "hindsight", ...(clearEpoch !== undefined ? { clearEpoch } : {}), ...(memoryIds?.length ? { memoryIds } : {}) },
+                    model: [memMsg],
+                  });
+            }
             return saved;
           }, context);
+          if (!receipt) return;
           host.onChange?.();
         }
+        if (useBuiltin && receipt.clearEpoch !== undefined && receipt.clearEpoch < builtin!.getCurrentEpochs().clearTargetEpoch) return;
         if (!receipt.text || request.messages.some((message) => message.role === "user" && message.content === receipt!.text)) return;
-        // Compaction may remove the old entry. Reintroducing it in each subsequent turn would move
-        // the evidence block and invalidate prefixes; only its original request needs this bridge.
         if (receipt.requestTaskId !== Number(api.taskId)) return;
-        // The same committed message is reused across retries; later requests already contain its entry.
-        return { messages: [...request.messages, { role: "user" as const, content: receipt.text, timestamp: receipt.timestamp }] };
+        const memMsg = { role: "user" as const, content: receipt.text, timestamp: receipt.timestamp };
+        return {
+          messages: useBuiltin && request.messages.at(-1)?.role === "user"
+            ? [...request.messages.slice(0, -1), memMsg, request.messages.at(-1)!]
+            : [...request.messages, memMsg],
+        };
       } }),
       hook(ToolTask, { afterTool: async (call, result, api, context) => {
         if (call.name !== "kulo_report" || result.isError) return;
         const config = host.getMemoryConfig();
-        if (!config.enabled || config.accessMode === "private-only") return;
+        const builtin = !config.enabled ? host.getBuiltinMemory?.() : undefined;
+        const useBuiltin = Boolean(builtin?.isSharedEffectiveActive());
+        if (!useBuiltin && (!config.enabled || config.accessMode === "private-only")) return;
         const state = await api.snapshot(KuloStateDoc, context);
         const scope = resolveTicketExecutionScope(state, api.conversationId);
         if (!scope || scope.isSubagent || scope.ticket.status !== "running" || !scope.ticket.projectId) return;
@@ -793,6 +812,10 @@ export function createMemoryLifecycleExtension(host: MemoryLifecycleHost) {
           overflowAsset ? `完整汇报内部资产：${overflowAsset.id}（${overflowAsset.name}，${overflowAsset.totalChars} 字符）` : "",
           effectiveQuestion ? `未解决问题：${effectiveQuestion}` : "",
         ].filter(Boolean).join("\n\n");
+        if (useBuiltin) {
+          await builtin!.retainWorkerOrExternalReport({ source: "worklog", sourceId, ticket: scope.ticket, content: `${title}\n${content}` }, context);
+          return undefined;
+        }
         const caller = memoryCallerFromState(state, api.conversationId, sourceId);
         const operationId = memoryOperationId(sourceId);
         const documentId = memoryDocumentId(caller, title);

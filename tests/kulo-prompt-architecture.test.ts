@@ -76,8 +76,16 @@ function offeredToolObjects(request: TranscriptContext): unknown[] {
   const byName = new Map<string, unknown>();
   for (const tool of request.tools ?? []) byName.set(tool.name, tool);
   for (const m of request.messages) {
-    if (m.role === "system" && "toolsAdded" in m && Array.isArray(m.toolsAdded)) {
-      for (const tool of m.toolsAdded) byName.set(tool.name, tool);
+    if (m.role === "system") {
+      if ("toolsRemoved" in m && Array.isArray(m.toolsRemoved)) {
+        for (const removed of m.toolsRemoved) {
+          const name = typeof removed === "string" ? removed : (removed as { name?: string })?.name;
+          if (name) byName.delete(name);
+        }
+      }
+      if ("toolsAdded" in m && Array.isArray(m.toolsAdded)) {
+        for (const tool of m.toolsAdded) byName.set(tool.name, tool);
+      }
     }
   }
   return [...byName.values()];
@@ -128,6 +136,7 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
       "kulo_identity",
       "kulo_orchestrator",
       "kulo_relationship",
+      "kulo_memory",
       "kulo_roles",
       "kulo_skills",
       "kulo_envs",
@@ -136,8 +145,8 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
     ]);
 
     const sec = extractSections(first);
+    expect(sec.kulo_memory).toContain("Long-Term Memory (Built-in)");
     for (const removed of [
-      "kulo_memory",
       "kulo_media",
       "kulo_content",
       "kulo_voice",
@@ -155,7 +164,7 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
     expect(sec.kulo_skills).toContain("genui-cards");
 
     const tools = offeredToolNames(first);
-    expect(tools).toHaveLength(15);
+    expect(tools).toHaveLength(17);
     expect(tools).toEqual(
       expect.arrayContaining([
         "kulo_dispatch",
@@ -173,6 +182,8 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
         "kulo_ui_diagram",
         "kulo_skill_read",
         "kulo_history_search",
+        "kulo_memory_recall",
+        "kulo_memory_retain",
       ]),
     );
     expect(tools).not.toContain("kulo_history_read");
@@ -183,15 +194,24 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
     expect(callableNames).not.toContain("kulo_synthesize_speech");
     expect(callableNames.some((t) => t.startsWith("hindsight_"))).toBe(false);
 
-    // Budget gates (down from 11,800 Chinese system chars [~7.8k tok] and 53 tools / 29,898 mixed-Chinese schema chars [~10k tok] on blank Hub;
-    // includes chat-resident `kulo_history_search` as the 15th resident tool)
+    // Budget gates (includes default-on built-in memory section + kulo_memory_recall/retain)
     const sysChars = systemTextLength(first);
     const schemaChars = JSON.stringify(offeredToolObjects(first)).length;
     expect(sysChars).toBeGreaterThan(2_000);
-    expect(sysChars).toBeLessThan(11_000);
+    expect(sysChars).toBeLessThan(12_000);
     expect(schemaChars).toBeGreaterThan(3_000);
-    expect(schemaChars).toBeLessThan(12_800);
-    expect(sysChars + schemaChars).toBeLessThan(23_500);
+    expect(schemaChars).toBeLessThan(14_200);
+    expect(sysChars + schemaChars).toBeLessThan(25_500);
+
+    // Turning off built-in memory restores the exact minimal 15-tool baseline with no kulo_memory section
+    await hub.memoryRuntime.builtinMemory.setEnabled(false, 1, BACKGROUND_CONTEXT);
+    const subOff = await hub.sendUserMessage("关闭后再测");
+    await subOff.wait(BACKGROUND_CONTEXT);
+    const afterOff = requests.at(-1)!;
+    expect(extractSections(afterOff).kulo_memory).toBeFalsy();
+    expect(offeredToolNames(afterOff)).toHaveLength(15);
+    expect(offeredToolNames(afterOff)).not.toContain("kulo_memory_recall");
+    expect(offeredToolNames(afterOff)).not.toContain("kulo_memory_retain");
   });
 
   it("enforces unified first-person self-reference across main chat, settings, voice, and default identity templates", () => {

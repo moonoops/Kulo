@@ -11,7 +11,7 @@ export function processFingerprint(pid: number): string | undefined {
     if (process.platform === "darwin") return execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined;
     if (process.platform === "win32") {
       const powershell = path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-      return execFileSync(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000 }).trim() || undefined;
+      return execFileSync(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000, windowsHide: true }).trim() || undefined;
     }
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -28,13 +28,15 @@ async function workerSupervisor(): Promise<void> {
   const path = await import("node:path");
   const [stateFile, encodedCommand, encodedCleanup, ...arguments_] = process.argv.slice(1);
   if (!stateFile || !encodedCommand) process.exit(2);
-  const command = JSON.parse(encodedCommand) as string[];
+  const parsedCommand = JSON.parse(encodedCommand) as string[] | { command: string[]; windowsVerbatimArguments?: boolean };
+  const command = Array.isArray(parsedCommand) ? parsedCommand : parsedCommand.command;
+  const windowsVerbatimArguments = Array.isArray(parsedCommand) ? false : Boolean(parsedCommand.windowsVerbatimArguments);
   const sandboxCleanup = JSON.parse(encodedCleanup ?? "[]") as string[];
   const fingerprint = (pid: number) => {
     if (process.platform === "linux") { const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8"); return stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/)[19]; }
     if (process.platform === "darwin") return cp.execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
     const powershell = path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    return cp.execFileSync(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return cp.execFileSync(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).trim();
   };
   const identity = fingerprint(process.pid);
   let childIdentity: string | undefined;
@@ -47,7 +49,10 @@ async function workerSupervisor(): Promise<void> {
   // This must succeed before a process is spawned: cleanup may already have revoked the launch directory.
   store("starting");
   const child = cp.spawn(command[0]!, [...command.slice(1), ...arguments_], {
-    stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"],
+    detached: process.platform !== "win32",
+    windowsHide: true,
+    ...(windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });
   let stopping = false;
   let exited = false;
@@ -132,8 +137,16 @@ async function workerSupervisor(): Promise<void> {
   });
 }
 
-export function supervisedCommand(command: readonly string[], controlDirectory: string, sandboxCleanup?: readonly string[]): readonly string[] {
-  return [process.execPath, "--input-type=module", "-e", standaloneFunctionSource(workerSupervisor), path.join(controlDirectory, "execution.json"), JSON.stringify(command), JSON.stringify(sandboxCleanup ?? [])];
+export function supervisedCommand(
+  command: readonly string[],
+  controlDirectory: string,
+  sandboxCleanup?: readonly string[],
+  options?: { windowsVerbatimArguments?: boolean },
+): readonly string[] {
+  const payload = options?.windowsVerbatimArguments
+    ? { command: [...command], windowsVerbatimArguments: true }
+    : command;
+  return [process.execPath, "--input-type=module", "-e", standaloneFunctionSource(workerSupervisor), path.join(controlDirectory, "execution.json"), JSON.stringify(payload), JSON.stringify(sandboxCleanup ?? [])];
 }
 
 export function standaloneFunctionSource(body: () => Promise<void>): string {

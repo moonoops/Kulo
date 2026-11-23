@@ -798,7 +798,7 @@ describe("settings assistant through the client protocol", () => {
           fauxToolCall("kulo_settings_read", { section: "current" }),
           fauxToolCall("kulo_devices_manage", { action: "enable" }),
           fauxToolCall("kulo_devices_manage", { action: "disable" }),
-          fauxToolCall("kulo_devices_ssh_add", { connection_id: "connection-kulostation", name: "KuloStation" }),
+          fauxToolCall("kulo_devices_ssh_add", { connection_id: "connection-localstation", name: "LocalStation" }),
         ], { stopReason: "toolUse" });
       },
       (ctx) => {
@@ -812,7 +812,7 @@ describe("settings assistant through the client protocol", () => {
             seenToolResults.push({ name: msg.toolName, isError: Boolean(msg.isError), text });
           }
         }
-        return fauxAssistantMessage([fauxText("已通过主机 MacMini 准备接入 KuloStation，请确认卡片。")]);
+        return fauxAssistantMessage([fauxText("已通过主机 MacMini 准备接入 LocalStation，请确认卡片。")]);
       },
       // Turn 2 (MacMini hub window): discover kulo_host_action, run read-only inspect (allowed) + mutating run (rejected)
       (ctx) => {
@@ -874,12 +874,12 @@ describe("settings assistant through the client protocol", () => {
       rename: async () => { throw new Error("unused"); },
       createInvitation: async () => { throw new Error("unused"); },
       inspectSshCredential: (connectionId) => (
-        connectionId === "connection-kulostation"
+        connectionId === "connection-localstation"
           ? {
               eligible: true,
               connection: {
-                id: "connection-kulostation",
-                name: "KuloStation",
+                id: "connection-localstation",
+                name: "LocalStation",
                 kind: "ssh",
                 category: "server",
                 status: "verified",
@@ -900,12 +900,12 @@ describe("settings assistant through the client protocol", () => {
     });
 
     // Turn 1 from joined peer Macbook
-    await hub.settingsAssistant.send("在 KuloStation 安装 kulo，并连接上本机", macbookContext, "peer-ssh-1", [], "macbook-peer");
+    await hub.settingsAssistant.send("在 LocalStation 安装 kulo，并连接上本机", macbookContext, "peer-ssh-1", [], "macbook-peer");
     const afterPeerTurn = await settled(hub, (snapshot) =>
       snapshot.messages.some((item) => item.role === "assistant" && item.text.includes("已通过主机 MacMini")),
     );
 
-    const pendingSsh = afterPeerTurn.actions.find((a) => a.status === "pending" && a.title.includes("KuloStation"));
+    const pendingSsh = afterPeerTurn.actions.find((a) => a.status === "pending" && a.title.includes("LocalStation"));
     expect(pendingSsh).toBeDefined();
     expect(pendingSsh?.title).toContain("通过主机 MacMini");
     expect(pendingSsh?.changes).toContain("执行主机：MacMini");
@@ -946,5 +946,87 @@ describe("settings assistant through the client protocol", () => {
     const turn2Entry = userEntries.find((e) => (e.data as { requestId?: string } | undefined)?.requestId === "hub-inspect-2");
     expect(turn1Entry?.data).toMatchObject({ source: { deviceId: "macbook-peer", name: "Macbook", kind: "computer" } });
     expect(turn2Entry?.data).toMatchObject({ source: { deviceId: "local", name: "MacMini", kind: "computer" } });
+  });
+
+  it("routes main-chat kulo_settings_navigate and appearance to the originating window when two clients are online, and cleans up one-shot navigate receipts", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kulo-dual-window-nav-"));
+    resources.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+    const provider = fauxProvider({ provider: "dual-nav-test", models: [{ id: "main-model" }] });
+    provider.setResponses([
+      () => fauxAssistantMessage([
+        fauxToolCall("tool_search", { query: "帮我打开设置页面去添加 API 密钥", limit: 3 }),
+        fauxToolCall("tool_search", { query: "把深色模式打开，切换夜间主题", limit: 3 }),
+      ], { stopReason: "toolUse" }),
+      () => fauxAssistantMessage([
+        fauxToolCall("kulo_settings_navigate", { module: "models", intent: "add-api" }),
+        fauxToolCall("kulo_settings_appearance", { mode: "dark" }),
+      ], { stopReason: "toolUse" }),
+      () => fauxAssistantMessage([fauxText("已为你打开模型接入页并切换深色模式。")]),
+    ]);
+    const models = createModels();
+    models.setProvider(provider.provider);
+
+    const hub = await openTestHub({
+      models,
+      providerId: "dual-nav-test",
+      config: {
+        stateDir: dir,
+        identityDir: path.join(dir, "identity"),
+        enableLocalEnv: true,
+        watchdogMinutes: 0,
+        memory: { enabled: false },
+        model: { defaultProvider: "dual-nav-test", defaultModel: "main-model", thinkingLevel: "off" },
+      },
+    });
+    resources.push(() => hub.close());
+
+    // Simulate both MacMini Hub window and MacBook joined peer window online simultaneously (#contexts.size === 2)
+    hub.settingsAssistant.updateContext({
+      clientId: "window-macmini",
+      module: "models",
+      active: false,
+      hasUnsavedChanges: false,
+      appearance: "light",
+    });
+    hub.settingsAssistant.updateContext({
+      clientId: "window-macbook",
+      module: "models",
+      active: false,
+      hasUnsavedChanges: false,
+      appearance: "light",
+    });
+    // Record that MacBook window sent the message on root topic
+    hub.settingsAssistant.noteTopicClient("root", "window-macbook");
+
+    const sub = await hub.sendUserMessage("帮我打开添加 API 密钥页面并切到深色模式");
+    await sub.wait(BACKGROUND_CONTEXT);
+
+    const snap = await hub.settingsAssistant.getSnapshot();
+    const navAction = snap.actions.find((a) => a.kind === "navigate");
+    const appAction = snap.actions.find((a) => a.kind === "appearance");
+    expect(navAction).toMatchObject({
+      clientId: "window-macbook",
+      fromMainChat: true,
+      module: "models",
+      intent: "add-api",
+      status: "pending",
+    });
+    expect(appAction).toMatchObject({
+      clientId: "window-macbook",
+      appearance: "dark",
+      status: "pending",
+    });
+
+    // Client acks with expectedTopicId: null (as when Settings was never subscribed yet) -> must succeed and remove one-shot main-chat navigate action
+    await hub.settingsAssistant.decide(navAction!.id, "client-applied", "window-macbook", undefined, null);
+    const afterAck = await hub.settingsAssistant.getSnapshot();
+    expect(afterAck.actions.some((a) => a.id === navAction!.id)).toBe(false);
+
+    // If originating window disconnects and multiple others remain (or none), clientAction returns honest unavailable
+    hub.settingsAssistant.forgetContext("window-macbook");
+    hub.settingsAssistant.forgetContext("window-macmini");
+    const unavailable = await hub.settingsAssistant.clientAction("navigate", { module: "models", intent: "add-api" }, "cmd-no-window", 1);
+    expect(unavailable).toMatchObject({ status: "unavailable" });
   });
 });

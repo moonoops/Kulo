@@ -391,9 +391,12 @@ describe("credential-safe durable history", () => {
     db.close();
     fs.mkdirSync(path.join(root, "backups"));
     const leftover = path.join(root, "backups/kulo-before-state-v2.sqlite.91fdc9cd-501b-4c63-9d26-5c128c99ea40.tmp");
+    const leftoverV3 = path.join(root, "backups/kulo-before-state-v3.sqlite.91fdc9cd-501b-4c63-9d26-5c128c99ea41.tmp");
     fs.copyFileSync(filename, leftover);
-    expect(await scrubStoredConversationSecrets(root, redact)).toEqual({ databases: 2, rows: 2 });
+    fs.copyFileSync(filename, leftoverV3);
+    expect(await scrubStoredConversationSecrets(root, redact)).toEqual({ databases: 3, rows: 3 });
     expect(fs.readFileSync(leftover).includes(Buffer.from(secret))).toBe(false);
+    expect(fs.readFileSync(leftoverV3).includes(Buffer.from(secret))).toBe(false);
     const verified = new DatabaseSync(leftover, { readOnly: true });
     expect((verified.prepare("PRAGMA quick_check").get() as { quick_check: string }).quick_check).toBe("ok");
     verified.close();

@@ -130,7 +130,7 @@ function writeControlFile(filename: string, content: string, mode: number): void
     if (!stat.isFile() || stat.nlink !== 1 || typeof process.getuid === "function" && stat.uid !== process.getuid()) {
       throw new CustomizationError("customization_control_invalid", "定制控制文件身份无效，已停止写入。");
     }
-    fs.ftruncateSync(descriptor, 0); fs.writeFileSync(descriptor, content); fs.fchmodSync(descriptor, mode);
+    fs.ftruncateSync(descriptor, 0); fs.writeFileSync(descriptor, content); if (process.platform !== "win32") fs.fchmodSync(descriptor, mode);
   } catch (error) {
     if (["ELOOP", "EMLINK", "EISDIR", "ENXIO"].includes((error as NodeJS.ErrnoException).code ?? "")) {
       throw new CustomizationError("customization_control_invalid", "定制控制文件包含不支持的链接或文件。");

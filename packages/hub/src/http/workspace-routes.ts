@@ -1,7 +1,7 @@
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { decodeConversationTopicId } from "../conversation-query.js";
 import { ProjectError } from "../projects.js";
-import type { HubHttpRouteContext } from "./context.js";
+import { assertHttpSameOrigin, type HubHttpRouteContext } from "./context.js";
 
 /**
  * Handles conversation query/history, `/api/topics*`, `/api/usage`,
@@ -89,9 +89,41 @@ export async function handleWorkspaceRoutes(ctx: HubHttpRouteContext): Promise<b
     sendJson(res, 200, topic);
     return true;
   }
+  if (req.method === "POST" && pathname === "/api/topics/root/archive") {
+    res.setHeader("cache-control", "no-store");
+    try {
+      assertHttpSameOrigin(ctx, { code: "main_archive_origin_required", message: "请在 Kulo 中归档主对话。" });
+    } catch (error) {
+      const err = error as { status?: number; code?: string; message?: string };
+      throw new ProjectError(err.status ?? 403, err.code ?? "main_archive_origin_required", err.message ?? "请在 Kulo 中归档主对话。");
+    }
+    if (!ctx.authority.hasOwnerHubControl || ctx.authority.isSshPrincipal) {
+      throw new ProjectError(403, "main_archive_owner_required", "需要主脑管理权限才能归档主对话。");
+    }
+    const body = await readJsonObject(req);
+    const keys = Object.keys(body);
+    if (
+      keys.some((k) => k !== "expectedConversationId") ||
+      typeof body.expectedConversationId !== "number" ||
+      !Number.isSafeInteger(body.expectedConversationId) ||
+      body.expectedConversationId < 1
+    ) {
+      throw new ProjectError(400, "invalid_archive_request", "请提供有效的主对话会话 ID。");
+    }
+    const result = await hub.archiveMainConversation({ expectedConversationId: body.expectedConversationId });
+    sendJson(res, 200, result);
+    return true;
+  }
   if (req.method === "POST" && pathname.startsWith("/api/topics/") && pathname.endsWith("/retry")) {
     const topicId = decodeURIComponent(pathname.slice("/api/topics/".length, -"/retry".length));
-    const out = await hub.retryTurn(topicId, `retry:${Date.now()}`);
+    const body = await readJsonObject(req);
+    const expectedConversationId =
+      body.expectedConversationId !== undefined
+        ? (typeof body.expectedConversationId === "number" && Number.isSafeInteger(body.expectedConversationId) && body.expectedConversationId > 0
+            ? body.expectedConversationId
+            : (() => { throw new ProjectError(400, "invalid_request", "会话代次无效。"); })())
+        : undefined;
+    const out = await hub.retryTurn(topicId, `retry:${Date.now()}`, undefined, undefined, expectedConversationId);
     sendJson(res, 200, out);
     return true;
   }

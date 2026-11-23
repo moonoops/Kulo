@@ -249,6 +249,7 @@ export interface HubContextGuardDeps {
     isRecovering?: () => boolean;
   };
   onContextUpdated?: (conversationId: number) => void;
+  isArchivingRoot?: () => boolean;
   softTriggerCeiling?: () => number;
   hardCeilingTokens?: () => number;
   now?: () => number;
@@ -427,6 +428,10 @@ export class HubContextGuard {
   }
 
   /** Atomic per-conversation compaction helper shared by manual, early-guard, and idle compaction. */
+  isCompacting(conversationId: number): boolean {
+    return this.#pendingCompacts.has(conversationId);
+  }
+
   async compactConversationAtomic(
     conversationId: number,
     context: Context = BACKGROUND_CONTEXT,
@@ -460,6 +465,10 @@ export class HubContextGuard {
     const topic = state?.topics && Object.hasOwn(state.topics, topicId) ? state.topics[topicId] : undefined;
     if (topic?.deletedAt) throw new ProjectError(404, "topic_deleted", "会话已删除。");
     if (!topic) throw new ProjectError(404, "topic_not_found", "会话不存在。");
+    if (topic.archived) throw new ProjectError(409, "topic_archived", "会话已归档，请还原后再整理上下文。");
+    if (topicId === "root" && this.#deps.isArchivingRoot?.()) {
+      throw new ProjectError(409, "main_archive_in_progress", "主对话正在归档中，请稍候。");
+    }
 
     return this.compactConversationAtomic(topic.conversationId, context);
   }

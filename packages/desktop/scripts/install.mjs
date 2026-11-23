@@ -95,7 +95,13 @@ export async function installMacApp(options = {}) {
   }
   console.log(`已安装：${destination}`);
   if (movedPrevious) console.log(`旧版本备份：${backup}`);
-  if (options.launch) await run("/usr/bin/open", ["-a", destination, "--args", "--kulo-data-dir=" + dataDir]);
+  if (options.launch) {
+    const launchEnv = { ...process.env };
+    delete launchEnv.SSH_CLIENT;
+    delete launchEnv.SSH_CONNECTION;
+    delete launchEnv.SSH_TTY;
+    await run("/usr/bin/open", ["-a", destination, "--args", "--kulo-data-dir=" + dataDir], { env: launchEnv });
+  }
   return destination;
 }
 

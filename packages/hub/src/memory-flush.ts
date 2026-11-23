@@ -1,59 +1,47 @@
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import {
-  AssistantEntry,
-  CompactionEntry,
-  SystemEntry,
-  ToolResultEntry,
-  UserEntry,
   defineExtension,
   defineTask,
   type ConversationId,
+  type Cursor,
   type EntryId,
-  type EntryRecord,
   type Harness,
+  type TaskId,
+  type Tx,
 } from "@earendil-works/pi-durable";
-import { redactSensitiveText } from "@kulo/protocol";
-import { isSafeMemoryText } from "./hindsight.js";
-import { matchesForgottenTerm } from "./memory-forget.js";
-import { MemoryContextEntry } from "./memory-lifecycle.js";
+import type { MainArchiveFlushStatus } from "@kulo/protocol";
+import {
+  buildContinuousFlushBatch,
+  isCursorAhead,
+  parseFlushExtraction,
+  type FlushedSourceRole,
+  type ScannedBatchItem,
+} from "./memory-flush-extract.js";
 import { PersonalityDoc } from "./personality.js";
 import { KuloProjectsDoc } from "./projects.js";
-import { isContextSyncEntry } from "./recent-work-sync.js";
 import { SettingsAssistantDoc, isActiveSettingsConversation } from "./settings-doc.js";
-import { KuloStateDoc, MediaRelayEntry, isOrchestratorConversation } from "./state.js";
-import { ContentPublicationEntry, KuloUserEntry } from "./ui-cards.js";
-import { VoiceTranscriptEntry } from "./voice-transcripts.js";
+import { KuloStateDoc, isOrchestratorConversation, resolveActiveRootConversationId } from "./state.js";
 import {
   KuloWorkingMemoryDoc,
-  bucketIdForScope,
   commitWorkingMemory,
-  computeMemoryFingerprint,
-  formatLocalDate,
-  isSuspiciousMemoryInstruction,
-  normalizeMemorySummary,
   tryCommitWorkingMemory,
   upsertWorkingMemoryRecord,
-  type WorkingMemoryCategory,
-  type WorkingMemoryEvidenceLevel,
+  type ConversationMemoryCursor,
   type WorkingMemoryRecord,
 } from "./working-memory.js";
+
+export {
+  buildContinuousFlushBatch,
+  verifyFlushExtraction,
+  type FlushedSourceRole,
+  type ScannedBatchItem,
+} from "./memory-flush-extract.js";
 
 export const MEMORY_FLUSH_TASK_NAME = "kulo.memory-flush";
 export const MEMORY_FLUSH_BATCH_BUDGET_CHARS = 24_000;
 const MEMORY_FLUSH_MAX_BATCHES_PER_STEP = 12;
 const MEMORY_FLUSH_FAILURE_BACKOFF_BASE_MS = 60_000;
 const MEMORY_FLUSH_FAILURE_BACKOFF_MAX_MS = 30 * 60_000;
-
-export type FlushedSourceRole = "user" | "assistant" | "tool_result";
-
-export interface ScannedBatchItem {
-  entryId: number;
-  role: FlushedSourceRole;
-  text: string;
-  timestamp: number;
-  charOffset: number;
-  isPartial: boolean;
-}
 
 export interface MemoryFlushHost {
   getHarness: () => Harness;
@@ -71,6 +59,23 @@ export interface MemoryFlushHost {
     allowCloudFallback?: boolean;
   }) => Promise<string>;
   onRecordsCommitted?: (records: readonly WorkingMemoryRecord[], context: Context) => Promise<void>;
+  onActiveRootMemoryUpdated?: (activeRootConversationId: number, context: Context) => Promise<void>;
+  getBuiltinMemoryEpochs?: () => { clearTargetEpoch: number; engineEpoch: number };
+  getBuiltinMemoryFloorCursor?: (conversationId: number) => { cutoffEntryId: number; cutoffCharOffset?: number } | undefined;
+  onFlushCommitInTx?: (
+    tx: Tx,
+    payload: {
+      conversationId: number;
+      trigger: "compaction" | "idle" | "archive";
+      verifiedRecords: readonly WorkingMemoryRecord[];
+      forgottenTerms: readonly { term: string }[];
+      expectedClearEpoch?: number;
+      expectedEngineEpoch?: number;
+      advanceIdleFloorEntryId?: number;
+      advanceIdleFloorCharOffset?: number;
+    },
+  ) => Promise<void>;
+  onFlushCommitted?: (context: Context) => Promise<void>;
   batchBudgetChars?: number;
   now?: () => number;
 }
@@ -79,6 +84,9 @@ interface MemoryFlushInput {
   conversationId: number;
   targetMaxEntryId: number;
   observedCompactionHeadId: number;
+  trigger?: "compaction" | "idle" | "archive";
+  expectedClearEpoch?: number;
+  expectedEngineEpoch?: number;
 }
 
 type MemoryFlushState = { phase: "flush"; batchesDone: number };
@@ -96,319 +104,82 @@ const FLUSH_SYSTEM_PROMPT = [
   "- If nothing durable is worth storing, return {\"items\":[]}.",
 ].join("\n");
 
-function extractEntryTextAndRole(
-  entry: EntryRecord,
-  redact: (text: string) => string,
-): { role: FlushedSourceRole; text: string; timestamp: number } | undefined {
+const ARCHIVE_FLUSH_HINT =
+  "Archive note: This main conversation segment is being archived to start a fresh main conversation. Use scope='global' for cross-conversation user preferences, standing rules, or ongoing commitments that should carry over into the fresh main conversation; use scope='local' for thread-only details.";
+
+async function hasLiveFlushTaskInTx(tx: Tx, convNum: number): Promise<boolean> {
+  let cursor: Cursor | undefined;
+  do {
+    const page = await tx.scanTasks(
+      { conversationId: convNum as ConversationId, kind: MEMORY_FLUSH_TASK_NAME, order: "descending" },
+      32,
+      cursor,
+    );
+    if (page.items.some((t) => t.state.status !== "terminal")) return true;
+    cursor = page.next;
+  } while (cursor);
+  return false;
+}
+
+function clearCoveredPendingTarget(cur: ConversationMemoryCursor): void {
   if (
-    SystemEntry.is(entry) ||
-    CompactionEntry.is(entry) ||
-    isContextSyncEntry(entry) ||
-    MediaRelayEntry.is(entry) ||
-    entry.kind === MemoryContextEntry.kind
+    cur.pendingTargetMaxEntryId !== undefined &&
+    !isCursorAhead(cur.pendingTargetMaxEntryId, 0, cur.lastFlushedEntryId, cur.lastFlushedCharOffset ?? 0)
   ) {
-    return undefined;
+    delete cur.pendingTargetMaxEntryId;
+    delete cur.pendingObservedCompactionHeadId;
+    delete cur.pendingTrigger;
   }
-
-  let role: FlushedSourceRole | undefined;
-  const parts: string[] = [];
-  let timestamp = 0;
-
-  if (entry.kind === VoiceTranscriptEntry.kind && entry.data && typeof entry.data === "object") {
-    const data = entry.data as { role?: unknown; text?: unknown; createdAt?: unknown };
-    if (typeof data.text === "string" && data.text.trim()) {
-      role = data.role === "assistant" ? "assistant" : "user";
-      parts.push(data.text);
-      if (typeof data.createdAt === "number") timestamp = data.createdAt;
-    }
-  } else if (entry.kind === ContentPublicationEntry.kind && entry.data && typeof entry.data === "object") {
-    const data = entry.data as { parts?: Array<{ text?: unknown }>; fallbackText?: unknown; createdAt?: unknown };
-    role = "assistant";
-    if (Array.isArray(data.parts)) {
-      for (const p of data.parts) {
-        if (typeof p?.text === "string" && p.text.trim()) parts.push(p.text);
-      }
-    } else if (typeof data.fallbackText === "string" && data.fallbackText.trim()) {
-      parts.push(data.fallbackText);
-    }
-    if (typeof data.createdAt === "number") timestamp = data.createdAt;
-  } else if (entry.kind === KuloUserEntry.kind && entry.data && typeof entry.data === "object") {
-    const data = entry.data as { text?: unknown };
-    if (typeof data.text === "string" && data.text.trim()) {
-      role = "user";
-      parts.push(data.text);
-    }
-  }
-
-  if (parts.length === 0 && Array.isArray(entry.model)) {
-    for (const msg of entry.model) {
-      if (typeof msg.timestamp === "number" && msg.timestamp > timestamp) timestamp = msg.timestamp;
-      if (msg.role === "user") {
-        role ??= "user";
-        if (typeof msg.content === "string") {
-          parts.push(msg.content);
-        } else if (Array.isArray(msg.content)) {
-          for (const block of msg.content) {
-            if (block.type === "text" && block.text) parts.push(block.text);
-          }
-        }
-      } else if (msg.role === "assistant") {
-        role ??= "assistant";
-        for (const block of msg.content) {
-          if (block.type === "text" && block.text) parts.push(block.text);
-        }
-      } else if (msg.role === "toolResult") {
-        role ??= "tool_result";
-        for (const block of msg.content) {
-          if (block.type === "text" && block.text) parts.push(`[tool:${msg.toolName}] ${block.text}`);
-        }
-      }
-    }
-  }
-
-  if (!role) {
-    if (UserEntry.is(entry)) role = "user";
-    else if (AssistantEntry.is(entry)) role = "assistant";
-    else if (ToolResultEntry.is(entry)) role = "tool_result";
-    else return undefined;
-  }
-
-  const raw = parts.join("\n").trim();
-  if (!raw) return undefined;
-  const safe = redact(redactSensitiveText(raw)).trim();
-  if (!safe) return undefined;
-  return { role, text: safe, timestamp: timestamp || Date.now() };
-}
-
-/**
- * Packs a contiguous slice of entries strictly within `budgetChars` (`24,000` default)
- * with zero head/tail sampling; oversized single entries continue via `charOffset`.
- */
-export function buildContinuousFlushBatch(
-  entries: readonly EntryRecord[],
-  startEntryId: number,
-  startCharOffset: number,
-  budgetChars: number,
-  redact: (text: string) => string,
-): {
-  items: ScannedBatchItem[];
-  nextLastFlushedEntryId: number;
-  nextLastFlushedCharOffset: number;
-  hasMoreInSlice: boolean;
-} {
-  const items: ScannedBatchItem[] = [];
-  let usedChars = 0;
-  let nextEntryId = Math.max(0, startEntryId - 1);
-  let nextCharOffset = 0;
-  let hasMoreInSlice = false;
-
-  for (let i = 0; i < entries.length; i += 1) {
-    const entry = entries[i]!;
-    const entryId = Number(entry.id);
-    if (entryId < startEntryId) continue;
-
-    const extracted = extractEntryTextAndRole(entry, redact);
-    if (!extracted) {
-      if (items.length === 0 || usedChars < budgetChars) {
-        nextEntryId = entryId;
-        nextCharOffset = 0;
-      }
-      continue;
-    }
-
-    const offset = entryId === startEntryId ? Math.max(0, startCharOffset) : 0;
-    const remainingText = offset > 0 ? extracted.text.slice(offset) : extracted.text;
-    if (!remainingText) {
-      nextEntryId = entryId;
-      nextCharOffset = 0;
-      continue;
-    }
-
-    const overhead = 40;
-    const available = budgetChars - usedChars - overhead;
-    if (available <= 0 && items.length > 0) {
-      hasMoreInSlice = true;
-      break;
-    }
-
-    if (remainingText.length <= Math.max(256, available)) {
-      items.push({
-        entryId,
-        role: extracted.role,
-        text: remainingText,
-        timestamp: extracted.timestamp,
-        charOffset: offset,
-        isPartial: false,
-      });
-      usedChars += remainingText.length + overhead;
-      nextEntryId = entryId;
-      nextCharOffset = 0;
-    } else {
-      // If we already packed earlier entries, stop cleanly before splitting the next entry.
-      if (items.length > 0) {
-        hasMoreInSlice = true;
-        break;
-      }
-      // Single ultra-long entry exceeds budget: split deterministically and preserve intra-entry offset.
-      const take = Math.max(256, budgetChars - overhead);
-      const chunk = remainingText.slice(0, take);
-      items.push({
-        entryId,
-        role: extracted.role,
-        text: chunk,
-        timestamp: extracted.timestamp,
-        charOffset: offset,
-        isPartial: true,
-      });
-      // Cursor stays BEFORE this entry's completion by storing `(entryId, offset + take)`.
-      nextEntryId = entryId;
-      nextCharOffset = offset + chunk.length;
-      hasMoreInSlice = true;
-      break;
-    }
-  }
-
-  return {
-    items,
-    nextLastFlushedEntryId: nextEntryId,
-    nextLastFlushedCharOffset: nextCharOffset,
-    hasMoreInSlice,
-  };
-}
-
-interface RawExtractedItem {
-  category?: unknown;
-  summary?: unknown;
-  anchorEntryId?: unknown;
-  scope?: unknown;
-  status?: unknown;
-  supersedesId?: unknown;
-}
-
-/**
- * Parses LLM JSON output and applies the 5 host security gates:
- * 1) Real `anchorEntryId` membership in the scanned batch
- * 2) Host-enforced `evidenceLevel` from real entry `sourceRole` (tool_result NEVER upgrades to user_decision/commitment)
- * 3) Dual-end redaction + `isSafeMemoryText`
- * 4) Dedicated `isSuspiciousMemoryInstruction` prompt-injection defense
- * 5) Forgotten-term filtering + scoped bucket assignment
- */
-export function verifyFlushExtraction(options: {
-  rawJson: string;
-  batch: readonly ScannedBatchItem[];
-  conversationId: number;
-  topicId: string;
-  projectId?: string;
-  redact: (text: string) => string;
-  forgottenTerms?: readonly { term: string }[];
-  now?: number;
-}): WorkingMemoryRecord[] {
-  const cleaned = options.rawJson.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    return [];
-  }
-  const rawItems =
-    parsed && typeof parsed === "object" && Array.isArray((parsed as { items?: unknown }).items)
-      ? ((parsed as { items: RawExtractedItem[] }).items)
-      : [];
-  if (rawItems.length === 0) return [];
-
-  const batchByEntryId = new Map<number, ScannedBatchItem>();
-  for (const item of options.batch) {
-    if (!batchByEntryId.has(item.entryId)) batchByEntryId.set(item.entryId, item);
-  }
-
-  const now = options.now ?? Date.now();
-  const forgotten = options.forgottenTerms ?? [];
-  const verified: WorkingMemoryRecord[] = [];
-
-  for (let idx = 0; idx < Math.min(rawItems.length, 24); idx += 1) {
-    const raw = rawItems[idx];
-    if (!raw || typeof raw !== "object") continue;
-
-    // Gate 1: anchorEntryId MUST genuinely belong to the scanned batch.
-    const anchorEntryId = Number(raw.anchorEntryId);
-    if (!Number.isSafeInteger(anchorEntryId) || anchorEntryId <= 0) continue;
-    const anchor = batchByEntryId.get(anchorEntryId);
-    if (!anchor) continue;
-
-    // Gate 3 & 4: normalize, dual-end redact, secret check, and prompt-injection check.
-    if (typeof raw.summary !== "string") continue;
-    const normalized = normalizeMemorySummary(raw.summary);
-    if (!normalized || normalized.length < 4) continue;
-    const redacted = options.redact(redactSensitiveText(normalized));
-    if (redacted !== normalized) continue;
-    if (!isSafeMemoryText(normalized)) continue;
-    if (isSuspiciousMemoryInstruction(normalized)) continue;
-
-    // Gate 5: forgotten terms check.
-    if (forgotten.some((entry) => matchesForgottenTerm(normalized, entry.term))) continue;
-
-    // Gate 2: host strictly enforces evidenceLevel & category ceilings from real sourceRole!
-    let evidenceLevel: WorkingMemoryEvidenceLevel;
-    let category: WorkingMemoryCategory =
-      raw.category === "commitment" || raw.category === "decision" || raw.category === "fact"
-        ? raw.category
-        : "fact";
-
-    if (anchor.role === "user") {
-      evidenceLevel = "user_decision";
-    } else if (anchor.role === "assistant") {
-      evidenceLevel = "assistant_proposal";
-      // Assistant-only text cannot create an authoritative user commitment without user entry anchor.
-      if (category === "commitment") category = "decision";
-    } else {
-      // tool_result / external webpage output is strictly untrusted external_reference.
-      evidenceLevel = "external_reference";
-      category = "fact";
-    }
-
-    const status = raw.status === "resolved" ? "resolved" : "active";
-    const supersedesId =
-      typeof raw.supersedesId === "string" && raw.supersedesId.trim().length > 0 && raw.supersedesId.length <= 120
-        ? raw.supersedesId.trim()
-        : undefined;
-
-    const requestedGlobal = raw.scope === "global" && evidenceLevel === "user_decision";
-    const bucketId = requestedGlobal
-      ? bucketIdForScope({ kind: "global" })
-      : options.projectId
-        ? bucketIdForScope({ kind: "project", projectId: options.projectId })
-        : bucketIdForScope({ kind: "topic", topicId: options.topicId });
-
-    const fingerprint = computeMemoryFingerprint(category, normalized);
-    verified.push({
-      id: `flush:${options.conversationId}:${anchorEntryId}:${fingerprint.slice(0, 10)}`,
-      bucketId,
-      category,
-      evidenceLevel,
-      status,
-      ...(supersedesId ? { supersedesId } : {}),
-      date: formatLocalDate(anchor.timestamp || now),
-      summary: normalized,
-      fingerprint,
-      provenance: {
-        conversationId: options.conversationId,
-        topicId: options.topicId,
-        ...(options.projectId ? { projectId: options.projectId } : {}),
-        entryId: anchorEntryId,
-        sourceRole: anchor.role,
-      },
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
-
-  return verified;
 }
 
 export function createMemoryFlushExtension(host: MemoryFlushHost) {
   const batchBudgetChars = host.batchBudgetChars ?? MEMORY_FLUSH_BATCH_BUDGET_CHARS;
   const now = () => (host.now ? host.now() : Date.now());
   const inFlightSchedule = new Set<number>();
+
+  const finishOrHandoverInTx = async (
+    tx: Tx,
+    convId: number,
+    currentTrigger: "compaction" | "idle" | "archive",
+    currentTarget: number,
+    outcome: { status: "completed"; result: null } | { status: "aborted" },
+    allowHandover: boolean,
+  ) => {
+    if (allowHandover) {
+      const txState = await tx.doc(KuloStateDoc);
+      const convKey = String(convId);
+      const txTopicId = txState.conversationToTopic?.[convKey];
+      const txTopic = txTopicId ? txState.topics?.[txTopicId] : undefined;
+      const topicAlive = Boolean(txTopicId && txTopic && txTopic.deletedAt === undefined && txTopic.conversationId === convId);
+      if (topicAlive) {
+        const wm = await tx.doc(KuloWorkingMemoryDoc);
+        const pendingCur = wm.cursors[convKey];
+        const pendingTarget = pendingCur?.pendingTargetMaxEntryId ?? 0;
+        const shouldHandover =
+          outcome.status !== "aborted" || currentTrigger === "idle" || pendingTarget > currentTarget;
+        if (
+          pendingCur &&
+          shouldHandover &&
+          pendingTarget > 0 &&
+          isCursorAhead(pendingTarget, 0, pendingCur.lastFlushedEntryId ?? 0, pendingCur.lastFlushedCharOffset ?? 0)
+        ) {
+          const nextTrigger = pendingCur.pendingTrigger ?? "compaction";
+          const nextHead = pendingCur.pendingObservedCompactionHeadId ?? 0;
+          delete pendingCur.pendingObservedCompactionHeadId;
+          if (nextTrigger !== "archive") {
+            delete pendingCur.pendingTargetMaxEntryId;
+            delete pendingCur.pendingTrigger;
+          }
+          await tx.createTask(
+            flushTask,
+            { conversationId: convId, targetMaxEntryId: pendingTarget, observedCompactionHeadId: nextHead, trigger: nextTrigger },
+            { ownership: { kind: "conversation" }, conversationId: convId as ConversationId, background: true },
+          );
+        }
+      }
+    }
+    return { status: "terminal" as const, outcome };
+  };
 
   const flushTask = defineTask<MemoryFlushInput, MemoryFlushState, null>({
     name: MEMORY_FLUSH_TASK_NAME,
@@ -423,6 +194,9 @@ export function createMemoryFlushExtension(host: MemoryFlushHost) {
         const harness = host.getHarness();
         const convId = task.input.conversationId;
         const convKey = String(convId);
+        const trigger = task.input.trigger ?? "compaction";
+        const isIdle = trigger === "idle";
+        const isArchive = trigger === "archive";
 
         const [state, settingsDoc, projects, wmDoc] = await Promise.all([
           harness.snapshot(KuloStateDoc, context),
@@ -436,9 +210,9 @@ export function createMemoryFlushExtension(host: MemoryFlushHost) {
           await runtime.commit(async () => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
           return;
         }
-        const topicId = state?.conversationToTopic?.[convKey] ?? "root";
-        const topic = state?.topics?.[topicId];
-        if (!topic || topic.deletedAt !== undefined) {
+        const topicId = state?.conversationToTopic?.[convKey];
+        const topic = topicId ? state?.topics?.[topicId] : undefined;
+        if (!topicId || !topic || topic.deletedAt !== undefined || topic.conversationId !== convId) {
           await runtime.commit(async () => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
           return;
         }
@@ -450,6 +224,22 @@ export function createMemoryFlushExtension(host: MemoryFlushHost) {
           }
         }
 
+        const isIdleEpochStale = (): boolean => {
+          if (!isIdle || !host.getBuiltinMemoryEpochs) return false;
+          const live = host.getBuiltinMemoryEpochs();
+          return (
+            (task.input.expectedClearEpoch !== undefined && live.clearTargetEpoch !== task.input.expectedClearEpoch) ||
+            (task.input.expectedEngineEpoch !== undefined && live.engineEpoch !== task.input.expectedEngineEpoch)
+          );
+        };
+        if (isIdleEpochStale()) {
+          await runtime.commit(
+            (tx) => finishOrHandoverInTx(tx, convId, trigger, task.input.targetMaxEntryId, { status: "completed", result: null }, true),
+            context,
+          );
+          return;
+        }
+
         const cursor = wmDoc?.cursors?.[convKey] ?? { lastFlushedEntryId: 0 };
         if (cursor.nextFlushEligibleAt && runtime.now() < cursor.nextFlushEligibleAt) {
           await runtime.commit(async () => ({
@@ -459,15 +249,38 @@ export function createMemoryFlushExtension(host: MemoryFlushHost) {
           }), context);
           return;
         }
+        const baseFailures =
+          cursor.nextFlushEligibleAt && runtime.now() >= cursor.nextFlushEligibleAt && (cursor.consecutiveFlushFailures ?? 0) >= 6
+            ? 0
+            : (cursor.consecutiveFlushFailures ?? 0);
 
-        const startEntryId =
-          cursor.lastFlushedCharOffset && cursor.lastFlushedCharOffset > 0
-            ? cursor.lastFlushedEntryId
-            : cursor.lastFlushedEntryId + 1;
-        const startCharOffset = cursor.lastFlushedCharOffset ?? 0;
+        const effectiveTarget = isIdle
+          ? task.input.targetMaxEntryId
+          : Math.max(task.input.targetMaxEntryId, cursor.pendingTargetMaxEntryId ?? 0);
 
-        if (startEntryId > task.input.targetMaxEntryId) {
-          await runtime.commit(async () => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
+        let baseId = cursor.lastFlushedEntryId;
+        let baseOff = cursor.lastFlushedCharOffset ?? 0;
+        if (isIdle) {
+          const floor = host.getBuiltinMemoryFloorCursor?.(convId);
+          if (floor && isCursorAhead(floor.cutoffEntryId, floor.cutoffCharOffset ?? 0, baseId, baseOff)) {
+            baseId = floor.cutoffEntryId;
+            baseOff = floor.cutoffCharOffset ?? 0;
+          }
+        }
+        const startEntryId = baseOff > 0 ? baseId : baseId + 1;
+        const startCharOffset = baseOff;
+
+        if (startEntryId > effectiveTarget) {
+          if (!isIdle && cursor.pendingTargetMaxEntryId !== undefined) {
+            await tryCommitWorkingMemory(harness, host.redact, (doc) => {
+              const cur = doc.cursors[convKey];
+              if (cur) clearCoveredPendingTarget(cur);
+            }, context);
+          }
+          await runtime.commit(
+            (tx) => finishOrHandoverInTx(tx, convId, trigger, effectiveTarget, { status: "completed", result: null }, true),
+            context,
+          );
           return;
         }
 
@@ -477,11 +290,11 @@ export function createMemoryFlushExtension(host: MemoryFlushHost) {
           return;
         }
 
-        // Load a page of entries in ascending order within [startEntryId, targetMaxEntryId].
+        // Load a page of entries in ascending order within [startEntryId, effectiveTarget].
         const page = await conversation.entries(
           {
             minEntryId: startEntryId as EntryId,
-            maxEntryId: task.input.targetMaxEntryId as EntryId,
+            maxEntryId: effectiveTarget as EntryId,
             order: "ascending",
           },
           100,
@@ -490,20 +303,35 @@ export function createMemoryFlushExtension(host: MemoryFlushHost) {
         );
 
         if (page.items.length === 0) {
-          await tryCommitWorkingMemory(harness, host.redact, (doc) => {
-            const cur = doc.cursors[convKey] ?? { lastFlushedEntryId: 0 };
-            cur.lastFlushedEntryId = Math.max(cur.lastFlushedEntryId, task.input.targetMaxEntryId);
-            delete cur.lastFlushedCharOffset;
-            cur.lastObservedCompactionHeadId = Math.max(
-              cur.lastObservedCompactionHeadId ?? 0,
-              task.input.observedCompactionHeadId,
-            );
-            cur.lastFlushedAt = now();
-            cur.consecutiveFlushFailures = 0;
-            delete cur.nextFlushEligibleAt;
-            doc.cursors[convKey] = cur;
-          }, context);
-          await runtime.commit(async () => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
+          if (isIdle) {
+            if (!isIdleEpochStale()) {
+              await commitWorkingMemory(harness, host.redact, () => {}, context, async (tx) => {
+                await host.onFlushCommitInTx?.(tx, {
+                  conversationId: convId, trigger: "idle", verifiedRecords: [], forgottenTerms: [],
+                  expectedClearEpoch: task.input.expectedClearEpoch, expectedEngineEpoch: task.input.expectedEngineEpoch,
+                  advanceIdleFloorEntryId: effectiveTarget, advanceIdleFloorCharOffset: 0,
+                });
+              });
+            }
+          } else {
+            await tryCommitWorkingMemory(harness, host.redact, (doc) => {
+              const cur = doc.cursors[convKey] ?? { lastFlushedEntryId: 0 };
+              if (isCursorAhead(effectiveTarget, 0, cur.lastFlushedEntryId, cur.lastFlushedCharOffset ?? 0)) {
+                cur.lastFlushedEntryId = effectiveTarget;
+                delete cur.lastFlushedCharOffset;
+              }
+              cur.lastObservedCompactionHeadId = Math.max(cur.lastObservedCompactionHeadId ?? 0, task.input.observedCompactionHeadId);
+              cur.lastFlushedAt = now();
+              cur.consecutiveFlushFailures = 0;
+              delete cur.nextFlushEligibleAt;
+              clearCoveredPendingTarget(cur);
+              doc.cursors[convKey] = cur;
+            }, context);
+          }
+          await runtime.commit(
+            (tx) => finishOrHandoverInTx(tx, convId, trigger, effectiveTarget, { status: "completed", result: null }, true),
+            context,
+          );
           return;
         }
 
@@ -518,22 +346,36 @@ export function createMemoryFlushExtension(host: MemoryFlushHost) {
         // If page only had skippable entries (system/compaction/sync), advance cursor without calling LLM!
         if (batch.items.length === 0) {
           const advanceTo = Math.max(batch.nextLastFlushedEntryId, Number(page.items.at(-1)!.id));
-          await tryCommitWorkingMemory(harness, host.redact, (doc) => {
-            const cur = doc.cursors[convKey] ?? { lastFlushedEntryId: 0 };
-            cur.lastFlushedEntryId = Math.max(cur.lastFlushedEntryId, advanceTo);
-            delete cur.lastFlushedCharOffset;
-            cur.lastObservedCompactionHeadId = Math.max(
-              cur.lastObservedCompactionHeadId ?? 0,
-              task.input.observedCompactionHeadId,
-            );
-            doc.cursors[convKey] = cur;
-          }, context);
-          const hasMorePages = Boolean(page.next) || advanceTo < task.input.targetMaxEntryId;
-          await runtime.commit(async () => (
-            hasMorePages
-              ? { status: "sleeping", until: runtime.now() + 100, checkpoint: { phase: "flush", batchesDone: task.state.checkpoint.batchesDone + 1 } }
-              : { status: "terminal", outcome: { status: "completed", result: null } }
-          ), context);
+          if (isIdle) {
+            if (!isIdleEpochStale()) {
+              await commitWorkingMemory(harness, host.redact, () => {}, context, async (tx) => {
+                await host.onFlushCommitInTx?.(tx, {
+                  conversationId: convId, trigger: "idle", verifiedRecords: [], forgottenTerms: [],
+                  expectedClearEpoch: task.input.expectedClearEpoch, expectedEngineEpoch: task.input.expectedEngineEpoch,
+                  advanceIdleFloorEntryId: advanceTo, advanceIdleFloorCharOffset: 0,
+                });
+              });
+            }
+          } else {
+            await tryCommitWorkingMemory(harness, host.redact, (doc) => {
+              const cur = doc.cursors[convKey] ?? { lastFlushedEntryId: 0 };
+              if (isCursorAhead(advanceTo, 0, cur.lastFlushedEntryId, cur.lastFlushedCharOffset ?? 0)) {
+                cur.lastFlushedEntryId = advanceTo;
+                delete cur.lastFlushedCharOffset;
+              }
+              cur.lastObservedCompactionHeadId = Math.max(cur.lastObservedCompactionHeadId ?? 0, task.input.observedCompactionHeadId);
+              clearCoveredPendingTarget(cur);
+              doc.cursors[convKey] = cur;
+            }, context);
+          }
+          const hasMorePages = Boolean(page.next) || advanceTo < effectiveTarget;
+          await runtime.commit(
+            async (tx) =>
+              hasMorePages
+                ? { status: "sleeping", until: runtime.now() + 100, checkpoint: { phase: "flush", batchesDone: task.state.checkpoint.batchesDone + 1 } }
+                : finishOrHandoverInTx(tx, convId, trigger, effectiveTarget, { status: "completed", result: null }, true),
+            context,
+          );
           return;
         }
 
@@ -575,23 +417,10 @@ export function createMemoryFlushExtension(host: MemoryFlushHost) {
           .filter(Boolean)
           .join("\n");
 
-        let rawJson: string;
-        try {
-          rawJson = await host.completeZeroToolJson({
-            systemPrompt: FLUSH_SYSTEM_PROMPT,
-            userContent,
-            maxTokens: 1_000,
-            signal: runtime.signal,
-            allowCloudFallback: !cap.capped,
-          });
-        } catch (error) {
-          if (runtime.signal.aborted) throw error;
-          const code = typeof error === "object" && error !== null && "code" in error
-            ? (error as { code?: unknown }).code
-            : undefined;
-          const failures = (cursor.consecutiveFlushFailures ?? 0) + 1;
+        const recordFailureAndBackoff = async (errorCode?: unknown): Promise<void> => {
+          const failures = baseFailures + 1;
           const deferMs =
-            code === "ambient_cloud_fallback_disallowed" && cap.resetAt && cap.resetAt > runtime.now()
+            errorCode === "ambient_cloud_fallback_disallowed" && cap.resetAt && cap.resetAt > runtime.now()
               ? cap.resetAt - runtime.now()
               : Math.min(MEMORY_FLUSH_FAILURE_BACKOFF_MAX_MS, MEMORY_FLUSH_FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(failures - 1, 5));
           const until = runtime.now() + deferMs;
@@ -606,17 +435,35 @@ export function createMemoryFlushExtension(host: MemoryFlushHost) {
               ? { status: "terminal", outcome: { status: "completed", result: null } }
               : { status: "sleeping", until, checkpoint: task.state.checkpoint }
           ), context);
+        };
+
+        let rawJson: string;
+        try {
+          rawJson = await host.completeZeroToolJson({
+            systemPrompt: isArchive ? `${FLUSH_SYSTEM_PROMPT}\n${ARCHIVE_FLUSH_HINT}` : FLUSH_SYSTEM_PROMPT,
+            userContent,
+            maxTokens: 1_000,
+            signal: runtime.signal,
+            allowCloudFallback: !cap.capped,
+          });
+        } catch (error) {
+          if (runtime.signal.aborted) throw error;
+          const code = typeof error === "object" && error !== null && "code" in error
+            ? (error as { code?: unknown }).code
+            : undefined;
+          await recordFailureAndBackoff(code);
           return;
         }
 
-        // Pre-commit live re-check of topic/project deletion & forgottenTerms!
+        // Pre-commit live re-check of topic identity (may have rotated from "root" -> archivedTopicId), deletion & forgottenTerms!
         const [liveState, liveProjects, personalityDoc] = await Promise.all([
           harness.snapshot(KuloStateDoc, context),
           harness.snapshot(KuloProjectsDoc, context),
           harness.snapshot(PersonalityDoc, context),
         ]);
-        const liveTopic = liveState?.topics?.[topicId];
-        if (!liveTopic || liveTopic.deletedAt !== undefined) {
+        const liveTopicId = liveState?.conversationToTopic?.[convKey];
+        const liveTopic = liveTopicId ? liveState?.topics?.[liveTopicId] : undefined;
+        if (!liveTopicId || !liveTopic || liveTopic.deletedAt !== undefined || liveTopic.conversationId !== convId) {
           await runtime.commit(async () => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
           return;
         }
@@ -629,66 +476,140 @@ export function createMemoryFlushExtension(host: MemoryFlushHost) {
           }
         }
 
-        const verified = verifyFlushExtraction({
+        const parsed = parseFlushExtraction({
           rawJson,
           batch: batch.items,
           conversationId: convId,
-          topicId,
+          topicId: liveTopicId,
           projectId: liveProjectId ?? undefined,
           redact: host.redact,
           forgottenTerms: personalityDoc?.forgottenTerms,
           now: now(),
         });
+        if (!parsed.ok) {
+          await recordFailureAndBackoff(parsed.reason);
+          return;
+        }
+        const verified = parsed.records;
+
+        if (isIdleEpochStale()) {
+          await runtime.commit(
+            (tx) => finishOrHandoverInTx(tx, convId, trigger, effectiveTarget, { status: "completed", result: null }, true),
+            context,
+          );
+          return;
+        }
 
         const committedRecords: WorkingMemoryRecord[] = [];
+        let abortedInTx = false;
+        let effectiveTopic = liveTopic;
+        let activeRootConvIdForNotify = resolveActiveRootConversationId(liveState);
+
         await commitWorkingMemory(
           harness,
           host.redact,
           (doc) => {
             for (const record of verified) {
+              if (isIdle && record.evidenceLevel !== "user_decision" && record.bucketId !== "global") continue;
               const res = upsertWorkingMemoryRecord(doc, record);
               if (res.inserted) committedRecords.push(res.record);
             }
             const cur = doc.cursors[convKey] ?? { lastFlushedEntryId: 0 };
-            if (batch.nextLastFlushedCharOffset > 0) {
-              cur.lastFlushedEntryId = batch.nextLastFlushedEntryId;
-              cur.lastFlushedCharOffset = batch.nextLastFlushedCharOffset;
-            } else {
-              cur.lastFlushedEntryId = Math.max(cur.lastFlushedEntryId, batch.nextLastFlushedEntryId);
-              delete cur.lastFlushedCharOffset;
+            if (!isIdle) {
+              if (isCursorAhead(batch.nextLastFlushedEntryId, batch.nextLastFlushedCharOffset, cur.lastFlushedEntryId, cur.lastFlushedCharOffset ?? 0)) {
+                cur.lastFlushedEntryId = batch.nextLastFlushedEntryId;
+                if (batch.nextLastFlushedCharOffset > 0) cur.lastFlushedCharOffset = batch.nextLastFlushedCharOffset;
+                else delete cur.lastFlushedCharOffset;
+              }
+              cur.lastObservedCompactionHeadId = Math.max(cur.lastObservedCompactionHeadId ?? 0, task.input.observedCompactionHeadId);
+              cur.lastFlushedAt = now();
+              clearCoveredPendingTarget(cur);
             }
-            cur.lastObservedCompactionHeadId = Math.max(
-              cur.lastObservedCompactionHeadId ?? 0,
-              task.input.observedCompactionHeadId,
-            );
-            cur.lastFlushedAt = now();
             cur.consecutiveFlushFailures = 0;
             delete cur.nextFlushEligibleAt;
             doc.cursors[convKey] = cur;
           },
           context,
+          async (tx) => {
+            await host.onFlushCommitInTx?.(tx, {
+              conversationId: convId,
+              trigger,
+              verifiedRecords: verified,
+              forgottenTerms: personalityDoc?.forgottenTerms ?? [],
+              expectedClearEpoch: task.input.expectedClearEpoch,
+              expectedEngineEpoch: task.input.expectedEngineEpoch,
+              ...(isIdle ? { advanceIdleFloorEntryId: batch.nextLastFlushedEntryId, advanceIdleFloorCharOffset: batch.nextLastFlushedCharOffset } : {}),
+            });
+          },
+          async (tx) => {
+            const txState = await tx.doc(KuloStateDoc);
+            const txTopicId = txState.conversationToTopic?.[convKey];
+            const txTopic = txTopicId ? txState.topics?.[txTopicId] : undefined;
+            if (!txTopicId || !txTopic || txTopic.deletedAt !== undefined || txTopic.conversationId !== convId) {
+              abortedInTx = true;
+              return false;
+            }
+            if (txTopicId !== liveTopicId) {
+              const oldTopicBucket = `topic:${liveTopicId}`;
+              const nextTopicBucket = `topic:${txTopicId}`;
+              for (const rec of verified) {
+                rec.provenance.topicId = txTopicId;
+                if (rec.bucketId === oldTopicBucket) rec.bucketId = nextTopicBucket;
+              }
+              effectiveTopic = txTopic;
+            }
+            activeRootConvIdForNotify = resolveActiveRootConversationId(txState);
+            return true;
+          },
         );
+
+        if (abortedInTx) {
+          await runtime.commit(async () => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
+          return;
+        }
 
         if (committedRecords.length > 0 && host.onRecordsCommitted) {
           await host.onRecordsCommitted(committedRecords, context).catch(() => {});
+        }
+        if (host.onFlushCommitted) {
+          await host.onFlushCommitted(context).catch(() => {});
+        }
+        if (
+          committedRecords.length > 0 &&
+          host.onActiveRootMemoryUpdated &&
+          (effectiveTopic.archivedFromRoot || committedRecords.some((r) => r.bucketId === "global"))
+        ) {
+          await host.onActiveRootMemoryUpdated(activeRootConvIdForNotify, context).catch(() => {});
         }
 
         const moreRemains =
           batch.hasMoreInSlice ||
           Boolean(page.next) ||
-          (batch.nextLastFlushedCharOffset === 0 && batch.nextLastFlushedEntryId < task.input.targetMaxEntryId);
+          (batch.nextLastFlushedCharOffset === 0 && batch.nextLastFlushedEntryId < effectiveTarget);
         const batchesDone = task.state.checkpoint.batchesDone + 1;
-        await runtime.commit(async () => (
-          moreRemains && batchesDone < MEMORY_FLUSH_MAX_BATCHES_PER_STEP
-            ? { status: "sleeping", until: runtime.now() + 150, checkpoint: { phase: "flush", batchesDone } }
-            : moreRemains
-              ? { status: "sleeping", until: runtime.now() + 5_000, checkpoint: { phase: "flush", batchesDone: 0 } }
-              : { status: "terminal", outcome: { status: "completed", result: null } }
-        ), context);
+        await runtime.commit(async (tx) => {
+          if (moreRemains) {
+            return batchesDone < MEMORY_FLUSH_MAX_BATCHES_PER_STEP
+              ? { status: "sleeping", until: runtime.now() + 150, checkpoint: { phase: "flush", batchesDone } }
+              : { status: "sleeping", until: runtime.now() + 5_000, checkpoint: { phase: "flush", batchesDone: 0 } };
+          }
+          return finishOrHandoverInTx(tx, convId, trigger, effectiveTarget, { status: "completed", result: null }, true);
+        }, context);
       },
     },
-    abort: async (_task, runtime, context) => {
-      await runtime.commit(async () => ({ status: "terminal", outcome: { status: "aborted" } }), context);
+    abort: async (task, runtime, context) => {
+      await runtime.commit(
+        (tx) =>
+          finishOrHandoverInTx(
+            tx,
+            task.input.conversationId,
+            task.input.trigger ?? "compaction",
+            task.input.targetMaxEntryId,
+            { status: "aborted" },
+            true,
+          ),
+        context,
+      );
     },
   });
 
@@ -719,40 +640,36 @@ export function createMemoryFlushExtension(host: MemoryFlushHost) {
     inFlightSchedule.add(convNum);
     try {
       const harness = host.getHarness();
-      const [state, settingsDoc, wmDoc] = await Promise.all([
-        harness.snapshot(KuloStateDoc, context),
-        harness.snapshot(SettingsAssistantDoc, context),
-        harness.snapshot(KuloWorkingMemoryDoc, context),
-      ]);
-      if (!isOrchestratorConversation(convNum, state) || isActiveSettingsConversation(convNum, settingsDoc)) {
-        return false;
-      }
-      const topicId = state?.conversationToTopic?.[String(convNum)] ?? "root";
-      const topic = state?.topics?.[topicId];
-      if (!topic || topic.deletedAt !== undefined) return false;
-
       const targetMaxEntryId = firstKept - 1;
-      const cursor = wmDoc?.cursors?.[String(convNum)];
-      const alreadyCovered =
-        cursor !== undefined &&
-        cursor.lastFlushedEntryId >= targetMaxEntryId &&
-        !(cursor.lastFlushedCharOffset && cursor.lastFlushedCharOffset > 0);
-      if (alreadyCovered) return false;
-
-      // Avoid creating a second concurrent flush task on the same conversation.
-      const inspected = await harness.inspect(context);
-      if (inspected.tasks.some((t) => Number(t.record.conversationId) === convNum && t.record.kind === MEMORY_FLUSH_TASK_NAME)) {
-        return false;
-      }
-
+      const convKey = String(convNum);
+      let scheduled = false;
       await harness.commit(async (tx) => {
+        const state = await tx.doc(KuloStateDoc);
+        const settingsDoc = await tx.doc(SettingsAssistantDoc);
+        if (!isOrchestratorConversation(convNum, state) || isActiveSettingsConversation(convNum, settingsDoc)) return;
+        const topicId = state.conversationToTopic?.[convKey];
+        const topic = topicId ? state.topics?.[topicId] : undefined;
+        if (!topicId || !topic || topic.deletedAt !== undefined || topic.conversationId !== convNum) return;
+
+        const wm = await tx.doc(KuloWorkingMemoryDoc);
+        const cur = wm.cursors[convKey] ?? { lastFlushedEntryId: 0 };
+        if (!isCursorAhead(targetMaxEntryId, 0, cur.lastFlushedEntryId, cur.lastFlushedCharOffset ?? 0)) return;
+
+        if (await hasLiveFlushTaskInTx(tx, convNum)) {
+          cur.pendingTargetMaxEntryId = Math.max(cur.pendingTargetMaxEntryId ?? 0, targetMaxEntryId);
+          cur.pendingObservedCompactionHeadId = Math.max(cur.pendingObservedCompactionHeadId ?? 0, observedCompactionHeadId);
+          wm.cursors[convKey] = cur;
+          scheduled = true;
+          return;
+        }
         await tx.createTask(
           flushTask,
-          { conversationId: convNum, targetMaxEntryId, observedCompactionHeadId },
+          { conversationId: convNum, targetMaxEntryId, observedCompactionHeadId, trigger: "compaction" },
           { ownership: { kind: "conversation" }, conversationId, background: true },
         );
+        scheduled = true;
       }, context);
-      return true;
+      return scheduled;
     } catch (error) {
       console.warn("[KuloMemoryFlush] Failed to schedule memory flush", error);
       return false;
@@ -761,11 +678,161 @@ export function createMemoryFlushExtension(host: MemoryFlushHost) {
     }
   };
 
+  /**
+   * Atomically schedules or merges an archive-tail flush for a frozen archived root conversation.
+   * Uses `tx.scanTasks` inside the same `harness.commit` that updates `pendingTargetMaxEntryId`,
+   * eliminating any Lost-Wakeup window against concurrently finishing idle/compaction flushes.
+   */
+  const scheduleForArchive = async (
+    conversationId: number,
+    tailEntryId: number,
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<MainArchiveFlushStatus> => {
+    if (
+      host.isClosed() ||
+      host.isRecovering() ||
+      host.isHandoverBarrierActive() ||
+      !Number.isSafeInteger(conversationId) ||
+      conversationId < 1 ||
+      !Number.isSafeInteger(tailEntryId) ||
+      tailEntryId < 1
+    ) {
+      return "skipped";
+    }
+    try {
+      const harness = host.getHarness();
+      const convKey = String(conversationId);
+      let status: MainArchiveFlushStatus = "skipped";
+      await harness.commit(async (tx) => {
+        const state = await tx.doc(KuloStateDoc);
+        const settingsDoc = await tx.doc(SettingsAssistantDoc);
+        if (!isOrchestratorConversation(conversationId, state) || isActiveSettingsConversation(conversationId, settingsDoc)) {
+          status = "skipped";
+          return;
+        }
+        const topicId = state.conversationToTopic?.[convKey];
+        const topic = topicId ? state.topics?.[topicId] : undefined;
+        if (!topicId || !topic || topic.deletedAt !== undefined || topic.conversationId !== conversationId) {
+          status = "skipped";
+          return;
+        }
+        const wm = await tx.doc(KuloWorkingMemoryDoc);
+        const cur = wm.cursors[convKey] ?? { lastFlushedEntryId: 0 };
+        if (!isCursorAhead(tailEntryId, 0, cur.lastFlushedEntryId, cur.lastFlushedCharOffset ?? 0)) {
+          clearCoveredPendingTarget(cur);
+          wm.cursors[convKey] = cur;
+          status = "already_up_to_date";
+          return;
+        }
+        cur.pendingTargetMaxEntryId = Math.max(cur.pendingTargetMaxEntryId ?? 0, tailEntryId);
+        cur.pendingTrigger = "archive";
+        wm.cursors[convKey] = cur;
+
+        if (await hasLiveFlushTaskInTx(tx, conversationId)) {
+          status = "merged_pending";
+          return;
+        }
+        await tx.createTask(
+          flushTask,
+          {
+            conversationId,
+            targetMaxEntryId: cur.pendingTargetMaxEntryId,
+            observedCompactionHeadId: 0,
+            trigger: "archive",
+          },
+          { ownership: { kind: "conversation" }, conversationId: conversationId as ConversationId, background: true },
+        );
+        status = "scheduled";
+      }, context);
+      return status;
+    } catch (error) {
+      console.warn("[KuloMemoryFlush] Failed to schedule archive flush", error);
+      return "skipped";
+    }
+  };
+
+  /**
+   * Startup/recovery sweep for pending archive/compaction flushes whose cursor has not yet
+   * reached `pendingTargetMaxEntryId` (including mid-offset long entries and post-backoff recovery).
+   */
+  const recoverPendingArchiveFlushes = async (context: Context = BACKGROUND_CONTEXT): Promise<number> => {
+    if (host.isClosed() || host.isRecovering() || host.isHandoverBarrierActive()) return 0;
+    const harness = host.getHarness();
+    const [wmDoc, state] = await Promise.all([
+      harness.snapshot(KuloWorkingMemoryDoc, context),
+      harness.snapshot(KuloStateDoc, context),
+    ]);
+    let recovered = 0;
+    for (const [convKey, cur] of Object.entries(wmDoc?.cursors ?? {})) {
+      const pendingTarget = cur?.pendingTargetMaxEntryId;
+      if (!pendingTarget || !isCursorAhead(pendingTarget, 0, cur.lastFlushedEntryId, cur.lastFlushedCharOffset ?? 0)) {
+        continue;
+      }
+      const convId = Number(convKey);
+      const topicId = state?.conversationToTopic?.[convKey];
+      const topic = topicId ? state?.topics?.[topicId] : undefined;
+      if (!Number.isSafeInteger(convId) || convId < 1 || !topicId || !topic || topic.deletedAt !== undefined || topic.conversationId !== convId) {
+        continue;
+      }
+      const res = await scheduleForArchive(convId, pendingTarget, context);
+      if (res === "scheduled") recovered += 1;
+    }
+    return recovered;
+  };
+
+  const scheduleForIdle = async (
+    input: { conversationId: number; headEntryId: number; clearEpoch: number; engineEpoch: number },
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<boolean> => {
+    const convNum = input.conversationId;
+    if (host.isClosed() || host.isRecovering() || host.isHandoverBarrierActive() || !Number.isSafeInteger(convNum) || convNum < 1 || input.headEntryId < 1) {
+      return false;
+    }
+    if (inFlightSchedule.has(convNum)) return false;
+    inFlightSchedule.add(convNum);
+    try {
+      const harness = host.getHarness();
+      let scheduled = false;
+      await harness.commit(async (tx) => {
+        if (await hasLiveFlushTaskInTx(tx, convNum)) return;
+        await tx.createTask(
+          flushTask,
+          {
+            conversationId: convNum,
+            targetMaxEntryId: input.headEntryId,
+            observedCompactionHeadId: 0,
+            trigger: "idle",
+            expectedClearEpoch: input.clearEpoch,
+            expectedEngineEpoch: input.engineEpoch,
+          },
+          { ownership: { kind: "conversation" }, conversationId: convNum as ConversationId, background: true },
+        );
+        scheduled = true;
+      }, context);
+      return scheduled;
+    } catch {
+      return false;
+    } finally {
+      inFlightSchedule.delete(convNum);
+    }
+  };
+
+  const abortIdleFlushTasks = async (context: Context = BACKGROUND_CONTEXT): Promise<void> => {
+    const harness = host.getHarness();
+    const inspected = await harness.inspect(context).catch(() => undefined);
+    for (const task of inspected?.tasks ?? []) {
+      if (task.record.kind !== MEMORY_FLUSH_TASK_NAME) continue;
+      const input = task.record.input as unknown as MemoryFlushInput | undefined;
+      if (input?.trigger !== "idle") continue;
+      await harness.abortTask(task.record.id as TaskId, context).catch(() => {});
+    }
+  };
+
   return Object.assign(
     defineExtension({
       name: "kulo-memory-flush",
       tasks: [flushTask],
     }),
-    { flushTask, scheduleForCompaction },
+    { flushTask, scheduleForCompaction, scheduleForArchive, recoverPendingArchiveFlushes, scheduleForIdle, abortIdleFlushTasks },
   );
 }

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { atomicReplaceDesktopFileSync } from "./desktop-fs.js";
 
 export interface WindowRect {
   x: number;
@@ -221,7 +222,7 @@ function isTitlebarReachable(rect: WindowRect, displays: readonly DisplayWorkAre
 export function readDesktopWindowStateFile(file: string): DesktopWindowState | undefined {
   let descriptor: number;
   try {
-    descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
@@ -296,7 +297,7 @@ export function writeDesktopWindowStateFile(file: string, state: DesktopWindowSt
       flag: "wx",
       mode: 0o600,
     });
-    fs.renameSync(temporary, file);
+    atomicReplaceDesktopFileSync(temporary, file);
   } catch {
     throw new Error("无法保存窗口状态，请检查数据目录权限。");
   } finally {

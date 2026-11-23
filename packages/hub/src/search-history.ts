@@ -2,16 +2,19 @@ import { AssistantEntry, ToolResultEntry, UserEntry, type Conversation, type Ent
 import type { Context } from "@earendil-works/chord/context";
 import type { ChatDisplayItem } from "@kulo/protocol";
 import { nativeSearchEvidence, sanitizeSearchSources } from "./search-sources.js";
-import { isRecoveryInputBoundary } from "./state.js";
+import { CoordinatorEventEntry, isLegacyInternalUserEntry, isRecoveryInputBoundary } from "./state.js";
 
-function boundary(entry: EntryRecord): boolean { return UserEntry.is(entry) || entry.kind === "kulo.user"; }
+function boundary(entry: EntryRecord): boolean {
+  return (UserEntry.is(entry) && !isLegacyInternalUserEntry(entry)) || entry.kind === "kulo.user";
+}
 
 function evidence(entry: EntryRecord): EntryRecord | undefined {
   if (isRecoveryInputBoundary(entry)) {
+    const kind = isLegacyInternalUserEntry(entry) ? CoordinatorEventEntry.kind : entry.kind;
     const data = entry.kind === "kulo.worker_relay" && entry.data && typeof entry.data === "object" && !Array.isArray(entry.data)
       ? { sources: sanitizeSearchSources(entry.data.sources), ...(Array.isArray(entry.data.searchSuggestions) ? { searchSuggestions: entry.data.searchSuggestions.filter((value) => typeof value === "string" && value.length <= 24_000).slice(-4) } : {}) }
       : undefined;
-    return { id: entry.id, conversationId: entry.conversationId, kind: entry.kind, model: [{ role: "user", content: "", timestamp: 0 }], ...(data ? { data } : {}) };
+    return { id: entry.id, conversationId: entry.conversationId, kind, model: [{ role: "user", content: "", timestamp: 0 }], ...(data ? { data } : {}) };
   }
   if (AssistantEntry.is(entry)) {
     const message = entry.model?.[0];

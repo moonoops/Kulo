@@ -13,7 +13,10 @@ import {
   type KuloActionConfirmations,
   type PendingActionConfirmation,
 } from "./action-confirmations.js";
-import { submitAutomaticChatInput } from "./chat-control.js";
+import {
+  submitAutomaticChatInput,
+  type AutomaticChatInputDraft,
+} from "./chat-control.js";
 import { chatRoutingData } from "./chat-submissions.js";
 import type { KuloConnections } from "./connections.js";
 import { reconcileTopicRoutingTarget, resolveHostActionTargetEnv } from "./env-routing-policy.js";
@@ -27,14 +30,45 @@ import type {
   TurnContextReader,
 } from "./hub-kernel-ports.js";
 import type { KuloProjects } from "./projects.js";
-import { formatHostActionRequestMessage } from "./prompts.js";
-import { KuloStateDoc, isTicketUnfinished } from "./state.js";
+import { formatHostActionRequestMessage, formatHostActionResultMessage } from "./prompts.js";
+import { CoordinatorEventEntry, KuloStateDoc, isTicketUnfinished } from "./state.js";
 import { injectEventToolsInTx } from "./tool-surface.js";
 import type {
   HostActionCaller,
   HostActionDecideOutcome,
   HostActionRunOutcome,
 } from "./tools-host-action.js";
+
+export function buildHostActionResultDraft(params: {
+  requestId: string;
+  refId: string;
+  envId: string;
+  envName: string;
+  body: string;
+  instruction: string;
+  redact: (text: string) => string;
+}): AutomaticChatInputDraft {
+  const safeEnvName = params.redact(params.envName);
+  const content = params.redact(
+    formatHostActionResultMessage({ body: params.redact(params.body), instruction: params.instruction }),
+  );
+  return {
+    type: "input",
+    content,
+    whenBusy: "followUp",
+    requestId: params.requestId,
+    entry: {
+      kind: CoordinatorEventEntry.kind,
+      data: {
+        eventKind: "host_action_result",
+        requestId: params.refId,
+        envId: params.envId,
+        envName: safeEnvName,
+        createdAt: Date.now(),
+      },
+    },
+  };
+}
 
 export interface HubHostActionsDeps {
   harness: Harness;
@@ -46,7 +80,7 @@ export interface HubHostActionsDeps {
   runtimeGates: Pick<HubRuntimeGates, "resumeIfNotRecovering" | "broadcastTickets" | "recordTicketOutwardAction">;
   turnContext?: TurnContextReader;
   steerTicket: (
-    params: { ticketId: string; commandId: string; text: string; originConversationId?: number },
+    params: { ticketId: string; commandId: string; text: string; originConversationId?: number; internalResume?: boolean },
     context?: Context,
   ) => Promise<unknown>;
 }
@@ -291,13 +325,14 @@ export class HubHostActions {
     );
     if (!origin) return;
     const payload = confirmation.payload;
+    const safeEnvName = this.#deps.connectionManager.redact(payload.envName);
     const redactedCommands = payload.commands.map((cmd) => this.#deps.connectionManager.redact(cmd));
     const message = formatHostActionRequestMessage({
       requestId: confirmation.id,
       ticketId: ticket.id,
       title: ticket.title,
       envId: payload.envId,
-      envName: payload.envName,
+      envName: safeEnvName,
       cwd: payload.cwd,
       summary: this.#deps.connectionManager.redact(payload.summary),
       commands: redactedCommands,
@@ -309,6 +344,17 @@ export class HubHostActions {
         content: this.#deps.connectionManager.redact(message),
         whenBusy: "followUp",
         requestId: `kulo:host-action-request:${confirmation.id}`,
+        entry: {
+          kind: CoordinatorEventEntry.kind,
+          data: {
+            eventKind: "host_action_request",
+            requestId: confirmation.id,
+            ticketId: ticket.id,
+            envId: payload.envId,
+            envName: safeEnvName,
+            createdAt: Date.now(),
+          },
+        },
       });
     }, BACKGROUND_CONTEXT);
     this.#deps.runtimeGates.resumeIfNotRecovering();
@@ -482,11 +528,14 @@ export class HubHostActions {
     if (resolved.status !== "approved") {
       await this.#deps.actionConfirmations.markOutcome(resolved.id, "confirmed");
       if (payload.ticketId) {
+        const safeEnvName = this.#deps.connectionManager.redact(payload.envName);
+        const safeSummary = this.#deps.connectionManager.redact(payload.summary);
         try {
           await this.#deps.steerTicket({
             ticketId: payload.ticketId,
             commandId: `host-action:${refId}:denied`,
-            text: `用户拒绝了在 ${payload.envName} (${payload.envId}) 上执行的本机操作「${payload.summary}」。请勿再次尝试同一操作，直接按现状向主智能体汇报。`,
+            text: `用户拒绝了在 ${safeEnvName} (${payload.envId}) 上执行的本机操作「${safeSummary}」。请勿再次尝试同一操作，直接按现状向主智能体汇报。`,
+            internalResume: true,
           });
         } catch (error) {
           console.warn("[KuloConfirmation] Failed to resume worker after host action denial", error instanceof Error ? error.message : String(error));
@@ -505,6 +554,7 @@ export class HubHostActions {
           ticketId: payload.ticketId,
           commandId: `host-action:${refId}:approved`,
           text: `${summaryText}\n请基于实际执行结果继续验证并完成当前任务。`,
+          internalResume: true,
         });
       } catch (error) {
         console.warn("[KuloConfirmation] Failed to resume worker after host action execution", error instanceof Error ? error.message : String(error));
@@ -516,12 +566,19 @@ export class HubHostActions {
     if (origin) {
       await this.#deps.harness.commit(
         (tx) =>
-          submitAutomaticChatInput(tx, origin, {
-            type: "input",
-            content: `[KULO_HOST_ACTION_RESULT]\n${summaryText}\n请用当前对话语言向用户简洁反馈实际执行结果，不要暴露内部卡片或工单编号。`,
-            whenBusy: "followUp",
-            requestId: `kulo:host-action-result:${refId}`,
-          }),
+          submitAutomaticChatInput(
+            tx,
+            origin,
+            buildHostActionResultDraft({
+              requestId: `kulo:host-action-result:${refId}`,
+              refId,
+              envId: payload.envId,
+              envName: payload.envName,
+              body: summaryText,
+              instruction: "请用当前对话语言向用户简洁反馈实际执行结果，不要暴露内部卡片或工单编号。",
+              redact: (text) => this.#deps.connectionManager.redact(text),
+            }),
+          ),
         BACKGROUND_CONTEXT,
       );
     }

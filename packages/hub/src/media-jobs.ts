@@ -68,12 +68,17 @@ function publicJob(value: StoredMediaJob): MediaJob {
   return job;
 }
 function operationKey(request: MediaJobRequest): string {
+  if (request.source.setupClientId) {
+    return JSON.stringify([`setup:${request.source.setupClientId}`, request.operationId]);
+  }
   return JSON.stringify([request.source.ticketId ? `ticket:${request.source.ticketId}` : `conversation:${request.source.conversationId}`, request.operationId]);
 }
 function fingerprint(request: MediaJobRequest): string {
-  const source = request.source.ticketId
-    ? { ticketId: request.source.ticketId, topicId: request.source.topicId, projectId: request.source.projectId }
-    : { conversationId: request.source.conversationId, topicId: request.source.topicId, projectId: request.source.projectId };
+  const source = request.source.setupClientId
+    ? { setupClientId: request.source.setupClientId, topicId: request.source.topicId }
+    : request.source.ticketId
+      ? { ticketId: request.source.ticketId, topicId: request.source.topicId, projectId: request.source.projectId }
+      : { conversationId: request.source.conversationId, topicId: request.source.topicId, projectId: request.source.projectId };
   const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
     ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
   return createHash("sha256").update(JSON.stringify({
@@ -180,10 +185,14 @@ export class KuloMediaJobs {
       const state = await this.#options.harness.snapshot(KuloMediaJobsDoc, context);
       const key = operationKey(request);
       const hash = fingerprint(request);
-      const previousId = own(state?.operations, key);
+      const legacySetupKey = request.source.setupClientId
+        ? JSON.stringify([`conversation:${request.source.conversationId}`, request.operationId])
+        : undefined;
+      const previousId = own(state?.operations, key) ?? (legacySetupKey ? own(state?.operations, legacySetupKey) : undefined);
       if (previousId) {
         const previous = own(state?.jobs, previousId);
-        if (!previous || previous.fingerprint !== hash) throw new MediaJobError(409, "media_operation_conflict", "此生成意图已用于不同请求，请查询原作业；新版本需使用新意图。");
+        const matchesHash = previous && (previous.fingerprint === hash || (Boolean(legacySetupKey) && previous.source.setupClientId === request.source.setupClientId && previous.prompt === request.prompt.trim()));
+        if (!matchesHash) throw new MediaJobError(409, "media_operation_conflict", "此生成意图已用于不同请求，请查询原作业；新版本需使用新意图。");
         return publicJob(previous);
       }
       await this.#options.validateSource?.(request.source);

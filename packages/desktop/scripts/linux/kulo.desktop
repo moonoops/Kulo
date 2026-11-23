@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=@APP_NAME@
+Comment=Kulo personal SuperAgent
+Exec=/usr/bin/kulo %U
+Icon=kulo
+Terminal=false
+Type=Application
+Categories=Utility;Development;
+StartupWMClass=@APP_NAME@

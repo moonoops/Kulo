@@ -180,7 +180,7 @@ export class ConversationQueries {
     const messages = (await this.source.project(prefix ? [prefix, ...entries] : entries, topic.conversationId, context)).filter((item) => ids.has(item.id) && isVisibleMessage(item));
     if (!messages.some((item) => item.id === messageId)) throw new ConversationQueryError(404, "conversation_message_not_found", "原消息不存在或已不可用。");
     await this.#unchanged(topics, topicId, context);
-    return { topicId, messageId, messages, ...(older.next && older.items.at(-1) ? { beforeEntryId: Number(older.items.at(-1)!.id) } : {}), hasMore: Boolean(older.next) };
+    return { topicId, conversationId: topic.conversationId, messageId, messages, ...(older.next && older.items.at(-1) ? { beforeEntryId: Number(older.items.at(-1)!.id) } : {}), hasMore: Boolean(older.next) };
   }
 
   async files(topicId: string, input: { cursor?: string; limit?: number } = {}, context: Context = BACKGROUND_CONTEXT): Promise<ConversationFilesPage> {

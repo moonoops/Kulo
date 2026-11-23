@@ -392,6 +392,12 @@ describe("Host action Main-Agent authority, smart judgment, escalation cards & c
     expect(orchestratorSawRequest).toBe(true);
     expect(fs.existsSync(markerWorker)).toBe(true);
     expect(await hub.uiCards.snapshot(Number(hub.rootConversation.id))).toHaveLength(0);
+    const rootView = await hub.getTopicView("root");
+    expect(rootView.messages.some((m) => m.text.includes("[KULO_HOST_ACTION_REQUEST]") || m.text.includes("[COORDINATOR_OK]"))).toBe(false);
+    const rootEntries = await hub.rootConversation.entries({}, 100, undefined, BACKGROUND_CONTEXT);
+    expect(rootEntries.items.some((e) => e.kind === "kulo.coordinator_event")).toBe(true);
+    const rootTopic = (await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))?.topics?.root;
+    expect(rootTopic?.lastMessagePreview ?? "").not.toContain("[KULO_HOST_ACTION_REQUEST]");
 
     // 3. Read-only role (scout) is STILL rejected from host maintenance 'run'
     scenario = "scout-readonly";

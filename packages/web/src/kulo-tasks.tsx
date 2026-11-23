@@ -33,6 +33,7 @@ import "./features/tasks/task-detail.css";
 import { useTaskClock } from "./features/tasks/use-task-clock";
 export { ticketTone, ticketStatusLabel, ticketWaitLabel, scopeTickets, type TaskTone } from "./features/tasks/task-model";
 export { KuloTaskRail } from "./features/tasks/task-rail";
+export { TaskRailClearAllAction, useTaskRailClearAllHost } from "./features/tasks/task-rail-clear-all";
 
 function toneToChipColor(
   tone: TaskTone,

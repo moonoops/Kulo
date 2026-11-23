@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import {
+  isAssistantDismissTarget,
   isAssistantItemAction,
   isNativeAppPermissionKind,
+  type AssistantDismissTarget,
   type ConnectionPrepareRequest,
   type ConnectionSaveRequest,
   type HomeAssistantAnnounceConfig,
@@ -146,11 +148,35 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
 
   if (pathname === "/api/assistant" || pathname.startsWith("/api/assistant/")) {
     res.setHeader("cache-control", "no-store");
+    const assertAssistantOwnerMutation = (originMessage: string, forbiddenMessage: string) => {
+      assertHttpSameOrigin(ctx, {
+        code: "assistant_origin_required",
+        message: originMessage,
+      });
+      if (!authority.hasOwnerHubControl || authority.isSshPrincipal) {
+        throw Object.assign(new Error(forbiddenMessage), { status: 403, code: "assistant_forbidden" });
+      }
+    };
+    const assertAssistantItemMutation = (originMessage: string, forbiddenMessage: string) => {
+      assertHttpSameOrigin(ctx, {
+        code: "assistant_origin_required",
+        message: originMessage,
+      });
+      const verifiedMobileItemAction =
+        authority.authSource === "bearer" &&
+        authority.isSameOrigin &&
+        authority.isMobilePrincipal &&
+        authority.isVerifiedMobileConnector;
+      if (authority.isSshPrincipal || (!authority.hasOwnerHubControl && !verifiedMobileItemAction)) {
+        throw Object.assign(new Error(forbiddenMessage), { status: 403, code: "assistant_forbidden" });
+      }
+    };
     if (pathname === "/api/assistant" && req.method === "GET") {
       sendJson(res, 200, { ...(await hub.getAssistantWorkspace()), ...hostFlags() });
       return true;
     }
     if (pathname === "/api/assistant/configure" && req.method === "POST") {
+      assertAssistantOwnerMutation("请在 Kulo 中修改助手通知配置。", "请通过受信任的 Kulo 客户端修改助手通知配置。");
       const body = await readJsonObject(req, 64 * 1024);
       sendJson(res, 200, {
         ...(await hub.configureAssistantNotifications({
@@ -245,6 +271,7 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
       return true;
     }
     if (pathname === "/api/assistant/spark" && req.method === "POST") {
+      assertAssistantOwnerMutation("请在 Kulo 中修改 Spark Mail 配置。", "请通过受信任的 Kulo 客户端修改 Spark Mail 配置。");
       const body = await readJsonObject(req, 32 * 1024);
       if (typeof body.enabled !== "boolean") {
         throw Object.assign(new Error("缺少 Spark Mail 开关参数。"), { status: 400 });
@@ -254,15 +281,9 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
       return true;
     }
     if (pathname === "/api/assistant/home-assistant" && req.method === "POST") {
+      assertAssistantOwnerMutation("请在 Kulo 中修改 Home Assistant 配置。", "请通过受信任的 Kulo 客户端修改 Home Assistant 配置。");
       const body = await readJsonObject(req, 64 * 1024);
       if (body.deployLocal === true) {
-        assertHttpSameOrigin(ctx, {
-          code: "assistant_origin_required",
-          message: "请在 Kulo 中部署 Home Assistant 容器。",
-        });
-        if (!authority.hasOwnerHubControl) {
-          throw Object.assign(new Error("请通过受信任的 Kulo 客户端在主机上部署 Home Assistant 容器。"), { status: 403 });
-        }
         const deployed = await hub.homeAssistant.deployLocalContainer({
           confirmed: body.confirmed === true,
           installXiaomiHome: body.installXiaomiHome !== false,
@@ -311,6 +332,7 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
       return true;
     }
     if (pathname === "/api/assistant/lark" && req.method === "POST") {
+      assertAssistantOwnerMutation("请在 Kulo 中修改飞书连接配置。", "请通过受信任的 Kulo 客户端修改飞书连接配置。");
       const body = await readJsonObject(req, 32 * 1024);
       if (body.syncNow === true) {
         const sync = await hub.larkConnector.syncNow();
@@ -330,8 +352,24 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
       sendJson(res, 200, await hub.getAssistantItemsSnapshot());
       return true;
     }
+    if (pathname === "/api/assistant/items/dismiss" && req.method === "POST") {
+      assertAssistantItemMutation("请在 Kulo 中执行此提醒操作。", "请通过受信任的 Kulo 客户端管理提醒事项。");
+      const body = await readJsonObject(req, 64 * 1024);
+      const rawItems = body.items;
+      if (
+        !Array.isArray(rawItems) ||
+        rawItems.length === 0 ||
+        rawItems.length > 64 ||
+        !rawItems.every(isAssistantDismissTarget)
+      ) {
+        throw Object.assign(new Error("批量已读参数无效。"), { status: 400, code: "invalid_assistant_dismiss" });
+      }
+      sendJson(res, 200, await hub.assistantCoordinator.dismissItems(rawItems as AssistantDismissTarget[]));
+      return true;
+    }
     const itemActionMatch = /^\/api\/assistant\/items\/([^/]+)\/action$/.exec(pathname);
     if (itemActionMatch && req.method === "POST") {
+      assertAssistantItemMutation("请在 Kulo 中执行此提醒操作。", "请通过受信任的 Kulo 客户端管理提醒事项。");
       const body = await readJsonObject(req, 32 * 1024);
       const itemId = decodeURIComponent(itemActionMatch[1]!);
       const action = body.action;

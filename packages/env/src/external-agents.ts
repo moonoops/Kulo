@@ -3,11 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { EXTERNAL_AGENT_QUOTA_CAPABILITY, EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY, isPersonalExternalAgentKind, isQuotaSupportedExternalAgentKind, redactSensitiveText, validateCustomAcpArgs, type ExternalAgentBinding, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentPendingReportFile, type ExternalAgentQuotaProbeResult, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentRun, type ExternalAgentUncertainReason, type ExternalWorkspaceMode, type WorkerExecutionPhase } from "@kulo/protocol";
+import { EXTERNAL_AGENT_MEMORY_MODE_CAPABILITY, EXTERNAL_AGENT_QUOTA_CAPABILITY, EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY, isPersonalExternalAgentKind, isQuotaSupportedExternalAgentKind, redactSensitiveText, validateCustomAcpArgs, type ExternalAgentBinding, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentPendingReportFile, type ExternalAgentQuotaProbeResult, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentRun, type ExternalAgentUncertainReason, type ExternalWorkspaceMode, type WorkerExecutionPhase } from "@kulo/protocol";
 import { canonicalExecutionPath } from "./isolation.js";
 import { cleanupRecordedExecutions, hasOrphanedExecution } from "./worker-supervisor.js";
 import { ProjectDirectoryRegistry } from "./project-directories.js";
-import { getAcpFlavor, probeGrokQuota, type GrokQuotaCliRunner } from "./external-agent-acp.js";
+import { getAcpFlavor, isAcpAuthRequiredError, probeGrokQuota, type GrokQuotaCliRunner } from "./external-agent-acp.js";
 import { augmentedNativePath, connectAcp, connectCodex, createExternalPipeFactory, externalCapabilities, externalRuntimePaths, nativeAgentEnvironment, primeLoginShellPath, probeCodexQuota, resolveExternalExecutable, type ExternalDriver, type ExternalDriverContext } from "./external-agent-drivers.js";
 import { connectGrok, detectGrok } from "./external-agent-grok.js";
 import { connectClaude, probeClaudeQuota } from "./external-agent-claude.js";
@@ -15,6 +15,7 @@ import { startExternalAgentMcp, type ExternalAgentMcpInvocation, type ExternalAg
 import { isValidQuotaProbeResult, mergeQuotaProbeResults, sanitizeQuotaError } from "./external-agent-quota.js";
 import type { ExternalAgentPipeFactory } from "./external-agent-rpc.js";
 import { isExternalAgentRequest, isExternalAgentResponse } from "./external-agent-validation.js";
+import { preserveWindowsCoreEnv, resolveCrossPlatformSpawn } from "./platform-process.js";
 import { SAFE_HOST_GIT_ARGS, applyStagedChanges, cloneStagedWorkspace, computeStagedDiff, safeHostGitEnv, type WorkspaceManifest } from "./staged-workspace.js";
 
 export { isExternalAgentRequest, isExternalAgentResponse };
@@ -22,6 +23,7 @@ export const EXTERNAL_AGENT_NODE_CAPABILITIES = [
   "external-agents",
   EXTERNAL_AGENT_QUOTA_CAPABILITY,
   EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY,
+  EXTERNAL_AGENT_MEMORY_MODE_CAPABILITY,
 ] as const;
 
 export type ExternalAgentToolHandler=(invocation:ExternalAgentMcpInvocation & {envId:string})=>Promise<unknown>;
@@ -156,7 +158,8 @@ function terminal(state:ExternalAgentRun["state"]):boolean{return["completed","f
 function hash(value:string):string{return createHash("sha256").update(value).digest("hex");}
 async function executableOutput(executable:string,args:string[],timeout=10_000):Promise<string>{
   return new Promise((resolve,reject)=>{
-    const child=spawn(executable,args,{env:{HOME:os.homedir(),PATH:augmentedNativePath(process.env.PATH??"")},stdio:["ignore","pipe","pipe"],windowsHide:true});let output="";
+    const spec=resolveCrossPlatformSpawn(executable,args);
+    const child=spawn(spec.command,spec.args,{env:preserveWindowsCoreEnv({HOME:os.homedir(),PATH:augmentedNativePath(process.env.PATH??"")}),stdio:["ignore","pipe","pipe"],windowsHide:true,...(spec.windowsVerbatimArguments?{windowsVerbatimArguments:true}:{})});let output="";
     const collect=(data:Buffer)=>{output+=data.toString("utf8");if(output.length>64_000){child.kill();reject(new Error("Agent information response exceeds its limit"));}};
     child.stdout.on("data",collect);child.stderr.on("data",collect);
     const timer=setTimeout(()=>{child.kill();reject(new Error("Local agent information request timed out"));},timeout);timer.unref();
@@ -208,7 +211,8 @@ async function detectClaudeAuthStatus(executable:string,signal?:AbortSignal):Pro
     let stdout="";
     let settled=false;
     const finish=(value:ClaudeAuthStatusProbe)=>{if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener("abort",onAbort);resolve(value);};
-    const child=spawn(executable,["auth","status","--json"],{env:nativeAgentEnvironment("claude-code"),stdio:["ignore","pipe","ignore"],windowsHide:true});
+    const spec=resolveCrossPlatformSpawn(executable,["auth","status","--json"]);
+    const child=spawn(spec.command,spec.args,{env:nativeAgentEnvironment("claude-code"),stdio:["ignore","pipe","ignore"],windowsHide:true,...(spec.windowsVerbatimArguments?{windowsVerbatimArguments:true}:{})});
     const onAbort=()=>{try{child.kill();}catch{/* ignore */}finish({loggedIn:null});};
     signal?.addEventListener("abort",onAbort,{once:true});
     const timer=setTimeout(()=>{try{child.kill();}catch{/* ignore */}finish({loggedIn:null});},5_000);timer.unref();
@@ -456,7 +460,7 @@ export class ExternalAgentService {
     if(["dots","muse"].includes(kind))throw new Error(`${kind} is reserved; no supported local task-control interface is configured`);
     if(kind!=="grok-bot"&&!live.stored.executable)throw new Error("Local agent client is not installed or its executable is unavailable");
     if(kind!=="grok-bot"&&(request.taskTools||request.allowSubagents||request.hasConnections||request.memoryEnabled)&&this.#handler&&request.runEpoch>=1){
-      live.mcp=await startExternalAgentMcp({runId:live.stored.run.id,taskId:request.taskId,runEpoch:request.runEpoch,cwd:live.stored.cwd,allowSubagents:Boolean(request.allowSubagents),hasConnections:Boolean(request.hasConnections),memoryEnabled:Boolean(request.memoryEnabled),redact:value=>this.#redact(value),handler:async invocation=>{
+      live.mcp=await startExternalAgentMcp({runId:live.stored.run.id,taskId:request.taskId,runEpoch:request.runEpoch,cwd:live.stored.cwd,allowSubagents:Boolean(request.allowSubagents),hasConnections:Boolean(request.hasConnections),memoryEnabled:Boolean(request.memoryEnabled),...(request.memoryMode?{memoryMode:request.memoryMode}:{}),redact:value=>this.#redact(value),handler:async invocation=>{
         if(this.#closed||this.#live.get(live.stored.run.id)!==live||terminal(live.stored.run.state))throw new Error("External collaboration scope has expired");
         this.#workspace(request);
         try{
@@ -735,7 +739,10 @@ export class ExternalAgentService {
     // No prompt and no provider request: successful initialize is connectivity, not an authentication claim.
     let driver:ExternalDriver|undefined;try{
       const result=value.kind==="codex"?await connectCodex(context,true):value.kind==="claude-code"?await connectClaude(context,true):await connectAcp(context,true);driver=result.driver;detection.models=result.models;detection.authenticated="authenticated" in result&&typeof result.authenticated==="boolean"?result.authenticated:detection.authenticated;
-    }catch(error){detection.error=this.#redact(error instanceof Error?error.message:"Local agent protocol probe failed");}finally{driver?.close();const cleanup=await Promise.all((live.cleanups??[]).map(close=>close().catch(()=>false)));if(cleanup.some(value=>!value))detection.error=detection.error??"Local protocol process cleanup is pending";}
+    }catch(error){
+      if(value.kind!=="codex"&&value.kind!=="claude-code"&&isAcpAuthRequiredError(error))detection.authenticated=false;
+      else detection.error=this.#redact(error instanceof Error?error.message:"Local agent protocol probe failed");
+    }finally{driver?.close();const cleanup=await Promise.all((live.cleanups??[]).map(close=>close().catch(()=>false)));if(cleanup.some(value=>!value))detection.error=detection.error??"Local protocol process cleanup is pending";}
     return detection;
   }
   async #quota(value:ExternalAgentBinding,externalSignal?:AbortSignal):Promise<ExternalAgentQuotaProbeResult>{

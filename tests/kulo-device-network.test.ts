@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createDeviceIpCollector, fallbackNetworkInterfaces, parseDarwinNetworkInterfaces, parseLinuxNetworkInterfaces, parseWindowsNetworkInterfaces, selectDeviceNetworkIps } from "../packages/env/src/device-network.js";
 
 const darwin = `en0: flags=8863<UP,BROADCAST,RUNNING,MULTICAST> mtu 1500
-  inet 10.0.1.10 netmask 0xffffff00
+  inet 10.0.0.10 netmask 0xffffff00
   inet6 fe80::123%en0 prefixlen 64 secured
   inet6 2001:db8:10:1::99 prefixlen 64 autoconf temporary
   inet6 2001:db8:10:1::98 prefixlen 64 dynamic
@@ -13,7 +13,7 @@ const darwin = `en0: flags=8863<UP,BROADCAST,RUNNING,MULTICAST> mtu 1500
   inet6 2001:db8:10:3::10 prefixlen 64 tentative
   status: active
 en8: flags=8863<UP,BROADCAST,RUNNING,MULTICAST> mtu 1500
-  inet 10.0.1.20 netmask 0xffffff00
+  inet 10.0.0.20 netmask 0xffffff00
   inet6 2001:db8:10:1::20 prefixlen 64 autoconf secured
   status: active
 en9: flags=8863<UP,BROADCAST,RUNNING,MULTICAST> mtu 1500
@@ -40,7 +40,7 @@ function nodeAddress(address: string): os.NetworkInterfaceInfo {
 describe("device network address collection", () => {
   it("keeps active Darwin LAN and Tailscale addresses without helper/proxy or temporary addresses", () => {
     expect(selectDeviceNetworkIps(parseDarwinNetworkInterfaces(darwin))).toEqual([
-      "10.0.1.10", "2001:db8:10:1::10", "fd00:db8:1::10", "10.0.1.20", "2001:db8:10:1::20", "100.100.1.10", "fd7a:115c:a1e0::10",
+      "10.0.0.10", "2001:db8:10:1::10", "fd00:db8:1::10", "10.0.0.20", "2001:db8:10:1::20", "100.100.1.10", "fd7a:115c:a1e0::10",
     ]);
   });
 
@@ -141,7 +141,7 @@ bridge100: flags=8863<UP,BROADCAST,RUNNING,MULTICAST> mtu 1500
       { index: 5, address: "2001:db8:1::6", prefixLength: 64, state: "Preferred", suffixOrigin: "Random", skipAsSource: false },
       { index: 5, address: "fd00::5", prefixLength: 64, state: "Deprecated", suffixOrigin: "Manual", skipAsSource: false },
       { index: 5, address: "fd01::5", prefixLength: 64, state: "Preferred", suffixOrigin: "Manual", skipAsSource: true },
-      { index: 6, address: "10.0.1.6", prefixLength: 24, state: "Preferred", suffixOrigin: "Dhcp", skipAsSource: false },
+      { index: 6, address: "10.0.0.6", prefixLength: 24, state: "Preferred", suffixOrigin: "Dhcp", skipAsSource: false },
       { index: 7, address: "172.20.0.1", prefixLength: 24, state: "Preferred", suffixOrigin: "Manual", skipAsSource: false },
       { index: 8, address: "100.100.1.5", prefixLength: 32, state: "Preferred", suffixOrigin: "Manual", skipAsSource: false },
       { index: 8, address: "fd7a:115c:a1e0::5", prefixLength: 128, state: "Preferred", suffixOrigin: "Manual", skipAsSource: false },
@@ -150,15 +150,15 @@ bridge100: flags=8863<UP,BROADCAST,RUNNING,MULTICAST> mtu 1500
   });
 
   it("uses a conservative interface fallback when native metadata is unavailable", () => {
-    const snapshot = { en0: [nodeAddress("10.0.1.5"), nodeAddress("fe80::1"), nodeAddress("2001:db8:1::5"), nodeAddress("2001:db8:1::6")], awdl0: [nodeAddress("fd00::5")], utun4: [nodeAddress("198.18.0.1")], utun5: [nodeAddress("100.100.1.5"), nodeAddress("fd7a:115c:a1e0::5")], utun6: [nodeAddress("100.70.1.5")] };
+    const snapshot = { en0: [nodeAddress("10.0.0.5"), nodeAddress("fe80::1"), nodeAddress("2001:db8:1::5"), nodeAddress("2001:db8:1::6")], awdl0: [nodeAddress("fd00::5")], utun4: [nodeAddress("198.18.0.1")], utun5: [nodeAddress("100.100.1.5"), nodeAddress("fd7a:115c:a1e0::5")], utun6: [nodeAddress("100.70.1.5")] };
     const run = vi.fn(() => { throw Object.assign(new Error("tool unavailable"), { code: "ENOENT" }); });
     const collector = createDeviceIpCollector({ platform: "darwin", interfaces: () => snapshot, run });
-    expect(collector()).toEqual(["10.0.1.5", "2001:db8:1::5", "100.100.1.5", "fd7a:115c:a1e0::5"]);
-    expect(selectDeviceNetworkIps(fallbackNetworkInterfaces("linux", { eth0: [nodeAddress("10.0.1.2")], docker0: [nodeAddress("172.17.0.1")], tun0: [nodeAddress("10.50.0.2")] }))).toEqual(["10.0.1.2"]);
+    expect(collector()).toEqual(["10.0.0.5", "2001:db8:1::5", "100.100.1.5", "fd7a:115c:a1e0::5"]);
+    expect(selectDeviceNetworkIps(fallbackNetworkInterfaces("linux", { eth0: [nodeAddress("10.0.0.2")], docker0: [nodeAddress("172.17.0.1")], tun0: [nodeAddress("10.50.0.2")] }))).toEqual(["10.0.0.2"]);
   });
 
   it("caches native metadata for polling but refreshes after network changes or expiry", () => {
-    let snapshot = { en0: [nodeAddress("10.0.1.10")] };
+    let snapshot = { en0: [nodeAddress("10.0.0.10")] };
     let time = 1_000;
     const run = vi.fn(() => darwin);
     const collector = createDeviceIpCollector({ platform: "darwin", interfaces: () => snapshot, run, now: () => time });
@@ -166,7 +166,7 @@ bridge100: flags=8863<UP,BROADCAST,RUNNING,MULTICAST> mtu 1500
     first.push("bad-caller-mutation");
     expect(collector()).not.toContain("bad-caller-mutation");
     expect(run).toHaveBeenCalledTimes(1);
-    snapshot = { en0: [nodeAddress("10.0.1.11")] };
+    snapshot = { en0: [nodeAddress("10.0.0.11")] };
     collector();
     expect(run).toHaveBeenCalledTimes(2);
     time += 15_001;
@@ -177,7 +177,7 @@ bridge100: flags=8863<UP,BROADCAST,RUNNING,MULTICAST> mtu 1500
   it("falls back for native timeouts and surfaces malformed metadata instead of hiding parser failures", () => {
     const collector = createDeviceIpCollector({ platform: "linux", interfaces: () => ({}), run: () => "not json" });
     expect(() => collector()).toThrow(SyntaxError);
-    const timeout = createDeviceIpCollector({ platform: "linux", interfaces: () => ({ eth0: [nodeAddress("10.0.1.2")] }), run: () => { throw Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }); } });
-    expect(timeout()).toEqual(["10.0.1.2"]);
+    const timeout = createDeviceIpCollector({ platform: "linux", interfaces: () => ({ eth0: [nodeAddress("10.0.0.2")] }), run: () => { throw Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }); } });
+    expect(timeout()).toEqual(["10.0.0.2"]);
   });
 });

@@ -59,6 +59,7 @@ export type ClientToHubMessage =
       replyTo?: ChatReplyReference;
       attachments?: ChatAttachment[];
       topicId?: string;
+      expectedConversationId?: number;
       requestId?: string;
       whenBusy?: "steer" | "followUp";
       targetDeviceId?: string;
@@ -66,11 +67,13 @@ export type ClientToHubMessage =
   | {
       type: "chat.abort";
       topicId?: string;
+      expectedConversationId?: number;
       requestId?: string;
     }
   | {
       type: "chat.retry";
       topicId?: string;
+      expectedConversationId?: number;
       requestId?: string;
     }
   | {
@@ -143,6 +146,7 @@ export type HubToClientMessage =
       supportsPing?: boolean;
       selectionVersion?: number;
       activeTopicId: string;
+      activeConversationId?: number;
       topics: TopicSummary[];
       messages: ChatDisplayItem[];
       topicActivities?: Record<string, TopicActivity>;
@@ -169,12 +173,14 @@ export type HubToClientMessage =
   | {
       type: "hub.live";
       topicId?: string;
+      conversationId?: number;
       selectionVersion?: number;
       live: LiveStreamState;
     }
   | {
       type: "hub.messages";
       topicId?: string;
+      conversationId?: number;
       selectionVersion?: number;
       messages: ChatDisplayItem[];
       historyBefore?: number;
@@ -203,6 +209,10 @@ export type HubToClientMessage =
       settings: KuloSettingsView;
     }
   | {
+      type: "hub.builtin_memory";
+      state: import("./builtin-memory.js").BuiltinMemoryStateView;
+    }
+  | {
       type: "hub.ticket_detail";
       ticket: TicketRecord;
       transcript: ChatDisplayItem[];
@@ -215,6 +225,7 @@ export type HubToClientMessage =
       requestId?: string;
       commandId?: string;
       topicId?: string;
+      conversationId?: number;
       ticketId?: string;
       itemId?: string;
       deduplicated?: boolean;
@@ -231,6 +242,7 @@ export type HubToClientMessage =
       requestId?: string;
       commandId?: string;
       topicId?: string;
+      conversationId?: number;
       ticketId?: string;
     };
 
@@ -252,9 +264,9 @@ export type EnvToHubControlMessage =
   | { type: "env.external_agent_result"; requestId: string; result?: import("./external-agents.js").ExternalAgentResponse; error?: string }
   | { type: "env.external_agent_tool_request"; requestId: string; runId: string; taskId: string; runEpoch: number; cwd: string; allowSubagents: boolean; name: string; args: Record<string, unknown> }
   | { type: "env.computer_preview"; subscriptionId: string; update: ComputerPreviewUpdate }
-  | { type: "env.android_status"; status: import("./android.js").AndroidEnvStatus }
-  | { type: "env.android_result"; requestId: string; result: import("./android.js").AndroidResult }
-  | { type: "env.android_control_result"; requestId: string; result: import("./android.js").AndroidControlResult }
+  | { type: "env.android_status"; status: import("./android-validation.js").AndroidEnvStatus }
+  | { type: "env.android_result"; requestId: string; result: import("./android-validation.js").AndroidResult }
+  | { type: "env.android_control_result"; requestId: string; result: import("./android-validation.js").AndroidControlResult }
   | { type: "env.notification_classify"; request: import("./android-notifications.js").AndroidNotificationClassification }
   | { type: "env.notification_cancel"; requestId: string; bindingId: string }
   | { type: "env.connector_status"; status: ConnectorSourceStatus }
@@ -332,8 +344,8 @@ export type HubToEnvControlMessage =
   | { type: "hub.computer_preview_subscribe"; subscriptionId: string; target: ComputerPreviewTarget }
   | { type: "hub.computer_preview_unsubscribe"; subscriptionId: string }
   | { type: "hub.computer_preview_input"; target: ComputerPreviewTarget; event: ComputerPreviewInputEvent }
-  | { type: "hub.android_request"; requestId: string; budgetMs: number; request: import("./android.js").AndroidRequest }
-  | { type: "hub.android_cancel"; requestId: string; request: import("./android.js").AndroidCancel }
+  | { type: "hub.android_request"; requestId: string; budgetMs: number; request: import("./android-validation.js").AndroidRequest }
+  | { type: "hub.android_cancel"; requestId: string; request: import("./android-validation.js").AndroidCancel }
   | { type: "hub.notification_decision"; result: import("./android-notifications.js").AndroidNotificationClassificationResult }
   | { type: "hub.connector_ack"; ack: ConnectorBatchAck }
   | { type: "hub.connector_config"; config: ConnectorSourceConfig }
