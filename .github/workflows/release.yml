@@ -100,11 +100,16 @@ jobs:
           }
 
       - name: Import macOS signing certificate (when configured)
-        if: matrix.platform == 'darwin' && secrets.KULO_MAC_CERT_P12 != ''
+        if: matrix.platform == 'darwin'
+        shell: bash
         env:
           KULO_MAC_CERT_P12: ${{ secrets.KULO_MAC_CERT_P12 }}
           KULO_MAC_CERT_PASSWORD: ${{ secrets.KULO_MAC_CERT_PASSWORD }}
         run: |
+          if [ -z "${KULO_MAC_CERT_P12:-}" ]; then
+            echo "Skipping macOS signing certificate import (KULO_MAC_CERT_P12 not configured)."
+            exit 0
+          fi
           KEYCHAIN_PATH="$RUNNER_TEMP/kulo-signing.keychain-db"
           KEYCHAIN_PASS="$(openssl rand -hex 24)"
           P12_PATH="$RUNNER_TEMP/kulo-cert.p12"
@@ -119,21 +124,28 @@ jobs:
           echo "KULO_CI_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
       - name: Prepare Windows signing certificate (when configured)
-        if: matrix.platform == 'win32' && secrets.KULO_WIN_CERT_PFX != ''
+        if: matrix.platform == 'win32'
         shell: pwsh
         env:
           KULO_WIN_CERT_PFX_B64: ${{ secrets.KULO_WIN_CERT_PFX }}
         run: |
+          if ([string]::IsNullOrWhiteSpace($env:KULO_WIN_CERT_PFX_B64)) {
+            Write-Host "Skipping Windows signing certificate preparation (KULO_WIN_CERT_PFX not configured)."
+            exit 0
+          }
           $pfxPath = Join-Path $env:RUNNER_TEMP "kulo-win-cert.pfx"
           [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:KULO_WIN_CERT_PFX_B64))
           "KULO_WIN_CERT_PFX_FILE=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Prepare update trust file (when configured)
-        if: secrets.KULO_UPDATE_TRUST_JSON != ''
         shell: bash
         env:
           KULO_UPDATE_TRUST_JSON: ${{ secrets.KULO_UPDATE_TRUST_JSON }}
         run: |
+          if [ -z "${KULO_UPDATE_TRUST_JSON:-}" ]; then
+            echo "Skipping update trust file preparation (KULO_UPDATE_TRUST_JSON not configured)."
+            exit 0
+          fi
           TRUST_PATH="$RUNNER_TEMP/kulo-update-trust.json"
           printf '%s\n' "$KULO_UPDATE_TRUST_JSON" > "$TRUST_PATH"
           echo "KULO_UPDATE_TRUST_FILE=$TRUST_PATH" >> "$GITHUB_ENV"
