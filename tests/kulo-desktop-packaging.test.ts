@@ -550,4 +550,19 @@ describe("macOS app bundle code signing", () => {
     const { stdout: runOut } = await execFileAsync(copyPath, ["kulo-uuid-ok"]);
     expect(runOut.trim()).toBe("kulo-uuid-ok");
   });
+
+  it("wraps all resolved filesystem dynamic imports in desktop scripts with pathToFileURL for Windows ESM compatibility", async () => {
+    const scriptsDir = path.resolve("packages/desktop/scripts");
+    const entries = await fs.readdir(scriptsDir);
+    for (const entry of entries) {
+      if (!entry.endsWith(".mjs")) continue;
+      const source = await fs.readFile(path.join(scriptsDir, entry), "utf8");
+      for (const match of source.matchAll(/\bimport\(\s*([^)]+)\)/g)) {
+        const arg = match[1]!.trim();
+        // Relative or bare package specifiers like "./ensure-electron.mjs" or "@electron/packager" are valid everywhere.
+        if (/^['"`]/.test(arg)) continue;
+        expect(arg, `${entry} dynamic import(${arg}) must use pathToFileURL(...).href for Windows`).toMatch(/^pathToFileURL\(/);
+      }
+    }
+  });
 });

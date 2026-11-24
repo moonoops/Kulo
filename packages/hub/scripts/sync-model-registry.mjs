@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const MODELS_DEV_URL = "https://models.dev/api.json";
 const LITELLM_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -18,7 +18,7 @@ async function fetchJson(url) {
   return res.json();
 }
 
-const { buildNormalizedCatalog } = await import(parserDistPath);
+const { buildNormalizedCatalog } = await import(pathToFileURL(parserDistPath).href);
 
 const [modelsDevRaw, liteLLMRaw] = await Promise.all([
   fetchJson(MODELS_DEV_URL),
