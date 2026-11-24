@@ -496,6 +496,28 @@ describe("Desktop shell cross-platform helpers, Attach Mode & packaging", () => 
     expect(await fsp.readFile(path.join(stage, "node_modules/demo/index.js"), "utf8")).toContain("ok = 1");
   });
 
+  it("preserves workspace state cleanly across transient hoisted nodeLinker during Windows deploy", async () => {
+    const { withPreservedWorkspaceState } = await import("../packages/desktop/scripts/payload.mjs");
+    const root = makeTempDir("win-hoisted-state");
+    await fsp.mkdir(path.join(root, "node_modules"), { recursive: true });
+    await fsp.writeFile(path.join(root, "package.json"), '{"name":"fixture"}\n');
+    await fsp.writeFile(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    await fsp.writeFile(path.join(root, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+    await fsp.writeFile(path.join(root, "node_modules/.modules.yaml"), "hoistedDependencies: {}\n");
+    const stateFile = path.join(root, "node_modules/.pnpm-workspace-state-v1.json");
+    const original = JSON.stringify({ lastValidatedTimestamp: 1, settings: { nodeLinker: "isolated", production: false }, projects: {} });
+    await fsp.writeFile(stateFile, original);
+
+    await withPreservedWorkspaceState(root, async () => {
+      await fsp.writeFile(
+        stateFile,
+        JSON.stringify({ lastValidatedTimestamp: 2, settings: { nodeLinker: "hoisted", production: true }, projects: {} }),
+      );
+    });
+
+    expect(await fsp.readFile(stateFile, "utf8")).toBe(original);
+  });
+
   it("prepares Linux agent-desktop clipboard owner binary at exact unsuffixed path", async () => {
     const root = makeTempDir("linux-agent-cli");
     await fsp.writeFile(path.join(root, "package.json"), '{"name":"env-fixture"}');

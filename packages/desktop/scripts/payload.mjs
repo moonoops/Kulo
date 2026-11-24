@@ -172,7 +172,7 @@ async function readOptional(file) {
 function deploymentIndependentState(state) {
   const { lastValidatedTimestamp: _timestamp, filteredInstall: _filtered, settings, ...rest } = state;
   const stableSettings = { ...settings };
-  for (const key of ["dev", "production", "dedupePeerDependents", "dedupeInjectedDeps", "enableGlobalVirtualStore"]) delete stableSettings[key];
+  for (const key of ["dev", "production", "dedupePeerDependents", "dedupeInjectedDeps", "enableGlobalVirtualStore", "nodeLinker"]) delete stableSettings[key];
   return JSON.stringify({ ...rest, settings: stableSettings });
 }
 
@@ -536,10 +536,13 @@ export async function prepareRuntimePayload(stage, options = {}) {
     throw new Error(`不支持的运行制品构建平台：${targetPlatform}`);
   }
   const pnpmInvocation = resolvePnpmInvocation(sourceRoot);
+  const deployEnv = targetPlatform === "win32"
+    ? { ...process.env, pnpm_config_node_linker: "hoisted" }
+    : process.env;
   await withPreservedWorkspaceState(sourceRoot, async () => {
     try {
       await run(pnpmInvocation.command, [...pnpmInvocation.prefixArgs, "--filter", "@kulo/desktop", "deploy", "--legacy", "--prod", stage], {
-        cwd: sourceRoot, maxBuffer: 8 * 1024 * 1024, windowsHide: true,
+        cwd: sourceRoot, env: deployEnv, maxBuffer: 8 * 1024 * 1024, windowsHide: true,
       });
     } catch (error) {
       throw new Error(["生产依赖部署失败。", error.stdout?.trim(), error.stderr?.trim(), error.message].filter(Boolean).join("\n"), { cause: error });
@@ -596,6 +599,9 @@ export async function prepareRuntimePayload(stage, options = {}) {
   }
   for (const file of ["node_modules/.modules.yaml", "node_modules/.pnpm/lock.yaml", "node_modules/.pnpm-workspace-state-v1.json"]) {
     await fs.rm(path.join(stage, file), { force: true });
+  }
+  if (targetPlatform === "win32") {
+    await fs.rm(path.join(stage, "node_modules/.pnpm"), { recursive: true, force: true });
   }
   for (const requiredFile of [
     "dist/main.js",
