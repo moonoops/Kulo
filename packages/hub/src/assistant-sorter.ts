@@ -40,6 +40,31 @@ interface CoalesceBucket {
   maxTimer: NodeJS.Timeout | null;
 }
 
+function resolveDigestTimestamp(sample: StoredAssistantEvent, now: number): number {
+  if (sample.driverId === "lark-cli" && sample.occurredAt > 0 && sample.occurredAt <= now + 60_000) {
+    return sample.occurredAt;
+  }
+  return now;
+}
+
+function buildEffectiveSample(events: readonly StoredAssistantEvent[]): StoredAssistantEvent {
+  const sample = events[events.length - 1]!;
+  if (events.length === 1) return sample;
+  const anyMentionsMe = events.some((ev) => ev.messageMeta?.mentionsMe === true);
+  const allBackfill = events.every((ev) => ev.messageMeta?.backfill === true);
+  const allDeleted = events.every((ev) => ev.messageMeta?.deleted === true);
+  if (!sample.messageMeta && !anyMentionsMe) return sample;
+  return {
+    ...sample,
+    messageMeta: {
+      ...(sample.messageMeta ?? {}),
+      ...(anyMentionsMe ? { mentionsMe: true } : {}),
+      backfill: allBackfill || undefined,
+      deleted: allDeleted || undefined,
+    },
+  };
+}
+
 export class AssistantSorter {
   readonly #options: AssistantSorterOptions;
   readonly #coalesceMs: number;
@@ -58,9 +83,51 @@ export class AssistantSorter {
     this.#maxCallsPerMinute = Math.max(1, options.maxCallsPerMinute ?? DEFAULT_MAX_CALLS_PER_MINUTE);
   }
 
+  async recoverUndigested(sinceMs?: number): Promise<number> {
+    if (this.#closed) return 0;
+    const undigested = await this.#options.ledger.listUndigestedEvents({
+      ...(sinceMs !== undefined ? { sinceMs } : {}),
+      limit: 100,
+    });
+    if (undigested.length > 0 && !this.#closed) {
+      this.enqueue(undigested);
+    }
+    return undigested.length;
+  }
+
   enqueue(events: readonly StoredAssistantEvent[]): void {
     if (this.#closed || events.length === 0) return;
     for (const event of events) {
+      if (event.direction === "outgoing") {
+        const targetTitle = event.title || event.threadHint || event.appLabel;
+        const outgoingSummary = event.messageMeta?.deleted
+          ? `我在「${targetTitle}」撤回了一条消息`.slice(0, 200)
+          : `我在「${targetTitle}」回复：${event.body.slice(0, 120)}`.slice(0, 200);
+        this.#serial = this.#serial
+          .then(async () => {
+            if (this.#closed) return;
+            await this.#options.ledger.recordDigest(
+              {
+                createdAt: resolveDigestTimestamp(event, Date.now()),
+                appId: event.appId,
+                appLabel: event.appLabel,
+                ...(event.threadHint ? { threadHint: event.threadHint } : {}),
+                category: "message",
+                disposition: "archive",
+                urgency: "low",
+                digest: outgoingSummary,
+                eventIds: [event.id],
+                situationKey: `${event.appId}:${event.threadHint || event.title || "self"}`.slice(0, 120),
+                driverId: event.driverId,
+                direction: "outgoing",
+              },
+              this.#options.redact,
+            );
+          })
+          .catch(() => {});
+        continue;
+      }
+
       if (
         this.#options.echoSuppressor?.consumeIfEcho({
           appId: event.appId,
@@ -86,6 +153,8 @@ export class AssistantSorter {
                 digest: echoSummary,
                 eventIds: [event.id],
                 situationKey: `${event.appId}:${event.threadHint || event.sender || event.title || "echo"}`.slice(0, 120),
+                driverId: event.driverId,
+                ...(event.direction ? { direction: event.direction } : {}),
               },
               this.#options.redact,
             );
@@ -94,7 +163,8 @@ export class AssistantSorter {
         continue;
       }
 
-      const bucketKey = `${event.appId}\0${event.threadHint || event.sender || event.title || "default"}`;
+      const threadPart = event.messageMeta?.threadId ? `\0${event.messageMeta.threadId}` : "";
+      const bucketKey = `${event.appId}\0${event.threadHint || event.sender || event.title || "default"}${threadPart}`;
       let bucket = this.#buckets.get(bucketKey);
       if (!bucket) {
         bucket = {
@@ -174,7 +244,7 @@ export class AssistantSorter {
       const isHomeAssistant = sample.appId === "home-assistant";
       const digest = await this.#options.ledger.recordDigest(
         {
-          createdAt: now,
+          createdAt: resolveDigestTimestamp(sample, now),
           appId: sample.appId,
           appLabel: sample.appLabel,
           ...(sample.threadHint ? { threadHint: sample.threadHint } : {}),
@@ -184,6 +254,8 @@ export class AssistantSorter {
           digest: fallbackSummary,
           eventIds: events.map((e) => e.id),
           situationKey: `${sample.appId}:${sample.threadHint || sample.sender || sample.title || "general"}`.slice(0, 120),
+          driverId: sample.driverId,
+          ...(sample.direction ? { direction: sample.direction } : {}),
         },
         this.#options.redact,
       );
@@ -206,6 +278,10 @@ export class AssistantSorter {
         appId: ev.appId,
         sender: ev.sender ?? ev.title,
         subtitle: ev.subtitle,
+        ...(ev.direction ? { direction: ev.direction } : {}),
+        ...(ev.messageMeta?.mentionsMe ? { mentionsMe: true } : {}),
+        ...(ev.messageMeta?.mentionsAll ? { mentionsAll: true } : {}),
+        ...(ev.messageMeta?.mutedChat ? { mutedChat: true } : {}),
         body: ev.body.slice(0, 600),
         at: new Date(ev.occurredAt).toISOString(),
       });
@@ -245,10 +321,11 @@ export class AssistantSorter {
     }
 
     if (this.#closed) return;
-    const normalized = normalizeSorterDisposition(parsed, sample);
+    const effectiveSample = buildEffectiveSample(events);
+    const normalized = normalizeSorterDisposition(parsed, effectiveSample);
     const saved = await this.#options.ledger.recordDigest(
       {
-        createdAt: Date.now(),
+        createdAt: resolveDigestTimestamp(sample, Date.now()),
         appId: sample.appId,
         appLabel: sample.appLabel,
         ...(sample.threadHint ? { threadHint: sample.threadHint } : {}),
@@ -258,6 +335,8 @@ export class AssistantSorter {
         digest: normalized.digest,
         eventIds: events.map((e) => e.id),
         situationKey: normalized.situationKey,
+        driverId: sample.driverId,
+        ...(sample.direction ? { direction: sample.direction } : {}),
       },
       this.#options.redact,
     );

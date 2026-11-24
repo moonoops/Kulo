@@ -384,6 +384,7 @@ export function createMediaHttpHandler(options: MediaHttpOptions): MediaHttpHand
         if (hit) {
           const thumbTarget: MediaFileTarget = {
             filePath: hit.filePath,
+            expectedSize: hit.size,
             mimeType: hit.mimeType,
             dispositionName: thumbnailFilename(loaded.record.name),
             inline: true,

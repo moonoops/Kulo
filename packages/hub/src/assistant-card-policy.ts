@@ -32,7 +32,7 @@ export const SORTER_SYSTEM_PROMPT = [
   "Summarize the grouped notification events into one concise factual line, classify them, and decide whether the main assistant brain should inspect them.",
   "Rules:",
   "- noise: promotional marketing, automated ads, trivial system/app popups, routine likes/emoji reactions, download/sync/build progress pings.",
-  "- archive (DEFAULT for most events): routine human chat, ordinary work questions without an urgent deadline, normal group discussion, routine schedule previews, and local IDE / AI coding agent / terminal task-completion notifications (e.g. Antigravity, Cursor, VS Code, Xcode, iTerm). Archived digests stay searchable in the ledger without interrupting the right rail.",
+  "- archive (DEFAULT for most events): routine human chat, ordinary work questions without an urgent deadline, normal group discussion, group @all/@所有人 announcements without direct personal action, routine bot/app notifications (机器人通知), user's own outgoing replies, routine schedule previews, and local IDE / AI coding agent / terminal task-completion notifications (e.g. Antigravity, Cursor, VS Code, Xcode, iTerm). Archived digests stay searchable in the ledger without interrupting the right rail.",
   "- notify_brain (STRICT high bar — only truly high-signal matters): imminent meetings starting soon, urgent work/family matters with an explicit deadline/outage/blocker, direct @mentions demanding immediate action or decision, payment/delivery exceptions, account security alerts, or smart-home safety/offline alerts (home-assistant).",
   "Output strict JSON only (no markdown fences) matching:",
   '{"digest":"<=80 chars concise factual summary in Chinese","category":"message|work|schedule|finance|delivery|security|system|noise","disposition":"noise|archive|notify_brain","urgency":"low|normal|high","situationKey":"stable short slug like app:sender_or_topic","title":"<=40 chars concise title"}',
@@ -103,10 +103,27 @@ export function isPassiveDevToolApp(appId: string, appLabel?: string): boolean {
 
 export function normalizeSorterDisposition(
   parsed: SorterParsedResult,
-  sample: Pick<StoredAssistantEvent, "appId" | "appLabel">,
+  sample: Pick<StoredAssistantEvent, "appId" | "appLabel" | "direction" | "messageMeta">,
 ): SorterParsedResult {
+  if (sample.direction === "outgoing") {
+    return { ...parsed, disposition: "archive", urgency: "low" };
+  }
+  if (sample.messageMeta?.deleted) {
+    return parsed.disposition === "notify_brain"
+      ? { ...parsed, disposition: "archive", urgency: "low" }
+      : parsed;
+  }
   if (parsed.disposition !== "notify_brain") return parsed;
   if (sample.appId === "home-assistant") return parsed;
+  if (sample.messageMeta?.backfill) {
+    return { ...parsed, disposition: "archive" };
+  }
+  if (sample.messageMeta?.mutedChat && !sample.messageMeta?.mentionsMe) {
+    return { ...parsed, disposition: "archive" };
+  }
+  if (sample.messageMeta?.mentionsAll && !sample.messageMeta?.mentionsMe) {
+    return { ...parsed, disposition: "archive" };
+  }
   if (parsed.urgency === "low") {
     return { ...parsed, disposition: "archive" };
   }
@@ -255,7 +272,11 @@ export function buildCoordinatorPromptPayload(input: {
     "</untrusted_event>",
     `<untrusted_recent_digests count="${input.recentDigests.length}" truncated="${String(input.truncated)}">`,
     input.recentDigests
-      .map((d) => escapeUntrustedText(`- [${new Date(d.createdAt).toISOString()}] (${d.appLabel}/${d.category}) ${d.digest}`))
+      .map((d) =>
+        escapeUntrustedText(
+          `- [${new Date(d.createdAt).toISOString()}] (${d.appLabel}/${d.category}${d.direction === "outgoing" ? "/本人已回复" : ""}) ${d.digest}`,
+        ),
+      )
       .join("\n"),
     "</untrusted_recent_digests>",
     `<active_cards activePassiveCount="${activePassiveCount}">`,

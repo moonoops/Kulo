@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createMediaHttpHandler, type MediaHttpHandler } from "../packages/hub/src/media-http.js";
-import { MediaThumbnailCache } from "../packages/hub/src/media-thumbnails.js";
+import { isValidWebp, isValidWebpHeader, MediaThumbnailCache, THUMBNAIL_VERSION } from "../packages/hub/src/media-thumbnails.js";
 import { KuloUploadStore } from "../packages/hub/src/uploads.js";
 
 const require = createRequire(import.meta.url);
@@ -36,7 +36,9 @@ function generateImage(args: string[]): Buffer {
 
 function webpInfo(bytes: Buffer): { fmt: string; width: number; height: number; hasAlpha: boolean } {
   expect(bytes.toString("ascii", 0, 4)).toBe("RIFF");
+  expect(bytes.readUInt32LE(4)).toBe(bytes.length - 8);
   expect(bytes.toString("ascii", 8, 12)).toBe("WEBP");
+  expect(isValidWebp(bytes)).toBe(true);
   const fmt = bytes.toString("ascii", 12, 16);
   if (fmt === "VP8 ") {
     return { fmt, width: bytes.readUInt16LE(26) & 0x3fff, height: bytes.readUInt16LE(28) & 0x3fff, hasAlpha: false };
@@ -54,6 +56,13 @@ function webpInfo(bytes: Buffer): { fmt: string; width: number; height: number; 
     };
   }
   throw new Error(`Unexpected WebP chunk format: ${fmt}`);
+}
+
+function assertWebpDecodes(bytes: Buffer): void {
+  execFileSync(BUNDLED_FFMPEG, ["-hide_banner", "-loglevel", "error", "-f", "webp_pipe", "-i", "pipe:0", "-f", "null", "-"], {
+    input: bytes,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
 }
 
 function makeExifRotatedJpeg(width: number, height: number): Buffer {
@@ -143,15 +152,16 @@ describe("media thumbnails and revalidatable HTTP caching", () => {
     expect(thumbRes.headers.get("cache-control")).toBe("private, no-cache");
     expect(thumbRes.headers.get("vary")).toBeNull();
     const thumbEtag = thumbRes.headers.get("etag")!;
-    expect(thumbEtag).toMatch(/^"thumb-v1-[a-f0-9]{64}"$/);
+    expect(thumbEtag).toMatch(new RegExp(`^"thumb-v${THUMBNAIL_VERSION}-[a-f0-9]{64}"$`));
     const thumbBytes = Buffer.from(await thumbRes.arrayBuffer());
     expect(thumbBytes.length).toBeLessThan(largeAlphaPng.length * 0.5);
     const alphaInfo = webpInfo(thumbBytes);
+    assertWebpDecodes(thumbBytes);
     expect(alphaInfo.width).toBe(960);
     expect(alphaInfo.height).toBe(720);
     expect(alphaInfo.hasAlpha).toBe(true);
     // Stored under cache/thumbnails, never polluting uploads/
-    expect(fs.readdirSync(thumbnailsDir!).some((n) => n.startsWith(`${alphaAsset.id}-`) && n.endsWith(".v1.webp"))).toBe(true);
+    expect(fs.readdirSync(thumbnailsDir!).some((n) => n.startsWith(`${alphaAsset.id}-`) && n.endsWith(`.v${THUMBNAIL_VERSION}.webp`))).toBe(true);
     expect(fs.readdirSync(uploadsDir).some((n) => n.endsWith(".webp"))).toBe(false);
 
     // 2. Compliant 304 for thumbnail (no content-length, no mismatched content-type), even AFTER disk eviction
@@ -386,11 +396,11 @@ describe("media thumbnails and revalidatable HTTP caching", () => {
 
     const staleTmp = writeTimed(".att_x.abc123.tmp", 64, 10 * 60_000);
     const freshTmp = writeTimed(".att_y.def456.tmp", 64, 10_000);
-    const orphan = writeTimed("att_missing01-0123456789abcdef.v1.webp", 2048, 120_000);
-    const oldVer = writeTimed(`${live1.id}-0123456789abcdef.v0.webp`, 2048, 120_000);
-    const oldestLive = writeTimed(`${live1.id}-aaaaaaaaaaaaaaaa.v1.webp`, 4000, 300_000);
-    const middleLive = writeTimed(`${live2.id}-bbbbbbbbbbbbbbbb.v1.webp`, 4000, 200_000);
-    const hotLive = writeTimed(`${live3.id}-cccccccccccccccc.v1.webp`, 4000, 10_000);
+    const orphan = writeTimed(`att_missing01-0123456789abcdef.v${THUMBNAIL_VERSION}.webp`, 2048, 120_000);
+    const oldVer = writeTimed(`${live1.id}-0123456789abcdef.v1.webp`, 2048, 120_000);
+    const oldestLive = writeTimed(`${live1.id}-aaaaaaaaaaaaaaaa.v${THUMBNAIL_VERSION}.webp`, 4000, 300_000);
+    const middleLive = writeTimed(`${live2.id}-bbbbbbbbbbbbbbbb.v${THUMBNAIL_VERSION}.webp`, 4000, 200_000);
+    const hotLive = writeTimed(`${live3.id}-cccccccccccccccc.v${THUMBNAIL_VERSION}.webp`, 4000, 10_000);
 
     const cache = new MediaThumbnailCache({
       dir: thumbsDir, uploadsDir, maxCacheBytes: 9000, targetCacheBytes: 6000, now: () => now,
@@ -415,5 +425,96 @@ describe("media thumbnails and revalidatable HTTP caching", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/png");
     expect(fs.existsSync(path.join(root, "cache"))).toBe(false);
+  });
+
+  it("emits valid RIFF sizes for >32 KiB RGB/RGBA WebP thumbnails, self-heals corrupt v1/v2 cache files, and validates odd-length chunks", async () => {
+    // 1. Validation edge cases: riff_size=0, odd-length VP8L chunk padding, VP8X without pixel bitstream
+    const oddChunkPayload = Buffer.alloc(247, 0x22);
+    const oddValid = Buffer.alloc(20 + 247 + 1);
+    oddValid.write("RIFF", 0, "ascii");
+    oddValid.writeUInt32LE(oddValid.length - 8, 4);
+    oddValid.write("WEBP", 8, "ascii");
+    oddValid.write("VP8L", 12, "ascii");
+    oddValid.writeUInt32LE(247, 16);
+    oddChunkPayload.copy(oddValid, 20);
+    expect(isValidWebpHeader(oddValid.subarray(0, 20), oddValid.length)).toBe(true);
+    expect(isValidWebp(oddValid)).toBe(true);
+
+    const zeroRiff = Buffer.from(oddValid);
+    zeroRiff.writeUInt32LE(0, 4);
+    expect(isValidWebpHeader(zeroRiff.subarray(0, 20), zeroRiff.length)).toBe(false);
+    expect(isValidWebp(zeroRiff)).toBe(false);
+
+    const vp8xNoPixels = Buffer.alloc(38);
+    vp8xNoPixels.write("RIFF", 0, "ascii");
+    vp8xNoPixels.writeUInt32LE(30, 4);
+    vp8xNoPixels.write("WEBP", 8, "ascii");
+    vp8xNoPixels.write("VP8X", 12, "ascii");
+    vp8xNoPixels.writeUInt32LE(10, 16);
+    vp8xNoPixels.write("EXIF", 30, "ascii");
+    vp8xNoPixels.writeUInt32LE(0, 34);
+    expect(isValidWebp(vp8xNoPixels)).toBe(false);
+
+    // 2. High-entropy >32 KiB WebP thumbnails (RGB + RGBA) must have exact riff_size and decode cleanly
+    const { origin, store, thumbnailsDir } = await startFixture();
+    const noisyRgbPng = generateImage([
+      "-f", "lavfi", "-i", "nullsrc=s=1400x1050:d=1",
+      "-vf", "geq=r='random(1)*255':g='random(2)*255':b='random(3)*255'",
+      "-frames:v", "1", "noisy-rgb.png",
+    ]);
+    const noisyRgbaPng = generateImage([
+      "-f", "lavfi", "-i", "nullsrc=s=1200x900:d=1",
+      "-vf", "format=rgba,geq=r='random(1)*255':g='random(2)*255':b='random(3)*255':a='if(lt(X,600),128,255)'",
+      "-frames:v", "1", "noisy-rgba.png",
+    ]);
+    const rgbAsset = store.saveUpload({ name: "screenshot-rgb.png", bytes: noisyRgbPng, ownerId: "owner" });
+    const rgbaAsset = store.saveUpload({ name: "screenshot-rgba.png", bytes: noisyRgbaPng, ownerId: "owner" });
+
+    // Pre-seed a corrupted v1 cache file and send its legacy v1 ETag -> must miss 304 fast-path, regenerate v2, then 304 on v2
+    const loadedRgb = store.getUpload(rgbAsset.id)!;
+    const prefix = loadedRgb.record.sha256!.slice(0, 16);
+    fs.mkdirSync(thumbnailsDir!, { recursive: true, mode: 0o700 });
+    const corruptV1Path = path.join(thumbnailsDir!, `${rgbAsset.id}-${prefix}.v1.webp`);
+    fs.writeFileSync(corruptV1Path, zeroRiff);
+    const oldV1Etag = `"thumb-v1-${loadedRgb.record.sha256!}"`;
+
+    const upgradeRes = await fetch(`${origin}/api/uploads/${rgbAsset.id}?variant=thumb`, {
+      headers: { ...bearer, "if-none-match": oldV1Etag },
+    });
+    expect(upgradeRes.status).toBe(200);
+    const v2Etag = upgradeRes.headers.get("etag")!;
+    expect(v2Etag).toBe(`"thumb-v${THUMBNAIL_VERSION}-${loadedRgb.record.sha256!}"`);
+    const rgbThumb = Buffer.from(await upgradeRes.arrayBuffer());
+    expect(rgbThumb.length).toBeGreaterThan(64 * 1024);
+    const rgbInfo = webpInfo(rgbThumb);
+    expect(rgbInfo.width).toBe(960);
+    expect(rgbInfo.height).toBe(720);
+    assertWebpDecodes(rgbThumb);
+
+    const v2Revalidate = await fetch(`${origin}/api/uploads/${rgbAsset.id}?variant=thumb`, {
+      headers: { ...bearer, "if-none-match": v2Etag },
+    });
+    expect(v2Revalidate.status).toBe(304);
+
+    // 3. Large >32 KiB RGBA WebP preserves alpha and exact RIFF length
+    const rgbaRes = await fetch(`${origin}/api/uploads/${rgbaAsset.id}?variant=thumb`, { headers: bearer });
+    expect(rgbaRes.status).toBe(200);
+    const rgbaThumb = Buffer.from(await rgbaRes.arrayBuffer());
+    expect(rgbaThumb.length).toBeGreaterThan(64 * 1024);
+    const rgbaInfo = webpInfo(rgbaThumb);
+    expect(rgbaInfo.width).toBe(960);
+    expect(rgbaInfo.height).toBe(720);
+    expect(rgbaInfo.hasAlpha).toBe(true);
+    assertWebpDecodes(rgbaThumb);
+
+    // 4. Corrupt on-disk v2 cache file is detected by #statExisting, removed, and regenerated transparently
+    const v2Path = path.join(thumbnailsDir!, `${rgbAsset.id}-${prefix}.v${THUMBNAIL_VERSION}.webp`);
+    fs.writeFileSync(v2Path, zeroRiff);
+    const healedRes = await fetch(`${origin}/api/uploads/${rgbAsset.id}?variant=thumb`, { headers: bearer });
+    expect(healedRes.status).toBe(200);
+    const healedBytes = Buffer.from(await healedRes.arrayBuffer());
+    expect(healedBytes.length).toBeGreaterThan(64 * 1024);
+    webpInfo(healedBytes);
+    assertWebpDecodes(healedBytes);
   });
 });

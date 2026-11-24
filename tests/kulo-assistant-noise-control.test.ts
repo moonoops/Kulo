@@ -869,4 +869,238 @@ describe("Assistant right-rail noise control & lifecycle invariants", () => {
       await hub.close();
     }
   });
+
+  it("merges cross-family Feishu cards (com.electron.lark <-> lark:default) and deterministically resolves passive cards on correlated outgoing replies without touching L2 decisions or unthreaded groups", async () => {
+    const stateDir = makeTempDir("coord-lark-family");
+    const ledger = new AssistantLedger({ stateDir });
+    const models = createModels();
+    const registry = createRegistry();
+    const harness = await Harness.open(new MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
+    await harness.commit(async (tx) => {
+      const doc = await tx.doc(AssistantDoc);
+      doc.enabled = true;
+      doc.lark = { enabled: true, selectedProfiles: ["default"] };
+    }, BACKGROUND_CONTEXT);
+
+    const responses: Array<() => string> = [];
+    let llmCalls = 0;
+    const coordinator = new AssistantCoordinator({
+      harness,
+      ledger,
+      ambientModel: {
+        completeZeroToolJson: async () => {
+          llmCalls += 1;
+          const next = responses.shift();
+          if (!next) throw new Error("unexpected_call");
+          return next();
+        },
+      } as never,
+      agentName: () => "Kulo",
+      envDisplayName: () => "MacBook",
+      isForegroundBusy: () => false,
+      redact: (text) => text,
+      createDetachedOrchestratorConversation: async () => ({ id: 888 as never }),
+      onItemsChanged: () => {},
+      onTopicsChanged: () => {},
+    });
+
+    const listItems = async () => {
+      const snap = await harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT);
+      return selectActiveAssistantItems(snap?.items, Date.now());
+    };
+
+    try {
+      const now = Date.now();
+      // 1. Seed a passive Feishu macOS notification card for Alice P2P
+      await harness.commit(async (tx) => {
+        const doc = await tx.doc(AssistantDoc);
+        upsertAssistantCardInDoc(doc, {
+          situationId: situationIdFromKey("com.electron.lark:Alice"),
+          situationKey: "com.electron.lark:Alice",
+          kind: "alert",
+          sourceApp: "com.electron.lark",
+          sourceLabel: "飞书",
+          title: "Alice 询问合同确认",
+          summary: "请尽快确认合同条款",
+          now: now - 10_000,
+        });
+      }, BACKGROUND_CONTEXT);
+      const [notifCard] = await listItems();
+      expect(notifCard).toBeDefined();
+
+      // 2. Structured lark:default escalation referencing the com.electron.lark itemId merges into the same card (no duplicate!)
+      responses.push(() =>
+        JSON.stringify({
+          action: "upsert_card",
+          itemId: notifCard!.id,
+          kind: "alert",
+          title: "Alice 询问合同确认（补充）",
+          summary: "Alice 补充要求今天下班前反馈",
+        }),
+      );
+      coordinator.enqueueEscalation({
+        digest: {
+          id: "d-lark-merge",
+          createdAt: now,
+          appId: "lark:default",
+          appLabel: "飞书",
+          threadHint: "oc_p2p_alice",
+          category: "work",
+          disposition: "notify_brain",
+          urgency: "high",
+          digest: "Alice 催促下班前确认合同",
+          eventIds: ["e-1"],
+          situationKey: "lark:default:oc_p2p_alice",
+          driverId: "lark-cli",
+          direction: "incoming",
+        },
+        events: [],
+      });
+      await coordinator.waitIdle();
+      const afterMerge = await listItems();
+      expect(afterMerge).toHaveLength(1);
+      expect(afterMerge[0]!.id).toBe(notifCard!.id);
+      expect(afterMerge[0]!.title).toContain("补充");
+
+      // 3. Seed an L2 decision card for Alice, a group card for 项目群, and an unrelated Bob card
+      await coordinator.proposeDecisionCard({
+        situationKey: "lark:default:oc_p2p_alice_send",
+        sourceApp: "lark:default",
+        sourceLabel: "飞书",
+        title: "Alice 飞书回复待确认",
+        summary: "已拟好回复草稿",
+        pendingAction: {
+          actionId: "act-l2-alice",
+          kind: "lark_send_reply",
+          label: "确认发送",
+          targetLabel: "oc_p2p_alice",
+          previewText: "好的收到",
+          driverId: "lark-cli",
+          operation: "im.messages.send",
+          params: { profile: "default", chatId: "oc_p2p_alice", text: "好的收到" },
+        },
+      });
+      await harness.commit(async (tx) => {
+        const doc = await tx.doc(AssistantDoc);
+        upsertAssistantCardInDoc(doc, {
+          situationId: situationIdFromKey("lark:default:oc_grp_proj"),
+          situationKey: "lark:default:oc_grp_proj",
+          kind: "alert",
+          sourceApp: "lark:default",
+          sourceLabel: "飞书",
+          title: "项目群：交付确认",
+          summary: "同事A询问交付时间",
+          now: now - 5_000,
+        });
+        upsertAssistantCardInDoc(doc, {
+          situationId: situationIdFromKey("lark:default:oc_p2p_bob"),
+          situationKey: "lark:default:oc_p2p_bob",
+          kind: "fyi",
+          sourceApp: "lark:default",
+          sourceLabel: "飞书",
+          title: "Bob 留言",
+          summary: "明天约饭吗",
+          now: now - 5_000,
+        });
+      }, BACKGROUND_CONTEXT);
+
+      const callsBefore = llmCalls;
+
+      // 4a. Older backfill outgoing reply (occurredAt < card.updatedAt - 60s) must NOT close Alice's newer passive card
+      const oldResolved = await coordinator.resolvePassiveCardsForOutgoingReply([
+        {
+          id: "evt-old",
+          envId: "local",
+          driverId: "lark-cli",
+          streamId: "s",
+          sourceEpoch: "v1",
+          nativeEventId: "lark:im:om_old",
+          eventVersion: "v:0:old",
+          appId: "lark:default",
+          appLabel: "飞书",
+          threadHint: "oc_p2p_alice",
+          title: "Alice",
+          body: "昨天的回复",
+          occurredAt: now - 10 * 60_000,
+          receivedAt: now,
+          direction: "outgoing",
+          messageMeta: { chatId: "oc_p2p_alice", chatType: "p2p", messageId: "om_old" },
+        },
+      ]);
+      expect(oldResolved).toBe(0);
+
+      // 4b. Unthreaded generic outgoing message in 项目群 must NOT blindly close the group card
+      const unthreadedResolved = await coordinator.resolvePassiveCardsForOutgoingReply([
+        {
+          id: "evt-grp-plain",
+          envId: "local",
+          driverId: "lark-cli",
+          streamId: "s",
+          sourceEpoch: "v1",
+          nativeEventId: "lark:im:om_gp",
+          eventVersion: "v:0:gp",
+          appId: "lark:default",
+          appLabel: "飞书",
+          threadHint: "oc_grp_proj",
+          title: "项目群",
+          body: "顺便问下另一个问题",
+          occurredAt: now + 1_000,
+          receivedAt: now + 1_000,
+          direction: "outgoing",
+          messageMeta: { chatId: "oc_grp_proj", chatType: "group", messageId: "om_gp" },
+        },
+      ]);
+      expect(unthreadedResolved).toBe(0);
+
+      // 4c. Correlated P2P reply to Alice + explicit group reply_to in 项目群 resolves BOTH passive cards with ZERO LLM calls,
+      // while preserving Alice's L2 decision card AND Bob's unrelated card!
+      const resolvedCount = await coordinator.resolvePassiveCardsForOutgoingReply([
+        {
+          id: "evt-p2p-reply",
+          envId: "local",
+          driverId: "lark-cli",
+          streamId: "s",
+          sourceEpoch: "v1",
+          nativeEventId: "lark:im:om_p2p_rep",
+          eventVersion: "v:0:pr",
+          appId: "lark:default",
+          appLabel: "飞书",
+          threadHint: "oc_p2p_alice",
+          title: "Alice",
+          body: "合同已确认没问题",
+          occurredAt: now + 2_000,
+          receivedAt: now + 2_000,
+          direction: "outgoing",
+          messageMeta: { chatId: "oc_p2p_alice", chatType: "p2p", messageId: "om_p2p_rep" },
+        },
+        {
+          id: "evt-grp-reply",
+          envId: "local",
+          driverId: "lark-cli",
+          streamId: "s",
+          sourceEpoch: "v1",
+          nativeEventId: "lark:im:om_grp_rep",
+          eventVersion: "v:0:gr",
+          appId: "lark:default",
+          appLabel: "飞书",
+          threadHint: "oc_grp_proj",
+          title: "项目群",
+          body: "交付时间定在周五",
+          occurredAt: now + 3_000,
+          receivedAt: now + 3_000,
+          direction: "outgoing",
+          messageMeta: { chatId: "oc_grp_proj", chatType: "group", messageId: "om_grp_rep", replyToMessageId: "om_q_a" },
+        },
+      ]);
+      expect(resolvedCount).toBe(2);
+      expect(llmCalls).toBe(callsBefore); // strictly zero LLM calls!
+
+      const remaining = await listItems();
+      expect(remaining.map((i) => i.title).sort()).toEqual(["Alice 飞书回复待确认", "Bob 留言"]);
+    } finally {
+      await coordinator.close();
+      await ledger.close();
+      await harness.close(BACKGROUND_CONTEXT);
+    }
+  });
 });

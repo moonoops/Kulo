@@ -3,66 +3,39 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync, backup as sqliteBackup } from "node:sqlite";
 import type { ConnectorEventBatch, RawConnectorEvent } from "@kulo/protocol";
+import type { LarkSyncCursorRecord, LarkSyncCursorStore } from "./connectors/lark-im-sync.js";
+import {
+  buildDigestAppFilterSql,
+  buildFtsTrigramQuery,
+  foldShadowedAssistantDigests,
+  mapDigestRow,
+  mapEventRow,
+  mapHaAutomationBackupRow,
+  mapHaSentinelStateRow,
+  parseAssistantDirection as parseDirection,
+  parseAssistantMessageMeta as parseMessageMeta,
+  sanitizeAssistantMessageMeta as sanitizeMessageMeta,
+  type HaAutomationBackupRow,
+  type HaSentinelStateRow,
+  type StoredAssistantDigest,
+  type StoredAssistantEvent,
+} from "./assistant-digest-query.js";
 
-const SCHEMA_VERSION = 2;
+export type {
+  HaAutomationBackupRow,
+  HaSentinelStateRow,
+  StoredAssistantDigest,
+  StoredAssistantEvent,
+};
+
+const SCHEMA_VERSION = 3;
+const DIGEST_COLS = "id, created_at, app_id, app_label, thread_hint, category, disposition, urgency, digest, event_ids_json, situation_key, driver_id, direction";
+const EVENT_COLS = "id, env_id, driver_id, stream_id, source_epoch, native_event_id, event_version, app_id, app_label, thread_hint, sender, title, subtitle, body, occurred_at, received_at, snapshot_ref, direction, message_meta_json";
 const MAX_AUTOMATION_BACKUPS = 50;
 const RAW_BODY_TTL_MS = 14 * 24 * 60 * 60 * 1_000;
 const DEDUPE_WINDOW_MS = 30_000;
 const SHORT_BODY_DEDUPE_WINDOW_MS = 5_000;
 const SHORT_BODY_MAX_CHARS = 6;
-
-export interface StoredAssistantEvent {
-  id: string;
-  envId: string;
-  driverId: string;
-  streamId: string;
-  sourceEpoch: string;
-  nativeEventId: string;
-  eventVersion: string;
-  appId: string;
-  appLabel: string;
-  threadHint?: string;
-  sender?: string;
-  title: string;
-  subtitle?: string;
-  body: string;
-  occurredAt: number;
-  receivedAt: number;
-  snapshotRef?: string;
-}
-
-export interface HaSentinelStateRow {
-  entityId: string;
-  unavailableSince?: number;
-  offlineAlertedAt?: number;
-  lowBatteryAlertedAt?: number;
-  doorOpenSince?: number;
-  lastCameraTriageAt?: number;
-  updatedAt: number;
-}
-
-export interface HaAutomationBackupRow {
-  id: string;
-  automationId: string;
-  alias: string;
-  previousConfigJson?: string;
-  appliedConfigJson: string;
-  createdAt: number;
-}
-
-export interface StoredAssistantDigest {
-  id: string;
-  createdAt: number;
-  appId: string;
-  appLabel: string;
-  threadHint?: string;
-  category: string;
-  disposition: "noise" | "archive" | "notify_brain";
-  urgency: "low" | "normal" | "high";
-  digest: string;
-  eventIds: string[];
-  situationKey: string;
-}
 
 export interface AssistantLedgerOptions {
   stateDir: string;
@@ -79,19 +52,9 @@ function computeDedupeKey(event: RawConnectorEvent): string {
   const senderNorm = normalizeForDedupe(event.sender ?? event.title).slice(0, 80);
   const threadPart = bodyNorm.length <= SHORT_BODY_MAX_CHARS ? normalizeForDedupe(event.threadHint ?? "") : "";
   return createHash("sha256")
-    .update([event.appId.toLowerCase(), senderNorm, threadPart, bodyNorm].join("\0"))
+    .update([event.appId.toLowerCase(), senderNorm, threadPart, bodyNorm, event.direction ?? ""].join("\0"))
     .digest("hex")
     .slice(0, 32);
-}
-
-function buildFtsTrigramQuery(raw: string): string {
-  const tokens = raw
-    .trim()
-    .split(/\s+/)
-    .map((part) => part.replace(/"/g, "").trim())
-    .filter((part) => part.length >= 3);
-  if (tokens.length === 0) return "";
-  return tokens.map((token) => `"${token}"`).join(" AND ");
 }
 
 export class AssistantLedger {
@@ -240,6 +203,29 @@ export class AssistantLedger {
         );
         CREATE INDEX IF NOT EXISTS idx_ha_auto_backups_created ON ha_automation_backups (created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_ha_auto_backups_auto_id ON ha_automation_backups (automation_id, created_at DESC);
+        PRAGMA user_version = 2;
+        COMMIT;
+      `);
+    }
+    if (currentVersion < 3) {
+      const eventCols = db.prepare("PRAGMA table_info(events)").all() as Array<{ name?: string }>;
+      const digestCols = db.prepare("PRAGMA table_info(digests)").all() as Array<{ name?: string }>;
+      const hasEventCol = (name: string) => eventCols.some((col) => col.name === name);
+      const hasDigestCol = (name: string) => digestCols.some((col) => col.name === name);
+      db.exec(`
+        BEGIN;
+        ${hasEventCol("direction") ? "" : "ALTER TABLE events ADD COLUMN direction TEXT;"}
+        ${hasEventCol("message_meta_json") ? "" : "ALTER TABLE events ADD COLUMN message_meta_json TEXT;"}
+        ${hasDigestCol("driver_id") ? "" : "ALTER TABLE digests ADD COLUMN driver_id TEXT;"}
+        ${hasDigestCol("direction") ? "" : "ALTER TABLE digests ADD COLUMN direction TEXT;"}
+        CREATE INDEX IF NOT EXISTS idx_events_native ON events (stream_id, native_event_id);
+        CREATE TABLE IF NOT EXISTS lark_sync_cursors (
+          account_key TEXT NOT NULL,
+          channel TEXT NOT NULL,
+          record_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (account_key, channel)
+        );
         PRAGMA user_version = ${SCHEMA_VERSION};
         COMMIT;
       `);
@@ -269,9 +255,23 @@ export class AssistantLedger {
         INSERT OR IGNORE INTO events (
           id, env_id, driver_id, stream_id, source_epoch, native_event_id, event_version,
           app_id, app_label, thread_hint, sender, title, subtitle, body,
-          occurred_at, received_at, dedupe_key, snapshot_ref
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          occurred_at, received_at, dedupe_key, snapshot_ref, direction, message_meta_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
+      const findPriorNative = db.prepare(
+        "SELECT id, message_meta_json FROM events WHERE stream_id = ? AND native_event_id = ? AND id != ?",
+      );
+      const markPriorRecalled = db.prepare(
+        "UPDATE events SET body = ?, message_meta_json = ? WHERE id = ?",
+      );
+      const findDigestsByEvent = db.prepare(
+        "SELECT id, app_label, thread_hint, category, event_ids_json FROM digests WHERE event_ids_json LIKE ?",
+      );
+      const updateDigestText = db.prepare("UPDATE digests SET digest = ? WHERE id = ?");
+      const deleteFtsRow = db.prepare("DELETE FROM digests_fts WHERE digest_id = ?");
+      const insertFtsRow = db.prepare(
+        "INSERT INTO digests_fts (digest_id, digest, app_label, thread_hint, category) VALUES (?, ?, ?, ?, ?)",
+      );
 
       db.exec("BEGIN");
       try {
@@ -288,6 +288,8 @@ export class AssistantLedger {
           const threadHint = raw.threadHint !== undefined ? redact(raw.threadHint).slice(0, 256) : undefined;
           const appLabel = (raw.appLabel || raw.appId).slice(0, 200);
           const snapshotRef = typeof raw.snapshotRef === "string" && raw.snapshotRef.trim() ? raw.snapshotRef.trim().slice(0, 160) : undefined;
+          const direction = parseDirection(raw.direction);
+          const messageMeta = raw.messageMeta ? sanitizeMessageMeta(raw.messageMeta) : undefined;
           const dedupeKey = computeDedupeKey({ ...raw, title, subtitle, body, sender, threadHint });
           const shortBody = normalizeForDedupe(body).length <= SHORT_BODY_MAX_CHARS;
           const windowMs = shortBody ? SHORT_BODY_DEDUPE_WINDOW_MS : DEDUPE_WINDOW_MS;
@@ -316,8 +318,35 @@ export class AssistantLedger {
             now,
             dedupeKey,
             snapshotRef ?? null,
+            direction ?? null,
+            messageMeta ? JSON.stringify(messageMeta) : null,
           ).changes;
           if (Number(changes) > 0) {
+            if (messageMeta?.deleted) {
+              const priorRows = findPriorNative.all(batch.streamId, raw.nativeEventId, id) as Array<{ id?: string; message_meta_json?: string | null }>;
+              for (const prior of priorRows) {
+                const priorId = typeof prior.id === "string" ? prior.id : "";
+                if (!priorId) continue;
+                const mergedMeta = { ...(parseMessageMeta(prior.message_meta_json) ?? {}), ...messageMeta, deleted: true };
+                markPriorRecalled.run("[消息已撤回]", JSON.stringify(mergedMeta), priorId);
+                const digestRows = findDigestsByEvent.all(`%"${priorId}"%`) as Array<Record<string, unknown>>;
+                for (const dRow of digestRows) {
+                  let ids: string[] = [];
+                  try {
+                    const parsed = JSON.parse(String(dRow.event_ids_json ?? "[]")) as unknown;
+                    if (Array.isArray(parsed)) ids = parsed.filter((x): x is string => typeof x === "string");
+                  } catch {
+                    ids = [];
+                  }
+                  if (!ids.includes(priorId)) continue;
+                  const digestId = String(dRow.id ?? "");
+                  const scrubbed = `[${appLabel}] ${title || sender || "消息"}：已撤回一条消息`.slice(0, 200);
+                  updateDigestText.run(scrubbed, digestId);
+                  deleteFtsRow.run(digestId);
+                  insertFtsRow.run(digestId, scrubbed, String(dRow.app_label ?? appLabel), String(dRow.thread_hint ?? ""), String(dRow.category ?? "message"));
+                }
+              }
+            }
             inserted.push({
               id,
               envId,
@@ -336,6 +365,8 @@ export class AssistantLedger {
               occurredAt: raw.occurredAt,
               receivedAt: now,
               ...(snapshotRef ? { snapshotRef } : {}),
+              ...(direction ? { direction } : {}),
+              ...(messageMeta ? { messageMeta } : {}),
             });
           } else {
             deduplicatedCount += 1;
@@ -363,8 +394,8 @@ export class AssistantLedger {
       try {
         db.prepare(`
           INSERT INTO digests (
-            id, created_at, app_id, app_label, thread_hint, category, disposition, urgency, digest, event_ids_json, situation_key
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ${DIGEST_COLS}
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           id,
           input.createdAt,
@@ -377,6 +408,8 @@ export class AssistantLedger {
           cleanDigest,
           JSON.stringify(input.eventIds),
           cleanSituationKey,
+          input.driverId ?? null,
+          input.direction ?? null,
         );
         db.prepare(`
           INSERT INTO digests_fts (digest_id, digest, app_label, thread_hint, category)
@@ -405,7 +438,7 @@ export class AssistantLedger {
       const sinceMs = options.sinceMs ?? 0;
       const limit = Math.max(1, Math.min(200, options.limit ?? 60));
       const rows = db.prepare(`
-        SELECT id, created_at, app_id, app_label, thread_hint, category, disposition, urgency, digest, event_ids_json, situation_key
+        SELECT ${DIGEST_COLS}
         FROM digests
         WHERE created_at >= ? ${options.includeNoise ? "" : "AND disposition != 'noise'"}
         ORDER BY created_at DESC
@@ -417,23 +450,30 @@ export class AssistantLedger {
     });
   }
 
-  searchDigests(options: { query?: string; appId?: string; sinceMs?: number; limit?: number } = {}): Promise<StoredAssistantDigest[]> {
+  searchDigests(options: { query?: string; appId?: string; sinceMs?: number; limit?: number; foldShadowedNotifications?: boolean } = {}): Promise<StoredAssistantDigest[]> {
     return this.#enqueue(() => {
       const db = this.#open();
       const limit = Math.max(1, Math.min(50, options.limit ?? 20));
+      const fold = options.foldShadowedNotifications !== false;
+      const fetchLimit = fold ? Math.min(100, limit * 2) : limit;
       const sinceMs = options.sinceMs ?? 0;
       const rawQuery = options.query?.trim() ?? "";
       const appFilter = options.appId?.trim() || undefined;
+      const finalize = (rows: Array<Record<string, unknown>>): StoredAssistantDigest[] => {
+        const mapped = rows.map(mapDigestRow);
+        return fold ? foldShadowedAssistantDigests(mapped, limit) : mapped.slice(0, limit);
+      };
 
       if (!rawQuery) {
+        const filterSql = appFilter ? buildDigestAppFilterSql(appFilter) : undefined;
         const rows = db.prepare(`
-          SELECT id, created_at, app_id, app_label, thread_hint, category, disposition, urgency, digest, event_ids_json, situation_key
+          SELECT ${DIGEST_COLS}
           FROM digests
-          WHERE created_at >= ? ${appFilter ? "AND (app_id = ? OR app_label = ?)" : ""}
+          WHERE created_at >= ? ${filterSql ? `AND ${filterSql.clause}` : ""}
           ORDER BY created_at DESC
           LIMIT ?
-        `).all(...(appFilter ? [sinceMs, appFilter, appFilter, limit] : [sinceMs, limit])) as Array<Record<string, unknown>>;
-        return rows.map(mapDigestRow);
+        `).all(sinceMs, ...(filterSql?.params ?? []), fetchLimit) as Array<Record<string, unknown>>;
+        return finalize(rows);
       }
 
       const terms = rawQuery.split(/\s+/).filter(Boolean).slice(0, 6);
@@ -441,15 +481,17 @@ export class AssistantLedger {
       if (useFts) {
         const ftsExpr = buildFtsTrigramQuery(rawQuery);
         if (ftsExpr) {
+          const filterSql = appFilter ? buildDigestAppFilterSql(appFilter, "d") : undefined;
+          const prefixedCols = DIGEST_COLS.split(", ").map((col) => `d.${col}`).join(", ");
           const rows = db.prepare(`
-            SELECT d.id, d.created_at, d.app_id, d.app_label, d.thread_hint, d.category, d.disposition, d.urgency, d.digest, d.event_ids_json, d.situation_key
+            SELECT ${prefixedCols}
             FROM digests_fts f
             JOIN digests d ON d.id = f.digest_id
-            WHERE digests_fts MATCH ? AND d.created_at >= ? ${appFilter ? "AND (d.app_id = ? OR d.app_label = ?)" : ""}
+            WHERE digests_fts MATCH ? AND d.created_at >= ? ${filterSql ? `AND ${filterSql.clause}` : ""}
             ORDER BY d.created_at DESC
             LIMIT ?
-          `).all(...(appFilter ? [ftsExpr, sinceMs, appFilter, appFilter, limit] : [ftsExpr, sinceMs, limit])) as Array<Record<string, unknown>>;
-          return rows.map(mapDigestRow);
+          `).all(ftsExpr, sinceMs, ...(filterSql?.params ?? []), fetchLimit) as Array<Record<string, unknown>>;
+          return finalize(rows);
         }
       }
 
@@ -460,17 +502,18 @@ export class AssistantLedger {
         const lowered = term.toLowerCase();
         params.push(lowered, lowered, lowered, lowered);
       }
-      if (appFilter) params.push(appFilter, appFilter);
-      params.push(limit);
+      const filterSql = appFilter ? buildDigestAppFilterSql(appFilter) : undefined;
+      if (filterSql) params.push(...filterSql.params);
+      params.push(fetchLimit);
 
       const rows = db.prepare(`
-        SELECT id, created_at, app_id, app_label, thread_hint, category, disposition, urgency, digest, event_ids_json, situation_key
+        SELECT ${DIGEST_COLS}
         FROM digests
-        WHERE created_at >= ? AND ${clauses.join(" AND ")} ${appFilter ? "AND (app_id = ? OR app_label = ?)" : ""}
+        WHERE created_at >= ? AND ${clauses.join(" AND ")} ${filterSql ? `AND ${filterSql.clause}` : ""}
         ORDER BY created_at DESC
         LIMIT ?
       `).all(...params) as Array<Record<string, unknown>>;
-      return rows.map(mapDigestRow);
+      return finalize(rows);
     });
   }
 
@@ -481,32 +524,83 @@ export class AssistantLedger {
       const db = this.#open();
       const placeholders = ids.map(() => "?").join(", ");
       const rows = db.prepare(`
-        SELECT id, env_id, driver_id, stream_id, source_epoch, native_event_id, event_version,
-               app_id, app_label, thread_hint, sender, title, subtitle, body, occurred_at, received_at, snapshot_ref
+        SELECT ${EVENT_COLS}
         FROM events
         WHERE id IN (${placeholders})
         ORDER BY occurred_at ASC
       `).all(...ids) as Array<Record<string, unknown>>;
-      return rows.map((row) => ({
-        id: String(row.id),
-        envId: String(row.env_id),
-        driverId: String(row.driver_id),
-        streamId: String(row.stream_id),
-        sourceEpoch: String(row.source_epoch),
-        nativeEventId: String(row.native_event_id),
-        eventVersion: String(row.event_version),
-        appId: String(row.app_id),
-        appLabel: String(row.app_label),
-        ...(typeof row.thread_hint === "string" ? { threadHint: redact(row.thread_hint) } : {}),
-        ...(typeof row.sender === "string" ? { sender: redact(row.sender) } : {}),
-        title: redact(String(row.title ?? "")),
-        ...(typeof row.subtitle === "string" ? { subtitle: redact(row.subtitle) } : {}),
-        body: redact(String(row.body ?? "")),
-        occurredAt: Number(row.occurred_at),
-        receivedAt: Number(row.received_at),
-        ...(typeof row.snapshot_ref === "string" && row.snapshot_ref ? { snapshotRef: row.snapshot_ref } : {}),
-      }));
+      return rows.map((row) => mapEventRow(row, redact));
     });
+  }
+
+  listUndigestedEvents(options: { sinceMs?: number; limit?: number } = {}): Promise<StoredAssistantEvent[]> {
+    return this.#enqueue(() => {
+      if (!fs.existsSync(this.#dbPath) && !this.#db) return [];
+      const db = this.#open();
+      const sinceMs = options.sinceMs ?? Date.now() - 24 * 60 * 60 * 1_000;
+      const limit = Math.max(1, Math.min(200, options.limit ?? 100));
+      const digestSince = Math.max(0, sinceMs - 24 * 60 * 60 * 1_000);
+      const digestRows = db.prepare("SELECT event_ids_json FROM digests WHERE created_at >= ?").all(digestSince) as Array<{ event_ids_json?: string }>;
+      const digestedIds = new Set<string>();
+      for (const d of digestRows) {
+        try {
+          const parsed = JSON.parse(String(d.event_ids_json ?? "[]")) as unknown;
+          if (Array.isArray(parsed)) {
+            for (const id of parsed) if (typeof id === "string") digestedIds.add(id);
+          }
+        } catch { /* ignore malformed row */ }
+      }
+      const rows = db.prepare(`
+        SELECT ${EVENT_COLS}
+        FROM events
+        WHERE received_at >= ? AND body_pruned_at IS NULL
+        ORDER BY occurred_at ASC
+        LIMIT ?
+      `).all(sinceMs, limit * 2) as Array<Record<string, unknown>>;
+      const identity = (v: string) => v;
+      return rows
+        .filter((row) => !digestedIds.has(String(row.id ?? "")))
+        .slice(0, limit)
+        .map((row) => mapEventRow(row, identity));
+    });
+  }
+
+  getLarkSyncCursor(accountKey: string, channel: "im" | "calendar"): Promise<LarkSyncCursorRecord | undefined> {
+    return this.#enqueue(() => {
+      if (!fs.existsSync(this.#dbPath) && !this.#db) return undefined;
+      const db = this.#open();
+      const row = db.prepare(
+        "SELECT record_json FROM lark_sync_cursors WHERE account_key = ? AND channel = ? LIMIT 1",
+      ).get(accountKey, channel) as { record_json?: string } | undefined;
+      if (typeof row?.record_json !== "string") return undefined;
+      try {
+        const parsed = JSON.parse(row.record_json) as unknown;
+        return parsed && typeof parsed === "object" ? (parsed as LarkSyncCursorRecord) : undefined;
+      } catch {
+        return undefined;
+      }
+    });
+  }
+
+  saveLarkSyncCursor(record: LarkSyncCursorRecord): Promise<void> {
+    return this.#enqueue(() => {
+      const db = this.#open();
+      db.prepare(`
+        INSERT INTO lark_sync_cursors (account_key, channel, record_json, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(account_key, channel) DO UPDATE SET
+          record_json = excluded.record_json,
+          updated_at = excluded.updated_at
+      `).run(record.accountKey, record.channel, JSON.stringify(record), record.updatedAt);
+      this.#onWrite?.();
+    });
+  }
+
+  larkCursorStore(): LarkSyncCursorStore {
+    return {
+      get: (accountKey, channel) => this.getLarkSyncCursor(accountKey, channel),
+      save: (record) => this.saveLarkSyncCursor(record),
+    };
   }
 
   getAllHaSentinelStates(): Promise<HaSentinelStateRow[]> {
@@ -682,52 +776,4 @@ export class AssistantLedger {
       this.#db = null;
     }
   }
-}
-
-function mapHaSentinelStateRow(row: Record<string, unknown>): HaSentinelStateRow {
-  return {
-    entityId: String(row.entity_id),
-    ...(typeof row.unavailable_since === "number" ? { unavailableSince: row.unavailable_since } : {}),
-    ...(typeof row.offline_alerted_at === "number" ? { offlineAlertedAt: row.offline_alerted_at } : {}),
-    ...(typeof row.low_battery_alerted_at === "number" ? { lowBatteryAlertedAt: row.low_battery_alerted_at } : {}),
-    ...(typeof row.door_open_since === "number" ? { doorOpenSince: row.door_open_since } : {}),
-    ...(typeof row.last_camera_triage_at === "number" ? { lastCameraTriageAt: row.last_camera_triage_at } : {}),
-    updatedAt: Number(row.updated_at ?? 0),
-  };
-}
-
-function mapHaAutomationBackupRow(row: Record<string, unknown>): HaAutomationBackupRow {
-  return {
-    id: String(row.id),
-    automationId: String(row.automation_id),
-    alias: String(row.alias ?? ""),
-    ...(typeof row.previous_config_json === "string" ? { previousConfigJson: row.previous_config_json } : {}),
-    appliedConfigJson: String(row.applied_config_json ?? "{}"),
-    createdAt: Number(row.created_at ?? 0),
-  };
-}
-
-function mapDigestRow(row: Record<string, unknown>): StoredAssistantDigest {
-  let eventIds: string[] = [];
-  try {
-    const parsed = JSON.parse(String(row.event_ids_json ?? "[]")) as unknown;
-    if (Array.isArray(parsed)) eventIds = parsed.filter((id): id is string => typeof id === "string");
-  } catch {
-    eventIds = [];
-  }
-  const disp = String(row.disposition ?? "archive");
-  const urgency = String(row.urgency ?? "low");
-  return {
-    id: String(row.id),
-    createdAt: Number(row.created_at),
-    appId: String(row.app_id),
-    appLabel: String(row.app_label),
-    ...(typeof row.thread_hint === "string" ? { threadHint: row.thread_hint } : {}),
-    category: String(row.category ?? "general"),
-    disposition: disp === "noise" || disp === "notify_brain" ? disp : "archive",
-    urgency: urgency === "high" || urgency === "normal" ? urgency : "low",
-    digest: String(row.digest ?? ""),
-    eventIds,
-    situationKey: String(row.situation_key ?? ""),
-  };
 }

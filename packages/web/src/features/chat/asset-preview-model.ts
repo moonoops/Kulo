@@ -28,3 +28,58 @@ export function constrainPreviewPan(pan: PreviewPan, image: PreviewSize, viewpor
     y: limits.y > 0 ? Math.max(-limits.y, Math.min(limits.y, pan.y)) : 0,
   };
 }
+
+export interface AssetImageLoadState {
+  forSrc: string | undefined;
+  useOriginal: boolean;
+  failed: boolean;
+  attempt: number;
+}
+
+export function initialAssetImageLoadState(src: string | undefined): AssetImageLoadState {
+  return { forSrc: src, useOriginal: false, failed: false, attempt: 0 };
+}
+
+export function normalizeAssetImageLoadState(
+  state: AssetImageLoadState,
+  src: string | undefined,
+): AssetImageLoadState {
+  return state.forSrc === src ? state : initialAssetImageLoadState(src);
+}
+
+export function resolveAssetImageDisplaySrc(
+  src: string | undefined,
+  thumbSrc: string | undefined,
+  state: AssetImageLoadState,
+): string | undefined {
+  if (!src) return undefined;
+  const effective = normalizeAssetImageLoadState(state, src);
+  return effective.useOriginal ? src : (thumbSrc ?? src);
+}
+
+export function transitionAssetImageError(
+  state: AssetImageLoadState,
+  src: string | undefined,
+  thumbSrc: string | undefined,
+): { next: AssetImageLoadState; fellBackToOriginal: boolean } {
+  const effective = normalizeAssetImageLoadState(state, src);
+  const hasThumbFallback = Boolean(src && thumbSrc && thumbSrc !== src);
+  if (!effective.useOriginal && hasThumbFallback) {
+    return {
+      next: { forSrc: src, useOriginal: true, failed: false, attempt: effective.attempt },
+      fellBackToOriginal: true,
+    };
+  }
+  return {
+    next: { forSrc: src, useOriginal: effective.useOriginal, failed: true, attempt: effective.attempt },
+    fellBackToOriginal: false,
+  };
+}
+
+export function transitionAssetImageRetry(
+  state: AssetImageLoadState,
+  src: string | undefined,
+): AssetImageLoadState {
+  const effective = normalizeAssetImageLoadState(state, src);
+  return { forSrc: src, useOriginal: false, failed: false, attempt: effective.attempt + 1 };
+}

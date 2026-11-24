@@ -909,9 +909,8 @@ export class KuloHub implements OrchestratorController {
         }, BACKGROUND_CONTEXT);
       },
       redact: redactAssistantText,
-      onEvents: async (profile, events) => {
-        await this.#ingestInternalAssistantEvents("lark-cli", events, `lark:${profile}`);
-      },
+      cursorStore: this.assistantLedger.larkCursorStore(),
+      onEvents: (profile, events) => this.#ingestInternalAssistantEvents("lark-cli", events, `lark:${profile}`),
     });
     this.assistantCoordinator = new AssistantCoordinator({
       harness: this.harness,
@@ -1060,16 +1059,10 @@ export class KuloHub implements OrchestratorController {
             text,
           });
           if (res.ok) {
-            this.assistantEchoSuppressor.recordOutgoing({
-              appId: `lark:${profile}`,
-              body: text,
-              requireSenderMatch: true,
-            });
-            for (const macBundle of ["com.electron.lark", "com.bytedance.lark"]) {
-              this.assistantEchoSuppressor.recordOutgoing({
-                appId: macBundle,
-                body: text,
-              });
+            const selfSenders = this.larkConnector.getSelfSenderAliases(profile);
+            this.assistantEchoSuppressor.recordOutgoing({ appId: `lark:${profile}`, body: text, selfSenders, requireSenderMatch: true });
+            for (const macBundle of ["com.electron.lark", "com.bytedance.feishu", "com.bytedance.lark"]) {
+              this.assistantEchoSuppressor.recordOutgoing({ appId: macBundle, body: text });
             }
           }
           return res;
@@ -2738,6 +2731,7 @@ export class KuloHub implements OrchestratorController {
     await hub.ambientModel.start();
     await hub.homeAssistant.start().catch(() => {});
     await hub.larkConnector.start().catch(() => {});
+    void hub.assistantSorter.recoverUndigested().catch(() => {});
     if (assistantSnap?.enabled) {
       envManager.setConnectorConfig({
         driverId: "macos-notifications",
@@ -4347,8 +4341,8 @@ export class KuloHub implements OrchestratorController {
     driverId: "home-assistant" | "lark-cli",
     events: import("@kulo/protocol").RawConnectorEvent[],
     streamSuffix: string = driverId,
-  ): Promise<void> {
-    if (events.length === 0) return;
+  ): Promise<{ inserted: number; deduplicated: number }> {
+    if (events.length === 0) return { inserted: 0, deduplicated: 0 };
     const redact = (text: string): string => this.connectionManager.redact(redactSensitiveText(text));
     const batch: ConnectorEventBatch = {
       batchId: `${driverId}-${Date.now()}`,
@@ -4358,11 +4352,13 @@ export class KuloHub implements OrchestratorController {
       cursorAfter: String(Date.now()),
       events,
     };
-    const { inserted } = await this.assistantLedger.ingestBatch(this.envManager.localEnvId, batch, redact);
+    const { inserted, deduplicatedCount } = await this.assistantLedger.ingestBatch(this.envManager.localEnvId, batch, redact);
     if (inserted.length > 0) {
       this.assistantSorter.enqueue(inserted);
+      if (inserted.some((ev) => ev.direction === "outgoing")) void this.assistantCoordinator.resolvePassiveCardsForOutgoingReply(inserted).catch(() => {});
       await this.#refreshAssistantActiveFlag(BACKGROUND_CONTEXT);
     }
+    return { inserted: inserted.length, deduplicated: deduplicatedCount };
   }
 
   async configureAssistantNotifications(

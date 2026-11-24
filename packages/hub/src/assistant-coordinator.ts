@@ -295,7 +295,7 @@ export class AssistantCoordinator {
         !isAssistantDecisionItem(priorTarget) &&
         input.digest.appId !== "home-assistant" &&
         priorTarget.sourceApp !== "home-assistant" &&
-        priorTarget.sourceApp === input.digest.appId;
+        isSameAssistantAppFamily(priorTarget.sourceApp, input.digest.appId);
 
       const committed = await this.#host.harness.commit(async (tx) => {
         const doc = await tx.doc(AssistantDoc);
@@ -308,7 +308,7 @@ export class AssistantCoordinator {
           if (!liveTarget) {
             if (doc.situations[priorTarget.situationId]?.status === "dismissed") return null;
           } else {
-            if (isAssistantDecisionItem(liveTarget) || liveTarget.sourceApp !== input.digest.appId) return null;
+            if (isAssistantDecisionItem(liveTarget) || !isSameAssistantAppFamily(liveTarget.sourceApp, input.digest.appId)) return null;
             const mergedKind: AssistantItemKind = liveTarget.kind === "alert" ? "alert" : resolvedKind;
             const mergedSitKey = this.#host.redact(doc.situations[liveTarget.situationId]?.key ?? cleanSitKey).slice(0, 160);
             upsertAssistantCardInDoc(doc, {
@@ -584,6 +584,57 @@ export class AssistantCoordinator {
   }
 
   /**
+   * Zero-LLM deterministic resolution of passive right-rail cards when the user's own
+   * verified outgoing Lark reply arrives for the same P2P chat or explicit group reply/thread.
+   * Never touches L2 `decision` cards or unrelated conversations.
+   */
+  async resolvePassiveCardsForOutgoingReply(
+    events: readonly StoredAssistantEvent[],
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<number> {
+    if (this.#closed || this.#host.canMutateState?.() === false) return 0;
+    const outgoing = events.filter(
+      (ev) => ev.direction === "outgoing" && ev.driverId === "lark-cli" && !ev.messageMeta?.deleted,
+    );
+    if (outgoing.length === 0) return 0;
+
+    const snap = await this.#host.harness.snapshot(AssistantDoc, context);
+    if (!snap || snap.items.length === 0) return 0;
+    const candidateIds = new Set<string>();
+    for (const item of snap.items) {
+      const sit = snap.situations?.[item.situationId];
+      if (outgoing.some((ev) => matchesOutgoingPassiveCard(item, sit?.key, sit?.title, ev))) {
+        candidateIds.add(item.id);
+      }
+    }
+    if (candidateIds.size === 0 || this.#closed || this.#host.canMutateState?.() === false) return 0;
+
+    const committed = await this.#host.harness.commit(async (tx) => {
+      const doc = await tx.doc(AssistantDoc);
+      const ts = Date.now();
+      let resolved = 0;
+      for (const id of candidateIds) {
+        const live = doc.items.find((item) => item.id === id);
+        if (!live) continue;
+        const sit = doc.situations?.[live.situationId];
+        if (!outgoing.some((ev) => matchesOutgoingPassiveCard(live, sit?.key, sit?.title, ev))) continue;
+        if (resolveAssistantItemInDoc(doc, (item) => item.id === id, ts)) {
+          resolved += 1;
+        }
+      }
+      if (resolved === 0) return null;
+      return {
+        resolved,
+        revision: doc.assistantRevision,
+        items: selectActiveAssistantItems(doc.items, ts),
+      };
+    }, context);
+    if (!committed) return 0;
+    this.#host.onItemsChanged(committed.revision, committed.items);
+    return committed.resolved;
+  }
+
+  /**
    * Prunes expired passive reminder cards. Uses a cheap read-only snapshot probe first so idle
    * sweeps incur zero write transactions or revision bumps.
    */
@@ -686,4 +737,45 @@ export class AssistantCoordinator {
     this.#host.onItemsChanged(recovered.revision, recovered.items);
     return recovered.count;
   }
+}
+
+const GENERIC_OUTGOING_MATCH_TITLES = new Set<string>([
+  "飞书",
+  "飞书私聊",
+  "飞书群聊",
+  "私聊",
+  "群聊",
+  "lark",
+  "feishu",
+]);
+
+function matchesOutgoingPassiveCard(
+  item: AssistantItemView,
+  situationKey: string | undefined,
+  situationTitle: string | undefined,
+  ev: StoredAssistantEvent,
+): boolean {
+  if (isAssistantDecisionItem(item)) return false;
+  if (item.sourceApp === "home-assistant") return false;
+  if (!isSameAssistantAppFamily(item.sourceApp, ev.appId)) return false;
+  // Allow 60s tolerance for lark-cli minute-level timestamps; never close newer alerts with older backfill replies.
+  if (ev.occurredAt < item.updatedAt - 60_000) return false;
+
+  const meta = ev.messageMeta;
+  const chatId = (meta?.chatId || ev.threadHint || "").trim().toLowerCase();
+  const titleNorm = ev.title.trim().toLowerCase();
+  const sitKey = (situationKey ?? "").toLowerCase();
+  const cardTitle = item.title.toLowerCase();
+  const sitTitle = (situationTitle ?? "").toLowerCase();
+
+  const matchesChatId = Boolean(chatId && sitKey.includes(chatId));
+  const matchesTitle = Boolean(
+    titleNorm.length >= 2 &&
+      !GENERIC_OUTGOING_MATCH_TITLES.has(titleNorm) &&
+      (cardTitle.includes(titleNorm) || sitTitle.includes(titleNorm) || sitKey.includes(titleNorm)),
+  );
+  if (!matchesChatId && !matchesTitle) return false;
+
+  if (meta?.chatType === "p2p") return true;
+  return Boolean(meta?.replyToMessageId || meta?.threadId);
 }

@@ -259,6 +259,7 @@ export {
   fallbackCoordinatorDecision,
 } from "./assistant-card-policy.js";
 export { AssistantLedger, type StoredAssistantEvent, type StoredAssistantDigest } from "./assistant-ledger.js";
+export { buildDigestAppFilterSql, foldShadowedAssistantDigests } from "./assistant-digest-query.js";
 export { AmbientModelService, loopbackJsonPost } from "./ambient-model-service.js";
 export { AssistantSorter, parseSorterOutput } from "./assistant-sorter.js";
 export { AssistantCoordinator, parseCoordinatorDecision, situationIdFromKey } from "./assistant-coordinator.js";
@@ -343,7 +344,17 @@ export {
   type LarkExecResult,
   type LarkExecRunner,
   type LarkPersistedConfig,
+  type LarkSyncCursorRecord,
+  type LarkSyncCursorStore,
 } from "./connectors/lark-connector.js";
+export {
+  buildImConnectorEvent,
+  extractCalendarEventsFromData,
+  extractImMessagesFromData,
+  parseLarkAuthStatus,
+  parseLarkCliEnvelope,
+  parseLarkTimestampMs,
+} from "./connectors/lark-cli-parsers.js";
 export {
   migrateLegacyLocalReferences,
   type LegacyLocalMigrationResult,

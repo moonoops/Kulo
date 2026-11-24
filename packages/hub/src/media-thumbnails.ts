@@ -7,7 +7,7 @@ import type { LoadedUpload, StoredUploadRecord } from "./uploads.js";
 
 const require = createRequire(import.meta.url);
 
-export const THUMBNAIL_VERSION = 1;
+export const THUMBNAIL_VERSION = 2;
 const THUMB_MAX_EDGE = 960;
 const THUMB_MIN_BYPASS_BYTES = 150 * 1024;
 const MAX_SOURCE_DIMENSION = 16_384;
@@ -80,10 +80,38 @@ function resolveBundledFfmpeg(): string | null {
   }
 }
 
-function isValidWebp(bytes: Buffer): boolean {
-  return bytes.length >= 16 &&
-    bytes.toString("ascii", 0, 4) === "RIFF" &&
-    bytes.toString("ascii", 8, 12) === "WEBP";
+export function isValidWebpHeader(head: Buffer, totalFileSize: number): boolean {
+  if (head.length < 20 || !Number.isSafeInteger(totalFileSize) || totalFileSize < 20 || totalFileSize % 2 !== 0) {
+    return false;
+  }
+  if (head.toString("ascii", 0, 4) !== "RIFF" || head.toString("ascii", 8, 12) !== "WEBP") {
+    return false;
+  }
+  const riffSize = head.readUInt32LE(4);
+  if (riffSize < 12 || riffSize !== totalFileSize - 8) return false;
+  const fourcc = head.toString("ascii", 12, 16);
+  const chunkSize = head.readUInt32LE(16);
+  if (fourcc === "VP8X") return chunkSize === 10 && totalFileSize >= 38;
+  if (fourcc !== "VP8 " && fourcc !== "VP8L") return false;
+  if (chunkSize <= 0) return false;
+  const paddedEnd = 20 + chunkSize + (chunkSize & 1);
+  return paddedEnd <= totalFileSize;
+}
+
+export function isValidWebp(bytes: Buffer): boolean {
+  if (!isValidWebpHeader(bytes, bytes.length)) return false;
+  let offset = 12;
+  let hasBitstream = false;
+  while (offset < bytes.length) {
+    if (offset + 8 > bytes.length) return false;
+    const chunkId = bytes.toString("ascii", offset, offset + 4);
+    const chunkSize = bytes.readUInt32LE(offset + 4);
+    const next = offset + 8 + chunkSize + (chunkSize & 1);
+    if (chunkSize <= 0 || next > bytes.length || next <= offset) return false;
+    if (chunkId === "VP8 " || chunkId === "VP8L") hasBitstream = true;
+    offset = next;
+  }
+  return offset === bytes.length && hasBitstream;
 }
 
 function digestPrefix16(record: StoredUploadRecord): string {
@@ -329,12 +357,30 @@ export class MediaThumbnailCache {
   }
 
   async #statExisting(thumbPath: string, etag: string): Promise<ThumbnailHit | null> {
+    let handle: fs.promises.FileHandle | undefined;
     try {
-      const stat = await fs.promises.lstat(thumbPath);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 16) return null;
+      handle = await fs.promises.open(thumbPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      const stat = await handle.stat();
+      if (!stat.isFile()) return null;
+      if (stat.size < 20) {
+        await handle.close().catch(() => {});
+        handle = undefined;
+        await fs.promises.rm(thumbPath, { force: true }).catch(() => {});
+        return null;
+      }
+      const head = Buffer.alloc(20);
+      const { bytesRead } = await handle.read(head, 0, 20, 0);
+      if (bytesRead < 20 || !isValidWebpHeader(head, stat.size)) {
+        await handle.close().catch(() => {});
+        handle = undefined;
+        await fs.promises.rm(thumbPath, { force: true }).catch(() => {});
+        return null;
+      }
       return { filePath: thumbPath, size: stat.size, etag, mimeType: "image/webp" };
     } catch {
       return null;
+    } finally {
+      await handle?.close().catch(() => {});
     }
   }
 
@@ -447,7 +493,7 @@ export class MediaThumbnailCache {
       "-map", "0:v:0", "-an", "-sn", "-dn", "-frames:v", "1", "-threads", "1",
       "-vf", `scale=w=min(${THUMB_MAX_EDGE}\\,iw):h=min(${THUMB_MAX_EDGE}\\,ih):force_original_aspect_ratio=decrease`,
       "-c:v", "libwebp", "-quality", "80", "-compression_level", "4",
-      "-f", "webp", "pipe:1",
+      "-f", "image2pipe", "pipe:1",
     ];
     return new Promise<TranscodeOutcome>((resolve) => {
       const child = spawn(bin, args, {

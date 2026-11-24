@@ -3,6 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { ChatAttachment, MessagePart } from "@kulo/protocol";
 import { KuloMarkdown, markdownUrlTransform } from "../../kulo-markdown";
 import { AssetImage, AssetImageGallery, resolveImageThumbUrl, safeContentUrl } from "./asset-preview";
+import {
+  initialAssetImageLoadState,
+  resolveAssetImageDisplaySrc,
+  transitionAssetImageError,
+  transitionAssetImageRetry,
+} from "./asset-preview-model";
 import { CodeBlock } from "./code-block";
 import { MessageContent, groupMessageParts, stableUserParts } from "./message-content";
 import { ConnectedMessageContent } from "./connected-message-content";
@@ -97,6 +103,44 @@ describe("chat rich content", () => {
     expect(resolveImageThumbUrl("blob:https://kulo.example/draft")).toBe("blob:https://kulo.example/draft");
     const externalHtml = renderToStaticMarkup(<AssetImage image={{ src: "https://cdn.example.com/photo.png", name: "外链图.png" }} />);
     expect(externalHtml).toContain('src="https://cdn.example.com/photo.png"');
+  });
+
+  it("silently falls back from thumbnail to original once before surfacing error, and resets on retry or src change", () => {
+    const localSrc = "/api/uploads/att_abc123";
+    const localThumb = resolveImageThumbUrl(localSrc);
+    let state = initialAssetImageLoadState(localSrc);
+    expect(resolveAssetImageDisplaySrc(localSrc, localThumb, state)).toBe("/api/uploads/att_abc123?variant=thumb");
+
+    // 1. Thumbnail failure silently switches to original without entering failed state
+    const firstErr = transitionAssetImageError(state, localSrc, localThumb);
+    expect(firstErr.fellBackToOriginal).toBe(true);
+    expect(firstErr.next.failed).toBe(false);
+    expect(firstErr.next.useOriginal).toBe(true);
+    state = firstErr.next;
+    expect(resolveAssetImageDisplaySrc(localSrc, localThumb, state)).toBe("/api/uploads/att_abc123");
+
+    // 2. Original failure surfaces error state
+    const secondErr = transitionAssetImageError(state, localSrc, localThumb);
+    expect(secondErr.fellBackToOriginal).toBe(false);
+    expect(secondErr.next.failed).toBe(true);
+    state = secondErr.next;
+
+    // 3. Retry clears failure, bumps attempt, and starts cleanly from thumbnail with fallback intact
+    state = transitionAssetImageRetry(state, localSrc);
+    expect(state.failed).toBe(false);
+    expect(state.useOriginal).toBe(false);
+    expect(state.attempt).toBe(1);
+    expect(resolveAssetImageDisplaySrc(localSrc, localThumb, state)).toBe("/api/uploads/att_abc123?variant=thumb");
+
+    // 4. Switching image src immediately resets stale fallback/failure state
+    const nextSrc = "/api/uploads/att_def456";
+    expect(resolveAssetImageDisplaySrc(nextSrc, resolveImageThumbUrl(nextSrc), secondErr.next)).toBe("/api/uploads/att_def456?variant=thumb");
+
+    // 5. External and blob URLs have no thumb fallback and surface error immediately
+    const extSrc = "https://cdn.example.com/photo.png";
+    const extErr = transitionAssetImageError(initialAssetImageLoadState(extSrc), extSrc, resolveImageThumbUrl(extSrc));
+    expect(extErr.fellBackToOriginal).toBe(false);
+    expect(extErr.next.failed).toBe(true);
   });
 
   it("preserves legacy user bubbles and renders attachments exactly once", () => {

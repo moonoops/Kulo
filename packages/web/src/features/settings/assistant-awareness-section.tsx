@@ -195,19 +195,30 @@ export function AssistantAwarenessSection({
     : null;
 
   const lark = assistant.lark;
-  const larkReadyCount = lark ? lark.profiles.filter((p) => p.ready).length : 0;
+  const larkReadyProfiles = lark ? lark.profiles.filter((p) => p.ready) : [];
+  const larkReadyCount = larkReadyProfiles.length;
+  const larkHasImPartial = larkReadyProfiles.some((p) => p.im?.coverage === "partial" || p.im?.status === "partial");
+  const larkCalendarScopeMissing = larkReadyProfiles.some(
+    (p) => p.im?.status === "ok" && p.calendar?.status === "missing_scope",
+  );
   const larkStatus: { color: "success" | "warning" | "default"; label: string } | null = lark
     ? !lark.enabled
       ? { color: "default", label: t("未开启", "Off") }
       : !lark.cliAvailable
         ? { color: "warning", label: t("未安装 lark-cli", "lark-cli missing") }
         : larkReadyCount > 0
-          ? {
-              color: "success",
-              label: larkReadyCount > 1
-                ? t(`已连接 · ${larkReadyCount} 个组织`, `Connected · ${larkReadyCount} orgs`)
-                : t("已连接", "Connected"),
-            }
+          ? lark.error
+            ? { color: "warning", label: t("同步异常", "Sync error") }
+            : larkHasImPartial
+              ? { color: "success", label: t("已连接 · 部分会话", "Connected · partial") }
+              : larkCalendarScopeMissing
+                ? { color: "success", label: t("IM 正常 · 日历缺权限", "IM OK · calendar scope") }
+                : {
+                    color: "success",
+                    label: larkReadyCount > 1
+                      ? t(`已连接 · ${larkReadyCount} 个组织`, `Connected · ${larkReadyCount} orgs`)
+                      : t("已连接", "Connected"),
+                  }
           : { color: "warning", label: t("待登录授权", "Sign in required") }
     : null;
 

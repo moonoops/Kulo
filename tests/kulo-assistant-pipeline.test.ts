@@ -163,13 +163,14 @@ describe("AssistantLedger", () => {
 
     await ledger.close();
 
-    // Verify PRAGMA user_version = 2 and future version fails closed.
+    // Verify PRAGMA user_version = 3 and future version fails closed.
     const rawDb = new DatabaseSync(ledger.dbPath);
     const uv = rawDb.prepare("PRAGMA user_version").get() as { user_version: number };
-    expect(uv.user_version).toBe(2);
+    expect(uv.user_version).toBe(3);
     const tables = (rawDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((r) => r.name);
     expect(tables).toContain("ha_sentinel_state");
     expect(tables).toContain("ha_automation_backups");
+    expect(tables).toContain("lark_sync_cursors");
     rawDb.exec("PRAGMA user_version = 99");
     rawDb.close();
 

@@ -15,6 +15,8 @@ import {
   startDevicePeer,
 } from "@kulo/env";
 import { decodeStreamChunk, encodeStreamChunk, KULO_VERSION, type ClusterLocalStatusView, type DevicePeerConfig } from "@kulo/protocol";
+import { createMediaHttpHandler } from "../packages/hub/src/media-http.js";
+import { KuloUploadStore } from "../packages/hub/src/uploads.js";
 import { findRunningDevicePeer } from "../packages/cli/src/device-launch";
 import { DevicePeerInUseError } from "@kulo/env";
 
@@ -806,5 +808,122 @@ describe("joined device local access", () => {
     expect(clearRes.status).toBe(200);
     expect(localCleared).toBe(true);
     expect(upstreamCleared).toBe(true);
+  });
+
+  it("maps read-only browser media cookies strictly to upstream Hub sessions and enforces revocation, scope, and switchHub isolation", async () => {
+    const uploadsDir = path.join(temporary(), "uploads");
+    const store = new KuloUploadStore(uploadsDir);
+    const pngBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
+    const owned = store.saveUpload({ name: "photo.png", mimeType: "image/png", bytes: pngBytes, ownerId: "peer-one" });
+    const otherOwned = store.saveUpload({ name: "private.png", mimeType: "image/png", bytes: pngBytes, ownerId: "other-device" });
+    const htmlArt = store.saveUpload({ name: "demo.html", mimeType: "text/html", bytes: Buffer.from("<h1>ok</h1>"), ownerId: "peer-one" });
+
+    let upstreamSetCookieSeen: string | undefined;
+    const mediaHttp = createMediaHttpHandler({
+      uploads: store,
+      authenticate: (req) => req.headers.authorization === "Bearer client-only-peer-one" ? "peer-one" : undefined,
+      canReadScope: () => false,
+    });
+    cleanup.push(() => mediaHttp.close());
+
+    const hubA = await fakeHub({
+      onRequest(request, response) {
+        const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
+        if (url.pathname === "/api/media/session" || url.pathname.startsWith("/api/uploads")) {
+          const origSetHeader = response.setHeader.bind(response);
+          response.setHeader = ((name: string, value: number | string | readonly string[]) => {
+            if (name.toLowerCase() === "set-cookie") upstreamSetCookieSeen = String(value);
+            return origSetHeader(name, value);
+          }) as typeof response.setHeader;
+          void mediaHttp(request, response, url).then((handled) => {
+            if (!handled && !response.headersSent) response.writeHead(404).end();
+          });
+          return true;
+        }
+        return false;
+      },
+    });
+    const hubB = await fakeHub();
+
+    const peer = await startDevicePeer(peerConfig(hubA.url));
+    cleanup.push(() => peer.close());
+    await peer.ready;
+
+    // 1. Minting media session rejects query-token and requires explicit local Bearer
+    const queryMint = await fetch(`${peer.url}/api/media/session?token=${encodeURIComponent(peer.authToken)}`, { method: "POST" });
+    expect(queryMint.status).toBe(401);
+
+    const mintRes = await fetch(`${peer.url}/api/media/session`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${peer.authToken}`, origin: peer.url },
+    });
+    expect(mintRes.status).toBe(200);
+    const localSetCookie = mintRes.headers.get("set-cookie") ?? "";
+    expect(localSetCookie).toMatch(/^kulo_media=[a-f0-9]{48}; Path=\/api\/uploads\/; HttpOnly; SameSite=Strict; Max-Age=\d+$/);
+    const localCookiePair = localSetCookie.split(";")[0]!;
+    // Local handle must never leak the upstream Hub media session ID
+    expect(upstreamSetCookieSeen).toBeTruthy();
+    expect(localCookiePair).not.toBe(upstreamSetCookieSeen!.split(";")[0]);
+
+    // 2. Browser reads owned attachment (GET, HEAD, Range, /meta, /preview, 304) using ONLY local cookie
+    const imgRes = await fetch(`${peer.url}/api/uploads/${owned.id}`, { headers: { cookie: localCookiePair } });
+    expect(imgRes.status).toBe(200);
+    expect(Buffer.from(await imgRes.arrayBuffer()).equals(pngBytes)).toBe(true);
+    const etag = imgRes.headers.get("etag")!;
+
+    const rangeRes = await fetch(`${peer.url}/api/uploads/${owned.id}`, {
+      headers: { cookie: localCookiePair, range: "bytes=0-7" },
+    });
+    expect(rangeRes.status).toBe(206);
+    expect(Buffer.from(await rangeRes.arrayBuffer()).equals(pngBytes.subarray(0, 8))).toBe(true);
+
+    const metaRes = await fetch(`${peer.url}/api/uploads/${owned.id}/meta`, { headers: { cookie: localCookiePair } });
+    expect(metaRes.status).toBe(200);
+
+    const previewRes = await fetch(`${peer.url}/api/uploads/${htmlArt.id}/preview`, { headers: { cookie: localCookiePair } });
+    expect(previewRes.status).toBe(200);
+    expect(previewRes.headers.get("content-security-policy")).toContain("default-src");
+
+    const notModRes = await fetch(`${peer.url}/api/uploads/${owned.id}`, {
+      headers: { cookie: localCookiePair, "if-none-match": etag },
+    });
+    expect(notModRes.status).toBe(304);
+
+    // 3. Per-attachment ownership is still enforced by Hub (403) without evicting the valid session
+    const forbiddenRes = await fetch(`${peer.url}/api/uploads/${otherOwned.id}`, { headers: { cookie: localCookiePair } });
+    expect(forbiddenRes.status).toBe(403);
+    const stillValid = await fetch(`${peer.url}/api/uploads/${owned.id}`, { headers: { cookie: localCookiePair } });
+    expect(stillValid.status).toBe(200);
+
+    // 4. Media cookie NEVER authorizes writes, management APIs, session self-renewal, or WebSockets
+    for (const [pathname, method] of [
+      ["/api/uploads", "POST"],
+      ["/api/media/session", "POST"],
+      ["/api/devices", "GET"],
+      ["/api/settings", "GET"],
+    ] as const) {
+      const blocked = await fetch(`${peer.url}${pathname}`, { method, headers: { cookie: localCookiePair } });
+      expect(blocked.status).toBe(401);
+    }
+
+    // 5. Upstream Hub revocation immediately invalidates the local handle (proves no device Bearer fallback) and clears cookie
+    mediaHttp.revoke("peer-one");
+    const afterRevoke = await fetch(`${peer.url}/api/uploads/${owned.id}`, {
+      headers: { cookie: localCookiePair, "if-none-match": etag },
+    });
+    expect(afterRevoke.status).toBe(401);
+    expect(afterRevoke.headers.get("set-cookie")).toContain("Max-Age=0");
+
+    // 6. Fresh session minted before switchHub is immediately invalidated on switchHub
+    const mint2 = await fetch(`${peer.url}/api/media/session`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${peer.authToken}`, origin: peer.url },
+    });
+    expect(mint2.status).toBe(200);
+    const cookie2 = (mint2.headers.get("set-cookie") ?? "").split(";")[0]!;
+    expect((await fetch(`${peer.url}/api/uploads/${owned.id}`, { headers: { cookie: cookie2 } })).status).toBe(200);
+
+    peer.switchHub(hubB.url);
+    expect((await fetch(`${peer.url}/api/uploads/${owned.id}`, { headers: { cookie: cookie2 } })).status).toBe(401);
   });
 });

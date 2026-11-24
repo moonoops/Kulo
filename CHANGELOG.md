@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.1.8 (2026-11-24)
+
+修复聊天图片缩略图大于 32 KiB 时的 WebP 封装损坏与 Peer 浏览器媒体会话 Cookie 转发问题，并全面升级飞书（`lark-cli v1.0.100`）增量同步、只读查库工具与跨源助理降噪协同，全程零额外用户配置负担（`v0.1.8`）。
+
+### Chat Image Thumbnails & Peer Read-Only Media Sessions
+
+- **WebP 缩略图修复与磁盘自愈（`@kulo/hub`、`@kulo/web`）**
+  - 将 FFmpeg 缩略图管道封装由 `-f webp pipe:1` 修正为 `-f image2pipe pipe:1`，彻底消除大于 32 KiB 缩略图写入 `riff_size = 0` 导致 Chromium/Electron 解码报「图片无法显示」的缺陷；升级缩略图缓存版本至 `v2` 并实现顶层 RIFF/WebP 校验与损坏文件读取前自动清除重建。
+  - 前端 `AssetImage` 缩略图加载失败时自动静默回退原图一次，并在原图异常或手动重试时自动刷新媒体会话 Cookie 与同步重置切换状态。
+- **Peer 节点浏览器只读媒体会话映射（`@kulo/env`）**
+  - 新增 `PeerMediaSessionStore` 有界会话映射：支持 `POST /api/media/session` 签发独立本地 `HttpOnly` `kulo_media` Cookie，并仅对 `GET/HEAD /api/uploads/:id(/meta|/preview|/view)?` 以 Cookie-only 转发上游 Hub（不携带设备 Bearer），在主脑切换或会话吊销时自动失效清理。
+
+### Feishu / Lark Sync, Read-Only Bridge & Cross-Source Awareness
+
+- **全面适配 `lark-cli v1.0.100` 与 IM 区间增量同步（`@kulo/hub`、`@kulo/protocol`、`@kulo/web`）**
+  - 完整解析 `{ ok, data }` 及 stderr 结构化错误信封与 `auth status --json` 四态诊断，补齐全链路 `--as user` 身份、单飞同步互斥锁与先落盘再推进游标机制；设置页现有飞书状态芯片精准展示分通道健康态。
+  - 新增 IM 区间增量同步（分页断点续传、`message_ids` `mget` 回填、话题回复展平、`missing_scope` 自动降级 `+chat-list` 及权限变更自动回探）、免打扰群差集识别与 2 小时冷启动回补隔离。
+  - 扩展 `kulo_lark_bridge` 支持 `list_chats`、`read_chat`、`search_messages` 只读查询（仅对主对话与话题编排器开放，对设置助手与普通 Worker 硬隔离，保留敏感载荷过滤与体积上限）。
+- **助理账本 v3、Token 节流阀与零 LLM 协同（`@kulo/hub`）**
+  - `assistant.sqlite` 幂等升级至 v3（持久化消息方向、结构化元数据、驱动来源与同步游标），支持撤回消息清洗旧原文与 FTS 摘要、启动未摘要事件恢复、`飞书`/`lark` 家族检索，以及非破坏性读时折叠被 `lark-cli` 覆盖的飞书通知重复摘要。
+  - 本人发出回复零模型调用直接归档事实摘要；免打扰群无 `@我`、历史回补与 `@所有人` 确定性归档不唤醒主模型 Coordinator；同家族飞书卡片自动合并，并在检测到已关联本人回复（私聊或带 `replyToMessageId`/`threadId` 群回复）时零 LLM 自动消解被动提醒卡（严格保护 L2 决策卡与未回复提问）。
+
 ## v0.1.7 (2026-11-24)
 
 重构本机高权执行与低摩擦权限体系（`executionTrustMode: "trusted" | "sandboxed"`），在保留核心态安全底线与向后兼容的前提下，显著降低个人主机研发、工具链调用、电脑操控与内网服务的权限摩擦（`v0.1.7`）。

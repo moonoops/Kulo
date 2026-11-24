@@ -44,6 +44,22 @@ export interface ConnectorSourceConfig {
   mutedApps: string[];
 }
 
+export type AssistantMessageDirection = "incoming" | "outgoing" | "unknown";
+
+export interface AssistantMessageMeta {
+  chatId?: string;
+  chatType?: "p2p" | "group" | "topic";
+  messageId?: string;
+  threadId?: string;
+  replyToMessageId?: string;
+  messagePosition?: string;
+  deleted?: boolean;
+  mentionsMe?: boolean;
+  mentionsAll?: boolean;
+  mutedChat?: boolean;
+  backfill?: boolean;
+}
+
 export interface RawConnectorEvent {
   nativeEventId: string;
   eventVersion: string;
@@ -56,6 +72,10 @@ export interface RawConnectorEvent {
   body: string;
   occurredAt: number;
   fidelity: "notification" | "local-db" | "structured";
+  /** Trusted message direction when verifiable by connector identity (e.g. Lark openId match). */
+  direction?: AssistantMessageDirection;
+  /** Structured message provenance & correlation metadata (chat/thread/reply/recall/mute). */
+  messageMeta?: AssistantMessageMeta;
   /** Optional internal reference to a sanitized temporary snapshot stored by Hub (never user-supplied over /ws/env). */
   snapshotRef?: string;
 }
@@ -259,12 +279,31 @@ export interface HomeAssistantSnapshot {
   migration?: HomeAssistantMigrationAdvice;
 }
 
+export type LarkChannelHealth = "ok" | "partial" | "missing_scope" | "error" | "idle";
+
+export interface LarkChannelDiagnostics {
+  status: LarkChannelHealth;
+  fetchedCount?: number;
+  ingestedCount?: number;
+  deduplicatedCount?: number;
+  pendingCount?: number;
+  coverage?: "complete" | "partial";
+  missingScopes?: string[];
+  note?: string;
+  error?: string;
+}
+
 export interface LarkProfileView {
   name: string;
+  appId?: string;
   brand?: string;
   userName?: string;
+  openId?: string;
   ready: boolean;
+  authState?: "user_ready" | "bot_only" | "keychain_or_token_error" | "cli_error";
   organizationKind?: "personal" | "enterprise" | "unknown";
+  calendar?: LarkChannelDiagnostics;
+  im?: LarkChannelDiagnostics;
   error?: string;
 }
 

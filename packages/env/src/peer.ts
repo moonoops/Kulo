@@ -49,12 +49,12 @@ import {
   buildOfflineJoinedDeviceView,
   buildPeerLocalClusterStatus,
   equalPeerToken,
-  forwardPeerRequestHeaders,
   readPeerBoundedBody,
   readPeerJoinRequest,
   schedulePeerAfterResponse as scheduleAfterResponse,
   startPeerAfterResponse,
 } from "./peer-http-helpers.js";
+import { PeerMediaSessionStore, proxyPeerHttpRequest } from "./peer-media-session.js";
 import { tryServeLocalWebAsset } from "./peer-static.js";
 
 const CLUSTER_AUTH_HEADER = "x-kulo-cluster-auth";
@@ -120,7 +120,6 @@ const equalToken = equalPeerToken;
 const readBoundedBody = readPeerBoundedBody;
 const readPeerJoin = readPeerJoinRequest;
 const startAfterResponse = startPeerAfterResponse;
-const requestHeaders = forwardPeerRequestHeaders;
 
 export interface StartDevicePeerOptions {
   runtimeOwner?: LocalInstanceOwner;
@@ -179,6 +178,7 @@ async function listenDevicePeer(
   const webSockets = new Set<WebSocket>();
   const sockets = new Set<Socket>();
   const activeUpstreams = new Set<http.ClientRequest>();
+  const mediaSessions = new PeerMediaSessionStore();
   let httpAgent = new http.Agent({ keepAlive: true });
   let httpsAgent = new https.Agent({ keepAlive: true });
   const proxyConnectTimeoutMs = options.proxyConnectTimeoutMs ?? DEFAULT_PROXY_CONNECT_TIMEOUT_MS;
@@ -215,6 +215,10 @@ async function listenDevicePeer(
   const isStandbyEnabled = (): boolean => Boolean(standbyHost && currentConfig.standby?.enabled);
 
   const localAuthToken = options.authToken?.trim() || localPeerProxyToken(initialConfig);
+  const isAuthorizedLocalBearer = (request: http.IncomingMessage): boolean => {
+    const bearer = /^Bearer\s+(\S+)$/i.exec(request.headers.authorization ?? "")?.[1];
+    return equalToken(bearer, localAuthToken);
+  };
   const isAuthorizedLocal = (request: http.IncomingMessage, parsed: URL): boolean => {
     const bearer = /^Bearer\s+(\S+)$/i.exec(request.headers.authorization ?? "")?.[1];
     return equalToken(bearer ?? parsed.searchParams.get("token") ?? undefined, localAuthToken);
@@ -425,6 +429,7 @@ async function listenDevicePeer(
   };
 
   const revokeLocalStandby = async (reason: string): Promise<void> => {
+    mediaSessions.invalidateAll();
     standbySyncStatus = undefined;
     if (currentConfig.standby) {
       persistConfigUpdate((prev) => {
@@ -452,6 +457,7 @@ async function listenDevicePeer(
     nextEnvUrl.protocol = activeHub.protocol === "https:" ? "wss:" : "ws:";
     agent.switchHub(nextEnvUrl.toString());
     if (changed) {
+      mediaSessions.invalidateAll();
       // Abort in-flight HTTP proxy requests to the previous primary and flush keep-alive pools
       // so pending calls (such as /api/media/session) immediately fail over to the new primary.
       for (const req of [...activeUpstreams]) {
@@ -1068,7 +1074,12 @@ async function listenDevicePeer(
       response.end(JSON.stringify({ ok: true, version: KULO_VERSION }));
       return;
     }
-    if (target.pathname.startsWith("/api/") && !isAuthorizedLocal(request, target)) {
+    const isMediaSessionPost = request.method === "POST" && target.pathname === "/api/media/session";
+    const localAuthorized = isMediaSessionPost
+      ? isAuthorizedLocalBearer(request) && isLocalControl(request)
+      : isAuthorizedLocal(request, target);
+    const mediaRead = !localAuthorized ? mediaSessions.resolveForRead(request, target.pathname, activeHub.origin) : undefined;
+    if (target.pathname.startsWith("/api/") && !localAuthorized && !mediaRead) {
       response.writeHead(401, { "content-type": "application/json", "cache-control": "no-store" });
       response.end(JSON.stringify({ error: "Unauthorized" }));
       return;
@@ -1174,6 +1185,7 @@ async function listenDevicePeer(
       try {
         const header = request.headers["x-kulo-transition-id"];
         const change = roleTransitions.leave(currentConfig, typeof header === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(header) ? header : undefined);
+        mediaSessions.invalidateAll();
         startAfterResponse(response, change);
       } catch (error) {
         response.writeHead(409, { "content-type": "application/json", "cache-control": "no-store" });
@@ -1193,6 +1205,7 @@ async function listenDevicePeer(
           if (!force && agent.hasActiveExecution) throw Object.assign(new Error("本机正在执行任务，切换主机会中断执行。"), { code: "local_tasks_running" });
         };
         const change = roleTransitions.join(input, checkTasks, id, rootDir ?? currentConfig.rootDir, { config: currentConfig, isSameHub: () => isSameHub(input) });
+        mediaSessions.invalidateAll();
         startAfterResponse(response, change);
       })().catch((error: unknown) => {
         const status = error && typeof error === "object" && "status" in error && typeof error.status === "number" ? error.status : 500;
@@ -1227,6 +1240,7 @@ async function listenDevicePeer(
             return;
           }
           if (upstreamRes.status === 401 || upstreamRes.status === 403) {
+            mediaSessions.invalidateAll();
             response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
             response.end(JSON.stringify(offlineJoinedView("主机已移除此设备或已关闭设备互联，请断开连接以恢复独立运行。", local)));
             return;
@@ -1240,64 +1254,19 @@ async function listenDevicePeer(
       })();
       return;
     }
-    target.searchParams.delete("token");
-    const isHttps = activeHub.protocol === "https:";
-    const transport = isHttps ? https : http;
-    const agentForRequest = isHttps ? httpsAgent : httpAgent;
-    let connectTimer: NodeJS.Timeout | undefined;
-    const clearConnectTimer = () => {
-      if (connectTimer) {
-        clearTimeout(connectTimer);
-        connectTimer = undefined;
-      }
-    };
-    const upstream = transport.request(target, {
-      method: request.method,
-      headers: requestHeaders(request.headers, activeHub, currentConfig.clientToken),
-      agent: agentForRequest,
-    }, (upstreamResponse) => {
-      clearConnectTimer();
-      const headers = { ...upstreamResponse.headers };
-      delete headers["set-cookie"];
-      if (headers.location?.startsWith(activeHub.origin)) {
-        const location = new URL(headers.location);
-        if (location.origin === activeHub.origin) headers.location = `${location.pathname}${location.search}${location.hash}`;
-      }
-      response.writeHead(upstreamResponse.statusCode ?? 502, headers);
-      upstreamResponse.pipe(response);
+    proxyPeerHttpRequest({
+      request,
+      response,
+      target,
+      activeHub,
+      clientToken: currentConfig.clientToken,
+      httpAgent,
+      httpsAgent,
+      activeUpstreams,
+      proxyConnectTimeoutMs,
+      mediaSessions,
+      mediaRead,
     });
-    activeUpstreams.add(upstream);
-    const cleanupUpstream = () => {
-      clearConnectTimer();
-      activeUpstreams.delete(upstream);
-    };
-    upstream.once("close", cleanupUpstream);
-    if (proxyConnectTimeoutMs > 0) {
-      upstream.once("socket", (socket) => {
-        if (!socket.connecting) return;
-        connectTimer = setTimeout(() => {
-          connectTimer = undefined;
-          upstream.destroy(new Error("Upstream connection timed out"));
-        }, proxyConnectTimeoutMs);
-        connectTimer.unref();
-        const connectedEvent = isHttps ? "secureConnect" : "connect";
-        socket.once(connectedEvent, clearConnectTimer);
-        socket.once("error", clearConnectTimer);
-        socket.once("close", clearConnectTimer);
-      });
-    }
-    upstream.on("error", () => {
-      cleanupUpstream();
-      if (response.headersSent) {
-        response.destroy();
-        return;
-      }
-      response.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
-      response.end(JSON.stringify({ error: "无法连接主脑，请检查主脑及网络连接。" }));
-    });
-    request.on("aborted", () => upstream.destroy());
-    response.on("close", () => { if (!response.writableEnded) upstream.destroy(); });
-    request.pipe(upstream);
   });
 
   server.on("connection", (socket) => {
@@ -1545,6 +1514,7 @@ async function listenDevicePeer(
     close() {
       closing ??= (async () => {
         closed = true;
+        mediaSessions.invalidateAll();
         clearInterval(clusterMonitorTimer);
         if (readinessRetry) clearTimeout(readinessRetry);
         await listenerTransition.catch(() => {});

@@ -1,10 +1,24 @@
 import { translate as tr, useI18n } from "../../kulo-i18n";
 import { Button, Link, Modal } from "@heroui/react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useCallback, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import type { ChatAttachment } from "@kulo/protocol";
-import { resolveAssetUrl } from "../../kulo-api";
+import { ensureMediaSession, resolveAssetUrl } from "../../kulo-api";
 import { KuloIcon } from "../../kulo-icon";
-import { constrainPreviewPan, constrainPreviewScale, fitPreviewScale, MAX_PREVIEW_SCALE, previewPanLimits, type PreviewPan, type PreviewSize } from "./asset-preview-model";
+import {
+  constrainPreviewPan,
+  constrainPreviewScale,
+  fitPreviewScale,
+  initialAssetImageLoadState,
+  MAX_PREVIEW_SCALE,
+  normalizeAssetImageLoadState,
+  previewPanLimits,
+  resolveAssetImageDisplaySrc,
+  transitionAssetImageError,
+  transitionAssetImageRetry,
+  type AssetImageLoadState,
+  type PreviewPan,
+  type PreviewSize,
+} from "./asset-preview-model";
 import "./chat-content.css";
 
 export interface ImagePreviewSource {
@@ -53,25 +67,50 @@ export function AssetImage({
   count?: number;
 }) {
   useI18n();
-  const [failed, setFailed] = useState(false);
-  const [attempt, setAttempt] = useState(0);
-  const [preview, setPreview] = useState<PreviewableImage | null>(null);
   const src = safeContentUrl(image.src, true);
-  const displaySrc = src ? resolveImageThumbUrl(src) : undefined;
-  useEffect(() => { setFailed(false); setAttempt(0); }, [image.src]);
+  const thumbSrc = src ? resolveImageThumbUrl(src) : undefined;
+  const [loadState, setLoadState] = useState<AssetImageLoadState>(() => initialAssetImageLoadState(src));
+  const [preview, setPreview] = useState<PreviewableImage | null>(null);
+  const activeSrcRef = useRef(src);
+  activeSrcRef.current = src;
+  useLayoutEffect(() => {
+    setLoadState((current) => (current.forSrc === src ? current : initialAssetImageLoadState(src)));
+  }, [src]);
+  const effective = normalizeAssetImageLoadState(loadState, src);
+  const displaySrc = resolveAssetImageDisplaySrc(src, thumbSrc, effective);
+  const isLocalUpload = Boolean(src && src.startsWith("/api/uploads/"));
+  const handleError = () => {
+    const outcome = transitionAssetImageError(effective, src, thumbSrc);
+    setLoadState(outcome.next);
+    if (!outcome.fellBackToOriginal && isLocalUpload) {
+      void ensureMediaSession(true).catch(() => {});
+    }
+  };
+  const handleRetry = () => {
+    const targetSrc = src;
+    const applyRetry = () => {
+      if (activeSrcRef.current !== targetSrc) return;
+      setLoadState((current) => transitionAssetImageRetry(current, targetSrc));
+    };
+    if (isLocalUpload) {
+      void ensureMediaSession(true).catch(() => undefined).finally(applyRetry);
+      return;
+    }
+    applyRetry();
+  };
   return <span className="kulo-chat-image">
-    {displaySrc && !failed ? <Button
+    {displaySrc && !effective.failed ? <Button
       aria-label={tr(`预览图片：${image.name}`, `Preview image: ${image.name}`)}
       className="kulo-chat-image-trigger"
       variant="ghost"
       onPress={() => onPreviewImage ? onPreviewImage(image) : setPreview(image)}
     >
-      <img key={attempt} src={displaySrc} alt={image.name} width={image.width} height={image.height} loading="lazy" decoding="async" onError={() => setFailed(true)} />
+      <img key={`${displaySrc}:${effective.attempt}`} src={displaySrc} alt={image.name} width={image.width} height={image.height} loading="lazy" decoding="async" onError={handleError} />
       {count !== undefined && count > 0 && <span className="kulo-chat-image-count">+{count}</span>}
     </Button> : <span className="kulo-chat-image-error" role="status">
       <KuloIcon name="image" size={24} />
       <span>{tr("图片无法显示", "Image unavailable")}</span>
-      {src && <Button size="sm" variant="secondary" onPress={() => { setFailed(false); setAttempt((n) => n + 1); }}>{tr("重试", "Retry")}</Button>}
+      {src && <Button size="sm" variant="secondary" onPress={handleRetry}>{tr("重试", "Retry")}</Button>}
     </span>}
     {!onPreviewImage && <AssetPreview image={preview} onClose={() => setPreview(null)} />}
   </span>;
@@ -212,7 +251,11 @@ export function AssetPreview({ image, onClose }: {
                 <img key={`${src}:${attempt}`} className="kulo-chat-preview-image" src={src} alt={current?.name ?? tr("图片", "Image")} draggable={false}
                   data-ready={ready || undefined} style={{ width: natural?.width, height: natural?.height, transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px)) scale(${effectiveScale})` }}
                   onLoad={(event) => { setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight }); setLoaded(true); }}
-                  onError={() => { setFailed(true); setLoaded(false); }} />
+                  onError={() => {
+                    setFailed(true);
+                    setLoaded(false);
+                    if (src?.startsWith("/api/uploads/")) void ensureMediaSession(true).catch(() => {});
+                  }} />
                 {!ready && <span role="status">{tr("加载中…", "Loading…")}</span>}
               </> : <span role="status">{tr("图片无法显示", "Image unavailable")}</span>}
             </div>
@@ -223,7 +266,11 @@ export function AssetPreview({ image, onClose }: {
               <Button size="sm" variant="secondary" aria-label={tr("下一张图片", "Next image")} onPress={() => move(1)}><KuloIcon name="chevron-right" size={16} /></Button>
             </div>}
             <div className="kulo-chat-preview-tools" role="group" aria-label={tr("图片缩放", "Image zoom")}>
-              {src && failed && <Button size="sm" variant="secondary" onPress={() => { setFailed(false); setAttempt((value) => value + 1); }}>{tr("重试", "Retry")}</Button>}
+              {src && failed && <Button size="sm" variant="secondary" onPress={() => {
+                const retry = () => { setFailed(false); setAttempt((value) => value + 1); };
+                if (src.startsWith("/api/uploads/")) void ensureMediaSession(true).catch(() => undefined).finally(retry);
+                else retry();
+              }}>{tr("重试", "Retry")}</Button>}
               <Button ref={zoomOutRef} size="sm" variant="ghost" isIconOnly aria-label={tr("缩小图片", "Zoom out")} isDisabled={!ready || effectiveScale <= Math.min(fitScale, 0.1)} onPress={() => setZoom(effectiveScale / 1.25)}><span aria-hidden="true">−</span></Button>
               <output className="kulo-chat-preview-scale" aria-label={tr("图片缩放比例", "Image zoom level")}>{ready ? `${new Intl.NumberFormat(locale, { maximumFractionDigits: effectiveScale < 0.01 ? 2 : 0 }).format(effectiveScale * 100)}%` : "—"}</output>
               <Button ref={zoomInRef} size="sm" variant="ghost" isIconOnly aria-label={tr("放大图片", "Zoom in")} isDisabled={!ready || effectiveScale >= MAX_PREVIEW_SCALE} onPress={() => setZoom(effectiveScale * 1.25)}><KuloIcon name="add" size={18} /></Button>
