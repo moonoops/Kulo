@@ -1,12 +1,16 @@
 import path from "node:path";
 import { ROOT_CONVERSATION_ID, type EntryRecord } from "@earendil-works/pi-durable";
 import {
+  LEGACY_MIGRATION_EXECUTION_TRUST_MODE,
   externalClientConnectionId,
   isEffectiveExternalReadOnly,
   isPersonalExternalAgentKind,
+  isWorkerEnvReady,
+  resolveEffectiveExecutionMode,
   type AgentAssignment,
   type AgentDispatchIntent,
   type EnvNodeDescriptor,
+  type ExecutionTrustMode,
   type ExternalAgentBinding,
   type ExternalClientConnection,
   type ExternalWorkspaceMode,
@@ -249,14 +253,16 @@ export function resolveDispatchAgentAndEnv(input: {
   activeLanguage?: KuloLanguage;
   getEnvDescriptor: (id: string) => EnvNodeDescriptor | undefined;
   isLocalEnv: (id: string) => boolean;
+  executionTrustMode?: ExecutionTrustMode;
   pickDefaultWorkerEnvId: () => string;
 }): DispatchAgentEnvPlan {
   const {
     params, domain, project, modelDispatch, recoveryTicket, originTopic, inputs, sender, dispatchSource,
-    envs, localEnvId, localEnv, activeRoles, activeExternalClients, activeLanguage, getEnvDescriptor, isLocalEnv, pickDefaultWorkerEnvId,
+    envs, localEnvId, localEnv, activeRoles, activeExternalClients, activeLanguage, getEnvDescriptor, isLocalEnv, executionTrustMode, pickDefaultWorkerEnvId,
   } = input;
   const { fixedTargetId, fixedTarget, proposedEnv, namedEnvResolution, namedEnv, namedAgent, executionDomain, androidDeviceIds } = domain;
-  const localReady = Boolean(localEnv?.online && hasWorkerIsolation(localEnv));
+  const trustMode = executionTrustMode ?? LEGACY_MIGRATION_EXECUTION_TRUST_MODE;
+  const localReady = Boolean(localEnv?.online && isWorkerEnvReady(localEnv, trustMode, { isLocal: true }));
 
   if (project && namedEnvResolution?.source === "current" && namedEnv !== project.deviceId) {
     throw new ProjectError(409, "project_binding_conflict", "消息中指定的设备与项目所属设备不同，请核对实际目标。");
@@ -337,7 +343,7 @@ export function resolveDispatchAgentAndEnv(input: {
       explicitAgentDeviceId: explicitAgentDevice, externalBindingDeviceId: externalBinding?.envId,
       recoveryTicket, sourceEnvId: sourceEnv, sourceRootDir, proposedEnvId: proposedEnv,
       targetScope: params.targetScope, userMessage: sender.text, goal: params.goal, scope: params.scope,
-      localEnv, pickFallbackEnvId: pickDefaultWorkerEnvId,
+      localEnv, executionTrustMode: trustMode, pickFallbackEnvId: pickDefaultWorkerEnvId,
     });
     if (resolved.conflictWithSource) {
       throw new ProjectError(409, "source_device_conflict", `该消息默认在「${sender.source?.name}」上处理。请省略 env_id，或根据用户明确指定的设备重新派单。`);
@@ -379,6 +385,7 @@ export interface ResolvedDispatchWorkspace {
   isReadOnly: boolean;
   builtInWorkspaceMode?: ExternalWorkspaceMode;
   externalWorkspaceMode?: ExternalWorkspaceMode;
+  effectiveExecutionMode: ExecutionTrustMode;
   nativeThinking?: string;
   providerOverride?: string;
   modelOverride?: string;
@@ -397,14 +404,18 @@ export function resolveDispatchWorkspaceAndModel(input: {
   sender: ReturnType<typeof chatRoutingData>;
   envs: readonly EnvNodeDescriptor[];
   getEnvDescriptor: (id: string) => EnvNodeDescriptor | undefined;
+  isLocalEnv?: (id: string) => boolean;
+  executionTrustMode?: ExecutionTrustMode;
   activeExternalClients?: Readonly<Record<string, ExternalClientConnection>>;
   defaultProvider?: string;
   defaultModel: string;
   defaultThinkingLevel: ThinkingEffort;
 }): ResolvedDispatchWorkspace {
-  const { params, domain, plan, project, reviewTarget, existingState, sender, envs, getEnvDescriptor, activeExternalClients, defaultProvider, defaultModel, defaultThinkingLevel } = input;
+  const { params, domain, plan, project, reviewTarget, existingState, sender, envs, getEnvDescriptor, isLocalEnv, executionTrustMode, activeExternalClients, defaultProvider, defaultModel, defaultThinkingLevel } = input;
   const { fixedTargetId, fixedTarget, proposedEnv, executionDomain, androidDeviceIds } = domain;
   const { routing, rolePreset, externalBinding, targetEnvId, sourceEnv } = plan;
+  const hubTrustMode = executionTrustMode ?? LEGACY_MIGRATION_EXECUTION_TRUST_MODE;
+  const targetIsLocal = Boolean(isLocalEnv?.(targetEnvId) || targetEnvId === "local");
 
   if (project && proposedEnv && proposedEnv !== project.deviceId) {
     throw new ProjectError(400, "project_binding_conflict", "执行设备必须与项目所属设备一致。");
@@ -417,8 +428,13 @@ export function resolveDispatchWorkspaceAndModel(input: {
   if (targetEnvId === sourceEnv && !targetDescriptor) {
     throw new ProjectError(409, "source_env_unavailable", `发信设备「${sender.source?.name}」的执行环境尚未连接。请启动该设备的 Kulo 执行环境，或指定其他设备。`);
   }
-  if (!externalBinding && executionDomain === "computer" && targetDescriptor?.online && !hasWorkerIsolation(targetDescriptor)) {
-    throw new ProjectError(409, "worker_isolation_unavailable", `目标执行设备「${targetDescriptor.name}」未启用沙箱隔离能力，无法运行内置后台 Worker。`);
+  const targetTrustMode = resolveEffectiveExecutionMode({
+    hubTrustMode,
+    descriptor: targetDescriptor,
+    isLocal: targetIsLocal,
+  });
+  if (params.workspaceMode === "direct" && targetTrustMode !== "trusted") {
+    throw new ProjectError(400, "invalid_workspace_mode", "目标设备当前处于隔离沙箱或未支持本机信任协议，不能使用 direct 模式。");
   }
   if (targetEnvId === sourceEnv && executionDomain === "android" && androidDeviceIds.some((id) => id !== sourceEnv)) {
     throw new ProjectError(409, "target_device_conflict", "当前手机任务默认使用发信手机。要操作其他手机，请明确指定目标设备。");
@@ -459,10 +475,32 @@ export function resolveDispatchWorkspaceAndModel(input: {
   const requestedReadOnly = Boolean(reviewTarget || rolePreset?.readOnly || routing.readOnly || (parent && isEffectiveExternalReadOnly(parent)) || params.workspaceMode === "read_only");
   // Native clients own their tool permissions; a task's read-only request is not a host-enforced write guarantee.
   const isReadOnly = !externalBinding && requestedReadOnly;
+  const defaultWriteWorkspaceMode: ExternalWorkspaceMode = targetTrustMode === "trusted" ? "direct" : "staged";
   const builtInWorkspaceMode: ExternalWorkspaceMode | undefined =
-    externalBinding || executionDomain === "android" || !project ? undefined : requestedReadOnly ? "read_only" : params.workspaceMode ?? "staged";
+    externalBinding || executionDomain === "android" || !project ? undefined : requestedReadOnly ? "read_only" : params.workspaceMode ?? defaultWriteWorkspaceMode;
   const externalWorkspaceMode: ExternalWorkspaceMode | undefined =
-    !externalBinding || !project ? undefined : requestedReadOnly ? "read_only" : params.workspaceMode ?? "staged";
+    !externalBinding || !project ? undefined : requestedReadOnly ? "read_only" : params.workspaceMode ?? defaultWriteWorkspaceMode;
+  const requireOsIsolation = !externalBinding && executionDomain === "computer" && Boolean(isReadOnly || builtInWorkspaceMode === "staged");
+  const effectiveExecutionMode = resolveEffectiveExecutionMode({
+    hubTrustMode,
+    descriptor: targetDescriptor,
+    isLocal: targetIsLocal,
+    requireOsIsolation,
+  });
+  if (
+    !externalBinding &&
+    executionDomain === "computer" &&
+    targetDescriptor?.online &&
+    !isWorkerEnvReady(targetDescriptor, effectiveExecutionMode, { isLocal: targetIsLocal, requireOsIsolation })
+  ) {
+    throw new ProjectError(
+      409,
+      "worker_isolation_unavailable",
+      requireOsIsolation
+        ? `目标执行设备「${targetDescriptor.name}」缺少原生隔离后端，无法兑现该任务的只读或隔离副本约束。`
+        : `目标执行设备「${targetDescriptor.name}」未启用沙箱隔离能力，无法运行内置后台 Worker。`,
+    );
+  }
 
   let nativeThinking: string | undefined;
   if (externalBinding && rolePreset) {
@@ -486,7 +524,7 @@ export function resolveDispatchWorkspaceAndModel(input: {
   const desiredThinking: ThinkingEffort =
     params.thinkingLevel ?? (rolePreset?.thinkingLevel && rolePreset.thinkingLevel !== "auto" ? rolePreset.thinkingLevel : defaultThinkingLevel);
   return {
-    pathApi, sep, cleanRoot, scratchRoot, requestedReadOnly, isReadOnly, builtInWorkspaceMode, externalWorkspaceMode,
+    pathApi, sep, cleanRoot, scratchRoot, requestedReadOnly, isReadOnly, builtInWorkspaceMode, externalWorkspaceMode, effectiveExecutionMode,
     nativeThinking, providerOverride, modelOverride, workerProviderOpt, workerModelId, desiredThinking,
   };
 }

@@ -5,7 +5,7 @@ import {
   type Harness,
 } from "@earendil-works/pi-durable";
 import { validateHostMaintenanceCommands, type EnvManager } from "@kulo/env";
-import { classifyShellSafetyFloor } from "@kulo/protocol";
+import { classifyShellSafetyFloor, resolveEffectiveExecutionMode } from "@kulo/protocol";
 import {
   buildHostActionConfirmCard,
   effectiveConfirmationEffect,
@@ -72,7 +72,7 @@ export function buildHostActionResultDraft(params: {
 
 export interface HubHostActionsDeps {
   harness: Harness;
-  envManager: Pick<EnvManager, "getEnvDescriptor" | "listEnvs" | "localEnvId" | "pickDefaultEnvId" | "requestHostAction">;
+  envManager: Pick<EnvManager, "getEnvDescriptor" | "getExecutionTrustMode" | "isLocalEnv" | "listEnvs" | "localEnvId" | "pickDefaultEnvId" | "requestHostAction">;
   projects: Pick<KuloProjects, "get">;
   actionConfirmations: KuloActionConfirmations;
   connectionManager: Pick<KuloConnections, "redact">;
@@ -206,8 +206,24 @@ export class HubHostActions {
     if (caller.kind === "worker" && caller.readOnly) {
       throw new Error("当前角色为只读模式，不能执行本机变更命令。");
     }
-    validateHostMaintenanceCommands(input.commands);
     const { envId, envName, routedToHubFallback } = await this.#resolveTargetEnv(caller, input.envId, context);
+    const targetDescriptor = this.#deps.envManager.getEnvDescriptor(envId);
+    const workerState = caller.kind === "worker"
+      ? await this.#deps.harness.snapshot(KuloStateDoc, context)
+      : undefined;
+    const frozenWorkerMode = caller.kind === "worker"
+      ? workerState?.ticketExecutionModes?.[caller.ticketId]
+      : undefined;
+    const baseTrustMode =
+      caller.kind === "worker" && frozenWorkerMode?.runEpoch === caller.runEpoch
+        ? frozenWorkerMode.mode
+        : this.#deps.envManager.getExecutionTrustMode();
+    const executionMode = resolveEffectiveExecutionMode({
+      hubTrustMode: baseTrustMode,
+      descriptor: targetDescriptor,
+      isLocal: this.#deps.envManager.isLocalEnv(envId),
+    });
+    validateHostMaintenanceCommands(input.commands, { executionMode });
 
     // Main Agent holds full personal-assistant authority and executes host actions directly.
     if (caller.kind === "orchestrator") {
@@ -218,6 +234,7 @@ export class HubHostActions {
           commands: input.commands,
           ...(input.cwd ? { cwd: input.cwd } : {}),
           ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+          executionMode,
         },
         context.abortSignal,
       );
@@ -229,7 +246,7 @@ export class HubHostActions {
     }
 
     const originConversationId = caller.originConversationId || Number(ROOT_CONVERSATION_ID);
-    const state = await this.#deps.harness.snapshot(KuloStateDoc, context);
+    const state = workerState;
     const topicId = state?.conversationToTopic?.[String(originConversationId)];
     const topic = topicId ? state?.topics?.[topicId] : undefined;
     if (topic?.deletedAt) throw new Error("所属会话已删除。");
@@ -244,6 +261,9 @@ export class HubHostActions {
     });
     const existing = await this.#deps.actionConfirmations.lookup(originConversationId, "host_action", fingerprint, context);
     if (existing?.status === "approved" && !existing.executed) {
+      const approvedMode = existing.payload.kind === "host_action" && existing.payload.executionMode
+        ? existing.payload.executionMode
+        : executionMode;
       const result = await this.#deps.envManager.requestHostAction(
         envId,
         {
@@ -251,6 +271,7 @@ export class HubHostActions {
           commands: input.commands,
           ...(input.cwd ? { cwd: input.cwd } : {}),
           ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+          executionMode: approvedMode,
         },
         context.abortSignal,
       );
@@ -274,6 +295,7 @@ export class HubHostActions {
         ticketId: caller.ticketId,
         runEpoch: caller.runEpoch,
         requestId: caller.callId,
+        executionMode,
       },
     }, context);
 
@@ -470,13 +492,17 @@ export class HubHostActions {
 
     // decision === "approve"
     if (!openCardId) {
+      const frozenTrusted = payload.executionMode === "trusted";
       for (const cmd of payload.commands) {
         const floor = classifyShellSafetyFloor(cmd);
-        if (floor.verdict !== "safe") {
+        if (floor.verdict === "block") {
           throw new Error(
-            floor.verdict === "block"
-              ? `本机操作命令触发毁灭性安全底线（${floor.reason ?? "catastrophic"}），禁止放行。`
-              : `本机操作命令包含无法静态完整解析的 Shell 语法（${floor.reason ?? "unreadable"}），禁止主智能体静默自动放行；请改用 decision='ask_user' 由用户亲自确认。`,
+            `本机操作命令触发毁灭性安全底线（${floor.reason ?? "catastrophic"}），禁止放行。`,
+          );
+        }
+        if (floor.verdict !== "safe" && !frozenTrusted) {
+          throw new Error(
+            `本机操作命令包含无法静态完整解析的 Shell 语法（${floor.reason ?? "unreadable"}），禁止主智能体静默自动放行；请改用 decision='ask_user' 由用户亲自确认。`,
           );
         }
       }

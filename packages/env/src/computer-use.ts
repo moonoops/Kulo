@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import { COMPUTER_USE_MAX_RESULT, isComputerPreviewInputEvent, isComputerUseRequest, isComputerUseResult, type ComputerPreviewInputEvent, type ComputerUseRequest, type ComputerUseResult, type ComputerPreviewTarget, type ComputerPreviewUpdate, type DesktopSystemPermissions, type SystemPermissionState } from "@kulo/protocol";
+import { COMPUTER_USE_MAX_RESULT, isComputerPreviewInputEvent, isComputerUseRequest, isComputerUseResult, type ComputerPreviewInputEvent, type ComputerUseRequest, type ComputerUseResult, type ComputerPreviewTarget, type ComputerPreviewUpdate, type DesktopSystemPermissions, type ExecutionTrustMode, type SystemPermissionState } from "@kulo/protocol";
 import { AgentCliError, runAgentCli, type AgentCliInvocation, type AgentCliRunner } from "./agent-cli.js";
 import {
   checkMacosChromeBackgroundTasks,
@@ -19,6 +19,7 @@ export interface ComputerUseServiceOptions {
   runner?: AgentCliRunner;
   browserEnabled?: boolean;
   desktopEnabled?: boolean;
+  getExecutionTrustMode?: () => ExecutionTrustMode;
   resolveBrowserExecutable?: () => ManagedBrowserExecutable;
   checkMacosChromeBackgroundTasks?: (signal?: AbortSignal) => Promise<MacosChromeBackgroundTaskState>;
   openSystemSettings?: (url: string, signal?: AbortSignal) => Promise<void>;
@@ -79,12 +80,15 @@ type BrowserSession = {
   launchedOnce?: boolean;
   unexpectedRestarts: number;
   usingSystemMacosChrome?: boolean;
+  profileDir?: string;
+  autoConnect?: boolean;
+  profileMode?: "persistent" | "ephemeral" | "auto_connect";
 };
 type DesktopSession = { app: string; windowId?: string; refs: Set<string> };
 type NativeEnvelope = { success?: boolean; ok?: boolean; data?: unknown; result?: unknown; error?: unknown; code?: unknown; checks?: unknown; summary?: unknown };
 
 const SUPPORTED = new Set<NodeJS.Platform>(["darwin", "linux", "win32"]);
-const MAX_BROWSER_SESSIONS = 2;
+const MAX_BROWSER_SESSIONS = 4;
 const MAX_DESKTOP_SESSIONS = 16;
 const OUTPUT_CHARACTERS = 48_000;
 const inheritedEnvironment = [
@@ -134,6 +138,7 @@ export class ComputerUseService {
   readonly #runner: AgentCliRunner;
   readonly #browserEnabled: boolean;
   readonly #desktopEnabled: boolean;
+  readonly #getExecutionTrustMode?: () => ExecutionTrustMode;
   readonly #browser = new Map<string, BrowserSession>();
   readonly #desktop = new Map<string, DesktopSession>();
   readonly #queues = new Map<string, Promise<unknown>>();
@@ -151,6 +156,7 @@ export class ComputerUseService {
   #suspending?: Promise<void>;
   #cleanupFailed = false;
   #recovery?: Promise<void>;
+  #persistentProfileOwnerSessionId?: string;
   #macosChromeBtmState: MacosChromeBackgroundTaskState = "unknown";
   #macosChromeBtmCheckedAt = 0;
   #macosChromeBtmCheck?: Promise<MacosChromeBackgroundTaskState>;
@@ -161,6 +167,7 @@ export class ComputerUseService {
     this.#runner = options.runner ?? runAgentCli;
     this.#browserEnabled = options.browserEnabled ?? false;
     this.#desktopEnabled = options.desktopEnabled ?? false;
+    this.#getExecutionTrustMode = options.getExecutionTrustMode;
     this.#resolveBrowserExecutable = options.resolveBrowserExecutable
       ?? (() => resolveManagedBrowserExecutable({ platform: this.#platform }));
     this.#checkMacosChromeBackgroundTasks = options.checkMacosChromeBackgroundTasks
@@ -280,9 +287,35 @@ export class ComputerUseService {
       const info = fs.fstatSync(descriptor);
       if (!info.isFile() || info.size > 16_384 || process.platform !== "win32" && ((info.mode & 0o077) !== 0 || typeof process.getuid === "function" && info.uid !== process.getuid())) throw new Error("Managed browser journal must be private");
       const value = object(JSON.parse(fs.readFileSync(descriptor, "utf8")));
-      if (!value || Object.keys(value).some((key) => key !== "version" && key !== "sessions") || value.version !== 1 || !Array.isArray(value.sessions) || value.sessions.length > MAX_BROWSER_SESSIONS || new Set(value.sessions).size !== value.sessions.length
+      if (!value || Object.keys(value).some((key) => key !== "version" && key !== "sessions" && key !== "meta") || value.version !== 1 || !Array.isArray(value.sessions) || value.sessions.length > MAX_BROWSER_SESSIONS || new Set(value.sessions).size !== value.sessions.length
         || value.sessions.some((session) => typeof session !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(session))) throw new Error("Invalid managed browser journal");
-      for (const sessionId of value.sessions as string[]) this.#browser.set(sessionId, { refs: new Set(), cleanupRequired: true, unexpectedRestarts: 0 });
+      const metaMap = value.meta !== undefined ? object(value.meta) : undefined;
+      if (value.meta !== undefined && !metaMap) throw new Error("Invalid managed browser journal");
+      const sessionSet = new Set(value.sessions as string[]);
+      if (metaMap) {
+        for (const key of Object.keys(metaMap)) {
+          if (!sessionSet.has(key)) throw new Error("Invalid managed browser journal");
+          const entry = object(metaMap[key]);
+          if (!entry || Object.keys(entry).some((field) => field !== "profileDir" && field !== "autoConnect")) throw new Error("Invalid managed browser journal");
+          if (entry.profileDir !== undefined && (typeof entry.profileDir !== "string" || !entry.profileDir || entry.profileDir.length > 2048 || entry.profileDir.includes("\0"))) throw new Error("Invalid managed browser journal");
+          if (entry.autoConnect !== undefined && typeof entry.autoConnect !== "boolean") throw new Error("Invalid managed browser journal");
+        }
+      }
+      for (const sessionId of value.sessions as string[]) {
+        const entry = metaMap ? object(metaMap[sessionId]) : undefined;
+        const profileDir = typeof entry?.profileDir === "string" ? entry.profileDir : undefined;
+        const autoConnect = entry?.autoConnect === true;
+        this.#browser.set(sessionId, {
+          refs: new Set(),
+          cleanupRequired: true,
+          unexpectedRestarts: 0,
+          ...(profileDir ? { profileDir, profileMode: "persistent" as const } : {}),
+          ...(autoConnect ? { autoConnect: true, profileMode: "auto_connect" as const } : {}),
+        });
+        if (profileDir && !this.#persistentProfileOwnerSessionId) {
+          this.#persistentProfileOwnerSessionId = sessionId;
+        }
+      }
     } finally { fs.closeSync(descriptor); }
   }
 
@@ -290,8 +323,20 @@ export class ComputerUseService {
     const temporary = this.#journal + ".tmp-" + randomBytes(8).toString("hex");
     const descriptor = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
     try {
+      const meta: Record<string, { profileDir?: string; autoConnect?: boolean }> = {};
+      for (const [sessionId, session] of this.#browser) {
+        if (session.profileDir || session.autoConnect) {
+          meta[sessionId] = {
+            ...(session.profileDir ? { profileDir: session.profileDir } : {}),
+            ...(session.autoConnect ? { autoConnect: true } : {}),
+          };
+        }
+      }
+      const payload = Object.keys(meta).length > 0
+        ? { version: 1, sessions: [...this.#browser.keys()], meta }
+        : { version: 1, sessions: [...this.#browser.keys()] };
       try {
-        fs.writeFileSync(descriptor, JSON.stringify({ version: 1, sessions: [...this.#browser.keys()] }));
+        fs.writeFileSync(descriptor, JSON.stringify(payload));
         fs.fsyncSync(descriptor);
       } finally { fs.closeSync(descriptor); }
       fs.renameSync(temporary, this.#journal);
@@ -304,6 +349,9 @@ export class ComputerUseService {
     this.#browser.delete(sessionId);
     try { this.#persistJournal(); }
     catch (error) { session.cleanupRequired = true; this.#browser.set(sessionId, session); throw error; }
+    if (this.#persistentProfileOwnerSessionId === sessionId) {
+      this.#persistentProfileOwnerSessionId = undefined;
+    }
     this.#previews.close({ tool: "browser", sessionId });
     this.#cleanupFailed = [...this.#browser.values()].some((entry) => entry.cleanupRequired);
   }
@@ -313,6 +361,11 @@ export class ComputerUseService {
     const sessions = [...this.#browser].filter(([, session]) => session.cleanupRequired).map(([id]) => id);
     const work = (async () => {
       const results = await Promise.allSettled(sessions.map(async (sessionId) => {
+        if (this.#browser.get(sessionId)?.autoConnect) {
+          // Never destructively close the user's own Chrome instance/tabs on close, suspend, or crash recovery.
+          this.#forgetBrowser(sessionId);
+          return;
+        }
         const raw = await this.#runner({ tool: "agent-browser", args: [...this.#browserArgs(sessionId), "close"], cwd: this.rootDir, env: this.#environment("browser"), timeoutMs: 5000 });
         const result = this.#native({ tool: "browser", action: "close", sessionId }, raw);
         if (result.failure) throw new Error("Managed browser cleanup was not confirmed");
@@ -514,21 +567,77 @@ export class ComputerUseService {
     return this.#executeDesktop(request, active, signal);
   }
 
-  #browserArgs(sessionId: string): string[] { return ["--config", this.#browserConfig, "--session", sessionId, "--json", "--idle-timeout", "5m", "--max-output", String(OUTPUT_CHARACTERS)]; }
+  #browserArgs(sessionId: string): string[] {
+    const session = this.#browser.get(sessionId);
+    return [
+      "--config",
+      this.#browserConfig,
+      "--session",
+      sessionId,
+      "--json",
+      "--idle-timeout",
+      "5m",
+      "--max-output",
+      String(OUTPUT_CHARACTERS),
+      ...(session?.profileDir ? ["--profile", session.profileDir] : []),
+      ...(session?.autoConnect ? ["--auto-connect"] : []),
+    ];
+  }
+
+  #effectiveExecutionMode(request: ComputerUseRequest): ExecutionTrustMode {
+    return request.executionMode ?? this.#getExecutionTrustMode?.() ?? "sandboxed";
+  }
 
   async #executeBrowser(request: Extract<ComputerUseRequest, { tool: "browser"; sessionId: string }>, active: () => boolean, signal: AbortSignal): Promise<ComputerUseResult> {
     let session = this.#browser.get(request.sessionId);
     if (request.action === "close" && !session) return this.#result(request, { closed: true });
+    if (request.action === "close" && session?.autoConnect) {
+      this.#forgetBrowser(request.sessionId);
+      return this.#result(request, { closed: true, detached: true });
+    }
     if (request.action === "open" && !session) {
       if (this.#browser.size >= MAX_BROWSER_SESSIONS) return this.#error(request, "SESSION_LIMIT", "Close an existing browser session before opening another");
       const selected = this.#resolveBrowserExecutable();
       const usingSystemMacosChrome = this.#usesSystemMacosChrome(selected);
-      session = { refs: new Set(), cleanupRequired: false, unexpectedRestarts: 0, usingSystemMacosChrome };
+      const effectiveMode = this.#effectiveExecutionMode(request);
+      let profileDir: string | undefined;
+      let autoConnect = false;
+      let profileMode: BrowserSession["profileMode"];
+      let claimedPersistentOwner = false;
+      if (effectiveMode === "trusted") {
+        if (process.env.KULO_BROWSER_AUTO_CONNECT === "1") {
+          autoConnect = true;
+          profileMode = "auto_connect";
+        } else if (!this.#persistentProfileOwnerSessionId) {
+          const customProfile = process.env.KULO_BROWSER_PROFILE?.trim();
+          profileDir = privateDirectory(customProfile ? path.resolve(customProfile) : path.join(this.rootDir, "browser-profile"));
+          profileMode = "persistent";
+          this.#persistentProfileOwnerSessionId = request.sessionId;
+          claimedPersistentOwner = true;
+        } else {
+          profileMode = "ephemeral";
+        }
+      }
+      session = {
+        refs: new Set(),
+        cleanupRequired: false,
+        unexpectedRestarts: 0,
+        usingSystemMacosChrome,
+        ...(profileDir ? { profileDir } : {}),
+        ...(autoConnect ? { autoConnect: true } : {}),
+        ...(profileMode ? { profileMode } : {}),
+      };
       this.#browser.set(request.sessionId, session);
       // Journal before spawning: a detached daemon may outlive this Env process.
       try { this.#persistJournal(); }
-      catch (error) { this.#browser.delete(request.sessionId); throw error; }
-      if (usingSystemMacosChrome) void this.#refreshMacosChromeBtm(false).catch(() => {});
+      catch (error) {
+        this.#browser.delete(request.sessionId);
+        if (claimedPersistentOwner && this.#persistentProfileOwnerSessionId === request.sessionId) {
+          this.#persistentProfileOwnerSessionId = undefined;
+        }
+        throw error;
+      }
+      if (usingSystemMacosChrome && !autoConnect) void this.#refreshMacosChromeBtm(false).catch(() => {});
     }
     if (!session) return this.#error(request, "SESSION_NOT_FOUND", "Open a browser session before using it");
     if ("ref" in request && request.ref !== undefined && !session.refs.has(request.ref.replace(/^@/, ""))) return this.#error(request, "REF_NOT_AUTHORIZED", "Take a fresh snapshot in this browser session before acting on a ref");
@@ -596,11 +705,14 @@ export class ComputerUseService {
     if (request.action === "close") this.#forgetBrowser(request.sessionId);
     if (request.action === "snapshot") session.refs = references(native.data, false);
     if (request.action !== "close") this.#previews.changed({ tool: "browser", sessionId: request.sessionId });
-    const payload = batch
+    const basePayload = batch
       ? { actionAccepted: true, observationRequired: true, ...(sessionReset ? { sessionReset } : {}) }
       : sessionReset && object(native.data)
         ? { ...object(native.data)!, sessionReset }
         : native.data;
+    const payload = request.action === "open" && session.profileMode && object(basePayload)
+      ? { ...object(basePayload)!, profileMode: session.profileMode }
+      : basePayload;
     return this.#result(request, payload);
   }
 
@@ -615,8 +727,8 @@ export class ComputerUseService {
     if (/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(request.app)) {
       return this.#error(request, "INVALID_INPUT", "Use an application name without bidirectional control characters");
     }
-    // Native app grants apply to the fixed application broker, including when a desktop driver is installed.
-    if (this.#platform === "darwin" && new Set(["messages", "信息", "消息", "com.apple.mobilesms", "com.apple.ichat", "mail", "邮件", "com.apple.mail"]).has(request.app.trim().toLowerCase())) {
+    // Native app grants apply to the fixed application broker in sandboxed mode.
+    if (this.#effectiveExecutionMode(request) !== "trusted" && this.#platform === "darwin" && new Set(["messages", "信息", "消息", "com.apple.mobilesms", "com.apple.ichat", "mail", "邮件", "com.apple.mail"]).has(request.app.trim().toLowerCase())) {
       return this.#error(request, "APPLICATION_CONNECTION_REQUIRED", "Use the connected Messages or Mail application through kulo_connection_use");
     }
     if ("text" in request && Buffer.byteLength(request.text) > 10_000) return this.#error(request, "INVALID_INPUT", "Desktop text input exceeds 10,000 UTF-8 bytes");

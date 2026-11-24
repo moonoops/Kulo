@@ -31,7 +31,7 @@ export function nativeClaudeOptions(ctx:ExternalDriverContext):Options{
     :{type:"preset",preset:"claude_code"};
   return{
     cwd:ctx.cwd,...(ctx.modelId?{model:ctx.modelId}:{}),...(ctx.sessionId?{resume:ctx.sessionId}:{}),
-    settingSources:["user","project","local"],pathToClaudeCodeExecutable:ctx.executable,includePartialMessages:true,env:nativeAgentEnvironment("claude-code"),
+    settingSources:["user","project","local"],pathToClaudeCodeExecutable:ctx.executable,includePartialMessages:true,env:nativeAgentEnvironment("claude-code",{trustMode:ctx.trustMode,blockedEnvNames:ctx.blockedEnvNames}),
     systemPrompt,...claudeThinkingOptions(ctx.thinkingLevel),...claudeServiceTierOptions(ctx.serviceTier),
     ...(isReadOnly?{disallowedTools:[...CLAUDE_READ_ONLY_DISALLOWED_TOOLS]}:{}),
     ...(ctx.servers.length?{mcpServers:Object.fromEntries(ctx.servers.map(server=>[server.name,{type:"http" as const,url:server.url,headers:Object.fromEntries((server.headers??[]).map(row=>[row.name,row.value]))}]))}:{}),
@@ -159,12 +159,12 @@ export async function connectClaude(ctx:ExternalDriverContext,probe=false):Promi
  * disables project/local settings, user stdio MCP servers, built-in tools, and all shell Hooks
  * so quota refreshes never launch user MCPs or trigger SessionStart hooks.
  */
-export function quotaClaudeOptions(executable: string, cwd: string): Options {
+export function quotaClaudeOptions(executable: string, cwd: string, blockedEnvNames?: Iterable<string>): Options {
   return {
     cwd,
     settingSources: ["user"],
     pathToClaudeCodeExecutable: executable,
-    env: nativeAgentEnvironment("claude-code"),
+    env: nativeAgentEnvironment("claude-code", { blockedEnvNames }),
     strictMcpConfig: true,
     mcpServers: {},
     tools: [],
@@ -183,6 +183,7 @@ export async function probeClaudeQuota(options: {
   timeoutMs?: number;
   redact?: (value: string) => string;
   queryFn?: ClaudeSdkQueryFn;
+  blockedEnvNames?: Iterable<string>;
 }): Promise<ExternalAgentQuotaProbeResult> {
   const timeoutMs = options.timeoutMs ?? 10_000;
   if (options.signal?.aborted) {
@@ -217,7 +218,7 @@ export async function probeClaudeQuota(options: {
       child.once("error", removeAbort);
       return child;
     },
-    ...quotaClaudeOptions(options.executable, options.cwd),
+    ...quotaClaudeOptions(options.executable, options.cwd, options.blockedEnvNames),
     abortController,
   };
   const agent = queryFn({ prompt: prompt(), options: sdkOptions });

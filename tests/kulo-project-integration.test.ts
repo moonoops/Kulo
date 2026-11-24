@@ -124,7 +124,7 @@ describe.skipIf(!sandboxAvailable)("Hub project integration with native temporar
     const topic = await f.hub.createTopic("项目会话", context, project.id);
     const card = await f.hub.dispatchTicket({
       commandId: "project-conversation-work", title: "PROJECT-WRITE", goal: "PROJECT-WRITE", scope: "项目目录", role: "coder",
-      originConversationId: topic.conversationId,
+      originConversationId: topic.conversationId, workspaceMode: "staged",
     });
     expect(card).toMatchObject({ projectId: project.id, envId: "local", workspaceDir: project.workspaceDir });
     await waitForTicket(f.hub, card.id, "ready");
@@ -135,7 +135,7 @@ describe.skipIf(!sandboxAvailable)("Hub project integration with native temporar
     const ordinary = await f.hub.createTopic("普通话题", context);
     const explicit = await f.hub.dispatchTicket({
       commandId: "ordinary-explicit-project-work", title: "ORDINARY-WRITE", goal: "ORDINARY-WRITE", scope: "项目目录", role: "coder",
-      originConversationId: ordinary.conversationId, projectId: project.id,
+      originConversationId: ordinary.conversationId, projectId: project.id, workspaceMode: "staged",
     });
     await waitForTicket(f.hub, explicit.id, "ready");
     expect(fs.existsSync(path.join(project.workspaceDir, "ordinary.txt"))).toBe(false);
@@ -171,7 +171,7 @@ describe.skipIf(!sandboxAvailable)("Hub project integration with native temporar
     await remote.stop();
     await until(() => !f.hub.envManager.getEnvDescriptor("remote")?.online);
     const card = await f.hub.dispatchTicket({
-      commandId: "offline-project-task", title: "离线设备任务", goal: "恢复后写入文件", scope: "项目目录", role: "coder", originConversationId: topic.conversationId,
+      commandId: "offline-project-task", title: "离线设备任务", goal: "恢复后写入文件", scope: "项目目录", role: "coder", originConversationId: topic.conversationId, workspaceMode: "staged",
     });
     await waitForTicket(f.hub, card.id, "waiting");
     const waiting = await f.hub.inspectTicketDetail(card.id);

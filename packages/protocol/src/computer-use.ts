@@ -1,8 +1,10 @@
+import type { ExecutionTrustMode } from "./execution-trust.js";
+
 export type ComputerUseTool = "browser" | "desktop";
 
 export type ComputerScrollDirection = "up" | "down" | "left" | "right";
 
-export type ComputerUseRequest =
+export type ComputerUseRequest = (
   | { tool: "browser"; action: "status" }
   | { tool: "browser"; action: "open"; sessionId: string; url: string }
   | { tool: "browser"; action: "snapshot" | "get-url" | "get-text" | "back" | "forward" | "close"; sessionId: string }
@@ -18,7 +20,8 @@ export type ComputerUseRequest =
   | { tool: "desktop"; action: "type" | "set-value"; sessionId: string; app: string; ref: string; text: string }
   | { tool: "desktop"; action: "scroll"; sessionId: string; app: string; ref: string; direction: ComputerScrollDirection; amount?: number }
   | { tool: "desktop"; action: "wait"; sessionId: string; app: string; text: string; timeoutMs?: number }
-  | { tool: "desktop"; action: "close"; sessionId: string };
+  | { tool: "desktop"; action: "close"; sessionId: string }
+) & { executionMode?: ExecutionTrustMode };
 
 export interface ComputerUseResult {
   tool: ComputerUseTool;
@@ -39,7 +42,8 @@ export function isComputerUseRequest(value: unknown): value is ComputerUseReques
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
   if (v.tool !== "browser" && v.tool !== "desktop" || typeof v.action !== "string") return false;
-  const allowed = new Set(["tool", "action"]);
+  if (v.executionMode !== undefined && v.executionMode !== "trusted" && v.executionMode !== "sandboxed") return false;
+  const allowed = new Set(["tool", "action", "executionMode"]);
   if (v.action === "status") return Object.keys(v).every((key) => allowed.has(key));
   if (v.tool === "desktop" && v.action === "permissions") return Object.keys(v).every((key) => allowed.has(key));
   if (v.tool === "desktop" && v.action === "permission-guide") {

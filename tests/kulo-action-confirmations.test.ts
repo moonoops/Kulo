@@ -197,6 +197,7 @@ describe("Main-Agent Full Authority, Smart Judgment & Non-Blocking Interactive C
                 scope: ".github/workflows/",
                 role: "coder",
                 project_id: project.id,
+                workspace_mode: "staged",
               }),
             ],
             { stopReason: "toolUse" },
@@ -1246,6 +1247,7 @@ describe("Main-Agent Full Authority, Smart Judgment & Non-Blocking Interactive C
       scope: ".github/workflows/",
       role: "coder",
       projectId: project.id,
+      workspaceMode: "staged",
     });
 
     let decisionCardId = "";

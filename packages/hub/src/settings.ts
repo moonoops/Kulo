@@ -69,6 +69,15 @@ import {
 import { resolveHindsightToken, resolveHindsightSharedReadToken } from "./hindsight.js";
 import { subscriptionModelTemplate } from "./subscription-models.js";
 import { AgentRoutingError, assertAgentDefaultScopes, normalizeAgentDispatchPolicy } from "./agent-routing.js";
+import {
+  applyExecutorBlockUpdate,
+  createFreshExecutorConfig,
+  normalizeExecutorConfig,
+  resolveRollbackExecutorConfig,
+  SettingsUpdateError,
+} from "./settings-executor.js";
+
+export { normalizeExecutorConfig, SettingsUpdateError };
 
 const VALID_CUSTOM_APIS = new Set<CustomProviderApi>(CUSTOM_PROVIDER_APIS);
 
@@ -590,50 +599,6 @@ function sanitizeCustomProviders(raw: unknown): CustomProviderConfig[] {
   return out;
 }
 
-function normalizeExecutorConfig(
-  raw: unknown,
-  fallbackMax = 3,
-  fallbackWatchdog = 5,
-  fallbackMaxSubagents = 4,
-  fallbackCompletedDisplay: ExecutorSlotsConfig["completedTaskDisplayHours"] = 3,
-): ExecutorSlotsConfig {
-  const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  const maxConcurrentWorkers = clampInt(
-    obj.maxConcurrentWorkers ?? obj.normalSlots ?? fallbackMax,
-    fallbackMax,
-    1,
-    16,
-  );
-  const maxSubagentsPerTicket = clampInt(
-    obj.maxSubagentsPerTicket ?? fallbackMaxSubagents,
-    fallbackMaxSubagents,
-    1,
-    8,
-  );
-  const watchdogMinutes = clampInt(
-    obj.watchdogMinutes ?? fallbackWatchdog,
-    fallbackWatchdog,
-    0,
-    60,
-  );
-  const completedTaskDisplayHours = obj.completedTaskDisplayHours === null ||
-    obj.completedTaskDisplayHours === 1 || obj.completedTaskDisplayHours === 3 || obj.completedTaskDisplayHours === 6
-    ? obj.completedTaskDisplayHours
-    : fallbackCompletedDisplay;
-  const autoArchiveEnabled = typeof obj.autoArchiveEnabled === "boolean" ? obj.autoArchiveEnabled : true;
-  const autoArchiveDays = typeof obj.autoArchiveDays === "number" && Number.isSafeInteger(obj.autoArchiveDays) &&
-    obj.autoArchiveDays >= 1 && obj.autoArchiveDays <= 3650 ? obj.autoArchiveDays : 7;
-  return {
-    maxConcurrentWorkers,
-    maxSubagentsPerTicket,
-    paused: Boolean(obj.paused),
-    watchdogMinutes,
-    completedTaskDisplayHours,
-    autoArchiveEnabled,
-    autoArchiveDays,
-  };
-}
-
 function normalizeModelConfig(raw: unknown): ModelGatewayConfig {
   const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const apiMode: CustomProviderApi = normalizeCustomProviderApi(obj.apiMode);
@@ -711,6 +676,7 @@ export type KuloDurableSettings = {
   rolesMigratedV3?: boolean;
   rolesMigratedV4?: boolean;
   gatewayMigratedV2?: boolean;
+  executionTrustModeRevision?: number;
   globalRevision: number;
   revisions: Record<SettingsBlockName, number>;
   presentation: PresentationConfig;
@@ -739,6 +705,7 @@ export const KuloSettingsDoc = defineDoc<KuloDurableSettings & JsonObject>({
       rolesMigratedV3: true,
       rolesMigratedV4: true,
       gatewayMigratedV2: true,
+      executionTrustModeRevision: 1,
       globalRevision: 1,
       revisions: {
         presentation: 1,
@@ -760,6 +727,7 @@ export const KuloSettingsDoc = defineDoc<KuloDurableSettings & JsonObject>({
         completedTaskDisplayHours: 3,
         autoArchiveEnabled: true,
         autoArchiveDays: 7,
+        executionTrustMode: "trusted",
       },
       roles: {},
       model: {
@@ -950,15 +918,13 @@ export function hydrateSettingsFromConfig(
     doc.rolesMigratedV4 = true;
     doc.gatewayMigratedV2 = true;
     doc.presentation = cleanJson(config.presentation);
-    doc.executor = {
+    doc.executionTrustModeRevision = 1;
+    doc.executor = createFreshExecutorConfig({
       maxConcurrentWorkers: config.maxConcurrentWorkers,
       maxSubagentsPerTicket: config.maxSubagentsPerTicket,
-      paused: false,
       watchdogMinutes: config.watchdogMinutes,
-      completedTaskDisplayHours: config.completedTaskDisplayHours === undefined ? 3 : config.completedTaskDisplayHours,
-      autoArchiveEnabled: true,
-      autoArchiveDays: 7,
-    };
+      completedTaskDisplayHours: config.completedTaskDisplayHours,
+    });
     doc.roles = cleanJson(config.roles);
     syncExternalClientsInSettings(doc);
     doc.model = cleanJson({
@@ -997,7 +963,8 @@ export function hydrateSettingsFromConfig(
   }
   doc.revisions.identity ??= 1;
 
-  // Upgrade older persisted SQLite settings docs in place
+  // Upgrade older persisted SQLite settings docs in place (never silently escalate missing trust mode)
+  doc.executionTrustModeRevision ??= 1;
   doc.executor = normalizeExecutorConfig(
     doc.executor,
     config.maxConcurrentWorkers,
@@ -1220,16 +1187,6 @@ export function toPublicSettingsView(
   };
 }
 
-export class SettingsUpdateError extends Error {
-  constructor(
-    readonly status: 400 | 409,
-    message: string,
-  ) {
-    super(message);
-    this.name = "SettingsUpdateError";
-  }
-}
-
 export function applySettingsBlockUpdate(
   doc: KuloDurableSettings,
   block: SettingsBlockName,
@@ -1293,59 +1250,12 @@ export function applySettingsBlockUpdate(
     }
 
     case "executor": {
-      const rawWorkers = val.maxConcurrentWorkers ?? val.normalSlots;
-      const maxConcurrentWorkers = Number(rawWorkers);
-      const prevExecutor = normalizeExecutorConfig(doc.executor);
-      const maxSubagentsPerTicket =
-        val.maxSubagentsPerTicket !== undefined
-          ? Number(val.maxSubagentsPerTicket)
-          : prevExecutor.maxSubagentsPerTicket;
-      const watchdogMinutes =
-        val.watchdogMinutes !== undefined
-          ? Number(val.watchdogMinutes)
-          : prevExecutor.watchdogMinutes;
-      const completedTaskDisplayHours = val.completedTaskDisplayHours === undefined
-        ? prevExecutor.completedTaskDisplayHours === undefined ? 3 : prevExecutor.completedTaskDisplayHours
-        : val.completedTaskDisplayHours;
-      if (completedTaskDisplayHours !== null &&
-        completedTaskDisplayHours !== 1 && completedTaskDisplayHours !== 3 && completedTaskDisplayHours !== 6) {
-        throw new SettingsUpdateError(400, "已完成任务显示时长需为 1、3、6 小时或一直显示。");
+      const result = applyExecutorBlockUpdate(doc.executor, val);
+      doc.executor = result.next;
+      if (result.trustModeChanged) {
+        doc.executionTrustModeRevision = (doc.executionTrustModeRevision ?? 1) + 1;
       }
-      const autoArchiveEnabled = val.autoArchiveEnabled === undefined ? prevExecutor.autoArchiveEnabled! : val.autoArchiveEnabled;
-      const autoArchiveDays = val.autoArchiveDays === undefined ? prevExecutor.autoArchiveDays! : val.autoArchiveDays;
-      if (typeof autoArchiveEnabled !== "boolean") {
-        throw new SettingsUpdateError(400, "自动归档开关需为开启或关闭。");
-      }
-      if (typeof autoArchiveDays !== "number" || !Number.isSafeInteger(autoArchiveDays) || autoArchiveDays < 1 || autoArchiveDays > 3650) {
-        throw new SettingsUpdateError(400, "自动归档天数需为 1~3650 的整数。");
-      }
-      const paused = Boolean(val.paused);
-      if (
-        !Number.isInteger(maxConcurrentWorkers) ||
-        maxConcurrentWorkers < 1 ||
-        maxConcurrentWorkers > 16 ||
-        !Number.isInteger(maxSubagentsPerTicket) ||
-        maxSubagentsPerTicket < 1 ||
-        maxSubagentsPerTicket > 8 ||
-        !Number.isInteger(watchdogMinutes) ||
-        watchdogMinutes < 0 ||
-        watchdogMinutes > 60
-      ) {
-        throw new SettingsUpdateError(
-          400,
-          "并发 Worker 上限需为 1~16 的整数，单任务子智能体上限需为 1~8 的整数，巡检超时需为 0~60 的整数分钟。",
-        );
-      }
-      doc.executor = {
-        maxConcurrentWorkers,
-        maxSubagentsPerTicket,
-        paused,
-        watchdogMinutes,
-        completedTaskDisplayHours,
-        autoArchiveEnabled,
-        autoArchiveDays,
-      };
-      summary = `并发上限 ${maxConcurrentWorkers} · 子智能体 ${maxSubagentsPerTicket} · 巡检${watchdogMinutes > 0 ? ` ${watchdogMinutes} 分钟` : "关闭"} · 已完成任务${completedTaskDisplayHours === null ? "一直显示" : `显示 ${completedTaskDisplayHours} 小时`} · 自动归档${autoArchiveEnabled ? ` ${autoArchiveDays} 天` : "关闭"}${paused ? "（已暂停新派单）" : ""}`;
+      summary = result.summary;
       break;
     }
 
@@ -1771,6 +1681,7 @@ export function rollbackSettingsToSnapshot(
   targetSnapshotRevision: number,
   expectedGlobalRevision: number,
   runtimeMemory?: HindsightMemoryConfig,
+  options?: { allowTrustModeChange?: boolean },
 ): string {
   if (doc.globalRevision !== expectedGlobalRevision) {
     throw new SettingsUpdateError(409, "配置在撤销前已发生变动，请刷新后重试。");
@@ -1778,6 +1689,11 @@ export function rollbackSettingsToSnapshot(
   const snap = doc.snapshots.find((s) => s.revision === targetSnapshotRevision);
   if (!snap) {
     throw new SettingsUpdateError(400, `未找到版本 v${targetSnapshotRevision} 的历史快照。`);
+  }
+
+  const rolledExecutor = resolveRollbackExecutorConfig(cleanJson(snap.previousState.executor), doc.executor);
+  if (options?.allowTrustModeChange === false && rolledExecutor.trustModeChanged) {
+    throw new SettingsUpdateError(403, "仅主人设备控制台可执行变更执行权限的历史回滚。");
   }
 
   const prevSnapshot = cleanJson({
@@ -1791,7 +1707,10 @@ export function rollbackSettingsToSnapshot(
   });
 
   doc.presentation = cleanJson(snap.previousState.presentation);
-  doc.executor = normalizeExecutorConfig(cleanJson(snap.previousState.executor));
+  doc.executor = rolledExecutor.next;
+  if (rolledExecutor.trustModeChanged) {
+    doc.executionTrustModeRevision = (doc.executionTrustModeRevision ?? 1) + 1;
+  }
   doc.roles = cleanJson(snap.previousState.roles);
   doc.externalClients = snap.previousState.externalClients ? cleanJson(snap.previousState.externalClients) : undefined;
   doc.model = normalizeModelConfig(cleanJson(snap.previousState.model));

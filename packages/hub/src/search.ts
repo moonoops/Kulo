@@ -9,6 +9,7 @@ import {
 } from "@kulo/protocol";
 import { fetchSearchPageAdapter, runSearchAdapter } from "./search-adapters.js";
 import { fetchWebPage } from "./web-content.js";
+import { isCloudMetadataHostOrIp, isPrivateOrLoopbackHost } from "./net-policy.js";
 
 const ORIGIN_ENV = "KULO_API_KEY_ORIGIN";
 const ADAPTERS: readonly SearchAdapterId[] = ["exa", "tavily", "brave", "duckduckgo"];
@@ -466,28 +467,46 @@ export class KuloSearch {
     const failure = attempts.at(-1)?.failure ?? { kind: "unknown", message: FAILURE_MESSAGES.unknown, retryable: true };
     throw new SearchError(failureStatus(failure), "search_all_failed", "所有搜索方案均未成功，请检查各方案的连接状态。", failure, attempts);
   }
-  async fetch(url: string, signal?: AbortSignal): Promise<WebPageResult> {
+  async fetch(
+    url: string,
+    signal?: AbortSignal,
+    options?: { allowPrivateNetwork?: boolean },
+  ): Promise<WebPageResult> {
     const overall = this.#signal(signal); assertActive(overall);
-    const state = await this.#state();
-    const candidates = (state?.order ?? []).map((id) => clone(requirePlan(state, id))).filter((plan) => plan.enabled);
+    const allowPrivateNetwork = Boolean(options?.allowPrivateNetwork);
+    let isPrivateTarget = false;
+    try {
+      const parsed = new URL(url);
+      if (isCloudMetadataHostOrIp(parsed.hostname)) {
+        throw new Error("已阻止访问受保护的云元数据地址。");
+      }
+      isPrivateTarget = isPrivateOrLoopbackHost(parsed.hostname);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("云元数据")) throw error;
+    }
     const attempts: SearchAttempt[] = [];
-    for (const plan of candidates) {
-      const key = await this.#key(plan);
-      try {
-        const view = await this.#view(plan);
-        if (confirmationRequired(plan) || (plan.adapter === "tavily" || plan.adapter === "brave") && !view.hasCredential) continue;
-        const attempt = AbortSignal.any([overall, AbortSignal.timeout(this.#options.attemptTimeoutMs ?? 30_000)]);
-        const page = await abortable(() => fetchSearchPageAdapter({ plan: view, apiKey: key, signal: attempt, fetch: this.#options.fetch, stateDir: this.#options.stateDir }, url), attempt);
-        if (page) return page;
-      } catch (error) {
-        if (overall.aborted && (overall.reason as { name?: string } | undefined)?.name !== "TimeoutError") overall.throwIfAborted();
-        const failure = failureValue(error, key);
-        attempts.push({ planId: plan.id, name: plan.name, error: failure.message, failure });
-        assertActive(overall, attempts);
+    // Private/loopback targets MUST NEVER be sent to cloud search/extract services (Exa/Tavily).
+    if (!isPrivateTarget) {
+      const state = await this.#state();
+      const candidates = (state?.order ?? []).map((id) => clone(requirePlan(state, id))).filter((plan) => plan.enabled);
+      for (const plan of candidates) {
+        const key = await this.#key(plan);
+        try {
+          const view = await this.#view(plan);
+          if (confirmationRequired(plan) || (plan.adapter === "tavily" || plan.adapter === "brave") && !view.hasCredential) continue;
+          const attempt = AbortSignal.any([overall, AbortSignal.timeout(this.#options.attemptTimeoutMs ?? 30_000)]);
+          const page = await abortable(() => fetchSearchPageAdapter({ plan: view, apiKey: key, signal: attempt, fetch: this.#options.fetch, stateDir: this.#options.stateDir }, url), attempt);
+          if (page) return page;
+        } catch (error) {
+          if (overall.aborted && (overall.reason as { name?: string } | undefined)?.name !== "TimeoutError") overall.throwIfAborted();
+          const failure = failureValue(error, key);
+          attempts.push({ planId: plan.id, name: plan.name, error: failure.message, failure });
+          assertActive(overall, attempts);
+        }
       }
     }
     try {
-      return await abortable(() => fetchWebPage({ url, signal: overall, fetch: this.#options.pageFetch }), overall);
+      return await abortable(() => fetchWebPage({ url, signal: overall, fetch: this.#options.pageFetch, ...(allowPrivateNetwork ? { allowPrivateNetwork } : {}) }), overall);
     } catch (error) {
       assertActive(overall, attempts);
       const failure = failureValue(error);

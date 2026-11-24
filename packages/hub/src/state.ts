@@ -56,6 +56,8 @@ export type KuloDurableState = {
   conversationToTopic?: Record<string, string>;
   topicTitles?: Record<string, TopicTitleJob>;
   fileDeliveryFailures?: Record<string, { runEpoch: number; errors: Record<string, string> }>;
+  /** Frozen negotiated execution trust mode bound to each ticket's runEpoch. */
+  ticketExecutionModes?: Record<string, { runEpoch: number; mode: import("@kulo/protocol").ExecutionTrustMode }>;
   workerArtifacts?: Record<string, import("@kulo/protocol").ChatAttachment[]>;
   /** Durable recovery slot for post-commit main conversation archive finalization. */
   pendingMainArchiveFinalize?: import("@kulo/protocol").MainArchiveFinalizeRecord;
@@ -510,6 +512,17 @@ function isTicketWriteExempt(ticket: Readonly<TicketRecord>): boolean {
   return Boolean(
     ticket.readOnly ||
       (ticket.externalExecution && ticket.projectId && ticket.externalExecution.workspaceMode === "read_only"),
+  );
+}
+
+/** True whenever a ticket holds an active or pending-cleanup/merge write lock over its workspace scope. */
+export function isTicketHoldingWriteLock(ticket: Readonly<TicketRecord>): boolean {
+  if (isTicketWriteExempt(ticket)) return false;
+  return Boolean(
+    ticket.status === "running" ||
+    ticket.status === "pausing" ||
+    ticket.cleanupPending ||
+    hasPendingWorkspaceApply(ticket),
   );
 }
 

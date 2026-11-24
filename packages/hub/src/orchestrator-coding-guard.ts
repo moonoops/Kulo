@@ -3,13 +3,15 @@ import path from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import { defineExtension, type ToolRegistration } from "@earendil-works/pi-durable";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
-import { canonicalExecutionPath, isApplicationPrivatePath, type EnvManager } from "@kulo/env";
-import { classifyShellSafetyFloor, type ProjectRecord, type TicketRecord } from "@kulo/protocol";
+import { canonicalExecutionPath, isApplicationPrivatePath, KULO_CORE_STATE_SENSITIVE_NAMES, type EnvManager } from "@kulo/env";
+import { classifyShellSafetyFloor, type ExecutionTrustMode, type ProjectRecord, type TicketRecord } from "@kulo/protocol";
 import { SettingsAssistantDoc, isActiveSettingsConversation } from "./settings-assistant.js";
-import { KuloStateDoc, isOrchestratorConversation, ticketsShareWriteScope } from "./state.js";
+import { KuloStateDoc, isOrchestratorConversation, isTicketHoldingWriteLock, ticketsShareWriteScope } from "./state.js";
 
 const ORCHESTRATOR_DEFAULT_BASH_TIMEOUT_SECONDS = 60;
 const ORCHESTRATOR_MAX_BASH_TIMEOUT_SECONDS = 300;
+const TRUSTED_ORCHESTRATOR_DEFAULT_BASH_TIMEOUT_SECONDS = 120;
+const TRUSTED_ORCHESTRATOR_MAX_BASH_TIMEOUT_SECONDS = 600;
 
 const HOME_SENSITIVE_DIR_NAMES = [
   ".ssh",
@@ -52,24 +54,40 @@ export interface ProtectedPathCheckerConfig {
   extraProtectedPaths?: readonly string[];
   getLiveIdentityDir: () => string;
   getLiveMemoryAuthFile: () => string | undefined;
+  getExecutionTrustMode?: () => ExecutionTrustMode;
+}
+
+/**
+ * Identifies Kulo core runtime state, peer config, and vault paths on remote Envs
+ * (protected across both trusted and sandboxed modes).
+ */
+export function isRemoteKuloCorePath(candidate: string): boolean {
+  const normalized = candidate.replace(/\\/g, "/");
+  if (/(?:^|\/)(?:\.kulo-state|\.secure|\.kulo-env)(?:\/|$)/i.test(normalized)) return true;
+  if (/(?:^|\/)\.kulo\/(?:connection\.json|node-identity\.json|cluster-membership\.json|cluster-transition\.json|peer\.json)$/i.test(normalized)) return true;
+  if (/(?:^|\/)(?:kulo-state|kulo|assistant|memory)\.sqlite(?:-wal|-shm|\.(?:failover-paused|redaction-pending))?$/i.test(normalized)) return true;
+  if (/(?:^|\/)(?:connection-vault\.json|vault-envelope\.enc|sync-key\.enc|kulo-runtime-owner\.sqlite(?:-wal|-shm)?|hub-owner\.sqlite(?:-wal|-shm)?|runtime-token)$/i.test(normalized)) return true;
+  return false;
 }
 
 /**
  * Pure local-host path policy checker for orchestrator / settings-assistant coding tools.
- * Evaluates live identity dir and memory auth file dynamically on every invocation.
+ * Evaluates live identity dir, memory auth file, and execution trust mode dynamically on every invocation.
  */
 export function createProtectedOrchestratorPathChecker(
   cfg: ProtectedPathCheckerConfig,
-): (candidatePath: string) => string | undefined {
+): (candidatePath: string, options?: { forceSandboxed?: boolean }) => string | undefined {
   const resolvedStateDir = safeCanonical(cfg.stateDir);
   const resolvedMainWorkspace = safeCanonical(cfg.mainWorkspaceDir);
   const homeDir = os.homedir();
   const homeSensitiveDirs = HOME_SENSITIVE_DIR_NAMES.map((name) => safeCanonical(path.join(homeDir, name)));
   const extraProtectedCanonical = (cfg.extraProtectedPaths ?? []).map((entry) => safeCanonical(path.resolve(entry)));
+  const coreStateTargets = KULO_CORE_STATE_SENSITIVE_NAMES.map((name) => safeCanonical(path.join(cfg.stateDir, name)));
 
-  return (candidatePath: string): string | undefined => {
+  return (candidatePath: string, options?: { forceSandboxed?: boolean }): string | undefined => {
+    const trusted = !options?.forceSandboxed && cfg.getExecutionTrustMode?.() === "trusted";
     const canonicalCandidate = safeCanonical(candidatePath);
-    if (isApplicationPrivatePath(candidatePath) || isApplicationPrivatePath(canonicalCandidate)) {
+    if (!trusted && (isApplicationPrivatePath(candidatePath) || isApplicationPrivatePath(canonicalCandidate))) {
       return "请通过已授权的消息或邮件应用读取内容。";
     }
     const liveIdentityDir = safeCanonical(cfg.getLiveIdentityDir());
@@ -85,7 +103,27 @@ export function createProtectedOrchestratorPathChecker(
       isInsideLocalOrPosix(canonicalCandidate, liveIdentityDir) ||
       isInsideLocalOrPosix(canonicalCandidate, defaultIdentityCanonical)
     ) {
-      return "主脑沙箱禁止直接读写私有身份目录；请使用 kulo_identity_read、kulo_identity_propose 或 kulo_relationship_update。";
+      return "禁止直接读写私有身份目录；请使用 kulo_identity_read、kulo_identity_propose 或 kulo_relationship_update。";
+    }
+    if (trusted) {
+      const inMainWorkspace =
+        resolvedMainWorkspace !== resolvedStateDir &&
+        isInsideLocalOrPosix(resolvedMainWorkspace, resolvedStateDir) &&
+        isInsideLocalOrPosix(canonicalCandidate, resolvedMainWorkspace);
+      if (
+        !inMainWorkspace &&
+        (coreStateTargets.some((target) => isInsideLocalOrPosix(canonicalCandidate, target)) ||
+          extraProtectedCanonical.some((dir) => isInsideLocalOrPosix(canonicalCandidate, dir)))
+      ) {
+        return "禁止经由文件工具直接读写 Kulo 运行时核心状态库或凭据目录。";
+      }
+      if (
+        (liveAuthFile && canonicalCandidate === liveAuthFile) ||
+        (defaultAuthFile && canonicalCandidate === defaultAuthFile)
+      ) {
+        return "禁止经由文件工具直接访问 Kulo 内部记忆认证文件。";
+      }
+      return undefined;
     }
     if (
       (isInsideLocalOrPosix(canonicalCandidate, resolvedStateDir) &&
@@ -183,8 +221,7 @@ export function createOrchestratorCodingGuardExtension(deps: OrchestratorCodingG
           } as TicketRecord;
           const conflictingTicket = Object.values(state?.tickets ?? {}).find(
             (t) =>
-              (t.status === "running" || t.status === "pausing") &&
-              !t.readOnly &&
+              isTicketHoldingWriteLock(t) &&
               ticketsShareWriteScope(
                 writeProbe,
                 targetIsLocalHost && deps.envManager.isLocalEnv(t.envId) && t.workspaceDir
@@ -193,10 +230,12 @@ export function createOrchestratorCodingGuardExtension(deps: OrchestratorCodingG
               ),
           );
           if (conflictingTicket) {
-            return `当前工作区正在由活跃工单 ${conflictingTicket.id}（${conflictingTicket.title}）写入中；请勿在主脑争抢同一目录写锁，改用 kulo_steer('${conflictingTicket.id}') 或等待该工单完成。`;
+            return `当前工作区正在由活跃工单 ${conflictingTicket.id}（${conflictingTicket.title}）持有写锁（运行中、待清理或待合并）；请勿在主脑争抢同一目录写锁，改用 kulo_steer('${conflictingTicket.id}') 或等待其释放写锁。`;
           }
           return undefined;
         };
+
+        const trusted = !activeSettings && deps.getExecutionTrustMode?.() === "trusted";
 
         if (toolName === "read" || toolName === "write" || toolName === "edit") {
           const rawPath = String((args as { path?: unknown })?.path ?? "")
@@ -214,12 +253,22 @@ export function createOrchestratorCodingGuardExtension(deps: OrchestratorCodingG
           }
 
           if (targetIsLocalHost) {
-            const blockedReason = isProtectedOrchestratorPath(absolute);
+            const blockedReason = isProtectedOrchestratorPath(absolute, { forceSandboxed: activeSettings });
             if (blockedReason) {
               return blockResult(blockedReason);
             }
-          } else if (isApplicationPrivatePath(absolute)) {
-            return blockResult("请通过已授权的消息或邮件应用读取内容。");
+          } else {
+            let remoteCanonical = absolute;
+            if (api.env) {
+              const canon = await api.env.canonicalPath(absolute, context);
+              if (canon.ok) remoteCanonical = canon.value;
+            }
+            if (isRemoteKuloCorePath(remoteCanonical) || isRemoteKuloCorePath(absolute)) {
+              return blockResult("禁止直接读取或修改远端设备的 Kulo 核心运行状态、配置或加密凭据文件。");
+            }
+            if (!trusted && isApplicationPrivatePath(remoteCanonical)) {
+              return blockResult("请通过已授权的消息或邮件应用读取内容。");
+            }
           }
 
           if (toolName === "write" || toolName === "edit") {
@@ -238,32 +287,44 @@ export function createOrchestratorCodingGuardExtension(deps: OrchestratorCodingG
           return blockResult(`主脑安全护栏拦截了毁灭性 Shell 命令（${floor.reason ?? "catastrophic"}）："${cmd.slice(0, 120)}"。`);
         }
         const liveIdentityDir = deps.getLiveIdentityDir();
-        const sensitiveStateTargets = [
-          path.join(deps.stateDir, "kulo.sqlite"),
-          path.join(deps.stateDir, "credentials.json"),
-          path.join(deps.stateDir, "connection-vault.json"),
-          path.join(deps.stateDir, "devices.json"),
-          path.join(deps.stateDir, "runtime-token"),
-          path.join(deps.stateDir, ".secure"),
-        ];
+        const sensitiveStateTargets = KULO_CORE_STATE_SENSITIVE_NAMES.map((name) => path.join(deps.stateDir, name));
         if (
           (liveIdentityDir && cmd.includes(liveIdentityDir)) ||
           (deps.defaultIdentityDir && cmd.includes(deps.defaultIdentityDir)) ||
           sensitiveStateTargets.some((target) => cmd.includes(target)) ||
-          /\b(?:systemd-creds|secret-tool)\b/.test(cmd) ||
+          (!trusted && /\b(?:systemd-creds|secret-tool)\b/.test(cmd)) ||
           /\.secure[/\\]linux-keystore\b/.test(cmd)
         ) {
-          return blockResult("主脑沙箱禁止通过 bash 访问私有身份目录或 Kulo 状态凭据文件。");
+          return blockResult("禁止通过 bash 直接访问私有身份目录或 Kulo 核心状态凭据文件。");
         }
         const conflictReason = await checkActiveWriteLock(authorizedWorkspaceDir);
         if (conflictReason) {
           return blockResult(conflictReason);
         }
+        // Also intercept bash commands from root/neutral cwd that explicitly target another write-locked project directory on the same device.
+        const lockedByCommand = Object.values(state?.tickets ?? {}).find((t) => {
+          if (!isTicketHoldingWriteLock(t) || !t.workspaceDir) return false;
+          const sameDevice = targetIsLocalHost ? deps.envManager.isLocalEnv(t.envId) : t.envId === targetEnvId;
+          if (!sameDevice) return false;
+          const ws = targetIsLocalHost ? safeCanonical(t.workspaceDir) : t.workspaceDir;
+          return cmd.includes(t.workspaceDir) || (ws !== t.workspaceDir && cmd.includes(ws));
+        });
+        if (lockedByCommand) {
+          return blockResult(
+            `目标工作区 ${lockedByCommand.workspaceDir} 正在由活跃工单 ${lockedByCommand.id}（${lockedByCommand.title}）持有写锁；请勿在主脑争抢同一目录写锁，改用 kulo_steer('${lockedByCommand.id}') 或等待其释放写锁。`,
+          );
+        }
+        const defaultTimeout = trusted
+          ? TRUSTED_ORCHESTRATOR_DEFAULT_BASH_TIMEOUT_SECONDS
+          : ORCHESTRATOR_DEFAULT_BASH_TIMEOUT_SECONDS;
+        const maxTimeout = trusted
+          ? TRUSTED_ORCHESTRATOR_MAX_BASH_TIMEOUT_SECONDS
+          : ORCHESTRATOR_MAX_BASH_TIMEOUT_SECONDS;
         const rawTimeout = (args as { timeout?: unknown })?.timeout;
         const clampedTimeout =
           typeof rawTimeout === "number" && Number.isFinite(rawTimeout) && rawTimeout > 0
-            ? Math.min(rawTimeout, ORCHESTRATOR_MAX_BASH_TIMEOUT_SECONDS)
-            : ORCHESTRATOR_DEFAULT_BASH_TIMEOUT_SECONDS;
+            ? Math.min(rawTimeout, maxTimeout)
+            : defaultTimeout;
         const nextArgs =
           rawTimeout !== clampedTimeout
             ? { ...(args as Record<string, unknown>), timeout: clampedTimeout }

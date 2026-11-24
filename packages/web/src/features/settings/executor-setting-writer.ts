@@ -10,6 +10,7 @@ export function executorSettingValue<K extends ExecutorSetting>(value: ExecutorS
     case "completedTaskDisplayHours": return (value[key] === undefined ? 3 : value[key]) as ExecutorSlotsConfig[K];
     case "autoArchiveEnabled": return (value[key] ?? true) as ExecutorSlotsConfig[K];
     case "autoArchiveDays": return (value[key] ?? 7) as ExecutorSlotsConfig[K];
+    case "executionTrustMode": return (value[key] ?? "sandboxed") as ExecutorSlotsConfig[K];
     default: return value[key];
   }
 }

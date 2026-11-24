@@ -365,7 +365,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                 scratchDir: ticket.scratchDir,
                 projectId: ticket.projectId,
                 grantRevision: ticket.grantRevision,
-                readOnly: ticket.readOnly,
+                readOnly: ticket.readOnly, executionKey: ticket.id, ...(snapshot?.ticketExecutionModes?.[ticket.id]?.runEpoch === ticket.runEpoch ? { executionMode: snapshot.ticketExecutionModes[ticket.id]!.mode } : {}),
                 ...(activeStagedCwd ? { stagedTaskId: ticket.id } : {}),
               },
             );

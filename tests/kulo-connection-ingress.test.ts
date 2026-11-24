@@ -67,22 +67,43 @@ async function fixture(failSaving = false, enableLocalEnv = false) {
 }
 
 describe("connection credential admission across user input paths", () => {
-  it.skipIf(process.platform !== "darwin")("keeps the main model's generic file reader out of application-private stores", async () => {
+  it.skipIf(process.platform !== "darwin")("keeps the main model's generic file reader out of application-private stores in sandboxed mode and permits access in trusted mode", async () => {
     const f = await fixture(false, true);
+    const settings = f.hub.getSettingsView();
+    await f.hub.updateSettingsBlock(
+      "executor",
+      settings.blocks.executor.revision,
+      { ...settings.blocks.executor.value, executionTrustMode: "sandboxed" },
+      BACKGROUND_CONTEXT,
+    );
     const home = path.join(f.stateDir, "synthetic-home");
     const filename = path.join(home, "Library/Mail/private.emlx");
     fs.mkdirSync(path.dirname(filename), { recursive: true });
     fs.writeFileSync(filename, "synthetic-mail-must-use-the-application-broker");
     vi.spyOn(os, "homedir").mockReturnValue(home);
-    let toolResults = "";
+    let sandboxedResults = "";
+    let trustedResults = "";
     f.provider.setResponses([
       () => fauxAssistantMessage([fauxToolCall("read", { path: filename })], { stopReason: "toolUse" }),
-      (transcript) => { toolResults = JSON.stringify(transcript.messages.filter((message) => message.role === "toolResult")); return fauxAssistantMessage("需要先连接对应应用。"); },
+      (transcript) => { sandboxedResults = JSON.stringify(transcript.messages.filter((message) => message.role === "toolResult")); return fauxAssistantMessage("需要先连接对应应用。"); },
+      () => fauxAssistantMessage([fauxToolCall("read", { path: filename })], { stopReason: "toolUse" }),
+      (transcript) => { trustedResults = JSON.stringify(transcript.messages.filter((message) => message.role === "toolResult")); return fauxAssistantMessage("已直接读取本地文件。"); },
     ]);
-    const sent = await f.hub.sendUserMessage("读取指定文件", { requestId: "private-application-reader" });
-    await sent.wait(BACKGROUND_CONTEXT);
-    expect(toolResults).toContain("通过已授权");
-    expect(toolResults).not.toContain("synthetic-mail-must-use-the-application-broker");
+    const sentSandboxed = await f.hub.sendUserMessage("读取指定文件", { requestId: "private-application-reader-sandboxed" });
+    await sentSandboxed.wait(BACKGROUND_CONTEXT);
+    expect(sandboxedResults).toContain("通过已授权");
+    expect(sandboxedResults).not.toContain("synthetic-mail-must-use-the-application-broker");
+
+    const updated = f.hub.getSettingsView();
+    await f.hub.updateSettingsBlock(
+      "executor",
+      updated.blocks.executor.revision,
+      { ...updated.blocks.executor.value, executionTrustMode: "trusted" },
+      BACKGROUND_CONTEXT,
+    );
+    const sentTrusted = await f.hub.sendUserMessage("本机信任模式下再读一次", { requestId: "private-application-reader-trusted" });
+    await sentTrusted.wait(BACKGROUND_CONTEXT);
+    expect(trustedResults).toContain("synthetic-mail-must-use-the-application-broker");
   });
 
   it("creates an unknown credential card from chat and allows the main model to organize its schema without receiving values", async () => {

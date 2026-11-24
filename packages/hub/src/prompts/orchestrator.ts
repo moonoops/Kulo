@@ -4,10 +4,12 @@ import {
   directExternalClientRoleId,
   externalClientDisplayName,
   isSupportedExternalAgentKind,
+  isWorkerEnvReady,
   localizeDefaultRolePreset,
   type ActiveMemoryMode,
   type CapabilitySnapshot,
   type EnvNodeDescriptor,
+  type ExecutionTrustMode,
   type ExternalClientConnection,
   type HindsightMemoryConfig,
   type KuloLanguage,
@@ -22,14 +24,21 @@ import { SettingsAssistantDoc, isActiveSettingsConversation, isMainOrchestratorC
 import { KuloStateDoc, isOrchestratorConversation } from "../state.js";
 import { KuloWorkingMemoryDoc, buildWorkingMemorySnapshot } from "../working-memory.js";
 
-export function buildPhilosophyPrompt(agentName = "Kulo", language?: KuloLanguage): string {
+export function buildPhilosophyPrompt(
+  agentName = "Kulo",
+  language?: KuloLanguage,
+  executionTrustMode: ExecutionTrustMode = "sandboxed",
+): string {
   const defaultLanguage = language === "en" ? "English" : "Chinese";
+  const authorityLine = executionTrustMode === "trusted"
+    ? "- **Authority & Delegation**: Handle quick checks, edits, native CLIs (`read`/`write`/`edit`/`bash`/`kulo_host_action`), and browser/desktop tasks directly; delegate multi-step coding, long builds, or Android via `kulo_dispatch` (Kulo state/vault stay protected; never kill the live app mid-build). Answer on `inline_delivery`; else confirm dispatch and end—never poll."
+    : "- **Authority & Delegation**: Handle quick answers, checks, and edits (`read`/`write`/`edit`/`bash`/`kulo_host_action`) directly; delegate via `kulo_dispatch` for multi-step coding, long builds/tests, mutable browser/desktop/Android work, or independent checks (respect Worker locks; keep credentials protected). On `inline_delivery`, answer directly; otherwise confirm dispatch and end your turn—never poll.";
   return `You are ${agentName}, the user's personal assistant—the app, settings, voice, Workers, vault, and isolation boundaries are all parts of you. Own the conversation and delegate background work via \`kulo_dispatch\`.
 
 ## Operating Rules
 - **Self-Reference**: Speak in unified first person ("I"/"我"); never split yourself from Kulo or say "Kulo doesn't allow me". Use plain terms and omit internal tool/ticket IDs or jargon unless asked.
 - **Language**: Honor requested deliverable languages; otherwise match the active conversation for visible replies and internal thinking/reasoning, defaulting to ${defaultLanguage}.
-- **Authority & Delegation**: Handle quick answers, checks, and edits (\`read\`/\`write\`/\`edit\`/\`bash\`/\`kulo_host_action\`) directly; delegate via \`kulo_dispatch\` for multi-step coding, long builds/tests, mutable browser/desktop/Android work, or independent checks (respect Worker locks; keep credentials protected). On \`inline_delivery\`, answer directly; otherwise confirm dispatch and end your turn—never poll.
+${authorityLine}
 - **Worker Gatekeeper**: Worker blockers/permissions come to you first. Approve/steer silently (\`[COORDINATOR_OK]\`) when safe; escalate via \`ask_user\`/\`kulo_ticket_ask_user\` (set \`action="stop"\` on cancel/end options) or chat only for risky/ambiguous choices, and apply chat replies to open cards immediately.
 - **Discuss vs. Act**: When asked to analyze or discuss, inspect without editing; when asked to do something, complete reversible steps end-to-end with your tools instead of handing manual instructions to the user, confirming only destructive or external-facing actions.
 - **Self-Contained Handoff**: Workers lack chat/Identity/memory. Pass \`context_summary\` only when needed beyond \`goal\` (omit redundant \`context_summary\`/\`acceptance\`); use \`attachment_ids\`/\`board_id\`/\`review_ticket_id\`.
@@ -89,6 +98,7 @@ export function createOrchestratorSections(options: {
   getRoles: () => Record<string, RolePreset>;
   getExternalClients?: () => Record<string, ExternalClientConnection>;
   getEnvs: () => EnvNodeDescriptor[];
+  getExecutionTrustMode?: () => ExecutionTrustMode;
   getIdentityDir: () => string;
   getMemoryConfig: () => HindsightMemoryConfig;
   getBuiltinMemoryState?: () => { active: boolean; sharedActive: boolean };
@@ -137,7 +147,11 @@ export function createOrchestratorSections(options: {
 
   const corePhilosophySection = section(
     "kulo_orchestrator",
-    () => buildPhilosophyPrompt(options.getAgentName?.() || "Kulo", options.getLanguage?.()),
+    () => buildPhilosophyPrompt(
+      options.getAgentName?.() || "Kulo",
+      options.getLanguage?.(),
+      options.getExecutionTrustMode?.() ?? "sandboxed",
+    ),
     { tag: false },
   );
 
@@ -279,6 +293,7 @@ export function createOrchestratorSections(options: {
 
     const envs = [...options.getEnvs()].sort((a, b) => a.id.localeCompare(b.id));
     const hasAndroid = envs.some((e) => e.executionKind === "native-device");
+    const trustMode = options.getExecutionTrustMode?.() ?? "sandboxed";
     const summarizeEnvCapabilities = (e: EnvNodeDescriptor): string => {
       if (e.executionKind === "native-device") {
         if (e.android?.enabled === false) return "android (disabled)";
@@ -286,7 +301,7 @@ export function createOrchestratorSections(options: {
       }
       const caps = new Set(e.capabilities);
       const tags = [
-        (caps.has("worker-isolation") || caps.has("worker-isolation-basic")) && !caps.has("worker-isolation-unavailable")
+        isWorkerEnvReady(e, trustMode, { isLocal: e.kind === "local" })
           ? "worker"
           : "no-sandbox",
       ];

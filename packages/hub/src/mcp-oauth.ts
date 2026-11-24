@@ -20,7 +20,7 @@ import {
   type OAuthCallbackPage,
   type OAuthChallenge,
 } from "@earendil-works/pi-mcp/oauth";
-import type { ConnectionRecordView, McpOAuthSessionView } from "@kulo/protocol";
+import type { ConnectionRecordView, ExecutionTrustMode, McpOAuthSessionView } from "@kulo/protocol";
 import type { ConnectionVault } from "./connections.js";
 import { createMcpFetch, validateMcpTargetUrl } from "./mcp-fetch.js";
 import { isNonPublicMcpUrl } from "./mcp-presets.js";
@@ -328,6 +328,7 @@ export interface McpOAuthSessionHost {
   onAuthorizedChange(connectionId: string, authorized: boolean): void;
   onCompletedProbe(connectionId: string, expectedRevision: number, signal?: AbortSignal): Promise<ConnectionRecordView | undefined>;
   redact(text: string): string;
+  getExecutionTrustMode?: () => ExecutionTrustMode;
   baseFetch?: typeof fetch;
 }
 
@@ -339,6 +340,7 @@ interface ActiveOAuthSession {
   expectedBinding: string;
   serverUrl: string;
   allowPrivateNetwork: boolean;
+  allowPrivateHttp: boolean;
   clientId?: string;
   clientSecret?: string;
   scope?: string;
@@ -430,6 +432,7 @@ export class McpOAuthSessionManager {
         }
         const oauthFetch = createMcpFetch({
           allowPrivateNetwork: session.allowPrivateNetwork,
+          allowPrivateHttp: session.allowPrivateHttp,
           timeoutMs: OAUTH_REQUEST_TIMEOUT_MS,
           baseFetch: this.#host.baseFetch,
         });
@@ -490,8 +493,9 @@ export class McpOAuthSessionManager {
     // Cancel any existing pending session for the same connection first.
     await this.cancelForConnection(record.id);
 
-    const allowPrivateNetwork = isNonPublicMcpUrl(record.url);
-    validateMcpTargetUrl(record.url, { allowPrivateNetwork });
+    const allowPrivateHttp = this.#host.getExecutionTrustMode?.() === "trusted";
+    const allowPrivateNetwork = allowPrivateHttp || isNonPublicMcpUrl(record.url);
+    validateMcpTargetUrl(record.url, { allowPrivateNetwork, allowPrivateHttp });
 
     const clientSecret = await this.#host.getClientSecret(record.id);
     const existingEntry = await this.#host.vault.get(mcpOAuthVaultRef(record.id));
@@ -503,6 +507,7 @@ export class McpOAuthSessionManager {
     const stepUp = challenge?.error === "insufficient_scope";
     const oauthFetch = createMcpFetch({
       allowPrivateNetwork,
+      allowPrivateHttp,
       timeoutMs: OAUTH_REQUEST_TIMEOUT_MS,
       baseFetch: this.#host.baseFetch,
     });
@@ -537,6 +542,7 @@ export class McpOAuthSessionManager {
             expectedBinding,
             serverUrl: record.url,
             allowPrivateNetwork,
+            allowPrivateHttp,
             clientId: record.mcpOAuthClientId,
             clientSecret,
             redirectUrl: pickRefreshRedirectUrl(existingState),
@@ -615,7 +621,7 @@ export class McpOAuthSessionManager {
       if (!authorizationUrl) {
         throw Object.assign(new Error("授权服务器未返回登录地址。"), { code: "connection_oauth_failed", status: 502 });
       }
-      validateMcpTargetUrl(authorizationUrl, { allowPrivateNetwork });
+      validateMcpTargetUrl(authorizationUrl, { allowPrivateNetwork, allowPrivateHttp });
       const oauthState = await provider.state();
       const requestedScope = authorizationUrl.searchParams.get("scope") ?? scope;
 
@@ -639,6 +645,7 @@ export class McpOAuthSessionManager {
         expectedBinding,
         serverUrl: record.url,
         allowPrivateNetwork,
+        allowPrivateHttp,
         clientId: record.mcpOAuthClientId,
         clientSecret,
         scope,

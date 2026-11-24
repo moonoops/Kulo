@@ -135,10 +135,10 @@ describe("managed browser sessions", () => {
 
   it("caps browser instances and releases a slot after closing its browser", async () => {
     const { service } = fixture();
-    for (const sessionId of ["one", "two"]) await service.request({ tool: "browser", action: "open", sessionId, url: "https://example.com" });
-    expect(await service.request({ tool: "browser", action: "open", sessionId: "three", url: "https://example.com" })).toMatchObject({ ok: false, error: { code: "SESSION_LIMIT" } });
+    for (const sessionId of ["one", "two", "three", "four"]) await service.request({ tool: "browser", action: "open", sessionId, url: "https://example.com" });
+    expect(await service.request({ tool: "browser", action: "open", sessionId: "five", url: "https://example.com" })).toMatchObject({ ok: false, error: { code: "SESSION_LIMIT" } });
     await service.request({ tool: "browser", action: "close", sessionId: "one" });
-    expect(await service.request({ tool: "browser", action: "open", sessionId: "three", url: "https://example.com" })).toMatchObject({ ok: true });
+    expect(await service.request({ tool: "browser", action: "open", sessionId: "five", url: "https://example.com" })).toMatchObject({ ok: true });
   });
 
   it("makes browser cleanup idempotent without launching unknown sessions", async () => {

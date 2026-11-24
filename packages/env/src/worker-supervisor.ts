@@ -1,6 +1,29 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFile, execFileSync } from "node:child_process";
+
+export interface SupervisorEnvPolicy {
+  mode: "trusted";
+  blockedEnvNames?: string[];
+  extraPath?: string;
+  nonInteractiveSudo?: boolean;
+  stripDesktopSsh?: boolean;
+  realHome?: string;
+  realTmpDir?: string;
+}
+
+export interface SupervisedCommandOptions {
+  windowsVerbatimArguments?: boolean;
+  childStdin?: "pipe" | "null";
+  envPolicy?: SupervisorEnvPolicy;
+  windowsJobObject?: boolean;
+}
+
+const WINDOWS_JOB_RUNNER_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../native/windows-job-runner.ps1",
+);
 
 export function processFingerprint(pid: number): string | undefined {
   try {
@@ -24,14 +47,96 @@ export function processFingerprint(pid: number): string | undefined {
 
 async function workerSupervisor(): Promise<void> {
   const fs = await import("node:fs");
+  const os = await import("node:os");
   const cp = await import("node:child_process");
   const path = await import("node:path");
   const [stateFile, encodedCommand, encodedCleanup, ...arguments_] = process.argv.slice(1);
   if (!stateFile || !encodedCommand) process.exit(2);
-  const parsedCommand = JSON.parse(encodedCommand) as string[] | { command: string[]; windowsVerbatimArguments?: boolean };
-  const command = Array.isArray(parsedCommand) ? parsedCommand : parsedCommand.command;
+  const parsedCommand = JSON.parse(encodedCommand) as
+    | string[]
+    | {
+        command: string[];
+        windowsVerbatimArguments?: boolean;
+        childStdin?: "pipe" | "null";
+        windowsJobObject?: boolean;
+        windowsJobScript?: string;
+        envPolicy?: {
+          mode: "trusted";
+          blockedEnvNames?: string[];
+          extraPath?: string;
+          nonInteractiveSudo?: boolean;
+          stripDesktopSsh?: boolean;
+          realHome?: string;
+          realTmpDir?: string;
+        };
+      };
+  const baseCommand = Array.isArray(parsedCommand) ? parsedCommand : parsedCommand.command;
   const windowsVerbatimArguments = Array.isArray(parsedCommand) ? false : Boolean(parsedCommand.windowsVerbatimArguments);
+  const childStdin: "pipe" | "null" = Array.isArray(parsedCommand) ? "pipe" : (parsedCommand.childStdin ?? "pipe");
+  const windowsJobObject = Array.isArray(parsedCommand) ? false : Boolean(parsedCommand.windowsJobObject);
+  const windowsJobScript = Array.isArray(parsedCommand) ? undefined : parsedCommand.windowsJobScript;
+  const envPolicy = Array.isArray(parsedCommand) ? undefined : parsedCommand.envPolicy;
   const sandboxCleanup = JSON.parse(encodedCleanup ?? "[]") as string[];
+
+  let spawnEnv: NodeJS.ProcessEnv | undefined;
+  if (envPolicy?.mode === "trusted") {
+    const internalSecretRe = /^(?:KULO|HINDSIGHT)_.*(?:TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|PEER.*CONFIG)/i;
+    const blockedUpper = new Set((envPolicy.blockedEnvNames ?? []).map((n) => n.trim().toUpperCase()).filter(Boolean));
+    const win32 = process.platform === "win32";
+    const env: NodeJS.ProcessEnv = {};
+    const setCaseAware = (k: string, v: string) => {
+      if (win32) {
+        const up = k.toUpperCase();
+        for (const existing of Object.keys(env)) {
+          if (existing.toUpperCase() === up && existing !== k) delete env[existing];
+        }
+      }
+      env[k] = v;
+    };
+    const readCaseAware = (target: string): string | undefined => {
+      if (!win32) return env[target];
+      const up = target.toUpperCase();
+      for (const [k, v] of Object.entries(env)) {
+        if (k.toUpperCase() === up && v !== undefined) return v;
+      }
+      return undefined;
+    };
+    const stripDesktopSsh = Boolean(envPolicy.stripDesktopSsh || process.env.KULO_DESKTOP_DATA_DIR);
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v === undefined) continue;
+      const up = k.toUpperCase();
+      if (stripDesktopSsh && (up === "SSH_CLIENT" || up === "SSH_CONNECTION" || up === "SSH_TTY")) continue;
+      setCaseAware(k, v);
+    }
+    const realHome = envPolicy.realHome || readCaseAware("HOME") || os.homedir();
+    const realTmp = envPolicy.realTmpDir || readCaseAware("TMPDIR") || os.tmpdir();
+    setCaseAware("HOME", realHome);
+    setCaseAware("KULO_HOST_HOME", realHome);
+    setCaseAware("TMPDIR", realTmp);
+    if (!readCaseAware("LANG")) setCaseAware("LANG", "en_US.UTF-8");
+    if (envPolicy.extraPath) setCaseAware(win32 ? "Path" : "PATH", envPolicy.extraPath);
+    if (!win32) {
+      if (!env.SHELL) env.SHELL = fs.existsSync("/bin/zsh") ? "/bin/zsh" : "/bin/bash";
+      if (!env.USER) { try { env.USER = os.userInfo().username; } catch { /* ignore */ } }
+      if (envPolicy.nonInteractiveSudo && !env.SUDO_ASKPASS) env.SUDO_ASKPASS = "/usr/bin/false";
+    } else {
+      if (!readCaseAware("TEMP")) setCaseAware("TEMP", realTmp);
+      if (!readCaseAware("TMP")) setCaseAware("TMP", realTmp);
+    }
+    for (const k of Object.keys(env)) {
+      if (internalSecretRe.test(k) || blockedUpper.has(k.toUpperCase())) delete env[k];
+    }
+    spawnEnv = env;
+  }
+
+  let spawnExecutable = baseCommand[0]!;
+  let spawnArgs = [...baseCommand.slice(1), ...arguments_];
+  if (process.platform === "win32" && !sandboxCleanup.length && windowsJobObject && windowsJobScript && fs.existsSync(windowsJobScript)) {
+    const powershell = path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    spawnArgs = ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", windowsJobScript, spawnExecutable, ...spawnArgs];
+    spawnExecutable = powershell;
+  }
+
   const fingerprint = (pid: number) => {
     if (process.platform === "linux") { const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8"); return stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/)[19]; }
     if (process.platform === "darwin") return cp.execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
@@ -48,11 +153,12 @@ async function workerSupervisor(): Promise<void> {
   };
   // This must succeed before a process is spawned: cleanup may already have revoked the launch directory.
   store("starting");
-  const child = cp.spawn(command[0]!, [...command.slice(1), ...arguments_], {
-    stdio: ["pipe", "pipe", "pipe"],
+  const child = cp.spawn(spawnExecutable, spawnArgs, {
+    stdio: [childStdin === "null" ? "ignore" : "pipe", "pipe", "pipe"],
     detached: process.platform !== "win32",
     windowsHide: true,
-    ...(windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+    ...(spawnEnv ? { env: spawnEnv } : {}),
+    ...(windowsVerbatimArguments && !(process.platform === "win32" && windowsJobObject) ? { windowsVerbatimArguments: true } : {}),
   });
   let stopping = false;
   let exited = false;
@@ -67,7 +173,15 @@ async function workerSupervisor(): Promise<void> {
       }
       return;
     }
-    try { process.platform === "win32" ? child.kill(kind) : process.kill(-child.pid, kind); }
+    if (process.platform === "win32") {
+      try {
+        cp.spawnSync(path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/F", "/T", "/PID", String(child.pid)], { stdio: "ignore", timeout: 2_000, windowsHide: true });
+      } catch { /* ignore */ }
+      try { child.kill(kind); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+      return;
+    }
+    try { process.kill(-child.pid, kind); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
   };
   const stop = () => {
@@ -81,6 +195,11 @@ async function workerSupervisor(): Promise<void> {
   process.on("SIGINT", stop);
   process.stdin.on("end", stop);
   process.stdin.on("error", stop);
+  if (childStdin === "null") {
+    // Flowing mode is required in Node streams so 'end' reliably fires on parent pipe EOF.
+    process.stdin.on("data", () => {});
+    process.stdin.resume();
+  }
   process.stdout.on("error", stop);
   child.once("spawn", async () => {
     if (child.pid) {
@@ -101,11 +220,13 @@ async function workerSupervisor(): Promise<void> {
       if (!verified) { store("cleanup_pending", child.pid); stop(); return; }
     }
     store("running", child.pid);
-    process.stdin.pipe(child.stdin);
+    if (childStdin !== "null" && child.stdin) {
+      process.stdin.pipe(child.stdin);
+    }
   });
-  child.stdin.on("error", stop);
-  child.stdout.pipe(process.stdout);
-  child.stderr.pipe(process.stderr);
+  if (child.stdin) child.stdin.on("error", stop);
+  if (child.stdout) child.stdout.pipe(process.stdout);
+  if (child.stderr) child.stderr.pipe(process.stderr);
   child.once("error", () => {
     store("stopped", child.pid);
     process.exit(1);
@@ -141,10 +262,24 @@ export function supervisedCommand(
   command: readonly string[],
   controlDirectory: string,
   sandboxCleanup?: readonly string[],
-  options?: { windowsVerbatimArguments?: boolean },
+  options?: SupervisedCommandOptions,
 ): readonly string[] {
-  const payload = options?.windowsVerbatimArguments
-    ? { command: [...command], windowsVerbatimArguments: true }
+  const hasExtended = Boolean(
+    options?.windowsVerbatimArguments ||
+    options?.childStdin === "null" ||
+    options?.envPolicy ||
+    options?.windowsJobObject,
+  );
+  const payload = hasExtended
+    ? {
+        command: [...command],
+        ...(options?.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+        ...(options?.childStdin ? { childStdin: options.childStdin } : {}),
+        ...(options?.envPolicy ? { envPolicy: options.envPolicy } : {}),
+        ...(options?.windowsJobObject
+          ? { windowsJobObject: true, windowsJobScript: WINDOWS_JOB_RUNNER_PATH }
+          : {}),
+      }
     : command;
   return [process.execPath, "--input-type=module", "-e", standaloneFunctionSource(workerSupervisor), path.join(controlDirectory, "execution.json"), JSON.stringify(payload), JSON.stringify(sandboxCleanup ?? [])];
 }
@@ -241,6 +376,7 @@ interface RecordedExecution {
   workspaceDir: string;
   scratchDir?: string;
   projectId?: string;
+  executionKey?: string;
   temporaryDir: string;
   cleanupModel?: string;
 }
@@ -249,7 +385,7 @@ function recordedExecutions(controlRoot: string): Array<{ directory: string; sco
   if (!fs.existsSync(controlRoot)) return [];
   const records: Array<{ directory: string; scope: RecordedExecution }> = [];
   for (const entry of fs.readdirSync(controlRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !entry.name.startsWith("kulo-worker-control-")) continue;
+    if (!entry.isDirectory() || (!entry.name.startsWith("kulo-worker-control-") && !entry.name.startsWith("kulo-host-action-"))) continue;
     const directory = path.join(controlRoot, entry.name);
     const owner = path.join(directory, "owner.json");
     if (!fs.existsSync(owner)) continue;
@@ -271,14 +407,29 @@ export function hasOrphanedExecution(controlRoot: string, workspaceDir: string):
 }
 
 /** Reconcile receipts before granting a directory to a new process after an Env or Hub restart. */
-export async function cleanupRecordedExecutions(controlRoot: string, select?: { workspaceDir?: string; scratchDir?: string; projectId?: string }): Promise<boolean> {
+export async function cleanupRecordedExecutions(
+  controlRoot: string,
+  select?: {
+    workspaceDir?: string;
+    scratchDir?: string;
+    projectId?: string;
+    executionKey?: string;
+    excludeDirectories?: ReadonlySet<string>;
+    includeHostActions?: boolean;
+  },
+): Promise<boolean> {
   let pending = false;
   for (const { directory, scope } of recordedExecutions(controlRoot)) {
+    if (select && !select.includeHostActions && path.basename(directory).startsWith("kulo-host-action-")) continue;
+    if (select?.excludeDirectories?.has(directory)) continue;
     if (select?.workspaceDir !== undefined && scope.workspaceDir !== select.workspaceDir) continue;
     if (select && "scratchDir" in select && scope.scratchDir !== select.scratchDir) continue;
     if (select?.projectId !== undefined && scope.projectId !== select.projectId) continue;
+    if (select?.executionKey !== undefined && scope.executionKey !== undefined && scope.executionKey !== select.executionKey) continue;
     const owned = scope.ownerPid === process.pid && (!scope.ownerIdentity || processFingerprint(process.pid) === scope.ownerIdentity);
     if (owned && !select) continue;
+    // Never terminate an active sibling receipt without an explicit executionKey match when select is scoped by executionKey.
+    if (owned && select?.executionKey !== undefined && scope.executionKey !== select.executionKey) continue;
     if (!owned && processExists(scope.ownerPid) && (!scope.ownerIdentity || processFingerprint(scope.ownerPid) === scope.ownerIdentity)) { pending = true; continue; }
     const executionFile = path.join(directory, "execution.json");
     if (process.platform === "darwin" && scope.cleanupModel !== "process-group" && fs.existsSync(executionFile) && !JSON.parse(fs.readFileSync(executionFile, "utf8")).sandboxCleanup) {

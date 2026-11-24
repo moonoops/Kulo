@@ -4,6 +4,7 @@ import {
   resolveRolePresetFromPool,
   type ActiveMemoryMode,
   type CapabilitySnapshot,
+  type ExecutionTrustMode,
   type KuloLanguage,
   type RolePreset,
   type TicketRecord,
@@ -22,6 +23,7 @@ export interface ComposeWorkerOptions {
   shellTimeoutSeconds?: number;
   language?: KuloLanguage;
   localEnvId?: string;
+  executionTrustMode?: ExecutionTrustMode;
   enabledTools?: ReadonlySet<string>;
 }
 
@@ -263,13 +265,18 @@ export function composeWorkerInstructions(
       } Report \`blocked\` before modifying external paths, expanding scope, or running destructive operations.`,
     );
   }
+  const isTrustedNative = opts.executionTrustMode === "trusted" && !isReadOnly && !isStagedProject;
   const hostActionClause = discovery.hasHostAction
     ? isReadOnly
       ? " or discover `kulo_host_action` (`action='inspect'`) via `tool_search` for read-only cross-platform process/port/host-path inspection (macOS blocks setuid `/bin/ps`)"
-      : " or discover `kulo_host_action` via `tool_search` for cross-platform process/port/host-path inspection (macOS blocks setuid `/bin/ps`) and credential-isolated host maintenance outside the workspace (group related steps into one `run` call)"
+      : isTrustedNative
+        ? " or discover `kulo_host_action` via `tool_search` for structured process/port/host-path inspection or confirmed host maintenance"
+        : " or discover `kulo_host_action` via `tool_search` for cross-platform process/port/host-path inspection (macOS blocks setuid `/bin/ps`) and credential-isolated host maintenance outside the workspace (group related steps into one `run` call)"
     : "";
   lines.push(
-    `- **Shell & Resumption**: Local dev servers must use \`PORT\` bound to \`127.0.0.1\` or \`::1\` (host management ports are off-limits). \`$HOME\` is an isolated temporary directory; inspect real user-home paths via \`$KULO_HOST_HOME\` (read-only)${hostActionClause}. Unspecified \`bash\` timeouts default to ${opts.shellTimeoutSeconds ?? DEFAULT_SHELL_TIMEOUT}s; set \`timeout\` explicitly for longer commands. Permission/timeout errors are execution failures, not user cancellations. When resuming after a wait or restart, inspect file changes and unconfirmed side-effect operations before acting.`,
+    isTrustedNative
+      ? `- **Shell & Resumption**: Local dev servers must use \`PORT\` bound to \`127.0.0.1\` or \`::1\` (host management ports are off-limits). Native user \`$HOME\`, login-shell \`PATH\`, and local CLIs/credentials (such as \`gh\`, \`lark-cli\`, \`ssh\`, Keychain) are directly available${hostActionClause}; Kulo's state DB and encrypted vault remain protected. When developing or packaging Kulo itself, keep build/sign verification (\`pnpm desktop:package\`) separate from app installation—report the verified bundle path instead of terminating the running Kulo app synchronously. Unspecified \`bash\` timeouts default to ${opts.shellTimeoutSeconds ?? DEFAULT_SHELL_TIMEOUT}s; set \`timeout\` explicitly for longer commands. Permission/timeout errors are execution failures, not user cancellations. When resuming after a wait or restart, inspect file changes and unconfirmed side-effect operations before acting.`
+      : `- **Shell & Resumption**: Local dev servers must use \`PORT\` bound to \`127.0.0.1\` or \`::1\` (host management ports are off-limits). \`$HOME\` is an isolated temporary directory; inspect real user-home paths via \`$KULO_HOST_HOME\` (read-only)${hostActionClause}. Unspecified \`bash\` timeouts default to ${opts.shellTimeoutSeconds ?? DEFAULT_SHELL_TIMEOUT}s; set \`timeout\` explicitly for longer commands. Permission/timeout errors are execution failures, not user cancellations. When resuming after a wait or restart, inspect file changes and unconfirmed side-effect operations before acting.`,
   );
   if (discovery.hasComputerHandoff) {
     lines.push(
@@ -358,6 +365,7 @@ export function composeSubagentInstructions(params: {
   language?: KuloLanguage;
   localEnvId?: string;
   shellTimeoutSeconds?: number;
+  executionTrustMode?: ExecutionTrustMode;
   enabledTools?: ReadonlySet<string>;
 }): string {
   const {
@@ -373,6 +381,7 @@ export function composeSubagentInstructions(params: {
     language,
     localEnvId,
     shellTimeoutSeconds,
+    executionTrustMode,
     enabledTools,
   } = params;
   const effectiveRolePreset =
@@ -434,10 +443,15 @@ export function composeSubagentInstructions(params: {
   if (narrowedScope) {
     lines.push(`- Sub-task Narrowed Scope: ${narrowedScope}`);
   }
+  const isTrustedNativeSubagent = executionTrustMode === "trusted" && !effectiveReadOnly && !isStagedProject;
   lines.push(
-    `- Shell & Limits: Local dev servers must use \`PORT\` on \`127.0.0.1\` or \`::1\` (host management ports are off-limits). \`$HOME\` is an isolated temporary directory; inspect real user-home paths via \`$KULO_HOST_HOME\` (read-only)${
-      discovery.hasHostAction ? " or `kulo_host_action` (`action='inspect'` only)" : ""
-    }. Unspecified \`bash\` timeouts default to ${shellTimeoutSeconds ?? DEFAULT_SHELL_TIMEOUT}s.`,
+    isTrustedNativeSubagent
+      ? `- Shell & Limits: Local dev servers must use \`PORT\` on \`127.0.0.1\` or \`::1\` (host management ports are off-limits). Native user \`$HOME\`, login-shell \`PATH\`, and local CLIs are directly available${
+          discovery.hasHostAction ? " (plus `kulo_host_action`)" : ""
+        }; Kulo's state DB and vault remain protected. Unspecified \`bash\` timeouts default to ${shellTimeoutSeconds ?? DEFAULT_SHELL_TIMEOUT}s.`
+      : `- Shell & Limits: Local dev servers must use \`PORT\` on \`127.0.0.1\` or \`::1\` (host management ports are off-limits). \`$HOME\` is an isolated temporary directory; inspect real user-home paths via \`$KULO_HOST_HOME\` (read-only)${
+          discovery.hasHostAction ? " or `kulo_host_action` (`action='inspect'` only)" : ""
+        }. Unspecified \`bash\` timeouts default to ${shellTimeoutSeconds ?? DEFAULT_SHELL_TIMEOUT}s.`,
   );
   const effectiveSubMemoryMode: ActiveMemoryMode = memoryMode ?? (memoryEnabled ? "hindsight" : "none");
   if (effectiveSubMemoryMode === "hindsight") {
@@ -473,6 +487,7 @@ export function createWorkerSections(options: {
   getMaxSubagentsPerTicket: () => number;
   getMediaCapabilities?: () => Promise<CapabilitySnapshot>;
   getLocalEnvId?: () => string;
+  getExecutionTrustMode?: () => ExecutionTrustMode;
   shellTimeoutSeconds?: number;
 }) {
   const mandateSection = section("kulo_worker_mandate", async (input, context) => {
@@ -489,6 +504,11 @@ export function createWorkerSections(options: {
     const memoryEnabled = memoryMode === "hindsight";
     const language = options.getLanguage?.();
     const localEnvId = options.getLocalEnvId?.();
+    const frozenMode = state?.ticketExecutionModes?.[scope.ticket.id];
+    const executionTrustMode: ExecutionTrustMode =
+      frozenMode && frozenMode.runEpoch === scope.ticket.runEpoch
+        ? frozenMode.mode
+        : (options.getExecutionTrustMode?.() ?? "sandboxed");
     const enabledTools = collectEnabledAgentTools(input.agent);
     if (scope.subagent) {
       const { roleId, preset } = resolveRolePresetFromPool(roles, scope.subagent.role);
@@ -503,6 +523,7 @@ export function createWorkerSections(options: {
         memoryEnabled,
         memoryMode,
         language,
+        executionTrustMode,
         ...(localEnvId ? { localEnvId } : {}),
         ...(options.shellTimeoutSeconds !== undefined ? { shellTimeoutSeconds: options.shellTimeoutSeconds } : {}),
         ...(enabledTools ? { enabledTools } : {}),
@@ -516,6 +537,7 @@ export function createWorkerSections(options: {
       maxSubagentsPerTicket: options.getMaxSubagentsPerTicket(),
       shellTimeoutSeconds: options.shellTimeoutSeconds,
       language,
+      executionTrustMode,
       ...(localEnvId ? { localEnvId } : {}),
       ...(enabledTools ? { enabledTools } : {}),
     });

@@ -112,10 +112,11 @@ describe("settings controls and layout", () => {
       expect(html).toContain(label);
     }
     expect(html).not.toContain('role="radio');
-    expect(html.match(/<button\b/g)).toHaveLength(2);
+    expect(html.match(/<button\b/g)).toHaveLength(4);
+    expect(html).toContain("执行权限");
+    expect(html).toContain('aria-label="执行权限说明"');
     expect(html).toContain('aria-label="超时检查说明"');
     expect(html).toContain("已完成任务显示时长");
-    expect(html).not.toContain("执行权限");
     expect(html.indexOf("已完成任务显示时长")).toBeGreaterThan(html.indexOf("超时检查"));
     expect(html).not.toContain("安全护栏");
     expect(html).not.toContain("kulo-settings-savebar");
@@ -156,8 +157,28 @@ describe("settings controls and layout", () => {
       },
     };
     const html = renderToStaticMarkup(<ConcurrencyModule settings={next} onSettingsUpdated={update} />);
-    const trigger = html.match(/<button\b[^>]*aria-haspopup="listbox"[^>]*>([\s\S]*?)<\/button>/);
-    expect(trigger?.[1]).toContain(expectedLabel);
+    const triggers = [...html.matchAll(/<button\b[^>]*aria-haspopup="listbox"[^>]*>([\s\S]*?)<\/button>/g)];
+    expect(triggers).toHaveLength(2);
+    expect(triggers[0]?.[1]).toContain("隔离沙箱");
+    expect(triggers[1]?.[1]).toContain(expectedLabel);
+  });
+
+  it.each([
+    { mode: undefined, expectedLabel: "隔离沙箱" },
+    { mode: "sandboxed" as const, expectedLabel: "隔离沙箱" },
+    { mode: "trusted" as const, expectedLabel: "本机信任" },
+  ])("renders executionTrustMode selection $expectedLabel", ({ mode, expectedLabel }) => {
+    const next: KuloSettingsView = {
+      ...settings,
+      blocks: {
+        ...settings.blocks,
+        executor: { ...settings.blocks.executor, value: { ...settings.blocks.executor.value, ...(mode ? { executionTrustMode: mode } : {}) } },
+      },
+    };
+    const html = renderToStaticMarkup(<ConcurrencyModule settings={next} onSettingsUpdated={update} />);
+    const triggers = [...html.matchAll(/<button\b[^>]*aria-haspopup="listbox"[^>]*>([\s\S]*?)<\/button>/g)];
+    expect(triggers).toHaveLength(2);
+    expect(triggers[0]?.[1]).toContain(expectedLabel);
   });
 
   it.each([

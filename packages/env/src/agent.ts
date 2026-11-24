@@ -2,17 +2,23 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
-import { localDaemon } from "@earendil-works/pi-env";
 import WebSocket from "ws";
-import { canonicalExecutionPath, createWorkerSandbox, nativeProtectedPaths, workerIsolationCapabilities, type WorkerSandbox } from "./isolation.js";
+import { canonicalExecutionPath, workerIsolationCapabilities, type WorkerSandbox } from "./isolation.js";
+import {
+  buildAgentCoreProtectedPaths,
+  buildAgentSandboxProtectedPaths,
+  cleanupAgentProjectScopes,
+  ownRuntimeProtectedPaths,
+  prepareAgentDaemonSpawn,
+  type AgentStreamScope,
+} from "./agent-stream-spawn.js";
+import { primeLoginShellPath } from "./trusted-execution.js";
 import { EXTERNAL_AGENT_NODE_CAPABILITIES, ExternalAgentService, isExternalAgentRequest } from "./external-agents.js";
 import type { ExternalAgentMcpInvocation } from "./external-agent-mcp.js";
 import { randomBytes } from "node:crypto";
 import { ProjectDirectoryRegistry } from "./project-directories.js";
 import { StagedWorkspaceService } from "./staged-workspace-service.js";
-import { cleanupRecordedExecutions, hasOrphanedExecution } from "./worker-supervisor.js";
+import { cleanupRecordedExecutions } from "./worker-supervisor.js";
 import { collectDeviceSystemInfo } from "./device-info.js";
 import { FlowBrowserService } from "./browser.js";
 import { ComputerUseService, computerUseConfiguration } from "./computer-use.js";
@@ -25,7 +31,11 @@ import {
   STREAM_RESUME_GRACE_MS,
   CONNECTORS_CAPABILITY,
   BUILTIN_MEMORY_SYNC_CAPABILITY, CLUSTER_FAILOVER_CAPABILITY,
+  LEGACY_MIGRATION_EXECUTION_TRUST_MODE,
+  TRUSTED_HOST_EXECUTION_CAPABILITY,
   WARM_STANDBY_CAPABILITY,
+  parseExecutionTrustMode,
+  type ExecutionTrustMode,
   type ClusterHandoverDirective,
   type ClusterSyncAvailableNotification,
   type ClusterSyncStatus,
@@ -53,23 +63,6 @@ import {
   type ComputerPreviewTarget,
   type ComputerPreviewUpdate,
 } from "@kulo/protocol";
-
-function ownRuntimeProtectedPaths(): string[] {
-  const envPackage = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const paths = [envPackage, path.join(envPackage, "node_modules"), path.resolve(envPackage, "../../node_modules")];
-  for (const sibling of ["cli", "protocol"]) paths.push(path.resolve(envPackage, "..", sibling));
-  try {
-    const protocolEntry = createRequire(import.meta.url).resolve("@kulo/protocol");
-    paths.push(path.resolve(path.dirname(protocolEntry), ".."));
-  } catch (error) {
-    // Installed peers bundle the protocol into their own protected runtime.
-    if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
-  }
-  for (let current = envPackage; current !== path.dirname(current); current = path.dirname(current)) {
-    if (path.basename(current) === "node_modules") paths.push(current);
-  }
-  return [...new Set(paths.filter((entry) => fs.existsSync(entry)))];
-}
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 15_000;
 const DEFAULT_HEARTBEAT_IDLE_MS = 25_000;
@@ -137,7 +130,7 @@ export class KuloEnvAgent {
   #ws: WebSocket | null = null;
   readonly #daemons = new Map<number, ChildProcessWithoutNullStreams>();
   readonly #workerSandboxes = new Map<number, WorkerSandbox>();
-  readonly #streamScopes = new Map<number, { workspaceDir?: string; scratchDir?: string; projectId?: string }>();
+  readonly #streamScopes = new Map<number, AgentStreamScope>();
   readonly #streamBuffers = new Map<number, StreamResumeBuffer>();
   readonly #streamAckTimers = new Map<number, NodeJS.Timeout>();
   readonly #cleaningStreams = new Map<number, Promise<boolean>>();
@@ -146,6 +139,7 @@ export class KuloEnvAgent {
   readonly #heartbeatIdleMs: number;
   readonly #heartbeatTimeoutMs: number;
   #hubInstanceId?: string;
+  #executionTrustMode: ExecutionTrustMode = LEGACY_MIGRATION_EXECUTION_TRUST_MODE;
   #connectorsNegotiated = false;
   #streamResumeNegotiated = false;
   #notificationSensor: MacOsNotificationSensor | null = null;
@@ -191,24 +185,37 @@ export class KuloEnvAgent {
       path.resolve(process.env.KULO_PEER_CONFIG?.trim() || path.join(os.homedir(), ".kulo", "connection.json")),
     ];
     fs.mkdirSync(this.#rootDir, { recursive: true });
-    this.#projectDirectories = new ProjectDirectoryRegistry({ deviceId: options.envId, filePath: options.projectGrantFile ?? path.join(this.#rootDir, ".kulo-env", "project-grants.json"), scratchRoot: path.join(this.#rootDir, "scratch"), getProtectedPaths: () => [...this.#launchProtectedPaths, ...ownRuntimeProtectedPaths(), ...(this.#options.protectedPaths ?? [])] });
+    const getCoreProtectedPaths = () => buildAgentCoreProtectedPaths({
+      rootDir: this.#rootDir,
+      privateDirectory: this.#projectDirectories.privateDirectory,
+      extraProtectedPaths: this.#options.protectedPaths,
+    });
+    const getSandboxProtectedPaths = () => buildAgentSandboxProtectedPaths({
+      rootDir: this.#rootDir,
+      privateDirectory: this.#projectDirectories.privateDirectory,
+      launchProtectedPaths: this.#launchProtectedPaths,
+      extraProtectedPaths: this.#options.protectedPaths,
+    });
+    this.#projectDirectories = new ProjectDirectoryRegistry({
+      deviceId: options.envId,
+      filePath: options.projectGrantFile ?? path.join(this.#rootDir, ".kulo-env", "project-grants.json"),
+      scratchRoot: path.join(this.#rootDir, "scratch"),
+      getProtectedPaths: () => [...this.#launchProtectedPaths, ...ownRuntimeProtectedPaths(), ...(this.#options.protectedPaths ?? [])],
+      getCoreProtectedPaths,
+      getExecutionTrustMode: () => this.#executionTrustMode,
+    });
     this.#stagedWorkspaces = new StagedWorkspaceService({ projectRegistry: this.#projectDirectories });
     this.#browser = options.browserService ?? new FlowBrowserService({ rootDir: path.join(this.#projectDirectories.privateDirectory, "browser") });
     this.#launchProtectedPaths.push(this.#browser.rootDir);
-    this.#computer = options.computerUseService ?? new ComputerUseService({ rootDir: path.join(this.#projectDirectories.privateDirectory, "computer-use"), ...computerUseConfiguration() });
+    this.#computer = options.computerUseService ?? new ComputerUseService({ rootDir: path.join(this.#projectDirectories.privateDirectory, "computer-use"), getExecutionTrustMode: () => this.#executionTrustMode, ...computerUseConfiguration() });
     this.#launchProtectedPaths.push(this.#computer.rootDir);
     this.#hostActions = new HostActionService({
       controlRoot: path.join(this.#projectDirectories.privateDirectory, "executions"),
-      getProtectedPaths: () => [
-        path.join(this.#rootDir, ".kulo-state"),
-        path.join(this.#rootDir, ".env"),
-        this.#projectDirectories.privateDirectory,
-        ...this.#launchProtectedPaths,
-        ...ownRuntimeProtectedPaths(),
-        ...(this.#options.protectedPaths ?? []),
-      ],
+      getProtectedPaths: getSandboxProtectedPaths,
+      getCoreProtectedPaths,
+      getExecutionTrustMode: () => this.#executionTrustMode,
     });
-    this.#externalAgents = options.externalAgentService ?? new ExternalAgentService({ envId: options.envId, rootDir: this.#rootDir, projectRegistry: this.#projectDirectories, toolHandler: invocation => this.#requestExternalTool(invocation) });
+    this.#externalAgents = options.externalAgentService ?? new ExternalAgentService({ envId: options.envId, rootDir: this.#rootDir, projectRegistry: this.#projectDirectories, getExecutionTrustMode: () => this.#executionTrustMode, toolHandler: invocation => this.#requestExternalTool(invocation) });
     if (process.platform === "darwin") {
       this.#notificationSensor = new MacOsNotificationSensor({
         envId: options.envId,
@@ -232,6 +239,7 @@ export class KuloEnvAgent {
   /** Start the agent and resolve once initial registration with Hub completes. */
   async start(): Promise<void> {
     this.#stopped = false;
+    void primeLoginShellPath();
     await cleanupRecordedExecutions(path.join(this.#projectDirectories.privateDirectory, "executions"));
     await this.#externalAgents.recover?.();
     return new Promise<void>((resolve, reject) => {
@@ -294,6 +302,7 @@ export class KuloEnvAgent {
     this.#ws = null;
     const wasRegistered = this.#registered;
     this.#registered = false;
+    this.#executionTrustMode = LEGACY_MIGRATION_EXECUTION_TRUST_MODE;
     this.#connectorsNegotiated = false;
     this.#clearLivenessTimers();
     if (previous) {
@@ -442,6 +451,8 @@ export class KuloEnvAgent {
     });
     this.#ws = ws;
     this.#registered = false;
+    // Always clear any trust policy from a previous Hub connection before re-negotiating.
+    this.#executionTrustMode = LEGACY_MIGRATION_EXECUTION_TRUST_MODE;
 
     ws.on("open", () => {
       if (ws !== this.#ws || this.#stopped) {
@@ -459,6 +470,7 @@ export class KuloEnvAgent {
           ...defaultCaps,
           STREAM_RESUME_CAPABILITY,
           CLUSTER_FAILOVER_CAPABILITY,
+          TRUSTED_HOST_EXECUTION_CAPABILITY,
           ...(this.#options.warmStandbyCapable ? [WARM_STANDBY_CAPABILITY, BUILTIN_MEMORY_SYNC_CAPABILITY] : []),
           ...EXTERNAL_AGENT_NODE_CAPABILITIES,
           "host-actions",
@@ -556,6 +568,7 @@ export class KuloEnvAgent {
         }
         const hubRestarted = Boolean(this.#hubInstanceId && msg.hubInstanceId && this.#hubInstanceId !== msg.hubInstanceId);
         this.#hubInstanceId = msg.hubInstanceId;
+        this.#executionTrustMode = parseExecutionTrustMode(msg.executionTrustMode) ?? LEGACY_MIGRATION_EXECUTION_TRUST_MODE;
         this.#streamResumeNegotiated = Boolean(msg.streamResumeSupported);
         this.#connectorsNegotiated = Boolean(msg.connectorsSupported);
         if (this.#connectorsNegotiated && this.#notificationSensor) {
@@ -600,6 +613,9 @@ export class KuloEnvAgent {
         for (const waiter of this.#registeredWaiters.splice(0)) {
           waiter.resolve();
         }
+      } else if (msg.type === "hub.execution_trust_mode") {
+        const nextMode = parseExecutionTrustMode(msg.mode);
+        if (nextMode) this.#executionTrustMode = nextMode;
       } else if (msg.type === "hub.ping") {
         this.#sendControl(ws, { type: "env.pong", ts: msg.ts });
       } else if (msg.type === "hub.open_stream") {
@@ -777,59 +793,27 @@ export class KuloEnvAgent {
       this.#sendControl(ws, { type: "env.stream_closed", streamId, error: "Duplicate execution stream" });
       return;
     }
-    let command: readonly string[];
-    let workerSandbox: WorkerSandbox | undefined;
+    let prepared: ReturnType<typeof prepareAgentDaemonSpawn>;
     try {
-      if (message.workspaceDir) {
-        if (hasOrphanedExecution(path.join(this.#projectDirectories.privateDirectory, "executions"), canonicalExecutionPath(message.workspaceDir))) throw new Error("Previous Worker execution cleanup is pending");
-        let rootDir = canonicalExecutionPath(this.#rootDir);
-        if (message.projectId && message.stagedTaskId) {
-          rootDir = this.#stagedWorkspaces.validateStagedCwd(message.stagedTaskId, message.projectId, message.workspaceDir, message.grantRevision).stagedDir;
-          if (message.scratchDir) this.#projectDirectories.validateScratch(message.scratchDir);
-        } else if (message.projectId) {
-          rootDir = this.#projectDirectories.validate(message.projectId, message.workspaceDir, message.grantRevision).workspaceDir;
-          if (message.scratchDir) this.#projectDirectories.validateScratch(message.scratchDir);
-        }
-        if (!message.projectId) {
-          this.#projectDirectories.assertUnregistered(message.workspaceDir);
-          if (message.scratchDir) this.#projectDirectories.assertUnregistered(message.scratchDir);
-        }
-        for (const requested of message.projectId ? [] : [message.workspaceDir, ...(message.scratchDir ? [message.scratchDir] : [])]) {
-          const relative = path.relative(rootDir, canonicalExecutionPath(requested));
-          if (relative.startsWith("..") || path.isAbsolute(relative)) {
-            throw new Error("Worker execution path is outside this Env's registered root");
-          }
-        }
-        for (const id of this.#cleaningStreams.keys()) {
-          if (this.#streamScopes.get(id)?.workspaceDir === canonicalExecutionPath(message.workspaceDir)) throw new Error("Previous Worker execution cleanup is pending");
-        }
-        workerSandbox = createWorkerSandbox({
-          workspaceDir: message.workspaceDir,
-          workspaceRoot: rootDir,
-          managedScratchRoot: this.#projectDirectories.scratchRoot,
-          scratchDir: message.scratchDir,
-          projectId: message.projectId,
-          grantRevision: message.grantRevision,
-          readOnly: message.readOnly,
-          controlRoot: path.join(this.#projectDirectories.privateDirectory, "executions"),
-          protectedPaths: nativeProtectedPaths([
-            path.join(this.#rootDir, ".kulo-state"),
-            path.join(this.#rootDir, ".env"),
-            this.#projectDirectories.privateDirectory,
-            ...this.#launchProtectedPaths,
-            ...ownRuntimeProtectedPaths(),
-            ...(this.#options.protectedPaths ?? []),
-            ...(message.protectedPaths ?? []),
-          ]),
-          network: message.network,
-        });
-        command = workerSandbox.command;
-      } else {
-        if (message.readOnly || message.network?.offline || message.projectId || message.stagedTaskId) {
-          throw new Error("Sandboxed or constrained execution stream requires workspaceDir");
-        }
-        command = [localDaemon()];
-      }
+      prepared = prepareAgentDaemonSpawn(message, {
+        rootDir: this.#rootDir,
+        projectDirectories: this.#projectDirectories,
+        stagedWorkspaces: this.#stagedWorkspaces,
+        cleaningStreams: this.#cleaningStreams,
+        streamScopes: this.#streamScopes,
+        executionTrustMode: this.#executionTrustMode,
+        sandboxProtectedPaths: () => buildAgentSandboxProtectedPaths({
+          rootDir: this.#rootDir,
+          privateDirectory: this.#projectDirectories.privateDirectory,
+          launchProtectedPaths: this.#launchProtectedPaths,
+          extraProtectedPaths: this.#options.protectedPaths,
+        }),
+        coreProtectedPaths: () => buildAgentCoreProtectedPaths({
+          rootDir: this.#rootDir,
+          privateDirectory: this.#projectDirectories.privateDirectory,
+          extraProtectedPaths: this.#options.protectedPaths,
+        }),
+      });
     } catch (err) {
       this.#sendControl(ws, {
         type: "env.stream_closed",
@@ -839,21 +823,22 @@ export class KuloEnvAgent {
       return;
     }
 
+    const { command, cwd, env, workerSandbox } = prepared;
     const [executable, ...args] = command;
     const child = spawn(executable!, [...args, "serve", "--token", daemonToken], {
-      cwd: workerSandbox?.workspaceDir ?? this.#rootDir,
+      cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        PATH: process.platform === "win32" ? `${path.dirname(process.execPath)};${process.env.SystemRoot ?? "C:\\Windows"}\\System32;${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0` : "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-        HOME: workerSandbox ? path.join(workerSandbox.temporaryDir, "home") : os.homedir(),
-        TMPDIR: workerSandbox ? path.join(workerSandbox.temporaryDir, "tmp") : os.tmpdir(),
-        LANG: "en_US.UTF-8",
-        ...(process.platform === "win32" ? { SystemRoot: process.env.SystemRoot ?? "C:\\Windows", WINDIR: process.env.WINDIR ?? "C:\\Windows", TEMP: workerSandbox ? path.join(workerSandbox.temporaryDir, "tmp") : os.tmpdir(), TMP: workerSandbox ? path.join(workerSandbox.temporaryDir, "tmp") : os.tmpdir(), ComSpec: process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe" } : {}),
-      },
+      env,
     });
 
     this.#daemons.set(streamId, child);
-    this.#streamScopes.set(streamId, { workspaceDir: workerSandbox?.workspaceDir, scratchDir: message.scratchDir ? canonicalExecutionPath(message.scratchDir) : undefined, projectId: message.projectId });
+    this.#streamScopes.set(streamId, {
+      workspaceDir: workerSandbox?.workspaceDir,
+      scratchDir: message.scratchDir ? canonicalExecutionPath(message.scratchDir) : undefined,
+      projectId: message.projectId,
+      executionKey: message.executionKey,
+      controlDir: workerSandbox?.controlDir,
+    });
     if (workerSandbox) this.#workerSandboxes.set(streamId, workerSandbox);
     const streamBuffer = this.#streamResumeNegotiated ? new StreamResumeBuffer() : undefined;
     if (streamBuffer) this.#streamBuffers.set(streamId, streamBuffer);
@@ -961,17 +946,13 @@ export class KuloEnvAgent {
       else if (request.action === "staged_apply") result = this.#stagedWorkspaces.apply(request);
       else if (request.action === "staged_discard") result = this.#stagedWorkspaces.discard(request.taskId, request.projectId);
       else if (request.action === "revoke" || request.action === "cleanup") {
-        if (request.action === "revoke") {
-          this.#projectDirectories.revoke(request.projectId);
-          this.#stagedWorkspaces.discardProject(request.projectId);
-        }
-        const selected = [...this.#streamScopes].filter(([, scope]) => request.action === "revoke"
-          ? scope.projectId === request.projectId
-          : scope.workspaceDir === canonicalExecutionPath(request.workspaceDir) && (request.scratchDir === undefined || scope.scratchDir === canonicalExecutionPath(request.scratchDir)));
-        const externalPending = request.action === "revoke" ? await this.#externalAgents.stopProject(request.projectId) : false;
-        const pending = await Promise.all(selected.map(([id]) => this.#stopStream(id)));
-        const recordedPending = await cleanupRecordedExecutions(path.join(this.#projectDirectories.privateDirectory, "executions"), request.action === "revoke" ? { projectId: request.projectId } : { workspaceDir: canonicalExecutionPath(request.workspaceDir), ...(request.scratchDir ? { scratchDir: canonicalExecutionPath(request.scratchDir) } : {}) });
-        result = { cleanupPending: externalPending || pending.some(Boolean) || recordedPending };
+        result = await cleanupAgentProjectScopes(request, {
+          projectDirectories: this.#projectDirectories,
+          stagedWorkspaces: this.#stagedWorkspaces,
+          streamScopes: this.#streamScopes,
+          stopExternalProject: (projectId) => this.#externalAgents.stopProject(projectId),
+          stopStream: (id) => this.#stopStream(id),
+        });
       } else throw new Error("Unknown project control action");
       this.#sendControl(ws, { type: "env.project_result", requestId, result });
     } catch (error) {

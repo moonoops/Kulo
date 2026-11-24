@@ -4,6 +4,13 @@ import { resolveHttpProxyUrlForTarget } from "@earendil-works/pi-ai/utils/node-h
 import type { McpFetch } from "@earendil-works/pi-mcp";
 import { Agent, Dispatcher1Wrapper, ProxyAgent, type Dispatcher } from "undici";
 import { isCloudMetadataIp, isLoopbackHost, isPrivateOrReservedIp, stripBrackets } from "./mcp-presets.js";
+import {
+  MAX_SAFE_HTTP_REDIRECTS,
+  SAFE_HTTP_REDIRECT_STATUSES,
+  isCloudMetadataHostOrIp,
+  isPrivateOrLoopbackHost,
+  prepareSafeHttpRedirect,
+} from "./net-policy.js";
 
 const processFetch = globalThis.fetch;
 
@@ -14,13 +21,22 @@ export interface McpFetchOptions {
    * so multi-hop OAuth discovery/DCR/token requests and DNS rebinding cannot pivot into local services.
    */
   allowPrivateNetwork: boolean;
+  /** True in trusted mode to allow plaintext HTTP on private/LAN hosts (never cloud metadata). */
+  allowPrivateHttp?: boolean;
+  /** True in trusted mode to follow up to 3 strict RFC 9110 safe redirects manually. */
+  allowSafeRedirects?: boolean;
+  /** Optional custom auth header name stripped on cross-origin GET/HEAD redirects. */
+  authHeaderName?: string;
   /** Optional per-request timeout merged with caller signal via AbortSignal.any. */
   timeoutMs?: number;
   /** Optional test injection hook; still enforces URL/scheme/redirect validation before invoking. */
   baseFetch?: typeof fetch;
 }
 
-export function validateMcpTargetUrl(rawUrl: string | URL, options: { allowPrivateNetwork: boolean }): URL {
+export function validateMcpTargetUrl(
+  rawUrl: string | URL,
+  options: { allowPrivateNetwork: boolean; allowPrivateHttp?: boolean },
+): URL {
   let url: URL;
   try {
     url = rawUrl instanceof URL ? new URL(rawUrl.href) : new URL(rawUrl);
@@ -34,16 +50,22 @@ export function validateMcpTargetUrl(rawUrl: string | URL, options: { allowPriva
   if (!host) {
     throw Object.assign(new Error("MCP 服务主机名无效。"), { code: "connection_mcp_invalid_url", status: 400 });
   }
+  if (isCloudMetadataHostOrIp(host)) {
+    throw Object.assign(new Error("已阻止访问受保护的元数据地址。"), { code: "connection_mcp_ssrf_blocked", status: 403 });
+  }
   const loopback = isLoopbackHost(host);
   if (url.protocol === "http:") {
-    if (!options.allowPrivateNetwork || !loopback) {
+    const allowedHttp =
+      (options.allowPrivateNetwork && loopback) ||
+      (Boolean(options.allowPrivateHttp) && isPrivateOrLoopbackHost(host));
+    if (!allowedHttp) {
       throw Object.assign(new Error("远程 MCP 及授权端点必须使用 HTTPS。"), { code: "connection_mcp_insecure_url", status: 400 });
     }
   } else if (url.protocol !== "https:") {
     throw Object.assign(new Error("MCP 及授权端点仅支持 HTTPS 协议。"), { code: "connection_mcp_insecure_url", status: 400 });
   }
   if (net.isIP(host)) {
-    if (isCloudMetadataIp(host)) {
+    if (isCloudMetadataIp(host) || isCloudMetadataHostOrIp(host)) {
       throw Object.assign(new Error("已阻止访问受保护的元数据地址。"), { code: "connection_mcp_ssrf_blocked", status: 403 });
     }
     if (!options.allowPrivateNetwork && isPrivateOrReservedIp(host)) {
@@ -64,7 +86,7 @@ function createCheckedLookup(allowPrivateNetwork: boolean) {
     callback: (err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void,
   ) => {
     const checkAddress = (addr: string): Error | null => {
-      if (isCloudMetadataIp(addr)) {
+      if (isCloudMetadataIp(addr) || isCloudMetadataHostOrIp(addr)) {
         return Object.assign(new Error("已阻止解析到受保护的元数据地址。"), { code: "connection_mcp_ssrf_blocked" });
       }
       if (!allowPrivateNetwork && isPrivateOrReservedIp(addr)) {
@@ -129,7 +151,11 @@ function getProxyAgent(uri: string): ProxyAgent {
 export function createMcpFetch(options: McpFetchOptions): McpFetch {
   return async (input, init) => {
     const rawUrl = typeof input === "string" || input instanceof URL ? input : (input as Request).url;
-    validateMcpTargetUrl(rawUrl, { allowPrivateNetwork: options.allowPrivateNetwork });
+    const validateOpts = {
+      allowPrivateNetwork: options.allowPrivateNetwork,
+      allowPrivateHttp: options.allowPrivateHttp,
+    };
+    const initialUrl = validateMcpTargetUrl(rawUrl, validateOpts);
 
     const signal = options.timeoutMs
       ? init?.signal
@@ -137,28 +163,84 @@ export function createMcpFetch(options: McpFetchOptions): McpFetch {
         : AbortSignal.timeout(options.timeoutMs)
       : init?.signal;
 
-    const requestInit: RequestInit = {
-      ...init,
-      redirect: "error",
-      ...(signal ? { signal } : {}),
+    const sendHop = async (
+      targetInput: Parameters<typeof fetch>[0],
+      hopInit: RequestInit,
+    ): Promise<Response> => {
+      if (options.baseFetch) {
+        return options.baseFetch(targetInput, hopInit);
+      }
+      const request = new Request(targetInput, hopInit);
+      let proxy: URL | undefined;
+      try {
+        proxy = resolveHttpProxyUrlForTarget(request.url);
+      } catch {
+        throw Object.assign(new Error("HTTP 代理配置无效，请检查代理地址。"), { code: "connection_mcp_proxy_invalid", status: 502 });
+      }
+      const dispatcher: Dispatcher = proxy ? getProxyAgent(proxy.href) : getDirectAgent(options.allowPrivateNetwork);
+      return processFetch(request, {
+        dispatcher: new Dispatcher1Wrapper(dispatcher),
+        redirect: hopInit.redirect,
+      } as RequestInit & { dispatcher: Dispatcher });
     };
 
-    if (options.baseFetch) {
-      return options.baseFetch(input as Parameters<typeof fetch>[0], requestInit);
+    if (!options.allowSafeRedirects) {
+      const requestInit: RequestInit = {
+        ...init,
+        redirect: "error",
+        ...(signal ? { signal } : {}),
+      };
+      return sendHop(input as Parameters<typeof fetch>[0], requestInit);
     }
 
-    const request = new Request(input as Parameters<typeof fetch>[0], requestInit);
-    let proxy: URL | undefined;
-    try {
-      proxy = resolveHttpProxyUrlForTarget(request.url);
-    } catch {
-      throw Object.assign(new Error("HTTP 代理配置无效，请检查代理地址。"), { code: "connection_mcp_proxy_invalid", status: 502 });
+    const baseMethod = init?.method ?? (input instanceof Request ? input.method : "GET");
+    const baseHeaders = new Headers(
+      init?.headers ?? (input instanceof Request ? input.headers : undefined),
+    );
+    const baseBody = init?.body !== undefined ? init.body : (input instanceof Request ? input.body : undefined);
+
+    let currentUrl = initialUrl;
+    let currentMethod = baseMethod.toUpperCase();
+    let currentHeaders = baseHeaders;
+    let currentBody = baseBody;
+
+    for (let hop = 0; hop <= MAX_SAFE_HTTP_REDIRECTS; hop++) {
+      signal?.throwIfAborted();
+      validateMcpTargetUrl(currentUrl, validateOpts);
+      const hopInit: RequestInit = {
+        ...init,
+        method: currentMethod,
+        headers: currentHeaders,
+        ...(currentBody !== undefined ? { body: currentBody } : { body: undefined }),
+        redirect: "manual",
+        ...(signal ? { signal } : {}),
+      };
+      const response = await sendHop(hop === 0 ? (input as Parameters<typeof fetch>[0]) : currentUrl.href, hopInit);
+      if (!SAFE_HTTP_REDIRECT_STATUSES.has(response.status)) {
+        return response;
+      }
+      const location = response.headers.get("location");
+      await response.body?.cancel().catch(() => undefined);
+      if (hop === MAX_SAFE_HTTP_REDIRECTS) {
+        throw Object.assign(new Error("MCP HTTP 重定向次数过多。"), { code: "connection_redirect_limit", status: 502 });
+      }
+      const next = prepareSafeHttpRedirect({
+        status: response.status,
+        location,
+        currentUrl,
+        initialOrigin: initialUrl.origin,
+        method: currentMethod,
+        headers: currentHeaders,
+        body: currentBody,
+        authHeaderName: options.authHeaderName,
+      });
+      validateMcpTargetUrl(next.url, validateOpts);
+      currentUrl = next.url;
+      currentMethod = next.method;
+      currentHeaders = next.headers;
+      currentBody = next.body;
     }
-    const dispatcher: Dispatcher = proxy ? getProxyAgent(proxy.href) : getDirectAgent(options.allowPrivateNetwork);
-    return processFetch(request, {
-      dispatcher: new Dispatcher1Wrapper(dispatcher),
-      redirect: "error",
-    } as RequestInit & { dispatcher: Dispatcher });
+    throw Object.assign(new Error("MCP HTTP 重定向次数过多。"), { code: "connection_redirect_limit", status: 502 });
   };
 }
 

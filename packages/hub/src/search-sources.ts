@@ -6,14 +6,14 @@ const text = (value: unknown, limit: number): string | undefined => typeof value
   ? value.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, limit) || undefined
   : undefined;
 
-export function sanitizeSearchSources(value: unknown): WebSource[] {
+export function sanitizeSearchSources(value: unknown, options?: { allowPrivateNetwork?: boolean }): WebSource[] {
   if (!Array.isArray(value)) return [];
   const sources: WebSource[] = [];
   const urls = new Set<string>();
   for (const item of value.slice(0, 100)) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const raw = item as Record<string, unknown>;
-    const url = typeof raw.url === "string" ? normalizeWebSourceUrl(raw.url) : undefined;
+    const url = typeof raw.url === "string" ? normalizeWebSourceUrl(raw.url, options) : undefined;
     const id = typeof raw.id === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(raw.id) ? raw.id : undefined;
     const title = text(raw.title, 300);
     if (!url || !id || !title || urls.has(url)) continue;
@@ -120,11 +120,11 @@ function destination(value: string, start: number): { url: string; end: number }
 
 const referenceKey = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase();
 
-function citedUrls(markdown: string): Set<string> {
+function citedUrls(markdown: string, options?: { allowPrivateNetwork?: boolean }): Set<string> {
   const urls = new Set<string>();
   const add = (raw: string | undefined) => {
     if (!raw) return;
-    const url = normalizeWebSourceUrl(raw.replace(/&amp;/g, "&"));
+    const url = normalizeWebSourceUrl(raw.replace(/&amp;/g, "&"), options);
     if (url) urls.add(url);
   };
   const references = new Map<string, string>();
@@ -157,6 +157,8 @@ function citedUrls(markdown: string): Set<string> {
 
 /** A source becomes a citation only when the answer links to that exact fetched URL. */
 export function selectCitedSources(markdown: string, sources: readonly WebSource[]): WebSource[] {
-  const cited = citedUrls(markdown);
-  return sanitizeSearchSources(sources).filter((source) => cited.has(source.url));
+  // Sources were already validated/fetched by web_fetch/web_search; allow matching verified private-LAN URLs while blocking cloud metadata.
+  const opts = { allowPrivateNetwork: true };
+  const cited = citedUrls(markdown, opts);
+  return sanitizeSearchSources(sources, opts).filter((source) => cited.has(source.url));
 }

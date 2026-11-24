@@ -3,11 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { canonicalExecutionPath, createWorkerSandbox, hasWorkerBasicOrFullIsolation, hasWorkerStrictNetworkIsolation, workerIsolationCapabilities, type WorkerExecutionOptions, type WorkerNetworkPolicy, type WorkerSandbox } from "./isolation.js";
+import { canonicalExecutionPath, workerIsolationCapabilities, type WorkerExecutionOptions, type WorkerNetworkPolicy } from "./isolation.js";
 import { EXTERNAL_AGENT_NODE_CAPABILITIES, ExternalAgentService, isExternalAgentRequest, isExternalAgentResponse, type ExternalAgentToolHandler } from "./external-agents.js";
 import { ProjectDirectoryRegistry, type AuthorizeDirectoryInput } from "./project-directories.js";
 import { StagedWorkspaceService } from "./staged-workspace-service.js";
-import { cleanupRecordedExecutions, hasOrphanedExecution } from "./worker-supervisor.js";
+import { cleanupRecordedExecutions } from "./worker-supervisor.js";
 import { FlowBrowserService } from "./browser.js";
 import { ComputerUseService, computerUseConfiguration } from "./computer-use.js";
 import { HostActionService } from "./host-actions.js";
@@ -15,11 +15,22 @@ import { collectDeviceSystemInfo } from "./device-info.js";
 import { MacOsNotificationSensor } from "./connectors/macos-notifications.js";
 import { SparkMailConnector } from "./connectors/spark-mail.js";
 import { StreamResumeBuffer } from "./stream-resume.js";
+import { primeLoginShellPath } from "./trusted-execution.js";
+import {
+  createBridgeExecutionEnv,
+  createBridgeWorkerExecutionEnv,
+  invalidateAllWorkerConnections,
+  pickBridgeDefaultWorkerEnvId,
+  releaseBridgeWorkerEnv,
+  retireIdleWorkerConnections,
+  scopeComputerUseForTarget,
+  scopeHostActionForTarget,
+  type BridgeExecutionContext,
+  type WorkerConnectionEntry,
+} from "./bridge-execution-env.js";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import {
   Connection,
-  LocalExecutionEnv,
-  RemoteExecutionEnv,
   localDaemon,
   sshConnection,
   type SshTarget,
@@ -30,6 +41,10 @@ import {
   CONNECTORS_CAPABILITY,
   CONNECTOR_MAX_BATCH_BYTES,
   EXTERNAL_AGENT_QUOTA_CAPABILITY, EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY,
+  LEGACY_MIGRATION_EXECUTION_TRUST_MODE,
+  TRUSTED_HOST_EXECUTION_CAPABILITY,
+  hasTrustedHostExecutionCapability,
+  type ExecutionTrustMode,
   isClusterSyncStatus,
   type ClusterHandoverDirective,
   type ClusterSyncAvailableNotification,
@@ -140,6 +155,7 @@ interface ActiveStream {
   workspaceDir?: string;
   scratchDir?: string;
   projectId?: string;
+  executionKey?: string;
   resumeBuffer?: StreamResumeBuffer;
   ackTimer?: NodeJS.Timeout;
   pausedForDisconnect?: boolean;
@@ -149,6 +165,7 @@ interface RemoteWsPeer {
   descriptor: EnvNodeDescriptor;
   ws: WebSocket | null;
   connection: Connection | null;
+  connectionsByMode: Map<ExecutionTrustMode, Connection>;
   streams: Map<number, ActiveStream>;
   nextStreamId: number;
   connectionLease?: string;
@@ -226,6 +243,12 @@ export interface EnvManagerOptions {
   workerEnvIds?: string[];
   workerNetwork?: WorkerNetworkPolicy;
   getProtectedPaths?: () => string[];
+  /** Exact core runtime state files protected in both trusted and sandboxed modes. */
+  getCoreProtectedPaths?: () => string[];
+  /** Dynamic internal secret env var names (e.g. custom Hindsight API key env names) stripped from all subprocesses. */
+  getBlockedEnvNames?: () => Iterable<string>;
+  /** Optional initial execution trust mode (defaults to conservative sandboxed until hydrated). */
+  initialExecutionTrustMode?: ExecutionTrustMode;
   /** Grace window in ms to keep stream-resume-v1 peers alive across brief disconnects (default: 20_000). */
   streamResumeGraceMs?: number;
   /** Interval in ms for Hub keepalive pings to remote WebSocket env nodes (default: 15_000). */
@@ -265,7 +288,8 @@ export class EnvManager {
 
   readonly #wsPeers = new Map<string, RemoteWsPeer>();
   readonly #sshPeers = new Map<string, SshPeer>();
-  readonly #workerConnections = new Map<string, { envId: string; cwd: string; scratchDir?: string; projectId?: string; connection: Connection; sandbox?: WorkerSandbox; cleaning?: boolean }>();
+  readonly #workerConnections = new Map<string, WorkerConnectionEntry>();
+  readonly #retiredWorkerConnections = new Set<WorkerConnectionEntry>();
   #localProjects: ProjectDirectoryRegistry | null = null;
   #localStagedWorkspaces: StagedWorkspaceService | null = null;
   #localExternalAgents: ExternalAgentService | null = null;
@@ -303,7 +327,9 @@ export class EnvManager {
   readonly #deviceDisplayNames = new Map<string, string>();
   readonly #revokedDeviceIds = new Set<string>();
   #remoteConnectionsEnabled = true;
-  #workerProtection = "";
+  #executionTrustMode: ExecutionTrustMode;
+  #executionTrustModeRevision = 1;
+  #trustModeHydrated = false;
   #pingTimer: NodeJS.Timeout | null = null;
   #closed = false;
 
@@ -313,11 +339,58 @@ export class EnvManager {
       throw new Error("Each Env identity requires a non-empty, unique node credential");
     }
     this.#options = options;
+    this.#executionTrustMode = options.initialExecutionTrustMode ?? LEGACY_MIGRATION_EXECUTION_TRUST_MODE;
+    this.#trustModeHydrated = options.initialExecutionTrustMode !== undefined;
     const initialLocalId = options.localEnvId?.trim();
     this.#localEnvId = initialLocalId && /^[a-zA-Z0-9_-]{1,100}$/.test(initialLocalId) ? initialLocalId : "local";
     this.#hubId = options.hubId?.trim() || "kulo-hub";
     this.#streamResumeGraceMs = options.streamResumeGraceMs ?? STREAM_RESUME_GRACE_MS;
     this.#computerConfiguration = options.computerUseService ? undefined : computerUseConfiguration();
+  }
+
+  getExecutionTrustMode(): ExecutionTrustMode {
+    return this.#executionTrustMode;
+  }
+
+  getExecutionTrustModeRevision(): number {
+    return this.#executionTrustModeRevision;
+  }
+
+  isTrustModeHydrated(): boolean {
+    return this.#trustModeHydrated;
+  }
+
+  setExecutionTrustMode(mode: ExecutionTrustMode, revision?: number): void {
+    const changed = this.#executionTrustMode !== mode;
+    this.#executionTrustMode = mode;
+    if (revision !== undefined && Number.isSafeInteger(revision) && revision >= 1) {
+      this.#executionTrustModeRevision = revision;
+    } else if (changed) {
+      this.#executionTrustModeRevision += 1;
+    }
+    this.#trustModeHydrated = true;
+    if (changed) {
+      retireIdleWorkerConnections(this.#workerConnections, this.#retiredWorkerConnections, this.#cleanupTasks);
+    }
+    for (const peer of this.#wsPeers.values()) {
+      if (
+        peer.connectionState === "online" &&
+        peer.ws &&
+        peer.descriptor.executionKind === "pi-env" &&
+        hasTrustedHostExecutionCapability(peer.descriptor.capabilities)
+      ) {
+        this.#sendControl(peer.ws, {
+          type: "hub.execution_trust_mode",
+          mode: this.#executionTrustMode,
+          revision: this.#executionTrustModeRevision,
+        });
+      }
+    }
+    if (changed) this.#notifyChange();
+  }
+
+  retireIdleWorkerEnvironments(): void {
+    retireIdleWorkerConnections(this.#workerConnections, this.#retiredWorkerConnections, this.#cleanupTasks);
   }
 
   get localEnvId(): string {
@@ -537,13 +610,25 @@ export class EnvManager {
 
     // 2. Optionally initialize built-in local Pi Env daemon
     if (this.#options.enableLocal !== false) {
+      void primeLoginShellPath();
       const rootDir = path.resolve(this.#options.localRootDir ?? process.cwd());
       const localId = this.#localEnvId;
-      this.#localProjects = new ProjectDirectoryRegistry({ deviceId: localId, filePath: this.#options.projectGrantFile ?? path.join(rootDir, ".kulo-env", "project-grants.json"), scratchRoot: path.join(rootDir, "scratch"), getProtectedPaths: () => [...(this.#options.getProtectedPaths?.() ?? []), ...this.#additionalProtectedPaths] });
+      const getCoreProtected = () => [
+        ...(this.#options.getCoreProtectedPaths?.() ?? []),
+        ...this.#additionalProtectedPaths,
+      ];
+      this.#localProjects = new ProjectDirectoryRegistry({
+        deviceId: localId,
+        filePath: this.#options.projectGrantFile ?? path.join(rootDir, ".kulo-env", "project-grants.json"),
+        scratchRoot: path.join(rootDir, "scratch"),
+        getProtectedPaths: () => [...(this.#options.getProtectedPaths?.() ?? []), ...this.#additionalProtectedPaths],
+        getCoreProtectedPaths: getCoreProtected,
+        getExecutionTrustMode: () => this.#executionTrustMode,
+      });
       this.#localStagedWorkspaces = new StagedWorkspaceService({ projectRegistry: this.#localProjects });
       this.#localBrowser = this.#options.browserService ?? new FlowBrowserService({ rootDir: path.join(this.#localProjects.privateDirectory, "browser") });
       this.#additionalProtectedPaths.add(this.#localBrowser.rootDir);
-      this.#localComputer = this.#options.computerUseService ?? new ComputerUseService({ rootDir: path.join(this.#localProjects.privateDirectory, "computer-use"), ...this.#computerConfiguration });
+      this.#localComputer = this.#options.computerUseService ?? new ComputerUseService({ rootDir: path.join(this.#localProjects.privateDirectory, "computer-use"), getExecutionTrustMode: () => this.#executionTrustMode, ...this.#computerConfiguration });
       this.#additionalProtectedPaths.add(this.#localComputer.rootDir);
       this.#localHostActions = new HostActionService({
         controlRoot: path.join(this.#localProjects.privateDirectory, "executions"),
@@ -552,8 +637,11 @@ export class EnvManager {
           ...this.#additionalProtectedPaths,
           this.#localProjects!.privateDirectory,
         ],
+        getCoreProtectedPaths: () => [...getCoreProtected(), this.#localProjects!.privateDirectory],
+        getExecutionTrustMode: () => this.#executionTrustMode,
+        getBlockedEnvNames: () => this.#options.getBlockedEnvNames?.() ?? [],
       });
-      this.#localExternalAgents = new ExternalAgentService({ envId: localId, rootDir, projectRegistry: this.#localProjects, toolHandler: this.#externalAgentToolHandler });
+      this.#localExternalAgents = new ExternalAgentService({ envId: localId, rootDir, projectRegistry: this.#localProjects, getExecutionTrustMode: () => this.#executionTrustMode, getBlockedEnvNames: () => this.#options.getBlockedEnvNames?.() ?? [], toolHandler: this.#externalAgentToolHandler });
       await this.#localExternalAgents.recover();
       await cleanupRecordedExecutions(path.join(this.#localProjects.privateDirectory, "executions"));
       this.#localConnection = new Connection({
@@ -569,7 +657,7 @@ export class EnvManager {
         arch: process.arch,
         rootDir,
         executionKind: "pi-env",
-        capabilities: [...(process.platform === "darwin" ? ["fs", "bash", "macos-local", CONNECTORS_CAPABILITY] : ["fs", "bash"]), ...EXTERNAL_AGENT_NODE_CAPABILITIES, "host-actions", ...workerIsolationCapabilities(), ...(this.#localBrowser.available ? ["flow-browser"] : []), ...this.#localComputer.capabilities()],
+        capabilities: [...(process.platform === "darwin" ? ["fs", "bash", "macos-local", CONNECTORS_CAPABILITY] : ["fs", "bash"]), TRUSTED_HOST_EXECUTION_CAPABILITY, ...EXTERNAL_AGENT_NODE_CAPABILITIES, "host-actions", ...workerIsolationCapabilities(), ...(this.#localBrowser.available ? ["flow-browser"] : []), ...this.#localComputer.capabilities()],
         connectedAt: now,
         lastSeenAt: now,
         info: collectDeviceSystemInfo(),
@@ -880,6 +968,7 @@ export class EnvManager {
           closeStreams = [...closeSet];
 
           const clusterPayload = executionKind === "pi-env" ? this.#clusterHandlers?.getRegistrationPayload?.(envId) : undefined;
+          const supportsTrusted = executionKind === "pi-env" && hasTrustedHostExecutionCapability(capabilities);
           this.#sendControl(ws, {
             type: "hub.registered",
             envId,
@@ -890,6 +979,9 @@ export class EnvManager {
             ...(closeStreams.length ? { closeStreams } : {}),
             ...(clusterPayload?.cluster ? { cluster: clusterPayload.cluster } : {}),
             ...(clusterPayload?.standby ? { standby: clusterPayload.standby } : {}),
+            ...(supportsTrusted
+              ? { executionTrustMode: this.#executionTrustMode, executionTrustModeRevision: this.#executionTrustModeRevision }
+              : {}),
           });
           if (connectorsSupported) {
             this.#sendControl(ws, { type: "hub.connector_config", config: this.#connectorConfig });
@@ -940,6 +1032,8 @@ export class EnvManager {
               peer.connection?.close();
               peer.connection = null;
             }
+            for (const conn of peer.connectionsByMode.values()) conn.close();
+            peer.connectionsByMode.clear();
             peer.ws = ws;
             peer.connectionState = "online";
             peer.missedPings = 0;
@@ -987,6 +1081,7 @@ export class EnvManager {
               },
               ws,
               connection: null,
+              connectionsByMode: new Map(),
               streams: new Map(),
               nextStreamId: 1,
               connectionLease: msg.connectionLease,
@@ -1005,6 +1100,7 @@ export class EnvManager {
           }
 
           const clusterPayload = executionKind === "pi-env" ? this.#clusterHandlers?.getRegistrationPayload?.(envId) : undefined;
+          const supportsTrusted = executionKind === "pi-env" && hasTrustedHostExecutionCapability(capabilities);
           this.#sendControl(ws, {
             type: "hub.registered",
             envId,
@@ -1018,6 +1114,9 @@ export class EnvManager {
               : {}),
             ...(clusterPayload?.cluster ? { cluster: clusterPayload.cluster } : {}),
             ...(clusterPayload?.standby ? { standby: clusterPayload.standby } : {}),
+            ...(supportsTrusted
+              ? { executionTrustMode: this.#executionTrustMode, executionTrustModeRevision: this.#executionTrustModeRevision }
+              : {}),
           });
           if (connectorsSupported) {
             this.#sendControl(ws, { type: "hub.connector_config", config: this.#connectorConfig });
@@ -1656,25 +1755,26 @@ export class EnvManager {
     if (this.isLocalEnv(envId) ? !this.#localComputer : !peer?.ws || peer.ws.readyState !== peer.ws.OPEN) throw new Error("Computer use requires the target device's authenticated Env connection");
     const expectedLease = this.#deviceConnectionLeases.get(envId);
     if (peer && expectedLease !== undefined && !sameToken(peer.connectionLease, expectedLease)) throw new Error("Computer-use device connection lease changed");
+    const scopedRequest = scopeComputerUseForTarget(request, this.#executionTrustMode, descriptor.capabilities, this.isLocalEnv(envId));
     const requestId = randomBytes(16).toString("hex");
     return new Promise((resolve, reject) => {
       const controller = new AbortController();
       const cancel = () => this.#finishComputerRequest(requestId, undefined, Object.assign(new Error("Computer-use operation cancelled; observe the target before retrying"), { name: "AbortError" }));
       const timer = setTimeout(() => this.#finishComputerRequest(requestId, undefined, new Error("Computer-use operation was not confirmed in time; observe the target before retrying")), 45_000);
       timer.unref();
-      const pending: PendingComputerRequest = { envId, request, ...(peer?.ws ? { ws: peer.ws } : {}), controller, resolve, reject, timer, removeAbort: () => signal?.removeEventListener("abort", cancel) };
+      const pending: PendingComputerRequest = { envId, request: scopedRequest, ...(peer?.ws ? { ws: peer.ws } : {}), controller, resolve, reject, timer, removeAbort: () => signal?.removeEventListener("abort", cancel) };
       this.#computerRequests.set(requestId, pending);
       signal?.addEventListener("abort", cancel, { once: true });
       if (signal?.aborted) { cancel(); return; }
-      if (pending.ws) this.#sendControl(pending.ws, { type: "hub.computer_request", requestId, request });
+      if (pending.ws) this.#sendControl(pending.ws, { type: "hub.computer_request", requestId, request: scopedRequest });
       else {
         const active = () => !this.#closed && this.#computerRequests.get(requestId) === pending && !controller.signal.aborted;
         void Promise.resolve().then(() => {
           if (!active()) throw new Error("Computer-use operation cancelled");
-          return this.#localComputer!.request(request, active, controller.signal);
+          return this.#localComputer!.request(scopedRequest, active, controller.signal);
         }).then((result) => {
           if (!active()) return;
-          if (!isComputerUseResult(result, request)) this.#finishComputerRequest(requestId, undefined, new Error("Invalid computer-use response"));
+          if (!isComputerUseResult(result, scopedRequest)) this.#finishComputerRequest(requestId, undefined, new Error("Invalid computer-use response"));
           else this.#finishComputerRequest(requestId, result);
         }, () => this.#finishComputerRequest(requestId, undefined, new Error("Computer-use device could not confirm the operation; observe the target before retrying")));
       }
@@ -1702,8 +1802,9 @@ export class EnvManager {
     if (peer && expectedLease !== undefined && !sameToken(peer.connectionLease, expectedLease)) {
       throw new Error("Device connection lease changed");
     }
+    const scopedRequest = scopeHostActionForTarget(request, this.#executionTrustMode, descriptor.capabilities, this.isLocalEnv(envId));
     const requestId = randomBytes(16).toString("hex");
-    const timeoutMs = request.kind === "run" ? Math.min((request.timeoutMs ?? 120_000) + 15_000, 620_000) : 20_000;
+    const timeoutMs = scopedRequest.kind === "run" ? Math.min((scopedRequest.timeoutMs ?? 120_000) + 15_000, 620_000) : 20_000;
     return new Promise((resolve, reject) => {
       const controller = new AbortController();
       const cancel = () => this.#finishHostActionRequest(requestId, undefined, Object.assign(new Error("本机操作已取消"), { name: "AbortError" }));
@@ -1711,7 +1812,7 @@ export class EnvManager {
       timer.unref();
       const pending: PendingHostActionRequest = {
         envId,
-        request,
+        request: scopedRequest,
         ...(peer?.ws ? { ws: peer.ws } : {}),
         controller,
         resolve,
@@ -1723,15 +1824,15 @@ export class EnvManager {
       signal?.addEventListener("abort", cancel, { once: true });
       if (signal?.aborted) { cancel(); return; }
       if (pending.ws) {
-        this.#sendControl(pending.ws, { type: "hub.host_action_request", requestId, request });
+        this.#sendControl(pending.ws, { type: "hub.host_action_request", requestId, request: scopedRequest });
       } else {
         const active = () => !this.#closed && this.#hostActionRequests.get(requestId) === pending && !controller.signal.aborted;
         void Promise.resolve().then(() => {
           if (!active()) throw new Error("本机操作已取消");
-          return this.#localHostActions!.execute(request, controller.signal);
+          return this.#localHostActions!.execute(scopedRequest, controller.signal);
         }).then((result) => {
           if (!active()) return;
-          if (!isHostActionResult(result, request)) this.#finishHostActionRequest(requestId, undefined, new Error("Invalid host action response"));
+          if (!isHostActionResult(result, scopedRequest)) this.#finishHostActionRequest(requestId, undefined, new Error("Invalid host action response"));
           else this.#finishHostActionRequest(requestId, result);
         }, (error: unknown) => {
           this.#finishHostActionRequest(
@@ -1996,41 +2097,94 @@ export class EnvManager {
     return result;
   }
 
-  async releaseWorkerExecutionEnv(envId: string, cwd: string, options?: { scratchDir?: string }): Promise<{ cleanupPending: boolean }> {
-    this.#assertPiEnv(envId);
-    const workspaceDir = this.isLocalEnv(envId) ? canonicalExecutionPath(cwd) : cwd;
-    const scratchDir = this.isLocalEnv(envId) && options?.scratchDir ? canonicalExecutionPath(options.scratchDir) : options?.scratchDir;
-    const matches = [...this.#workerConnections].filter(([, entry]) => entry.envId === envId && entry.cwd === workspaceDir && (!options || entry.scratchDir === scratchDir));
-    const results = await Promise.all(matches.map(async ([key, entry]) => {
-      entry.cleaning = true;
-      entry.connection.close();
-      if (!entry.sandbox) {
-        this.#workerConnections.delete(key);
-        return false;
-      }
-      const pending = await entry.sandbox.cleanup();
-      if (!pending && this.#workerConnections.get(key) === entry) this.#workerConnections.delete(key);
-      return pending;
-    }));
-    if (this.isLocalEnv(envId)) {
-      const recordedPending = this.#localProjects ? await cleanupRecordedExecutions(path.join(this.#localProjects.privateDirectory, "executions"), { workspaceDir, ...(options ? { scratchDir } : {}) }) : false;
-      return { cleanupPending: results.some(Boolean) || recordedPending };
-    }
-    const peer = this.#wsPeers.get(envId);
-    if (!peer || peer.connectionState !== "online" || !peer.ws || peer.ws.readyState !== peer.ws.OPEN) {
-      if (peer) {
-        for (const [streamId, stream] of [...peer.streams]) {
-          if (stream.workspaceDir === cwd && (!options?.scratchDir || stream.scratchDir === options.scratchDir)) {
-            peer.pendingCloseStreamIds.add(streamId);
-            this.#abortSingleStream(peer, streamId, "Worker stopped during disconnect");
-          }
+  #executionContext(): BridgeExecutionContext {
+    return {
+      closed: this.#closed,
+      localEnvId: this.#localEnvId,
+      localDescriptor: this.#localDescriptor ?? undefined,
+      localConnection: this.#localConnection,
+      localProjects: this.#localProjects,
+      localStagedWorkspaces: this.#localStagedWorkspaces,
+      bridgePort: this.#bridgePort,
+      bridgeSecret: this.#bridgeSecret,
+      stdioRelayPath: STDIO_RELAY_PATH,
+      workerEnvIds: this.#options.workerEnvIds,
+      workerNetwork: this.#options.workerNetwork,
+      deviceTokens: this.#deviceTokens,
+      revokedProjects: this.#revokedProjects,
+      workerConnections: this.#workerConnections,
+      retiredWorkerConnections: this.#retiredWorkerConnections,
+      cleanupTasks: this.#cleanupTasks,
+      executionTrustMode: this.#executionTrustMode,
+      isLocalEnv: (id) => this.isLocalEnv(id),
+      assertPiEnv: (id) => this.#assertPiEnv(id),
+      getEnvDescriptor: (id) => this.getEnvDescriptor(id),
+      hasWsPeer: (id) => this.#wsPeers.has(id),
+      getWsPeerDescriptor: (id) => this.#wsPeers.get(id)?.descriptor,
+      getWsPeerConnection: (id, mode) => {
+        const peer = this.#wsPeers.get(id);
+        if (!peer) return null;
+        if (!hasTrustedHostExecutionCapability(peer.descriptor.capabilities)) return peer.connection;
+        let conn = peer.connectionsByMode.get(mode);
+        if (!conn) {
+          conn = new Connection({
+            command: [
+              process.execPath,
+              STDIO_RELAY_PATH,
+              String(this.#bridgePort),
+              id,
+              this.#bridgeSecret,
+              JSON.stringify({ executionMode: mode }),
+            ],
+          });
+          peer.connectionsByMode.set(mode, conn);
         }
-      }
-      return { cleanupPending: true };
-    }
-    const result = await this.#projectRequest(envId, { action: "cleanup", workspaceDir: cwd, ...(options?.scratchDir ? { scratchDir: options.scratchDir } : {}) });
-    if (!("cleanupPending" in result) || typeof result.cleanupPending !== "boolean") throw new Error("Invalid Worker cleanup response");
-    return { cleanupPending: results.some(Boolean) || result.cleanupPending };
+        return conn;
+      },
+      getSshPeerConnection: (id) => this.#sshPeers.get(id)?.connection ?? null,
+      getSandboxProtectedPaths: () => [...new Set([...(this.#options.getProtectedPaths?.() ?? []), ...this.#additionalProtectedPaths])],
+      getCoreProtectedPaths: () => [...new Set([...(this.#options.getCoreProtectedPaths?.() ?? []), ...this.#additionalProtectedPaths])],
+      getBlockedEnvNames: () => this.#options.getBlockedEnvNames?.() ?? [],
+      abortRemoteStreams: (id, cwd, scratchDir, executionKey) => {
+        const peer = this.#wsPeers.get(id);
+        if (!peer || peer.connectionState !== "online" || !peer.ws || peer.ws.readyState !== peer.ws.OPEN) {
+          if (peer) {
+            for (const [streamId, stream] of [...peer.streams]) {
+              if (
+                stream.workspaceDir === cwd &&
+                (!scratchDir || stream.scratchDir === scratchDir) &&
+                (!executionKey || stream.executionKey === executionKey)
+              ) {
+                peer.pendingCloseStreamIds.add(streamId);
+                this.#abortSingleStream(peer, streamId, "Worker stopped during disconnect");
+              }
+            }
+          }
+          return true;
+        }
+        return false;
+      },
+      requestRemoteCleanup: async (id, cwd, scratchDir, executionKey) => {
+        const peer = this.#wsPeers.get(id);
+        const supportsKey = Boolean(peer && hasTrustedHostExecutionCapability(peer.descriptor.capabilities));
+        const result = await this.#projectRequest(id, {
+          action: "cleanup",
+          workspaceDir: cwd,
+          ...(scratchDir ? { scratchDir } : {}),
+          ...(supportsKey && executionKey ? { executionKey } : {}),
+        });
+        if (!("cleanupPending" in result) || typeof result.cleanupPending !== "boolean") throw new Error("Invalid Worker cleanup response");
+        return { cleanupPending: result.cleanupPending };
+      },
+    };
+  }
+
+  async releaseWorkerExecutionEnv(
+    envId: string,
+    cwd: string,
+    options?: { scratchDir?: string; executionMode?: ExecutionTrustMode; executionKey?: string },
+  ): Promise<{ cleanupPending: boolean }> {
+    return releaseBridgeWorkerEnv(this.#executionContext(), envId, cwd, options);
   }
 
   listEnvs(): EnvNodeDescriptor[] {
@@ -2089,103 +2243,16 @@ export class EnvManager {
   }
 
   pickDefaultWorkerEnvId(): string {
-    if (this.#closed) throw new Error("Env manager is closed");
-    if (this.#localDescriptor?.online && hasWorkerBasicOrFullIsolation(this.#localDescriptor.capabilities)) return this.#localEnvId;
-    for (const envId of this.#options.workerEnvIds ?? []) {
-      const descriptor = this.getEnvDescriptor(envId);
-      if (descriptor?.online && descriptor.executionKind !== "native-device" && hasWorkerBasicOrFullIsolation(descriptor.capabilities)) return envId;
-    }
-    for (const envId of this.#deviceTokens.keys()) {
-      const descriptor = this.getEnvDescriptor(envId);
-      if (descriptor?.online && descriptor.executionKind !== "native-device" && hasWorkerBasicOrFullIsolation(descriptor.capabilities)) return envId;
-    }
-    throw new Error("No isolated Worker Env is available. Register an approved sandboxed Env before starting a Worker.");
+    return pickBridgeDefaultWorkerEnvId(this.#executionContext());
   }
 
-  /** Unlike LocalExecutionEnv, every file operation goes through the sandboxed daemon. */
+  /** Create a Worker `ExecutionEnv` bound to `envId`, `cwd`, and the negotiated execution trust mode. */
   createWorkerExecutionEnv(envId: string, cwd: string, options: WorkerExecutionOptions = {}): ExecutionEnv {
-    if (this.#closed) throw new Error("Env manager is closed");
-    this.#assertPiEnv(envId);
-    if (this.isLocalEnv(envId)) {
-      cwd = canonicalExecutionPath(cwd);
-      if (options.scratchDir) options = { ...options, scratchDir: canonicalExecutionPath(options.scratchDir) };
-    }
-    const protectedPaths = [...new Set([...(this.#options.getProtectedPaths?.() ?? []), ...this.#additionalProtectedPaths])];
-    const network: WorkerNetworkPolicy = {
-      localConnectPorts: [...(this.#options.workerNetwork?.localConnectPorts ?? []), ...(options.network?.localConnectPorts ?? [])],
-      localListenPorts: [...(this.#options.workerNetwork?.localListenPorts ?? []), ...(options.network?.localListenPorts ?? [])],
-      ...(options.network?.offline ? { offline: true } : {}),
-    };
-    const protection = JSON.stringify(protectedPaths);
-    if (protection !== this.#workerProtection) {
-      this.invalidateWorkerEnvironments();
-      this.#workerProtection = protection;
-    }
-    if (!this.isLocalEnv(envId) && !this.#options.workerEnvIds?.includes(envId) && !this.#deviceTokens.has(envId)) {
-      throw new Error(`Env '${envId}' has not been approved for isolated Worker execution`);
-    }
-    const descriptor = this.getEnvDescriptor(envId);
-    if (!descriptor?.online) throw new Error(`Worker Env '${envId}' is offline`);
-    if (!(network.offline || network.localConnectPorts?.length ? hasWorkerStrictNetworkIsolation(descriptor.capabilities) : hasWorkerBasicOrFullIsolation(descriptor.capabilities))) throw new Error(`Worker Env '${envId}' has no ready native isolation backend; update or configure the Env before execution`);
-    if (options.projectId && this.#revokedProjects.has(JSON.stringify([envId, options.projectId]))) throw new Error("Project execution has been revoked");
-    const previousExecutions = [...this.#workerConnections.values()].filter((entry) => entry.envId === envId && entry.cwd === cwd && entry.cleaning);
-    const cacheKey = JSON.stringify([envId, cwd, options.scratchDir, network, options.projectId, options.grantRevision, options.stagedTaskId, Boolean(options.readOnly), protection]);
-    let entry = this.#workerConnections.get(cacheKey);
-    if (entry?.cleaning) entry = undefined;
-    if (!entry) {
-      if (this.isLocalEnv(envId)) {
-        if (hasOrphanedExecution(path.join(this.#localProjects!.privateDirectory, "executions"), canonicalExecutionPath(cwd))) throw new Error("Previous Worker execution cleanup is pending");
-        let workspaceRoot = canonicalExecutionPath(this.#localDescriptor!.rootDir);
-        if (options.projectId && options.stagedTaskId) {
-          workspaceRoot = this.#localStagedWorkspaces!.validateStagedCwd(options.stagedTaskId, options.projectId, cwd, options.grantRevision).stagedDir;
-          if (options.scratchDir) this.#localProjects!.validateScratch(options.scratchDir);
-        } else if (options.projectId) {
-          workspaceRoot = this.#localProjects!.validate(options.projectId, cwd, options.grantRevision).workspaceDir;
-          if (options.scratchDir) this.#localProjects!.validateScratch(options.scratchDir);
-        }
-        if (!options.projectId) {
-          this.#localProjects!.assertUnregistered(cwd);
-          if (options.scratchDir) this.#localProjects!.assertUnregistered(options.scratchDir);
-        }
-        for (const entry of options.projectId ? [] : [cwd, ...(options.scratchDir ? [options.scratchDir] : [])]) {
-          const relative = path.relative(workspaceRoot, canonicalExecutionPath(entry));
-          if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Worker execution path is outside the local Env's registered root");
-        }
-        const sandbox = createWorkerSandbox({ ...options, workspaceDir: cwd, workspaceRoot, managedScratchRoot: this.#localProjects!.scratchRoot, controlRoot: path.join(this.#localProjects!.privateDirectory, "executions"), protectedPaths: [...protectedPaths, this.#localProjects!.privateDirectory], network });
-        const command = async () => {
-          const pending = await Promise.all(previousExecutions.map((previous) => previous.sandbox?.cleanup() ?? false));
-          if (pending.some(Boolean)) throw new Error("Worker execution cleanup is pending");
-          return sandbox.command;
-        };
-        entry = { envId, cwd, scratchDir: options.scratchDir, projectId: options.projectId, connection: new Connection({ command }), sandbox };
-      } else if (this.#wsPeers.has(envId)) {
-        entry = {
-          envId, cwd, scratchDir: options.scratchDir, projectId: options.projectId,
-          connection: new Connection({ command: [
-            process.execPath, STDIO_RELAY_PATH, String(this.#bridgePort), envId, this.#bridgeSecret,
-            JSON.stringify({ workspaceDir: cwd, scratchDir: options.scratchDir, projectId: options.projectId, grantRevision: options.grantRevision, ...(options.stagedTaskId ? { stagedTaskId: options.stagedTaskId } : {}), readOnly: options.readOnly, protectedPaths, network }),
-          ] }),
-        };
-      } else {
-        throw new Error("SSH Worker execution requires a sandboxed Env agent; direct SSH daemons are not isolated");
-      }
-      this.#workerConnections.set(cacheKey, entry);
-    }
-    return new RemoteExecutionEnv({ connection: entry.connection, id: `kulo-worker:${envId}:${cwd}`, cwd, shellPath: this.getEnvDescriptor(envId)?.platform === "win32" ? "powershell.exe" : "/bin/bash" });
+    return createBridgeWorkerExecutionEnv(this.#executionContext(), envId, cwd, options);
   }
 
   invalidateWorkerEnvironments(): void {
-    for (const [key, entry] of this.#workerConnections) {
-      entry.cleaning = true;
-      entry.connection.close();
-      if (entry.sandbox) {
-        const cleanup = entry.sandbox.cleanup().then((pending) => { if (!pending && this.#workerConnections.get(key) === entry) this.#workerConnections.delete(key); return pending; });
-        this.#cleanupTasks.add(cleanup);
-        void cleanup.finally(() => this.#cleanupTasks.delete(cleanup)).catch((error: unknown) => console.error("[KuloEnv:cleanup]", error instanceof Error ? error.message : "Worker cleanup failed"));
-      } else {
-        this.#workerConnections.delete(key);
-      }
-    }
+    invalidateAllWorkerConnections(this.#workerConnections, this.#cleanupTasks, undefined, this.#retiredWorkerConnections);
   }
 
   protectPaths(paths: readonly string[]): void {
@@ -2196,149 +2263,19 @@ export class EnvManager {
       this.#additionalProtectedPaths.add(protectedPath);
       changed = true;
     }
-    if (changed) this.invalidateWorkerEnvironments();
+    if (changed) {
+      invalidateAllWorkerConnections(this.#workerConnections, this.#cleanupTasks, (entry) => entry.executionMode === "sandboxed", this.#retiredWorkerConnections);
+      this.retireIdleWorkerEnvironments();
+    }
   }
 
   /** Build a `Pi Durable` `ExecutionEnv` bound to `envId` and `cwd`. */
   createExecutionEnv(
     envId: string,
     cwd: string,
-    options?: { sandboxed?: boolean; readOnly?: boolean; offline?: boolean },
+    options?: { sandboxed?: boolean; readOnly?: boolean; offline?: boolean; executionMode?: ExecutionTrustMode },
   ): ExecutionEnv {
-    this.#assertPiEnv(envId);
-    if (this.isLocalEnv(envId)) {
-      if (!this.#localConnection || !this.#localDescriptor) {
-        throw new Error("Local execution environment is not enabled on this Hub");
-      }
-      if (options?.sandboxed) {
-        if (!(options.offline ? hasWorkerStrictNetworkIsolation(this.#localDescriptor.capabilities) : hasWorkerBasicOrFullIsolation(this.#localDescriptor.capabilities)) || !this.#localProjects) {
-          throw new Error("Sandboxed execution requires native worker isolation on local Env; refusing unsandboxed fallback.");
-        }
-        const canonicalCwd = canonicalExecutionPath(cwd);
-        const protectedPaths = [...new Set([...(this.#options.getProtectedPaths?.() ?? []), ...this.#additionalProtectedPaths])];
-        const protection = JSON.stringify(protectedPaths);
-        if (protection !== this.#workerProtection) {
-          this.invalidateWorkerEnvironments();
-          this.#workerProtection = protection;
-        }
-        const network: WorkerNetworkPolicy = {
-          localConnectPorts: [],
-          localListenPorts: [],
-          ...(options.offline ? { offline: true } : {}),
-        };
-        const cacheKey = JSON.stringify(["orchestrator-local", canonicalCwd, Boolean(options.readOnly), Boolean(options.offline), protection]);
-        let entry = this.#workerConnections.get(cacheKey);
-        if (entry?.cleaning) entry = undefined;
-        if (!entry) {
-          const workspaceRoot = canonicalExecutionPath(this.#localDescriptor.rootDir);
-          const sandbox = createWorkerSandbox({
-            workspaceDir: canonicalCwd,
-            workspaceRoot: canonicalCwd.startsWith(workspaceRoot) ? workspaceRoot : canonicalCwd,
-            managedScratchRoot: this.#localProjects.scratchRoot,
-            controlRoot: path.join(this.#localProjects.privateDirectory, "executions"),
-            protectedPaths: [...protectedPaths, this.#localProjects.privateDirectory],
-            readOnly: Boolean(options.readOnly),
-            network,
-          });
-          entry = {
-            envId: this.#localEnvId,
-            cwd: canonicalCwd,
-            connection: new Connection({ command: async () => sandbox.command }),
-            sandbox,
-          };
-          this.#workerConnections.set(cacheKey, entry);
-        }
-        return new RemoteExecutionEnv({
-          connection: entry.connection,
-          id: "node:local",
-          cwd: canonicalCwd,
-          shellPath: process.platform === "win32" ? "powershell.exe" : "/bin/bash",
-        });
-      }
-      return new LocalExecutionEnv({
-        cwd,
-        connection: this.#localConnection,
-      });
-    }
-
-    const wsPeer = this.#wsPeers.get(envId);
-    if (wsPeer) {
-      if (!wsPeer.descriptor.online) {
-        throw new Error(
-          `Execution environment '${envId}' (${wsPeer.descriptor.name}) is currently offline`,
-        );
-      }
-      if (options?.sandboxed) {
-        if (
-          !(options.offline ? hasWorkerStrictNetworkIsolation(wsPeer.descriptor.capabilities) : hasWorkerBasicOrFullIsolation(wsPeer.descriptor.capabilities)) ||
-          !(this.#options.workerEnvIds?.includes(envId) || this.#deviceTokens.has(envId))
-        ) {
-          throw new Error(`Sandboxed execution requires native worker isolation on Env '${envId}'; refusing unsandboxed fallback.`);
-        }
-        const protectedPaths = [...new Set([...(this.#options.getProtectedPaths?.() ?? []), ...this.#additionalProtectedPaths])];
-        const protection = JSON.stringify(protectedPaths);
-        if (protection !== this.#workerProtection) {
-          this.invalidateWorkerEnvironments();
-          this.#workerProtection = protection;
-        }
-        const network: WorkerNetworkPolicy = {
-          localConnectPorts: [],
-          localListenPorts: [],
-          ...(options.offline ? { offline: true } : {}),
-        };
-        const cacheKey = JSON.stringify(["orchestrator-ws", envId, cwd, Boolean(options.readOnly), Boolean(options.offline), protection]);
-        let entry = this.#workerConnections.get(cacheKey);
-        if (entry?.cleaning) entry = undefined;
-        if (!entry) {
-          entry = {
-            envId,
-            cwd,
-            connection: new Connection({
-              command: [
-                process.execPath,
-                STDIO_RELAY_PATH,
-                String(this.#bridgePort),
-                envId,
-                this.#bridgeSecret,
-                JSON.stringify({
-                  workspaceDir: cwd,
-                  readOnly: Boolean(options.readOnly),
-                  protectedPaths,
-                  network,
-                }),
-              ],
-            }),
-          };
-          this.#workerConnections.set(cacheKey, entry);
-        }
-        return new RemoteExecutionEnv({
-          connection: entry.connection,
-          id: `pi-env:${envId}`,
-          cwd,
-          shellPath: wsPeer.descriptor.platform === "win32" ? "powershell.exe" : "/bin/bash",
-        });
-      }
-      if (!wsPeer.connection) throw new Error(`Execution environment '${envId}' has no Pi Env connection`);
-      return new RemoteExecutionEnv({
-        connection: wsPeer.connection,
-        id: `pi-env:${envId}`,
-        cwd,
-      });
-    }
-
-    const sshPeer = this.#sshPeers.get(envId);
-    if (sshPeer) {
-      if (options?.sandboxed) {
-        throw new Error(`Sandboxed execution is not supported on SSH Env '${envId}'; refusing unsandboxed fallback.`);
-      }
-      return new RemoteExecutionEnv({
-        connection: sshPeer.connection,
-        id: `pi-env:${envId}`,
-        cwd,
-      });
-    }
-
-    throw new Error(`Unknown execution environment '${envId}'`);
+    return createBridgeExecutionEnv(this.#executionContext(), envId, cwd, options);
   }
 
   async close(): Promise<void> {
@@ -2385,6 +2322,8 @@ export class EnvManager {
       peer.connectionState = "offline";
       peer.descriptor.online = false;
       peer.connection?.close();
+      for (const conn of peer.connectionsByMode.values()) conn.close();
+      peer.connectionsByMode.clear();
       this.#failAllStreams(peer, "Hub shutting down");
       if (peer.ws) {
         try {
@@ -2434,7 +2373,7 @@ export class EnvManager {
       const remainder = headerBuf.subarray(nl + 1);
       headerBuf = Buffer.alloc(0);
 
-      let parsed: { envId?: string; secret?: string; daemonToken?: string; projectId?: string; grantRevision?: number; stagedTaskId?: string; readOnly?: boolean; workspaceDir?: string; scratchDir?: string; protectedPaths?: string[]; network?: { localConnectPorts?: number[]; localListenPorts?: number[] } };
+      let parsed: { envId?: string; secret?: string; daemonToken?: string; projectId?: string; grantRevision?: number; stagedTaskId?: string; readOnly?: boolean; workspaceDir?: string; scratchDir?: string; protectedPaths?: string[]; network?: { localConnectPorts?: number[]; localListenPorts?: number[]; offline?: boolean }; executionMode?: ExecutionTrustMode; executionKey?: string };
       try {
         parsed = JSON.parse(line);
       } catch {
@@ -2475,10 +2414,16 @@ export class EnvManager {
         workspaceDir: parsed.workspaceDir,
         scratchDir: parsed.scratchDir,
         projectId: parsed.projectId,
+        executionKey: parsed.executionKey,
         ...(peer.streamResumeSupported ? { resumeBuffer: new StreamResumeBuffer() } : {}),
       };
       peer.streams.set(streamId, streamEntry);
 
+      const supportsTrusted = hasTrustedHostExecutionCapability(peer.descriptor.capabilities);
+      const forwardExecutionMode =
+        (parsed.executionMode === "trusted" || parsed.executionMode === "sandboxed") && supportsTrusted
+          ? parsed.executionMode
+          : undefined;
       this.#sendControl(peer.ws, {
         type: "hub.open_stream",
         streamId,
@@ -2490,6 +2435,8 @@ export class EnvManager {
         ...(parsed.scratchDir ? { scratchDir: parsed.scratchDir } : {}),
         ...(parsed.protectedPaths ? { protectedPaths: parsed.protectedPaths } : {}),
         ...(parsed.network ? { network: parsed.network } : {}),
+        ...(forwardExecutionMode ? { executionMode: forwardExecutionMode } : {}),
+        ...(supportsTrusted && parsed.executionKey ? { executionKey: parsed.executionKey } : {}),
       });
 
       if (remainder.byteLength > 0) {

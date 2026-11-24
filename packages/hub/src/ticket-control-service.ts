@@ -7,6 +7,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { EnvManager } from "@kulo/env";
 import {
+  resolveEffectiveExecutionMode,
   resolveRolePresetFromPool,
   type TicketCardView,
   type TicketRecord,
@@ -404,6 +405,13 @@ export class TicketControlService {
           activeRoles: liveSettings.get().roles,
           isParking: (id) => ports.reconciler.isParking(id),
           isTicketDevicesOnline: (t) => this.#ticketDevicesOnline(t),
+          resolveExecutionMode: (t) =>
+            resolveEffectiveExecutionMode({
+              hubTrustMode: envManager.getExecutionTrustMode(),
+              descriptor: envManager.getEnvDescriptor(t.envId),
+              isLocal: envManager.isLocalEnv(t.envId),
+              requireOsIsolation: Boolean(t.readOnly || t.workspaceStaging?.mode === "staged"),
+            }),
           workerTicketTask: ports.workerTicketTask,
         }),
       context,

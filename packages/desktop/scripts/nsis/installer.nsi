@@ -10,7 +10,7 @@ Unicode true
   !define APP_ID "io.kulo.desktop"
 !endif
 !ifndef APP_VERSION
-  !define APP_VERSION "0.1.6"
+  !define APP_VERSION "0.1.7"
 !endif
 !ifndef SOURCE_DIR
   !error "SOURCE_DIR must be defined via -DSOURCE_DIR=..."

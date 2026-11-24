@@ -1,4 +1,5 @@
 import net from "node:net";
+import { isCloudMetadataHostOrIp, isPrivateOrLoopbackHost } from "./net-policy.js";
 import path from "node:path";
 import {
   MCP_BLOCKED_ENV_KEYS,
@@ -414,6 +415,7 @@ export function normalizeMcpConnectionFields(
   input: ConnectionFields,
   helpers: {
     stateDir?: string;
+    allowPrivateHttp?: boolean;
     textField: (value: unknown, label: string, max: number) => string | undefined;
     instructionsField: (value: unknown) => string | undefined;
     credentialSchema: (value: unknown) => ConnectionCredentialField[] | undefined;
@@ -434,11 +436,17 @@ export function normalizeMcpConnectionFields(
     if (!rawUrl) failMcpField("请填写 MCP 服务地址。");
     let url: URL;
     try { url = new URL(rawUrl); } catch { failMcpField("请输入有效的 MCP 服务地址。"); }
-    if (url.username || url.password || url.search || url.hash) failMcpField("MCP 服务地址不能包含账号、密码或查询参数。");
+    if (url.username || url.password || url.hash) failMcpField("MCP 服务地址不能包含账号、密码或片段。");
+    for (const [paramKey] of url.searchParams) {
+      if (/^(?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|secret|password|passwd|auth|key)$/i.test(paramKey)) {
+        failMcpField("MCP 服务地址查询参数不能包含明文凭据，请使用专用凭据字段。");
+      }
+    }
     const host = stripBrackets(url.hostname);
-    if (!host || isCloudMetadataIp(host)) failMcpField("MCP 服务地址无效或受安全策略阻止。");
+    if (!host || isCloudMetadataIp(host) || isCloudMetadataHostOrIp(host)) failMcpField("MCP 服务地址无效或受安全策略阻止。");
     if (url.protocol === "http:") {
-      if (!isLoopbackHost(host)) failMcpField("远程 MCP 服务地址必须使用 HTTPS。");
+      const httpAllowed = isLoopbackHost(host) || (Boolean(helpers.allowPrivateHttp) && isPrivateOrLoopbackHost(host));
+      if (!httpAllowed) failMcpField("远程 MCP 服务地址必须使用 HTTPS。");
     } else if (url.protocol !== "https:") {
       failMcpField("远程 MCP 服务地址必须使用 HTTPS。");
     }

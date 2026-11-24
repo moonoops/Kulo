@@ -1,8 +1,11 @@
-import type {
-  DispatchTargetScope,
-  EnvNodeDescriptor,
-  TicketEnvBinding,
-  TicketRecord,
+import {
+  LEGACY_MIGRATION_EXECUTION_TRUST_MODE,
+  isWorkerEnvReady,
+  type DispatchTargetScope,
+  type EnvNodeDescriptor,
+  type ExecutionTrustMode,
+  type TicketEnvBinding,
+  type TicketRecord,
 } from "@kulo/protocol";
 import { namedDispatchDevices } from "./agent-routing.js";
 
@@ -172,6 +175,7 @@ export interface ComputerEnvResolutionInput {
   goal?: string;
   scope?: string;
   localEnv?: EnvNodeDescriptor;
+  executionTrustMode?: ExecutionTrustMode;
   pickFallbackEnvId: () => string;
 }
 
@@ -201,8 +205,10 @@ export function resolveComputerEnvBinding(input: ComputerEnvResolutionInput): Co
     goal,
     scope,
     localEnv,
+    executionTrustMode,
     pickFallbackEnvId,
   } = input;
+  const trustMode = executionTrustMode ?? LEGACY_MIGRATION_EXECUTION_TRUST_MODE;
 
   // Tier 1: Hard bindings
   if (projectDeviceId) {
@@ -227,7 +233,7 @@ export function resolveComputerEnvBinding(input: ComputerEnvResolutionInput): Co
         waitForSource: recoveryTicket.envBinding === "sender_local",
       };
     }
-    const target = proposedEnvId ?? (localEnv?.online && hasWorkerIsolation(localEnv) ? localEnvId : recoveryTicket.envId);
+    const target = proposedEnvId ?? (localEnv?.online && isWorkerEnvReady(localEnv, trustMode, { isLocal: true }) ? localEnvId : recoveryTicket.envId);
     return {
       envId: target,
       envBinding: target === localEnvId ? "hub_local" : "pool_fallback",
@@ -313,7 +319,7 @@ export function resolveComputerEnvBinding(input: ComputerEnvResolutionInput): Co
       };
     }
 
-    const localReady = Boolean(localEnv?.online && hasWorkerIsolation(localEnv));
+    const localReady = Boolean(localEnv?.online && isWorkerEnvReady(localEnv, trustMode, { isLocal: true }));
     if (localReady) {
       return {
         envId: localEnvId,
@@ -337,7 +343,7 @@ export function resolveComputerEnvBinding(input: ComputerEnvResolutionInput): Co
       waitForSource: false,
     };
   }
-  if (localEnv?.online && hasWorkerIsolation(localEnv)) {
+  if (localEnv?.online && isWorkerEnvReady(localEnv, trustMode, { isLocal: true })) {
     return {
       envId: localEnvId,
       envBinding: "hub_local",

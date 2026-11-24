@@ -1,3 +1,5 @@
+import type { ExecutionTrustMode } from "./execution-trust.js";
+
 export type HostInspectScope = "summary" | "processes" | "ports";
 
 export type HostActionRequest =
@@ -7,12 +9,14 @@ export type HostActionRequest =
       filter?: string;
       paths?: string[];
       limit?: number;
+      executionMode?: ExecutionTrustMode;
     }
   | {
       kind: "run";
       commands: string[];
       cwd?: string;
       timeoutMs?: number;
+      executionMode?: ExecutionTrustMode;
     };
 
 export interface HostProcessEntry {
@@ -73,8 +77,9 @@ export function isHostActionRequest(value: unknown): value is HostActionRequest 
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
   if (v.kind === "inspect") {
-    const allowed = new Set(["kind", "scope", "filter", "paths", "limit"]);
+    const allowed = new Set(["kind", "scope", "filter", "paths", "limit", "executionMode"]);
     if (Object.keys(v).some((key) => !allowed.has(key))) return false;
+    if (v.executionMode !== undefined && v.executionMode !== "trusted" && v.executionMode !== "sandboxed") return false;
     if (v.scope !== "summary" && v.scope !== "processes" && v.scope !== "ports") return false;
     if (v.filter !== undefined && (typeof v.filter !== "string" || v.filter.length > 120 || /[\x00-\x1f\x7f]/.test(v.filter))) return false;
     if (v.limit !== undefined && (typeof v.limit !== "number" || !Number.isInteger(v.limit) || v.limit < 1 || v.limit > 200)) return false;
@@ -85,8 +90,9 @@ export function isHostActionRequest(value: unknown): value is HostActionRequest 
     return true;
   }
   if (v.kind === "run") {
-    const allowed = new Set(["kind", "commands", "cwd", "timeoutMs"]);
+    const allowed = new Set(["kind", "commands", "cwd", "timeoutMs", "executionMode"]);
     if (Object.keys(v).some((key) => !allowed.has(key))) return false;
+    if (v.executionMode !== undefined && v.executionMode !== "trusted" && v.executionMode !== "sandboxed") return false;
     if (!Array.isArray(v.commands) || v.commands.length < 1 || v.commands.length > HOST_ACTION_MAX_COMMANDS) return false;
     if (v.commands.some((cmd) => typeof cmd !== "string" || !cmd.trim() || cmd.length > HOST_ACTION_MAX_COMMAND_CHARS || cmd.includes("\0"))) return false;
     if (v.cwd !== undefined && (typeof v.cwd !== "string" || !v.cwd.trim() || v.cwd.length > 4096 || /[\x00-\x1f\x7f]/.test(v.cwd))) return false;

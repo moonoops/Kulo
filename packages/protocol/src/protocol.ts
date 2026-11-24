@@ -375,6 +375,15 @@ export type HubToEnvControlMessage =
       cluster?: import("./cluster.js").ClusterTopology;
       /** Standby sync authorization pushed to approved standby peers. */
       standby?: { enabled: boolean; syncToken: string };
+      /** Current Hub execution trust mode pushed to trusted-host-v1 peers. */
+      executionTrustMode?: import("./execution-trust.js").ExecutionTrustMode;
+      /** Monotonic policy revision for execution trust mode. */
+      executionTrustModeRevision?: number;
+    }
+  | {
+      type: "hub.execution_trust_mode";
+      mode: import("./execution-trust.js").ExecutionTrustMode;
+      revision?: number;
     }
   | {
       type: "hub.cluster_topology";
@@ -406,6 +415,10 @@ export type HubToEnvControlMessage =
       scratchDir?: string;
       protectedPaths?: string[];
       network?: { localConnectPorts?: number[]; localListenPorts?: number[]; offline?: boolean };
+      /** Explicit execution trust mode negotiated with trusted-host-v1 peers. */
+      executionMode?: import("./execution-trust.js").ExecutionTrustMode;
+      /** Per-task owner key for scoped remote stream & process-tree cleanup (trusted-host-v1 peers only). */
+      executionKey?: string;
     }
   | {
       type: "hub.stream_ack";

@@ -7,6 +7,25 @@ export { KuloEnvAgent, type KuloEnvAgentOptions } from "./agent.js";
 export { ComputerUseService, computerUseConfiguration } from "./computer-use.js";
 export { HostActionService, expandHostPath, validateHostMaintenanceCommands } from "./host-actions.js";
 export { buildHostMaintenanceSandboxProfile, buildWorkerSandboxProfile, canonicalExecutionPath, createWorkerSandbox, defaultProtectedPaths, discoverGitWriteDeniedPaths, hasWorkerBasicOrFullIsolation, hasWorkerStrictNetworkIsolation, isApplicationPrivatePath, workerIsolationCapabilities, type WorkerExecutionOptions, type WorkerNetworkPolicy } from "./isolation.js";
+export {
+  augmentedNativePath,
+  buildCoreStateProtectedPaths,
+  buildSafeMcpDiscoveryEnv,
+  buildTrustedHostEnv,
+  createTrustedWorkerSession,
+  getCachedLoginShellPath,
+  isBlockedInternalEnvName,
+  KULO_CORE_STATE_SENSITIVE_NAMES,
+  KULO_INTERNAL_SECRET_ENV_RE,
+  parseLoginShellPathOutput,
+  primeLoginShellPath,
+  resetLoginShellPathCacheForTest,
+  resolveLoginShellPath,
+  stripBlockedEnv,
+  TrustedLocalExecutionEnv,
+  type BuildTrustedHostEnvOptions,
+  type TrustedWorkerSessionOptions,
+} from "./trusted-execution.js";
 export { buildLinuxSandboxArguments, isRestrictedLinuxProxyAddress } from "./isolation-linux.js";
 export { buildWindowsSandboxPolicy, cleanupWindowsSandboxCommand, createWindowsBasicSandboxSetupCommand, createWindowsSandboxCommand } from "./isolation-windows.js";
 export { createMacSandboxCleanupCommand } from "./isolation-macos.js";

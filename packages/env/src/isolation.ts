@@ -9,6 +9,7 @@ import { createWindowsBasicSandboxSetupCommand, createWindowsSandboxCommand, cre
 import { createLinuxSandboxCommand, linuxSandboxAvailable } from "./isolation-linux.js";
 import { createMacSandboxCleanupCommand, macSandboxCleanupAvailable } from "./isolation-macos.js";
 import { randomBytes } from "node:crypto";
+import type { ExecutionTrustMode } from "@kulo/protocol";
 
 export interface WorkerExecutionOptions {
   scratchDir?: string;
@@ -17,6 +18,10 @@ export interface WorkerExecutionOptions {
   grantRevision?: number;
   stagedTaskId?: string;
   readOnly?: boolean;
+  /** Negotiated execution mode bound to this task's runEpoch. */
+  executionMode?: ExecutionTrustMode;
+  /** Optional per-runEpoch owner key for isolated connection caching and precise release. */
+  executionKey?: string;
 }
 
 export interface WorkerNetworkPolicy {
@@ -41,6 +46,7 @@ export interface WorkerSandboxOptions extends WorkerExecutionOptions {
 export interface WorkerSandbox {
   command: readonly string[];
   temporaryDir: string;
+  controlDir?: string;
   workspaceDir: string;
   port: number;
   close(): void;
@@ -515,7 +521,7 @@ export function createWorkerSandbox(options: WorkerSandboxOptions): WorkerSandbo
   fs.mkdirSync(controlRoot, { recursive: true, mode: 0o700 });
   const controlDir = fs.realpathSync(fs.mkdtempSync(path.join(controlRoot, "kulo-worker-control-")));
   fs.chmodSync(controlDir, 0o700);
-  fs.writeFileSync(path.join(controlDir, "owner.json"), JSON.stringify({ ownerPid: process.pid, ownerIdentity: processFingerprint(process.pid), workspaceDir, scratchDir, projectId: options.projectId, temporaryDir, cleanupModel: process.platform === "darwin" ? "macos-seatbelt" : "os-container" }), { mode: 0o600 });
+  fs.writeFileSync(path.join(controlDir, "owner.json"), JSON.stringify({ ownerPid: process.pid, ownerIdentity: processFingerprint(process.pid), workspaceDir, scratchDir, projectId: options.projectId, ...(options.executionKey ? { executionKey: options.executionKey } : {}), temporaryDir, cleanupModel: process.platform === "darwin" ? "macos-seatbelt" : "os-container" }), { mode: 0o600 });
   const homeDir = path.join(temporaryDir, "home");
   const tempDir = path.join(temporaryDir, "tmp");
   fs.mkdirSync(homeDir);
@@ -588,6 +594,7 @@ export function createWorkerSandbox(options: WorkerSandboxOptions): WorkerSandbo
     return {
       workspaceDir,
       temporaryDir,
+      controlDir,
       port,
       command: supervisedCommand(innerCommand, controlDir, sandboxCleanup),
       cleanup,

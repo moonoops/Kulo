@@ -71,20 +71,7 @@ const BLOCKED_CUSTOM_ACP_EXECUTABLES = new Set([
   "gawk",
   "sed",
   "expect",
-  "deno",
-  "bun",
-  "bunx",
-  "npx",
-  "pnpx",
-  "dlx",
-  "uvx",
-  "pipx",
-  "corepack",
-  "tsx",
-  "ts-node",
 ]);
-
-const BLOCKED_CUSTOM_ACP_RUNTIME_PATTERN = /^(?:node|nodejs|python|pypy|perl|ruby|php)(?:\d+(?:\.\d+)*)?$/i;
 
 export function isBlockedCustomAcpExecutableName(filePath: string): boolean {
   const normalized = filePath.trim().replace(/[\\/]+$/, "");
@@ -94,7 +81,7 @@ export function isBlockedCustomAcpExecutableName(filePath: string): boolean {
     .replace(/\.(?:exe|cmd|bat|com)$/i, "")
     .toLowerCase();
   if (!base) return true;
-  return BLOCKED_CUSTOM_ACP_EXECUTABLES.has(base) || BLOCKED_CUSTOM_ACP_RUNTIME_PATTERN.test(base);
+  return BLOCKED_CUSTOM_ACP_EXECUTABLES.has(base);
 }
 
 export function isValidCustomAcpAgentRef(value: unknown): value is string {

@@ -1,9 +1,13 @@
-import type { ExternalAgentKind } from "@kulo/protocol";
+import type { ExecutionTrustMode, ExternalAgentKind } from "@kulo/protocol";
 import { getAcpFlavor } from "./external-agent-acp.js";
 
 export interface NativeAgentEnvOptions {
   /** Sub-commands launched via ACP `terminal/create` should not inherit host LLM keys by default. */
   terminal?: boolean;
+  /** Execution trust mode (`trusted` keeps host dev/cloud/deploy vars while still isolating Kulo/Hindsight secrets). */
+  trustMode?: ExecutionTrustMode;
+  /** Additional Kulo/Hindsight secret env var names (e.g. custom Hindsight API key env names) to always strip. */
+  blockedEnvNames?: Iterable<string>;
 }
 
 const KULO_OR_MEMORY_SECRET_RE =
@@ -127,19 +131,25 @@ export function filterNativeAgentEnvironment(
     kind === "gemini-cli" ||
     kind === "antigravity";
 
+  const trusted = options?.trustMode === "trusted";
   const terminalMode = options?.terminal === true;
-  const isolateVendorKeys = !terminalMode && kind !== undefined && !MULTI_VENDOR_AGENT_KINDS.has(kind);
+  const isolateVendorKeys = (!terminalMode || trusted) && kind !== undefined && !MULTI_VENDOR_AGENT_KINDS.has(kind);
   // Desktop GUI runtimes launched via `open -a` from SSH inherit stale SSH session markers that
   // cause local CLIs (e.g. Antigravity `agy`) to skip the unlocked OS keychain.
   const stripStaleDesktopSshSession = Boolean(sourceEnv.KULO_DESKTOP_DATA_DIR);
+  const dynamicBlocked = new Set<string>();
+  if (options?.blockedEnvNames) {
+    for (const name of options.blockedEnvNames) {
+      if (typeof name === "string" && name.trim()) dynamicBlocked.add(name.trim().toUpperCase());
+    }
+  }
 
   const filtered: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(sourceEnv)) {
     if (value === undefined) continue;
     const upper = name.toUpperCase();
 
-    if (KULO_OR_MEMORY_SECRET_RE.test(name)) continue;
-    if (HOST_PRODUCTION_SECRET_EXACT.has(upper) || HOST_PRODUCTION_SECRET_RE.test(name)) continue;
+    if (KULO_OR_MEMORY_SECRET_RE.test(name) || dynamicBlocked.has(upper)) continue;
     if (
       stripStaleDesktopSshSession &&
       (upper === "SSH_CLIENT" || upper === "SSH_CONNECTION" || upper === "SSH_TTY")
@@ -147,15 +157,18 @@ export function filterNativeAgentEnvironment(
       continue;
     }
 
-    if ((upper === "AWS_SECRET_ACCESS_KEY" || upper === "AWS_SESSION_TOKEN") && !allowAwsForBedrock) {
-      continue;
-    }
-    if (upper === "GOOGLE_APPLICATION_CREDENTIALS" && !allowGcpForVertex) {
-      continue;
+    if (!trusted) {
+      if (HOST_PRODUCTION_SECRET_EXACT.has(upper) || HOST_PRODUCTION_SECRET_RE.test(name)) continue;
+      if ((upper === "AWS_SECRET_ACCESS_KEY" || upper === "AWS_SESSION_TOKEN") && !allowAwsForBedrock) {
+        continue;
+      }
+      if (upper === "GOOGLE_APPLICATION_CREDENTIALS" && !allowGcpForVertex) {
+        continue;
+      }
     }
 
     if (KNOWN_LLM_API_KEYS.has(upper)) {
-      if (terminalMode) continue;
+      if (!trusted && terminalMode) continue;
       if (isolateVendorKeys && !isAllowedLlmKeyForKind(name, kind)) continue;
     }
 

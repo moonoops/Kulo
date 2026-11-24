@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type JsonObject, type Tx } from "@earendil-works/pi-durable";
-import type { ActionEffectState, TicketWaitOption, UiCardInput, UiCardSnapshot, UiValues } from "@kulo/protocol";
+import type { ActionEffectState, ExecutionTrustMode, TicketWaitOption, UiCardInput, UiCardSnapshot, UiValues } from "@kulo/protocol";
 import { hashConfirmationValue as hashValue } from "./action-confirmation-cards.js";
 import { UiCardsDoc, type KuloUiCards } from "./ui-cards.js";
 
@@ -74,6 +74,7 @@ export type ActionConfirmationPayload =
       ticketId?: string;
       runEpoch?: number;
       requestId?: string;
+      executionMode?: ExecutionTrustMode;
     }
   | {
       kind: "ticket_decision";

@@ -302,6 +302,7 @@ describe("Hub + ExternalAgentService staged workspace, context distillation & at
       scope: "src/**",
       role: "codex-architect",
       projectId: project.id,
+      workspaceMode: "staged",
       contextSummary: "用户要求按规范重构，注意脱敏 sk-supersecretvalue1234567890。",
       attachmentIds: [uploaded.id],
     });

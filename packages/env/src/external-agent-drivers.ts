@@ -6,11 +6,25 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { cleanSupervisedExecution, processFingerprint, supervisedCommand } from "./worker-supervisor.js";
 import { defaultProtectedPaths } from "./isolation.js";
 import { ExternalAgentRpc, type ExternalAgentPipeFactory, type RpcValue } from "./external-agent-rpc.js";
-import { isBlockedCustomAcpExecutableName, isBundledClaudeSdkExecutable, isSupportedExternalAgentKind, KULO_VERSION, validateCustomAcpArgs, type ExternalAgentBinding, type ExternalAgentCapabilities, type ExternalAgentInputAttachment, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentQuotaProbeResult, type ExternalWorkspaceMode } from "@kulo/protocol";
+import { isBlockedCustomAcpExecutableName, isBundledClaudeSdkExecutable, isSupportedExternalAgentKind, KULO_VERSION, validateCustomAcpArgs, type ExecutionTrustMode, type ExternalAgentBinding, type ExternalAgentCapabilities, type ExternalAgentInputAttachment, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentQuotaProbeResult, type ExternalWorkspaceMode } from "@kulo/protocol";
 import { ACP_FLAVORS, acpReadableSkillSubdirs, extractModelsFromAcpInitialize, extractModelsFromAcpModelState, getAcpFlavor, isSensitiveCredentialFilename, sortEffortTokens } from "./external-agent-acp.js";
 import { filterNativeAgentEnvironment, type NativeAgentEnvOptions } from "./external-agent-env.js";
 import { resolveCrossPlatformSpawn } from "./platform-process.js";
 import { prependKuloInstructions, resolveSafeExternalImages } from "./external-agent-validation.js";
+import {
+  augmentedNativePath,
+  isValidAbsolutePathSegment,
+  KULO_CORE_STATE_SENSITIVE_NAMES,
+  parseLoginShellPathOutput,
+  primeLoginShellPath,
+  resolveLoginShellPath,
+} from "./trusted-execution.js";
+export {
+  augmentedNativePath,
+  parseLoginShellPathOutput,
+  primeLoginShellPath,
+  resolveLoginShellPath,
+};
 
 export interface ExternalDriverContext {
   binding: ExternalAgentBinding;
@@ -40,6 +54,8 @@ export interface ExternalDriverContext {
   permission(id:string,title:string,choices:Array<{id:string;label:string}>):Promise<string>;
   controlRoot?:string;
   projectId?:string;
+  trustMode?: ExecutionTrustMode;
+  blockedEnvNames?: Iterable<string>;
   registerCleanup?:(cleanup:()=>Promise<boolean>)=>void;
 }
 export interface ExternalDriver { cancel():Promise<void>; close():void; cleanup?():Promise<boolean> }
@@ -59,170 +75,6 @@ export const kindBinary: Partial<Record<ExternalAgentKind, string>> = {
   "claude-code": "claude",
   ...Object.fromEntries(Object.values(ACP_FLAVORS).filter((flavor): flavor is NonNullable<typeof flavor> => Boolean(flavor)).map((flavor) => [flavor.kind, flavor.binary])),
 };
-
-const PATH_SENTINEL_START = "__KULO_PATH_START__";
-const PATH_SENTINEL_END = "__KULO_PATH_END__";
-const SYSTEM_STUB_PATH_DIRS = new Set(["/usr/bin", "/bin", "/usr/sbin", "/sbin"]);
-let cachedLoginShellPath: string[] | undefined;
-let loginShellPathPromise: Promise<string[]> | undefined;
-
-function isValidAbsolutePathSegment(segment: string): boolean {
-  return segment.length > 0 && path.isAbsolute(segment) && !/[\x00-\x1f\x7f]/.test(segment);
-}
-
-export function parseLoginShellPathOutput(stdout: string, delimiter = path.delimiter): string[] {
-  const start = stdout.lastIndexOf(PATH_SENTINEL_START);
-  if (start < 0) return [];
-  const end = stdout.indexOf(PATH_SENTINEL_END, start + PATH_SENTINEL_START.length);
-  if (end < 0) return [];
-  const raw = stdout.slice(start + PATH_SENTINEL_START.length, end);
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const segment of raw.split(delimiter)) {
-    const trimmed = segment.trim();
-    if (!isValidAbsolutePathSegment(trimmed) || seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    result.push(trimmed);
-  }
-  return result;
-}
-
-export async function resolveLoginShellPath(options?: { shell?: string; timeoutMs?: number }): Promise<string[]> {
-  if (process.platform === "win32") return [];
-  const shellCandidate = options?.shell ?? (process.env.SHELL && path.isAbsolute(process.env.SHELL) ? process.env.SHELL : (fs.existsSync("/bin/zsh") ? "/bin/zsh" : "/bin/sh"));
-  const timeoutMs = options?.timeoutMs ?? 2500;
-  return new Promise<string[]>((resolve) => {
-    let stdout = "";
-    let settled = false;
-    const finish = (paths: string[]) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(paths);
-    };
-    const child = spawn(
-      shellCandidate,
-      ["-lc", `printf '%s%s%s' '${PATH_SENTINEL_START}' "$PATH" '${PATH_SENTINEL_END}'`],
-      {
-        env: {
-          HOME: os.homedir(),
-          USER: process.env.USER ?? "",
-          TERM: "dumb",
-          PATH: process.env.PATH ?? "/usr/bin:/bin",
-        },
-        stdio: ["ignore", "pipe", "ignore"],
-        windowsHide: true,
-      },
-    );
-    const timer = setTimeout(() => {
-      try { child.kill(); } catch { /* ignore */ }
-      finish([]);
-    }, timeoutMs);
-    timer.unref();
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
-      if (stdout.length > 64_000) {
-        try { child.kill(); } catch { /* ignore */ }
-        finish(parseLoginShellPathOutput(stdout));
-      }
-    });
-    child.once("error", () => finish([]));
-    child.once("exit", (code) => finish(code === 0 ? parseLoginShellPathOutput(stdout) : []));
-  });
-}
-
-export function primeLoginShellPath(): Promise<string[]> {
-  if (cachedLoginShellPath !== undefined) return Promise.resolve(cachedLoginShellPath);
-  if (process.platform === "win32" || process.env.KULO_DISABLE_LOGIN_SHELL_PATH === "1" || process.env.VITEST) {
-    cachedLoginShellPath = [];
-    return Promise.resolve([]);
-  }
-  loginShellPathPromise ??= resolveLoginShellPath()
-    .then((paths) => { cachedLoginShellPath = paths; return paths; })
-    .catch(() => { cachedLoginShellPath = []; return []; });
-  return loginShellPathPromise;
-}
-
-function listVersionedNodeDirs(parent: string, suffix: string[]): string[] {
-  try {
-    const entries = fs.readdirSync(parent);
-    entries.sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: "base" }));
-    const dirs: string[] = [];
-    for (const entry of entries) {
-      const candidate = path.join(parent, entry, ...suffix);
-      if (isValidAbsolutePathSegment(candidate) && fs.existsSync(candidate)) dirs.push(candidate);
-    }
-    return dirs;
-  } catch {
-    return [];
-  }
-}
-
-function wellKnownUserToolDirs(): string[] {
-  const home = os.homedir();
-  const candidates = process.platform === "win32"
-    ? [
-        path.join(home, ".local", "bin"),
-        path.join(home, ".bun", "bin"),
-        path.join(home, ".cargo", "bin"),
-        path.join(home, "AppData", "Local", "pnpm"),
-      ]
-    : [
-        "/opt/homebrew/bin",
-        "/opt/homebrew/sbin",
-        "/usr/local/bin",
-        "/usr/local/sbin",
-        path.join(home, ".local", "bin"),
-        path.join(home, ".bun", "bin"),
-        path.join(home, ".cargo", "bin"),
-        path.join(home, ".volta", "bin"),
-        path.join(home, ".npm-global", "bin"),
-        path.join(home, "Library", "pnpm"),
-        path.join(home, ".local", "share", "pnpm"),
-        path.join(home, ".asdf", "shims"),
-        path.join(home, ".local", "share", "mise", "shims"),
-        path.join(home, ".nodenv", "shims"),
-        path.join(home, ".pyenv", "shims"),
-        path.join(home, ".proto", "shims"),
-        path.join(home, ".grok", "bin"),
-        path.join(home, ".opencode", "bin"),
-        path.join(home, ".cursor", "bin"),
-        path.join(home, ".kiro", "bin"),
-        path.join(home, ".gemini", "antigravity", "bin"),
-        path.join(home, ".gemini", "antigravity-cli", "bin"),
-        path.join(home, "Library", "Application Support", "Antigravity", "bin"),
-        ...listVersionedNodeDirs(path.join(home, ".nvm", "versions", "node"), ["bin"]),
-        ...listVersionedNodeDirs(path.join(home, "Library", "Application Support", "fnm", "node-versions"), ["installation", "bin"]),
-        ...listVersionedNodeDirs(path.join(home, ".fnm", "node-versions"), ["installation", "bin"]),
-        ...listVersionedNodeDirs(path.join(home, ".local", "share", "fnm", "node-versions"), ["installation", "bin"]),
-      ];
-  return candidates.filter((dir) => isValidAbsolutePathSegment(dir) && fs.existsSync(dir));
-}
-
-export function augmentedNativePath(basePath = process.env.PATH ?? "", loginShellDirs = cachedLoginShellPath ?? []): string {
-  const nonStubBase: string[] = [];
-  const systemStubs: string[] = [];
-  for (const rawSegment of basePath.split(path.delimiter)) {
-    const segment = rawSegment.trim();
-    if (!isValidAbsolutePathSegment(segment)) continue;
-    if (SYSTEM_STUB_PATH_DIRS.has(segment)) systemStubs.push(segment);
-    else nonStubBase.push(segment);
-  }
-  const ordered = [
-    ...loginShellDirs.filter(isValidAbsolutePathSegment),
-    ...nonStubBase,
-    ...wellKnownUserToolDirs(),
-    ...systemStubs,
-  ];
-  const seen = new Set<string>();
-  const deduped: string[] = [];
-  for (const dir of ordered) {
-    if (seen.has(dir)) continue;
-    seen.add(dir);
-    deduped.push(dir);
-  }
-  return deduped.join(path.delimiter);
-}
 
 function isShimLauncherPath(filePath: string, home = os.homedir()): boolean {
   const resolved = path.resolve(filePath);
@@ -365,9 +217,9 @@ export function managedNativeProcess(options:{executable:string;args:string[];cw
   })();
   return {child,cleanup};
 }
-export function createExternalPipeFactory(options:{controlRoot:string;projectId?:string;kind?:ExternalAgentKind}):ExternalAgentPipeFactory{
+export function createExternalPipeFactory(options:{controlRoot:string;projectId?:string;kind?:ExternalAgentKind;trustMode?:ExecutionTrustMode;blockedEnvNames?:Iterable<string>}):ExternalAgentPipeFactory{
   return async spec=>{
-    const managed=managedNativeProcess({executable:spec.executable,args:spec.args,cwd:spec.cwd,env:{...nativeAgentEnvironment(options.kind),...spec.env},controlRoot:options.controlRoot,projectId:options.projectId});const child=managed.child;
+    const managed=managedNativeProcess({executable:spec.executable,args:spec.args,cwd:spec.cwd,env:{...nativeAgentEnvironment(options.kind,{trustMode:options.trustMode,blockedEnvNames:options.blockedEnvNames}),...spec.env},controlRoot:options.controlRoot,projectId:options.projectId});const child=managed.child;
     child.stdout.on("data",spec.onStdout);child.stderr.on("data",spec.onStderr);
     const exited=new Promise<number>((resolve,reject)=>{child.once("error",reject);child.once("exit",code=>resolve(code??-1));});
     return{write:data=>{child.stdin.write(data);},close:()=>{child.kill();},exited,cleanup:managed.cleanup};
@@ -406,10 +258,12 @@ function isWithinAcpDir(target: string, root: string): boolean {
   const rel = path.relative(canonicalAcpPath(root), target);
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
-export function isProtectedAcpPath(canonicalTarget: string, includeGitControl: boolean, currentKind?: ExternalAgentKind): boolean {
+export function isProtectedAcpPath(canonicalTarget: string, includeGitControl: boolean, currentKind?: ExternalAgentKind, trustMode?: ExecutionTrustMode): boolean {
   const normalized = canonicalTarget.replace(/\\/g, "/");
   if (/(?:^|\/)(?:\.kulo-state|\.secure)(?:\/|$)/.test(normalized)) return true;
-  if (/(?:^|\/)(?:connection\.json|devices\.json|runtime-token|node-identity\.json|cluster-membership\.json|cluster-transition\.json|cluster-sync-meta\.json|sync-key\.enc|vault-envelope\.enc|(?:kulo|assistant|memory)\.sqlite(?:-wal|-shm|\.(?:failover-paused|redaction-pending))?)$/.test(normalized)) return true;
+  if (KULO_CORE_STATE_SENSITIVE_NAMES.includes(path.basename(canonicalTarget) as (typeof KULO_CORE_STATE_SENSITIVE_NAMES)[number])) return true;
+  if (/(?:^|\/)(?:connection\.json|connections\.json|devices\.json|runtime-token|node-identity\.json|cluster-membership\.json|cluster-transition\.json|cluster-sync-meta\.json|sync-key\.enc|vault-envelope\.enc|(?:kulo|assistant|memory)\.sqlite(?:-wal|-shm|\.(?:failover-paused|redaction-pending))?)$/.test(normalized)) return true;
+  if (trustMode === "trusted") return false;
   if (/\/Library\/Group Containers\/group\.com\.apple\.usernoted(?:\/|$)/.test(normalized)) return true;
   if (/^\/(?:private\/)?var\/folders\/[^/]+\/[^/]+\/0\/com\.apple\.notificationcenter(?:\/|$)/.test(normalized)) return true;
   if (includeGitControl && /(?:^|\/)\.git\/(?:hooks(?:\/|$)|config$)/.test(normalized)) return true;
@@ -439,7 +293,7 @@ function createAcpLocalClient(ctx:ExternalDriverContext){
       if(method==="fs/read_text_file"){
         if(typeof params.path!=="string"||!path.isAbsolute(params.path))throw new Error("ACP file path must be absolute");
         const target=canonicalAcpPath(params.path);
-        if(isProtectedAcpPath(target,false,ctx.binding.kind))throw new Error("ACP file read is denied for protected system or Kulo paths");
+        if(isProtectedAcpPath(target,false,ctx.binding.kind,ctx.trustMode)||ctx.overlapsProtected?.(target))throw new Error("ACP file read is denied for protected system or Kulo paths");
         const content=await fs.promises.readFile(target,"utf8");
         if(params.line===undefined&&params.limit===undefined)return{content};
         if(params.line!==undefined&&(!Number.isSafeInteger(params.line)||Number(params.line)<1)||params.limit!==undefined&&(!Number.isSafeInteger(params.limit)||Number(params.limit)<0))throw new Error("Invalid ACP line range");
@@ -448,7 +302,7 @@ function createAcpLocalClient(ctx:ExternalDriverContext){
       if(method==="fs/write_text_file"){
         if(typeof params.path!=="string"||!path.isAbsolute(params.path)||typeof params.content!=="string")throw new Error("Invalid ACP file write");
         const target=canonicalAcpPath(params.path);
-        if(isProtectedAcpPath(target,true,ctx.binding.kind))throw new Error("ACP file write is denied for protected system, git control, or Kulo paths");
+        if(isProtectedAcpPath(target,true,ctx.binding.kind,ctx.trustMode)||ctx.overlapsProtected?.(target))throw new Error("ACP file write is denied for protected system, git control, or Kulo paths");
         if(ctx.readOnly||ctx.workspaceMode==="read_only"){
           const inNotes=Boolean(ctx.scratchNotesDir&&isWithinAcpDir(target,ctx.scratchNotesDir));
           if(!inNotes)throw new Error("Read-only external task cannot modify files outside its scratch notes directory");
@@ -464,7 +318,7 @@ function createAcpLocalClient(ctx:ExternalDriverContext){
         if(ctx.readOnly||ctx.workspaceMode==="read_only")throw new Error("Read-only external task cannot spawn unrestricted ACP terminals");
         if(typeof params.command!=="string"||!params.command||params.args!==undefined&&(!Array.isArray(params.args)||params.args.some(value=>typeof value!=="string")))throw new Error("Invalid ACP terminal command");
         if(!ctx.controlRoot)throw new Error("ACP terminal process supervision is unavailable");
-        const env:NodeJS.ProcessEnv={...nativeAgentEnvironment(ctx.binding.kind,{terminal:true})};for(const item of Array.isArray(params.env)?params.env:[]){const value=obj(item);if(typeof value.name!=="string"||typeof value.value!=="string")throw new Error("Invalid ACP terminal environment");env[value.name]=value.value;}
+        const env:NodeJS.ProcessEnv={...nativeAgentEnvironment(ctx.binding.kind,{terminal:true,trustMode:ctx.trustMode,blockedEnvNames:ctx.blockedEnvNames})};for(const item of Array.isArray(params.env)?params.env:[]){const value=obj(item);if(typeof value.name!=="string"||typeof value.value!=="string")throw new Error("Invalid ACP terminal environment");env[value.name]=value.value;}
         const limit=params.outputByteLimit===undefined?1024*1024:Number(params.outputByteLimit);if(!Number.isSafeInteger(limit)||limit<0)throw new Error("Invalid ACP output byte limit");
         const managed=managedNativeProcess({executable:params.command,args:(params.args??[]) as string[],cwd:typeof params.cwd==="string"?params.cwd:ctx.cwd,env,controlRoot:ctx.controlRoot,projectId:ctx.projectId});
         const value:Terminal={...managed,output:Buffer.alloc(0),limit,truncated:false,exited:Promise.resolve({exitCode:null,signal:null})};

@@ -194,7 +194,10 @@ export async function handleSettingsProvidersRoutes(ctx: HubHttpRouteContext): P
       toRevision?: number;
       expectedGlobalRevision?: number;
     };
-    const out = await hub.rollbackSettings(Number(body.toRevision), Number(body.expectedGlobalRevision));
+    const canChangeTrustMode = ctx.authority.hasOwnerHubControl && !ctx.authority.isSshPrincipal;
+    const out = await hub.rollbackSettings(Number(body.toRevision), Number(body.expectedGlobalRevision), undefined, {
+      allowTrustModeChange: canChangeTrustMode,
+    });
     sendJson(res, 200, out);
     return true;
   }
@@ -209,6 +212,16 @@ export async function handleSettingsProvidersRoutes(ctx: HubHttpRouteContext): P
       expectedRevision?: number;
       value?: unknown;
     };
+    if (block === "executor" && body.value && typeof body.value === "object" && Object.hasOwn(body.value, "executionTrustMode")) {
+      const requestedMode = (body.value as Record<string, unknown>).executionTrustMode;
+      const currentMode = hub.getSettingsView().blocks.executor.value.executionTrustMode;
+      if (requestedMode !== undefined && requestedMode !== currentMode) {
+        if (!ctx.authority.hasOwnerHubControl || ctx.authority.isSshPrincipal) {
+          sendJson(res, 403, { error: "仅主人设备控制台可修改执行权限模式。" });
+          return true;
+        }
+      }
+    }
     const out = await hub.updateSettingsBlock(block, Number(body.expectedRevision), body.value);
     sendJson(res, 200, out);
     return true;

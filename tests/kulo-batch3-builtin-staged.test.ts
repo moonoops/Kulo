@@ -43,12 +43,12 @@ function makeTestModels() {
   return { provider, models };
 }
 
-function openStagedTestHub(
+async function openStagedTestHub(
   dir: string,
   models: ReturnType<typeof createModels>,
   extra: { inlineDispatchWaitMs?: number } = {},
 ) {
-  return openTestHub({
+  const hub = await openTestHub({
     models,
     config: {
       stateDir: path.join(dir, "state"),
@@ -67,6 +67,15 @@ function openStagedTestHub(
       },
     },
   });
+  // Switch into explicit sandboxed mode to exercise built-in staged-by-default isolation invariants.
+  const settings = hub.getSettingsView();
+  await hub.updateSettingsBlock(
+    "executor",
+    settings.blocks.executor.revision,
+    { ...settings.blocks.executor.value, executionTrustMode: "sandboxed" },
+    context,
+  );
+  return hub;
 }
 
 function allTools(ctx: TranscriptContext) {
@@ -213,9 +222,9 @@ describe("Batch 3 — R4-B Built-in Worker Staged Project Writes", () => {
     await sub.wait(context);
 
     const schemaJson = JSON.stringify(seenWorkspaceModeSchema);
+    expect(schemaJson).toContain("direct");
     expect(schemaJson).toContain("staged");
     expect(schemaJson).toContain("read_only");
-    expect(schemaJson).not.toContain("direct");
     expect(attemptDirectResult).toContain("direct");
   });
 

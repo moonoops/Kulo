@@ -1,5 +1,7 @@
+import fs from "node:fs";
 import path from "node:path";
 import type { Context } from "@earendil-works/chord/context";
+import { buildCoreStateProtectedPaths } from "@kulo/env";
 import {
   AssistantEntry,
   type ConversationId,
@@ -7,13 +9,16 @@ import {
   type EntryRecord,
   type Harness,
 } from "@earendil-works/pi-durable";
-import type {
-  AgentExpressionState,
-  HindsightMemoryConfig,
-  KuloLanguage,
-  ModelGatewayConfig,
-  RolePreset,
-  TicketOutwardAction,
+import {
+  LEGACY_MIGRATION_EXECUTION_TRUST_MODE,
+  parseExecutionTrustMode,
+  type AgentExpressionState,
+  type ExecutionTrustMode,
+  type HindsightMemoryConfig,
+  type KuloLanguage,
+  type ModelGatewayConfig,
+  type RolePreset,
+  type TicketOutwardAction,
 } from "@kulo/protocol";
 import { chatRoutingData } from "./chat-submissions.js";
 import { DEFAULT_COMPACTION_CONFIG, type KuloHubConfig } from "./config.js";
@@ -35,6 +40,11 @@ export interface LiveSettingsReplaceResult {
   oldAuthFile?: string;
   newAuthFile?: string;
   protectedPathsChanged: boolean;
+  executionTrustModeChanged: boolean;
+  tightenedTrustMode: boolean;
+  relaxedTrustMode: boolean;
+  newExecutionTrustMode: ExecutionTrustMode;
+  executionTrustModeRevision: number;
 }
 
 /**
@@ -74,6 +84,8 @@ export class LiveSettingsStore {
   replace(nextDoc: KuloDurableSettings): LiveSettingsReplaceResult {
     const oldIdentityDir = this.getIdentityDir();
     const oldAuthFile = this.#current?.memory.authFile;
+    const oldTrustMode = this.getExecutionTrustMode();
+    const oldTrustRevision = this.getExecutionTrustModeRevision();
     if (this.#current && nextDoc.globalRevision < this.#current.globalRevision) {
       return {
         applied: false,
@@ -82,6 +94,11 @@ export class LiveSettingsStore {
         oldAuthFile,
         newAuthFile: oldAuthFile,
         protectedPathsChanged: false,
+        executionTrustModeChanged: false,
+        tightenedTrustMode: false,
+        relaxedTrustMode: false,
+        newExecutionTrustMode: oldTrustMode,
+        executionTrustModeRevision: oldTrustRevision,
       };
     }
     if (!this.#current) {
@@ -96,6 +113,8 @@ export class LiveSettingsStore {
     }
     const newIdentityDir = this.getIdentityDir();
     const newAuthFile = this.#current.memory.authFile;
+    const newTrustMode = this.getExecutionTrustMode();
+    const newTrustRevision = this.getExecutionTrustModeRevision();
     return {
       applied: true,
       oldIdentityDir,
@@ -104,7 +123,35 @@ export class LiveSettingsStore {
       newAuthFile,
       protectedPathsChanged:
         oldIdentityDir !== newIdentityDir || oldAuthFile !== newAuthFile,
+      executionTrustModeChanged: oldTrustMode !== newTrustMode,
+      tightenedTrustMode: oldTrustMode === "trusted" && newTrustMode === "sandboxed",
+      relaxedTrustMode: oldTrustMode === "sandboxed" && newTrustMode === "trusted",
+      newExecutionTrustMode: newTrustMode,
+      executionTrustModeRevision: newTrustRevision,
     };
+  }
+
+  isHydrated(): boolean {
+    return this.#current !== null;
+  }
+
+  getExecutionTrustMode(): ExecutionTrustMode {
+    return parseExecutionTrustMode(this.#current?.executor?.executionTrustMode) ?? LEGACY_MIGRATION_EXECUTION_TRUST_MODE;
+  }
+
+  getExecutionTrustModeRevision(): number {
+    return this.#current?.executionTrustModeRevision ?? 1;
+  }
+
+  /** Dynamic list of configured Hindsight API key env var names to strip from child processes. */
+  getBlockedSecretEnvNames(): string[] {
+    const memory = this.#current?.memory ?? this.#config.memory;
+    const names = [
+      memory?.routerApiKeyEnv,
+      memory?.workerApiKeyEnv,
+      memory?.sharedReadApiKeyEnv,
+    ];
+    return names.filter((n): n is string => typeof n === "string" && n.trim().length > 0).map((n) => n.trim());
   }
 
   setExpression(expression: AgentExpressionState | null): void {
@@ -185,6 +232,41 @@ export class LiveSettingsStore {
     }
     return out;
   }
+
+  getCoreProtectedPaths(): string[] {
+    return buildCoreStateProtectedPaths({
+      stateDir: this.#config.stateDir,
+      identityDir: this.getIdentityDir(),
+      memoryAuthFile: this.#current?.memory.authFile || this.#config.memory.authFile,
+      extraProtectedPaths: [
+        ...(this.#config.extraProtectedPaths ?? []),
+        this.#defaultIdentityDir,
+      ],
+    });
+  }
+}
+
+/**
+ * Inspect whether an unplanned-failover trust guard marker is present in `stateDir`.
+ * Pair with `clearFailoverTrustGuard(stateDir)` strictly AFTER the hydration commit succeeds.
+ */
+export function hasFailoverTrustGuard(stateDir: string): boolean {
+  return fs.existsSync(path.join(stateDir, "failover-trust-guard.json"));
+}
+
+/** Remove the unplanned-failover trust guard marker after hydration commit succeeds. */
+export function clearFailoverTrustGuard(stateDir: string): void {
+  try { fs.rmSync(path.join(stateDir, "failover-trust-guard.json"), { force: true }); } catch { /* ignore */ }
+}
+
+/**
+ * Check and consume any unplanned-failover trust guard marker left by `cluster-lifecycle.ts`.
+ * When present, forces conservative `sandboxed` mode on the promoted Hub until the owner confirms.
+ */
+export function consumeFailoverTrustGuard(stateDir: string): boolean {
+  if (!hasFailoverTrustGuard(stateDir)) return false;
+  clearFailoverTrustGuard(stateDir);
+  return true;
 }
 
 /**

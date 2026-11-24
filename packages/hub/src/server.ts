@@ -348,7 +348,7 @@ export async function startKuloHubServer(
     ...(options.clusterSyncMaxDelayMs !== undefined ? { maxDelayMs: options.clusterSyncMaxDelayMs } : {}),
   });
 
-  hub.setOnClusterDirty((kind) => clusterSync.markDirty(kind), () => devices.hasRemoteStandbys());
+  hub.setOnClusterDirty((kind, opts) => clusterSync.markDirty(kind, opts), () => devices.hasRemoteStandbys());
   devices.setOnWrite(() => clusterSync.markDirty("files"));
   hub.setClusterCloseHook(async () => {
     await clusterSync.close();

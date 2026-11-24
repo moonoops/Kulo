@@ -233,6 +233,13 @@ describe("computer use through real Hub Workers", () => {
       },
     });
     cleanups.push(() => hub.close());
+    const initSettings = hub.getSettingsView();
+    await hub.updateSettingsBlock(
+      "executor",
+      initSettings.blocks.executor.revision,
+      { ...initSettings.blocks.executor.value, executionTrustMode: "sandboxed" },
+      BACKGROUND_CONTEXT,
+    );
 
     const openSessions = new Set<string>();
     const native = vi.spyOn(hub.envManager, "requestComputerUse").mockImplementation(async (_envId, request) => {
@@ -261,9 +268,93 @@ describe("computer use through real Hub Workers", () => {
     expect(browserResults[2]?.isError).toBe(true);
     expect(JSON.stringify(browserResults[2])).toContain("只读");
 
-    // 3. Session auto-closes after orchestratorBrowserIdleMs (140ms) so MAX_BROWSER_SESSIONS=2 is never leaked!
+    // 3. Session auto-closes after orchestratorBrowserIdleMs (140ms) so browser slots are never leaked!
     expect(openSessions.size).toBe(1);
     await vi.waitFor(() => expect(openSessions.size).toBe(0), { timeout: 2_000, interval: 25 });
     expect(native.mock.calls.at(-1)?.[1]).toMatchObject({ tool: "browser", action: "close" });
+  });
+
+  it("unlocks interactive kulo_browser and kulo_desktop on Main Chat in trusted mode without killing sessions on Worker start", async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kulo-chat-trusted-cu-")));
+    cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
+    const provider = fauxProvider({ provider: "openai", models: [{ id: "computer-hub-model" }] });
+    const models = createModels();
+    models.setProvider(provider.provider);
+
+    const observedChatTools: string[][] = [];
+    provider.setResponses(Array.from({ length: 30 }, () => (context: TranscriptContext) => {
+      const tools = toolNames(context);
+      observedChatTools.push(tools);
+      const lastUserIdx = context.messages.findLastIndex((m) => m.role === "user");
+      const turnResults = context.messages.slice(lastUserIdx + 1).filter((m) => m.role === "toolResult");
+      if (!tools.includes("kulo_browser") || !tools.includes("kulo_desktop") || !tools.includes("kulo_computer_handoff")) {
+        return call("tool_search", { query: "kulo_browser kulo_desktop kulo_computer_handoff", limit: 3 });
+      }
+      const browserCalls = turnResults.filter((m) => m.toolName === "kulo_browser").length;
+      const desktopCalls = turnResults.filter((m) => m.toolName === "kulo_desktop").length;
+      const handoffCalls = turnResults.filter((m) => m.toolName === "kulo_computer_handoff").length;
+      if (browserCalls === 0) return call("kulo_browser", { action: "open", url: "https://example.com/app" });
+      if (browserCalls === 1) return call("kulo_browser", { action: "click", ref: "@e1" });
+      if (desktopCalls === 0) return call("kulo_desktop", { action: "snapshot", app: "Safari" });
+      if (handoffCalls === 0) return call("kulo_computer_handoff", { target: "desktop", reason: "尝试桌面接管" });
+      if (handoffCalls === 1) return call("kulo_computer_handoff", { target: "browser", reason: "请扫码登录", url: "https://example.com/app" });
+      return answer("已在主对话中完成浏览器点击、桌面快照观察，并发起浏览器登录接管。");
+    }));
+
+    const hub = await openTestHub({
+      models,
+      orchestratorBrowserIdleMs: 5_000,
+      config: {
+        authToken: HUB_TEST_ADMIN_TOKEN,
+        stateDir: path.join(root, "state"),
+        identityDir: path.join(root, "identity"),
+        localEnvRoot: path.join(root, "runtime"),
+        enableLocalEnv: true,
+        memory: { enabled: false },
+        watchdogMinutes: 0,
+        model: { defaultProvider: "openai", defaultModel: "computer-hub-model", thinkingLevel: "off", apiKey: "" },
+      },
+    });
+    cleanups.push(() => hub.close());
+
+    const origDesc = hub.envManager.getEnvDescriptor.bind(hub.envManager);
+    vi.spyOn(hub.envManager, "getEnvDescriptor").mockImplementation((envId) => {
+      const desc = origDesc(envId);
+      if (!desc) return desc;
+      const caps = new Set(desc.capabilities);
+      caps.add("agent-browser");
+      caps.add("agent-desktop");
+      return { ...desc, capabilities: [...caps] };
+    });
+
+    const native = vi.spyOn(hub.envManager, "requestComputerUse").mockImplementation(async (_envId, request) => ({
+      tool: request.tool,
+      action: request.action,
+      ...("sessionId" in request ? { sessionId: request.sessionId } : {}),
+      platform: process.platform,
+      ok: true,
+      data: request.tool === "desktop" ? { app: "Safari", snapshot: "Docs window" } : { title: "App" },
+    }) as ComputerUseResult);
+
+    const sub = await hub.sendUserMessage("打开网页点一下按钮并查看桌面窗口");
+    expect((await sub.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+
+    expect(observedChatTools.some((t) => t.includes("kulo_browser"))).toBe(true);
+    expect(observedChatTools.some((t) => t.includes("kulo_desktop"))).toBe(true);
+    expect(native.mock.calls.map(([envId, req]) => `${envId}:${req.tool}:${req.action}`)).toEqual([
+      "local:browser:open",
+      "local:browser:click",
+      "local:desktop:snapshot",
+    ]);
+    const handoffResults = (await hub.rootConversation.context(BACKGROUND_CONTEXT)).messages.filter(
+      (m) => m.role === "toolResult" && m.toolName === "kulo_computer_handoff",
+    );
+    expect(handoffResults).toHaveLength(2);
+    expect(handoffResults[0]?.isError).toBe(true);
+    expect(handoffResults[1]?.isError).not.toBe(true);
+
+    const previews = await hub.listComputerPreviews("root");
+    expect(previews.some((p) => p.tool === "browser" && p.handoff?.interactive === true)).toBe(true);
+    expect(previews.some((p) => p.tool === "desktop" && p.handoff === undefined)).toBe(true);
   });
 });

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, Button, Label, ListBox, Popover, ProgressBar, Select, Switch } from "@heroui/react";
-import type { CompletedTaskDisplayHours, ExecutorSlotsConfig, KuloSettingsView, SlotSummary } from "@kulo/protocol";
+import { Alert, AlertDialog, Button, Label, ListBox, Popover, ProgressBar, Select, Switch } from "@heroui/react";
+import type { CompletedTaskDisplayHours, ExecutionTrustMode, ExecutorSlotsConfig, KuloSettingsView, SlotSummary } from "@kulo/protocol";
 import { KuloApiError, kuloRest } from "../../kulo-api";
 import { useI18n } from "../../kulo-i18n";
 import { KuloIcon } from "../../kulo-icon";
@@ -55,11 +55,16 @@ export function ConcurrencyModule({
   const displayTrigger = useRef<HTMLButtonElement>(null);
   const displayPopover = useRef<HTMLDivElement>(null);
   const restoreDisplayFocus = useRef(false);
+  const trustModeTrigger = useRef<HTMLButtonElement>(null);
+  const trustModePopover = useRef<HTMLDivElement>(null);
+  const restoreTrustModeFocus = useRef(false);
+  const [confirmTrustedOpen, setConfirmTrustedOpen] = useState(false);
   const busy = reloading || Object.values(pending).some(Boolean);
   useSettingsPending(busy);
 
   const labels: Record<ExecutorSetting, string> = {
     paused: t("接收新任务", "Accept new tasks"),
+    executionTrustMode: t("执行权限", "Execution permission"),
     maxConcurrentWorkers: t("并发智能体上限", "Concurrent agent limit"),
     maxSubagentsPerTicket: t("并发子智能体上限", "Concurrent subagent limit"),
     watchdogMinutes: t("超时检查", "Inactivity check"),
@@ -67,6 +72,11 @@ export function ConcurrencyModule({
     autoArchiveEnabled: t("自动归档", "Auto-archive"),
     autoArchiveDays: t("未活动超过", "Inactive for more than"),
   };
+  const executionTrustModeOptions: ReadonlyArray<{ value: ExecutionTrustMode; label: string }> = [
+    { value: "trusted", label: t("本机信任", "Trusted host") },
+    { value: "sandboxed", label: t("隔离沙箱", "Sandboxed") },
+  ];
+  const executionTrustMode: ExecutionTrustMode = targets.executionTrustMode ?? (executorSettingValue(exec.value, "executionTrustMode") ?? "sandboxed");
   const completedDisplayOptions: ReadonlyArray<{ value: string; hours: CompletedTaskDisplayHours; label: string }> = [
     { value: "1", hours: 1, label: t("1 小时", "1 hour") },
     { value: "3", hours: 3, label: t("3 小时", "3 hours") },
@@ -91,6 +101,14 @@ export function ConcurrencyModule({
       displayTrigger.current?.focus({ preventScroll: true });
     }
   }, [pending.completedTaskDisplayHours]);
+
+  useEffect(() => {
+    if (pending.executionTrustMode || confirmTrustedOpen || !restoreTrustModeFocus.current) return;
+    restoreTrustModeFocus.current = false;
+    if (typeof document !== "undefined" && document.activeElement === document.body && !trustModeTrigger.current?.disabled) {
+      trustModeTrigger.current?.focus({ preventScroll: true });
+    }
+  }, [pending.executionTrustMode, confirmTrustedOpen]);
 
   function replaceDrafts(next: NumberDrafts) {
     draftsRef.current = next;
@@ -272,6 +290,54 @@ export function ConcurrencyModule({
             </Switch.Content>
           </Switch>
 
+          <Select
+            variant="secondary"
+            value={executionTrustMode}
+            onChange={(value) => {
+              const option = executionTrustModeOptions.find((entry) => entry.value === value);
+              if (!option || option.value === executionTrustMode) return;
+              const focused = typeof document === "undefined" ? null : document.activeElement;
+              restoreTrustModeFocus.current = Boolean(
+                focused && (focused === trustModeTrigger.current || trustModePopover.current?.contains(focused)),
+              );
+              if (option.value === "trusted" && executionTrustMode === "sandboxed") {
+                setConfirmTrustedOpen(true);
+                return;
+              }
+              void saveSetting("executionTrustMode", option.value);
+            }}
+            isDisabled={Boolean(pending.executionTrustMode) || writer.blocked}
+            className="kulo-settings-row kulo-settings-row--choice"
+          >
+            <div className="kulo-field-label">
+              <Label className="text-sm font-normal text-foreground">{labels.executionTrustMode}</Label>
+              <Popover>
+                <Button type="button" slot={null} isIconOnly size="sm" variant="ghost" aria-label={t("执行权限说明", "About execution permissions")}>
+                  <KuloIcon name="help" size={14} />
+                </Button>
+                <Popover.Content placement="top" className="max-w-[min(320px,calc(100vw-24px))] motion-reduce:animate-none">
+                  <Popover.Dialog aria-label={t("执行权限说明", "About execution permissions")} className="text-sm outline-none">
+                    {t(
+                      "本机信任模式直接使用当前用户环境、本地命令行与系统钥匙串执行任务，作用于本机及已配对兼容设备；隔离沙箱模式仅限授权目录并隔离宿主凭据。",
+                      "Trusted host mode runs with your user environment, local CLIs, and system keychain across this device and compatible paired devices; Sandboxed mode isolates host credentials to authorized directories.",
+                    )}
+                  </Popover.Dialog>
+                </Popover.Content>
+              </Popover>
+              {pending.executionTrustMode && savingLabel}
+            </div>
+            <Select.Trigger ref={trustModeTrigger}><Select.Value /><Select.Indicator /></Select.Trigger>
+            <Select.Popover ref={trustModePopover} className="motion-reduce:animate-none">
+              <ListBox>
+                {executionTrustModeOptions.map((option) => (
+                  <ListBox.Item key={option.value} id={option.value} textValue={option.label}>
+                    {option.label}<ListBox.ItemIndicator />
+                  </ListBox.Item>
+                ))}
+              </ListBox>
+            </Select.Popover>
+          </Select>
+
           <SettingsNumberField {...numberProps("maxConcurrentWorkers")} unit={t("个", "")} />
           <SettingsNumberField {...numberProps("maxSubagentsPerTicket")} unit={t("个", "")} />
           <SettingsNumberField
@@ -360,6 +426,60 @@ export function ConcurrencyModule({
           </div>
         </Alert>
       ))}
+
+      <AlertDialog
+        isOpen={confirmTrustedOpen}
+        onOpenChange={(open) => {
+          if (!open && !pending.executionTrustMode) {
+            setConfirmTrustedOpen(false);
+            if (trustModeTrigger.current && !trustModeTrigger.current.disabled && typeof requestAnimationFrame === "function") {
+              requestAnimationFrame(() => trustModeTrigger.current?.focus({ preventScroll: true }));
+            }
+          }
+        }}
+      >
+        <AlertDialog.Backdrop isDismissable={!pending.executionTrustMode} isKeyboardDismissDisabled={Boolean(pending.executionTrustMode)}>
+          <AlertDialog.Container placement="center" size="sm">
+            <AlertDialog.Dialog>
+              <AlertDialog.Header>
+                <AlertDialog.Heading>{t("切换为本机信任模式？", "Switch to Trusted host mode?")}</AlertDialog.Heading>
+              </AlertDialog.Header>
+              <AlertDialog.Body>
+                <p className="text-sm text-muted">
+                  {t(
+                    "开启后，本机及已配对兼容设备上的任务可直接使用当前用户环境、本地工具与系统钥匙串，仅保护 Kulo 核心状态与凭据库。随时可切回隔离沙箱。",
+                    "Tasks on this device and compatible paired devices will run with your native user environment, local CLIs, and system keychain while Kulo's core state and vault remain protected. You can switch back to Sandboxed mode at any time.",
+                  )}
+                </p>
+              </AlertDialog.Body>
+              <AlertDialog.Footer>
+                <Button
+                  variant="tertiary"
+                  isDisabled={Boolean(pending.executionTrustMode)}
+                  onPress={() => {
+                    setConfirmTrustedOpen(false);
+                    if (trustModeTrigger.current && !trustModeTrigger.current.disabled && typeof requestAnimationFrame === "function") {
+                      requestAnimationFrame(() => trustModeTrigger.current?.focus({ preventScroll: true }));
+                    }
+                  }}
+                >
+                  {t("取消", "Cancel")}
+                </Button>
+                <Button
+                  variant="primary"
+                  isPending={Boolean(pending.executionTrustMode)}
+                  onPress={() => {
+                    setConfirmTrustedOpen(false);
+                    void saveSetting("executionTrustMode", "trusted");
+                  }}
+                >
+                  {t("切换为本机信任", "Switch to Trusted host")}
+                </Button>
+              </AlertDialog.Footer>
+            </AlertDialog.Dialog>
+          </AlertDialog.Container>
+        </AlertDialog.Backdrop>
+      </AlertDialog>
     </div>
   );
 }

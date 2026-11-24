@@ -162,7 +162,7 @@ async function fixture() {
   };
   const dispatch = (topic: Pick<TopicSummary, "conversationId">, commandId = "generate-html", projectId?: string): Promise<TicketCardView> => hub.dispatchTicket({
     commandId, title: "生成独立 HTML", goal: "生成产物，交主 Agent 审核后再决定交付", scope: "只操作任务工作目录", role: "coder", originConversationId: topic.conversationId,
-    ...(projectId ? { projectId } : {}),
+    ...(projectId ? { projectId, workspaceMode: "staged" as const } : {}),
   });
   const read = (asset: ChatAttachment) => fetch(`${server.url}${asset.url}`, { headers: { authorization: `Bearer ${HUB_TEST_ADMIN_TOKEN}` } });
   return { directory, workspace, mainRequests, steps, routerSteps, dispatch, read, reopen, get hub() { return hub; } };

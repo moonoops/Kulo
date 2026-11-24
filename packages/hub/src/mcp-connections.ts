@@ -18,8 +18,10 @@ import {
   type ConnectionSecrets,
   type ConnectionUseOperation,
   type ConnectionUseResult,
+  type ExecutionTrustMode,
   type McpToolSummary,
 } from "@kulo/protocol";
+import { buildSafeMcpDiscoveryEnv } from "@kulo/env";
 import type { ConnectionVault } from "./connections.js";
 import { buildAugmentedHostPath } from "./host-path.js";
 import { createMcpFetch, validateMcpTargetUrl } from "./mcp-fetch.js";
@@ -73,12 +75,15 @@ export interface McpConnectionPoolOptions {
   idleMs?: number;
   baseFetch?: typeof fetch;
   transportFactory?: (ctx: McpTransportFactoryContext) => McpTransport | Promise<McpTransport>;
+  getExecutionTrustMode?: () => ExecutionTrustMode;
+  getBlockedEnvNames?: () => Iterable<string>;
 }
 
 interface PoolEntry {
   connectionId: string;
   revision: number;
   binding: string;
+  isStdio?: boolean;
   client: McpClient;
   authProvider?: KuloMcpAuthProvider;
   tools: Tool[];
@@ -102,33 +107,47 @@ export function summarizeMcpTools(tools: readonly Tool[], redact: (text: string)
   }));
 }
 
-export function buildMcpStdioEnv(secrets: ConnectionSecrets, allowedKeys: readonly string[]): Record<string, string> {
-  const env: Record<string, string> = {
-    PATH: buildAugmentedHostPath(),
-    HOME: os.homedir(),
-    TMPDIR: os.tmpdir(),
-    LANG: process.env.LANG || "en_US.UTF-8",
-  };
-  const baseWhitelist = [
-    "LC_CTYPE",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "ALL_PROXY",
-    "NO_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "all_proxy",
-    "no_proxy",
-    "NODE_EXTRA_CA_CERTS",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    ...(process.platform === "win32"
-      ? ["SystemRoot", "SYSTEMROOT", "COMSPEC", "PATHEXT", "APPDATA", "LOCALAPPDATA", "USERPROFILE", "TEMP", "TMP"]
-      : []),
-  ];
-  for (const name of baseWhitelist) {
-    const val = process.env[name];
-    if (val && !val.startsWith("()")) env[name] = val;
+export function buildMcpStdioEnv(
+  secrets: ConnectionSecrets,
+  allowedKeys: readonly string[],
+  options?: { trustMode?: ExecutionTrustMode; blockedEnvNames?: Iterable<string> },
+): Record<string, string> {
+  const env: Record<string, string> = options?.trustMode === "trusted"
+    ? {
+        ...buildSafeMcpDiscoveryEnv({ sourceEnv: process.env, blockedEnvNames: options.blockedEnvNames }),
+        PATH: buildAugmentedHostPath(),
+        HOME: os.homedir(),
+        TMPDIR: os.tmpdir(),
+        LANG: process.env.LANG || "en_US.UTF-8",
+      }
+    : {
+        PATH: buildAugmentedHostPath(),
+        HOME: os.homedir(),
+        TMPDIR: os.tmpdir(),
+        LANG: process.env.LANG || "en_US.UTF-8",
+      };
+  if (options?.trustMode !== "trusted") {
+    const baseWhitelist = [
+      "LC_CTYPE",
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "ALL_PROXY",
+      "NO_PROXY",
+      "http_proxy",
+      "https_proxy",
+      "all_proxy",
+      "no_proxy",
+      "NODE_EXTRA_CA_CERTS",
+      "SSL_CERT_FILE",
+      "SSL_CERT_DIR",
+      ...(process.platform === "win32"
+        ? ["SystemRoot", "SYSTEMROOT", "COMSPEC", "PATHEXT", "APPDATA", "LOCALAPPDATA", "USERPROFILE", "TEMP", "TMP"]
+        : []),
+    ];
+    for (const name of baseWhitelist) {
+      const val = process.env[name];
+      if (val && !val.startsWith("()")) env[name] = val;
+    }
   }
   for (const key of allowedKeys) {
     if (isBlockedMcpEnvKey(key)) continue;
@@ -181,6 +200,7 @@ export class McpConnectionPool {
   readonly #entries = new Map<string, PoolEntry>();
   readonly #connecting = new Map<string, Promise<PoolEntry>>();
   readonly #challenges = new Map<string, OAuthChallenge>();
+  #stdioGeneration = 0;
   #closed = false;
 
   constructor(options: McpConnectionPoolOptions) {
@@ -234,9 +254,11 @@ export class McpConnectionPool {
   ): Promise<{ transport: McpTransport; authProvider?: KuloMcpAuthProvider }> {
     let authProvider: KuloMcpAuthProvider | undefined;
     if (record.mcpTransport === "http" && record.url && (record.mcpAuthMode ?? "oauth") === "oauth") {
-      const allowPrivateNetwork = isNonPublicMcpUrl(record.url);
+      const trusted = this.#options.getExecutionTrustMode?.() === "trusted";
+      const allowPrivateNetwork = trusted || isNonPublicMcpUrl(record.url);
       const oauthFetch = createMcpFetch({
         allowPrivateNetwork,
+        allowPrivateHttp: trusted,
         timeoutMs: OAUTH_REFRESH_TIMEOUT_MS,
         baseFetch: this.#options.baseFetch,
       });
@@ -271,10 +293,12 @@ export class McpConnectionPool {
       if (!record.url) {
         throw Object.assign(new Error("缺少远程 MCP 服务地址。"), { code: "connection_mcp_invalid_config", status: 400 });
       }
-      const allowPrivateNetwork = isNonPublicMcpUrl(record.url);
-      validateMcpTargetUrl(record.url, { allowPrivateNetwork });
+      const trusted = this.#options.getExecutionTrustMode?.() === "trusted";
+      const allowPrivateNetwork = trusted || isNonPublicMcpUrl(record.url);
+      validateMcpTargetUrl(record.url, { allowPrivateNetwork, allowPrivateHttp: trusted });
       const headers: Record<string, string> = {};
       const authMode = record.mcpAuthMode ?? "oauth";
+      let authHeaderName: string | undefined;
       if (authMode === "bearer") {
         if (!secrets.apiKey) {
           throw Object.assign(new Error("缺少 MCP 访问令牌。"), { code: "connection_credential_missing", status: 409 });
@@ -284,12 +308,19 @@ export class McpConnectionPool {
         if (!secrets.apiKey) {
           throw Object.assign(new Error("缺少 MCP 认证请求头密钥。"), { code: "connection_credential_missing", status: 409 });
         }
-        headers[record.headerName || "X-API-Key"] = secrets.apiKey;
+        authHeaderName = record.headerName || "X-API-Key";
+        headers[authHeaderName] = secrets.apiKey;
       }
       const transport = new StreamableHttpTransport({
         url: record.url,
         headers,
-        fetch: createMcpFetch({ allowPrivateNetwork, baseFetch: this.#options.baseFetch }),
+        fetch: createMcpFetch({
+          allowPrivateNetwork,
+          allowPrivateHttp: trusted,
+          allowSafeRedirects: trusted,
+          ...(authHeaderName ? { authHeaderName } : {}),
+          baseFetch: this.#options.baseFetch,
+        }),
         openGetStream,
         maxMessageBytes: MAX_MESSAGE_BYTES,
         ...(authProvider ? { authProvider } : {}),
@@ -302,12 +333,16 @@ export class McpConnectionPool {
         throw Object.assign(new Error("缺少本机 MCP 启动命令。"), { code: "connection_mcp_invalid_config", status: 400 });
       }
       const allowedKeys = (record.credentialFields ?? []).map((f) => f.key);
+      const trustMode = this.#options.getExecutionTrustMode?.() ?? "sandboxed";
       const transport = new StdioTransport({
         command: record.mcpCommand,
         args: record.mcpArgs ?? [],
         ...(record.mcpCwd ? { cwd: record.mcpCwd } : {}),
         inheritEnv: false,
-        env: buildMcpStdioEnv(secrets, allowedKeys),
+        env: buildMcpStdioEnv(secrets, allowedKeys, {
+          trustMode,
+          blockedEnvNames: this.#options.getBlockedEnvNames?.(),
+        }),
         maxMessageBytes: MAX_MESSAGE_BYTES,
         closeTimeoutMs: 2_000,
       });
@@ -358,6 +393,7 @@ export class McpConnectionPool {
         connectionId: record.id,
         revision: record.revision,
         binding,
+        isStdio: record.mcpTransport === "stdio",
         client,
         authProvider,
         tools,
@@ -402,11 +438,16 @@ export class McpConnectionPool {
 
     let pending = this.#connecting.get(record.id);
     if (!pending) {
+      const stdioGen = record.mcpTransport === "stdio" ? this.#stdioGeneration : undefined;
       pending = this.#openEntry(record, secrets, binding, true, signal)
         .then((entry) => {
-          if (this.#closed || this.#options.getBinding(record.id) !== binding) {
+          if (
+            this.#closed ||
+            this.#options.getBinding(record.id) !== binding ||
+            (stdioGen !== undefined && this.#stdioGeneration !== stdioGen)
+          ) {
             void this.#closeEntry(entry);
-            throw Object.assign(new Error("连接配置已变更，请重试。"), { code: "connection_conflict", status: 409 });
+            throw Object.assign(new Error("连接配置或执行模式已变更，请重试。"), { code: "connection_conflict", status: 409 });
           }
           this.#entries.set(record.id, entry);
           this.#touchIdle(entry);
@@ -586,6 +627,13 @@ export class McpConnectionPool {
     const entry = this.#entries.get(connectionId);
     if (entry) await this.#closeEntry(entry);
     this.#challenges.delete(connectionId);
+  }
+
+  /** Invalidates active and in-flight Stdio MCP sessions when execution trust mode changes. */
+  async invalidateStdioConnections(): Promise<void> {
+    this.#stdioGeneration += 1;
+    const stdioEntries = [...this.#entries.values()].filter((entry) => entry.isStdio);
+    await Promise.all(stdioEntries.map((entry) => this.#closeEntry(entry)));
   }
 
   async close(): Promise<void> {

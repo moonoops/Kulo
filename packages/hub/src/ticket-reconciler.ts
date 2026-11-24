@@ -263,7 +263,10 @@ export class TicketReconciler {
         ticket.externalExecution || ticket.executionDomain === "android"
           ? Promise.resolve({ cleanupPending: externalCleanupPending })
           : (async () => {
-              const envRelease = await envManager.releaseWorkerExecutionEnv(ticket.envId, effectiveWorkspaceDir, { scratchDir: ticket.scratchDir });
+              const envRelease = await envManager.releaseWorkerExecutionEnv(ticket.envId, effectiveWorkspaceDir, {
+                scratchDir: ticket.scratchDir,
+                executionKey: ticket.id,
+              });
               const stagedPending = !envRelease.cleanupPending && shouldDiscardBuiltInStaged
                 ? await ports.stagedApply.discardTicketStagedWorkspace(ticket)
                 : false;

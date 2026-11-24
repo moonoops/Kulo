@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import type { ProjectDirectoryGrant, ProjectDirectoryListing } from "@kulo/protocol";
+import type { ExecutionTrustMode, ProjectDirectoryGrant, ProjectDirectoryListing } from "@kulo/protocol";
 import { canonicalExecutionPath, defaultProtectedPaths, isApplicationPrivatePath } from "./isolation.js";
 
 interface StoredGrant extends ProjectDirectoryGrant {
@@ -67,11 +67,20 @@ export class ProjectDirectoryRegistry {
   readonly filePath: string;
   readonly #deviceId: string;
   readonly #getProtectedPaths: () => readonly string[];
+  readonly #getCoreProtectedPaths?: () => readonly string[];
+  readonly #getExecutionTrustMode?: () => ExecutionTrustMode;
   readonly scratchRoot: string;
   readonly privateDirectory: string;
   #state: GrantState;
 
-  constructor(options: { deviceId: string; filePath: string; scratchRoot: string; getProtectedPaths?: () => readonly string[] }) {
+  constructor(options: {
+    deviceId: string;
+    filePath: string;
+    scratchRoot: string;
+    getProtectedPaths?: () => readonly string[];
+    getCoreProtectedPaths?: () => readonly string[];
+    getExecutionTrustMode?: () => ExecutionTrustMode;
+  }) {
     this.filePath = path.resolve(options.filePath);
     this.privateDirectory = path.dirname(this.filePath);
     this.#deviceId = options.deviceId;
@@ -80,6 +89,8 @@ export class ProjectDirectoryRegistry {
       throw new ProtectedDirectoryError("Env control and scratch directories overlap protected application data");
     }
     this.#getProtectedPaths = options.getProtectedPaths ?? (() => []);
+    this.#getCoreProtectedPaths = options.getCoreProtectedPaths;
+    this.#getExecutionTrustMode = options.getExecutionTrustMode;
     this.#state = { version: 1, grants: {}, operations: {} };
     if (fs.existsSync(this.filePath)) {
       const state = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as GrantState;
@@ -97,14 +108,19 @@ export class ProjectDirectoryRegistry {
   }
 
   protectedPaths(): string[] {
+    if (this.#getExecutionTrustMode?.() === "trusted") {
+      const core = this.#getCoreProtectedPaths ? this.#getCoreProtectedPaths() : [];
+      return [this.privateDirectory, ...core].map(canonicalExecutionPath);
+    }
     return [...defaultProtectedPaths(), this.privateDirectory, ...this.#getProtectedPaths()].map(canonicalExecutionPath);
   }
 
   #assertAllowed(directory: string, granting: boolean): void {
+    const trusted = this.#getExecutionTrustMode?.() === "trusted";
     if (granting && (directory === path.parse(directory).root || directory === canonicalExecutionPath(os.homedir()))) {
       throw new Error("Select a project directory, not the filesystem or home root");
     }
-    if (isApplicationPrivatePath(directory)) throw new ProtectedDirectoryError("Project directory overlaps protected application data");
+    if (!trusted && isApplicationPrivatePath(directory)) throw new ProtectedDirectoryError("Project directory overlaps protected application data");
     const managedRoot = path.dirname(this.scratchRoot);
     if (this.protectedPaths().some((entry) => within(directory, entry) && !(entry !== managedRoot && within(managedRoot, entry) && within(directory, managedRoot)))) {
       throw new ProtectedDirectoryError("Project directory overlaps protected device data");

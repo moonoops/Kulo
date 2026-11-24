@@ -5,8 +5,10 @@ import {
   type ConversationId, type Harness, type JsonObject,
 } from "@earendil-works/pi-durable";
 import {
+  LEGACY_MIGRATION_EXECUTION_TRUST_MODE,
   isSilentCoordinatorReplyText,
-  type CreateProjectInput, type ProjectDirectoryGrant, type ProjectDirectoryListing, type ProjectRecord,
+  isWorkerEnvReady,
+  type CreateProjectInput, type ExecutionTrustMode, type ProjectDirectoryGrant, type ProjectDirectoryListing, type ProjectRecord,
   type ProjectView, type TicketRecord, type TopicSummary,
 } from "@kulo/protocol";
 import { KuloStateDoc, hasPendingWorkspaceApply, isLegacyInternalUserEntry, transitionTicketStatus } from "./state.js";
@@ -22,7 +24,9 @@ export class ProjectError extends Error {
 }
 
 export interface ProjectEnvManager {
-  getEnvDescriptor(id: string): { id: string; name: string; online: boolean; capabilities: string[] } | undefined;
+  getEnvDescriptor(id: string): { id: string; name: string; online: boolean; capabilities: string[]; executionKind?: "pi-env" | "native-device" } | undefined;
+  getExecutionTrustMode?(): ExecutionTrustMode;
+  isLocalEnv?(id: string): boolean;
   listProjectDirectories(deviceId: string, directory?: string): Promise<ProjectDirectoryListing>;
   authorizeProjectDirectory(deviceId: string, input: {
     projectId: string; path: string; create?: boolean; operationId: string; revision?: number;
@@ -106,13 +110,15 @@ export class KuloProjects {
   async #changed(): Promise<void> { await this.#deps.onChanged?.(); }
 
   #view(project: ProjectRecord, state?: Readonly<KuloProjectsState>): ProjectView {
+    const trustMode = this.#deps.envManager.getExecutionTrustMode?.() ?? LEGACY_MIGRATION_EXECUTION_TRUST_MODE;
     const device = this.#deps.envManager.getEnvDescriptor(project.deviceId);
+    const deviceReady = !device || isWorkerEnvReady(device, trustMode, { isLocal: Boolean(this.#deps.envManager.isLocalEnv?.(device.id)) });
     const error = project.deletedAt !== undefined ? "项目已删除。"
       : state?.bindings[project.id] ? "项目目录正在重新关联。"
       : state?.errors[project.id]
       ?? (state?.needsAuthorization[project.id] ? "项目目录需要重新授权。" : undefined)
-      ?? (device && (!(device.capabilities.includes("worker-isolation") || device.capabilities.includes("worker-isolation-basic")) || device.capabilities.includes("worker-isolation-unavailable")) ? "设备执行隔离尚未就绪。" : undefined)
-      ?? (device?.capabilities.includes("worker-network-unavailable") ? "设备执行网络尚未就绪。" : undefined);
+      ?? (!deviceReady ? "设备执行隔离尚未就绪。" : undefined)
+      ?? (trustMode === "sandboxed" && device?.capabilities.includes("worker-network-unavailable") ? "设备执行网络尚未就绪。" : undefined);
     return {
       ...clone(project), deviceName: device?.name ?? project.deviceId,
       availability: !device?.online ? "offline" : error ? "unavailable" : "ready",

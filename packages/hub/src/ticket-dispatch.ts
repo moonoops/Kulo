@@ -126,7 +126,7 @@ export async function admitDispatchInTx(
     listEnvs: () => EnvNodeDescriptor[];
     getEnvDescriptor: (id: string) => EnvNodeDescriptor | undefined;
     redact: (text: string) => string;
-    prepareWorkerEnv?: (envId: string, workspaceDir: string, opts: { scratchDir?: string; projectId?: string; grantRevision?: number; readOnly: boolean }) => void;
+    prepareWorkerEnv?: (envId: string, workspaceDir: string, opts: { scratchDir?: string; projectId?: string; grantRevision?: number; readOnly: boolean; executionMode?: import("@kulo/protocol").ExecutionTrustMode; executionKey?: string }) => void;
     workerTicketTask: ReturnType<typeof createWorkerTicketTask>;
     workerAgentConfig?: AgentChange;
     supersededStagedToDiscard: TicketRecord[];
@@ -397,12 +397,19 @@ export async function admitDispatchInTx(
   if (!externalBinding && executionDomain !== "android" && builtInWorkspaceMode !== "staged" && getEnvDescriptor(targetEnvId)?.online) {
     prepareWorkerEnv?.(targetEnvId, workspaceDir, {
       scratchDir, projectId: project?.id, grantRevision: project?.grantRevision, readOnly: isReadOnly,
+      executionMode: workspace.effectiveExecutionMode,
+      executionKey: ticketId,
     });
   }
   const created = await createDispatchedTicket(
     tx, state, draft, workerTicketTask,
     workerAgentConfig ? { ...workerAgentConfig, ...(executionDomain !== "android" ? { cwd: workspaceDir } : {}) } : undefined,
   );
+  state.ticketExecutionModes ??= {};
+  state.ticketExecutionModes[created.id] = {
+    runEpoch: created.runEpoch,
+    mode: workspace.effectiveExecutionMode,
+  };
   if (connectionIds.length > 0 && created.workerConversationId && executionDomain !== "android") {
     await injectEventToolsInTx(tx, created.workerConversationId, ["kulo_connections", "kulo_connection_use"]);
   }

@@ -1,5 +1,5 @@
 import { isValidElement, type ComponentProps, type ReactElement, type ReactNode } from "react";
-import { Button, Select, Switch } from "@heroui/react";
+import { AlertDialog, Button, Select, Switch } from "@heroui/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecutorSlotsConfig, KuloSettingsView } from "@kulo/protocol";
 import { KuloApiError, kuloRest } from "../../kulo-api";
@@ -66,11 +66,14 @@ function page() {
     hooks.effects = [];
     const tree = ConcurrencyModule({ settings: current, onSettingsUpdated: onUpdated, onDirtyChange: onDirty });
     for (const effect of hooks.effects) effect();
+    const selects = findElements<ComponentProps<typeof Select>>(tree, Select);
     return {
       numbers: findElements<ComponentProps<typeof SettingsNumberField>>(tree, SettingsNumberField),
       switches: findElements<ComponentProps<typeof Switch>>(tree, Switch),
-      select: findElements<ComponentProps<typeof Select>>(tree, Select)[0]!,
-      selectCount: findElements<ComponentProps<typeof Select>>(tree, Select).length,
+      trustSelect: selects[0]!,
+      select: selects[1]!,
+      selectCount: selects.length,
+      alertDialog: findElements<ComponentProps<typeof AlertDialog>>(tree, AlertDialog)[0],
       button: (label: string) => {
         const result = findElements<ComponentProps<typeof Button>>(tree, Button).find((button) => button.props.children === label);
         if (!result) throw new Error(`Missing button: ${label}`);
@@ -276,8 +279,41 @@ describe("runtime preferences autosave", () => {
     expect(view.onDirty).toHaveBeenLastCalledWith(false);
   });
 
-  it("omits the deprecated hostActionPermission selector from ConcurrencyModule", () => {
+  it("renders executionTrustMode and completedTaskDisplayHours selectors without deprecated hostActionPermission", () => {
     const view = page();
-    expect(view.render().selectCount).toBe(1);
+    const controls = view.render();
+    expect(controls.selectCount).toBe(2);
+    expect(controls.trustSelect.props.value).toBe("sandboxed");
+    expect(controls.select.props.value).toBe("3");
+  });
+
+  it("confirms sandboxed -> trusted escalation via AlertDialog and saves trusted -> sandboxed immediately", async () => {
+    const save = mockSaves();
+    const view = page();
+    // Initial value omits executionTrustMode -> defaults to sandboxed; escalating to trusted opens AlertDialog before saving
+    view.render().trustSelect.props.onChange?.("trusted");
+    let controls = view.render();
+    expect(save).not.toHaveBeenCalled();
+    expect(controls.alertDialog?.props.isOpen).toBe(true);
+    // Cancel leaves mode unchanged
+    controls.button("取消").props.onPress?.({} as never);
+    controls = view.render();
+    expect(controls.alertDialog?.props.isOpen).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+
+    // Confirm saves trusted
+    controls.trustSelect.props.onChange?.("trusted");
+    controls = view.render();
+    expect(controls.alertDialog?.props.isOpen).toBe(true);
+    controls.button("切换为本机信任").props.onPress?.({} as never);
+    await vi.waitFor(() => expect(view.onUpdated).toHaveBeenCalledOnce());
+    expect(save.mock.calls[0]).toEqual(["executor", 1, { ...initialValue, executionTrustMode: "trusted" }]);
+
+    // Downgrading trusted -> sandboxed saves immediately without AlertDialog
+    controls = view.render();
+    expect(controls.trustSelect.props.value).toBe("trusted");
+    controls.trustSelect.props.onChange?.("sandboxed");
+    await vi.waitFor(() => expect(view.onUpdated).toHaveBeenCalledTimes(2));
+    expect(save.mock.calls[1]).toEqual(["executor", 2, { ...initialValue, executionTrustMode: "sandboxed" }]);
   });
 });

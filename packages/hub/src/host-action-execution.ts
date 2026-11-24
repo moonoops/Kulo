@@ -56,6 +56,7 @@ export async function executeApprovedHostAction(
         commands: payload.commands,
         ...(payload.cwd ? { cwd: payload.cwd } : {}),
         ...(payload.timeoutMs !== undefined ? { timeoutMs: payload.timeoutMs } : {}),
+        ...(payload.executionMode ? { executionMode: payload.executionMode } : {}),
       },
       context?.abortSignal,
     );

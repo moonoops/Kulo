@@ -247,6 +247,7 @@ import { RelationshipReviewsDoc, collectRelationshipInput } from "./relationship
 import { computeHubUsageStats } from "./hub-usage-stats.js";
 import { migrateLegacyLocalReferences } from "./cluster-migration.js";
 import {
+  clearFailoverTrustGuard, hasFailoverTrustGuard,
   InlineDispatchWaiters,
   LiveSettingsStore,
   TurnContextReader,
@@ -613,7 +614,7 @@ export class KuloHub implements OrchestratorController {
   #closed = false;
   #closing?: Promise<void>;
   #androidHubId = "";
-  #onClusterDirty?: (kind: "sqlite" | "assistant" | "memory" | "vault" | "files" | "uploads") => void;
+  #onClusterDirty?: (kind: "sqlite" | "assistant" | "memory" | "vault" | "files" | "uploads", options?: { immediate?: boolean }) => void;
   #hasRemoteStandbys?: () => boolean;
   #clusterCloseHook?: () => Promise<void>;
   #clusterHostContext?: { localNodeId: string; legacyLocalNodeId?: string };
@@ -1824,6 +1825,8 @@ export class KuloHub implements OrchestratorController {
         path.resolve(".env"),
         ...(config.memory.authFile ? [path.resolve(config.memory.authFile)] : []),
       ],
+      getCoreProtectedPaths: () => settingsStore.getCoreProtectedPaths(),
+      getBlockedEnvNames: () => settingsStore.getBlockedSecretEnvNames(),
       onChange: (envs) => {
         if (hubRef) {
           for (const env of envs) {
@@ -1903,6 +1906,7 @@ export class KuloHub implements OrchestratorController {
       extraProtectedPaths: config.extraProtectedPaths,
       getLiveIdentityDir,
       getLiveMemoryAuthFile: () => getLiveMemory().authFile,
+      getExecutionTrustMode: () => settingsStore.getExecutionTrustMode(),
       envManager,
       redact,
       assertChatReadTarget: (conversationId, toolTaskId, envId, context, topic) =>
@@ -1948,11 +1952,12 @@ export class KuloHub implements OrchestratorController {
       hostActions,
       uploads,
       search: () => hubRef!.search,
-      getLocalEnvId: () => envManager.localEnvId,
+      getLocalEnvId: () => envManager.localEnvId, getEnvDescriptor: (id) => envManager.getEnvDescriptor(id),
       publishAsset: (input, api, context) => contentExt.publishAsset(input, api, context),
       onStateChanged: notifyTicketsChanged,
       onOutwardAction: (ticketId, runEpoch, label) => hubRef ? hubRef.#recordTicketOutwardAction(ticketId, runEpoch, "shell", label) : undefined,
       getIdentityDir: getLiveIdentityDir,
+      getStateDir: () => config.stateDir, getMainWorkspaceDir: () => mainWorkspaceDir, getCoreProtectedPaths: () => settingsStore.getCoreProtectedPaths(), getExecutionTrustMode: () => settingsStore.getExecutionTrustMode(),
       getMemoryConfig: getLiveMemory, getSharedMemoryMode: () => memoryRuntime.builtinMemory.getExternalMemoryMode(), builtinMemoryTools: memoryRuntime.createBuiltinMemoryTools("shared"),
       getRoles: getLiveRoles,
       getLanguage: getLiveLanguage,
@@ -2037,6 +2042,7 @@ export class KuloHub implements OrchestratorController {
     const controllerProxy: OrchestratorController = {
       connections,
       hostActions,
+      webFetchContext: { getExecutionTrustMode: () => settingsStore.getExecutionTrustMode(), getLocalEnvId: () => envManager.localEnvId, getEnvDescriptor: (id) => envManager.getEnvDescriptor(id), getRemoteEnv: (id) => { const d = envManager.getEnvDescriptor(id); return d ? envManager.createExecutionEnv(id, d.rootDir, { executionMode: "trusted" }) : undefined; }, resolveOrchestratorTargetEnvId: (cid, tid, ctx) => hubRef!.#resolveOrchestratorTargetEnvId(cid, tid, ctx) },
       showDeviceInvitation: async (conversationId, callId) => {
         const hub = hubRef!;
         const device = hub.#deviceController?.view();
@@ -2070,7 +2076,7 @@ export class KuloHub implements OrchestratorController {
       getLanguage: getLiveLanguage,
       getRoles: getLiveRoles,
       getExternalClients: () => settingsStore.getExternalClients(),
-      getEnvs: () => envManager.listEnvs(),
+      getEnvs: () => envManager.listEnvs(), getExecutionTrustMode: () => settingsStore.getExecutionTrustMode(),
       getIdentityDir: getLiveIdentityDir,
       getMemoryConfig: getLiveMemory, getBuiltinMemoryState: () => ({ active: memoryRuntime.builtinMemory.isEffectiveActive(), sharedActive: memoryRuntime.builtinMemory.isSharedEffectiveActive() }),
       getMediaCapabilities: () =>
@@ -2518,7 +2524,7 @@ export class KuloHub implements OrchestratorController {
                   scratchDir,
                   projectId: authorized.id,
                   grantRevision: authorized.grantRevision,
-                  readOnly: activeSettings,
+                  readOnly: activeSettings, executionKey: `orchestrator-topic:${topic.id}`,
                 });
               });
             }
@@ -2530,7 +2536,7 @@ export class KuloHub implements OrchestratorController {
             catch { defaultEnvId = undefined; }
             const envInfo = defaultEnvId ? envManager.getEnvDescriptor(defaultEnvId) : candidateEnv;
             const cwd = target.cwd ?? envInfo?.rootDir ?? mainWorkspaceDir;
-            const execOptions = { sandboxed: true, offline: false, readOnly: activeSettings };
+            const execOptions = { ...(activeSettings ? { sandboxed: true, readOnly: true } : {}), offline: false };
             if (defaultEnvId) return envManager.createExecutionEnv(defaultEnvId, cwd, execOptions);
             return lazyProjectEnvironment(`kulo-env:${candidateEnv.id}`, cwd, async () => {
               const resolvedId = envManager.pickDefaultEnvId();
@@ -2550,6 +2556,7 @@ export class KuloHub implements OrchestratorController {
             throw new Error(`Isolated staged workspace for ticket '${ticket.id}' is not prepared yet.`);
           }
           const effectiveWorkspaceDir = activeStagedCwd ?? ticket.workspaceDir;
+          const frozenMode = state?.ticketExecutionModes?.[ticket.id];
           return envManager.createWorkerExecutionEnv(
             ticket.envId,
             activeStagedCwd ? effectiveWorkspaceDir : (target.cwd ?? effectiveWorkspaceDir),
@@ -2558,6 +2565,8 @@ export class KuloHub implements OrchestratorController {
               projectId: ticket.projectId,
               grantRevision: ticket.grantRevision,
               readOnly: execScope?.readOnly,
+              executionKey: ticket.id,
+              ...(frozenMode?.runEpoch === ticket.runEpoch ? { executionMode: frozenMode.mode } : {}),
               ...(activeStagedCwd && !ticket.externalExecution ? { stagedTaskId: ticket.id } : {}),
             },
           );
@@ -2578,16 +2587,24 @@ export class KuloHub implements OrchestratorController {
 
     closePartialStorage = () => harness.close(BACKGROUND_CONTEXT);
     const hasGatewayCredential = Boolean(await credentialStore.read(KULO_GATEWAY_PROVIDER_ID));
+    const failoverGuarded = hasFailoverTrustGuard(config.stateDir);
     const hydratedSettings = await harness.commit(async (tx) => {
       const stateDoc = await tx.doc(KuloStateDoc);
       const settingsDoc = await tx.doc(KuloSettingsDoc);
       hydrateSettingsFromConfig(settingsDoc, config, { hasGatewayCredential });
+      if (failoverGuarded && settingsDoc.executor.executionTrustMode === "trusted") {
+        settingsDoc.executor.executionTrustMode = "sandboxed";
+        settingsDoc.executionTrustModeRevision = (settingsDoc.executionTrustModeRevision ?? 1) + 1;
+      }
       assertMemoryIdentitySeparation(settingsDoc.memory, config, envManager);
       ensureDefaultRootTopic(stateDoc, settingsDoc.presentation.agentName);
       return cloneJson(settingsDoc) as KuloDurableSettings;
     }, context);
+    if (failoverGuarded) clearFailoverTrustGuard(config.stateDir);
 
     settingsStore.hydrate(hydratedSettings);
+    envManager.setExecutionTrustMode(settingsStore.getExecutionTrustMode(), settingsStore.getExecutionTrustModeRevision());
+    connectionManager.setExecutionTrustModeProvider(() => settingsStore.getExecutionTrustMode(), () => settingsStore.getBlockedSecretEnvNames());
     const effectiveIdentityDir = settingsStore.getIdentityDir();
     try {
       fs.mkdirSync(effectiveIdentityDir, { recursive: true, mode: 0o700 });
@@ -3082,8 +3099,7 @@ export class KuloHub implements OrchestratorController {
       webSearchAvailable: this.#webSearchAvailable,
       customizationEnabled: Boolean(this.config.customization),
       deviceInviteAvailable: deviceView?.role === "hub",
-      computerUseBrowserEnabled: this.#computer.settings.browserEnabled,
-      computerUseDesktopEnabled: this.#computer.settings.desktopEnabled,
+      computerUseBrowserEnabled: this.#computer.settings.browserEnabled, computerUseDesktopEnabled: this.#computer.settings.desktopEnabled, executionTrustMode: this.#settingsStore.getExecutionTrustMode(),
       hasStagedDeviceJoin: Boolean(this.deviceJoinStaging.hasActive),
       assistantActive: this.#assistantActive,
       ...extra,
@@ -3398,6 +3414,7 @@ export class KuloHub implements OrchestratorController {
     toRevision: number,
     expectedGlobalRevision: number,
     context: Context = BACKGROUND_CONTEXT,
+    options?: { allowTrustModeChange?: boolean },
   ): Promise<{ settings: KuloSettingsView; summary: string }> {
     const { nextDoc, summary } = await this.harness.commit(async (tx) => {
       const doc = await tx.doc(KuloSettingsDoc);
@@ -3405,7 +3422,7 @@ export class KuloHub implements OrchestratorController {
       if (Object.values(state.tickets).some((ticket) => ticket.status === "running")) {
         throw new SettingsUpdateError(400, "请先停止正在运行的后台任务，再恢复历史设置。");
       }
-      const msg = rollbackSettingsToSnapshot(doc, toRevision, expectedGlobalRevision, this.config.memory);
+      const msg = rollbackSettingsToSnapshot(doc, toRevision, expectedGlobalRevision, this.config.memory, options);
       assertMemoryIdentitySeparation(doc.memory, this.config, this.envManager);
       return {
         nextDoc: cloneJson(doc) as KuloDurableSettings,
@@ -4582,7 +4599,7 @@ export class KuloHub implements OrchestratorController {
     return this.#providerManager?.cancelOAuthSession(sessionId) ?? null;
   }
 
-  setOnClusterDirty(hook: ((kind: "sqlite" | "assistant" | "memory" | "vault" | "files" | "uploads") => void) | undefined, hasRemoteStandbys?: () => boolean): void { this.#onClusterDirty = hook; this.#hasRemoteStandbys = hasRemoteStandbys; }
+  setOnClusterDirty(hook: ((kind: "sqlite" | "assistant" | "memory" | "vault" | "files" | "uploads", options?: { immediate?: boolean }) => void) | undefined, hasRemoteStandbys?: () => boolean): void { this.#onClusterDirty = hook; this.#hasRemoteStandbys = hasRemoteStandbys; }
   backupSyncSqlite(name: "assistant.sqlite" | "memory.sqlite", destPath: string): Promise<boolean> { return name === "memory.sqlite" ? this.memoryRuntime.builtinMemory.store.backupTo(destPath) : this.assistantLedger.backupTo(destPath); }
   async #onBuiltinMemoryModeChanged(state: BuiltinMemoryStateView): Promise<void> {
     if (this.#closed) return;
@@ -5244,8 +5261,11 @@ export class KuloHub implements OrchestratorController {
     if (prevMemEnabled !== this.#effectiveMemoryConfig(this.#liveSettings.memory).enabled || prevRawMem.enabled !== this.#liveSettings.memory.enabled || prevRawMem.accessMode !== this.#liveSettings.memory.accessMode) await this.memoryRuntime.builtinMemory.onExternalEngineChanged(context);
     this.externalClientQuotas.reconcileFromSettings(this.#liveSettings.roles, this.#liveSettings.externalClients);
 
-    if (update.protectedPathsChanged) {
-      this.envManager.invalidateWorkerEnvironments();
+    if (update.protectedPathsChanged) this.envManager.retireIdleWorkerEnvironments();
+    if (update.executionTrustModeChanged) {
+      this.envManager.setExecutionTrustMode(update.newExecutionTrustMode, update.executionTrustModeRevision);
+      void this.connectionManager.invalidateStdioMcpConnections().catch(() => {});
+      if (update.tightenedTrustMode) this.#onClusterDirty?.("sqlite", { immediate: true });
     }
     if (update.newIdentityDir === this.#defaultIdentityDir) {
       fs.mkdirSync(update.newIdentityDir, { recursive: true, mode: 0o700 });

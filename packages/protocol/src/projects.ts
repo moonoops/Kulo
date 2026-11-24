@@ -87,7 +87,7 @@ export type ProjectEnvRequest =
   | { action: "list"; path?: string }
   | { action: "authorize"; projectId: string; path: string; create?: boolean; operationId: string; revision?: number }
   | { action: "revoke"; projectId: string }
-  | { action: "cleanup"; workspaceDir: string; scratchDir?: string }
+  | { action: "cleanup"; workspaceDir: string; scratchDir?: string; executionKey?: string }
   | { action: "staged_prepare"; taskId: string; projectId: string; sourceDir: string; directoryId?: string; grantRevision?: number; fresh?: boolean }
   | { action: "staged_diff"; taskId: string; filePath?: string }
   | { action: "staged_apply"; taskId: string; projectId: string; directoryId?: string; grantRevision?: number; paths?: string[]; allowConflicts?: boolean; expectedDigest?: string }

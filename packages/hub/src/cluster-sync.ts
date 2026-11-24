@@ -407,18 +407,15 @@ export class ClusterSyncService {
     }
   }
 
-  markDirty(kind: "sqlite" | "assistant" | "memory" | "vault" | "files" | "uploads"): void {
+  markDirty(kind: "sqlite" | "assistant" | "memory" | "vault" | "files" | "uploads", options?: { immediate?: boolean }): void {
     if (this.#closed) return;
     if (kind === "vault") {
       this.#meta = { ...this.#meta, vaultRevision: this.#meta.vaultRevision + 1 };
-      try {
-        writeSyncMeta(this.#opts.stateDir, this.#meta);
-      } catch {
-        // Persist on next snapshot build
-      }
+      try { writeSyncMeta(this.#opts.stateDir, this.#meta); } catch { /* Persist on next snapshot build */ }
     }
     this.#dirty = true;
     if (!this.#opts.hasRemoteStandbys()) return;
+    if (options?.immediate) { void this.flushNow().catch((e) => console.error("[ClusterSync] immediate flush failed:", e instanceof Error ? e.message : String(e))); return; }
     this.#scheduleDebouncedBuild();
   }
 

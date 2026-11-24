@@ -505,6 +505,20 @@ export async function applyReplicaForPromotion(
   };
   saveClusterMembership(paths.clusterMembershipPath, nextMembership);
 
+  if (options.reason !== "handover") {
+    // Unplanned failover: write guard BEFORE clearing cluster-transition.json so even interrupted-promotion recovery
+    // conservatively boots into sandboxed mode until owner confirms latest policy.
+    try {
+      fs.writeFileSync(
+        path.join(paths.hubStateDir, "failover-trust-guard.json"),
+        JSON.stringify({ reason: options.reason, promotedAt: Date.now() }),
+        { mode: 0o600 },
+      );
+    } catch {
+      // Best-effort failover marker
+    }
+  }
+
   removePeerConfig(paths.peerConfigPath);
   fs.rmSync(paths.clusterTransitionPath, { force: true });
 

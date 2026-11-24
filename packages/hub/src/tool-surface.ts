@@ -9,6 +9,7 @@ import {
   ANDROID_INITIAL_TOOLS,
   ANDROID_TOOL_CATALOG,
   type EnvNodeDescriptor,
+  type ExecutionTrustMode,
   type SettingsAssistantModule,
 } from "@kulo/protocol";
 
@@ -36,6 +37,7 @@ export interface ToolSurfaceRuntimeState {
   deviceInviteAvailable: boolean;
   computerUseBrowserEnabled?: boolean;
   computerUseDesktopEnabled?: boolean;
+  executionTrustMode?: ExecutionTrustMode;
   readOnly?: boolean;
   allowSubagents?: boolean;
   settingsModule?: SettingsAssistantModule;
@@ -256,17 +258,17 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
   },
   {
     name: "kulo_desktop",
-    audiences: ALL_COMPUTER_WORKERS,
+    audiences: ["chat", ...ALL_COMPUTER_WORKERS],
     tier: "deferred",
     scope: "global",
-    requires: (s) => s.computerUseDesktopEnabled !== false,
+    requires: (s) => (s.audience !== "chat" || s.executionTrustMode === "trusted") && s.computerUseDesktopEnabled !== false,
   },
   {
     name: "kulo_computer_handoff",
-    audiences: ["computer-worker"],
+    audiences: ["chat", "computer-worker"],
     tier: "deferred",
     scope: "global",
-    requires: (s) => !s.readOnly && (s.computerUseBrowserEnabled !== false || s.computerUseDesktopEnabled !== false),
+    requires: (s) => (s.audience !== "chat" || s.executionTrustMode === "trusted") && !s.readOnly && (s.computerUseBrowserEnabled !== false || s.computerUseDesktopEnabled !== false),
   },
 
   // 5. UI Cards & Artifact Publication

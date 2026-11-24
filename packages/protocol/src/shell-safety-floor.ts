@@ -711,7 +711,6 @@ function classifySingleCommand(words: readonly string[], depth: number, options:
         (arg) =>
           arg === "--force" ||
           arg === "-f" ||
-          arg.startsWith("--force-with-lease") ||
           (arg.startsWith("-") && !arg.startsWith("--") && arg.includes("f")),
       );
       if (isForce) {

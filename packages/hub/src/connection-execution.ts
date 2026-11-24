@@ -1,8 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import type { ConnectionRecordView, ConnectionSecrets, ConnectionUseOperation, ConnectionUseResult } from "@kulo/protocol";
+import type { ConnectionRecordView, ConnectionSecrets, ConnectionUseOperation, ConnectionUseResult, ExecutionTrustMode } from "@kulo/protocol";
 import { LocalConnectionApplications, type ConnectionApplicationBackend } from "./connection-applications.js";
+import {
+  MAX_SAFE_HTTP_REDIRECTS,
+  SAFE_HTTP_REDIRECT_STATUSES,
+  isCloudMetadataHostOrIp,
+  isPrivateOrLoopbackHost,
+  prepareSafeHttpRedirect,
+} from "./net-policy.js";
 import {
   MAX_SSH_CAPTURE_OUTPUT,
   captureSshProcess,
@@ -19,6 +26,22 @@ import {
 
 const MAX_OUTPUT = MAX_SSH_CAPTURE_OUTPUT;
 const MAX_KNOWN_HOSTS_BYTES = 64 * 1024;
+const MAX_SSH_TIMEOUT_MS = 600_000;
+const FORBIDDEN_CUSTOM_HTTP_HEADERS = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "set-cookie",
+  "host",
+  "connection",
+  "content-length",
+  "transfer-encoding",
+  "upgrade",
+  "te",
+  "trailer",
+  "keep-alive",
+  "proxy-connection",
+]);
 export interface ConnectionHostScan { fingerprint: string; lines: string[] }
 export interface ConnectionSshProbeResult { exitCode: number; stderr: string; output: string }
 export interface ConnectionExecutionBackend {
@@ -45,11 +68,19 @@ export class LocalConnectionExecutor implements ConnectionExecutionBackend {
   readonly #fetch: typeof fetch;
   readonly #applications: ConnectionApplicationBackend;
   readonly #platform: NodeJS.Platform;
-  constructor(options: { stateDir: string; fetch?: typeof fetch; applications?: ConnectionApplicationBackend; platform?: NodeJS.Platform }) {
+  readonly #getExecutionTrustMode?: () => ExecutionTrustMode;
+  constructor(options: {
+    stateDir: string;
+    fetch?: typeof fetch;
+    applications?: ConnectionApplicationBackend;
+    platform?: NodeJS.Platform;
+    getExecutionTrustMode?: () => ExecutionTrustMode;
+  }) {
     this.#directory = path.join(options.stateDir, "connection-runtime");
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#platform = options.platform ?? process.platform;
     this.#applications = options.applications ?? new LocalConnectionApplications({ stateDir: options.stateDir, platform: this.#platform });
+    this.#getExecutionTrustMode = options.getExecutionTrustMode;
   }
   #prepare(): void {
     if (fs.existsSync(this.#directory) && (fs.lstatSync(this.#directory).isSymbolicLink() || !fs.statSync(this.#directory).isDirectory())) fail("连接运行目录无效。", "connection_storage_invalid");
@@ -132,7 +163,7 @@ export class LocalConnectionExecutor implements ConnectionExecutionBackend {
     if (this.#platform === "win32") fail("此环境暂不支持安全的 SSH 凭据注入。", "connection_ssh_platform_unavailable");
     if (!operation.command.trim() || operation.command.length > 32_000 || operation.command.includes("\0")) fail("SSH 命令无效。");
     const timeout = operation.timeoutMs ?? 30_000;
-    if (!Number.isSafeInteger(timeout) || timeout < 1_000 || timeout > 120_000) fail("SSH 超时范围无效。");
+    if (!Number.isSafeInteger(timeout) || timeout < 1_000 || timeout > MAX_SSH_TIMEOUT_MS) fail("SSH 超时范围无效。");
     const knownHostsPath = this.#knownHosts(connection);
     this.#prepare();
     const session = await prepareSshAuthSession({
@@ -158,16 +189,36 @@ export class LocalConnectionExecutor implements ConnectionExecutionBackend {
   }
   async #http(connection: ConnectionRecordView, secrets: ConnectionSecrets, operation: Extract<ConnectionUseOperation, { kind: "http" }>, signal?: AbortSignal): Promise<ConnectionUseResult> {
     if (connection.kind === "ssh" || !connection.url) fail("此连接未配置 API 或站点地址。");
+    const trusted = this.#getExecutionTrustMode?.() === "trusted";
     const base = new URL(connection.url);
-    if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) fail("连接地址必须是无凭据的 HTTPS 地址。");
+    if (base.username || base.password || base.search || base.hash) fail("连接地址必须是无凭据的有效地址。");
+    if (isCloudMetadataHostOrIp(base.hostname)) fail("连接地址受安全策略阻止。", "connection_http_blocked");
+    if (base.protocol === "http:") {
+      if (!trusted || !isPrivateOrLoopbackHost(base.hostname)) {
+        fail(
+          !trusted && isPrivateOrLoopbackHost(base.hostname)
+            ? "当前处于隔离沙箱模式，不允许执行内网 HTTP 连接；请改用 HTTPS 或切回本机信任模式。"
+            : "连接地址必须是无凭据的 HTTPS 地址。",
+          "connection_http_restricted",
+        );
+      }
+    } else if (base.protocol !== "https:") {
+      fail("连接地址必须是无凭据的 HTTPS 地址。");
+    }
     if (!operation.path.startsWith("/") || operation.path.startsWith("//") || /[\x00-\x20\x7f\\]/.test(operation.path) || operation.path.length > 4_096) fail("请求必须使用连接站点内的相对路径。");
     const target = new URL(operation.path, base);
     if (target.origin !== base.origin || target.username || target.password) fail("连接凭据不能发送到其他站点。");
     const method = operation.method ?? "GET";
     if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"].includes(method) || operation.body !== undefined && (typeof operation.body !== "string" || operation.body.length > 64_000) || (method === "GET" || method === "HEAD") && operation.body !== undefined) fail("HTTP 请求参数无效。");
+    const authHeaderName = connection.authType === "header" ? (connection.headerName ?? "X-API-Key") : undefined;
+    const authHeaderLower = authHeaderName?.toLowerCase();
     const headers = new Headers({ Accept: "application/json, text/plain;q=0.9" });
     for (const [name, value] of Object.entries(operation.headers ?? {})) {
-      if (!/^(accept|content-type|if-match|if-none-match)$/i.test(name) || typeof value !== "string" || value.length > 1_024 || /[\r\n]/.test(value)) fail("请求头不在允许范围内。");
+      const lower = name.toLowerCase();
+      const allowedCustom = trusted
+        ? /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,80}$/.test(name) && !FORBIDDEN_CUSTOM_HTTP_HEADERS.has(lower) && lower !== authHeaderLower
+        : /^(accept|content-type|if-match|if-none-match)$/i.test(name);
+      if (!allowedCustom || typeof value !== "string" || value.length > 1_024 || /[\r\n]/.test(value)) fail("请求头不在允许范围内。");
       headers.set(name, value);
     }
     if (operation.body !== undefined && !headers.has("Content-Type")) {
@@ -179,7 +230,7 @@ export class LocalConnectionExecutor implements ConnectionExecutionBackend {
       if (!connection.username || !secrets.password || connection.username.includes(":")) fail("账号密码不完整。");
       headers.set("Authorization", `Basic ${Buffer.from(`${connection.username}:${secrets.password}`).toString("base64")}`);
     } else if (connection.authType === "header") {
-      const name = connection.headerName ?? "X-API-Key";
+      const name = authHeaderName ?? "X-API-Key";
       if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,80}$/.test(name) || /^(host|cookie|set-cookie|proxy-authorization|connection|content-length|transfer-encoding)$/i.test(name) || !secrets.apiKey || /[\r\n]/.test(secrets.apiKey)) fail("API 认证信息无效。");
       headers.set(name, secrets.apiKey);
     } else {
@@ -188,8 +239,57 @@ export class LocalConnectionExecutor implements ConnectionExecutionBackend {
     }
     const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000);
     let response: Response;
-    try { response = await this.#fetch(target, { method, headers, body: operation.body, redirect: "error", signal: requestSignal }); }
-    catch { fail("连接请求未完成，请检查网络或授权状态。", "connection_http_failed"); }
+    if (!trusted) {
+      try { response = await this.#fetch(target, { method, headers, body: operation.body, redirect: "error", signal: requestSignal }); }
+      catch { fail("连接请求未完成，请检查网络或授权状态。", "connection_http_failed"); }
+    } else {
+      let currentUrl = target;
+      let currentMethod: string = method;
+      let currentHeaders = headers;
+      let currentBody: RequestInit["body"] = operation.body;
+      let finalResponse: Response | undefined;
+      for (let hop = 0; hop <= MAX_SAFE_HTTP_REDIRECTS; hop++) {
+        try {
+          finalResponse = await this.#fetch(currentUrl, {
+            method: currentMethod,
+            headers: currentHeaders,
+            body: currentBody,
+            redirect: "manual",
+            signal: requestSignal,
+          });
+        } catch {
+          fail("连接请求未完成，请检查网络或授权状态。", "connection_http_failed");
+        }
+        if (!SAFE_HTTP_REDIRECT_STATUSES.has(finalResponse.status)) break;
+        const location = finalResponse.headers.get("location");
+        await finalResponse.body?.cancel().catch(() => undefined);
+        if (hop === MAX_SAFE_HTTP_REDIRECTS) {
+          fail("HTTP 重定向次数过多。", "connection_redirect_limit");
+        }
+        const next = prepareSafeHttpRedirect({
+          status: finalResponse.status,
+          location,
+          currentUrl,
+          initialOrigin: base.origin,
+          method: currentMethod,
+          headers: currentHeaders,
+          body: currentBody,
+          authHeaderName,
+        });
+        if (next.url.protocol === "http:" && !isPrivateOrLoopbackHost(next.url.hostname)) {
+          fail("重定向目标不允许降级到公网明文 HTTP。", "connection_redirect_blocked");
+        } else if (next.url.protocol !== "https:" && next.url.protocol !== "http:") {
+          fail("重定向目标协议无效。", "connection_redirect_blocked");
+        }
+        currentUrl = next.url;
+        currentMethod = next.method;
+        currentHeaders = next.headers;
+        currentBody = next.body;
+        finalResponse = undefined;
+      }
+      if (!finalResponse) fail("HTTP 重定向次数过多。", "connection_redirect_limit");
+      response = finalResponse;
+    }
     const reader = response.body?.getReader();
     const chunks: Uint8Array[] = [];
     let size = 0;

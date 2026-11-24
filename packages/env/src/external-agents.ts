@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { EXTERNAL_AGENT_MEMORY_MODE_CAPABILITY, EXTERNAL_AGENT_QUOTA_CAPABILITY, EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY, isPersonalExternalAgentKind, isQuotaSupportedExternalAgentKind, redactSensitiveText, validateCustomAcpArgs, type ExternalAgentBinding, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentPendingReportFile, type ExternalAgentQuotaProbeResult, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentRun, type ExternalAgentUncertainReason, type ExternalWorkspaceMode, type WorkerExecutionPhase } from "@kulo/protocol";
+import { EXTERNAL_AGENT_MEMORY_MODE_CAPABILITY, EXTERNAL_AGENT_QUOTA_CAPABILITY, EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY, isPersonalExternalAgentKind, isQuotaSupportedExternalAgentKind, redactSensitiveText, validateCustomAcpArgs, type ExecutionTrustMode, type ExternalAgentBinding, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentPendingReportFile, type ExternalAgentQuotaProbeResult, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentRun, type ExternalAgentUncertainReason, type ExternalWorkspaceMode, type WorkerExecutionPhase } from "@kulo/protocol";
 import { canonicalExecutionPath } from "./isolation.js";
 import { cleanupRecordedExecutions, hasOrphanedExecution } from "./worker-supervisor.js";
 import { ProjectDirectoryRegistry } from "./project-directories.js";
@@ -205,14 +205,14 @@ export interface ClaudeAuthStatusProbe {
   authMethod?: string;
   apiProvider?: string;
 }
-async function detectClaudeAuthStatus(executable:string,signal?:AbortSignal):Promise<ClaudeAuthStatusProbe>{
+async function detectClaudeAuthStatus(executable:string,signal?:AbortSignal,blockedEnvNames?:Iterable<string>):Promise<ClaudeAuthStatusProbe>{
   return new Promise(resolve=>{
     if(signal?.aborted)return resolve({loggedIn:null});
     let stdout="";
     let settled=false;
     const finish=(value:ClaudeAuthStatusProbe)=>{if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener("abort",onAbort);resolve(value);};
     const spec=resolveCrossPlatformSpawn(executable,["auth","status","--json"]);
-    const child=spawn(spec.command,spec.args,{env:nativeAgentEnvironment("claude-code"),stdio:["ignore","pipe","ignore"],windowsHide:true,...(spec.windowsVerbatimArguments?{windowsVerbatimArguments:true}:{})});
+    const child=spawn(spec.command,spec.args,{env:nativeAgentEnvironment("claude-code",{blockedEnvNames}),stdio:["ignore","pipe","ignore"],windowsHide:true,...(spec.windowsVerbatimArguments?{windowsVerbatimArguments:true}:{})});
     const onAbort=()=>{try{child.kill();}catch{/* ignore */}finish({loggedIn:null});};
     signal?.addEventListener("abort",onAbort,{once:true});
     const timer=setTimeout(()=>{try{child.kill();}catch{/* ignore */}finish({loggedIn:null});},5_000);timer.unref();
@@ -231,14 +231,16 @@ async function detectClaudeAuthStatus(executable:string,signal?:AbortSignal):Pro
     });
   });
 }
-async function detectClaudeAuthenticated(executable:string):Promise<boolean|null>{
-  const status=await detectClaudeAuthStatus(executable);
+async function detectClaudeAuthenticated(executable:string,blockedEnvNames?:Iterable<string>):Promise<boolean|null>{
+  const status=await detectClaudeAuthStatus(executable,undefined,blockedEnvNames);
   if(status.loggedIn===true)return true;
   if(status.loggedIn===false)return hasClaudeExternalAuthConfig()?null:false;
   return null;
 }
 export interface ExternalAgentServiceOptions {
   envId:string;rootDir:string;projectRegistry:ProjectDirectoryRegistry;
+  getExecutionTrustMode?:()=>ExecutionTrustMode;
+  getBlockedEnvNames?:()=>Iterable<string>;
   toolHandler?:ExternalAgentToolHandler;pipeFactory?:ExternalAgentPipeFactory;
   claudeAuthStatus?:(executable:string,signal?:AbortSignal)=>Promise<ClaudeAuthStatusProbe>;
   claudeQuotaProbe?:typeof probeClaudeQuota;
@@ -486,16 +488,18 @@ export class ExternalAgentService {
   #context(live:LiveRun,request:RunRequest):ExternalDriverContext{
     const executionCwd=live.stored.executionCwd??live.stored.cwd;
     const inputsDir=path.join(this.#options.projectRegistry.scratchRoot,request.taskId.replace(/[^A-Za-z0-9._-]/g,"_"),"inputs");
+    const trustMode=this.#options.getExecutionTrustMode?.()??"sandboxed";
+    const blockedEnvNames=[...(this.#options.getBlockedEnvNames?.()??[])];
     const fallbackReadOnlyNote=!request.developerInstructions&&request.readOnly&&!/Workspace Mode:\s*read_only|Read-only mode:/i.test(request.prompt)
       ?"Read-only mode: inspect and analyze only; never modify files or perform write operations."
       :"";
     return{
-    binding:request.binding,executable:live.stored.executable,cwd:executionCwd,workspaceMode:live.stored.workspaceMode,scratchNotesDir:live.stored.scratchNotesDir,controlRoot:path.join(this.#options.projectRegistry.privateDirectory,"external-executions"),projectId:request.projectId,readOnly:request.readOnly,
+    binding:request.binding,executable:live.stored.executable,cwd:executionCwd,workspaceMode:live.stored.workspaceMode,scratchNotesDir:live.stored.scratchNotesDir,controlRoot:path.join(this.#options.projectRegistry.privateDirectory,"external-executions"),projectId:request.projectId,readOnly:request.readOnly,trustMode,blockedEnvNames,
     prompt:[request.prompt,fallbackReadOnlyNote].filter(Boolean).join("\n\n"),
     developerInstructions:request.developerInstructions,attachments:request.attachments,inputsDir,overlapsProtected:candidate=>this.#overlapsProtected(candidate),
     modelId:request.modelId,thinkingLevel:request.thinkingLevel,serviceTier:request.serviceTier,sessionId:request.sessionId,timeoutMs:request.timeoutMs,servers:live.mcp?[live.mcp.server]:[],
     pipe:async spec=>{
-      const factory=this.#options.pipeFactory??createExternalPipeFactory({controlRoot:path.join(this.#options.projectRegistry.privateDirectory,"external-executions"),projectId:request.projectId,kind:request.binding.kind});
+      const factory=this.#options.pipeFactory??createExternalPipeFactory({controlRoot:path.join(this.#options.projectRegistry.privateDirectory,"external-executions"),projectId:request.projectId,kind:request.binding.kind,trustMode,blockedEnvNames});
       const pipe=await factory(spec);const cleanup=async()=>{pipe.close();return pipe.cleanup?.()??pipe.exited.then(()=>true,()=>false);};
       (live.cleanups??=[]).push(cleanup);
       if(terminal(live.stored.run.state)||this.#closed){const quiescent=await cleanup();throw Object.assign(new Error("External agent scope expired during process launch"),{externalAgentQuiescent:quiescent});}
@@ -718,7 +722,7 @@ export class ExternalAgentService {
     let version:string|undefined;
     try{version=this.#redact(await executableOutput(executable,[...(flavor?.versionArgs??["--version"])])).slice(0,200);}catch{/* Protocol probe reports executable readiness separately. */}
     const authenticated=kind==="claude-code"
-      ? await detectClaudeAuthenticated(executable)
+      ? await detectClaudeAuthenticated(executable,this.#options.getBlockedEnvNames?.())
       : flavor?.detectAuth
         ? await flavor.detectAuth(executable,augmentedNativePath(process.env.PATH??""))
         : null;
@@ -779,7 +783,8 @@ export class ExternalAgentService {
         });
       }
       if(value.kind==="claude-code"){
-        const authProbe=await (this.#options.claudeAuthStatus??detectClaudeAuthStatus)(executable,controller.signal);
+        const blockedEnvNames=this.#options.getBlockedEnvNames?.();
+        const authProbe=await (this.#options.claudeAuthStatus??((exe,sig)=>detectClaudeAuthStatus(exe,sig,blockedEnvNames)))(executable,controller.signal);
         if(authProbe.loggedIn===false){
           return{kind:"claude-code",status:hasClaudeExternalAuthConfig()?"api_key_billing":"unauthenticated",source:"live",fetchedAt:Date.now(),windows:[]};
         }
@@ -797,9 +802,10 @@ export class ExternalAgentService {
           controlRoot,
           signal:controller.signal,
           redact:v=>this.#redact(v),
+          blockedEnvNames,
         });
       }
-      const grokPipeFactory=this.#options.pipeFactory??createExternalPipeFactory({controlRoot,kind:"grok"});
+      const grokPipeFactory=this.#options.pipeFactory??createExternalPipeFactory({controlRoot,kind:"grok",trustMode:this.#options.getExecutionTrustMode?.()??"sandboxed",blockedEnvNames:this.#options.getBlockedEnvNames?.()});
       return probeGrokQuota({
         executable,
         cwd,

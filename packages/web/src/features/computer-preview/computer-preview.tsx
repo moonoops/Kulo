@@ -213,21 +213,23 @@ export function TaskCardPreviewControls({
         </Button>
         <Tooltip.Content placement="top">{isExpanded ? t("收起画面", "Collapse view") : t("展开画面", "Expand view")}</Tooltip.Content>
       </Tooltip>
-      <Tooltip delay={350}>
-        <Button
-          type="button"
-          isIconOnly
-          size="sm"
-          variant="danger-soft"
-          isDisabled={!connected || stopped}
-          isPending={Boolean(stop?.pending)}
-          aria-label={t(`停止任务：${ticketTitle}`, `Stop task: ${ticketTitle}`)}
-          onPress={() => { void client.stopTask(onStop, ticketId); }}
-        >
-          {stop?.pending ? <Spinner size="sm" color="current" /> : <KuloIcon name="stop" size={14} />}
-        </Button>
-        <Tooltip.Content placement="top">{stopped ? t("停止中", "Stopping") : t("停止任务", "Stop task")}</Tooltip.Content>
-      </Tooltip>
+      {!ticketId.startsWith("chat:") && (
+        <Tooltip delay={350}>
+          <Button
+            type="button"
+            isIconOnly
+            size="sm"
+            variant="danger-soft"
+            isDisabled={!connected || stopped}
+            isPending={Boolean(stop?.pending)}
+            aria-label={t(`停止任务：${ticketTitle}`, `Stop task: ${ticketTitle}`)}
+            onPress={() => { void client.stopTask(onStop, ticketId); }}
+          >
+            {stop?.pending ? <Spinner size="sm" color="current" /> : <KuloIcon name="stop" size={14} />}
+          </Button>
+          <Tooltip.Content placement="top">{stopped ? t("停止中", "Stopping") : t("停止任务", "Stop task")}</Tooltip.Content>
+        </Tooltip>
+      )}
     </div>
   );
 }
@@ -599,18 +601,35 @@ export function ComputerPreviewModal({
                       {t("重新连接", "Reconnect")}
                     </Button>
                   )}
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="danger-soft"
-                    isDisabled={!connected || stopped || handoffBusy}
-                    isPending={Boolean(stop?.pending)}
-                    aria-label={t(`停止任务：${selected.title}`, `Stop task: ${selected.title}`)}
-                    onPress={() => { void client.stopTask(onStop, selected.ticketId); }}
-                  >
-                    {stop?.pending ? <Spinner size="sm" color="current" /> : <KuloIcon name="stop" size={14} />}
-                    {stopped ? t("停止中", "Stopping") : t("停止任务", "Stop task")}
-                  </Button>
+                  {selected.ticketId.startsWith("chat:") ? (
+                    !handoff && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="danger-soft"
+                        isDisabled={!connected || handoffBusy}
+                        isPending={handoffBusy}
+                        aria-label={t(`结束会话：${selected.title}`, `End session: ${selected.title}`)}
+                        onPress={() => { void settleHandoff("cancel"); }}
+                      >
+                        {handoffBusy ? <Spinner size="sm" color="current" /> : <KuloIcon name="stop" size={14} />}
+                        {t("结束会话", "End session")}
+                      </Button>
+                    )
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="danger-soft"
+                      isDisabled={!connected || stopped || handoffBusy}
+                      isPending={Boolean(stop?.pending)}
+                      aria-label={t(`停止任务：${selected.title}`, `Stop task: ${selected.title}`)}
+                      onPress={() => { void client.stopTask(onStop, selected.ticketId); }}
+                    >
+                      {stop?.pending ? <Spinner size="sm" color="current" /> : <KuloIcon name="stop" size={14} />}
+                      {stopped ? t("停止中", "Stopping") : t("停止任务", "Stop task")}
+                    </Button>
+                  )}
                   <Button type="button" size="sm" variant="secondary" onPress={() => client.closeModal()}>
                     {t("关闭", "Close")}
                   </Button>

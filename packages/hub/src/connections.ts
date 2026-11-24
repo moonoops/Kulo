@@ -5,7 +5,7 @@ import {
   inspectSensitiveText, redactDeviceInvitationText, redactSensitiveText, SENSITIVE_TEXT_REDACTION,
   type ConnectionAccessRequest, type ConnectionApplicationView, type ConnectionDescribeRequest, type ConnectionFields, type ConnectionKind, type ConnectionPrepareRequest,
   type ConnectionRecordView, type ConnectionSaveRequest, type ConnectionSecrets, type ConnectionSetupInput,
-  type ConnectionTestResult, type ConnectionUseOperation, type ConnectionUseResult, type ConnectionWorkspaceSnapshot,
+  type ConnectionTestResult, type ConnectionUseOperation, type ConnectionUseResult, type ConnectionWorkspaceSnapshot, type ExecutionTrustMode,
 } from "@kulo/protocol";
 import { LocalConnectionVault } from "./connection-vault.js";
 import { LocalConnectionExecutor, type ConnectionExecutionBackend, type ConnectionHostScan } from "./connection-execution.js";
@@ -90,28 +90,18 @@ export class KuloConnections {
   readonly #mcpOAuthAuthorized = new Set<string>();
   readonly #applicationProbes = new Map<string, { revision: number; at: number; connected: boolean; error?: string }>();
   #vaultState: { available: boolean; error?: string } = { available: true };
-  #initialized = false;
-  #closed = false;
-  constructor(options: {
-    stateDir: string;
-    vault?: ConnectionVault;
-    executor?: ConnectionExecutionBackend;
-    applications?: ConnectionApplicationBackend;
-    platform?: NodeJS.Platform;
-    onChanged?: () => void | Promise<void>;
-    mcpBaseFetch?: typeof fetch;
-    mcpTransportFactory?: (ctx: McpTransportFactoryContext) => McpTransport | Promise<McpTransport>;
-    mcpIdleMs?: number;
-  }) {
-    this.#stateDir = options.stateDir;
-    this.#file = path.join(options.stateDir, "connections.json");
+  #getExecutionTrustMode: () => ExecutionTrustMode = () => "sandboxed";
+  #getBlockedEnvNames: () => Iterable<string> = () => [];
+  #initialized = false; #closed = false;
+  constructor(options: { stateDir: string; vault?: ConnectionVault; executor?: ConnectionExecutionBackend; applications?: ConnectionApplicationBackend; platform?: NodeJS.Platform; onChanged?: () => void | Promise<void>; mcpBaseFetch?: typeof fetch; mcpTransportFactory?: (ctx: McpTransportFactoryContext) => McpTransport | Promise<McpTransport>; mcpIdleMs?: number; getExecutionTrustMode?: () => ExecutionTrustMode; getBlockedEnvNames?: () => Iterable<string> }) {
+    this.#stateDir = options.stateDir; this.#file = path.join(options.stateDir, "connections.json");
+    if (options.getExecutionTrustMode) this.#getExecutionTrustMode = options.getExecutionTrustMode;
+    if (options.getBlockedEnvNames) this.#getBlockedEnvNames = options.getBlockedEnvNames;
     this.#vault = options.vault ?? new LocalConnectionVault({ stateDir: options.stateDir });
     this.#platform = options.platform ?? process.platform;
     this.#applications = options.applications ?? new LocalConnectionApplications({ stateDir: options.stateDir, platform: this.#platform });
-    this.#executor = options.executor ?? new LocalConnectionExecutor({ stateDir: options.stateDir, applications: this.#applications, platform: this.#platform });
-    this.#onChanged = options.onChanged;
-    this.#mcpLocks = new McpOAuthRefreshLockManager(options.stateDir);
-    this.#mcpBaseFetch = options.mcpBaseFetch;
+    this.#executor = options.executor ?? new LocalConnectionExecutor({ stateDir: options.stateDir, applications: this.#applications, platform: this.#platform, getExecutionTrustMode: () => this.#getExecutionTrustMode() });
+    this.#onChanged = options.onChanged; this.#mcpLocks = new McpOAuthRefreshLockManager(options.stateDir); this.#mcpBaseFetch = options.mcpBaseFetch;
     this.#doc = { version: 1, connections: {}, inputs: {}, imports: {}, requests: {} };
     if (fs.existsSync(this.#file)) {
       if (fs.lstatSync(this.#file).isSymbolicLink() || !fs.statSync(this.#file).isFile()) fail("连接记录路径无效。", "connection_storage_corrupt", 500);
@@ -123,26 +113,20 @@ export class KuloConnections {
         if (identifier(id) !== record.id || !Number.isSafeInteger(record.revision) || record.revision < 1 || !Array.isArray(record.secretFields) || record.secretFields.length > MAX_CREDENTIAL_FIELDS ||
           new Set(record.secretFields).size !== record.secretFields.length ||
           record.secretFields.some((key) => !allowedSecretKeyFor(record.kind, key, record.mcpTransport, record.mcpAuthMode))) fail("连接记录格式无效。", "connection_storage_corrupt", 500);
-        normalizeFields(record, this.#stateDir);
+        // Storage read always allows previously-saved private HTTP records even after tightening back to sandboxed.
+        normalizeFields(record, this.#stateDir, { allowPrivateHttp: true });
       }
       this.#doc = { ...parsed, requests: parsed.requests ?? {} };
       for (const request of Object.values(this.#doc.requests)) this.#requests.set(request.id, request);
     }
     this.#mcpPool = new McpConnectionPool({
-      vault: this.#vault,
-      locks: this.#mcpLocks,
-      getBinding: (id) => {
-        const record = this.#doc.connections[id];
-        return record ? binding(record) : undefined;
-      },
-      redact: (text) => this.redact(text),
-      onSecrets: (values) => this.rememberSecrets(values),
-      onAuthorizedChange: (id, authorized) => {
-        if (authorized) this.#mcpOAuthAuthorized.add(id);
-        else this.#mcpOAuthAuthorized.delete(id);
-      },
+      vault: this.#vault, locks: this.#mcpLocks,
+      getBinding: (id) => { const record = this.#doc.connections[id]; return record ? binding(record) : undefined; },
+      redact: (text) => this.redact(text), onSecrets: (values) => this.rememberSecrets(values),
+      onAuthorizedChange: (id, authorized) => { if (authorized) this.#mcpOAuthAuthorized.add(id); else this.#mcpOAuthAuthorized.delete(id); },
       onDiscoveryUpdated: (id, expectedRevision, discovery) => this.#updateMcpDiscoveryCache(id, expectedRevision, discovery),
       onComposioSessionExpired: (id, expectedBinding, signal, failedSessionId) => this.refreshComposioSession(id, expectedBinding, signal, failedSessionId),
+      getExecutionTrustMode: () => this.#getExecutionTrustMode(), getBlockedEnvNames: () => this.#getBlockedEnvNames(),
       ...(options.mcpIdleMs !== undefined ? { idleMs: options.mcpIdleMs } : {}),
       ...(options.mcpBaseFetch ? { baseFetch: options.mcpBaseFetch } : {}),
       ...(options.mcpTransportFactory ? { transportFactory: options.mcpTransportFactory } : {}),
@@ -181,6 +165,7 @@ export class KuloConnections {
         return this.#markMcpVerified(id, expectedRevision, discovery);
       },
       redact: (text) => this.redact(text),
+      getExecutionTrustMode: () => this.#getExecutionTrustMode(),
       ...(options.mcpBaseFetch ? { baseFetch: options.mcpBaseFetch } : {}),
     });
   }
@@ -227,9 +212,14 @@ export class KuloConnections {
       fail("该本地 MCP 服务绑定在原主机，当前运行于备用主机故已自动暂停。", "connection_host_changed_paused", 409);
     }
   }
+  setExecutionTrustModeProvider(getMode: () => ExecutionTrustMode, getBlockedEnvNames?: () => Iterable<string>): void {
+    this.#getExecutionTrustMode = getMode;
+    if (getBlockedEnvNames) this.#getBlockedEnvNames = getBlockedEnvNames;
+  }
+  async invalidateStdioMcpConnections(): Promise<void> { await this.#mcpPool.invalidateStdioConnections(); }
   async #changed(): Promise<void> { await this.#onChanged?.(); }
   #view(record: StoredConnection): ConnectionRecordView {
-    const fields = normalizeFields(record, this.#stateDir);
+    const fields = normalizeFields(record, this.#stateDir, { allowPrivateHttp: true });
     return clone({ ...fields, id: record.id, revision: record.revision, status: record.status, hasCredential: record.hasCredential,
       secretFields: record.secretFields, createdAt: record.createdAt, updatedAt: record.updatedAt,
       ...(record.error ? { error: this.redact(record.error) } : {}), ...(record.hostFingerprint ? { hostFingerprint: record.hostFingerprint } : {}),
@@ -474,7 +464,7 @@ export class KuloConnections {
         draft.credentialFields = [...schema, ...Object.keys(supplied).filter((key) => !seen.has(key)).map((key) => ({ key, label: fieldLabel(key) }))];
       }
     } else if (request.kind !== "mcp" && draft.credentialFields === undefined && previous?.credentialFields) draft.credentialFields = previous.credentialFields;
-    const fields = normalizeFields(draft, this.#stateDir);
+    const fields = normalizeFields(draft, this.#stateDir, { allowPrivateHttp: this.#getExecutionTrustMode() === "trusted" });
     if (previous?.kind === "ssh" && fields.kind !== "ssh") this.#sshInUseGuard?.(previous.id);
     if (fields.kind === "app") {
       const app = getConnectionApplication(fields.appId);
@@ -680,7 +670,7 @@ export class KuloConnections {
           ...(preset?.headerName && !(request.headerName ?? target?.headerName) ? { headerName: preset.headerName } : {}),
         } : {}),
       };
-      const fields = normalizeFields(merged, this.#stateDir);
+      const fields = normalizeFields(merged, this.#stateDir, { allowPrivateHttp: this.#getExecutionTrustMode() === "trusted" });
       for (const key of ["name", "username", "host", "url", "headerName", "typeLabel", "instructions", "mcpCommand", "mcpCwd", "mcpOAuthClientId", "mcpOAuthScope"] as const) if (fields[key] && this.#metadataHasSecret(fields[key]!)) fail("请通过保密输入框填写凭据。");
       for (const arg of fields.mcpArgs ?? []) if (arg && this.#metadataHasSecret(arg)) fail("启动参数不能包含凭据。");
       for (const field of fields.credentialFields ?? []) if (this.#metadataHasSecret(field.key) || this.#metadataHasSecret(field.label)) fail("字段名称中包含凭据，请使用普通名称。");
@@ -789,7 +779,7 @@ export class KuloConnections {
             ? { name: this.redact(name), kind: "custom", category: "credential", credentialFields: Object.keys(secrets).map((key) => ({ key, label: fieldLabel(key) })) }
             : { name: this.redact(name), kind, ...(metadata.host ? { host: metadata.host } : {}), ...(metadata.port ? { port: metadata.port } : {}), ...(metadata.username ? { username: metadata.username } : {}), ...(metadata.url ? { url: metadata.url } : {}) };
           // Only a definite endpoint and account identify a previous connection. Ambiguous secrets stay on incomplete cards.
-          const candidate = !fallbackCustom && (fields.host || fields.url) && Object.values(this.#doc.connections).find((record) => binding(record) === binding(normalizeFields(fields)));
+          const candidate = !fallbackCustom && (fields.host || fields.url) && Object.values(this.#doc.connections).find((record) => binding(record) === binding(normalizeFields(fields, this.#stateDir, { allowPrivateHttp: true })));
           const saved = await this.#save({ ...fields, ...(candidate ? { id: candidate.id, expectedRevision: candidate.revision } : {}), secrets }, "chat");
           ids = [saved.id];
           for (const [index, extra] of extras.entries()) {

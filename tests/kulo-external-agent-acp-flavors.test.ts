@@ -380,17 +380,24 @@ describe("ACP flavors, Grok Build, OpenCode, Kiro, and custom ACP drivers", () =
     for (const blocked of [
       "/bin/sh",
       "/bin/bash",
+      "/bin/zsh",
+      "/usr/bin/env",
+      "/usr/bin/sudo",
+      "/usr/bin/osascript",
+    ]) {
+      expect(isBlockedCustomAcpExecutableName(blocked), blocked).toBe(true);
+    }
+    for (const allowed of [
+      "/opt/homebrew/bin/kimi-code",
+      "/Users/test/.local/bin/hermes-acp",
       "/opt/homebrew/bin/python3.13",
       "/usr/local/bin/node22",
       "/usr/local/bin/npx",
       "/Users/test/.local/bin/uvx",
       "/Users/test/.bun/bin/bunx",
-      "/usr/bin/env",
     ]) {
-      expect(isBlockedCustomAcpExecutableName(blocked), blocked).toBe(true);
+      expect(isBlockedCustomAcpExecutableName(allowed), allowed).toBe(false);
     }
-    expect(isBlockedCustomAcpExecutableName("/opt/homebrew/bin/kimi-code")).toBe(false);
-    expect(isBlockedCustomAcpExecutableName("/Users/test/.local/bin/hermes-acp")).toBe(false);
 
     // Symlink disguise pointing to /bin/sh must be rejected on realpath double-check
     const dir = tempDir("kulo-acp-symlink-");

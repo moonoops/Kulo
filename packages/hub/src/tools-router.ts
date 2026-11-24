@@ -34,7 +34,7 @@ import type { ToolRegistration } from "@earendil-works/pi-durable";
 import type { MemoryCallerContext } from "./hindsight.js";
 import type { ForgottenTermEntry, MemoryForgetOutcome } from "./memory-forget.js";
 import { createWebSearchTool } from "./tools-search.js";
-import { createWebFetchTool } from "./tools-worker.js";
+import { createWebFetchTool, type WebFetchToolOptions } from "./tools-worker.js";
 import type { KuloSearch } from "./search.js";
 import { createConnectionTools, type ConnectionToolController } from "./tools-connections.js";
 import { createHostActionDecideTool, createHostActionTool, type HostActionController } from "./tools-host-action.js";
@@ -155,6 +155,7 @@ export interface CloseTicketParams {
 export interface OrchestratorController {
   connections?: ConnectionToolController;
   hostActions?: HostActionController;
+  webFetchContext?: Omit<WebFetchToolOptions, "getSearch">;
   showDeviceInvitation?(conversationId: number, callId: string): Promise<void>;
   dispatchTicket(params: DispatchTicketParams, context: Context): Promise<TicketCardView>;
   dispatchTicketForModel?(params: DispatchTicketParams, context: Context): Promise<DispatchTicketModelOutcome>;
@@ -252,7 +253,7 @@ export function createOrchestratorToolsExtension(
       assignment: opt(str({ description: "Extra Worker instructions." })),
       context_summary: opt(str({ description: "Redacted task context (no private identity or secrets)." })),
       attachment_ids: opt(arr(str(), { maxItems: 16, description: "Chat attachment IDs (att_...) to pass." })),
-      workspace_mode: opt(oneOf(["staged", "read_only"], { description: "Workspace mode: 'staged' (default) or 'read_only' (audits/Q&A)." })),
+      workspace_mode: opt(oneOf(["direct", "staged", "read_only"], { description: "Workspace mode: 'direct' (default in trusted mode), 'staged' (isolated copy), or 'read_only' (audits/Q&A)." })),
       target_scope: opt(oneOf(["hub_local", "sender_device"], { description: "For ungrouped tasks without env_id: 'hub_local' (research/writing/attachments) or 'sender_device' (sender files/ports/browser/desktop)." })),
       execute_at: opt(str({ description: "ISO 8601 timestamp with timezone for scheduled execution." })),
       repeat_every_seconds: opt(num({ description: "Positive integer interval in seconds (requires execute_at)." })),
@@ -830,7 +831,7 @@ export function createOrchestratorToolsExtension(
       identityProposalTool,
       relationshipUpdateTool,
       expressionTool,
-      createWebFetchTool(getSearch),
+      createWebFetchTool({ getSearch, ...controller.webFetchContext }),
       createWebSearchTool(getSearch),
       ...hindsightTools,
       ...builtinMemoryTools,

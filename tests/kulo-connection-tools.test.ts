@@ -112,21 +112,31 @@ describe("connection permission tools", () => {
     expect(f.controller.use).not.toHaveBeenCalled();
   });
 
-  it("maps a bounded HTTP media type without accepting credential or arbitrary headers", async () => {
+  it("maps bounded HTTP media type and safe custom headers while rejecting credential or hop-by-hop headers", async () => {
     const f = fixture();
     await f.invoke("kulo_connection_use", { connection_id: "conn-a", operation: "http", path: "/v1/records", method: "PATCH",
-      body: '{"enabled":true}', content_type: "application/json; charset=utf-8" });
+      body: '{"enabled":true}', content_type: "application/json; charset=utf-8", headers: { "X-Request-Trace": "trace-123" } });
     expect(f.controller.use).toHaveBeenCalledWith(expect.anything(), { connectionId: "conn-a", operation: {
-      kind: "http", path: "/v1/records", method: "PATCH", body: '{"enabled":true}', headers: { "Content-Type": "application/json; charset=utf-8" },
+      kind: "http", path: "/v1/records", method: "PATCH", body: '{"enabled":true}', headers: { "X-Request-Trace": "trace-123", "Content-Type": "application/json; charset=utf-8" },
     } }, BACKGROUND_CONTEXT);
     vi.mocked(f.controller.use).mockClear();
     for (const content_type of ["", "application", "application/json\r\nAuthorization: injected", "application/json\r\n", "text/plain; charset=\"unterminated", "x".repeat(257) + "/json"]) {
       await expect(f.invoke("kulo_connection_use", { connection_id: "conn-a", operation: "http", path: "/v1/records", method: "POST", body: "data", content_type })).rejects.toThrow("Content-Type");
     }
+    for (const badHeaders of [
+      { Authorization: "Bearer secret" },
+      { Cookie: "sid=abc" },
+      { "X-Api-Key": "leak" },
+      { Host: "evil.example" },
+      { "Transfer-Encoding": "chunked" },
+      { "X-Test": "line1\r\nInjected: 1" },
+    ]) {
+      await expect(f.invoke("kulo_connection_use", { connection_id: "conn-a", operation: "http", path: "/v1/records", method: "GET", headers: badHeaders })).rejects.toThrow("无效或受保护字段");
+    }
     await expect(f.invoke("kulo_connection_use", { connection_id: "conn-a", operation: "ssh", command: "true", content_type: "application/json" })).rejects.toThrow("不支持的字段");
     expect(f.controller.use).not.toHaveBeenCalled();
     const schema = JSON.stringify(f.tools.find((tool) => tool.name === "kulo_connection_use")!.parameters);
-    expect(schema).not.toContain('"headers"');
+    expect(schema).toContain('"headers"');
     expect(schema).not.toContain('"authorization"');
   });
 
@@ -258,9 +268,11 @@ describe("connection permission tools", () => {
       { operation: "app", action: "send", params: {} },
       { operation: "app", action: "send", ticket_id: "T-9999", run_epoch: 1 },
       { operation: "http", path: "/", action: "send" },
-      { operation: "http", path: "/", headers: { Authorization: "synthetic" } },
       { operation: "ssh", command: "true", params_json: "{}" },
     ]) await expect(f.invoke("kulo_connection_use", { connection_id: "conn-a", ...args })).rejects.toThrow("不支持的字段");
+    await expect(
+      f.invoke("kulo_connection_use", { connection_id: "conn-a", operation: "http", path: "/", headers: { Authorization: "synthetic" } }),
+    ).rejects.toThrow("无效或受保护字段");
     expect(f.controller.use).not.toHaveBeenCalled();
   });
 

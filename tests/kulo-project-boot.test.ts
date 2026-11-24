@@ -151,7 +151,7 @@ describe.skipIf(!sandboxAvailable)("project boot coordination", () => {
     const workspaceDir = path.join(directory, "project");
     fs.mkdirSync(workspaceDir);
     const project = await hub.projects.create({ commandId: "running-project", name: "Running project", deviceId: "local", workspaceDir });
-    const card = await hub.dispatchTicket({ commandId: "running-before-restart", title: "运行态恢复", goal: "由子 Agent 持续写入并保留执行记录", scope: "项目目录", role: "coder", projectId: project.id });
+    const card = await hub.dispatchTicket({ commandId: "running-before-restart", title: "运行态恢复", goal: "由子 Agent 持续写入并保留执行记录", scope: "项目目录", role: "coder", projectId: project.id, workspaceMode: "staged" });
     const until = async (check: () => boolean | Promise<boolean>, label: string) => {
       const deadline = Date.now() + 6_000;
       while (!await check()) {

@@ -10,6 +10,7 @@ import {
   isHostActionRequest,
   redactSecrets,
   redactSensitiveText,
+  type ExecutionTrustMode,
   type HostActionRequest,
   type HostActionResult,
   type HostActionStepResult,
@@ -32,6 +33,7 @@ import { createMacSandboxCleanupCommand, macSandboxCleanupAvailable } from "./is
 import { createLinuxHostMaintenanceCommand, linuxSandboxAvailable } from "./isolation-linux.js";
 import { cleanupWindowsSandboxCommand, createWindowsSandboxCommand } from "./isolation-windows.js";
 import { removeReadonlyTreeSync, safeChmodSync } from "./platform-fs.js";
+import { buildTrustedHostEnv } from "./trusted-execution.js";
 import { cleanSupervisedExecution, processFingerprint, supervisedCommand } from "./worker-supervisor.js";
 
 const execFileAsync = promisify(execFile);
@@ -66,22 +68,28 @@ export function expandHostPath(raw: string, homeDir = os.homedir()): string {
   return trimmed;
 }
 
-export function validateHostMaintenanceCommands(commands: readonly string[]): void {
+export function validateHostMaintenanceCommands(
+  commands: readonly string[],
+  options?: { executionMode?: ExecutionTrustMode },
+): void {
+  const trusted = options?.executionMode === "trusted";
   for (const command of commands) {
     const floor = classifyShellSafetyFloor(command);
     if (floor.verdict === "block") {
       throw new Error(`已拦截高危系统命令："${command.slice(0, 120)}"`);
     }
-    for (const pattern of PRIVILEGE_ESCALATION_PATTERNS) {
-      if (pattern.test(command)) {
-        throw new Error("本机运维操作以当前登录用户权限运行，不支持 sudo / 管理员提权；如需管理员权限，请由用户在终端手动执行。");
+    if (!trusted) {
+      for (const pattern of PRIVILEGE_ESCALATION_PATTERNS) {
+        if (pattern.test(command)) {
+          throw new Error("本机运维操作以当前登录用户权限运行，不支持 sudo / 管理员提权；如需管理员权限，请由用户在终端手动执行。");
+        }
       }
     }
   }
 }
 
-function resolveProtectedCanonical(extraProtected: readonly string[]): string[] {
-  const raw = nativeProtectedPaths([...defaultProtectedPaths(), ...extraProtected]);
+function resolveProtectedCanonical(extraProtected: readonly string[], trusted = false): string[] {
+  const raw = nativeProtectedPaths(trusted ? [...extraProtected] : [...defaultProtectedPaths(), ...extraProtected]);
   const out = new Set<string>();
   for (const entry of raw) {
     try {
@@ -93,17 +101,19 @@ function resolveProtectedCanonical(extraProtected: readonly string[]): string[] 
   return [...out];
 }
 
-function isProtectedPath(candidate: string, canonicalProtected: readonly string[]): boolean {
+function isProtectedPath(candidate: string, canonicalProtected: readonly string[], trusted = false): boolean {
   let actual: string;
   try {
     actual = canonicalExecutionPath(candidate);
   } catch {
     return true;
   }
-  if (process.platform === "darwin" && (actual === "/System/Volumes/Data" || actual.startsWith("/System/Volumes/Data/"))) {
-    return true;
+  if (!trusted) {
+    if (process.platform === "darwin" && (actual === "/System/Volumes/Data" || actual.startsWith("/System/Volumes/Data/"))) {
+      return true;
+    }
+    if (isApplicationPrivatePath(actual)) return true;
   }
-  if (isApplicationPrivatePath(actual)) return true;
   return canonicalProtected.some((blocked) => inside(actual, blocked));
 }
 
@@ -258,11 +268,34 @@ function parseWindowsNetstatPorts(stdout: string, filter: string | undefined, li
 export class HostActionService {
   readonly #controlRoot: string;
   readonly #getProtectedPaths: () => readonly string[];
+  readonly #getCoreProtectedPaths?: () => readonly string[];
+  readonly #getExecutionTrustMode?: () => ExecutionTrustMode;
+  readonly #getBlockedEnvNames?: () => Iterable<string>;
   readonly #activeControllers = new Set<AbortController>();
 
-  constructor(options: { controlRoot: string; getProtectedPaths: () => readonly string[] }) {
+  constructor(options: {
+    controlRoot: string;
+    getProtectedPaths: () => readonly string[];
+    getCoreProtectedPaths?: () => readonly string[];
+    getExecutionTrustMode?: () => ExecutionTrustMode;
+    getBlockedEnvNames?: () => Iterable<string>;
+  }) {
     this.#controlRoot = path.resolve(options.controlRoot);
     this.#getProtectedPaths = options.getProtectedPaths;
+    this.#getCoreProtectedPaths = options.getCoreProtectedPaths;
+    this.#getExecutionTrustMode = options.getExecutionTrustMode;
+    this.#getBlockedEnvNames = options.getBlockedEnvNames;
+  }
+
+  #resolveMode(request: HostActionRequest): ExecutionTrustMode {
+    return request.executionMode ?? this.#getExecutionTrustMode?.() ?? "sandboxed";
+  }
+
+  #protectedPathsForMode(mode: ExecutionTrustMode): readonly string[] {
+    if (mode === "trusted") {
+      return [...(this.#getCoreProtectedPaths?.() ?? []), this.#controlRoot];
+    }
+    return [...this.#getProtectedPaths(), this.#controlRoot];
   }
 
   async suspend(): Promise<void> {
@@ -374,7 +407,7 @@ export class HostActionService {
     return [];
   }
 
-  #inspectPaths(rawPaths: readonly string[], canonicalProtected: readonly string[]): HostPathCheck[] {
+  #inspectPaths(rawPaths: readonly string[], canonicalProtected: readonly string[], trusted: boolean): HostPathCheck[] {
     const homeDir = os.homedir();
     const results: HostPathCheck[] = [];
     for (const raw of rawPaths) {
@@ -383,14 +416,14 @@ export class HostActionService {
         results.push({ path: raw, status: "error" });
         continue;
       }
-      if (isProtectedPath(expanded, canonicalProtected)) {
+      if (isProtectedPath(expanded, canonicalProtected, trusted)) {
         results.push({ path: raw, status: "denied" });
         continue;
       }
       try {
         const lstat = fs.lstatSync(expanded);
         const resolved = canonicalExecutionPath(expanded);
-        if (isProtectedPath(resolved, canonicalProtected)) {
+        if (isProtectedPath(resolved, canonicalProtected, trusted)) {
           results.push({ path: raw, status: "denied" });
           continue;
         }
@@ -398,7 +431,7 @@ export class HostActionService {
           results.push({ path: raw, resolvedPath: resolved, status: "symlink" });
         } else if (lstat.isDirectory()) {
           const allEntries = fs.readdirSync(resolved)
-            .filter((name) => !isProtectedPath(path.join(resolved, name), canonicalProtected))
+            .filter((name) => !isProtectedPath(path.join(resolved, name), canonicalProtected, trusted))
             .sort((a, b) => a.localeCompare(b));
           const maxEntries = 40;
           results.push({
@@ -429,7 +462,9 @@ export class HostActionService {
     request: Extract<HostActionRequest, { kind: "inspect" }>,
     signal: AbortSignal,
   ): Promise<HostActionResult> {
-    const canonicalProtected = resolveProtectedCanonical(this.#getProtectedPaths());
+    const mode = this.#resolveMode(request);
+    const trusted = mode === "trusted";
+    const canonicalProtected = resolveProtectedCanonical(this.#protectedPathsForMode(mode), trusted);
     const limit = request.limit ?? (request.scope === "summary" ? 40 : 80);
     const includeProcesses = request.scope === "processes" || request.scope === "summary";
     const includePorts = request.scope === "ports" || request.scope === "summary";
@@ -437,7 +472,7 @@ export class HostActionService {
       includeProcesses ? this.#inspectProcesses(request.filter, limit, signal) : Promise.resolve(undefined),
       includePorts ? this.#inspectPorts(request.filter, limit, signal) : Promise.resolve(undefined),
     ]);
-    const paths = request.paths?.length ? this.#inspectPaths(request.paths, canonicalProtected) : undefined;
+    const paths = request.paths?.length ? this.#inspectPaths(request.paths, canonicalProtected, trusted) : undefined;
     return {
       kind: "inspect",
       platform: process.platform,
@@ -455,15 +490,19 @@ export class HostActionService {
     request: Extract<HostActionRequest, { kind: "run" }>,
     signal: AbortSignal,
   ): Promise<HostActionResult> {
-    validateHostMaintenanceCommands(request.commands);
-    const protectedPaths = nativeProtectedPaths([...defaultProtectedPaths(), ...this.#getProtectedPaths()]);
-    const canonicalProtected = resolveProtectedCanonical(protectedPaths);
+    const mode = this.#resolveMode(request);
+    const trusted = mode === "trusted";
+    validateHostMaintenanceCommands(request.commands, { executionMode: mode });
+    const protectedPaths = nativeProtectedPaths(
+      trusted ? [...this.#protectedPathsForMode(mode)] : [...defaultProtectedPaths(), ...this.#protectedPathsForMode(mode)],
+    );
+    const canonicalProtected = resolveProtectedCanonical(protectedPaths, trusted);
     const homeDir = os.homedir();
     const rawCwd = request.cwd ? expandHostPath(request.cwd, homeDir) : homeDir;
     if (!path.isAbsolute(rawCwd)) {
       throw new Error("工作目录必须为绝对路径。");
     }
-    if (isProtectedPath(rawCwd, canonicalProtected)) {
+    if (isProtectedPath(rawCwd, canonicalProtected, trusted)) {
       throw new Error("工作目录位于受保护的凭据或系统私有路径内，已拒绝执行。");
     }
     const cwd = canonicalExecutionPath(rawCwd);
@@ -471,14 +510,16 @@ export class HostActionService {
       throw new Error(`工作目录不存在：${rawCwd}`);
     }
 
-    if (process.platform === "darwin" && (!fs.existsSync("/usr/bin/sandbox-exec") || !macSandboxCleanupAvailable())) {
-      throw new Error("当前 macOS 设备缺少原生沙箱隔离后端，拒绝无隔离执行本机运维命令。");
-    }
-    if (process.platform === "linux" && !linuxSandboxAvailable()) {
-      throw new Error("当前 Linux 设备缺少 bubblewrap 原生沙箱后端，拒绝无隔离执行本机运维命令。");
-    }
-    if (process.platform === "win32" && !hasWorkerBasicOrFullIsolation(workerIsolationCapabilities())) {
-      throw new Error("当前 Windows 设备缺少原生沙箱隔离后端，拒绝无隔离执行本机运维命令。");
+    if (!trusted) {
+      if (process.platform === "darwin" && (!fs.existsSync("/usr/bin/sandbox-exec") || !macSandboxCleanupAvailable())) {
+        throw new Error("当前 macOS 设备缺少原生沙箱隔离后端，拒绝无隔离执行本机运维命令。");
+      }
+      if (process.platform === "linux" && !linuxSandboxAvailable()) {
+        throw new Error("当前 Linux 设备缺少 bubblewrap 原生沙箱后端，拒绝无隔离执行本机运维命令。");
+      }
+      if (process.platform === "win32" && !hasWorkerBasicOrFullIsolation(workerIsolationCapabilities())) {
+        throw new Error("当前 Windows 设备缺少原生沙箱隔离后端，拒绝无隔离执行本机运维命令。");
+      }
     }
 
     const totalTimeoutMs = request.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
@@ -501,6 +542,7 @@ export class HostActionService {
         command,
         cwd,
         protectedPaths,
+        trusted,
         timeoutMs: remainingMs,
         signal,
       });
@@ -557,6 +599,7 @@ export class HostActionService {
     command: string;
     cwd: string;
     protectedPaths: readonly string[];
+    trusted: boolean;
     timeoutMs: number;
     signal: AbortSignal;
   }): Promise<{ exitCode: number; stdout: string; stderr: string; truncated: boolean }> {
@@ -567,7 +610,7 @@ export class HostActionService {
     let windowsSandboxCmd: readonly string[] | undefined;
 
     try {
-      if (process.platform === "win32") {
+      if (!params.trusted && process.platform === "win32") {
         sandboxTempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kulo-host-action-tmp-")));
       }
       fs.writeFileSync(
@@ -577,71 +620,112 @@ export class HostActionService {
           ownerIdentity: processFingerprint(process.pid),
           workspaceDir: params.cwd,
           temporaryDir: sandboxTempDir ?? controlDir,
-          cleanupModel: process.platform === "darwin" ? "macos-seatbelt" : "os-container",
+          cleanupModel: params.trusted
+            ? process.platform === "win32" ? "windows-job" : "process-group"
+            : process.platform === "darwin" ? "macos-seatbelt" : "os-container",
         }),
         { mode: 0o600 },
       );
 
       const allProtected = [...params.protectedPaths, controlDir];
       const homeDir = os.homedir();
-      const pathEnv = workerExecutionPath(allProtected);
-      const proxyEnv = workerProxyEnvironment();
-
       let wrappedCommand: readonly string[];
-      if (process.platform === "darwin") {
-        const sandboxIdentity = {
-          marker: `kulo.worker.${randomBytes(24).toString("hex")}`,
-          negative: `kulo.unowned.${randomBytes(24).toString("hex")}`,
-        };
-        const sandboxCleanup = createMacSandboxCleanupCommand(controlDir, sandboxIdentity.marker, sandboxIdentity.negative);
-        const profile = buildHostMaintenanceSandboxProfile({
-          protectedPaths: allProtected,
-          sandboxIdentity,
+      let spawnEnv: NodeJS.ProcessEnv;
+
+      if (params.trusted) {
+        const innerCommand: readonly string[] =
+          process.platform === "win32"
+            ? [
+                path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+                "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", params.command,
+              ]
+            : ["/bin/bash", "-c", params.command];
+        wrappedCommand = supervisedCommand(innerCommand, controlDir, undefined, {
+          childStdin: "null",
+          windowsJobObject: process.platform === "win32",
         });
-        const innerCommand: readonly string[] = [
-          "/usr/bin/env",
-          "-i",
-          `PATH=${pathEnv}`,
-          `HOME=${homeDir}`,
-          `KULO_HOST_HOME=${homeDir}`,
-          `TMPDIR=${os.tmpdir()}`,
-          `USER=${os.userInfo().username}`,
-          "LANG=en_US.UTF-8",
-          "SHELL=/bin/bash",
-          ...proxyEnv,
-          "/usr/bin/sandbox-exec",
-          "-p",
-          profile,
-          "/bin/bash",
-          "-c",
-          params.command,
-        ];
-        wrappedCommand = supervisedCommand(innerCommand, controlDir, sandboxCleanup);
-      } else if (process.platform === "linux") {
-        const innerCommand = createLinuxHostMaintenanceCommand({
-          cwd: params.cwd,
-          controlDir,
-          protectedPaths: allProtected,
-          pathEnv,
-          proxyEnv,
-          command: params.command,
+        spawnEnv = buildTrustedHostEnv({
+          sourceEnv: process.env,
+          nonInteractiveSudo: true,
+          blockedEnvNames: this.#getBlockedEnvNames?.(),
         });
-        wrappedCommand = supervisedCommand(innerCommand, controlDir);
       } else {
-        const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
-        const powershell = path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-        const isolatedTemp = sandboxTempDir!;
-        const sandboxWorkspace = params.cwd.toLowerCase() === homeDir.toLowerCase() ? isolatedTemp : params.cwd;
-        windowsSandboxCmd = createWindowsSandboxCommand({
-          workspaceDir: sandboxWorkspace,
-          temporaryDir: isolatedTemp,
-          executable: powershell,
-          protectedPaths: allProtected,
-          port: 1,
-          networkBackend: "basic",
-        });
-        const innerCommand = [...windowsSandboxCmd, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", params.command];
-        wrappedCommand = supervisedCommand(innerCommand, controlDir);
+        const pathEnv = workerExecutionPath(allProtected);
+        const proxyEnv = workerProxyEnvironment();
+        if (process.platform === "darwin") {
+          const sandboxIdentity = {
+            marker: `kulo.worker.${randomBytes(24).toString("hex")}`,
+            negative: `kulo.unowned.${randomBytes(24).toString("hex")}`,
+          };
+          const sandboxCleanup = createMacSandboxCleanupCommand(controlDir, sandboxIdentity.marker, sandboxIdentity.negative);
+          const profile = buildHostMaintenanceSandboxProfile({
+            protectedPaths: allProtected,
+            sandboxIdentity,
+          });
+          const innerCommand: readonly string[] = [
+            "/usr/bin/env",
+            "-i",
+            `PATH=${pathEnv}`,
+            `HOME=${homeDir}`,
+            `KULO_HOST_HOME=${homeDir}`,
+            `TMPDIR=${os.tmpdir()}`,
+            `USER=${os.userInfo().username}`,
+            "LANG=en_US.UTF-8",
+            "SHELL=/bin/bash",
+            ...proxyEnv,
+            "/usr/bin/sandbox-exec",
+            "-p",
+            profile,
+            "/bin/bash",
+            "-c",
+            params.command,
+          ];
+          wrappedCommand = supervisedCommand(innerCommand, controlDir, sandboxCleanup);
+        } else if (process.platform === "linux") {
+          const innerCommand = createLinuxHostMaintenanceCommand({
+            cwd: params.cwd,
+            controlDir,
+            protectedPaths: allProtected,
+            pathEnv,
+            proxyEnv,
+            command: params.command,
+          });
+          wrappedCommand = supervisedCommand(innerCommand, controlDir);
+        } else {
+          const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+          const powershell = path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+          const isolatedTemp = sandboxTempDir!;
+          const sandboxWorkspace = params.cwd.toLowerCase() === homeDir.toLowerCase() ? isolatedTemp : params.cwd;
+          windowsSandboxCmd = createWindowsSandboxCommand({
+            workspaceDir: sandboxWorkspace,
+            temporaryDir: isolatedTemp,
+            executable: powershell,
+            protectedPaths: allProtected,
+            port: 1,
+            networkBackend: "basic",
+          });
+          const innerCommand = [...windowsSandboxCmd, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", params.command];
+          wrappedCommand = supervisedCommand(innerCommand, controlDir);
+        }
+        spawnEnv =
+          process.platform === "win32"
+            ? {
+                PATH: `${path.dirname(process.execPath)};${process.env.SystemRoot ?? "C:\\Windows"}\\System32;${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0`,
+                USERPROFILE: homeDir,
+                HOME: homeDir,
+                KULO_HOST_HOME: homeDir,
+                SystemRoot: process.env.SystemRoot ?? "C:\\Windows",
+                WINDIR: process.env.WINDIR ?? "C:\\Windows",
+                TEMP: os.tmpdir(),
+                TMP: os.tmpdir(),
+                ComSpec: process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe",
+              }
+            : {
+                PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                HOME: homeDir,
+                TMPDIR: os.tmpdir(),
+                LANG: "en_US.UTF-8",
+              };
       }
 
       return await new Promise<{ exitCode: number; stdout: string; stderr: string; truncated: boolean }>((resolve, reject) => {
@@ -651,25 +735,7 @@ export class HostActionService {
           // Keep stdin piped open until completion/termination: worker-supervisor watches stdin EOF
           // as a parent-death signal and kills the supervised child group immediately on /dev/null EOF.
           stdio: ["pipe", "pipe", "pipe"],
-          env:
-            process.platform === "win32"
-              ? {
-                  PATH: `${path.dirname(process.execPath)};${process.env.SystemRoot ?? "C:\\Windows"}\\System32;${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0`,
-                  USERPROFILE: homeDir,
-                  HOME: homeDir,
-                  KULO_HOST_HOME: homeDir,
-                  SystemRoot: process.env.SystemRoot ?? "C:\\Windows",
-                  WINDIR: process.env.WINDIR ?? "C:\\Windows",
-                  TEMP: os.tmpdir(),
-                  TMP: os.tmpdir(),
-                  ComSpec: process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe",
-                }
-              : {
-                  PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-                  HOME: homeDir,
-                  TMPDIR: os.tmpdir(),
-                  LANG: "en_US.UTF-8",
-                },
+          env: spawnEnv,
           windowsHide: true,
         });
 

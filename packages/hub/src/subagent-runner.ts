@@ -507,6 +507,7 @@ export class KuloSubagentRunner {
 
     if (ticket.executionDomain !== "android" && ticket.scratchDir) {
       const activeStagedCwd = getActiveStagedCwd(ticket);
+      const frozenMode = (await this.#host.harness.snapshot(KuloStateDoc, context))?.ticketExecutionModes?.[ticket.id];
       const execEnv = this.#host.envManager.createWorkerExecutionEnv(
         ticket.envId,
         activeStagedCwd ?? ticket.workspaceDir,
@@ -515,6 +516,8 @@ export class KuloSubagentRunner {
           projectId: ticket.projectId,
           grantRevision: ticket.grantRevision,
           readOnly: ticket.readOnly,
+          executionKey: ticket.id,
+          ...(frozenMode?.runEpoch === ticket.runEpoch ? { executionMode: frozenMode.mode } : {}),
           ...(activeStagedCwd && !ticket.externalExecution ? { stagedTaskId: ticket.id } : {}),
         },
       );

@@ -138,7 +138,7 @@ export function removeReadonlyTreeSync(targetPath: string, platform: NodeJS.Plat
     fs.rmSync(targetPath, { recursive: true, force: true });
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EACCES" || code === "EPERM") {
+    if (code === "EACCES" || code === "EPERM" || code === "ENOTEMPTY") {
       clearReadonlyAttributesSync(targetPath);
       fs.rmSync(targetPath, { recursive: true, force: true });
       return;
@@ -157,7 +157,7 @@ export async function removeReadonlyTree(targetPath: string, platform: NodeJS.Pl
     await fsp.rm(targetPath, { recursive: true, force: true });
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EACCES" || code === "EPERM") {
+    if (code === "EACCES" || code === "EPERM" || code === "ENOTEMPTY") {
       clearReadonlyAttributesSync(targetPath);
       await fsp.rm(targetPath, { recursive: true, force: true });
       return;

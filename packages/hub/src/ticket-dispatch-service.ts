@@ -233,8 +233,8 @@ export class TicketDispatchService {
     if (params.workspaceMode !== undefined && !["staged", "direct", "read_only"].includes(params.workspaceMode)) {
       throw new ProjectError(400, "invalid_workspace_mode", "工作区隔离模式无效。");
     }
-    if (modelDispatch && params.workspaceMode === "direct") {
-      throw new ProjectError(400, "invalid_workspace_mode", "项目写任务默认在隔离副本（staged）中执行，模型不能直接指定 direct 模式。");
+    if (modelDispatch && params.workspaceMode === "direct" && envManager.getExecutionTrustMode() !== "trusted") {
+      throw new ProjectError(400, "invalid_workspace_mode", "项目写任务在隔离沙箱模式下默认在隔离副本（staged）中执行，模型不能直接指定 direct 模式。");
     }
     if (params.targetScope !== undefined && !["hub_local", "sender_device"].includes(params.targetScope)) {
       throw new ProjectError(400, "invalid_target_scope", "任务目标位置参数无效。");
@@ -315,6 +315,7 @@ export class TicketDispatchService {
       activeLanguage,
       getEnvDescriptor: (id) => envManager.getEnvDescriptor(id),
       isLocalEnv: (id) => envManager.isLocalEnv(id),
+      executionTrustMode: envManager.getExecutionTrustMode(),
       pickDefaultWorkerEnvId: () => envManager.pickDefaultWorkerEnvId(),
     });
 
@@ -332,6 +333,8 @@ export class TicketDispatchService {
       sender,
       envs,
       getEnvDescriptor: (id) => envManager.getEnvDescriptor(id),
+      isLocalEnv: (id) => envManager.isLocalEnv(id),
+      executionTrustMode: envManager.getExecutionTrustMode(),
       activeExternalClients,
       defaultProvider: settingsSnapshotLive.model.defaultProvider,
       defaultModel: settingsSnapshotLive.model.defaultModel,

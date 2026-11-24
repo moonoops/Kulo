@@ -8,6 +8,7 @@ import {
 import type {
   ChatAttachment,
   ChatReplyReference,
+  ExecutionTrustMode,
   RolePreset,
   TicketCardView,
   TicketRecord,
@@ -71,6 +72,7 @@ export async function admitTicketSteerInTx(
     activeRoles: Readonly<Record<string, RolePreset>>;
     isParking: (ticketId: string) => boolean;
     isTicketDevicesOnline: (ticket: Readonly<TicketRecord>) => boolean;
+    resolveExecutionMode?: (ticket: Readonly<TicketRecord>) => ExecutionTrustMode;
     workerTicketTask: ReturnType<typeof createWorkerTicketTask>;
   },
 ): Promise<AdmitTicketSteerOutcome> {
@@ -191,6 +193,12 @@ export async function admitTicketSteerInTx(
     { ownership: { kind: "conversation" }, conversationId: (t.originConversationId ?? Number(ROOT_CONVERSATION_ID)) as ConversationId, background: true },
   );
   t.runEpoch = nextEpoch;
+  const priorMode = state.ticketExecutionModes?.[t.id]?.mode;
+  const resolvedMode = input.resolveExecutionMode ? input.resolveExecutionMode(t) : priorMode;
+  if (resolvedMode) {
+    state.ticketExecutionModes ??= {};
+    state.ticketExecutionModes[t.id] = { runEpoch: nextEpoch, mode: resolvedMode };
+  }
   transitionTicketStatus(t, "queued", Date.now());
   t.activeTaskId = Number(taskId);
   t.waiting = undefined;
@@ -313,6 +321,9 @@ export async function admitParkTicketStartInTx(
     return false;
   }
   t.runEpoch = nextEpoch;
+  if (state.ticketExecutionModes?.[ticketId]) {
+    state.ticketExecutionModes[ticketId] = { runEpoch: nextEpoch, mode: state.ticketExecutionModes[ticketId]!.mode };
+  }
   transitionTicketStatus(t, "pausing", Date.now());
   t.waiting = t.waiting && t.waiting.reason !== "project" ? t.waiting : preservedWait;
   t.updatedAt = Date.now();

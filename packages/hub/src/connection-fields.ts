@@ -11,12 +11,17 @@ import {
 import { getConnectionApplication } from "./connection-applications.js";
 import { COMPOSIO_PRESET_ID, composioBinding } from "./composio-bridge.js";
 import { normalizeMcpConnectionFields } from "./mcp-presets.js";
+import { isCloudMetadataHostOrIp, isPrivateOrLoopbackHost } from "./net-policy.js";
 
 function fail(message: string, code = "invalid_connection", status = 400): never {
   throw Object.assign(new Error(message), { code, status });
 }
 
-export function normalizeFields(input: ConnectionFields, stateDir?: string): ConnectionFields {
+export function normalizeFields(
+  input: ConnectionFields,
+  stateDir?: string,
+  options?: { allowPrivateHttp?: boolean },
+): ConnectionFields {
   if (!input || typeof input !== "object" || !KNOWN_KINDS.includes(input.kind)) fail("请选择连接类型。");
   if (input.kind === "app") {
     const app = getConnectionApplication(input.appId);
@@ -31,7 +36,14 @@ export function normalizeFields(input: ConnectionFields, stateDir?: string): Con
     };
   }
   if (input.kind === "mcp") {
-    return normalizeMcpConnectionFields(input, { stateDir, textField, instructionsField, credentialSchema, allowedSecretKeyFor });
+    return normalizeMcpConnectionFields(input, {
+      stateDir,
+      allowPrivateHttp: options?.allowPrivateHttp,
+      textField,
+      instructionsField,
+      credentialSchema,
+      allowedSecretKeyFor,
+    });
   }
   if (input.appId !== undefined || input.category === "app") fail("请从预置应用入口连接应用。");
   const category: ConnectionCategory = input.category ?? "credential";
@@ -64,7 +76,15 @@ export function normalizeFields(input: ConnectionFields, stateDir?: string): Con
     if (rawUrl) {
       let url: URL;
       try { url = new URL(rawUrl); } catch { fail("请输入完整的 HTTPS 地址。"); }
-      if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) fail("站点地址必须使用 HTTPS，且不能包含账号、密码或查询参数。");
+      if (url.username || url.password || url.search || url.hash) fail("站点地址不能包含账号、密码、查询参数或片段。");
+      if (isCloudMetadataHostOrIp(url.hostname)) fail("站点地址受安全策略阻止。");
+      if (url.protocol === "http:") {
+        if (!options?.allowPrivateHttp || !isPrivateOrLoopbackHost(url.hostname)) {
+          fail("站点地址必须使用 HTTPS，且不能包含账号、密码或查询参数。");
+        }
+      } else if (url.protocol !== "https:") {
+        fail("站点地址必须使用 HTTPS，且不能包含账号、密码或查询参数。");
+      }
       fields.url = url.href;
     }
     if (input.kind === "custom") return fields;
@@ -88,7 +108,10 @@ export function binding(fields: ConnectionFields): string {
     }
     if (fields.mcpPresetId === COMPOSIO_PRESET_ID) return composioBinding(fields);
     const u = fields.url ? new URL(fields.url) : undefined;
-    return JSON.stringify(["mcp", "http", u ? `${u.origin}${u.pathname}` : "", fields.mcpAuthMode ?? "oauth", fields.headerName?.toLowerCase() ?? "", fields.mcpOAuthClientId ?? ""]);
+    const sortedSearch = u && u.search
+      ? `?${[...u.searchParams.entries()].sort(([a, av], [b, bv]) => a.localeCompare(b) || av.localeCompare(bv)).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&")}`
+      : "";
+    return JSON.stringify(["mcp", "http", u ? `${u.origin}${u.pathname}${sortedSearch}` : "", fields.mcpAuthMode ?? "oauth", fields.headerName?.toLowerCase() ?? "", fields.mcpOAuthClientId ?? ""]);
   }
   if (fields.kind === "custom") return JSON.stringify(["custom", fields.url ? new URL(fields.url).origin : "", fields.username ?? ""]);
   return JSON.stringify(fields.kind === "ssh"

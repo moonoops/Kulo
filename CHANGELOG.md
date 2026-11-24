@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.1.7 (2026-11-24)
+
+重构本机高权执行与低摩擦权限体系（`executionTrustMode: "trusted" | "sandboxed"`），在保留核心态安全底线与向后兼容的前提下，显著降低个人主机研发、工具链调用、电脑操控与内网服务的权限摩擦（`v0.1.7`）。
+
+### Trusted Host Execution & Low-Friction Permissions
+
+- **统一执行权限模式与跨设备能力协商（`@kulo/protocol`、`@kulo/env`、`@kulo/hub`、`@kulo/web`）**
+  - 新增 `executionTrustMode`（`trusted` 本机信任 / `sandboxed` 隔离沙箱）单一开关：新装默认 `trusted`，历史版本升级保持 `sandboxed`，并在「设置 → 并发与执行」提供简洁切换入口、说明 Popover 与沙箱升权 `AlertDialog` 二次确认；仅主人设备控制台（排除 SSH principal）可修改执行权限或执行涉及权限变更的历史回滚。
+  - 新增 `trusted-host-v1` 协议能力协商与 `hub.execution_trust_mode` 下发；未升级旧版 Peer 自动降级为 `sandboxed` 并保持 OS 沙箱隔离；非计划主备接管通过 `failover-trust-guard.json` 强制降级保护。
+  - 切换执行权限采用非破坏性热切换：正在执行的 `runEpoch` 冻结维持原模式（覆盖 `steer`/`retry`/`park`、Scheduler、Subagent、`host_action` 与 `computer_use`），空闲缓存温和淘汰，且多并发 Worker 与主对话按 `executionKey` 精确隔离清理。
+- **本机工具链、自我研发与进程监督（`@kulo/env`、`@kulo/hub`）**
+  - `trusted` 模式下解除 OS 沙箱对本机 Keychain、SSH、已登录 CLI 工具链与跨目录读写的阻断，支持 Kulo 直接修改自身源码仓库；仅通过内存透传净化 Kulo/Hindsight 内部秘钥变量（磁盘零 `env.json` 落盘），并持续保护运行态核心凭据与数据库文件（含 symlink 解析防御与 ACP 核心路径守卫）。
+  - 完善 POSIX 进程组与 Windows Job Object（无 `CmdletBinding` 参数抢占）生命周期监督与父进程 EOF 自动回收。
+
+### Computer Use, External Agents & Local Network Unlock
+
+- **主对话电脑操控与预览接管增强（`@kulo/env`、`@kulo/hub`、`@kulo/web`）**
+  - `trusted` 模式下解锁主对话交互式 `kulo_browser` 与只读 `kulo_desktop`、持久化浏览器 Profile（并发自动降级临时 Profile）及 `autoConnect` 无损关闭；修复主对话浏览器接管通过预览弹窗完成后的自动唤醒与关闭交互。
+- **本机/私网 HTTP 与 MCP OAuth 放通及云元数据防御（`@kulo/hub`）**
+  - `trusted` 模式下支持 `web_fetch`、MCP 及 MCP OAuth 直接访问 `localhost` 与私有局域网服务（内网请求绝不外泄至云端搜索代理），同时持续阻断云元数据地址（含 IPv4-mapped IPv6 与完整展开形式 AWS IPv6 IMDS）与跨源重放重定向。
+
 ## v0.1.6 (2026-11-24)
 
 新增零配置内置长期记忆、主对话归档与平滑轮转、跨平台宿主机/桌面打包与附着模式、免密局域网/本机模型直连注册、右侧助理降噪治理、聊天媒体缩略图，以及升级自愈、Windows 沙箱/命令执行、SQLite 并发安全与移动端网关权限收口修复（`v0.1.6`）。
