@@ -833,6 +833,7 @@ export async function startKuloHubServer(
     },
     onNotification: (event) => {
       broadcastToAllClients({ type: "hub.notification", event });
+      if (event.kind === "assistant_alert" || event.urgency === "high" || event.urgency === "critical") broadcastAssistantSse("assistant_alert", { event });
     },
     onTopics: (topics) => {
       const existing = new Set(topics.map((topic) => topic.id));
@@ -841,10 +842,7 @@ export async function startKuloHubServer(
       const proactive = topics.filter((topic) => topic.origin === "proactive" && !topic.deletedAt);
       if (proactive.length > 0) broadcastAssistantSse("proactive_topics", { topics: proactive });
     },
-    onAssistantItems: (assistantRevision, items) => {
-      broadcastToAllClients({ type: "hub.assistant_items", assistantRevision, items });
-      broadcastAssistantSse("assistant_items", { assistantRevision, items });
-    },
+    onAssistantItems: (assistantRevision, items) => { broadcastToAllClients({ type: "hub.assistant_items", assistantRevision, items }); broadcastAssistantSse("assistant_items", { assistantRevision, items }); },
     onProjects: (projects) => broadcastToAllClients({ type: "hub.projects", projects }),
     onTicketDelta: (delta, snapshot) => {
       let incremental: string | undefined;

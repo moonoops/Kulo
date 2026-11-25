@@ -9,6 +9,8 @@ export interface FormattedSessionNotification {
   topicId: string;
   eventId: string;
   dedupeKey: string;
+  force?: boolean;
+  soundOverride?: boolean;
 }
 
 export function formatMainSessionNotification(
@@ -26,7 +28,16 @@ export function formatMainSessionNotification(
       || undefined;
 
   let body: string;
-  if (event.kind === "attention_required") {
+  if (event.kind === "assistant_alert") {
+    const detail = summary || topicFallback;
+    if (event.urgency === "critical") {
+      body = detail
+        ? t(`紧急告警：${detail}`, `Critical alert: ${detail}`)
+        : t("收到紧急安全告警", "Critical alert received");
+    } else {
+      body = detail || t("收到重要提醒", "Important alert received");
+    }
+  } else if (event.kind === "attention_required") {
     const detail = summary || topicFallback;
     body = detail
       ? t(`需要确认：${detail}`, `Needs confirmation: ${detail}`)
@@ -46,6 +57,8 @@ export function formatMainSessionNotification(
     body,
     topicId: event.topicId,
     eventId: event.id,
-    dedupeKey: `topic:${event.topicId}`,
+    dedupeKey: event.dedupeKey?.trim() || `topic:${event.topicId}`,
+    ...(event.breakthroughForeground === true ? { force: true } : {}),
+    ...(event.soundOverride === true ? { soundOverride: true } : {}),
   };
 }

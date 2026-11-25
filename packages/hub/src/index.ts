@@ -431,3 +431,32 @@ export {
   validateReviewTargetTicket,
   writeReviewPackToScratchEnv,
 } from "./ticket-review-pack.js";
+export {
+  evaluateWatchRulesForEvents,
+  findMutedAppsConflict,
+  formatWatchRulesForPrompt,
+  isWatchRuleActiveAt,
+  isWithinQuietHours,
+  matchesRuleToken,
+  matchesWatchRuleApp,
+  sanitizeQuietHoursInput,
+  sanitizeWatchRuleInput,
+  type SanitizedWatchRuleDraft,
+  type WatchRuleEvaluation,
+} from "./assistant-watch-rules.js";
+export {
+  createProactiveWakeBeforeToolHook,
+  findActiveProactiveWakeInDescending,
+  findReplyWakeAttribution,
+  isCriticalSafetyAlert,
+  isNonToolCallAssistantEntry,
+  readOnlyToolsForWakeSource,
+  type ActiveProactiveWakeInfo,
+  type ProactiveWakeGuardDeps,
+} from "./assistant-proactive-guard.js";
+export {
+  AssistantProactiveWakeService,
+  type ExecuteProactiveWakeInput,
+  type ExecuteProactiveWakeOutcome,
+  type ProactiveWakeHost,
+} from "./assistant-proactive-wake.js";

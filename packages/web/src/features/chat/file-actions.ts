@@ -12,6 +12,7 @@ export interface DesktopNotificationBridgePayload {
   eventId?: string;
   dedupeKey?: string;
   force?: boolean;
+  soundOverride?: boolean;
 }
 
 export interface DesktopPickDirectoryOptions {

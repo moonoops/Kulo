@@ -5,6 +5,7 @@ export interface DesktopNotificationPayload {
   eventId?: string;
   dedupeKey?: string;
   force?: boolean;
+  soundOverride?: boolean;
 }
 
 export interface RenderedDesktopNotificationPayload extends DesktopNotificationPayload {
@@ -50,6 +51,7 @@ export function normalizeDesktopNotificationPayload(raw: unknown): DesktopNotifi
   const eventId = sanitizeSafeToken(input.eventId, 160);
   const dedupeKey = sanitizeSafeToken(input.dedupeKey, 160);
   const force = input.force === true ? true : undefined;
+  const soundOverride = input.soundOverride === true ? true : undefined;
   return {
     title,
     ...(body ? { body } : {}),
@@ -57,6 +59,7 @@ export function normalizeDesktopNotificationPayload(raw: unknown): DesktopNotifi
     ...(eventId ? { eventId } : {}),
     ...(dedupeKey ? { dedupeKey } : {}),
     ...(force ? { force } : {}),
+    ...(soundOverride ? { soundOverride } : {}),
   };
 }
 
@@ -95,7 +98,8 @@ export function createDesktopNotifications(options: DesktopNotificationControlle
     const prefs = options.getPreferences?.() ?? { enabled: true, sound: false };
     if (!payload.force && (!prefs.enabled || options.isWindowFocused())) return false;
     const timestamp = now();
-    let silent = !prefs.sound;
+    const wantsSound = prefs.sound || (payload.soundOverride === true && (prefs.enabled || payload.force === true));
+    let silent = !wantsSound;
     if (!silent && !payload.force && timestamp - lastSoundAt < soundCooldownMs) {
       silent = true;
     }

@@ -384,6 +384,15 @@ describe("Assistant right-rail noise control & lifecycle invariants", () => {
         urgency: "normal",
         digest: "异常登录",
       }),
+    ).toMatchObject({ action: "wake_chat", kind: "alert" });
+    expect(
+      fallbackCoordinatorDecision({
+        appId: "com.electron.lark",
+        appLabel: "飞书",
+        category: "work",
+        urgency: "high",
+        digest: "合同需要确认",
+      }),
     ).toMatchObject({ action: "upsert_card", kind: "alert" });
 
     expect(isSameAssistantAppFamily("lark:default", "com.electron.lark")).toBe(true);

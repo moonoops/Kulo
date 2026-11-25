@@ -81,6 +81,11 @@ export interface HubTopicManagerDeps {
   };
   onTopicIdle?: (topicId: string, conversationId: number, live: LiveStreamState, value: ConversationView) => void;
   hasPendingMediaRelay?: (conversationId: number) => boolean;
+  decorateNotification?: (
+    event: MainSessionNotificationEvent,
+    entriesAscending: readonly EntryRecord[],
+    maxVisibleAssistantId: number,
+  ) => MainSessionNotificationEvent | null;
   orchestrator: {
     resolveAgent: () => { model: { provider: string; modelId: string }; thinkingLevel: BuiltinThinkingEffort };
     extensions: (isRoot: boolean) => Extension[];
@@ -669,10 +674,16 @@ export class HubTopicManager {
     this.#deps.voiceCalls.topicUpdated(cache.topicId, messages, cache.live);
     this.#topicTitles.observe(cache.topicId, messages, cache.live.busy || Boolean(cache.live.runFailure));
     const recovering = this.#deps.runtimeGates.isRecovering();
+    const decoratedNotification =
+      notification.event && !recovering
+        ? (this.#deps.decorateNotification
+            ? this.#deps.decorateNotification(notification.event, value.entries, cache.notificationBaseline.lastVisibleAssistantId)
+            : notification.event)
+        : null;
     for (const listener of this.#deps.listeners) {
       listener.onTopicView?.(cache.topicId, messages, cache.live, convId);
       if (cache.topicId === "root") listener.onRootView?.(messages, cache.live);
-      if (notification.event && !recovering) listener.onNotification?.(notification.event);
+      if (decoratedNotification) listener.onNotification?.(decoratedNotification);
     }
   }
 

@@ -627,20 +627,9 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
       windowGuard: (s) => s.settingsModule === "machines" || Boolean(s.hasStagedDeviceJoin),
     }),
   ),
-  {
-    name: "kulo_assistant_digests",
-    audiences: ["chat"],
-    tier: "deferred",
-    scope: "global",
-    requires: (s) => Boolean(s.assistantActive),
-  },
-  {
-    name: "kulo_assistant_event_read",
-    audiences: ["chat"],
-    tier: "deferred",
-    scope: "global",
-    requires: (s) => Boolean(s.assistantActive),
-  },
+  { name: "kulo_assistant_digests", audiences: ["chat"], tier: "deferred", scope: "global", requires: (s) => Boolean(s.assistantActive) },
+  { name: "kulo_assistant_event_read", audiences: ["chat"], tier: "deferred", scope: "global", requires: (s) => Boolean(s.assistantActive) },
+  { name: "kulo_assistant_watch", audiences: ["chat"], tier: "deferred", scope: "global" },
   {
     name: "kulo_assistant_read",
     audiences: ["chat", "settings"],

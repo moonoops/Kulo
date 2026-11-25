@@ -5,6 +5,8 @@ import type {
   AmbientLocalEngine,
   AssistantItemView,
   AssistantPendingAction,
+  AssistantQuietHours,
+  AssistantWatchRule,
   AssistantWorkspaceSnapshot,
   HomeAssistantAnnounceConfig,
   HomeAssistantSentinelConfig,
@@ -14,6 +16,8 @@ import type {
 } from "@kulo/protocol";
 import { isMainOrchestratorApi } from "./settings-doc.js";
 import type { AssistantLedger } from "./assistant-ledger.js";
+import { findMutedAppsConflict, sanitizeQuietHoursInput, sanitizeWatchRuleInput } from "./assistant-watch-rules.js";
+import { KuloStateDoc } from "./state.js";
 import type { SparkMailService } from "./connectors/spark-mail-service.js";
 import {
   assertSafeHaServiceCallDeep,
@@ -22,11 +26,24 @@ import {
 } from "./connectors/home-assistant.js";
 import type { LarkConnectorService } from "./connectors/lark-connector.js";
 
+export interface AssistantWatchRuleHost {
+  list(): Promise<{ rules: AssistantWatchRule[]; quietHours?: AssistantQuietHours; mutedApps: string[] }>;
+  create(draft: ReturnType<typeof sanitizeWatchRuleInput>): Promise<AssistantWatchRule>;
+  update(
+    ruleId: string,
+    patch: Partial<Pick<AssistantWatchRule, "label" | "mode" | "status" | "apps" | "senders" | "keywords" | "chatIds" | "condition" | "targetTopicId" | "expiresAt">>,
+  ): Promise<AssistantWatchRule | null>;
+  remove(ruleId: string): Promise<boolean>;
+  setQuietHours(quietHours: AssistantQuietHours): Promise<AssistantQuietHours>;
+}
+
 export interface AssistantToolsHost {
   ledger: AssistantLedger;
   sparkMail: SparkMailService;
   homeAssistant: HomeAssistantService;
   larkConnector: LarkConnectorService;
+  watchRules?: AssistantWatchRuleHost;
+  isConversationInProactiveWake?(conversationId: number): Promise<boolean>;
   redact(text: string): string;
   workspaceSnapshot(): Promise<AssistantWorkspaceSnapshot>;
   configureNotifications(input: { enabled?: boolean; muteApp?: string; unmuteApp?: string }): Promise<AssistantWorkspaceSnapshot>;
@@ -48,6 +65,7 @@ export interface AssistantToolsHost {
     title: string;
     summary: string;
     pendingAction: AssistantPendingAction;
+    suppressAlertNotification?: boolean;
   }): Promise<AssistantItemView>;
   configureBackgroundModel(input: {
     mode: "auto" | "local-managed" | "kulo-provider";
@@ -247,18 +265,23 @@ export function createAssistantToolsExtension(get: () => AssistantToolsHost) {
             }
             const status = await host.sparkMail.status({ ...(args.env_id ? { envId: args.env_id } : {}) });
             const title = (args.title?.trim() || args.subject?.trim() || "邮件回复草稿待确认").slice(0, 80);
+            const inProactiveWake = Boolean(await host.isConversationInProactiveWake?.(Number(api.conversationId)));
+            const recipientLabel = args.to?.trim()
+              ? (args.subject?.trim() ? `${args.to.trim()} · ${args.subject.trim()}` : args.to.trim())
+              : (args.subject?.trim() || "Spark 草稿箱");
             const card = await host.proposeDecisionCard({
               situationKey: `spark-mail:${args.thread_id || args.to || args.subject || randomUUID()}`,
               sourceApp: "com.readdle.SparkDesktop",
               sourceLabel: "Spark Mail",
               ...(status.envName ? { envName: status.envName } : {}),
               title,
-              summary: `已预拟草稿，点击确认后将保存至 Spark 草稿箱（不会直接外发）。`,
+              summary: `已预拟草稿（收件对象：${recipientLabel.slice(0, 80)}），点击确认后将保存至 Spark 草稿箱（不会直接外发）。`,
+              suppressAlertNotification: inProactiveWake,
               pendingAction: {
                 actionId: `spark-draft-${randomUUID().slice(0, 8)}`,
                 kind: "spark_create_draft",
                 label: "确认存为草稿",
-                targetLabel: args.to || args.subject || "Spark 草稿箱",
+                targetLabel: recipientLabel.slice(0, 120),
                 previewText: args.body.trim().slice(0, 400),
                 driverId: "spark-mail",
                 ...(status.envId ? { envId: status.envId } : {}),
@@ -532,18 +555,25 @@ export function createAssistantToolsExtension(get: () => AssistantToolsHost) {
                 triggerSource: "user_confirmed_l2",
                 context: { entities: entityMap, stale: entities.stale },
               });
+              const targetLabel = target?.name || args.entity_id || `${args.domain}.${args.service}`;
+              const concreteAction = `${args.domain}.${args.service} → ${targetLabel}`;
+              const safePreview = args.preview?.trim()
+                ? `${concreteAction}（${args.preview.trim()}）`
+                : concreteAction;
+              const inProactiveWake = Boolean(await host.isConversationInProactiveWake?.(Number(api.conversationId)));
               const card = await host.proposeDecisionCard({
                 situationKey: `ha:${args.entity_id || `${args.domain}.${args.service}`}`,
                 sourceApp: "home-assistant",
                 sourceLabel: "智能家居",
-                title: (args.title?.trim() || `家居控制：${target?.name || args.entity_id || args.domain}`).slice(0, 80),
-                summary: (args.preview?.trim() || `确认后将操作「${target?.name || args.domain}」`).slice(0, 300),
+                title: (args.title?.trim() || `家居控制：${targetLabel}`).slice(0, 80),
+                summary: safePreview.slice(0, 300),
+                suppressAlertNotification: inProactiveWake,
                 pendingAction: {
                   actionId: `ha-${randomUUID().slice(0, 8)}`,
                   kind: "ha_call_service",
                   label: "确认执行",
-                  targetLabel: target?.name || args.entity_id || `${args.domain}.${args.service}`,
-                  previewText: (args.preview?.trim() || `${target?.name || args.entity_id || args.domain}`).slice(0, 300),
+                  targetLabel,
+                  previewText: safePreview.slice(0, 300),
                   driverId: "home-assistant",
                   operation: `${args.domain}.${args.service}`,
                   params: {
@@ -648,12 +678,14 @@ export function createAssistantToolsExtension(get: () => AssistantToolsHost) {
             return { isError: true, output: [{ type: "text", text: "propose_reply 需要提供 chat_id 与 text。" }] };
           }
           const profile = args.profile?.trim() || "default";
+          const inProactiveWake = Boolean(await host.isConversationInProactiveWake?.(Number(api.conversationId)));
           const card = await host.proposeDecisionCard({
             situationKey: `lark:${profile}:${args.chat_id}`,
             sourceApp: `lark:${profile}`,
             sourceLabel: profile === "default" ? "飞书" : `飞书 (${profile})`,
             title: (args.title?.trim() || "飞书回复待确认").slice(0, 80),
             summary: args.text.trim().slice(0, 140),
+            suppressAlertNotification: inProactiveWake,
             pendingAction: {
               actionId: `lark-reply-${randomUUID().slice(0, 8)}`,
               kind: "lark_send_reply",
@@ -670,6 +702,150 @@ export function createAssistantToolsExtension(get: () => AssistantToolsHost) {
             },
           });
           return textResult({ proposed: true, card });
+        },
+      }),
+      defineTool({
+        name: "kulo_assistant_watch",
+        description: "Manage user-requested proactive wakeup watch rules and quiet hours (default empty until requested): watch specific people, chats, apps, keywords, or conditions for instant event-driven wakeup (one-shot or continuous) instead of creating polling schedules. 关键词：关注规则 盯住 盯梢 提醒我 主动唤醒 必提醒 重要联系人 关键词唤醒 安静时段 免打扰 watch rule",
+        parameters: obj({
+          action: oneOf(["list", "create", "update", "pause", "resume", "delete", "set_quiet_hours"]),
+          rule_id: opt(str({ description: "Target watch rule ID when action is update/pause/resume/delete." })),
+          label: opt(str({ description: "Concise Chinese/English label for the watch rule (<=60 chars)." })),
+          mode: opt(oneOf(["once", "continuous"], { description: "'once' auto-completes after alerting once (default); 'continuous' stays active." })),
+          apps: opt(arr(str(), { description: "Optional app aliases or bundle IDs (e.g. lark, spark, wechat, home-assistant)." })),
+          senders: opt(arr(str(), { description: "Optional sender or group name filters (ASCII >=2 chars)." })),
+          keywords: opt(arr(str(), { description: "Optional title/body keyword filters (ASCII >=2 chars)." })),
+          chat_ids: opt(arr(str(), { description: "Optional exact chat IDs (e.g. Feishu oc_xxx)." })),
+          condition: opt(str({ description: "Optional natural-language semantic condition evaluated by the background sorter." })),
+          bind_current_topic: opt(bool({ description: "Bind rule wakeup to current non-root topic (default true outside main chat)." })),
+          expires_in_hours: opt(num({ description: "Optional expiry window in hours (0-2160)." })),
+          quiet_enabled: opt(bool({ description: "Enable/disable quiet hours when action='set_quiet_hours'." })),
+          quiet_start: opt(str({ description: "Quiet hours start in 24h HH:MM (e.g. '23:00')." })),
+          quiet_end: opt(str({ description: "Quiet hours end in 24h HH:MM (e.g. '08:00')." })),
+          quiet_timezone: opt(str({ description: "Optional IANA timezone (e.g. 'Asia/Shanghai')." })),
+          allow_watch_rules: opt(bool({ description: "Allow watch rules to break through quiet hours (HA safety always breaks through)." })),
+        }),
+        deferred: true,
+        replay: "safe",
+        outputLimits: { maxBytes: 24_000, maxLines: 200 },
+        execute: async (args, api, context) => {
+          const { allowed, isSettings } = await isMainOrchestratorApi(api, context);
+          if (!allowed || isSettings) {
+            return { isError: true, output: [{ type: "text", text: "仅主对话或话题编排器可管理主动关注规则。" }] };
+          }
+          const host = get();
+          if (!host.watchRules) {
+            return { isError: true, output: [{ type: "text", text: "当前中枢尚未初始化关注规则服务。" }] };
+          }
+          const summarizeSources = async () => {
+            const ws = await host.workspaceSnapshot();
+            const readyEnvs = ws.sources.filter((s) => s.permission === "granted").map((s) => s.envName);
+            const unreadyEnvs = ws.sources
+              .filter((s) => s.permission !== "granted")
+              .map((s) => ({ name: s.envName, permission: s.permission }));
+            return {
+              activeSources: {
+                macosNotifications: { enabled: ws.enabled, readyEnvs, unreadyEnvs },
+                lark: { enabled: Boolean(ws.lark?.enabled), readyProfiles: (ws.lark?.profiles ?? []).filter((p) => p.ready).map((p) => p.name) },
+                spark: { enabled: Boolean(ws.spark?.enabled) },
+                homeAssistant: { enabled: Boolean(ws.homeAssistant?.enabled), connected: Boolean(ws.homeAssistant?.connected) },
+              },
+              mutedApps: ws.mutedApps,
+            };
+          };
+          try {
+            if (args.action === "list") {
+              const [state, sources] = await Promise.all([host.watchRules.list(), summarizeSources()]);
+              return textResult({ rules: state.rules, quietHours: state.quietHours ?? null, ...sources });
+            }
+            if (args.action === "set_quiet_hours") {
+              const qh = sanitizeQuietHoursInput({
+                enabled: args.quiet_enabled !== false,
+                start: args.quiet_start,
+                end: args.quiet_end,
+                timezone: args.quiet_timezone,
+                allowWatchRules: args.allow_watch_rules,
+              });
+              const saved = await host.watchRules.setQuietHours(qh);
+              return textResult({ quietHours: saved });
+            }
+            if (args.action === "create") {
+              const stateDoc = await api.snapshot(KuloStateDoc, context);
+              const currentTopicId = stateDoc?.conversationToTopic?.[String(api.conversationId)];
+              const targetTopicId =
+                args.bind_current_topic !== false && currentTopicId && currentTopicId !== "root"
+                  ? currentTopicId
+                  : undefined;
+              const draft = sanitizeWatchRuleInput(
+                {
+                  label: args.label,
+                  mode: args.mode,
+                  apps: args.apps,
+                  senders: args.senders,
+                  keywords: args.keywords,
+                  chatIds: args.chat_ids,
+                  condition: args.condition,
+                  targetTopicId,
+                  expiresInHours: args.expires_in_hours,
+                },
+                (t) => host.redact(t),
+              );
+              const rule = await host.watchRules.create(draft);
+              const sources = await summarizeSources();
+              const mutedConflicts = findMutedAppsConflict(rule.apps, sources.mutedApps);
+              const anySourceOn =
+                sources.activeSources.macosNotifications.enabled ||
+                sources.activeSources.lark.enabled ||
+                sources.activeSources.spark.enabled ||
+                sources.activeSources.homeAssistant.enabled;
+              return textResult({
+                created: true,
+                rule,
+                ...sources,
+                ...(mutedConflicts.length ? { mutedHint: `注意：相关应用（${mutedConflicts.join(", ")}）当前处于静音列表，可能需要先取消静音才能触发。` } : {}),
+                ...(!anySourceOn ? { sourceHint: "当前尚未开启任何消息采集源（如 macOS 通知中心或飞书桥接），请询问或帮用户开启对应连接源使规则生效。" } : {}),
+              });
+            }
+            const ruleId = args.rule_id?.trim();
+            if (!ruleId) {
+              return { isError: true, output: [{ type: "text", text: `${args.action} 需要提供 rule_id。` }] };
+            }
+            if (args.action === "delete") {
+              const deleted = await host.watchRules.remove(ruleId);
+              return deleted
+                ? textResult({ deleted: true, ruleId })
+                : { isError: true, output: [{ type: "text", text: `未找到关注规则 '${ruleId}'。` }] };
+            }
+            if (args.action === "pause" || args.action === "resume") {
+              const updated = await host.watchRules.update(ruleId, { status: args.action === "pause" ? "paused" : "active" });
+              return updated
+                ? textResult({ rule: updated })
+                : { isError: true, output: [{ type: "text", text: `未找到关注规则 '${ruleId}'。` }] };
+            }
+            const existing = (await host.watchRules.list()).rules.find((r) => r.id === ruleId);
+            if (!existing) {
+              return { isError: true, output: [{ type: "text", text: `未找到关注规则 '${ruleId}'。` }] };
+            }
+            const draft = sanitizeWatchRuleInput(
+              {
+                label: args.label ?? existing.label,
+                mode: args.mode ?? existing.mode,
+                apps: args.apps ?? existing.apps,
+                senders: args.senders ?? existing.senders,
+                keywords: args.keywords ?? existing.keywords,
+                chatIds: args.chat_ids ?? existing.chatIds,
+                condition: args.condition ?? existing.condition,
+                targetTopicId: existing.targetTopicId,
+                expiresInHours: args.expires_in_hours,
+                expiresAt: args.expires_in_hours === undefined ? existing.expiresAt : undefined,
+              },
+              (t) => host.redact(t),
+            );
+            const updated = await host.watchRules.update(ruleId, draft);
+            return textResult({ rule: updated });
+          } catch (error) {
+            return { isError: true, output: [{ type: "text", text: host.redact(error instanceof Error ? error.message : "关注规则操作失败。") }] };
+          }
         },
       }),
     ],

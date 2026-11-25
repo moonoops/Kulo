@@ -1,14 +1,19 @@
+import { randomUUID } from "node:crypto";
 import { defineDoc, type JsonObject } from "@earendil-works/pi-durable";
 import {
   compareAssistantItems,
   defaultAssistantItemTtlMs,
   isAssistantDecisionItem,
   isAssistantItemExpired,
+  MAX_ASSISTANT_WATCH_RULES,
   type AmbientLocalEngine,
   type AssistantDismissTarget,
   type AssistantItemKind,
   type AssistantItemView,
   type AssistantPendingAction,
+  type AssistantQuietHours,
+  type AssistantWatchRule,
+  type AssistantWatchRuleStatus,
   type HomeAssistantAnnounceConfig,
   type HomeAssistantSentinelConfig,
 } from "@kulo/protocol";
@@ -23,6 +28,7 @@ export type AssistantSituationRecord = {
   linkedTopicId?: string;
   snapshotRef?: string;
   lastEscalatedAt?: number;
+  lastWokenAt?: number;
   updatedAt: number;
 };
 
@@ -48,6 +54,8 @@ export type AssistantDurableState = {
     announce?: HomeAssistantAnnounceConfig;
   };
   lark?: { enabled: boolean; selectedProfiles: string[] };
+  watchRules?: AssistantWatchRule[];
+  quietHours?: AssistantQuietHours;
   assistantRevision: number;
   situations: Record<string, AssistantSituationRecord>;
   items: AssistantItemView[];
@@ -64,7 +72,10 @@ export function isAssistantSourceEnabled(
   if (!doc) return false;
   if (appId === "home-assistant") return Boolean(doc.homeAssistant?.enabled);
   if (appId.startsWith("lark:")) return Boolean(doc.lark?.enabled);
-  if (appId === "com.readdle.SparkDesktop") return Boolean(doc.spark?.enabled || doc.enabled);
+  const norm = appId.trim().toLowerCase();
+  if (norm === "com.readdle.sparkdesktop" || norm === "com.readdle.sparkdesktop.appstore") {
+    return Boolean(doc.spark?.enabled || doc.enabled);
+  }
   return Boolean(doc.enabled);
 }
 
@@ -220,6 +231,7 @@ export function upsertAssistantCardInDoc(
     pendingAction?: AssistantPendingAction;
     linkedTopicId?: string;
     snapshotRef?: string;
+    lastWokenAt?: number;
     expiresAt?: number;
     now: number;
   },
@@ -237,6 +249,7 @@ export function upsertAssistantCardInDoc(
   const existingSituation = doc.situations[input.situationId];
   const resolvedLinkedTopicId = input.linkedTopicId ?? existingSituation?.linkedTopicId;
   const resolvedSnapshotRef = input.snapshotRef ?? existingSituation?.snapshotRef;
+  const resolvedLastWokenAt = input.lastWokenAt ?? existingSituation?.lastWokenAt;
   doc.situations[input.situationId] = {
     id: input.situationId,
     key: input.situationKey,
@@ -247,6 +260,7 @@ export function upsertAssistantCardInDoc(
     ...(resolvedLinkedTopicId ? { linkedTopicId: resolvedLinkedTopicId } : {}),
     ...(resolvedSnapshotRef ? { snapshotRef: resolvedSnapshotRef } : {}),
     lastEscalatedAt: input.now,
+    ...(resolvedLastWokenAt !== undefined ? { lastWokenAt: resolvedLastWokenAt } : {}),
     updatedAt: input.now,
   };
 
@@ -550,4 +564,158 @@ export function finalizePendingActionInDoc(doc: AssistantDurableState, itemId: s
     sit.updatedAt = now;
   }
   doc.assistantRevision += 1;
+}
+
+export function listEffectiveWatchRules(
+  rules: readonly AssistantWatchRule[] | undefined,
+  now = Date.now(),
+): AssistantWatchRule[] {
+  if (!Array.isArray(rules) || rules.length === 0) return [];
+  return rules.map((rule) => {
+    const expired = rule.status === "active" && rule.expiresAt !== undefined && now >= rule.expiresAt;
+    return JSON.parse(JSON.stringify(expired ? { ...rule, status: "expired" as AssistantWatchRuleStatus } : rule)) as AssistantWatchRule;
+  });
+}
+
+export function createWatchRuleInDoc(
+  doc: AssistantDurableState,
+  draft: Omit<AssistantWatchRule, "id" | "status" | "createdAt" | "updatedAt">,
+  now: number,
+): AssistantWatchRule {
+  ensureAssistantState(doc);
+  const rules = Array.isArray(doc.watchRules) ? [...doc.watchRules] : [];
+  for (const r of rules) {
+    if (r.status === "active" && r.expiresAt !== undefined && now >= r.expiresAt) {
+      r.status = "expired";
+      r.updatedAt = now;
+    }
+  }
+  const activeCount = rules.filter((r) => r.status === "active" || r.status === "paused").length;
+  if (activeCount >= MAX_ASSISTANT_WATCH_RULES) {
+    throw new Error(`关注规则已达上限（${MAX_ASSISTANT_WATCH_RULES} 条），请先删除或清理不再需要的规则。`);
+  }
+  // Evict oldest terminal (triggered/expired) rules if total exceeds cap.
+  while (rules.length >= MAX_ASSISTANT_WATCH_RULES) {
+    const idx = rules.findIndex((r) => r.status === "triggered" || r.status === "expired");
+    if (idx < 0) break;
+    rules.splice(idx, 1);
+  }
+  const rule: AssistantWatchRule = {
+    id: `watch-${randomUUID().replaceAll("-", "").slice(0, 8)}`,
+    ...draft,
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  };
+  rules.unshift(rule);
+  doc.watchRules = rules;
+  doc.revision += 1;
+  return JSON.parse(JSON.stringify(rule)) as AssistantWatchRule;
+}
+
+export function updateWatchRuleInDoc(
+  doc: AssistantDurableState,
+  ruleId: string,
+  patch: Partial<Pick<AssistantWatchRule, "label" | "mode" | "status" | "apps" | "senders" | "keywords" | "chatIds" | "condition" | "targetTopicId" | "expiresAt">>,
+  now: number,
+): AssistantWatchRule | null {
+  ensureAssistantState(doc);
+  if (!Array.isArray(doc.watchRules)) return null;
+  const target = doc.watchRules.find((r) => r.id === ruleId);
+  if (!target) return null;
+  if (patch.label !== undefined) target.label = patch.label;
+  if (patch.mode !== undefined) target.mode = patch.mode;
+  if (patch.status !== undefined) target.status = patch.status;
+  if ("apps" in patch) {
+    if (patch.apps?.length) target.apps = [...patch.apps];
+    else delete target.apps;
+  }
+  if ("senders" in patch) {
+    if (patch.senders?.length) target.senders = [...patch.senders];
+    else delete target.senders;
+  }
+  if ("keywords" in patch) {
+    if (patch.keywords?.length) target.keywords = [...patch.keywords];
+    else delete target.keywords;
+  }
+  if ("chatIds" in patch) {
+    if (patch.chatIds?.length) target.chatIds = [...patch.chatIds];
+    else delete target.chatIds;
+  }
+  if ("condition" in patch) {
+    if (patch.condition) target.condition = patch.condition;
+    else delete target.condition;
+  }
+  if ("targetTopicId" in patch) {
+    if (patch.targetTopicId && patch.targetTopicId !== "root") target.targetTopicId = patch.targetTopicId;
+    else delete target.targetTopicId;
+  }
+  if ("expiresAt" in patch) {
+    if (patch.expiresAt !== undefined) target.expiresAt = patch.expiresAt;
+    else delete target.expiresAt;
+  }
+  target.updatedAt = now;
+  doc.revision += 1;
+  return JSON.parse(JSON.stringify(target)) as AssistantWatchRule;
+}
+
+export function deleteWatchRuleInDoc(doc: AssistantDurableState, ruleId: string): boolean {
+  ensureAssistantState(doc);
+  if (!Array.isArray(doc.watchRules)) return false;
+  const idx = doc.watchRules.findIndex((r) => r.id === ruleId);
+  if (idx < 0) return false;
+  doc.watchRules.splice(idx, 1);
+  doc.revision += 1;
+  return true;
+}
+
+export function setQuietHoursInDoc(doc: AssistantDurableState, quietHours: AssistantQuietHours): AssistantQuietHours {
+  ensureAssistantState(doc);
+  doc.quietHours = JSON.parse(JSON.stringify(quietHours)) as AssistantQuietHours;
+  doc.revision += 1;
+  return JSON.parse(JSON.stringify(doc.quietHours)) as AssistantQuietHours;
+}
+
+/**
+ * Atomically marks matched watch rules as triggered (only called when the alert actually surfaced
+ * to the user via proactive chat wake or immediate system notification fallback).
+ * `mode === "once"` rules transition to `status = "triggered"`.
+ */
+export function recordWatchRulesTriggeredInDoc(
+  doc: AssistantDurableState,
+  ruleIds: readonly string[],
+  now: number,
+): string[] {
+  ensureAssistantState(doc);
+  if (!Array.isArray(doc.watchRules) || ruleIds.length === 0) return [];
+  const idSet = new Set(ruleIds);
+  const updated: string[] = [];
+  for (const rule of doc.watchRules) {
+    if (!idSet.has(rule.id) || rule.status !== "active") continue;
+    rule.lastTriggeredAt = now;
+    rule.triggerCount = (rule.triggerCount ?? 0) + 1;
+    rule.updatedAt = now;
+    if (rule.mode === "once") {
+      rule.status = "triggered";
+    }
+    updated.push(rule.id);
+  }
+  if (updated.length > 0) doc.revision += 1;
+  return updated;
+}
+
+export function recordSituationWokenInDoc(
+  doc: AssistantDurableState,
+  situationId: string,
+  now: number,
+  linkedTopicId?: string,
+): void {
+  ensureAssistantState(doc);
+  const sit = doc.situations[situationId];
+  if (!sit) return;
+  sit.lastWokenAt = now;
+  if (linkedTopicId && linkedTopicId !== "root") {
+    sit.linkedTopicId = linkedTopicId;
+  }
+  sit.updatedAt = now;
 }

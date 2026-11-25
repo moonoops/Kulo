@@ -90,12 +90,15 @@ import { createHistoryToolsExtension } from "./tools-history.js";
 import { AssistantDoc, ensureAssistantState, muteAssistantAppInDoc, selectActiveAssistantItems } from "./assistant-state.js";
 import { AssistantLedger } from "./assistant-ledger.js";
 import { AmbientModelService } from "./ambient-model-service.js";
-import { AssistantSorter } from "./assistant-sorter.js";
+import type { AssistantSorter } from "./assistant-sorter.js";
 import { AssistantEchoSuppressor } from "./assistant-echo.js";
-import { AssistantCoordinator } from "./assistant-coordinator.js";
-import { createAssistantToolsExtension } from "./tools-assistant.js";
+import type { AssistantCoordinator } from "./assistant-coordinator.js";
+import type { AssistantProactiveWakeService } from "./assistant-proactive-wake.js";
+import { createHubAssistantRuntime } from "./assistant-wiring.js";
+import { createAssistantToolsExtension, type AssistantWatchRuleHost } from "./tools-assistant.js";
 import { SparkMailService } from "./connectors/spark-mail-service.js";
-import { HomeAssistantService, isHomeAssistantPreDispatchError, sanitizeServiceData } from "./connectors/home-assistant.js";
+import { HomeAssistantService } from "./connectors/home-assistant.js";
+import { isPrivateLocalModelEndpoint } from "./local-model-endpoint.js";
 import { HaLanAudioRelay } from "./connectors/ha-lan-audio.js";
 import { LarkConnectorService } from "./connectors/lark-connector.js";
 import { ContextCompactionDoc, createContextCompactionController, validateBillionKernel, type BillionKernelRuntime } from "./context-compaction.js";
@@ -518,6 +521,8 @@ export class KuloHub implements OrchestratorController {
   readonly history: KuloConversationHistory;
   readonly assistantLedger: AssistantLedger;
   readonly ambientModel: AmbientModelService;
+  readonly assistantProactiveWake: AssistantProactiveWakeService;
+  readonly assistantWatchRules: AssistantWatchRuleHost;
   readonly assistantSorter: AssistantSorter;
   readonly assistantCoordinator: AssistantCoordinator;
   readonly sparkMail: SparkMailService;
@@ -912,16 +917,27 @@ export class KuloHub implements OrchestratorController {
       cursorStore: this.assistantLedger.larkCursorStore(),
       onEvents: (profile, events) => this.#ingestInternalAssistantEvents("lark-cli", events, `lark:${profile}`),
     });
-    this.assistantCoordinator = new AssistantCoordinator({
+    const assistantRuntime = createHubAssistantRuntime({
       harness: this.harness,
       ledger: this.assistantLedger,
       ambientModel: this.ambientModel,
-      agentName: () => this.#liveSettings.presentation.agentName,
-      envDisplayName: (envId) => this.envManager.getEnvDescriptor(envId)?.name,
-      isForegroundBusy: () => this.voiceCalls.hasActiveCalls() || this.#topics.inspectBusyTopics().length > 0,
-      canMutateState: () => !this.#closed && !this.#recovering && !this.#handoverBarrierActive,
-      shouldSkipCloudModel: async () => this.usageCaps.isCappedFor("assistant").capped && (await this.ambientModel.willUseCloudModel(true)),
+      echoSuppressor: this.assistantEchoSuppressor,
+      envManager: this.envManager,
+      uploads: this.uploads,
+      sparkMail: this.sparkMail,
+      homeAssistant: this.homeAssistant,
+      larkConnector: this.larkConnector,
       redact: redactAssistantText,
+      agentName: () => this.#liveSettings.presentation.agentName,
+      isForegroundBusy: () => this.voiceCalls.hasActiveCalls() || this.#topics.inspectBusyTopics().length > 0,
+      isVoiceCallActive: () => this.voiceCalls.hasActiveCalls(),
+      canMutateState: () => !this.#closed && !this.#recovering && !this.#handoverBarrierActive,
+      isAssistantCloudCapped: () => this.usageCaps.isCappedFor("assistant").capped,
+      isMainModelLocal: () => {
+        const agent = this.#resolveOrchestratorAgent();
+        const model = this.#models.getModel(agent.model.provider, agent.model.modelId);
+        return Boolean(model?.baseUrl && isPrivateLocalModelEndpoint(model.baseUrl));
+      },
       createDetachedOrchestratorConversation: async (ctx) => {
         const orchestratorAgent = this.#resolveOrchestratorAgent();
         const conv = await this.harness.createConversation(
@@ -940,145 +956,20 @@ export class KuloHub implements OrchestratorController {
         );
         return { id: conv.id };
       },
+      queueChat: (topicId, fn) => this.#delivery.queueChat(topicId, fn),
+      resolveWatchedTopic: (topicId, ctx) => this.#topics.resolveWatchedTopic(topicId, ctx),
+      resumeIfNotRecovering: () => this.#runtimeGates.resumeIfNotRecovering(),
       onItemsChanged: (revision, items) => this.#emitAssistantItems(revision, items),
       onTopicsChanged: (topics) => this.#emitTopics(topics),
-      onTopicContentChanged: (topicId) => {
-        this.#topics.refreshTopic(topicId);
-      },
-      materializeSnapshot: async (snapshotRef, conversationId) => {
-        const snap = this.homeAssistant.sentinel?.readTemporarySnapshot(snapshotRef);
-        if (!snap) return undefined;
-        const asset = this.uploads.saveUpload({
-          name: snap.fileName,
-          mimeType: snap.mimeType,
-          bytes: snap.bytes,
-          ownerId: "assistant:home-assistant",
-          idempotencyKey: `ha-snapshot:${snapshotRef}`,
-        });
-        this.uploads.bindAttachments([asset], `conversation:${conversationId}`, "assistant:home-assistant");
-        return asset;
-      },
-      onAlertSurfaced: (ev) => {
-        const critical = ev.sourceApp === "home-assistant" && /(?:告警|烟雾|燃气|漏水|报警|异常)/.test(`${ev.title} ${ev.summary}`);
-        const spokenText = ev.summary.includes(ev.title) ? ev.summary : `${ev.title}：${ev.summary}`;
-        void this.homeAssistant.announce({
-          text: spokenText,
-          urgency: ev.urgency,
-          critical,
-          situationId: ev.situationId,
-        }).catch(() => {});
-      },
-      onMutedAppsChanged: (mutedApps) => {
-        void this.harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT).then((snap) => {
-          this.envManager.setConnectorConfig({
-            driverId: "macos-notifications",
-            enabled: Boolean(snap?.enabled),
-            mutedApps,
-          });
-        }).catch(() => {});
-      },
-      executePendingAction: async (action) => {
-        if (action.kind === "spark_create_draft") {
-          const body = typeof action.params.body === "string" ? action.params.body : "";
-          const res = await this.sparkMail.executeConfirmedDraft(
-            {
-              ...(typeof action.params.replyToThreadId === "string" ? { replyToThreadId: action.params.replyToThreadId } : {}),
-              ...(typeof action.params.to === "string" ? { to: action.params.to } : {}),
-              ...(typeof action.params.subject === "string" ? { subject: action.params.subject } : {}),
-              body,
-            },
-            action.envId,
-          );
-          return {
-            ok: res.ok,
-            ...(res.preDispatch !== undefined ? { preDispatch: res.preDispatch } : {}),
-            ...(res.error ? { error: res.error } : {}),
-          };
-        }
-        if (action.kind === "ha_call_service") {
-          const domain = typeof action.params.domain === "string" ? action.params.domain : "";
-          const service = typeof action.params.service === "string" ? action.params.service : "";
-          const entityId = typeof action.params.entityId === "string" ? action.params.entityId : undefined;
-          const serviceData = action.params.serviceData !== undefined ? sanitizeServiceData(action.params.serviceData) : undefined;
-          try {
-            await this.homeAssistant.callService({
-              domain,
-              service,
-              ...(entityId ? { entityId } : {}),
-              ...(serviceData ? { serviceData } : {}),
-              triggerSource: "user_confirmed_l2",
-            });
-            return { ok: true };
-          } catch (error) {
-            return {
-              ok: false,
-              preDispatch: isHomeAssistantPreDispatchError(error),
-              error: error instanceof Error ? error.message : "Home Assistant 服务调用失败。",
-            };
-          }
-        }
-        if (action.kind === "ha_upsert_automation") {
-          const configId = typeof action.params.configId === "string" ? action.params.configId : "";
-          const config = action.params.config && typeof action.params.config === "object" && !Array.isArray(action.params.config)
-            ? (action.params.config as Record<string, unknown>)
-            : null;
-          if (!configId || !config) return { ok: false, preDispatch: true, error: "自动化配置参数缺失。" };
-          try {
-            await this.homeAssistant.upsertAutomation({ configId, config });
-            return { ok: true };
-          } catch (error) {
-            return {
-              ok: false,
-              preDispatch: isHomeAssistantPreDispatchError(error),
-              error: error instanceof Error ? error.message : "写入 Home Assistant 自动化失败。",
-            };
-          }
-        }
-        if (action.kind === "ha_delete_automation") {
-          const configId = typeof action.params.configId === "string" ? action.params.configId : "";
-          if (!configId) return { ok: false, preDispatch: true, error: "缺少待删除的自动化 ID。" };
-          try {
-            await this.homeAssistant.deleteAutomation(configId);
-            return { ok: true };
-          } catch (error) {
-            return {
-              ok: false,
-              preDispatch: isHomeAssistantPreDispatchError(error),
-              error: error instanceof Error ? error.message : "删除 Home Assistant 自动化失败。",
-            };
-          }
-        }
-        if (action.kind === "lark_send_reply") {
-          const profile = typeof action.params.profile === "string" && action.params.profile.trim()
-            ? action.params.profile.trim()
-            : "default";
-          const text = typeof action.params.text === "string" ? action.params.text : "";
-          const res = await this.larkConnector.executeConfirmedReply({
-            ...(typeof action.params.profile === "string" ? { profile: action.params.profile } : {}),
-            chatId: typeof action.params.chatId === "string" ? action.params.chatId : "",
-            text,
-          });
-          if (res.ok) {
-            const selfSenders = this.larkConnector.getSelfSenderAliases(profile);
-            this.assistantEchoSuppressor.recordOutgoing({ appId: `lark:${profile}`, body: text, selfSenders, requireSenderMatch: true });
-            for (const macBundle of ["com.electron.lark", "com.bytedance.feishu", "com.bytedance.lark"]) {
-              this.assistantEchoSuppressor.recordOutgoing({ appId: macBundle, body: text });
-            }
-          }
-          return res;
-        }
-        return { ok: false, preDispatch: true, error: "不支持的待确认动作类型。" };
+      onTopicContentChanged: (topicId) => this.#topics.refreshTopic(topicId),
+      emitNotification: (event) => {
+        for (const listener of this.#listeners) listener.onNotification?.(event);
       },
     });
-    this.assistantSorter = new AssistantSorter({
-      ledger: this.assistantLedger,
-      ambientModel: this.ambientModel,
-      redact: redactAssistantText,
-      echoSuppressor: this.assistantEchoSuppressor,
-      shouldSkipCloudModel: async () => this.usageCaps.isCappedFor("assistant").capped && (await this.ambientModel.willUseCloudModel(false)),
-      isCloudCapped: () => this.usageCaps.isCappedFor("assistant").capped,
-      onNotifyBrain: (payload) => this.assistantCoordinator.enqueueEscalation(payload),
-    });
+    this.assistantProactiveWake = assistantRuntime.proactiveWake;
+    this.assistantWatchRules = assistantRuntime.watchRules;
+    this.assistantCoordinator = assistantRuntime.coordinator;
+    this.assistantSorter = assistantRuntime.sorter;
     this.envManager.setConnectorHandlers({
       onEvents: (envId, batch) => this.#ingestConnectorBatch(envId, batch),
     });
@@ -1477,6 +1368,11 @@ export class KuloHub implements OrchestratorController {
         this.#mediaDelivery?.onConversationIdle(conversationId);
       },
       hasPendingMediaRelay: (conversationId) => this.#mediaDelivery?.hasPendingRelay(conversationId) ?? false,
+      decorateNotification: (event, entries, maxVisibleAssistantId) => {
+        const decorated = this.assistantProactiveWake.decorateTopicNotification(event, entries, maxVisibleAssistantId);
+        if (decorated) this.assistantEchoSuppressor.recordSelfNotification(decorated.summary);
+        return decorated;
+      },
       orchestrator: {
         resolveAgent: () => this.#resolveOrchestratorAgent(),
         extensions: (isRoot) => this.#orchestratorExtensions(isRoot),
@@ -2386,6 +2282,8 @@ export class KuloHub implements OrchestratorController {
       sparkMail: hubRef!.sparkMail,
       homeAssistant: hubRef!.homeAssistant,
       larkConnector: hubRef!.larkConnector,
+      watchRules: hubRef!.assistantWatchRules,
+      isConversationInProactiveWake: (convId) => hubRef!.assistantProactiveWake.isConversationInProactiveWake(convId),
       redact: (text) => hubRef!.connectionManager.redact(redactSensitiveText(text)),
       workspaceSnapshot: () => hubRef!.getAssistantWorkspace(),
       configureNotifications: (input) => hubRef!.configureAssistantNotifications(input),
@@ -4750,6 +4648,7 @@ export class KuloHub implements OrchestratorController {
     this.haLanAudio.clear();
     await finish(() => this.assistantSorter.close());
     await finish(() => this.assistantCoordinator.close());
+    await finish(() => this.assistantProactiveWake.close());
     await finish(() => this.ambientModel.close());
     await finish(() => this.assistantLedger.close());
     await finish(() => this.#androidNotifications.close());

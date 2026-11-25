@@ -260,17 +260,17 @@ export interface TopicActivity {
   lastAssistantMessageId?: number;
 }
 
-export type MainSessionNotificationKind =
-  | "reply_completed"
-  | "attention_required"
-  | "run_failed";
-
+export type MainSessionNotificationKind = "reply_completed" | "attention_required" | "run_failed" | "assistant_alert";
 export interface MainSessionNotificationEvent {
   id: string;
   kind: MainSessionNotificationKind;
   topicId: string;
   topicTitle?: string;
   summary?: string;
+  urgency?: "normal" | "high" | "critical";
+  soundOverride?: boolean;
+  breakthroughForeground?: boolean;
+  dedupeKey?: string;
   createdAt: number;
 }
 

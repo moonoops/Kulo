@@ -317,7 +317,8 @@ export type CoordinatorEventKind =
   | "host_action_request"
   | "host_action_result"
   | "connection_request"
-  | "user_task_instruction";
+  | "user_task_instruction"
+  | "assistant_proactive_wake";
 
 export type CoordinatorEventEntryData = {
   eventKind: CoordinatorEventKind;
@@ -328,6 +329,13 @@ export type CoordinatorEventEntryData = {
   envName?: string;
   /** Clean user-authored text when `eventKind === "user_task_instruction"` (never includes internal envelope tags). */
   manualText?: string;
+  /** Proactive wake correlation metadata when `eventKind === "assistant_proactive_wake"`. */
+  wakeId?: string;
+  situationId?: string;
+  wakeUrgency?: "high" | "critical";
+  suppressReplyNotification?: boolean;
+  triggerChatId?: string;
+  triggerSourceApp?: string;
   createdAt: number;
 };
 

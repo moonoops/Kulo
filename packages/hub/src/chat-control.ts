@@ -41,6 +41,7 @@ function inferFallbackCoordinatorEventKind(content: InputSubmissionDraft["conten
   if (trimmed.startsWith("[KULO_CONNECTION_REQUEST]")) return "connection_request";
   if (trimmed.startsWith("[KULO_HOST_ACTION_RESULT]")) return "host_action_result";
   if (trimmed.startsWith("[KULO_USER_TASK_INSTRUCTION]")) return "user_task_instruction";
+  if (trimmed.startsWith("[KULO_ASSISTANT_WAKE]")) return "assistant_proactive_wake";
   return "host_action_request";
 }
 

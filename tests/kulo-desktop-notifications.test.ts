@@ -21,6 +21,7 @@ describe("desktop native notifications", () => {
       eventId: "evt-1",
       dedupeKey: "topic:topic_1",
       force: true,
+      soundOverride: true,
     })).toEqual({
       title: "回复 完成 !",
       body: "整理 文件",
@@ -28,6 +29,7 @@ describe("desktop native notifications", () => {
       eventId: "evt-1",
       dedupeKey: "topic:topic_1",
       force: true,
+      soundOverride: true,
     });
     expect(normalizeDesktopNotificationPayload({ title: "Done", topicId: "../bad", eventId: "bad id" })).toEqual({
       title: "Done",
@@ -138,5 +140,72 @@ describe("desktop native notifications", () => {
     expect(formatDockBadgeText(1)).toBe("1");
     expect(formatDockBadgeText(99)).toBe("99");
     expect(formatDockBadgeText(100)).toBe("99+");
+  });
+
+  it("honors soundOverride for high-urgency wakes even when default sound is muted, while still respecting prefs.enabled unless forced", () => {
+    let focused = false;
+    let enabled = true;
+    let clock = 20_000;
+    const shown: Array<{ title: string; body?: string; silent: boolean }> = [];
+    const controller = createDesktopNotifications({
+      isSupported: () => true,
+      isWindowFocused: () => focused,
+      getPreferences: () => ({ enabled, sound: false }),
+      coalesceMs: 0,
+      soundCooldownMs: 3_000,
+      now: () => clock,
+      showNotification: (payload) => {
+        shown.push({ title: payload.title, body: payload.body, silent: payload.silent });
+      },
+      onFocusWindow: vi.fn(),
+    });
+
+    // High-urgency proactive wake plays sound despite default sound=false
+    expect(controller.notify({
+      title: "Kulo",
+      body: "紧急提醒：老板催确认合同",
+      topicId: "root",
+      eventId: "wake-1",
+      dedupeKey: "situation:sit_1",
+      soundOverride: true,
+    })).toBe(true);
+    expect(shown[0]).toEqual({ title: "Kulo", body: "紧急提醒：老板催确认合同", silent: false });
+
+    // Respects soundCooldownMs on immediate follow-up
+    expect(controller.notify({
+      title: "Kulo",
+      body: "第二条紧急提醒",
+      topicId: "root",
+      eventId: "wake-2",
+      dedupeKey: "situation:sit_2",
+      soundOverride: true,
+    })).toBe(true);
+    expect(shown[1]).toEqual({ title: "Kulo", body: "第二条紧急提醒", silent: true });
+
+    // Respects prefs.enabled=false when not forced
+    enabled = false;
+    clock += 5_000;
+    expect(controller.notify({
+      title: "Kulo",
+      body: "普通高优唤醒",
+      topicId: "root",
+      eventId: "wake-3",
+      soundOverride: true,
+    })).toBe(false);
+    expect(shown).toHaveLength(2);
+
+    // Critical breakthrough (force=true + soundOverride=true) breaks through focus and disabled prefs with sound
+    focused = true;
+    expect(controller.notify({
+      title: "Kulo",
+      body: "严重告警：厨房烟雾报警",
+      topicId: "root",
+      eventId: "crit-1",
+      force: true,
+      soundOverride: true,
+    })).toBe(true);
+    expect(shown[2]).toEqual({ title: "Kulo", body: "严重告警：厨房烟雾报警", silent: false });
+
+    controller.dispose();
   });
 });

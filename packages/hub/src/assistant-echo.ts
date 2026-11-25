@@ -3,6 +3,11 @@ import { createHash } from "node:crypto";
 export const ECHO_MIN_NORMALIZED_CHARS = 12;
 export const ECHO_DEFAULT_TTL_MS = 15_000;
 const ECHO_MAX_TOKENS = 128;
+const SELF_NOTIFICATION_TTL_MS = 30_000;
+const SELF_NOTIFICATION_MAX_TOKENS = 64;
+
+const BROWSER_OR_ELECTRON_APP_RE =
+  /^(?:com\.google\.chrome|com\.apple\.safari|company\.thebrowser\.browser|com\.microsoft\.edgemac|org\.mozilla\.firefox|com\.brave\.browser|com\.operasoftware\.opera|com\.vivaldi\.vivaldi|com\.github\.electron)(?:\.|$)/i;
 
 const SECURITY_EXEMPT_RE = /(?:门锁|安防|告警|报警|烟雾|燃气|漏水|入侵|alarm|security|lock|smoke|gas|leak)/i;
 
@@ -56,6 +61,35 @@ export interface IncomingEchoCandidate {
  */
 export class AssistantEchoSuppressor {
   readonly #tokens: EchoToken[] = [];
+  readonly #selfNotifications: Array<{ normalized: string; expiresAt: number }> = [];
+
+  recordSelfNotification(body: string | undefined, now = Date.now()): void {
+    const normalized = normalizeEchoText(body ?? "");
+    if (!normalized) return;
+    this.#pruneSelfNotifications(now);
+    this.#selfNotifications.push({ normalized, expiresAt: now + SELF_NOTIFICATION_TTL_MS });
+    if (this.#selfNotifications.length > SELF_NOTIFICATION_MAX_TOKENS) {
+      this.#selfNotifications.splice(0, this.#selfNotifications.length - SELF_NOTIFICATION_MAX_TOKENS);
+    }
+  }
+
+  isSelfNotificationEcho(candidate: IncomingEchoCandidate): boolean {
+    const appId = candidate.appId.trim().toLowerCase();
+    if (!BROWSER_OR_ELECTRON_APP_RE.test(appId)) return false;
+    const titleNorm = (candidate.title ?? "").trim().toLowerCase();
+    if (titleNorm !== "kulo") return false;
+    const now = candidate.now ?? Date.now();
+    this.#pruneSelfNotifications(now);
+    if (this.#selfNotifications.length === 0) return false;
+    const bodyNorm = normalizeEchoText(candidate.body);
+    if (!bodyNorm) return false;
+    for (const token of this.#selfNotifications) {
+      if (bodyNorm === token.normalized || bodyNorm.includes(token.normalized) || token.normalized.includes(bodyNorm)) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   recordOutgoing(input: RecordOutgoingEchoInput): boolean {
     const appId = input.appId.trim().toLowerCase();
@@ -131,12 +165,21 @@ export class AssistantEchoSuppressor {
 
   clear(): void {
     this.#tokens.length = 0;
+    this.#selfNotifications.length = 0;
   }
 
   #pruneExpired(now: number): void {
     for (let i = this.#tokens.length - 1; i >= 0; i--) {
       if (this.#tokens[i]!.expiresAt <= now) {
         this.#tokens.splice(i, 1);
+      }
+    }
+  }
+
+  #pruneSelfNotifications(now: number): void {
+    for (let i = this.#selfNotifications.length - 1; i >= 0; i--) {
+      if (this.#selfNotifications[i]!.expiresAt <= now) {
+        this.#selfNotifications.splice(i, 1);
       }
     }
   }

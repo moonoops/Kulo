@@ -127,6 +127,63 @@ describe("main-session notification formatting", () => {
       eventId: "e3",
       dedupeKey: "topic:topic_1",
     });
+
+    setLanguage("zh-CN");
+    expect(formatMainSessionNotification({
+      id: "e4",
+      kind: "assistant_alert",
+      topicId: "topic_1",
+      summary: "飞书：老板催确认合同",
+      urgency: "high",
+      soundOverride: true,
+      dedupeKey: "situation:sit_boss",
+      createdAt: 4,
+    }, { topics, agentName: "Kulo" })).toEqual({
+      title: "Kulo",
+      body: "飞书：老板催确认合同",
+      topicId: "topic_1",
+      eventId: "e4",
+      dedupeKey: "situation:sit_boss",
+      soundOverride: true,
+    });
+
+    expect(formatMainSessionNotification({
+      id: "e5",
+      kind: "assistant_alert",
+      topicId: "root",
+      summary: "厨房烟雾报警器触发",
+      urgency: "critical",
+      soundOverride: true,
+      breakthroughForeground: true,
+      dedupeKey: "situation:sit_smoke",
+      createdAt: 5,
+    }, { topics, agentName: "Kulo" })).toEqual({
+      title: "Kulo",
+      body: "紧急告警：厨房烟雾报警器触发",
+      topicId: "root",
+      eventId: "e5",
+      dedupeKey: "situation:sit_smoke",
+      force: true,
+      soundOverride: true,
+    });
+
+    expect(formatMainSessionNotification({
+      id: "e6",
+      kind: "reply_completed",
+      topicId: "root",
+      summary: "已核实飞书消息，老板需要下午 3 点前确认合同。",
+      urgency: "high",
+      soundOverride: true,
+      dedupeKey: "situation:sit_boss",
+      createdAt: 6,
+    }, { topics, agentName: "Kulo" })).toEqual({
+      title: "Kulo",
+      body: "已核实飞书消息，老板需要下午 3 点前确认合同。",
+      topicId: "root",
+      eventId: "e6",
+      dedupeKey: "situation:sit_boss",
+      soundOverride: true,
+    });
   });
 });
 

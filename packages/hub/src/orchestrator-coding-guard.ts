@@ -5,6 +5,7 @@ import { defineExtension, type ToolRegistration } from "@earendil-works/pi-durab
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { canonicalExecutionPath, isApplicationPrivatePath, KULO_CORE_STATE_SENSITIVE_NAMES, type EnvManager } from "@kulo/env";
 import { classifyShellSafetyFloor, type ExecutionTrustMode, type ProjectRecord, type TicketRecord } from "@kulo/protocol";
+import { createProactiveWakeBeforeToolHook } from "./assistant-proactive-guard.js";
 import { SettingsAssistantDoc, isActiveSettingsConversation } from "./settings-assistant.js";
 import { KuloStateDoc, isOrchestratorConversation, isTicketHoldingWriteLock, ticketsShareWriteScope } from "./state.js";
 
@@ -336,6 +337,7 @@ export function createOrchestratorCodingGuardExtension(deps: OrchestratorCodingG
 
   return defineExtension({
     name: "kulo-orchestrator-guard",
+    hooks: [createProactiveWakeBeforeToolHook()],
     wraps: [
       wrapOrchestratorCodingTool("read"),
       wrapOrchestratorCodingTool("write"),

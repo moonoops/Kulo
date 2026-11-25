@@ -138,14 +138,14 @@ function isLarkNotificationDigest(item: FoldableDigestLike): boolean {
   return item.driverId === "macos-notifications" && item.appLabel.trim().startsWith("飞书");
 }
 
-function normalizeDigestText(raw: string): string {
+export function normalizeDigestText(raw: string): string {
   return raw
     .replace(/^\[[^\]]+\]\s*/u, "")
     .replace(/[\s\p{P}\p{S}]+/gu, "")
     .toLowerCase();
 }
 
-function extractMatchTokens(raw: string | undefined): string[] {
+export function extractMatchTokens(raw: string | undefined): string[] {
   if (!raw) return [];
   const cleaned = raw
     .replace(/^\[[^\]]+\]\s*/u, "")
@@ -158,7 +158,7 @@ function extractMatchTokens(raw: string | undefined): string[] {
   return [...new Set(parts)];
 }
 
-function hasSharedContentSubstring(a: string, b: string, minLen = 6): boolean {
+export function hasSharedContentSubstring(a: string, b: string, minLen = 6): boolean {
   if (a.length < minLen || b.length < minLen) return false;
   const shorter = a.length <= b.length ? a : b;
   const longer = a.length <= b.length ? b : a;

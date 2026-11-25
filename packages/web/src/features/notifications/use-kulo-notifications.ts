@@ -64,14 +64,16 @@ export function useKuloNotifications({
     });
 
     const unsubscribeHub = subscribeNotification((event) => {
-      if (!isWindowBackgrounded()) return;
+      const backgrounded = isWindowBackgrounded();
+      const breakthrough = event.breakthroughForeground === true;
+      if (!backgrounded && !breakthrough) return;
       const currentPrefs = prefsRef.current;
       const formatted = formatMainSessionNotification(event, {
         topics: topicsRef.current,
         agentName: agentNameRef.current,
       });
 
-      if (currentPrefs.badge) {
+      if (backgrounded && currentPrefs.badge) {
         const seen = countedEventIdsRef.current;
         if (!seen.has(event.id)) {
           seen.add(event.id);
@@ -84,14 +86,15 @@ export function useKuloNotifications({
         }
       }
 
-      if (currentPrefs.enabled) {
+      if (currentPrefs.enabled || breakthrough) {
         if (isDesktop) {
           void window.kuloDesktop?.notify?.(formatted).catch((error: unknown) => {
             console.warn("[KuloNotify] Desktop notification failed", error);
           });
         } else {
           deliverBrowserNotification(formatted, {
-            sound: currentPrefs.sound,
+            sound: currentPrefs.sound || formatted.soundOverride === true,
+            force: breakthrough,
             onOpen: (topicId) => {
               clearBadge();
               onOpenTopicRef.current(topicId);

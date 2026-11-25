@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord/context";
-import type { ConversationId, Harness, JsonObject } from "@earendil-works/pi-durable";
+import type { ConversationId, Harness } from "@earendil-works/pi-durable";
 import {
   isAssistantDecisionItem,
   isAssistantItemExpired,
@@ -9,8 +9,8 @@ import {
   type AssistantItemKind,
   type AssistantItemView,
   type AssistantPendingAction,
+  type AssistantWatchRule,
   type ChatAttachment,
-  type MessagePart,
   type TopicSummary,
 } from "@kulo/protocol";
 import type { AmbientModelService } from "./ambient-model-service.js";
@@ -37,10 +37,14 @@ import {
   upsertAssistantCardInDoc,
 } from "./assistant-state.js";
 import { executeAssistantItemAction } from "./assistant-item-actions.js";
-import { ChatAttachmentGrantsDoc } from "./chat-attachment-deliveries.js";
-import { ContentPublicationEntry, type ContentPublicationData } from "./ui-cards.js";
+import { isCriticalSafetyAlert } from "./assistant-proactive-guard.js";
+import type {
+  ExecuteProactiveWakeInput,
+  ExecuteProactiveWakeOutcome,
+} from "./assistant-proactive-wake.js";
+import type { AssistantEscalationPayload } from "./assistant-sorter.js";
+import { formatWatchRulesForPrompt, isWatchRuleActiveAt, isWithinQuietHours } from "./assistant-watch-rules.js";
 import type { DeliveryAck, DeliveryIntent } from "./delivery-receipts.js";
-import { applyTopicPreview, ensureDefaultRootTopic, KuloStateDoc, listSortedTopics, summarizeTopicPreview } from "./state.js";
 
 export { parseCoordinatorDecision, situationIdFromKey, type CoordinatorDecision };
 
@@ -60,6 +64,14 @@ export interface AssistantCoordinatorHost {
   onTopicContentChanged?(topicId: string): void;
   onMutedAppsChanged?(mutedApps: string[]): void;
   materializeSnapshot?(snapshotRef: string, conversationId: number): Promise<ChatAttachment | undefined>;
+  executeProactiveWake?(input: ExecuteProactiveWakeInput): Promise<ExecuteProactiveWakeOutcome>;
+  onCardAlertNotification?(input: {
+    situationId: string;
+    topicId?: string;
+    title: string;
+    summary: string;
+    isCritical?: boolean;
+  }): void;
   onAlertSurfaced?(event: {
     situationId: string;
     kind: AssistantItemKind;
@@ -80,11 +92,33 @@ const FOREGROUND_DEFER_MS = 4_000;
 const EXPIRY_SWEEP_INTERVAL_MS = 5 * 60 * 1_000;
 const CLOSE_DRAIN_TIMEOUT_MS = 2_000;
 
+function mergeEscalations(
+  prev: AssistantEscalationPayload | undefined,
+  next: AssistantEscalationPayload,
+): AssistantEscalationPayload {
+  if (!prev) return next;
+  const matchedRuleIds = [...new Set([...(prev.matchedRuleIds ?? []), ...(next.matchedRuleIds ?? [])])];
+  const deterministicRuleIds = [...new Set([...(prev.deterministicRuleIds ?? []), ...(next.deterministicRuleIds ?? [])])];
+  const seenEvents = new Set<string>();
+  const mergedEvents: StoredAssistantEvent[] = [];
+  for (const ev of [...prev.events, ...next.events]) {
+    if (seenEvents.has(ev.id)) continue;
+    seenEvents.add(ev.id);
+    mergedEvents.push(ev);
+  }
+  return {
+    digest: next.digest,
+    events: mergedEvents.slice(-16),
+    ...(matchedRuleIds.length ? { matchedRuleIds } : {}),
+    ...(deterministicRuleIds.length ? { deterministicRuleIds } : {}),
+  };
+}
+
 export class AssistantCoordinator {
   readonly #host: AssistantCoordinatorHost;
   readonly #inFlight = new Set<string>();
   readonly #inFlightPromises = new Set<Promise<void>>();
-  readonly #pending = new Map<string, { digest: StoredAssistantDigest; events: StoredAssistantEvent[] }>();
+  readonly #pending = new Map<string, AssistantEscalationPayload>();
   readonly #controllers = new Set<AbortController>();
   readonly #deferTimers = new Map<string, NodeJS.Timeout>();
   #expiryTimer: NodeJS.Timeout | null = null;
@@ -106,16 +140,17 @@ export class AssistantCoordinator {
     this.#expiryTimer.unref();
   }
 
-  enqueueEscalation(input: { digest: StoredAssistantDigest; events: StoredAssistantEvent[] }): void {
+  enqueueEscalation(input: AssistantEscalationPayload): void {
     if (this.#closed) return;
     const sitKey = input.digest.situationKey;
     if (this.#inFlight.has(sitKey)) {
-      this.#pending.set(sitKey, input);
+      this.#pending.set(sitKey, mergeEscalations(this.#pending.get(sitKey), input));
       return;
     }
     const gated = this.#host.canMutateState?.() === false;
-    if (gated || (input.digest.urgency !== "high" && this.#host.isForegroundBusy())) {
-      this.#pending.set(sitKey, input);
+    const urgent = input.digest.urgency === "high" || Boolean(input.matchedRuleIds?.length);
+    if (gated || (!urgent && this.#host.isForegroundBusy())) {
+      this.#pending.set(sitKey, mergeEscalations(this.#pending.get(sitKey), input));
       this.#scheduleDeferred(sitKey);
       return;
     }
@@ -171,7 +206,7 @@ export class AssistantCoordinator {
     this.#deferTimers.set(sitKey, timer);
   }
 
-  #startSituation(sitKey: string, input: { digest: StoredAssistantDigest; events: StoredAssistantEvent[] }): void {
+  #startSituation(sitKey: string, input: AssistantEscalationPayload): void {
     if (this.#closed || this.#inFlight.has(sitKey)) return;
     this.#inFlight.add(sitKey);
     const run = this.#evaluateEscalation(sitKey, input)
@@ -192,13 +227,11 @@ export class AssistantCoordinator {
     this.#inFlightPromises.add(run);
   }
 
-  async #evaluateEscalation(
-    sitKey: string,
-    input: { digest: StoredAssistantDigest; events: StoredAssistantEvent[] },
-  ): Promise<void> {
+  async #evaluateEscalation(sitKey: string, input: AssistantEscalationPayload): Promise<void> {
     if (this.#closed) return;
     if (this.#host.canMutateState?.() === false) {
-      this.#pending.set(sitKey, input);
+      this.#pending.set(sitKey, mergeEscalations(this.#pending.get(sitKey), input));
+      this.#scheduleDeferred(sitKey);
       return;
     }
     const now = Date.now();
@@ -214,6 +247,13 @@ export class AssistantCoordinator {
     const activeItems = selectActiveAssistantItems(snap.items, now);
     const priorItemsById = new Map(activeItems.map((item) => [item.id, item]));
 
+    const activeWatchRules = (snap.watchRules ?? []).filter((r) => isWatchRuleActiveAt(r, now));
+    const activeRuleById = new Map(activeWatchRules.map((r) => [r.id, r]));
+    const activeRuleIdSet = new Set(activeRuleById.keys());
+    const preMatchedIds = (input.matchedRuleIds ?? []).filter((id) => activeRuleById.has(id));
+    const deterministicIds = (input.deterministicRuleIds ?? []).filter((id) => activeRuleById.has(id));
+    const hasDeterministicMatch = deterministicIds.length > 0;
+
     const { items: recentDigests, truncated } = await this.#host.ledger.recentDigests({
       sinceMs: now - RECENT_DIGEST_WINDOW_MS,
       limit: RECENT_DIGEST_LIMIT,
@@ -226,19 +266,29 @@ export class AssistantCoordinator {
 
     let decision: CoordinatorDecision;
     if (await this.#host.shouldSkipCloudModel?.()) {
-      if (input.digest.appId !== "home-assistant" && input.digest.category !== "security") {
+      if (input.digest.appId !== "home-assistant" && input.digest.category !== "security" && preMatchedIds.length === 0) {
         clearTimeout(timer);
         this.#controllers.delete(controller);
         return;
       }
-      decision = { action: "upsert_card", kind: "alert", title: input.digest.appLabel, summary: input.digest.digest };
+      decision = {
+        action: preMatchedIds.length > 0 || input.digest.appId === "home-assistant" || input.digest.category === "security"
+          ? "wake_chat"
+          : "upsert_card",
+        kind: "alert",
+        title: input.digest.appLabel,
+        summary: input.digest.digest,
+      };
     } else try {
+      const watchRulesPrompt = formatWatchRulesForPrompt(activeWatchRules);
       const promptPayload = buildCoordinatorPromptPayload({
         digest: input.digest,
         events: input.events,
         recentDigests,
         truncated,
         activeItems,
+        ...(watchRulesPrompt ? { watchRulesPrompt } : {}),
+        ...(preMatchedIds.length ? { matchedRuleIds: preMatchedIds } : {}),
       });
       const raw = await this.#host.ambientModel.completeZeroToolJson({
         systemPrompt: COORDINATOR_SYSTEM_PROMPT,
@@ -247,17 +297,35 @@ export class AssistantCoordinator {
         signal: controller.signal,
         preferMainModel: true,
       });
-      decision = parseCoordinatorDecision(raw);
+      decision = parseCoordinatorDecision(raw, activeRuleIdSet);
     } catch {
-      decision = fallbackCoordinatorDecision(input.digest);
+      decision = fallbackCoordinatorDecision(input.digest, { hasMatchedRule: preMatchedIds.length > 0 });
     } finally {
       clearTimeout(timer);
       this.#controllers.delete(controller);
     }
 
-    if (this.#closed || decision.action === "ignore") return;
+    if (this.#closed) return;
+    const allMatchedIds = [...new Set([...preMatchedIds, ...(decision.matchedRuleIds ?? [])])].filter((id) =>
+      activeRuleById.has(id),
+    );
+    const matchedRules: AssistantWatchRule[] = allMatchedIds
+      .map((id) => activeRuleById.get(id))
+      .filter((r): r is AssistantWatchRule => Boolean(r));
+
+    // Deterministic user watch rules may only be resolved if the user already replied, never silently ignored/downgraded to fyi.
+    if (hasDeterministicMatch && decision.action !== "resolve_item") {
+      decision = {
+        ...decision,
+        action: "wake_chat",
+        kind: "alert",
+      };
+    }
+
+    if (decision.action === "ignore") return;
     if (this.#host.canMutateState?.() === false) {
-      this.#pending.set(sitKey, input);
+      this.#pending.set(sitKey, mergeEscalations(this.#pending.get(sitKey), input));
+      this.#scheduleDeferred(sitKey);
       return;
     }
 
@@ -266,6 +334,11 @@ export class AssistantCoordinator {
     const envName = sampleEvent ? this.#host.envDisplayName(sampleEvent.envId) : undefined;
     const cleanTitle = this.#host.redact(decision.title || input.digest.appLabel).slice(0, 80);
     const cleanSummary = this.#host.redact(decision.summary || input.digest.digest).slice(0, 300);
+    const isCritical = isCriticalSafetyAlert({
+      sourceApp: input.digest.appId,
+      title: cleanTitle,
+      summary: cleanSummary,
+    });
 
     if (decision.action === "resolve_item") {
       const targetId = decision.itemId ?? `asst-${sitId}`;
@@ -286,83 +359,37 @@ export class AssistantCoordinator {
       return;
     }
 
-    if (decision.action === "upsert_card") {
-      const resolvedKind = decision.kind ?? (input.digest.urgency === "high" ? "alert" : "fyi");
-      const priorTarget = decision.itemId ? priorItemsById.get(decision.itemId) : undefined;
-      // Never merge across Home Assistant entities (protects 5-min speaker cooldown and per-entity recovery) or L2 decision cards.
-      const allowMergeById =
-        priorTarget !== undefined &&
-        !isAssistantDecisionItem(priorTarget) &&
-        input.digest.appId !== "home-assistant" &&
-        priorTarget.sourceApp !== "home-assistant" &&
-        isSameAssistantAppFamily(priorTarget.sourceApp, input.digest.appId);
+    // Quiet hours: non-critical events (unless allowed watch rule) silently land as right-rail cards without waking/popping/burning once rules.
+    const inQuietHours = isWithinQuietHours(snap.quietHours, now);
+    const suppressedByQuietHours =
+      inQuietHours &&
+      !isCritical &&
+      !(matchedRules.length > 0 && snap.quietHours?.allowWatchRules === true);
 
-      const committed = await this.#host.harness.commit(async (tx) => {
-        const doc = await tx.doc(AssistantDoc);
-        ensureAssistantState(doc);
-        if (!isAssistantSourceEnabled(doc, input.digest.appId) || doc.mutedApps.includes(input.digest.appId)) return null;
-        const ts = Date.now();
-
-        if (allowMergeById && priorTarget) {
-          const liveTarget = doc.items.find((item) => item.id === priorTarget.id);
-          if (!liveTarget) {
-            if (doc.situations[priorTarget.situationId]?.status === "dismissed") return null;
-          } else {
-            if (isAssistantDecisionItem(liveTarget) || !isSameAssistantAppFamily(liveTarget.sourceApp, input.digest.appId)) return null;
-            const mergedKind: AssistantItemKind = liveTarget.kind === "alert" ? "alert" : resolvedKind;
-            const mergedSitKey = this.#host.redact(doc.situations[liveTarget.situationId]?.key ?? cleanSitKey).slice(0, 160);
-            upsertAssistantCardInDoc(doc, {
-              situationId: liveTarget.situationId,
-              situationKey: mergedSitKey,
-              kind: mergedKind,
-              sourceApp: input.digest.appId,
-              sourceLabel: input.digest.appLabel,
-              ...(envName ? { envName } : {}),
-              title: cleanTitle,
-              summary: cleanSummary,
-              ...(snapshotRef ? { snapshotRef } : {}),
-              now: ts,
-            });
-            return {
-              revision: doc.assistantRevision,
-              items: selectActiveAssistantItems(doc.items, ts),
-              effectiveSitId: liveTarget.situationId,
-              effectiveKind: mergedKind,
-            };
-          }
-        }
-
-        const currentSit = doc.situations[sitId];
-        if (currentSit?.status === "dismissed" && (priorStatus !== "dismissed" || currentSit.updatedAt > priorUpdatedAt)) {
-          return null;
-        }
-        const existingAtSit = doc.items.find((item) => item.situationId === sitId);
-        if (existingAtSit && isAssistantDecisionItem(existingAtSit)) return null;
-
-        upsertAssistantCardInDoc(doc, {
-          situationId: sitId,
-          situationKey: cleanSitKey,
-          kind: resolvedKind,
-          sourceApp: input.digest.appId,
-          sourceLabel: input.digest.appLabel,
-          ...(envName ? { envName } : {}),
-          title: cleanTitle,
-          summary: cleanSummary,
-          ...(snapshotRef ? { snapshotRef } : {}),
-          now: ts,
-        });
-        return {
-          revision: doc.assistantRevision,
-          items: selectActiveAssistantItems(doc.items, ts),
-          effectiveSitId: sitId,
-          effectiveKind: resolvedKind,
-        };
-      }, BACKGROUND_CONTEXT);
-      if (committed) {
-        this.#host.onItemsChanged(committed.revision, committed.items);
+    if (decision.action === "wake_chat" && !suppressedByQuietHours && this.#host.executeProactiveWake) {
+      const wakeOutcome = await this.#host.executeProactiveWake({
+        situationId: sitId,
+        situationKey: cleanSitKey,
+        digest: input.digest,
+        events: input.events,
+        title: cleanTitle,
+        summary: cleanSummary,
+        ...(envName ? { envName } : {}),
+        ...(snapshotRef ? { snapshotRef } : {}),
+        matchedRules,
+        isCritical,
+        ...(priorStatus ? { priorStatus } : {}),
+        priorUpdatedAt,
+      });
+      if (wakeOutcome.status === "deferred_by_gate") {
+        this.#pending.set(sitKey, mergeEscalations(this.#pending.get(sitKey), input));
+        this.#scheduleDeferred(sitKey);
+        return;
+      }
+      if (wakeOutcome.status === "woken" || wakeOutcome.status === "fallback_notified" || (wakeOutcome.status === "deferred_by_voice" && isCritical)) {
         this.#host.onAlertSurfaced?.({
-          situationId: committed.effectiveSitId,
-          kind: committed.effectiveKind,
+          situationId: sitId,
+          kind: "alert",
           sourceApp: input.digest.appId,
           sourceLabel: input.digest.appLabel,
           title: cleanTitle,
@@ -373,147 +400,105 @@ export class AssistantCoordinator {
       return;
     }
 
-    // decision.action === "open_topic": re-check gate BEFORE creating conversation or writing uploads/.
-    if (this.#closed) return;
-    if (this.#host.canMutateState?.() === false) {
-      this.#pending.set(sitKey, input);
-      return;
-    }
+    // `upsert_card` (or `wake_chat` downgraded by quietHours / missing wake host)
+    const resolvedKind: AssistantItemKind =
+      decision.action === "wake_chat"
+        ? "alert"
+        : decision.kind ?? (input.digest.urgency === "high" ? "alert" : "fyi");
+    const priorTarget = decision.itemId ? priorItemsById.get(decision.itemId) : undefined;
+    // Never merge across Home Assistant entities (protects 5-min speaker cooldown and per-entity recovery) or L2 decision cards.
+    const allowMergeById =
+      priorTarget !== undefined &&
+      !isAssistantDecisionItem(priorTarget) &&
+      input.digest.appId !== "home-assistant" &&
+      priorTarget.sourceApp !== "home-assistant" &&
+      isSameAssistantAppFamily(priorTarget.sourceApp, input.digest.appId);
 
-    const latestSnap = await this.#host.harness.snapshot(AssistantDoc, BACKGROUND_CONTEXT);
-    const stateSnap = await this.#host.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
-    const existingLinkedTopic = latestSnap?.situations?.[sitId]?.linkedTopicId;
-    const existingLiveTopic = existingLinkedTopic ? stateSnap?.topics?.[existingLinkedTopic] : undefined;
-    const preCreatedConv = existingLiveTopic && !existingLiveTopic.deletedAt
-      ? undefined
-      : await this.#host.createDetachedOrchestratorConversation(BACKGROUND_CONTEXT);
-    const resolvedTargetConvId = existingLiveTopic && !existingLiveTopic.deletedAt
-      ? existingLiveTopic.conversationId
-      : (preCreatedConv?.id as number | undefined);
-    const effectiveSnapshotRef = snapshotRef ?? latestSnap?.situations?.[sitId]?.snapshotRef;
-    const snapshotAsset = effectiveSnapshotRef && resolvedTargetConvId !== undefined
-      ? await this.#host.materializeSnapshot?.(effectiveSnapshotRef, resolvedTargetConvId).catch(() => undefined)
-      : undefined;
-
-    if (this.#closed) return;
-    if (this.#host.canMutateState?.() === false) {
-      this.#pending.set(sitKey, input);
-      return;
-    }
-
-    const briefingText = this.#host.redact(
-      decision.briefingMarkdown || `**${cleanTitle}**（来源：${input.digest.appLabel}${envName ? ` · ${envName}` : ""}）\n\n${cleanSummary}`,
-    );
-
-    const resolvedKind = decision.kind ?? "alert";
     const committed = await this.#host.harness.commit(async (tx) => {
       const doc = await tx.doc(AssistantDoc);
-      const state = await tx.doc(KuloStateDoc);
       ensureAssistantState(doc);
-      ensureDefaultRootTopic(state, this.#host.agentName());
       if (!isAssistantSourceEnabled(doc, input.digest.appId) || doc.mutedApps.includes(input.digest.appId)) return null;
+      const ts = Date.now();
+
+      if (allowMergeById && priorTarget) {
+        const liveTarget = doc.items.find((item) => item.id === priorTarget.id);
+        if (!liveTarget) {
+          if (doc.situations[priorTarget.situationId]?.status === "dismissed") return null;
+        } else {
+          if (isAssistantDecisionItem(liveTarget) || !isSameAssistantAppFamily(liveTarget.sourceApp, input.digest.appId)) return null;
+          const mergedKind: AssistantItemKind = liveTarget.kind === "alert" ? "alert" : resolvedKind;
+          const mergedSitKey = this.#host.redact(doc.situations[liveTarget.situationId]?.key ?? cleanSitKey).slice(0, 160);
+          upsertAssistantCardInDoc(doc, {
+            situationId: liveTarget.situationId,
+            situationKey: mergedSitKey,
+            kind: mergedKind,
+            sourceApp: input.digest.appId,
+            sourceLabel: input.digest.appLabel,
+            ...(envName ? { envName } : {}),
+            title: cleanTitle,
+            summary: cleanSummary,
+            ...(snapshotRef ? { snapshotRef } : {}),
+            now: ts,
+          });
+          return {
+            revision: doc.assistantRevision,
+            items: selectActiveAssistantItems(doc.items, ts),
+            effectiveSitId: liveTarget.situationId,
+            effectiveKind: mergedKind,
+            linkedTopicId: doc.situations[liveTarget.situationId]?.linkedTopicId,
+          };
+        }
+      }
 
       const currentSit = doc.situations[sitId];
       if (currentSit?.status === "dismissed" && (priorStatus !== "dismissed" || currentSit.updatedAt > priorUpdatedAt)) {
         return null;
       }
-
-      const ts = Date.now();
-      let topicId = currentSit?.linkedTopicId;
-      let targetConvId: number | undefined;
-      if (topicId && state.topics?.[topicId] && !state.topics[topicId]!.deletedAt) {
-        const existingTopic = state.topics[topicId]!;
-        targetConvId = existingTopic.conversationId;
-        existingTopic.updatedAt = ts;
-        existingTopic.archived = false;
-        existingTopic.proactiveSeq = (existingTopic.proactiveSeq ?? 0) + 1;
-      } else if (preCreatedConv) {
-        topicId = `topic-${preCreatedConv.id as number}`;
-        targetConvId = preCreatedConv.id as number;
-        const record: TopicSummary = {
-          id: topicId,
-          conversationId: targetConvId,
-          title: cleanTitle,
-          origin: "proactive",
-          situationId: sitId,
-          proactiveSeq: 1,
-          createdAt: ts,
-          updatedAt: ts,
-        };
-        state.topics![topicId] = record;
-        state.conversationToTopic![String(targetConvId)] = topicId;
-      }
-
-      if (targetConvId === undefined || !topicId) return null;
-
-      const parts: MessagePart[] = [{ partId: `proactive:${sitId}:${ts}`, type: "markdown", text: briefingText }];
-      if (snapshotAsset) {
-        const grants = await tx.doc(ChatAttachmentGrantsDoc);
-        const scope = `conversation:${targetConvId}`;
-        const scopes = grants.byAsset[snapshotAsset.id] ?? [];
-        if (!scopes.includes(scope)) grants.byAsset[snapshotAsset.id] = [...scopes, scope];
-        parts.push({
-          partId: `proactive-img:${sitId}:${ts}`,
-          type: "image",
-          assetId: snapshotAsset.id,
-          asset: JSON.parse(JSON.stringify(snapshotAsset)) as ChatAttachment,
-        });
-      }
-
-      await tx.appendEntry(ContentPublicationEntry, targetConvId as ConversationId, {
-        data: {
-          parts,
-          fallbackText: briefingText,
-          createdAt: ts,
-        } as unknown as ContentPublicationData & JsonObject,
-      });
-      const targetTopic = state.topics?.[topicId];
-      if (targetTopic) {
-        applyTopicPreview(targetTopic, summarizeTopicPreview([{ role: "assistant", text: briefingText, createdAt: ts }]), ts);
-      }
-
       const existingAtSit = doc.items.find((item) => item.situationId === sitId);
-      const cardProtected = Boolean(existingAtSit && isAssistantDecisionItem(existingAtSit));
-      if (!cardProtected) {
-        upsertAssistantCardInDoc(doc, {
-          situationId: sitId,
-          situationKey: cleanSitKey,
-          kind: resolvedKind,
-          sourceApp: input.digest.appId,
-          sourceLabel: input.digest.appLabel,
-          ...(envName ? { envName } : {}),
-          title: cleanTitle,
-          summary: cleanSummary,
-          linkedTopicId: topicId,
-          ...(effectiveSnapshotRef ? { snapshotRef: effectiveSnapshotRef } : {}),
-          now: ts,
-        });
-      }
+      if (existingAtSit && isAssistantDecisionItem(existingAtSit)) return null;
 
-      return {
-        topicId,
-        cardProtected,
-        revision: doc.assistantRevision,
-        items: selectActiveAssistantItems(doc.items, ts),
-        topics: listSortedTopics(state),
-      };
-    }, BACKGROUND_CONTEXT);
-
-    if (committed) {
-      this.#host.onTopicsChanged(committed.topics);
-      this.#host.onTopicContentChanged?.(committed.topicId);
-      if (!committed.cardProtected) {
-        this.#host.onItemsChanged(committed.revision, committed.items);
-      }
-      this.#host.onAlertSurfaced?.({
+      upsertAssistantCardInDoc(doc, {
         situationId: sitId,
+        situationKey: cleanSitKey,
         kind: resolvedKind,
         sourceApp: input.digest.appId,
         sourceLabel: input.digest.appLabel,
+        ...(envName ? { envName } : {}),
         title: cleanTitle,
         summary: cleanSummary,
-        urgency: input.digest.urgency,
+        ...(snapshotRef ? { snapshotRef } : {}),
+        now: ts,
       });
+      return {
+        revision: doc.assistantRevision,
+        items: selectActiveAssistantItems(doc.items, ts),
+        effectiveSitId: sitId,
+        effectiveKind: resolvedKind,
+        linkedTopicId: doc.situations[sitId]?.linkedTopicId,
+      };
+    }, BACKGROUND_CONTEXT);
+    if (committed) {
+      this.#host.onItemsChanged(committed.revision, committed.items);
+      if (!suppressedByQuietHours) {
+        if (committed.effectiveKind === "alert") {
+          this.#host.onCardAlertNotification?.({
+            situationId: committed.effectiveSitId,
+            ...(committed.linkedTopicId ? { topicId: committed.linkedTopicId } : {}),
+            title: cleanTitle,
+            summary: cleanSummary,
+            isCritical,
+          });
+        }
+        this.#host.onAlertSurfaced?.({
+          situationId: committed.effectiveSitId,
+          kind: committed.effectiveKind,
+          sourceApp: input.digest.appId,
+          sourceLabel: input.digest.appLabel,
+          title: cleanTitle,
+          summary: cleanSummary,
+          urgency: input.digest.urgency,
+        });
+      }
     }
   }
 
@@ -530,6 +515,7 @@ export class AssistantCoordinator {
       title: string;
       summary: string;
       pendingAction: AssistantPendingAction;
+      suppressAlertNotification?: boolean;
     },
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<AssistantItemView> {
@@ -561,6 +547,14 @@ export class AssistantCoordinator {
       };
     }, context);
     this.#host.onItemsChanged(committed.revision, committed.items);
+    if (!input.suppressAlertNotification) {
+      this.#host.onCardAlertNotification?.({
+        situationId: sitId,
+        title: committed.card.title,
+        summary: committed.card.summary,
+        isCritical: false,
+      });
+    }
     return committed.card;
   }
 
@@ -702,11 +696,6 @@ export class AssistantCoordinator {
     };
   }
 
-  /**
-   * Executes a user right-rail card action with durable DeliveryReceiptDoc idempotency.
-   * For `promote_to_topic`, atomically creates or reuses the linked proactive topic without cross-DB split-brain.
-   * For `confirm_action`, executes the L2 `pendingAction` at most once per `commandId`.
-   */
   async performItemAction(input: {
     itemId: string;
     expectedRevision: number;
@@ -717,10 +706,6 @@ export class AssistantCoordinator {
     return executeAssistantItemAction(this.#host, input);
   }
 
-  /**
-   * Startup / failover recovery: downgrades any lingering `dispatched` L2 cards from a crashed
-   * process to read-only `unknown` state so users can verify the external app without blind replay.
-   */
   async reconcileDispatchedActions(context: Context = BACKGROUND_CONTEXT): Promise<number> {
     const recovered = await this.#host.harness.commit(async (tx) => {
       const doc = await tx.doc(AssistantDoc);
@@ -758,7 +743,6 @@ function matchesOutgoingPassiveCard(
   if (isAssistantDecisionItem(item)) return false;
   if (item.sourceApp === "home-assistant") return false;
   if (!isSameAssistantAppFamily(item.sourceApp, ev.appId)) return false;
-  // Allow 60s tolerance for lark-cli minute-level timestamps; never close newer alerts with older backfill replies.
   if (ev.occurredAt < item.updatedAt - 60_000) return false;
 
   const meta = ev.messageMeta;

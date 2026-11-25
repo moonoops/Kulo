@@ -1,4 +1,4 @@
-import { safeJsonForXmlTag } from "@kulo/protocol";
+import { safeJsonForXmlTag, type AssistantQuietHours, type AssistantWatchRule } from "@kulo/protocol";
 import type { StoredAssistantDigest, StoredAssistantEvent } from "./assistant-ledger.js";
 import type { AssistantLedger } from "./assistant-ledger.js";
 import type { AmbientModelService } from "./ambient-model-service.js";
@@ -9,15 +9,24 @@ import {
   SORTER_SYSTEM_PROMPT,
   type SorterParsedResult,
 } from "./assistant-card-policy.js";
+import { evaluateWatchRulesForEvents, formatWatchRulesForPrompt } from "./assistant-watch-rules.js";
 
 export { parseSorterOutput, type SorterParsedResult };
+
+export interface AssistantEscalationPayload {
+  digest: StoredAssistantDigest;
+  events: StoredAssistantEvent[];
+  matchedRuleIds?: string[];
+  deterministicRuleIds?: string[];
+}
 
 export interface AssistantSorterOptions {
   ledger: AssistantLedger;
   ambientModel: AmbientModelService;
   redact: (text: string) => string;
-  onNotifyBrain: (input: { digest: StoredAssistantDigest; events: StoredAssistantEvent[] }) => void;
+  onNotifyBrain: (input: AssistantEscalationPayload) => void;
   echoSuppressor?: AssistantEchoSuppressor;
+  getWatchConfig?: () => Promise<{ rules: AssistantWatchRule[]; quietHours?: AssistantQuietHours }>;
   shouldSkipCloudModel?: () => Promise<boolean>;
   isCloudCapped?: () => boolean;
   coalesceWindowMs?: number;
@@ -129,6 +138,13 @@ export class AssistantSorter {
       }
 
       if (
+        this.#options.echoSuppressor?.isSelfNotificationEcho({
+          appId: event.appId,
+          driverId: event.driverId,
+          sender: event.sender,
+          title: event.title,
+          body: event.body,
+        }) ||
         this.#options.echoSuppressor?.consumeIfEcho({
           appId: event.appId,
           driverId: event.driverId,
@@ -233,6 +249,16 @@ export class AssistantSorter {
     const sample = events[events.length - 1]!;
     const now = Date.now();
 
+    let watchConfig: { rules: readonly AssistantWatchRule[]; quietHours?: AssistantQuietHours } | undefined;
+    try {
+      watchConfig = await this.#options.getWatchConfig?.();
+    } catch {
+      watchConfig = undefined;
+    }
+    const watchEval = evaluateWatchRulesForEvents(watchConfig?.rules, events, now);
+    const deterministicRuleIds = watchEval.deterministicMatches.map((r) => r.id);
+    const semanticRuleIdSet = new Set(watchEval.semanticCandidates.map((r) => r.id));
+
     // Sliding 1-minute rate limit to prevent notification storms from saturating model quotas.
     while (this.#callTimestamps.length > 0 && now - this.#callTimestamps[0]! >= 60_000) {
       this.#callTimestamps.shift();
@@ -242,6 +268,7 @@ export class AssistantSorter {
     const usageCapped = !rateLimited && Boolean(await this.#options.shouldSkipCloudModel?.());
     if (rateLimited || usageCapped) {
       const isHomeAssistant = sample.appId === "home-assistant";
+      const forceNotify = isHomeAssistant || deterministicRuleIds.length > 0;
       const digest = await this.#options.ledger.recordDigest(
         {
           createdAt: resolveDigestTimestamp(sample, now),
@@ -249,8 +276,8 @@ export class AssistantSorter {
           appLabel: sample.appLabel,
           ...(sample.threadHint ? { threadHint: sample.threadHint } : {}),
           category: isHomeAssistant ? "security" : "general",
-          disposition: isHomeAssistant ? "notify_brain" : "archive",
-          urgency: isHomeAssistant ? "high" : "low",
+          disposition: forceNotify ? "notify_brain" : "archive",
+          urgency: forceNotify ? "high" : "low",
           digest: fallbackSummary,
           eventIds: events.map((e) => e.id),
           situationKey: `${sample.appId}:${sample.threadHint || sample.sender || sample.title || "general"}`.slice(0, 120),
@@ -259,8 +286,12 @@ export class AssistantSorter {
         },
         this.#options.redact,
       );
-      if (isHomeAssistant) {
-        this.#options.onNotifyBrain({ digest, events });
+      if (forceNotify) {
+        this.#options.onNotifyBrain({
+          digest,
+          events,
+          ...(deterministicRuleIds.length ? { matchedRuleIds: deterministicRuleIds, deterministicRuleIds } : {}),
+        });
       }
       return;
     }
@@ -292,26 +323,35 @@ export class AssistantSorter {
             ...events.slice(-PROMPT_TAIL_EVENTS).map(formatEvent),
           ]
         : events.map(formatEvent);
+      const watchRulesPrompt = formatWatchRulesForPrompt(watchEval.semanticCandidates);
+      const userContent = [
+        ...(watchRulesPrompt ? [watchRulesPrompt] : []),
+        `<untrusted_events>\n${safeJsonForXmlTag(payload)}\n</untrusted_events>`,
+      ].join("\n");
       const raw = await this.#options.ambientModel.completeZeroToolJson({
         systemPrompt: SORTER_SYSTEM_PROMPT,
-        userContent: `<untrusted_events>\n${safeJsonForXmlTag(payload)}\n</untrusted_events>`,
+        userContent,
         maxTokens: 400,
         signal: controller.signal,
         allowCloudFallback: !this.#options.isCloudCapped?.(),
       });
-      parsed = parseSorterOutput(raw, {
-        appId: sample.appId,
-        appLabel: sample.appLabel,
-        sender: sample.sender,
-        title: sample.title,
-        body: sample.body,
-      });
+      parsed = parseSorterOutput(
+        raw,
+        {
+          appId: sample.appId,
+          appLabel: sample.appLabel,
+          sender: sample.sender,
+          title: sample.title,
+          body: sample.body,
+        },
+        semanticRuleIdSet,
+      );
     } catch {
       parsed = {
         digest: fallbackSummary,
         category: "general",
-        disposition: "archive",
-        urgency: "low",
+        disposition: deterministicRuleIds.length > 0 ? "notify_brain" : "archive",
+        urgency: deterministicRuleIds.length > 0 ? "high" : "low",
         situationKey: `${sample.appId}:${sample.threadHint || sample.sender || sample.title || "general"}`.slice(0, 120),
         title: (sample.title || sample.appLabel).slice(0, 80),
       };
@@ -321,8 +361,11 @@ export class AssistantSorter {
     }
 
     if (this.#closed) return;
+    const matchedRuleIds = [...new Set([...deterministicRuleIds, ...(parsed.matchedRuleIds ?? [])])];
     const effectiveSample = buildEffectiveSample(events);
-    const normalized = normalizeSorterDisposition(parsed, effectiveSample);
+    const normalized = normalizeSorterDisposition(parsed, effectiveSample, {
+      hasMatchedRule: matchedRuleIds.length > 0,
+    });
     const saved = await this.#options.ledger.recordDigest(
       {
         createdAt: resolveDigestTimestamp(sample, Date.now()),
@@ -342,7 +385,12 @@ export class AssistantSorter {
     );
 
     if (saved.disposition === "notify_brain" && !this.#closed) {
-      this.#options.onNotifyBrain({ digest: saved, events });
+      this.#options.onNotifyBrain({
+        digest: saved,
+        events,
+        ...(matchedRuleIds.length ? { matchedRuleIds } : {}),
+        ...(deterministicRuleIds.length ? { deterministicRuleIds } : {}),
+      });
     }
   }
 }

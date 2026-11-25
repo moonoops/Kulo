@@ -374,6 +374,7 @@ export function isSensitiveNotificationPayload(input: {
   body?: string;
 }): boolean {
   if (isMacOsSensitiveBundleId(input.appId)) return true;
+  if (input.appId.trim().toLowerCase() === "com.github.electron" && input.title?.trim() === "Kulo") return true;
   return isOneTimeCodeText(`${input.title ?? ""}\n${input.subtitle ?? ""}\n${input.body ?? ""}`);
 }
 
@@ -544,4 +545,36 @@ export function compareAssistantItems(a: AssistantItemView, b: AssistantItemView
     b.updatedAt - a.updatedAt ||
     a.id.localeCompare(b.id)
   );
+}
+
+export type AssistantWatchRuleMode = "once" | "continuous";
+export type AssistantWatchRuleStatus = "active" | "paused" | "triggered" | "expired";
+export type AssistantNotificationUrgency = "normal" | "high" | "critical";
+
+export const MAX_ASSISTANT_WATCH_RULES = 32;
+
+export interface AssistantWatchRule {
+  id: string;
+  label: string;
+  status: AssistantWatchRuleStatus;
+  mode: AssistantWatchRuleMode;
+  apps?: string[];
+  senders?: string[];
+  keywords?: string[];
+  chatIds?: string[];
+  condition?: string;
+  targetTopicId?: string;
+  expiresAt?: number;
+  createdAt: number;
+  updatedAt: number;
+  lastTriggeredAt?: number;
+  triggerCount?: number;
+}
+
+export interface AssistantQuietHours {
+  enabled: boolean;
+  start: string;
+  end: string;
+  timezone?: string;
+  allowWatchRules?: boolean;
 }
