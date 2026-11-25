@@ -14,6 +14,7 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { canonicalExecutionPath, KULO_CORE_STATE_SENSITIVE_NAMES } from "@kulo/env";
+import { KULO_REPORT_DESCRIPTION } from "./prompts/tool-descriptions.js";
 import { arr, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import type {
   ActiveMemoryMode,
@@ -284,8 +285,7 @@ export function createWorkerExtension(options: {
 }) {
   const kuloReportTool = defineTool({
     name: "kulo_report",
-    description:
-      "Report progress, a blocker, completion, or failure to the main Agent. Files are privately staged for the main Agent to inspect; only the main Agent may approve and publish them to the user. A ready report never means approved or sent.",
+    description: KULO_REPORT_DESCRIPTION,
     parameters: obj({
       state: oneOf(["progress", "blocked", "ready", "failed"]),
       summary: str({

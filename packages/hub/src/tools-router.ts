@@ -1,5 +1,12 @@
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { arr, bool, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
+import { arr, bool, int, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
+import {
+  KULO_DISPATCH_DESCRIPTION,
+  KULO_DISPATCH_EXECUTE_AT_DESCRIPTION,
+  KULO_DISPATCH_GOAL_DESCRIPTION,
+  KULO_DISPATCH_REPEAT_EVERY_DESCRIPTION,
+  KULO_STOP_DESCRIPTION,
+} from "./prompts/tool-descriptions.js";
 import type { Context } from "@earendil-works/chord/context";
 import {
   IDENTITY_FILES,
@@ -241,13 +248,12 @@ export function createOrchestratorToolsExtension(
   });
   const dispatchTool = defineTool({
     name: "kulo_dispatch",
-    description:
-      "Dispatch work as a durable Worker Ticket. Project/bound tasks lock to their Env; use target_scope='hub_local' (compute/research/attachments) or 'sender_device' (sender files/ports/GUI), execution_domain='android' for phone-only. Reuse command_id on retry.",
+    description: KULO_DISPATCH_DESCRIPTION,
     parameters: obj({
       command_id: str({ description: "Idempotency key; reuse on retry." }),
       title: str({ description: "Short user-visible title (8–18 chars / 3–6 words; no internal IDs or paths)." }),
       user_summary: opt(str({ description: "One-sentence panel summary." })),
-      goal: str({ description: "Clear task objective." }),
+      goal: str({ description: KULO_DISPATCH_GOAL_DESCRIPTION }),
       scope: str({ description: "Authorized files/modules and exclusions." }),
       acceptance: opt(str({ description: "Verification criteria." })),
       assignment: opt(str({ description: "Extra Worker instructions." })),
@@ -255,8 +261,8 @@ export function createOrchestratorToolsExtension(
       attachment_ids: opt(arr(str(), { maxItems: 16, description: "Chat attachment IDs (att_...) to pass." })),
       workspace_mode: opt(oneOf(["direct", "staged", "read_only"], { description: "Workspace mode: 'direct' (default in trusted mode), 'staged' (isolated copy), or 'read_only' (audits/Q&A)." })),
       target_scope: opt(oneOf(["hub_local", "sender_device"], { description: "For ungrouped tasks without env_id: 'hub_local' (research/writing/attachments) or 'sender_device' (sender files/ports/browser/desktop)." })),
-      execute_at: opt(str({ description: "ISO 8601 timestamp with timezone for scheduled execution." })),
-      repeat_every_seconds: opt(num({ description: "Positive integer interval in seconds (requires execute_at)." })),
+      execute_at: opt(str({ description: KULO_DISPATCH_EXECUTE_AT_DESCRIPTION })),
+      repeat_every_seconds: opt(num({ description: KULO_DISPATCH_REPEAT_EVERY_DESCRIPTION })),
       role: opt(str({ description: "Worker or external Agent role ID." })),
       provider_override: opt(str({ description: "Provider ID override for built-in Workers." })),
       model_override: opt(str({ description: "Model ID override for built-in Workers." })),
@@ -269,7 +275,7 @@ export function createOrchestratorToolsExtension(
       project_id: opt(str({ description: "Target project ID." })),
       connection_ids: opt(arr(str({ description: "Saved connection IDs to grant (never secret values)." }))),
       workspace_dir: opt(str({ description: "Explicit absolute working directory; omit for isolated table/<ticket>." })),
-      inline_wait_ms: opt(num({ description: "Inline wait (0–30000 ms) for fast built-in Workers; ignored for external Agents." })),
+      inline_wait_ms: opt(int({ minimum: 0, maximum: 30_000, description: "Inline wait (0–30000 ms) for fast built-in Workers; ignored for external Agents." })),
       supersedes: opt(arr(obj({ ticket_id: str(), reason: str() }), { description: "Failed/obsolete tickets replaced once this ticket succeeds." })),
       board_id: opt(str({ description: "TaskBoard ID to link." })),
       board_title: opt(str({ description: "New TaskBoard title (multi-ticket only)." })),
@@ -371,8 +377,7 @@ export function createOrchestratorToolsExtension(
 
   const stopTool = defineTool({
     name: "kulo_stop",
-    description:
-      "Immediately stop a Ticket when the user cancels, declines required permissions, or asks to end it. Never auto-resumes.",
+    description: KULO_STOP_DESCRIPTION,
     parameters: obj({
       ticket_id: str({ description: "Ticket ID to stop." }),
       reason: opt(str({ description: "Optional short reason." })),

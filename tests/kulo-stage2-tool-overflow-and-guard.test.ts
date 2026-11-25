@@ -207,7 +207,7 @@ describe("Stage 2: Top-level chat tool overflow, internalOnly isolation, pruning
     fs.mkdirSync(workspaceDir, { recursive: true });
     const bigFile = path.join(workspaceDir, "large.txt");
     const middleNeedle = "MIDDLE_NEEDLE_STAGE2_7741";
-    const bigContent = `${"HEADER_ROW\n".repeat(300)}${middleNeedle}\n${"FOOTER_ROW\n".repeat(450)}`;
+    const bigContent = `${"HEADER_ROW_LONG_LINE_PAD\n".repeat(420)}${middleNeedle}\n${"FOOTER_ROW_LONG_LINE_PAD\n".repeat(700)}`;
     fs.writeFileSync(bigFile, bigContent, "utf8");
 
     let spilledAssetId = "";
@@ -216,7 +216,7 @@ describe("Stage 2: Top-level chat tool overflow, internalOnly isolation, pruning
       models: [{ id: "m1", contextWindow: 128_000, maxTokens: 4_096 }],
     });
     provider.setResponses([
-      // Root turn 1: read large.txt -> spills via afterTool -> mounts kulo_inspect_asset
+      // Root turn 1: read large.txt (>24K on 128K window) -> spills via afterTool -> mounts kulo_inspect_asset
       () => fauxAssistantMessage([fauxToolCall("read", { path: "large.txt" })], { stopReason: "toolUse" }),
       (ctx) => {
         const lastTool = [...ctx.messages].reverse().find((m) => m.role === "toolResult");
@@ -224,7 +224,9 @@ describe("Stage 2: Top-level chat tool overflow, internalOnly isolation, pruning
           ? lastTool.content.filter((p): p is { type: "text"; text: string } => p.type === "text").map((p) => p.text).join("\n")
           : "";
         spilledAssetId = TOOL_OVERFLOW_MARKER_RE.exec(toolText)?.[1] ?? "";
-        return fauxAssistantMessage([fauxToolCall("kulo_inspect_asset", { asset_id: spilledAssetId, offset: 2400, limit: 4000 })], { stopReason: "toolUse" });
+        const headMatch = /preview_head=(\d+)/.exec(toolText);
+        const nextOffset = headMatch ? Number(headMatch[1]) : 2400;
+        return fauxAssistantMessage([fauxToolCall("kulo_inspect_asset", { asset_id: spilledAssetId, offset: nextOffset, limit: 8000 })], { stopReason: "toolUse" });
       },
       (ctx) => {
         const lastTool = [...ctx.messages].reverse().find((m) => m.role === "toolResult");

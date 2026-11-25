@@ -310,7 +310,7 @@ export class HubTopicManager {
         extensions: this.#deps.orchestrator.extensions(false),
         tools: this.#deps.orchestrator.tools(false),
         cwd: project?.workspaceDir ?? this.#deps.orchestrator.mainWorkspaceDir,
-        maxTurns: 25,
+        maxTurns: 40,
       },
     }, context);
 
@@ -585,7 +585,7 @@ export class HubTopicManager {
       extensions: this.#deps.orchestrator.extensions(isRoot),
       tools: this.#deps.orchestrator.tools(isRoot),
       cwd: topic.projectId ? (await this.#deps.projects.get(topic.projectId, context)).workspaceDir : this.#deps.orchestrator.mainWorkspaceDir,
-      maxTurns: 25,
+      maxTurns: 40,
     }, context);
 
     await this.#deps.contextCompaction.align(conv.id, context);

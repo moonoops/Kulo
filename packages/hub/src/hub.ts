@@ -103,6 +103,7 @@ import { HaLanAudioRelay } from "./connectors/ha-lan-audio.js";
 import { LarkConnectorService } from "./connectors/lark-connector.js";
 import { ContextCompactionDoc, createContextCompactionController, validateBillionKernel, type BillionKernelRuntime } from "./context-compaction.js";
 import { HubMemoryRuntime } from "./hub-memory-runtime.js";
+import { EMPTY_MEDIA_CAPABILITIES, createConversationContextWindowResolver } from "./orchestrator-prompt-wiring.js";
 import { createOrchestratorToolOverflowExtension, containsToolOverflowMarker } from "./orchestrator-tool-overflow.js";
 import { createRecentWorkSyncHook, isSystemBaselinePending } from "./recent-work-sync.js";
 import { type LoadedBillionContextPackage } from "./extension-packages.js";
@@ -949,7 +950,7 @@ export class KuloHub implements OrchestratorController {
               extensions: this.#orchestratorExtensions(false),
               tools: this.#orchestratorTools(false),
               cwd: this.#mainWorkspaceDir,
-              maxTurns: 25,
+              maxTurns: 40,
             },
           },
           ctx,
@@ -1683,13 +1684,6 @@ export class KuloHub implements OrchestratorController {
     uploads.cleanupIncompleteUploads();
     uploads.cleanupDrafts();
     uploads.cleanupToolOverflows();
-    const toolOverflowExt = createOrchestratorToolOverflowExtension({
-      uploads, redact, isKnownSecret,
-      resolveDeferredTools: async (convId, candidates, ctx) => {
-        const conv = hubRef ? await hubRef.harness.conversation(convId, ctx) : undefined;
-        return conv ? resolveDeferredAddTools(conv, ctx, candidates) : [];
-      },
-    });
 
     fs.mkdirSync(config.stateDir, { recursive: true });
     fs.mkdirSync(mainWorkspaceDir, { recursive: true });
@@ -1753,6 +1747,20 @@ export class KuloHub implements OrchestratorController {
     });
 
     const getLiveRoles = () => settingsStore.getRoles();
+    const toolOverflowExt = createOrchestratorToolOverflowExtension({
+      uploads,
+      redact,
+      isKnownSecret,
+      resolveContextWindow: createConversationContextWindowResolver({
+        getHarness: () => hubRef?.harness,
+        models,
+        settingsStore,
+      }),
+      resolveDeferredTools: async (convId, candidates, ctx) => {
+        const conv = hubRef ? await hubRef.harness.conversation(convId, ctx) : undefined;
+        return conv ? resolveDeferredAddTools(conv, ctx, candidates) : [];
+      },
+    });
     const getLiveMemory = () => {
       const mem = settingsStore.getMemory();
       return hubRef ? hubRef.#effectiveMemoryConfig(mem) : mem;
@@ -1854,12 +1862,7 @@ export class KuloHub implements OrchestratorController {
       getMediaCapabilities: () =>
         hubRef
           ? hubRef.capabilities.snapshot()
-          : Promise.resolve({
-              revision: 1,
-              connections: [],
-              capabilities: [],
-              imageRouting: { mode: "auto", preference: "balanced", rules: [], instructions: "" },
-            }),
+          : Promise.resolve(EMPTY_MEDIA_CAPABILITIES),
       runSubagents: (req, ctx) => hubRef!.#runSubagents(req, ctx),
       mediaJob: async (id, conversationId) => {
         const source = await hubRef!.mediaSource(conversationId);
@@ -1971,12 +1974,7 @@ export class KuloHub implements OrchestratorController {
       getMediaCapabilities: () =>
         hubRef
           ? hubRef.capabilities.snapshot()
-          : Promise.resolve({
-              revision: 1,
-              connections: [],
-              capabilities: [],
-              imageRouting: { mode: "auto", preference: "balanced", rules: [], instructions: "" },
-            }),
+          : Promise.resolve(EMPTY_MEDIA_CAPABILITIES),
       getPersonalityContext: () => hubRef!.personality.context(),
       freezeRecentWorkBaseline: true,
       isSystemBaselinePending: (conversationId, ctx) => isSystemBaselinePending(hubRef!.harness, conversationId, ctx),
@@ -2527,7 +2525,7 @@ export class KuloHub implements OrchestratorController {
       thinkingLevel: orchestratorAgent.thinkingLevel,
       extensions: [redactionExt, toolOverflowExt, orchestratorExt, codingToolsExt, orchestratorGuardExt, computerUseExt, toolSearchExt, contentExt, projectExt, skillExt, orchestratorTailExt, memoryRuntime.builtinMemoryRecallExt, mediaExt, voiceExt, memoryServiceExt, memorySetupExt, historyExt, assistantToolsExt, globalSettingsExt, ...(customizationExt ? [customizationExt] : []), contextCompaction.extension],
       cwd: mainWorkspaceDir,
-      maxTurns: 25,
+      maxTurns: 40,
     };
     const initialRoot = await harness.root(context, activeRootConvId === Number(ROOT_CONVERSATION_ID) ? { agent: rootAgent } : undefined);
     const rootConversation = activeRootConvId === Number(ROOT_CONVERSATION_ID)
@@ -4289,11 +4287,7 @@ export class KuloHub implements OrchestratorController {
     });
     this.#emitAssistantItems(nextState.assistantRevision, nextState.items);
 
-    const becameActive = nextState.enabled || (await this.assistantLedger.hasAnyRecords());
-    if (becameActive !== this.#assistantActive) {
-      this.#assistantActive = becameActive;
-      await this.#reconfigureOrchestratorConversations(context);
-    }
+    await this.#refreshAssistantActiveFlag(context);
     return this.getAssistantWorkspace(context);
   }
 
@@ -5346,7 +5340,7 @@ export class KuloHub implements OrchestratorController {
           extensions: this.#orchestratorExtensions(isRoot),
           tools: this.#orchestratorTools(isRoot),
           cwd,
-          maxTurns: 25,
+          maxTurns: 40,
         },
         context,
       );

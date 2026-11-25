@@ -70,6 +70,7 @@ function filterStagedDiffSummary(
   const emptyDirsDeleted = prev.emptyDirsDeleted?.filter((p) => !appliedSet.has(p));
   const modeChanged = prev.modeChanged?.filter((p) => !appliedSet.has(p));
   const sensitivePaths = prev.sensitivePaths?.filter((p) => !appliedSet.has(p));
+  const autoExecPaths = prev.autoExecPaths?.filter((p) => !appliedSet.has(p));
   const dirChanges = (emptyDirsAdded?.length ?? 0) + (emptyDirsDeleted?.length ?? 0);
   return {
     ...prev,
@@ -81,6 +82,7 @@ function filterStagedDiffSummary(
     ...(emptyDirsDeleted?.length ? { emptyDirsDeleted } : { emptyDirsDeleted: undefined }),
     ...(modeChanged?.length ? { modeChanged } : { modeChanged: undefined }),
     ...(sensitivePaths?.length ? { sensitivePaths } : { sensitivePaths: undefined }),
+    ...(autoExecPaths?.length ? { autoExecPaths } : { autoExecPaths: undefined }),
     conflictFiles: prev.conflictFiles.filter((p) => !appliedSet.has(p)),
   };
 }
@@ -136,6 +138,7 @@ export class TicketStagedApplyService {
       ...(redacted.emptyDirsDeleted?.length ? { emptyDirsDeleted: redacted.emptyDirsDeleted } : {}),
       ...(redacted.modeChanged?.length ? { modeChanged: redacted.modeChanged } : {}),
       ...(redacted.sensitivePaths?.length ? { sensitivePaths: redacted.sensitivePaths } : {}),
+      ...(redacted.autoExecPaths?.length ? { autoExecPaths: redacted.autoExecPaths } : {}),
       conflictFiles: redacted.conflictFiles,
       unifiedPreview: redacted.unifiedPreview.slice(0, 24 * 1024),
       truncated: redacted.truncated,

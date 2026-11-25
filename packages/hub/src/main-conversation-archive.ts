@@ -117,7 +117,7 @@ export class MainConversationArchiveService {
       extensions: this.#deps.orchestrator.extensions(isRoot),
       tools: this.#deps.orchestrator.tools(isRoot),
       cwd: this.#deps.orchestrator.mainWorkspaceDir,
-      maxTurns: 25,
+      maxTurns: 40,
     };
   }
 

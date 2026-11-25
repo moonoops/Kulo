@@ -450,6 +450,7 @@ export interface StagedWorkspaceDiffSummary {
   emptyDirsDeleted?: string[];
   modeChanged?: string[];
   sensitivePaths?: string[];
+  autoExecPaths?: string[];
   unifiedPreview: string;
   truncated: boolean;
 }

@@ -142,13 +142,13 @@ export function formatStagedDiffRelayLines(stagedDiff: {
       ? [`- Mode changed: ${stagedDiff.modeChanged.slice(0, 20).join(", ")}${stagedDiff.modeChanged.length > 20 ? " ..." : ""}`]
       : []),
     ...(stagedDiff.sensitivePaths?.length
-      ? [`[HIGH-SENSITIVITY PATHS] Changes touch deletions, executable mode bits, symlinks, or auto-exec repo configs (${stagedDiff.sensitivePaths.slice(0, 20).join(", ")}${stagedDiff.sensitivePaths.length > 20 ? " ..." : ""}) — ask explicit user confirmation before calling kulo_apply_staged_changes.`]
+      ? [`[HIGH-SENSITIVITY PATHS] Changes touch executable mode bits, symlinks, or auto-exec repo configs (${stagedDiff.sensitivePaths.slice(0, 20).join(", ")}${stagedDiff.sensitivePaths.length > 20 ? " ..." : ""}) — ask explicit user confirmation before calling kulo_apply_staged_changes.`]
       : []),
     ...(stagedDiff.conflictFiles.length
       ? [`WARNING — concurrent live-workspace conflicts in: ${stagedDiff.conflictFiles.join(", ")} (ask user confirmation before merging)`]
       : []),
     ...(stagedDiff.unifiedPreview ? ["Diff Preview:", stagedDiff.unifiedPreview.slice(0, 6000)] : []),
-    "Inspect full file diffs with kulo_inspect_staged_diff if needed; call kulo_apply_staged_changes when in-scope, sensitivity-free, and conflict-free, or ask the user first on out-of-scope edits, [HIGH-SENSITIVITY PATHS], or conflictFiles (or steer the Worker to revise in place).",
+    "Inspect full file diffs with kulo_inspect_staged_diff if needed; call kulo_apply_staged_changes when in-scope, sensitivity-free, and conflict-free, or ask the user first on out-of-scope edits, unexpected deletions, [HIGH-SENSITIVITY PATHS], or conflictFiles (or steer the Worker to revise in place).",
   ];
 }
 

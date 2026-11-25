@@ -56,11 +56,19 @@ export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
 };
 
 /**
- * Target soft background-compaction trigger ceiling for large-window models (200K / 1M+).
+ * Target soft background-compaction trigger ceiling for medium/large models (<= 256K).
  * Keeps long-running chats responsive and prompt-cache-efficient without lowering `blocking`
  * or inflating `reserveTokens`.
  */
 export const DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS = 128_000;
+/** Window threshold above which the default soft background trigger scales up gently toward 160K. */
+export const LARGE_WINDOW_THRESHOLD_TOKENS = 256_000;
+/** Soft trigger ceiling for 500K+/1M models (stays safely below 200K vendor 2x pricing cliffs). */
+export const LARGE_WINDOW_SOFT_BACKGROUND_TRIGGER_MAX_TOKENS = 160_000;
+export const LARGE_WINDOW_SOFT_TRIGGER_RATIO = 0.3;
+/** Default retained tail on >= 500K windows when keepRecentTokens uses the factory default. */
+export const LARGE_WINDOW_KEEP_RECENT_THRESHOLD_TOKENS = 500_000;
+export const LARGE_WINDOW_KEEP_RECENT_TOKENS = 32_000;
 /** Candidate tighter soft background trigger & tail target for chat-scoped paired replay validation. */
 export const CANDIDATE_CHAT_SOFT_BACKGROUND_TRIGGER_TOKENS = 72_000;
 export const CANDIDATE_CHAT_KEEP_RECENT_TOKENS = 16_000;
@@ -69,28 +77,55 @@ export const HARD_CONTEXT_GUARD_CEILING_TOKENS = 200_000;
 const MIN_SOFT_COMPACTION_SLACK = 8_192;
 
 /**
+ * Resolves the default soft background compaction ceiling for a given context window:
+ * - `<= 256K`: keeps `128_000` (preserves 200K headroom and legacy behavior);
+ * - `> 256K`: scales gently via `min(160_000, max(128_000, floor(window * 0.30)))`
+ *   (e.g., 500K -> 150K, 1M -> 160K) while staying below the 200K 2x pricing cliff.
+ */
+export function resolveDefaultSoftTriggerCeiling(contextWindow: number): number {
+  if (!Number.isFinite(contextWindow) || contextWindow <= LARGE_WINDOW_THRESHOLD_TOKENS) {
+    return DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS;
+  }
+  return Math.min(
+    LARGE_WINDOW_SOFT_BACKGROUND_TRIGGER_MAX_TOKENS,
+    Math.max(
+      DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS,
+      Math.floor(contextWindow * LARGE_WINDOW_SOFT_TRIGGER_RATIO),
+    ),
+  );
+}
+
+/**
  * Clamps compaction thresholds proportionally for small/medium context windows (e.g. 32K / 64K)
  * so `keepRecentTokens` never exceeds `contextWindow - reserveTokens` (avoiding per-turn blocking loops)
  * and `backgroundTokens` retains healthy headroom (avoiding thrashing storms).
- * For large-window models (e.g. 200K / 1M), raises `backgroundTokens` so non-blocking background
- * compaction triggers around `softTriggerCeiling` instead of waiting until ~1M tokens,
- * while preserving explicit `backgroundTokens === 0` opt-outs and earlier user-configured triggers.
+ * For large-window models (e.g. 200K / 500K / 1M), raises `backgroundTokens` so non-blocking background
+ * compaction triggers around the effective soft ceiling (`128K` on `<= 256K`, up to `160K` on `1M`),
+ * while preserving explicit `backgroundTokens === 0` opt-outs and explicit user overrides.
  */
 export function clampCompactionConfigForWindow(
   compaction: CompactionConfig,
   contextWindow: number,
-  softTriggerCeiling = DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS,
+  softTriggerCeiling?: number,
 ): CompactionConfig {
   if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
     return { ...compaction };
   }
+  const hasExplicitSoftCeiling = softTriggerCeiling !== undefined;
+  const effectiveSoftCeiling = softTriggerCeiling ?? resolveDefaultSoftTriggerCeiling(contextWindow);
   const reserveTokens = Math.min(
     compaction.reserveTokens,
     Math.max(512, Math.floor(contextWindow * 0.25)),
   );
   const blocking = Math.max(512, contextWindow - reserveTokens);
+  const scaledKeepRecent =
+    !hasExplicitSoftCeiling &&
+    contextWindow >= LARGE_WINDOW_KEEP_RECENT_THRESHOLD_TOKENS &&
+    compaction.keepRecentTokens === DEFAULT_COMPACTION_CONFIG.keepRecentTokens
+      ? LARGE_WINDOW_KEEP_RECENT_TOKENS
+      : compaction.keepRecentTokens;
   const keepRecentTokens = Math.min(
-    compaction.keepRecentTokens,
+    scaledKeepRecent,
     Math.max(512, Math.floor(blocking * 0.45)),
   );
   const baseBackgroundTokens =
@@ -101,11 +136,16 @@ export function clampCompactionConfigForWindow(
           Math.max(0, Math.floor((blocking - keepRecentTokens) * 0.5)),
         );
   const softTrigger = Math.max(
-    softTriggerCeiling,
+    effectiveSoftCeiling,
     keepRecentTokens + MIN_SOFT_COMPACTION_SLACK,
   );
+  // Apply the default large-window soft-ceiling floor only when using factory backgroundTokens
+  // (or an explicit softTriggerCeiling override), letting power users explicitly raise softLimit > 160K.
+  const applySoftCeilingFloor =
+    hasExplicitSoftCeiling ||
+    compaction.backgroundTokens === DEFAULT_COMPACTION_CONFIG.backgroundTokens;
   const backgroundTokens =
-    baseBackgroundTokens > 0 && blocking > softTrigger
+    applySoftCeilingFloor && baseBackgroundTokens > 0 && blocking > softTrigger
       ? Math.max(baseBackgroundTokens, blocking - softTrigger)
       : baseBackgroundTokens;
   return {
@@ -129,12 +169,13 @@ export interface ComputedContextThresholds {
 /**
  * Computes effective compaction and proactive UI warning thresholds for a model window.
  * Guarantees `warnLimit < blocking` across all windows (including 32K where `softLimit * 1.5`
- * would otherwise overshoot the blocking threshold).
+ * would otherwise overshoot the blocking threshold), and clamps default `> 256K` warnings at
+ * `HARD_CONTEXT_GUARD_CEILING_TOKENS` (200K) so idle 1M chats never sit above the pricing cliff.
  */
 export function computeContextThresholds(
   compaction: CompactionConfig,
   contextWindow: number,
-  softTriggerCeiling = DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS,
+  softTriggerCeiling?: number,
 ): ComputedContextThresholds {
   const window = Number.isFinite(contextWindow) && contextWindow > 0
     ? Math.floor(contextWindow)
@@ -145,9 +186,15 @@ export function computeContextThresholds(
     ? Math.max(clamped.keepRecentTokens, blocking - clamped.backgroundTokens)
     : blocking;
   const blockingCap = Math.max(1, Math.min(blocking - 1, Math.floor(blocking * 0.9)));
-  const warnLimit = clamped.backgroundTokens > 0
+  const rawWarnLimit = clamped.backgroundTokens > 0
     ? Math.min(blockingCap, Math.max(softLimit + MIN_SOFT_COMPACTION_SLACK, Math.floor(softLimit * 1.5)))
     : blockingCap;
+  const warnLimit =
+    softTriggerCeiling === undefined &&
+    window > LARGE_WINDOW_THRESHOLD_TOKENS &&
+    softLimit < HARD_CONTEXT_GUARD_CEILING_TOKENS
+      ? Math.min(rawWarnLimit, HARD_CONTEXT_GUARD_CEILING_TOKENS)
+      : rawWarnLimit;
   return {
     window,
     blocking,
@@ -162,7 +209,7 @@ export function computeContextThresholds(
 export function buildAdaptiveCompactionPolicy(
   compaction: CompactionConfig,
   models: Iterable<{ provider: string; id: string; contextWindow?: number }>,
-  softTriggerCeiling = DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS,
+  softTriggerCeiling?: number,
 ): CompactionConfig & { modelOverrides?: Record<string, CompactionConfig> } {
   const overrides: Record<string, CompactionConfig> = {};
   let count = 0;

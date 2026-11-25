@@ -231,7 +231,7 @@ export function createOrchestratorCodingGuardExtension(deps: OrchestratorCodingG
               ),
           );
           if (conflictingTicket) {
-            return `当前工作区正在由活跃工单 ${conflictingTicket.id}（${conflictingTicket.title}）持有写锁（运行中、待清理或待合并）；请勿在主脑争抢同一目录写锁，改用 kulo_steer('${conflictingTicket.id}') 或等待其释放写锁。`;
+            return `当前工作区正在由活跃工单 ${conflictingTicket.id}（${conflictingTicket.title}）持有写锁（运行中、待清理或待合并）；请勿在主脑争抢同一目录写锁，直接针对 ${conflictingTicket.id} 调用 kulo_inspect_staged_diff / kulo_apply_staged_changes 处理待合并改动，或改用 kulo_steer('${conflictingTicket.id}') 引导/等待其释放写锁。`;
           }
           return undefined;
         };

@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import type { StagedWorkspaceApplyResult, StagedWorkspaceDiffDetail, StagedWorkspaceDiffSummary } from "@kulo/protocol";
 import { resolveCrossPlatformSpawn } from "./platform-process.js";
+import { isAutoExecSensitivePath } from "./staged-workspace-policy.js";
 
 export interface ManifestEntry {
   sha256: string;
@@ -50,22 +51,6 @@ const DEFAULT_BUILD_CACHE_FILE_SUFFIXES = [".tsbuildinfo", ".pyc", ".pyo"];
 const MAX_TEXT_DIFF_FILE_BYTES = 512 * 1024;
 const STREAM_HASH_CHUNK_BYTES = 64 * 1024;
 const STAT_CACHE_RACY_WINDOW_MS = 2000;
-const LIFECYCLE_SCRIPT_KEYS = new Set([
-  "preinstall",
-  "install",
-  "postinstall",
-  "prepare",
-  "prepublish",
-  "prepublishOnly",
-  "prepack",
-  "postpack",
-  "preuninstall",
-  "uninstall",
-  "postuninstall",
-  "preversion",
-  "version",
-  "postversion",
-]);
 
 export const STAGED_NON_COW_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 export const STAGED_NON_COW_MAX_FILES = 50_000;
@@ -620,62 +605,6 @@ function hasExecBitDiff(before: ManifestEntry | undefined, after: ManifestEntry 
   return (before.mode & 0o111) !== (after.mode & 0o111);
 }
 
-function readPackageLifecycleScripts(filePath: string | undefined): { valid: boolean; scripts: Record<string, string> } {
-  if (!filePath || !fs.existsSync(filePath)) return { valid: true, scripts: {} };
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { valid: false, scripts: {} };
-    const rawScripts = (parsed as { scripts?: unknown }).scripts;
-    if (!rawScripts || typeof rawScripts !== "object" || Array.isArray(rawScripts)) return { valid: true, scripts: {} };
-    const scripts: Record<string, string> = {};
-    for (const [key, value] of Object.entries(rawScripts as Record<string, unknown>)) {
-      if (LIFECYCLE_SCRIPT_KEYS.has(key) && typeof value === "string") {
-        scripts[key] = value;
-      }
-    }
-    return { valid: true, scripts };
-  } catch {
-    return { valid: false, scripts: {} };
-  }
-}
-
-function hasPackageLifecycleScriptChange(beforePath: string | undefined, afterPath: string | undefined): boolean {
-  const before = readPackageLifecycleScripts(beforePath);
-  const after = readPackageLifecycleScripts(afterPath);
-  if (!after.valid) return true;
-  const keys = new Set([...Object.keys(before.scripts), ...Object.keys(after.scripts)]);
-  for (const key of keys) {
-    if (before.scripts[key] !== after.scripts[key]) return true;
-  }
-  return false;
-}
-
-function isAutoExecSensitivePath(
-  relPosix: string,
-  beforePath: string | undefined,
-  afterPath: string | undefined,
-): boolean {
-  if (
-    relPosix === ".husky" ||
-    relPosix.startsWith(".husky/") ||
-    relPosix.includes("/.husky/") ||
-    relPosix === ".envrc" ||
-    relPosix.endsWith("/.envrc") ||
-    relPosix === ".vscode" ||
-    relPosix.startsWith(".vscode/") ||
-    relPosix.includes("/.vscode/") ||
-    relPosix === ".github/workflows" ||
-    relPosix.startsWith(".github/workflows/") ||
-    relPosix.includes("/.github/workflows/")
-  ) {
-    return true;
-  }
-  if (relPosix === "package.json" || relPosix.endsWith("/package.json")) {
-    return hasPackageLifecycleScriptChange(beforePath, afterPath);
-  }
-  return false;
-}
-
 function formatOctalMode(mode: number): string {
   return `100${(mode & 0o777).toString(8).padStart(3, "0")}`;
 }
@@ -800,6 +729,7 @@ export function computeStagedDiff(options: {
   const modeChanged: string[] = [];
   const conflictFiles: string[] = [];
   const sensitiveSet = new Set<string>();
+  const autoExecSet = new Set<string>();
 
   for (const rel of allPaths) {
     const base = options.baseline[rel];
@@ -840,7 +770,6 @@ export function computeStagedDiff(options: {
       }
     } else if (base && !next) {
       deleted.push(rel);
-      sensitiveSet.add(rel);
     } else if (contentChanged || execChanged) {
       modified.push(rel);
       if (execChanged) {
@@ -860,6 +789,7 @@ export function computeStagedDiff(options: {
     const afterPath = next ? path.join(options.stagedDir, safeRel) : undefined;
     if (isAutoExecSensitivePath(rel, beforePath, afterPath)) {
       sensitiveSet.add(rel);
+      autoExecSet.add(rel);
     }
 
     const liveSource = currentSource[rel];
@@ -910,6 +840,7 @@ export function computeStagedDiff(options: {
   }
 
   const sensitivePaths = [...sensitiveSet].sort();
+  const autoExecPaths = [...autoExecSet].sort();
   const summary: StagedWorkspaceDiffSummary = {
     hasChanges: changedPaths.length > 0,
     added,
@@ -919,6 +850,7 @@ export function computeStagedDiff(options: {
     ...(emptyDirsDeleted.length > 0 ? { emptyDirsDeleted } : {}),
     ...(modeChanged.length > 0 ? { modeChanged } : {}),
     ...(sensitivePaths.length > 0 ? { sensitivePaths } : {}),
+    ...(autoExecPaths.length > 0 ? { autoExecPaths } : {}),
     conflictFiles,
     unifiedPreview: truncateUtf8(diffText, 24 * 1024),
     truncated,

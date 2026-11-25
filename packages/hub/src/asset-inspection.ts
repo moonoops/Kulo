@@ -13,11 +13,86 @@ export interface AssetInspectionInput {
 
 const DEFAULT_PAGE_LENGTH = 12_000;
 const MAX_PAGE_LENGTH = 24_000;
+/** Leaves ~6 KiB headroom under pi-durable's 50 KiB single-line boundOutput cutoff. */
+export const ASSET_INSPECTION_MAX_SERIALIZED_BYTES = 44 * 1024;
 
-function page(text: string, offset: number, limit: number) {
-  if (offset > text.length) throw new UploadError("读取位置超出了资源文本长度。", 416);
-  const end = Math.min(offset + limit, text.length);
-  return { text: text.slice(offset, end), offset, nextOffset: end < text.length ? end : null, totalLength: text.length, truncated: end < text.length };
+function isHighSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+}
+
+function isLowSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+}
+
+/** Ensures a slice boundary never splits a UTF-16 surrogate pair across adjacent pages. */
+function adjustSurrogateBoundary(text: string, start: number, end: number): number {
+  if (end <= start || end >= text.length) return end;
+  if (isHighSurrogate(text.charCodeAt(end - 1)) && isLowSurrogate(text.charCodeAt(end))) {
+    return end - 1;
+  }
+  return end;
+}
+
+/** Minimum forward progress of one full Unicode code point from `offset`. */
+function minProgressEnd(text: string, offset: number): number {
+  if (offset >= text.length) return offset;
+  if (offset + 1 < text.length && isHighSurrogate(text.charCodeAt(offset)) && isLowSurrogate(text.charCodeAt(offset + 1))) {
+    return offset + 2;
+  }
+  return offset + 1;
+}
+
+function buildBoundedTextPayload(
+  fullText: string,
+  offset: number,
+  limit: number,
+  maxBytes: number,
+  composeDetails: (pageFields: {
+    offset: number;
+    nextOffset: number | null;
+    totalLength: number;
+    truncated: boolean;
+    text: string;
+  }) => JsonObject,
+): { details: JsonObject; serialized: string } {
+  if (offset > fullText.length) throw new UploadError("读取位置超出了资源文本长度。", 416);
+
+  const renderAt = (rawEnd: number) => {
+    const end = adjustSurrogateBoundary(fullText, offset, rawEnd);
+    const truncated = end < fullText.length;
+    const details = composeDetails({
+      offset,
+      nextOffset: truncated ? end : null,
+      totalLength: fullText.length,
+      truncated,
+      text: fullText.slice(offset, end),
+    });
+    const serialized = JSON.stringify(details);
+    return { end, details, serialized, bytes: Buffer.byteLength(serialized, "utf8") };
+  };
+
+  const maxEnd = Math.min(offset + limit, fullText.length);
+  const fullCandidate = renderAt(maxEnd);
+  if (fullCandidate.bytes <= maxBytes || offset === fullText.length) {
+    return { details: fullCandidate.details, serialized: fullCandidate.serialized };
+  }
+
+  const floorEnd = Math.min(minProgressEnd(fullText, offset), maxEnd);
+  let lo = floorEnd;
+  let hi = maxEnd;
+  let best = renderAt(floorEnd);
+
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const candidate = renderAt(mid);
+    if (candidate.bytes <= maxBytes) {
+      best = candidate;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return { details: best.details, serialized: best.serialized };
 }
 
 function isTextMime(mimeType: string): boolean {
@@ -77,18 +152,49 @@ export function inspectAssetContent(input: AssetInspectionInput, uploads: KuloUp
         };
       }
     }
-    const details = {
-      asset, inspection: "text", contentProvided: true, ...page(fullText, offset, limit),
-      ...(diagramSummary ? { diagramSummary } : {}),
-      warning,
-    } as unknown as JsonObject;
-    return { details, output: [{ type: "text", text: JSON.stringify(details) }] };
+    // Keep pagination cursor and metadata strictly BEFORE `text` so truncated JSON can never sever `nextOffset`.
+    const { details, serialized } = buildBoundedTextPayload(
+      fullText,
+      offset,
+      limit,
+      ASSET_INSPECTION_MAX_SERIALIZED_BYTES,
+      ({ offset: pageOffset, nextOffset, totalLength, truncated, text }) => ({
+        asset,
+        inspection: "text",
+        contentProvided: true,
+        offset: pageOffset,
+        nextOffset,
+        totalLength,
+        truncated,
+        ...(diagramSummary ? { diagramSummary } : {}),
+        warning,
+        text,
+      }) as unknown as JsonObject,
+    );
+    return { details, output: [{ type: "text", text: serialized }] };
   }
   const transcript = storedTranscript?.status !== "failed" ? storedTranscript?.text : undefined;
   if ((asset.kind === "audio" || asset.kind === "video") && transcript) {
-    const details = { asset, inspection: "transcript", contentProvided: false, transcriptProvided: true, ...page(transcript, offset, limit),
-      note: "仅提供已有转写；音视频内容未解码，不代表已完整审阅。", warning } as unknown as JsonObject;
-    return { details, output: [{ type: "text", text: JSON.stringify(details) }] };
+    const { details, serialized } = buildBoundedTextPayload(
+      transcript,
+      offset,
+      limit,
+      ASSET_INSPECTION_MAX_SERIALIZED_BYTES,
+      ({ offset: pageOffset, nextOffset, totalLength, truncated, text }) => ({
+        asset,
+        inspection: "transcript",
+        contentProvided: false,
+        transcriptProvided: true,
+        offset: pageOffset,
+        nextOffset,
+        totalLength,
+        truncated,
+        note: "仅提供已有转写；音视频内容未解码，不代表已完整审阅。",
+        warning,
+        text,
+      }) as unknown as JsonObject,
+    );
+    return { details, output: [{ type: "text", text: serialized }] };
   }
   if (offset !== 0 || input.limit !== undefined) throw new UploadError("此资源没有可分页的文本内容。", 400);
   const details = { asset, inspection: "metadata", contentProvided: false,

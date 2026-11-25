@@ -14,6 +14,7 @@ import { KuloProjectsDoc } from "../projects.js";
 import { KuloStateDoc, getActiveStagedCwd, resolveTicketExecutionScope } from "../state.js";
 import { budgetExternalContextSections, escapeXmlContent, fitSectionBudget } from "./external-agent.js";
 import { formatMediaRoutingSummary } from "./orchestrator.js";
+import { buildComputerWorkerCraftSection } from "./worker-craft.js";
 
 export interface ComposeWorkerOptions {
   memoryEnabled?: boolean;
@@ -248,6 +249,8 @@ export function composeWorkerInstructions(
   }
 
   lines.push("");
+  lines.push(buildComputerWorkerCraftSection({ isReadOnly, hasScratchDir: Boolean(ticket.scratchDir) }));
+  lines.push("");
   lines.push("## Execution & Verification Rules");
   lines.push(
     `- **Language**: Match the task's active language for internal thinking/reasoning and handoff notes (defaulting to ${defaultLanguage} when unspecified).`,
@@ -284,7 +287,7 @@ export function composeWorkerInstructions(
     );
   }
   lines.push(
-    "- **Retries & Escalation**: Resolve minor ambiguities with the most reasonable interpretation and note your assumption. Do not repeat an approach that already failed; check the outcome of any uncertain side effect before retrying, try new approaches within scope when evidence warrants it, and report `blocked` when progress requires a specific human decision or permission.",
+    "- **Retries & Escalation**: Resolve minor ambiguities with the most reasonable interpretation and note your assumption. When a tool fails, read the error and change approach or arguments instead of repeating the same call; check the outcome of any uncertain side effect before retrying, try new approaches within scope when evidence warrants it, and report `blocked` when progress requires a specific human decision or permission.",
   );
   lines.push(
     "- **Truthfulness**: Never fabricate uninspected file contents, citations, or unexecuted check results.",
@@ -459,6 +462,13 @@ export function composeSubagentInstructions(params: {
   } else if (effectiveSubMemoryMode === "builtin") {
     lines.push("- Shared project memory is available via `kulo_memory_recall(bank='shared')` when historical context is needed.");
   }
+  lines.push("");
+  lines.push(
+    buildComputerWorkerCraftSection({
+      isReadOnly: effectiveReadOnly,
+      hasScratchDir: Boolean(parentTicket.scratchDir),
+    }),
+  );
   lines.push("");
   lines.push("## Execution & Response");
   lines.push(

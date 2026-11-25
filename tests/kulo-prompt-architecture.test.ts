@@ -198,10 +198,10 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
     const sysChars = systemTextLength(first);
     const schemaChars = JSON.stringify(offeredToolObjects(first)).length;
     expect(sysChars).toBeGreaterThan(2_000);
-    expect(sysChars).toBeLessThan(12_000);
+    expect(sysChars).toBeLessThan(16_200);
     expect(schemaChars).toBeGreaterThan(3_000);
-    expect(schemaChars).toBeLessThan(14_200);
-    expect(sysChars + schemaChars).toBeLessThan(25_500);
+    expect(schemaChars).toBeLessThan(15_500);
+    expect(sysChars + schemaChars).toBeLessThan(31_500);
 
     // Turning off built-in memory restores the exact minimal 15-tool baseline with no kulo_memory section
     await hub.memoryRuntime.builtinMemory.setEnabled(false, 1, BACKGROUND_CONTEXT);

@@ -57,7 +57,7 @@ function validPathList(value: unknown, maxItems = 5000, maxLen = 4096): boolean 
 function validDiffSummary(value: unknown): value is StagedWorkspaceDiffSummary {
   if (!object(value) || typeof value.hasChanges !== "boolean" || typeof value.truncated !== "boolean" || typeof value.unifiedPreview !== "string" || value.unifiedPreview.length > 64_000) return false;
   if (!["added", "modified", "deleted", "conflictFiles"].every((key) => validPathList(value[key]))) return false;
-  return ["emptyDirsAdded", "emptyDirsDeleted", "modeChanged", "sensitivePaths"].every((key) => value[key] === undefined || validPathList(value[key]));
+  return ["emptyDirsAdded", "emptyDirsDeleted", "modeChanged", "sensitivePaths", "autoExecPaths"].every((key) => value[key] === undefined || validPathList(value[key]));
 }
 
 function validReadOnlyViolation(value: unknown): value is ReadOnlyViolationSummary {

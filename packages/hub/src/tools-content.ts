@@ -6,6 +6,7 @@ import { KuloUiCards, type UiAssetPublicationInput, type UiCardSource, type UiDi
 import type { PublishedDiagramResult } from "./diagram-publication.js";
 import { KuloStateDoc, isOrchestratorConversation } from "./state.js";
 import { resolveDeferredAddTools } from "./tool-surface.js";
+import { KULO_UI_DIAGRAM_DESCRIPTION, KULO_UI_SHOW_DESCRIPTION } from "./prompts/tool-descriptions.js";
 
 export interface ContentToolsOptions {
   get: () => KuloUiCards;
@@ -47,8 +48,7 @@ export function createContentToolsExtension(options: ContentToolsOptions) {
     tools: [
       defineTool({
         name: "kulo_ui_show",
-        description:
-          "Publish an interactive HeroUI v3 card (choices, forms, selectable tables; read `genui-cards` for multi-element/tabbed/chart cards). Example: `{\"root\":\"main\",\"elements\":{\"main\":{\"type\":\"Stack\",\"props\":{\"gap\":\"md\"},\"children\":[\"q\",\"go\"]},\"q\":{\"type\":\"Choice\",\"props\":{\"field\":\"choice\",\"options\":[{\"value\":\"a\",\"label\":\"Option A\"}],\"required\":true}},\"go\":{\"type\":\"Button\",\"props\":{\"actionId\":\"ok\",\"label\":\"Confirm\",\"variant\":\"primary\"}}},\"state\":{\"values\":{}}}` + `actions:[{\"id\":\"ok\",\"label\":\"Confirm\",\"kind\":\"submit\"}]` (<=80 elements, depth 8; no JS/style/class/URLs).",
+        description: KULO_UI_SHOW_DESCRIPTION,
         parameters: obj(definition),
         replay: "safe",
         execute: (args, api, context) => ordered(api, async () => {
@@ -68,8 +68,7 @@ export function createContentToolsExtension(options: ContentToolsOptions) {
       }),
       ...(options.publishDiagram ? [defineTool({
         name: "kulo_ui_diagram",
-        description:
-          "Proactively embed an inline SVG chart or diagram in Main Chat for trends, comparisons, timelines, flows, or architectures (takeaway first; `--d-*`; `diagram-design`).",
+        description: KULO_UI_DIAGRAM_DESCRIPTION,
         parameters: obj({
           title: str(),
           svg: str(),

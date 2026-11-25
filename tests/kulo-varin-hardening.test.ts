@@ -554,8 +554,8 @@ describe("#6 Adaptive compaction clamping and post-commit tool pruning", () => {
 
     const c1m = clampCompactionConfigForWindow(DEFAULT_COMPACTION_CONFIG, 1_048_576);
     expect(c1m.reserveTokens).toBe(DEFAULT_COMPACTION_CONFIG.reserveTokens);
-    expect(c1m.keepRecentTokens).toBe(DEFAULT_COMPACTION_CONFIG.keepRecentTokens);
-    expect(1_048_576 - c1m.reserveTokens - c1m.backgroundTokens).toBe(128_000);
+    expect(c1m.keepRecentTokens).toBe(32_000);
+    expect(1_048_576 - c1m.reserveTokens - c1m.backgroundTokens).toBe(160_000);
 
     // Explicit backgroundTokens=0 opt-out and earlier user-configured triggers remain honored.
     expect(clampCompactionConfigForWindow({ ...DEFAULT_COMPACTION_CONFIG, backgroundTokens: 0 }, 1_048_576).backgroundTokens).toBe(0);

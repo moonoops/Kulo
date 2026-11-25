@@ -22,7 +22,6 @@ import type {
 } from "@kulo/protocol";
 import {
   DEFAULT_CONTEXT_WINDOW,
-  DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS,
   HARD_CONTEXT_GUARD_CEILING_TOKENS,
   computeContextThresholds,
 } from "./config.js";
@@ -330,7 +329,7 @@ export class HubContextGuard {
     const live = view.docs["pi.live"] as LiveState | undefined;
     const agentDoc = view.docs["pi.agent"] as StoredAgentDocLike | undefined;
     const { modelKey, contextWindow, compaction } = this.#resolveEffectiveModelAndCompaction(agentDoc);
-    const softCeiling = this.#deps.softTriggerCeiling?.() ?? DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS;
+    const softCeiling = this.#deps.softTriggerCeiling?.();
     const thresholds = computeContextThresholds(compaction, contextWindow, softCeiling);
 
     const latestCompactionId = this.#latestCompactionEntryId(view.entries);
@@ -400,7 +399,11 @@ export class HubContextGuard {
       return undefined;
     }
     if (!this.#deps.settingsStore.getCompactionConfig().enabled) return undefined;
-    const ceiling = this.#deps.hardCeilingTokens?.() ?? HARD_CONTEXT_GUARD_CEILING_TOKENS;
+    const ceiling =
+      this.#deps.hardCeilingTokens?.() ??
+      (liveContext && liveContext.softLimit >= HARD_CONTEXT_GUARD_CEILING_TOKENS
+        ? Math.max(HARD_CONTEXT_GUARD_CEILING_TOKENS, liveContext.warnLimit)
+        : HARD_CONTEXT_GUARD_CEILING_TOKENS);
     if (liveContext?.tokens === undefined || liveContext.tokens < ceiling) return undefined;
 
     const live = watchValue.docs["pi.live"] as LiveState | undefined;
@@ -493,7 +496,7 @@ export class HubContextGuard {
       model: agent.model,
       compaction: agent.compaction as StoredAgentDocLike["compaction"],
     });
-    const softCeiling = this.#deps.softTriggerCeiling?.() ?? DEFAULT_SOFT_BACKGROUND_TRIGGER_TOKENS;
+    const softCeiling = this.#deps.softTriggerCeiling?.();
     const thresholds = computeContextThresholds(compaction, contextWindow, softCeiling);
     const cut = analyzeCompactablePrefix(ctxView, thresholds.keepRecentTokens);
     if (!cut.canCompact) {

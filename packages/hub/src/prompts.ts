@@ -1,8 +1,11 @@
 export {
   KULO_PHILOSOPHY_PROMPT,
   buildPhilosophyPrompt,
+  buildSettingsPhilosophyPrompt,
   createOrchestratorSections,
   formatMediaRoutingSummary,
+  resolvePromptVersion,
+  type KuloPromptVersion,
 } from "./prompts/orchestrator.js";
 export {
   DEFAULT_EXTERNAL_AGENT_ROLE_PROMPT,
