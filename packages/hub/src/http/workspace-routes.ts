@@ -78,14 +78,22 @@ export async function handleWorkspaceRoutes(ctx: HubHttpRouteContext): Promise<b
     return true;
   }
   if (req.method === "POST" && pathname === "/api/topics") {
-    const body = (await readJsonObject(req)) as { title?: string; projectId?: string | null };
+    const body = (await readJsonObject(req)) as { title?: string; projectId?: string | null; draft?: boolean };
     if (body.title !== undefined && typeof body.title !== "string") {
       throw new ProjectError(400, "invalid_topic", "会话名称无效。");
     }
     if (body.projectId !== undefined && body.projectId !== null && typeof body.projectId !== "string") {
       throw new ProjectError(400, "invalid_project", "项目无效。");
     }
-    const topic = await hub.createTopic(body.title, undefined, body.projectId);
+    if (body.draft !== undefined && typeof body.draft !== "boolean") {
+      throw new ProjectError(400, "invalid_topic", "会话参数无效。");
+    }
+    const topic = await hub.createTopic(
+      body.title,
+      undefined,
+      body.projectId,
+      body.draft !== undefined ? { draft: body.draft } : undefined,
+    );
     sendJson(res, 200, topic);
     return true;
   }

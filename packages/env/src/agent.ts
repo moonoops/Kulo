@@ -475,7 +475,7 @@ export class KuloEnvAgent {
           ...EXTERNAL_AGENT_NODE_CAPABILITIES,
           "host-actions",
           ...workerIsolationCapabilities(),
-          ...(this.#options.capabilities ?? []).filter((capability) => !["flow-browser", "agent-browser", "agent-desktop"].includes(capability)),
+          ...(this.#options.capabilities ?? []).filter((capability) => !["flow-browser", "agent-browser", "agent-browser-v2", "agent-desktop"].includes(capability)),
           ...(this.#browser.available ? ["flow-browser"] : []),
           ...this.#computer.capabilities(),
         ]),

@@ -69,18 +69,19 @@ function PlayGlyph({ playing }: { playing: boolean }) {
   return <KuloIcon name={playing ? "pause" : "play"} size={22} />;
 }
 
-export function MediaMessage({ asset, conversationKey, onPreviewImage, localPreview = false, defaultExpanded = true, fallbackText }: {
+export function MediaMessage({ asset, conversationKey, onPreviewImage, localPreview = false, defaultExpanded = true, compact = false, fallbackText }: {
   asset: ChatAttachment;
   conversationKey?: string;
   onPreviewImage?: (image: PreviewableImage) => void;
   localPreview?: boolean;
   defaultExpanded?: boolean;
+  compact?: boolean;
   fallbackText?: string;
 }) {
   useI18n();
   if (asset.kind === "image") return <AssetImageGallery assets={[asset]} onPreviewImage={onPreviewImage} />;
   if (asset.kind === "file" && asset.presentation === "diagram" && isHtmlArtifact(asset)) return <InlineDiagram asset={asset} fallbackText={fallbackText} />;
-  if (asset.kind !== "audio" && asset.kind !== "video") return <FileMessage asset={asset} defaultExpanded={defaultExpanded} onPreviewImage={onPreviewImage} />;
+  if (asset.kind !== "audio" && asset.kind !== "video") return <FileMessage asset={asset} defaultExpanded={defaultExpanded} compact={compact} onPreviewImage={onPreviewImage} />;
   return <PlayableMedia asset={asset} conversationKey={conversationKey} localPreview={localPreview} />;
 }
 

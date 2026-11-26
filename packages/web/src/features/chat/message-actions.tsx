@@ -1,5 +1,6 @@
 import { translate as tr, useI18n } from "../../kulo-i18n";
 import { Button, Spinner } from "@heroui/react";
+import { createPortal } from "react-dom";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { getMessageParts, messagePartFallback, type ChatAttachment, type ChatDisplayItem, type ChatReplyReference } from "@kulo/protocol";
 import { KuloIcon } from "../../kulo-icon";
@@ -18,6 +19,15 @@ export function useMessageReply(): ((excerpt: string) => void) | undefined {
 const EXCLUDED_SELECTION_SELECTOR = [
   ".kulo-chat-code-toolbar",
   ".kulo-chat-code-footer",
+  ".kulo-artifact-header",
+  ".kulo-artifact-compact-row",
+  ".kulo-artifact-collapsed",
+  ".kulo-artifact-feedback",
+  ".kulo-artifact-error",
+  ".kulo-artifact-unsupported",
+  ".kulo-pdf-toolbar",
+  ".kulo-pptx-toolbar",
+  ".kulo-xlsx-bar",
   ".kulo-message-reply",
   ".kulo-message-sources",
   ".kulo-message-footer",
@@ -33,11 +43,36 @@ const STRIP_SELECTION_SELECTOR = [
   "[aria-hidden=\"true\"]",
   ".kulo-chat-code-toolbar",
   ".kulo-chat-code-footer",
+  ".kulo-artifact-header",
+  ".kulo-artifact-compact-row",
+  ".kulo-artifact-collapsed",
+  ".kulo-artifact-feedback",
+  ".kulo-artifact-error",
+  ".kulo-artifact-unsupported",
+  ".kulo-pdf-toolbar",
+  ".kulo-pptx-toolbar",
+  ".kulo-xlsx-bar",
   ".kulo-message-reply",
   ".kulo-message-sources",
   ".kulo-message-footer",
   ".kulo-selection-quote-bar",
 ].join(", ");
+
+interface SelectionRect {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+}
+
+export interface SelectionQuoteBarPosition {
+  text: string;
+  top: number;
+  left: number;
+  placement: "above" | "below";
+}
+
+const CLIPPING_OVERFLOW = /^(?:auto|scroll|hidden|clip)$/;
 
 function elementOf(node: Node | null): Element | null {
   if (!node) return null;
@@ -48,7 +83,76 @@ function isFinePointerEnvironment(): boolean {
   return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(pointer: fine)").matches;
 }
 
-export function extractValidMessageSelection(rootEl: HTMLElement | null): { text: string; top: number; left: number } | null {
+function intersectRect(a: SelectionRect, b: SelectionRect): SelectionRect | null {
+  const top = Math.max(a.top, b.top);
+  const bottom = Math.min(a.bottom, b.bottom);
+  const left = Math.max(a.left, b.left);
+  const right = Math.min(a.right, b.right);
+  if (right <= left || bottom <= top) return null;
+  return { top, bottom, left, right };
+}
+
+function visibleClipBounds(node: Element | null, vw: number, vh: number): SelectionRect | null {
+  let clip: SelectionRect = { top: 0, left: 0, right: vw, bottom: vh };
+  if (typeof window === "undefined" || typeof window.getComputedStyle !== "function") return clip;
+  const body = typeof document !== "undefined" ? document.body : null;
+  const docEl = typeof document !== "undefined" ? document.documentElement : null;
+  for (let current: Element | null = node; current && current !== body && current !== docEl; current = current.parentElement) {
+    const style = window.getComputedStyle(current);
+    const clipsX = CLIPPING_OVERFLOW.test(style.overflowX || style.overflow);
+    const clipsY = CLIPPING_OVERFLOW.test(style.overflowY || style.overflow);
+    if (!clipsX && !clipsY) continue;
+    const box = current.getBoundingClientRect();
+    if (box.width === 0 && box.height === 0) continue;
+    const next = intersectRect(clip, {
+      top: clipsY ? box.top : clip.top,
+      bottom: clipsY ? box.bottom : clip.bottom,
+      left: clipsX ? box.left : clip.left,
+      right: clipsX ? box.right : clip.right,
+    });
+    if (!next) return null;
+    clip = next;
+  }
+  return clip;
+}
+
+function resolveVisibleSelectionRect(range: Range, anchorEl: Element | null, vw: number, vh: number): SelectionRect | null {
+  const clip = visibleClipBounds(anchorEl, vw, vh);
+  if (!clip) return null;
+
+  const rawRects: SelectionRect[] = [];
+  if (typeof range.getClientRects === "function") {
+    for (const candidate of Array.from(range.getClientRects())) {
+      if (candidate.width === 0 && candidate.height === 0) continue;
+      const clipped = intersectRect(candidate, clip);
+      if (clipped) rawRects.push(clipped);
+    }
+  }
+  if (rawRects.length > 0) {
+    let minTop = rawRects[0]!.top;
+    for (const candidate of rawRects) {
+      if (candidate.top < minTop) minTop = candidate.top;
+    }
+    const topLine = rawRects.filter((candidate) => candidate.top - minTop <= 4);
+    let top = topLine[0]!.top;
+    let bottom = topLine[0]!.bottom;
+    let left = topLine[0]!.left;
+    let right = topLine[0]!.right;
+    for (const candidate of topLine.slice(1)) {
+      if (candidate.top < top) top = candidate.top;
+      if (candidate.bottom > bottom) bottom = candidate.bottom;
+      if (candidate.left < left) left = candidate.left;
+      if (candidate.right > right) right = candidate.right;
+    }
+    return { top, bottom, left, right };
+  }
+
+  const bounding = range.getBoundingClientRect();
+  if (bounding.width === 0 && bounding.height === 0) return null;
+  return intersectRect(bounding, clip);
+}
+
+export function extractValidMessageSelection(rootEl: HTMLElement | null): SelectionQuoteBarPosition | null {
   if (!rootEl || typeof window === "undefined") return null;
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
@@ -56,11 +160,18 @@ export function extractValidMessageSelection(rootEl: HTMLElement | null): { text
   if (!anchorNode || !focusNode || !rootEl.contains(anchorNode) || !rootEl.contains(focusNode)) return null;
   const anchorEl = elementOf(anchorNode);
   const focusEl = elementOf(focusNode);
+  if (anchorEl?.isConnected === false || focusEl?.isConnected === false) return null;
   if (anchorEl?.closest(EXCLUDED_SELECTION_SELECTOR) || focusEl?.closest(EXCLUDED_SELECTION_SELECTOR)) {
     return null;
   }
   const range = selection.getRangeAt(0);
-  if (!rootEl.contains(range.commonAncestorContainer)) return null;
+  if (
+    !rootEl.contains(range.commonAncestorContainer)
+    || (range.startContainer && !rootEl.contains(range.startContainer))
+    || (range.endContainer && !rootEl.contains(range.endContainer))
+  ) {
+    return null;
+  }
 
   let text = selection.toString();
   if (typeof document !== "undefined") {
@@ -73,12 +184,15 @@ export function extractValidMessageSelection(rootEl: HTMLElement | null): { text
   const trimmed = text.trim();
   if (!trimmed) return null;
 
-  const rect = range.getBoundingClientRect();
-  if (rect.width === 0 && rect.height === 0) return null;
   const vw = window.innerWidth || 1024;
-  const left = Math.min(Math.max(rect.left + rect.width / 2, 48), Math.max(48, vw - 48));
-  const top = rect.top >= 48 ? rect.top - 8 : Math.min((window.innerHeight || 768) - 12, rect.bottom + 36);
-  return { text: trimmed, top, left };
+  const vh = window.innerHeight || 768;
+  const rect = resolveVisibleSelectionRect(range, elementOf(range.commonAncestorContainer) ?? anchorEl, vw, vh);
+  if (!rect) return null;
+  const left = Math.min(Math.max(rect.left + (rect.right - rect.left) / 2, 48), Math.max(48, vw - 48));
+  if (rect.top >= 48) {
+    return { text: trimmed, top: rect.top - 8, left, placement: "above" };
+  }
+  return { text: trimmed, top: Math.min(Math.max(12, vh - 44), rect.bottom + 8), left, placement: "below" };
 }
 
 export function messageQuote(item: ChatDisplayItem): { text: string; attachments: ChatAttachment[] } {
@@ -101,7 +215,7 @@ export function MessageActions({ item, children, onReply, showFooter = true }: {
   const selected = useRef("");
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
-  const [selectionBar, setSelectionBar] = useState<{ text: string; top: number; left: number } | null>(null);
+  const [selectionBar, setSelectionBar] = useState<SelectionQuoteBarPosition | null>(null);
   const quote = messageQuote(item);
   const speechKey = `${item.role}:${item.id}:${quote.text}`;
   const currentSpeech = voice?.speech?.key === speechKey ? voice.speech : null;
@@ -142,11 +256,13 @@ export function MessageActions({ item, children, onReply, showFooter = true }: {
     document.addEventListener("selectionchange", syncSelection);
     window.addEventListener("scroll", clearBar, true);
     window.addEventListener("resize", clearBar);
+    window.addEventListener("blur", clearBar);
     document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("selectionchange", syncSelection);
       window.removeEventListener("scroll", clearBar, true);
       window.removeEventListener("resize", clearBar);
+      window.removeEventListener("blur", clearBar);
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [quoteExcerpt]);
@@ -157,32 +273,37 @@ export function MessageActions({ item, children, onReply, showFooter = true }: {
       setCopied(true);
     } catch { setError(tr("复制失败，请选择文字复制", "Copy failed. Select the text to copy it.")); }
   };
+  const selectionToolbar = selectionBar && quoteExcerpt && typeof document !== "undefined"
+    ? createPortal(
+      <div
+        className="kulo-selection-quote-bar"
+        data-placement={selectionBar.placement}
+        role="toolbar"
+        aria-label={tr("引用选中内容", "Quote selection")}
+        style={{ top: selectionBar.top, left: selectionBar.left }}
+        onPointerDown={(event) => { event.preventDefault(); }}
+      >
+        <Button
+          size="sm"
+          variant="secondary"
+          aria-label={tr("引用选中文本", "Quote selected text")}
+          onPress={() => {
+            const snippet = selectionBar.text;
+            setSelectionBar(null);
+            window.getSelection()?.removeAllRanges();
+            quoteExcerpt(snippet);
+          }}
+        >
+          {tr("引用", "Quote")}
+        </Button>
+      </div>,
+      document.body,
+    )
+    : null;
   return <MessageReplyContext.Provider value={quoteExcerpt}>
     <div ref={root} className="kulo-message-with-actions" data-role={item.role}>
       {children}
-      {selectionBar && quoteExcerpt && (
-        <div
-          className="kulo-selection-quote-bar"
-          role="toolbar"
-          aria-label={tr("引用选中内容", "Quote selection")}
-          style={{ top: selectionBar.top, left: selectionBar.left }}
-          onPointerDown={(event) => { event.preventDefault(); }}
-        >
-          <Button
-            size="sm"
-            variant="secondary"
-            aria-label={tr("引用选中文本", "Quote selected text")}
-            onPress={() => {
-              const snippet = selectionBar.text;
-              setSelectionBar(null);
-              window.getSelection()?.removeAllRanges();
-              quoteExcerpt(snippet);
-            }}
-          >
-            {tr("引用", "Quote")}
-          </Button>
-        </div>
-      )}
+      {selectionToolbar}
       {showFooter && (timestamp || quote.text) && <div className="kulo-message-footer">
         {timestamp && <time className="kulo-message-timestamp" dateTime={timestamp.dateTime} title={timestamp.title}>{timestamp.label}</time>}
         {quote.text && <div className="kulo-message-actions"

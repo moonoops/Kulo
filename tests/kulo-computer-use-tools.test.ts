@@ -70,4 +70,133 @@ describe("Kulo computer-use tools", () => {
     await f.browser.execute({ action: "close" }, {} as never, BACKGROUND_CONTEXT);
     expect(f.sessionClosed).toHaveBeenCalledWith(f.scope, "browser", computerUseSessionId(f.scope));
   });
+
+  it("maps browser v2 snapshot, snapshot_mode, and batch parameters cleanly", async () => {
+    const f = fixture();
+    const sid = computerUseSessionId(f.scope);
+
+    await f.browser.execute(
+      { action: "open", url: "https://example.com", snapshot: false, snapshot_mode: "compact" },
+      {} as never,
+      BACKGROUND_CONTEXT,
+    );
+    expect(f.execute).toHaveBeenLastCalledWith(
+      "windows-env",
+      {
+        tool: "browser",
+        action: "open",
+        sessionId: sid,
+        url: "https://example.com",
+        returnSnapshot: false,
+        snapshotMode: "compact",
+      },
+      undefined,
+    );
+
+    await f.browser.execute({ action: "snapshot", snapshot_mode: "compact" }, {} as never, BACKGROUND_CONTEXT);
+    expect(f.execute).toHaveBeenLastCalledWith(
+      "windows-env",
+      {
+        tool: "browser",
+        action: "snapshot",
+        sessionId: sid,
+        mode: "compact",
+      },
+      undefined,
+    );
+
+    await f.browser.execute(
+      {
+        action: "batch",
+        snapshot: true,
+        snapshot_mode: "compact",
+        steps: [
+          { action: "fill", ref: "@e1", text: "alice" },
+          { action: "click", ref: "@e2" },
+          { action: "wait", text: "Welcome", timeout_ms: 2500 },
+        ],
+      },
+      {} as never,
+      BACKGROUND_CONTEXT,
+    );
+    expect(f.execute).toHaveBeenLastCalledWith(
+      "windows-env",
+      {
+        tool: "browser",
+        action: "batch",
+        sessionId: sid,
+        returnSnapshot: true,
+        snapshotMode: "compact",
+        steps: [
+          { action: "fill", ref: "@e1", text: "alice" },
+          { action: "click", ref: "@e2" },
+          { action: "wait", text: "Welcome", timeoutMs: 2500 },
+        ],
+      },
+      undefined,
+    );
+  });
+
+  it("rejects mutating browser batch in readOnly mode while allowing read-only batch steps", async () => {
+    const f = fixture(true);
+    await expect(
+      f.browser.execute(
+        { action: "batch", steps: [{ action: "snapshot" }, { action: "click", ref: "@e1" }] },
+        {} as never,
+        BACKGROUND_CONTEXT,
+      ),
+    ).rejects.toThrow("只读");
+    await expect(
+      f.browser.execute(
+        { action: "batch", steps: [{ action: "fill", ref: "@e1", text: "secret" }] },
+        {} as never,
+        BACKGROUND_CONTEXT,
+      ),
+    ).rejects.toThrow("只读");
+    expect(f.execute).not.toHaveBeenCalled();
+
+    await f.browser.execute(
+      { action: "batch", steps: [{ action: "get-url" }, { action: "snapshot", mode: "compact" }] },
+      {} as never,
+      BACKGROUND_CONTEXT,
+    );
+    expect(f.execute).toHaveBeenCalledWith(
+      "windows-env",
+      {
+        tool: "browser",
+        action: "batch",
+        sessionId: computerUseSessionId(f.scope),
+        steps: [{ action: "get-url" }, { action: "snapshot", mode: "compact" }],
+      },
+      undefined,
+    );
+  });
+
+  it("rejects invalid batch steps and surfaces transferred-session tombstone errors", async () => {
+    const f = fixture();
+    await expect(
+      f.browser.execute({ action: "batch", steps: [] }, {} as never, BACKGROUND_CONTEXT),
+    ).rejects.toThrow("参数无效");
+    await expect(
+      f.browser.execute(
+        { action: "batch", steps: [{ action: "open", url: "https://example.com" }] as never },
+        {} as never,
+        BACKGROUND_CONTEXT,
+      ),
+    ).rejects.toThrow("参数无效");
+    await expect(
+      f.browser.execute(
+        { action: "batch", steps: [{ action: "click", ref: "@e1", mode: "compact" }] as never },
+        {} as never,
+        BACKGROUND_CONTEXT,
+      ),
+    ).rejects.toThrow("参数无效");
+    expect(f.execute).not.toHaveBeenCalled();
+
+    vi.mocked(f.scope.assertActive).mockRejectedValueOnce(new Error("浏览器会话已移交后台任务，请勿继续操作旧页面。"));
+    await expect(
+      f.browser.execute({ action: "get-url" }, {} as never, BACKGROUND_CONTEXT),
+    ).rejects.toThrow("浏览器会话已移交后台任务");
+    expect(f.execute).not.toHaveBeenCalled();
+  });
 });

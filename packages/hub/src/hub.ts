@@ -105,6 +105,8 @@ import { ContextCompactionDoc, createContextCompactionController, validateBillio
 import { HubMemoryRuntime } from "./hub-memory-runtime.js";
 import { EMPTY_MEDIA_CAPABILITIES, createConversationContextWindowResolver } from "./orchestrator-prompt-wiring.js";
 import { createOrchestratorToolOverflowExtension, containsToolOverflowMarker } from "./orchestrator-tool-overflow.js";
+import { createRunHealthController } from "./run-health-extension.js";
+import { ORCHESTRATOR_MAX_TURNS, PROACTIVE_WAKE_MAX_TURNS, SUBAGENT_MAX_TURNS, WORKER_MAX_TURNS } from "./run-health-policy.js";
 import { createRecentWorkSyncHook, isSystemBaselinePending } from "./recent-work-sync.js";
 import { type LoadedBillionContextPackage } from "./extension-packages.js";
 import { stageProjectSkillSource } from "./skill-source-env.js";
@@ -570,6 +572,7 @@ export class KuloHub implements OrchestratorController {
   readonly #memorySetupExt: ReturnType<typeof createMemorySetupExtension>;
   readonly #redactionExt: ReturnType<typeof createCredentialRedactionExtension>;
   readonly #toolOverflowExt: ReturnType<typeof createOrchestratorToolOverflowExtension>;
+  readonly #runHealth: ReturnType<typeof createRunHealthController>;
   readonly memoryRuntime: HubMemoryRuntime;
   readonly #historyExt: ReturnType<typeof createHistoryToolsExtension>;
   readonly #assistantToolsExt: ReturnType<typeof createAssistantToolsExtension>;
@@ -686,6 +689,7 @@ export class KuloHub implements OrchestratorController {
     connections: ConnectionToolController;
     redactionExt: ReturnType<typeof createCredentialRedactionExtension>;
     toolOverflowExt: ReturnType<typeof createOrchestratorToolOverflowExtension>;
+    runHealth: ReturnType<typeof createRunHealthController>;
     memoryRuntime: HubMemoryRuntime;
     credentialStore: CredentialStore;
     voiceAsr?: VoiceAsrEngine;
@@ -702,6 +706,7 @@ export class KuloHub implements OrchestratorController {
     this.connections = params.connections;
     this.#redactionExt = params.redactionExt;
     this.#toolOverflowExt = params.toolOverflowExt;
+    this.#runHealth = params.runHealth;
     this.memoryRuntime = params.memoryRuntime;
     this.#activeRootConversation = params.rootConversation;
     this.identityFiles = params.identityFiles;
@@ -951,7 +956,7 @@ export class KuloHub implements OrchestratorController {
               extensions: this.#orchestratorExtensions(false),
               tools: this.#orchestratorTools(false),
               cwd: this.#mainWorkspaceDir,
-              maxTurns: 40,
+              maxTurns: PROACTIVE_WAKE_MAX_TURNS,
             },
           },
           ctx,
@@ -1448,6 +1453,7 @@ export class KuloHub implements OrchestratorController {
       runtimeGates: this.#runtimeGates,
       inlineWaiters: this.#inlineWaiters,
       turnContext: this.#turnContext,
+      computerTransfer: this.#computer,
       workerOps: {
         workerTicketTask: this.#workerTicketTask,
         resolveWorkerAgent: (providerOpt, modelId, desiredThinking) =>
@@ -1762,6 +1768,7 @@ export class KuloHub implements OrchestratorController {
         return conv ? resolveDeferredAddTools(conv, ctx, candidates) : [];
       },
     });
+    const runHealth = createRunHealthController({ getHarness: () => hubRef?.harness, getModels: () => models, resolveFallbackModel: () => (hubRef ? hubRef.#resolveOrchestratorAgent().model : undefined), redact });
     const getLiveMemory = () => {
       const mem = settingsStore.getMemory();
       return hubRef ? hubRef.#effectiveMemoryConfig(mem) : mem;
@@ -2336,44 +2343,26 @@ export class KuloHub implements OrchestratorController {
       },
     });
     const registry = createRegistry();
-    registry.install(redactionExt);
-    registry.install(toolOverflowExt);
-    registry.install(memoryRuntime.memoryFlushExt); registry.install(memoryRuntime.builtinMemoryRecallExt);
-    registry.install(schedulerExt);
-    registry.install(codingToolsExt);
-    registry.install(androidExt);
-    registry.install(toolSearchExt);
-    registry.install(settingsTierExt);
-    registry.install(computerMixedAndroidTierExt);
-    registry.install(readOnlyAndroidTierExt);
-    registry.install(orchestratorGuardExt);
-    registry.install(computerUseExt);
-    registry.install(routerReadExt);
-    registry.install(workerExt);
-    registry.install(orchestratorExt);
-    registry.install(orchestratorTailExt);
-    registry.install(globalSettingsExt);
-    registry.install(settingsAssistantExt);
-    registry.install(deviceToolsExt);
+    registry.install(redactionExt); registry.install(toolOverflowExt);
+    registry.install(memoryRuntime.memoryFlushExt); registry.install(memoryRuntime.builtinMemoryRecallExt); registry.install(runHealth.extension);
+    registry.install(schedulerExt); registry.install(codingToolsExt);
+    registry.install(androidExt); registry.install(toolSearchExt);
+    registry.install(settingsTierExt); registry.install(computerMixedAndroidTierExt);
+    registry.install(readOnlyAndroidTierExt); registry.install(orchestratorGuardExt);
+    registry.install(computerUseExt); registry.install(routerReadExt);
+    registry.install(workerExt); registry.install(orchestratorExt);
+    registry.install(orchestratorTailExt); registry.install(globalSettingsExt);
+    registry.install(settingsAssistantExt); registry.install(deviceToolsExt);
     if (customizationExt) registry.install(customizationExt);
-    registry.install(appearanceCustomizationExt);
-    registry.install(modelConfigurationExt);
-    registry.install(agentConfigurationExt);
-    registry.install(contentExt);
-    registry.install(projectExt);
-    registry.install(skillExt);
-    registry.install(capabilitySetupExt);
-    registry.install(mediaExt);
-    registry.install(voiceExt);
-    registry.install(mediaExportExt);
-    registry.install(memoryLifecycleExt);
-    registry.install(memoryServiceExt);
-    registry.install(memorySetupExt);
-    registry.install(extensionsExt);
-    registry.install(extensionSetupExt);
-    registry.install(historyExt);
-    registry.install(assistantToolsExt);
-    registry.install(contextCompaction.extension);
+    registry.install(appearanceCustomizationExt); registry.install(modelConfigurationExt);
+    registry.install(agentConfigurationExt); registry.install(contentExt);
+    registry.install(projectExt); registry.install(skillExt);
+    registry.install(capabilitySetupExt); registry.install(mediaExt);
+    registry.install(voiceExt); registry.install(mediaExportExt);
+    registry.install(memoryLifecycleExt); registry.install(memoryServiceExt);
+    registry.install(memorySetupExt); registry.install(extensionsExt);
+    registry.install(extensionSetupExt); registry.install(historyExt);
+    registry.install(assistantToolsExt); registry.install(contextCompaction.extension);
 
     const harness = await Harness.open(
       storage,
@@ -2522,9 +2511,9 @@ export class KuloHub implements OrchestratorController {
     const rootAgent = {
       model: orchestratorAgent.model,
       thinkingLevel: orchestratorAgent.thinkingLevel,
-      extensions: [redactionExt, toolOverflowExt, orchestratorExt, codingToolsExt, orchestratorGuardExt, computerUseExt, toolSearchExt, contentExt, projectExt, skillExt, orchestratorTailExt, memoryRuntime.builtinMemoryRecallExt, mediaExt, voiceExt, memoryServiceExt, memorySetupExt, historyExt, assistantToolsExt, globalSettingsExt, ...(customizationExt ? [customizationExt] : []), contextCompaction.extension],
+      extensions: [redactionExt, toolOverflowExt, orchestratorExt, codingToolsExt, orchestratorGuardExt, computerUseExt, toolSearchExt, contentExt, projectExt, skillExt, orchestratorTailExt, memoryRuntime.builtinMemoryRecallExt, runHealth.extension, mediaExt, voiceExt, memoryServiceExt, memorySetupExt, historyExt, assistantToolsExt, globalSettingsExt, ...(customizationExt ? [customizationExt] : []), contextCompaction.extension],
       cwd: mainWorkspaceDir,
-      maxTurns: 40,
+      maxTurns: ORCHESTRATOR_MAX_TURNS,
     };
     const initialRoot = await harness.root(context, activeRootConvId === Number(ROOT_CONVERSATION_ID) ? { agent: rootAgent } : undefined);
     const rootConversation = activeRootConvId === Number(ROOT_CONVERSATION_ID)
@@ -2590,6 +2579,7 @@ export class KuloHub implements OrchestratorController {
       connections,
       redactionExt,
       toolOverflowExt,
+      runHealth,
       memoryRuntime,
       credentialStore,
       voiceAsr: init.voiceAsr,
@@ -3017,7 +3007,7 @@ export class KuloHub implements OrchestratorController {
       this.#projectExt,
       this.#skillExt,
       this.#orchestratorTailExt,
-      this.memoryRuntime.builtinMemoryRecallExt,
+      this.memoryRuntime.builtinMemoryRecallExt, this.#runHealth.extension,
       this.#mediaExt,
       this.#voiceExt,
       ...(isRoot ? [this.#memoryServiceExt] : []),
@@ -3049,7 +3039,7 @@ export class KuloHub implements OrchestratorController {
         this.#workerExt,
         this.#contentExt,
         this.#skillExt,
-        this.#contextCompaction.extension,
+        this.#runHealth.extension, this.#contextCompaction.extension,
       ];
     }
     return [
@@ -3065,7 +3055,7 @@ export class KuloHub implements OrchestratorController {
       this.#mediaExportExt,
       this.#memoryLifecycleExt,
       ...(androidTargetIds.length ? [this.#androidExt, this.#computerMixedAndroidTierExt] : []),
-      this.#contextCompaction.extension,
+      this.#runHealth.extension, this.#contextCompaction.extension,
     ];
   }
 
@@ -3199,7 +3189,7 @@ export class KuloHub implements OrchestratorController {
     return this.#topics.archiveInactiveTopics(context);
   }
 
-  async createTopic(title?: string, context: Context = BACKGROUND_CONTEXT, projectId?: string | null): Promise<TopicSummary> { return this.#topics.createTopic(title, context, projectId); }
+  async createTopic(title?: string, context: Context = BACKGROUND_CONTEXT, projectId?: string | null, options?: { draft?: boolean }): Promise<TopicSummary> { return this.#topics.createTopic(title, context, projectId, options); }
   async patchTopic(topicId: string, patch: { title?: string; pinned?: boolean; archived?: boolean; targetDeviceId?: string | null }, context: Context = BACKGROUND_CONTEXT): Promise<TopicSummary> { return this.#topics.patchTopic(topicId, patch, context); }
   async deleteTopic(topicId: string, context: Context = BACKGROUND_CONTEXT, options: { stopTasks?: boolean } = {}): Promise<{ deleted: string; topics: TopicSummary[] }> { return this.#topics.deleteTopic(topicId, context, options); }
   async compactTopic(topicId: string, context: Context = BACKGROUND_CONTEXT) { return this.#contextGuard.compactTopic(topicId, context); }
@@ -4611,6 +4601,7 @@ export class KuloHub implements OrchestratorController {
 
   async #finishClose(context: Context): Promise<void> {
     this.#closed = true;
+    this.#runHealth.close();
     this.externalClientQuotas.close();
     this.#externalClientAdmin.clearReceipts();
     this.releaseHandoverBarrier();
@@ -5339,7 +5330,7 @@ export class KuloHub implements OrchestratorController {
           extensions: this.#orchestratorExtensions(isRoot),
           tools: this.#orchestratorTools(isRoot),
           cwd,
-          maxTurns: 40,
+          maxTurns: ORCHESTRATOR_MAX_TURNS,
         },
         context,
       );
@@ -5382,7 +5373,7 @@ export class KuloHub implements OrchestratorController {
         model: workerAgent.model,
         ...(rolePreset?.thinkingLevel !== "auto" ? { thinkingLevel: workerAgent.thinkingLevel } : {}),
         ...this.#workerTools({ executionDomain: ticket.executionDomain, androidTargetIds: androidTargets, allowSubagents: Boolean(rolePreset?.allowSubagents), readOnly: Boolean(ticket.readOnly), hasProject: Boolean(ticket.projectId) }),
-        ...(ticket.executionDomain !== "android" ? { cwd: effectiveWorkspaceDir } : {}),
+        ...(ticket.executionDomain !== "android" ? { cwd: effectiveWorkspaceDir } : {}), maxTurns: WORKER_MAX_TURNS,
       },
       context,
     );
@@ -5418,7 +5409,7 @@ export class KuloHub implements OrchestratorController {
         model: subAgent.model,
         ...(subPreset?.thinkingLevel !== "auto" ? { thinkingLevel: subAgent.thinkingLevel } : {}),
         ...this.#workerTools({ executionDomain: ticket.executionDomain, androidTargetIds: androidTargets, allowSubagents: false, isSubagent: true, readOnly: effectiveReadOnly, hasProject: Boolean(ticket.projectId) }),
-        ...(ticket.executionDomain !== "android" ? { cwd: effectiveWorkspaceDir } : {}),
+        ...(ticket.executionDomain !== "android" ? { cwd: effectiveWorkspaceDir } : {}), maxTurns: SUBAGENT_MAX_TURNS,
       },
       context,
     );

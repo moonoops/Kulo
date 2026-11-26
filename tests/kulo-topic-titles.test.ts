@@ -70,6 +70,22 @@ describe("first-turn topic titles", () => {
     expect(titleCalls).toBe(1);
   });
 
+  it("preserves immediate fallback title when created with draft: true and still upgrades it via AI after the first reply", async () => {
+    const { hub } = await fixture((ctx) => {
+      if (titleRequest(ctx)) return fauxAssistantMessage('{"title":"定时任务巡检方案"}');
+      return fauxAssistantMessage("可以按每小时执行一次巡检。");
+    });
+    const topic = await hub.createTopic("帮我设计一个定时任务巡检方案", BACKGROUND_CONTEXT, undefined, { draft: true });
+    expect(topic.title).toBe("帮我设计一个定时任务巡检方案");
+    expect(topic.draft).toBe(true);
+    const first = await hub.sendUserMessage("帮我设计一个定时任务巡检方案", { topicId: topic.id });
+    await first.wait(BACKGROUND_CONTEXT);
+    await until(async () => (await hub.listTopics()).find((item) => item.id === topic.id)?.title === "定时任务巡检方案");
+    const saved = (await hub.listTopics()).find((item) => item.id === topic.id);
+    expect(saved?.title).toBe("定时任务巡检方案");
+    expect(saved?.draft).toBeUndefined();
+  });
+
   it.each(["自定义会话名称", "请帮我排查本机设备连接的问题"]) ("preserves a manual rename while the title request is in flight: %s", async (manualTitle) => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });

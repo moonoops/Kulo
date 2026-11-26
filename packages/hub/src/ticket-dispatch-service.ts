@@ -23,11 +23,16 @@ import type {
 } from "@kulo/protocol";
 import { capturedAgentIntent, extractAgentDispatchIntent } from "./agent-routing.js";
 import { chatRoutingData } from "./chat-submissions.js";
+import {
+  assistantEntryHasBrowserCall,
+  type ComputerBrowserTransferPort,
+} from "./computer-session-transfer.js";
 import type { KuloConnections } from "./connections.js";
 import { redactCredentialData } from "./credential-redaction.js";
 import { collectCoordinatorEvidencePaths, formatEvidenceManifest } from "./dispatch-evidence-manifest.js";
 import { inferDispatchWorkspace, isDedicatedRemoteRoot } from "./dispatch-workspace-infer.js";
 import { reconcileTopicRoutingTarget } from "./env-routing-policy.js";
+import { WORKER_MAX_TURNS } from "./run-health-policy.js";
 import type {
   HubRuntimeGates,
   InlineDispatchWaiters,
@@ -107,6 +112,7 @@ export interface TicketDispatchServiceDeps {
   runtimeGates: HubRuntimeGates;
   inlineWaiters: InlineDispatchWaiters;
   turnContext: TurnContextReader;
+  computerTransfer?: ComputerBrowserTransferPort;
   workerOps: TicketDispatchWorkerOps;
 }
 
@@ -122,6 +128,17 @@ export class TicketDispatchService {
     params: DispatchTicketParams,
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<TicketCardView> {
+    return (await this.#dispatchTicketInternal(params, context)).card;
+  }
+
+  async #dispatchTicketInternal(
+    params: DispatchTicketParams,
+    context: Context = BACKGROUND_CONTEXT,
+  ): Promise<{
+    card: TicketCardView;
+    browserSessionInherited?: boolean;
+    browserSessionInheritReason?: string;
+  }> {
     const {
       harness,
       getRootConversation,
@@ -133,6 +150,7 @@ export class TicketDispatchService {
       liveSettings,
       runtimeGates,
       turnContext,
+      computerTransfer,
       workerOps,
     } = this.#deps;
 
@@ -174,7 +192,10 @@ export class TicketDispatchService {
     });
     if (prior) {
       bindDispatchedAttachments(uploads, prior);
-      return toTicketCardView(prior, activeRoles);
+      return {
+        card: toTicketCardView(prior, activeRoles),
+        ...(params.inheritBrowserSession ? { browserSessionInherited: Boolean(prior.inheritedBrowserSession) } : {}),
+      };
     }
 
     const executeAt = parseDispatchSchedule(params.executeAt, params.repeatEverySeconds, Boolean(recoveryGuard));
@@ -284,6 +305,11 @@ export class TicketDispatchService {
         )
       : [];
 
+    const activeBrowserEnvId =
+      params.inheritBrowserSession && !originIsSettings
+        ? computerTransfer?.activeOrchestratorBrowserEnvId(resolvedOriginTopicId)
+        : undefined;
+
     const domain = resolveDispatchDomain({
       params,
       sender,
@@ -295,6 +321,7 @@ export class TicketDispatchService {
       priorUserTurns,
       envs,
       activeRoles,
+      activeBrowserEnvId,
       getEnvDescriptor: (id) => envManager.getEnvDescriptor(id),
     });
 
@@ -318,6 +345,7 @@ export class TicketDispatchService {
       getEnvDescriptor: (id) => envManager.getEnvDescriptor(id),
       isLocalEnv: (id) => envManager.isLocalEnv(id),
       executionTrustMode: envManager.getExecutionTrustMode(),
+      inheritedBrowserEnvId: !params.envId?.trim() && !domain.projectId ? activeBrowserEnvId : undefined,
       pickDefaultWorkerEnvId: () => envManager.pickDefaultWorkerEnvId(),
     });
 
@@ -382,13 +410,27 @@ export class TicketDispatchService {
             readOnly: workspace.isReadOnly,
             hasProject: Boolean(project),
           }),
-          maxTurns: 40,
+          maxTurns: WORKER_MAX_TURNS,
+        }
+      : undefined;
+
+    const requestedBrowserInherit = params.inheritBrowserSession === true;
+    const browserTransferRequest = requestedBrowserInherit
+      ? {
+          requested: true,
+          candidate: !originIsSettings
+            ? computerTransfer?.inspectOrchestratorBrowserForTransfer(resolvedOriginTopicId, plan.targetEnvId)
+            : undefined,
+          hasSameTurnBrowserCall:
+            modelDispatch && params.originToolTaskId !== undefined
+              ? await this.#hasSameTurnBrowserCall(originConversationId, params.originToolTaskId, context)
+              : false,
         }
       : undefined;
 
     const originConv = (await harness.conversation(originConversationId as ConversationId, context)) ?? getRootConversation();
     const supersededStagedToDiscard: TicketRecord[] = [];
-    const admitted = await originConv.commit(
+    const commitOutcome = await originConv.commit(
       (tx) =>
         admitDispatchInTx(tx, {
           params,
@@ -420,9 +462,36 @@ export class TicketDispatchService {
           supersededStagedToDiscard,
           inferredReadPaths: evidencePaths,
           isRemoteDedicatedRoot,
+          browserTransferRequest,
         }),
       context,
     );
+    const admitted = commitOutcome.ticket;
+    let browserSessionInherited = commitOutcome.browserSessionInherited;
+    let browserSessionInheritReason = commitOutcome.browserSessionInheritReason;
+
+    if (commitOutcome.pendingBrowserTransfer) {
+      const swapped = Boolean(
+        computerTransfer?.commitOrchestratorBrowserTransferToTicket({
+          topicId: commitOutcome.pendingBrowserTransfer.topicId,
+          expectedSessionId: commitOutcome.pendingBrowserTransfer.sessionId,
+          envId: commitOutcome.pendingBrowserTransfer.envId,
+          ticketId: admitted.id,
+          workerConversationId: admitted.workerConversationId,
+          runEpoch: admitted.runEpoch,
+        }),
+      );
+      if (!swapped) {
+        await harness.commit(async (tx) => {
+          const live = (await tx.doc(KuloStateDoc)).tickets[admitted.id];
+          if (live?.inheritedBrowserSession?.sessionId === commitOutcome.pendingBrowserTransfer!.sessionId) {
+            delete live.inheritedBrowserSession;
+          }
+        }, context).catch(() => {});
+        browserSessionInherited = false;
+        browserSessionInheritReason = "transfer_commit_race";
+      }
+    }
 
     if (supersededStagedToDiscard.length > 0) {
       await Promise.allSettled(supersededStagedToDiscard.map((old) => workerOps.discardTicketStagedWorkspace(old)));
@@ -430,7 +499,41 @@ export class TicketDispatchService {
     bindDispatchedAttachments(uploads, admitted);
     runtimeGates.resumeIfNotRecovering();
     await runtimeGates.broadcastTickets(context);
-    return toTicketCardView(admitted, activeRoles, activeExternalClients);
+    return {
+      card: toTicketCardView(admitted, activeRoles, activeExternalClients),
+      ...(browserSessionInherited !== undefined ? { browserSessionInherited } : {}),
+      ...(browserSessionInheritReason ? { browserSessionInheritReason } : {}),
+    };
+  }
+
+  async #hasSameTurnBrowserCall(
+    originConversationId: number,
+    toolTaskId: number,
+    context: Context,
+  ): Promise<boolean> {
+    const { harness } = this.#deps;
+    const conversation = await harness.conversation(originConversationId as ConversationId, context);
+    if (!conversation) return false;
+    let current = toolTaskId;
+    let assistantId: number | undefined;
+    for (let depth = 0; depth < 16; depth++) {
+      const task = await harness.commit((tx) => tx.task(current as never), context);
+      const input = task?.input as { kind?: string; assistant?: number; parent?: number } | undefined;
+      if (input?.kind === "model" && typeof input.assistant === "number") {
+        assistantId = input.assistant;
+        break;
+      }
+      if (input?.kind !== "nested" || typeof input.parent !== "number") break;
+      current = input.parent;
+    }
+    if (assistantId === undefined) return false;
+    const page = await conversation.entries(
+      { minEntryId: assistantId as EntryId, maxEntryId: assistantId as EntryId },
+      1,
+      undefined,
+      context,
+    );
+    return assistantEntryHasBrowserCall(page.items.find((item) => Number(item.id) === assistantId));
   }
 
   /** Absolute paths the coordinator read/edited this turn, only when its tools ran on the dispatch target Env. */
@@ -459,7 +562,12 @@ export class TicketDispatchService {
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<DispatchTicketModelOutcome> {
     const { harness, inlineDispatchWaitMs, liveSettings, runtimeGates, inlineWaiters } = this.#deps;
-    const card = await this.dispatchTicket(params, context);
+    const dispatched = await this.#dispatchTicketInternal(params, context);
+    const card = dispatched.card;
+    const browserInheritMeta = {
+      ...(dispatched.browserSessionInherited !== undefined ? { browserSessionInherited: dispatched.browserSessionInherited } : {}),
+      ...(dispatched.browserSessionInheritReason ? { browserSessionInheritReason: dispatched.browserSessionInheritReason } : {}),
+    };
     const initialState = await harness.snapshot(KuloStateDoc, context);
     const initialTicket = initialState?.tickets[card.id];
     const configuredWaitMs = initialTicket?.externalExecution
@@ -472,12 +580,14 @@ export class TicketDispatchService {
       return {
         ticket: toTicketCardView(initialTicket, liveSettings.get().roles),
         inlineDelivery: cloneJson(initialTicket.inlineResult),
+        ...browserInheritMeta,
       };
     }
     if (initialTicket?.deliveryClaim !== "inline_waiting" || configuredWaitMs <= 0) {
       return {
         ticket: card,
         ...(initialBlocker ? { blockedByPendingMerge: initialBlocker } : {}),
+        ...browserInheritMeta,
       };
     }
 
@@ -521,11 +631,12 @@ export class TicketDispatchService {
       await runtimeGates.broadcastTickets(withoutAbortSignal(context));
     }
     if (outcome.inlineDelivery) {
-      return { ticket: outcome.ticket, inlineDelivery: outcome.inlineDelivery };
+      return { ticket: outcome.ticket, inlineDelivery: outcome.inlineDelivery, ...browserInheritMeta };
     }
     return {
       ticket: outcome.ticket,
       ...(outcome.blockedByPendingMerge ? { blockedByPendingMerge: outcome.blockedByPendingMerge } : {}),
+      ...browserInheritMeta,
     };
   }
 

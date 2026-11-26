@@ -5,6 +5,15 @@ export { activateStagedPeer, localPeerProof, localPeerProxyToken, stageDevicePee
 export { FlowBrowserService, flowBrowserExecutable, type FlowBrowserDriver, type FlowBrowserServiceOptions } from "./browser.js";
 export { KuloEnvAgent, type KuloEnvAgentOptions } from "./agent.js";
 export { ComputerUseService, computerUseConfiguration } from "./computer-use.js";
+export {
+  AUTO_SNAPSHOT_MAX_CHARS,
+  AUTO_SNAPSHOT_MAX_TIMEOUT_MS,
+  AUTO_SNAPSHOT_MIN_REMAINING_MS,
+  browserSnapshotCliArgs,
+  compactBrowserSnapshotData,
+  validateBrowserBatchRefs,
+} from "./computer-browser-batch.js";
+export { executeComputerUseWithCompat, prepareComputerUseForTarget } from "./computer-use-compat.js";
 export { HostActionService, expandHostPath, validateHostMaintenanceCommands } from "./host-actions.js";
 export { buildHostMaintenanceSandboxProfile, buildWorkerSandboxProfile, canonicalExecutionPath, createWorkerSandbox, defaultProtectedPaths, discoverGitWriteDeniedPaths, hasWorkerBasicOrFullIsolation, hasWorkerStrictNetworkIsolation, isApplicationPrivatePath, workerIsolationCapabilities, type WorkerExecutionOptions, type WorkerNetworkPolicy } from "./isolation.js";
 export {

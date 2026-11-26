@@ -170,6 +170,8 @@ export interface ComputerEnvResolutionInput {
   sourceEnvId?: string;
   sourceRootDir?: string;
   proposedEnvId?: string;
+  /** Active Orchestrator browser Env used as default target when `inherit_browser_session: true` without explicit env/project/scope. */
+  inheritedBrowserEnvId?: string;
   targetScope?: DispatchTargetScope;
   userMessage?: string;
   goal?: string;
@@ -200,6 +202,7 @@ export function resolveComputerEnvBinding(input: ComputerEnvResolutionInput): Co
     sourceEnvId,
     sourceRootDir,
     proposedEnvId,
+    inheritedBrowserEnvId,
     targetScope,
     userMessage,
     goal,
@@ -271,6 +274,18 @@ export function resolveComputerEnvBinding(input: ComputerEnvResolutionInput): Co
   }
 
   // Tier 2 & 3: Ungrouped built-in computer tasks
+  if (inheritedBrowserEnvId && !proposedEnvId && !targetScope) {
+    return {
+      envId: inheritedBrowserEnvId,
+      envBinding:
+        inheritedBrowserEnvId === sourceEnvId
+          ? "sender_local"
+          : inheritedBrowserEnvId === localEnvId || inheritedBrowserEnvId === "local"
+            ? "hub_local"
+            : "pool_fallback",
+      waitForSource: Boolean(sourceEnvId && inheritedBrowserEnvId === sourceEnvId),
+    };
+  }
 
   if (sourceEnvId) {
     // Conservative rule: local-machine signals ALWAYS override model's target_scope='hub_local'

@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
-import type { TicketCardView } from "@kulo/protocol";
-import { isTaskUnfinished, reconcileTaskRows, taskDurationLabel, taskHasExpired, taskIsRecovering, taskNeedsAttention, taskRunningMs, taskStatusLabel, taskSummary, taskTimeLabel, visibleTaskCards } from "./task-model";
+import type { TicketCardView, TopicSummary } from "@kulo/protocol";
+import {
+  buildTopicTitleMap,
+  expandClearAllTicketIds,
+  groupVisibleTaskCards,
+  isTaskUnfinished,
+  reconcileTaskRows,
+  taskDurationLabel,
+  taskHasExpired,
+  taskIsRecovering,
+  taskNeedsAttention,
+  taskRunningMs,
+  taskStatusLabel,
+  taskSummary,
+  taskTimeLabel,
+  visibleTaskCards,
+} from "./task-model";
 
 const hour = 3_600_000;
 const ticket = (id: string, changes: Partial<TicketCardView> = {}): TicketCardView => ({
@@ -109,5 +124,89 @@ describe("task row presence", () => {
     for (const status of ["ready", "failed", "stopped", "closed"] as const) {
       expect(isTaskUnfinished(ticket(status, { status }))).toBe(false);
     }
+  });
+});
+
+describe("recovery lineage deduplication and topic grouping", () => {
+  const recovery = { state: "recovering" as const, attempts: 1, startedAt: 1, deadlineAt: 600_001, rootTicketId: "A" };
+
+  it("only marks standalone failed+recovering cards as recovering, keeping active replacements in their real state", () => {
+    expect(taskIsRecovering(ticket("failed-rec", { status: "failed", recovery }))).toBe(true);
+    expect(taskStatusLabel(ticket("failed-rec", { status: "failed", recovery }))).toBe("恢复中");
+    for (const [status, label] of [
+      ["running", "运行中"],
+      ["queued", "排队中"],
+      ["pausing", "暂停中"],
+    ] as const) {
+      const replacement = ticket(`rep-${status}`, { status, recovery });
+      expect(taskIsRecovering(replacement)).toBe(false);
+      expect(taskStatusLabel(replacement)).toBe(label);
+    }
+  });
+
+  it("transitively hides same-scope superseded failures across multi-hop chains while respecting scope and projected protection", () => {
+    const a = ticket("A", { status: "failed", originTopicId: "topic-1", projectId: "proj-1", createdAt: 1, recovery });
+    const b = ticket("B", { status: "failed", originTopicId: "topic-1", projectId: "proj-1", createdAt: 2, supersedes: ["A"], recovery });
+    const c = ticket("C", { status: "running", originTopicId: "topic-1", projectId: "proj-1", createdAt: 3, supersedes: ["B"], recovery });
+    expect(visibleTaskCards([a, b, c], 10, 3).map(t => t.id)).toEqual(["C"]);
+
+    // When the leaf fails (exhausted), ancestors remain hidden and only the leaf failure shows.
+    const cFailed = { ...c, status: "failed" as const, recovery: { ...recovery, state: "exhausted" as const } };
+    expect(visibleTaskCards([a, b, cFailed], 10, 3).map(t => t.id)).toEqual(["C"]);
+
+    // Protected (e.g. projectedTicketId) keeps an older failure visible while selected (same rank 1 -> newer createdAt first).
+    expect(visibleTaskCards([a, b, c], 10, 3, new Set(["A"])).map(t => t.id)).toEqual(["C", "A"]);
+
+    // Stopped or closed replacements do not hide failures (only B still hides A).
+    const cStopped = { ...c, status: "stopped" as const };
+    expect(visibleTaskCards([a, b, cStopped], 10, 3).map(t => t.id)).toEqual(["B", "C"]);
+    const bStopped = { ...b, status: "stopped" as const };
+    expect(visibleTaskCards([a, bStopped], 10, 3).map(t => t.id)).toEqual(["A", "B"]);
+
+    // Cross-topic and cross-project supersedes never hide cards from another scope.
+    const crossTopic = ticket("X", { status: "running", originTopicId: "topic-2", projectId: "proj-1", supersedes: ["A"] });
+    const crossProject = ticket("Y", { status: "running", originTopicId: "topic-1", projectId: "proj-2", supersedes: ["A"] });
+    expect(visibleTaskCards([a, crossTopic, crossProject], 10, 3).map(t => t.id)).toContain("A");
+  });
+
+  it("expands clear-all IDs to include hidden same-scope superseded failed ancestors only", () => {
+    const a = ticket("A", { status: "failed", originTopicId: "t1", createdAt: 1 });
+    const b = ticket("B", { status: "failed", originTopicId: "t1", supersedes: ["A"], createdAt: 2 });
+    const c = ticket("C", { status: "running", originTopicId: "t1", supersedes: ["B"], createdAt: 3 });
+    const closedAncestor = ticket("OLD", { status: "closed", originTopicId: "t1", createdAt: 0 });
+    const otherTopic = ticket("OTHER", { status: "failed", originTopicId: "t2", createdAt: 1 });
+    const all = [closedAncestor, a, b, { ...c, supersedes: ["B", "OLD", "OTHER"] }, otherTopic];
+    const visible = visibleTaskCards(all, 10, 3);
+    expect(visible.map(t => t.id)).toEqual(["OTHER", "C"]);
+    expect(expandClearAllTicketIds(all, visible)).toEqual(["OTHER", "C", "B", "A"]);
+  });
+
+  it("groups visible cards into current and other topics normalizing root and preserving order", () => {
+    const cards = [
+      ticket("root-implicit", { originTopicId: undefined, status: "failed", createdAt: 1 }),
+      ticket("other-1", { originTopicId: "t2", status: "running", createdAt: 3 }),
+      ticket("root-explicit", { originTopicId: "root", status: "running", createdAt: 2 }),
+      ticket("other-2", { originTopicId: "t3", status: "ready", createdAt: 4 }),
+    ];
+    const visible = visibleTaskCards(cards, 10, null);
+    const groupedRoot = groupVisibleTaskCards(visible, "root");
+    expect(groupedRoot.current.map(t => t.id)).toEqual(["root-implicit", "root-explicit"]);
+    expect(groupedRoot.other.map(t => t.id)).toEqual(["other-1", "other-2"]);
+
+    const groupedT2 = groupVisibleTaskCards(visible, "t2");
+    expect(groupedT2.current.map(t => t.id)).toEqual(["other-1"]);
+    expect(groupedT2.other.map(t => t.id)).toEqual(["root-implicit", "root-explicit", "other-2"]);
+  });
+
+  it("builds topic title map using mainChatTitle for master/root and skipping deleted topics", () => {
+    const topics: TopicSummary[] = [
+      { id: "root", conversationId: 1, title: "默认主会话", master: true, createdAt: 1, updatedAt: 1 },
+      { id: "t1", conversationId: 2, title: "Q4 财报分析", createdAt: 2, updatedAt: 2 },
+      { id: "deleted", conversationId: 3, title: "已删会话", deletedAt: 5, createdAt: 3, updatedAt: 3 },
+    ];
+    const map = buildTopicTitleMap(topics, "Kulo · 主会话");
+    expect(map?.get("root")).toBe("Kulo · 主会话");
+    expect(map?.get("t1")).toBe("Q4 财报分析");
+    expect(map?.get("deleted")).toBeUndefined();
   });
 });

@@ -9,6 +9,7 @@ import {
   type ComputerPreviewUpdate,
   type ComputerUseConfigurationInput,
   type ComputerUseSettings,
+  type InheritedBrowserSession,
 } from "@kulo/protocol";
 import type { KuloActionConfirmations } from "./action-confirmations.js";
 import type { KuloCapabilities } from "./capabilities.js";
@@ -20,6 +21,22 @@ import {
   computerHandoffFingerprint,
   formatComputerHandoffResumePrompt,
 } from "./computer-handoff.js";
+import {
+  BROWSER_SESSION_TRANSFERRED_ERROR,
+  TransferredBrowserSessionTombstones,
+  buildTicketComputerSessionCleanupTasks,
+  commitOrchestratorBrowserTransfer,
+  findComputerPreviewTarget,
+  forceCloseTicketComputerSessions,
+  formatPreviewHandoff,
+  hydrateInheritedTicketSessionsForPreview,
+  inspectOrchestratorBrowserCandidate,
+  resolveOrHydrateWorkerComputerSession,
+  trackOrchestratorBrowserCallEnd,
+  type OrchestratorBrowserTransferCandidate,
+  type OrchestratorComputerSession,
+  type TrackedComputerSession,
+} from "./computer-session-transfer.js";
 import type { KuloConnections } from "./connections.js";
 import type { HubRuntimeGates } from "./hub-kernel-ports.js";
 import type { HubMediaDelivery } from "./hub-media-delivery.js";
@@ -30,27 +47,7 @@ import {
   resolveTicketExecutionScope,
 } from "./state.js";
 import { canDirectStopTicket } from "./ticket-stop.js";
-import { createComputerUseExtension } from "./tools-computer-use.js";
-
-interface TrackedComputerSession {
-  ticketId: string;
-  envId: string;
-  tool: "browser" | "desktop";
-  sessionId: string;
-  conversationId: number;
-  runEpoch: number;
-  app?: string;
-}
-
-interface OrchestratorComputerSession {
-  topicId: string;
-  conversationId: number;
-  envId: string;
-  tool: "browser" | "desktop";
-  sessionId: string;
-  app?: string;
-  idleTimer: ReturnType<typeof setTimeout>;
-}
+import { computerUseSessionId, createComputerUseExtension } from "./tools-computer-use.js";
 
 export interface HubComputerShellOptions {
   envManager: Pick<
@@ -93,6 +90,9 @@ export class HubComputerController {
   readonly #computerSessions = new Map<string, TrackedComputerSession>();
   readonly #computerHandoffs = new ActiveComputerHandoffTracker();
   readonly #orchestratorSessions = new Map<string, OrchestratorComputerSession>();
+  readonly #inFlightOrchestratorBrowser = new Map<string, number>();
+  readonly #transferTombstones = new TransferredBrowserSessionTombstones();
+  readonly #closedTicketSessions = new Set<string>();
   #computerUseSettings: ComputerUseSettings = { browserEnabled: true, desktopEnabled: true };
   #runtime: HubComputerRuntimeDeps | null = null;
 
@@ -118,6 +118,22 @@ export class HubComputerController {
         return controller.#envManager.requestComputerUse(envId, request, signal);
       },
       sessionOpened: (scope, tool, sessionId) => controller.#onSessionOpened(scope, tool, sessionId),
+      callStarted: (scope, tool) => {
+        if (tool !== "browser" || !scope.ticketId.startsWith("chat:")) return;
+        const topicId = scope.ticketId.split(":")[1] ?? "root";
+        controller.#inFlightOrchestratorBrowser.set(topicId, (controller.#inFlightOrchestratorBrowser.get(topicId) ?? 0) + 1);
+      },
+      callFinished: (scope, tool, sessionId, request, result) => {
+        if (tool !== "browser" || !scope.ticketId.startsWith("chat:")) return;
+        trackOrchestratorBrowserCallEnd({
+          inFlightBrowserCalls: controller.#inFlightOrchestratorBrowser,
+          orchestratorSessions: controller.#orchestratorSessions,
+          topicId: scope.ticketId.split(":")[1] ?? "root",
+          sessionId,
+          action: request.action,
+          result,
+        });
+      },
       sessionObserved: (scope, tool, sessionId, app) => {
         if (scope.ticketId.startsWith("chat:")) {
           const topicId = scope.ticketId.split(":")[1] ?? "root";
@@ -128,13 +144,16 @@ export class HubComputerController {
         const session = controller.#computerSessions.get(`${scope.ticketId}:${tool}:${sessionId}`);
         if (session) session.app = app;
       },
-      sessionClosed: (scope, tool, sessionId) => {
+      sessionClosed: async (scope, tool, sessionId) => {
         if (scope.ticketId.startsWith("chat:")) {
           const topicId = scope.ticketId.split(":")[1] ?? "root";
           controller.#forgetOrchestratorSession(topicId, tool, sessionId);
           return;
         }
-        controller.#computerSessions.delete(`${scope.ticketId}:${tool}:${sessionId}`);
+        const key = `${scope.ticketId}:${tool}:${sessionId}`;
+        controller.#computerSessions.delete(key);
+        controller.#closedTicketSessions.add(key);
+        if (tool === "browser") await controller.#clearPersistedInheritedSession(scope.ticketId, sessionId);
       },
       requestHandoff: (scope, input, api, ctx) => controller.#requestComputerHandoff(scope, input, api, ctx),
     });
@@ -164,6 +183,27 @@ export class HubComputerController {
 
   activeOrchestratorBrowserEnvId(topicId: string): string | undefined {
     return this.#orchestratorSessions.get(`${topicId}:browser`)?.envId;
+  }
+
+  inspectOrchestratorBrowserForTransfer(topicId: string, _targetEnvId?: string): OrchestratorBrowserTransferCandidate | undefined {
+    return inspectOrchestratorBrowserCandidate({
+      orchestratorSessions: this.#orchestratorSessions,
+      topicId,
+      getEnvDescriptor: (envId) => this.#envManager.getEnvDescriptor(envId),
+      hasActiveHandoff: (key, sid) => this.#computerHandoffs.hasActiveHandoff(key, sid),
+      inFlightBrowserCalls: this.#inFlightOrchestratorBrowser,
+    });
+  }
+
+  commitOrchestratorBrowserTransferToTicket(input: {
+    topicId: string; expectedSessionId: string; envId: string; ticketId: string; workerConversationId?: number; runEpoch: number;
+  }): boolean {
+    const swapped = commitOrchestratorBrowserTransfer({
+      orchestratorSessions: this.#orchestratorSessions, computerSessions: this.#computerSessions, tombstones: this.#transferTombstones,
+      hasActiveHandoff: (key, sid) => this.#computerHandoffs.hasActiveHandoff(key, sid), inFlightBrowserCalls: this.#inFlightOrchestratorBrowser, ...input,
+    });
+    if (swapped) this.#closedTicketSessions.delete(`${input.ticketId}:browser:${input.expectedSessionId}`);
+    return swapped;
   }
 
   async configureComputerUse(
@@ -219,22 +259,31 @@ export class HubComputerController {
         descriptor: envDescriptor,
         isLocal: envDescriptor?.kind === "local",
       });
+      const topicAtStart = state?.topics?.[resolved.topicId];
+      const runEpoch = tool === "browser" ? (topicAtStart?.browserSessionEpoch ?? 1) : 1;
+      const chatTicketId = `chat:${resolved.topicId}:${tool}:${resolved.envId}`;
+      const preservedSessionId = existing && existing.envId === resolved.envId ? existing.sessionId : undefined;
+      const effectiveSessionId =
+        preservedSessionId ?? computerUseSessionId({ ticketId: chatTicketId, conversationId: Number(api.conversationId), runEpoch });
       const assertActive = async () => {
         if (rt.runtimeGates.isClosed()) throw new Error("Hub 已关闭。");
         const latestState = await rt.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         const topic = latestState?.topics?.[resolved.topicId];
         if (!topic || topic.deletedAt) throw new Error("会话已删除。");
+        if (tool === "browser" && (this.#transferTombstones.has(effectiveSessionId) || (topic.browserSessionEpoch ?? 1) !== runEpoch)) {
+          throw new Error(BROWSER_SESSION_TRANSFERRED_ERROR);
+        }
         const envDesc = this.#envManager.getEnvDescriptor(resolved.envId);
         if (!envDesc?.online) throw new Error("目标电脑已离线，操作会话已停止。");
       };
       return {
-        ticketId: `chat:${resolved.topicId}:${tool}:${resolved.envId}`,
+        ticketId: chatTicketId,
         conversationId: Number(api.conversationId),
-        runEpoch: 1,
+        runEpoch,
         envId: resolved.envId,
         readOnly: effectiveMode === "sandboxed",
         executionMode: effectiveMode,
-        ...(existing && existing.envId === resolved.envId ? { preservedSessionId: existing.sessionId } : {}),
+        ...(preservedSessionId ? { preservedSessionId } : {}),
         assertActive,
       };
     }
@@ -255,14 +304,19 @@ export class HubComputerController {
       }
       await rt.mediaDelivery.validateMediaSource(source);
     };
-    const retainedSession = [...this.#computerSessions.values()].find(
-      (entry) => entry.ticketId === source.ticketId && entry.conversationId === Number(api.conversationId) && entry.envId === source.envId,
-    );
-    if (retainedSession && retainedSession.runEpoch !== source.runEpoch) {
-      retainedSession.runEpoch = source.runEpoch;
-    }
     const currentState = await rt.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
     const execScope = resolveTicketExecutionScope(currentState, api.conversationId);
+    const retainedSession = resolveOrHydrateWorkerComputerSession({
+      computerSessions: this.#computerSessions,
+      closedTicketSessions: this.#closedTicketSessions,
+      ticket: currentState?.tickets?.[source.ticketId],
+      ticketId: source.ticketId,
+      conversationId: Number(api.conversationId),
+      envId: source.envId,
+      runEpoch: source.runEpoch,
+      tool,
+      isSubagent: Boolean(execScope?.isSubagent),
+    });
     const frozenMode = currentState?.ticketExecutionModes?.[source.ticketId];
     const baseTrustMode = frozenMode?.runEpoch === source.runEpoch
       ? frozenMode.mode
@@ -293,12 +347,14 @@ export class HubComputerController {
   ): Promise<void> {
     const rt = this.#requireRuntime();
     if (scope.ticketId.startsWith("chat:")) {
+      if (tool === "browser" && this.#transferTombstones.has(sessionId)) return;
       const topicId = scope.ticketId.split(":")[1] ?? "root";
       this.#touchOrchestratorSession(topicId, tool, scope.conversationId, scope.envId, sessionId);
       return;
     }
     if (!this.#envManager.getEnvDescriptor(scope.envId)?.capabilities.includes(`agent-${tool}`)) return;
     const key = `${scope.ticketId}:${tool}:${sessionId}`;
+    this.#closedTicketSessions.delete(key);
     if (!this.#computerSessions.has(key)) {
       this.#computerSessions.set(key, {
         ticketId: scope.ticketId,
@@ -326,10 +382,13 @@ export class HubComputerController {
       const topic = state?.topics?.[topicId];
       if (!topic || topic.deletedAt) return [];
     }
+    hydrateInheritedTicketSessionsForPreview(state?.tickets, this.#computerSessions, this.#closedTicketSessions);
     const sessions: ComputerPreviewSessionView[] = [];
     for (const [key, session] of this.#computerSessions) {
-      const scope = resolveTicketExecutionScope(state, session.conversationId as ConversationId);
-      const ticket = scope?.ticket;
+      const scope = session.conversationId !== undefined
+        ? resolveTicketExecutionScope(state, session.conversationId as ConversationId)
+        : undefined;
+      const ticket = scope?.ticket ?? state?.tickets[session.ticketId];
       const env = this.#envManager.getEnvDescriptor(session.envId);
       const originTopicId = ticket ? (ticket.originTopicId ?? "root") : undefined;
       const originTopic = originTopicId ? state?.topics?.[originTopicId] : undefined;
@@ -354,6 +413,7 @@ export class HubComputerController {
       ) {
         continue;
       }
+      const handoff = formatPreviewHandoff(activeHandoff, handoffActiveForSession, session.tool);
       sessions.push({
         id: createHash("sha256").update(key).digest("hex"),
         ticketId: ticket.id,
@@ -362,38 +422,19 @@ export class HubComputerController {
         deviceName: env.name,
         title: ticket.title,
         ...(session.app ? { app: session.app } : {}),
-        ...(handoffActiveForSession && activeHandoff
-          ? {
-              handoff: {
-                requestId: activeHandoff.requestId,
-                ...(activeHandoff.cardId ? { cardId: activeHandoff.cardId } : {}),
-                reason: activeHandoff.reason,
-                target: activeHandoff.tool,
-                expiresAt: activeHandoff.expiresAt,
-                ...(activeHandoff.url ? { url: activeHandoff.url } : {}),
-                ...(activeHandoff.app ? { app: activeHandoff.app } : {}),
-                interactive: session.tool === "browser",
-              },
-            }
-          : {}),
+        ...(handoff ? { handoff } : {}),
       });
     }
     for (const entry of this.#orchestratorSessions.values()) {
       const topic = state?.topics?.[entry.topicId];
       const env = this.#envManager.getEnvDescriptor(entry.envId);
-      if (
-        !topic ||
-        topic.deletedAt ||
-        (!allTopics && entry.topicId !== topicId) ||
-        !env?.online ||
-        !env.capabilities.includes(`agent-${entry.tool}`)
-      ) {
+      if (!topic || topic.deletedAt || (!allTopics && entry.topicId !== topicId) || !env?.online || !env.capabilities.includes(`agent-${entry.tool}`)) {
         continue;
       }
       const previewKey = `chat:${entry.topicId}:${entry.tool}:${entry.sessionId}`;
       const handoffKey = `chat:${entry.topicId}:${entry.tool}:${entry.envId}`;
       const activeHandoff = this.#computerHandoffs.get(handoffKey);
-      const handoffActiveForSession = Boolean(activeHandoff && activeHandoff.sessionId === entry.sessionId);
+      const handoff = formatPreviewHandoff(activeHandoff, Boolean(activeHandoff && activeHandoff.sessionId === entry.sessionId), entry.tool);
       sessions.push({
         id: createHash("sha256").update(previewKey).digest("hex"),
         ticketId: handoffKey,
@@ -402,43 +443,14 @@ export class HubComputerController {
         deviceName: env.name,
         title: topic.title?.trim() || (entry.tool === "browser" ? "主对话浏览器" : "主对话桌面"),
         ...(entry.app ? { app: entry.app } : {}),
-        ...(handoffActiveForSession && activeHandoff
-          ? {
-              handoff: {
-                requestId: activeHandoff.requestId,
-                ...(activeHandoff.cardId ? { cardId: activeHandoff.cardId } : {}),
-                reason: activeHandoff.reason,
-                target: activeHandoff.tool,
-                expiresAt: activeHandoff.expiresAt,
-                ...(activeHandoff.url ? { url: activeHandoff.url } : {}),
-                ...(activeHandoff.app ? { app: activeHandoff.app } : {}),
-                interactive: entry.tool === "browser",
-              },
-            }
-          : {}),
+        ...(handoff ? { handoff } : {}),
       });
     }
     return sessions.slice(0, 16);
   }
 
-  #findPreviewTarget(id: string): { handoffKey: string; envId: string; tool: "browser" | "desktop"; sessionId: string } | undefined {
-    for (const [key, session] of this.#computerSessions) {
-      if (createHash("sha256").update(key).digest("hex") === id) {
-        return { handoffKey: session.ticketId, envId: session.envId, tool: session.tool, sessionId: session.sessionId };
-      }
-    }
-    for (const entry of this.#orchestratorSessions.values()) {
-      const previewKey = `chat:${entry.topicId}:${entry.tool}:${entry.sessionId}`;
-      if (createHash("sha256").update(previewKey).digest("hex") === id) {
-        return {
-          handoffKey: `chat:${entry.topicId}:${entry.tool}:${entry.envId}`,
-          envId: entry.envId,
-          tool: entry.tool,
-          sessionId: entry.sessionId,
-        };
-      }
-    }
-    return undefined;
+  #findPreviewTarget(id: string) {
+    return findComputerPreviewTarget(id, this.#computerSessions, this.#orchestratorSessions);
   }
 
   async subscribeComputerPreview(
@@ -718,31 +730,46 @@ export class HubComputerController {
     return { ok: true, status: action };
   }
 
-  async #forceCloseTicketSessions(ticketId: string): Promise<void> {
-    const sessions = [...this.#computerSessions].filter(([, s]) => s.ticketId === ticketId);
-    for (const [key, session] of sessions) {
-      this.#computerSessions.delete(key);
-      await this.#envManager
-        .requestComputerUse(session.envId, { tool: session.tool, action: "close", sessionId: session.sessionId })
-        .catch(() => {});
-    }
+  async #clearPersistedInheritedSession(ticketId: string, sessionId: string): Promise<void> {
+    const rt = this.#runtime;
+    if (!rt || rt.runtimeGates.isClosed()) return;
+    await rt.harness.commit(async (tx) => {
+      const ticket = (await tx.doc(KuloStateDoc)).tickets[ticketId];
+      if (ticket?.inheritedBrowserSession?.sessionId === sessionId) delete ticket.inheritedBrowserSession;
+    }, BACKGROUND_CONTEXT).catch(() => {});
   }
 
-  buildTicketSessionCleanupTasks(ticketId: string, options: { park?: boolean } = {}): Array<Promise<void>> {
-    if (!options.park) this.#computerHandoffs.clear(ticketId);
-    const sessions = [...this.#computerSessions].filter(
-      ([, session]) =>
-        session.ticketId === ticketId &&
-        !(options.park && this.#computerHandoffs.hasActiveHandoff(ticketId, session.sessionId)),
-    );
-    return sessions.map(async ([key, session]) => {
-      const result = await this.#envManager.requestComputerUse(session.envId, {
-        tool: session.tool,
-        action: "close",
-        sessionId: session.sessionId,
-      });
-      if (!result.ok) throw new Error("任务的电脑操作会话尚未关闭。");
-      this.#computerSessions.delete(key);
+  #forceCloseTicketSessions(ticketId: string): Promise<void> {
+    return forceCloseTicketComputerSessions({
+      ticketId,
+      computerSessions: this.#computerSessions,
+      closedTicketSessions: this.#closedTicketSessions,
+      closeEnvSession: (envId, tool, sessionId) => this.#envManager.requestComputerUse(envId, { tool, action: "close", sessionId }),
+      getPersistedInherited: async () =>
+        this.#runtime ? (await this.#runtime.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))?.tickets[ticketId]?.inheritedBrowserSession : undefined,
+      clearPersistedInherited: (sessionId) => this.#clearPersistedInheritedSession(ticketId, sessionId),
+    });
+  }
+
+  buildTicketSessionCleanupTasks(
+    ticketId: string,
+    options: { park?: boolean; inheritedBrowserSession?: InheritedBrowserSession } = {},
+  ): Array<Promise<void>> {
+    return buildTicketComputerSessionCleanupTasks({
+      ticketId,
+      options,
+      computerSessions: this.#computerSessions,
+      closedTicketSessions: this.#closedTicketSessions,
+      hasActiveHandoff: (id, sid) => this.#computerHandoffs.hasActiveHandoff(id, sid),
+      clearHandoff: (id) => { this.#computerHandoffs.clear(id); },
+      closeEnvSession: (envId, tool, sessionId) => this.#envManager.requestComputerUse(envId, { tool, action: "close", sessionId }),
+      ...(this.#runtime
+        ? {
+            getPersistedInherited: async () =>
+              (await this.#runtime!.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))?.tickets[ticketId]?.inheritedBrowserSession,
+          }
+        : {}),
+      clearPersistedInherited: (sessionId) => this.#clearPersistedInheritedSession(ticketId, sessionId),
     });
   }
 
@@ -758,6 +785,7 @@ export class HubComputerController {
     const key = `${topicId}:${tool}`;
     const prev = this.#orchestratorSessions.get(key);
     if (prev) clearTimeout(prev.idleTimer);
+    const preservedProfileMode = prev && prev.sessionId === sessionId && prev.envId === envId ? prev.profileMode : undefined;
     const handoffKey = `chat:${topicId}:${tool}:${envId}`;
     const idleTimer = setTimeout(() => {
       if (this.#runtime?.runtimeGates.isClosed()) return;
@@ -772,6 +800,7 @@ export class HubComputerController {
       envId,
       tool,
       sessionId,
+      ...(preservedProfileMode ? { profileMode: preservedProfileMode } : {}),
       ...(app ?? prev?.app ? { app: app ?? prev?.app } : {}),
       idleTimer,
     });
@@ -837,5 +866,6 @@ export class HubComputerController {
 
   closeAllHandoffs(): void {
     this.#computerHandoffs.closeAll();
+    this.#transferTombstones.clear();
   }
 }

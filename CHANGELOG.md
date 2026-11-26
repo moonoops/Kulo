@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.1.10 (2026-11-26)
+
+全面升级浏览器自动化 v2 协议与主控→Worker 浏览器会话原子移交能力，引入双层智能体运行健康治理与防死循环熔断机制，修复多模态光栅图片误脱敏与异常分类，并显著打磨延迟话题草稿、任务栏恢复谱系去重分组、文件消息紧凑卡片与选区引用条体验（`v0.1.10`）。
+
+### Browser Automation v2 & Orchestrator-to-Worker Session Handoff
+
+- **`agent-browser-v2` 能力协商、自动快照故障隔离与有界批量操作（`@kulo/protocol`、`@kulo/env`、`@kulo/hub`）**
+  - 新增 `computer-browser-batch.ts` 与 `computer-use-compat.ts`：支持 `compact`/`interactive` 快照模式与 `data.refs` 裁剪；对 `open`/`click`/`scroll`/`back`/`forward` 默认附带故障隔离式自动快照（14k 字符上限、剩余时间低于 8s 自动跳过、二次快照失败绝不触发误清理，且对 `fill`/`type` 可选快照脱敏清洗）。
+  - 新增有界多步 `batch` 动作（单次最多 5 步、累计等待 ≤ 15s、只读批量校验、`click`/`scroll`/`back`/`forward`/换行输入前自动拦截过期 ref-epoch、屏蔽 `fill`/`type` 原始回显、动态 `computerUseRpcTimeoutMs` 超时），并在面向未升级旧版 Peer 节点时自动降级兼容（剥离新字段、模拟自动快照并优雅拒绝 `batch`）。
+- **主控 → Worker 浏览器会话所有权原子移交（`@kulo/hub`、`@kulo/protocol`）**
+  - 新增 `computer-session-transfer.ts`：在 `trusted` 模式下 `kulo_dispatch` 可原子接管主控活跃持久化浏览器会话，通过递增 `browserSessionEpoch` 隔离旧会话并写入墓碑错误防误操作，同时保持空闲定时器免疫与预览重新绑定；对 `sandboxed`、`auto_connect`、只读 Worker、排队任务或同轮并发浏览器调用安全降级；支持 Hub 冷重启后从 `KuloStateDoc` 恢复继承会话并在停止工单时无泄漏关闭。
+
+### Run Health Governance & Anti-Doom-Loop Protection
+
+- **集中轮次预算与双层防卡死守卫（`@kulo/hub`、`@kulo/protocol`、`@kulo/web`）**
+  - 新增 `run-health-policy.ts`、`run-health-judge.ts` 与 `run-health-extension.ts`：集中管理各角色轮次预算（主控 60 轮、Worker 120 轮、主动唤醒 40 轮、子智能体与设置助手 25 轮），并按严格顺序注册于 `kulo-builtin-memory-recall` 之后。
+  - **第一层确定性守卫**：检测重复工具调用（键序无关）、忽略易变时间戳/UUID 的连续相同错误以及仅在真实快照推进的浏览器停滞循环；提供主控第 15 轮柔和派单提醒与临近上限优雅收口（主控仅放行单次 `kulo_dispatch`、Worker 仅放行 `kulo_report`、卡死时拦截无效派单），并在用户中途 `steer` 时自动重置计数与基线。
+  - **第二层异步轨检评审**：以 fail-open 模式异步调用受控 `models.completeSimple`（零工具、无缓存、脱敏且结构化剥离 `kulo_browser` `fill`/`type` 文本与全部 `kulo_connection_use` 参数），精准识别停滞轨迹；Web UI 补齐双语 `turn_limit` 步数提示。
+
+### Raster Image Verification & Credential Redaction Self-Healing
+
+- **纯叶子光栅图片结构校验与历史库自愈（`@kulo/protocol`、`@kulo/hub`、`@kulo/web`）**
+  - 新增 `image-payload.ts`：对 PNG/JPEG/GIF/WebP（≤ 20 MiB，严格排除 SVG）执行零拷贝头尾帧与线性 base64 校验，放行合法视觉图片免受凭证脱敏误伤，同时严格拦截伪造文件头、IEND 后附加密文、SVG、非 transcript 文档及工具参数绕过；在 `credential-redaction.ts` 的 `beforeRequest` 中自动修复已污染的历史 SQLite 会话，阻止损坏图片块送达上游模型。
+  - 细化 `errors.ts` 与前端 `kulo-error.ts` 错误归类，准确区分 `image_payload_invalid`（提示图片数据无效或超限，不误导切换模型）与真正的 `multimodal_unsupported`（双语对齐）。
+
+### Chat UX, Deferred Topic Drafts & Task Rail Recovery Lineage
+
+- **延迟话题草稿与无闪烁视图切换（`@kulo/web`、`@kulo/hub`）**
+  - 重构 `topic-drafts.ts` 与 `POST /api/topics`（新增 `draft` 标记）：未发送的新建话题仅留在本地按普通/项目槽位隔离保存，不再在服务端产生空白幽灵话题；发送时即时生成简洁首句/附件标题同时保留 `draft: true` 供首轮回复后由 AI 自动润色；通过 `conversationViewKey` 消除新建落盘时的对话流闪烁，并自动清理已删除项目的本地草稿。
+- **任务栏恢复谱系去重与跨话题分组（`@kulo/protocol`、`@kulo/hub`、`@kulo/web`）**
+  - 抽离 `ticket-types.ts` 并在 `TicketCardView` 暴露 `supersedes`：同作用域内多跳替代链上的历史失败工单自动隐藏，活跃替代任务恢复显示其真实执行状态；一键清空、关闭与归档叶子替代任务时同步收口隐藏的失败祖先；任务栏在存在跨话题工单时自动按「当前话题 / 其他话题」清晰分组且不泄露原始 `originTopicId`。
+- **文件消息紧凑视图与选区引用定位增强（`@kulo/web`）**
+  - `file-message.tsx` 区分助手文件（默认内联预览）与用户发送文件（默认紧凑缩略卡片，保留展开/大窗/下载与更多菜单）；`message-actions.tsx` 改用 Portal 渲染选区引用条，结合真实行客户矩形与滚动祖先裁切精确锚定于最上方可见选区行（靠近顶边自动下翻，滚出视口自动隐藏）。
+
 ## v0.1.9 (2026-11-26)
 
 全面推进基准驱动的编排器 Harness 工程治理与减负重构，同时囊括助理主动唤醒规则管道、DSH 风格提示词架构与 1M 自适应上下文压缩能力（`v0.1.9`）。在 ShellBench、AlignBench 与 WildBench v2 249 道公开基准题的三方同场双盲重测中，彻底消除“框架税”：WildBench v2 全面反超同模型裸模型（`+0.382` / WB-Score `+0.763`）、AlignBench 纯直答损耗削减 84%、ShellBench 平均耗时腰斩（提速 `2.0×–2.2×`）且安全细则达成 100% 全过。

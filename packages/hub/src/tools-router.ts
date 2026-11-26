@@ -84,6 +84,7 @@ export interface DispatchTicketParams {
   boardId?: string;
   boardTitle?: string;
   reviewTicketId?: string;
+  inheritBrowserSession?: boolean;
 }
 
 export interface BoardToolParams {
@@ -115,6 +116,8 @@ export interface DispatchTicketModelOutcome {
     ticketId: string;
     title: string;
   };
+  browserSessionInherited?: boolean;
+  browserSessionInheritReason?: string;
 }
 
 export interface SteerTicketParams {
@@ -280,6 +283,7 @@ export function createOrchestratorToolsExtension(
       board_id: opt(str({ description: "TaskBoard ID to link." })),
       board_title: opt(str({ description: "New TaskBoard title (multi-ticket only)." })),
       review_ticket_id: opt(str({ description: "Settled ticket ID to review (read-only)." })),
+      inherit_browser_session: opt(bool({ description: "Set true to transfer this chat's active browser session (page & login state) to the Worker (requires trusted mode, writable built-in computer Worker, immediate slot, non-auto-connect session)." })),
     }),
     replay: "safe",
     execute: async (args, api, context) => {
@@ -319,6 +323,7 @@ export function createOrchestratorToolsExtension(
         ...(args.board_id?.trim() ? { boardId: args.board_id.trim() } : {}),
         ...(args.board_title?.trim() ? { boardTitle: args.board_title.trim() } : {}),
         ...(args.review_ticket_id?.trim() ? { reviewTicketId: args.review_ticket_id.trim() } : {}),
+        ...(args.inherit_browser_session !== undefined ? { inheritBrowserSession: args.inherit_browser_session } : {}),
       };
       const outcome = controller.dispatchTicketForModel
         ? await controller.dispatchTicketForModel(dispatchParams, context)
@@ -326,6 +331,8 @@ export function createOrchestratorToolsExtension(
       const payload = {
         ticket: outcome.ticket,
         ...(outcome.inlineDelivery ? { inline_delivery: outcome.inlineDelivery } : {}),
+        ...(outcome.browserSessionInherited !== undefined ? { browser_session_inherited: outcome.browserSessionInherited } : {}),
+        ...(outcome.browserSessionInheritReason ? { browser_session_inherit_reason: outcome.browserSessionInheritReason } : {}),
         ...(outcome.blockedByPendingMerge
           ? {
               blocked_by_pending_merge: {

@@ -1,6 +1,11 @@
 @reference "../../kulo.css";
 
 .kulo-chat-artifact { container-type: inline-size; width: 100%; min-width: 0; gap: 0; padding: 0; border: 1px solid var(--kulo-card-edge); border-radius: var(--kulo-card-radius); box-shadow: none; }
+.kulo-chat-artifact[data-compact="true"] { width: min(100%, 340px); }
+.kulo-artifact-compact-row { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--kulo-space-2); min-width: 0; padding: var(--kulo-space-2); }
+.kulo-artifact-compact-trigger { display: flex; flex: 1; align-items: center; justify-content: flex-start; gap: var(--kulo-space-3); min-width: 0; height: auto; padding: var(--kulo-space-1); text-align: start; }
+.kulo-artifact-compact-info { display: flex; flex: 1; align-items: center; gap: var(--kulo-space-3); min-width: 140px; padding: var(--kulo-space-1); }
+.kulo-artifact-thumb { display: grid; place-items: center; flex: none; width: 40px; height: 40px; border: 1px solid var(--kulo-card-edge); border-radius: 10px; background: var(--surface-tertiary); color: var(--muted); }
 .kulo-artifact-header { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--kulo-control-gap); min-width: 0; padding: var(--kulo-list-padding-block) var(--kulo-list-padding-inline); }
 .kulo-artifact-header > svg { flex-shrink: 0; color: var(--muted); }
 .kulo-artifact-detail { display: flex; flex: 1; flex-direction: column; min-width: 80px; }
@@ -31,5 +36,5 @@
   .kulo-artifact-header > .kulo-artifact-actions { width: 100%; justify-content: flex-end; }
 }
 @media (pointer: coarse) {
-  .kulo-artifact-actions .button, .kulo-artifact-collapsed .button, .kulo-artifact-feedback .button { min-height: 44px; min-width: 44px; }
+  .kulo-artifact-actions .button, .kulo-artifact-collapsed .button, .kulo-artifact-feedback .button, .kulo-artifact-compact-trigger { min-height: 44px; min-width: 44px; }
 }

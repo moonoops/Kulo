@@ -38,6 +38,7 @@ import {
   releaseSlot,
   toTicketCardView,
   transitionTicketStatus,
+  type KuloDurableState,
   type WorkerRecoveryEntryData,
 } from "./state.js";
 import { pruneClosedSubagentsInTx, settlePendingSubagentsInTx } from "./subagent-runner.js";
@@ -46,6 +47,60 @@ import type { CloseTicketParams, SteerTicketParams } from "./tools-router.js";
 
 function cloneJson<T>(val: T): T {
   return JSON.parse(JSON.stringify(val)) as T;
+}
+
+function suppressRecoveryLineage(
+  state: KuloDurableState,
+  origin: Readonly<TicketRecord>,
+  prior: NonNullable<TicketRecord["recovery"]>,
+  now: number,
+): void {
+  const rootId = prior.rootTicketId ?? origin.id;
+  for (const related of Object.values(state.tickets)) {
+    if (
+      related.id !== origin.id &&
+      sameRecoveryScope(origin, related) &&
+      related.recovery?.startedAt === prior.startedAt &&
+      (related.recovery.rootTicketId ?? related.id) === rootId
+    ) {
+      related.recovery = undefined;
+      related.autoRecoverySuppressed = true;
+      related.updatedAt = now;
+    }
+  }
+}
+
+function hasLiveSupersedingChild(
+  state: Readonly<KuloDurableState>,
+  ticket: Readonly<TicketRecord>,
+): boolean {
+  return Object.values(state.tickets).some(
+    (other) =>
+      other.id !== ticket.id &&
+      other.status !== "closed" &&
+      other.status !== "stopped" &&
+      sameRecoveryScope(ticket, other) &&
+      other.supersedes?.includes(ticket.id),
+  );
+}
+
+function collectSameScopeSupersededAncestors(
+  state: Readonly<KuloDurableState>,
+  origin: Readonly<TicketRecord>,
+): TicketRecord[] {
+  const ancestors: TicketRecord[] = [];
+  const visited = new Set<string>([origin.id]);
+  const pending = [...(origin.supersedes ?? [])];
+  while (pending.length) {
+    const ancestorId = pending.pop()!;
+    if (visited.has(ancestorId)) continue;
+    visited.add(ancestorId);
+    const ancestor = state.tickets[ancestorId];
+    if (!ancestor || !sameRecoveryScope(origin, ancestor)) continue;
+    ancestors.push(ancestor);
+    if (ancestor.supersedes?.length) pending.push(...ancestor.supersedes);
+  }
+  return ancestors;
 }
 
 export interface AdmitTicketSteerOutcome {
@@ -289,13 +344,9 @@ export async function admitTicketCloseInTx(
   releaseProjectWrite(state, t.id, { force: !t.cleanupPending });
   const prior = t.recovery;
   t.recovery = undefined;
-  if (prior && (prior.rootTicketId ?? t.id) === t.id) {
-    for (const related of Object.values(state.tickets)) {
-      if (related.recovery?.rootTicketId === t.id && related.recovery.startedAt === prior.startedAt) {
-        related.recovery = undefined;
-        related.autoRecoverySuppressed = true;
-      }
-    }
+  if (prior) {
+    t.autoRecoverySuppressed = true;
+    suppressRecoveryLineage(state, t, prior, now);
   }
   t.closure = {
     kind: params.kind,
@@ -304,6 +355,42 @@ export async function admitTicketCloseInTx(
     at: now,
   };
   t.updatedAt = now;
+  if (params.kind !== "superseded" && t.supersedes?.length && !hasLiveSupersedingChild(state, t)) {
+    const ancestors = collectSameScopeSupersededAncestors(state, t);
+    let retiredAny = true;
+    while (retiredAny) {
+      retiredAny = false;
+      for (const ancestor of ancestors) {
+        if (ancestor.status !== "failed" || hasLiveSupersedingChild(state, ancestor)) continue;
+        if (!ancestor.cleanupPending && (getActiveStagedCwd(ancestor) || hasPendingWorkspaceApply(ancestor))) {
+          if (ancestor.workspaceStaging && !ancestor.workspaceStaging.appliedAt) {
+            ancestor.workspaceStaging.discardedAt = now;
+            delete ancestor.workspaceStaging.stagedCwd;
+            delete ancestor.workspaceStaging.stagedDiff;
+          }
+          if (ancestor.externalExecution && !ancestor.externalExecution.stagedAppliedAt) {
+            delete ancestor.externalExecution.stagedCwd;
+            delete ancestor.externalExecution.stagedDiff;
+          }
+        }
+        transitionTicketStatus(ancestor, "closed", now);
+        settlePendingSubagentsInTx(state, ancestor.id, now);
+        if (ancestor.schedule) ancestor.schedule.nextRunAt = null;
+        releaseProjectWrite(state, ancestor.id, { force: !ancestor.cleanupPending });
+        const ancestorPrior = ancestor.recovery;
+        ancestor.recovery = undefined;
+        ancestor.autoRecoverySuppressed = true;
+        if (ancestorPrior) suppressRecoveryLineage(state, ancestor, ancestorPrior, now);
+        ancestor.closure = {
+          kind: "obsolete",
+          reason: params.reason.trim() || "替代任务已关闭",
+          at: now,
+        };
+        ancestor.updatedAt = now;
+        retiredAny = true;
+      }
+    }
+  }
   pruneClosedSubagentsInTx(state);
   return { card: toTicketCardView(t, activeRoles), changed: true, stagedToDiscard };
 }

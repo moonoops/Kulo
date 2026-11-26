@@ -3,8 +3,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import { COMPUTER_USE_MAX_RESULT, isComputerPreviewInputEvent, isComputerUseRequest, isComputerUseResult, type ComputerPreviewInputEvent, type ComputerUseRequest, type ComputerUseResult, type ComputerPreviewTarget, type ComputerPreviewUpdate, type DesktopSystemPermissions, type ExecutionTrustMode, type SystemPermissionState } from "@kulo/protocol";
+import { BROWSER_V2_CAPABILITY, COMPUTER_USE_MAX_RESULT, browserRequestWantsAutoSnapshot, computerUseEnvDeadlineMs, isComputerPreviewInputEvent, isComputerUseRequest, isComputerUseResult, type ComputerPreviewInputEvent, type ComputerUseRequest, type ComputerUseResult, type ComputerPreviewTarget, type ComputerPreviewUpdate, type DesktopSystemPermissions, type ExecutionTrustMode, type SystemPermissionState } from "@kulo/protocol";
 import { AgentCliError, runAgentCli, type AgentCliInvocation, type AgentCliRunner } from "./agent-cli.js";
+import {
+  browserSnapshotCliArgs,
+  collectInputSecrets,
+  compactBrowserSnapshotData,
+  executeBrowserBatch,
+  extractBrowserRefs,
+  runSecondaryAutoSnapshot,
+  scrubSecretsInString,
+} from "./computer-browser-batch.js";
 import {
   checkMacosChromeBackgroundTasks,
   resolveManagedBrowserExecutable,
@@ -112,13 +121,8 @@ function object(value: unknown): Record<string, unknown> | undefined {
 }
 
 function references(value: unknown, desktop: boolean): Set<string> {
+  if (!desktop) return extractBrowserRefs(value);
   const refs = new Set<string>();
-  if (!desktop) {
-    const data = object(value);
-    const mapped = object(data?.refs);
-    if (mapped) for (const key of Object.keys(mapped)) if (/^@?e[0-9]+$/.test(key)) refs.add(key.replace(/^@/, ""));
-    return refs;
-  }
   const stack: unknown[] = [object(value)?.tree];
   let visited = 0;
   while (stack.length && visited++ < 50_000) {
@@ -212,7 +216,7 @@ export class ComputerUseService {
 
   capabilities(): string[] {
     if (!SUPPORTED.has(this.#platform)) return [];
-    return [...(this.#browserEnabled ? ["agent-browser"] : []), ...(this.#desktopEnabled ? ["agent-desktop"] : [])];
+    return [...(this.#browserEnabled ? ["agent-browser", BROWSER_V2_CAPABILITY] : []), ...(this.#desktopEnabled ? ["agent-desktop"] : [])];
   }
 
   subscribePreview(target: ComputerPreviewTarget, listener: (update: ComputerPreviewUpdate) => void): () => void {
@@ -417,10 +421,10 @@ export class ComputerUseService {
     return env;
   }
 
-  async #call(request: ComputerUseRequest, args: string[], active: () => boolean, signal: AbortSignal, input?: string): Promise<unknown> {
+  async #call(request: ComputerUseRequest, args: string[], active: () => boolean, signal: AbortSignal, input?: string, timeoutMs = 30_000): Promise<unknown> {
     if (!active()) throw new AgentCliError("CLI_ABORTED", "The computer-use operation was cancelled");
     const invocation: AgentCliInvocation = {
-      tool: request.tool === "browser" ? "agent-browser" : "agent-desktop", args, cwd: this.rootDir, env: this.#environment(request.tool), signal, timeoutMs: 30_000,
+      tool: request.tool === "browser" ? "agent-browser" : "agent-desktop", args, cwd: this.rootDir, env: this.#environment(request.tool), signal, timeoutMs,
       ...(input !== undefined ? { input } : {}),
     };
     const value = await this.#runner(invocation);
@@ -452,7 +456,7 @@ export class ComputerUseService {
       const detail = object(native.error);
       const code = typeof detail?.code === "string" ? detail.code : typeof native.code === "string" ? native.code : "NATIVE_OPERATION_FAILED";
       let message = typeof detail?.message === "string" ? detail.message : typeof native.error === "string" ? native.error : "The native tool did not complete the operation";
-      if ("text" in request && request.text) message = message.split(request.text).join("[input omitted]");
+      if ("text" in request && request.text) message = scrubSecretsInString(message, collectInputSecrets([request.text]));
       return { failure: this.#error(request, code.slice(0,128), message) };
     }
     return { data: batch ? native.result : native.data };
@@ -588,6 +592,40 @@ export class ComputerUseService {
     return request.executionMode ?? this.#getExecutionTrustMode?.() ?? "sandboxed";
   }
 
+  async #detectBrowserUnexpectedRestart(
+    session: BrowserSession,
+    action: Extract<ComputerUseRequest, { tool: "browser"; sessionId: string }>["action"],
+    lifecycle: Record<string, unknown> | undefined,
+    signal: AbortSignal,
+  ): Promise<{ unexpectedRestart: true; restartCount: number; cause?: string; message: string } | undefined> {
+    const unexpectedRestart =
+      action !== "close"
+      && Boolean(session.launchedOnce)
+      && lifecycle?.launched === true
+      && lifecycle?.reused === false
+      && lifecycle?.relaunchedBrowser !== true;
+    if (!unexpectedRestart) return undefined;
+    session.unexpectedRestarts += 1;
+    if (action !== "open") session.refs.clear();
+    const btmState = session.usingSystemMacosChrome
+      ? (this.#macosChromeBtmState !== "unknown" ? this.#macosChromeBtmState : await this.#refreshMacosChromeBtm(false, signal))
+      : "unknown";
+    const base = action === "open"
+      ? "The previous managed browser process exited unexpectedly before this navigation and a fresh browser instance was started."
+      : "The managed browser process exited unexpectedly between commands and was restarted on a blank page (about:blank); previous page state and refs were lost.";
+    const detail = btmState === "disallowed"
+      ? " Root cause: macOS Login Items & Extensions ('Allow in the Background') has Google Chrome disabled, so macOS loginwindow force-quits headless Chrome after ~30 seconds. Stop retrying in a loop and report blocked so the user can enable Google Chrome in Allow in the Background or install an isolated automation browser (Chrome for Testing)."
+      : session.unexpectedRestarts >= 2
+        ? ` The managed browser has exited unexpectedly ${session.unexpectedRestarts} times in this session. Stop retrying in a loop and report blocked with this diagnostic.`
+        : " Re-open the target URL before continuing, and report blocked if this repeats.";
+    return {
+      unexpectedRestart: true,
+      restartCount: session.unexpectedRestarts,
+      ...(btmState === "disallowed" ? { cause: "macos_chrome_background_tasks_disallowed" } : {}),
+      message: base + detail,
+    };
+  }
+
   async #executeBrowser(request: Extract<ComputerUseRequest, { tool: "browser"; sessionId: string }>, active: () => boolean, signal: AbortSignal): Promise<ComputerUseResult> {
     let session = this.#browser.get(request.sessionId);
     if (request.action === "close" && !session) return this.#result(request, { closed: true });
@@ -640,13 +678,26 @@ export class ComputerUseService {
       if (usingSystemMacosChrome && !autoConnect) void this.#refreshMacosChromeBtm(false).catch(() => {});
     }
     if (!session) return this.#error(request, "SESSION_NOT_FOUND", "Open a browser session before using it");
+    if (request.action === "batch") {
+      const batchResult = await executeBrowserBatch({
+        request,
+        sessionRefs: session.refs,
+        platform: this.#platform,
+        runBatchCli: (commands, timeoutMs) =>
+          this.#call(request, [...this.#browserArgs(request.sessionId), "batch", "--omit-command", "--bail"], active, signal, JSON.stringify(commands), timeoutMs),
+        onLifecycle: (lifecycle) => this.#detectBrowserUnexpectedRestart(session!, "batch", lifecycle, signal),
+      });
+      if (batchResult.ok || object(batchResult.data)?.steps) this.#previews.changed({ tool: "browser", sessionId: request.sessionId });
+      return batchResult;
+    }
     if ("ref" in request && request.ref !== undefined && !session.refs.has(request.ref.replace(/^@/, ""))) return this.#error(request, "REF_NOT_AUTHORIZED", "Take a fresh snapshot in this browser session before acting on a ref");
+    const deadlineAt = Date.now() + computerUseEnvDeadlineMs(request);
     const args = this.#browserArgs(request.sessionId);
     let input: string | undefined;
-    const batch = request.action === "fill" || request.action === "type";
+    const singleTextBatch = request.action === "fill" || request.action === "type";
     switch (request.action) {
       case "open": args.push("open", request.url); break;
-      case "snapshot": args.push("snapshot", "-i", "-c"); break;
+      case "snapshot": args.push(...browserSnapshotCliArgs(request.mode)); break;
       case "get-url": args.push("get", "url"); break;
       case "get-text": args.push("get", "text", "body"); break;
       case "click": args.push("click", `@${request.ref.replace(/^@/, "")}`); break;
@@ -667,52 +718,39 @@ export class ComputerUseService {
     }
     if (!["get-url", "get-text"].includes(request.action)) session.refs.clear();
     const value = await this.#call(request, args, active, signal, input);
-    const native = this.#native(request, value, batch);
+    const native = this.#native(request, value, singleTextBatch);
     if (native.failure) return native.failure;
     const lifecycle = object(object(native.data)?.lifecycle);
-    const unexpectedRestart =
-      request.action !== "close"
-      && Boolean(session.launchedOnce)
-      && lifecycle?.launched === true
-      && lifecycle?.reused === false
-      && lifecycle?.relaunchedBrowser !== true;
+    const sessionReset = await this.#detectBrowserUnexpectedRestart(session, request.action, lifecycle, signal);
     if (request.action === "open") {
       session.previewReady = true;
       session.launchedOnce = true;
     }
-    let sessionReset: { unexpectedRestart: true; restartCount: number; cause?: string; message: string } | undefined;
-    if (unexpectedRestart) {
-      session.unexpectedRestarts += 1;
-      if (request.action !== "open") session.refs.clear();
-      const btmState = session.usingSystemMacosChrome
-        ? (this.#macosChromeBtmState !== "unknown" ? this.#macosChromeBtmState : await this.#refreshMacosChromeBtm(false, signal))
-        : "unknown";
-      const base = request.action === "open"
-        ? "The previous managed browser process exited unexpectedly before this navigation and a fresh browser instance was started."
-        : "The managed browser process exited unexpectedly between commands and was restarted on a blank page (about:blank); previous page state and refs were lost.";
-      const detail = btmState === "disallowed"
-        ? " Root cause: macOS Login Items & Extensions ('Allow in the Background') has Google Chrome disabled, so macOS loginwindow force-quits headless Chrome after ~30 seconds. Stop retrying in a loop and report blocked so the user can enable Google Chrome in Allow in the Background or install an isolated automation browser (Chrome for Testing)."
-        : session.unexpectedRestarts >= 2
-          ? ` The managed browser has exited unexpectedly ${session.unexpectedRestarts} times in this session. Stop retrying in a loop and report blocked with this diagnostic.`
-          : " Re-open the target URL before continuing, and report blocked if this repeats.";
-      sessionReset = {
-        unexpectedRestart: true,
-        restartCount: session.unexpectedRestarts,
-        ...(btmState === "disallowed" ? { cause: "macos_chrome_background_tasks_disallowed" } : {}),
-        message: base + detail,
-      };
-    }
     if (request.action === "close") this.#forgetBrowser(request.sessionId);
     if (request.action === "snapshot") session.refs = references(native.data, false);
     if (request.action !== "close") this.#previews.changed({ tool: "browser", sessionId: request.sessionId });
-    const basePayload = batch
-      ? { actionAccepted: true, observationRequired: true, ...(sessionReset ? { sessionReset } : {}) }
-      : sessionReset && object(native.data)
-        ? { ...object(native.data)!, sessionReset }
-        : native.data;
-    const payload = request.action === "open" && session.profileMode && object(basePayload)
+    const wantsAutoSnapshot = browserRequestWantsAutoSnapshot(request);
+    const rawMain = request.action === "snapshot" ? compactBrowserSnapshotData(native.data) : native.data;
+    const basePayload = singleTextBatch
+      ? { actionAccepted: true, ...(wantsAutoSnapshot ? {} : { observationRequired: true }), ...(sessionReset ? { sessionReset } : {}) }
+      : sessionReset && object(rawMain)
+        ? { ...object(rawMain)!, sessionReset }
+        : rawMain;
+    let payload: unknown = request.action === "open" && session.profileMode && object(basePayload)
       ? { ...object(basePayload)!, profileMode: session.profileMode }
       : basePayload;
+    if (wantsAutoSnapshot && !(sessionReset && request.action !== "open")) {
+      payload = await runSecondaryAutoSnapshot({
+        request,
+        mainData: payload,
+        deadlineAt,
+        active,
+        signal,
+        runSnapshot: async (mode, timeoutMs) =>
+          this.#native(request, await this.#call(request, [...this.#browserArgs(request.sessionId), ...browserSnapshotCliArgs(mode)], active, signal, undefined, timeoutMs)),
+        onRefs: (refs) => { session!.refs = refs; },
+      });
+    }
     return this.#result(request, payload);
   }
 

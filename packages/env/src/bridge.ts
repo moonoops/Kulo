@@ -23,11 +23,11 @@ import {
   pickBridgeDefaultWorkerEnvId,
   releaseBridgeWorkerEnv,
   retireIdleWorkerConnections,
-  scopeComputerUseForTarget,
   scopeHostActionForTarget,
   type BridgeExecutionContext,
   type WorkerConnectionEntry,
 } from "./bridge-execution-env.js";
+import { executeComputerUseWithCompat } from "./computer-use-compat.js";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import {
   Connection,
@@ -68,7 +68,6 @@ import {
   EXTERNAL_AGENT_KINDS,
   EXTERNAL_AGENT_MCP_TOOL_NAMES,
   type ExternalAgentMcpToolName,
-  isComputerUseRequest,
   isComputerUseResult,
   isHostActionRequest,
   isHostActionResult,
@@ -1743,24 +1742,24 @@ export class EnvManager {
   }
 
   async requestComputerUse(envId: string, request: ComputerUseRequest, signal?: AbortSignal): Promise<ComputerUseResult> {
+    return executeComputerUseWithCompat({
+      closed: this.#closed, descriptor: this.getEnvDescriptor(envId), request, targetMode: this.#executionTrustMode, isLocal: this.isLocalEnv(envId), signal,
+      sendRpc: (scopedRequest, timeoutMs, rpcSignal) => this.#dispatchComputerUseRpc(envId, scopedRequest, timeoutMs, rpcSignal),
+    });
+  }
+  #dispatchComputerUseRpc(envId: string, scopedRequest: ComputerUseRequest, timeoutMs: number, signal?: AbortSignal): Promise<ComputerUseResult> {
     if (this.#closed) throw new Error("Env manager is closed");
-    if (!isComputerUseRequest(request)) throw new Error("Invalid computer-use request");
     if (signal?.aborted) throw Object.assign(new Error("Computer-use operation cancelled"), { name: "AbortError" });
-    const descriptor = this.getEnvDescriptor(envId);
-    if (!descriptor?.online) throw new Error("Computer-use device is offline");
-    if (descriptor.executionKind === "native-device" || !["darwin", "linux", "win32"].includes(descriptor.platform)) throw new Error("This device has no supported computer-use driver");
-    if (!descriptor.capabilities.includes(request.tool === "browser" ? "agent-browser" : "agent-desktop")) throw new Error(`Computer-use ${request.tool} is not enabled on this device`);
     if (this.#computerRequests.size >= 32) throw new Error("Computer-use request limit reached");
     const peer = this.isLocalEnv(envId) ? undefined : this.#wsPeers.get(envId);
     if (this.isLocalEnv(envId) ? !this.#localComputer : !peer?.ws || peer.ws.readyState !== peer.ws.OPEN) throw new Error("Computer use requires the target device's authenticated Env connection");
     const expectedLease = this.#deviceConnectionLeases.get(envId);
     if (peer && expectedLease !== undefined && !sameToken(peer.connectionLease, expectedLease)) throw new Error("Computer-use device connection lease changed");
-    const scopedRequest = scopeComputerUseForTarget(request, this.#executionTrustMode, descriptor.capabilities, this.isLocalEnv(envId));
     const requestId = randomBytes(16).toString("hex");
     return new Promise((resolve, reject) => {
       const controller = new AbortController();
       const cancel = () => this.#finishComputerRequest(requestId, undefined, Object.assign(new Error("Computer-use operation cancelled; observe the target before retrying"), { name: "AbortError" }));
-      const timer = setTimeout(() => this.#finishComputerRequest(requestId, undefined, new Error("Computer-use operation was not confirmed in time; observe the target before retrying")), 45_000);
+      const timer = setTimeout(() => this.#finishComputerRequest(requestId, undefined, new Error("Computer-use operation was not confirmed in time; observe the target before retrying")), timeoutMs);
       timer.unref();
       const pending: PendingComputerRequest = { envId, request: scopedRequest, ...(peer?.ws ? { ws: peer.ws } : {}), controller, resolve, reject, timer, removeAbort: () => signal?.removeEventListener("abort", cancel) };
       this.#computerRequests.set(requestId, pending);
@@ -1769,14 +1768,9 @@ export class EnvManager {
       if (pending.ws) this.#sendControl(pending.ws, { type: "hub.computer_request", requestId, request: scopedRequest });
       else {
         const active = () => !this.#closed && this.#computerRequests.get(requestId) === pending && !controller.signal.aborted;
-        void Promise.resolve().then(() => {
-          if (!active()) throw new Error("Computer-use operation cancelled");
-          return this.#localComputer!.request(scopedRequest, active, controller.signal);
-        }).then((result) => {
-          if (!active()) return;
-          if (!isComputerUseResult(result, scopedRequest)) this.#finishComputerRequest(requestId, undefined, new Error("Invalid computer-use response"));
-          else this.#finishComputerRequest(requestId, result);
-        }, () => this.#finishComputerRequest(requestId, undefined, new Error("Computer-use device could not confirm the operation; observe the target before retrying")));
+        void Promise.resolve().then(() => { if (!active()) throw new Error("Computer-use operation cancelled"); return this.#localComputer!.request(scopedRequest, active, controller.signal); })
+          .then((result) => { if (!active()) return; if (!isComputerUseResult(result, scopedRequest)) this.#finishComputerRequest(requestId, undefined, new Error("Invalid computer-use response")); else this.#finishComputerRequest(requestId, result); },
+            () => this.#finishComputerRequest(requestId, undefined, new Error("Computer-use device could not confirm the operation; observe the target before retrying")));
       }
     });
   }

@@ -39,7 +39,9 @@ describe("project REST requests", () => {
     vi.stubGlobal("fetch", request);
     await kuloRest.createTopic(undefined, "project-1");
     await kuloRest.createTopic();
+    await kuloRest.createTopic("首条消息标题", "project-1", { draft: true });
     expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({ projectId: "project-1" });
     expect(JSON.parse(request.mock.calls[1][1].body)).toEqual({});
+    expect(JSON.parse(request.mock.calls[2][1].body)).toEqual({ title: "首条消息标题", projectId: "project-1", draft: true });
   });
 });

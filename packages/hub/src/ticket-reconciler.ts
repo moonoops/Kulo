@@ -257,7 +257,10 @@ export class TicketReconciler {
           ticket.workspaceStaging?.mode === "staged" && !ticket.workspaceStaging.appliedAt &&
           !ticket.workspaceStaging.discardedAt && ticket.workspaceStaging.stagedCwd,
       );
-      const computerCloseTasks = ports.computer.buildTicketSessionCleanupTasks(ticket.id, options);
+      const computerCloseTasks = ports.computer.buildTicketSessionCleanupTasks(ticket.id, {
+        ...options,
+        ...(ticket.inheritedBrowserSession ? { inheritedBrowserSession: ticket.inheritedBrowserSession } : {}),
+      });
       const [connection, worker, ...computer] = await Promise.allSettled([
         connectionManager.revoke(ticket.id),
         ticket.externalExecution || ticket.executionDomain === "android"

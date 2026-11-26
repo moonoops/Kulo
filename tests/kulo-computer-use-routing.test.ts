@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ComputerUseRequest, ComputerUseResult, HubToEnvControlMessage } from "@kulo/protocol";
+import { computerUseRpcTimeoutMs, type ComputerUseRequest, type ComputerUseResult, type HubToEnvControlMessage } from "@kulo/protocol";
 import { EnvManager } from "../packages/env/src/bridge.js";
 import { KuloEnvAgent } from "../packages/env/src/agent.js";
 import type { ComputerUseService } from "../packages/env/src/computer-use.js";
@@ -25,7 +25,7 @@ function result(request: ComputerUseRequest, platform = process.platform, data: 
   return { tool: request.tool, action: request.action, ...("sessionId" in request ? { sessionId: request.sessionId } : {}), platform, ok: true, data };
 }
 
-function service(rootDir: string, handler: (request: ComputerUseRequest, active: () => boolean, signal?: AbortSignal) => Promise<ComputerUseResult> = async (request) => result(request), capabilities = ["agent-browser", "agent-desktop"]) {
+function service(rootDir: string, handler: (request: ComputerUseRequest, active: () => boolean, signal?: AbortSignal) => Promise<ComputerUseResult> = async (request) => result(request), capabilities = ["agent-browser", "agent-browser-v2", "agent-desktop"]) {
   fs.mkdirSync(rootDir, { recursive: true });
   const value = {
     rootDir,
@@ -64,7 +64,7 @@ async function connect(url: string, envId: string, token: string, platform = "wi
     socket.on("message", onMessage);
     socket.once("close", () => reject(new Error("Registration rejected")));
   });
-  socket.send(JSON.stringify({ type: "env.register", envId, token, name: envId, rootDir: platform === "win32" ? "C:\\kulo-env" : "/tmp/kulo-env", platform, arch: "x64", capabilities: ["agent-browser", "agent-desktop"], ...extra }));
+  socket.send(JSON.stringify({ type: "env.register", envId, token, name: envId, rootDir: platform === "win32" ? "C:\\kulo-env" : "/tmp/kulo-env", platform, arch: "x64", capabilities: ["agent-browser", "agent-browser-v2", "agent-desktop"], ...extra }));
   await registered;
   return socket;
 }
@@ -155,10 +155,11 @@ describe("computer use Env routing", () => {
     const manager = new EnvManager({ enableLocal: false, envTokens: { device: "device-token" } });
     await manager.start();
     const host = await server(manager);
-    const agent = new KuloEnvAgent({ hubUrl: host.url, envId: "device", authToken: "device-token", rootDir: path.join(root, "env"), computerUseService: computer.instance, capabilities: ["agent-browser", "agent-desktop"], reconnect: false });
+    const agent = new KuloEnvAgent({ hubUrl: host.url, envId: "device", authToken: "device-token", rootDir: path.join(root, "env"), computerUseService: computer.instance, capabilities: ["agent-browser", "agent-browser-v2", "agent-desktop"], reconnect: false });
     try {
       await agent.start();
       expect(manager.getEnvDescriptor("device")?.capabilities).not.toContain("agent-browser");
+      expect(manager.getEnvDescriptor("device")?.capabilities).not.toContain("agent-browser-v2");
       expect(manager.getEnvDescriptor("device")?.capabilities).not.toContain("agent-desktop");
       await expect(manager.requestComputerUse("device", open)).rejects.toThrow("not enabled");
       expect(computer.request).not.toHaveBeenCalled();
@@ -302,5 +303,164 @@ describe("computer use Env routing", () => {
       if (reason === "lease") await expect(manager.requestComputerUse("device", open)).rejects.toThrow("lease changed");
       device.close();
     } finally { await manager.close(); await host.close(); }
+  });
+
+  it("downgrades browser-v2 requests for legacy remote Envs without agent-browser-v2: strips new fields, emulates auto-snapshot, and rejects batch cleanly", async () => {
+    const manager = new EnvManager({ enableLocal: false, envTokens: { legacy: "legacy-token" } });
+    await manager.start();
+    const host = await server(manager);
+    try {
+      const legacy = await connect(host.url, "legacy", "legacy-token", "linux", { capabilities: ["agent-browser", "agent-desktop"] });
+      const received: ComputerUseRequest[] = [];
+      let failNextSnapshot = false;
+      legacy.on("message", (raw) => {
+        const msg = JSON.parse(raw.toString()) as HubToEnvControlMessage;
+        if (msg.type !== "hub.computer_request") return;
+        received.push(msg.request);
+        if (msg.request.action === "snapshot") {
+          if (failNextSnapshot) {
+            failNextSnapshot = false;
+            legacy.send(JSON.stringify({
+              type: "env.computer_result",
+              requestId: msg.requestId,
+              result: { tool: "browser", action: "snapshot", sessionId: msg.request.sessionId, platform: "linux", ok: false, error: { code: "SNAP_ERR", message: "page navigating" } },
+            }));
+            return;
+          }
+          legacy.send(JSON.stringify({
+            type: "env.computer_result",
+            requestId: msg.requestId,
+            result: result(msg.request, "linux", { snapshot: '- button "Login" [ref=e1] secret-val', refs: { e1: { role: "button" } } }),
+          }));
+          return;
+        }
+        legacy.send(JSON.stringify({
+          type: "env.computer_result",
+          requestId: msg.requestId,
+          result: result(msg.request, "linux", { url: "https://legacy.example.com" }),
+        }));
+      });
+
+      // 1. open with returnSnapshot=true & snapshotMode="compact" -> strips fields on wire & emulates follow-up snapshot RPC (stripping data.refs!)
+      const opened = await manager.requestComputerUse("legacy", {
+        tool: "browser",
+        action: "open",
+        sessionId: "legacy-s1",
+        url: "https://legacy.example.com",
+        returnSnapshot: true,
+        snapshotMode: "compact",
+      });
+      expect(opened).toMatchObject({
+        ok: true,
+        data: {
+          url: "https://legacy.example.com",
+          snapshot: '- button "Login" [ref=e1] secret-val',
+        },
+      });
+      expect(opened.data as Record<string, unknown>).not.toHaveProperty("refs");
+      expect(received[0]).toEqual({ tool: "browser", action: "open", sessionId: "legacy-s1", url: "https://legacy.example.com" });
+      expect(received[1]).toEqual({ tool: "browser", action: "snapshot", sessionId: "legacy-s1" });
+
+      // 2. open with returnSnapshot=false -> strips returnSnapshot and sends ONLY 1 RPC
+      const countBeforeNoSnap = received.length;
+      const openNoSnap = await manager.requestComputerUse("legacy", {
+        tool: "browser",
+        action: "open",
+        sessionId: "legacy-s1",
+        url: "https://legacy.example.com",
+        returnSnapshot: false,
+      });
+      expect(openNoSnap.ok).toBe(true);
+      expect(received.length).toBe(countBeforeNoSnap + 1);
+      expect(received.at(-1)).toEqual({ tool: "browser", action: "open", sessionId: "legacy-s1", url: "https://legacy.example.com" });
+
+      // 3. snapshot with mode="compact" -> strips mode on wire
+      const snap = await manager.requestComputerUse("legacy", { tool: "browser", action: "snapshot", sessionId: "legacy-s1", mode: "compact" });
+      expect(snap.ok).toBe(true);
+      expect(received.at(-1)).toEqual({ tool: "browser", action: "snapshot", sessionId: "legacy-s1" });
+
+      // 4. fill with returnSnapshot=true -> strips returnSnapshot, emulates snapshot, scrubs typed secret
+      const filled = await manager.requestComputerUse("legacy", {
+        tool: "browser",
+        action: "fill",
+        sessionId: "legacy-s1",
+        ref: "@e1",
+        text: "secret-val",
+        returnSnapshot: true,
+      });
+      expect(filled.ok).toBe(true);
+      expect(JSON.stringify(filled)).not.toContain("secret-val");
+      expect((filled.data as Record<string, unknown>).snapshot as string).toContain("[input omitted]");
+
+      // 5. Follow-up emulated snapshot error degrades gracefully without rejecting primary action
+      failNextSnapshot = true;
+      const degraded = await manager.requestComputerUse("legacy", { tool: "browser", action: "click", sessionId: "legacy-s1", ref: "@e1" });
+      expect(degraded).toMatchObject({
+        ok: true,
+        data: {
+          observationRequired: true,
+          snapshotError: "page navigating",
+        },
+      });
+
+      // 6. batch on legacy remote Env rejected cleanly without sending wire payload
+      const countBeforeBatch = received.length;
+      const batchRejected = await manager.requestComputerUse("legacy", {
+        tool: "browser",
+        action: "batch",
+        sessionId: "legacy-s1",
+        steps: [{ action: "click", ref: "@e1" }],
+      });
+      expect(batchRejected).toMatchObject({
+        ok: false,
+        action: "batch",
+        platform: "linux",
+        error: { code: "CAPABILITY_UNSUPPORTED", message: expect.stringContaining("agent-browser-v2") },
+      });
+      expect(received.length).toBe(countBeforeBatch);
+      legacy.close();
+    } finally { await manager.close(); await host.close(); }
+  });
+
+  it("uses dynamic computerUseRpcTimeoutMs for multi-step batch requests instead of the fixed 45s timeout", async () => {
+    const manager = new EnvManager({ enableLocal: false, envTokens: { v2: "v2-token" } });
+    await manager.start();
+    const host = await server(manager);
+    try {
+      const device = await connect(host.url, "v2", "v2-token");
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const batchReq: ComputerUseRequest = {
+        tool: "browser",
+        action: "batch",
+        sessionId: "kulo-batch-deadline",
+        steps: [
+          { action: "fill", ref: "@e1", text: "user" },
+          { action: "fill", ref: "@e2", text: "pass" },
+          { action: "click", ref: "@e3" },
+          { action: "wait", text: "Dashboard", timeoutMs: 15_000 },
+        ],
+      };
+      const expectedTimeout = computerUseRpcTimeoutMs(batchReq);
+      expect(expectedTimeout).toBeGreaterThan(45_000);
+
+      const incoming = nextMessage(device, "hub.computer_request");
+      const response = manager.requestComputerUse("v2", batchReq);
+      let settled = false;
+      const rejection = response.then(() => { settled = true; }, (err) => { settled = true; throw err; });
+      const reqMsg = await incoming;
+      const cancelled = nextMessage(device, "hub.computer_cancel");
+
+      // Still alive past the old 45s wall
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(settled).toBe(false);
+
+      // Expires exactly when reaching dynamic computerUseRpcTimeoutMs(batchReq)
+      const expectation = expect(rejection).rejects.toThrow("not confirmed in time");
+      await vi.advanceTimersByTimeAsync(expectedTimeout - 45_000);
+      await expectation;
+      expect(await cancelled).toMatchObject({ requestId: reqMsg.requestId });
+      vi.useRealTimers();
+      device.close();
+    } finally { vi.useRealTimers(); await manager.close(); await host.close(); }
   });
 });

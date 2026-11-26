@@ -5,6 +5,7 @@ export type FriendlyErrorKind =
   | "quota"
   | "forbidden"
   | "model_not_found"
+  | "image_payload_invalid"
   | "multimodal_unsupported"
   | "context_overflow"
   | "rate_limit"
@@ -195,6 +196,22 @@ function buildRawDetail(input: FriendlyErrorInput): string | undefined {
   return joined.length > 2000 ? `${joined.slice(0, 2000)}…` : joined;
 }
 
+/** Extract the positive step/turn count from `turn_limit` detail/rawMessage (e.g. `"60 turns"`). */
+export function parseTurnLimitStepCount(input: FriendlyErrorInput): number | undefined {
+  const candidates = [input.detail, input.rawMessage];
+  for (const raw of candidates) {
+    const text = raw?.trim();
+    if (!text) continue;
+    const labeled = /\b(\d+)\s*(?:turns?|steps?|步|轮)\b/i.exec(text) ?? /^(\d+)$/.exec(text);
+    if (!labeled) continue;
+    const count = Number(labeled[1]);
+    if (Number.isSafeInteger(count) && count >= 1 && count <= 100_000) {
+      return count;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Translate raw Hub / pi-durable / upstream gateway errors into friendly Chinese diagnostics.
  */
@@ -220,10 +237,13 @@ export function describeKuloError(input: FriendlyErrorInput): FriendlyErrorDescr
   const info = extractUpstreamErrorInfo(sourceText);
 
   if (reason === "turn_limit") {
+    const steps = parseTurnLimitStepCount(input);
     return {
       kind: "turn_limit",
       title: "已达到单轮执行步数上限",
-      hint: "为避免循环调用，本轮已自动暂停。点击「继续生成」即可接着往下执行。",
+      hint: steps !== undefined
+        ? `本轮已执行 ${steps} 步，为避免长时间空转已自动暂停。点击「继续生成」即可接着往下执行。`
+        : "为避免循环调用，本轮已自动暂停。点击「继续生成」即可接着往下执行。",
       ...(info.statusCode !== undefined ? { statusCode: info.statusCode } : {}),
       ...(rawDetail ? { rawDetail } : {}),
       retryable: true,
@@ -372,16 +392,87 @@ export function describeKuloError(input: FriendlyErrorInput): FriendlyErrorDescr
     };
   }
 
+  const hasImageContext =
+    haystack.includes("image") ||
+    haystack.includes("base64") ||
+    haystack.includes("data:") ||
+    haystack.includes("mime") ||
+    haystack.includes("vision") ||
+    haystack.includes("multimodal") ||
+    haystack.includes("图片") ||
+    haystack.includes("图像");
+
+  const isImagePayloadError =
+    (statusCode === undefined || statusCode === 400 || statusCode === 413 || statusCode === 415 || statusCode === 422) &&
+    (haystack.includes("invalid base64") ||
+      haystack.includes("expected a base64-encoded") ||
+      haystack.includes("invalid image") ||
+      haystack.includes("unsupported image format") ||
+      haystack.includes("image is too large") ||
+      haystack.includes("could not process image") ||
+      haystack.includes("corrupt image") ||
+      haystack.includes("malformed image") ||
+      (hasImageContext &&
+        (haystack.includes("invalid_value") ||
+          haystack.includes("could not decode") ||
+          haystack.includes("exceeds maximum") ||
+          (haystack.includes("exceeds ") && haystack.includes("mb")) ||
+          haystack.includes("too large") ||
+          haystack.includes("url is not accessible") ||
+          haystack.includes("error while downloading") ||
+          haystack.includes("failed to download") ||
+          haystack.includes("invalid data url") ||
+          haystack.includes("not a valid base64") ||
+          (haystack.includes("base64") &&
+            (haystack.includes("invalid") ||
+              haystack.includes("decode") ||
+              haystack.includes("malformed") ||
+              haystack.includes("corrupt"))))));
+
+  if (isImagePayloadError) {
+    return {
+      kind: "image_payload_invalid",
+      title: "图片数据无效或超出限制",
+      hint: "发送给模型的图片数据可能已损坏、格式不受支持或体积超出接口限制（无需切换模型）。请重新读取或压缩图片后再重试。",
+      ...(statusCode !== undefined ? { statusCode } : {}),
+      ...(rawDetail ? { rawDetail } : {}),
+      retryable: true,
+      suggestModelSettings: false,
+      isUserAbort: false,
+    };
+  }
+
   if (
     (statusCode === undefined || statusCode === 400 || statusCode === 415 || statusCode === 422) &&
-    (haystack.includes("image_url") ||
-      haystack.includes("does not support image") ||
-      haystack.includes("unsupported image") ||
-      haystack.includes("image input") ||
-      haystack.includes("vision") ||
-      haystack.includes("multimodal") ||
+    (haystack.includes("does not support image") ||
+      haystack.includes("doesn't support image") ||
+      haystack.includes("do not support image") ||
+      haystack.includes("does not support vision") ||
+      haystack.includes("doesn't support vision") ||
+      haystack.includes("does not support multimodal") ||
+      haystack.includes("image input is not supported") ||
+      haystack.includes("image inputs are not supported") ||
+      haystack.includes("images are not supported") ||
+      haystack.includes("image_url is not supported") ||
+      haystack.includes("image_url is only supported") ||
+      haystack.includes("vision is not supported") ||
+      haystack.includes("multimodal is not supported") ||
+      haystack.includes("multimodal input is not supported") ||
+      haystack.includes("not a vision model") ||
+      haystack.includes("not a multimodal model") ||
+      haystack.includes("not multimodal") ||
+      haystack.includes("no vision support") ||
+      haystack.includes("no endpoints found that support image") ||
+      haystack.includes("cannot process image") ||
+      haystack.includes("cannot read image") ||
+      haystack.includes("unknown variant `image_url`") ||
+      (haystack.includes("unsupported content type") && haystack.includes("image")) ||
+      (haystack.includes("only supported by certain models") && hasImageContext) ||
+      /\b(?:image_url|image\s+inputs?|images|vision|multimodal)\b[^.\n]{0,40}\b(?:not\s+supported|unsupported)\b/.test(haystack) ||
       haystack.includes("不支持图片") ||
-      haystack.includes("不支持图像"))
+      haystack.includes("不支持图像") ||
+      haystack.includes("不支持视觉") ||
+      haystack.includes("不支持多模态"))
   ) {
     return {
       kind: "multimodal_unsupported",

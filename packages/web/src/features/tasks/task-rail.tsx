@@ -18,12 +18,29 @@ import {
   type AssistantDismissAllHandler,
 } from "./assistant-rail-section";
 import {
-  isTaskUnfinished, reconcileTaskRows, taskCompletedAt, taskDurationLabel, taskIsRecovering, taskNeedsAttention, taskStatusLabel,
-  visibleTaskCards, type TaskRow,
+  groupVisibleTaskCards, isTaskUnfinished, normalizeTaskTopicId, reconcileTaskRows, taskCompletedAt, taskDurationLabel,
+  taskIsRecovering, taskNeedsAttention, taskStatusLabel, visibleTaskCards, type TaskRow,
 } from "./task-model";
 import { TaskFailureActions, type TicketAction } from "./task-failure-actions";
 import "./task-rail.css";
 import { useTaskClock } from "./use-task-clock";
+
+function pinWithinOrder(
+  previousIds: readonly string[],
+  desiredTickets: readonly TicketCardView[],
+  pinned: ReadonlySet<string>,
+): TicketCardView[] {
+  const ordered = [...desiredTickets];
+  for (let index = 0; index < previousIds.length; index++) {
+    const id = previousIds[index]!;
+    if (!pinned.has(id)) continue;
+    const currentIndex = ordered.findIndex((ticket) => ticket.id === id);
+    if (currentIndex < 0) continue;
+    const [ticket] = ordered.splice(currentIndex, 1);
+    ordered.splice(Math.min(index, ordered.length), 0, ticket!);
+  }
+  return ordered;
+}
 
 function RailStatus({ ticket }: { ticket: TicketCardView }) {
   const { t } = useI18n();
@@ -39,9 +56,11 @@ function RailStatus({ ticket }: { ticket: TicketCardView }) {
 }
 
 export function KuloTaskRail({
-  tickets, assistantItems = [], onAssistantItemAction, onAssistantDismissAll, projectedTicketId, onProject, onRetry, onIgnore, onArchive, clearingAll = false, clearAllError = null, onClearAllError, scrollContainerRef, completedTaskDisplayHours = 3, connected = true, canQueueActions = connected, loaded = true, snapshotVersion = 0, computerPreview,
+  tickets, activeTopicId, topicTitles, assistantItems = [], onAssistantItemAction, onAssistantDismissAll, projectedTicketId, onProject, onRetry, onIgnore, onArchive, clearingAll = false, clearAllError = null, onClearAllError, scrollContainerRef, completedTaskDisplayHours = 3, connected = true, canQueueActions = connected, loaded = true, snapshotVersion = 0, computerPreview,
 }: {
   tickets: TicketCardView[];
+  activeTopicId?: string;
+  topicTitles?: ReadonlyMap<string, string>;
   assistantItems?: AssistantItemView[];
   onAssistantItemAction?: (item: AssistantItemView, action: AssistantItemAction) => Promise<void> | void;
   onAssistantDismissAll?: AssistantDismissAllHandler;
@@ -73,10 +92,31 @@ export function KuloTaskRail({
   const [archivingIds, setArchivingIds] = useState<ReadonlySet<string>>(new Set());
   const [actionError, setActionError] = useState<string | null>(null);
   const [settling, setSettling] = useState<ReadonlySet<string>>(new Set());
+  const normalizedActiveTopicId = activeTopicId === undefined ? undefined : normalizeTaskTopicId(activeTopicId);
   const protectedIds = useMemo(() => new Set([hoveredId, focusedId, projectedTicketId].filter((id): id is string => Boolean(id))), [hoveredId, focusedId, projectedTicketId]);
   const desired = useMemo(() => visibleTaskCards(tickets, now, completedTaskDisplayHours, protectedIds), [tickets, now, completedTaskDisplayHours, protectedIds]);
-  const [rows, setRows] = useState<TaskRow[]>(() => desired.map(ticket => ({ ticket, present: true, enter: false })));
-  const rowsRef = useRef(rows); rowsRef.current = rows;
+  const desiredGrouped = useMemo(
+    () => (normalizedActiveTopicId === undefined ? undefined : groupVisibleTaskCards(desired, normalizedActiveTopicId)),
+    [desired, normalizedActiveTopicId],
+  );
+  const [rows, setRows] = useState<TaskRow[]>(() => {
+    const initial = desiredGrouped ? [...desiredGrouped.current, ...desiredGrouped.other] : desired;
+    return initial.map(ticket => ({ ticket, present: true, enter: false }));
+  });
+  const currentRows = useMemo(
+    () => (normalizedActiveTopicId === undefined ? rows : rows.filter(row => normalizeTaskTopicId(row.ticket.originTopicId) === normalizedActiveTopicId)),
+    [rows, normalizedActiveTopicId],
+  );
+  const otherRows = useMemo(
+    () => (normalizedActiveTopicId === undefined ? [] : rows.filter(row => normalizeTaskTopicId(row.ticket.originTopicId) !== normalizedActiveTopicId)),
+    [rows, normalizedActiveTopicId],
+  );
+  const showGroupHeaders = normalizedActiveTopicId !== undefined && otherRows.length > 0;
+  const renderedRows = useMemo(
+    () => (showGroupHeaders ? [...currentRows, ...otherRows] : rows),
+    [showGroupHeaders, currentRows, otherRows, rows],
+  );
+  const rowsRef = useRef(renderedRows); rowsRef.current = renderedRows;
   const internalScrollRef = useRef<HTMLDivElement>(null);
   const scrollRef = scrollContainerRef ?? internalScrollRef;
   const listRef = useRef<HTMLDivElement>(null);
@@ -84,29 +124,33 @@ export function KuloTaskRail({
   const movements = useRef(new Map<string, Animation>());
   const knownIds = useRef(new Set(tickets.map(ticket => ticket.id)));
   const baseline = useRef(snapshotVersion);
+  const previousTopicIdRef = useRef(normalizedActiveTopicId);
   const pendingSnapshotLayout = useRef<string | undefined>(undefined);
   const previousTickets = useRef(new Map(tickets.map(ticket => [ticket.id, ticket])));
   const completionTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const anchor = useRef<{ id: string; top: number } | undefined>(undefined);
   const reduced = useReducedContentMotion();
 
+  const getRowElements = (): HTMLElement[] =>
+    Array.from(listRef.current?.querySelectorAll<HTMLElement>(".kulo-task-row[data-ticket-id]") ?? []);
+
   const capturePositions = () => {
-    previousPositions.current = new Map(Array.from(listRef.current?.children ?? []).map(node => {
-      const element = node as HTMLElement;
-      return [element.dataset.ticketId!, element.offsetTop];
-    }));
+    previousPositions.current = new Map(getRowElements().map(element => [element.dataset.ticketId!, element.offsetTop]));
   };
   const captureAnchor = () => {
     const scroll = scrollRef.current;
     if (!scroll || scroll.scrollTop < 4) { anchor.current = undefined; return; }
     const top = scroll.getBoundingClientRect().top;
-    const first = Array.from(listRef.current?.children ?? []).find(node => node.getBoundingClientRect().bottom > top) as HTMLElement | undefined;
+    const first = getRowElements().find(node => node.getBoundingClientRect().bottom > top);
     anchor.current = first ? { id: first.dataset.ticketId!, top: first.getBoundingClientRect().top - top } : undefined;
   };
 
   useLayoutEffect(() => {
-    const reset = baseline.current !== snapshotVersion || !loaded || !connected || document.hidden;
+    const topicChanged = previousTopicIdRef.current !== normalizedActiveTopicId;
+    previousTopicIdRef.current = normalizedActiveTopicId;
+    const reset = baseline.current !== snapshotVersion || topicChanged || !loaded || !connected || document.hidden;
     baseline.current = snapshotVersion;
+    if (topicChanged) anchor.current = undefined;
     const fresh = reset ? new Set<string>() : new Set(tickets.filter(ticket => !knownIds.current.has(ticket.id)).map(ticket => ticket.id));
     for (const ticket of tickets) knownIds.current.add(ticket.id);
     const held = new Set<string>();
@@ -129,39 +173,53 @@ export function KuloTaskRail({
     }
     previousTickets.current = new Map(tickets.map(ticket => [ticket.id, ticket]));
     if (held.size !== settling.size || [...held].some(id => !settling.has(id))) setSettling(held);
-    const ordered = [...desired];
     const pinned = new Set([hoveredId, focusedId, ...held].filter((id): id is string => Boolean(id)));
-    for (const [index, row] of rowsRef.current.entries()) {
-      const currentIndex = ordered.findIndex(ticket => ticket.id === row.ticket.id);
-      if (currentIndex < 0 || !pinned.has(row.ticket.id)) continue;
-      const [ticket] = ordered.splice(currentIndex, 1);
-      ordered.splice(Math.min(index, ordered.length), 0, ticket!);
+    let ordered: TicketCardView[];
+    if (desiredGrouped) {
+      if (topicChanged) {
+        ordered = [...desiredGrouped.current, ...desiredGrouped.other];
+      } else {
+        const prevCurrentIds = rowsRef.current
+          .filter(row => normalizeTaskTopicId(row.ticket.originTopicId) === normalizedActiveTopicId)
+          .map(row => row.ticket.id);
+        const prevOtherIds = rowsRef.current
+          .filter(row => normalizeTaskTopicId(row.ticket.originTopicId) !== normalizedActiveTopicId)
+          .map(row => row.ticket.id);
+        ordered = [
+          ...pinWithinOrder(prevCurrentIds, desiredGrouped.current, pinned),
+          ...pinWithinOrder(prevOtherIds, desiredGrouped.other, pinned),
+        ];
+      }
+    } else {
+      ordered = pinWithinOrder(rowsRef.current.map(row => row.ticket.id), desired, pinned);
     }
     if (reset || pendingSnapshotLayout.current !== undefined) pendingSnapshotLayout.current = ordered.map(ticket => ticket.id).join("|");
     const scroll = scrollRef.current;
     const viewportTop = scroll?.getBoundingClientRect().top ?? 0;
-    const offscreen = new Set(Array.from(listRef.current?.children ?? [])
+    const offscreen = new Set(getRowElements()
       .filter(node => scroll && scroll.scrollTop > 4 && node.getBoundingClientRect().bottom <= viewportTop)
-      .map(node => (node as HTMLElement).dataset.ticketId));
+      .map(node => node.dataset.ticketId));
     setRows(previous => {
-      const next = reconcileTaskRows(previous, ordered, fresh).map(row => ({ ...row, instantExit: !row.present && (reset || offscreen.has(row.ticket.id)) }));
+      const basePrevious = topicChanged ? previous.filter(row => row.present) : previous;
+      const next = reconcileTaskRows(basePrevious, ordered, fresh).map(row => ({ ...row, instantExit: !row.present && (reset || offscreen.has(row.ticket.id)) }));
       if (next.length === previous.length && next.every((row, index) => row.ticket === previous[index]?.ticket && row.present === previous[index]?.present && row.enter === previous[index]?.enter && row.instantExit === previous[index]?.instantExit)) return previous;
       return next;
     });
-  }, [tickets, desired, loaded, connected, snapshotVersion, reduced, hoveredId, focusedId, settling]);
+  }, [tickets, desired, desiredGrouped, normalizedActiveTopicId, loaded, connected, snapshotVersion, reduced, hoveredId, focusedId, settling]);
 
-  const layoutKey = rows.map(row => row.ticket.id + ":" + row.present).join("|");
+  const layoutKey = (showGroupHeaders ? `${currentRows.length}|${otherRows.length}|` : "") + renderedRows.map(row => row.ticket.id + ":" + row.present).join("|");
   useLayoutEffect(() => {
     const list = listRef.current;
     const scroll = scrollRef.current;
     if (!list || !scroll) return;
+    const rowElements = getRowElements();
     const activeAnchor = anchor.current;
     if (scroll.scrollTop > 4 && activeAnchor) {
-      const element = Array.from(list.children).find(node => (node as HTMLElement).dataset.ticketId === activeAnchor.id);
+      const element = rowElements.find(node => node.dataset.ticketId === activeAnchor.id);
       if (element) scroll.scrollTop += element.getBoundingClientRect().top - scroll.getBoundingClientRect().top - activeAnchor.top;
     }
     const canMove = pendingSnapshotLayout.current === undefined && !reduced && !document.hidden && connected && loaded && scroll.scrollTop < 4;
-    for (const node of Array.from(list.children) as HTMLElement[]) {
+    for (const node of rowElements) {
       const id = node.dataset.ticketId!;
       const previousTop = previousPositions.current.get(id);
       const transform = getComputedStyle(node).transform;
@@ -178,8 +236,8 @@ export function KuloTaskRail({
       }
     }
     capturePositions(); captureAnchor();
-    if (rows.every(row => row.present) && rows.map(row => row.ticket.id).join("|") === pendingSnapshotLayout.current) pendingSnapshotLayout.current = undefined;
-  }, [layoutKey, reduced, loaded, connected, snapshotVersion]);
+    if (renderedRows.every(row => row.present) && renderedRows.map(row => row.ticket.id).join("|") === pendingSnapshotLayout.current) pendingSnapshotLayout.current = undefined;
+  }, [layoutKey, normalizedActiveTopicId, reduced, loaded, connected, snapshotVersion]);
 
   useEffect(() => () => {
     for (const timer of completionTimers.current.values()) clearTimeout(timer);
@@ -209,9 +267,9 @@ export function KuloTaskRail({
     const index = rowsRef.current.findIndex(row => row.ticket.id === ticketId);
     await action(ticketId);
     requestAnimationFrame(() => {
-      const rows = Array.from(listRef.current?.children ?? []) as HTMLElement[];
-      const remaining = rows.filter(row => !row.querySelector('[inert]'));
-      const row = removing ? remaining[Math.min(Math.max(0, index), remaining.length - 1)] : rows.find(row => row.dataset.ticketId === ticketId);
+      const rowNodes = getRowElements();
+      const remaining = rowNodes.filter(row => !row.querySelector('[inert]'));
+      const row = removing ? remaining[Math.min(Math.max(0, index), remaining.length - 1)] : rowNodes.find(row => row.dataset.ticketId === ticketId);
       const target = row?.querySelector<HTMLButtonElement>(".kulo-task-card-button") ?? scrollRef.current;
       target?.focus({ preventScroll: true });
     });
@@ -264,11 +322,163 @@ export function KuloTaskRail({
     }
     return map;
   }, [computerPreview?.state.sessions]);
-  const rowTicketIds = useMemo(() => new Set(rows.map((row) => row.ticket.id)), [rows]);
+  const rowTicketIds = useMemo(() => new Set(renderedRows.map((row) => row.ticket.id)), [renderedRows]);
   const orphanPreviews = useMemo(
     () => [...previewsByTicket.entries()].filter(([ticketId]) => !rowTicketIds.has(ticketId)),
     [previewsByTicket, rowTicketIds],
   );
+
+  const renderTaskRow = (row: TaskRow, isOtherGroup: boolean) => {
+    const ticket = row.ticket;
+    const completed = taskCompletedAt(ticket);
+    const durationLabel = taskDurationLabel(ticket, now);
+    const sourceTopicTitle = isOtherGroup
+      ? topicTitles?.get(normalizeTaskTopicId(ticket.originTopicId))?.trim() || undefined
+      : undefined;
+    const age = ticket.status === "ready" && !ticket.pendingWorkspaceApply && completed !== undefined && completedTaskDisplayHours !== null ?
+      Math.min(1, Math.max(0, (now - completed) / (completedTaskDisplayHours * 3_600_000))) : 0;
+    const cardBusy = clearingAll || archivingIds.has(ticket.id) || discardingId === ticket.id;
+    const ticketPreviews = computerPreview ? previewsByTicket.get(ticket.id) : undefined;
+    const activePreview = Boolean(computerPreview && ticketPreviews && ticketPreviews.length > 0);
+    const selectedPreview = activePreview && computerPreview
+      ? resolveCardPreviewSession(computerPreview.state, ticket.id, ticketPreviews!)
+      : undefined;
+    const previewBodyId = `${railId}-preview-${ticket.id}`;
+    return <div className="kulo-task-row" data-ticket-id={ticket.id} key={ticket.id}
+      onPointerEnter={event => { if (event.pointerType !== "touch") setHoveredId(ticket.id); }}
+      onPointerLeave={() => setHoveredId(current => current === ticket.id ? undefined : current)}
+      onFocusCapture={() => setFocusedId(ticket.id)}
+      onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusedId(current => current === ticket.id ? undefined : current); }}>
+      <ContentPresence present={row.present} animateEntry={row.enter && loaded && connected} animateExit={!row.instantExit} onExited={() => {
+        capturePositions();
+        setRows(current => current.filter(item => item.ticket.id !== ticket.id || item.present));
+      }}>
+        <div className="kulo-task-space">
+          <Card variant="secondary" className={"kulo-task-card" + (row.enter ? " kulo-task-enter" : "")}
+            data-state={taskIsRecovering(ticket) ? "recovering" : ticket.status} data-attention={taskNeedsAttention(ticket) || undefined} data-selected={projectedTicketId === ticket.id || undefined}
+            data-has-preview={activePreview || undefined}
+            style={{ "--task-age": age } as CSSProperties}>
+            <Card.Content className="kulo-task-card-content">
+              {activePreview && computerPreview && ticketPreviews ? (
+                <>
+                  <div className="kulo-task-card-head">
+                    <Button type="button" variant="ghost" className="kulo-task-card-button"
+                      aria-label={ticket.title + t("，查看任务详情", ", view task details")} aria-current={projectedTicketId === ticket.id ? "true" : undefined}
+                      onPress={() => onProject(ticket.id, ticket.title)}>
+                      <strong className="kulo-task-title" title={ticket.title}>{ticket.title}</strong>
+                    </Button>
+                    <TaskCardPreviewControls
+                      ticketId={ticket.id}
+                      ticketTitle={ticket.title}
+                      bodyId={previewBodyId}
+                      state={computerPreview.state}
+                      client={computerPreview.client}
+                      connected={connected}
+                      onStop={computerPreview.onStop}
+                    />
+                  </div>
+                  <TaskCardComputerPreview
+                    ticketId={ticket.id}
+                    ticketTitle={ticket.title}
+                    bodyId={previewBodyId}
+                    sessions={ticketPreviews}
+                    state={computerPreview.state}
+                    client={computerPreview.client}
+                    connected={connected}
+                    onStop={computerPreview.onStop}
+                  />
+                  <div className="kulo-task-card-foot kulo-task-card-preview-foot">
+                    <span className="kulo-task-card-status-group">
+                      <RailStatus ticket={ticket} />
+                      {sourceTopicTitle && (
+                        <>
+                          <span className="kulo-task-device-sep" aria-hidden="true">·</span>
+                          <span className="kulo-task-topic-name" title={sourceTopicTitle}>{sourceTopicTitle}</span>
+                        </>
+                      )}
+                      {ticket.subagentSummary && ticket.subagentSummary.running > 0 && (
+                        <>
+                          <span className="kulo-task-device-sep" aria-hidden="true">·</span>
+                          <span className="kulo-task-device-name">{t(`${ticket.subagentSummary.running} 队友运行中`, `${ticket.subagentSummary.running} teammates active`)}</span>
+                        </>
+                      )}
+                      {selectedPreview?.deviceName && (
+                        <>
+                          <span className="kulo-task-device-sep" aria-hidden="true">·</span>
+                          <span className="kulo-task-device-name" title={selectedPreview.deviceName}>{selectedPreview.deviceName}</span>
+                        </>
+                      )}
+                    </span>
+                    {durationLabel && <span className="kulo-task-time">{durationLabel}</span>}
+                  </div>
+                </>
+              ) : (
+                <div className="kulo-task-card-main">
+                  <Button type="button" variant="ghost" className="kulo-task-card-button"
+                    aria-label={ticket.title + t("，查看任务详情", ", view task details")} aria-current={projectedTicketId === ticket.id ? "true" : undefined}
+                    onPress={() => onProject(ticket.id, ticket.title)}>
+                    <strong className="kulo-task-title" title={ticket.title}>{ticket.title}</strong>
+                    <span className="kulo-task-card-foot">
+                      <span className="kulo-task-card-status-group">
+                        <RailStatus ticket={ticket} />
+                        {sourceTopicTitle && (
+                          <>
+                            <span className="kulo-task-device-sep" aria-hidden="true">·</span>
+                            <span className="kulo-task-topic-name" title={sourceTopicTitle}>{sourceTopicTitle}</span>
+                          </>
+                        )}
+                        {ticket.subagentSummary && ticket.subagentSummary.running > 0 && (
+                          <>
+                            <span className="kulo-task-device-sep" aria-hidden="true">·</span>
+                            <span className="kulo-task-device-name">{t(`${ticket.subagentSummary.running} 队友运行中`, `${ticket.subagentSummary.running} teammates active`)}</span>
+                          </>
+                        )}
+                      </span>
+                      {durationLabel && <span className="kulo-task-time">{durationLabel}</span>}
+                    </span>
+                  </Button>
+                  {onArchive && (
+                    <Tooltip delay={350}>
+                      <Button
+                        type="button"
+                        isIconOnly
+                        size="sm"
+                        variant="ghost"
+                        className="kulo-task-archive-button"
+                        aria-label={t(`归档任务：${ticket.title}`, `Archive task: ${ticket.title}`)}
+                        isDisabled={!canQueueActions || cardBusy}
+                        isPending={archivingIds.has(ticket.id)}
+                        onPress={() => handleArchivePress(ticket)}
+                      >
+                        {archivingIds.has(ticket.id) ? <Spinner size="sm" color="current" /> : <KuloIcon name="archive" size={16} />}
+                      </Button>
+                      <Tooltip.Content placement="top">{t("归档", "Archive")}</Tooltip.Content>
+                    </Tooltip>
+                  )}
+                </div>
+              )}
+              {ticket.status === "failed" && onRetry && onIgnore && <div className="kulo-task-card-actions">
+                <TaskFailureActions ticket={ticket} connected={connected} canQueueActions={canQueueActions && !cardBusy}
+                  onRetry={id => runAction(id, onRetry, false)} onIgnore={id => runAction(id, onIgnore, true)} />
+              </div>}
+              {ticket.status === "ready" && ticket.pendingWorkspaceApply && onIgnore && <div className="kulo-task-card-actions">
+                <Button
+                  size="sm"
+                  variant="tertiary"
+                  isDisabled={!canQueueActions || cardBusy}
+                  isPending={discardingId === ticket.id}
+                  aria-label={t(`丢弃并关闭任务：${ticket.title}`, `Discard and close task: ${ticket.title}`)}
+                  onPress={() => setDiscardTarget(ticket)}
+                >
+                  {t("丢弃并关闭", "Discard & close")}
+                </Button>
+              </div>}
+            </Card.Content>
+          </Card>
+        </div>
+      </ContentPresence>
+    </div>;
+  };
 
   return <div className="kulo-task-rail" data-reduced={reduced || undefined}>
     {displayedError && <p className="kulo-task-rail-error" role="alert">{displayedError}</p>}
@@ -291,7 +501,7 @@ export function KuloTaskRail({
       <AssistantRailSection
         state={assistantRail}
         now={now}
-        hasTasks={rows.length > 0}
+        hasTasks={renderedRows.length > 0}
         connected={connected}
         onAssistantItemAction={onAssistantItemAction}
         onAssistantDismissAll={onAssistantDismissAll}
@@ -303,145 +513,25 @@ export function KuloTaskRail({
         listRef={listRef}
       />
       <div className="kulo-task-list" ref={listRef}>
-        {rows.map(row => {
-          const ticket = row.ticket;
-          const completed = taskCompletedAt(ticket);
-          const durationLabel = taskDurationLabel(ticket, now);
-          const age = ticket.status === "ready" && !ticket.pendingWorkspaceApply && completed !== undefined && completedTaskDisplayHours !== null ?
-            Math.min(1, Math.max(0, (now - completed) / (completedTaskDisplayHours * 3_600_000))) : 0;
-          const cardBusy = clearingAll || archivingIds.has(ticket.id) || discardingId === ticket.id;
-          const ticketPreviews = computerPreview ? previewsByTicket.get(ticket.id) : undefined;
-          const activePreview = Boolean(computerPreview && ticketPreviews && ticketPreviews.length > 0);
-          const selectedPreview = activePreview && computerPreview
-            ? resolveCardPreviewSession(computerPreview.state, ticket.id, ticketPreviews!)
-            : undefined;
-          const previewBodyId = `${railId}-preview-${ticket.id}`;
-          return <div className="kulo-task-row" data-ticket-id={ticket.id} key={ticket.id}
-            onPointerEnter={event => { if (event.pointerType !== "touch") setHoveredId(ticket.id); }}
-            onPointerLeave={() => setHoveredId(current => current === ticket.id ? undefined : current)}
-            onFocusCapture={() => setFocusedId(ticket.id)}
-            onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusedId(current => current === ticket.id ? undefined : current); }}>
-            <ContentPresence present={row.present} animateEntry={row.enter && loaded && connected} animateExit={!row.instantExit} onExited={() => {
-              capturePositions();
-              setRows(current => current.filter(item => item.ticket.id !== ticket.id || item.present));
-            }}>
-              <div className="kulo-task-space">
-                <Card variant="secondary" className={"kulo-task-card" + (row.enter ? " kulo-task-enter" : "")}
-                  data-state={taskIsRecovering(ticket) ? "recovering" : ticket.status} data-attention={taskNeedsAttention(ticket) || undefined} data-selected={projectedTicketId === ticket.id || undefined}
-                  data-has-preview={activePreview || undefined}
-                  style={{ "--task-age": age } as CSSProperties}>
-                  <Card.Content className="kulo-task-card-content">
-                    {activePreview && computerPreview && ticketPreviews ? (
-                      <>
-                        <div className="kulo-task-card-head">
-                          <Button type="button" variant="ghost" className="kulo-task-card-button"
-                            aria-label={ticket.title + t("，查看任务详情", ", view task details")} aria-current={projectedTicketId === ticket.id ? "true" : undefined}
-                            onPress={() => onProject(ticket.id, ticket.title)}>
-                            <strong className="kulo-task-title" title={ticket.title}>{ticket.title}</strong>
-                          </Button>
-                          <TaskCardPreviewControls
-                            ticketId={ticket.id}
-                            ticketTitle={ticket.title}
-                            bodyId={previewBodyId}
-                            state={computerPreview.state}
-                            client={computerPreview.client}
-                            connected={connected}
-                            onStop={computerPreview.onStop}
-                          />
-                        </div>
-                        <TaskCardComputerPreview
-                          ticketId={ticket.id}
-                          ticketTitle={ticket.title}
-                          bodyId={previewBodyId}
-                          sessions={ticketPreviews}
-                          state={computerPreview.state}
-                          client={computerPreview.client}
-                          connected={connected}
-                          onStop={computerPreview.onStop}
-                        />
-                        <div className="kulo-task-card-foot kulo-task-card-preview-foot">
-                          <span className="kulo-task-card-status-group">
-                            <RailStatus ticket={ticket} />
-                            {ticket.subagentSummary && ticket.subagentSummary.running > 0 && (
-                              <>
-                                <span className="kulo-task-device-sep" aria-hidden="true">·</span>
-                                <span className="kulo-task-device-name">{t(`${ticket.subagentSummary.running} 队友运行中`, `${ticket.subagentSummary.running} teammates active`)}</span>
-                              </>
-                            )}
-                            {selectedPreview?.deviceName && (
-                              <>
-                                <span className="kulo-task-device-sep" aria-hidden="true">·</span>
-                                <span className="kulo-task-device-name" title={selectedPreview.deviceName}>{selectedPreview.deviceName}</span>
-                              </>
-                            )}
-                          </span>
-                          {durationLabel && <span className="kulo-task-time">{durationLabel}</span>}
-                        </div>
-                      </>
-                    ) : (
-                      <div className="kulo-task-card-main">
-                        <Button type="button" variant="ghost" className="kulo-task-card-button"
-                          aria-label={ticket.title + t("，查看任务详情", ", view task details")} aria-current={projectedTicketId === ticket.id ? "true" : undefined}
-                          onPress={() => onProject(ticket.id, ticket.title)}>
-                          <strong className="kulo-task-title" title={ticket.title}>{ticket.title}</strong>
-                          <span className="kulo-task-card-foot">
-                            <span className="kulo-task-card-status-group">
-                              <RailStatus ticket={ticket} />
-                              {ticket.subagentSummary && ticket.subagentSummary.running > 0 && (
-                                <>
-                                  <span className="kulo-task-device-sep" aria-hidden="true">·</span>
-                                  <span className="kulo-task-device-name">{t(`${ticket.subagentSummary.running} 队友运行中`, `${ticket.subagentSummary.running} teammates active`)}</span>
-                                </>
-                              )}
-                            </span>
-                            {durationLabel && <span className="kulo-task-time">{durationLabel}</span>}
-                          </span>
-                        </Button>
-                        {onArchive && (
-                          <Tooltip delay={350}>
-                            <Button
-                              type="button"
-                              isIconOnly
-                              size="sm"
-                              variant="ghost"
-                              className="kulo-task-archive-button"
-                              aria-label={t(`归档任务：${ticket.title}`, `Archive task: ${ticket.title}`)}
-                              isDisabled={!canQueueActions || cardBusy}
-                              isPending={archivingIds.has(ticket.id)}
-                              onPress={() => handleArchivePress(ticket)}
-                            >
-                              {archivingIds.has(ticket.id) ? <Spinner size="sm" color="current" /> : <KuloIcon name="archive" size={16} />}
-                            </Button>
-                            <Tooltip.Content placement="top">{t("归档", "Archive")}</Tooltip.Content>
-                          </Tooltip>
-                        )}
-                      </div>
-                    )}
-                    {ticket.status === "failed" && onRetry && onIgnore && <div className="kulo-task-card-actions">
-                      <TaskFailureActions ticket={ticket} connected={connected} canQueueActions={canQueueActions && !cardBusy}
-                        onRetry={id => runAction(id, onRetry, false)} onIgnore={id => runAction(id, onIgnore, true)} />
-                    </div>}
-                    {ticket.status === "ready" && ticket.pendingWorkspaceApply && onIgnore && <div className="kulo-task-card-actions">
-                      <Button
-                        size="sm"
-                        variant="tertiary"
-                        isDisabled={!canQueueActions || cardBusy}
-                        isPending={discardingId === ticket.id}
-                        aria-label={t(`丢弃并关闭任务：${ticket.title}`, `Discard and close task: ${ticket.title}`)}
-                        onPress={() => setDiscardTarget(ticket)}
-                      >
-                        {t("丢弃并关闭", "Discard & close")}
-                      </Button>
-                    </div>}
-                  </Card.Content>
-                </Card>
+        {showGroupHeaders ? (
+          <>
+            {currentRows.length > 0 && (
+              <div key="group:current" className="kulo-task-group-header" data-group="current" role="heading" aria-level={3}>
+                {t("当前话题", "Current topic")}
               </div>
-            </ContentPresence>
-          </div>;
-        })}
+            )}
+            {currentRows.map(row => renderTaskRow(row, false))}
+            <div key="group:other" className="kulo-task-group-header" data-group="other" role="heading" aria-level={3}>
+              {t("其他话题", "Other topics")}
+            </div>
+            {otherRows.map(row => renderTaskRow(row, true))}
+          </>
+        ) : (
+          renderedRows.map(row => renderTaskRow(row, false))
+        )}
       </div>
-      {!loaded && rows.length === 0 && orphanPreviews.length === 0 && assistantRail.visibleItems.length === 0 && <div className="kulo-task-empty" role="status"><Spinner size="sm" aria-label={t("加载任务", "Loading tasks")} /></div>}
-      {loaded && rows.length === 0 && orphanPreviews.length === 0 && assistantRail.visibleItems.length === 0 && <div className="kulo-task-empty"><KuloIcon name="check" size={20} /><span>{t("暂无后台任务", "No background tasks")}</span></div>}
+      {!loaded && renderedRows.length === 0 && orphanPreviews.length === 0 && assistantRail.visibleItems.length === 0 && <div className="kulo-task-empty" role="status"><Spinner size="sm" aria-label={t("加载任务", "Loading tasks")} /></div>}
+      {loaded && renderedRows.length === 0 && orphanPreviews.length === 0 && assistantRail.visibleItems.length === 0 && <div className="kulo-task-empty"><KuloIcon name="check" size={20} /><span>{t("暂无后台任务", "No background tasks")}</span></div>}
     </div>
     <ConfirmDialog
       open={Boolean(liveDiscardTarget)}

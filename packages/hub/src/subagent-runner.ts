@@ -19,6 +19,7 @@ import {
 import type { EnvManager } from "@kulo/env";
 import { redactCredentialData } from "./credential-redaction.js";
 import { ProjectError } from "./projects.js";
+import { SUBAGENT_MAX_TURNS } from "./run-health-policy.js";
 import {
   KuloStateDoc,
   getActiveStagedCwd,
@@ -448,7 +449,7 @@ export class KuloSubagentRunner {
             thinkingLevel: subAgent.thinkingLevel,
             ...this.#host.buildSubagentTools(ticket, effectiveReadOnly),
             ...(ticket.executionDomain !== "android" ? { cwd: effectiveWorkspaceDir } : {}),
-            maxTurns: 25,
+            maxTurns: SUBAGENT_MAX_TURNS,
           },
         },
         context,

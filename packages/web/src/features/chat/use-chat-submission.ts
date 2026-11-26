@@ -1,9 +1,10 @@
 import { useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import type {
-  ChatReplyReference,
-  ClientToHubMessage,
-  TicketCardView,
-  TopicSummary,
+import {
+  redactSecrets,
+  type ChatReplyReference,
+  type ClientToHubMessage,
+  type TicketCardView,
+  type TopicSummary,
 } from "@kulo/protocol";
 import {
   KuloWsDisconnectedError,
@@ -12,7 +13,7 @@ import {
 import type { DraftAttachment } from "../../kulo-composer";
 import { translate as t } from "../../kulo-i18n";
 import { composerDraftKey } from "../tasks/task-navigation";
-import type { TopicDraftStore } from "../topics/topic-drafts";
+import { deriveDraftTopicTitle, type TopicDraftStore } from "../topics/topic-drafts";
 import {
   submissionKey,
   type PendingSubmissionBackup,
@@ -238,11 +239,17 @@ export function useChatSubmission(params: UseChatSubmissionParams) {
             ? params.inspectedTicket.ticket
             : undefined))
         : undefined;
+      const initialTitle = params.topicDrafts.isLocal(params.activeTopicId)
+        ? deriveDraftTopicTitle(redactSecrets(raw), attachmentsToSend.map((a) => a.name))
+        : undefined;
       const targetTopic =
         params.projectedTicketId && overrideText === undefined
           ? (targetTicket?.originTopicId ?? "root")
           : params.topicDrafts.isLocal(params.activeTopicId)
-            ? (await params.topicDrafts.ensure(params.activeTopicId)).id
+            ? (await params.topicDrafts.ensure(params.activeTopicId, {
+                ...(initialTitle ? { title: initialTitle } : {}),
+                draft: true,
+              })).id
             : params.activeTopicId;
 
       if (params.projectedTicketId && overrideText === undefined) {

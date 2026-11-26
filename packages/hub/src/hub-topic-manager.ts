@@ -19,6 +19,7 @@ import { redactCredentialData } from "./credential-redaction.js";
 import { entryTimestamp } from "./hub-display-projection.js";
 import type { HubRuntimeGates, LiveSettingsStore } from "./hub-kernel-ports.js";
 import { KuloProjects, KuloProjectsDoc, ProjectError, assertProjectBinding } from "./projects.js";
+import { ORCHESTRATOR_MAX_TURNS } from "./run-health-policy.js";
 import {
   createTopicNotificationBaseline, detectMainSessionNotification, type TopicNotificationBaseline,
 } from "./session-notifications.js";
@@ -299,7 +300,12 @@ export class HubTopicManager {
     return archived;
   }
 
-  async createTopic(title?: string, context: Context = BACKGROUND_CONTEXT, projectId?: string | null): Promise<TopicSummary> {
+  async createTopic(
+    title?: string,
+    context: Context = BACKGROUND_CONTEXT,
+    projectId?: string | null,
+    options?: { draft?: boolean },
+  ): Promise<TopicSummary> {
     const project = projectId ? await this.#deps.projects.get(projectId, context) : undefined;
     const orchestratorAgent = this.#deps.orchestrator.resolveAgent();
     const conv = await this.#deps.harness.createConversation({
@@ -310,7 +316,7 @@ export class HubTopicManager {
         extensions: this.#deps.orchestrator.extensions(false),
         tools: this.#deps.orchestrator.tools(false),
         cwd: project?.workspaceDir ?? this.#deps.orchestrator.mainWorkspaceDir,
-        maxTurns: 40,
+        maxTurns: ORCHESTRATOR_MAX_TURNS,
       },
     }, context);
 
@@ -326,7 +332,7 @@ export class HubTopicManager {
         id: topicId,
         conversationId: conv.id as number,
         title: cleanTitle || "新对话",
-        ...(cleanTitle ? {} : { draft: true }),
+        ...(!cleanTitle || options?.draft ? { draft: true } : {}),
         createdAt: now,
         updatedAt: now,
         ...(project ? { projectId: project.id } : {}),
@@ -585,7 +591,7 @@ export class HubTopicManager {
       extensions: this.#deps.orchestrator.extensions(isRoot),
       tools: this.#deps.orchestrator.tools(isRoot),
       cwd: topic.projectId ? (await this.#deps.projects.get(topic.projectId, context)).workspaceDir : this.#deps.orchestrator.mainWorkspaceDir,
-      maxTurns: 40,
+      maxTurns: ORCHESTRATOR_MAX_TURNS,
     }, context);
 
     await this.#deps.contextCompaction.align(conv.id, context);

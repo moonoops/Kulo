@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HTML_ARTIFACT_CSP, htmlArtifactDocument, isHtmlArtifact, type ChatAttachment } from "@kulo/protocol";
+import { UserAttachmentList } from "../../kulo-composer";
 import { FileMessage } from "./file-message";
 import { MAX_OFFICE_PREVIEW_BYTES } from "./file-preview-model";
 import { MessageContent } from "./message-content";
@@ -37,39 +38,63 @@ describe("message artifacts", () => {
     expect(htmlMarkup).not.toContain("aria-label=\"在浏览器打开：可交互报告.html\"");
   });
 
-  it("renders every supported file inline, expanding Office files by default for assistant messages and collapsing them for user uploads", () => {
+  it("renders assistant files inline by default while showing user-sent files as compact thumbnails", () => {
     const assistant = renderToStaticMarkup(<MessageContent item={{ id: 1, role: "assistant", text: "结果如下", attachments: [html, { ...html, id: "second", name: "另一份.html" }] }} />);
     expect(assistant.match(/class="kulo-artifact-inline-stage"/g)).toHaveLength(2);
     expect(assistant).not.toContain('class="kulo-artifact-inline-stage" hidden=""');
+    expect(assistant).not.toContain('data-compact="true"');
     expect(assistant).toContain("展开阅读：可交互报告.html");
-    const userHtml = renderToStaticMarkup(<MessageContent item={{ id: 2, role: "user", text: "查看页面", attachments: [html] }} />);
-    expect(userHtml).not.toContain('class="kulo-artifact-inline-stage" hidden=""');
 
-    const docx: ChatAttachment = { ...html, id: "doc1", name: "方案.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" };
-    const assistantDocx = renderToStaticMarkup(<MessageContent item={{ id: 3, role: "assistant", text: "已生成文档", attachments: [docx] }} />);
-    expect(assistantDocx).toContain('data-kind="docx"');
-    expect(assistantDocx).not.toContain('class="kulo-artifact-inline-stage" hidden=""');
-    expect(assistantDocx).toContain("展开阅读：方案.docx");
-
-    const userDocx = renderToStaticMarkup(<MessageContent item={{ id: 4, role: "user", text: "帮我改一下", attachments: [docx] }} />);
-    expect(userDocx).toContain('data-kind="docx"');
-    expect(userDocx).toContain('class="kulo-artifact-inline-stage" hidden=""');
-    expect(userDocx).toContain("展开预览：方案.docx");
-
-    for (const [name, mimeType, kind] of [
+    const supportedFiles: Array<[string, string, string]> = [
+      ["可交互报告.html", "text/html", "html"],
       ["报告.pdf", "application/pdf", "pdf"],
       ["说明.md", "text/markdown", "markdown"],
       ["记录.txt", "text/plain", "text"],
       ["报表.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"],
       ["汇报.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"],
       ["纪要.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"],
-    ]) {
-      const markup = renderToStaticMarkup(<FileMessage asset={{ ...html, name: name!, mimeType: mimeType! }} />);
-      expect(markup).toContain(`data-kind="${kind}"`);
-      expect(markup).toContain('data-asset-id="first"');
-      expect(markup).toContain(`放大预览：${name}`);
-      expect(markup).toContain(`展开阅读：${name}`);
+    ];
+
+    for (const [name, mimeType, kind] of supportedFiles) {
+      const asset: ChatAttachment = { ...html, id: `asset-${kind}`, name, mimeType };
+
+      const assistantMarkup = renderToStaticMarkup(
+        <MessageContent item={{ id: 10, role: "assistant", text: "已生成文件", attachments: [asset] }} />,
+      );
+      expect(assistantMarkup).toContain(`data-kind="${kind}"`);
+      expect(assistantMarkup).not.toContain('data-compact="true"');
+      expect(assistantMarkup).not.toContain('class="kulo-artifact-inline-stage" hidden=""');
+      expect(assistantMarkup).toContain(`放大预览：${name}`);
+      expect(assistantMarkup).toContain(`展开阅读：${name}`);
+
+      const userMarkup = renderToStaticMarkup(
+        <MessageContent item={{ id: 20, role: "user", text: "请看这个文件", attachments: [asset] }} />,
+      );
+      expect(userMarkup).toContain(`data-kind="${kind}"`);
+      expect(userMarkup).toContain('data-compact="true"');
+      expect(userMarkup).toContain('class="kulo-artifact-inline-stage" hidden=""');
+      expect(userMarkup).toContain(`预览文件：${name}`);
+      expect(userMarkup).toContain(`文件选项：${name}`);
+      expect(userMarkup).not.toContain(`展开阅读：${name}`);
+      for (const button of userMarkup.match(/<button\b[\s\S]*?<\/button>/g) ?? []) {
+        expect(button.match(/<button\b/g)).toHaveLength(1);
+      }
     }
+
+    const userZip = renderToStaticMarkup(
+      <MessageContent item={{ id: 21, role: "user", text: "资料包", attachments: [{ ...html, id: "zip1", name: "资料包.zip", mimeType: "application/zip" }] }} />,
+    );
+    expect(userZip).toContain('data-compact="true"');
+    expect(userZip).toContain("下载文件：资料包.zip");
+    expect(userZip).not.toContain("预览文件：资料包.zip");
+    expect(userZip).not.toContain("此文件暂不支持内嵌预览");
+
+    const legacyUserList = renderToStaticMarkup(
+      <UserAttachmentList attachments={[{ ...html, id: "pdf1", name: "手册.pdf", mimeType: "application/pdf" }]} />,
+    );
+    expect(legacyUserList).toContain('data-compact="true"');
+    expect(legacyUserList).toContain('class="kulo-artifact-inline-stage" hidden=""');
+    expect(legacyUserList).toContain("预览文件：手册.pdf");
   });
 
   it("degrades oversized Office files above 15 MiB into compact non-previewable cards without Expand controls", () => {

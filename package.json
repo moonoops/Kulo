@@ -1,6 +1,6 @@
 {
   "name": "kulo-monorepo",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "license": "AGPL-3.0-only",
   "private": true,
   "description": "Kulo: A self-hosted, always-on personal agent across devices",

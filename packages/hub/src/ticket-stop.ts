@@ -13,6 +13,7 @@ import {
   transitionTicketStatus,
   type KuloDurableState,
 } from "./state.js";
+import { sameRecoveryScope } from "./task-recovery.js";
 import type { KuloUiCards } from "./ui-cards.js";
 
 export interface AdmittedTicketStop {
@@ -130,14 +131,45 @@ export async function admitTicketStopInTx(
     recordProcessedCommand(state, params.commandId, params.ticketId, "stop");
   }
   t.runEpoch += 1;
-  transitionTicketStatus(t, "stopped", Date.now());
+  const now = Date.now();
+  transitionTicketStatus(t, "stopped", now);
   const previousRecovery = t.recovery;
   t.recovery = undefined;
-  if (previousRecovery) {
+  const suppressLineage = (origin: Readonly<TicketRecord>, prior: NonNullable<TicketRecord["recovery"]>) => {
+    const rootId = prior.rootTicketId ?? origin.id;
     for (const related of Object.values(state.tickets)) {
-      if (related.recovery?.startedAt === previousRecovery.startedAt && related.recovery.rootTicketId === previousRecovery.rootTicketId) {
+      if (
+        related.id !== origin.id &&
+        sameRecoveryScope(origin, related) &&
+        related.recovery?.startedAt === prior.startedAt &&
+        (related.recovery.rootTicketId ?? related.id) === rootId
+      ) {
         related.recovery = undefined;
-        if (related.id !== t.id) related.autoRecoverySuppressed = true;
+        related.autoRecoverySuppressed = true;
+        related.updatedAt = now;
+      }
+    }
+  };
+  if (previousRecovery) {
+    t.autoRecoverySuppressed = true;
+    suppressLineage(t, previousRecovery);
+  }
+  if (t.supersedes?.length) {
+    const visited = new Set<string>([t.id]);
+    const pending = [...t.supersedes];
+    while (pending.length) {
+      const ancestorId = pending.pop()!;
+      if (visited.has(ancestorId)) continue;
+      visited.add(ancestorId);
+      const ancestor = state.tickets[ancestorId];
+      if (!ancestor || !sameRecoveryScope(t, ancestor)) continue;
+      if (ancestor.supersedes?.length) pending.push(...ancestor.supersedes);
+      if (ancestor.recovery) {
+        const ancestorPrior = ancestor.recovery;
+        ancestor.recovery = undefined;
+        ancestor.autoRecoverySuppressed = true;
+        ancestor.updatedAt = now;
+        suppressLineage(ancestor, ancestorPrior);
       }
     }
   }

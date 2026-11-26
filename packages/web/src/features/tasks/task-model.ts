@@ -1,5 +1,5 @@
 import { translate as t } from "../../kulo-i18n";
-import type { TicketCardView, TicketRecord, TicketStatus } from "@kulo/protocol";
+import type { TicketCardView, TicketRecord, TicketStatus, TopicSummary } from "@kulo/protocol";
 
 export type TaskTone = "ask" | "run" | "fail" | "done" | "wait";
 export type TaskTiming = Pick<TicketRecord, "status" | "createdAt" | "updatedAt" | "startedRunningAt" | "accumulatedRunningMs" | "completedAt" | "queuedAt" | "waiting">;
@@ -12,7 +12,7 @@ export function compactTaskPaths(text: string, ticket: Pick<TicketRecord, "works
 }
 
 export function taskIsRecovering(ticket: Pick<TicketCardView, "status" | "recovery">): boolean {
-  return ticket.recovery?.state === "recovering" && ["failed", "queued", "running", "pausing"].includes(ticket.status);
+  return ticket.status === "failed" && ticket.recovery?.state === "recovering";
 }
 
 export function isTaskUnfinished(ticket: Pick<TicketCardView, "status">): boolean {
@@ -137,8 +137,116 @@ export function taskRank(ticket: TicketCardView): number {
   return 4;
 }
 
+export function normalizeTaskTopicId(topicId?: string): string {
+  return topicId ?? "root";
+}
+
+export function sameTaskRecoveryScope(
+  a: Pick<TicketCardView, "originTopicId" | "projectId">,
+  b: Pick<TicketCardView, "originTopicId" | "projectId">,
+): boolean {
+  return normalizeTaskTopicId(a.originTopicId) === normalizeTaskTopicId(b.originTopicId) && a.projectId === b.projectId;
+}
+
+export function collectSupersededFailureIds(tickets: readonly TicketCardView[]): Set<string> {
+  const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]));
+  const superseded = new Set<string>();
+  for (const ticket of tickets) {
+    if (ticket.status === "closed" || ticket.status === "stopped" || !ticket.supersedes?.length) continue;
+    const visited = new Set<string>([ticket.id]);
+    const pending = [...ticket.supersedes];
+    while (pending.length) {
+      const ancestorId = pending.pop()!;
+      if (visited.has(ancestorId)) continue;
+      visited.add(ancestorId);
+      const ancestor = byId.get(ancestorId);
+      if (!ancestor || !sameTaskRecoveryScope(ticket, ancestor)) continue;
+      if (ancestor.status === "failed") superseded.add(ancestor.id);
+      if (ancestor.supersedes?.length) pending.push(...ancestor.supersedes);
+    }
+  }
+  return superseded;
+}
+
+export function expandClearAllTicketIds(
+  allTickets: readonly TicketCardView[],
+  visibleTickets: readonly TicketCardView[],
+): string[] {
+  const byId = new Map(allTickets.map((ticket) => [ticket.id, ticket]));
+  const ids = visibleTickets.map((ticket) => ticket.id);
+  const seen = new Set(ids);
+  for (const ticket of visibleTickets) {
+    if (!ticket.supersedes?.length) continue;
+    const visited = new Set<string>([ticket.id]);
+    const pending = [...ticket.supersedes];
+    while (pending.length) {
+      const ancestorId = pending.pop()!;
+      if (visited.has(ancestorId)) continue;
+      visited.add(ancestorId);
+      const ancestor = byId.get(ancestorId);
+      if (!ancestor || ancestor.status === "closed" || !sameTaskRecoveryScope(ticket, ancestor)) continue;
+      if (ancestor.supersedes?.length) pending.push(...ancestor.supersedes);
+      if (ancestor.status === "failed" && !seen.has(ancestor.id)) {
+        seen.add(ancestor.id);
+        ids.push(ancestor.id);
+      }
+    }
+  }
+  return ids;
+}
+
+export interface GroupedTaskCards {
+  current: TicketCardView[];
+  other: TicketCardView[];
+}
+
+export function groupVisibleTaskCards(
+  visible: readonly TicketCardView[],
+  activeTopicId: string,
+): GroupedTaskCards {
+  const current: TicketCardView[] = [];
+  const other: TicketCardView[] = [];
+  const normalizedActive = normalizeTaskTopicId(activeTopicId);
+  for (const ticket of visible) {
+    if (normalizeTaskTopicId(ticket.originTopicId) === normalizedActive) current.push(ticket);
+    else other.push(ticket);
+  }
+  return { current, other };
+}
+
+export function buildTopicTitleMap(
+  topics?: readonly TopicSummary[],
+  mainChatTitle?: string,
+): ReadonlyMap<string, string> | undefined {
+  const cleanMain = mainChatTitle?.trim();
+  if (!topics && !cleanMain) return undefined;
+  const titles = new Map<string, string>();
+  for (const topic of topics ?? []) {
+    if (topic.deletedAt !== undefined) continue;
+    if (topic.master || topic.id === "root") {
+      const label = cleanMain || topic.title.trim();
+      if (label) {
+        titles.set(topic.id, label);
+        if (topic.master && !titles.has("root")) titles.set("root", label);
+      }
+      continue;
+    }
+    const label = topic.title.trim();
+    if (label) titles.set(topic.id, label);
+  }
+  if (cleanMain && !titles.has("root")) titles.set("root", cleanMain);
+  return titles;
+}
+
 export function visibleTaskCards(tickets: readonly TicketCardView[], now: number, hours: number | null, protectedIds: ReadonlySet<string> = new Set()): TicketCardView[] {
-  return tickets.filter(ticket => ticket.status !== "closed" && (!taskHasExpired(ticket, now, hours) || protectedIds.has(ticket.id)))
+  const supersededFailures = collectSupersededFailureIds(tickets);
+  return tickets
+    .filter(
+      (ticket) =>
+        ticket.status !== "closed" &&
+        (!supersededFailures.has(ticket.id) || protectedIds.has(ticket.id)) &&
+        (!taskHasExpired(ticket, now, hours) || protectedIds.has(ticket.id)),
+    )
     .sort((a, b) => taskRank(a) - taskRank(b) ||
       (a.status === "ready" && b.status === "ready" ? (taskCompletedAt(b) ?? b.createdAt) - (taskCompletedAt(a) ?? a.createdAt) : b.createdAt - a.createdAt) ||
       a.id.localeCompare(b.id));
@@ -147,7 +255,7 @@ export function visibleTaskCards(tickets: readonly TicketCardView[], now: number
 export function scopeTickets(tickets: readonly TicketCardView[], scope: "topic" | "project" | "all", activeTopicId: string, activeProjectId?: string): TicketCardView[] {
   if (scope === "all") return [...tickets];
   if (scope === "project" && activeProjectId) return tickets.filter(ticket => ticket.projectId === activeProjectId);
-  return tickets.filter(ticket => (ticket.originTopicId ?? "root") === activeTopicId);
+  return tickets.filter(ticket => normalizeTaskTopicId(ticket.originTopicId) === normalizeTaskTopicId(activeTopicId));
 }
 
 export interface TaskRow {

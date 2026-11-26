@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { ImageContent, TextContent, UserMessage } from "@earendil-works/pi-ai";
-import { DIAGRAM_LIMITS, isHtmlArtifact, type ChatAttachment } from "@kulo/protocol";
+import { DIAGRAM_LIMITS, isHtmlArtifact, VISION_IMAGE_MIMES, type ChatAttachment } from "@kulo/protocol";
 import { inspectMediaPrefix, probeMediaFile, type MediaMetadata, type UploadKind } from "./media-probe.js";
 
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
@@ -29,12 +29,7 @@ export function uploadByteLimit(kind: UploadKind): number {
   return kind === "video" ? MAX_VIDEO_UPLOAD_BYTES : kind === "audio" ? MAX_AUDIO_UPLOAD_BYTES : MAX_UPLOAD_BYTES;
 }
 
-export const VISION_IMAGE_MIMES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "image/gif",
-]);
+export { VISION_IMAGE_MIMES };
 
 const EXT_TO_MIME: Record<string, string> = {
   ".png": "image/png",

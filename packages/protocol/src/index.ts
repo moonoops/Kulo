@@ -26,6 +26,7 @@ export * from "./diagram-artifact.js";
 export * from "./genui.js";
 export * from "./capabilities.js";
 export * from "./image-models.js";
+export * from "./image-payload.js";
 export * from "./image-setup.js";
 export * from "./personality.js";
 export * from "./memory-service.js";

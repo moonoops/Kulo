@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Alert, Button, Chip, Disclosure, Spinner, toast } from "@heroui/react";
 import {
-  parseStandaloneDeviceInvitation, redactDeviceInvitationText,
+  redactDeviceInvitationText,
   type AssistantItemAction, type AssistantItemView, type ChatReplyReference,
   type ConversationMessageWindow, type SettingsAssistantContext, type TicketCardView,
 } from "@kulo/protocol";
@@ -26,7 +26,7 @@ import {
 import { transitionSettingsLayout } from "./features/shell/settings-transition";
 import { composerDraftKey, resolveTaskChatReturn, restoreComposerDraft, restoredChatScroll, type TaskChatReturn } from "./features/tasks/task-navigation";
 import { TopicsSidebar } from "./features/topics/topics-sidebar";
-import { TopicDraftStore } from "./features/topics/topic-drafts";
+import { TopicDraftStore, conversationViewKey } from "./features/topics/topic-drafts";
 import { useTopicActivity } from "./features/topics/use-topic-activity";
 import { unfinishedTicket, type ProjectNavigationRequest } from "./features/projects/project-model";
 import { useSettingsAssistant } from "./features/settings/use-settings-assistant";
@@ -223,14 +223,11 @@ function AppShell() {
   const draftScopeRef = useRef(deliveryScope);
   draftScopeRef.current = deliveryScope;
   const topicDrafts = useMemo(() => new TopicDraftStore({
-    create: (projectId) => kuloRest.createTopic(undefined, projectId),
+    create: ({ projectId, title, draft }) => kuloRest.createTopic(title, projectId, draft !== undefined ? { draft } : undefined),
     onSaved: (_localId, topic, wasSelected) => {
       if (draftScopeRef.current !== deliveryScope) return;
       setTopics((current) => [topic, ...current.filter((item) => item.id !== topic.id)]);
       if (wasSelected) selectPersistedTopic(topic.id);
-    },
-    onError: (error) => {
-      if (draftScopeRef.current === deliveryScope) toast.danger(error instanceof Error ? error.message : t("新建话题失败，草稿已保留", "Could not create the topic. Your draft is saved."));
     },
   }), [deliveryScope, selectPersistedTopic, setTopics]);
   const localTopics = useSyncExternalStore(topicDrafts.subscribe, topicDrafts.getSnapshot, topicDrafts.getSnapshot);
@@ -383,7 +380,6 @@ function AppShell() {
     draftEditRevisionRef.current++;
     if (!val) editingSubmissionRef.current.delete(currentDraftKey);
     setComposerDrafts((cur) => ({ ...cur, [currentDraftKey]: val }));
-    if (!projectedTicketId && val.trim() && !(canReceiveDeviceInvitation && parseStandaloneDeviceInvitation(val))) topicDrafts.touch(activeTopicId);
   };
   const {
     getAttachments,
@@ -767,9 +763,10 @@ function AppShell() {
     onError: (message) => { toast.danger(message); },
   });
   useEffect(() => {
+    if (topics.length && topicDrafts.pruneMissingProjects(new Set(projects.filter((project) => !project.deletedAt).map((project) => project.id)))) selectTopic("root");
     if (topicDrafts.isLocal(activeTopicId)) return;
     if (topics.length && !topics.some((topic) => topic.id === activeTopicId && !topic.deletedAt)) selectTopic("root");
-  }, [activeTopicId, topics, selectTopic, topicDrafts]);
+  }, [activeTopicId, projects, topics, selectTopic, topicDrafts]);
   const currentModelId = settings?.blocks.model.value.defaultModel;
   const hasConfiguredModel = Boolean(currentModelId?.trim());
   const lastMessageId = messages[messages.length - 1]?.id ?? 0;
@@ -1795,7 +1792,7 @@ function AppShell() {
         )
       ) : (
         <ConversationScene
-          conversationKey={`${currentDraftKey}:${activeTopicConvId ?? ""}`}
+          conversationKey={conversationViewKey(activeTopicId, currentDraftKey, activeTopicConvId)}
           empty={messages.length === 0 && !live.busy && !activeRunFailure && !canLoadHistory && !historyLoading}
           ready={Boolean(localTopics.selected) || Boolean(viewingHistory) || conversationLoaded || messages.length > 0}
           onChooseRecommendation={(task) => {
@@ -1812,7 +1809,7 @@ function AppShell() {
               onWheel={() => { chatNavigatingRef.current = false; }}
               onTouchStart={() => { chatNavigatingRef.current = false; }}
             >
-              <div key={`${topicDrafts.draftTopicId(activeTopicId)}:${activeTopicConvId ?? ""}`} className="kulo-conversation-stream">
+              <div key={conversationViewKey(activeTopicId, topicDrafts.draftTopicId(activeTopicId), activeTopicConvId)} className="kulo-conversation-stream">
                 {canLoadHistory && <Button variant="ghost" size="sm" className="self-center" isDisabled={historyLoading || messageWindowLoading} onPress={() => {
                   const node = chatScrollRef.current;
                   const previousHeight = node?.scrollHeight ?? 0;
@@ -1840,7 +1837,7 @@ function AppShell() {
                 )}
               </div>
             </div>
-            <ConversationOutline key={`${activeTopicId}:${activeTopicConvId ?? ""}`} turns={conversationTurns} topicId={activeTopicId} scrollRef={chatScrollRef} onNavigate={() => {
+            <ConversationOutline key={conversationViewKey(activeTopicId, topicDrafts.draftTopicId(activeTopicId), activeTopicConvId)} turns={conversationTurns} topicId={activeTopicId} scrollRef={chatScrollRef} onNavigate={() => {
               chatNavigatingRef.current = true;
               nearBottomRef.current = false;
             }} />
@@ -1871,11 +1868,11 @@ function AppShell() {
               onCancelReply={() => setCurrentReply(undefined)}
               onDraftTextChange={setCurrentDraft}
               attachments={currentAttachments}
-              onEnqueueFiles={(files) => { enqueueFiles(currentDraftKey, files); if (files.length) topicDrafts.touch(activeTopicId); }}
+              onEnqueueFiles={(files) => enqueueFiles(currentDraftKey, files)}
               onRemoveAttachment={(localId) => removeAttachment(currentDraftKey, localId)}
               onRetryAttachment={(localId) => retryAttachment(currentDraftKey, localId)}
               onCancelAttachment={(localId) => cancelAttachment(currentDraftKey, localId)}
-              conversationKey={`${currentDraftKey}:${activeTopicConvId ?? ""}`}
+              conversationKey={conversationViewKey(activeTopicId, currentDraftKey, activeTopicConvId)}
               onTranscribeVoice={transcribeVoice}
               voiceCallTarget={voiceCallTarget}
               onResolveVoiceCallTarget={resolveVoiceCallTarget}
@@ -1899,6 +1896,7 @@ function AppShell() {
 
   const taskRailClearAll = useTaskRailClearAllHost({
     tickets,
+    activeTopicId, topics, mainChatTitle,
     completedTaskDisplayHours: settings?.blocks.executor.value.completedTaskDisplayHours,
     projectedTicketId,
     canQueueActions: outboxReady,

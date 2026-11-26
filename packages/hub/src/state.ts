@@ -723,6 +723,7 @@ export function toTicketCardView(
     ...(ticket.stoppedReason ? { stoppedReason: ticket.stoppedReason } : {}),
     ...(ticket.closure ? { closure: { ...ticket.closure } } : {}),
     ...(ticket.recovery ? { recovery: { ...ticket.recovery } } : {}),
+    ...(ticket.supersedes?.length ? { supersedes: [...ticket.supersedes] } : {}),
     ...(ticket.originTopicId ? { originTopicId: ticket.originTopicId } : {}),
     ...(ticket.projectId ? { projectId: ticket.projectId } : {}),
     ...(ticket.waiting ? { waiting: { ...ticket.waiting } } : {}),
@@ -865,9 +866,10 @@ export function closeSettledTicketsForDeletedTopic(
     releaseProjectWrite(state, ticket.id);
     const prior = ticket.recovery;
     ticket.recovery = undefined;
-    if (prior && (prior.rootTicketId ?? ticket.id) === ticket.id) {
+    if (prior) {
+      const rootId = prior.rootTicketId ?? ticket.id;
       for (const related of Object.values(state.tickets)) {
-        if (related.recovery?.rootTicketId === ticket.id && related.recovery.startedAt === prior.startedAt) {
+        if (related.id !== ticket.id && (related.recovery?.rootTicketId ?? related.id) === rootId && related.recovery?.startedAt === prior.startedAt) {
           related.recovery = undefined;
           related.autoRecoverySuppressed = true;
         }

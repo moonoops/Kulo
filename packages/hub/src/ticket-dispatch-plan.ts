@@ -177,9 +177,10 @@ export function resolveDispatchDomain(input: {
   priorUserTurns: readonly PriorUserDeviceTurn[];
   envs: readonly EnvNodeDescriptor[];
   activeRoles: Readonly<Record<string, RolePreset>>;
+  activeBrowserEnvId?: string;
   getEnvDescriptor: (id: string) => EnvNodeDescriptor | undefined;
 }): DispatchDomainPlan {
-  const { params, sender, dispatchSource, recoveryTicket, originTopic, reviewTarget, inputAttachmentIds, priorUserTurns, envs, activeRoles, getEnvDescriptor } = input;
+  const { params, sender, dispatchSource, recoveryTicket, originTopic, reviewTarget, inputAttachmentIds, priorUserTurns, envs, activeRoles, activeBrowserEnvId, getEnvDescriptor } = input;
   if (params.executionDomain !== undefined && !["android", "computer"].includes(params.executionDomain)) {
     throw new ProjectError(400, "invalid_execution_domain", "任务执行类型无效。");
   }
@@ -206,6 +207,7 @@ export function resolveDispatchDomain(input: {
     (dispatchSource.inheritedAssignment && activeRoles[dispatchSource.inheritedAssignment.agentId]?.external);
   const inferSourcePhone =
     !domainEnv && !requestedProject && !namedComputerAgent && params.targetScope !== "hub_local" &&
+    !(params.inheritBrowserSession && activeBrowserEnvId) &&
     inputAttachmentIds.length === 0 && sender.source?.kind === "android";
   const executionDomain = params.executionDomain ?? recoveryTicket?.executionDomain ??
     (inferSourcePhone || getEnvDescriptor(domainEnv ?? "")?.executionKind === "native-device" ? "android" : "computer");
@@ -254,11 +256,12 @@ export function resolveDispatchAgentAndEnv(input: {
   getEnvDescriptor: (id: string) => EnvNodeDescriptor | undefined;
   isLocalEnv: (id: string) => boolean;
   executionTrustMode?: ExecutionTrustMode;
+  inheritedBrowserEnvId?: string;
   pickDefaultWorkerEnvId: () => string;
 }): DispatchAgentEnvPlan {
   const {
     params, domain, project, modelDispatch, recoveryTicket, originTopic, inputs, sender, dispatchSource,
-    envs, localEnvId, localEnv, activeRoles, activeExternalClients, activeLanguage, getEnvDescriptor, isLocalEnv, executionTrustMode, pickDefaultWorkerEnvId,
+    envs, localEnvId, localEnv, activeRoles, activeExternalClients, activeLanguage, getEnvDescriptor, isLocalEnv, executionTrustMode, inheritedBrowserEnvId, pickDefaultWorkerEnvId,
   } = input;
   const { fixedTargetId, fixedTarget, proposedEnv, namedEnvResolution, namedEnv, namedAgent, executionDomain, androidDeviceIds } = domain;
   const trustMode = executionTrustMode ?? LEGACY_MIGRATION_EXECUTION_TRUST_MODE;
@@ -342,6 +345,7 @@ export function resolveDispatchAgentAndEnv(input: {
       topicTargetDeviceId: originTopic?.targetDeviceId, namedEnvId: namedEnv,
       explicitAgentDeviceId: explicitAgentDevice, externalBindingDeviceId: externalBinding?.envId,
       recoveryTicket, sourceEnvId: sourceEnv, sourceRootDir, proposedEnvId: proposedEnv,
+      inheritedBrowserEnvId,
       targetScope: params.targetScope, userMessage: sender.text, goal: params.goal, scope: params.scope,
       localEnv, executionTrustMode: trustMode, pickFallbackEnvId: pickDefaultWorkerEnvId,
     });

@@ -7,7 +7,7 @@ import { Harness, MemoryStorage, ToolResultEntry, createRegistry, defineExtensio
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type TranscriptContext } from "@earendil-works/pi-ai";
 import type { TicketRecord } from "@kulo/protocol";
 import { openTestHub } from "./helpers/secure-hub.js";
-import { KuloStateDoc, WorkerRecoveryEntry, WorkerRelayEntry, type KuloDurableState } from "../packages/hub/src/state.js";
+import { KuloStateDoc, toTicketCardView, WorkerRecoveryEntry, WorkerRelayEntry, type KuloDurableState } from "../packages/hub/src/state.js";
 import { extractDisplayMessages, extractLiveState } from "../packages/hub/src/hub.js";
 import { voiceHistory } from "../packages/hub/src/voice-context.js";
 import { VoiceTranscriptEntry } from "../packages/hub/src/voice-transcripts.js";
@@ -425,5 +425,78 @@ describe("durable automatic recovery", () => {
     expect(s.tickets.F?.recovery).toEqual(s.tickets.E?.recovery);
     const reviews = (await reopened.rootConversation.context(BACKGROUND_CONTEXT)).entries.filter(WorkerRecoveryEntry.is);
     expect(reviews).toHaveLength(1); expect(reviews[0]?.data.ticketId).toBe("F");
+  });
+
+  it("exposes supersedes on TicketCardView and suppresses/retires hidden ancestors when closing or archiving a leaf replacement", async () => {
+    const hub = await openHub(() => fauxAssistantMessage([fauxText("[RECOVERY_OK]")]));
+    const now = Date.now();
+    const recovery = { state: "recovering" as const, attempts: 1, startedAt: now, deadlineAt: now + 600_000, rootTicketId: "A" };
+    await hub.harness.commit(async tx => {
+      const s = await tx.doc(KuloStateDoc);
+      s.tickets.A = ticket("A", { originTopicId: "root", recovery: { ...recovery } });
+      s.tickets.B = ticket("B", { originTopicId: "root", supersedes: ["A"], recovery: { ...recovery } });
+      s.tickets.C = ticket("C", { originTopicId: "root", supersedes: ["B"], status: "failed", recovery: { ...recovery, state: "exhausted" } });
+      s.tickets.OTHER = ticket("OTHER", { originTopicId: "other-topic", status: "failed", recovery: { ...recovery, rootTicketId: "OTHER" } });
+    }, BACKGROUND_CONTEXT);
+
+    const cardC = toTicketCardView((await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))!.tickets.C!, {});
+    expect(cardC.supersedes).toEqual(["B"]);
+    expect(toTicketCardView((await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))!.tickets.A!, {}).supersedes).toBeUndefined();
+
+    // Closing/ignoring leaf C suppresses recovery across A->B->C and retires same-scope failed ancestors A & B without touching other topics.
+    await hub.closeTicket({ ticketId: "C", commandId: "ignore:C", kind: "obsolete", reason: "用户忽略" });
+    const afterClose = (await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))!;
+    expect(afterClose.tickets.C).toMatchObject({ status: "closed", autoRecoverySuppressed: true, closure: { kind: "obsolete" } });
+    expect(afterClose.tickets.B).toMatchObject({ status: "closed", autoRecoverySuppressed: true, closure: { kind: "obsolete" } });
+    expect(afterClose.tickets.A).toMatchObject({ status: "closed", autoRecoverySuppressed: true, closure: { kind: "obsolete" } });
+    expect(afterClose.tickets.A?.recovery).toBeUndefined();
+    expect(afterClose.tickets.B?.recovery).toBeUndefined();
+    expect(afterClose.tickets.C?.recovery).toBeUndefined();
+    expect(afterClose.tickets.OTHER).toMatchObject({ status: "failed", recovery: { state: "recovering" } });
+
+    // Stopping a running leaf replacement suppresses lineage recovery, and subsequent archive/close retires ancestors cleanly.
+    const now2 = Date.now() + 10;
+    const rec2 = { state: "recovering" as const, attempts: 1, startedAt: now2, deadlineAt: now2 + 600_000, rootTicketId: "R1" };
+    await hub.harness.commit(async tx => {
+      const s = await tx.doc(KuloStateDoc);
+      s.tickets.R1 = ticket("R1", { originTopicId: "root", status: "failed", recovery: { ...rec2 } });
+      s.tickets.R2 = ticket("R2", { originTopicId: "root", status: "failed", supersedes: ["R1"], recovery: { ...rec2 } });
+      s.tickets.R3 = ticket("R3", { originTopicId: "root", status: "running", supersedes: ["R2"], recovery: { ...rec2 } });
+      // Branched lineage: B1 (failed) + B2 (running) both supersede BR. Closing B1 must NOT prematurely retire BR.
+      s.tickets.BR = ticket("BR", { originTopicId: "root", status: "failed" });
+      s.tickets.B1 = ticket("B1", { originTopicId: "root", status: "failed", supersedes: ["BR"] });
+      s.tickets.B2 = ticket("B2", { originTopicId: "root", status: "running", supersedes: ["BR"] });
+    }, BACKGROUND_CONTEXT);
+
+    await hub.stopTicket("R3", "用户归档", BACKGROUND_CONTEXT, "stop:R3");
+    const afterStop = (await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))!;
+    expect(afterStop.tickets.R3).toMatchObject({ status: "stopped", autoRecoverySuppressed: true });
+    expect(afterStop.tickets.R2?.recovery).toBeUndefined();
+    expect(afterStop.tickets.R2?.autoRecoverySuppressed).toBe(true);
+    expect(afterStop.tickets.R1?.recovery).toBeUndefined();
+    expect(afterStop.tickets.R1?.autoRecoverySuppressed).toBe(true);
+
+    // Waking recovery on R1 after stopping R3 must terminate without spawning a new replacement.
+    const r1Task = await hub.harness.commit(async tx => tx.createTask(
+      recoveryTask,
+      { ticketId: "R1", startedAt: now2 },
+      { ownership: { kind: "conversation" }, conversationId: hub.rootConversation.id, background: true },
+    ), BACKGROUND_CONTEXT);
+    hub.harness.resume();
+    await until(async () => (await hub.harness.commit(tx => tx.task(r1Task), BACKGROUND_CONTEXT))?.state.status === "terminal");
+
+    // Step 2 of UI archiveTicket: closing stopped R3 (which no longer has recovery) still retires R2 and R1.
+    await hub.closeTicket({ ticketId: "R3", commandId: "archive:R3", kind: "obsolete", reason: "用户归档" });
+    const afterArchive = (await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))!;
+    expect(afterArchive.tickets.R3?.status).toBe("closed");
+    expect(afterArchive.tickets.R2).toMatchObject({ status: "closed", closure: { kind: "obsolete" } });
+    expect(afterArchive.tickets.R1).toMatchObject({ status: "closed", closure: { kind: "obsolete" } });
+
+    // Branch safety: closing B1 while B2 is still running keeps BR open for B2 to resolve.
+    await hub.closeTicket({ ticketId: "B1", commandId: "close:B1", kind: "obsolete", reason: "忽略旧分支" });
+    const afterBranch = (await hub.harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT))!;
+    expect(afterBranch.tickets.B1?.status).toBe("closed");
+    expect(afterBranch.tickets.BR?.status).toBe("failed");
+    expect(afterBranch.tickets.B2?.status).toBe("running");
   });
 });

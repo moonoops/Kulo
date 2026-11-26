@@ -1,4 +1,10 @@
-import { describeKuloError, type FriendlyErrorDescriptor, type FriendlyErrorInput, type FriendlyErrorKind } from "@kulo/protocol";
+import {
+  describeKuloError,
+  parseTurnLimitStepCount,
+  type FriendlyErrorDescriptor,
+  type FriendlyErrorInput,
+  type FriendlyErrorKind,
+} from "@kulo/protocol";
 import { getLanguage } from "./kulo-i18n";
 
 export function describeLocalizedKuloError(input: FriendlyErrorInput): FriendlyErrorDescriptor {
@@ -6,6 +12,7 @@ export function describeLocalizedKuloError(input: FriendlyErrorInput): FriendlyE
   if (getLanguage() !== "en") return error;
 
   const model = input.modelId?.trim();
+  const turnLimitSteps = error.kind === "turn_limit" ? parseTurnLimitStepCount(input) : undefined;
   const messages: Record<FriendlyErrorKind, Pick<FriendlyErrorDescriptor, "title" | "hint">> = {
     user_abort: {
       title: "Generation stopped",
@@ -35,6 +42,10 @@ export function describeLocalizedKuloError(input: FriendlyErrorInput): FriendlyE
         ? `The gateway does not support or enable “${model}”, or its URL is incorrect. Test the connection and choose an available model in Models.`
         : "The gateway does not support the selected model, or its URL is incorrect. Test the connection and choose an available model in Models.",
     },
+    image_payload_invalid: {
+      title: "Invalid or oversized image payload",
+      hint: "The image data sent to the model may be corrupted, in an unsupported format, or over the provider's size limit (no need to switch models). Re-read or compress the image, then retry.",
+    },
     multimodal_unsupported: {
       title: "This model does not support images",
       hint: "The selected model cannot process image input. Choose a model with image support in Models, then retry.",
@@ -53,7 +64,11 @@ export function describeLocalizedKuloError(input: FriendlyErrorInput): FriendlyE
     },
     turn_limit: {
       title: "Execution step limit reached",
-      hint: "This turn paused automatically to avoid repeated tool calls. Select Continue to resume.",
+      hint: turnLimitSteps !== undefined
+        ? turnLimitSteps === 1
+          ? "This turn paused after 1 step to avoid extended loops. Select Continue to resume."
+          : `This turn paused after ${turnLimitSteps} steps to avoid extended loops. Select Continue to resume.`
+        : "This turn paused automatically to avoid repeated tool calls. Select Continue to resume.",
     },
     interrupted: {
       title: "Reply interrupted",

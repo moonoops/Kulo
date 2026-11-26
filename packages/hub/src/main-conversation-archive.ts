@@ -32,6 +32,7 @@ import type { HubRuntimeGates } from "./hub-kernel-ports.js";
 import { MediaNoticesDoc } from "./hub-media-delivery.js";
 import type { HubMemoryRuntime } from "./hub-memory-runtime.js";
 import type { HubTopicManager } from "./hub-topic-manager.js";
+import { ORCHESTRATOR_MAX_TURNS } from "./run-health-policy.js";
 import {
   allocateArchivedRootTopicId,
   findBlockingMainArchiveTickets,
@@ -117,7 +118,7 @@ export class MainConversationArchiveService {
       extensions: this.#deps.orchestrator.extensions(isRoot),
       tools: this.#deps.orchestrator.tools(isRoot),
       cwd: this.#deps.orchestrator.mainWorkspaceDir,
-      maxTurns: 40,
+      maxTurns: ORCHESTRATOR_MAX_TURNS,
     };
   }
 

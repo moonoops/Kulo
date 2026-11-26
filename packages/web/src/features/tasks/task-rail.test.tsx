@@ -519,4 +519,98 @@ describe("background task rail", () => {
     expect(allExpiredHtml).not.toContain("kulo-assistant-rail-section");
     expect(allExpiredHtml).toContain("暂无后台任务");
   });
+
+  it("hides superseded failed ancestors and renders the active replacement as running instead of recovering", () => {
+    const recovery = { state: "recovering" as const, attempts: 1, startedAt: 1, deadlineAt: 600_001, rootTicketId: "fail-1" };
+    const failedRoot: TicketCardView = { ...card, id: "fail-1", title: "首次尝试失败", status: "failed", originTopicId: "topic-a", recovery };
+    const replacement: TicketCardView = {
+      ...card, id: "rep-2", title: "替代方案执行中", status: "running", originTopicId: "topic-a",
+      supersedes: ["fail-1"], recovery,
+    };
+    const html = renderToStaticMarkup(
+      <KuloTaskRail
+        tickets={[failedRoot, replacement]}
+        onProject={() => {}}
+        onRetry={async () => {}}
+        onIgnore={async () => {}}
+      />,
+    );
+    expect(html).not.toContain("首次尝试失败");
+    expect(html).toContain("替代方案执行中");
+    expect(html).toContain("运行中");
+    expect(html).not.toContain("恢复中");
+    expect(html.match(/<button\b[^>]*class="[^"]*\bkulo-task-card-button\b/g)).toHaveLength(1);
+  });
+
+  it("groups current and other topics only when other-topic cards exist and never leaks raw originTopicId", () => {
+    const currentCard: TicketCardView = { ...card, id: "curr-1", title: "整理周报", originTopicId: "topic-a" };
+    const otherNamedCard: TicketCardView = { ...card, id: "other-named", title: "核对账单", originTopicId: "topic-b" };
+    const otherUnknownCard: TicketCardView = { ...card, id: "other-raw", title: "未知来源任务", originTopicId: "secret-raw-topic-id" };
+    const rootCard: TicketCardView = { ...card, id: "root-task", title: "主会话任务", originTopicId: undefined };
+    const topicTitles = new Map([
+      ["root", "Kulo · 主会话"],
+      ["topic-a", "当前话题标题"],
+      ["topic-b", "项目规划"],
+    ]);
+
+    // Single-topic (all cards in activeTopicId): no redundant group headers.
+    const singleTopicHtml = renderToStaticMarkup(
+      <KuloTaskRail tickets={[currentCard]} activeTopicId="topic-a" topicTitles={topicTitles} onProject={() => {}} />,
+    );
+    expect(singleTopicHtml).toContain("整理周报");
+    expect(singleTopicHtml).not.toContain("kulo-task-group-header");
+    expect(singleTopicHtml).not.toContain("当前话题");
+    expect(singleTopicHtml).not.toContain("其他话题");
+
+    // Mixed topics: shows both flat group headers (without data-ticket-id) and topic title only for resolved other cards.
+    const mixedHtml = renderToStaticMarkup(
+      <KuloTaskRail
+        tickets={[currentCard, otherNamedCard, otherUnknownCard, rootCard]}
+        activeTopicId="topic-a"
+        topicTitles={topicTitles}
+        onProject={() => {}}
+      />,
+    );
+    expect(mixedHtml).toContain('class="kulo-task-group-header" data-group="current" role="heading" aria-level="3">当前话题</div>');
+    expect(mixedHtml).toContain('class="kulo-task-group-header" data-group="other" role="heading" aria-level="3">其他话题</div>');
+    expect(mixedHtml).not.toMatch(/kulo-task-group-header[^>]*data-ticket-id/);
+    expect(mixedHtml.indexOf("整理周报")).toBeLessThan(mixedHtml.indexOf('data-group="other"'));
+    expect(mixedHtml.indexOf('data-group="other"')).toBeLessThan(mixedHtml.indexOf("核对账单"));
+    expect(mixedHtml).toContain("项目规划");
+    expect(mixedHtml).toContain("Kulo · 主会话");
+    expect(mixedHtml).not.toContain("当前话题标题");
+    expect(mixedHtml).not.toContain("secret-raw-topic-id");
+
+    // Only other-topic cards: shows only "其他话题" header, omitting empty "当前话题".
+    const otherOnlyHtml = renderToStaticMarkup(
+      <KuloTaskRail tickets={[otherNamedCard]} activeTopicId="topic-a" topicTitles={topicTitles} onProject={() => {}} />,
+    );
+    expect(otherOnlyHtml).not.toContain('data-group="current"');
+    expect(otherOnlyHtml).toContain('data-group="other"');
+    expect(otherOnlyHtml).toContain("项目规划");
+  });
+
+  it("includes cross-topic breakdown in clear-all description only when other-topic cards exist", () => {
+    const t = (zh: string) => zh;
+    const sameTopic = [
+      { ...card, id: "a", originTopicId: "topic-a", status: "ready" as const },
+      { ...card, id: "b", originTopicId: "topic-a", status: "ready" as const },
+    ];
+    const singleSummary = buildClearAllDescription(sameTopic, t, "topic-a");
+    expect(singleSummary).toBe("将删除右侧全部 2 张任务卡片。");
+    expect(singleSummary).not.toContain("其他话题");
+
+    const crossSummary = buildClearAllDescription(
+      [
+        { ...card, id: "a", originTopicId: "topic-a", status: "running" as const },
+        { ...card, id: "b", originTopicId: "topic-b", status: "ready" as const },
+        { ...card, id: "c", originTopicId: undefined, status: "ready" as const },
+      ],
+      t,
+      "topic-a",
+    );
+    expect(crossSummary).toContain("全部 3 张任务卡片");
+    expect(crossSummary).toContain("含当前话题 1 张、其他话题 2 张");
+    expect(crossSummary).toContain("1 项进行中任务将被停止");
+  });
 });

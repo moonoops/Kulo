@@ -10,7 +10,9 @@ import {
   type JsonObject, type Storage,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { formatDeviceChatInvitation, formatDeviceInstallerInstructions } from "@kulo/protocol";
+import {
+  formatDeviceChatInvitation, formatDeviceInstallerInstructions, redactSensitiveText,
+} from "@kulo/protocol";
 import { KuloConnections } from "../packages/hub/src/connections.js";
 import { ConnectionVaultError, LocalConnectionVault } from "../packages/hub/src/connection-vault.js";
 import { KuloConversationHistory } from "../packages/hub/src/conversation-history.js";
@@ -655,5 +657,452 @@ describe("credential-safe durable history", () => {
       ...googleMessage,
       content: [{ type: "text", text: "ok", textSignature: leaked }],
     }], redactFn, { nativeContent: "messages", isKnownSecret: (v) => v.includes(leaked) })).toThrow("凭据不能写入普通状态");
+  });
+
+  function buildValidPngBase64(options: { payloadBytes?: Buffer; minTotalBytes?: number } = {}): string {
+    // 8-byte PNG signature + 25-byte IHDR chunk (width=16, height=16) = 33 bytes (multiple of 3)
+    const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const ihdr = Buffer.from([
+      0x00, 0x00, 0x00, 0x0d, // length = 13
+      0x49, 0x48, 0x44, 0x52, // "IHDR"
+      0x00, 0x00, 0x00, 0x10, // width = 16
+      0x00, 0x00, 0x00, 0x10, // height = 16
+      0x08, 0x02, 0x00, 0x00, 0x00, // 8-bit RGB
+      0x00, 0x00, 0x00, 0x00, // dummy CRC
+    ]);
+    const iend = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
+    // 8-byte IDAT header + 1 alignment byte -> offset 42 (multiple of 3 for aligned base64 insertion)
+    const extraSize = Math.max(0, (options.minTotalBytes ?? 0) - (sig.length + ihdr.length + iend.length + 12 + (options.payloadBytes?.length ?? 0)));
+    const idatBody = Buffer.concat([
+      Buffer.from([0x78]), // 1-byte alignment prefix so payloadBytes starts at byte offset 42 (divisible by 3)
+      options.payloadBytes ?? Buffer.from([0x01, 0x02, 0x03]),
+      extraSize > 0 ? Buffer.alloc(extraSize, 0x5a) : Buffer.alloc(0),
+    ]);
+    const idatLen = Buffer.alloc(4);
+    idatLen.writeUInt32BE(idatBody.length, 0);
+    const idat = Buffer.concat([idatLen, Buffer.from("IDAT", "ascii"), idatBody, Buffer.alloc(4)]);
+    return Buffer.concat([sig, ihdr, idat, iend]).toString("base64");
+  }
+
+  function buildValidJpegBase64(minTotalBytes = 64): string {
+    const head = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);
+    const body = Buffer.alloc(Math.max(16, minTotalBytes - head.length - 2), 0x33);
+    const eoi = Buffer.from([0xff, 0xd9]);
+    return Buffer.concat([head, body, eoi]).toString("base64");
+  }
+
+  function buildValidGifBase64(minTotalBytes = 64): string {
+    const head = Buffer.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00]);
+    const body = Buffer.alloc(Math.max(8, minTotalBytes - head.length - 1), 0x22);
+    return Buffer.concat([head, body, Buffer.from([0x3b])]).toString("base64");
+  }
+
+  function buildValidWebpBase64(minTotalBytes = 64): string {
+    const vp8lBody = Buffer.concat([Buffer.from([0x2f, 0x00, 0x00, 0x00, 0x00]), Buffer.alloc(Math.max(16, minTotalBytes - 25), 0x44)]);
+    const subLen = Buffer.alloc(4);
+    subLen.writeUInt32LE(vp8lBody.length, 0);
+    const riffPayload = Buffer.concat([Buffer.from("WEBP", "ascii"), Buffer.from("VP8L", "ascii"), subLen, vp8lBody]);
+    const riffLen = Buffer.alloc(4);
+    riffLen.writeUInt32LE(riffPayload.length, 0);
+    return Buffer.concat([Buffer.from("RIFF", "ascii"), riffLen, riffPayload]).toString("base64");
+  }
+
+  it("preserves verified >1 MiB and <1 MiB collision raster images across afterTool, storage, beforeRequest, wire formats, beforeCompact, and startup scrub", async () => {
+    // 1. Construct a >1 MiB valid PNG (exceeding MAX_TEXT_LENGTH = 1_048_576 in inspectSensitiveText)
+    const largePng = buildValidPngBase64({ minTotalBytes: 900_000 }); // ~1.2 MiB base64
+    expect(largePng.length).toBeGreaterThan(1_048_576);
+
+    // 2. Construct a <1 MiB valid PNG whose base64 literally contains a 4-char password + BSA + AIza collisions
+    const collisionChunkB64 = "1234+BSAAAAAAAAAAAAAAAAAAAAAA/AIzaBBBBBBBBBBBBBBBBBBBBBBAAAA";
+    const collisionPng = buildValidPngBase64({ payloadBytes: Buffer.from(collisionChunkB64, "base64") });
+    expect(collisionPng.length).toBeLessThan(1_048_576);
+    expect(collisionPng).toContain("1234");
+    expect(collisionPng).toContain("+BSAAAAAAAAAAAAAAAAAAAAAA");
+    expect(collisionPng).toContain("/AIzaBBBBBBBBBBBBBBBBBBBBBB");
+
+    const validJpeg = buildValidJpegBase64();
+    const validWebp = buildValidWebpBase64();
+    const validGif = buildValidGifBase64();
+
+    const knownSecrets = ["1234", secret];
+    const redactAll = (text: string) => redactSensitiveText(text, knownSecrets, { definiteOnly: true });
+    const isKnownSecret = (text: string) => knownSecrets.some((item) => text.includes(item));
+
+    // Confirm raw redactor WOULD corrupt both images without the verified-image exemption
+    expect(redactAll(largePng)).toBe("[消息过长，敏感内容已隐藏]");
+    expect(redactAll(collisionPng)).toContain("[已隐藏]");
+    expect(isKnownSecret(collisionPng)).toBe(true);
+
+    const onCompactionDeclined = vi.fn();
+    const extension = createCredentialRedactionExtension(redactAll, { isKnownSecret, onCompactionDeclined });
+    const generation = extension.hooks![0]!.handlers as {
+      beforeRequest: (request: unknown) => { messages: unknown };
+      beforeProviderRequest: (request: unknown) => { payload: unknown };
+    };
+    const tools = extension.hooks![1]!.handlers as {
+      afterTool: (call: unknown, result: unknown) => Record<string, unknown>;
+    };
+    const compaction = extension.hooks![2]!.handlers as {
+      beforeCompact: (input: unknown, api?: { conversationId?: number }) => unknown;
+    };
+
+    // A. ToolTask.afterTool preserves output[] and read-tool top-level structuredOutput while still redacting text/details
+    const readBlockLarge = { type: "image", mimeType: "image/png", data: largePng };
+    const readBlockCollision = { type: "image", mimeType: "image/jpeg", data: collisionPng }; // intentional browser MIME/magic mismatch
+    const afterRead = tools.afterTool({}, {
+      output: [
+        { type: "text", text: `caption ${secret}` },
+        readBlockLarge,
+        readBlockCollision,
+        { type: "image", mimeType: "image/jpeg", data: validJpeg },
+        { type: "image", mimeType: "image/webp", data: validWebp },
+        { type: "image", mimeType: "image/gif", data: validGif },
+      ],
+      structuredOutput: readBlockLarge,
+      details: { secretNote: secret },
+    });
+    const afterOutput = afterRead.output as Array<Record<string, unknown>>;
+    expect(afterOutput[0]).toEqual({ type: "text", text: "caption [已隐藏]" });
+    expect(afterOutput[1]!.data).toBe(largePng);
+    expect(afterOutput[2]!.data).toBe(collisionPng);
+    expect(afterOutput[3]!.data).toBe(validJpeg);
+    expect(afterOutput[4]!.data).toBe(validWebp);
+    expect(afterOutput[5]!.data).toBe(validGif);
+    expect((afterRead.structuredOutput as Record<string, unknown>).data).toBe(largePng);
+    expect(afterRead.details).toEqual({ secretNote: "[已隐藏]" });
+
+    // B. GenerationTask.beforeRequest preserves verified images at every size
+    const requestMessages = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: `inspect ${secret}` },
+          readBlockLarge,
+          readBlockCollision,
+        ],
+        timestamp: 1,
+      },
+      {
+        role: "toolResult",
+        toolCallId: "c1",
+        toolName: "read",
+        content: [
+          { type: "image", mimeType: "image/png", data: largePng },
+          { type: "image", mimeType: "image/png", data: collisionPng },
+        ],
+        isError: false,
+        timestamp: 2,
+      },
+    ];
+    const reqOut = generation.beforeRequest({ messages: requestMessages }).messages as Array<{ content: Array<Record<string, unknown>> }>;
+    expect(reqOut[0]!.content[0]).toEqual({ type: "text", text: "inspect [已隐藏]" });
+    expect(reqOut[0]!.content[1]!.data).toBe(largePng);
+    expect(reqOut[0]!.content[2]!.data).toBe(collisionPng);
+    expect(reqOut[1]!.content[0]!.data).toBe(largePng);
+    expect(reqOut[1]!.content[1]!.data).toBe(collisionPng);
+
+    // C. GenerationTask.beforeProviderRequest preserves ALL wire formats (OpenAI Responses, Completions, Anthropic, Google, Mistral, System One, media-adapters)
+    const largeDataUrl = `data:image/png;base64,${largePng}`;
+    const collisionDataUrl = `data:image/png;base64,${collisionPng}`;
+    const wirePayloads = {
+      openaiResponses: {
+        input: [
+          { role: "user", content: [{ type: "input_text", text: secret }, { type: "input_image", detail: "auto", image_url: largeDataUrl }] },
+          { type: "function_call_output", call_id: "c1", output: [{ type: "input_image", detail: "auto", image_url: collisionDataUrl }] },
+        ],
+      },
+      openaiCompletions: {
+        messages: [
+          { role: "user", content: [{ type: "text", text: secret }, { type: "image_url", image_url: { url: largeDataUrl } }] },
+        ],
+      },
+      anthropic: {
+        messages: [
+          { role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: largePng } }, { type: "image", source: { type: "base64", media_type: "image/png", data: collisionPng } }] },
+        ],
+      },
+      google: {
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { inlineData: { mimeType: "image/png", data: largePng } },
+              { functionResponse: { name: "read", response: { output: secret }, parts: [{ inlineData: { mimeType: "image/png", data: collisionPng } }] } },
+            ],
+          },
+        ],
+      },
+      mistral: {
+        inputs: [
+          { role: "user", content: [{ type: "text", text: secret }, { type: "image_url", imageUrl: largeDataUrl }] },
+          { role: "tool", toolCallId: "c1", name: "read", content: [{ type: "image_url", imageUrl: collisionDataUrl }] },
+        ],
+      },
+      systemOneImages: {
+        images: [largeDataUrl, collisionDataUrl],
+        state: [{ type: "image_url", image_url: { url: `data:image/webp;base64,${validWebp}` } }, `prompt ${secret}`],
+      },
+      systemOneAssets: {
+        assets: {
+          "<image-1>": { type: "image", format: "png", data_base64: largePng },
+          "<image-2>": { type: "image", format: "jpeg", data_base64: collisionPng },
+        },
+        state: ["<image-1>", "<image-2>", secret],
+      },
+      mediaAdapter: {
+        input: [{ type: "text", text: secret }, { type: "image", mime_type: "image/png", data: collisionPng }],
+      },
+    };
+    for (const [name, payload] of Object.entries(wirePayloads)) {
+      const redactedWire = generation.beforeProviderRequest({ payload }).payload;
+      const serialized = JSON.stringify(redactedWire);
+      expect(serialized, name).not.toContain(secret);
+      expect(serialized, name).not.toContain("[消息过长，敏感内容已隐藏]");
+      if (name === "openaiResponses") {
+        expect(serialized).toContain(largeDataUrl);
+        expect(serialized).toContain(collisionDataUrl);
+      } else if (name === "openaiCompletions") {
+        expect(serialized).toContain(largeDataUrl);
+      } else if (name === "anthropic" || name === "google" || name === "systemOneAssets") {
+        expect(serialized).toContain(largePng);
+        expect(serialized).toContain(collisionPng);
+      } else if (name === "mistral" || name === "systemOneImages") {
+        expect(serialized).toContain(largeDataUrl);
+        expect(serialized).toContain(collisionDataUrl);
+      } else if (name === "mediaAdapter") {
+        expect(serialized).toContain(collisionPng);
+      }
+    }
+
+    // D. CompactionTask.beforeCompact proceeds when verified >1 MiB and <1 MiB collision images are present
+    const cleanCompactMessages = [
+      { role: "user", content: [{ type: "text", text: "safe text" }, readBlockLarge, readBlockCollision], timestamp: 1 },
+    ];
+    expect(compaction.beforeCompact({ messages: cleanCompactMessages }, { conversationId: 1 })).toBeUndefined();
+    expect(onCompactionDeclined).not.toHaveBeenCalled();
+
+    // E. wrapRedactedStorage + scrubStoredConversationSecrets preserve verified images in SQLite
+    const stateDir = directory();
+    const dbFile = path.join(stateDir, "kulo.sqlite");
+    const sqlite = await openNodeSqliteStorage(dbFile);
+    const harness = await open(wrapRedactedStorage(sqlite, redactAll, { isKnownSecret }));
+    await harness.commit(async (tx) => {
+      await tx.appendEntry(UserEntry, ROOT_CONVERSATION_ID, {
+        data: { text: `note ${secret}` },
+        model: [
+          { role: "user", content: [{ type: "text", text: `caption ${secret}` }, readBlockLarge, readBlockCollision], timestamp: 1 },
+        ],
+      });
+    }, context);
+    const entries = await (await harness.root(context)).entries({}, 20, undefined, context);
+    const storedMsg = entries.items.find((e) => e.kind === UserEntry.kind)?.model?.[0] as { content: Array<Record<string, unknown>> };
+    expect(storedMsg.content[0]).toEqual({ type: "text", text: "caption [已隐藏]" });
+    expect(storedMsg.content[1]!.data).toBe(largePng);
+    expect(storedMsg.content[2]!.data).toBe(collisionPng);
+    await harness.close(context);
+
+    // Startup scrub must not corrupt verified images or throw credential_history_unavailable
+    const scrubResult = await scrubStoredConversationSecrets(stateDir, redactAll, { isKnownSecret });
+    expect(scrubResult.rows).toBe(0);
+    const verifyDb = new DatabaseSync(dbFile, { readOnly: true });
+    cleanups.push(() => verifyDb.close());
+    const storedRows = verifyDb.prepare("SELECT record FROM entries").all() as Array<{ record: string }>;
+    const allStored = storedRows.map((r) => r.record).join("\n");
+    expect(allStored).toContain(largePng);
+    expect(allStored).toContain(collisionPng);
+    expect(allStored).not.toContain(secret);
+  });
+
+  it("blocks security bypasses: forged PNG header + secret, post-IEND secret, beforeTool arguments, details, non-transcript docs, and SVG", async () => {
+    const validPng = buildValidPngBase64({ payloadBytes: Buffer.from("1234+BSAAAAAAAAAAAAAAAAAAAAAA/AIzaBBBBBBBBBBBBBBBBBBBBBBAAAA", "base64") });
+    const knownSecrets = ["1234", secret];
+    const redactAll = (text: string) => redactSensitiveText(text, knownSecrets, { definiteOnly: true });
+    const isKnownSecret = (text: string) => knownSecrets.some((item) => text.includes(item));
+
+    const extension = createCredentialRedactionExtension(redactAll, { isKnownSecret });
+    const generation = extension.hooks![0]!.handlers as {
+      beforeRequest: (request: unknown) => { messages: unknown };
+      beforeProviderRequest: (request: unknown) => { payload: unknown };
+    };
+    const tools = extension.hooks![1]!.handlers as {
+      beforeTool: (call: unknown) => { arguments: unknown };
+      afterTool: (call: unknown, result: unknown) => Record<string, unknown>;
+    };
+
+    // 1. Forged 16-byte PNG header + plaintext secret (missing valid IEND) -> redacted in storage/afterTool, replaced in beforeRequest
+    const forgedPngBytes = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52]),
+      Buffer.from(` ${secret} `),
+    ]);
+    const forgedB64 = forgedPngBytes.toString("base64");
+    const forgedSecretPlaintext = `iVBORw0KGgoAAAANSUhEUg==${secret}`;
+    const afterForged = tools.afterTool({}, {
+      output: [{ type: "image", mimeType: "image/png", data: forgedSecretPlaintext }],
+      structuredOutput: { type: "image", mimeType: "image/png", data: forgedSecretPlaintext },
+    });
+    expect(JSON.stringify(afterForged)).not.toContain(secret);
+
+    const beforeReqForged = generation.beforeRequest({
+      messages: [
+        { role: "user", content: [{ type: "image", mimeType: "image/png", data: forgedB64 }] },
+        { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "image", mimeType: "image/png", data: forgedSecretPlaintext }] },
+      ],
+    }).messages as Array<{ content: Array<Record<string, unknown>> }>;
+    expect(beforeReqForged[0]!.content[0]).toEqual({ type: "text", text: "[图片数据不可用或已损坏，请重新读取]" });
+    expect(beforeReqForged[1]!.content[0]).toEqual({ type: "text", text: "[图片数据不可用或已损坏，请重新读取]" });
+
+    // 2. Valid PNG with secret appended AFTER IEND -> rejected & redacted
+    const pngWithTrailingSecret = Buffer.concat([Buffer.from(validPng, "base64"), Buffer.from(secret)]).toString("base64");
+    const beforeReqTrailing = generation.beforeRequest({
+      messages: [{ role: "user", content: [{ type: "image", mimeType: "image/png", data: pngWithTrailingSecret }] }],
+    }).messages as Array<{ content: Array<Record<string, unknown>> }>;
+    expect(beforeReqTrailing[0]!.content[0]).toEqual({ type: "text", text: "[图片数据不可用或已损坏，请重新读取]" });
+
+    // 3. ToolTask.beforeTool arguments smuggling with a VALID PNG -> NEVER exempted
+    const beforeToolOut = tools.beforeTool({
+      arguments: {
+        img: { type: "image", mimeType: "image/png", data: validPng },
+        url: `data:image/png;base64,${validPng}`,
+      },
+    });
+    expect(JSON.stringify(beforeToolOut.arguments)).not.toContain("+BSAAAAAAAAAAAAAAAAAAAAAA");
+    expect(JSON.stringify(beforeToolOut.arguments)).toContain("[已隐藏]");
+
+    // 4. ToolTask.afterTool details & nested/extra-key structuredOutput with a VALID PNG -> NEVER exempted
+    const afterToolSmuggled = tools.afterTool({}, {
+      output: [{ type: "text", text: "ok" }],
+      details: { img: { type: "image", mimeType: "image/png", data: validPng } },
+      structuredOutput: {
+        nested: { type: "image", mimeType: "image/png", data: validPng },
+        [secret]: "dynamic-key",
+      },
+    });
+    expect(JSON.stringify(afterToolSmuggled.details)).toContain("[已隐藏]");
+    expect(JSON.stringify(afterToolSmuggled.structuredOutput)).not.toContain(secret);
+    expect(JSON.stringify(afterToolSmuggled.structuredOutput)).toContain("[已隐藏]");
+
+    // 5. Wire assistant tool_use.input smuggling -> NEVER exempted
+    const wireSmuggled = generation.beforeProviderRequest({
+      payload: {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "tool_use", id: "t1", name: "bash", input: { type: "image", mimeType: "image/png", data: validPng } }],
+          },
+        ],
+      },
+    }).payload;
+    expect(JSON.stringify(wireSmuggled)).toContain("[已隐藏]");
+
+    // 6. Non-transcript document in wrapRedactedStorage -> NEVER exempted (throws documentLeak)
+    const harness = await open(wrapRedactedStorage(new MemoryStorage(), redactAll, { isKnownSecret }));
+    await harness.commit(async (tx) => { await tx.doc(NotesDoc); }, context);
+    await expect(harness.commit(async (tx) => {
+      (await tx.doc(NotesDoc)).notes = `data:image/png;base64,${validPng}`;
+    }, context)).rejects.toThrow("凭据不能写入普通状态记录");
+
+    // 7. SVG (image/svg+xml) -> NEVER exempted; redacted in storage/wire AND replaced in beforeRequest
+    const svgContent = `<svg xmlns="http://www.w3.org/2000/svg"><text>${secret}</text></svg>`;
+    const svgDataUrl = `data:image/svg+xml;base64,${Buffer.from(svgContent).toString("base64")}`;
+    const svgPlainPayload = redactCredentialData(
+      [{ role: "user", content: [{ type: "image", mimeType: "image/svg+xml", data: svgContent }] }],
+      redactAll,
+      { nativeContent: "messages", isKnownSecret },
+    );
+    expect(JSON.stringify(svgPlainPayload)).not.toContain(secret);
+    const svgWire = generation.beforeProviderRequest({
+      payload: { messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: `${svgDataUrl}${secret}` } }] }] },
+    }).payload;
+    expect(JSON.stringify(svgWire)).not.toContain(secret);
+    const svgBeforeReq = generation.beforeRequest({
+      messages: [{ role: "user", content: [{ type: "image", mimeType: "image/svg+xml", data: Buffer.from(svgContent).toString("base64") }] }],
+    }).messages as Array<{ content: Array<Record<string, unknown>> }>;
+    expect(svgBeforeReq[0]!.content[0]).toEqual({ type: "text", text: "[图片数据不可用或已损坏，请重新读取]" });
+  });
+
+  it("heals already-poisoned SQLite conversations in beforeRequest so corrupted image blocks never reach upstream models", async () => {
+    const stateDir = directory();
+    const dbFile = path.join(stateDir, "kulo.sqlite");
+    const provider = fauxProvider({ provider: "heal-fixture", models: [{ id: "vision-test", input: ["text", "image"] }] });
+    const models = createModels();
+    models.setProvider(provider.provider);
+
+    // Seed a legacy poisoned SQLite conversation like T-0055 (without redaction extension active yet)
+    const rawStorage = await openNodeSqliteStorage(dbFile);
+    const seedHarness = await Harness.open(rawStorage, { models, registry: createRegistry(), settings: { compaction: { enabled: false } } }, context);
+    const seedChat = await seedHarness.root(context, { agent: { model: { provider: "heal-fixture", modelId: "vision-test" } } });
+    await seedHarness.commit(async (tx) => {
+      await tx.appendEntry(UserEntry, ROOT_CONVERSATION_ID, {
+        data: { text: "old image turn" },
+        model: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "请看这张截图" },
+              { type: "image", mimeType: "image/png", data: "[消息过长，敏感内容已隐藏]" },
+            ],
+            timestamp: 1,
+          },
+          {
+            role: "assistant",
+            api: "openai-responses",
+            provider: "heal-fixture",
+            model: "vision-test",
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+            stopReason: "toolUse",
+            content: [
+              { type: "toolCall", id: "read-poisoned-1", name: "read", arguments: { path: "shot.png" } },
+            ],
+            timestamp: 2,
+          },
+          {
+            role: "toolResult",
+            toolCallId: "read-poisoned-1",
+            toolName: "read",
+            content: [
+              { type: "text", text: "Read image file [image/png]." },
+              { type: "image", mimeType: "image/png", data: "[消息过长，敏感内容已隐藏]" },
+            ],
+            isError: false,
+            timestamp: 3,
+          },
+        ],
+      });
+    }, context);
+    await seedHarness.close(context);
+
+    // Reopen with wrapRedactedStorage + createCredentialRedactionExtension and send a new turn
+    const redactAll = (text: string) => redactSensitiveText(text, [secret], { definiteOnly: true });
+    const extension = createCredentialRedactionExtension(redactAll);
+    const registry = createRegistry();
+    registry.install(extension);
+    const reopenedStorage = wrapRedactedStorage(await openNodeSqliteStorage(dbFile), redactAll);
+    const harness = await Harness.open(reopenedStorage, { models, registry, settings: { compaction: { enabled: false } } }, context);
+    cleanups.push(() => harness.close(context));
+    const chat = await harness.root(context);
+    await chat.configure({ model: { provider: "heal-fixture", modelId: "vision-test" }, extensions: [extension] }, context);
+
+    const seenMessages: unknown[] = [];
+    provider.setResponses([
+      (input: TranscriptContext) => {
+        seenMessages.push(input.messages);
+        return fauxAssistantMessage([fauxText("已恢复正常处理。")]);
+      },
+    ]);
+
+    const sub = await chat.submit({ type: "input", content: "继续分析" }, context);
+    const settled = await sub.wait(context);
+    await chat.waitForIdle(context);
+    expect(settled.status).toBe("done");
+    expect(seenMessages).toHaveLength(1);
+
+    const outgoingJson = JSON.stringify(seenMessages[0]);
+    expect(outgoingJson).not.toContain('"type":"image"');
+    expect(outgoingJson).not.toContain("image_url");
+    expect(outgoingJson).not.toContain("[消息过长，敏感内容已隐藏]");
+    expect(outgoingJson).toContain("[图片数据不可用或已损坏，请重新读取]");
+    expect(outgoingJson).toContain("请看这张截图");
+    expect(outgoingJson).toContain("Read image file [image/png].");
+    expect(seedChat.id).toBe(chat.id);
   });
 });

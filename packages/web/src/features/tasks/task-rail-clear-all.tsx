@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Button, Spinner, Tooltip } from "@heroui/react";
-import type { TicketCardView } from "@kulo/protocol";
+import type { TicketCardView, TopicSummary } from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { useI18n } from "../../kulo-i18n";
 import { KuloIcon } from "../../kulo-icon";
-import { isTaskUnfinished, visibleTaskCards } from "./task-model";
+import {
+  buildTopicTitleMap,
+  expandClearAllTicketIds,
+  groupVisibleTaskCards,
+  isTaskUnfinished,
+  visibleTaskCards,
+} from "./task-model";
 import { useTaskClock } from "./use-task-clock";
 
 export type ArchiveAllTicketsHandler = (ticketIds: readonly string[]) => Promise<void> | void;
@@ -28,12 +34,22 @@ export async function archiveTicketsBatch(
 export function buildClearAllDescription(
   tickets: readonly TicketCardView[],
   t: (zh: string, en: string) => string,
+  activeTopicId?: string,
 ): string {
+  const grouped = activeTopicId !== undefined ? groupVisibleTaskCards(tickets, activeTopicId) : undefined;
+  const topicBreakdown =
+    grouped && grouped.other.length > 0
+      ? t(
+          `含当前话题 ${grouped.current.length} 张、其他话题 ${grouped.other.length} 张`,
+          `including ${grouped.current.length} in current topic and ${grouped.other.length} in other topics`,
+        )
+      : undefined;
   const activeCount = tickets.filter(isTaskUnfinished).length;
   const pendingMergeCount = tickets.filter(
     (ticket) => ticket.status === "ready" && ticket.pendingWorkspaceApply,
   ).length;
   const parts = [
+    topicBreakdown,
     activeCount > 0
       ? t(
           `${activeCount} 项进行中任务将被停止`,
@@ -57,6 +73,7 @@ export function buildClearAllDescription(
 
 export interface TaskRailClearAllActionProps {
   tickets: readonly TicketCardView[];
+  activeTopicId?: string;
   completedTaskDisplayHours?: 1 | 3 | 6 | null;
   projectedTicketId?: string;
   canQueueActions?: boolean;
@@ -69,6 +86,7 @@ export interface TaskRailClearAllActionProps {
 
 export function TaskRailClearAllAction({
   tickets,
+  activeTopicId,
   completedTaskDisplayHours = 3,
   projectedTicketId,
   canQueueActions = true,
@@ -105,7 +123,7 @@ export function TaskRailClearAllAction({
     return null;
   }
 
-  const clearAllDescription = buildClearAllDescription(visibleTickets, t);
+  const clearAllDescription = buildClearAllDescription(visibleTickets, t, activeTopicId);
 
   return (
     <>
@@ -138,7 +156,7 @@ export function TaskRailClearAllAction({
         onCancel={() => setConfirmOpen(false)}
         onConfirm={() => {
           if (!onArchiveAll || !canQueueActions || clearingAll || visibleTickets.length === 0) return;
-          const ids = visibleTickets.map((ticket) => ticket.id);
+          const ids = expandClearAllTicketIds(tickets, visibleTickets);
           setConfirmOpen(false);
           onError?.(null);
           setClearingAll(true);
@@ -165,6 +183,8 @@ export function TaskRailClearAllAction({
 export interface TaskRailClearAllHostResult {
   headerAction: ReactNode;
   railProps: {
+    activeTopicId?: string;
+    topicTitles?: ReadonlyMap<string, string>;
     clearingAll: boolean;
     clearAllError: string | null;
     onClearAllError: () => void;
@@ -174,6 +194,9 @@ export interface TaskRailClearAllHostResult {
 
 export function useTaskRailClearAllHost({
   tickets,
+  activeTopicId,
+  topics,
+  mainChatTitle,
   completedTaskDisplayHours = 3,
   projectedTicketId,
   canQueueActions = true,
@@ -181,6 +204,9 @@ export function useTaskRailClearAllHost({
   onArchiveAll,
 }: {
   tickets: readonly TicketCardView[];
+  activeTopicId?: string;
+  topics?: readonly TopicSummary[];
+  mainChatTitle?: string;
   completedTaskDisplayHours?: 1 | 3 | 6 | null;
   projectedTicketId?: string;
   canQueueActions?: boolean;
@@ -192,6 +218,7 @@ export function useTaskRailClearAllHost({
   const [clearAllError, setClearAllError] = useState<string | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
+  const topicTitles = useMemo(() => buildTopicTitleMap(topics, mainChatTitle), [topics, mainChatTitle]);
   const clearError = useCallback(() => setClearAllError(null), []);
   const handleCleared = useCallback(() => {
     requestAnimationFrame(() => scrollContainerRef.current?.focus({ preventScroll: true }));
@@ -210,6 +237,7 @@ export function useTaskRailClearAllHost({
   const headerAction = (
     <TaskRailClearAllAction
       tickets={tickets}
+      activeTopicId={activeTopicId}
       completedTaskDisplayHours={completedTaskDisplayHours}
       projectedTicketId={projectedTicketId}
       canQueueActions={canQueueActions}
@@ -224,6 +252,8 @@ export function useTaskRailClearAllHost({
   return {
     headerAction,
     railProps: {
+      ...(activeTopicId !== undefined ? { activeTopicId } : {}),
+      ...(topicTitles ? { topicTitles } : {}),
       clearingAll,
       clearAllError,
       onClearAllError: clearError,

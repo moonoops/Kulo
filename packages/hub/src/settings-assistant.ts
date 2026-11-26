@@ -25,14 +25,8 @@ import { KuloStateDoc, isActiveRootConversation, isLegacyInternalUserEntry, isOr
 import { KuloUserEntry } from "./ui-cards.js";
 import { completedTopicTitle, createTopicTitleJob, parseTopicTitle, retryFailedTopicTitle, titleGenerationFailure } from "./topic-titles.js";
 import { SETTINGS_TITLE_INSTRUCTIONS, buildSettingsAssistantPrompt } from "./prompts.js";
-import {
-  SettingsAssistantDoc,
-  isActiveSettingsConversation,
-  isMainOrchestratorConversation,
-  isSettingsTopicDeleted,
-  parseSettingsTopicConversationId,
-  settingsTopicId,
-  type DeviceAssistantOperation,
+import { SETTINGS_ASSISTANT_MAX_TURNS } from "./run-health-policy.js";
+import { SettingsAssistantDoc, isActiveSettingsConversation, isMainOrchestratorConversation, isSettingsTopicDeleted, parseSettingsTopicConversationId, settingsTopicId, type DeviceAssistantOperation,
   type SettingsAssistantState,
   type SettingsSessionCommand as SessionCommand,
   type SettingsTitleJob,
@@ -890,7 +884,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
       extensions,
       ...(tools ? { tools: [...tools] } : {}),
       ...(this.#host.cwd ? { cwd: this.#host.cwd } : {}),
-      maxTurns: 25,
+      maxTurns: SETTINGS_ASSISTANT_MAX_TURNS,
     };
   }
 

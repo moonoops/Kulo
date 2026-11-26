@@ -18,7 +18,6 @@ import { kuloRest, resolveAssetUrl } from "./kulo-api";
 import { useKuloAppearance } from "./kulo-appearance";
 import { KuloIcon } from "./kulo-icon";
 import { AssetImageGallery, AssetPreview, resolveImageThumbUrl, type PreviewableImage } from "./features/chat/asset-preview";
-import { filePreviewKind, isOfficePreviewKind } from "./features/chat/file-preview-model";
 import { MediaMessage, formatMediaTime } from "./features/chat/media-message";
 import { composerEnterAction, insertComposerNewline, isMacComposerPlatform } from "./features/chat/composer-keyboard";
 import type { ComposerDeviceJoin } from "./features/chat/use-chat-device-join";
@@ -563,7 +562,7 @@ export function UserAttachmentList({ attachments, onPreviewImage }: { attachment
   useI18n();
   if (!attachments?.length) return null;
   const images = attachments.filter((asset) => asset.kind === "image");
-  return <div className="kulo-composer-legacy-attachments">{images.length > 0 && <AssetImageGallery assets={images} onPreviewImage={onPreviewImage} />}{attachments.filter((asset) => asset.kind !== "image").map((asset) => <MediaMessage key={asset.id} asset={asset} onPreviewImage={onPreviewImage} defaultExpanded={!isOfficePreviewKind(filePreviewKind(asset))} />)}</div>;
+  return <div className="kulo-composer-legacy-attachments">{images.length > 0 && <AssetImageGallery assets={images} onPreviewImage={onPreviewImage} />}{attachments.filter((asset) => asset.kind !== "image").map((asset) => <MediaMessage key={asset.id} asset={asset} onPreviewImage={onPreviewImage} defaultExpanded={false} compact />)}</div>;
 }
 
 export function AttachmentLightbox({ image, onClose }: { image: PreviewableImage | null; onClose: () => void }) {

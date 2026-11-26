@@ -27,11 +27,11 @@ const NEW_FILE_MAX_LINES = 900;
  * to permanently tighten the baseline (or delete the entry once <= 900 lines).
  */
 const LEGACY_FILE_LINE_CEILINGS: Record<string, number> = {
-  "packages/hub/src/hub.ts": 5649,
+  "packages/hub/src/hub.ts": 5640,
   "packages/protocol/src/android.ts": 3656,
-  "packages/env/src/bridge.ts": 2577,
-  "packages/hub/src/settings-assistant.ts": 2188,
-  "packages/web/src/App.tsx": 2018,
+  "packages/env/src/bridge.ts": 2571,
+  "packages/hub/src/settings-assistant.ts": 2182,
+  "packages/web/src/App.tsx": 2016,
   "packages/hub/src/providers.ts": 1937,
   "packages/hub/src/server.ts": 1846,
   "packages/hub/src/connectors/home-assistant.ts": 1810,
@@ -47,7 +47,6 @@ const LEGACY_FILE_LINE_CEILINGS: Record<string, number> = {
   "packages/hub/skills/diagram-design/scripts/check-diagram.mjs": 1064,
   "packages/web/src/features/settings/external-agent-connect-card.tsx": 1062,
   "packages/hub/src/identity-files.ts": 1004,
-  "packages/protocol/src/domain.ts": 1001,
   "packages/env/src/staged-workspace.ts": 1000,
   "packages/hub/src/hindsight-service.ts": 984,
   "packages/protocol/src/diagram-validator.ts": 983,

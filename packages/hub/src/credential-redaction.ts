@@ -7,7 +7,10 @@ import {
   CompactionTask, defineExtension, GenerationTask, hook, ToolTask,
   AssistantEntry, UserEntry, type DocumentId, type JsonObject, type Storage, type StorageWrite,
 } from "@earendil-works/pi-durable";
-import { inspectSensitiveText, mayContainDeviceInvitation, redactDeviceInvitationText, redactSensitiveText } from "@kulo/protocol";
+import {
+  inspectSensitiveText, isVerifiedImageBinaryPayload, isVerifiedImageContainerValue, isVisionImageMime,
+  mayContainDeviceInvitation, redactDeviceInvitationText, redactSensitiveText,
+} from "@kulo/protocol";
 import { invalidateDeviceInvitationSearchIndex } from "./conversation-history.js";
 import { CoordinatorEventEntry } from "./state.js";
 import { KuloUserEntry } from "./ui-cards.js";
@@ -24,6 +27,59 @@ const SETTINGS_SECRET_FIELD = /^(?:apiKey|routerApiKey|workerApiKey|sharedReadAp
 const SEALED_PREFIX = "kulo-secret:";
 const PAYLOAD_FIELDS = new Set(["payload", "data", "structuredOutput", "details", "kuloNativeContent"]);
 const DYNAMIC_KEY_FIELDS = new Set(["payload", "structuredOutput", "details"]);
+const CORRUPT_IMAGE_PLACEHOLDER_TEXT = "[图片数据不可用或已损坏，请重新读取]";
+
+function isTopLevelReadImageBlock(value: unknown): value is { type: "image"; mimeType: string; data: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return false;
+  const record = value as Record<string, unknown>;
+  if (record.type !== "image") return false;
+  const keys = Object.keys(record);
+  if (keys.length !== 3) return false;
+  if (!keys.every((k) => k === "type" || k === "mimeType" || k === "data")) return false;
+  return isVerifiedImageContainerValue(record, "data", record.data);
+}
+
+function isVerifiedImageMimeTag(parent: unknown, key: string | undefined, value: string): boolean {
+  if (!parent || typeof parent !== "object" || Array.isArray(parent)) return false;
+  const record = parent as Record<string, unknown>;
+  if (key === "mimeType" || key === "mime_type" || key === "media_type") {
+    return isVisionImageMime(value) && isVerifiedImageContainerValue(record, "data", record.data);
+  }
+  if (key === "format") {
+    return record.type === "image" && isVerifiedImageContainerValue(record, "data_base64", record.data_base64);
+  }
+  return false;
+}
+
+function sanitizeCorruptImagesInMessages<T>(messages: T): T {
+  if (!Array.isArray(messages)) return messages;
+  let changed = false;
+  const nextMessages = messages.map((message) => {
+    if (!message || typeof message !== "object") return message;
+    const record = message as Record<string, unknown>;
+    if ((record.role !== "user" && record.role !== "toolResult") || !Array.isArray(record.content)) {
+      return message;
+    }
+    let contentChanged = false;
+    const nextContent = record.content.map((block) => {
+      if (!block || typeof block !== "object") return block;
+      const part = block as Record<string, unknown>;
+      if (part.type !== "image") return block;
+      const mime = part.mimeType ?? part.mime_type;
+      if (typeof mime === "string" && isVerifiedImageBinaryPayload(part.data, mime)) {
+        return block;
+      }
+      contentChanged = true;
+      return { type: "text", text: CORRUPT_IMAGE_PLACEHOLDER_TEXT };
+    });
+    if (!contentChanged) return message;
+    changed = true;
+    return { ...record, content: nextContent };
+  });
+  return (changed ? nextMessages : messages) as T;
+}
 
 export interface CredentialSealingOptions {
   /** Exact known credentials (including their stored encodings), without prose-pattern heuristics. */
@@ -85,7 +141,7 @@ class SettingsSecretSealer {
 /** Preserve protocol identities while filtering free text and explicitly named secret fields. */
 export function redactCredentialData<T>(value: T, redact: (text: string) => string, options: {
   preserveSealedReferences?: boolean;
-  nativeContent?: "records" | "messages" | "wire" | "live";
+  nativeContent?: "records" | "messages" | "wire" | "live" | "toolResult";
   isKnownSecret?: (text: string) => boolean;
 } = {}): T {
   const seen = new WeakMap<object, unknown>();
@@ -125,14 +181,30 @@ export function redactCredentialData<T>(value: T, redact: (text: string) => stri
     };
     records(value);
   }
-  const visit = (input: unknown, field?: string, referenceMap = false, payload = false, dynamicKeys = false, currentPath: Array<string | number> = []): unknown => {
+  const mode = options.nativeContent;
+  const visit = (
+    input: unknown,
+    field?: string,
+    referenceMap = false,
+    payload = false,
+    dynamicKeys = false,
+    currentPath: Array<string | number> = [],
+    imageChannel = mode === "wire",
+    blockedImageSubtree = false,
+    parentObj?: unknown,
+    inArray = false,
+  ): unknown => {
     if (typeof input === "string") {
       if (opaqueFields.get(JSON.stringify(currentPath)) === input) return input;
+      if (imageChannel && !dynamicKeys && !blockedImageSubtree) {
+        if (isVerifiedImageContainerValue(parentObj, field, input)) return input;
+        if (isVerifiedImageMimeTag(parentObj, field, input)) return input;
+      }
       if (options.preserveSealedReferences && field && SETTINGS_SECRET_FIELD.test(field) && /^kulo-secret:durable-secret:[a-f0-9-]{36}$/.test(input)) return input;
       // Memory setup indexes secret fields by opaque store handles; those handles are not credential values.
       if (referenceMap && /^(?:memory-service|media|connection|durable-secret):[a-zA-Z0-9._:-]+$/.test(input)) return redact(input);
       if (field && SECRET_FIELD.test(field)) return input ? REDACTED : input;
-      if (!payload && field && STRUCTURAL_FIELDS.has(field)) return input;
+      if (!payload && field && STRUCTURAL_FIELDS.has(field) && !(mode === "wire" && field === "state")) return input;
       return redact(input);
     }
     if (input === null || typeof input !== "object") return input;
@@ -142,19 +214,108 @@ export function redactCredentialData<T>(value: T, redact: (text: string) => stri
     if (Array.isArray(input)) {
       const result: unknown[] = [];
       seen.set(input, result);
-      for (const [index, item] of input.entries()) result.push(visit(item, field, referenceMap, payload, dynamicKeys, [...currentPath, index]));
+      const itemField = field === "images" && inArray ? undefined : field;
+      for (const [index, item] of input.entries()) {
+        result.push(visit(
+          item,
+          itemField,
+          referenceMap,
+          payload,
+          dynamicKeys,
+          [...currentPath, index],
+          imageChannel,
+          blockedImageSubtree,
+          input,
+          true,
+        ));
+      }
       return result;
     }
     const prototype = Object.getPrototypeOf(input);
     if (prototype !== Object.prototype && prototype !== null) return input;
     const result: Record<string, unknown> = Object.create(prototype) as Record<string, unknown>;
     seen.set(input, result);
+    const obj = input as Record<string, unknown>;
+    const isNonTranscriptDocEnvelope =
+      mode === "records" &&
+      !payload &&
+      !dynamicKeys &&
+      Boolean(obj.record && typeof obj.record === "object" && !Array.isArray(obj.record)) &&
+      !isTranscriptDocument((obj.record as Record<string, unknown>).kind as string | undefined);
+    const isNestedCallResult =
+      mode === "records" &&
+      !payload &&
+      !dynamicKeys &&
+      !blockedImageSubtree &&
+      typeof obj.taskId === "number" &&
+      typeof obj.isError === "boolean";
+    const isReadStructuredOutputHost =
+      (mode === "toolResult" && currentPath.length === 0) || isNestedCallResult;
+
     for (const [key, item] of Object.entries(input)) {
+      if (key === "structuredOutput" && isReadStructuredOutputHost && isTopLevelReadImageBlock(item)) {
+        Object.defineProperty(result, key, {
+          value: { type: "image", mimeType: item.mimeType, data: item.data },
+          enumerable: true, writable: true, configurable: true,
+        });
+        continue;
+      }
       let nextKey = dynamicKeys ? redact(key) : key;
       let suffix = 1;
       while (Object.hasOwn(result, nextKey)) nextKey = `${REDACTED}:${suffix++}`;
+
+      const nextPayload = payload || PAYLOAD_FIELDS.has(key);
+      const nextDynamicKeys = dynamicKeys || DYNAMIC_KEY_FIELDS.has(key);
+      const blocksImagesHere =
+        blockedImageSubtree ||
+        nextDynamicKeys ||
+        key === "arguments" ||
+        (isNonTranscriptDocEnvelope && key === "value") ||
+        (mode === "wire" && (
+          key === "function" ||
+          (key === "input" && obj.type === "tool_use") ||
+          (key === "args" && typeof obj.name === "string") ||
+          obj.role === "assistant" ||
+          obj.role === "model"
+        ));
+
+      let nextImageChannel = false;
+      if (!blocksImagesHere) {
+        if (mode === "wire") {
+          nextImageChannel = imageChannel;
+        } else if (mode === "messages") {
+          nextImageChannel =
+            imageChannel ||
+            (!payload && key === "content" && (obj.role === "user" || obj.role === "toolResult"));
+        } else if (mode === "toolResult") {
+          nextImageChannel =
+            imageChannel ||
+            (currentPath.length === 0 && key === "output" && Array.isArray(item));
+        } else if (mode === "records") {
+          nextImageChannel =
+            imageChannel ||
+            (!payload && key === "content" && (
+              obj.role === "user" ||
+              obj.role === "toolResult" ||
+              obj.mode === "steer" ||
+              obj.mode === "followUp"
+            ));
+        }
+      }
+
       Object.defineProperty(result, nextKey, {
-        value: visit(item, key, field === "credentialRefs", payload || PAYLOAD_FIELDS.has(key), dynamicKeys || DYNAMIC_KEY_FIELDS.has(key), [...currentPath, key]),
+        value: visit(
+          item,
+          key,
+          field === "credentialRefs",
+          nextPayload,
+          nextDynamicKeys,
+          [...currentPath, key],
+          nextImageChannel,
+          blocksImagesHere,
+          input,
+          false,
+        ),
         enumerable: true, writable: true, configurable: true,
       });
     }
@@ -309,12 +470,17 @@ export function createCredentialRedactionExtension(
     name: "kulo-credential-redaction",
     hooks: [
       hook(GenerationTask, {
-        beforeRequest: (request) => ({ messages: redactCredentialData(request.messages, redact, { nativeContent: "messages", isKnownSecret: options.isKnownSecret }) }),
+        beforeRequest: (request) => ({
+          messages: redactCredentialData(sanitizeCorruptImagesInMessages(request.messages), redact, {
+            nativeContent: "messages",
+            isKnownSecret: options.isKnownSecret,
+          }),
+        }),
         beforeProviderRequest: (request) => ({ payload: redactCredentialData(request.payload, redact, { nativeContent: "wire", isKnownSecret: options.isKnownSecret }) }),
       }),
       hook(ToolTask, {
         beforeTool: (call) => ({ arguments: redactCredentialData(call.arguments, redact) as unknown as JsonObject }),
-        afterTool: (_call, result) => redactCredentialData(result, redact),
+        afterTool: (_call, result) => redactCredentialData(result, redact, { nativeContent: "toolResult", isKnownSecret: options.isKnownSecret }),
       }),
       hook(CompactionTask, {
         beforeCompact: (input, api) => {
@@ -359,11 +525,13 @@ async function prepareRevisionCleanup(database: DatabaseSync, redact: (text: str
   const read = database.prepare("SELECT seq, kind, version, content FROM document_revisions WHERE document_id = ? ORDER BY seq");
   const settingsIds = new Set<number>();
   const liveIds = new Set<number>();
+  const transcriptIds = new Set<number>();
   if (database.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'documents'").get()) {
     for (const row of database.prepare("SELECT id, record FROM documents").all() as Array<{ id: number; record: string }>) {
       const kind = (JSON.parse(row.record) as { kind?: string }).kind;
       if (sealer && kind === "kulo.settings") settingsIds.add(row.id);
       if (kind === "pi.live") liveIds.add(row.id);
+      else if (isTranscriptDocument(kind)) transcriptIds.add(row.id);
     }
     if (sealer) {
       // Discover every historical settings credential first so earlier prose/entries can be filtered by exact value.
@@ -394,7 +562,11 @@ async function prepareRevisionCleanup(database: DatabaseSync, redact: (text: str
       const sealed = sealer && settingsIds.has(id) ? await sealer.seal(value) : value;
       const next = JSON.stringify(redactCredentialData(sealed, redact, {
         preserveSealedReferences: Boolean(sealer),
-        ...(liveIds.has(id) ? { nativeContent: "live" as const, isKnownSecret: options.isKnownSecret } : {}),
+        ...(liveIds.has(id)
+          ? { nativeContent: "live" as const, isKnownSecret: options.isKnownSecret }
+          : transcriptIds.has(id)
+            ? { nativeContent: "records" as const, isKnownSecret: options.isKnownSecret }
+            : {}),
       }));
       if (next !== JSON.stringify(parsed) || revision.kind !== "base") {
         if (next !== JSON.stringify(value) || settingsIds.has(id)) dirty = true;

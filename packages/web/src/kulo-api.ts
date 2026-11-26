@@ -429,10 +429,10 @@ export const kuloRest = {
     if (path) query.set("path", path);
     return apiRequest<ProjectDirectoryListing>(`/api/projects/directories?${query}`, { signal });
   },
-  createTopic: (title?: string, projectId?: string) =>
+  createTopic: (title?: string, projectId?: string, options?: { draft?: boolean }) =>
     apiRequest<TopicSummary>("/api/topics", {
       method: "POST",
-      body: { ...(title ? { title } : {}), ...(projectId ? { projectId } : {}) },
+      body: { ...(title ? { title } : {}), ...(projectId ? { projectId } : {}), ...(options?.draft !== undefined ? { draft: options.draft } : {}) },
     }),
   patchTopic: (
     topicId: string,

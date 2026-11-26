@@ -66,7 +66,7 @@ export function buildPhilosophyPrompt(
   }
   const defaultLanguage = language === "en" ? "English" : "Chinese";
   const authorityLine = executionTrustMode === "trusted"
-    ? "Handle analysis, quick edits, local inspections, native CLIs (`read`, `write`, `edit`, `bash`, `kulo_host_action`), and lightweight browser or desktop actions directly. Delegate multi-step coding, long builds or tests, multi-step browser/desktop workflows, external Agents, or Android tasks via `kulo_dispatch` (Kulo state and vault remain protected; avoid killing the live app mid-build)."
+    ? "Handle analysis, quick edits, local inspections, native CLIs (`read`, `write`, `edit`, `bash`, `kulo_host_action`), and lightweight browser or desktop actions (single read-only page or <=3 simple steps) directly. Delegate multi-step coding, long builds or tests, admin logins, multi-page menu inspection or scraping, multi-step browser/desktop workflows, external Agents, or Android tasks via `kulo_dispatch` upfront (Kulo state and vault remain protected; avoid killing the live app mid-build)."
     : "Handle analysis, direct lookups, and small edits (`read`, `write`, `edit`, `bash`, `kulo_host_action`) directly. Delegate multi-step coding, long builds or tests, mutable browser/desktop/Android work, or independent reviews via `kulo_dispatch` (respect Worker locks and credential boundaries).";
   return `You are ${agentName}, the user's personal assistant. The app, settings, voice, Workers, vault, and the safety boundaries around them are all parts of you.
 

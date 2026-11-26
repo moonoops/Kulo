@@ -7,6 +7,12 @@ import {
   resolveRoleOrDirectClient,
 } from "./agent-routing.js";
 import type { chatRoutingData } from "./chat-submissions.js";
+import {
+  evaluateBrowserSessionTransferEligibility,
+  hasImmediateWorkerSlotForNewTicket,
+  type BrowserSessionInheritRejectReason,
+  type OrchestratorBrowserTransferCandidate,
+} from "./computer-session-transfer.js";
 import { inferDispatchWorkspace } from "./dispatch-workspace-infer.js";
 import { canSwitchEnvDuringRecovery } from "./env-routing-policy.js";
 import { assertExternalAgentScope } from "./external-agent-tools.js";
@@ -101,6 +107,17 @@ export function bindDispatchedAttachments(uploads: KuloUploadStore, ticket: Read
   uploads.bindAttachments(ticket.inputAttachmentIds, `ticket:${ticket.id}`);
 }
 
+export interface AdmitDispatchOutcome {
+  ticket: TicketRecord;
+  pendingBrowserTransfer?: {
+    topicId: string;
+    envId: string;
+    sessionId: string;
+  };
+  browserSessionInherited?: boolean;
+  browserSessionInheritReason?: BrowserSessionInheritRejectReason;
+}
+
 export async function admitDispatchInTx(
   tx: Tx,
   input: {
@@ -134,13 +151,18 @@ export async function admitDispatchInTx(
     /** Absolute paths the coordinator inspected on the target Env this turn (pure data, used for read-only inference). */
     inferredReadPaths?: readonly string[];
     isRemoteDedicatedRoot?: boolean;
+    browserTransferRequest?: {
+      requested: boolean;
+      candidate?: OrchestratorBrowserTransferCandidate;
+      hasSameTurnBrowserCall: boolean;
+    };
   },
-): Promise<TicketRecord> {
+): Promise<AdmitDispatchOutcome> {
   const {
     params, originConversationId, originIsSettings, modelDispatch, dispatchSource, sender, recoveryGuard,
     executeAt, contextSummary, inputAttachmentIds, connectionIds, connectionRevisions, project, domain, plan, workspace,
     defaultAgentName, inlineDispatchWaitMs, liveRoles, liveMaxSubagentsPerTicket, listEnvs, getEnvDescriptor, redact,
-    prepareWorkerEnv, workerTicketTask, workerAgentConfig, supersededStagedToDiscard,
+    prepareWorkerEnv, workerTicketTask, workerAgentConfig, supersededStagedToDiscard, browserTransferRequest,
   } = input;
   const { executionDomain, androidDeviceIds } = domain;
   const { routingEnv, routing, roleId, rolePreset, externalBinding, targetEnvId, envBinding, waitForSource, agentEnv } = plan;
@@ -168,7 +190,13 @@ export async function admitDispatchInTx(
     externalClients: settings.externalClients,
     language: settings.presentation.language,
   });
-  if (duplicate) return cloneJson(duplicate);
+  if (duplicate) {
+    const cloned = cloneJson(duplicate);
+    return {
+      ticket: cloned,
+      ...(browserTransferRequest?.requested ? { browserSessionInherited: Boolean(cloned.inheritedBrowserSession) } : {}),
+    };
+  }
   const currentRoles = settings.roles;
   const currentExternalClients = settings.externalClients;
   const currentSelection = androidDeviceIds.length || executionDomain === "android"
@@ -282,6 +310,47 @@ export async function admitDispatchInTx(
           (!supersededIds.includes(other.id) && hasPendingWorkspaceApply(other))) &&
         ticketsShareWriteScope(candidateWriteTicket, other),
     );
+  const transferWriteConflict =
+    writeConflictExists ||
+    (executionDomain !== "android" &&
+      !isReadOnly &&
+      Object.values(state.tickets).some(
+        (other) =>
+          (other.cleanupPending ||
+            (other.status === "queued" && !other.readOnly && (!other.waiting || other.waiting.reason === "project"))) &&
+          ticketsShareWriteScope(candidateWriteTicket, other),
+      ));
+  const queuedRunnableAheadCount = Object.values(state.tickets).filter(
+    (other) =>
+      other.status === "queued" &&
+      !other.cleanupPending &&
+      (!other.waiting || other.waiting.reason === "project") &&
+      !state.slots.holders.includes(other.id) &&
+      areTicketDevicesOnline(other, getEnvDescriptor),
+  ).length;
+  const hasImmediateWorkerSlot = hasImmediateWorkerSlotForNewTicket({
+    paused: settings.executor.paused,
+    maxConcurrentWorkers: settings.executor.maxConcurrentWorkers,
+    activeHolders: state.slots.holders,
+    queuedRunnableAheadCount,
+    writeConflictExists: transferWriteConflict,
+    targetDevicesOnline: areTicketDevicesOnline(candidateWriteTicket, getEnvDescriptor),
+  });
+  const browserTransferDecision = browserTransferRequest?.requested
+    ? evaluateBrowserSessionTransferEligibility({
+        requested: true,
+        isOrchestratorCaller: isOrchestratorConversation(originConversationId, state) && !isSettingsOrigin && !params.parentTicketId,
+        executionDomain,
+        isExternalAgent: Boolean(externalBinding),
+        isScheduled: executeAt !== undefined,
+        workerEffectiveMode: workspace.effectiveExecutionMode,
+        isReadOnly,
+        targetEnvId,
+        candidate: browserTransferRequest.candidate,
+        hasSameTurnBrowserCall: browserTransferRequest.hasSameTurnBrowserCall,
+        hasImmediateWorkerSlot,
+      })
+    : undefined;
   const eligibleInline =
     modelDispatch &&
     !externalBinding &&
@@ -352,6 +421,15 @@ export async function admitDispatchInTx(
     status: executeAt === undefined ? "queued" : "waiting",
     envId: targetEnvId,
     envBinding,
+    ...(browserTransferDecision?.eligible
+      ? {
+          deviceStateTouched: true,
+          inheritedBrowserSession: {
+            envId: browserTransferDecision.candidate.envId,
+            sessionId: browserTransferDecision.candidate.sessionId,
+          },
+        }
+      : {}),
     ...(sender.source ? { senderSource: { deviceId: sender.source.deviceId, name: sender.source.name } } : {}),
     executionDomain,
     ...(androidDeviceIds.length ? { androidDeviceIds } : {}),
@@ -420,8 +498,31 @@ export async function admitDispatchInTx(
     runEpoch: created.runEpoch,
     mode: workspace.effectiveExecutionMode,
   };
+  if (browserTransferDecision?.eligible) {
+    const topic = state.topics?.[originTopicId];
+    if (topic) {
+      topic.browserSessionEpoch = (topic.browserSessionEpoch ?? 1) + 1;
+    }
+  }
   if (connectionIds.length > 0 && created.workerConversationId && executionDomain !== "android") {
     await injectEventToolsInTx(tx, created.workerConversationId, ["kulo_connections", "kulo_connection_use"]);
   }
-  return created;
+  return {
+    ticket: created,
+    ...(browserTransferDecision?.eligible
+      ? {
+          pendingBrowserTransfer: {
+            topicId: originTopicId,
+            envId: browserTransferDecision.candidate.envId,
+            sessionId: browserTransferDecision.candidate.sessionId,
+          },
+          browserSessionInherited: true,
+        }
+      : browserTransferDecision
+        ? {
+            browserSessionInherited: false,
+            browserSessionInheritReason: browserTransferDecision.reason,
+          }
+        : {}),
+  };
 }

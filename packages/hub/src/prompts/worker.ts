@@ -10,6 +10,7 @@ import {
   type TicketRecord,
 } from "@kulo/protocol";
 import { section } from "@earendil-works/pi-durable";
+import { formatInheritedBrowserSessionNote } from "../computer-session-transfer.js";
 import { KuloProjectsDoc } from "../projects.js";
 import { KuloStateDoc, getActiveStagedCwd, resolveTicketExecutionScope } from "../state.js";
 import { budgetExternalContextSections, escapeXmlContent, fitSectionBudget } from "./external-agent.js";
@@ -618,6 +619,10 @@ export function formatWorkerInitialPrompt(
   }
   if (extra?.followUp?.trim()) {
     parts.push(`<follow_up>\n${escapeXmlContent(extra.followUp.trim())}\n</follow_up>`);
+  }
+  const inheritedBrowserNote = formatInheritedBrowserSessionNote(ticket.inheritedBrowserSession);
+  if (inheritedBrowserNote) {
+    parts.push(inheritedBrowserNote);
   }
   parts.push(
     ticket.externalExecution

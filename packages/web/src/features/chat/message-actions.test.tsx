@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MessageActions, messageQuote } from "./message-actions";
+import { extractValidMessageSelection, MessageActions, messageQuote } from "./message-actions";
 import { CodeBlock } from "./code-block";
 import { ConnectedMessageContent } from "./connected-message-content";
 import { messageReply } from "./reply-reference";
@@ -12,7 +12,7 @@ vi.mock("../voice/voice-context", async (importOriginal) => ({
   ...await importOriginal<typeof import("../voice/voice-context")>(),
   useVoiceWorkspace: () => voiceState.current,
 }));
-afterEach(() => { vi.useRealTimers(); voiceState.current = null; });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); voiceState.current = null; });
 
 describe("message footer action sizing", () => {
   function actionButtons(html: string) {
@@ -136,5 +136,184 @@ describe("excerpt and code block quoting (#7)", () => {
 
     const excerptReply = messageReply(item, "正文片段", { excerpt: true });
     expect(excerptReply).toEqual({ messageId: 15, role: "assistant", text: "正文片段", excerpt: true });
+  });
+});
+
+describe("selection quote bar positioning", () => {
+  type RectLike = { top: number; bottom: number; left: number; right: number; width: number; height: number };
+  interface MockNode {
+    nodeType: number;
+    isConnected: boolean;
+    parentElement: MockNode | null;
+    contains(target: unknown): boolean;
+    closest(selector: string): MockNode | null;
+    getBoundingClientRect(): RectLike;
+    __classes: Set<string>;
+    __overflow: string;
+  }
+  function rect(left: number, top: number, width: number, height: number): RectLike {
+    return { left, top, right: left + width, bottom: top + height, width, height };
+  }
+
+  function mockNode(options: {
+    classes?: string[];
+    parent?: MockNode | null;
+    clipRect?: RectLike;
+    overflow?: string;
+    connected?: boolean;
+  } = {}): MockNode {
+    const classSet = new Set(options.classes ?? []);
+    const node: MockNode = {
+      nodeType: 1,
+      isConnected: options.connected ?? true,
+      parentElement: options.parent ?? null,
+      contains(target: unknown): boolean {
+        let cur: { parentElement?: unknown } | null = target as { parentElement?: unknown } | null;
+        while (cur) {
+          if (cur === node) return true;
+          cur = (cur.parentElement as { parentElement?: unknown } | null) ?? null;
+        }
+        return false;
+      },
+      closest(selector: string): MockNode | null {
+        const parts = selector.split(",").map((s) => s.trim());
+        let cur: MockNode | null = node;
+        while (cur) {
+          for (const part of parts) {
+            if (part.startsWith(".") && cur.__classes.has(part.slice(1))) return cur;
+          }
+          cur = cur.parentElement;
+        }
+        return null;
+      },
+      getBoundingClientRect: () => options.clipRect ?? rect(0, 0, 0, 0),
+      __classes: classSet,
+      __overflow: options.overflow ?? "visible",
+    };
+    return node;
+  }
+
+  function stubSelection(options: {
+    text: string;
+    anchorNode: MockNode;
+    focusNode?: MockNode;
+    clientRects?: RectLike[];
+    boundingRect?: RectLike;
+    innerWidth?: number;
+    innerHeight?: number;
+  }) {
+    const focus = options.focusNode ?? options.anchorNode;
+    const range = {
+      commonAncestorContainer: options.anchorNode,
+      startContainer: options.anchorNode,
+      endContainer: focus,
+      cloneContents: () => ({ querySelector: () => null }),
+      getClientRects: () => options.clientRects ?? [],
+      getBoundingClientRect: () => options.boundingRect ?? rect(0, 0, 0, 0),
+    };
+    vi.stubGlobal("Node", { ELEMENT_NODE: 1 });
+    vi.stubGlobal("window", {
+      innerWidth: options.innerWidth ?? 1280,
+      innerHeight: options.innerHeight ?? 800,
+      getSelection: () => ({
+        isCollapsed: false,
+        rangeCount: 1,
+        anchorNode: options.anchorNode,
+        focusNode: focus,
+        getRangeAt: () => range,
+        toString: () => options.text,
+      }),
+      getComputedStyle: (el: { __overflow?: string }) => ({
+        overflow: el.__overflow ?? "visible",
+        overflowX: el.__overflow ?? "visible",
+        overflowY: el.__overflow ?? "visible",
+      }),
+    });
+  }
+
+  it("anchors above the top-most visible line's client rects and flips below near the top edge", () => {
+    const root = mockNode({ classes: ["kulo-message-with-actions"] });
+    const textLayer = mockNode({ classes: ["kulo-pdf-text-layer"], parent: root });
+
+    // Multi-line selection where line 1 is on the left (100..260) and line 2 spans further right (100..520)
+    stubSelection({
+      text: "DA600 系列产品介绍",
+      anchorNode: textLayer,
+      clientRects: [rect(100, 200, 160, 20), rect(100, 224, 420, 20)],
+      boundingRect: rect(100, 200, 420, 44),
+    });
+    expect(extractValidMessageSelection(root as unknown as HTMLElement)).toEqual({
+      text: "DA600 系列产品介绍",
+      left: 180,
+      top: 192,
+      placement: "above",
+    });
+
+    // Near the top edge of viewport (< 48px), flips below the selected text
+    stubSelection({
+      text: "顶部首行",
+      anchorNode: textLayer,
+      clientRects: [rect(120, 20, 100, 18)],
+      boundingRect: rect(120, 20, 100, 18),
+    });
+    expect(extractValidMessageSelection(root as unknown as HTMLElement)).toEqual({
+      text: "顶部首行",
+      left: 170,
+      top: 46,
+      placement: "below",
+    });
+  });
+
+  it("clips against scroll ancestors and suppresses off-screen selections", () => {
+    const root = mockNode({ classes: ["kulo-message-with-actions"] });
+    const scroller = mockNode({
+      classes: ["kulo-artifact-live-preview"],
+      parent: root,
+      overflow: "auto",
+      clipRect: rect(40, 140, 500, 400),
+    });
+    const textLayer = mockNode({ classes: ["kulo-pdf-text-layer"], parent: scroller });
+
+    // Completely scrolled above the preview box
+    stubSelection({
+      text: "不可见行",
+      anchorNode: textLayer,
+      clientRects: [rect(80, 90, 200, 20)],
+      boundingRect: rect(80, 90, 200, 20),
+    });
+    expect(extractValidMessageSelection(root as unknown as HTMLElement)).toBeNull();
+
+    // Partially clipped horizontally on the right edge of the scroll container
+    stubSelection({
+      text: "横向可见部分",
+      anchorNode: textLayer,
+      clientRects: [rect(440, 220, 200, 20)],
+      boundingRect: rect(440, 220, 200, 20),
+    });
+    expect(extractValidMessageSelection(root as unknown as HTMLElement)).toEqual({
+      text: "横向可见部分",
+      left: 490,
+      top: 212,
+      placement: "above",
+    });
+  });
+
+  it.each([
+    "kulo-artifact-header",
+    "kulo-artifact-compact-row",
+    "kulo-artifact-collapsed",
+    "kulo-pdf-toolbar",
+    "kulo-pptx-toolbar",
+    "kulo-xlsx-bar",
+  ])("ignores selections inside file preview chrome .%s", (chromeClass) => {
+    const root = mockNode({ classes: ["kulo-message-with-actions"] });
+    const chrome = mockNode({ classes: [chromeClass], parent: root });
+    stubSelection({
+      text: "第 1 页 / 共 16 页",
+      anchorNode: chrome,
+      clientRects: [rect(100, 100, 120, 20)],
+      boundingRect: rect(100, 100, 120, 20),
+    });
+    expect(extractValidMessageSelection(root as unknown as HTMLElement)).toBeNull();
   });
 });
