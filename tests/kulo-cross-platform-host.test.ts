@@ -606,4 +606,28 @@ describe("Desktop shell cross-platform helpers, Attach Mode & packaging", () => 
     const host = renderLinuxRuntimeHostWrapper();
     expect(host).toContain("headless-host.js");
   });
+
+  it("keeps NSIS installer free of fragile relative jumps and keeps Windows .exe out of public release uploads", () => {
+    const nsi = fs.readFileSync(
+      fileURLToPath(new URL("../packages/desktop/scripts/nsis/installer.nsi", import.meta.url)),
+      "utf8",
+    );
+    expect(nsi).toContain('!include "LogicLib.nsh"');
+    expect(nsi).toContain("ManifestLongPathAware true");
+    expect(nsi).toContain("ReserveFile /plugin nsExec.dll");
+    expect(nsi).not.toMatch(/\bIfFileExists\b[^\n]*\s[+-]\d+/);
+    expect(nsi).not.toMatch(/\bGoto\s+[+-]\d+/);
+    const execCount = (nsi.match(/nsExec::ExecToLog/g) ?? []).length;
+    const popCount = (nsi.match(/\bPop \$0\b/g) ?? []).length;
+    expect(execCount).toBeGreaterThanOrEqual(2);
+    expect(popCount).toBeGreaterThanOrEqual(execCount);
+    expect(nsi.indexOf('SetOutPath "$INSTDIR"')).toBeLessThan(nsi.indexOf('File /r "${SOURCE_DIR}\\*.*"'));
+
+    const workflow = fs.readFileSync(
+      fileURLToPath(new URL("../.github/workflows/release.yml", import.meta.url)),
+      "utf8",
+    );
+    expect(workflow).not.toMatch(/dist\/desktop\/\*?-Setup-\*\.exe[^\n]*\n\s*cp -f "\$f" dist\/release-upload\//);
+    expect(workflow).toContain("build-windows-preview:");
+  });
 });

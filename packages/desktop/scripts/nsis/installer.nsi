@@ -2,6 +2,7 @@
 Unicode true
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
+!include "LogicLib.nsh"
 
 !ifndef APP_NAME
   !define APP_NAME "Kulo"
@@ -25,9 +26,12 @@ Unicode true
 Name "${APP_NAME} ${APP_VERSION}"
 OutFile "${OUTPUT_FILE}"
 RequestExecutionLevel user
+ManifestDPIAware true
+ManifestLongPathAware true
 InstallDir "$LOCALAPPDATA\Programs\${APP_NAME}"
 InstallDirRegKey HKCU "Software\${APP_ID}" "InstallDir"
-SetCompressor /SOLID lzma
+SetCompressor lzma
+ReserveFile /plugin nsExec.dll
 
 !define MUI_ICON "${ICON_FILE}"
 !define MUI_UNICON "${ICON_FILE}"
@@ -47,12 +51,27 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_LANGUAGE "English"
 
 Section "Install"
-  ; Gracefully ask any running instance to quit before replacing files.
-  IfFileExists "$INSTDIR\${APP_NAME}.exe" 0 +4
+  ; Gracefully ask any running instance to quit and wait until file locks clear.
+  ${If} ${FileExists} "$INSTDIR\${APP_NAME}.exe"
     nsExec::ExecToLog '"$INSTDIR\${APP_NAME}.exe" --kulo-quit'
-    Sleep 1500
+    Pop $0
+    StrCpy $1 0
+    ${DoWhile} $1 < 20
+      ClearErrors
+      FileOpen $2 "$INSTDIR\${APP_NAME}.exe" a
+      ${IfNot} ${Errors}
+        FileClose $2
+        ${ExitDo}
+      ${EndIf}
+      Sleep 500
+      IntOp $1 $1 + 1
+    ${Loop}
+    ; Remove stale resources from prior versions so kulo-release.json verification stays exact.
+    RMDir /r "$INSTDIR\resources"
+  ${EndIf}
 
   SetOutPath "$INSTDIR"
+  SetOverwrite on
   File /r "${SOURCE_DIR}\*.*"
 
   ; Create Start Menu and Desktop shortcuts
@@ -77,9 +96,21 @@ Section "Install"
 SectionEnd
 
 Section "Uninstall"
-  IfFileExists "$INSTDIR\${APP_NAME}.exe" 0 +3
+  ${If} ${FileExists} "$INSTDIR\${APP_NAME}.exe"
     nsExec::ExecToLog '"$INSTDIR\${APP_NAME}.exe" --kulo-quit'
-    Sleep 1500
+    Pop $0
+    StrCpy $1 0
+    ${DoWhile} $1 < 20
+      ClearErrors
+      FileOpen $2 "$INSTDIR\${APP_NAME}.exe" a
+      ${IfNot} ${Errors}
+        FileClose $2
+        ${ExitDo}
+      ${EndIf}
+      Sleep 500
+      IntOp $1 $1 + 1
+    ${Loop}
+  ${EndIf}
 
   Delete "$DESKTOP\${APP_NAME}.lnk"
   RMDir /r "$SMPROGRAMS\${APP_NAME}"

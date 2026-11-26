@@ -181,7 +181,8 @@ export async function packageWindowsApp(options = {}) {
       const slug = appName.replace(/\s+/g, "-");
       installerPath = path.join(output, `${slug}-Setup-${manifest.version}-win32-${process.arch}.exe`);
       const nsiScript = fileURLToPath(new URL("./nsis/installer.nsi", import.meta.url));
-      await run(makensis, [
+      const { stderr: nsisStderr } = await run(makensis, [
+        "/V3",
         `/DAPP_NAME=${appName}`,
         `/DAPP_ID=${appId}`,
         `/DAPP_VERSION=${manifest.version}`,
@@ -190,6 +191,9 @@ export async function packageWindowsApp(options = {}) {
         `/DICON_FILE=${path.join(desktopRoot, "assets/kulo.ico")}`,
         nsiScript,
       ], { maxBuffer: 8 * 1024 * 1024, windowsHide: true });
+      if (nsisStderr?.trim()) {
+        console.warn(`makensis 提示：\n${nsisStderr.trim()}`);
+      }
       await signWindowsBinary(installerPath, options);
       await writeSha256File(installerPath);
       console.log(`已生成 Windows 安装包：${installerPath}`);

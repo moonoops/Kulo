@@ -10,6 +10,11 @@ on:
         description: "Release tag (e.g. v0.2.0)"
         required: false
         type: string
+      include_windows:
+        description: "Build experimental Windows x64 installer as a workflow preview artifact (not published to GitHub Releases)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -51,11 +56,6 @@ jobs:
             platform: darwin
             arch: arm64
             extra_flags: "--dmg"
-          - label: Windows x64
-            os: windows-latest
-            platform: win32
-            arch: x64
-            extra_flags: "--require-installer"
           - label: Linux x64
             os: ubuntu-24.04
             platform: linux
@@ -91,14 +91,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bubblewrap dpkg-dev desktop-file-utils libsecret-1-0
 
-      - name: Install Windows NSIS
-        if: matrix.platform == 'win32'
-        shell: pwsh
-        run: |
-          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue)) {
-            choco install nsis -y --no-progress
-          }
-
       - name: Import macOS signing certificate (when configured)
         if: matrix.platform == 'darwin'
         shell: bash
@@ -122,20 +114,6 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
           rm -f "$P12_PATH"
           echo "KULO_CI_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-
-      - name: Prepare Windows signing certificate (when configured)
-        if: matrix.platform == 'win32'
-        shell: pwsh
-        env:
-          KULO_WIN_CERT_PFX_B64: ${{ secrets.KULO_WIN_CERT_PFX }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:KULO_WIN_CERT_PFX_B64)) {
-            Write-Host "Skipping Windows signing certificate preparation (KULO_WIN_CERT_PFX not configured)."
-            exit 0
-          }
-          $pfxPath = Join-Path $env:RUNNER_TEMP "kulo-win-cert.pfx"
-          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:KULO_WIN_CERT_PFX_B64))
-          "KULO_WIN_CERT_PFX_FILE=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Prepare update trust file (when configured)
         shell: bash
@@ -162,8 +140,6 @@ jobs:
         env:
           KULO_DESKTOP_CHANNEL: release
           KULO_MAC_SIGN_IDENTITY: ${{ secrets.KULO_MAC_SIGN_IDENTITY }}
-          KULO_WIN_CERT_PFX: ${{ env.KULO_WIN_CERT_PFX_FILE }}
-          KULO_WIN_CERT_PASSWORD: ${{ secrets.KULO_WIN_CERT_PASSWORD }}
           KULO_UPDATE_TRUST_FILE: ${{ env.KULO_UPDATE_TRUST_FILE }}
         run: node packages/desktop/scripts/package.mjs --release ${{ matrix.extra_flags }}
 
@@ -174,7 +150,7 @@ jobs:
           if [ -n "${KULO_CI_KEYCHAIN:-}" ] && [ -f "$KULO_CI_KEYCHAIN" ]; then
             security delete-keychain "$KULO_CI_KEYCHAIN" || true
           fi
-          rm -f "${KULO_WIN_CERT_PFX_FILE:-}" "${KULO_UPDATE_TRUST_FILE:-}" "$RUNNER_TEMP/kulo-cert.p12" || true
+          rm -f "${KULO_UPDATE_TRUST_FILE:-}" "$RUNNER_TEMP/kulo-cert.p12" || true
 
       - name: Collect distributables
         shell: bash
@@ -192,8 +168,6 @@ jobs:
             fi
           done
           for f in \
-            dist/desktop/*-Setup-*.exe \
-            dist/desktop/*-Setup-*.exe.sha256 \
             dist/desktop/*.deb \
             dist/desktop/*.deb.sha256 \
             dist/desktop/*.AppImage \
@@ -304,3 +278,100 @@ jobs:
               --title "Kulo $RELEASE_TAG" \
               --generate-notes
           fi
+
+  build-windows-preview:
+    name: Build preview (Windows x64 — manual only)
+    if: github.event_name == 'workflow_dispatch' && inputs.include_windows
+    needs: build-macos-cleanup
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.20.0"
+
+      - name: Enable Corepack pnpm
+        run: corepack enable
+
+      - name: Download prebuilt macOS cleanup helper
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-worker-cleanup
+          path: dist/prebuilt
+
+      - name: Install Windows NSIS
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue)) {
+            choco install nsis -y --no-progress
+          }
+
+      - name: Prepare Windows signing certificate (when configured)
+        shell: pwsh
+        env:
+          KULO_WIN_CERT_PFX_B64: ${{ secrets.KULO_WIN_CERT_PFX }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:KULO_WIN_CERT_PFX_B64)) {
+            Write-Host "Skipping Windows signing certificate preparation (KULO_WIN_CERT_PFX not configured)."
+            exit 0
+          }
+          $pfxPath = Join-Path $env:RUNNER_TEMP "kulo-win-cert.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:KULO_WIN_CERT_PFX_B64))
+          "KULO_WIN_CERT_PFX_FILE=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace packages
+        env:
+          KULO_MACOS_CLEANUP_PREBUILT: ${{ format('{0}/dist/prebuilt/macos-worker-cleanup', github.workspace) }}
+        run: pnpm build
+
+      - name: Package Windows preview installer
+        env:
+          KULO_DESKTOP_CHANNEL: release
+          KULO_WIN_CERT_PFX: ${{ env.KULO_WIN_CERT_PFX_FILE }}
+          KULO_WIN_CERT_PASSWORD: ${{ secrets.KULO_WIN_CERT_PASSWORD }}
+        run: node packages/desktop/scripts/package.mjs --release --require-installer
+
+      - name: Smoke-test NSIS silent install and uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = Get-ChildItem -Path "dist/desktop" -Filter "*-Setup-*.exe" | Select-Object -First 1
+          if (-not $setup) { throw "Missing Windows NSIS installer." }
+          $dest = Join-Path $env:RUNNER_TEMP "kulo-nsis-smoke"
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          $install = Start-Process -FilePath $setup.FullName -ArgumentList @("/S", "/D=$dest") -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "NSIS silent install failed with exit code $($install.ExitCode)" }
+          foreach ($rel in @("Kulo.exe", "Uninstall Kulo.exe", "resources\runtime\node.exe", "resources\app\kulo-release.json")) {
+            $p = Join-Path $dest $rel
+            if (-not (Test-Path $p)) { throw "Installed file missing after NSIS install: $p" }
+          }
+          Push-Location (Join-Path $dest "resources\app")
+          try {
+            & (Join-Path $dest "resources\runtime\node.exe") --input-type=module -e "const r = await import('@kulo/recovery'); await r.verifyRelease(process.cwd(), await r.readReleaseManifest(process.cwd()), { full: true });"
+            if ($LASTEXITCODE -ne 0) { throw "verifyRelease failed on installed Windows payload" }
+          } finally {
+            Pop-Location
+          }
+          $uninst = Start-Process -FilePath (Join-Path $dest "Uninstall Kulo.exe") -ArgumentList @("/S", "_?=$dest") -Wait -PassThru
+          if ($uninst.ExitCode -ne 0) { throw "NSIS silent uninstall failed with exit code $($uninst.ExitCode)" }
+          if (Test-Path (Join-Path $dest "Kulo.exe")) { throw "Kulo.exe still exists after NSIS uninstall" }
+          Write-Host "NSIS silent install, verifyRelease, and uninstall passed."
+
+      - name: Clean up temporary signing material
+        if: always()
+        shell: bash
+        run: rm -f "${KULO_WIN_CERT_PFX_FILE:-}" || true
+
+      - name: Upload Windows preview artifact (never published to GitHub Releases)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-preview-win32-x64
+          path: |
+            dist/desktop/*-Setup-*.exe
+            dist/desktop/*-Setup-*.exe.sha256
+          if-no-files-found: error
