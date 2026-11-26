@@ -126,6 +126,19 @@ export interface PreparedAgentDaemonSpawn {
   workerSandbox?: WorkerSandbox;
 }
 
+/**
+ * Read-only Workers cannot create their workspace, so an explicit or inferred directory must already exist;
+ * otherwise sandbox setup would silently mount an empty directory. Kulo-managed ticket desks
+ * (`<root>/table/<ticket>`) remain created on demand for file-less research tickets.
+ */
+export function assertReadOnlyWorkspaceExists(rootDir: string, workspaceDir: string): void {
+  const relative = path.relative(path.join(canonicalExecutionPath(rootDir), "table"), canonicalExecutionPath(workspaceDir));
+  if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) return;
+  let directory = false;
+  try { directory = fs.statSync(workspaceDir).isDirectory(); } catch { directory = false; }
+  if (!directory) throw new Error("Read-only workspace directory does not exist on target Env");
+}
+
 export interface AgentStreamSpawnDeps {
   rootDir: string;
   projectDirectories: ProjectDirectoryRegistry;
@@ -193,6 +206,8 @@ export function prepareAgentDaemonSpawn(
         throw new Error("Worker execution path is outside this Env's registered root");
       }
     }
+    // Existence is probed only after grant/root validation so the check cannot act as an out-of-root oracle.
+    if (message.readOnly && !message.stagedTaskId) assertReadOnlyWorkspaceExists(deps.rootDir, message.workspaceDir);
     for (const id of deps.cleaningStreams.keys()) {
       if (deps.streamScopes.get(id)?.workspaceDir === canonicalWs) {
         throw new Error("Previous Worker execution cleanup is pending");

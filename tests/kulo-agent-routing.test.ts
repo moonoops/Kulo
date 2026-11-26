@@ -279,7 +279,12 @@ describe("routing authority boundaries", () => {
   });
 
   it("bounds explicit targets and refuses unsafe registry names while matching valid names literally", () => {
-    expect(() => extractAgentDispatchIntent(Array.from({ length: 17 }, (_, i) => `@agent-${i}`).join(" "), roles)).toThrow(/最多点名 16/);
+    expect(() =>
+      extractAgentDispatchIntent(
+        `${Array.from({ length: 17 }, (_, i) => `@agent-${i}`).join(" ")} 请处理任务`,
+        roles,
+      ),
+    ).toThrow(/最多点名 16/);
     for (const label of ["bad\nname", "bad\u202ename", "bad\ud800name", "x".repeat(201)]) {
       expect(() => extractAgentDispatchIntent("use Codex", { ...roles, unsafe: external("unsafe", "codex", { label }) })).toThrow(/名称或编号/);
     }
@@ -287,6 +292,37 @@ describe("routing authority boundaries", () => {
     expect(extractAgentDispatchIntent("用 literal123 修复", pool)).toBeUndefined();
     expect(extractAgentDispatchIntent("用 literal.* 修复", pool)?.targets[0]?.agentId).toBe("literal");
     expect(extractAgentDispatchIntent("用小研👩‍💻 实现", pool)?.targets[0]?.agentId).toBe("emoji");
+  });
+
+  it("ignores unfenced assembly, decorators, CSS at-rules, scoped packages, and SSH hosts while keeping real @agent addressing", () => {
+    const unfencedCodeCases = [
+      "Why does printf crash in this ARM64 snippet?\n.global main\n.type main, @function\nmain:\n  bl printf@PLT",
+      "Check this section header: .section .note.GNU-stack,\"\",@progbits",
+      "@Override\npublic void run() { System.out.println(1); }",
+      "@dataclass\nclass Item:\n    name: str\n    @property\n    def label(self): return self.name",
+      "@pytest.mark.parametrize('x', [1, 2])\ndef test_inc(x): assert x > 0",
+      "import { Button } from '@heroui/react';\nimport type { RolePreset } from @kulo/protocol/roles;",
+      "@media (max-width: 640px) { .card { display: block; } }\n@tailwind utilities;",
+      "/**\n * @param input user payload\n * @returns normalized output\n */\n// @ts-expect-error legacy field",
+      "Clone git@github.com:org/repo.git or ssh root@192.0.2.50:22 to inspect logs",
+      "Passing callback, @unknown_symbol without any dispatch verb in mid-sentence",
+    ];
+    for (const sample of unfencedCodeCases) {
+      expect(extractAgentDispatchIntent(sample, roles), sample).toBeUndefined();
+    }
+
+    // Genuine unknown @agent calls (clause-initial, Markdown-emphasized, semicolon-separated, or preceded by dispatch verb) must still lock!
+    expect(extractAgentDispatchIntent("@cursor 重构一下这个函数", roles)).toEqual(intent("cursor"));
+    expect(extractAgentDispatchIntent("**@cursor** fix this regression", roles)).toEqual(intent("cursor"));
+    expect(extractAgentDispatchIntent("Tests failed; @devin fix it", roles)).toEqual(intent("devin"));
+    expect(extractAgentDispatchIntent("@devin, refactor the auth middleware", roles)).toEqual(intent("devin"));
+    expect(extractAgentDispatchIntent("请让 @unconfigured-bot 检查构建日志", roles)).toEqual(intent("unconfigured-bot"));
+    expect(extractAgentDispatchIntent("    - @codex-main 帮我修复空指针", roles)?.targets[0]?.agentId).toBe("codex-main");
+    expect(extractAgentDispatchIntent("让 @codex-main 修一下 foo(a, b) === bar[0] 的崩溃", roles)?.targets[0]?.agentId).toBe("codex-main");
+
+    // Even if a user explicitly names a custom agent after a reserved keyword, knownNames preserves it
+    const withCustomOverride = { ...roles, override: external("override", "codex", { label: "override" }) };
+    expect(extractAgentDispatchIntent("@override 请检查这段逻辑", withCustomOverride)?.targets[0]?.agentId).toBe("override");
   });
 
   it("preserves the original role's read-only restriction across explicit, inherited and default reassignment", () => {

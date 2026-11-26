@@ -157,7 +157,7 @@
 
 ### 1. macOS 桌面应用（macOS 14+，Apple Silicon）
 
-- **直接安装**：前往 [GitHub Releases](https://github.com/moonoops/Kulo/releases/latest) 下载 **`Kulo-v0.1.8-macOS-arm64.dmg`**，双击挂载后将 **`Kulo.app`** 拖入 **`Applications`** 即可。
+- **直接安装**：前往 [GitHub Releases](https://github.com/moonoops/Kulo/releases/latest) 下载 **`Kulo-v0.1.9-macOS-arm64.dmg`**，双击挂载后将 **`Kulo.app`** 拖入 **`Applications`** 即可。
   - *说明*：正式版 DMG 已使用 Developer ID Application 证书签名（暂未走 Apple 公证）。首次打开如遇 macOS 安全提示，右键选择「打开」或运行一次：
     ```sh
     xattr -cr "/Applications/Kulo.app"

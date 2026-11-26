@@ -3,7 +3,7 @@ import {
   type ModelsApiStreamOptions, type ModelsSimpleStreamOptions, type StreamOptions,
 } from "@earendil-works/pi-ai";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
-import type { ModelNativeTools, WebSource } from "@kulo/protocol";
+import { sanitizeMarkdownTrackingLinks, type ModelNativeTools, type WebSource } from "@kulo/protocol";
 import { sanitizeSearchSources } from "./search-sources.js";
 import { normalizeWebSourceUrl, sanitizeSearchSuggestions, webSourceId } from "./web-content.js";
 import {
@@ -323,6 +323,11 @@ function nativeStream(
           complete.stopReason = "error"; complete.errorMessage = capture.failure;
         }
         if (!["error", "aborted", "length", "pending", "deferred"].includes(complete.stopReason)) {
+          if (RESPONSES_APIS.has(model.api)) {
+            complete.content = complete.content.map((block) =>
+              block.type === "text" ? { ...block, text: sanitizeMarkdownTrackingLinks(block.text) } : block,
+            );
+          }
           const sources = capture.sources();
           if (sources.length) {
             complete.kuloSearchSources = sources;

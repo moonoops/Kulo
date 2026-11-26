@@ -7,6 +7,7 @@ import {
   type KuloLanguage, type RolePreset, type TicketRecord,
 } from "@kulo/protocol";
 import { defaultExternalAgentRolePrompt, defaultExternalAgentWhenToUse } from "./prompts/worker.js";
+import { hasExplicitUnknownAtIntent, maskNonConversationalAtTokens } from "./agent-mention-guard.js";
 
 type Roles = Readonly<Record<string, RolePreset>>;
 type ExternalClients = Readonly<Record<string, ExternalClientConnection>>;
@@ -165,11 +166,12 @@ function aliases(roles: Roles, externalClients?: ExternalClients): Alias[] {
 const escaped = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 function unquotedText(text: string, names: readonly { text: string }[]): string {
   const exactName = new Set(names.map(name => canonical(name.text)));
-  return text.replace(/```[^]*?(?:```|$)|~~~[^]*?(?:~~~|$)|`[^`\n]*`/g, " ")
+  const stripped = text.replace(/```[^]*?(?:```|$)|~~~[^]*?(?:~~~|$)|`[^`\n]*`/g, " ")
     .replace(/<(?:code|pre|blockquote)\b[^>]*>[^]*?<\/(?:code|pre|blockquote)>/gi, " ")
     .replace(/^\s*>[^\n]*(?:\n|$)/gm, "\n")
     .replace(/^\s*(?:引用|示例|例如|原文|example|quote)\s*[:：][^\n]*/gim, " ")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+  return maskNonConversationalAtTokens(stripped, exactName)
     .replace(/\b(?:https?|plugin|app):\/\/[^\s<>()]+|\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, " ")
     .replace(/“([^”]*)”|「([^」]*)」|『([^』]*)』|"([^"\n]*)"|(?<![\p{L}\p{N}])'([^'\n]*)'(?![\p{L}\p{N}])/gu, (_full, ...groups: unknown[]) => {
       const content = groups.slice(0, 5).find(group => typeof group === "string") as string;
@@ -371,7 +373,16 @@ export function extractAgentDispatchIntent(
       if (directNames.replace(/\b(?:and|or|the|my|your|local)\b|[\s@、,，:：]|以及|和|与|或/gi, "")) continue;
     }
     const direct = !before.replace(/[@\s,，:：]/g, "") && /^(?:\s*[,，:：]?\s*)(?:帮我|请|负责|来|修复|实现|检查|审查|写|做|fix\b|please\b|review\b|implement\b)/i.test(after);
-    if (!match.at && !direct && (!verb || between.length > 120 || /(?:介绍|解释|比较|对比)|\b(?:explain|compare)\b/i.test(between))) continue;
+    const isKnownTarget =
+      match.alias.ids.length > 0 ||
+      Boolean(match.alias.kind) ||
+      Boolean(match.alias.internal) ||
+      Boolean(match.at && (ownRole(roles, match.alias.text) || resolveRoleOrDirectClient(match.alias.text, roles, externalClients)));
+    if (!isKnownTarget) {
+      if (!hasExplicitUnknownAtIntent({ before, after, between, hasVerb: Boolean(verb) })) continue;
+    } else if (!match.at && !direct && (!verb || between.length > 120 || /(?:介绍|解释|比较|对比)|\b(?:explain|compare)\b/i.test(between))) {
+      continue;
+    }
     if (!/[A-Za-z0-9_-]/.test(match.alias.text.at(-1)!) && /^[\p{L}]/u.test(after) && !/^(?:在|于|从|到|来|去|帮|负责|写|修|做|检|审|查|设|研|调|实|开|处|排|测|接|协|完|跑|执|和|与|或|以及)/.test(after)) continue;
     const devicePrefix = clause || before.slice(-120);
     const devicePool = deviceAliases(envs);

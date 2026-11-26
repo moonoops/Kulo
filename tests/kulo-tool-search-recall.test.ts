@@ -85,6 +85,7 @@ const ORCHESTRATOR_BENCHMARK: readonly BenchmarkCase[] = [
   { query: "查看后台工单的实时运行进度和子任务详情", expectedAnyOf: ["kulo_inspect"] },
   { query: "关闭清理已经废弃的旧工单", expectedAnyOf: ["kulo_close"] },
   { query: "刷新更新刚才那张交互卡片的内容", expectedAnyOf: ["kulo_ui_update"] },
+  { query: "画一个系统架构流程图或者柱状图 SVG 图表", expectedAnyOf: ["kulo_ui_diagram"] },
   { query: "把工作区里的报告文件作为附件发送发布到聊天", expectedAnyOf: ["kulo_publish_asset"] },
   { query: "打开浏览器访问动态渲染网页获取快照", expectedAnyOf: ["kulo_browser"] },
   { query: "对长期记忆做深度反思归纳历史原因", expectedAnyOf: ["hindsight_reflect"] },
@@ -383,5 +384,53 @@ describe("Step 3: tool_search bilingual recall, deterministic event injection & 
           : [];
       expect(addAfterCompact).not.toContain("kulo_settings_appearance");
     });
+  });
+
+  it("auto-mounts kulo_ui_diagram when chat reads diagram-design skill", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kulo-diagram-automount-"));
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+    const provider = fauxProvider({ provider: "diag-mount", models: [{ id: "m1" }] });
+    const models = createModels();
+    models.setProvider(routeSettingsTitleRequests(provider));
+    const seenOffered: string[][] = [];
+    let turnStep = 0;
+    provider.setResponses(
+      Array.from({ length: 6 }, () => (ctx: TranscriptContext) => {
+        const offered = [
+          ...(ctx.tools?.map((t) => t.name) ?? []),
+          ...ctx.messages.flatMap((m) => (m.role === "system" && Array.isArray(m.toolsAdded) ? m.toolsAdded.map((t) => t.name) : [])),
+        ];
+        seenOffered.push([...new Set(offered)]);
+        turnStep++;
+        if (turnStep === 1) {
+          return fauxAssistantMessage([fauxToolCall("kulo_skill_read", { id: "diagram-design" })], { stopReason: "toolUse" });
+        }
+        return fauxAssistantMessage([fauxText("diagram-design read and kulo_ui_diagram mounted.")]);
+      }),
+    );
+
+    const hub = await openTestHub({
+      models,
+      providerId: "diag-mount",
+      config: {
+        stateDir: path.join(dir, "state"),
+        identityDir: path.join(dir, "identity"),
+        enableLocalEnv: false,
+        watchdogMinutes: 0,
+        memory: { enabled: false },
+        model: { defaultProvider: "diag-mount", defaultModel: "m1", thinkingLevel: "off", apiKey: "" },
+      },
+    });
+    cleanups.push(() => hub.close());
+
+    const sub = await hub.sendUserMessage("画一个架构图");
+    const done = await sub.wait(BACKGROUND_CONTEXT);
+    expect(done.status).toBe("done");
+    expect(seenOffered[0]).not.toContain("kulo_ui_diagram");
+    expect(seenOffered[1]).toContain("kulo_ui_diagram");
+    const agentDoc = await hub.harness.snapshot(AgentDoc, hub.rootConversation.id, BACKGROUND_CONTEXT);
+    const added = agentDoc?.modelTools && !Array.isArray(agentDoc.modelTools) ? agentDoc.modelTools.add ?? [] : [];
+    expect(added).toContain("kulo_ui_diagram");
   });
 });

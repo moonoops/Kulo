@@ -51,6 +51,11 @@ describe("Hub inline diagram publication, CSP serving, privacy, and topic-file i
       callNum++;
       if (callNum === 1) {
         return fauxAssistantMessage([
+          fauxToolCall("kulo_skill_read", { id: "diagram-design" }),
+        ], { stopReason: "toolUse" });
+      }
+      if (callNum === 2) {
+        return fauxAssistantMessage([
           fauxText("先说结论：订单从创建直接流向支付确认。"),
           fauxToolCall("kulo_ui_diagram", {
             title: "订单状态流转图",
@@ -185,6 +190,11 @@ describe("Hub inline diagram publication, CSP serving, privacy, and topic-file i
       step++;
       if (step === 1) {
         return fauxAssistantMessage([
+          fauxToolCall("tool_search", { query: "kulo_ui_diagram", limit: 3 }),
+        ], { stopReason: "toolUse" });
+      }
+      if (step === 2) {
+        return fauxAssistantMessage([
           fauxToolCall("kulo_ui_diagram", {
             title: "非法脚本测试",
             svg: `<svg viewBox="0 0 400 200"><script>alert(1)</script></svg>`,
@@ -192,7 +202,7 @@ describe("Hub inline diagram publication, CSP serving, privacy, and topic-file i
           }),
         ], { stopReason: "toolUse" });
       }
-      if (step === 2) {
+      if (step === 3) {
         return fauxAssistantMessage([
           fauxToolCall("kulo_ui_diagram", {
             title: "脱敏测试图",

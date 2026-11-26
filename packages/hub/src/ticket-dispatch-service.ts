@@ -25,6 +25,8 @@ import { capturedAgentIntent, extractAgentDispatchIntent } from "./agent-routing
 import { chatRoutingData } from "./chat-submissions.js";
 import type { KuloConnections } from "./connections.js";
 import { redactCredentialData } from "./credential-redaction.js";
+import { collectCoordinatorEvidencePaths, formatEvidenceManifest } from "./dispatch-evidence-manifest.js";
+import { inferDispatchWorkspace, isDedicatedRemoteRoot } from "./dispatch-workspace-infer.js";
 import { reconcileTopicRoutingTarget } from "./env-routing-policy.js";
 import type {
   HubRuntimeGates,
@@ -341,15 +343,27 @@ export class TicketDispatchService {
       defaultThinkingLevel: settingsSnapshotLive.model.thinkingLevel,
     });
 
-    if (!project && params.workspaceDir?.trim()) {
+    const evidencePaths = modelDispatch && !plan.externalBinding && domain.executionDomain === "computer"
+      ? await this.#coordinatorEvidencePaths(originConversationId, inputs, plan.targetEnvId, project?.deviceId ?? originTopic?.targetDeviceId, context)
+      : [];
+    const evidenceLine = formatEvidenceManifest(evidencePaths);
+    if (evidenceLine) params = { ...params, assignment: [params.assignment?.trim(), evidenceLine].filter(Boolean).join("\n") };
+    let isRemoteDedicatedRoot = isDedicatedRemoteRoot({ isLocal: envManager.isLocalEnv(plan.targetEnvId), rootDir: envManager.getEnvDescriptor(plan.targetEnvId)?.rootDir });
+    const inferred = !project && !params.workspaceDir?.trim() && domain.executionDomain === "computer"
+      ? inferDispatchWorkspace({ envRootDir: workspace.cleanRoot, isReadOnly: workspace.isReadOnly, texts: [params.goal, params.scope, params.acceptance], coordinatorReadPaths: evidencePaths, isRemoteDedicatedRoot })
+      : undefined;
+    const requestedDir = params.workspaceDir?.trim() || (inferred && inferred.kind !== "default" ? inferred.dir : undefined);
+    if (!project && requestedDir) {
       const requested = {
         envId: plan.targetEnvId,
-        workspaceDir: envManager.isLocalEnv(plan.targetEnvId) ? canonicalExecutionPath(params.workspaceDir) : params.workspaceDir,
+        workspaceDir: envManager.isLocalEnv(plan.targetEnvId) ? canonicalExecutionPath(requestedDir) : requestedDir,
       } as TicketRecord;
       const overlap = (await projects.list(context)).find((p) =>
         ticketsShareWriteScope(requested, { envId: p.deviceId, workspaceDir: p.workspaceDir } as TicketRecord),
       );
-      if (overlap) {
+      // A whole-root read-only fallback quietly yields to the isolated default when projects live under it.
+      if (overlap && inferred?.kind === "env_root_readonly" && !params.workspaceDir?.trim()) isRemoteDedicatedRoot = false;
+      else if (overlap) {
         throw new ProjectError(400, "project_required", `该目录属于项目 ${overlap.name}，请使用 project_id 派单。`, { projectId: overlap.id });
       }
     }
@@ -404,6 +418,8 @@ export class TicketDispatchService {
           workerTicketTask: workerOps.workerTicketTask,
           workerAgentConfig,
           supersededStagedToDiscard,
+          inferredReadPaths: evidencePaths,
+          isRemoteDedicatedRoot,
         }),
       context,
     );
@@ -415,6 +431,27 @@ export class TicketDispatchService {
     runtimeGates.resumeIfNotRecovering();
     await runtimeGates.broadcastTickets(context);
     return toTicketCardView(admitted, activeRoles, activeExternalClients);
+  }
+
+  /** Absolute paths the coordinator read/edited this turn, only when its tools ran on the dispatch target Env. */
+  async #coordinatorEvidencePaths(
+    originConversationId: number,
+    inputs: readonly EntryRecord[],
+    targetEnvId: string,
+    boundEnvId: string | undefined,
+    context: Context,
+  ): Promise<string[]> {
+    const { harness, envManager, connectionManager } = this.#deps;
+    let coordinatorEnvId = boundEnvId;
+    if (!coordinatorEnvId) {
+      try { coordinatorEnvId = envManager.pickDefaultEnvId(); } catch { return []; }
+    }
+    if (coordinatorEnvId !== targetEnvId || !inputs.length) return [];
+    const conversation = await harness.conversation(originConversationId as ConversationId, context);
+    if (!conversation) return [];
+    const minEntryId = Math.min(...inputs.map((entry) => Number(entry.id)));
+    const page = await conversation.entries({ minEntryId: minEntryId as EntryId }, 200, undefined, context);
+    return collectCoordinatorEvidencePaths(page.items, { redact: (text) => connectionManager.redact(text) });
   }
 
   async dispatchTicketForModel(

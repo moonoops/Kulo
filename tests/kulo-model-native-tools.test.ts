@@ -319,6 +319,39 @@ describe("model-native search tools", () => {
     expect(result.kuloSearchSources).toHaveLength(1);
   });
 
+  it("strips tracking query params from Responses prose and sources while keeping Anthropic signed blocks untouched", async () => {
+    const trackedUrl = "https://example.com/primary?utm_source=openai&msockid=track123";
+    const responsesText = `Fact ([example.com](${trackedUrl})) and code \`${trackedUrl}\`.`;
+    const f = fixture(
+      [{
+        type: "response.completed",
+        response: {
+          output: [
+            { type: "web_search_call", action: { sources: [{ url: trackedUrl, title: "Primary" }] } },
+            { type: "message", content: [{ type: "output_text", annotations: [{ type: "url_citation", url: trackedUrl, title: "Primary" }] }] },
+          ],
+        },
+      }],
+      answer({ content: [{ type: "text", text: responsesText }] }),
+    );
+    const cleaned = await f.models.completeSimple(f.model, { messages: [] }) as NativeSearchMessage;
+    expect(cleaned.content).toEqual([{ type: "text", text: `Fact ([example.com](${sourceUrl})) and code \`${trackedUrl}\`.` }]);
+    expect(cleaned.kuloSearchSources).toMatchObject([{ url: sourceUrl, title: "Primary" }]);
+
+    // Anthropic signed content must remain byte-for-byte untouched so nativeContentHash replay succeeds.
+    const claudeBlocks: RawBlock[] = [
+      { type: "server_tool_use", id: "srv-utm", name: "web_search", input: { query: "facts" } },
+      { type: "web_search_tool_result", tool_use_id: "srv-utm", content: [{ type: "web_search_result", url: trackedUrl, title: "Primary", encrypted_content: "enc-1" }] },
+      { type: "text", text: `Signed link ([example.com](${trackedUrl})).`, citations: [{ type: "web_search_result_location", url: trackedUrl, title: "Primary", cited_text: "Fact", encrypted_index: "idx-1" }] },
+    ];
+    const cf = claudeModels((_req, idx) => idx === 0 ? claudeSse(claudeBlocks, "msg-claude-utm") : claudeSse([{ type: "text", text: "Replay ok." }], "msg-claude-utm-2"));
+    const claudeFirst = await cf.models.completeSimple(cf.model, { messages: [] }) as NativeSearchMessage;
+    expect(claudeFirst.content).toEqual([{ type: "text", text: `Signed link ([example.com](${trackedUrl})).` }]);
+    expect(claudeFirst.kuloSearchSources).toMatchObject([{ url: sourceUrl, title: "Primary" }]);
+    const claudeFollowup = await cf.models.completeSimple(cf.model, { messages: [claudeFirst, { role: "user", content: "Next", timestamp: 1 }] });
+    expect(claudeFollowup.stopReason).toBe("stop");
+  });
+
   it("leaves disabled models on their original call path", async () => {
     const f = fixture([]);
     const wrapped = withNativeToolsModels(f.target, { getNativeTools: () => ({ webSearch: false }) });

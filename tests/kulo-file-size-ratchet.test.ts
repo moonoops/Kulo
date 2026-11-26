@@ -27,7 +27,7 @@ const NEW_FILE_MAX_LINES = 900;
  * to permanently tighten the baseline (or delete the entry once <= 900 lines).
  */
 const LEGACY_FILE_LINE_CEILINGS: Record<string, number> = {
-  "packages/hub/src/hub.ts": 5650,
+  "packages/hub/src/hub.ts": 5649,
   "packages/protocol/src/android.ts": 3656,
   "packages/env/src/bridge.ts": 2577,
   "packages/hub/src/settings-assistant.ts": 2188,
@@ -35,11 +35,11 @@ const LEGACY_FILE_LINE_CEILINGS: Record<string, number> = {
   "packages/hub/src/providers.ts": 1937,
   "packages/hub/src/server.ts": 1846,
   "packages/hub/src/connectors/home-assistant.ts": 1810,
-  "packages/hub/src/settings.ts": 1739,
   "packages/hub/src/cluster-sync.ts": 1669,
+  "packages/hub/src/settings.ts": 1659,
   "packages/web/src/kulo-api.ts": 1627,
   "packages/env/src/peer.ts": 1548,
-  "packages/hub/src/scheduler.ts": 1333,
+  "packages/hub/src/scheduler.ts": 1332,
   "packages/hub/src/hindsight.ts": 1301,
   "packages/hub/src/connections.ts": 1182,
   "packages/env/src/agent.ts": 1174,
@@ -51,7 +51,6 @@ const LEGACY_FILE_LINE_CEILINGS: Record<string, number> = {
   "packages/env/src/staged-workspace.ts": 1000,
   "packages/hub/src/hindsight-service.ts": 984,
   "packages/protocol/src/diagram-validator.ts": 983,
-  "packages/hub/src/tool-surface.ts": 930,
   "packages/web/src/features/settings/api-provider-modal.tsx": 924,
 };
 

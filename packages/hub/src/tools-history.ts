@@ -20,9 +20,9 @@ export function createHistoryToolsExtension(get: () => KuloConversationHistory) 
     name: "kulo-history",
     tools: [
       defineTool({
-        name: "kulo_history_search", replay: "safe",
+        name: "kulo_history_search", replay: "safe", deferred: true,
         description:
-          "Search persisted chat history (incl. pre-compaction) for earlier agreements or quotes (`scope='project'` for active project; `after`/`before` ms). Returns snippets with `conversationId`/`entryId` (evidence only).",
+          "Search persisted chat history (incl. pre-compaction) for earlier agreements or quotes (`scope='project'` for active project; `after`/`before` ms). Returns snippets with `conversationId`/`entryId` (evidence only). 关键词：搜索聊天记录 查找历史对话 以前说过的话 回忆原文 history search past chat",
         parameters: obj({ query: str(), scope: opt(oneOf(["conversation", "project"])), mode: opt(oneOf(["phrase", "keywords"])), after: opt(num()), before: opt(num()), limit: opt(num()), cursor: opt(str()), max_chars: opt(num()) }),
         execute: async (args, api, context) => {
           try {

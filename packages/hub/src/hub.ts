@@ -273,6 +273,7 @@ import { TicketInspectionService } from "./ticket-inspection.js";
 import { TicketReconciler } from "./ticket-reconciler.js";
 import { TicketStagedApplyService } from "./ticket-staged-apply.js";
 import { createOrchestratorCodingGuardExtension } from "./orchestrator-coding-guard.js";
+import { selectOrchestratorDefaultEnv } from "./orchestrator-env-cwd.js";
 import type { HostActionController } from "./tools-host-action.js";
 import type { AskUserForTicketParams } from "./tools-router.js";
 import { API_KEY_ORIGIN_ENV } from "./providers.js";
@@ -2418,19 +2419,17 @@ export class KuloHub implements OrchestratorController {
               });
             }
             // Hub-hosted tools such as search and settings remain available without an online execution node.
-            const candidateEnv = envManager.listEnvs().find((env) => env.executionKind !== "native-device");
-            if (!candidateEnv) return undefined;
-            let defaultEnvId: string | undefined;
-            try { defaultEnvId = envManager.pickDefaultEnvId(); }
-            catch { defaultEnvId = undefined; }
-            const envInfo = defaultEnvId ? envManager.getEnvDescriptor(defaultEnvId) : candidateEnv;
-            const cwd = target.cwd ?? envInfo?.rootDir ?? mainWorkspaceDir;
+            const selection = selectOrchestratorDefaultEnv({
+              listEnvs: () => envManager.listEnvs(), localEnvId: envManager.localEnvId, isLocalEnv: (id) => envManager.isLocalEnv(id),
+              getEnvDescriptor: (id) => envManager.getEnvDescriptor(id), pickDefaultEnvId: () => envManager.pickDefaultEnvId(),
+              targetCwd: target.cwd, mainWorkspaceDir, topicTargetDeviceId: topic?.targetDeviceId, activeSettings, hubTrustMode: settingsStore.getExecutionTrustMode(),
+            });
+            if (!selection) return undefined;
             const execOptions = { ...(activeSettings ? { sandboxed: true, readOnly: true } : {}), offline: false };
-            if (defaultEnvId) return envManager.createExecutionEnv(defaultEnvId, cwd, execOptions);
-            return lazyProjectEnvironment(`kulo-env:${candidateEnv.id}`, cwd, async () => {
-              const resolvedId = envManager.pickDefaultEnvId();
-              const resolvedInfo = envManager.getEnvDescriptor(resolvedId);
-              return envManager.createExecutionEnv(resolvedId, target.cwd ?? resolvedInfo?.rootDir ?? mainWorkspaceDir, execOptions);
+            if (selection.activeEnvId) return envManager.createExecutionEnv(selection.activeEnvId, selection.cwd, execOptions);
+            return lazyProjectEnvironment(`kulo-env:${selection.candidateEnv.id}`, selection.cwd, async () => {
+              const lazy = selection.resolveLazy(settingsStore.getExecutionTrustMode());
+              return envManager.createExecutionEnv(lazy.envId, lazy.cwd, execOptions);
             });
           }
 

@@ -10,6 +10,7 @@ import {
   type ExecutionTrustMode,
   type HostActionRequest,
 } from "@kulo/protocol";
+import { assertReadOnlyWorkspaceExists } from "./agent-stream-spawn.js";
 import {
   canonicalExecutionPath,
   createWorkerSandbox,
@@ -375,6 +376,7 @@ export function createBridgeWorkerExecutionEnv(
           throw new Error("Worker execution path is outside the local Env's registered root");
         }
       }
+      if (options.readOnly && !options.stagedTaskId) assertReadOnlyWorkspaceExists(ctx.localDescriptor!.rootDir, cwd);
       const controlRoot = path.join(ctx.localProjects!.privateDirectory, "executions");
       const sandbox =
         effectiveMode === "trusted"

@@ -8,7 +8,7 @@ import { Readability } from "@mozilla/readability";
 import { resolveHttpProxyUrlForTarget } from "@earendil-works/pi-ai/utils/node-http-proxy";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { parseHTML } from "linkedom";
-import type { WebPageResult, WebSource } from "@kulo/protocol";
+import { stripTrackingSearchParams, type WebPageResult, type WebSource } from "@kulo/protocol";
 import {
   isCloudMetadataHostOrIp,
   isFakeIpAddress,
@@ -41,6 +41,7 @@ export function normalizeWebSourceUrl(
       return undefined;
     }
   }
+  stripTrackingSearchParams(url);
   return url.toString();
 }
 

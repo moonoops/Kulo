@@ -239,7 +239,7 @@ describe("Stage 1: context thresholds, watch-window estimation, manual compact A
     await hub.harness.waitForTask(acceptedBody.taskId as never, BACKGROUND_CONTEXT);
   });
 
-  it("offers kulo_history_search on chat turn 1, skips mounting kulo_history_read on zero hits, and mounts it on hit without tool_search", async () => {
+  it("defers kulo_history_search on chat turn 1, loads via tool_search, skips mounting kulo_history_read on zero hits, and mounts it on hit", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kulo-s1-hist-"));
     cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
     const requests: TranscriptContext[] = [];
@@ -252,7 +252,11 @@ describe("Stage 1: context thresholds, watch-window estimation, manual compact A
         requests.push(structuredClone(ctx));
         return fauxAssistantMessage([fauxText("记住了：暗语 ALPHA-9941。")]);
       },
-      // Turn 2: zero-hit search -> must NOT mount kulo_history_read
+      // Turn 2: search deferred tool first, then zero-hit search -> must NOT mount kulo_history_read
+      (ctx) => {
+        requests.push(structuredClone(ctx));
+        return fauxAssistantMessage([fauxToolCall("tool_search", { query: "搜索聊天记录 history search", limit: 3 })], { stopReason: "toolUse" });
+      },
       (ctx) => {
         requests.push(structuredClone(ctx));
         return fauxAssistantMessage([fauxToolCall("kulo_history_search", { query: "NONEXISTENT_XYZ_777" })], { stopReason: "toolUse" });
@@ -312,7 +316,7 @@ describe("Stage 1: context thresholds, watch-window estimation, manual compact A
     // Settings Assistant must still keep kulo_history_search deferred.
     const settingsSnap = await hub.settingsAssistant.getSnapshot();
     expect(settingsSnap).toBeDefined();
-    expect(requests.length).toBe(5);
+    expect(requests.length).toBe(6);
   });
 
   it("surfaces a secret-free compactionError diagnostic when credential redaction declines compaction", async () => {

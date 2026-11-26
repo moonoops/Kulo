@@ -964,11 +964,10 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
               reason: task.state.checkpoint.unansweredReason,
               detail: task.state.checkpoint.unansweredDetail,
             });
+            const opaque = desc.kind === "unknown" && desc.hint === "请求处理过程中遇到异常，请稍后重试。" ? (deps.redact?.(desc.rawDetail ?? task.state.checkpoint.unansweredReason) ?? "").replace(/\s+/g, " ").trim().slice(0, 300) : "";
             finalReport = {
               state: "failed",
-              summary: desc.isUserAbort
-                ? "任务已手动停止。"
-                : `${desc.title}：${desc.hint}`,
+              summary: desc.isUserAbort ? "任务已手动停止。" : `${desc.title}：${opaque || desc.hint}`,
               at: now,
             };
             ticket.latestReport = finalReport;

@@ -40,7 +40,7 @@ process.exit(20);`;
 async function skillRuntime(options: SkillToolsOptions, audience: SkillAudience, id: string | undefined, api: Pick<ToolExecutionApi, "conversationId" | "env"> & Partial<Pick<ToolExecutionApi, "taskId">>, context: Context) {
   if (!options.runtimeContext) return undefined;
   const required = await options.get().runtimeRequirements(audience, id);
-  if (!required.targetDevice && !required.reactWorkspace && !required.media && !required.android && !required.customization && !required.memoryKnowledge) return undefined;
+  if (!required.targetDevice && !required.reactWorkspace && !required.media && !required.android && !required.customization && !required.memoryKnowledge) return { capabilities: [] };
   const runtime = await options.runtimeContext(api, context, { ...required, catalogOnly: id === undefined });
   if (id && required.reactWorkspace && runtime?.diagnostics?.length) throw new SkillError(409, "skill_context_unavailable", runtime.diagnostics.join(" "));
   return runtime;
@@ -87,8 +87,14 @@ export function createSkillToolsExtension(options: SkillToolsOptions) {
   const readSkill = async (args: { id: string; resource?: string; version?: string }, api: ToolExecutionApi, context: Context) => {
     const audience = await options.audience(api);
     const runtime = await skillRuntime(options, audience, args.id, api, context);
-    const addTools = audience === "worker"
-      ? await resolveDeferredAddTools(api, context, ["kulo_skill_materialize"])
+    const autoMountCandidates =
+      audience === "worker"
+        ? ["kulo_skill_materialize"]
+        : audience === "chat" && args.id === "diagram-design"
+          ? ["kulo_ui_diagram"]
+          : [];
+    const addTools = autoMountCandidates.length > 0
+      ? await resolveDeferredAddTools(api, context, autoMountCandidates)
       : [];
     try {
       const text = await options.get().read(args.id, args.resource ?? "SKILL.md", audience, args.version, runtime);

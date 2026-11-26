@@ -164,7 +164,7 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
     expect(sec.kulo_skills).toContain("genui-cards");
 
     const tools = offeredToolNames(first);
-    expect(tools).toHaveLength(17);
+    expect(tools).toHaveLength(15);
     expect(tools).toEqual(
       expect.arrayContaining([
         "kulo_dispatch",
@@ -179,14 +179,14 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
         "bash",
         "tool_search",
         "kulo_ui_show",
-        "kulo_ui_diagram",
         "kulo_skill_read",
-        "kulo_history_search",
         "kulo_memory_recall",
         "kulo_memory_retain",
       ]),
     );
     expect(tools).not.toContain("kulo_history_read");
+    expect(tools).not.toContain("kulo_history_search");
+    expect(tools).not.toContain("kulo_ui_diagram");
     const rootAgent = await hub.rootConversation.agent(BACKGROUND_CONTEXT);
     const callableNames = rootAgent.callable.map((t) => t.name);
     expect(callableNames).not.toContain("kulo_skill_materialize");
@@ -203,13 +203,13 @@ describe("Prompt architecture, section ordering, budgets, and audience pruning",
     expect(schemaChars).toBeLessThan(15_500);
     expect(sysChars + schemaChars).toBeLessThan(31_500);
 
-    // Turning off built-in memory restores the exact minimal 15-tool baseline with no kulo_memory section
+    // Turning off built-in memory restores the exact minimal 13-tool baseline with no kulo_memory section
     await hub.memoryRuntime.builtinMemory.setEnabled(false, 1, BACKGROUND_CONTEXT);
     const subOff = await hub.sendUserMessage("关闭后再测");
     await subOff.wait(BACKGROUND_CONTEXT);
     const afterOff = requests.at(-1)!;
     expect(extractSections(afterOff).kulo_memory).toBeFalsy();
-    expect(offeredToolNames(afterOff)).toHaveLength(15);
+    expect(offeredToolNames(afterOff)).toHaveLength(13);
     expect(offeredToolNames(afterOff)).not.toContain("kulo_memory_recall");
     expect(offeredToolNames(afterOff)).not.toContain("kulo_memory_retain");
   });
@@ -610,6 +610,7 @@ describe("Recent-work scope isolation and V4 role migration invariants", () => {
 
     hydrateSettingsFromConfig(persisted, config);
     expect(persisted.rolesMigratedV4).toBe(true);
+    expect(persisted.rolesMigratedV5).toBe(true);
 
     // Unmodified V3 factory text fields on scout upgraded to V4 English, while ALL permissions/bindings stayed untouched!
     expect(persisted.roles.scout!.label).toBe(fresh.scout!.label);
@@ -633,5 +634,53 @@ describe("Recent-work scope isolation and V4 role migration invariants", () => {
     expect(persisted.roles.scout!.prompt).toBe(fresh.scout!.prompt);
     expect(persisted.roles.scout!.readOnly).toBe(false);
     expect(persisted.roles.coder!.prompt).toBe("始终使用 TDD 并写中文注释。");
+  });
+
+  it("migrates unmodified V4 EN/ZH role texts to V5 while preserving custom overrides", () => {
+    const config = resolveHubConfig({});
+    const fresh = defaultRolePresets();
+    const persisted: KuloDurableSettings = {
+      initialized: true,
+      rolesMigratedV2: true,
+      rolesMigratedV3: true,
+      rolesMigratedV4: true,
+      globalRevision: 3,
+      revisions: { presentation: 1, executor: 1, roles: 3, model: 1, identity: 1, memory: 1 },
+      presentation: { agentName: "Kulo", workbenchName: "Kulo's table" },
+      executor: { maxConcurrentWorkers: 3, maxSubagentsPerTicket: 4, paused: false, watchdogMinutes: 5 },
+      roles: {
+        ...fresh,
+        writer: {
+          ...fresh.writer!,
+          label: HISTORICAL_DEFAULT_ROLE_TEXTS.writer!.labels[1]!,
+          whenToUse: HISTORICAL_DEFAULT_ROLE_TEXTS.writer!.whenToUse[1]!,
+          prompt: HISTORICAL_DEFAULT_ROLE_TEXTS.writer!.prompts[1]!,
+        },
+        coder: {
+          ...fresh.coder!,
+          label: HISTORICAL_DEFAULT_ROLE_TEXTS.coder!.labels[0]!,
+          whenToUse: HISTORICAL_DEFAULT_ROLE_TEXTS.coder!.whenToUse[2]!,
+          prompt: HISTORICAL_DEFAULT_ROLE_TEXTS.coder!.prompts[2]!,
+        },
+        architect: {
+          ...fresh.architect!,
+          prompt: "自定义架构规范。",
+        },
+      },
+      model: config.model,
+      identity: { directory: "", directoryRevision: 1 },
+      memory: config.memory,
+      expression: null,
+      snapshots: [],
+    };
+
+    hydrateSettingsFromConfig(persisted, config);
+    expect(persisted.rolesMigratedV4).toBe(true);
+    expect(persisted.rolesMigratedV5).toBe(true);
+    expect(persisted.roles.writer!.whenToUse).toBe(fresh.writer!.whenToUse);
+    expect(persisted.roles.writer!.prompt).toBe(fresh.writer!.prompt);
+    expect(persisted.roles.coder!.whenToUse).toBe(fresh.coder!.whenToUse);
+    expect(persisted.roles.coder!.prompt).toBe(fresh.coder!.prompt);
+    expect(persisted.roles.architect!.prompt).toBe("自定义架构规范。");
   });
 });

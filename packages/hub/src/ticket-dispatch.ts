@@ -7,6 +7,7 @@ import {
   resolveRoleOrDirectClient,
 } from "./agent-routing.js";
 import type { chatRoutingData } from "./chat-submissions.js";
+import { inferDispatchWorkspace } from "./dispatch-workspace-infer.js";
 import { canSwitchEnvDuringRecovery } from "./env-routing-policy.js";
 import { assertExternalAgentScope } from "./external-agent-tools.js";
 import { assertProjectBinding, KuloProjectsDoc, ProjectError } from "./projects.js";
@@ -130,6 +131,9 @@ export async function admitDispatchInTx(
     workerTicketTask: ReturnType<typeof createWorkerTicketTask>;
     workerAgentConfig?: AgentChange;
     supersededStagedToDiscard: TicketRecord[];
+    /** Absolute paths the coordinator inspected on the target Env this turn (pure data, used for read-only inference). */
+    inferredReadPaths?: readonly string[];
+    isRemoteDedicatedRoot?: boolean;
   },
 ): Promise<TicketRecord> {
   const {
@@ -215,7 +219,13 @@ export async function admitDispatchInTx(
   const ticketId = `T-${String(ticketNum).padStart(4, "0")}`;
   const workspaceDir = executionDomain === "android"
     ? ""
-    : project?.workspaceDir || params.workspaceDir?.trim() || `${cleanRoot}${sep}table${sep}${ticketId}-${slugifyDispatchTitle(params.title)}`;
+    : project?.workspaceDir || params.workspaceDir?.trim() || (() => {
+      const inferred = inferDispatchWorkspace({
+        envRootDir: cleanRoot, isReadOnly, texts: [params.goal, params.scope, params.acceptance],
+        coordinatorReadPaths: input.inferredReadPaths, isRemoteDedicatedRoot: input.isRemoteDedicatedRoot,
+      });
+      return inferred.kind === "default" ? `${cleanRoot}${sep}table${sep}${ticketId}-${slugifyDispatchTitle(params.title)}` : inferred.dir;
+    })();
   const scratchDir = executionDomain === "android" ? undefined : `${scratchRoot}${sep}${ticketId}`;
 
   const now = Date.now();

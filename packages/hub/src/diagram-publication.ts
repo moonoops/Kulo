@@ -61,8 +61,8 @@ export function createDiagramPublisher(options: DiagramPublisherOptions) {
     if (!title || Array.from(title).length > 120) {
       throw new UiCardError("invalid_diagram_input", "图示标题长度需为 1–120 字符。", 400);
     }
-    if (!fallbackText || fallbackText.length > 2000) {
-      throw new UiCardError("invalid_diagram_input", "fallback_text 必填且不超过 2000 字符。", 400);
+    if (!fallbackText || fallbackText.length > 4000) {
+      throw new UiCardError("invalid_diagram_input", "fallback_text 必填且不超过 4000 字符。", 400);
     }
     if (caption && caption.length > 200) {
       throw new UiCardError("invalid_diagram_input", "图注 caption 不超过 200 字符。", 400);
@@ -120,6 +120,14 @@ export function createDiagramPublisher(options: DiagramPublisherOptions) {
       },
     );
 
+    const warnings = checked.warnings.map((w) => w.message);
+    const svgLabelCount = (checked.svg.match(/<text\b/gi) ?? []).length;
+    if (svgLabelCount >= 4 && fallbackText.length < 40 && !fallbackText.includes("\n")) {
+      warnings.push(
+        "fallback_text is very brief for a multi-label diagram; also include key labels, relationships, or values inline in your prose reply so plain-text readers are not left with a dangling diagram reference.",
+      );
+    }
+
     return {
       status: "published",
       assetId: asset.id,
@@ -128,7 +136,7 @@ export function createDiagramPublisher(options: DiagramPublisherOptions) {
       height: asset.height ?? checked.height,
       motion,
       ...(checked.autoFixed.length ? { autoFixed: checked.autoFixed } : {}),
-      ...(checked.warnings.length ? { warnings: checked.warnings.map((w) => w.message) } : {}),
+      ...(warnings.length ? { warnings } : {}),
     };
   };
 }

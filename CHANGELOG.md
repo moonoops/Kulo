@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.1.9 (2026-11-26)
+
+全面推进基准驱动的编排器 Harness 工程治理与减负重构，同时囊括助理主动唤醒规则管道、DSH 风格提示词架构与 1M 自适应上下文压缩能力（`v0.1.9`）。在 ShellBench、AlignBench 与 WildBench v2 249 道公开基准题的三方同场双盲重测中，彻底消除“框架税”：WildBench v2 全面反超同模型裸模型（`+0.382` / WB-Score `+0.763`）、AlignBench 纯直答损耗削减 84%、ShellBench 平均耗时腰斩（提速 `2.0×–2.2×`）且安全细则达成 100% 全过。
+
+### Harness Engineering, URL Hygiene & Dispatch Reliability
+
+- **远端默认节点工作目录修复与无沙箱保护（`@kulo/hub`）**
+  - 新增纯叶子模块 `orchestrator-env-cwd.ts`，在未绑定项目且锁定目标设备或单台在线电脑节点场景下，正确将默认工作目录映射至远端节点 `rootDir`，彻底消除跨宿主机路径越界报错与多余的 `kulo_host_action` 探测绕路；同时在 `sandboxed` 模式下自动过滤未就绪的 `no-sandbox`/SSH 节点，防止纯对话误抛异常。
+- **只读工作区智能推断、节点端预检与证据路径移交（`@kulo/hub`、`@kulo/env`）**
+  - 新增 `dispatch-workspace-infer.ts` 与 `dispatch-evidence-manifest.ts`：仅为无项目只读工单推断受管根内公共目录或只读绑定远端专用根，解决空 `table/` 目录遮蔽工作区文件的问题，并向 Worker 移交主控已读路径清单避免重复读盘；在执行节点侧（`agent-stream-spawn.ts`、`bridge-execution-env.ts`）于路径边界校验后增加只读目录存在性预检；`scheduler.ts` 脱敏并截断透传真实底层失败原因。
+- **代码感知的 `@agent` 点名守卫（`@kulo/hub`）**
+  - 新增 `agent-mention-guard.ts` 并接入 `agent-routing.ts`（含 `namedDispatchDevices`）：对未加代码围栏的汇编修饰（如 `.type main, @function`）、scoped 包、SSH 主机、注释与装饰器执行词法局部等长遮蔽，要求未知 `@name` 具备显式指派动词或句首呼语子句，同时严格保留显式点名不静默替换的安全不变量。
+- **四端对称 URL 追踪参数清洗与联网纪律（`@kulo/protocol`、`@kulo/hub`、`@kulo/web`）**
+  - 在 `@kulo/protocol` 新增共享叶子 `url-hygiene.ts`（支持平衡括号 URL、跳过代码块、兼容流式未闭合链接、折叠相邻同 URL 引用），对称接入 `web-content.ts`、`model-native-tools.ts`（仅 Responses API，不触碰 Anthropic 签名块）、`hub-display-projection.ts` 与前端 `citation-sources.ts`，彻底消除 `?utm_source=openai` 追踪外链污染并完整保留 Web UI `<SourceCitationLink asPill>` 胶囊体验；在主控提示词中明确角色扮演、创作、润色与纯逻辑数学题的禁搜边界。
+- **工具面减负、交付落点与文体自适应提示词（`@kulo/hub`、`@kulo/protocol`）**
+  - 抽离 `tool-surface-tiers.ts` 使 `tool-surface.ts` 退出超长遗留文件清单（930 → 843 行）；将 `kulo_ui_diagram` 与 `kulo_history_search` 静态降级为 `deferred`（读 `diagram-design` 技能自动挂载，零额外轮次；保持 `kulo_ui_show`/`kulo_steer`/`kulo_stop` 常驻无缓存抖动）；放宽图示 `fallbackText` 至 4000 字符。
+  - 明确“聊天直接交付代码 vs 后台工作区派单”决策边界、工单回传终态自包含与单轮轻核验、逻辑/数学题先推导再结论、角色扮演充分沉浸、实体锚点保真及 V4→V5 双语角色路由无损迁移（瓶颈优先路由替代按输出后缀归类 `writer`）。
+
+### Proactive Watch-Rule Wake Pipeline & Prompt Architecture Foundation
+
+- **助理主动唤醒规则与桌面通知路由（`@kulo/hub`、`@kulo/protocol`、`@kulo/desktop`、`@kulo/web`）**
+  - 新增 `assistant-watch-rules.ts`、`assistant-proactive-wake.ts`、`assistant-proactive-guard.ts` 与 `assistant-echo.ts`，支持按用户配置规则自动监听外部消息流并受控唤醒主对话与桌面系统通知。
+- **DSH 风格提示词编排、工具输出溢出分页与 1M 自适应压缩（`@kulo/hub`、`@kulo/env`）**
+  - 新增 `orchestrator-prompt-wiring.ts` 与 `staged-workspace-policy.ts`，完善工具输出 3D 溢出分页检索（`asset-inspection.ts`、`orchestrator-tool-overflow.ts`）与超长上下文自适应压缩策略。
+
 ## v0.1.8 (2026-11-24)
 
 修复聊天图片缩略图大于 32 KiB 时的 WebP 封装损坏与 Peer 浏览器媒体会话 Cookie 转发问题，并全面升级飞书（`lark-cli v1.0.100`）增量同步、只读查库工具与跨源助理降噪协同，全程零额外用户配置负担（`v0.1.8`）。

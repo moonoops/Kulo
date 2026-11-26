@@ -69,6 +69,7 @@ export function createContentToolsExtension(options: ContentToolsOptions) {
       ...(options.publishDiagram ? [defineTool({
         name: "kulo_ui_diagram",
         description: KULO_UI_DIAGRAM_DESCRIPTION,
+        deferred: true,
         parameters: obj({
           title: str(),
           svg: str(),

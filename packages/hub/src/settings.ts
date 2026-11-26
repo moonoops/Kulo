@@ -8,6 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { defineDoc, type JsonObject } from "@earendil-works/pi-durable";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { migrateSettingsRolesOnHydrate } from "./settings-role-migration.js";
 import {
   CUSTOM_PROVIDER_APIS,
   EXTERNAL_AGENT_KINDS,
@@ -30,7 +31,6 @@ import {
   validateImageModelProfile,
   VertexConfigError,
   defaultRolePresets,
-  HISTORICAL_DEFAULT_ROLE_TEXTS,
   type AgentExpressionState,
   type CompactionConfig,
   type CustomModelConfig,
@@ -675,6 +675,7 @@ export type KuloDurableSettings = {
   rolesMigratedV2?: boolean;
   rolesMigratedV3?: boolean;
   rolesMigratedV4?: boolean;
+  rolesMigratedV5?: boolean;
   gatewayMigratedV2?: boolean;
   executionTrustModeRevision?: number;
   globalRevision: number;
@@ -704,6 +705,7 @@ export const KuloSettingsDoc = defineDoc<KuloDurableSettings & JsonObject>({
       rolesMigratedV2: true,
       rolesMigratedV3: true,
       rolesMigratedV4: true,
+      rolesMigratedV5: true,
       gatewayMigratedV2: true,
       executionTrustModeRevision: 1,
       globalRevision: 1,
@@ -916,6 +918,7 @@ export function hydrateSettingsFromConfig(
     doc.rolesMigratedV2 = true;
     doc.rolesMigratedV3 = true;
     doc.rolesMigratedV4 = true;
+    doc.rolesMigratedV5 = true;
     doc.gatewayMigratedV2 = true;
     doc.presentation = cleanJson(config.presentation);
     doc.executionTrustModeRevision = 1;
@@ -973,91 +976,7 @@ export function hydrateSettingsFromConfig(
     config.completedTaskDisplayHours,
   );
   doc.model = normalizeModelConfig(doc.model);
-
-  const upgradeRoleTexts = (id: string, target: RolePreset, existing: RolePreset): RolePreset => {
-    const historical = HISTORICAL_DEFAULT_ROLE_TEXTS[id];
-    const isHistoricalLabel = Boolean(historical?.labels.includes(existing.label));
-    const isHistoricalWhen = Boolean(historical?.whenToUse.includes(existing.whenToUse));
-    const isHistoricalPrompt = Boolean(historical?.prompts.includes(existing.prompt));
-    return {
-      ...existing,
-      id,
-      label: isHistoricalLabel || !existing.label?.trim() ? target.label : existing.label,
-      whenToUse: isHistoricalWhen || !existing.whenToUse?.trim() ? target.whenToUse : existing.whenToUse,
-      prompt: isHistoricalPrompt || !existing.prompt?.trim() ? target.prompt : existing.prompt,
-    };
-  };
-
-  if (!doc.rolesMigratedV3) {
-    const freshDefaults = defaultRolePresets();
-    const prevRoles = doc.roles ?? {};
-    const migrated: Record<string, RolePreset> = {};
-    const carryOverrides = (id: string, target: RolePreset, legacy: RolePreset | undefined): RolePreset => {
-      if (!legacy) return { ...target };
-      const merged: RolePreset = {
-        ...target,
-        ...(legacy.provider ? { provider: legacy.provider } : {}),
-        ...(legacy.modelId ? { modelId: legacy.modelId } : {}),
-        ...(legacy.enabled !== undefined ? { enabled: legacy.enabled } : {}),
-        ...(legacy.readOnly !== undefined ? { readOnly: legacy.readOnly } : {}),
-        ...(legacy.allowSubagents !== undefined ? { allowSubagents: legacy.allowSubagents } : {}),
-        ...(legacy.thinkingLevel !== undefined ? { thinkingLevel: legacy.thinkingLevel } : {}),
-        ...(legacy.dispatchPolicy ? { dispatchPolicy: cleanJson(legacy.dispatchPolicy) } : {}),
-      };
-      return upgradeRoleTexts(id, target, {
-        ...merged,
-        label: legacy.label,
-        whenToUse: legacy.whenToUse,
-        prompt: legacy.prompt,
-      });
-    };
-    for (const [id, preset] of Object.entries(freshDefaults)) {
-      const legacyMatch =
-        id === "coder"
-          ? prevRoles.coder ?? prevRoles.engineer
-          : id === "checker"
-            ? prevRoles.checker ?? prevRoles.reviewer
-            : id === "scout"
-              ? prevRoles.scout ?? prevRoles.explorer
-              : prevRoles[id];
-      migrated[id] = carryOverrides(id, preset, legacyMatch);
-    }
-    const legacyDefaultIds = new Set([
-      "architect",
-      "engineer",
-      "writer",
-      "scout",
-      "coder",
-      "checker",
-      "designer",
-      "reviewer",
-      "explorer",
-    ]);
-    for (const [id, custom] of Object.entries(prevRoles)) {
-      if (!legacyDefaultIds.has(id)) {
-        migrated[id] = cleanJson(custom);
-      }
-    }
-    doc.roles = migrated;
-    doc.rolesMigratedV2 = true;
-    doc.rolesMigratedV3 = true;
-    doc.rolesMigratedV4 = true;
-  } else if (!doc.rolesMigratedV4) {
-    const freshDefaults = defaultRolePresets();
-    const upgradePool = (pool: Record<string, RolePreset> | undefined) => {
-      if (!pool) return;
-      for (const [id, preset] of Object.entries(freshDefaults)) {
-        const existing = pool[id];
-        if (!existing || existing.external) continue;
-        pool[id] = upgradeRoleTexts(id, preset, existing);
-      }
-    };
-    upgradePool(doc.roles);
-    for (const snap of doc.snapshots ?? []) {
-      upgradePool(snap.previousState?.roles);
-    }
-    doc.rolesMigratedV4 = true;
-  }
+  migrateSettingsRolesOnHydrate(doc);
   syncExternalClientsInSettings(doc);
 
   // Keep env-supplied API keys in sync if none stored inline
@@ -1434,6 +1353,7 @@ export function applySettingsBlockUpdate(
       doc.rolesMigratedV2 = true;
       doc.rolesMigratedV3 = true;
       doc.rolesMigratedV4 = true;
+      doc.rolesMigratedV5 = true;
       summary = options.summaryOverride ?? `更新 Worker 角色与模型预设（共 ${roleValues.length} 个角色）`;
       break;
     }

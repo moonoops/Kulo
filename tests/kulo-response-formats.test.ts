@@ -59,7 +59,7 @@ function expectFormatPolicy(request: TranscriptContext) {
   const prompt = sections(request);
   expect(prompt.kulo_orchestrator).toMatch(/Respect any user-requested format/);
   expect(prompt.kulo_orchestrator).toMatch(/plain text for simple answers and Markdown tables for quick comparisons/);
-  expect(prompt.kulo_orchestrator).toMatch(/Proactively.*kulo_ui_diagram.*diagram-design/);
+  expect(prompt.kulo_orchestrator).toMatch(/kulo_ui_diagram.*tool_search.*diagram-design/);
   expect(prompt.kulo_orchestrator).toMatch(/trends, comparisons, timelines.*phase schematics; never invent points/);
   expect(prompt.kulo_orchestrator).toMatch(/kulo_ui_show.*genui-cards/);
   expect(prompt.kulo_orchestrator).toMatch(/kulo_generate_image.*kulo_generate_video.*real asset/);
@@ -68,8 +68,9 @@ function expectFormatPolicy(request: TranscriptContext) {
   expect(prompt.kulo_skills).toContain("genui-cards");
   expect(prompt.kulo_skills).toContain("diagram-design");
   expect(offeredTools(request)).toEqual(expect.arrayContaining([
-    "kulo_ui_show", "kulo_ui_diagram", "tool_search", "kulo_skill_read",
+    "kulo_ui_show", "tool_search", "kulo_skill_read",
   ]));
+  expect(offeredTools(request)).not.toContain("kulo_ui_diagram");
 }
 
 describe("response formats in actual model requests", () => {

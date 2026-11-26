@@ -12,6 +12,7 @@ import {
   isInternalCoordinatorPromptText,
   isSilentCoordinatorReplyText,
   redactSensitiveText,
+  sanitizeMarkdownTrackingLinks,
   type ChatAttachment,
   type ChatDisplayItem,
   type ChatReplyReference,
@@ -477,7 +478,7 @@ export function extractDisplayMessages(
         if (isSilentAck && toolCalls.length === 0) {
           continue;
         }
-        const visibleText = isSilentAck ? "" : textBlocks.join("\n");
+        const visibleText = isSilentAck ? "" : sanitizeMarkdownTrackingLinks(textBlocks.join("\n"));
         const sources = visibleText.trim()
           ? sanitizeSearchSources([...native.sources, ...selectCitedSources(visibleText, pendingSources)])
           : [];
@@ -562,7 +563,7 @@ export function extractLiveState(
       (trimmedStreaming.startsWith("[R") && "[RECOVERY_OK]".startsWith(trimmedStreaming))
     )
   ) {
-    streamingText = rawStreamingText;
+    streamingText = sanitizeMarkdownTrackingLinks(rawStreamingText);
   }
 
   const { currentResponseId } = resolveResponseContext(responseEntries);

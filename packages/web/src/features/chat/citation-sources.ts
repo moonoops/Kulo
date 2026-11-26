@@ -1,4 +1,4 @@
-import type { WebSource } from "@kulo/protocol";
+import { stripTrackingSearchParams, type WebSource } from "@kulo/protocol";
 
 export interface IndexedWebSource {
   id: string;
@@ -62,6 +62,7 @@ export function safeSourceUrl(value: unknown): string | undefined {
     const [a, b] = host.split(".").map(Number) as [number, number];
     if (a === 0 || a === 10 || a === 127 || a >= 224 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && (b === 0 || b === 168) || a === 100 && b >= 64 && b <= 127 || a === 198 && (b === 18 || b === 19)) return undefined;
   }
+  stripTrackingSearchParams(url);
   return url.toString();
 }
 
