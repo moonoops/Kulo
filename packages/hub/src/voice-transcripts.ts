@@ -5,6 +5,8 @@ export interface VoiceTranscriptData {
   role: "user" | "assistant";
   text: string;
   createdAt: number;
+  itemId?: string;
+  incomplete?: boolean;
 }
 
 export const VoiceTranscriptEntry = defineEntry<VoiceTranscriptData & JsonObject>("kulo.voice.transcript");

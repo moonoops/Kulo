@@ -35,7 +35,7 @@ export interface VoiceLiveOpenInput extends VoiceLiveConfig {
   onEvent: (event: VoiceCallEvent) => void;
   onDelegate: (request: { id: string; text: string }) => void | Promise<void>;
 }
-export interface VoiceLiveOptions { signal?: AbortSignal; timeoutMs?: number }
+export interface VoiceLiveOptions { signal?: AbortSignal; timeoutMs?: number; closeTimeoutMs?: number }
 export interface VoiceLiveConnection {
   readonly inputSampleRate: number;
   readonly outputSampleRate: number;
@@ -49,6 +49,7 @@ export interface VoiceLiveConnection {
 }
 interface TranscriptGroup { id: string; text: string; endMs?: number }
 interface InputTranscriptSegment { startMs: number; endMs: number; text: string }
+interface PendingDelegation { timer: ReturnType<typeof setTimeout>; offsetMs: number; previousOffset: number }
 interface Task { upstreamId?: string; responded: boolean; cancelled: boolean }
 type Json = Record<string, unknown>;
 function object(value: unknown): value is Json { return !!value && typeof value === "object" && !Array.isArray(value); }
@@ -197,11 +198,12 @@ class LiveConnection implements VoiceLiveConnection {
   readonly #inputSegments: InputTranscriptSegment[] = [];
   readonly #delegationOffsets = new Map<string, number>();
   readonly #pendingCommands: Json[] = [];
-  readonly #pendingDelegations = new Map<string, ReturnType<typeof setTimeout>>();
+  readonly #pendingDelegations = new Map<string, PendingDelegation>();
   #resolveClosed!: () => void;
   #socket?: WebSocket;
   #ready = false;
   #closing = false;
+  #finishing = false;
   #ended = false;
   #muted = false;
   #state?: VoiceCallState;
@@ -218,6 +220,7 @@ class LiveConnection implements VoiceLiveConnection {
     this.#input = input;
     this.#options = options;
     if (options.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 60_000)) throw new VoiceLiveError("voice_live_invalid_timeout", "通话连接超时设置无效。");
+    if (options.closeTimeoutMs !== undefined && (!Number.isFinite(options.closeTimeoutMs) || options.closeTimeoutMs <= 0 || options.closeTimeoutMs > 60_000)) throw new VoiceLiveError("voice_live_invalid_timeout", "通话关闭超时设置无效。");
     this.#instructions = instructions(input);
     this.#history = history(input);
     this.inputSampleRate = input.provider === "openai" ? 24_000 : 16_000;
@@ -242,11 +245,22 @@ class LiveConnection implements VoiceLiveConnection {
   async open(): Promise<VoiceLiveConnection> {
     const signal = this.#options.signal ?? this.#input.signal;
     if (signal?.aborted) throw new VoiceLiveError("voice_live_cancelled", "通话连接已取消。");
-    this.#abort = () => this.#fail(new VoiceLiveError("voice_live_cancelled", "通话连接已取消。"));
+    this.#abort = () => {
+      if (!this.#ready) {
+        this.#fail(new VoiceLiveError("voice_live_cancelled", "通话连接已取消。"));
+        return;
+      }
+      if (this.#closing) {
+        this.#socket?.terminate();
+        this.#finish(true);
+        return;
+      }
+      this.close();
+    };
     signal?.addEventListener("abort", this.#abort, { once: true });
     this.#setState("connecting");
     try { await this.#connect(); return this; }
-    catch (error) { this.#finish(); throw error; }
+    catch (error) { this.#finish(true); throw error; }
   }
   #connect(resume = false): Promise<void> {
     this.#ready = false;
@@ -355,7 +369,7 @@ class LiveConnection implements VoiceLiveConnection {
           const text = reason.toString();
           this.#logFailure("socket_close", { code, ready: this.#ready }, text);
           this.#fail(code === 1008 || code === 1007 ? safeFailure(provider, undefined, text) : new VoiceLiveError("voice_live_disconnected", "实时语音连接已断开，可重新连接。"));
-        } else this.#finish();
+        } else this.#finish(false);
       });
     });
   }
@@ -423,9 +437,19 @@ class LiveConnection implements VoiceLiveConnection {
     if (endMs !== undefined) group.endMs = endMs;
     this.#event({ type: "transcript", id: group.id, role, text: group.text, final: false });
   }
-  #finalize(role: "user" | "assistant"): void {
+  #finalize(role: "user" | "assistant", incomplete = false): void {
     const group = this.#groups[role];
-    if (group) { this.#event({ type: "transcript", id: group.id, role, text: group.text, final: true }); delete this.#groups[role]; }
+    if (group) {
+      delete this.#groups[role];
+      this.#event({
+        type: "transcript",
+        id: group.id,
+        role,
+        text: group.text,
+        final: true,
+        ...(incomplete ? { incomplete: true } : {}),
+      });
+    }
   }
   #interrupt(): void {
     clearTimeout(this.#speechTimer); this.#speakingUntil = 0;
@@ -441,19 +465,25 @@ class LiveConnection implements VoiceLiveConnection {
     this.#speechTimer = setTimeout(() => { if (!this.#closing && !this.#ended) this.#setState("listening"); }, Math.max(20, this.#speakingUntil - Date.now()));
     this.#speechTimer.unref?.();
   }
-  #delegate(id: string, request: string, upstreamId?: string): void {
-    if (this.#tasks.has(id) || this.#closing || this.#ended) return;
+  #delegate(id: string, request: string, upstreamId?: string, allowClosing = false): void {
+    if (this.#tasks.has(id) || this.#ended || (this.#closing && !allowClosing)) return;
     if (this.#tasks.size >= 128) { this.#fail(new VoiceLiveError("voice_live_task_limit", "本次通话的任务数量已达上限，请重新连接。")); return; }
-    this.#tasks.set(id, { upstreamId, responded: false, cancelled: false }); this.#setState("working");
-    void Promise.resolve().then(() => this.#input.onDelegate({ id, text: request })).catch(() => {
+    this.#tasks.set(id, { upstreamId, responded: false, cancelled: false });
+    if (!this.#closing) this.#setState("working");
+    try {
+      void Promise.resolve(this.#input.onDelegate({ id, text: request })).catch(() => {
+        if (!this.#closing && !this.#ended) this.sendTaskResult(id, "Kulo 未能完成这次请求，请查看聊天中的任务状态。", true);
+      });
+    } catch {
       if (!this.#closing && !this.#ended) this.sendTaskResult(id, "Kulo 未能完成这次请求，请查看聊天中的任务状态。", true);
-    });
+    }
   }
   #openaiMessage(message: Json): void {
-    if (message.type === "session.output_audio.delta" && typeof message.delta === "string") this.#audio(message.delta);
-    else if ((message.type === "session.input_transcript.delta" || message.type === "session.output_transcript.delta") && typeof message.delta === "string") {
+    if (message.type === "session.output_audio.delta" && typeof message.delta === "string") {
+      if (!this.#closing) this.#audio(message.delta);
+    } else if ((message.type === "session.input_transcript.delta" || message.type === "session.output_transcript.delta") && typeof message.delta === "string") {
       const role = message.type === "session.input_transcript.delta" ? "user" : "assistant";
-      if (role === "user" && this.#state === "speaking") this.#interrupt();
+      if (role === "user" && this.#state === "speaking" && !this.#closing) this.#interrupt();
       if (role === "user" && typeof message.start_ms === "number" && typeof message.end_ms === "number" && Number.isFinite(message.start_ms) && Number.isFinite(message.end_ms) && message.start_ms >= 0 && message.end_ms >= message.start_ms) {
         this.#inputSegments.push({ startMs: message.start_ms, endMs: message.end_ms, text: message.delta });
         if (this.#inputSegments.length > 512) this.#inputSegments.splice(0, this.#inputSegments.length - 512);
@@ -470,13 +500,17 @@ class LiveConnection implements VoiceLiveConnection {
       this.#delegationOffsets.set(id, offsetMs);
       // Task metadata and speech text travel independently. Give already queued transcript fragments time to arrive.
       const timer = setTimeout(() => {
+        if (this.#ended) { this.#pendingDelegations.delete(id); return; }
+        // While draining a graceful close, wait for #finish(false) on session.closed so delayed trailing fragments
+        // join the request and transcript persistence precedes delegation.
+        if (this.#closing) return;
         this.#pendingDelegations.delete(id);
         const request = this.#requestAt(offsetMs, previousOffset);
         if (request?.trim()) this.#delegate(id, request);
         else this.#appendOpenAI("session.thinking.append", id, "No clear user request was received. Ask the caller to repeat the task before executing it.");
       }, 150);
-      timer.unref?.(); this.#pendingDelegations.set(id, timer);
-    } else if (message.type === "session.closed") { this.#closing = true; this.#socket?.close(1000); this.#finish(); }
+      timer.unref?.(); this.#pendingDelegations.set(id, { timer, offsetMs, previousOffset });
+    } else if (message.type === "session.closed") { this.#closing = true; this.#socket?.close(1000); this.#finish(false); }
     else if (message.type === "error") {
       const upstream = object(message.error) ? message.error : {};
       const reason = typeof upstream.message === "string" ? upstream.message : "";
@@ -488,7 +522,7 @@ class LiveConnection implements VoiceLiveConnection {
       }, reason);
       const error = safeFailure(this.#config.provider, undefined, reason);
       if (!this.#ready) this.#fail(error);
-      else { this.#interrupt(); this.#event({ type: "error", code: error.code, message: error.message }); }
+      else if (!this.#closing) { this.#interrupt(); this.#event({ type: "error", code: error.code, message: error.message }); }
     }
   }
   #requestAt(offsetMs: number, previousOffset: number): string {
@@ -509,24 +543,24 @@ class LiveConnection implements VoiceLiveConnection {
     if (object(message.sessionResumptionUpdate) && message.sessionResumptionUpdate.resumable === true && typeof message.sessionResumptionUpdate.newHandle === "string") this.#resumptionHandle = message.sessionResumptionUpdate.newHandle;
     if (object(message.serverContent)) {
       const content = message.serverContent;
-      if (content.interrupted === true) { this.#interrupt(); this.#finalize("assistant"); }
+      if (content.interrupted === true) { if (!this.#closing) this.#interrupt(); this.#finalize("assistant"); }
       if (object(content.inputTranscription) && typeof content.inputTranscription.text === "string") this.#transcript("user", content.inputTranscription.text);
       if (object(content.outputTranscription) && typeof content.outputTranscription.text === "string") this.#transcript("assistant", content.outputTranscription.text);
-      if (object(content.modelTurn) && Array.isArray(content.modelTurn.parts)) for (const part of content.modelTurn.parts) {
+      if (!this.#closing && object(content.modelTurn) && Array.isArray(content.modelTurn.parts)) for (const part of content.modelTurn.parts) {
         if (!object(part) || !object(part.inlineData) || typeof part.inlineData.data !== "string") continue;
         if (typeof part.inlineData.mimeType !== "string" || !/^audio\/pcm(?:;rate=24000)?$/i.test(part.inlineData.mimeType)) { this.#fail(new VoiceLiveError("voice_live_unsupported_audio", "语音服务返回了不支持的音频编码。")); return; }
         this.#audio(part.inlineData.data);
       }
-      if (content.turnComplete === true) { this.#finalize("user"); this.#finalize("assistant"); if (this.#speakingUntil <= Date.now()) this.#setState("listening"); }
+      if (content.turnComplete === true) { this.#finalize("user"); this.#finalize("assistant"); if (!this.#closing && this.#speakingUntil <= Date.now()) this.#setState("listening"); }
     }
     if (object(message.toolCall) && Array.isArray(message.toolCall.functionCalls)) for (const call of message.toolCall.functionCalls) {
       if (!object(call)) continue;
       const id = typeof call.id === "string" && call.id.length <= 256 ? call.id : randomUUID();
       const upstreamId = typeof call.id === "string" ? call.id : undefined;
       if (call.name !== DELEGATE_TOOL || !object(call.args) || typeof call.args.request !== "string" || !call.args.request.trim() || Buffer.byteLength(call.args.request) > MAX_CONTEXT_BYTES) {
-        this.#send({ toolResponse: { functionResponses: [{ ...(upstreamId ? { id: upstreamId } : {}), name: typeof call.name === "string" ? call.name : DELEGATE_TOOL, response: { error: "Unsupported tool or invalid task request." } }] } }); continue;
+        if (!this.#closing) this.#send({ toolResponse: { functionResponses: [{ ...(upstreamId ? { id: upstreamId } : {}), name: typeof call.name === "string" ? call.name : DELEGATE_TOOL, response: { error: "Unsupported tool or invalid task request." } }] } }); continue;
       }
-      this.#delegate(id, call.args.request, upstreamId);
+      this.#delegate(id, call.args.request, upstreamId, true);
     }
     if (object(message.toolCallCancellation) && Array.isArray(message.toolCallCancellation.ids)) for (const id of message.toolCallCancellation.ids) {
       const task = typeof id === "string" ? this.#tasks.get(id) : undefined;
@@ -572,27 +606,44 @@ class LiveConnection implements VoiceLiveConnection {
     if (this.#ended) return;
     const reject = this.#connectReject; this.#connectReject = undefined; reject?.(error);
     this.#event({ type: "error", code: error.code, message: error.message }); this.#closing = true;
-    this.#socket?.terminate(); this.#finish();
+    this.#socket?.terminate(); this.#finish(true);
   }
-  #finish(): void {
-    if (this.#ended) return;
-    this.#ended = true; this.#ready = false;
+  #finish(incomplete = false): void {
+    if (this.#ended || this.#finishing) return;
+    this.#finishing = true;
+    this.#closing = true;
     clearTimeout(this.#connectTimer); clearTimeout(this.#closeTimer); clearTimeout(this.#speechTimer);
-    for (const timer of this.#pendingDelegations.values()) clearTimeout(timer);
+    // Finalize remaining transcripts before flushing delegations so transcript persistence precedes delegation.
+    this.#finalize("user", incomplete);
+    this.#finalize("assistant", incomplete);
+    const pending = [...this.#pendingDelegations.entries()];
     this.#pendingDelegations.clear();
+    for (const [id, entry] of pending) {
+      clearTimeout(entry.timer);
+      if (!incomplete) {
+        const request = this.#requestAt(entry.offsetMs, entry.previousOffset);
+        if (request?.trim()) this.#delegate(id, request, undefined, true);
+      }
+    }
+    this.#ended = true; this.#ready = false;
     this.#pendingCommands.length = 0;
     const signal = this.#options.signal ?? this.#input.signal;
     if (this.#abort) signal?.removeEventListener("abort", this.#abort);
-    this.#finalize("user"); this.#finalize("assistant"); this.#setState("ended"); this.#resolveClosed();
+    this.#setState("ended"); this.#resolveClosed();
   }
   close(): void {
     if (this.#closing || this.#ended) return;
     this.#closing = true;
     if (!this.#ready) { this.#fail(new VoiceLiveError("voice_live_cancelled", "通话连接已取消。")); return; }
+    const timeoutMs = this.#options.closeTimeoutMs ?? 3000;
     if (this.#config.provider === "openai") {
-      this.#send({ type: "session.close", event_id: randomUUID() });
-      this.#closeTimer = setTimeout(() => { this.#socket?.terminate(); this.#finish(); }, 3000);
-    } else { this.#socket?.close(1000); this.#closeTimer = setTimeout(() => { this.#socket?.terminate(); this.#finish(); }, 1000); }
+      try { this.#send({ type: "session.close", event_id: randomUUID() }); }
+      catch { this.#socket?.terminate(); this.#finish(true); return; }
+      this.#closeTimer = setTimeout(() => { this.#socket?.terminate(); this.#finish(true); }, timeoutMs);
+    } else {
+      this.#socket?.close(1000);
+      this.#closeTimer = setTimeout(() => { this.#socket?.terminate(); this.#finish(true); }, timeoutMs);
+    }
     this.#closeTimer.unref?.();
   }
 }

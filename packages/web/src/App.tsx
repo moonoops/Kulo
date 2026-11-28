@@ -58,6 +58,7 @@ import { KuloIcon } from "./kulo-icon";
 import { ConnectedMessageContent } from "./features/chat/connected-message-content";
 import { liveResponseMessageId, mergeResponseMessages } from "./features/chat/response-messages";
 import { KuloLiveWaitRow } from "./features/chat/live-wait-row";
+import { VoiceCallSummaryCard } from "./features/chat/voice-call-summary-card";
 import { mergeChatSubmissions, splitChatTimeline, submissionKey, type ChatViewItem, type PendingSubmissionBackup } from "./features/chat/chat-submissions";
 import { UserDeliveryStatus, useDeliveryStatusClock, visibleChatDeliveryLabel, visibleTaskSubmissionStatus } from "./features/chat/delivery-status";
 import { computeChatScrollState, useChatAutoScroll } from "./features/chat/use-chat-autoscroll";
@@ -1287,6 +1288,13 @@ function AppShell() {
     }
 
     if (item.role === "system_note") {
+      if (item.voiceSummary) {
+        return (
+          <div key={item.id} data-message-id={item.id} className="w-full">
+            <VoiceCallSummaryCard summary={item.voiceSummary} topicId={activeTopicId} agentName={agentName} />
+          </div>
+        );
+      }
       return (
         <div
           key={item.id}

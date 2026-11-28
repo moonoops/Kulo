@@ -57,9 +57,15 @@ import { modelFetch, retainEnvironmentProxy } from "./http-transport.js";
 import { withNativeToolsModels } from "./model-native-tools.js";
 import { LocalVoiceAsr } from "./voice-asr.js";
 import { KuloVoiceService, VoiceError, type SyncedVoiceModelCandidate, type VoiceAsrEngine } from "./voice-service.js";
-import { KuloVoiceCalls, type KuloVoiceCallsOptions } from "./voice-calls.js";
+import { KuloVoiceCalls, type KuloVoiceCallsOptions, type VoiceCallSummaryInput } from "./voice-calls.js";
 import { TicketBoardProjection } from "./ticket-board.js";
-import { VoiceTranscriptEntry } from "./voice-transcripts.js";
+import {
+  persistVoiceCallSummary,
+  persistVoiceTranscript,
+  readVoiceCallTranscriptTurns,
+  resolveBoundVoiceConversation,
+  type ResolvedVoiceConversation,
+} from "./voice-call-summary.js";
 import { createVoiceContext } from "./voice-context.js";
 import { createVoiceToolsExtension } from "./tools-voice.js";
 import { KuloMediaJobs } from "./media-jobs.js";
@@ -176,6 +182,7 @@ import {
   type ComputerPreviewUpdate,
   type ArchiveMainConversationInput,
   type ArchiveMainConversationResult,
+  type VoiceCallTranscriptTurn,
 } from "@kulo/protocol";
 import {
   DEFAULT_COMPACTION_CONFIG,
@@ -617,6 +624,7 @@ export class KuloHub implements OrchestratorController {
   #cleanupRetryDelayMs = 500;
   readonly #settingsStore: LiveSettingsStore;
   #recovering = true;
+  #acceptingNewWork = true;
   #closed = false;
   #closing?: Promise<void>;
   #androidHubId = "";
@@ -1178,6 +1186,9 @@ export class KuloHub implements OrchestratorController {
       onChanged: () => this.#broadcastVoice() });
     this.voiceCalls = new KuloVoiceCalls({ voice: this.voice, openLive: params.voiceOpenLive,
       canCreateCall: async (topicId) => {
+        if (!this.#acceptingNewWork || this.#closed) {
+          throw new VoiceError(503, "voice_calls_closed", "语音服务已关闭。");
+        }
         if (topicId === "root" && this.#mainArchive?.isArchivingRoot()) {
           throw new VoiceError(409, "main_archive_in_progress", "主对话正在归档，请稍后再发起语音通话。");
         }
@@ -1198,14 +1209,20 @@ export class KuloHub implements OrchestratorController {
           memory: this.#effectiveMemoryConfig(this.#liveSettings.memory), agentName: this.#liveSettings.presentation.agentName,
           builtinMemoryRecall: this.memoryRuntime.builtinMemory.isEffectiveActive() ? (input, ctx) => this.memoryRuntime.builtinMemory.recallForVoice(input, ctx) : undefined,
           redact: (text) => this.connectionManager.redact(text) }, BACKGROUND_CONTEXT);
-        return { ...voiceContext, ...(cache.live.runFailure ? { priorFailureTaskId: cache.live.runFailure.taskId ?? "router" } : {}) };
+        return {
+          ...voiceContext,
+          conversationId: Number(cache.conversation.id),
+          ...(cache.live.runFailure ? { priorFailureTaskId: cache.live.runFailure.taskId ?? "router" } : {}),
+        };
       },
-      transcript: (topicId, event, callId) => this.#recordVoiceTranscript(topicId, event, callId),
-      delegate: async ({ topicId, principalId, callId, delegationId, text }) => {
-        await this.#voiceTopic(topicId);
+      transcript: (topicId, event, callId, conversationId) => this.#recordVoiceTranscript(topicId, event, callId, conversationId),
+      delegate: async ({ topicId, conversationId, principalId, callId, delegationId, text }) => {
+        const target = await this.#resolveVoiceConversation(topicId, conversationId, false);
+        if (!target || target.archived) return;
         await this.sendUserMessage(`[Voice Call Request]\n${text}\nFulfill this spoken request in the active conversation context (delegate complex work via kulo_dispatch, or update existing work via kulo_steer). Publish full deliverables to this chat and reply with concise, verified facts and status suitable for spoken summary.`,
-          { topicId, principalId, requestId: `voice:${callId}:${delegationId}`, voiceDelegation: true });
-      } });
+          { topicId: target.topicId, expectedConversationId: target.conversationId, principalId, requestId: `voice:${callId}:${delegationId}`, voiceDelegation: true });
+      },
+      summary: (input) => this.#recordVoiceCallSummary(input) });
     this.mediaJobs = new KuloMediaJobs({ harness: this.harness, capabilities: this.capabilities, uploads: this.uploads,
       browser: (id, request) => this.envManager.requestBrowser(id, request),
       validateSource: (source, job) => this.#validateMediaSource(source, job),
@@ -2862,18 +2879,43 @@ export class KuloHub implements OrchestratorController {
     return this.#resolveWatchedTopic(topicId, BACKGROUND_CONTEXT);
   }
 
-  async #recordVoiceTranscript(topicId: string, event: Extract<VoiceCallEvent, { type: "transcript" }>, callId: string): Promise<void> {
-    if (!event.final || !event.text.trim() || this.#closed) return;
-    const cache = await this.#voiceTopic(topicId);
-    const text = event.role === "user" ? (await this.connectionManager.processText(event.text)).text : this.connectionManager.redact(event.text);
-    const createdAt = Date.now();
-    await cache.conversation.submit({ type: "write", entry: { kind: VoiceTranscriptEntry.kind,
-      data: { callId, role: event.role, text, createdAt },
-      model: [{ role: "user", content: `[KULO_VOICE_CONTEXT: ${event.role === "user" ? "用户" : "Kulo"}在通话中说]\n${text}`, timestamp: createdAt }] },
-      ...(event.id ? { requestId: `voice-transcript:${callId}:${event.role}:${event.id}` } : {}) }, BACKGROUND_CONTEXT);
-    this.#refreshTopicContent(cache);
-    const preview = summarizeTopicPreview([{ role: event.role, text, createdAt }]);
-    if (preview) this.#topics.recordTopicActivity(cache.topicId, preview, Number(cache.conversation.id));
+  async #resolveVoiceConversation(topicId: string, conversationId?: number, allowArchived = true): Promise<ResolvedVoiceConversation | undefined> {
+    if (conversationId !== undefined) return resolveBoundVoiceConversation(this.harness, conversationId, allowArchived, BACKGROUND_CONTEXT);
+    const cache = await this.#voiceTopic(topicId, allowArchived);
+    return { conversation: cache.conversation, conversationId: Number(cache.conversation.id), topicId: cache.topicId, archived: false };
+  }
+
+  async #recordVoiceTranscript(topicId: string, event: Extract<VoiceCallEvent, { type: "transcript" }>, callId: string, conversationId?: number): Promise<boolean> {
+    if (!event.final || !event.text.trim() || this.#closed) return false;
+    const target = await this.#resolveVoiceConversation(topicId, conversationId, true);
+    if (!target) return false;
+    return persistVoiceTranscript({
+      target, event, callId,
+      processUserText: async (text) => (await this.connectionManager.processText(text)).text,
+      redact: (text) => this.connectionManager.redact(text),
+      refreshConversation: (id) => this.#topics.refreshByConversation(id),
+      recordTopicActivity: (id, preview, convId) => this.#topics.recordTopicActivity(id, preview, convId),
+    }, BACKGROUND_CONTEXT);
+  }
+
+  async #recordVoiceCallSummary(input: VoiceCallSummaryInput): Promise<void> {
+    if (this.#closed || input.turnCount < 1) return;
+    const target = await this.#resolveVoiceConversation(input.topicId, input.conversationId, true);
+    if (!target) return;
+    await persistVoiceCallSummary({
+      harness: this.harness, target, input,
+      redact: (text) => this.connectionManager.redact(text),
+      refreshConversation: (id) => this.#topics.refreshByConversation(id),
+    }, BACKGROUND_CONTEXT);
+  }
+
+  async getVoiceCallTranscript(topicId: string, callId: string, context: Context = BACKGROUND_CONTEXT): Promise<VoiceCallTranscriptTurn[]> {
+    const cleanCallId = callId.trim();
+    if (!cleanCallId || cleanCallId.length > 240 || /[\x00-\x1f\x7f]/.test(cleanCallId)) {
+      throw new VoiceError(400, "invalid_voice_call", "通话标识无效。");
+    }
+    const cache = await this.#voiceTopic(topicId || "root", true);
+    return readVoiceCallTranscriptTurns(cache.conversation, cleanCallId, (text) => this.connectionManager.redact(text), context);
   }
 
   async transcribeVoiceAsset(assetId: string, options: { topicId?: string; principalId: string }, context: Context = BACKGROUND_CONTEXT): Promise<ChatAttachment> {
@@ -3511,6 +3553,9 @@ export class KuloHub implements OrchestratorController {
 
   async deliverClientMessage(message: ReliableClientMessage, principalId = this.envManager.localEnvId, context: Context = BACKGROUND_CONTEXT,
     source?: ChatMessageSource): Promise<DeliveryAck & { deduplicated?: boolean }> {
+    if (!this.#acceptingNewWork || this.#closed) {
+      throw new ProjectError(503, "hub_closing", "中枢正在退出，请稍后重试。");
+    }
     if (this.#handoverBarrierActive && message.type !== "chat.abort") {
       throw new ProjectError(503, "cluster_handover_in_progress", "主机正在切换，请稍候。");
     }
@@ -3586,6 +3631,9 @@ export class KuloHub implements OrchestratorController {
     options: MessageSubmissionOptions = {},
     context: Context = BACKGROUND_CONTEXT,
   ) {
+    if ((!this.#acceptingNewWork && !options.voiceDelegation) || this.#closed) {
+      throw new ProjectError(503, "hub_closing", "中枢正在退出，请稍后重试。");
+    }
     return this.#chat.sendUserMessage(content, options, context);
   }
 
@@ -3619,6 +3667,9 @@ export class KuloHub implements OrchestratorController {
     input: ArchiveMainConversationInput,
     context: Context = BACKGROUND_CONTEXT,
   ): Promise<ArchiveMainConversationResult> {
+    if (!this.#acceptingNewWork || this.#closed) {
+      throw new ProjectError(503, "hub_unavailable", "中枢当前不可执行主对话归档，请稍后重试。");
+    }
     return this.#mainArchive.archiveMainConversation(input, context);
   }
 
@@ -4603,15 +4654,19 @@ export class KuloHub implements OrchestratorController {
   }
 
   async #finishClose(context: Context): Promise<void> {
+    // Reject new incoming work first, then drain active voice calls (trailing transcripts & summary cards)
+    // BEFORE marking #closed = true so drain-period durable writes are never dropped.
+    this.#acceptingNewWork = false;
+    const errors: unknown[] = [];
+    const finish = async (work: () => unknown) => {
+      try { await work(); } catch (error) { errors.push(error); }
+    };
+    await finish(() => this.voiceCalls.close());
     this.#closed = true;
     this.#runHealth.close();
     this.externalClientQuotas.close();
     this.#externalClientAdmin.clearReceipts();
     this.releaseHandoverBarrier();
-    const errors: unknown[] = [];
-    const finish = async (work: () => unknown) => {
-      try { await work(); } catch (error) { errors.push(error); }
-    };
     await finish(() => this.#clusterCloseHook?.());
     this.#inlineWaiters.notifyAll();
     await this.#computer.closeAllOrchestratorBrowserSessions();
@@ -4625,7 +4680,6 @@ export class KuloHub implements OrchestratorController {
     await finish(() => this.memoryRuntime.close());
     if (this.#uploadCleanupTimer) { clearInterval(this.#uploadCleanupTimer); this.#uploadCleanupTimer = null; }
     await finish(() => this.#customizationInstance?.close());
-    await finish(() => this.voiceCalls.close());
     await finish(() => this.voice.close());
     await finish(() => this.connectionManager.closeAsync());
     await finish(() => this.envManager.setAndroidNotificationClassifier(undefined));

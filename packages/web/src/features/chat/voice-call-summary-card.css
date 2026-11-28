@@ -1,0 +1,109 @@
+@reference "../../kulo.css";
+
+.kulo-voice-summary-card {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-secondary);
+  padding: var(--kulo-space-2) var(--kulo-space-3);
+}
+
+.kulo-voice-summary-trigger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--kulo-space-2);
+  text-align: left;
+  color: var(--muted);
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
+  font-weight: 500;
+}
+
+.kulo-voice-summary-trigger:hover {
+  color: var(--foreground);
+}
+
+.kulo-voice-summary-heading {
+  display: inline-flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: var(--kulo-space-2);
+}
+
+.kulo-voice-summary-heading > svg {
+  flex: none;
+}
+
+.kulo-voice-summary-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.kulo-voice-summary-body {
+  margin-top: var(--kulo-space-2);
+  border-top: 1px solid var(--separator);
+  padding-top: var(--kulo-space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--kulo-space-2);
+}
+
+.kulo-voice-summary-turns {
+  @apply scrollbar;
+  display: flex;
+  flex-direction: column;
+  gap: var(--kulo-space-2);
+  max-height: 18rem;
+  overflow-y: auto;
+  padding-inline-end: var(--kulo-space-1);
+}
+
+.kulo-voice-summary-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.kulo-voice-summary-turn-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--kulo-space-2);
+  color: var(--muted);
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
+  font-weight: 500;
+}
+
+.kulo-voice-summary-turn-text {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.kulo-voice-summary-tickets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--kulo-space-1);
+}
+
+.kulo-voice-summary-status {
+  display: flex;
+  align-items: center;
+  gap: var(--kulo-space-2);
+  color: var(--muted);
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
+}

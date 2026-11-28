@@ -205,6 +205,7 @@ export interface ChatDisplayItem {
   submissionId?: number;
   delivery?: "queued" | "paused";
   voiceCallId?: string;
+  voiceSummary?: import("./voice.js").VoiceCallSummaryView;
   role: "user" | "assistant" | "relay" | "dispatch" | "system_note";
   text: string;
   replyTo?: ChatReplyReference;

@@ -16,39 +16,73 @@ export interface VoiceCallConfiguration {
 }
 export interface VoiceCallScope { topicId: string; clientId: string; principalId: string; commandId: string }
 type Transcript = Extract<VoiceCallEvent, { type: "transcript" }>;
+export interface VoiceCallSummaryInput {
+  topicId: string;
+  conversationId?: number;
+  callId: string;
+  startedAt: number;
+  endedAt: number;
+  durationMs: number;
+  turnCount: number;
+  delegatedTicketIds: string[];
+  hadDelegations: boolean;
+}
 export interface KuloVoiceCallsOptions {
   voice: { liveConfig(): Promise<VoiceCallConfiguration> };
   context(topicId: string, principalId: string): Promise<{
     history: Array<{ role: "user" | "assistant"; text: string }>;
     instructions: string;
+    conversationId?: number;
     messageIds?: Array<string | number>;
     priorFailureTaskId?: number | "router";
   }>;
-  transcript(topicId: string, event: Transcript, callId: string): Promise<void>;
-  delegate(input: { topicId: string; principalId: string; callId: string; delegationId: string; text: string }): Promise<void>;
+  transcript(topicId: string, event: Transcript, callId: string, conversationId?: number): Promise<boolean | void>;
+  delegate(input: {
+    topicId: string;
+    conversationId?: number;
+    principalId: string;
+    callId: string;
+    delegationId: string;
+    text: string;
+  }): Promise<void | { ticketId?: string; ticketIds?: string[] }>;
+  summary?(input: VoiceCallSummaryInput): Promise<void>;
   openLive?: typeof openVoiceLive;
   canCreateCall?: (topicId: string) => Promise<void> | void;
   pendingTimeoutMs?: number;
+  drainTimeoutMs?: number;
   now?: () => number;
+}
+
+interface InterimTranscript {
+  role: "user" | "assistant";
+  id?: string;
+  text: string;
 }
 
 interface Call {
   id: string;
+  conversationId?: number;
+  startedAt: number;
   scope: VoiceCallScope;
   configuration: string;
   context: Awaited<ReturnType<KuloVoiceCallsOptions["context"]>>;
   session: VoiceCallSession;
   controller: AbortController;
   timer: ReturnType<typeof setTimeout>;
-  ended: boolean;
+  closing: boolean;
+  sealed: boolean;
   socket?: WebSocket;
   connection?: VoiceLiveConnection;
   opening?: Promise<void>;
   finishing?: Promise<void>;
   effects: Promise<void>;
   delegated: Set<string>;
+  initialTaskIds: Set<string>;
+  delegatedTicketIds: Set<string>;
   seen: Map<string, string>;
+  interimTranscripts: Map<string, InterimTranscript>;
   finalTranscripts: Map<string, string>;
+  persistedTranscriptCount: number;
   taskUpdates: Map<string, string>;
   routerUpdates: Map<string, { text: string; spoken: boolean }>;
   pendingAudio: string[];
@@ -62,6 +96,7 @@ const MAX_SOCKET_BUFFER = 2 * 1024 * 1024;
 const MAX_AUDIO_FRAME = 96 * 1024;
 const MAX_TRANSCRIPT = 64_000;
 const MAX_RESULT = 1400;
+const DEFAULT_DRAIN_TIMEOUT_MS = 3_500;
 const identifier = (value: unknown, name: string): string => {
   if (typeof value !== "string" || !value.trim() || value.length > 240 || /[\x00-\x1f\x7f]/.test(value)) throw new VoiceCallsError(400, "invalid_voice_call", `${name}无效。`);
   return value.trim();
@@ -98,11 +133,11 @@ export class KuloVoiceCalls {
       if (previous) {
         if (previous.topicId !== scope.topicId) throw new VoiceCallsError(409, "voice_call_command_conflict", "通话请求已用于其他会话。");
         const existing = this.#calls.get(previous.id);
-        if (!existing || existing.ended) throw new VoiceCallsError(410, "voice_call_ended", "通话已结束，请重新发起。");
+        if (!existing || existing.closing || existing.sealed) throw new VoiceCallsError(410, "voice_call_ended", "通话已结束，请重新发起。");
         return { ...existing.session };
       }
-      if ([...this.#calls.values()].some((call) => !call.ended && call.scope.principalId === scope.principalId)) throw new VoiceCallsError(409, "voice_call_active", "已有正在进行的通话。");
-      await Promise.all([...this.#calls.values()].filter((call) => call.ended && call.scope.principalId === scope.principalId).map((call) => call.finishing));
+      if ([...this.#calls.values()].some((call) => !call.closing && !call.sealed && call.scope.principalId === scope.principalId)) throw new VoiceCallsError(409, "voice_call_active", "已有正在进行的通话。");
+      await Promise.all([...this.#calls.values()].filter((call) => (call.closing || call.sealed) && call.scope.principalId === scope.principalId).map((call) => call.finishing));
       await this.#options.canCreateCall?.(scope.topicId);
       this.#creatingTopics.add(scope.topicId);
       let config: VoiceCallConfiguration;
@@ -115,21 +150,28 @@ export class KuloVoiceCalls {
       }
       if (this.#closed) throw new VoiceCallsError(503, "voice_calls_closed", "语音服务已关闭。");
       const id = `call_${randomUUID().replaceAll("-", "")}`;
+      const startedAt = this.#now();
       const inputSampleRate = config.provider === "openai" ? 24000 : 16000;
       const session: VoiceCallSession = { id, wsPath: `/api/voice/calls/${id}/socket`, inputSampleRate, outputSampleRate: 24000 };
+      const topicTasks = this.#topicTasks.get(scope.topicId);
       const call: Call = {
-        id, scope, configuration: configIdentity(config), context, session, controller: new AbortController(),
+        id,
+        ...(context.conversationId !== undefined ? { conversationId: context.conversationId } : {}),
+        startedAt,
+        scope, configuration: configIdentity(config), context, session, controller: new AbortController(),
         timer: setTimeout(() => { void this.#finish(call); }, this.#options.pendingTimeoutMs ?? 30_000),
-        ended: false, effects: Promise.resolve(), delegated: new Set(),
+        closing: false, sealed: false, effects: Promise.resolve(), delegated: new Set(),
+        initialTaskIds: new Set(topicTasks?.keys()), delegatedTicketIds: new Set(),
         seen: new Map((this.#topicMessages.get(scope.topicId) ?? []).map((item) => [messageId(item), item.text])),
-        finalTranscripts: new Map(), taskUpdates: new Map(this.#topicTasks.get(scope.topicId)), routerUpdates: new Map(), pendingAudio: [], pendingAudioBytes: 0, muted: false,
-        audioBudget: inputSampleRate * 2 * 4, audioBudgetAt: now,
+        interimTranscripts: new Map(), finalTranscripts: new Map(), persistedTranscriptCount: 0,
+        taskUpdates: new Map(topicTasks), routerUpdates: new Map(), pendingAudio: [], pendingAudioBytes: 0, muted: false,
+        audioBudget: inputSampleRate * 2 * 4, audioBudgetAt: startedAt,
       };
       for (const entryId of context.messageIds ?? []) call.seen.set(String(entryId), "");
       if (context.priorFailureTaskId !== undefined) call.taskUpdates.set(`failure:${context.priorFailureTaskId}`, "failed");
       call.timer.unref?.();
       this.#calls.set(id, call);
-      this.#commands.set(command, { id, topicId: scope.topicId, at: now });
+      this.#commands.set(command, { id, topicId: scope.topicId, at: startedAt });
       return { ...session };
     });
     this.#tail = work.then(() => undefined, () => undefined);
@@ -138,7 +180,7 @@ export class KuloVoiceCalls {
 
   #call(id: string, principalId: string): Call {
     const call = this.#calls.get(id);
-    if (!call || call.ended) throw new VoiceCallsError(410, "voice_call_ended", "通话不存在或已经结束。");
+    if (!call || call.closing || call.sealed) throw new VoiceCallsError(410, "voice_call_ended", "通话不存在或已经结束。");
     if (call.scope.principalId !== principalId) throw new VoiceCallsError(403, "voice_call_forbidden", "无权访问此通话。");
     return call;
   }
@@ -155,20 +197,20 @@ export class KuloVoiceCalls {
     const opening = (async () => {
       try {
         const config = await this.#options.voice.liveConfig();
-        if (call.ended) return;
+        if (call.closing || call.sealed) return;
         if (configIdentity(config) !== call.configuration) throw new VoiceCallsError(409, "voice_call_settings_changed", "通话设置已变更，请重新连接。");
         const connection = await (this.#options.openLive ?? openVoiceLive)({
           ...config, instructions: call.context.instructions, history: call.context.history, signal: call.controller.signal,
           onEvent: (event) => this.#event(call, event), onDelegate: (request) => this.#delegate(call, request),
         });
         call.connection = connection;
-        if (call.ended) { connection.close(); return; }
+        if (call.closing || call.sealed) { connection.close(); return; }
         connection.setMuted(call.muted);
         for (const chunk of call.pendingAudio.splice(0)) if (!call.muted) connection.sendAudio(chunk);
         call.pendingAudioBytes = 0;
         void connection.closed.then(() => this.#finish(call), () => this.#fail(call, "语音连接已断开。", "voice_upstream_closed"));
       } catch (error) {
-        if (!call.ended) {
+        if (!call.closing && !call.sealed) {
           const own = error instanceof VoiceCallsError;
           const liveError = error instanceof Error && error.name === "VoiceLiveError" && typeof (error as { code?: unknown }).code === "string"
             ? error as Error & { code: string }
@@ -187,7 +229,7 @@ export class KuloVoiceCalls {
 
   #send(call: Call, event: VoiceCallEvent): void {
     const socket = call.socket;
-    if (call.ended || !socket || socket.readyState !== 1) return;
+    if (call.closing || call.sealed || !socket || socket.readyState !== 1) return;
     if (socket.bufferedAmount > MAX_SOCKET_BUFFER) { void this.#finish(call); return; }
     try { socket.send(JSON.stringify(event)); }
     catch { void this.#finish(call); }
@@ -200,31 +242,91 @@ export class KuloVoiceCalls {
     });
   }
 
+  #enqueueTranscript(call: Call, event: Transcript): void {
+    if (call.sealed) return;
+    const text = event.text.trim().slice(0, MAX_TRANSCRIPT);
+    if (!text) return;
+    const itemId = event.id?.trim() || undefined;
+    const interimKey = itemId ? `${event.role}:${itemId}` : `${event.role}:__anon__`;
+    const finalKey = itemId ? `${event.role}:${itemId}` : `${event.role}:${text}`;
+    call.interimTranscripts.delete(interimKey);
+    if (itemId ? call.finalTranscripts.has(finalKey) : call.finalTranscripts.get(finalKey) === text) return;
+    call.finalTranscripts.set(finalKey, text);
+    const normalized: Transcript = {
+      type: "transcript",
+      role: event.role,
+      text,
+      final: true,
+      ...(itemId ? { id: itemId } : {}),
+      ...(event.incomplete ? { incomplete: true } : {}),
+    };
+    this.#queue(call, async () => {
+      const stored = await this.#options.transcript(call.scope.topicId, normalized, call.id, call.conversationId);
+      if (stored !== false) call.persistedTranscriptCount += 1;
+    });
+  }
+
+  #flushIncompleteInterims(call: Call): void {
+    if (call.sealed || call.interimTranscripts.size === 0) return;
+    const pending = [...call.interimTranscripts.values()];
+    call.interimTranscripts.clear();
+    for (const interim of pending) {
+      this.#enqueueTranscript(call, {
+        type: "transcript",
+        role: interim.role,
+        ...(interim.id ? { id: interim.id } : {}),
+        text: interim.text,
+        final: true,
+        incomplete: true,
+      });
+    }
+  }
+
   #event(call: Call, event: VoiceCallEvent): void {
-    if (event.type === "transcript" && event.final && event.text.trim()) {
+    if (call.sealed) return;
+    if (event.type === "transcript" && event.text.trim()) {
       const text = event.text.trim().slice(0, MAX_TRANSCRIPT);
-      const key = event.id ? `${event.role}:${event.id}` : `${event.role}:${text}`;
-      if (call.finalTranscripts.get(key) !== text) {
-        call.finalTranscripts.set(key, text);
-        this.#queue(call, () => this.#options.transcript(call.scope.topicId, { ...event, text }, call.id));
+      const itemId = event.id?.trim() || undefined;
+      if (event.final) {
+        this.#enqueueTranscript(call, { ...event, ...(itemId ? { id: itemId } : {}), text });
+      } else {
+        const finalKey = itemId ? `${event.role}:${itemId}` : `${event.role}:${text}`;
+        if (!call.finalTranscripts.has(finalKey)) {
+          const interimKey = itemId ? `${event.role}:${itemId}` : `${event.role}:__anon__`;
+          call.interimTranscripts.set(interimKey, { role: event.role, ...(itemId ? { id: itemId } : {}), text });
+        }
       }
     }
-    this.#send(call, event);
-    if (event.type === "error") void this.#finish(call);
+    if (!call.closing) {
+      this.#send(call, event);
+      if (event.type === "error") void this.#finish(call);
+    }
   }
 
   #delegate(call: Call, request: { id: string; text: string }): void {
-    if (call.ended || call.delegated.has(request.id)) return;
+    if (call.sealed || call.delegated.has(request.id)) return;
     if (!request.id || request.id.length > 240 || !request.text.trim() || request.text.length > MAX_TRANSCRIPT) {
       this.#send(call, { type: "error", code: "invalid_voice_delegation", message: "没有听清任务要求，请再说一次。" });
       return;
     }
     call.delegated.add(request.id);
     this.#queue(call, async () => {
-      if (call.ended) return;
+      if (call.sealed) return;
       try {
-        await this.#options.delegate({ topicId: call.scope.topicId, principalId: call.scope.principalId, callId: call.id,
-          delegationId: request.id, text: request.text.trim() });
+        const result = await this.#options.delegate({
+          topicId: call.scope.topicId,
+          ...(call.conversationId !== undefined ? { conversationId: call.conversationId } : {}),
+          principalId: call.scope.principalId,
+          callId: call.id,
+          delegationId: request.id,
+          text: request.text.trim(),
+        });
+        if (result && typeof result === "object") {
+          if (typeof result.ticketId === "string" && result.ticketId) call.delegatedTicketIds.add(result.ticketId);
+          if (Array.isArray(result.ticketIds)) {
+            for (const tid of result.ticketIds) if (typeof tid === "string" && tid) call.delegatedTicketIds.add(tid);
+          }
+        }
         this.#taskResult(call, request.id, "请求已提交给当前 Kulo 会话处理，进展和结果将单独更新。", true);
       } catch {
         this.#taskResult(call, request.id, "任务提交状态尚未确认，请查看当前会话。", true);
@@ -233,7 +335,7 @@ export class KuloVoiceCalls {
   }
 
   #input(call: Call, raw: RawData, binary: boolean): void {
-    if (call.ended) return;
+    if (call.closing || call.sealed) return;
     const bytes = frameBuffer(raw);
     if (binary || bytes.length > MAX_AUDIO_FRAME) { void this.#fail(call, "语音数据格式无效。", "invalid_voice_audio"); return; }
     let value: unknown;
@@ -276,7 +378,7 @@ export class KuloVoiceCalls {
     this.#topicMessages.set(topicId, messages.slice(-100));
     if (this.#topicMessages.size > 128) this.#topicMessages.delete(this.#topicMessages.keys().next().value!);
     for (const call of this.#calls.values()) {
-      if (call.ended || call.scope.topicId !== topicId) continue;
+      if (call.closing || call.sealed || call.scope.topicId !== topicId) continue;
       for (const message of messages) {
         const id = messageId(message);
         const previous = call.seen.get(id);
@@ -305,7 +407,11 @@ export class KuloVoiceCalls {
     if (!baseline) { baseline = new Map(); this.#topicTasks.set(topicId, baseline); }
     baseline.set(taskId, fingerprint);
     for (const call of this.#calls.values()) {
-      if (call.ended || call.scope.topicId !== topicId || !summary.trim()) continue;
+      if (call.sealed || call.scope.topicId !== topicId) continue;
+      if (call.delegated.size > 0 && !call.initialTaskIds.has(taskId)) {
+        call.delegatedTicketIds.add(taskId);
+      }
+      if (call.closing || !summary.trim()) continue;
       if (call.taskUpdates.get(taskId) === fingerprint) continue;
       call.taskUpdates.set(taskId, fingerprint);
       this.#notification(call, `工单 ${taskId}（${status}）的更新：\n${summary.trim().slice(0, MAX_RESULT)}`,
@@ -314,13 +420,13 @@ export class KuloVoiceCalls {
   }
 
   #taskResult(call: Call, id: string, text: string, final: boolean): void {
-    if (call.ended || !call.connection) return;
+    if (call.closing || call.sealed || !call.connection) return;
     try { call.connection.sendTaskResult(id, text, final); }
     catch { void this.#fail(call, "通话连接已中断，任务结果仍保留在当前会话。", "voice_result_delivery_failed"); }
   }
 
   #notification(call: Call, text: string, speak: boolean): void {
-    if (call.ended || !call.connection) return;
+    if (call.closing || call.sealed || !call.connection) return;
     try { call.connection.sendNotification(text, speak); }
     catch { void this.#fail(call, "通话连接已中断，任务结果仍保留在当前会话。", "voice_result_delivery_failed"); }
   }
@@ -332,22 +438,76 @@ export class KuloVoiceCalls {
 
   #finish(call: Call): Promise<void> {
     if (call.finishing) return call.finishing;
-    call.finishing = Promise.resolve().then(async () => {
+    let releaseStart!: () => void;
+    const readyToDrain = new Promise<void>((resolve) => { releaseStart = resolve; });
+    call.finishing = readyToDrain.then(async () => {
+      let timedOut = false;
       if (call.connection) {
+        const drainTimeoutMs = this.#options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
         let timer: ReturnType<typeof setTimeout> | undefined;
-        try { await Promise.race([call.connection.closed.then(() => undefined, () => undefined), new Promise<void>((resolve) => { timer = setTimeout(resolve, 1000); timer.unref?.(); })]); }
-        finally { if (timer) clearTimeout(timer); }
+        try {
+          const outcome = await Promise.race([
+            call.connection.closed.then(() => "closed" as const, () => "closed" as const),
+            new Promise<"timeout">((resolve) => {
+              timer = setTimeout(() => resolve("timeout"), drainTimeoutMs);
+              timer.unref?.();
+            }),
+          ]);
+          if (outcome === "timeout") {
+            timedOut = true;
+            call.controller.abort();
+          }
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
       }
-      await call.effects;
-    }).finally(() => { this.#calls.delete(call.id); });
+      if (timedOut) {
+        this.#flushIncompleteInterims(call);
+      }
+      while (true) {
+        const current = call.effects;
+        await current;
+        if (call.effects === current) break;
+      }
+      // Hard-seal callbacks before emitting the summary card; #calls entry remains until summary completes.
+      call.sealed = true;
+      call.interimTranscripts.clear();
+      if (call.persistedTranscriptCount > 0 && this.#options.summary) {
+        const endedAt = this.#now();
+        try {
+          await this.#options.summary({
+            topicId: call.scope.topicId,
+            ...(call.conversationId !== undefined ? { conversationId: call.conversationId } : {}),
+            callId: call.id,
+            startedAt: call.startedAt,
+            endedAt,
+            durationMs: Math.max(0, endedAt - call.startedAt),
+            turnCount: call.persistedTranscriptCount,
+            delegatedTicketIds: [...call.delegatedTicketIds],
+            hadDelegations: call.delegated.size > 0,
+          });
+        } catch {
+          // Summary write failures must not prevent call teardown.
+        }
+      }
+    }).finally(() => {
+      call.sealed = true;
+      this.#calls.delete(call.id);
+    });
     this.#send(call, { type: "state", state: "ended" });
-    call.ended = true;
+    call.closing = true;
     clearTimeout(call.timer);
-    call.controller.abort();
     call.pendingAudio.length = 0;
     call.pendingAudioBytes = 0;
-    call.connection?.close();
+    if (call.connection) {
+      // Connected normal hangup: initiate graceful close first; abort controller ONLY as timeout fallback.
+      call.connection.close();
+    } else {
+      // Handshake / pre-attach cancellation: abort immediately.
+      call.controller.abort();
+    }
     if (call.socket && call.socket.readyState < 2) call.socket.close(1000, "Call ended");
+    releaseStart();
     return call.finishing;
   }
 
@@ -359,14 +519,14 @@ export class KuloVoiceCalls {
   }
 
   hasActiveCalls(): boolean {
-    return [...this.#calls.values()].some((call) => !call.ended);
+    return [...this.#calls.values()].some((call) => !call.closing && !call.sealed);
   }
 
-  /** True while a call on `topicId` is being created, live, or still draining `finishing`/`effects` (never inspects `#topicTasks` dedup cache). */
+  /** True while a call on `topicId` is being created, live, draining `effects`, or committing its summary before seal teardown. */
   hasActiveOrPendingCallForTopic(topicId: string): boolean {
     if (this.#creatingTopics.has(topicId)) return true;
     for (const call of this.#calls.values()) {
-      if (call.scope.topicId === topicId && (!call.ended || Boolean(call.finishing))) return true;
+      if (call.scope.topicId === topicId && (!call.sealed || Boolean(call.finishing))) return true;
     }
     return false;
   }

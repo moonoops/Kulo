@@ -136,6 +136,14 @@ export async function handleVoiceAssistantConnectionsRoutes(ctx: HubHttpRouteCon
       );
       return true;
     }
+    const transcriptRoute = /^\/api\/voice\/calls\/([^/]+)\/transcript$/.exec(pathname);
+    if (transcriptRoute && req.method === "GET") {
+      const callId = decodeURIComponent(transcriptRoute[1]!);
+      const topicId = parsedUrl.searchParams.get("topicId")?.trim() || "root";
+      const turns = await hub.getVoiceCallTranscript(topicId, callId);
+      sendJson(res, 200, { callId, turns });
+      return true;
+    }
     const callRoute = /^\/api\/voice\/calls\/([^/]+)$/.exec(pathname);
     if (callRoute && req.method === "DELETE") {
       await hub.voiceCalls.end(decodeURIComponent(callRoute[1]!), currentDevice(req, parsedUrl));

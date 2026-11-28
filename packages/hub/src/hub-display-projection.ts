@@ -18,6 +18,7 @@ import {
   type ChatReplyReference,
   type LiveStreamState,
   type UiActionReceipt,
+  type VoiceCallTranscriptTurn,
   type WebSource,
   type WorkerInspectEntrySummary,
 } from "@kulo/protocol";
@@ -37,6 +38,7 @@ import {
 } from "./state.js";
 import { ContentPublicationEntry, KuloUserEntry, UiActionEntry } from "./ui-cards.js";
 import { parseUserEntryContent } from "./uploads.js";
+import { VoiceCallSummaryEntry, formatVoiceCallSummaryText } from "./voice-call-summary.js";
 import { VoiceTranscriptEntry } from "./voice-transcripts.js";
 
 function cloneJson<T>(val: T): T {
@@ -69,6 +71,9 @@ export function entryTimestamp(entry: EntryRecord): number | undefined {
   if (typeof message?.timestamp === "number" && Number.isFinite(message.timestamp)) return message.timestamp;
   if (ContentPublicationEntry.is(entry) && typeof entry.data.createdAt === "number" && Number.isFinite(entry.data.createdAt)) {
     return entry.data.createdAt;
+  }
+  if (VoiceCallSummaryEntry.is(entry) && typeof entry.data.endedAt === "number" && Number.isFinite(entry.data.endedAt)) {
+    return entry.data.endedAt;
   }
   return undefined;
 }
@@ -197,6 +202,7 @@ export function extractDisplayMessages(
       entry.data.receipt as unknown as UiActionReceipt,
     ]),
   );
+  const voiceTurnsByCall = new Map<string, VoiceCallTranscriptTurn[]>();
 
   for (const entry of entries) {
     if (WorkerRecoveryEntry.is(entry)) {
@@ -208,7 +214,59 @@ export function extractDisplayMessages(
     if (entry.kind === "kulo.memory-context" || entry.kind === MemoryContextRevocationEntry.kind || isContextSyncEntry(entry)) continue;
     const createdAt = entryTimestamp(entry);
 
-    if (VoiceTranscriptEntry.is(entry)) continue;
+    if (VoiceTranscriptEntry.is(entry)) {
+      const safeText = redactToolText(String(entry.data.text ?? "")).trim();
+      if (safeText && typeof entry.data.callId === "string" && entry.data.callId) {
+        let list = voiceTurnsByCall.get(entry.data.callId);
+        if (!list) {
+          list = [];
+          voiceTurnsByCall.set(entry.data.callId, list);
+        }
+        list.push({
+          ...(typeof entry.data.itemId === "string" && entry.data.itemId ? { id: entry.data.itemId } : {}),
+          role: entry.data.role === "assistant" ? "assistant" : "user",
+          text: safeText,
+          ...(typeof entry.data.createdAt === "number" && Number.isFinite(entry.data.createdAt)
+            ? { createdAt: entry.data.createdAt }
+            : {}),
+          ...(entry.data.incomplete === true ? { incomplete: true } : {}),
+        });
+      }
+      continue;
+    }
+
+    if (VoiceCallSummaryEntry.is(entry)) {
+      const data = entry.data;
+      const callId = typeof data.callId === "string" ? data.callId : "";
+      const durationMs = typeof data.durationMs === "number" && Number.isFinite(data.durationMs) ? Math.max(0, Math.floor(data.durationMs)) : 0;
+      const turnCount = typeof data.turnCount === "number" && Number.isFinite(data.turnCount) ? Math.max(0, Math.floor(data.turnCount)) : 0;
+      const delegatedTicketIds = Array.isArray(data.delegatedTicketIds)
+        ? data.delegatedTicketIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+        : [];
+      const matchedTurns = callId ? voiceTurnsByCall.get(callId) : undefined;
+      const inlineTurns =
+        matchedTurns && matchedTurns.length > 0 && matchedTurns.length >= turnCount && matchedTurns.length <= 32
+          ? matchedTurns
+          : undefined;
+      const summaryCreatedAt = createdAt ?? (typeof data.endedAt === "number" ? data.endedAt : undefined);
+      items.push({
+        id: Number(entry.id),
+        role: "system_note",
+        ...(callId ? { voiceCallId: callId } : {}),
+        text: formatVoiceCallSummaryText({ durationMs, turnCount, delegatedTicketIds }),
+        voiceSummary: {
+          callId,
+          durationMs,
+          turnCount,
+          delegatedTicketIds,
+          ...(typeof data.startedAt === "number" && Number.isFinite(data.startedAt) ? { startedAt: data.startedAt } : {}),
+          ...(typeof data.endedAt === "number" && Number.isFinite(data.endedAt) ? { endedAt: data.endedAt } : {}),
+          ...(inlineTurns ? { turns: inlineTurns } : {}),
+        },
+        ...(summaryCreatedAt !== undefined ? { createdAt: summaryCreatedAt } : {}),
+      });
+      continue;
+    }
 
     if (ContentPublicationEntry.is(entry)) {
       const sources = selectCitedSources(

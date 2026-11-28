@@ -7,6 +7,7 @@ import { buildVoiceCallInstructions } from "./prompts.js";
 import { isContextSyncEntry, isContextSyncMessageText } from "./recent-work-sync.js";
 import { memoryCallerFromState } from "./tools-memory.js";
 import { WorkerRecoveryEntry, isInternalCoordinatorInputEntry, isLegacyInternalUserEntry, isRecoveryInputBoundary, type KuloDurableState } from "./state.js";
+import { VoiceCallSummaryEntry } from "./voice-call-summary.js";
 import { VoiceTranscriptEntry } from "./voice-transcripts.js";
 
 interface VoiceHistoryMessage { role: "user" | "assistant"; text: string }
@@ -60,6 +61,7 @@ export function voiceHistory(view: ContextView, redact: (text: string) => string
       isInternalCoordinatorInputEntry(entry) ||
       isLegacyInternalUserEntry(entry) ||
       entry.kind === "kulo.voice.delegation" ||
+      VoiceCallSummaryEntry.is(entry) ||
       entry.kind === "kulo.memory-context" ||
       entry.kind === MemoryContextRevocationEntry.kind ||
       isContextSyncEntry(entry)

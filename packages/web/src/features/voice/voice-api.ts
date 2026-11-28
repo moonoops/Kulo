@@ -1,4 +1,4 @@
-import type { MediaTranscript, VoiceCallSession, VoiceSettingsInput, VoiceSnapshot } from "@kulo/protocol";
+import type { MediaTranscript, VoiceCallSession, VoiceCallTranscriptTurn, VoiceSettingsInput, VoiceSnapshot } from "@kulo/protocol";
 import { translate as t } from "../../kulo-i18n";
 import { apiRequest, ensureMediaSession, getAuthTokenFromUrl, KuloApiError } from "../../kulo-api";
 
@@ -25,6 +25,11 @@ export const voiceApi = {
     apiRequest<VoiceCallSession>("/api/voice/calls", { method: "POST", body, signal }),
   closeCall: (id: string, clientId: string) =>
     apiRequest<void>(`/api/voice/calls/${encodeURIComponent(id)}`, { method: "DELETE", body: { clientId } }),
+  getCallTranscript: (callId: string, topicId: string, signal?: AbortSignal) =>
+    apiRequest<{ callId: string; turns: VoiceCallTranscriptTurn[] }>(
+      `/api/voice/calls/${encodeURIComponent(callId)}/transcript?${new URLSearchParams({ topicId })}`,
+      { signal },
+    ),
   synthesize: async (text: string, clientId: string, signal?: AbortSignal, preview = false): Promise<Blob> => {
     await ensureMediaSession();
     const token = getAuthTokenFromUrl();

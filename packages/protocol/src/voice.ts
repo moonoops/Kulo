@@ -70,8 +70,26 @@ export type VoiceCallEvent =
   | { type: "state"; state: VoiceCallState }
   | { type: "audio"; data: string; sampleRate: number }
   | { type: "interrupted" }
-  | { type: "transcript"; role: "user" | "assistant"; text: string; final: boolean; id?: string }
+  | { type: "transcript"; role: "user" | "assistant"; text: string; final: boolean; id?: string; incomplete?: boolean }
   | { type: "error"; message: string; code?: string };
+
+export interface VoiceCallTranscriptTurn {
+  id?: string;
+  role: "user" | "assistant";
+  text: string;
+  createdAt?: number;
+  incomplete?: boolean;
+}
+
+export interface VoiceCallSummaryView {
+  callId: string;
+  durationMs: number;
+  turnCount: number;
+  delegatedTicketIds: string[];
+  startedAt?: number;
+  endedAt?: number;
+  turns?: VoiceCallTranscriptTurn[];
+}
 
 export type VoiceCallInput = { type: "audio"; data: string } | { type: "mute"; muted: boolean } | { type: "close" };
 export interface VoiceCallSession {

@@ -27,6 +27,7 @@ import {
   isLegacyInternalUserEntry,
 } from "./state.js";
 import { ContentPublicationEntry, KuloUserEntry } from "./ui-cards.js";
+import { VoiceCallSummaryEntry } from "./voice-call-summary.js";
 import { VoiceTranscriptEntry } from "./voice-transcripts.js";
 import {
   bucketIdForScope,
@@ -68,6 +69,7 @@ export function extractEntryTextAndRole(
     WorkerWatchdogEntry.is(entry) ||
     WorkerRecoveryEntry.is(entry) ||
     isLegacyInternalUserEntry(entry) ||
+    VoiceCallSummaryEntry.is(entry) ||
     entry.kind === MemoryContextEntry.kind ||
     entry.kind === MemoryContextRevocationEntry.kind
   ) {
