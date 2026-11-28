@@ -1,5 +1,6 @@
 import {
   compareTicketCards,
+  externalClientConnectionId,
   externalClientDisplayName,
   parseDirectExternalClientRoleId,
   resolveRolePresetFromPool,
@@ -50,9 +51,22 @@ export function toTicketCardView(
     directLabel ??
     resolveRolePresetFromPool(roles, ticket.role).preset?.label ??
     ticket.role;
+  const externalClientId = ticket.externalExecution
+    ? (ticket.quotaPause?.externalClientId ??
+        directClientId ??
+        roles[ticket.role]?.externalClientId?.trim() ??
+        externalClientConnectionId(ticket.externalExecution.binding))
+    : undefined;
   return {
     id: ticket.id,
     ...(ticket.externalExecution ? { externalAgentKind: ticket.externalExecution.binding.kind } : {}),
+    ...(externalClientId ? { externalClientId } : {}),
+    ...(ticket.externalExecution?.modelId ? { externalModelId: ticket.externalExecution.modelId } : {}),
+    ...(ticket.providerOverride ? { providerOverride: ticket.providerOverride } : {}),
+    ...(ticket.modelOverride ? { modelOverride: ticket.modelOverride } : {}),
+    ...(ticket.thinkingOverride ? { thinkingOverride: ticket.thinkingOverride } : {}),
+    ...(ticket.quotaPause ? { quotaPause: { ...ticket.quotaPause } } : {}),
+    ...(ticket.runHealthStuck ? { runHealthStuck: { ...ticket.runHealthStuck } } : {}),
     ...(hasPendingWorkspaceApply(ticket) ? { pendingWorkspaceApply: true } : {}),
     ...(subagentSummary && subagentSummary.total > 0 ? { subagentSummary } : {}),
     ...(ticket.boardId ? { boardId: ticket.boardId } : {}),

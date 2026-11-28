@@ -1,7 +1,7 @@
 import { useI18n } from "../../kulo-i18n";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { Button, Card, Spinner, Tooltip } from "@heroui/react";
-import type { AssistantItemAction, AssistantItemView, ComputerPreviewSessionView, TicketCardView } from "@kulo/protocol";
+import type { AssistantItemAction, AssistantItemView, ComputerPreviewSessionView, ExternalClientConnection, ProviderCatalogItem, TicketCardView } from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { KuloIcon } from "../../kulo-icon";
 import { ContentPresence, useReducedContentMotion } from "../chat/use-content-motion";
@@ -18,10 +18,11 @@ import {
   type AssistantDismissAllHandler,
 } from "./assistant-rail-section";
 import {
-  groupVisibleTaskCards, isTaskUnfinished, normalizeTaskTopicId, reconcileTaskRows, taskCompletedAt, taskDurationLabel,
+  groupVisibleTaskCards, isTaskUnfinished, isTicketQuotaPaused, isTicketRunHealthStuck, normalizeTaskTopicId, reconcileTaskRows, taskCompletedAt, taskDurationLabel,
   taskIsRecovering, taskNeedsAttention, taskStatusLabel, visibleTaskCards, type TaskRow,
 } from "./task-model";
 import { TaskFailureActions, type TicketAction } from "./task-failure-actions";
+import { TaskQuotaActions, type TicketResumeOverrideAction } from "./quota-resume-popover";
 import "./task-rail.css";
 import { useTaskClock } from "./use-task-clock";
 
@@ -56,7 +57,7 @@ function RailStatus({ ticket }: { ticket: TicketCardView }) {
 }
 
 export function KuloTaskRail({
-  tickets, activeTopicId, topicTitles, assistantItems = [], onAssistantItemAction, onAssistantDismissAll, projectedTicketId, onProject, onRetry, onIgnore, onArchive, clearingAll = false, clearAllError = null, onClearAllError, scrollContainerRef, completedTaskDisplayHours = 3, connected = true, canQueueActions = connected, loaded = true, snapshotVersion = 0, computerPreview,
+  tickets, activeTopicId, topicTitles, assistantItems = [], onAssistantItemAction, onAssistantDismissAll, projectedTicketId, onProject, onRetry, onIgnore, onArchive, onStop, onResumeOverride, providers, externalClients, defaultProvider, defaultModel, clearingAll = false, clearAllError = null, onClearAllError, scrollContainerRef, completedTaskDisplayHours = 3, connected = true, canQueueActions = connected, loaded = true, snapshotVersion = 0, computerPreview,
 }: {
   tickets: TicketCardView[];
   activeTopicId?: string;
@@ -69,6 +70,12 @@ export function KuloTaskRail({
   onRetry?: TicketAction;
   onIgnore?: TicketAction;
   onArchive?: TicketAction;
+  onStop?: TicketAction;
+  onResumeOverride?: TicketResumeOverrideAction;
+  providers?: readonly ProviderCatalogItem[];
+  externalClients?: Readonly<Record<string, ExternalClientConnection>>;
+  defaultProvider?: string;
+  defaultModel?: string;
   clearingAll?: boolean;
   clearAllError?: string | null;
   onClearAllError?: () => void;
@@ -460,6 +467,18 @@ export function KuloTaskRail({
               {ticket.status === "failed" && onRetry && onIgnore && <div className="kulo-task-card-actions">
                 <TaskFailureActions ticket={ticket} connected={connected} canQueueActions={canQueueActions && !cardBusy}
                   onRetry={id => runAction(id, onRetry, false)} onIgnore={id => runAction(id, onIgnore, true)} />
+              </div>}
+              {(isTicketQuotaPaused(ticket) || isTicketRunHealthStuck(ticket)) && onResumeOverride && <div className="kulo-task-card-actions">
+                <TaskQuotaActions
+                  ticket={ticket}
+                  providers={providers}
+                  externalClients={externalClients}
+                  defaultProvider={defaultProvider}
+                  defaultModel={defaultModel}
+                  canQueueActions={canQueueActions && !cardBusy}
+                  onResumeOverride={onResumeOverride}
+                  onStop={onStop ? (id) => runAction(id, onStop, false) : undefined}
+                />
               </div>}
               {ticket.status === "ready" && ticket.pendingWorkspaceApply && onIgnore && <div className="kulo-task-card-actions">
                 <Button

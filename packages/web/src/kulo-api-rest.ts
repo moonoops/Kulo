@@ -19,7 +19,7 @@ import type {
   ProjectDirectoryListing, ProjectView, ProviderCatalogItem, RecentWorkSnapshot, RelationshipRollbackRequest,
   RelationshipWriteRequest, ResolveModelMetadataRequest, ResolveModelMetadataResponse, SearchAttempt,
   SearchFailure, SearchPlanInput, SearchSnapshot, SettingsBlockName, SetupInputRequest, SkillAudience,
-  SkillSnapshot, TicketCardView, TopicCompactResult, TopicSummary, UiActionInput, UiActionReceipt,
+  SkillSnapshot, TicketCardView, TicketResumeOverrideRequest, TicketResumeOverrideResponse, TopicCompactResult, TopicSummary, UiActionInput, UiActionReceipt,
   UiCardSnapshot, UsageCapsSnapshot, UsageCapsUpdateInput, UsageStatsView, WebSearchResult,
 } from "@kulo/protocol";
 
@@ -373,6 +373,11 @@ export const kuloRest = {
     apiRequest<ExternalClientQuotasView>("/api/external-clients/quotas/refresh", { method: "POST", body, signal: options?.signal }),
   retryTicket: (ticketId: string) =>
     apiRequest<{ ticket: TicketCardView }>(`/api/tickets/${encodeURIComponent(ticketId)}/retry`, { method: "POST" }),
+  resumeTicketOverride: (ticketId: string, body: TicketResumeOverrideRequest = {}) =>
+    apiRequest<TicketResumeOverrideResponse>(
+      `/api/tickets/${encodeURIComponent(ticketId)}/resume-override`,
+      { method: "POST", body },
+    ),
   stopScheduledTask: (ticketId: string) =>
     apiRequest<{ task: TicketCardView }>(`/api/scheduled-tasks/${encodeURIComponent(ticketId)}/stop`, { method: "POST" }),
   deleteScheduledTask: (ticketId: string) =>

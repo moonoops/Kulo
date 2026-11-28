@@ -61,6 +61,7 @@ import { handleDevicesAndClusterRoutes } from "./http/devices-cluster-routes.js"
 import { handleProjectsRoutes } from "./http/projects-routes.js";
 import { handleSettingsProvidersRoutes } from "./http/settings-providers-routes.js";
 import { handleSystemPermissionsRoutes, handleUiCardRoutes } from "./http/system-ui-routes.js";
+import { handleTicketResumeRoutes } from "./http/ticket-resume-routes.js";
 import { handleVoiceAssistantConnectionsRoutes } from "./http/voice-assistant-connections-routes.js";
 import { handleWorkspaceRoutes } from "./http/workspace-routes.js";
 import { UiCardError } from "./ui-cards.js";
@@ -1279,6 +1280,7 @@ export async function startKuloHubServer(
     (ctx) => handleDevicesAndClusterRoutes(ctx, devicesClusterRouteDeps),
     handleCapabilitiesRoutes,
     handleProjectsRoutes,
+    handleTicketResumeRoutes,
     handleWorkspaceRoutes,
     handleSettingsProvidersRoutes,
   ];

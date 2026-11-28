@@ -11,6 +11,7 @@ import {
 } from "@kulo/protocol";
 import { spillOversizedReport } from "./report-overflow.js";
 import { appendTicketOutwardAction } from "./task-recovery.js";
+import { classifyQuotaPauseFromExternalFailure } from "./ticket-quota-pause.js";
 import type { KuloUploadStore } from "./uploads.js";
 
 export interface ExternalTicketTelemetry {
@@ -372,13 +373,32 @@ export function settleTerminalExternalRun(input: {
   const readOnlyViolation = run.readOnlyViolation ?? live.externalExecution?.readOnlyViolation;
   const withViolation = (base: WorkerReportRecord): WorkerReportRecord =>
     readOnlyViolation ? { ...base, readOnlyViolation } : base;
-  const autoRecoverableFailure = run.state === "failed" && live.agentAssignment?.source === "orchestrator";
+  const quotaPause =
+    run.state === "failed"
+      ? classifyQuotaPauseFromExternalFailure({
+          ticket: live,
+          error: run.error,
+          redact,
+          now,
+        })
+      : undefined;
+  const autoRecoverableFailure =
+    !quotaPause && run.state === "failed" && live.agentAssignment?.source === "orchestrator";
   const resumableTimeout =
     run.state === "uncertain" &&
     run.uncertainReason === "timeout" &&
     Boolean(run.sessionId);
 
-  if (run.state === "completed") {
+  if (quotaPause) {
+    live.quotaPause = quotaPause;
+    live.waiting = { reason: "quota", since: now, detail: quotaPause.errorMessage };
+    live.latestReport = withViolation({
+      state: "progress",
+      summary: `额度已暂停：${quotaPause.errorMessage}`,
+      at: now,
+    });
+    live.recovery = undefined;
+  } else if (run.state === "completed") {
     if (live.latestReport && ["blocked", "failed"].includes(live.latestReport.state)) {
       live.latestReport = withViolation(live.latestReport);
     } else if (explicitReady) {

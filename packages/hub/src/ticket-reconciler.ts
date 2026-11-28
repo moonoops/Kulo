@@ -120,6 +120,7 @@ export class TicketReconciler {
       state = await harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
       for (const ticket of Object.values(state?.tickets ?? {})) {
         if (ticket.status !== "running" && ticket.status !== "pausing") continue;
+        if (ticket.waiting?.reason === "quota" && ticket.activeTaskId !== undefined) continue;
         const waiting = ticket.waiting ?? (ticket.latestReport?.state === "blocked"
           ? { reason: "coordinator" as const, since: Date.now(), detail: ticket.latestReport.question ?? ticket.latestReport.summary } : undefined);
         if (waiting) await this.parkTicket(ticket.id, waiting);
@@ -127,7 +128,7 @@ export class TicketReconciler {
       if (!runtimeGates.isRecovering()) {
         const after = await harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         for (const ticket of Object.values(after?.tickets ?? {})) {
-          if (ticket.status === "waiting" && ticket.wakePending) await this.resumeWaitingTicket(ticket.id, BACKGROUND_CONTEXT);
+          if (ticket.status === "waiting" && ticket.wakePending && ticket.waiting?.reason !== "quota") await this.resumeWaitingTicket(ticket.id, BACKGROUND_CONTEXT);
         }
       }
       const connections = await harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
@@ -187,6 +188,7 @@ export class TicketReconciler {
         const waiting = await harness.snapshot(KuloStateDoc, BACKGROUND_CONTEXT);
         for (const ticket of Object.values(waiting?.tickets ?? {})) {
           if ((ticket.envId === env.id || androidTargetsOf(ticket).includes(env.id)) && this.#ticketDevicesOnline(ticket) && ticket.status === "waiting" && !ticket.cleanupPending &&
+            ticket.waiting?.reason !== "quota" &&
             (ticket.wakePending || ticket.waiting?.reason === "env" || (ticket.waiting?.reason === "time" && (ticket.waiting.until ?? 0) <= Date.now()))) {
             await this.resumeWaitingTicket(ticket.id, BACKGROUND_CONTEXT);
           }
@@ -392,7 +394,7 @@ export class TicketReconciler {
     const { harness, runtimeGates, ports } = this.#deps;
     const state = await harness.snapshot(KuloStateDoc, context);
     const ticket = state?.tickets[ticketId];
-    if (!ticket || ticket.status !== "waiting" || ((ticket.waiting?.reason === "user" || ticket.waiting?.reason === "connection" || ticket.waiting?.reason === "coordinator") && !ticket.wakePending) || ticket.cleanupPending) return;
+    if (!ticket || ticket.status !== "waiting" || ticket.waiting?.reason === "quota" || ((ticket.waiting?.reason === "user" || ticket.waiting?.reason === "connection" || ticket.waiting?.reason === "coordinator") && !ticket.wakePending) || ticket.cleanupPending) return;
     if (!ticket.wakePending && ticket.schedule?.nextRunAt != null && hasPendingWorkspaceApply(ticket)) return;
     if (ticket.schedule?.nextRunAt != null && ticket.schedule.nextRunAt > Date.now()) return;
     if (!ticket.wakePending && ticket.waiting?.until !== undefined && ticket.waiting.until > Date.now()) return;

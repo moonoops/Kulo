@@ -14,6 +14,8 @@ import {
 import type {
   ChatReplyReference,
   DispatchCardMeta,
+  ExternalClientConnection,
+  ProviderCatalogItem,
   TicketCardView,
   TicketWaitOption,
 } from "@kulo/protocol";
@@ -26,8 +28,9 @@ import { TaskTimeline } from "./features/tasks/task-timeline";
 import { TaskDeliverables } from "./features/tasks/task-deliverables";
 import { TaskSubagents } from "./features/tasks/task-subagents";
 
-import { compactTaskPaths, formatExternalContextUsage, formatExternalSessionMode, ticketHasPendingWorkspaceApply, ticketTone, taskIsRecovering, taskStatusLabel, taskTimeLabel, type TaskTone } from "./features/tasks/task-model";
+import { compactTaskPaths, formatExternalContextUsage, formatExternalSessionMode, isTicketQuotaPaused, isTicketRunHealthStuck, ticketHasPendingWorkspaceApply, ticketTone, taskIsRecovering, taskStatusLabel, taskTimeLabel, type TaskTone } from "./features/tasks/task-model";
 import { TaskFailureActions, type TicketAction } from "./features/tasks/task-failure-actions";
+import { TaskQuotaActions, type TicketResumeOverrideAction } from "./features/tasks/quota-resume-popover";
 import { newDeliveryId } from "./features/chat/reliable-intents";
 import "./features/tasks/task-detail.css";
 import { useTaskClock } from "./features/tasks/use-task-clock";
@@ -68,7 +71,7 @@ export function relativeTime(ts: number): string {
 export function TaskStatus({ status, waiting, cleanupPending, recovery, externalAgentKind, pendingWorkspaceApply }: Pick<TicketCardView, "status" | "waiting" | "cleanupPending" | "recovery" | "externalAgentKind" | "pendingWorkspaceApply">) {
   const { t } = useI18n();
   const recovering = taskIsRecovering({ status, recovery });
-  const tone = cleanupPending || pendingWorkspaceApply || status === "waiting" && waiting?.reason === "user" ? "ask" : recovering ? "run" : ticketTone(status);
+  const tone = cleanupPending || pendingWorkspaceApply || (status === "waiting" && (waiting?.reason === "user" || waiting?.reason === "quota")) ? "ask" : recovering ? "run" : ticketTone(status);
   return (
     <Chip
       size="sm"
@@ -148,6 +151,11 @@ export function KuloTaskProjection({
   onAnswerBlocker,
   onStop,
   onRetry,
+  onResumeOverride,
+  providers,
+  externalClients,
+  defaultProvider,
+  defaultModel,
   onArchiveClose,
   onDefer,
   onOpenOrigin,
@@ -168,6 +176,11 @@ export function KuloTaskProjection({
   onAnswerBlocker: (ticketId: string, answer: string, commandId: string, decisionOptionId?: string) => Promise<void>;
   onStop: (ticketId: string, reason?: string) => Promise<void> | void;
   onRetry: TicketAction;
+  onResumeOverride?: TicketResumeOverrideAction;
+  providers?: readonly ProviderCatalogItem[];
+  externalClients?: Readonly<Record<string, ExternalClientConnection>>;
+  defaultProvider?: string;
+  defaultModel?: string;
   onArchiveClose: TicketAction;
   onDefer: () => void;
   onOpenOrigin?: () => void;
@@ -306,6 +319,23 @@ export function KuloTaskProjection({
   const isActiveProgress = ticket.status === "running" || ticket.status === "pausing";
   const externalContextLabel = formatExternalContextUsage(ticket.externalExecution?.contextUsage);
   const externalModeLabel = formatExternalSessionMode(ticket.externalExecution?.activeSessionMode);
+  const quotaPaused = isTicketQuotaPaused(ticket);
+  const runHealthStuck = isTicketRunHealthStuck(ticket);
+  const resumeTicketView = {
+    id: ticket.id,
+    title: ticket.title,
+    status: ticket.status,
+    waiting: ticket.waiting,
+    quotaPause: ticket.quotaPause,
+    runHealthStuck: ticket.runHealthStuck,
+    externalAgentKind: ticket.externalExecution?.binding.kind,
+    externalClientId: ticket.quotaPause?.externalClientId,
+    externalModelId: ticket.externalExecution?.modelId,
+    providerOverride: ticket.providerOverride,
+    modelOverride: ticket.modelOverride,
+    cleanupPending: ticket.cleanupPending,
+    envId: ticket.envId,
+  };
 
   return (
     <div className="mc-projection-scroll" data-kulo-navigation-key={`task:${ticket.id}`} data-kulo-navigation="content">
@@ -352,7 +382,33 @@ export function KuloTaskProjection({
           {controlError && <p className="kulo-task-action-error" role="alert">{controlError}</p>}
         </section>
 
-        {!completed && !needsAnswer && <section className="kulo-task-progress" aria-labelledby="task-overview-heading">
+        {(quotaPaused || runHealthStuck) && onResumeOverride && (
+          <section className="flex flex-col gap-3 rounded-2xl border border-warning/40 bg-warning-soft/30 p-4" aria-label={quotaPaused ? t("额度暂停处理", "Quota pause recovery") : t("停滞告警恢复", "Stuck task recovery")}>
+            <div className="flex items-center gap-2">
+              <Chip size="sm" variant="soft" color="warning">
+                <KuloIcon name="help" filled size={14} />
+                <span>{quotaPaused ? t("额度暂停", "Quota paused") : t("任务疑似停滞", "Task appears stuck")}</span>
+              </Chip>
+            </div>
+            <p className="text-sm text-foreground">
+              {quotaPaused
+                ? (ticket.quotaPause?.errorMessage ?? ticket.waiting?.detail ?? t("当前模型额度已耗尽，任务已暂停并保留既有改动。", "Model quota exhausted. Progress and staged changes are preserved."))
+                : (ticket.runHealthStuck?.reason ?? t("检测到任务连续重复或停滞，可切换更强模型继续。", "Repeated loop or stall detected. Switch to a stronger model to continue."))}
+            </p>
+            <TaskQuotaActions
+              ticket={resumeTicketView}
+              providers={providers}
+              externalClients={externalClients}
+              defaultProvider={defaultProvider}
+              defaultModel={defaultModel}
+              canQueueActions={canQueueActions && !submittingAnswer && !pendingControl}
+              onResumeOverride={onResumeOverride}
+              onStop={quotaPaused ? (id) => runControl("stop", (targetId) => onStop(targetId)) : undefined}
+            />
+          </section>
+        )}
+
+        {!completed && !needsAnswer && !quotaPaused && <section className="kulo-task-progress" aria-labelledby="task-overview-heading">
           <div className="kulo-task-overview-heading">
             <KuloIcon name={recovering ? "refresh" : failed ? "error" : "task-alt"} size={18} />
             <h2 id="task-overview-heading" className="kulo-group-title" ref={overviewHeadingRef} tabIndex={-1}>

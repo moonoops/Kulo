@@ -104,8 +104,21 @@ export function ticketWaitLabel(waiting: TicketCardView["waiting"]): string {
     case "time": return t("等待时间", "Waiting for scheduled time");
     case "external": return t("等待外部结果", "Waiting for external result");
     case "project": return t("等待项目", "Waiting for project");
+    case "quota": return t("额度暂停", "Quota paused");
     default: return t("等待中", "Waiting");
   }
+}
+
+export function isTicketQuotaPaused(
+  ticket: Pick<TicketCardView, "status" | "waiting">,
+): boolean {
+  return ticket.status === "waiting" && ticket.waiting?.reason === "quota";
+}
+
+export function isTicketRunHealthStuck(
+  ticket: Pick<TicketCardView, "status" | "runHealthStuck">,
+): boolean {
+  return Boolean(ticket.runHealthStuck && ticket.status !== "stopped" && ticket.status !== "closed");
 }
 
 export function ticketStatusLabel(status: TicketStatus): string {
@@ -121,7 +134,7 @@ export function taskNeedsAttention(ticket: TicketCardView): boolean {
       ticket.pendingWorkspaceApply ||
       (ticket.status === "failed" && !taskIsRecovering(ticket)) ||
       ticket.status === "blocked" ||
-      (ticket.status === "waiting" && ticket.waiting?.reason === "user"),
+      (ticket.status === "waiting" && (ticket.waiting?.reason === "user" || ticket.waiting?.reason === "quota")),
   );
 }
 

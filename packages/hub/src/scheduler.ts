@@ -1,7 +1,7 @@
 import { AssistantEntry, ToolResultEntry, ROOT_CONVERSATION_ID, defineTask, type JsonObject } from "@earendil-works/pi-durable";
 import type { EnvManager } from "@kulo/env";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
-import { describeKuloError, isSupportedExternalAgentKind, type ExternalAgentBinding, type ExternalAgentPendingReport, type ExternalAgentQuotaProbeResult, type ExternalAgentUncertainReason, type StagedWorkspaceDiffSummary, type TicketRecord, type TicketWait, type WorkerReportRecord } from "@kulo/protocol";
+import { describeKuloError, isSupportedExternalAgentKind, type ExternalAgentBinding, type ExternalAgentPendingReport, type ExternalAgentQuotaProbeResult, type ExternalAgentUncertainReason, type RolePreset, type StagedWorkspaceDiffSummary, type TicketRecord, type TicketWait, type WorkerReportRecord } from "@kulo/protocol";
 import { buildExternalAgentRunRequest, escapeXmlContent, formatExternalPermissionMessage, formatStagedDiffRelayLines, formatWorkerInitialPrompt, formatWorkerRelayMessage, reconcileConsumedResumeState, type MaterializedExternalAttachment } from "./prompts.js";
 import { KuloStateDoc, WorkerRelayEntry, getActiveStagedCwd, hasActiveSubagents, hasPendingWorkspaceApply, releaseSlot, transitionTicketStatus, tryClaimSlot, type KuloDurableState } from "./state.js";
 import { SettingsAssistantDoc, isActiveSettingsConversation, parseSettingsTopicConversationId } from "./settings-doc.js";
@@ -13,6 +13,8 @@ import { beginTicketRecovery, epochOutwardActions, formatOutwardActionsSummary, 
 import { submitAutomaticChatInput } from "./chat-control.js";
 import { bindDispatchedAttachments } from "./ticket-dispatch.js";
 import { evaluateInlineClaim } from "./android-delivery.js";
+import type { WorkerModelSelection } from "./ticket-model-arbiter.js";
+import { classifyQuotaPauseFromUnanswered, isQuotaPauseCheckpoint } from "./ticket-quota-pause.js";
 import {
   applyExternalRunSnapshotToTicket,
   prepareCompletedExternalReports,
@@ -77,6 +79,10 @@ export interface WorkerTicketTaskDependencies {
   onOriginConversationRelayed?: (originConversationId: number, context: Context) => Promise<void>;
   onExternalAgentQuota?: (binding: ExternalAgentBinding, quota: ExternalAgentQuotaProbeResult) => void;
   onExternalTelemetry?: (telemetry: ExternalTicketTelemetry) => void;
+  getWorkerModelContext?: (ticket: Readonly<TicketRecord>) => {
+    rolePreset?: Pick<RolePreset, "provider" | "modelId" | "thinkingLevel">;
+    defaultModel?: WorkerModelSelection;
+  };
 }
 
 export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
@@ -116,7 +122,9 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             }
             transitionTicketStatus(ticket, "waiting", runtime.now());
             ticket.updatedAt = runtime.now();
-            releaseSlot(state, ticket.id);
+            releaseSlot(state, ticket.id, {
+              releaseWrite: ticket.waiting.reason === "quota" ? false : !hasPendingWorkspaceApply(ticket),
+            });
             waitingReason = ticket.waiting.reason;
             notified = true;
             if (ticket.waiting.reason === "time") {
@@ -677,16 +685,22 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           await runtime.commit(async () => ({ status: "terminal", outcome: { status: "aborted" } }), context);
           return;
         }
+        const quotaPauseCheckpoint = isQuotaPauseCheckpoint(task.state.checkpoint);
         if (hasActiveSubagents(snapshot!, pending.id)) {
           await runtime.commit(async (tx) => {
             const state = await tx.doc(KuloStateDoc);
             const current = state.tickets[pending.id];
-            if (current?.runEpoch === task.input.runEpoch && current.waiting) transitionTicketStatus(current, "pausing", runtime.now());
+            if (current?.runEpoch === task.input.runEpoch && (current.waiting || quotaPauseCheckpoint)) {
+              transitionTicketStatus(current, "pausing", runtime.now());
+            }
             return { status: "sleeping", until: runtime.now() + 300, checkpoint: task.state.checkpoint };
           }, context);
           return;
         }
-        const cleanup = await deps.prepareTicketRelease?.(pending, context);
+        const releaseTarget = !pending.waiting && quotaPauseCheckpoint
+          ? { ...pending, waiting: { reason: "quota" as const, since: runtime.now() } }
+          : pending;
+        const cleanup = await deps.prepareTicketRelease?.(releaseTarget, context);
         let builtInStagedDiff: StagedWorkspaceDiffSummary | undefined;
         let builtInZeroDiffDiscarded = false;
         let externalZeroDiffDiscarded = false;
@@ -704,6 +718,7 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
             pending.status !== "closed" &&
             !(
               pending.waiting &&
+              pending.waiting.reason !== "quota" &&
               !(
                 (pending.waiting.reason === "user" || pending.waiting.reason === "coordinator") &&
                 pending.latestReport?.state === "blocked"
@@ -801,8 +816,19 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
               ticket.latestReport?.state === "blocked"
             )
           ) {
+            if (
+              ticket.waiting.reason === "quota" &&
+              builtInStagedDiff &&
+              ticket.workspaceStaging?.mode === "staged" &&
+              !ticket.workspaceStaging.appliedAt &&
+              !ticket.workspaceStaging.discardedAt
+            ) {
+              ticket.workspaceStaging.stagedDiff = JSON.parse(JSON.stringify(builtInStagedDiff)) as StagedWorkspaceDiffSummary;
+            }
             transitionTicketStatus(ticket, "waiting", now);
-            releaseSlot(state, ticket.id, { releaseWrite: !hasPendingWorkspaceApply(ticket) });
+            releaseSlot(state, ticket.id, {
+              releaseWrite: ticket.waiting.reason === "quota" ? false : !hasPendingWorkspaceApply(ticket),
+            });
             parked = true;
             waitingReason = ticket.waiting.reason;
             if (ticket.waiting.reason === "time") {
@@ -816,6 +842,43 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
 
           const latest = ticket.latestReport;
           let finalReport: WorkerReportRecord;
+
+          const builtInQuotaPause =
+            !(latest && (latest.state === "ready" || latest.state === "blocked" || latest.state === "failed")) &&
+            task.state.checkpoint.unansweredReason
+              ? classifyQuotaPauseFromUnanswered({
+                  ticket,
+                  unansweredReason: task.state.checkpoint.unansweredReason,
+                  unansweredDetail: task.state.checkpoint.unansweredDetail,
+                  ...deps.getWorkerModelContext?.(ticket),
+                  redact: deps.redact,
+                  now,
+                })
+              : undefined;
+          if (builtInQuotaPause) {
+            if (
+              builtInStagedDiff &&
+              ticket.workspaceStaging?.mode === "staged" &&
+              !ticket.workspaceStaging.appliedAt &&
+              !ticket.workspaceStaging.discardedAt
+            ) {
+              ticket.workspaceStaging.stagedDiff = JSON.parse(JSON.stringify(builtInStagedDiff)) as StagedWorkspaceDiffSummary;
+            }
+            ticket.quotaPause = builtInQuotaPause;
+            ticket.waiting = { reason: "quota", since: now, detail: builtInQuotaPause.errorMessage };
+            ticket.latestReport = {
+              state: "progress",
+              summary: `额度已暂停：${builtInQuotaPause.errorMessage}`,
+              at: now,
+            };
+            ticket.recovery = undefined;
+            delete ticket.finalRelayPending;
+            transitionTicketStatus(ticket, "waiting", now);
+            releaseSlot(state, ticket.id, { releaseWrite: false });
+            parked = true;
+            waitingReason = "quota";
+            return { status: "terminal", outcome: { status: "completed", result: null } };
+          }
 
           if (
             latest &&

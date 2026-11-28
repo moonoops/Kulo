@@ -17,7 +17,7 @@ export function topicNotifications(tickets: readonly TicketCardView[], topicId: 
   for (const ticket of tickets) {
     if ((ticket.originTopicId ?? "root") !== topicId) continue;
     if (ticket.status === "failed" && !taskIsRecovering(ticket)) failureCount++;
-    if (ticket.cleanupPending || ticket.status === "blocked" || ticket.status === "waiting" && ticket.waiting?.reason === "user") attentionCount++;
+    if (ticket.cleanupPending || ticket.status === "blocked" || (ticket.status === "waiting" && (ticket.waiting?.reason === "user" || ticket.waiting?.reason === "quota"))) attentionCount++;
   }
   return { failureCount, attentionCount };
 }

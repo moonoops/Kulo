@@ -352,6 +352,16 @@ export function describeKuloError(input: FriendlyErrorInput): FriendlyErrorDescr
     haystack.includes("quota exceeded") ||
     haystack.includes("credit balance") ||
     haystack.includes("billing_not_active") ||
+    haystack.includes("subscription_sharing_usage_limit_exceeded") ||
+    haystack.includes("subscription_sharing_workplace_individual_usage_limit_exceeded") ||
+    haystack.includes("usage_limit_reached") ||
+    haystack.includes("gousagelimiterror") ||
+    haystack.includes("freeusagelimiterror") ||
+    haystack.includes("monthly usage limit reached") ||
+    haystack.includes("out of budget") ||
+    haystack.includes("specified api usage limits") ||
+    info.errorCode === "1308" ||
+    /"code"\s*:\s*"?1308(?![0-9])/.test(haystack) ||
     haystack.includes("余额不足") ||
     haystack.includes("额度不足") ||
     haystack.includes("欠费")

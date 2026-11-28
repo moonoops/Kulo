@@ -63,7 +63,7 @@ export interface TicketWaitOption {
 }
 
 export interface TicketWait {
-  reason: "user" | "env" | "time" | "external" | "project" | "connection" | "coordinator";
+  reason: "user" | "env" | "time" | "external" | "project" | "connection" | "coordinator" | "quota";
   since: number;
   until?: number;
   detail?: string;

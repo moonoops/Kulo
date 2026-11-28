@@ -44,6 +44,7 @@ import {
   ticketsShareWriteScope,
   type KuloDurableState,
 } from "./state.js";
+import { resolveWorkerEffectiveModel } from "./ticket-model-arbiter.js";
 import type { DispatchTicketParams } from "./tools-router.js";
 
 export type DurableTopicRecord = NonNullable<KuloDurableState["topics"]>[string];
@@ -534,10 +535,22 @@ export function resolveDispatchWorkspaceAndModel(input: {
   }
   const providerOverride = !externalBinding && params.providerOverride?.trim() ? params.providerOverride.trim() : undefined;
   const modelOverride = !externalBinding && params.modelOverride?.trim() ? params.modelOverride.trim() : undefined;
-  const workerProviderOpt = providerOverride || rolePreset?.provider?.trim() || defaultProvider;
-  const workerModelId = modelOverride || rolePreset?.modelId?.trim() || defaultModel;
-  const desiredThinking: ThinkingEffort =
-    params.thinkingLevel ?? (rolePreset?.thinkingLevel && rolePreset.thinkingLevel !== "auto" ? rolePreset.thinkingLevel : defaultThinkingLevel);
+  const effectiveModel = resolveWorkerEffectiveModel({
+    ticket: {
+      providerOverride,
+      modelOverride,
+      thinkingOverride: params.thinkingLevel,
+    },
+    rolePreset,
+    defaultModel: {
+      provider: defaultProvider,
+      modelId: defaultModel,
+      thinkingLevel: defaultThinkingLevel,
+    },
+  });
+  const workerProviderOpt = effectiveModel.provider;
+  const workerModelId = effectiveModel.modelId;
+  const desiredThinking: ThinkingEffort = effectiveModel.thinkingLevel;
   return {
     pathApi, sep, cleanRoot, scratchRoot, requestedReadOnly, isReadOnly, builtInWorkspaceMode, externalWorkspaceMode, effectiveExecutionMode,
     nativeThinking, providerOverride, modelOverride, workerProviderOpt, workerModelId, desiredThinking,

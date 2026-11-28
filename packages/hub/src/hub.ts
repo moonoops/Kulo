@@ -86,7 +86,7 @@ import { createMemorySetupExtension } from "./tools-memory-setup.js";
 import { KuloExtensions, createExtensionsExtension, type ExtensionPackageExecutor } from "./extensions.js";
 import { createExtensionSetupExtension } from "./tools-extensions.js";
 import { KuloConversationHistory } from "./conversation-history.js";
-import { deriveConnectedExternalClients, type BuiltinMemoryStateView, type ConversationSearchInput, type MainSessionNotificationEvent, type MemoryServiceJob } from "@kulo/protocol";
+import { deriveConnectedExternalClients, type BuiltinMemoryStateView, type ConversationSearchInput, type MainSessionNotificationEvent, type MemoryServiceJob, type TicketResumeOverrideRequest, type TicketResumeOverrideResponse } from "@kulo/protocol";
 import { ExternalAgentQuotaService } from "./external-agent-quotas.js";
 import { topicActivity } from "./topic-activity.js";
 import { KuloSubagentRunner } from "./subagent-runner.js";
@@ -289,6 +289,8 @@ import { TicketDispatchService } from "./ticket-dispatch-service.js";
 import { TicketExternalRuntime } from "./ticket-external-runtime.js";
 import { TicketInspectionService } from "./ticket-inspection.js";
 import { TicketReconciler } from "./ticket-reconciler.js";
+import { resolveWorkerEffectiveModel } from "./ticket-model-arbiter.js";
+import { TicketQuotaResumeService } from "./ticket-quota-pause.js";
 import { TicketStagedApplyService } from "./ticket-staged-apply.js";
 import { createOrchestratorCodingGuardExtension } from "./orchestrator-coding-guard.js";
 import { selectOrchestratorDefaultEnv } from "./orchestrator-env-cwd.js";
@@ -619,6 +621,7 @@ export class KuloHub implements OrchestratorController {
   readonly #stagedApply: TicketStagedApplyService;
   readonly #ticketReconciler: TicketReconciler;
   readonly #ticketControl: TicketControlService;
+  readonly #ticketQuotaResume: TicketQuotaResumeService;
   readonly #mediaDelivery: HubMediaDelivery;
   readonly #delivery: HubDeliveryCoordinator;
   readonly #inlineWaiters = new InlineDispatchWaiters();
@@ -1619,6 +1622,10 @@ export class KuloHub implements OrchestratorController {
         transcribeVoiceAsset: (assetId, opts, ctx) => this.transcribeVoiceAsset(assetId, opts, ctx),
       },
     });
+    this.#ticketQuotaResume = new TicketQuotaResumeService({
+      harness: this.harness, models: this.#models, envManager: this.envManager, projects: this.projects, usageCaps: this.usageCaps, liveSettings: this.#settingsStore, delivery: this.#delivery, runtimeGates: this.#runtimeGates,
+      ports: { redact: (text) => this.connectionManager.redact(text), fallbackProviderId: this.#providerId, workerTicketTask: this.#workerTicketTask, reconciler: this.#ticketReconciler, syncWorkerConversation: (ticket, ctx) => this.#syncSingleWorkerConversation(ticket, ctx), refreshExternalQuota: (clientId) => { void this.externalClientQuotas.refresh({ clientId, force: false }).catch(() => {}); } },
+    });
     this.#externalClientAdmin = new ExternalClientAdminService({
       harness: this.harness,
       envManager: this.envManager,
@@ -1991,6 +1998,7 @@ export class KuloHub implements OrchestratorController {
           for (const listener of hubRef.#listeners) listener.onTicketTelemetry?.(updated.current);
         }
       },
+      getWorkerModelContext: (ticket) => { const m = settingsStore.getModel(); return { rolePreset: settingsStore.getRoles()[ticket.role], defaultModel: { provider: m.defaultProvider, modelId: m.defaultModel, thinkingLevel: m.thinkingLevel } }; },
     });
 
     const schedulerExt = defineExtension({
@@ -4028,6 +4036,10 @@ export class KuloHub implements OrchestratorController {
     return this.#ticketControl.retryTicket(ticketId, context, commandId, suppliedIntent);
   }
 
+  async resumeTicketWithOverride(ticketId: string, input: TicketResumeOverrideRequest, context: Context = BACKGROUND_CONTEXT, principalId = "local"): Promise<TicketResumeOverrideResponse> {
+    return this.#ticketQuotaResume.resumeWithOverride(ticketId, input, context, principalId);
+  }
+
   async steerTicket(
     params: SteerTicketParams,
     context: Context = BACKGROUND_CONTEXT,
@@ -5328,26 +5340,14 @@ export class KuloHub implements OrchestratorController {
     const conv = await this.harness.conversation(ticket.workerConversationId as ConversationId, context);
     if (!conv) return;
     const rolePreset = this.#liveSettings.roles[ticket.role];
-    const workerProviderOpt = ticket.providerOverride || rolePreset?.provider?.trim() || this.#liveSettings.model.defaultProvider;
-    const workerModelId = ticket.modelOverride || rolePreset?.modelId?.trim() || this.#liveSettings.model.defaultModel;
-    const desiredThinking: ThinkingEffort =
-      rolePreset?.thinkingLevel && rolePreset.thinkingLevel !== "auto"
-        ? rolePreset.thinkingLevel
-        : this.#liveSettings.model.thinkingLevel;
-    const workerAgent = resolveAgentModelAndThinking(
-      this.#models,
-      this.#providerId,
-      workerProviderOpt,
-      workerModelId,
-      desiredThinking,
-      this.#liveSettings.model,
-    );
+    const effective = resolveWorkerEffectiveModel({ ticket, rolePreset, defaultModel: { provider: this.#liveSettings.model.defaultProvider, modelId: this.#liveSettings.model.defaultModel, thinkingLevel: this.#liveSettings.model.thinkingLevel } });
+    const workerAgent = resolveAgentModelAndThinking(this.#models, this.#providerId, effective.provider, effective.modelId, effective.thinkingLevel, this.#liveSettings.model);
     const androidTargets = this.#androidTargets(ticket);
     const effectiveWorkspaceDir = getEffectiveWorkspaceDir(ticket);
     await conv.configure(
       {
         model: workerAgent.model,
-        ...(rolePreset?.thinkingLevel !== "auto" ? { thinkingLevel: workerAgent.thinkingLevel } : {}),
+        ...(effective.explicitThinking ? { thinkingLevel: workerAgent.thinkingLevel } : {}),
         ...this.#workerTools({ executionDomain: ticket.executionDomain, androidTargetIds: androidTargets, allowSubagents: Boolean(rolePreset?.allowSubagents), readOnly: Boolean(ticket.readOnly), hasProject: Boolean(ticket.projectId) }),
         ...(ticket.executionDomain !== "android" ? { cwd: effectiveWorkspaceDir } : {}), maxTurns: WORKER_MAX_TURNS,
       },

@@ -176,6 +176,8 @@ export async function admitTicketStopInTx(
   t.stoppedReason = params.reason?.trim() || "Stopped by user";
   t.activeTaskId = undefined;
   t.waiting = undefined;
+  delete t.quotaPause;
+  delete t.runHealthStuck;
   if (t.schedule) t.schedule.nextRunAt = null;
   if (params.deleteSchedule) {
     if (!t.schedule) throw new ProjectError(404, "schedule_not_found", "定时任务不存在。");

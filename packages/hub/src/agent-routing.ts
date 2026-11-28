@@ -664,10 +664,11 @@ export function evaluateTicketAgentBlock(
   if (role.enabled === false) return `任务指定的 Agent「${role.label}」已停用，请启用它或明确选择其他 Agent。`;
   if (ticket.externalExecution) {
     const old = ticket.externalExecution;
+    const expectedModelId = ticket.modelOverride?.trim() || role.modelId;
     if (!role.external || role.external.kind !== old.binding.kind || role.external.envId !== old.binding.envId ||
         role.external.executable !== old.binding.executable || role.external.agentRef !== old.binding.agentRef ||
         JSON.stringify(role.external.acpArgs ?? []) !== JSON.stringify(old.binding.acpArgs ?? []) ||
-        role.modelId !== old.modelId || role.serviceTier !== old.serviceTier) {
+        expectedModelId !== old.modelId || role.serviceTier !== old.serviceTier) {
       return `任务指定的 Agent「${role.label}」配置已改变，请核对后重新指派。`;
     }
     if (!role.external.verifiedAt || isPersonalExternalAgentKind(role.external.kind)) {

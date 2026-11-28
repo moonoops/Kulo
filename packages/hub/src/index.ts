@@ -556,3 +556,21 @@ export {
   type TicketRestartDecision,
   type WorkerEpochInspection,
 } from "./restart-gate.js";
+export {
+  resolveWorkerEffectiveModel,
+  type ResolveWorkerEffectiveModelInput,
+  type ResolvedWorkerModel,
+  type WorkerModelSelection,
+  type WorkerModelSource,
+} from "./ticket-model-arbiter.js";
+export {
+  QUOTA_PAUSE_ERROR_MAX_CHARS,
+  TicketQuotaResumeService,
+  classifyQuotaPauseFromExternalFailure,
+  classifyQuotaPauseFromUnanswered,
+  downgradeQuotaWaitingToUser,
+  isQuotaPauseCheckpoint,
+  sanitizeTicketQuotaText,
+  type TicketQuotaResumeDeps,
+  type TicketQuotaResumePorts,
+} from "./ticket-quota-pause.js";

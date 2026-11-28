@@ -7,6 +7,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { SettingsAssistantDoc, isActiveSettingsConversation } from "./settings-doc.js";
 import { KuloStateDoc, isOrchestratorConversation, resolveTicketExecutionScope } from "./state.js";
+import { sanitizeTicketQuotaText } from "./ticket-quota-pause.js";
 import { evaluateRunHealthWithJudge, RUN_HEALTH_JUDGE_TIMEOUT_MS, type RunHealthJudgeInput } from "./run-health-judge.js";
 import {
   buildBeforeToolBlockMessage, buildDeterministicWarningGuidance, buildJudgeGuidance,
@@ -350,13 +351,27 @@ export function createRunHealthController(options: RunHealthExtensionOptions): R
     conversationId: ConversationId,
     updater: (txDoc: RunHealthDocState, liveRun: { first?: EntryId; inputs: unknown[]; turns: number } | undefined) => boolean,
     context: Context = BACKGROUND_CONTEXT,
+    workerStuck?: { kind: "doom_loop" | "judge_stuck"; reason: string },
   ): Promise<void> => {
     const harness = options.getHarness();
     if (!harness || shutdownController.signal.aborted) return;
     await harness.commit(async (tx) => {
       const live = await tx.doc(LiveDoc, conversationId);
       const doc = await tx.doc(RunHealthDoc, conversationId);
-      updater(doc as RunHealthDocState, live.run);
+      const applied = updater(doc as RunHealthDocState, live.run);
+      if (applied && workerStuck) {
+        const kuloState = await tx.doc(KuloStateDoc);
+        const scope = resolveTicketExecutionScope(kuloState, conversationId);
+        if (scope && !scope.isSubagent && scope.ticket.status !== "stopped" && scope.ticket.status !== "closed") {
+          const now = Date.now();
+          scope.ticket.runHealthStuck = {
+            kind: workerStuck.kind,
+            reason: sanitizeTicketQuotaText(workerStuck.reason, options.redact) || "检测到任务执行停滞",
+            at: now,
+          };
+          scope.ticket.updatedAt = now;
+        }
+      }
     }, context);
   };
 
@@ -456,17 +471,24 @@ export function createRunHealthController(options: RunHealthExtensionOptions): R
             docDirty = true;
           }
 
+          let workerStuckUpdate: { kind: "doom_loop" | "judge_stuck"; reason: string } | undefined;
           if (evalAction === "brake" && evalBrakeReason) {
             if (!nextDoc.forceWrapUp || nextDoc.forceWrapUp.source === "turn_limit") {
               nextDoc.forceWrapUp = { source: "doom_loop", reason: evalBrakeReason, setAtTurn: turns };
               delete nextDoc.pendingGuidance;
               docDirty = true;
             }
+            if (role === "worker") {
+              workerStuckUpdate = { kind: "doom_loop", reason: evalBrakeReason };
+            }
           } else if (evalAction === "warn" && evalWarning && !nextDoc.forceWrapUp) {
             nextDoc.pendingGuidance = {
               source: "doom_loop", turn: turns, text: buildDeterministicWarningGuidance(role, evalWarning),
             };
             docDirty = true;
+            if (role === "worker") {
+              workerStuckUpdate = { kind: "doom_loop", reason: evalWarning.detail };
+            }
           } else if (
             nextDoc.pendingGuidance &&
             (nextDoc.pendingGuidance.source === "doom_loop" ||
@@ -476,7 +498,7 @@ export function createRunHealthController(options: RunHealthExtensionOptions): R
             docDirty = true;
           }
 
-          if (docDirty) {
+          if (docDirty || workerStuckUpdate) {
             await commitDocUpdate(
               api.conversationId,
               (txDoc, liveRun) => {
@@ -485,6 +507,7 @@ export function createRunHealthController(options: RunHealthExtensionOptions): R
                 return true;
               },
               context,
+              workerStuckUpdate,
             ).catch(() => {});
           }
 
@@ -543,6 +566,9 @@ export function createRunHealthController(options: RunHealthExtensionOptions): R
                   return true;
                 },
                 BACKGROUND_CONTEXT,
+                role === "worker" && verdict?.verdict === "stuck"
+                  ? { kind: "judge_stuck", reason: verdict.reason }
+                  : undefined,
               );
             } catch {
               // Strict fail-open: never surface errors from detached judge persistence.

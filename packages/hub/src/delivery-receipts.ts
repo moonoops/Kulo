@@ -19,7 +19,7 @@ export interface DeliveryIntent {
   id: string;
   key: string;
   fingerprint: string;
-  action: ReliableClientMessage["type"];
+  action: ReliableClientMessage["type"] | "ticket.resume_override";
   topicId?: string;
   legacyKey: string;
   legacyFingerprint: string;

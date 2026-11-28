@@ -505,6 +505,7 @@ export function isTicketHoldingWriteLock(ticket: Readonly<TicketRecord>): boolea
   return Boolean(
     ticket.status === "running" ||
     ticket.status === "pausing" ||
+    (ticket.status === "waiting" && ticket.waiting?.reason === "quota") ||
     ticket.cleanupPending ||
     hasPendingWorkspaceApply(ticket),
   );
@@ -520,7 +521,9 @@ function ensureWriteHolders(state: KuloDurableState): string[] {
   }
   for (const ticket of Object.values(state.tickets)) {
     if (
-      (ticket.cleanupPending || hasPendingWorkspaceApply(ticket)) &&
+      (ticket.cleanupPending ||
+        hasPendingWorkspaceApply(ticket) ||
+        (ticket.status === "waiting" && ticket.waiting?.reason === "quota")) &&
       !isTicketWriteExempt(ticket) &&
       !state.slots.writeHolders.includes(ticket.id)
     ) {
@@ -763,6 +766,8 @@ export function closeSettledTicketsForDeletedTopic(
     }
     transitionTicketStatus(ticket, "closed", now);
     ticket.waiting = undefined;
+    delete ticket.quotaPause;
+    delete ticket.runHealthStuck;
     ticket.activeTaskId = undefined;
     ticket.resumePrompt = undefined;
     ticket.resumeAttachmentIds = undefined;

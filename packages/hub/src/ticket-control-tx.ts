@@ -353,6 +353,8 @@ export async function admitTicketCloseInTx(
     }
   }
   transitionTicketStatus(t, "closed", now);
+  delete t.quotaPause;
+  delete t.runHealthStuck;
   settlePendingSubagentsInTx(state, t.id, now);
   if (t.schedule) t.schedule.nextRunAt = null;
   releaseProjectWrite(state, t.id, { force: !t.cleanupPending });
@@ -455,7 +457,9 @@ export async function admitParkTicketFinishInTx(
   t.activeTaskId = undefined;
   t.cleanupPending = input.cleanupPending;
   t.updatedAt = Date.now();
-  releaseSlot(state, input.ticketId);
+  releaseSlot(state, input.ticketId, {
+    releaseWrite: t.waiting?.reason === "quota" ? false : !hasPendingWorkspaceApply(t),
+  });
   if (t.waiting?.reason === "time") {
     const id = await tx.createTask(
       input.workerTicketTask,

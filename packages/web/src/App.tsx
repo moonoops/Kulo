@@ -899,6 +899,14 @@ function AppShell() {
     await sendWsWithAck({ type: "ticket.retry", ticketId });
   }, [sendWsWithAck]);
 
+  const stopTicket = useCallback(async (ticketId: string, reason?: string) => {
+    await sendWsWithAck({ type: "ticket.stop", ticketId, reason: reason?.trim() || "手动停止" });
+  }, [sendWsWithAck]);
+
+  const resumeTicketOverride = useCallback(async (ticketId: string, body: Parameters<typeof kuloRest.resumeTicketOverride>[1]) => {
+    await kuloRest.resumeTicketOverride(ticketId, body);
+  }, []);
+
   const ignoreTicket = useCallback(async (ticketId: string) => {
     await sendWsWithAck({ type: "ticket.close", ticketId, kind: "obsolete", reason: "用户忽略" });
     if (projectedTicketRef.current === ticketId) closeProjection();
@@ -1583,14 +1591,12 @@ function AppShell() {
                 }, { draftKey, topicId: projectedDetail.ticket.originTopicId ?? "root", rawUserText: ans }, deliveryScope);
                 await waitForQueuedAck(record);
               }}
-              onStop={async (id, reason) => {
-                await sendWsWithAck({
-                  type: "ticket.stop",
-                  ticketId: id,
-                  reason: reason?.trim() || "手动停止",
-                });
-              }}
+              onStop={stopTicket}
               onRetry={retryTicket}
+              onResumeOverride={resumeTicketOverride}
+              externalClients={settings?.externalClients}
+              defaultProvider={settings?.blocks.model.value.defaultProvider}
+              defaultModel={settings?.blocks.model.value.defaultModel}
               onArchiveClose={ignoreTicket}
               onDefer={closeProjection}
               projectName={projectedProject?.name}
@@ -1838,6 +1844,11 @@ function AppShell() {
         computerPreview={computerPreviewBinding}
         onProject={projectTask}
         onRetry={retryTicket}
+        onStop={stopTicket}
+        onResumeOverride={resumeTicketOverride}
+        externalClients={settings?.externalClients}
+        defaultProvider={settings?.blocks.model.value.defaultProvider}
+        defaultModel={settings?.blocks.model.value.defaultModel}
         onIgnore={ignoreTicket}
         onArchive={archiveTicket}
         {...taskRailClearAll.railProps}

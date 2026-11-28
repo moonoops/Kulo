@@ -93,6 +93,58 @@ export interface InheritedBrowserSession {
   sessionId: string;
 }
 
+export type TicketQuotaPauseKind =
+  | "provider_quota"
+  | "external_quota"
+  | "rate_limit_exhausted"
+  | "usage_cap";
+
+export interface TicketQuotaPause {
+  kind: TicketQuotaPauseKind;
+  provider?: string;
+  modelId?: string;
+  externalClientId?: string;
+  /** Sanitized via connectionManager.redact(redactSecrets(...)) and <= 240 chars. */
+  errorMessage: string;
+  pausedAt: number;
+  resetsAt?: number;
+}
+
+export type TicketRunHealthStuckKind = "doom_loop" | "judge_stuck";
+
+export interface TicketRunHealthStuck {
+  kind: TicketRunHealthStuckKind;
+  /** Sanitized via connectionManager.redact(redactSecrets(...)) and <= 240 chars. */
+  reason: string;
+  at: number;
+}
+
+export interface TicketModelEscalation {
+  runEpoch: number;
+  activatedAtTurn: number;
+  escalatedModel: {
+    provider?: string;
+    modelId: string;
+    thinkingLevel?: import("./domain.js").RoleThinkingEffort;
+  };
+  /** Sanitized via connectionManager.redact(redactSecrets(...)) and <= 240 chars. */
+  reason: string;
+}
+
+export interface TicketResumeOverrideRequest {
+  commandId?: string;
+  provider?: string;
+  modelId?: string;
+  thinkingLevel?: import("./domain.js").RoleThinkingEffort;
+  note?: string;
+}
+
+export interface TicketResumeOverrideResponse {
+  ticket: TicketCardView;
+  resumed: boolean;
+  warning?: string;
+}
+
 export interface TicketRecord {
   id: string;
   commandId: string;
@@ -107,6 +159,10 @@ export interface TicketRecord {
   role: string;
   providerOverride?: string;
   modelOverride?: string;
+  thinkingOverride?: import("./domain.js").RoleThinkingEffort;
+  modelEscalation?: TicketModelEscalation;
+  quotaPause?: TicketQuotaPause;
+  runHealthStuck?: TicketRunHealthStuck;
   status: TicketStatus;
   envId: string;
   /** Authoritative binding category for `envId`; undefined on legacy tickets defaults to locked. */
@@ -176,6 +232,13 @@ export interface TicketRecord {
 
 export interface TicketCardView {
   externalAgentKind?: import("./external-agents.js").ExternalAgentKind;
+  externalClientId?: string;
+  externalModelId?: string;
+  providerOverride?: string;
+  modelOverride?: string;
+  thinkingOverride?: import("./domain.js").RoleThinkingEffort;
+  quotaPause?: TicketQuotaPause;
+  runHealthStuck?: TicketRunHealthStuck;
   pendingWorkspaceApply?: boolean;
   subagentSummary?: TicketSubagentSummary;
   boardId?: string;
