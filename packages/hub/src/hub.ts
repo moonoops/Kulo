@@ -42,6 +42,7 @@ import { createComputerMixedAndroidTierExtension, createReadOnlyAndroidTierExten
 import { resolveAndroidToolAssets } from "./android-delivery.js";
 import { KuloAndroidNotifications } from "./android-notifications.js";
 import { appendTicketOutwardAction, createFailureRecoveryTask, isSilentRecoveryFailure } from "./task-recovery.js";
+import { ExternalTelemetryCache, type ExternalTicketTelemetry } from "./scheduler-external-settle.js";
 import { prepareStateStorage } from "./state-storage.js";
 import { HubStateOwner } from "./state-owner.js";
 import { KuloConnections } from "./connections.js";
@@ -485,6 +486,7 @@ export interface HubEventListener {
   onProjects?: (projects: ProjectView[]) => void;
   onTickets?: (tickets: TicketCardView[], slots: SlotSummary) => void;
   onTicketDelta?: (delta: TicketBoardDelta, snapshot: () => ReturnType<TicketBoardProjection["snapshot"]>) => void;
+  onTicketTelemetry?: (telemetry: ExternalTicketTelemetry) => void;
   onAssistantItems?: (assistantRevision: number, items: AssistantItemView[]) => void;
   onEnvs?: (envs: EnvNodeDescriptor[]) => void;
   onExpression?: (expression: AgentExpressionState | null) => void;
@@ -499,6 +501,7 @@ export interface HubEventListener {
  */
 export class KuloHub implements OrchestratorController {
   readonly #ticketBoard = new TicketBoardProjection();
+  readonly #externalTelemetry = new ExternalTelemetryCache();
   readonly config: KuloHubConfig;
   readonly envManager: EnvManager;
   readonly harness: Harness;
@@ -1633,6 +1636,12 @@ export class KuloHub implements OrchestratorController {
       stateDir: this.config.stateDir,
       defaultIdentityDir: this.#defaultIdentityDir,
       hydrateMessages: (entries, conversationId, options) => this.#projection.hydrateMessages(entries, conversationId, options),
+      getExternalTelemetry: (ticket) =>
+        this.#externalTelemetry.get(ticket.id, {
+          envId: ticket.envId,
+          runEpoch: ticket.runEpoch,
+          ...(ticket.externalExecution?.sessionId ? { sessionId: ticket.externalExecution.sessionId } : {}),
+        }),
     });
   }
 
@@ -1941,7 +1950,7 @@ export class KuloHub implements OrchestratorController {
         });
       },
       onTicketSettled: async (ticketId) => {
-        if (hubRef) { hubRef.#watchdog.untrack(ticketId); await hubRef.#settleStaleTicketConfirmations(ticketId); void hubRef.memoryRuntime.onTicketSettled(ticketId).catch(() => {}); }
+        if (hubRef) { hubRef.#externalTelemetry.clear(ticketId); hubRef.#watchdog.untrack(ticketId); await hubRef.#settleStaleTicketConfirmations(ticketId); void hubRef.memoryRuntime.onTicketSettled(ticketId).catch(() => {}); }
       },
       onInlineCandidateSettled: (ticketId) => {
         if (hubRef) hubRef.#notifyInlineWaiters(ticketId);
@@ -1951,6 +1960,13 @@ export class KuloHub implements OrchestratorController {
       },
       onExternalAgentQuota: (binding, quota) => {
         hubRef?.externalClientQuotas.ingestPassiveQuota(binding, quota);
+      },
+      onExternalTelemetry: (telemetry) => {
+        if (!hubRef || hubRef.#closed) return;
+        const updated = hubRef.#externalTelemetry.update(telemetry, redact);
+        if (updated.changed && updated.current) {
+          for (const listener of hubRef.#listeners) listener.onTicketTelemetry?.(updated.current);
+        }
       },
     });
 

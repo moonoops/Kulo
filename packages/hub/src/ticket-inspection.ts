@@ -6,15 +6,18 @@ import {
   type Harness,
 } from "@earendil-works/pi-durable";
 import type { EnvManager } from "@kulo/env";
-import type {
-  ChatDisplayItem,
-  ExternalAgentRun,
-  ExternalAgentRuntimeEvent,
-  LiveStreamState,
-  SubagentCardView,
-  TicketRecord,
-  WorkerInspectResult,
+import {
+  normalizeExternalContextUsage,
+  type ChatDisplayItem,
+  type ExternalAgentContextUsage,
+  type ExternalAgentRun,
+  type ExternalAgentRuntimeEvent,
+  type LiveStreamState,
+  type SubagentCardView,
+  type TicketRecord,
+  type WorkerInspectResult,
 } from "@kulo/protocol";
+import { sanitizeExternalSessionMode } from "./scheduler-external-settle.js";
 import { BUILTIN_MEMORY_DISPLAY_REDACTED_TOOLS } from "./builtin-memory-entries.js";
 import type { KuloConnections } from "./connections.js";
 import { redactCredentialData } from "./credential-redaction.js";
@@ -60,6 +63,9 @@ export interface TicketInspectionServiceDeps {
     conversationId: number,
     options?: DisplayMessageOptions,
   ) => Promise<ChatDisplayItem[]>;
+  getExternalTelemetry?: (
+    ticket: Readonly<TicketRecord>,
+  ) => { contextUsage?: ExternalAgentContextUsage; activeSessionMode?: string } | undefined;
 }
 
 export class TicketInspectionService {
@@ -222,8 +228,19 @@ export class TicketInspectionService {
           ? [{ callId: `ext-tool-${latestToolEvent.sequence}`, name: connectionManager.redact(latestToolEvent.text).slice(0, 120) }]
           : []),
       ];
+      const projectedTicket = cloneJson(ticket);
+      const cachedTelemetry = this.#deps.getExternalTelemetry?.(ticket);
+      const liveUsage = normalizeExternalContextUsage(
+        run?.contextUsage ?? cachedTelemetry?.contextUsage ?? projectedTicket.externalExecution!.contextUsage ?? {},
+      );
+      const liveMode = sanitizeExternalSessionMode(
+        run?.activeSessionMode ?? cachedTelemetry?.activeSessionMode ?? projectedTicket.externalExecution!.activeSessionMode,
+        (value) => connectionManager.redact(value),
+      );
+      if (liveUsage) projectedTicket.externalExecution!.contextUsage = liveUsage;
+      if (liveMode) projectedTicket.externalExecution!.activeSessionMode = liveMode;
       return {
-        ticket: cloneJson(ticket),
+        ticket: projectedTicket,
         transcript,
         ...subagentsField,
         live: {
@@ -302,6 +319,14 @@ export class TicketInspectionService {
       const phase = run?.phase ?? ticket.externalExecution.phase;
       const touchedFiles = run?.touchedFiles ?? ticket.externalExecution.touchedFiles;
       const uncertainReason = run?.uncertainReason ?? ticket.externalExecution.uncertainReason;
+      const cachedTelemetry = this.#deps.getExternalTelemetry?.(ticket);
+      const liveUsage = normalizeExternalContextUsage(
+        run?.contextUsage ?? cachedTelemetry?.contextUsage ?? ticket.externalExecution.contextUsage ?? {},
+      );
+      const liveMode = sanitizeExternalSessionMode(
+        run?.activeSessionMode ?? cachedTelemetry?.activeSessionMode ?? ticket.externalExecution.activeSessionMode,
+        (value) => this.#deps.connectionManager.redact(value),
+      );
       const externalInspect: WorkerInspectResult = {
         ticketId: ticket.id,
         title: ticket.title,
@@ -325,6 +350,8 @@ export class TicketInspectionService {
           ...((run?.stagedCwd ?? ticket.externalExecution.stagedCwd) ? { stagedCwd: run?.stagedCwd ?? ticket.externalExecution.stagedCwd } : {}),
           ...(uncertainReason ? { uncertainReason } : {}),
           permissions: run?.permissions ?? ticket.externalExecution.pendingPermissions ?? [],
+          ...(liveUsage ? { contextUsage: liveUsage } : {}),
+          ...(liveMode ? { activeSessionMode: liveMode } : {}),
         },
         recentEntries: (run?.events ?? []).slice(-15).map((event) => ({
           id: event.sequence,

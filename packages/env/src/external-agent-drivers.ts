@@ -6,7 +6,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { cleanSupervisedExecution, processFingerprint, supervisedCommand } from "./worker-supervisor.js";
 import { defaultProtectedPaths } from "./isolation.js";
 import { ExternalAgentRpc, type ExternalAgentPipeFactory, type RpcValue } from "./external-agent-rpc.js";
-import { isBlockedCustomAcpExecutableName, isBundledClaudeSdkExecutable, isSupportedExternalAgentKind, KULO_VERSION, validateCustomAcpArgs, type ExecutionTrustMode, type ExternalAgentBinding, type ExternalAgentCapabilities, type ExternalAgentInputAttachment, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentQuotaProbeResult, type ExternalWorkspaceMode } from "@kulo/protocol";
+import { isBlockedCustomAcpExecutableName, isBundledClaudeSdkExecutable, isSupportedExternalAgentKind, KULO_VERSION, normalizeExternalContextUsage, resolveExternalModelEffortPolicy, validateCustomAcpArgs, type ExecutionTrustMode, type ExternalAgentBinding, type ExternalAgentCapabilities, type ExternalAgentContextUsage, type ExternalAgentInputAttachment, type ExternalAgentKind, type ExternalAgentModelInfo, type ExternalAgentQuotaProbeResult, type ExternalWorkspaceMode } from "@kulo/protocol";
 import { ACP_FLAVORS, acpReadableSkillSubdirs, extractModelsFromAcpInitialize, extractModelsFromAcpModelState, getAcpFlavor, isSensitiveCredentialFilename, sortEffortTokens } from "./external-agent-acp.js";
 import { filterNativeAgentEnvironment, type NativeAgentEnvOptions } from "./external-agent-env.js";
 import { resolveCrossPlatformSpawn } from "./platform-process.js";
@@ -42,12 +42,15 @@ export interface ExternalDriverContext {
   thinkingLevel?: string;
   serviceTier?: string;
   sessionId?: string;
+  runEpoch?: number;
   timeoutMs: number;
   servers: Array<{name:string;url:string;headers?:Array<{name:string;value:string}>}>;
   pipe: ExternalAgentPipeFactory;
   event(type:"message"|"tool"|"permission"|"state"|"error", text:string):void;
   activity?(label?:string):void;
   quota?(snapshot: ExternalAgentQuotaProbeResult):void;
+  contextUsage?(usage: ExternalAgentContextUsage, scope: { envId: string; sessionId: string; runEpoch: number }): void;
+  sessionMode?(mode: string, scope: { envId: string; sessionId: string; runEpoch: number }): void;
   session(id:string):void;
   submitted():void;
   complete(state:"completed"|"failed"|"cancelled"|"uncertain", error?:string):void;
@@ -346,37 +349,137 @@ function isThoughtLevelConfigOption(row: RpcValue): boolean {
   );
 }
 
-function modelsFromConfig(session:RpcValue):{models:ExternalAgentModelInfo[];configId:string|undefined;thoughtConfigId:string|undefined;currentModelId:string|undefined}{
-  const rawModels:Array<{id:string;name:string}>=[];let configId:string|undefined;let thoughtConfigId:string|undefined;let currentModel:string|undefined;
-  const efforts:string[]=[];
-  const collectModels=(options:unknown)=>{for(const item of Array.isArray(options)?options:[]){const value=obj(item);if(typeof value.value==="string")rawModels.push({id:value.value,name:text(value.name)||value.value});else collectModels(value.options);}};
-  const collectEfforts=(options:unknown)=>{for(const item of Array.isArray(options)?options:[]){const value=obj(item);if(typeof value.value==="string"){if(value.value&&!efforts.includes(value.value))efforts.push(value.value);}else collectEfforts(value.options);}};
-  for(const option of Array.isArray(session.configOptions)?session.configOptions:[]){
-    const row=obj(option);
-    if(!configId&&(row.category==="model"||row.id==="model")){configId=text(row.id)||undefined;currentModel=text(row.currentValue)||undefined;collectModels(row.options);}
-    if(!thoughtConfigId&&isThoughtLevelConfigOption(row)){thoughtConfigId=text(row.id)||undefined;collectEfforts(row.options);}
+function extractModeFromConfigOptions(configOptions: unknown): string | undefined {
+  for (const option of Array.isArray(configOptions) ? configOptions : []) {
+    const row = obj(option);
+    if (row.category === "mode" || row.id === "mode") {
+      const value = text(row.currentValue).trim();
+      if (value) return value;
+    }
+  }
+  return undefined;
+}
+
+function extractModeFromSession(session: RpcValue): string | undefined {
+  return (
+    extractModeFromConfigOptions(session.configOptions) ||
+    text(obj(session.modes).currentModeId).trim() ||
+    undefined
+  );
+}
+
+function firstFiniteNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function extractContextUsageFromUpdate(update: RpcValue): ExternalAgentContextUsage | undefined {
+  const usedTokens = firstFiniteNumber(
+    update.used,
+    update.usedTokens,
+    update.contextTokens,
+    update.tokens,
+  );
+  if (usedTokens === undefined) return undefined;
+  const contextWindow = firstFiniteNumber(
+    update.size,
+    update.contextWindow,
+    update.window,
+    update.limit,
+    update.maxTokens,
+  );
+  return normalizeExternalContextUsage({ usedTokens, contextWindow, updatedAt: Date.now() });
+}
+
+function isAutoOrBypassSessionMode(mode: string): boolean {
+  return /^(?:auto|bypass|bypass[_-]?permissions|yolo|full[_-]?auto|dangerously)/i.test(mode.trim());
+}
+
+export function modelsFromConfig(
+  session: RpcValue,
+  options?: { hadThoughtConfig?: boolean },
+): {
+  models: ExternalAgentModelInfo[];
+  configId: string | undefined;
+  thoughtConfigId: string | undefined;
+  currentModelId: string | undefined;
+  currentModeId: string | undefined;
+} {
+  const rawModels: Array<{ id: string; name: string }> = [];
+  let configId: string | undefined;
+  let thoughtConfigId: string | undefined;
+  let currentModel: string | undefined;
+  const efforts: string[] = [];
+  const collectModels = (items: unknown) => {
+    for (const item of Array.isArray(items) ? items : []) {
+      const value = obj(item);
+      if (typeof value.value === "string") rawModels.push({ id: value.value, name: text(value.name) || value.value });
+      else collectModels(value.options);
+    }
+  };
+  const collectEfforts = (items: unknown) => {
+    for (const item of Array.isArray(items) ? items : []) {
+      const value = obj(item);
+      if (typeof value.value === "string") {
+        if (value.value && !efforts.includes(value.value)) efforts.push(value.value);
+      } else collectEfforts(value.options);
+    }
+  };
+  for (const option of Array.isArray(session.configOptions) ? session.configOptions : []) {
+    const row = obj(option);
+    if (!configId && (row.category === "model" || row.id === "model")) {
+      configId = text(row.id) || undefined;
+      currentModel = text(row.currentValue) || undefined;
+      collectModels(row.options);
+    }
+    if (!thoughtConfigId && isThoughtLevelConfigOption(row)) {
+      thoughtConfigId = text(row.id) || undefined;
+      collectEfforts(row.options);
+    }
   }
   const sessionModelState = extractModelsFromAcpModelState(obj(session.models));
-  if(!currentModel && sessionModelState.currentModelId) currentModel = sessionModelState.currentModelId;
-  const perModelEfforts = new Map<string, string[]>(
-    sessionModelState.models.map((item) => [item.id, item.efforts ?? []]),
+  if (!currentModel && sessionModelState.currentModelId) currentModel = sessionModelState.currentModelId;
+  const perModelState = new Map<string, ExternalAgentModelInfo>(
+    sessionModelState.models.map((item) => [item.id, item]),
   );
   const sourceModels = rawModels.length
     ? rawModels
     : sessionModelState.models.map(({ id, name }) => ({ id, name }));
   const sortedSharedEfforts = efforts.length ? sortEffortTokens(efforts) : [];
-  const hasPerModelCatalog = sessionModelState.models.length > 0 && [...perModelEfforts.values()].some((list) => list.length > 0);
-  const models:ExternalAgentModelInfo[]=sourceModels.map(item=>{
-    const modelEfforts=hasPerModelCatalog
-      ? (perModelEfforts.has(item.id)?perModelEfforts.get(item.id)!:sortedSharedEfforts)
-      : sortedSharedEfforts;
-    return{
-      ...item,
-      ...(modelEfforts.length?{efforts:[...modelEfforts]}:{}),
-      ...(currentModel&&item.id===currentModel?{isDefault:true}:{}),
-    };
+  const hasPerModelCatalog =
+    sessionModelState.models.length > 0 &&
+    sessionModelState.models.some((item) => item.effortCapability === "supported" || item.effortCapability === "unsupported");
+  const models: ExternalAgentModelInfo[] = sourceModels.map((item) => {
+    const fromState = perModelState.get(item.id);
+    const defaultField = currentModel && item.id === currentModel ? { isDefault: true } : {};
+    if (hasPerModelCatalog && fromState) {
+      if (fromState.effortCapability === "unsupported") {
+        return { ...item, effortCapability: "unsupported", ...defaultField };
+      }
+      if (fromState.efforts?.length) {
+        return { ...item, efforts: [...fromState.efforts], effortCapability: "supported", ...defaultField };
+      }
+    }
+    if (sortedSharedEfforts.length > 0) {
+      return { ...item, efforts: [...sortedSharedEfforts], effortCapability: "supported", ...defaultField };
+    }
+    if (
+      (thoughtConfigId !== undefined && sortedSharedEfforts.length === 0) ||
+      (options?.hadThoughtConfig && currentModel && item.id === currentModel)
+    ) {
+      return { ...item, effortCapability: "unsupported", ...defaultField };
+    }
+    return { ...item, effortCapability: "unknown", ...defaultField };
   });
-  return {models,configId,thoughtConfigId,currentModelId:currentModel};
+  return {
+    models,
+    configId,
+    thoughtConfigId,
+    currentModelId: currentModel,
+    currentModeId: extractModeFromSession(session),
+  };
 }
 
 function extractXaiPromptComplete(method: string, params: RpcValue): { sessionId?: string; promptId?: string; stopReason?: string; error?: string } | undefined {
@@ -420,15 +523,33 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
   }
 
   const isResumingSession = Boolean(ctx.sessionId);
+  const runEpoch = ctx.runEpoch ?? 0;
   let sessionId=ctx.sessionId;let submitted=false;let closed=false;let cancelRequested=false;let permissionCancelled=false;let sawToolOrOutput=false;let promptSettled=false;
   let activePromptId: string | undefined;
   let settlePromptFn: ((stopReason: string, errorMessage?: string) => void) | undefined;
+  let lastReportedMode: string | undefined;
   const tools=new Map<string,string>();
   const bufferedConfigOptions = new Map<string, unknown[]>();
+  const bufferedUsage = new Map<string, ExternalAgentContextUsage>();
+  const bufferedModes = new Map<string, string>();
   const configWaiters = new Set<() => void>();
   let replayWaiterKick: (() => void) | undefined;
   const notifyConfigWaiters = () => {
     for (const wake of [...configWaiters]) wake();
+  };
+  const emitContextUsage = (usage: ExternalAgentContextUsage, activeSessionId: string) => {
+    if (closed || !activeSessionId) return;
+    ctx.contextUsage?.(usage, { envId: ctx.binding.envId, sessionId: activeSessionId, runEpoch });
+  };
+  const emitSessionMode = (rawMode: string, activeSessionId: string) => {
+    if (closed || !activeSessionId) return;
+    const clean = rawMode.replace(/[\x00-\x1f\x7f]/g, "").trim().slice(0, 128);
+    if (!clean || clean === lastReportedMode) return;
+    lastReportedMode = clean;
+    ctx.sessionMode?.(clean, { envId: ctx.binding.envId, sessionId: activeSessionId, runEpoch });
+    if (!probe && isAutoOrBypassSessionMode(clean)) {
+      ctx.event("state", `External client reported session mode: ${clean}`);
+    }
   };
   const local=createAcpLocalClient(ctx);
   const rpc=new ExternalAgentRpc({request:async(method,params,id)=>{
@@ -446,6 +567,7 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
     if(optKind.includes("reject")||optKind.includes("deny")||optKind.includes("cancel")){permissionCancelled=true;}
     return{outcome:{outcome:"selected",optionId:choice}};
   },notification:(method,params)=>{
+    if (closed) return;
     if (flavor?.xaiPromptCompletionFallback && submitted && !promptSettled) {
       const complete = extractXaiPromptComplete(method, params);
       if (complete && (!complete.sessionId || complete.sessionId === sessionId) && (!complete.promptId || !activePromptId || complete.promptId === activePromptId)) {
@@ -456,6 +578,34 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
     if (method !== "session/update") return;
     const update=obj(params.update),kind=text(update.sessionUpdate);
     const notifSessionId = text(params.sessionId);
+    if (kind === "usage_update") {
+      const usage = extractContextUsageFromUpdate(update);
+      if (usage) {
+        if (sessionId) {
+          if (notifSessionId === sessionId) emitContextUsage(usage, sessionId);
+        } else if (notifSessionId) {
+          bufferedUsage.set(notifSessionId, usage);
+        }
+      }
+    } else if (kind === "current_mode_update") {
+      const mode = text(update.currentModeId).trim() || text(update.modeId).trim() || text(update.mode).trim();
+      if (mode) {
+        if (sessionId) {
+          if (notifSessionId === sessionId) emitSessionMode(mode, sessionId);
+        } else if (notifSessionId) {
+          bufferedModes.set(notifSessionId, mode);
+        }
+      }
+    } else if (kind === "config_option_update" && Array.isArray(update.configOptions)) {
+      const mode = extractModeFromConfigOptions(update.configOptions);
+      if (mode) {
+        if (sessionId) {
+          if (notifSessionId === sessionId) emitSessionMode(mode, sessionId);
+        } else if (notifSessionId) {
+          bufferedModes.set(notifSessionId, mode);
+        }
+      }
+    }
     if (!submitted) {
       if (replayWaiterKick && (!sessionId || notifSessionId === sessionId)) {
         replayWaiterKick();
@@ -497,17 +647,20 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
       return (await(pipe.cleanup?.()??pipe.exited.then(()=>true,()=>false)))&&processes;
     },
   };
-  const validateRequestedModelAndEffort = (models: ExternalAgentModelInfo[], currentModelId?: string) => {
+  const validateRequestedModel = (models: ExternalAgentModelInfo[]) => {
     if (ctx.modelId && models.length > 0 && !models.some((model) => model.id === ctx.modelId)) {
       throw new Error("Selected model is not advertised by this local agent");
     }
-    if (ctx.thinkingLevel) {
-      const targetId = ctx.modelId || currentModelId || models.find((model) => model.isDefault)?.id;
-      const target = targetId ? models.find((model) => model.id === targetId) : undefined;
-      if (target?.efforts?.length && !target.efforts.includes(ctx.thinkingLevel)) {
-        throw new Error("Selected thinking level is not advertised by this local agent");
-      }
-    }
+  };
+  const resolveEffectiveThinkingLevel = (models: ExternalAgentModelInfo[], currentModelId?: string): string | undefined => {
+    const requested = ctx.thinkingLevel?.trim();
+    if (!requested || requested === "auto") return undefined;
+    const targetId = ctx.modelId || currentModelId || models.find((model) => model.isDefault)?.id;
+    const target = targetId ? models.find((model) => model.id === targetId) : undefined;
+    const policy = resolveExternalModelEffortPolicy(target, ctx.binding.kind, models);
+    if (policy.capability === "unsupported") return undefined;
+    if (policy.capability === "supported" && !policy.efforts.includes(requested)) return undefined;
+    return requested;
   };
   try{
     const init=await rpc.call(
@@ -522,7 +675,7 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
     );
     const initModels = extractModelsFromAcpInitialize(init);
     if (probe && flavor?.probeInitializeOnly && initModels.models.length > 0) {
-      validateRequestedModelAndEffort(initModels.models, initModels.currentModelId);
+      validateRequestedModel(initModels.models);
       return { driver, models: initModels.models };
     }
     const capabilities=obj(init.agentCapabilities);const mcpServers=obj(capabilities.mcpCapabilities).http?ctx.servers.map(server=>({type:"http",name:server.name,url:server.url,headers:server.headers??[]})):[];
@@ -569,6 +722,13 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
       }
     };
     mergeBufferedConfig();
+    const initialMode = bufferedModes.get(sessionId) ?? extractModeFromSession(session);
+    bufferedModes.clear();
+    if (!lastReportedMode && initialMode) emitSessionMode(initialMode, sessionId);
+    const preBufferedUsage = bufferedUsage.get(sessionId);
+    bufferedUsage.clear();
+    if (preBufferedUsage) emitContextUsage(preBufferedUsage, sessionId);
+
     let parsed = modelsFromConfig(session);
     if (probe && parsed.models.length === 0 && initModels.models.length === 0 && flavor?.modelAdvertisementGraceMs && flavor.modelAdvertisementGraceMs > 0) {
       await new Promise<void>((resolve) => {
@@ -592,9 +752,10 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
       });
     }
     let models = parsed.models.length > 0 ? parsed.models : initModels.models;
-    const currentModelId = parsed.currentModelId ?? initModels.currentModelId;
+    let currentModelId = parsed.currentModelId ?? initModels.currentModelId;
     const configId = parsed.configId;
     const thoughtConfigId = parsed.thoughtConfigId;
+    const hadThoughtConfig = Boolean(thoughtConfigId);
 
     const useSetSessionModel = Boolean(
       flavor?.preferSetSessionModel ||
@@ -602,13 +763,14 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
     );
 
     if (useSetSessionModel) {
-      validateRequestedModelAndEffort(models, currentModelId);
+      validateRequestedModel(models);
       const effectiveModelId = ctx.modelId || currentModelId || models.find((model) => model.isDefault)?.id;
-      if ((ctx.modelId || ctx.thinkingLevel) && effectiveModelId) {
+      const effectiveThinkingLevel = resolveEffectiveThinkingLevel(models, currentModelId);
+      if ((ctx.modelId || effectiveThinkingLevel) && effectiveModelId) {
         await rpc.call("session/set_model", {
           sessionId,
           modelId: effectiveModelId,
-          ...(ctx.thinkingLevel ? { _meta: { reasoningEffort: ctx.thinkingLevel } } : {}),
+          ...(effectiveThinkingLevel ? { _meta: { reasoningEffort: effectiveThinkingLevel } } : {}),
         });
       } else if (ctx.modelId) {
         throw new Error("Selected model is not advertised by this local agent");
@@ -621,11 +783,14 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
         const updated = await rpc.call("session/set_config_option", { sessionId, configId, value: ctx.modelId });
         if (Array.isArray(updated.configOptions)) {
           session = { ...session, configOptions: updated.configOptions };
-          const refreshed = modelsFromConfig(session);
+          const refreshed = modelsFromConfig(session, { hadThoughtConfig });
           if (refreshed.models.length > 0) models = refreshed.models;
+          if (refreshed.currentModelId) currentModelId = refreshed.currentModelId;
+          if (refreshed.currentModeId) emitSessionMode(refreshed.currentModeId, sessionId);
         }
       }
-      if (ctx.thinkingLevel) {
+      const effectiveThinkingLevel = resolveEffectiveThinkingLevel(models, currentModelId);
+      if (effectiveThinkingLevel) {
         const options = (Array.isArray(session.configOptions) ? session.configOptions : []).map(obj);
         const option = options.find((value) => isThoughtLevelConfigOption(value));
         const values: RpcValue[] = [];
@@ -637,10 +802,9 @@ export async function connectAcp(ctx:ExternalDriverContext,probe=false):Promise<
           }
         };
         collect(option?.options);
-        if (!option || !values.some((value) => value.value === ctx.thinkingLevel)) {
-          throw new Error("Selected thinking level is not advertised by this local agent");
+        if (option && values.some((value) => value.value === effectiveThinkingLevel)) {
+          await rpc.call("session/set_config_option", { sessionId, configId: option.id, value: effectiveThinkingLevel });
         }
-        await rpc.call("session/set_config_option", { sessionId, configId: option.id, value: ctx.thinkingLevel });
       }
     }
 

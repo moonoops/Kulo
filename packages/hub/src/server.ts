@@ -764,6 +764,7 @@ export async function startKuloHubServer(
   };
 
   const lastTopicActivities = new Map<string, string>();
+  const inspectedTickets = new Map<WebSocket, string>();
   const assistantStreamClients = new Set<{ res: http.ServerResponse; heartbeat: NodeJS.Timeout }>();
   const broadcastAssistantSse = (event: string, data: unknown) => {
     const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -833,6 +834,19 @@ export async function startKuloHubServer(
           }
           ws.send(full);
         }
+      }
+    },
+    onTicketTelemetry: (telemetry) => {
+      const encoded = JSON.stringify({
+        type: "hub.ticket_telemetry",
+        ticketId: telemetry.ticketId,
+        runEpoch: telemetry.runEpoch,
+        ...(telemetry.sessionId ? { sessionId: telemetry.sessionId } : {}),
+        ...(telemetry.contextUsage ? { contextUsage: telemetry.contextUsage } : {}),
+        ...(telemetry.activeSessionMode ? { activeSessionMode: telemetry.activeSessionMode } : {}),
+      });
+      for (const [ws, ticketId] of inspectedTickets.entries()) {
+        if (ws.readyState === ws.OPEN && ticketId === telemetry.ticketId) ws.send(encoded);
       }
     },
     onEnvs: (envs) => {
@@ -1099,6 +1113,7 @@ export async function startKuloHubServer(
             break;
           }
           case "ticket.inspect": {
+            inspectedTickets.set(ws, msg.ticketId);
             const detail = await hub.inspectTicketDetail(msg.ticketId);
             send({ type: "hub.ticket_detail", ...detail });
             sendAck({ ticketId: msg.ticketId });
@@ -1145,6 +1160,7 @@ export async function startKuloHubServer(
     ws.once("close", () => {
       deviceClients.delete(ws);
       clientTopics.delete(ws);
+      inspectedTickets.delete(ws);
       const clientId = settingsClients.get(ws);
       settingsClients.delete(ws);
       if (clientId && ![...settingsClients.values()].includes(clientId)) hub.settingsAssistant.forgetContext(clientId);

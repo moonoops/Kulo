@@ -158,6 +158,7 @@ export function defaultProtectedPaths(homeDir = os.homedir()): string[] {
     path.join(homeDir, ".codex"),
     path.join(homeDir, ".gemini"),
     path.join(homeDir, ".antigravity"),
+    path.join(homeDir, ".agents"),
     path.join(homeDir, ".grok"),
     path.join(homeDir, ".cursor"),
     path.join(homeDir, ".opencode"),
@@ -505,7 +506,7 @@ export function createWorkerSandbox(options: WorkerSandboxOptions): WorkerSandbo
   for (const directory of runtimePaths) {
     if (directory === path.parse(directory).root || directory === canonicalExecutionPath(os.homedir()) ||
         protectedPaths.some((entry) => inside(directory, canonicalExecutionPath(entry))) ||
-        [".claude", ".gemini", ".antigravity", ".dsh", ".codex", ".grok", ".cursor", ".opencode", ".kiro", ".copilot"].some((name) => inside(directory, canonicalExecutionPath(path.join(os.homedir(), name))))) {
+        [".claude", ".gemini", ".antigravity", ".agents", ".dsh", ".codex", ".grok", ".cursor", ".opencode", ".kiro", ".copilot"].some((name) => inside(directory, canonicalExecutionPath(path.join(os.homedir(), name))))) {
       throw new Error("Agent runtime code cannot expose private account or application directories");
     }
   }

@@ -114,8 +114,8 @@ describe("ACP flavors, Grok Build, OpenCode, Kiro, and custom ACP drivers", () =
     expect(extracted).toEqual({
       currentModelId: "grok-4.6",
       models: [
-        { id: "grok-4.6", name: "Grok 4.6", efforts: ["low", "medium", "high", "xhigh"], isDefault: true },
-        { id: "grok-fast", name: "Grok Fast" },
+        { id: "grok-4.6", name: "Grok 4.6", efforts: ["low", "medium", "high", "xhigh"], effortCapability: "supported", isDefault: true },
+        { id: "grok-fast", name: "Grok Fast", effortCapability: "unsupported" },
       ],
     });
   });
@@ -207,7 +207,7 @@ describe("ACP flavors, Grok Build, OpenCode, Kiro, and custom ACP drivers", () =
     expect(probed.sent.find((m) => m.method === "initialize")?.params).toMatchObject({ _meta: { clientType: "extension" } });
     expect(probed.sent.some((m) => m.method === "session/new")).toBe(false);
     expect(probeRes.models).toEqual([
-      { id: "grok-4.6", name: "Grok 4.6", efforts: ["low", "high", "xhigh"], isDefault: true },
+      { id: "grok-4.6", name: "Grok 4.6", efforts: ["low", "high", "xhigh"], effortCapability: "supported", isDefault: true },
     ]);
     probeRes.driver.close();
 
@@ -308,7 +308,7 @@ describe("ACP flavors, Grok Build, OpenCode, Kiro, and custom ACP drivers", () =
     };
     const res = await connectAcp(ctx, true);
     expect(spec.args).toEqual(["acp"]);
-    expect(res.models).toEqual([{ id: "gpt-5.4", name: "GPT-5.4", isDefault: true }]);
+    expect(res.models).toEqual([{ id: "gpt-5.4", name: "GPT-5.4", effortCapability: "unknown", isDefault: true }]);
     res.driver.close();
   });
 

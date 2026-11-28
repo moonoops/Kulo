@@ -16,6 +16,7 @@ import {
   areInternalRolesAtDefaults,
   isSupportedExternalAgentKind,
   localizeRolePresets,
+  resolveExternalModelEffortPolicy,
   type EnvNodeDescriptor,
   type ProjectView,
   type KuloSettingsView,
@@ -424,12 +425,17 @@ export function WorkersModule({
               const displayModel = isExternal
                 ? role.modelId?.trim() || t("客户端默认", "Client default")
                 : role.modelId?.trim() || t("默认模型", "Default model");
-              const displayEffort = isExternal
-                ? externalEffortLabel(role.thinkingLevel ?? "auto", t)
-                : effortLabel(role.thinkingLevel, roleModelMeta);
               const matchedExternalModel = isExternal
                 ? (client?.models.find((m) => m.id === role.modelId?.trim()) ?? (!role.modelId?.trim() ? client?.models.find((m) => m.isDefault) : undefined))
                 : undefined;
+              const externalEffortPolicy = isExternal
+                ? resolveExternalModelEffortPolicy(matchedExternalModel, externalKind, client?.models)
+                : undefined;
+              const displayEffort = isExternal
+                ? externalEffortPolicy?.showSelector
+                  ? externalEffortLabel(role.thinkingLevel ?? "auto", t)
+                  : ""
+                : effortLabel(role.thinkingLevel, roleModelMeta);
               const matchedTier = isExternal && role.serviceTier?.trim()
                 ? (matchedExternalModel?.serviceTiers?.find((tier) => tier.id === role.serviceTier?.trim()) ?? role.serviceTier.trim())
                 : undefined;

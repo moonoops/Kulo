@@ -2,7 +2,10 @@ import { useI18n } from "../../kulo-i18n";
 import { ComboBox, Description, Fieldset, Header, Input, Label, ListBox, Select, Switch, TextArea, TextField } from "@heroui/react";
 import {
   isSupportedExternalAgentKind,
+  resolveExternalModelEffortPolicy,
   type EnvNodeDescriptor,
+  type ExternalAgentKind,
+  type ExternalAgentModelInfo,
   type ExternalAgentServiceTierInfo,
   type ExternalClientConnection,
   type KuloSettingsView,
@@ -16,19 +19,37 @@ const BUILTIN_ENGINE_KEY = "__builtin__";
 const EXTERNAL_DEFAULT_MODEL_KEY = "__client_default__";
 const EXTERNAL_DEFAULT_TIER_KEY = "__client_default__";
 
-const FALLBACK_EXTERNAL_EFFORTS: Record<string, string[]> = {
-  "claude-code": ["adaptive", "low", "medium", "high", "max", "none"],
-  codex: ["low", "medium", "high", "xhigh"],
-  antigravity: ["low", "medium", "high"],
-  grok: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-  cursor: ["low", "medium", "high"],
-  opencode: ["low", "medium", "high"],
-  "gemini-cli": ["low", "medium", "high"],
-  kiro: ["low", "medium", "high"],
-  copilot: ["low", "medium", "high"],
-  dsh: ["low", "medium", "high"],
-  acp: ["low", "medium", "high"],
-};
+export function applyExternalModelChange(
+  value: RolePreset,
+  nextRaw: string,
+  externalModels: readonly ExternalAgentModelInfo[],
+  externalKind?: ExternalAgentKind | string,
+): RolePreset {
+  const trimmed = nextRaw.trim();
+  const nextModel = trimmed
+    ? externalModels.find((item) => item.id === trimmed)
+    : externalModels.find((item) => item.isDefault);
+  const nextPolicy = resolveExternalModelEffortPolicy(nextModel, externalKind, externalModels);
+  const currentEffort = value.thinkingLevel ?? "auto";
+  const nextEffort =
+    nextPolicy.capability === "unsupported"
+      ? "auto"
+      : currentEffort !== "auto" && nextPolicy.capability === "supported" && !nextPolicy.efforts.includes(currentEffort)
+        ? "auto"
+        : currentEffort;
+  const currentServiceTier = value.serviceTier?.trim() || "";
+  const nextTier =
+    currentServiceTier && nextModel && !(nextModel.serviceTiers ?? []).some((tier) => tier.id === currentServiceTier)
+      ? undefined
+      : value.serviceTier;
+  return {
+    ...value,
+    provider: undefined,
+    modelId: nextRaw ? nextRaw : undefined,
+    thinkingLevel: nextEffort,
+    serviceTier: nextTier,
+  };
+}
 
 export function externalEffortLabel(effort: string, t: (zh: string, en: string) => string): string {
   if (effort === "auto" || !effort) return t("自动", "Auto");
@@ -104,24 +125,23 @@ export function AgentPresetFields({
   const model = groups.find((group) => group.providerId === providerId)?.models.find((item) => item.id === (modelId || defaultModel?.defaultModel));
 
   const externalModels = resolvedExternalClient?.models ?? [];
+  const externalKind = resolvedExternalClient?.kind ?? value.external?.kind;
   const matchedExternalModel = externalModels.find((item) => item.id === modelId) ?? (!modelId ? externalModels.find((item) => item.isDefault) : undefined);
-  const unionExternalEfforts = [...new Set(externalModels.flatMap((item) => item.efforts ?? []))];
-  const rawExternalEfforts = matchedExternalModel?.efforts?.length
-    ? matchedExternalModel.efforts
-    : unionExternalEfforts.length
-      ? unionExternalEfforts
-      : FALLBACK_EXTERNAL_EFFORTS[resolvedExternalClient?.kind ?? value.external?.kind ?? "codex"] ?? ["low", "medium", "high"];
+  const externalEffortPolicy = isExternal
+    ? resolveExternalModelEffortPolicy(matchedExternalModel, externalKind, externalModels)
+    : undefined;
+  const showEffortSelector = !isExternal || Boolean(externalEffortPolicy?.showSelector);
 
   const efforts = isExternal
     ? [
         { value: "auto", label: t("自动", "Auto") },
-        ...rawExternalEfforts.filter((item) => item !== "auto").map((item) => ({ value: item, label: externalEffortLabel(item, t) })),
+        ...(externalEffortPolicy?.efforts ?? []).filter((item) => item !== "auto").map((item) => ({ value: item, label: externalEffortLabel(item, t) })),
       ]
     : model
       ? [{ value: "auto", label: t("自动", "Auto") }, ...modelEffortOptions(model)]
       : ROLE_EFFORT_OPTIONS.map((option) => ({ ...option, label: effortLabel(option.value) }));
 
-  if (value.thinkingLevel && !efforts.some((option) => option.value === value.thinkingLevel)) {
+  if (showEffortSelector && value.thinkingLevel && !efforts.some((option) => option.value === value.thinkingLevel)) {
     efforts.push({
       value: value.thinkingLevel,
       label: isExternal ? externalEffortLabel(value.thinkingLevel, t) : effortLabel(value.thinkingLevel, model),
@@ -178,22 +198,7 @@ export function AgentPresetFields({
   };
 
   const updateExternalModel = (nextRaw: string) => {
-    const trimmed = nextRaw.trim();
-    const nextModel = externalModels.find((item) => item.id === trimmed);
-    const currentEffort = value.thinkingLevel ?? "auto";
-    const nextEffort = currentEffort !== "auto" && nextModel?.efforts?.length && !nextModel.efforts.includes(currentEffort)
-      ? "auto"
-      : currentEffort;
-    const nextTier = currentServiceTier && nextModel && !(nextModel.serviceTiers ?? []).some((tier) => tier.id === currentServiceTier)
-      ? undefined
-      : value.serviceTier;
-    onChange({
-      ...value,
-      provider: undefined,
-      modelId: nextRaw ? nextRaw : undefined,
-      thinkingLevel: nextEffort,
-      serviceTier: nextTier,
-    });
+    onChange(applyExternalModelChange(value, nextRaw, externalModels, externalKind));
   };
 
   return <div className="kulo-form-stack">
@@ -336,15 +341,17 @@ export function AgentPresetFields({
             </Select.Popover>
           </Select>
         )}
-        <Select variant="primary" value={value.thinkingLevel ?? "auto"} onChange={(key) => { if (key !== null) onChange({ ...value, thinkingLevel: String(key) }); }} fullWidth className="kulo-form-field">
-          <Label className="text-sm text-foreground">{t("默认思考强度", "Default thinking effort")}</Label>
-          <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-          <Select.Popover>
-            <ListBox>{efforts.map((option) => <ListBox.Item key={option.value} id={option.value} textValue={option.label}>
-              {option.label}<ListBox.ItemIndicator />
-            </ListBox.Item>)}</ListBox>
-          </Select.Popover>
-        </Select>
+        {showEffortSelector && (
+          <Select variant="primary" value={value.thinkingLevel ?? "auto"} onChange={(key) => { if (key !== null) onChange({ ...value, thinkingLevel: String(key) }); }} fullWidth className="kulo-form-field">
+            <Label className="text-sm text-foreground">{t("默认思考强度", "Default thinking effort")}</Label>
+            <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+            <Select.Popover>
+              <ListBox>{efforts.map((option) => <ListBox.Item key={option.value} id={option.value} textValue={option.label}>
+                {option.label}<ListBox.ItemIndicator />
+              </ListBox.Item>)}</ListBox>
+            </Select.Popover>
+          </Select>
+        )}
         {showServiceTier && (
           <Select
             variant="primary"

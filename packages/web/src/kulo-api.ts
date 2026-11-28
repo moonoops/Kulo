@@ -795,6 +795,36 @@ export function useKuloHubConnection() {
                 ...(msg.subagents?.length ? { subagents: msg.subagents } : {}),
               });
               break;
+            case "hub.ticket_telemetry":
+              setInspectedTicket((current) => {
+                if (
+                  !current ||
+                  current.ticket.id !== msg.ticketId ||
+                  current.ticket.runEpoch !== msg.runEpoch ||
+                  !current.ticket.externalExecution
+                ) {
+                  return current;
+                }
+                if (
+                  current.ticket.externalExecution.sessionId &&
+                  msg.sessionId &&
+                  current.ticket.externalExecution.sessionId !== msg.sessionId
+                ) {
+                  return current;
+                }
+                return {
+                  ...current,
+                  ticket: {
+                    ...current.ticket,
+                    externalExecution: {
+                      ...current.ticket.externalExecution,
+                      ...(msg.contextUsage !== undefined ? { contextUsage: msg.contextUsage } : {}),
+                      ...(msg.activeSessionMode !== undefined ? { activeSessionMode: msg.activeSessionMode } : {}),
+                    },
+                  },
+                };
+              });
+              break;
             case "hub.ack": {
               if (!versionedSelections && msg.action === "topic.select" && msg.topicId && msg.topicId !== activeTopicRef.current) {
                 // Legacy Hubs update their subscription in read-completion order.

@@ -26,7 +26,7 @@ import { TaskTimeline } from "./features/tasks/task-timeline";
 import { TaskDeliverables } from "./features/tasks/task-deliverables";
 import { TaskSubagents } from "./features/tasks/task-subagents";
 
-import { compactTaskPaths, ticketHasPendingWorkspaceApply, ticketTone, taskIsRecovering, taskStatusLabel, taskTimeLabel, type TaskTone } from "./features/tasks/task-model";
+import { compactTaskPaths, formatExternalContextUsage, formatExternalSessionMode, ticketHasPendingWorkspaceApply, ticketTone, taskIsRecovering, taskStatusLabel, taskTimeLabel, type TaskTone } from "./features/tasks/task-model";
 import { TaskFailureActions, type TicketAction } from "./features/tasks/task-failure-actions";
 import { newDeliveryId } from "./features/chat/reliable-intents";
 import "./features/tasks/task-detail.css";
@@ -304,6 +304,8 @@ export function KuloTaskProjection({
   };
 
   const isActiveProgress = ticket.status === "running" || ticket.status === "pausing";
+  const externalContextLabel = formatExternalContextUsage(ticket.externalExecution?.contextUsage);
+  const externalModeLabel = formatExternalSessionMode(ticket.externalExecution?.activeSessionMode);
 
   return (
     <div className="mc-projection-scroll" data-kulo-navigation-key={`task:${ticket.id}`} data-kulo-navigation="content">
@@ -314,6 +316,8 @@ export function KuloTaskProjection({
             <div><dt className="sr-only">{t("执行角色", "Execution role")}</dt><dd>{roleLabel}</dd></div>
             <div><dt className="sr-only">{t("耗时", "Duration")}</dt><dd>{taskTimeLabel(ticket, now)}</dd></div>
             <div><dt className="sr-only">{t("轮次", "Run")}</dt><dd>{t(`第 ${ticket.runEpoch} 轮`, `Run ${ticket.runEpoch}`)}</dd></div>
+            {externalContextLabel && <div><dt className="sr-only">{t("上下文用量", "Context usage")}</dt><dd>{externalContextLabel}</dd></div>}
+            {externalModeLabel && <div><dt className="sr-only">{t("会话模式", "Session mode")}</dt><dd>{externalModeLabel}</dd></div>}
           </dl>
           <div className="kulo-task-detail-controls">
             <div className="kulo-task-detail-links">

@@ -196,13 +196,107 @@ export interface ExternalAgentServiceTierInfo {
   description?: string;
 }
 
+export type ExternalAgentEffortCapability = "unknown" | "unsupported" | "supported";
+
 export interface ExternalAgentModelInfo {
   id: string;
   name: string;
   efforts?: string[];
+  effortCapability?: ExternalAgentEffortCapability;
   serviceTiers?: ExternalAgentServiceTierInfo[];
   defaultServiceTier?: string;
   isDefault?: boolean;
+}
+
+export const FALLBACK_EXTERNAL_EFFORTS: Readonly<Record<string, readonly string[]>> = {
+  "claude-code": ["adaptive", "low", "medium", "high", "max", "none"],
+  codex: ["low", "medium", "high", "xhigh"],
+  antigravity: ["low", "medium", "high", "xhigh"],
+  grok: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+  cursor: ["low", "medium", "high"],
+  opencode: ["low", "medium", "high"],
+  "gemini-cli": ["low", "medium", "high"],
+  kiro: ["low", "medium", "high"],
+  copilot: ["low", "medium", "high"],
+  dsh: ["low", "medium", "high"],
+  acp: ["low", "medium", "high"],
+};
+
+export interface ExternalModelEffortPolicy {
+  capability: ExternalAgentEffortCapability;
+  showSelector: boolean;
+  efforts: string[];
+  usesFallback: boolean;
+}
+
+export function resolveExternalModelEffortPolicy(
+  modelInfo: Pick<ExternalAgentModelInfo, "efforts" | "effortCapability"> | undefined,
+  kind?: ExternalAgentKind | string,
+  siblingModels?: ReadonlyArray<Pick<ExternalAgentModelInfo, "efforts" | "effortCapability">>,
+): ExternalModelEffortPolicy {
+  if (modelInfo?.effortCapability === "unsupported") {
+    return { capability: "unsupported", showSelector: false, efforts: [], usesFallback: false };
+  }
+  const explicitEfforts = Array.isArray(modelInfo?.efforts)
+    ? [...new Set(modelInfo.efforts.map((item) => item.trim()).filter(Boolean))]
+    : [];
+  if (explicitEfforts.length > 0) {
+    return { capability: "supported", showSelector: true, efforts: explicitEfforts, usesFallback: false };
+  }
+  if (
+    modelInfo &&
+    modelInfo.effortCapability === undefined &&
+    siblingModels?.some(
+      (sibling) =>
+        sibling.effortCapability === "supported" ||
+        (Array.isArray(sibling.efforts) && sibling.efforts.some((item) => Boolean(item.trim()))),
+    )
+  ) {
+    return { capability: "unsupported", showSelector: false, efforts: [], usesFallback: false };
+  }
+  const fallback = FALLBACK_EXTERNAL_EFFORTS[kind ?? ""] ?? ["low", "medium", "high"];
+  return { capability: "unknown", showSelector: true, efforts: [...fallback], usesFallback: true };
+}
+
+export interface ExternalAgentContextUsage {
+  /** Number of context tokens currently in use (>= 0; supports 0). */
+  usedTokens: number;
+  /** Context window size in tokens when known (> 0). */
+  contextWindow?: number;
+  /** Rounded usage percentage [0, 100]; strictly omitted when contextWindow is unknown or <= 0. */
+  percent?: number;
+  /** Capture timestamp in milliseconds. */
+  updatedAt: number;
+}
+
+export function normalizeExternalContextUsage(input: {
+  usedTokens?: unknown;
+  contextWindow?: unknown;
+  updatedAt?: unknown;
+}): ExternalAgentContextUsage | undefined {
+  if (typeof input.usedTokens !== "number" || !Number.isFinite(input.usedTokens) || input.usedTokens < 0) {
+    return undefined;
+  }
+  const usedTokens = Math.round(input.usedTokens);
+  const rawWindow = input.contextWindow;
+  const contextWindow =
+    typeof rawWindow === "number" && Number.isFinite(rawWindow) && rawWindow > 0
+      ? Math.round(rawWindow)
+      : undefined;
+  const percent =
+    contextWindow !== undefined
+      ? Math.max(0, Math.min(100, Math.round((usedTokens / contextWindow) * 100)))
+      : undefined;
+  const updatedAt =
+    typeof input.updatedAt === "number" && Number.isFinite(input.updatedAt) && input.updatedAt > 0
+      ? Math.round(input.updatedAt)
+      : Date.now();
+  return {
+    usedTokens,
+    ...(contextWindow !== undefined ? { contextWindow } : {}),
+    ...(percent !== undefined ? { percent } : {}),
+    updatedAt,
+  };
 }
 
 export interface ExternalClientConnection {
@@ -511,6 +605,10 @@ export interface ExternalAgentRun {
   pendingReports?: ExternalAgentPendingReport[];
   /** Latest passively captured quota snapshot observed during this external run (never blocks run settlement). */
   latestQuota?: ExternalAgentQuotaProbeResult;
+  /** Latest read-only context usage telemetry reported by the external client (kept in-memory until receipt merge/settlement). */
+  contextUsage?: ExternalAgentContextUsage;
+  /** Read-only active session mode reported by the external client (never auto-switched by Kulo). */
+  activeSessionMode?: string;
   error?: string;
 }
 
@@ -656,6 +754,10 @@ export interface ExternalTicketExecution {
   effectiveReadOnly?: boolean;
   allowSubagents?: boolean;
   children?: Record<string, { taskId: string; fingerprint: string }>;
+  /** Read-only context usage telemetry piggybacked on existing receipt merges or terminal settlement. */
+  contextUsage?: ExternalAgentContextUsage;
+  /** Read-only active session mode observed from the external client. */
+  activeSessionMode?: string;
 }
 
 export function isEffectiveExternalReadOnly(

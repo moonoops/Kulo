@@ -375,6 +375,7 @@ export function extractModelsFromAcpModelState(modelState: RpcValue): {
   const currentModelId = rawCurrent ? rawCurrent.split("?")[0] || undefined : undefined;
   const listed: Array<{ id: string; name: string }> = [];
   const perModelEfforts = new Map<string, string[]>();
+  const explicitUnsupportedIds = new Set<string>();
 
   if (Array.isArray(modelState.availableModels)) {
     for (const rawEntry of modelState.availableModels) {
@@ -389,6 +390,14 @@ export function extractModelsFromAcpModelState(modelState: RpcValue): {
       }
       const efforts = perModelEfforts.get(baseId) ?? [];
       if (!perModelEfforts.has(baseId)) perModelEfforts.set(baseId, efforts);
+
+      const meta = asRecord(entry._meta);
+      const explicitlyDisabled =
+        entry.supportsReasoningEffort === false || meta.supportsReasoningEffort === false;
+      if (explicitlyDisabled) {
+        explicitUnsupportedIds.add(baseId);
+        continue;
+      }
 
       if (qIndex >= 0) {
         const query = new URLSearchParams(rawId.slice(qIndex + 1));
@@ -411,8 +420,7 @@ export function extractModelsFromAcpModelState(modelState: RpcValue): {
         }
       }
 
-      const meta = asRecord(entry._meta);
-      if (meta.supportsReasoningEffort !== false && Array.isArray(meta.reasoningEfforts)) {
+      if (Array.isArray(meta.reasoningEfforts)) {
         for (const rawLevel of meta.reasoningEfforts) {
           if (typeof rawLevel === "string") {
             const token = rawLevel.trim();
@@ -427,12 +435,24 @@ export function extractModelsFromAcpModelState(modelState: RpcValue): {
     }
   }
 
+  const anyModelHasEfforts = [...perModelEfforts.entries()].some(
+    ([modelId, list]) => !explicitUnsupportedIds.has(modelId) && list.length > 0,
+  );
+
   const models: ExternalAgentModelInfo[] = listed.map((item) => {
-    const rawEfforts = perModelEfforts.get(item.id) ?? [];
+    const isExplicitUnsupported = explicitUnsupportedIds.has(item.id);
+    const rawEfforts = isExplicitUnsupported ? [] : (perModelEfforts.get(item.id) ?? []);
     const sorted = rawEfforts.length ? sortEffortTokens(rawEfforts) : [];
+    const effortCapability =
+      sorted.length > 0
+        ? ("supported" as const)
+        : isExplicitUnsupported || anyModelHasEfforts
+          ? ("unsupported" as const)
+          : ("unknown" as const);
     return {
       ...item,
       ...(sorted.length ? { efforts: sorted } : {}),
+      effortCapability,
       ...(currentModelId && item.id === currentModelId ? { isDefault: true } : {}),
     };
   });
@@ -517,6 +537,7 @@ export const ACP_FLAVORS: Partial<Record<ExternalAgentKind, AcpFlavorSpec>> = {
       ".gemini/antigravity-cli/builtin/skills",
       ".gemini/config/skills",
       ".gemini/skills",
+      ".agents/skills",
     ],
   },
   grok: {

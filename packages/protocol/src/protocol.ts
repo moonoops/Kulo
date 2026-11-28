@@ -220,6 +220,14 @@ export type HubToClientMessage =
       subagents?: import("./task-boards.js").SubagentCardView[];
     }
   | {
+      type: "hub.ticket_telemetry";
+      ticketId: string;
+      runEpoch: number;
+      sessionId?: string;
+      contextUsage?: import("./external-agents.js").ExternalAgentContextUsage;
+      activeSessionMode?: string;
+    }
+  | {
       type: "hub.ack";
       action: ClientWsActionType;
       requestId?: string;

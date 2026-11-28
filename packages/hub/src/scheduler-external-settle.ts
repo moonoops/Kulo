@@ -1,5 +1,8 @@
 import {
   detectOutwardShellCommandsFromToolText,
+  normalizeExternalContextUsage,
+  redactSensitiveText,
+  type ExternalAgentContextUsage,
   type ExternalAgentRun,
   type ExternalAgentRuntimeEvent,
   type TicketRecord,
@@ -9,6 +12,121 @@ import {
 import { spillOversizedReport } from "./report-overflow.js";
 import { appendTicketOutwardAction } from "./task-recovery.js";
 import type { KuloUploadStore } from "./uploads.js";
+
+export interface ExternalTicketTelemetry {
+  ticketId: string;
+  envId: string;
+  runEpoch: number;
+  sessionId?: string;
+  contextUsage?: ExternalAgentContextUsage;
+  activeSessionMode?: string;
+}
+
+export function sanitizeExternalSessionMode(
+  rawMode: string | undefined,
+  redact?: (value: string) => string,
+): string | undefined {
+  if (typeof rawMode !== "string") return undefined;
+  const once = redact ? redact(rawMode) : rawMode;
+  const clean = redactSensitiveText(once).replace(/[\x00-\x1f\x7f]/g, "").trim().slice(0, 128);
+  return clean || undefined;
+}
+
+function sameContextUsage(
+  a: ExternalAgentContextUsage | undefined,
+  b: ExternalAgentContextUsage | undefined,
+): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return (
+    a.usedTokens === b.usedTokens &&
+    a.contextWindow === b.contextWindow &&
+    a.percent === b.percent &&
+    a.updatedAt === b.updatedAt
+  );
+}
+
+/**
+ * In-memory Hub telemetry projection for active external agent runs.
+ * Keeps high-frequency `contextUsage` / `activeSessionMode` out of KuloStateDoc while
+ * enforcing strict `(envId, sessionId, runEpoch)` anti-stale filtering.
+ */
+export class ExternalTelemetryCache {
+  readonly #entries = new Map<string, ExternalTicketTelemetry>();
+
+  update(
+    incoming: ExternalTicketTelemetry,
+    redact?: (value: string) => string,
+  ): { changed: boolean; current?: ExternalTicketTelemetry } {
+    const normalizedUsage = incoming.contextUsage
+      ? normalizeExternalContextUsage(incoming.contextUsage)
+      : undefined;
+    const sanitizedMode = sanitizeExternalSessionMode(incoming.activeSessionMode, redact);
+    if (!normalizedUsage && !sanitizedMode) {
+      return { changed: false, current: this.#entries.get(incoming.ticketId) };
+    }
+
+    const prev = this.#entries.get(incoming.ticketId);
+    if (prev) {
+      if (incoming.runEpoch < prev.runEpoch) {
+        return { changed: false, current: prev };
+      }
+      if (incoming.runEpoch === prev.runEpoch) {
+        if (incoming.envId !== prev.envId) {
+          return { changed: false, current: prev };
+        }
+        if (prev.sessionId && incoming.sessionId && incoming.sessionId !== prev.sessionId) {
+          return { changed: false, current: prev };
+        }
+      }
+    }
+
+    const sameEpoch = Boolean(prev && prev.runEpoch === incoming.runEpoch);
+    const prevUsage = sameEpoch ? prev?.contextUsage : undefined;
+    const nextUsage =
+      normalizedUsage && (!prevUsage || normalizedUsage.updatedAt >= prevUsage.updatedAt)
+        ? normalizedUsage
+        : prevUsage;
+    const nextMode = sanitizedMode ?? (sameEpoch ? prev?.activeSessionMode : undefined);
+    const nextSessionId = incoming.sessionId ?? (sameEpoch ? prev?.sessionId : undefined);
+    const next: ExternalTicketTelemetry = {
+      ticketId: incoming.ticketId,
+      envId: incoming.envId,
+      runEpoch: incoming.runEpoch,
+      ...(nextSessionId ? { sessionId: nextSessionId } : {}),
+      ...(nextUsage ? { contextUsage: nextUsage } : {}),
+      ...(nextMode ? { activeSessionMode: nextMode } : {}),
+    };
+    const changed =
+      !prev ||
+      prev.runEpoch !== next.runEpoch ||
+      prev.envId !== next.envId ||
+      prev.sessionId !== next.sessionId ||
+      !sameContextUsage(prev.contextUsage, next.contextUsage) ||
+      prev.activeSessionMode !== next.activeSessionMode;
+    if (changed) this.#entries.set(incoming.ticketId, next);
+    return { changed, current: changed ? next : prev };
+  }
+
+  get(
+    ticketId: string,
+    expected: { envId: string; runEpoch: number; sessionId?: string },
+  ): Pick<ExternalTicketTelemetry, "contextUsage" | "activeSessionMode"> | undefined {
+    const entry = this.#entries.get(ticketId);
+    if (!entry) return undefined;
+    if (entry.envId !== expected.envId || entry.runEpoch !== expected.runEpoch) return undefined;
+    if (expected.sessionId && entry.sessionId && entry.sessionId !== expected.sessionId) return undefined;
+    if (!entry.contextUsage && !entry.activeSessionMode) return undefined;
+    return {
+      ...(entry.contextUsage ? { contextUsage: { ...entry.contextUsage } } : {}),
+      ...(entry.activeSessionMode ? { activeSessionMode: entry.activeSessionMode } : {}),
+    };
+  }
+
+  clear(ticketId: string): void {
+    this.#entries.delete(ticketId);
+  }
+}
 
 function externalPhaseLabel(phase?: WorkerExecutionPhase): string {
   switch (phase) {
@@ -96,16 +214,51 @@ export function applyExternalRunSnapshotToTicket(
   redact: (value: string) => string,
 ): void {
   const ext = live.externalExecution!;
-  ext.sessionId = run.sessionId;
-  ext.lastSequence = Math.max(0, run.nextSequence - 1);
-  ext.pendingPermissions = run.permissions;
-  if (run.stagedCwd) ext.stagedCwd = run.stagedCwd;
-  if (run.stagedDiff) ext.stagedDiff = run.stagedDiff;
-  if (run.phase) ext.phase = run.phase;
-  if (run.touchedFiles?.length) ext.touchedFiles = [...run.touchedFiles];
-  if (run.uncertainReason) ext.uncertainReason = run.uncertainReason;
-  if (run.readOnlyViolation) ext.readOnlyViolation = run.readOnlyViolation;
+  if (run.taskId !== live.id || run.runEpoch !== live.runEpoch || run.runEpoch !== runEpoch) return;
+  if (ext.sessionId && run.sessionId && run.sessionId !== ext.sessionId) return;
+
+  const isTerminal = ["completed", "failed", "cancelled", "uncertain"].includes(run.state);
+  const nextLastSequence = Math.max(0, run.nextSequence - 1);
+  let hasDurableWrite = isTerminal;
+
+  if (ext.sessionId !== run.sessionId) {
+    ext.sessionId = run.sessionId;
+    hasDurableWrite = true;
+  }
+  if (ext.lastSequence !== nextLastSequence) {
+    ext.lastSequence = nextLastSequence;
+    hasDurableWrite = true;
+  }
+  if (JSON.stringify(ext.pendingPermissions ?? []) !== JSON.stringify(run.permissions)) {
+    ext.pendingPermissions = run.permissions;
+    hasDurableWrite = true;
+  }
+  if (run.stagedCwd && ext.stagedCwd !== run.stagedCwd) {
+    ext.stagedCwd = run.stagedCwd;
+    hasDurableWrite = true;
+  }
+  if (run.stagedDiff && JSON.stringify(ext.stagedDiff) !== JSON.stringify(run.stagedDiff)) {
+    ext.stagedDiff = run.stagedDiff;
+    hasDurableWrite = true;
+  }
+  if (run.phase && ext.phase !== run.phase) {
+    ext.phase = run.phase;
+    hasDurableWrite = true;
+  }
+  if (run.touchedFiles?.length && JSON.stringify(ext.touchedFiles ?? []) !== JSON.stringify(run.touchedFiles)) {
+    ext.touchedFiles = [...run.touchedFiles];
+    hasDurableWrite = true;
+  }
+  if (run.uncertainReason && ext.uncertainReason !== run.uncertainReason) {
+    ext.uncertainReason = run.uncertainReason;
+    hasDurableWrite = true;
+  }
+  if (run.readOnlyViolation && JSON.stringify(ext.readOnlyViolation) !== JSON.stringify(run.readOnlyViolation)) {
+    ext.readOnlyViolation = run.readOnlyViolation;
+    hasDurableWrite = true;
+  }
   if (run.events.length > 0) {
+    hasDurableWrite = true;
     ext.lastActivityAt = Math.max(
       ext.lastActivityAt ?? 0,
       ...run.events.map((event) => event.at),
@@ -145,6 +298,19 @@ export function applyExternalRunSnapshotToTicket(
         seenSeq.add(ev.sequence);
       }
       ext.recentEvents = merged.slice(-30);
+    }
+  }
+  // Zero write amplification: piggyback read-only telemetry into KuloStateDoc ONLY during an existing receipt merge or terminal settlement.
+  if (hasDurableWrite) {
+    if (run.contextUsage) {
+      const normalized = normalizeExternalContextUsage(run.contextUsage);
+      if (normalized && (!ext.contextUsage || normalized.updatedAt >= ext.contextUsage.updatedAt)) {
+        ext.contextUsage = normalized;
+      }
+    }
+    const sanitizedMode = sanitizeExternalSessionMode(run.activeSessionMode, redact);
+    if (sanitizedMode) {
+      ext.activeSessionMode = sanitizedMode;
     }
   }
 }

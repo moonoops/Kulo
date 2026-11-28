@@ -8,6 +8,7 @@ import {
   isConversationModel,
   isPersonalExternalAgentKind,
   isValidCustomAcpAgentRef,
+  resolveExternalModelEffortPolicy,
   validateCustomAcpArgs,
   type BuiltinThinkingEffort,
   type CustomModelConfig,
@@ -220,6 +221,33 @@ export function normalizeRoleThinkingSelections(
           : "auto";
     if (role.thinkingLevel !== next) {
       role.thinkingLevel = next;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+export function normalizeExternalRoleThinkingSelections(
+  roles: Record<string, RolePreset>,
+  externalClients?: Record<string, ExternalClientConnection>,
+): boolean {
+  let changed = false;
+  for (const role of Object.values(roles)) {
+    if (!role.external) continue;
+    if (!role.thinkingLevel || role.thinkingLevel === "auto") continue;
+    const clientId = role.externalClientId?.trim() || externalClientConnectionId(role.external);
+    const client = externalClients?.[clientId];
+    const models = client?.models ?? [];
+    const modelId = role.modelId?.trim() || "";
+    const matchedModel = modelId
+      ? models.find((item) => item.id === modelId)
+      : models.find((item) => item.isDefault);
+    const policy = resolveExternalModelEffortPolicy(matchedModel, role.external.kind, models);
+    if (
+      policy.capability === "unsupported" ||
+      (policy.capability === "supported" && !policy.efforts.includes(role.thinkingLevel))
+    ) {
+      role.thinkingLevel = "auto";
       changed = true;
     }
   }
@@ -569,6 +597,7 @@ export function applyRolesBlockUpdate(
     );
   }
   normalizeRoleThinkingSelections(doc.roles, doc.model);
+  normalizeExternalRoleThinkingSelections(doc.roles, doc.externalClients);
   doc.rolesMigratedV2 = true;
   doc.rolesMigratedV3 = true;
   doc.rolesMigratedV4 = true;

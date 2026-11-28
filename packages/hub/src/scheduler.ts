@@ -19,6 +19,7 @@ import {
   settleExternalPollFailure,
   settleTerminalExternalRun,
   updateExternalProgressReport,
+  type ExternalTicketTelemetry,
 } from "./scheduler-external-settle.js";
 
 export type WorkerTicketTaskInput = {
@@ -75,6 +76,7 @@ export interface WorkerTicketTaskDependencies {
   onInlineCandidateSettled?: (ticketId: string) => void;
   onOriginConversationRelayed?: (originConversationId: number, context: Context) => Promise<void>;
   onExternalAgentQuota?: (binding: ExternalAgentBinding, quota: ExternalAgentQuotaProbeResult) => void;
+  onExternalTelemetry?: (telemetry: ExternalTicketTelemetry) => void;
 }
 
 export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
@@ -322,6 +324,16 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           try {
             const response = await deps.envManager.requestExternalAgent(ticket.envId, runRequest);
             if (response.type !== "run" || response.run.id !== runId || response.run.taskId !== ticket.id || response.run.runEpoch !== task.input.runEpoch || response.run.kind !== external.binding.kind) throw new Error("客户端未返回匹配的任务执行标识。");
+            if (response.run.contextUsage || response.run.activeSessionMode) {
+              deps.onExternalTelemetry?.({
+                ticketId: ticket.id,
+                envId: ticket.envId,
+                runEpoch: task.input.runEpoch,
+                ...(response.run.sessionId ?? external.sessionId ? { sessionId: response.run.sessionId ?? external.sessionId } : {}),
+                ...(response.run.contextUsage ? { contextUsage: response.run.contextUsage } : {}),
+                ...(response.run.activeSessionMode ? { activeSessionMode: response.run.activeSessionMode } : {}),
+              });
+            }
             await runtime.commit(async (tx) => {
               const live = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
               if (live?.runEpoch === task.input.runEpoch) {
@@ -582,6 +594,16 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           }
           if (run.latestQuota) {
             deps.onExternalAgentQuota?.(execution.binding, run.latestQuota);
+          }
+          if (run.contextUsage || run.activeSessionMode) {
+            deps.onExternalTelemetry?.({
+              ticketId: ticket.id,
+              envId: ticket.envId,
+              runEpoch: task.input.runEpoch,
+              ...(run.sessionId ?? execution.sessionId ? { sessionId: run.sessionId ?? execution.sessionId } : {}),
+              ...(run.contextUsage ? { contextUsage: run.contextUsage } : {}),
+              ...(run.activeSessionMode ? { activeSessionMode: run.activeSessionMode } : {}),
+            });
           }
           const redact = (value: string) => deps.redact?.(value) ?? value;
           const origin = run.permissions.length ? await runtime.conversation((activeTicket.originConversationId ?? ROOT_CONVERSATION_ID) as never, context) : undefined;

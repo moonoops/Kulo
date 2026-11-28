@@ -1,5 +1,50 @@
 import { translate as t } from "../../kulo-i18n";
-import type { TicketCardView, TicketRecord, TicketStatus, TopicSummary } from "@kulo/protocol";
+import type { ExternalAgentContextUsage, TicketCardView, TicketRecord, TicketStatus, TopicSummary } from "@kulo/protocol";
+
+export function formatExternalTokenCount(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens < 0) return "0";
+  const rounded = Math.round(tokens);
+  if (rounded >= 1_000_000) {
+    const m = rounded / 1_000_000;
+    return `${m >= 10 || Number.isInteger(m) ? Math.round(m) : m.toFixed(1)}M`;
+  }
+  if (rounded >= 1_000) {
+    const k = rounded / 1_000;
+    return `${k >= 100 || Number.isInteger(k) ? Math.round(k) : k.toFixed(1)}k`;
+  }
+  return String(rounded);
+}
+
+export function formatExternalContextUsage(
+  usage: ExternalAgentContextUsage | undefined,
+): string | undefined {
+  if (!usage || typeof usage.usedTokens !== "number" || !Number.isFinite(usage.usedTokens) || usage.usedTokens < 0) {
+    return undefined;
+  }
+  const usedLabel = formatExternalTokenCount(usage.usedTokens);
+  const hasKnownWindow =
+    typeof usage.contextWindow === "number" &&
+    Number.isFinite(usage.contextWindow) &&
+    usage.contextWindow > 0;
+  if (!hasKnownWindow) {
+    return t(`上下文 ${usedLabel}`, `Context ${usedLabel}`);
+  }
+  const windowLabel = formatExternalTokenCount(usage.contextWindow!);
+  const percent =
+    typeof usage.percent === "number" && Number.isFinite(usage.percent)
+      ? Math.max(0, Math.min(100, Math.round(usage.percent)))
+      : Math.max(0, Math.min(100, Math.round((usage.usedTokens / usage.contextWindow!) * 100)));
+  return t(
+    `上下文 ${usedLabel} / ${windowLabel} (${percent}%)`,
+    `Context ${usedLabel} / ${windowLabel} (${percent}%)`,
+  );
+}
+
+export function formatExternalSessionMode(mode: string | undefined): string | undefined {
+  const clean = mode?.trim();
+  if (!clean) return undefined;
+  return t(`模式 ${clean}`, `Mode ${clean}`);
+}
 
 export type TaskTone = "ask" | "run" | "fail" | "done" | "wait";
 export type TaskTiming = Pick<TicketRecord, "status" | "createdAt" | "updatedAt" | "startedRunningAt" | "accumulatedRunningMs" | "completedAt" | "queuedAt" | "waiting">;

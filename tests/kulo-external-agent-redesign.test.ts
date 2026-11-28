@@ -168,8 +168,8 @@ describe("external agent redesign — Env & Driver invariants (B1, B5, B6, E2, E
     const { driver, models } = await connectAcp(ctx, false);
     try {
       expect(models).toEqual([
-        { id: "gemini-4-carbon", name: "Gemini 4 Carbon", efforts: ["low", "high"], isDefault: true },
-        { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash" },
+        { id: "gemini-4-carbon", name: "Gemini 4 Carbon", efforts: ["low", "high"], effortCapability: "supported", isDefault: true },
+        { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", effortCapability: "unsupported" },
       ]);
       expect(activity).toHaveBeenCalledWith("Thinking...");
       const nested = path.join(cwd, "sub", "dir", "new.txt");

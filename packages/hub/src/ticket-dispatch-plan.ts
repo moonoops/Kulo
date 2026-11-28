@@ -7,6 +7,7 @@ import {
   isPersonalExternalAgentKind,
   isWorkerEnvReady,
   resolveEffectiveExecutionMode,
+  resolveExternalModelEffortPolicy,
   type AgentAssignment,
   type AgentDispatchIntent,
   type EnvNodeDescriptor,
@@ -508,17 +509,27 @@ export function resolveDispatchWorkspaceAndModel(input: {
 
   let nativeThinking: string | undefined;
   if (externalBinding && rolePreset) {
+    const clientId = rolePreset.externalClientId?.trim() || externalClientConnectionId(externalBinding);
+    const clientModels = activeExternalClients?.[clientId]?.models ?? [];
+    const explicitModelId = rolePreset.modelId?.trim();
+    const targetModel = explicitModelId
+      ? clientModels.find((m) => m.id === explicitModelId)
+      : clientModels.find((m) => m.isDefault);
+    const policy = resolveExternalModelEffortPolicy(targetModel, externalBinding.kind, clientModels);
     if (rolePreset.thinkingLevel && rolePreset.thinkingLevel !== "auto") {
-      nativeThinking = rolePreset.thinkingLevel;
+      if (
+        policy.capability !== "unsupported" &&
+        (policy.capability !== "supported" || policy.efforts.includes(rolePreset.thinkingLevel))
+      ) {
+        nativeThinking = rolePreset.thinkingLevel;
+      }
     } else if (params.thinkingLevel) {
-      const clientId = rolePreset.externalClientId?.trim() || externalClientConnectionId(externalBinding);
-      const clientModels = activeExternalClients?.[clientId]?.models ?? [];
-      const targetModel = rolePreset.modelId
-        ? clientModels.find((m) => m.id === rolePreset.modelId)
-        : clientModels.find((m) => m.isDefault) ?? clientModels[0];
-      const efforts = targetModel?.efforts ?? [];
-      if (efforts.includes(params.thinkingLevel)) nativeThinking = params.thinkingLevel;
-      else if (params.thinkingLevel === "off" && efforts.includes("none")) nativeThinking = "none";
+      const advisoryModel = targetModel ?? (!explicitModelId ? clientModels[0] : undefined);
+      const advisoryPolicy = resolveExternalModelEffortPolicy(advisoryModel, externalBinding.kind, clientModels);
+      if (advisoryPolicy.capability === "supported") {
+        if (advisoryPolicy.efforts.includes(params.thinkingLevel)) nativeThinking = params.thinkingLevel;
+        else if (params.thinkingLevel === "off" && advisoryPolicy.efforts.includes("none")) nativeThinking = "none";
+      }
     }
   }
   const providerOverride = !externalBinding && params.providerOverride?.trim() ? params.providerOverride.trim() : undefined;

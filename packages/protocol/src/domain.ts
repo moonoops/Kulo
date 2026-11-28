@@ -762,6 +762,8 @@ export interface WorkerInspectResult {
     stagedCwd?: string;
     uncertainReason?: import("./external-agents.js").ExternalAgentUncertainReason;
     permissions: import("./external-agents.js").ExternalAgentPermission[];
+    contextUsage?: import("./external-agents.js").ExternalAgentContextUsage;
+    activeSessionMode?: string;
   };
 }
 

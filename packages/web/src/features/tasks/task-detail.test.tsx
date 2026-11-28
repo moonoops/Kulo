@@ -175,4 +175,47 @@ describe("task failure details", () => {
     expect(cleanupStopped).toContain("清理待确认");
     expect(cleanupStopped).toContain("用户跳过人工接管并停止任务");
   });
+
+  it("renders read-only external context usage and session mode, supporting 0 tokens and omitting percentage when window is unknown", () => {
+    const withWindow = render({
+      status: "running",
+      externalExecution: {
+        binding: { kind: "antigravity", envId: "local" },
+        contextUsage: { usedTokens: 0, contextWindow: 200_000, percent: 0, updatedAt: 10 },
+        activeSessionMode: "plan",
+      },
+    });
+    expect(withWindow).toContain("上下文 0 / 200k (0%)");
+    expect(withWindow).toContain("模式 plan");
+
+    const unknownWindow = render({
+      status: "running",
+      externalExecution: {
+        binding: { kind: "antigravity", envId: "local" },
+        contextUsage: { usedTokens: 42_500, updatedAt: 10 },
+      },
+    });
+    expect(unknownWindow).toContain("上下文 42.5k");
+    expect(unknownWindow).not.toContain("%");
+
+    const zeroUnknownWindow = render({
+      status: "running",
+      externalExecution: {
+        binding: { kind: "antigravity", envId: "local" },
+        contextUsage: { usedTokens: 0, contextWindow: 0, updatedAt: 10 },
+      },
+    });
+    expect(zeroUnknownWindow).toContain("上下文 0");
+    expect(zeroUnknownWindow).not.toContain("%");
+
+    // Unupgraded old Env missing telemetry degrades gracefully
+    const legacyEnv = render({
+      status: "running",
+      externalExecution: {
+        binding: { kind: "antigravity", envId: "local" },
+      },
+    });
+    expect(legacyEnv).not.toContain("上下文 ");
+    expect(legacyEnv).not.toContain("模式 ");
+  });
 });

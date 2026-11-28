@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { EXTERNAL_AGENT_MEMORY_MODE_CAPABILITY, EXTERNAL_AGENT_QUOTA_CAPABILITY, EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY, isPersonalExternalAgentKind, isQuotaSupportedExternalAgentKind, redactSensitiveText, validateCustomAcpArgs, type ExecutionTrustMode, type ExternalAgentBinding, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentPendingReportFile, type ExternalAgentQuotaProbeResult, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentRun, type ExternalAgentUncertainReason, type ExternalWorkspaceMode, type WorkerExecutionPhase } from "@kulo/protocol";
+import { EXTERNAL_AGENT_MEMORY_MODE_CAPABILITY, EXTERNAL_AGENT_QUOTA_CAPABILITY, EXTERNAL_AGENT_STRUCTURED_DISPATCH_CAPABILITY, isPersonalExternalAgentKind, isQuotaSupportedExternalAgentKind, normalizeExternalContextUsage, redactSensitiveText, validateCustomAcpArgs, type ExecutionTrustMode, type ExternalAgentBinding, type ExternalAgentContextUsage, type ExternalAgentDetection, type ExternalAgentKind, type ExternalAgentPendingReport, type ExternalAgentPendingReportFile, type ExternalAgentQuotaProbeResult, type ExternalAgentRequest, type ExternalAgentResponse, type ExternalAgentRun, type ExternalAgentUncertainReason, type ExternalWorkspaceMode, type WorkerExecutionPhase } from "@kulo/protocol";
 import { canonicalExecutionPath } from "./isolation.js";
 import { cleanupRecordedExecutions, hasOrphanedExecution } from "./worker-supervisor.js";
 import { ProjectDirectoryRegistry } from "./project-directories.js";
@@ -14,7 +14,7 @@ import { connectClaude, probeClaudeQuota } from "./external-agent-claude.js";
 import { startExternalAgentMcp, type ExternalAgentMcpInvocation, type ExternalAgentMcpServer } from "./external-agent-mcp.js";
 import { isValidQuotaProbeResult, mergeQuotaProbeResults, sanitizeQuotaError } from "./external-agent-quota.js";
 import type { ExternalAgentPipeFactory } from "./external-agent-rpc.js";
-import { isExternalAgentRequest, isExternalAgentResponse } from "./external-agent-validation.js";
+import { isExternalAgentRequest, isExternalAgentResponse, isValidExternalContextUsage } from "./external-agent-validation.js";
 import { preserveWindowsCoreEnv, resolveCrossPlatformSpawn } from "./platform-process.js";
 import { SAFE_HOST_GIT_ARGS, applyStagedChanges, cloneStagedWorkspace, computeStagedDiff, safeHostGitEnv, type WorkspaceManifest } from "./staged-workspace.js";
 
@@ -275,6 +275,8 @@ export class ExternalAgentService {
       if(stored.version!==1||!id(stored.run?.id)||!id(stored.run.taskId)||typeof stored.fingerprint!=="string"||!path.isAbsolute(stored.cwd))throw new Error("Invalid external agent execution receipt");
       stored.run.permissions=[];
       if(stored.run.latestQuota!==undefined&&!isValidQuotaProbeResult(stored.run.latestQuota)){delete stored.run.latestQuota;}
+      if(stored.run.contextUsage!==undefined&&!isValidExternalContextUsage(stored.run.contextUsage)){delete stored.run.contextUsage;}
+      if(stored.run.activeSessionMode!==undefined&&(typeof stored.run.activeSessionMode!=="string"||!stored.run.activeSessionMode.trim()||stored.run.activeSessionMode.length>128)){delete stored.run.activeSessionMode;}
       if(!terminal(stored.run.state)){stored.run.state="uncertain";stored.run.uncertainReason="env_restart";stored.run.quiescent=false;stored.run.error="Env restarted before the native terminal result was recorded; this task was not resubmitted";}
       this.#runs.set(stored.run.id,stored);this.#persist(stored);
     }
@@ -497,7 +499,7 @@ export class ExternalAgentService {
     binding:request.binding,executable:live.stored.executable,cwd:executionCwd,workspaceMode:live.stored.workspaceMode,scratchNotesDir:live.stored.scratchNotesDir,controlRoot:path.join(this.#options.projectRegistry.privateDirectory,"external-executions"),projectId:request.projectId,readOnly:request.readOnly,trustMode,blockedEnvNames,
     prompt:[request.prompt,fallbackReadOnlyNote].filter(Boolean).join("\n\n"),
     developerInstructions:request.developerInstructions,attachments:request.attachments,inputsDir,overlapsProtected:candidate=>this.#overlapsProtected(candidate),
-    modelId:request.modelId,thinkingLevel:request.thinkingLevel,serviceTier:request.serviceTier,sessionId:request.sessionId,timeoutMs:request.timeoutMs,servers:live.mcp?[live.mcp.server]:[],
+    modelId:request.modelId,thinkingLevel:request.thinkingLevel,serviceTier:request.serviceTier,sessionId:request.sessionId,runEpoch:request.runEpoch,timeoutMs:request.timeoutMs,servers:live.mcp?[live.mcp.server]:[],
     pipe:async spec=>{
       const factory=this.#options.pipeFactory??createExternalPipeFactory({controlRoot:path.join(this.#options.projectRegistry.privateDirectory,"external-executions"),projectId:request.projectId,kind:request.binding.kind,trustMode,blockedEnvNames});
       const pipe=await factory(spec);const cleanup=async()=>{pipe.close();return pipe.cleanup?.()??pipe.exited.then(()=>true,()=>false);};
@@ -506,7 +508,7 @@ export class ExternalAgentService {
       return pipe;
     },
     registerCleanup:cleanup=>{(live.cleanups??=[]).push(cleanup);},
-    event:(type,value)=>this.#event(live,type,value),activity:label=>this.#activity(live,label),quota:snapshot=>this.#recordPassiveQuota(live,snapshot),session:sessionId=>{if(typeof sessionId!=="string"||!sessionId||sessionId.length>512)throw new Error("Invalid native agent session ID");live.stored.run.sessionId=sessionId;this.#persist(live.stored);},
+    event:(type,value)=>this.#event(live,type,value),activity:label=>this.#activity(live,label),quota:snapshot=>this.#recordPassiveQuota(live,snapshot),contextUsage:(usage,scope)=>this.#recordContextUsage(live,usage,scope),sessionMode:(mode,scope)=>this.#recordSessionMode(live,mode,scope),session:sessionId=>{if(typeof sessionId!=="string"||!sessionId||sessionId.length>512)throw new Error("Invalid native agent session ID");live.stored.run.sessionId=sessionId;this.#persist(live.stored);},
     submitted:()=>{if(terminal(live.stored.run.state)||Date.now()>=(live.deadline??Infinity))throw new Error("External agent run has expired");live.submitted=true;live.stored.run.state="running";if(!live.stored.run.phase||live.stored.run.phase==="starting")live.stored.run.phase="investigating";this.#event(live,"state","Task accepted by local agent protocol");},complete:(state,error)=>this.#finish(live,state,error,state==="uncertain"?"disconnect":undefined),
     permission:async(permissionId,title,choices)=>{
       if(terminal(live.stored.run.state))throw new Error("External agent permission scope expired");
@@ -527,6 +529,20 @@ export class ExternalAgentService {
     if(!isValidQuotaProbeResult(merged))return;
     live.stored.run.latestQuota=merged;
     this.#persist(live.stored);
+  }
+  #recordContextUsage(live:LiveRun,usage:ExternalAgentContextUsage,scope:{envId:string;sessionId:string;runEpoch:number}):void{
+    if(live.stored.fingerprint==="probe"||terminal(live.stored.run.state)||this.#live.get(live.stored.run.id)!==live)return;
+    if(scope.envId!==this.#options.envId||scope.runEpoch!==live.stored.run.runEpoch||!live.stored.run.sessionId||scope.sessionId!==live.stored.run.sessionId)return;
+    const normalized=normalizeExternalContextUsage(usage);
+    if(!normalized)return;
+    live.stored.run.contextUsage=normalized;
+  }
+  #recordSessionMode(live:LiveRun,mode:string,scope:{envId:string;sessionId:string;runEpoch:number}):void{
+    if(live.stored.fingerprint==="probe"||terminal(live.stored.run.state)||this.#live.get(live.stored.run.id)!==live)return;
+    if(scope.envId!==this.#options.envId||scope.runEpoch!==live.stored.run.runEpoch||!live.stored.run.sessionId||scope.sessionId!==live.stored.run.sessionId)return;
+    const clean=this.#redact(mode).replace(/[\x00-\x1f\x7f]/g,"").trim().slice(0,128);
+    if(!clean)return;
+    live.stored.run.activeSessionMode=clean;
   }
   #activity(live:LiveRun,label?:string):void{
     if(terminal(live.stored.run.state))return;

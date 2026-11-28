@@ -5,6 +5,7 @@ import {
   EXTERNAL_AGENT_KINDS,
   validateCustomAcpArgs,
   type ExternalAgentBinding,
+  type ExternalAgentContextUsage,
   type ExternalAgentInputAttachment,
   type ExternalAgentKind,
   type ExternalAgentPendingReport,
@@ -62,6 +63,33 @@ function validDiffSummary(value: unknown): value is StagedWorkspaceDiffSummary {
 
 function validReadOnlyViolation(value: unknown): value is ReadOnlyViolationSummary {
   return object(value) && validPathList(value.mutatedPaths, 50, 4096) && typeof value.totalCount === "number" && Number.isSafeInteger(value.totalCount) && value.totalCount >= 1 && typeof value.discardedFromClone === "boolean";
+}
+
+export function isValidExternalContextUsage(value: unknown): value is ExternalAgentContextUsage {
+  if (!object(value)) return false;
+  if (Object.keys(value).some((key) => !["usedTokens", "contextWindow", "percent", "updatedAt"].includes(key))) {
+    return false;
+  }
+  if (typeof value.usedTokens !== "number" || !Number.isFinite(value.usedTokens) || value.usedTokens < 0) {
+    return false;
+  }
+  if (
+    value.contextWindow !== undefined &&
+    (typeof value.contextWindow !== "number" || !Number.isFinite(value.contextWindow) || value.contextWindow <= 0)
+  ) {
+    return false;
+  }
+  if (
+    value.percent !== undefined &&
+    (value.contextWindow === undefined ||
+      typeof value.percent !== "number" ||
+      !Number.isFinite(value.percent) ||
+      value.percent < 0 ||
+      value.percent > 100)
+  ) {
+    return false;
+  }
+  return typeof value.updatedAt === "number" && Number.isFinite(value.updatedAt) && value.updatedAt > 0;
 }
 
 function validPendingReportFile(value: unknown): value is ExternalAgentPendingReportFile {
@@ -137,7 +165,7 @@ export function isExternalAgentResponse(value: unknown): value is ExternalAgentR
     if (!object(detection) || !EXTERNAL_AGENT_KINDS.includes(detection.kind as ExternalAgentKind) || typeof detection.installed !== "boolean" || (detection.desktopAppInstalled !== undefined && typeof detection.desktopAppInstalled !== "boolean") || (detection.authenticated !== null && typeof detection.authenticated !== "boolean") || !Array.isArray(detection.models) || detection.models.length > 1000 || !optionalString(detection.executable) || !optionalString(detection.version, 200) || !optionalString(detection.error, 4000)) return false;
     const capabilities = detection.capabilities;
     if (!object(capabilities) || !["resume", "cancel", "models", "permissions", "collaboration"].every((key) => typeof capabilities[key] === "boolean") || !["native", "observed", "none"].includes(String(capabilities.terminalEvidence))) return false;
-    return detection.models.every((model) => object(model) && typeof model.id === "string" && model.id.length > 0 && model.id.length <= 4096 && typeof model.name === "string" && model.name.length <= 4096 && (model.isDefault === undefined || typeof model.isDefault === "boolean") && (model.defaultServiceTier === undefined || (typeof model.defaultServiceTier === "string" && model.defaultServiceTier.length > 0 && model.defaultServiceTier.length <= 128)) && (model.efforts === undefined || (Array.isArray(model.efforts) && model.efforts.length <= 32 && model.efforts.every((effort) => typeof effort === "string" && effort.length > 0 && effort.length <= 64))) && (model.serviceTiers === undefined || (Array.isArray(model.serviceTiers) && model.serviceTiers.length <= 32 && model.serviceTiers.every((tier) => object(tier) && typeof tier.id === "string" && tier.id.length > 0 && tier.id.length <= 64 && (tier.name === undefined || (typeof tier.name === "string" && tier.name.length <= 128)) && (tier.description === undefined || (typeof tier.description === "string" && tier.description.length <= 512))))));
+    return detection.models.every((model) => object(model) && typeof model.id === "string" && model.id.length > 0 && model.id.length <= 4096 && typeof model.name === "string" && model.name.length <= 4096 && (model.isDefault === undefined || typeof model.isDefault === "boolean") && (model.effortCapability === undefined || model.effortCapability === "unknown" || model.effortCapability === "unsupported" || model.effortCapability === "supported") && (model.defaultServiceTier === undefined || (typeof model.defaultServiceTier === "string" && model.defaultServiceTier.length > 0 && model.defaultServiceTier.length <= 128)) && (model.efforts === undefined || (Array.isArray(model.efforts) && model.efforts.length <= 32 && model.efforts.every((effort) => typeof effort === "string" && effort.length > 0 && effort.length <= 64))) && (model.serviceTiers === undefined || (Array.isArray(model.serviceTiers) && model.serviceTiers.length <= 32 && model.serviceTiers.every((tier) => object(tier) && typeof tier.id === "string" && tier.id.length > 0 && tier.id.length <= 64 && (tier.name === undefined || (typeof tier.name === "string" && tier.name.length <= 128)) && (tier.description === undefined || (typeof tier.description === "string" && tier.description.length <= 512))))));
   }
   if (value.type === "quota") {
     if (Object.keys(value).some((key) => key !== "type" && key !== "quota")) return false;
@@ -153,7 +181,7 @@ export function isExternalAgentResponse(value: unknown): value is ExternalAgentR
   }
   if (value.type !== "run" || !object(value.run)) return false;
   const run = value.run;
-  if (!id(run.id) || !id(run.taskId) || !Number.isSafeInteger(run.runEpoch) || Number(run.runEpoch) < 0 || !EXTERNAL_AGENT_KINDS.includes(run.kind as ExternalAgentKind) || !["starting", "running", "waiting", "completed", "failed", "cancelled", "uncertain"].includes(String(run.state)) || typeof run.text !== "string" || run.text.length > 256_000 || !Array.isArray(run.events) || run.events.length > 401 || !Array.isArray(run.permissions) || run.permissions.length > 64 || !Number.isSafeInteger(run.nextSequence) || Number(run.nextSequence) < 1 || (run.quiescent !== undefined && typeof run.quiescent !== "boolean") || !optionalString(run.sessionId, 512) || !optionalString(run.stagedCwd, 8192) || !optionalString(run.scratchNotesDir, 8192) || (run.stagedDiff !== undefined && !validDiffSummary(run.stagedDiff)) || (run.uncertainReason !== undefined && !UNCERTAIN_REASONS.has(run.uncertainReason as ExternalAgentUncertainReason)) || (run.phase !== undefined && !WORKER_PHASES.has(run.phase as WorkerExecutionPhase)) || (run.touchedFiles !== undefined && !validPathList(run.touchedFiles, 25, 1024)) || (run.readOnlyViolation !== undefined && !validReadOnlyViolation(run.readOnlyViolation)) || (run.pendingReports !== undefined && (!Array.isArray(run.pendingReports) || run.pendingReports.length > 16 || !run.pendingReports.every(validPendingReport))) || (run.latestQuota !== undefined && !isValidQuotaProbeResult(run.latestQuota)) || !optionalString(run.error, 4000)) return false;
+  if (!id(run.id) || !id(run.taskId) || !Number.isSafeInteger(run.runEpoch) || Number(run.runEpoch) < 0 || !EXTERNAL_AGENT_KINDS.includes(run.kind as ExternalAgentKind) || !["starting", "running", "waiting", "completed", "failed", "cancelled", "uncertain"].includes(String(run.state)) || typeof run.text !== "string" || run.text.length > 256_000 || !Array.isArray(run.events) || run.events.length > 401 || !Array.isArray(run.permissions) || run.permissions.length > 64 || !Number.isSafeInteger(run.nextSequence) || Number(run.nextSequence) < 1 || (run.quiescent !== undefined && typeof run.quiescent !== "boolean") || !optionalString(run.sessionId, 512) || !optionalString(run.stagedCwd, 8192) || !optionalString(run.scratchNotesDir, 8192) || (run.stagedDiff !== undefined && !validDiffSummary(run.stagedDiff)) || (run.uncertainReason !== undefined && !UNCERTAIN_REASONS.has(run.uncertainReason as ExternalAgentUncertainReason)) || (run.phase !== undefined && !WORKER_PHASES.has(run.phase as WorkerExecutionPhase)) || (run.touchedFiles !== undefined && !validPathList(run.touchedFiles, 25, 1024)) || (run.readOnlyViolation !== undefined && !validReadOnlyViolation(run.readOnlyViolation)) || (run.pendingReports !== undefined && (!Array.isArray(run.pendingReports) || run.pendingReports.length > 16 || !run.pendingReports.every(validPendingReport))) || (run.latestQuota !== undefined && !isValidQuotaProbeResult(run.latestQuota)) || (run.contextUsage !== undefined && !isValidExternalContextUsage(run.contextUsage)) || !optionalString(run.activeSessionMode, 128) || !optionalString(run.error, 4000)) return false;
   let previous = 0;
   for (const event of run.events) {
     if (!object(event) || !Number.isSafeInteger(event.sequence) || Number(event.sequence) <= previous || Number(event.sequence) >= Number(run.nextSequence) || !Number.isFinite(event.at) || !["message", "tool", "permission", "state", "error"].includes(String(event.type)) || typeof event.text !== "string" || event.text.length > 16_000) return false;
