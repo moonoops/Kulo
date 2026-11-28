@@ -1,6 +1,6 @@
 import { translate as t, useI18n } from "../../kulo-i18n";
 import { useEffect, useRef, useState } from "react";
-import { Alert, Button, Card, Disclosure, Input, Label, Link, ListBox, Select, TextArea, TextField } from "@heroui/react";
+import { Alert, Button, Card, Disclosure, Input, Label, Link, ListBox, Select, Switch, TextArea, TextField } from "@heroui/react";
 import {
   isValidMcpEnvKey,
   redactSensitiveText,
@@ -73,6 +73,22 @@ export interface ConnectionDraft {
   mcpCommand: string;
   mcpArgsText: string;
   mcpCwd: string;
+  mcpAppsEnabled: boolean;
+}
+
+const AGGREGATOR_MCP_PRESET_IDS = new Set(["composio", "zapier"]);
+
+export function isAggregatorMcpDraft(draft: Pick<ConnectionDraft, "mcpPresetId" | "url">): boolean {
+  if (draft.mcpPresetId && AGGREGATOR_MCP_PRESET_IDS.has(draft.mcpPresetId)) return true;
+  if (draft.url.trim()) {
+    try {
+      const host = new URL(draft.url.trim()).hostname.toLowerCase();
+      if (host === "backend.composio.dev" || host.endsWith(".composio.dev") || host === "mcp.zapier.com" || host.endsWith(".zapier.com")) {
+        return true;
+      }
+    } catch { /* ignore partial URL while typing */ }
+  }
+  return false;
 }
 
 export function createConnectionDraft(input: ConnectionSetupInput, existing?: ConnectionRecordView): ConnectionDraft {
@@ -114,6 +130,7 @@ export function createConnectionDraft(input: ConnectionSetupInput, existing?: Co
     mcpCommand: input.mcpCommand ?? existing?.mcpCommand ?? "",
     mcpArgsText: (input.mcpArgs ?? existing?.mcpArgs ?? []).join("\n"),
     mcpCwd: input.mcpCwd ?? existing?.mcpCwd ?? "",
+    mcpAppsEnabled: Boolean(input.mcpAppsEnabled ?? existing?.mcpAppsEnabled ?? false),
   };
 }
 
@@ -202,6 +219,9 @@ export function connectionSaveRequest(draft: ConnectionDraft, input: ConnectionS
       }
       if (schema.length || input.connectionId) request.credentialFields = schema;
       if (Object.keys(secrets).length) request.secrets = secrets;
+    }
+    if (draft.mcpAppsEnabled && !isAggregatorMcpDraft(draft)) {
+      request.mcpAppsEnabled = true;
     }
   } else if (draft.kind === "custom") {
     if (!draft.typeLabel.trim()) throw new Error(t("请输入凭据类型。", "Enter a credential type."));
@@ -479,6 +499,19 @@ export function ConnectionSetupForm({ input, existing, application, clientId, co
             </div>)}
             <Button ref={addFieldRef} size="sm" variant="secondary" isDisabled={disabled || draft.credentialFields.length >= 32} onPress={addField}>{t("添加环境变量", "Add env var")}</Button>
           </>}
+          {!isAggregatorMcpDraft(draft) && (
+            <Switch
+              className="w-full"
+              isSelected={draft.mcpAppsEnabled}
+              isDisabled={disabled}
+              onChange={(selected) => change("mcpAppsEnabled", selected)}
+            >
+              <Switch.Content className="kulo-settings-row kulo-settings-row--toggle">
+                <Label>{t("允许内联 MCP App（只读原型）", "Allow inline MCP App (read-only prototype)")}</Label>
+                <Switch.Control className="justify-self-end"><Switch.Thumb /></Switch.Control>
+              </Switch.Content>
+            </Switch>
+          )}
         </> : (
           <CredentialFormFields
             draft={draft}

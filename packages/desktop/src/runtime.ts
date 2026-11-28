@@ -65,6 +65,7 @@ export async function runDesktopRuntime(): Promise<void> {
 
   let hub: KuloHub | undefined;
   let activePeer: DevicePeerConfig | undefined;
+  let mcpAppSandboxOrigin: string | undefined;
   const resources: RuntimeResources = {};
   const close = createRuntimeShutdown(resources);
   let startupComplete!: () => void;
@@ -157,6 +158,7 @@ export async function runDesktopRuntime(): Promise<void> {
     const startPeerRuntime = async (peerConfig: DevicePeerConfig) => {
       await closeActiveResources();
       activePeer = peerConfig;
+      mcpAppSandboxOrigin = undefined;
       const peer = await startDevicePeer(peerConfig, {
         runtimeOwner,
         port: activePort,
@@ -216,6 +218,7 @@ export async function runDesktopRuntime(): Promise<void> {
       });
       resources.server = server;
       activePort = server.port;
+      mcpAppSandboxOrigin = server.mcpAppSandboxOrigin;
       saveDesktopRuntimePort(paths, activePort);
       return server.url;
     };
@@ -236,7 +239,10 @@ export async function runDesktopRuntime(): Promise<void> {
     }
     if (stopping) return;
     await new Promise<void>((resolve, reject) => {
-      process.send!({ type: "ready", url: readyUrl, token }, (error) => error ? reject(error) : resolve());
+      process.send!(
+        { type: "ready", url: readyUrl, token, ...(mcpAppSandboxOrigin ? { mcpAppSandboxOrigin } : {}) },
+        (error) => error ? reject(error) : resolve(),
+      );
     });
   } catch (error) {
     report(error);

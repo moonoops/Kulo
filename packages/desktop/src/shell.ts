@@ -124,7 +124,7 @@ const desktopWindowState = createDesktopWindowStateStore({
   onLog: (message) => log(message),
 });
 
-interface RuntimeReady { url: string; token: string }
+interface RuntimeReady { url: string; token: string; mcpAppSandboxOrigin?: string }
 
 const fileActions = createDesktopFileActions({
   dataDir,
@@ -520,17 +520,27 @@ async function startServices(mode: DevelopmentMode | undefined): Promise<void> {
       fileConnection = attached;
       rendererOrigin = attached.url;
       let html = "";
+      let attachedSandboxOrigin: string | undefined;
       try {
         const res = await fetch(`${attached.url}/`, { headers: { Authorization: `Bearer ${attached.token}` }, signal: AbortSignal.timeout(5_000) });
         if (res.ok) html = await res.text();
       } catch {
         // Fall back to packaged index.html below if reading over loopback fails.
       }
+      try {
+        const cfgRes = await fetch(`${attached.url}/api/mcp-apps/config`, { headers: { Authorization: `Bearer ${attached.token}` }, signal: AbortSignal.timeout(2_000) });
+        if (cfgRes.ok) {
+          const cfg = await cfgRes.json() as { sandboxOrigin?: unknown };
+          attachedSandboxOrigin = localHttpOrigin(cfg.sandboxOrigin);
+        }
+      } catch {
+        // Ignore if attached host does not expose MCP App sandbox config.
+      }
       if (!html) {
         const fallbackHtml = path.join(appDir, "web/dist/index.html");
         if (fs.existsSync(fallbackHtml)) html = fs.readFileSync(fallbackHtml, "utf8");
       }
-      contentSecurityPolicy = desktopContentSecurityPolicy(html, attached.url, false);
+      contentSecurityPolicy = desktopContentSecurityPolicy(html, attached.url, false, { mcpAppSandboxOrigin: attachedSandboxOrigin });
       const created = createWindow();
       created.webContents.setBackgroundThrottling(true);
       const rendererReady = uiReady.wait(created.webContents.id, attached.url);
@@ -575,9 +585,12 @@ async function startServices(mode: DevelopmentMode | undefined): Promise<void> {
     nodePath, entry, cwd: dataDir, env,
     validateReady: (message) => {
       if (!message || typeof message !== "object") return;
-      const value = message as { type?: unknown; url?: unknown; token?: unknown };
+      const value = message as { type?: unknown; url?: unknown; token?: unknown; mcpAppSandboxOrigin?: unknown };
       const url = localHttpOrigin(value.url);
-      if (value.type === "ready" && url && typeof value.token === "string" && /^[a-f0-9]{64}$/.test(value.token)) return { url, token: value.token };
+      const sandbox = localHttpOrigin(value.mcpAppSandboxOrigin);
+      if (value.type === "ready" && url && typeof value.token === "string" && /^[a-f0-9]{64}$/.test(value.token)) {
+        return { url, token: value.token, ...(sandbox && sandbox !== url ? { mcpAppSandboxOrigin: sandbox } : {}) };
+      }
     },
     onOutput: (text) => log(text.trimEnd()),
     onExit: (code, signal) => {
@@ -608,7 +621,12 @@ async function startServices(mode: DevelopmentMode | undefined): Promise<void> {
     if (quitting) return;
   }
   rendererOrigin = uiOrigin;
-  contentSecurityPolicy = desktopContentSecurityPolicy(fs.readFileSync(path.join(webDir, "index.html"), "utf8"), uiOrigin, Boolean(mode));
+  contentSecurityPolicy = desktopContentSecurityPolicy(
+    fs.readFileSync(path.join(webDir, "index.html"), "utf8"),
+    uiOrigin,
+    Boolean(mode),
+    { mcpAppSandboxOrigin: ready.mcpAppSandboxOrigin },
+  );
   const created = createWindow();
   created.webContents.setBackgroundThrottling(!mode);
   const rendererReady = uiReady.wait(created.webContents.id, uiOrigin);

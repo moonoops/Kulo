@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { ChatReplyReference, ChatDisplayItem, MessagePart, UiCardSnapshot, UiValues } from "@kulo/protocol";
 import { kuloRest } from "../../kulo-api";
 import { KuloMarkdown } from "../../kulo-markdown";
-import { GeneratedCard } from "../genui";
+import { GeneratedCard, McpAppFrame } from "../genui";
 import { CodeBlock } from "./code-block";
 import { MessageContent } from "./message-content";
 import { DeviceInvitationCopy } from "./device-invitation-copy";
@@ -56,6 +56,7 @@ export function ConnectedMessageContent({ item, connected = true, conversationKe
 }) {
   const content = <MessageContent item={item} conversationKey={conversationKey} onPreviewImage={onPreviewImage} animateEntry={animateEntry} onNavigateReply={onNavigateReply}
     renderDeviceInvitation={(part) => <DeviceInvitationCopy key={`${deliveryScope ?? ""}:${conversationKey}:${part.hubId}`} hubId={part.hubId} hubName={part.hubName} partId={part.partId} connected={connected} deliveryScope={deliveryScope} />}
-    renderUiPart={(part) => <ConnectedCard part={part} connected={connected} conversationKey={conversationKey} onPreviewImage={onPreviewImage} onAdjust={onAdjust} />} />;
+    renderUiPart={(part) => <ConnectedCard part={part} connected={connected} conversationKey={conversationKey} onPreviewImage={onPreviewImage} onAdjust={onAdjust} />}
+    renderMcpAppPart={(part) => <McpAppFrame key={part.partId} partId={part.partId} mcpApp={part.mcpApp} fallbackText={part.fallbackText} connected={connected} conversationKey={conversationKey} />} />;
   return contentOnly ? <>{content}{trailingContent}</> : <MessageActions item={item} onReply={onReply} onSideQuestion={onSideQuestion} showFooter={!trailingContent}>{content}{trailingContent}</MessageActions>;
 }

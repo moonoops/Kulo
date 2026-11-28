@@ -1,5 +1,6 @@
 import type { ChatAttachment, ChatDisplayItem } from "./domain.js";
 import type { UiCardSnapshot } from "./genui.js";
+import type { McpAppInlineMeta } from "./mcp-apps.js";
 
 export interface MediaTranscriptSegment {
   start: number;
@@ -33,7 +34,8 @@ export type MessagePart =
       caption?: string;
       fallbackText?: string;
     }
-  | { partId: string; type: "ui"; cardId: string; fallbackText: string; card?: UiCardSnapshot };
+  | { partId: string; type: "ui"; cardId: string; fallbackText: string; card?: UiCardSnapshot }
+  | { partId: string; type: "mcp-app"; mcpApp: McpAppInlineMeta; fallbackText: string };
 
 export function attachmentMessagePart(attachment: ChatAttachment, messageId: string | number): MessagePart {
   return {
@@ -57,6 +59,7 @@ export function messagePartFallback(part: MessagePart): string {
     case "markdown": return part.text;
     case "code": return `\`\`\`${part.language ?? ""}\n${part.code}\n\`\`\``;
     case "ui": return part.fallbackText;
+    case "mcp-app": return part.fallbackText;
     case "device-invitation": return `邀请设备加入 ${part.hubName}`;
     default: return part.fallbackText || part.caption || part.asset?.name || `[${part.type}]`;
   }

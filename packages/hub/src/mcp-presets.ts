@@ -256,6 +256,37 @@ export function getMcpPreset(id: unknown): McpPresetDefinition {
   return preset;
 }
 
+/**
+ * Returns true if the MCP connection is a hosted multi-app aggregator (e.g. Composio, Zapier).
+ * Stage 4 P2-2 strictly forbids enabling MCP Apps on aggregator connections.
+ */
+export function isMcpAggregatorConnection(
+  fields: Pick<ConnectionFields, "kind" | "mcpPresetId" | "url">,
+): boolean {
+  if (fields.kind !== "mcp") return false;
+  if (fields.mcpPresetId) {
+    if (fields.mcpPresetId === COMPOSIO_PRESET_ID) return true;
+    const preset = findMcpPreset(fields.mcpPresetId);
+    if (preset?.hostedAggregator || preset?.category === "aggregator") return true;
+  }
+  if (fields.url) {
+    try {
+      const host = new URL(fields.url).hostname.toLowerCase();
+      if (
+        host === "backend.composio.dev" ||
+        host.endsWith(".composio.dev") ||
+        host === "mcp.zapier.com" ||
+        host.endsWith(".zapier.com")
+      ) {
+        return true;
+      }
+    } catch {
+      // Malformed URLs are rejected elsewhere during normalization.
+    }
+  }
+  return false;
+}
+
 export function stripBrackets(hostname: string): string {
   const lower = hostname.trim().toLowerCase();
   return lower.startsWith("[") && lower.endsWith("]") ? lower.slice(1, -1) : lower;
@@ -473,6 +504,16 @@ export function normalizeMcpConnectionFields(
     if (!composioMeta && (input.mcpComposioUserId !== undefined || input.mcpComposioSessionId !== undefined || input.mcpAllowedToolkits !== undefined)) {
       failMcpField("仅 Composio 连接支持 Composio 会话与应用范围字段。");
     }
+    if (input.mcpAppsEnabled !== undefined && typeof input.mcpAppsEnabled !== "boolean") {
+      failMcpField("MCP App 开关参数无效。");
+    }
+    const mcpAppsEnabled = input.mcpAppsEnabled === true;
+    if (mcpAppsEnabled && isMcpAggregatorConnection({ kind: "mcp", mcpPresetId: preset?.id, url: url.href })) {
+      throw Object.assign(new Error("聚合型 MCP 连接暂不支持内联 MCP App 原型。"), {
+        code: "connection_mcp_apps_aggregator_forbidden",
+        status: 403,
+      });
+    }
     const credentialFields: ConnectionCredentialField[] =
       authMode === "bearer" || authMode === "header"
         ? [{ key: "apiKey", label: "访问令牌" }]
@@ -488,6 +529,7 @@ export function normalizeMcpConnectionFields(
       ...(mcpOAuthCallbackPort !== undefined ? { mcpOAuthCallbackPort } : {}),
       ...(composioMeta ?? {}),
       ...(input.mcpDisabled ? { mcpDisabled: true } : {}),
+      ...(mcpAppsEnabled ? { mcpAppsEnabled: true } : {}),
       ...(instructions ? { instructions } : {}),
       credentialFields,
     };
@@ -495,6 +537,10 @@ export function normalizeMcpConnectionFields(
   if (input.url !== undefined || input.mcpAuthMode !== undefined || input.headerName !== undefined || input.mcpPresetId !== undefined || input.mcpOAuthClientId !== undefined || input.mcpOAuthScope !== undefined || input.mcpOAuthCallbackPort !== undefined || input.mcpComposioUserId !== undefined || input.mcpComposioSessionId !== undefined || input.mcpAllowedToolkits !== undefined) {
     failMcpField("本机 Stdio MCP 不能包含远程 HTTP、OAuth 或 Composio 字段。");
   }
+  if (input.mcpAppsEnabled !== undefined && typeof input.mcpAppsEnabled !== "boolean") {
+    failMcpField("MCP App 开关参数无效。");
+  }
+  const mcpAppsEnabled = input.mcpAppsEnabled === true;
   const mcpCommand = normalizeMcpCommand(input.mcpCommand);
   const mcpArgs = normalizeMcpArgs(input.mcpArgs);
   const mcpCwd = normalizeMcpCwd(input.mcpCwd, helpers.stateDir);
@@ -505,6 +551,7 @@ export function normalizeMcpConnectionFields(
     ...(mcpArgs?.length ? { mcpArgs } : {}),
     ...(mcpCwd ? { mcpCwd } : {}),
     ...(input.mcpDisabled ? { mcpDisabled: true } : {}),
+    ...(mcpAppsEnabled ? { mcpAppsEnabled: true } : {}),
     ...(instructions ? { instructions } : {}),
     credentialFields: schema,
   };

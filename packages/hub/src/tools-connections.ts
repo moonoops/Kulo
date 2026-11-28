@@ -222,7 +222,17 @@ export function createConnectionTools(controller: ConnectionToolController, audi
         operation = { kind: "information", action: "read" };
       } else throw new Error("连接操作类型无效。");
       context.abortSignal?.throwIfAborted();
-      try { return result(await controller.use(caller, { connectionId, operation }, context)); }
+      try {
+        const used = await controller.use(caller, { connectionId, operation }, context);
+        if (used && typeof used === "object" && "mcpApp" in used) {
+          const { mcpApp, ...llmPayload } = used as Record<string, unknown>;
+          return {
+            output: [{ type: "text" as const, text: JSON.stringify(llmPayload) }],
+            details: { ...llmPayload, ...(mcpApp ? { mcpApp } : {}) } as never,
+          };
+        }
+        return result(used);
+      }
       catch (error) { return handleConnectionNotFound(error, connectionId, api, context); }
     },
   });

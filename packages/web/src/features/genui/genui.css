@@ -79,6 +79,69 @@
 .kulo-genui-tabs { min-width: 0; }
 .kulo-genui-code { min-width: 0; }
 
+.kulo-mcp-app-card {
+  width: 100%;
+  max-width: 780px;
+  min-width: 0;
+  border: 1px solid var(--kulo-card-edge);
+  border-radius: var(--kulo-card-radius);
+  padding: var(--kulo-space-3) var(--kulo-space-4);
+  gap: var(--kulo-space-3);
+  color: var(--foreground);
+  box-shadow: none;
+}
+
+.kulo-mcp-app-header {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--kulo-space-2);
+  padding: 0;
+}
+
+.kulo-mcp-app-source {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: baseline;
+  gap: var(--kulo-space-2);
+}
+
+.kulo-mcp-app-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: var(--kulo-text-body);
+  line-height: var(--kulo-leading-body);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.kulo-mcp-app-subtitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--kulo-text-caption);
+  line-height: var(--kulo-leading-caption);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kulo-mcp-app-stage {
+  padding: 0;
+  min-width: 0;
+}
+
+.kulo-mcp-app-iframe {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
 @keyframes kulo-genui-ready { from { opacity: 0; } to { opacity: 1; } }
 
 @media (max-width: 480px) {

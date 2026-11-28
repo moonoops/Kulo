@@ -58,6 +58,7 @@ import type { HubHttpRouteContext } from "./http/context.js";
 import { authenticateHttpPrincipal, isDirectLocalHttpRequest, resolveHubRequestAuthority } from "./http/authority.js";
 import { handleCapabilitiesRoutes } from "./http/capabilities-routes.js";
 import { handleDevicesAndClusterRoutes } from "./http/devices-cluster-routes.js";
+import { handleMcpAppRoutes } from "./http/mcp-app-routes.js";
 import { handleMigrationRoutes } from "./http/migration-routes.js";
 import { handleBatchWorkflowRoutes } from "./http/batch-workflow-routes.js";
 import { handleProjectsRoutes } from "./http/projects-routes.js";
@@ -70,6 +71,8 @@ import { handleWorkspaceRoutes } from "./http/workspace-routes.js";
 import { SideQuestionError } from "./side-questions.js";
 import { MigrationError } from "./tools-migration.js";
 import { BatchWorkflowError } from "./batch-workflow-service.js";
+import { McpAppError } from "./mcp-app-bridge.js";
+import { startMcpAppSandboxProxyServer, type McpAppSandboxProxyServer } from "./mcp-app-sandbox-proxy.js";
 import { UiCardError } from "./ui-cards.js";
 import { DeviceConnectionError, DeviceInterconnectionManager } from "./devices.js";
 import { isTicketUnfinished } from "./state.js";
@@ -86,6 +89,8 @@ export interface KuloHubServer {
   readonly localUrl: string;
   readonly envWsUrl: string;
   readonly clientWsUrl: string;
+  readonly mcpAppSandboxOrigin?: string;
+  readonly mcpAppSandboxUrl?: string;
   /** Actively check cluster fence and peers (for example after OS wake from sleep). */
   probeConnection(): void;
   close(): Promise<void>;
@@ -163,10 +168,11 @@ function sendJson(res: http.ServerResponse, status: number, payload: unknown): v
   res.end(JSON.stringify(payload));
 }
 
-function webUiContentSecurityPolicy(html: string): string {
+function webUiContentSecurityPolicy(html: string, mcpAppSandboxOrigin?: string): string {
   const inlineHashes = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
     .filter((match) => !/\bsrc\s*=/.test(match[1]!) && match[2]!.trim())
     .map((match) => `'sha256-${createHash("sha256").update(match[2]!).digest("base64")}'`);
+  const frameSrc = mcpAppSandboxOrigin ? `frame-src 'self' about: ${mcpAppSandboxOrigin}` : "frame-src 'self' about:";
   return [
     "default-src 'self'",
     `script-src 'self' 'wasm-unsafe-eval'${inlineHashes.length ? ` ${inlineHashes.join(" ")}` : ""}`,
@@ -177,7 +183,7 @@ function webUiContentSecurityPolicy(html: string): string {
     "media-src 'self' data: blob: https: http:",
     "connect-src 'self' ws: wss:",
     "worker-src 'self' blob:",
-    "frame-src 'self' about:",
+    frameSrc,
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'self'",
@@ -222,6 +228,8 @@ export interface KuloHubServerOptions {
   clusterSyncDebounceMs?: number;
   clusterSyncMaxDelayMs?: number;
   clusterFenceIntervalMs?: number;
+  enableMcpAppSandboxProxy?: boolean;
+  mcpAppSandboxAllowedHostOrigins?: readonly string[];
 }
 
 export async function startKuloHubServer(
@@ -257,6 +265,7 @@ export async function startKuloHubServer(
   if (devices.enabled && options.host === undefined) host = "0.0.0.0";
   let actualPort = requestedPort;
   let closing = false;
+  let mcpAppSandboxProxy: McpAppSandboxProxyServer | undefined;
   let listenerTransition: Promise<void> = Promise.resolve();
   let clusterKeys: ClusterNodeKeyMaterial | null = null;
   const clusterNonceGuard = new ClusterNonceGuard();
@@ -1232,7 +1241,7 @@ export async function startKuloHubServer(
       res.writeHead(200, {
         "content-type": mime,
         "cache-control": cacheHeader,
-        "content-security-policy": webUiContentSecurityPolicy(html),
+        "content-security-policy": webUiContentSecurityPolicy(html, mcpAppSandboxProxy?.origin),
         "referrer-policy": "no-referrer",
         "x-content-type-options": "nosniff",
       });
@@ -1284,6 +1293,7 @@ export async function startKuloHubServer(
     handleSystemPermissionsRoutes,
     handleAssistantStreamRoute,
     handleMigrationRoutes,
+    handleMcpAppRoutes,
     handleBatchWorkflowRoutes,
     handleVoiceAssistantConnectionsRoutes,
     handleUiCardRoutes,
@@ -1576,6 +1586,10 @@ export async function startKuloHubServer(
         sendJson(res, err.status, { error: hub.connectionManager.redact(err.message), code: err.code });
         return;
       }
+      if (err instanceof McpAppError) {
+        sendJson(res, err.status, { error: hub.connectionManager.redact(err.message), code: err.code });
+        return;
+      }
       if (err instanceof DeviceConnectionError) {
         sendJson(res, err.status, { error: err.message, code: err.code });
         return;
@@ -1725,6 +1739,25 @@ export async function startKuloHubServer(
   }
   actualPort = addr.port;
   const advertised = new URL(localListenerOrigin({ address: host, port: actualPort }));
+  if (options.enableMcpAppSandboxProxy !== false) {
+    try {
+      mcpAppSandboxProxy = await startMcpAppSandboxProxyServer({
+        host: "127.0.0.1",
+        port: 0,
+        allowedHostOrigins: [
+          advertised.origin,
+          `http://127.0.0.1:${actualPort}`,
+          `http://localhost:${actualPort}`,
+          ...(options.mcpAppSandboxAllowedHostOrigins ?? []),
+        ],
+      });
+      hub.mcpApps.setSandboxProxy(mcpAppSandboxProxy);
+    } catch (error) {
+      httpServer.closeAllConnections();
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+      throw error;
+    }
+  }
   if (devices.enabled) {
     void sshDevices.restore(devices.sshRecords).catch((error: unknown) => {
       console.error("恢复 SSH 设备失败:", error instanceof Error ? error.message : String(error));
@@ -1748,12 +1781,15 @@ export async function startKuloHubServer(
     localUrl: localListenerOrigin(addr),
     clientWsUrl: `ws://${advertised.host}/ws/client`,
     envWsUrl: `ws://${advertised.host}/ws/env`,
+    ...(mcpAppSandboxProxy ? { mcpAppSandboxOrigin: mcpAppSandboxProxy.origin, mcpAppSandboxUrl: mcpAppSandboxProxy.url } : {}),
     probeConnection: () => {
       if (closing) return;
       void fenceMonitor.checkNow();
     },
     close: async () => {
       closing = true;
+      hub.mcpApps.setSandboxProxy(undefined);
+      if (mcpAppSandboxProxy) { await mcpAppSandboxProxy.close().catch(() => {}); mcpAppSandboxProxy = undefined; }
       cancelMobileConnectorRestore();
       fenceMonitor.stop();
       hub.setOnClusterDirty(undefined);

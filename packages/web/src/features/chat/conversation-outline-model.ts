@@ -29,7 +29,7 @@ function messagePreview(item: ChatDisplayItem): string {
   const text = parts.flatMap((part) => {
     if (part.type === "markdown") return [part.text];
     if (part.type === "code") return [part.code];
-    if (part.type === "ui") return [part.fallbackText];
+    if (part.type === "ui" || part.type === "mcp-app") return [part.fallbackText];
     if (part.type === "device-invitation") return [tr(`邀请设备加入 ${part.hubName}`, `Invite a device to ${part.hubName}`)];
     return part.caption ? [part.caption] : [];
   }).join("\n");

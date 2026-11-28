@@ -11,6 +11,8 @@ import type {
 } from "@kulo/protocol";
 import type { KuloConnections } from "./connections.js";
 import type { HubRuntimeGates } from "./hub-kernel-ports.js";
+import type { McpAppBridgeService } from "./mcp-app-bridge.js";
+import type { McpExecuteResult } from "./mcp-connections.js";
 import type { KuloProjects } from "./projects.js";
 import {
   SettingsAssistantDoc,
@@ -29,6 +31,7 @@ import type { ConnectionCaller } from "./tools-connections.js";
 export interface HubConnectionsBridgeDeps {
   harness: Harness;
   connectionManager: KuloConnections;
+  mcpApps?: Pick<McpAppBridgeService, "recordToolResult" | "invalidateConnection">;
   envManager: Pick<EnvManager, "getEnvDescriptor">;
   projects: Pick<KuloProjects, "get">;
   settingsAssistant: Pick<SettingsAssistant, "describeConnection">;
@@ -120,6 +123,7 @@ export class HubConnectionsBridge {
   }
 
   async removeConnection(id: string): Promise<void> {
+    this.#deps.mcpApps?.invalidateConnection(id);
     const pending = (await this.#deps.connectionManager.snapshot()).requests.filter(
       (request) => request.connectionId === id && request.status === "pending",
     );
@@ -138,13 +142,21 @@ export class HubConnectionsBridge {
     }
   }
 
+  #finalizeUseResult(raw: McpExecuteResult) {
+    const { mcpAppCapture, ...clean } = raw;
+    if (!mcpAppCapture || !this.#deps.mcpApps) return clean;
+    const mcpApp = this.#deps.mcpApps.recordToolResult(mcpAppCapture);
+    return { ...clean, mcpApp };
+  }
+
   async use(caller: ConnectionCaller, input: { connectionId: string; operation: ConnectionUseOperation }, context: Context) {
     const { scope } = await this.assertCaller(caller, context);
     context.abortSignal?.throwIfAborted();
     if (caller.kind === "orchestrator") {
       const identity = `conversation:${caller.conversationId}`;
       await this.#deps.connectionManager.grant(identity, 0, [input.connectionId]);
-      return this.#deps.connectionManager.use(identity, 0, input.connectionId, input.operation, { signal: context.abortSignal });
+      const raw = await this.#deps.connectionManager.use(identity, 0, input.connectionId, input.operation, { signal: context.abortSignal });
+      return this.#finalizeUseResult(raw as McpExecuteResult);
     }
     if (!scope!.ticket.connectionIds?.includes(input.connectionId)) {
       throw new Error("尚未获得这个连接的使用权限，请向主模型申请。");
@@ -167,7 +179,7 @@ export class HubConnectionsBridge {
       onOutwardAction: (label) => this.#deps.runtimeGates.recordTicketOutwardAction(caller.ticketId, caller.runEpoch, "connection", label),
     });
     await this.assertCaller(caller, context);
-    return result;
+    return this.#finalizeUseResult(result as McpExecuteResult);
   }
 
   async request(caller: ConnectionCaller, input: { connectionId: string; reason: string; requestId: string }, context: Context) {

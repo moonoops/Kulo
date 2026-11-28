@@ -253,6 +253,7 @@ import {
   extractLiveState,
 } from "./hub-display-projection.js";
 import { HubMessageProjection } from "./hub-message-projection.js";
+import { McpAppBridgeService } from "./mcp-app-bridge.js";
 export { extractDisplayMessages, extractLiveState };
 import { MainConversationArchiveService } from "./main-conversation-archive.js";
 import { SideQuestionService } from "./side-questions.js";
@@ -559,7 +560,7 @@ export class KuloHub implements OrchestratorController {
   readonly homeAssistant: HomeAssistantService;
   readonly larkConnector: LarkConnectorService;
   #lanHttpEndpointProvider?: () => { lanReachable: boolean; port: number } | undefined;
-  readonly connectionManager: KuloConnections;
+  readonly connectionManager: KuloConnections; readonly mcpApps: McpAppBridgeService;
   readonly connections: ConnectionToolController;
   readonly migration: LocalConfigMigrationService; readonly batchWorkflows: BatchWorkflowService; readonly #batchToolsExt: ReturnType<typeof createBatchToolsExtension>;
 
@@ -784,7 +785,8 @@ export class KuloHub implements OrchestratorController {
     this.#androidNotifications.setOnWrite(() => this.#notifyClusterDirty("files"));
     this.uploads.setOnWrite(() => this.#notifyClusterDirty("uploads"));
     this.identityFiles.setOnWrite(() => this.#notifyClusterDirty("files"));
-    this.connectionManager.setOnPersist(() => this.#notifyClusterDirty("files"));
+    this.mcpApps = new McpAppBridgeService({ connections: this.connectionManager });
+    this.connectionManager.setOnPersist(() => { this.#notifyClusterDirty("files"); this.mcpApps.reconcileConnections(); });
     this.connectionManager.localVault?.setOnChange(() => this.#notifyClusterDirty("vault"));
     this.envManager.setAndroidNotificationClassifier((request, signal) => this.#androidNotifications.classify(request, signal));
     this.#subagentRunner = new KuloSubagentRunner({
@@ -1468,15 +1470,7 @@ export class KuloHub implements OrchestratorController {
       pruneCompactionBaseline: (conversationId, ctx, force) =>
         this.#contextCompaction.pruneCommittedBaseline(conversationId, ctx, force),
     });
-    this.#connectionsBridge = new HubConnectionsBridge({
-      harness: this.harness,
-      connectionManager: this.connectionManager,
-      envManager: this.envManager,
-      projects: this.projects,
-      settingsAssistant: this.settingsAssistant,
-      runtimeGates: this.#runtimeGates,
-      steerTicket: (req, ctx) => this.steerTicket(req, ctx),
-    });
+    this.#connectionsBridge = new HubConnectionsBridge({ harness: this.harness, connectionManager: this.connectionManager, mcpApps: this.mcpApps, envManager: this.envManager, projects: this.projects, settingsAssistant: this.settingsAssistant, runtimeGates: this.#runtimeGates, steerTicket: (req, ctx) => this.steerTicket(req, ctx) });
     this.#hostActions = new HubHostActions({
       harness: this.harness,
       envManager: this.envManager,
@@ -4773,7 +4767,7 @@ export class KuloHub implements OrchestratorController {
     if (this.#uploadCleanupTimer) { clearInterval(this.#uploadCleanupTimer); this.#uploadCleanupTimer = null; }
     await finish(() => this.#customizationInstance?.close());
     await finish(() => this.voice.close());
-    await finish(() => this.connectionManager.closeAsync());
+    this.mcpApps.close(); await finish(() => this.connectionManager.closeAsync());
     await finish(() => this.envManager.setAndroidNotificationClassifier(undefined));
     await finish(() => this.envManager.setConnectorHandlers(undefined));
     await finish(() => this.larkConnector.close());

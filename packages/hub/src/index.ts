@@ -240,6 +240,7 @@ export {
   isBlockedMcpEnvKey,
   isCloudMetadataIp,
   isLoopbackHost,
+  isMcpAggregatorConnection,
   isNonPublicMcpUrl,
   isPrivateOrReservedIp,
   isValidMcpEnvKey,
@@ -258,12 +259,34 @@ export {
 } from "./mcp-oauth.js";
 export {
   McpConnectionPool,
+  buildMcpAppViewToolResult,
   buildMcpStdioEnv,
+  isHostApprovedReadOnlyMcpAppTool,
   sanitizeMcpCallContent,
+  sanitizeStructuredContentForView,
+  type McpAppReadResourceOutput,
+  type McpAppToolResultCapture,
   type McpConnectionPoolOptions,
   type McpDiscoverySnapshot,
+  type McpExecuteResult,
   type McpTransportFactoryContext,
 } from "./mcp-connections.js";
+export {
+  McpAppBridgeService,
+  McpAppError,
+  type McpAppBridgeConnectionsPort,
+  type McpAppBridgeOptions,
+} from "./mcp-app-bridge.js";
+export {
+  MCP_APP_INNER_SANDBOX_CSP,
+  MCP_APP_SANDBOX_PATH,
+  buildMcpAppSandboxProxyCsp,
+  buildMcpAppSandboxProxyHtml,
+  normalizeAllowedHostOrigin,
+  startMcpAppSandboxProxyServer,
+  type McpAppSandboxProxyOptions,
+  type McpAppSandboxProxyServer,
+} from "./mcp-app-sandbox-proxy.js";
 export {
   AssistantDoc,
   ensureAssistantState,

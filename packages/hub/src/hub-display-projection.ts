@@ -11,12 +11,15 @@ import {
   getUiSpecFields,
   isInternalCoordinatorPromptText,
   isSilentCoordinatorReplyText,
+  isValidMcpAppResourceUri,
   redactSensitiveText,
   sanitizeMarkdownTrackingLinks,
   type ChatAttachment,
   type ChatDisplayItem,
   type ChatReplyReference,
   type LiveStreamState,
+  type McpAppInlineMeta,
+  type MessagePart,
   type UiActionReceipt,
   type VoiceCallTranscriptTurn,
   type WebSource,
@@ -201,6 +204,42 @@ export interface DisplayMessageOptions {
   resolveConnectionLabel?: (connectionId: string) => string | undefined;
 }
 
+function parseMcpAppInlineMeta(
+  raw: unknown,
+  redact: (text: string) => string,
+): McpAppInlineMeta | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const rec = raw as Record<string, unknown>;
+  if (
+    typeof rec.connectionId !== "string" ||
+    !rec.connectionId ||
+    typeof rec.connectionName !== "string" ||
+    !rec.connectionName ||
+    typeof rec.connectionRevision !== "number" ||
+    !Number.isSafeInteger(rec.connectionRevision) ||
+    typeof rec.toolName !== "string" ||
+    !rec.toolName ||
+    !isValidMcpAppResourceUri(rec.resourceUri) ||
+    rec.readOnly !== true
+  ) {
+    return undefined;
+  }
+  const safeName = redact(rec.connectionName).slice(0, 120);
+  const safeTitle = typeof rec.title === "string" && rec.title.trim() ? redact(rec.title.trim()).slice(0, 120) : undefined;
+  const safeUri = redact(rec.resourceUri).slice(0, 512);
+  const resultRef = typeof rec.resultRef === "string" && rec.resultRef.trim() ? rec.resultRef.trim().slice(0, 128) : undefined;
+  return {
+    connectionId: rec.connectionId,
+    connectionName: safeName,
+    connectionRevision: rec.connectionRevision,
+    toolName: rec.toolName,
+    resourceUri: safeUri,
+    ...(safeTitle ? { title: safeTitle } : {}),
+    ...(resultRef ? { resultRef } : {}),
+    readOnly: true,
+  };
+}
+
 export function extractDisplayMessages(
   entries: readonly EntryRecord[],
   options: DisplayMessageOptions = {},
@@ -211,6 +250,7 @@ export function extractDisplayMessages(
   let toolOutputRemaining = 32_768;
   let pendingSources: WebSource[] = [];
   let pendingSearchSuggestions: string[] = [];
+  let pendingMcpApps: McpAppInlineMeta[] = [];
   let recoveryTurn = false;
   const uiCommands = new Map(
     entries.filter(UiActionEntry.is).map((entry) => [
@@ -354,7 +394,7 @@ export function extractDisplayMessages(
             toolCallId?: string;
             toolName?: string;
             isError?: boolean;
-            details?: { sources?: unknown; searchSuggestions?: unknown };
+            details?: { sources?: unknown; searchSuggestions?: unknown; mcpApp?: unknown };
             content?: Array<{ type?: string; text?: string }>;
           }
         | undefined;
@@ -412,6 +452,10 @@ export function extractDisplayMessages(
           if (typeof msg.details?.searchSuggestions === "string" && msg.details.searchSuggestions.length <= 64_000) {
             pendingSearchSuggestions = [...new Set([...pendingSearchSuggestions, msg.details.searchSuggestions])].slice(-4);
           }
+        }
+        if (msg.toolName === "kulo_connection_use" && msg.details?.mcpApp) {
+          const parsedMcpApp = parseMcpAppInlineMeta(msg.details.mcpApp, redactToolText);
+          if (parsedMcpApp) pendingMcpApps.push(parsedMcpApp);
         }
         const actionLabel = DISPATCH_TOOL_LABELS[msg.toolName];
         if (actionLabel && Array.isArray(msg.content)) {
@@ -479,6 +523,7 @@ export function extractDisplayMessages(
         }
         pendingSources = [];
         pendingSearchSuggestions = [];
+        pendingMcpApps = [];
         let displayText = parsed.text;
         if (displayText.startsWith('{"type":"kulo.ui.action"')) {
           try {
@@ -592,11 +637,25 @@ export function extractDisplayMessages(
           ? sanitizeSearchSources([...native.sources, ...selectCitedSources(visibleText, pendingSources)])
           : [];
 
-        if (visibleText.trim().length > 0 || toolCalls.length > 0 || thinkingBlocks.length > 0) {
+        const attachedMcpApps = visibleText.trim().length > 0 && pendingMcpApps.length > 0 ? pendingMcpApps.splice(0) : [];
+        const parts: MessagePart[] | undefined = attachedMcpApps.length > 0
+          ? [
+              { partId: `${entry.id as number}:text`, type: "markdown", text: visibleText },
+              ...attachedMcpApps.map((mcpApp, idx): MessagePart => ({
+                partId: `${entry.id as number}:mcp-app:${idx}:${mcpApp.resultRef ?? mcpApp.toolName}`,
+                type: "mcp-app",
+                mcpApp,
+                fallbackText: `${mcpApp.connectionName} · ${mcpApp.title ?? mcpApp.toolName}`,
+              })),
+            ]
+          : undefined;
+
+        if (visibleText.trim().length > 0 || toolCalls.length > 0 || thinkingBlocks.length > 0 || (parts && parts.length > 0)) {
           items.push({
             id: entry.id as number,
             role: "assistant",
             text: visibleText,
+            ...(parts ? { parts } : {}),
             ...(sources.length
               ? {
                   sources,

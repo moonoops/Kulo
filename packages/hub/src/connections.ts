@@ -132,40 +132,25 @@ export class KuloConnections {
       ...(options.mcpTransportFactory ? { transportFactory: options.mcpTransportFactory } : {}),
     });
     this.mcpOAuth = new McpOAuthSessionManager({
-      getRecord: (id) => {
-        const record = this.#doc.connections[id];
-        return record ? this.#view(record) : undefined;
-      },
-      getBinding: (id) => {
-        const record = this.#doc.connections[id];
-        return record ? binding(record) : undefined;
-      },
+      getRecord: (id) => { const record = this.#doc.connections[id]; return record ? this.#view(record) : undefined; },
+      getBinding: (id) => { const record = this.#doc.connections[id]; return record ? binding(record) : undefined; },
       getClientSecret: async (id) => {
         const record = this.#doc.connections[id];
         if (!record?.credentialRef) return undefined;
         const fields = await this.#vault.get(record.credentialRef);
-        if (!fields || fields.__binding !== binding(record)) return undefined;
-        return fields.clientSecret || undefined;
+        return fields && fields.__binding === binding(record) ? fields.clientSecret || undefined : undefined;
       },
-      getChallenge: (id) => this.#mcpPool.getChallenge(id),
-      clearChallenge: (id) => this.#mcpPool.clearChallenge(id),
-      vault: this.#vault,
-      locks: this.#mcpLocks,
-      onSecrets: (values) => this.rememberSecrets(values),
-      onAuthorizedChange: (id, authorized) => {
-        if (authorized) this.#mcpOAuthAuthorized.add(id);
-        else this.#mcpOAuthAuthorized.delete(id);
-      },
+      getChallenge: (id) => this.#mcpPool.getChallenge(id), clearChallenge: (id) => this.#mcpPool.clearChallenge(id),
+      vault: this.#vault, locks: this.#mcpLocks, onSecrets: (values) => this.rememberSecrets(values),
+      onAuthorizedChange: (id, authorized) => { if (authorized) this.#mcpOAuthAuthorized.add(id); else this.#mcpOAuthAuthorized.delete(id); },
       onCompletedProbe: async (id, expectedRevision, signal) => {
         await this.#mcpPool.invalidate(id);
         const current = this.#doc.connections[id];
         if (!current || current.revision !== expectedRevision) return undefined;
         const secrets = current.credentialRef ? await this.#secrets(current) : {};
-        const discovery = await this.#mcpPool.test(this.#view(current), secrets, binding(current), signal);
-        return this.#markMcpVerified(id, expectedRevision, discovery);
+        return this.#markMcpVerified(id, expectedRevision, await this.#mcpPool.test(this.#view(current), secrets, binding(current), signal));
       },
-      redact: (text) => this.redact(text),
-      getExecutionTrustMode: () => this.#getExecutionTrustMode(),
+      redact: (text) => this.redact(text), getExecutionTrustMode: () => this.#getExecutionTrustMode(),
       ...(options.mcpBaseFetch ? { baseFetch: options.mcpBaseFetch } : {}),
     });
   }
@@ -344,12 +329,7 @@ export class KuloConnections {
       if (this.#closed) return;
       const current = this.#doc.connections[id];
       if (!current || current.kind !== "mcp" || current.revision !== expectedRevision) return;
-      const updated: StoredConnection = {
-        ...current,
-        ...(discovery.serverName ? { mcpServerName: discovery.serverName } : {}),
-        mcpTools: discovery.tools,
-        mcpToolsUpdatedAt: discovery.updatedAt,
-      };
+      const updated: StoredConnection = { ...current, ...(discovery.serverName ? { mcpServerName: discovery.serverName } : {}), mcpTools: discovery.tools, mcpToolsUpdatedAt: discovery.updatedAt };
       this.#persist({ ...this.#doc, connections: { ...this.#doc.connections, [id]: updated } });
     });
   }
@@ -1169,6 +1149,21 @@ export class KuloConnections {
       fail("此 SSH 凭据缺少登录密码或私钥。", "connection_credential_missing", 409);
     }
     return { connection: view, secrets, knownHostsPath, revision: record.revision };
+  }
+  async withMcpAppPool<T>(id: string, expectedRevision: number, work: (pool: McpConnectionPool, record: ConnectionRecordView, secrets: ConnectionSecrets, bind: string, signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    this.#assertOpen();
+    const record = this.#record(id);
+    if (record.kind !== "mcp" || record.mcpDisabled || record.mcpAppsEnabled !== true) fail("该连接未启用只读内联 MCP App。", "connection_mcp_apps_disabled", 403);
+    if (record.revision !== expectedRevision) fail("连接配置已变更，旧视图已失效。", "connection_conflict", 410);
+    if (record.mcpTransport === "http" && (record.mcpAuthMode ?? "oauth") === "oauth" && !this.#mcpOAuthAuthorized.has(record.id)) fail("请先完成此 MCP 连接的 OAuth 授权。", "connection_mcp_auth_required", 401);
+    this.#assertNotPausedLocalMcp(record);
+    const controller = new AbortController(); this.#active.set(controller, { ticketId: `mcp-app:${id}`, connectionId: id });
+    const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    try {
+      const secrets = await this.#secrets(record); this.#assertOpen();
+      if (combined.aborted || this.#record(id).revision !== expectedRevision) fail("连接权限已撤销。", "connection_access_revoked", 410);
+      return await work(this.#mcpPool, this.#view(record), secrets, binding(record), combined);
+    } finally { this.#active.delete(controller); }
   }
   async closeAsync(): Promise<void> {
     await this.mcpOAuth.close().catch(() => undefined); await this.#mcpPool.close().catch(() => undefined);

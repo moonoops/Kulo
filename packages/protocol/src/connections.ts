@@ -1,3 +1,5 @@
+import type { McpAppInlineMeta, McpAppToolVisibility } from "./mcp-apps.js";
+
 export type ConnectionKind = "ssh" | "account" | "api-key" | "custom" | "app" | "mcp";
 export type ConnectionCategory = "app" | "credential" | "information";
 export type ConnectionApplicationId = "messages" | "mail" | "github" | "figma";
@@ -11,6 +13,8 @@ export interface McpToolSummary {
   description?: string;
   readOnly: boolean;
   destructive?: boolean;
+  uiResourceUri?: string;
+  visibility?: McpAppToolVisibility[];
 }
 export interface McpPresetDefinition {
   id: string;
@@ -93,6 +97,8 @@ export interface ConnectionFields {
   mcpComposioSessionId?: string;
   mcpAllowedToolkits?: string[];
   mcpDisabled?: boolean;
+  /** Explicit per-connection opt-in for read-only inline MCP Apps (default false; forbidden on aggregators). */
+  mcpAppsEnabled?: boolean;
 }
 export interface ConnectionRecordView extends ConnectionFields {
   id: string;
@@ -185,6 +191,7 @@ export interface ConnectionUseResult {
   output: string;
   exitCode?: number;
   status?: number;
+  mcpApp?: McpAppInlineMeta;
 }
 export type ConnectionTestErrorCode =
   | "connection_local_network_blocked"

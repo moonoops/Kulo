@@ -7,6 +7,7 @@ import {
   limitMcpContent,
   normalizeMcpInputSchema,
   toLlmContent,
+  type ClientCapabilities,
   type LlmContent,
   type McpTransport,
   type Tool,
@@ -14,11 +15,18 @@ import {
 import { McpOAuthAuthorizationRequiredError, type OAuthChallenge } from "@earendil-works/pi-mcp/oauth";
 import {
   KULO_VERSION,
+  MCP_APP_EXTENSION_ID,
+  MCP_APP_RESOURCE_MIME_TYPE,
+  extractMcpToolUiMeta,
+  isMcpToolVisibleToApp,
+  isMcpToolVisibleToModel,
+  isValidMcpAppResourceUri,
   type ConnectionRecordView,
   type ConnectionSecrets,
   type ConnectionUseOperation,
   type ConnectionUseResult,
   type ExecutionTrustMode,
+  type McpAppViewToolResult,
   type McpToolSummary,
 } from "@kulo/protocol";
 import { buildSafeMcpDiscoveryEnv } from "@kulo/env";
@@ -37,7 +45,23 @@ import {
   filterComposioTools,
   isComposioSessionMissingError,
 } from "./composio-bridge.js";
-import { isBlockedMcpEnvKey, isNonPublicMcpUrl } from "./mcp-presets.js";
+import { isBlockedMcpEnvKey, isMcpAggregatorConnection, isNonPublicMcpUrl } from "./mcp-presets.js";
+import {
+  buildMcpAppViewToolResult,
+  isHostApprovedReadOnlyMcpAppTool,
+  sanitizeStructuredContentForView,
+  validateMcpAppResourceResult,
+  type McpAppReadResourceOutput,
+  type McpAppToolResultCapture,
+} from "./mcp-app-sanitize.js";
+
+export {
+  buildMcpAppViewToolResult,
+  isHostApprovedReadOnlyMcpAppTool,
+  sanitizeStructuredContentForView,
+  type McpAppReadResourceOutput,
+  type McpAppToolResultCapture,
+};
 
 const DEFAULT_IDLE_MS = 5 * 60_000;
 const DEFAULT_CALL_TIMEOUT_MS = 30_000;
@@ -49,6 +73,10 @@ const MAX_LIST_TOOLS_BYTES = 32 * 1024;
 const MAX_INLINE_IMAGE_BASE64_BYTES = 64 * 1024;
 
 export type McpOperation = Extract<ConnectionUseOperation, { kind: "mcp" }>;
+
+export interface McpExecuteResult extends ConnectionUseResult {
+  mcpAppCapture?: McpAppToolResultCapture;
+}
 
 export interface McpDiscoverySnapshot {
   serverName?: string;
@@ -84,6 +112,7 @@ interface PoolEntry {
   revision: number;
   binding: string;
   isStdio?: boolean;
+  mcpAppsActive: boolean;
   client: McpClient;
   authProvider?: KuloMcpAuthProvider;
   tools: Tool[];
@@ -98,13 +127,21 @@ export function isMcpToolReadOnly(tool: Pick<Tool, "annotations">): boolean {
 }
 
 export function summarizeMcpTools(tools: readonly Tool[], redact: (text: string) => string): McpToolSummary[] {
-  return tools.slice(0, MAX_STORED_TOOLS).map((tool) => ({
-    name: tool.name,
-    ...(tool.title ? { title: redact(tool.title).slice(0, 120) } : {}),
-    ...(tool.description ? { description: redact(tool.description).slice(0, MAX_TOOL_DESCRIPTION_CHARS) } : {}),
-    readOnly: isMcpToolReadOnly(tool),
-    ...(tool.annotations?.destructiveHint === true ? { destructive: true } : {}),
-  }));
+  return tools
+    .filter((tool) => isMcpToolVisibleToModel(tool._meta))
+    .slice(0, MAX_STORED_TOOLS)
+    .map((tool) => {
+      const ui = extractMcpToolUiMeta(tool._meta);
+      return {
+        name: tool.name,
+        ...(tool.title ? { title: redact(tool.title).slice(0, 120) } : {}),
+        ...(tool.description ? { description: redact(tool.description).slice(0, MAX_TOOL_DESCRIPTION_CHARS) } : {}),
+        readOnly: isMcpToolReadOnly(tool),
+        ...(tool.annotations?.destructiveHint === true ? { destructive: true } : {}),
+        ...(ui?.resourceUri ? { uiResourceUri: redact(ui.resourceUri).slice(0, 256) } : {}),
+        ...(ui?.visibility ? { visibility: ui.visibility } : {}),
+      };
+    });
 }
 
 export function buildMcpStdioEnv(
@@ -383,11 +420,23 @@ export class McpConnectionPool {
     signal?: AbortSignal,
   ): Promise<PoolEntry> {
     signal?.throwIfAborted();
+    const mcpAppsEligible = record.mcpAppsEnabled === true && !isMcpAggregatorConnection(record);
     const { transport, authProvider } = await this.#buildTransport(record, secrets, binding, openGetStream);
     const client = new McpClient({
       name: "kulo",
       version: KULO_VERSION,
       requestTimeoutMs: DEFAULT_CALL_TIMEOUT_MS,
+      ...(mcpAppsEligible
+        ? {
+            capabilities: {
+              extensions: {
+                [MCP_APP_EXTENSION_ID]: {
+                  mimeTypes: [MCP_APP_RESOURCE_MIME_TYPE],
+                },
+              },
+            } as ClientCapabilities,
+          }
+        : {}),
     });
     try {
       const init = await client.connect(transport);
@@ -400,6 +449,7 @@ export class McpConnectionPool {
         revision: record.revision,
         binding,
         isStdio: record.mcpTransport === "stdio",
+        mcpAppsActive: mcpAppsEligible,
         client,
         authProvider,
         tools,
@@ -522,7 +572,7 @@ export class McpConnectionPool {
     binding: string,
     operation: McpOperation,
     options: { readOnly?: boolean; signal?: AbortSignal; onOutwardAction?: (label: string) => void | Promise<void> } = {},
-  ): Promise<ConnectionUseResult> {
+  ): Promise<McpExecuteResult> {
     const composioPolicy = evaluateComposioCall(record, operation, { readOnly: options.readOnly });
     let current = record;
     let outwardRecorded = false;
@@ -532,7 +582,9 @@ export class McpConnectionPool {
         this.#touchIdle(entry);
 
         if (operation.action === "list_tools") {
-          const tools = await this.#ensureFreshTools(current, entry, operation.refresh === true, options.signal);
+          const allTools = await this.#ensureFreshTools(current, entry, operation.refresh === true, options.signal);
+          // Per MCP Apps 2026-01-26, hide app-only tools (`visibility: ["app"]`) from the model.
+          const tools = allTools.filter((tool) => isMcpToolVisibleToModel(tool._meta));
           const query = operation.query?.trim().toLowerCase() ?? "";
           const limit = Math.max(1, Math.min(30, operation.limit ?? 20));
           const matched = query
@@ -545,12 +597,16 @@ export class McpConnectionPool {
           const outTools: Array<Record<string, unknown>> = [];
           let approxBytes = 256;
           for (const tool of matched.slice(0, limit)) {
+            const ui = current.mcpAppsEnabled === true && !isMcpAggregatorConnection(current)
+              ? extractMcpToolUiMeta(tool._meta)
+              : undefined;
             const item = {
               name: tool.name,
               ...(tool.title ? { title: this.#options.redact(tool.title).slice(0, 120) } : {}),
               ...(tool.description ? { description: this.#options.redact(tool.description).slice(0, MAX_TOOL_DESCRIPTION_CHARS) } : {}),
               readOnly: isMcpToolReadOnly(tool),
               ...(tool.annotations?.destructiveHint === true ? { destructive: true } : {}),
+              ...(ui?.resourceUri ? { uiResourceUri: this.#options.redact(ui.resourceUri).slice(0, 256) } : {}),
               inputSchema: normalizeMcpInputSchema(tool.inputSchema),
             };
             const serialized = this.#options.redact(JSON.stringify(item));
@@ -580,6 +636,12 @@ export class McpConnectionPool {
             status: 400,
           });
         }
+        if (!isMcpToolVisibleToModel(target._meta)) {
+          throw Object.assign(new Error("此 MCP 工具仅限应用视图调用，模型不可直接调用。"), {
+            code: "connection_mcp_tool_app_only",
+            status: 403,
+          });
+        }
         if (options.readOnly && !isMcpToolReadOnly(target)) {
           throw Object.assign(new Error("只读任务不能调用非只读 MCP 工具（工具未明确声明 readOnlyHint=true 且非破坏性）。"), {
             code: "connection_read_only",
@@ -604,6 +666,29 @@ export class McpConnectionPool {
 
         const blocks = toLlmContent(rawResult);
         const sanitized = await sanitizeMcpCallContent(blocks, this.#options.redact);
+
+        let mcpAppCapture: McpAppToolResultCapture | undefined;
+        if (
+          current.mcpAppsEnabled === true &&
+          !isMcpAggregatorConnection(current) &&
+          isHostApprovedReadOnlyMcpAppTool(target)
+        ) {
+          const uiMeta = extractMcpToolUiMeta(target._meta);
+          if (uiMeta?.resourceUri) {
+            const viewResult = await buildMcpAppViewToolResult(rawResult, this.#options.redact);
+            mcpAppCapture = {
+              connectionId: current.id,
+              connectionName: this.#options.redact(current.name).slice(0, 120),
+              connectionRevision: current.revision,
+              toolName: target.name,
+              ...(target.title ? { title: this.#options.redact(target.title).slice(0, 120) } : {}),
+              resourceUri: this.#options.redact(uiMeta.resourceUri).slice(0, 512),
+              viewResult,
+              readOnly: true,
+            };
+          }
+        }
+
         return {
           kind: "mcp",
           output: JSON.stringify({
@@ -613,6 +698,7 @@ export class McpConnectionPool {
             isError: rawResult.isError === true,
             content: sanitized,
           }),
+          ...(mcpAppCapture ? { mcpAppCapture } : {}),
         };
       } catch (error) {
         if (attempt === 0 && current.mcpPresetId === COMPOSIO_PRESET_ID && isComposioSessionMissingError(error) && this.#options.onComposioSessionExpired) {
@@ -627,6 +713,86 @@ export class McpConnectionPool {
       }
     }
     throw Object.assign(new Error("MCP 调用失败。"), { code: "connection_mcp_execution_failed", status: 502 });
+  }
+
+  /** Reads and validates a `ui://` `text/html;profile=mcp-app` resource (<= 2.5 MiB) for an enabled non-aggregator MCP connection. */
+  async readAppResource(
+    record: ConnectionRecordView,
+    secrets: ConnectionSecrets,
+    binding: string,
+    uri: string,
+    signal?: AbortSignal,
+  ): Promise<McpAppReadResourceOutput> {
+    if (record.mcpAppsEnabled !== true || isMcpAggregatorConnection(record)) {
+      throw Object.assign(new Error("该连接未启用只读内联 MCP App。"), {
+        code: "connection_mcp_apps_disabled",
+        status: 403,
+      });
+    }
+    if (!isValidMcpAppResourceUri(uri)) {
+      throw Object.assign(new Error("无效的 MCP App 资源地址（仅允许 ui:// 协议）。"), {
+        code: "connection_mcp_app_invalid_uri",
+        status: 400,
+      });
+    }
+    try {
+      const entry = await this.#getOrConnect(record, secrets, binding, signal);
+      this.#touchIdle(entry);
+      const resource = await entry.client.readResource(uri, { signal, timeoutMs: DEFAULT_CALL_TIMEOUT_MS });
+      this.#touchIdle(entry);
+      return validateMcpAppResourceResult(uri, resource, this.#options.redact);
+    } catch (error) {
+      this.#mapError(error);
+    }
+  }
+
+  /** Executes a read-only, app-visible MCP tool strictly within the same connection for an active MCP App View. */
+  async callAppTool(
+    record: ConnectionRecordView,
+    secrets: ConnectionSecrets,
+    binding: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<McpAppViewToolResult> {
+    if (record.mcpAppsEnabled !== true || isMcpAggregatorConnection(record)) {
+      throw Object.assign(new Error("该连接未启用只读内联 MCP App。"), {
+        code: "connection_mcp_apps_disabled",
+        status: 403,
+      });
+    }
+    try {
+      const entry = await this.#getOrConnect(record, secrets, binding, signal);
+      this.#touchIdle(entry);
+      const tools = await this.#ensureFreshTools(record, entry, false, signal);
+      const target = tools.find((item) => item.name === toolName);
+      if (!target) {
+        throw Object.assign(new Error(`此 MCP 服务未提供名为「${toolName}」的工具。`), {
+          code: "connection_mcp_tool_not_found",
+          status: 404,
+        });
+      }
+      if (!isMcpToolVisibleToApp(target._meta)) {
+        throw Object.assign(new Error("此 MCP 工具仅供模型调用，禁止应用视图调用。"), {
+          code: "connection_mcp_app_tool_visibility_denied",
+          status: 403,
+        });
+      }
+      if (!isHostApprovedReadOnlyMcpAppTool(target)) {
+        throw Object.assign(new Error("MCP App 只读原型拒绝执行写操作或非只读工具。"), {
+          code: "connection_mcp_app_write_forbidden",
+          status: 403,
+        });
+      }
+      const rawResult = await entry.client.callTool(toolName, args, {
+        signal,
+        timeoutMs: DEFAULT_CALL_TIMEOUT_MS,
+      });
+      this.#touchIdle(entry);
+      return await buildMcpAppViewToolResult(rawResult, this.#options.redact);
+    } catch (error) {
+      this.#mapError(error);
+    }
   }
 
   async invalidate(connectionId: string): Promise<void> {

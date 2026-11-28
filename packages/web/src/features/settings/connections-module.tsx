@@ -370,7 +370,12 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
                       </Table.Cell>
                       <Table.Cell className="kulo-settings-table-cell kulo-settings-table-meta">
                         <div className="flex flex-col items-start gap-1">
-                          <Chip size="sm" variant="soft" color={status.color}>{status.label}</Chip>
+                          <div className="flex flex-wrap items-center gap-1">
+                            <Chip size="sm" variant="soft" color={status.color}>{status.label}</Chip>
+                            {connection.mcpAppsEnabled && !isComposio && (
+                              <Chip size="sm" variant="soft">MCP App</Chip>
+                            )}
+                          </div>
                           {connection.error && <p className="whitespace-normal break-words text-xs text-danger">{redactSensitiveText(connection.error)}</p>}
                         </div>
                       </Table.Cell>

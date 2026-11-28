@@ -15,6 +15,7 @@ import "./chat-content.css";
 
 type AssetPart = Extract<MessagePart, { assetId: string }>;
 type UiPart = Extract<MessagePart, { type: "ui" }>;
+type McpAppPart = Extract<MessagePart, { type: "mcp-app" }>;
 export interface ContentGroup { id: string; parts: MessagePart[] }
 interface ContentRow { group: ContentGroup; present: boolean; animateEntry: boolean }
 
@@ -100,10 +101,11 @@ export function stableUserParts(item: Pick<ChatDisplayItem, "role" | "requestId"
   });
 }
 
-export function MessageContent({ item, onPreviewImage, renderUiPart, renderDeviceInvitation, conversationKey, animateEntry = false, onNavigateReply }: {
+export function MessageContent({ item, onPreviewImage, renderUiPart, renderMcpAppPart, renderDeviceInvitation, conversationKey, animateEntry = false, onNavigateReply }: {
   item: ChatDisplayItem;
   onPreviewImage?: (image: PreviewableImage) => void;
   renderUiPart?: (part: UiPart) => ReactNode;
+  renderMcpAppPart?: (part: McpAppPart) => ReactNode;
   renderDeviceInvitation?: (part: Extract<MessagePart, { type: "device-invitation" }>) => ReactNode;
   conversationKey?: string;
   animateEntry?: boolean;
@@ -130,6 +132,7 @@ export function MessageContent({ item, onPreviewImage, renderUiPart, renderDevic
         : <KuloMarkdown text={part.text} sources={assistantSources} highlightedSourceUrl={highlightedSourceUrl} onHighlightSource={assistantSources ? setHighlightedSourceUrl : undefined} onPreviewImage={onPreviewImage} />;
       case "code": return <CodeBlock code={part.code} language={part.language} fileName={part.fileName} />;
       case "ui": return renderUiPart ? renderUiPart(part) : <KuloMarkdown text={part.fallbackText} sources={assistantSources} onPreviewImage={onPreviewImage} />;
+      case "mcp-app": return renderMcpAppPart ? renderMcpAppPart(part) : <KuloMarkdown text={part.fallbackText} sources={assistantSources} onPreviewImage={onPreviewImage} />;
       case "device-invitation": return item.role === "assistant" && renderDeviceInvitation
         ? renderDeviceInvitation(part)
         : <span>{messagePartFallback(part)}</span>;

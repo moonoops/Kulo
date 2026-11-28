@@ -8,6 +8,7 @@ import {
   Link,
   ListBox,
   Select,
+  Switch,
   TextArea,
   TextField,
 } from "@heroui/react";
@@ -15,6 +16,7 @@ import type { McpAuthMode, McpPresetDefinition } from "@kulo/protocol";
 import { useI18n } from "../../kulo-i18n";
 import {
   clearConnectionDraftSecrets,
+  isAggregatorMcpDraft,
   mcpAuthModeLabel,
   type ConnectionDraft,
 } from "./connection-setup-inputs";
@@ -40,6 +42,7 @@ function applyParsedServer(
       mcpCommand: "",
       mcpArgsText: "",
       mcpCwd: "",
+      mcpAppsEnabled: false,
     };
   }
   const envDrafts = (server.envFields ?? []).map((field, index) => ({
@@ -59,6 +62,7 @@ function applyParsedServer(
     mcpArgsText: (server.mcpArgs ?? []).join("\n"),
     mcpCwd: server.mcpCwd ?? "",
     credentialFields: envDrafts,
+    mcpAppsEnabled: false,
   };
 }
 
@@ -558,6 +562,20 @@ export function McpCustomForm({
             {t("添加环境变量", "Add env var")}
           </Button>
         </>
+      )}
+
+      {!selectedPreset?.hostedAggregator && !isAggregatorMcpDraft(draft) && (
+        <Switch
+          className="w-full"
+          isSelected={draft.mcpAppsEnabled}
+          isDisabled={busy}
+          onChange={(selected) => onChange("mcpAppsEnabled", selected)}
+        >
+          <Switch.Content className="kulo-settings-row kulo-settings-row--toggle">
+            <Label>{t("允许内联 MCP App（只读原型）", "Allow inline MCP App (read-only prototype)")}</Label>
+            <Switch.Control className="justify-self-end"><Switch.Thumb /></Switch.Control>
+          </Switch.Content>
+        </Switch>
       )}
     </form>
   );

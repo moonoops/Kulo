@@ -105,17 +105,26 @@ export function desktopWindowChrome(platform: NodeJS.Platform): Pick<BrowserWind
   return platform === "darwin" ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 16, y: 18 } } : {};
 }
 
-export function desktopContentSecurityPolicy(html: string, origin: string, development: boolean): string {
+export function desktopContentSecurityPolicy(
+  html: string,
+  origin: string,
+  development: boolean,
+  options?: { mcpAppSandboxOrigin?: string },
+): string {
   const inlineHashes = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
     .filter((match) => !/\bsrc\s*=/.test(match[1]!) && match[2]!.trim())
     .map((match) => `'sha256-${createHash("sha256").update(match[2]!).digest("base64")}'`);
+  const parsedOrigin = new URL(origin);
+  const candidateSandbox = localHttpOrigin(options?.mcpAppSandboxOrigin);
+  const sandboxOrigin = candidateSandbox && candidateSandbox !== parsedOrigin.origin ? candidateSandbox : undefined;
   return [
     "default-src 'self'",
     `script-src 'self' 'wasm-unsafe-eval' ${development ? "'unsafe-inline'" : inlineHashes.join(" ")}`,
     "script-src-attr 'none'", "style-src 'self' 'unsafe-inline'", "font-src 'self' data:",
     "img-src 'self' data: blob: https: http:", "media-src 'self' data: blob: https: http:",
-    `connect-src 'self' ws://${new URL(origin).host}`, "worker-src 'self' blob:",
-    "frame-src 'self' about:", "object-src 'none'", "base-uri 'none'", "form-action 'self'",
+    `connect-src 'self' ws://${parsedOrigin.host}`, "worker-src 'self' blob:",
+    sandboxOrigin ? `frame-src 'self' about: ${sandboxOrigin}` : "frame-src 'self' about:",
+    "object-src 'none'", "base-uri 'none'", "form-action 'self'",
   ].join("; ");
 }
 

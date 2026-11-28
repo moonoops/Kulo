@@ -52,5 +52,6 @@ export * from "./url-hygiene.js";
 export * from "./migration.js";
 export * from "./side-questions.js";
 export * from "./batch-workflow.js";
+export * from "./mcp-apps.js";
 
 export type * from "./recovery.js";
