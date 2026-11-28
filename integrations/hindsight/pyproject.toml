@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kulo-hindsight-auth"
-version = "0.1.10"
+version = "0.1.11"
 license = "AGPL-3.0-only"
 description = "In-process Router/Worker authorization for Kulo's two Hindsight banks"
 requires-python = ">=3.11"

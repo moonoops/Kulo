@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.1.11 (2026-11-28)
+
+全面增强 Kulo 的长期运行韧性、零摩擦对话交互与安全生态协同能力：新增额度用尽暂停与原工单同引擎换模续跑、重启自动恢复安全闸门与崩溃熔断、Hub 本机配置发现与无凭据安全导入、预览弹窗内联续聊、零工具单抽屉支线提问（`/btw`）、只读持久化批量扇出（`kulo_batch_dispatch`）、内置 Worker 单向遇卡升模试点及只读内联 MCP Apps 双层跨源沙箱原型，同时修复语音挂断时序、升级 ACP 三态思考强度与只读遥测，并对聊天工具步骤降噪与核心大文件完成系统性瘦身（`v0.1.11`）。
+
+### Resilience, Quota Pause & Restart Safety Gate
+
+- **订阅限流/额度用尽暂停、统一模型仲裁与同引擎换模续跑（`@kulo/hub`、`@kulo/protocol`、`@kulo/web`）**
+  - 新增 `ticket-model-arbiter.ts`（统一优先级 `user_override > escalation(runEpoch) > role_preset > default`）、`ticket-quota-pause.ts` 与 `http/ticket-resume-routes.ts`：识别 429 / 订阅配额耗尽后将工单安全暂停为 `waiting(reason="quota")`，前端共享 `quota-resume-popover.tsx` 支持原地选择同引擎模型直接续跑（严守 `usage_cap` 上限且不触发跨引擎切换）。
+- **重启自动恢复安全闸门与崩溃循环熔断（`@kulo/hub`）**
+  - 新增 `restart-gate.ts` 与宿主机本机持久化 `boot-gate.json`（排除出集群同步路径）：仅在明确证明为本机计划内重启且任务满足纯只读安全证明时才自动恢复运行，其余均安全降级为等待用户确认；5 分钟内连续异常重启达到阈值自动触发熔断，防止重启死循环。
+- **内置 Worker 单向遇卡自动升模试点（`@kulo/hub`、`@kulo/protocol`、`@kulo/web`）**
+  - 新增 `run-health-escalation.ts` 并在角色预设中提供默认关闭的「遇卡升级模型」配置：单个内置 Worker 陷入死循环时最多单向升级一次更强模型（杜绝降级震荡），校验目标模型上下文窗口并同步重置死循环计数器。
+
+### Zero-Friction UX: Side Questions, Preview Composer & De-Noising
+
+- **零工具单抽屉支线提问 `/btw`（`@kulo/protocol`、`@kulo/hub`、`@kulo/web`）**
+  - 新增 `side-questions.ts`、`side-question-store.ts`、`http/side-question-routes.ts`、`use-side-question.ts` 与右侧锚定 `side-question-drawer.tsx`：主输入框 `/btw <问题>` 或选区菜单「支线追问」可在单抽屉中基于当前安全边界只读追问（零工具、不写入主对话历史、单抽屉最多 12 轮、双重脱敏落盘、24 小时自动清理），支持一键「插入主框」转为草稿。
+- **文件与电脑预览弹窗内联续聊（`@kulo/web`）**
+  - 新增 `modal-footer-composer.tsx` 嵌入 `file-message.tsx` 与 `computer-preview.tsx` 的 `Modal.Footer`：打开时冻结目标快照，按来源三路路由（文件/聊天追问、运行中工单 `steer` 纠偏、接管模式显式区分「发消息」与「完成接管」），严格隔离键盘事件防串键，`Esc` 收起并恢复焦点。
+- **语音通话挂断时序修复、ACP 三态能力与步骤卡片降噪（`@kulo/hub`、`@kulo/env`、`@kulo/web`）**
+  - 修复 `voice-calls.ts`、`voice-live-adapters.ts` 与 `hub.ts` 关闭顺序，先优雅排空连接与待派发队列再兜底中止，并新增零 LLM 消耗的可折叠通话摘要卡（`voice-call-summary.ts`、`voice-call-summary-card.tsx`）。
+  - ACP 新增思考强度三态能力（`unknown | unsupported | supported`）、补齐 Antigravity `xhigh` 档位与 `.agents/skills` 只读路径（沙箱写保护 `~/.agents`），并通过只读 `hub.ticket_telemetry` + 内存缓存展示上下文占用，消除写放大。
+  - 新增 `tool-step-summary.ts` 与前端只读连续步骤折叠汇总，默认对连续成功的只读探查降噪，写操作、确认项与报错始终完整可见。
+
+### Safe Ecosystem: Local Migration, Batch Fan-Out & MCP Apps Prototype
+
+- **Hub 本机配置发现与无凭据安全导入向导（`@kulo/protocol`、`@kulo/hub`、`@kulo/web`）**
+  - 新增 `migration-scan.ts`、`migration-sanitize.ts`、`tools-migration.ts`、`http/migration-routes.ts` 与 `migration-import-modal.tsx`：严格限定仅 Hub 本机控制台可用（`Cache-Control: no-store`、不透明候选 ID + 10 分钟 TOCTOU 哈希校验）；导入 HTTP MCP 时强制剥离 5 类敏感凭据、Skills 快照（含 `~/.agents/skills`）默认停用且默认仅限后台任务、本地 `stdio` 仅提供只读风险清单与表单预填，绝不自动执行。
+- **只读持久化批量扇出 `kulo_batch_dispatch`（`@kulo/protocol`、`@kulo/hub`、`@kulo/web`）**
+  - 新增 `batch-workflow-schema.ts`、`batch-workflow-runner.ts`、`batch-workflow-service.ts`、`tools-batch.ts` 与 `batch-workflow-card.tsx`：硬锁只读并行执行、单项结果持久化、部分容错与重启续跑，超过 6 项强制人工确认，输出结果经 `<untrusted_batch_report>` 不可信来源隔离。
+- **只读内联 MCP Apps（`2026-01-26`）双层跨源沙箱原型（`@kulo/protocol`、`@kulo/hub`、`@kulo/desktop`、`@kulo/web`）**
+  - 新增 `mcp-app-sandbox-proxy.ts`、`mcp-app-bridge.ts`、`mcp-app-sanitize.ts`、`http/mcp-app-routes.ts` 与 `mcp-app-frame.tsx`：连接级默认关闭开关（聚合器禁用），采用独立无凭据回环跨源代理与严格内层 CSP（无 `?token=`、无 `allow-same-origin`、屏蔽 `ui/message`、全局单活挂载、编辑/撤销即时 410 吊销）。
+
+### Architecture Slimming & Desktop Packaging Fixes
+
+- 完成核心模块瘦身与棘轮收紧（8 个历史大文件净缩减 **1,211 行**上限，拆离 `ticket-card-view.ts`、`hub-message-projection.ts`、`http/system-ui-routes.ts`、`scheduler-external-settle.ts`、`settings-roles.ts`、`kulo-api-rest.ts` 等聚焦模块），并包含 Windows NSIS 安装器相对跳转修复与发布流水线门禁加固。
+
 ## v0.1.10 (2026-11-26)
 
 全面升级浏览器自动化 v2 协议与主控→Worker 浏览器会话原子移交能力，引入双层智能体运行健康治理与防死循环熔断机制，修复多模态光栅图片误脱敏与异常分类，并显著打磨延迟话题草稿、任务栏恢复谱系去重分组、文件消息紧凑卡片与选区引用条体验（`v0.1.10`）。

@@ -23,7 +23,7 @@ export type {
   WorkerReportRecord,
   WorkerReportState,
 } from "./ticket-types.js";
-export const KULO_VERSION = "0.1.10";
+export const KULO_VERSION = "0.1.11";
 
 export type ActionConfirmationKind =
   | "customization_validate"
