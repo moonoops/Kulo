@@ -7,7 +7,18 @@ import {
 } from "@earendil-works/pi-durable";
 import { SettingsAssistantDoc, isActiveSettingsConversation } from "./settings-doc.js";
 import { KuloStateDoc, isOrchestratorConversation, resolveTicketExecutionScope } from "./state.js";
-import { sanitizeTicketQuotaText } from "./ticket-quota-pause.js";
+import {
+  RunHealthEscalationEntry,
+  applyWorkerHealthActionInTx,
+  clearSettledTicketEscalationInTx,
+  estimateConversationContextTokens,
+  sanitizeEscalationText,
+  type ModelEscalationTrigger,
+  type RunHealthEscalationRecord,
+  type RunHealthEscalationSettings,
+  type RunHealthEscalationSkip,
+  type WorkerHealthCommitAction,
+} from "./run-health-escalation.js";
 import { evaluateRunHealthWithJudge, RUN_HEALTH_JUDGE_TIMEOUT_MS, type RunHealthJudgeInput } from "./run-health-judge.js";
 import {
   buildBeforeToolBlockMessage, buildDeterministicWarningGuidance, buildJudgeGuidance,
@@ -27,7 +38,7 @@ export interface RunHealthDocState {
   wrapUpDispatched?: boolean;
   judgedTurns?: number[];
   pendingGuidance?: {
-    source: "doom_loop" | "judge";
+    source: "doom_loop" | "judge" | "escalation";
     turn: number;
     text: string;
     deliveredAtTurn?: number;
@@ -37,6 +48,8 @@ export interface RunHealthDocState {
     reason: string;
     setAtTurn: number;
   };
+  escalation?: RunHealthEscalationRecord;
+  lastEscalationSkip?: RunHealthEscalationSkip;
 }
 
 /**
@@ -57,6 +70,10 @@ export interface RunHealthExtensionOptions {
   getHarness: () => Harness | undefined;
   getModels?: () => Models;
   resolveFallbackModel?: () => ModelRef | undefined;
+  /** Optional live settings supplier enabling built-in Worker one-way auto-escalation (§5.3). */
+  getSettings?: () => RunHealthEscalationSettings;
+  /** Optional callback invoked when escalation updates ticket durable state. */
+  onTicketChanged?: () => void;
   redact: (text: string) => string;
   judgeTimeoutMs?: number;
   /** Optional custom judge evaluator (primarily for deterministic testing). */
@@ -71,6 +88,8 @@ export interface RunHealthController {
   close(): void;
   /** Resolves once all currently in-flight background judge tasks have settled. */
   waitForPendingJudges(): Promise<void>;
+  /** Terminal cleanup invoked from `hub.ts` `onTicketSettled` (zero intrusion into `scheduler.ts`). */
+  onTicketSettled(ticketId: string, context?: Context): Promise<void>;
 }
 
 interface RunHealthMemoryCache {
@@ -215,12 +234,14 @@ function normalizeDocForRun(
   }
   const prevInputs = raw.lastInputCount ?? inputCount;
   if (inputCount > prevInputs) {
-    // Mid-run user steer: reset doom-loop/stuck state and shift turn budget baseline.
+    // Mid-run user steer: reset doom-loop/stuck state and shift turn budget baseline,
+    // while strictly preserving active one-way `escalation` state.
     return {
       state: {
         runFirstEntryId, lastInputCount: inputCount, turnsAtLastUserInput: turns,
         softReminded: false, dispatchedInRun: Boolean(raw.dispatchedInRun),
         wrapUpDispatched: Boolean(raw.wrapUpDispatched), judgedTurns: [...(raw.judgedTurns ?? [])],
+        ...(raw.escalation ? { escalation: { ...raw.escalation } } : {}),
       },
       changed: true, steered: true, resetRun: false,
     };
@@ -232,12 +253,19 @@ function normalizeDocForRun(
       wrapUpDispatched: Boolean(raw.wrapUpDispatched), judgedTurns: [...(raw.judgedTurns ?? [])],
       ...(raw.pendingGuidance ? { pendingGuidance: { ...raw.pendingGuidance } } : {}),
       ...(raw.forceWrapUp ? { forceWrapUp: { ...raw.forceWrapUp } } : {}),
+      ...(raw.escalation ? { escalation: { ...raw.escalation } } : {}),
+      ...(raw.lastEscalationSkip ? { lastEscalationSkip: { ...raw.lastEscalationSkip } } : {}),
     },
     changed: false, steered: false, resetRun: false,
   };
 }
 
-function assignDocState(target: RunHealthDocState, next: RunHealthDocState): void {
+function assignDocState(
+  target: RunHealthDocState,
+  next: RunHealthDocState,
+  preserveExistingEscalation = false,
+): void {
+  const sameRun = target.runFirstEntryId === next.runFirstEntryId;
   target.runFirstEntryId = next.runFirstEntryId;
   target.lastInputCount = next.lastInputCount;
   target.turnsAtLastUserInput = next.turnsAtLastUserInput;
@@ -249,6 +277,10 @@ function assignDocState(target: RunHealthDocState, next: RunHealthDocState): voi
   else delete target.pendingGuidance;
   if (next.forceWrapUp) target.forceWrapUp = { ...next.forceWrapUp };
   else delete target.forceWrapUp;
+  if (next.escalation) target.escalation = { ...next.escalation };
+  else if (!(preserveExistingEscalation && sameRun && target.escalation)) delete target.escalation;
+  if (next.lastEscalationSkip) target.lastEscalationSkip = { ...next.lastEscalationSkip };
+  else delete target.lastEscalationSkip;
 }
 
 async function resolveConversationRole(
@@ -289,12 +321,16 @@ async function rebuildMemoryCacheFromEntries(
 ): Promise<RunHealthMemoryCache> {
   const entries = await loadRunEntriesAscending(api, runFirstEntryId, context);
   let userGoal = "";
-  let lastUserEntryIdx = -1;
+  let lastResetEntryIdx = -1;
   for (let i = 0; i < entries.length; i += 1) {
     const entry = entries[i]!;
     if (excludeAssistantId !== undefined && Number(entry.id) >= excludeAssistantId) break;
+    if (RunHealthEscalationEntry.is(entry)) {
+      lastResetEntryIdx = i;
+      continue;
+    }
     const text = extractUserGoalTextFromEntry(entry);
-    if (text) { userGoal = text; lastUserEntryIdx = i; }
+    if (text) { userGoal = text; lastResetEntryIdx = i; }
   }
 
   let doomLoop = createEmptyDoomLoopState();
@@ -324,7 +360,7 @@ async function rebuildMemoryCacheFromEntries(
     const outcomes = extractOutcomesForAssistantRound(entry, resultEntries);
     if (outcomes.length > 0) {
       trajectoryTurns.push(buildJudgeTrajectoryTurn(roundCounter, outcomes));
-      if (i > lastUserEntryIdx) {
+      if (i > lastResetEntryIdx) {
         doomLoop = evaluateDoomLoopRound(doomLoop, outcomes).state;
       } else if (outcomes.some((o) => o.name === "kulo_dispatch" && !o.isError)) {
         doomLoop.dispatchedInRun = true;
@@ -351,28 +387,28 @@ export function createRunHealthController(options: RunHealthExtensionOptions): R
     conversationId: ConversationId,
     updater: (txDoc: RunHealthDocState, liveRun: { first?: EntryId; inputs: unknown[]; turns: number } | undefined) => boolean,
     context: Context = BACKGROUND_CONTEXT,
-    workerStuck?: { kind: "doom_loop" | "judge_stuck"; reason: string },
-  ): Promise<void> => {
+    workerAction?: WorkerHealthCommitAction,
+  ): Promise<{ applied: boolean; escalated: boolean; skipWarning?: string }> => {
     const harness = options.getHarness();
-    if (!harness || shutdownController.signal.aborted) return;
-    await harness.commit(async (tx) => {
+    if (!harness || shutdownController.signal.aborted) return { applied: false, escalated: false };
+    const result = await harness.commit(async (tx) => {
       const live = await tx.doc(LiveDoc, conversationId);
-      const doc = await tx.doc(RunHealthDoc, conversationId);
-      const applied = updater(doc as RunHealthDocState, live.run);
-      if (applied && workerStuck) {
-        const kuloState = await tx.doc(KuloStateDoc);
-        const scope = resolveTicketExecutionScope(kuloState, conversationId);
-        if (scope && !scope.isSubagent && scope.ticket.status !== "stopped" && scope.ticket.status !== "closed") {
-          const now = Date.now();
-          scope.ticket.runHealthStuck = {
-            kind: workerStuck.kind,
-            reason: sanitizeTicketQuotaText(workerStuck.reason, options.redact) || "检测到任务执行停滞",
-            at: now,
-          };
-          scope.ticket.updatedAt = now;
-        }
+      const doc = (await tx.doc(RunHealthDoc, conversationId)) as RunHealthDocState;
+      if (!workerAction) {
+        return { applied: updater(doc, live.run), escalated: false };
       }
+      return applyWorkerHealthActionInTx(tx, {
+        conversationId,
+        doc,
+        action: workerAction,
+        getSettings: options.getSettings,
+        redact: options.redact,
+        applyDocUpdate: () => updater(doc, live.run),
+      });
     }, context);
+    if (result.skipWarning) options.onWarning?.(result.skipWarning);
+    if (result.escalated) options.onTicketChanged?.();
+    return result;
   };
 
   const resetCacheForSteer = (cache: RunHealthMemoryCache, inputCount: number, turns: number) => {
@@ -471,50 +507,88 @@ export function createRunHealthController(options: RunHealthExtensionOptions): R
             docDirty = true;
           }
 
+          const models = options.getModels?.() ?? api.models;
           let workerStuckUpdate: { kind: "doom_loop" | "judge_stuck"; reason: string } | undefined;
+          let layer1EscalationTrigger: ModelEscalationTrigger | undefined;
           if (evalAction === "brake" && evalBrakeReason) {
+            const safeBrakeReason = sanitizeEscalationText(evalBrakeReason, options.redact) || evalBrakeReason;
             if (!nextDoc.forceWrapUp || nextDoc.forceWrapUp.source === "turn_limit") {
-              nextDoc.forceWrapUp = { source: "doom_loop", reason: evalBrakeReason, setAtTurn: turns };
+              nextDoc.forceWrapUp = { source: "doom_loop", reason: safeBrakeReason, setAtTurn: turns };
               delete nextDoc.pendingGuidance;
               docDirty = true;
             }
             if (role === "worker") {
-              workerStuckUpdate = { kind: "doom_loop", reason: evalBrakeReason };
+              workerStuckUpdate = { kind: "doom_loop", reason: safeBrakeReason };
+              layer1EscalationTrigger = { layer: "layer1_doom_loop", action: "brake", reason: safeBrakeReason };
             }
           } else if (evalAction === "warn" && evalWarning && !nextDoc.forceWrapUp) {
+            const safeWarnDetail = sanitizeEscalationText(evalWarning.detail, options.redact) || evalWarning.detail;
             nextDoc.pendingGuidance = {
               source: "doom_loop", turn: turns, text: buildDeterministicWarningGuidance(role, evalWarning),
             };
             docDirty = true;
             if (role === "worker") {
-              workerStuckUpdate = { kind: "doom_loop", reason: evalWarning.detail };
+              workerStuckUpdate = { kind: "doom_loop", reason: safeWarnDetail };
+              layer1EscalationTrigger = { layer: "layer1_doom_loop", action: "warn", reason: safeWarnDetail };
             }
           } else if (
             nextDoc.pendingGuidance &&
             (nextDoc.pendingGuidance.source === "doom_loop" ||
+              (nextDoc.pendingGuidance.source === "escalation" &&
+                nextDoc.pendingGuidance.deliveredAtTurn !== undefined &&
+                turns >= nextDoc.pendingGuidance.deliveredAtTurn) ||
               (nextDoc.pendingGuidance.deliveredAtTurn !== undefined && turns > nextDoc.pendingGuidance.deliveredAtTurn))
           ) {
             delete nextDoc.pendingGuidance;
             docDirty = true;
           }
 
-          if (docDirty || workerStuckUpdate) {
-            await commitDocUpdate(
+          let escalatedThisTurn = false;
+          if (docDirty || workerStuckUpdate || layer1EscalationTrigger) {
+            const harness = options.getHarness();
+            const estimatedContextTokens =
+              layer1EscalationTrigger && options.getSettings && harness
+                ? await estimateConversationContextTokens(harness, api.conversationId, context)
+                : 0;
+            const committed = await commitDocUpdate(
               api.conversationId,
               (txDoc, liveRun) => {
                 if (!liveRun || Number(liveRun.first ?? assistant) !== runFirstEntryId) return false;
-                assignDocState(txDoc, nextDoc);
+                assignDocState(txDoc, nextDoc, !normalized.resetRun);
                 return true;
               },
               context,
-              workerStuckUpdate,
-            ).catch(() => {});
+              workerStuckUpdate || layer1EscalationTrigger
+                ? {
+                    ...(workerStuckUpdate ? { stuck: workerStuckUpdate } : {}),
+                    ...(layer1EscalationTrigger && options.getSettings
+                      ? {
+                          escalation: {
+                            trigger: layer1EscalationTrigger,
+                            turn: turns,
+                            estimatedContextTokens,
+                            models,
+                          },
+                        }
+                      : {}),
+                  }
+                : undefined,
+            ).catch(() => ({ applied: false, escalated: false }));
+            if (committed.escalated) {
+              escalatedThisTurn = true;
+              // Immediately reset Layer-1 doom-loop streak so the escalated strong model starts fresh.
+              cache.doomLoop = {
+                ...createEmptyDoomLoopState(),
+                dispatchedInRun: cache.doomLoop.dispatchedInRun,
+              };
+            }
           }
 
           // Layer 2: Fire-and-forget asynchronous health judge (NEVER awaited in afterTools).
           const effectiveTurns = Math.max(0, turns - (nextDoc.turnsAtLastUserInput ?? 0));
           const alreadyJudged = (nextDoc.judgedTurns ?? []).includes(turns) || cache.inFlightJudgeTurns.has(turns);
           const shouldLaunchJudge =
+            !escalatedThisTurn &&
             Boolean(budget.healthCheckInterval) &&
             effectiveTurns > 0 &&
             effectiveTurns % budget.healthCheckInterval! === 0 &&
@@ -528,7 +602,13 @@ export function createRunHealthController(options: RunHealthExtensionOptions): R
           const modelRef = agentDoc?.model ?? options.resolveFallbackModel?.();
           if (!modelRef) return;
 
-          const models = options.getModels?.() ?? api.models;
+          let expectedRunEpoch: number | undefined;
+          if (role === "worker") {
+            const stateSnap = await api.snapshot(KuloStateDoc, context);
+            const scope = resolveTicketExecutionScope(stateSnap, api.conversationId);
+            if (scope && !scope.isSubagent) expectedRunEpoch = scope.ticket.runEpoch;
+          }
+
           const trajectory = buildJudgeTrajectorySummary({
             role, turnsUsed: turns, effectiveTurnsSinceInput: effectiveTurns, maxTurns: budget.maxTurns,
             userGoal: cache.userGoal, recentTurns: cache.trajectoryTurns, doomLoop: cache.doomLoop,
@@ -548,7 +628,35 @@ export function createRunHealthController(options: RunHealthExtensionOptions): R
               });
               if (shutdownController.signal.aborted) return;
 
-              await commitDocUpdate(
+              const harness = options.getHarness();
+              const isWorkerStuck = role === "worker" && verdict?.verdict === "stuck";
+              const estimatedContextTokens =
+                isWorkerStuck && options.getSettings && harness
+                  ? await estimateConversationContextTokens(harness, convId, BACKGROUND_CONTEXT)
+                  : 0;
+              const safeVerdictReason = verdict
+                ? sanitizeEscalationText(verdict.reason, options.redact) || "检测到任务执行停滞"
+                : "";
+
+              const judgeWorkerAction: WorkerHealthCommitAction | undefined =
+                role === "worker" && (expectedRunEpoch !== undefined || isWorkerStuck)
+                  ? {
+                      ...(expectedRunEpoch !== undefined ? { expectedRunEpoch, requireRunningTicket: true } : {}),
+                      ...(isWorkerStuck
+                        ? {
+                            stuck: { kind: "judge_stuck" as const, reason: safeVerdictReason },
+                            escalation: {
+                              trigger: { layer: "layer2_judge" as const, verdict: "stuck" as const, reason: verdict.reason },
+                              turn: judgedTurn,
+                              estimatedContextTokens,
+                              models,
+                            },
+                          }
+                        : {}),
+                    }
+                  : undefined;
+
+              const committed = await commitDocUpdate(
                 convId,
                 (txDoc, liveRun) => {
                   if (!liveRun || Number(liveRun.first ?? assistant) !== runFirstEntryId) return false;
@@ -558,18 +666,29 @@ export function createRunHealthController(options: RunHealthExtensionOptions): R
                   txDoc.judgedTurns = [...judged].sort((a, b) => a - b);
                   if (!verdict || verdict.verdict === "healthy") return true;
                   if (verdict.verdict === "stuck") {
-                    txDoc.forceWrapUp = { source: "judge_stuck", reason: verdict.reason, setAtTurn: judgedTurn };
+                    txDoc.forceWrapUp = { source: "judge_stuck", reason: safeVerdictReason, setAtTurn: judgedTurn };
                     delete txDoc.pendingGuidance;
                   } else if (verdict.verdict === "handoff_or_wrap" && !txDoc.forceWrapUp) {
-                    txDoc.pendingGuidance = { source: "judge", turn: judgedTurn, text: buildJudgeGuidance(role, verdict) };
+                    txDoc.pendingGuidance = {
+                      source: "judge",
+                      turn: judgedTurn,
+                      text: sanitizeEscalationText(buildJudgeGuidance(role, verdict), options.redact, 600),
+                    };
                   }
                   return true;
                 },
                 BACKGROUND_CONTEXT,
-                role === "worker" && verdict?.verdict === "stuck"
-                  ? { kind: "judge_stuck", reason: verdict.reason }
-                  : undefined,
+                judgeWorkerAction,
               );
+              if (committed.escalated) {
+                const currentCache = caches.get(convNum);
+                if (currentCache && currentCache.runFirstEntryId === runFirstEntryId) {
+                  currentCache.doomLoop = {
+                    ...createEmptyDoomLoopState(),
+                    dispatchedInRun: currentCache.doomLoop.dispatchedInRun,
+                  };
+                }
+              }
             } catch {
               // Strict fail-open: never surface errors from detached judge persistence.
             } finally {
@@ -648,7 +767,7 @@ export function createRunHealthController(options: RunHealthExtensionOptions): R
               api.conversationId,
               (txDoc, liveRun) => {
                 if (!liveRun || Number(liveRun.first ?? 0) !== runFirstEntryId) return false;
-                assignDocState(txDoc, state);
+                assignDocState(txDoc, state, !normalized.resetRun);
                 return true;
               },
               context,
@@ -743,6 +862,31 @@ export function createRunHealthController(options: RunHealthExtensionOptions): R
     },
     async waitForPendingJudges() {
       while (pendingJudges.size > 0) await Promise.allSettled([...pendingJudges]);
+    },
+    async onTicketSettled(ticketId: string, context: Context = BACKGROUND_CONTEXT) {
+      const harness = options.getHarness();
+      if (!harness || shutdownController.signal.aborted) return;
+      try {
+        const res = await harness.commit(async (tx) => {
+          const settled = await clearSettledTicketEscalationInTx(tx, ticketId);
+          if (settled.workerConversationId !== undefined) {
+            const doc = (await tx.doc(
+              RunHealthDoc,
+              settled.workerConversationId as ConversationId,
+            )) as RunHealthDocState;
+            delete doc.escalation;
+            delete doc.lastEscalationSkip;
+            delete doc.forceWrapUp;
+            delete doc.pendingGuidance;
+          }
+          return settled;
+        }, context);
+        if (res.workerConversationId !== undefined) {
+          caches.delete(res.workerConversationId);
+        }
+      } catch {
+        // Best-effort terminal cleanup; never interferes with ticket settlement.
+      }
     },
   };
 }

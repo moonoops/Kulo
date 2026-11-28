@@ -27,6 +27,7 @@ import { redactCredentialData } from "./credential-redaction.js";
 import { BUILTIN_MEMORY_DISPLAY_REDACTED_TOOLS, MemoryContextRevocationEntry } from "./builtin-memory-entries.js";
 import { isContextSyncEntry } from "./recent-work-sync.js";
 import { resolveResponseContext } from "./response-context.js";
+import { RunHealthEscalationEntry } from "./run-health-escalation.js";
 import { nativeSearchEvidence, sanitizeSearchSources, selectCitedSources } from "./search-sources.js";
 import {
   CoordinatorEventEntry,
@@ -75,6 +76,9 @@ export function entryTimestamp(entry: EntryRecord): number | undefined {
   }
   if (VoiceCallSummaryEntry.is(entry) && typeof entry.data.endedAt === "number" && Number.isFinite(entry.data.endedAt)) {
     return entry.data.endedAt;
+  }
+  if (RunHealthEscalationEntry.is(entry) && typeof entry.data.at === "number" && Number.isFinite(entry.data.at)) {
+    return entry.data.at;
   }
   return undefined;
 }
@@ -168,6 +172,16 @@ export function summarizeEntryForInspect(entry: EntryRecord): WorkerInspectEntry
       id,
       kind: "compaction",
       summary: "已压缩早期上下文",
+      ...(createdAt ? { createdAt } : {}),
+    };
+  }
+
+  if (RunHealthEscalationEntry.is(entry)) {
+    const text = typeof entry.data.text === "string" && entry.data.text.trim() ? entry.data.text.trim() : "已自动升级模型";
+    return {
+      id,
+      kind: "other",
+      summary: text,
       ...(createdAt ? { createdAt } : {}),
     };
   }
@@ -317,6 +331,19 @@ export function extractDisplayMessages(
         text: "已压缩早期上下文",
         ...(createdAt ? { createdAt } : {}),
       });
+      continue;
+    }
+
+    if (RunHealthEscalationEntry.is(entry)) {
+      const text = redactToolText(String(entry.data.text ?? "")).trim();
+      if (text) {
+        items.push({
+          id: Number(entry.id),
+          role: "system_note",
+          text,
+          ...(createdAt !== undefined ? { createdAt } : {}),
+        });
+      }
       continue;
     }
 

@@ -65,6 +65,14 @@ export function toTicketCardView(
     ...(ticket.providerOverride ? { providerOverride: ticket.providerOverride } : {}),
     ...(ticket.modelOverride ? { modelOverride: ticket.modelOverride } : {}),
     ...(ticket.thinkingOverride ? { thinkingOverride: ticket.thinkingOverride } : {}),
+    ...(ticket.modelEscalation
+      ? {
+          modelEscalation: {
+            ...ticket.modelEscalation,
+            escalatedModel: { ...ticket.modelEscalation.escalatedModel },
+          },
+        }
+      : {}),
     ...(ticket.quotaPause ? { quotaPause: { ...ticket.quotaPause } } : {}),
     ...(ticket.runHealthStuck ? { runHealthStuck: { ...ticket.runHealthStuck } } : {}),
     ...(hasPendingWorkspaceApply(ticket) ? { pendingWorkspaceApply: true } : {}),

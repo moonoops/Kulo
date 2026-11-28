@@ -365,7 +365,8 @@ export function areInternalRolesAtDefaults(
       (actual.provider?.trim() || undefined) !== def.provider ||
       (actual.modelId?.trim() || undefined) !== def.modelId ||
       (actual.serviceTier?.trim() || undefined) !== def.serviceTier ||
-      (actual.thinkingLevel ?? "auto") !== (def.thinkingLevel ?? "auto")
+      (actual.thinkingLevel ?? "auto") !== (def.thinkingLevel ?? "auto") ||
+      Boolean(actual.escalationModel)
     ) {
       return false;
     }

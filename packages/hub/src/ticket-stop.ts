@@ -178,6 +178,7 @@ export async function admitTicketStopInTx(
   t.waiting = undefined;
   delete t.quotaPause;
   delete t.runHealthStuck;
+  delete t.modelEscalation;
   if (t.schedule) t.schedule.nextRunAt = null;
   if (params.deleteSchedule) {
     if (!t.schedule) throw new ProjectError(404, "schedule_not_found", "定时任务不存在。");

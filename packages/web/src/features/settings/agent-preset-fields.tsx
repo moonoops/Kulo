@@ -15,9 +15,41 @@ import { formatExternalClientTarget, roleExternalClientId, switchRoleEngine } fr
 import { ROLE_EFFORT_OPTIONS, clampModelEffort, effortLabel, modelEffortOptions, selectedDefaultProvider, type ProviderModelGroup } from "./settings-helpers";
 
 const DEFAULT_MODEL_KEY = "__default__";
+const ESCALATION_DISABLED_KEY = "__disabled__";
 const BUILTIN_ENGINE_KEY = "__builtin__";
 const EXTERNAL_DEFAULT_MODEL_KEY = "__client_default__";
 const EXTERNAL_DEFAULT_TIER_KEY = "__client_default__";
+
+export function applyEscalationModelChange(
+  value: RolePreset,
+  key: string,
+  groups: readonly ProviderModelGroup[],
+): RolePreset {
+  if (!key || key === ESCALATION_DISABLED_KEY) {
+    const next = { ...value };
+    delete next.escalationModel;
+    return next;
+  }
+  const separator = key.indexOf("::");
+  if (separator <= 0) return value;
+  const provider = key.slice(0, separator).trim();
+  const nextModelId = key.slice(separator + 2).trim();
+  if (!provider || !nextModelId) return value;
+  const nextModel = groups.find((group) => group.providerId === provider)?.models.find((item) => item.id === nextModelId);
+  const prevThinking = value.escalationModel?.thinkingLevel;
+  const clampedThinking =
+    prevThinking && prevThinking !== "auto" && nextModel
+      ? clampModelEffort(prevThinking, nextModel)
+      : prevThinking;
+  return {
+    ...value,
+    escalationModel: {
+      provider,
+      modelId: nextModelId,
+      ...(clampedThinking ? { thinkingLevel: clampedThinking } : {}),
+    },
+  };
+}
 
 export function applyExternalModelChange(
   value: RolePreset,
@@ -123,6 +155,13 @@ export function AgentPresetFields({
   const selectedModelKey = modelId ? `${providerId}::${modelId}` : DEFAULT_MODEL_KEY;
   const inGroups = groups.some((group) => group.providerId === providerId && group.models.some((model) => model.id === modelId));
   const model = groups.find((group) => group.providerId === providerId)?.models.find((item) => item.id === (modelId || defaultModel?.defaultModel));
+  const escalationProvider = value.escalationModel?.provider?.trim() || "";
+  const escalationModelId = value.escalationModel?.modelId?.trim() || "";
+  const selectedEscalationKey =
+    escalationProvider && escalationModelId ? `${escalationProvider}::${escalationModelId}` : ESCALATION_DISABLED_KEY;
+  const escalationInGroups =
+    Boolean(escalationProvider && escalationModelId) &&
+    groups.some((group) => group.providerId === escalationProvider && group.models.some((item) => item.id === escalationModelId));
 
   const externalModels = resolvedExternalClient?.models ?? [];
   const externalKind = resolvedExternalClient?.kind ?? value.external?.kind;
@@ -351,6 +390,47 @@ export function AgentPresetFields({
               </ListBox.Item>)}</ListBox>
             </Select.Popover>
           </Select>
+        )}
+        {!isExternal && (
+          <div className="kulo-settings-list">
+            <Select
+              variant="primary"
+              value={selectedEscalationKey}
+              onChange={(key) => onChange(applyEscalationModelChange(value, String(key ?? ESCALATION_DISABLED_KEY), groups))}
+              fullWidth
+              className="kulo-settings-row"
+            >
+              <Label className="text-sm text-foreground">{t("遇卡升级模型", "Auto-escalate model")}</Label>
+              <Select.Trigger><Select.Value className="truncate" /><Select.Indicator /></Select.Trigger>
+              <Select.Popover>
+                <ListBox>
+                  <ListBox.Item id={ESCALATION_DISABLED_KEY} textValue={t("关闭", "Off")}>
+                    {t("关闭", "Off")}
+                    <ListBox.ItemIndicator />
+                  </ListBox.Item>
+                  {!escalationInGroups && escalationModelId && (
+                    <ListBox.Item id={selectedEscalationKey} textValue={escalationModelId}>
+                      <span className="min-w-0 whitespace-normal break-all">
+                        {groups.length > 0 ? t(`${escalationModelId}（未添加）`, `${escalationModelId} (not added)`) : escalationModelId}
+                      </span>
+                      <ListBox.ItemIndicator />
+                    </ListBox.Item>
+                  )}
+                  {groups.map((group) => (
+                    <ListBox.Section key={group.providerId}>
+                      <Header>{group.label}</Header>
+                      {group.models.map((item) => (
+                        <ListBox.Item key={item.id} id={`${group.providerId}::${item.id}`} textValue={item.id}>
+                          <span className="min-w-0 whitespace-normal break-all">{item.id}</span>
+                          <ListBox.ItemIndicator />
+                        </ListBox.Item>
+                      ))}
+                    </ListBox.Section>
+                  ))}
+                </ListBox>
+              </Select.Popover>
+            </Select>
+          </div>
         )}
         {showServiceTier && (
           <Select

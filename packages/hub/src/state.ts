@@ -768,6 +768,7 @@ export function closeSettledTicketsForDeletedTopic(
     ticket.waiting = undefined;
     delete ticket.quotaPause;
     delete ticket.runHealthStuck;
+    delete ticket.modelEscalation;
     ticket.activeTaskId = undefined;
     ticket.resumePrompt = undefined;
     ticket.resumeAttachmentIds = undefined;

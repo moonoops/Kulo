@@ -65,6 +65,12 @@ export const CUSTOM_PROVIDER_APIS = [
 
 export type CustomProviderApi = (typeof CUSTOM_PROVIDER_APIS)[number];
 
+export interface RoleEscalationModel {
+  provider: string;
+  modelId: string;
+  thinkingLevel?: RoleThinkingEffort;
+}
+
 export interface RolePreset {
   id: string;
   label: string;
@@ -79,6 +85,8 @@ export interface RolePreset {
   provider?: string;
   modelId?: string;
   thinkingLevel?: RoleThinkingEffort;
+  /** Optional one-way auto-escalation model for built-in Workers when stuck (disabled when omitted). */
+  escalationModel?: RoleEscalationModel;
   serviceTier?: string;
   externalClientId?: string;
   external?: import("./external-agents.js").ExternalAgentBinding;

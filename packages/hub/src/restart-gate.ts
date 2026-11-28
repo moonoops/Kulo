@@ -448,6 +448,14 @@ export function applyTicketRestartDecision(
   now: number,
   redact?: (text: string) => string,
 ): void {
+  if (
+    !ticket.providerOverride &&
+    !ticket.modelOverride &&
+    ticket.modelEscalation &&
+    ticket.modelEscalation.runEpoch === ticket.runEpoch - 1
+  ) {
+    ticket.modelEscalation = { ...ticket.modelEscalation, runEpoch: ticket.runEpoch };
+  }
   if (decision.action === "auto_resume") {
     ticket.waiting ??= { reason: "env", since: now, detail: decision.waitingDetail };
     return;

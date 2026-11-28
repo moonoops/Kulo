@@ -614,9 +614,17 @@ export class TicketQuotaResumeService {
       }
 
       const now = Date.now();
+      const prevEpoch = live.runEpoch;
+      const preserveEscalation =
+        !live.externalExecution &&
+        reqProvider === undefined &&
+        reqModelId === undefined &&
+        !live.providerOverride &&
+        !live.modelOverride &&
+        live.modelEscalation?.runEpoch === prevEpoch;
       delete live.quotaPause;
       delete live.runHealthStuck;
-      delete live.modelEscalation;
+      if (!preserveEscalation) delete live.modelEscalation;
       live.recovery = undefined;
       live.autoRecoverySuppressed = undefined;
       live.updatedAt = now;
@@ -645,6 +653,9 @@ export class TicketQuotaResumeService {
       }
 
       const nextEpoch = live.runEpoch + 1;
+      if (preserveEscalation && live.modelEscalation) {
+        live.modelEscalation = { ...live.modelEscalation, runEpoch: nextEpoch };
+      }
       if (live.externalExecution) {
         delete live.externalExecution.runId;
         delete live.externalExecution.pendingPermissions;

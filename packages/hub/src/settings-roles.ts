@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import {
   EXTERNAL_AGENT_KINDS,
   externalClientConnectionId,
@@ -16,6 +17,7 @@ import {
   type ExternalAgentModelInfo,
   type ExternalClientConnection,
   type ModelGatewayConfig,
+  type RoleEscalationModel,
   type RolePreset,
   type RoleThinkingEffort,
 } from "@kulo/protocol";
@@ -50,7 +52,10 @@ export interface RolesBlockUpdateOptions {
   upsertClients?: Record<string, ExternalClientConnection>;
   removeClientIds?: readonly string[];
   summaryOverride?: string;
+  hasModel?: (provider: string, modelId: string) => boolean;
 }
+
+const BUILTIN_PROVIDERS_BY_ID = new Map(builtinProviders().map((provider) => [provider.id, provider]));
 
 function cleanJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -134,6 +139,146 @@ export function assertConversationModelSelection(
   }
 }
 
+function parseRoleEscalationModel(raw: unknown, roleId: string): RoleEscalationModel | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new SettingsUpdateError(400, `角色 "${roleId}" 的遇卡升级模型配置无效。`);
+  }
+  const rec = raw as Record<string, unknown>;
+  if (Object.keys(rec).some((key) => key !== "provider" && key !== "modelId" && key !== "thinkingLevel")) {
+    throw new SettingsUpdateError(400, `角色 "${roleId}" 的遇卡升级模型包含无效字段。`);
+  }
+  const provider = typeof rec.provider === "string" ? rec.provider.trim() : "";
+  const modelId = typeof rec.modelId === "string" ? rec.modelId.trim() : "";
+  if (!provider && !modelId) return undefined;
+  if (!provider || !modelId) {
+    throw new SettingsUpdateError(400, `角色 "${roleId}" 的遇卡升级模型必须同时指定服务商和模型 ID。`);
+  }
+  if (
+    provider.length > 120 ||
+    /[\x00-\x1f]/.test(provider) ||
+    modelId.length > 200 ||
+    /[\x00-\x1f]/.test(modelId)
+  ) {
+    throw new SettingsUpdateError(400, `角色 "${roleId}" 的遇卡升级模型标识格式无效。`);
+  }
+  const rawThinking = rec.thinkingLevel;
+  const thinkingLevel =
+    rawThinking !== undefined && rawThinking !== null && String(rawThinking).trim() !== ""
+      ? parseRoleThinking(rawThinking, "auto")
+      : undefined;
+  return {
+    provider,
+    modelId,
+    ...(thinkingLevel ? { thinkingLevel } : {}),
+  };
+}
+
+export function assertValidEscalationModel(
+  config: ModelGatewayConfig,
+  escalationModel: RoleEscalationModel,
+  roleId: string,
+  hasModel?: (provider: string, modelId: string) => boolean,
+): void {
+  const provider = escalationModel.provider.trim();
+  const modelId = escalationModel.modelId.trim();
+  assertConversationModelSelection(config, provider, modelId);
+  if (hasModel?.(provider, modelId)) return;
+
+  if (provider === "kulo-gateway") {
+    if (config.gatewayDisabled) {
+      throw new SettingsUpdateError(400, `默认网关已停用，角色 "${roleId}" 不能使用「${provider}/${modelId}」作为遇卡升级模型。`);
+    }
+    const matchesGateway = Boolean(config.gatewayModels?.some((m) => m.id === modelId));
+    const matchesDefault =
+      (!config.defaultProvider?.trim() || config.defaultProvider.trim() === "kulo-gateway") &&
+      config.defaultModel.trim() === modelId;
+    if (!matchesGateway && !matchesDefault) {
+      throw new SettingsUpdateError(400, `角色 "${roleId}" 的遇卡升级模型「${provider}/${modelId}」不存在。`);
+    }
+    return;
+  }
+
+  const customProvider = config.customProviders?.find((entry) => entry.id === provider);
+  if (customProvider) {
+    if (!customProvider.models.some((m) => m.id === modelId)) {
+      throw new SettingsUpdateError(400, `服务商「${provider}」中不存在遇卡升级模型「${modelId}」。`);
+    }
+    return;
+  }
+
+  const builtin = BUILTIN_PROVIDERS_BY_ID.get(provider);
+  const subscriptionModels =
+    config.subscriptionModels && Object.hasOwn(config.subscriptionModels, provider)
+      ? config.subscriptionModels[provider]
+      : undefined;
+  if (subscriptionModels) {
+    const existsInSub = subscriptionModels.some((m) => m.id === modelId);
+    const existsInBuiltin = Boolean(builtin?.getModels().some((m) => m.id === modelId));
+    if (!existsInSub && !existsInBuiltin) {
+      throw new SettingsUpdateError(400, `订阅服务商「${provider}」中不存在遇卡升级模型「${modelId}」。`);
+    }
+    return;
+  }
+
+  if (builtin) {
+    const existsInBuiltin = Boolean(builtin.getModels().some((m) => m.id === modelId));
+    const matchesDefault = config.defaultProvider?.trim() === provider && config.defaultModel.trim() === modelId;
+    if (!existsInBuiltin && !matchesDefault) {
+      throw new SettingsUpdateError(400, `服务商「${provider}」中不存在遇卡升级模型「${modelId}」。`);
+    }
+    return;
+  }
+
+  throw new SettingsUpdateError(400, `角色 "${roleId}" 的遇卡升级模型指向了不存在的服务商「${provider}」。`);
+}
+
+function isRemovedModelReference(
+  explicitProvider: string | undefined,
+  modelId: string | undefined,
+  prevModel: ModelGatewayConfig,
+  nextModel: ModelGatewayConfig,
+  prevCustomById: ReadonlyMap<string, NonNullable<ModelGatewayConfig["customProviders"]>[number]>,
+  nextCustomById: ReadonlyMap<string, NonNullable<ModelGatewayConfig["customProviders"]>[number]>,
+  prevGatewayModels: ReadonlySet<string>,
+  nextGatewayChatModels: ReadonlySet<string>,
+): boolean {
+  if (!explicitProvider && !modelId) return false;
+  if (explicitProvider === "kulo-gateway") {
+    if (nextModel.gatewayDisabled) return true;
+    return Boolean(modelId && prevGatewayModels.has(modelId) && !nextGatewayChatModels.has(modelId));
+  }
+  if (explicitProvider && prevCustomById.has(explicitProvider)) {
+    const prevCustom = prevCustomById.get(explicitProvider)!;
+    const nextCustom = nextCustomById.get(explicitProvider);
+    if (!nextCustom) return true;
+    return Boolean(
+      modelId &&
+        prevCustom.models.some((m) => m.id === modelId) &&
+        !nextCustom.models.some((m) => m.id === modelId && isConversationModel(m)),
+    );
+  }
+  if (
+    explicitProvider &&
+    modelId &&
+    prevModel.subscriptionModels &&
+    Object.hasOwn(prevModel.subscriptionModels, explicitProvider) &&
+    prevModel.subscriptionModels[explicitProvider]!.some((m) => m.id === modelId)
+  ) {
+    const nextSub =
+      nextModel.subscriptionModels && Object.hasOwn(nextModel.subscriptionModels, explicitProvider)
+        ? nextModel.subscriptionModels[explicitProvider]
+        : undefined;
+    return Boolean(nextSub && !nextSub.some((m) => m.id === modelId && isConversationModel(m)));
+  }
+  if (!explicitProvider && modelId) {
+    const prevImplicitProvider =
+      prevModel.defaultProvider?.trim() || (!prevModel.gatewayDisabled ? "kulo-gateway" : "");
+    return prevImplicitProvider === "kulo-gateway" && Boolean(nextModel.gatewayDisabled);
+  }
+  return false;
+}
+
 export function cleanupRemovedRoleModels(
   roles: Record<string, RolePreset>,
   prevModel: ModelGatewayConfig,
@@ -149,55 +294,37 @@ export function cleanupRemovedRoleModels(
 
   for (const role of Object.values(roles)) {
     if (role.external) continue;
-    const explicitProvider = role.provider?.trim();
-    const modelId = role.modelId?.trim();
-    if (!explicitProvider && !modelId) continue;
-
-    let shouldClear = false;
-    if (explicitProvider === "kulo-gateway") {
-      if (nextModel.gatewayDisabled) {
-        shouldClear = true;
-      } else if (modelId && prevGatewayModels.has(modelId) && !nextGatewayChatModels.has(modelId)) {
-        shouldClear = true;
-      }
-    } else if (explicitProvider && prevCustomById.has(explicitProvider)) {
-      const prevCustom = prevCustomById.get(explicitProvider)!;
-      const nextCustom = nextCustomById.get(explicitProvider);
-      if (!nextCustom) {
-        shouldClear = true;
-      } else if (
-        modelId &&
-        prevCustom.models.some((m) => m.id === modelId) &&
-        !nextCustom.models.some((m) => m.id === modelId && isConversationModel(m))
-      ) {
-        shouldClear = true;
-      }
-    } else if (
-      explicitProvider &&
-      modelId &&
-      prevModel.subscriptionModels &&
-      Object.hasOwn(prevModel.subscriptionModels, explicitProvider) &&
-      prevModel.subscriptionModels[explicitProvider]!.some((m) => m.id === modelId)
+    if (
+      isRemovedModelReference(
+        role.provider?.trim(),
+        role.modelId?.trim(),
+        prevModel,
+        nextModel,
+        prevCustomById,
+        nextCustomById,
+        prevGatewayModels,
+        nextGatewayChatModels,
+      )
     ) {
-      const nextSub =
-        nextModel.subscriptionModels && Object.hasOwn(nextModel.subscriptionModels, explicitProvider)
-          ? nextModel.subscriptionModels[explicitProvider]
-          : undefined;
-      if (nextSub && !nextSub.some((m) => m.id === modelId && isConversationModel(m))) {
-        shouldClear = true;
-      }
-    } else if (!explicitProvider && modelId) {
-      const prevImplicitProvider =
-        prevModel.defaultProvider?.trim() || (!prevModel.gatewayDisabled ? "kulo-gateway" : "");
-      if (prevImplicitProvider === "kulo-gateway" && nextModel.gatewayDisabled) {
-        shouldClear = true;
-      }
-    }
-
-    if (shouldClear) {
       delete role.provider;
       delete role.modelId;
       role.thinkingLevel = "auto";
+      changed = true;
+    }
+    if (
+      role.escalationModel &&
+      isRemovedModelReference(
+        role.escalationModel.provider?.trim(),
+        role.escalationModel.modelId?.trim(),
+        prevModel,
+        nextModel,
+        prevCustomById,
+        nextCustomById,
+        prevGatewayModels,
+        nextGatewayChatModels,
+      )
+    ) {
+      delete role.escalationModel;
       changed = true;
     }
   }
@@ -211,17 +338,31 @@ export function normalizeRoleThinkingSelections(
   let changed = false;
   for (const role of Object.values(roles)) {
     if (role.external) continue;
-    if (!role.thinkingLevel || role.thinkingLevel === "auto") continue;
-    const model = configuredModel(config, role.provider, role.modelId || config.defaultModel);
-    const next =
-      model?.reasoning === false || model?.thinkingEnabled === false
-        ? "off"
-        : isValidThinkingSelection(model, role.thinkingLevel)
-          ? role.thinkingLevel
-          : "auto";
-    if (role.thinkingLevel !== next) {
-      role.thinkingLevel = next;
-      changed = true;
+    if (role.thinkingLevel && role.thinkingLevel !== "auto") {
+      const model = configuredModel(config, role.provider, role.modelId || config.defaultModel);
+      const next =
+        model?.reasoning === false || model?.thinkingEnabled === false
+          ? "off"
+          : isValidThinkingSelection(model, role.thinkingLevel)
+            ? role.thinkingLevel
+            : "auto";
+      if (role.thinkingLevel !== next) {
+        role.thinkingLevel = next;
+        changed = true;
+      }
+    }
+    if (role.escalationModel?.thinkingLevel && role.escalationModel.thinkingLevel !== "auto") {
+      const escModel = configuredModel(config, role.escalationModel.provider, role.escalationModel.modelId);
+      const nextEsc =
+        escModel?.reasoning === false || escModel?.thinkingEnabled === false
+          ? "off"
+          : isValidThinkingSelection(escModel, role.escalationModel.thinkingLevel)
+            ? role.escalationModel.thinkingLevel
+            : "auto";
+      if (role.escalationModel.thinkingLevel !== nextEsc) {
+        role.escalationModel.thinkingLevel = nextEsc;
+        changed = true;
+      }
     }
   }
   return changed;
@@ -534,6 +675,7 @@ export function applyRolesBlockUpdate(
     }
     const provider = typeof r.provider === "string" && r.provider.trim() ? r.provider.trim() : undefined;
     const serviceTier = external ? parseExternalServiceTier(r.serviceTier) : undefined;
+    const escalationModel = external ? undefined : parseRoleEscalationModel(r.escalationModel, roleId);
     nextRoles[roleId] = {
       id: roleId,
       label,
@@ -547,6 +689,7 @@ export function applyRolesBlockUpdate(
       ...(external ? { external: cleanJson(external) } : {}),
       ...(dispatchPolicy ? { dispatchPolicy } : {}),
       ...(typeof r.modelId === "string" && r.modelId.trim() ? { modelId: r.modelId.trim() } : {}),
+      ...(escalationModel ? { escalationModel } : {}),
       ...(serviceTier ? { serviceTier } : {}),
       thinkingLevel: external ? parseExternalRoleThinking(r.thinkingLevel) : parseRoleThinking(r.thinkingLevel, "auto"),
     };
@@ -578,7 +721,12 @@ export function applyRolesBlockUpdate(
     throw new SettingsUpdateError(400, "至少需要保留一个启用状态的 Worker 角色。");
   }
   for (const role of roleValues) {
-    if (!role.external) assertConversationModelSelection(doc.model, role.provider, role.modelId || doc.model.defaultModel);
+    if (!role.external) {
+      assertConversationModelSelection(doc.model, role.provider, role.modelId || doc.model.defaultModel);
+      if (role.escalationModel) {
+        assertValidEscalationModel(doc.model, role.escalationModel, role.id, options.hasModel);
+      }
+    }
   }
   doc.roles = nextRoles;
   if (

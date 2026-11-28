@@ -251,7 +251,8 @@ export async function admitTicketSteerInTx(
     t.waiting = { reason: "env", since: Date.now(), detail: t.cleanupPending ? "等待确认旧执行已清理" : "等待执行设备上线" };
     return { card: toTicketCardView(t, activeRoles), created: false, injected: false };
   }
-  const nextEpoch = t.runEpoch + 1;
+  const prevEpoch = t.runEpoch;
+  const nextEpoch = prevEpoch + 1;
   if (t.externalExecution) {
     delete t.externalExecution.runId;
     delete t.externalExecution.pendingPermissions;
@@ -262,6 +263,15 @@ export async function admitTicketSteerInTx(
     { ownership: { kind: "conversation" }, conversationId: (t.originConversationId ?? Number(ROOT_CONVERSATION_ID)) as ConversationId, background: true },
   );
   t.runEpoch = nextEpoch;
+  if (
+    !t.externalExecution &&
+    !t.providerOverride &&
+    !t.modelOverride &&
+    t.modelEscalation &&
+    t.modelEscalation.runEpoch === prevEpoch
+  ) {
+    t.modelEscalation = { ...t.modelEscalation, runEpoch: nextEpoch };
+  }
   const priorMode = state.ticketExecutionModes?.[t.id]?.mode;
   const resolvedMode = input.resolveExecutionMode ? input.resolveExecutionMode(t) : priorMode;
   if (resolvedMode) {
@@ -355,6 +365,7 @@ export async function admitTicketCloseInTx(
   transitionTicketStatus(t, "closed", now);
   delete t.quotaPause;
   delete t.runHealthStuck;
+  delete t.modelEscalation;
   settlePendingSubagentsInTx(state, t.id, now);
   if (t.schedule) t.schedule.nextRunAt = null;
   releaseProjectWrite(state, t.id, { force: !t.cleanupPending });
@@ -424,6 +435,15 @@ export async function admitParkTicketStartInTx(
     return false;
   }
   t.runEpoch = nextEpoch;
+  if (
+    !t.externalExecution &&
+    !t.providerOverride &&
+    !t.modelOverride &&
+    t.modelEscalation &&
+    t.modelEscalation.runEpoch === expectedEpoch
+  ) {
+    t.modelEscalation = { ...t.modelEscalation, runEpoch: nextEpoch };
+  }
   if (state.ticketExecutionModes?.[ticketId]) {
     state.ticketExecutionModes[ticketId] = { runEpoch: nextEpoch, mode: state.ticketExecutionModes[ticketId]!.mode };
   }

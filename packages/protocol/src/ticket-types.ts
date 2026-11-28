@@ -237,6 +237,7 @@ export interface TicketCardView {
   providerOverride?: string;
   modelOverride?: string;
   thinkingOverride?: import("./domain.js").RoleThinkingEffort;
+  modelEscalation?: TicketModelEscalation;
   quotaPause?: TicketQuotaPause;
   runHealthStuck?: TicketRunHealthStuck;
   pendingWorkspaceApply?: boolean;

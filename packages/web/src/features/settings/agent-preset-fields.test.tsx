@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { ExternalClientConnection, KuloSettingsView, RolePreset } from "@kulo/protocol";
-import { AgentPresetFields, applyExternalModelChange } from "./agent-preset-fields";
+import { AgentPresetFields, applyEscalationModelChange, applyExternalModelChange } from "./agent-preset-fields";
 import { SETTINGS_MODULES, toProviderModelItem, type ProviderModelGroup } from "./settings-helpers";
 
 const defaultModel: KuloSettingsView["blocks"]["model"]["value"] = {
@@ -38,14 +38,15 @@ describe("agent settings fields", () => {
     const edit = renderFields();
     const create = renderFields({ isCreating: true });
     for (const html of [edit, create]) {
-      for (const label of ["智能体名称", "只读模式", "允许子智能体", "智能体模型", "默认思考强度", "负责任务", "智能体系统提示词"]) {
+      for (const label of ["智能体名称", "只读模式", "允许子智能体", "智能体模型", "默认思考强度", "遇卡升级模型", "负责任务", "智能体系统提示词"]) {
         expect(html).toContain(label);
       }
       expect(html).toContain(agent.label);
       expect(html).toContain(agent.whenToUse);
       expect(html).toContain(agent.prompt);
       expect(html.match(/role="switch"/g)).toHaveLength(2);
-      expect(html.match(/aria-haspopup="listbox"/g)).toHaveLength(2);
+      expect(html.match(/aria-haspopup="listbox"/g)).toHaveLength(3);
+      expect(html).toContain("kulo-settings-row");
       expect(html).not.toContain('role="radio');
     }
     expect(create).toContain("智能体标识");
@@ -143,5 +144,39 @@ describe("agent settings fields", () => {
       <AgentPresetFields value={{ ...agyRole, modelId: undefined, thinkingLevel: "xhigh" }} onChange={() => {}} externalClient={unknownClient} />,
     );
     expect(unknownHtml).toContain("默认思考强度");
+    expect(unknownHtml).not.toContain("遇卡升级模型");
+  });
+
+  it("shows optional one-way auto-escalation selector only for built-in roles, defaults to off, and updates cleanly", () => {
+    const strongGroups: ProviderModelGroup[] = [
+      ...groups,
+      {
+        providerId: "anthropic-cloud",
+        label: "Anthropic",
+        models: [toProviderModelItem({ id: "claude-opus-4", reasoning: true })],
+      },
+    ];
+    const defaultHtml = renderFields({ availableGroups: strongGroups });
+    expect(defaultHtml).toContain("遇卡升级模型");
+    expect(defaultHtml).toContain("关闭");
+    expect(defaultHtml).toContain("kulo-settings-row");
+
+    // Selecting an escalation model populates escalationModel
+    const escalated = applyEscalationModelChange(agent, "anthropic-cloud::claude-opus-4", strongGroups);
+    expect(escalated.escalationModel).toEqual({
+      provider: "anthropic-cloud",
+      modelId: "claude-opus-4",
+    });
+
+    const configuredHtml = renderFields({ value: escalated, availableGroups: strongGroups });
+    expect(configuredHtml).toContain("claude-opus-4");
+
+    // Preserves saved escalationModel when model catalog is unavailable
+    const offlineHtml = renderFields({ value: escalated, availableGroups: [] });
+    expect(offlineHtml).toContain("claude-opus-4");
+
+    // Disabling clears escalationModel back to undefined
+    const disabled = applyEscalationModelChange(escalated, "__disabled__", strongGroups);
+    expect(disabled.escalationModel).toBeUndefined();
   });
 });

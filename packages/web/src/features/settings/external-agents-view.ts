@@ -63,6 +63,7 @@ export function switchRoleEngine(
     };
     delete next.provider;
     delete next.modelId;
+    delete next.escalationModel;
     delete next.serviceTier;
     delete next.externalClientId;
     delete next.external;
@@ -77,6 +78,7 @@ export function switchRoleEngine(
     thinkingLevel: previousClientId === client.id ? (role.thinkingLevel ?? "auto") : "auto",
   };
   delete next.provider;
+  delete next.escalationModel;
   if (previousClientId !== client.id) {
     delete next.modelId;
     delete next.serviceTier;

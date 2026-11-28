@@ -1838,7 +1838,7 @@ export class KuloHub implements OrchestratorController {
         return conv ? resolveDeferredAddTools(conv, ctx, candidates) : [];
       },
     });
-    const runHealth = createRunHealthController({ getHarness: () => hubRef?.harness, getModels: () => models, resolveFallbackModel: () => (hubRef ? hubRef.#resolveOrchestratorAgent().model : undefined), redact });
+    const runHealth = createRunHealthController({ getHarness: () => hubRef?.harness, getModels: () => models, resolveFallbackModel: () => (hubRef ? hubRef.#resolveOrchestratorAgent().model : undefined), getSettings: () => ({ roles: settingsStore.getRoles(), model: settingsStore.getModel(), fallbackProviderId: providerId }), onTicketChanged: () => { if (hubRef) void hubRef.#broadcastTickets(BACKGROUND_CONTEXT).catch(() => {}); }, redact });
     const getLiveMemory = () => {
       const mem = settingsStore.getMemory();
       return hubRef ? hubRef.#effectiveMemoryConfig(mem) : mem;
@@ -1991,7 +1991,7 @@ export class KuloHub implements OrchestratorController {
         });
       },
       onTicketSettled: async (ticketId) => {
-        if (hubRef) { hubRef.#externalTelemetry.clear(ticketId); hubRef.#watchdog.untrack(ticketId); await hubRef.#settleStaleTicketConfirmations(ticketId); void hubRef.memoryRuntime.onTicketSettled(ticketId).catch(() => {}); void hubRef.batchWorkflows.abortForTicket(ticketId).catch(() => {}); }
+        if (hubRef) { hubRef.#externalTelemetry.clear(ticketId); hubRef.#watchdog.untrack(ticketId); await hubRef.#runHealth.onTicketSettled(ticketId); await hubRef.#settleStaleTicketConfirmations(ticketId); void hubRef.memoryRuntime.onTicketSettled(ticketId).catch(() => {}); void hubRef.batchWorkflows.abortForTicket(ticketId).catch(() => {}); }
       },
       onInlineCandidateSettled: (ticketId) => {
         if (hubRef) hubRef.#notifyInlineWaiters(ticketId);

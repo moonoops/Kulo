@@ -1057,7 +1057,13 @@ export function applySettingsBlockUpdate(
         ...(nextApiKey ? { apiKey: nextApiKey } : {}),
       };
       assertConversationModelSelection(nextModel, nextModel.defaultProvider, nextModel.defaultModel);
-      for (const role of Object.values(doc.roles)) if (!role.external) assertConversationModelSelection(nextModel, role.provider, role.modelId || nextModel.defaultModel);
+      for (const role of Object.values(doc.roles)) {
+        if (role.external) continue;
+        assertConversationModelSelection(nextModel, role.provider, role.modelId || nextModel.defaultModel);
+        if (role.escalationModel) {
+          assertConversationModelSelection(nextModel, role.escalationModel.provider, role.escalationModel.modelId);
+        }
+      }
       doc.model = nextModel;
       const selected = configuredModel(doc.model, doc.model.defaultProvider, doc.model.defaultModel);
       if (selected?.reasoning === false || selected?.thinkingEnabled === false) {

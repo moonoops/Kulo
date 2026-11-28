@@ -278,6 +278,9 @@ export function syncOpenAICompatibleModels(
     if (role.modelId?.trim()) {
       modelIds.add(role.modelId.trim());
     }
+    if (role.escalationModel?.provider?.trim() === KULO_PROVIDER_ID && role.escalationModel.modelId?.trim()) {
+      modelIds.add(role.escalationModel.modelId.trim());
+    }
   }
 
   const contextWindow = config.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
