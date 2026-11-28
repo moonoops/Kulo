@@ -21,6 +21,7 @@ import {
   formatWorkerInitialPrompt,
   formatWorkerRelayMessage,
 } from "./prompts.js";
+import { RESTART_GATE_WAIT_TOKEN_PREFIX } from "./restart-gate.js";
 import type { createWorkerTicketTask } from "./scheduler.js";
 import { isSettingsTopicDeleted, SettingsAssistantDoc } from "./settings-assistant.js";
 import {
@@ -339,7 +340,10 @@ export class TicketReconciler {
     const parked = await harness.snapshot(KuloStateDoc, context);
     if (parked?.tickets[ticketId]?.wakePending) await this.resumeWaitingTicket(ticketId, context);
     const isBlockedCoordinatorWait = preservedWait.reason === "coordinator" && !preservedWait.waitToken?.startsWith("host-action-req:");
-    if ((preservedWait.reason === "user" && !preservedWait.waitToken?.startsWith("host-action:")) || isBlockedCoordinatorWait) {
+    const suppressAutomaticUserRelay =
+      preservedWait.waitToken?.startsWith("host-action:") ||
+      preservedWait.waitToken?.startsWith(RESTART_GATE_WAIT_TOKEN_PREFIX);
+    if ((preservedWait.reason === "user" && !suppressAutomaticUserRelay) || isBlockedCoordinatorWait) {
       const latest = await harness.snapshot(KuloStateDoc, context);
       const settingsLatest = await harness.snapshot(SettingsAssistantDoc, context);
       const originTopic = latest?.topics?.[ticket.originTopicId ?? "root"];

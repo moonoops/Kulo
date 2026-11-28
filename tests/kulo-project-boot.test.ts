@@ -191,15 +191,39 @@ describe.skipIf(!sandboxAvailable)("project boot coordination", () => {
     expect(processAlive()).toBe(true);
     restarting = true;
     hub = await openTestHub({ config, models });
+    // Stage 1 P1-4B: boot still cleans up the old native process & fences subagents, but holds a
+    // writable/subagent/bash ticket in waiting(reason="user") instead of auto-resuming blindly.
+    await until(async () => {
+      const snap = (await hub.harness.snapshot(KuloStateDoc, context))?.tickets[card.id];
+      return snap?.status === "waiting" && snap.cleanupPending === false;
+    }, "Boot did not settle cleanup and hold writable ticket for user review");
+    expect(processAlive()).toBe(false);
+    expect(resumedRequests).toHaveLength(0);
+    const held = (await hub.harness.snapshot(KuloStateDoc, context))!;
+    expect(held.tickets[card.id]).toMatchObject({
+      status: "waiting",
+      cleanupPending: false,
+      waiting: { reason: "user" },
+    });
+    expect(held.tickets[card.id]!.runEpoch).toBeGreaterThan(ticket.runEpoch);
+    expect(held.slots.holders).not.toContain(card.id);
+    expect(held.tickets[card.id]?.workspaceStaging?.stagedCwd).toBeTruthy();
+    expect(Object.values(held.subagents ?? {}).filter((sub) => sub.ticketId === card.id).every((sub) => sub.state !== "running")).toBe(true);
+
+    // Explicit user confirmation resumes the ticket cleanly in a new epoch after cleanup.
+    await hub.steerTicket({
+      commandId: "boot-user-continue-after-cleanup",
+      ticketId: card.id,
+      text: "已核对旧进程清理与工作区变更，继续完成原任务。",
+      decisionOptionId: "restart-continue",
+    });
     await until(() => resumedRequests.some((request) => !request.child), "New epoch did not reach the model");
     expect(resumedRequests.every((request) => !request.child && !request.oldProcessAlive && !request.oldChildLoopActive), JSON.stringify(resumedRequests)).toBe(true);
-    expect(resumedRequests[0]?.text).toContain("Wait condition satisfied");
-    expect(resumedRequests[0]?.text).toContain("workspace file changes");
-    expect(resumedRequests[0]?.text).toContain("unconfirmed tool results");
+    expect(resumedRequests[0]?.text).toContain("已核对旧进程清理与工作区变更");
     expect(processAlive()).toBe(false);
     const continuing = (await hub.harness.snapshot(KuloStateDoc, context))!;
     expect(continuing.tickets[card.id]).toMatchObject({ status: "running", cleanupPending: false });
-    expect(continuing.tickets[card.id]!.runEpoch).toBeGreaterThan(ticket.runEpoch);
+    expect(continuing.tickets[card.id]!.runEpoch).toBeGreaterThan(held.tickets[card.id]!.runEpoch);
     expect(continuing.slots.holders).toEqual([card.id]);
     expect(continuing.slots.writeHolders).toContain(card.id);
     expect(Object.values(continuing.subagents ?? {}).filter((sub) => sub.ticketId === card.id).every((sub) => sub.state !== "running")).toBe(true);

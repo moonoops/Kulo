@@ -264,6 +264,17 @@ import {
   TurnContextReader,
   type HubRuntimeGates,
 } from "./hub-kernel-ports.js";
+import {
+  abortActiveOrchestratorConversationsBeforeResume,
+  applyTicketRestartDecision,
+  evaluateTicketRestartAutoResume,
+  inspectBuiltInTicketsForRestartGate,
+  preAbortFencedWorkerTasks,
+  recordBootStart,
+  recordGracefulShutdown,
+  resolveBootGateLocalNodeId,
+  type BootGateStartResult,
+} from "./restart-gate.js";
 import { HubChatPipeline, type MessageSubmissionOptions } from "./hub-chat-pipeline.js";
 import { HubComputerController } from "./hub-computer-controller.js";
 import { HubConnectionsBridge } from "./hub-connections-bridge.js";
@@ -549,6 +560,9 @@ export class KuloHub implements OrchestratorController {
   readonly #releaseProxy: () => Promise<void>;
   readonly #stateOwner: HubStateOwner;
   get localInstance(): Pick<HubStateOwner, "publish" | "proveLocalIdentity"> { return this.#stateOwner; }
+  get bootGate(): Readonly<BootGateStartResult & { bootWasFailover: boolean }> {
+    return { ...this.#bootGate, bootWasFailover: this.#bootWasFailover };
+  }
   readonly #providerManager: KuloProviderManager | null;
   readonly #defaultIdentityDir: string;
   readonly #mainWorkspaceDir: string;
@@ -626,6 +640,9 @@ export class KuloHub implements OrchestratorController {
   #cleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
   #cleanupRetryDelayMs = 500;
   readonly #settingsStore: LiveSettingsStore;
+  readonly #bootGate: BootGateStartResult;
+  readonly #bootWasFailover: boolean;
+  #bootCompleted = false;
   #recovering = true;
   #acceptingNewWork = true;
   #closed = false;
@@ -703,9 +720,13 @@ export class KuloHub implements OrchestratorController {
     voiceOpenLive?: KuloVoiceCallsOptions["openLive"];
     watchdogCheckIntervalMs: number;
     watchdogStallMsOverride?: number;
+    bootGate: BootGateStartResult;
+    bootWasFailover: boolean;
   }) {
     this.#releaseProxy = params.releaseProxy;
     this.#stateOwner = params.stateOwner;
+    this.#bootGate = params.bootGate;
+    this.#bootWasFailover = params.bootWasFailover;
     this.config = params.config;
     this.envManager = params.envManager;
     this.harness = params.harness;
@@ -1680,6 +1701,8 @@ export class KuloHub implements OrchestratorController {
     try {
     const config = resolveHubConfig(init.config);
     stateOwner = HubStateOwner.acquire(config.stateDir);
+    const bootLocalNodeId = resolveBootGateLocalNodeId(config.stateDir, config.localEnvId);
+    const bootGate = recordBootStart(config.stateDir, bootLocalNodeId);
     if (!init.storage) await prepareStateStorage(config.stateDir);
     const connectionVault = init.connectionVault ?? init.connectionManager?.localVault ?? new LocalConnectionVault({ stateDir: config.stateDir });
     const connectionManager = init.connectionManager ?? new KuloConnections({ stateDir: config.stateDir, vault: connectionVault });
@@ -2501,6 +2524,7 @@ export class KuloHub implements OrchestratorController {
     closePartialStorage = () => harness.close(BACKGROUND_CONTEXT);
     const hasGatewayCredential = Boolean(await credentialStore.read(KULO_GATEWAY_PROVIDER_ID));
     const failoverGuarded = hasFailoverTrustGuard(config.stateDir);
+    const bootWasFailover = failoverGuarded;
     const hydratedSettings = await harness.commit(async (tx) => {
       const stateDoc = await tx.doc(KuloStateDoc);
       const settingsDoc = await tx.doc(KuloSettingsDoc);
@@ -2624,6 +2648,8 @@ export class KuloHub implements OrchestratorController {
       ...(init.watchdogStallMsOverride !== undefined
         ? { watchdogStallMsOverride: init.watchdogStallMsOverride }
         : {}),
+      bootGate,
+      bootWasFailover,
     });
     hubRef = hub;
     await observeChatAttachmentGrants(harness, uploads, context);
@@ -2680,6 +2706,7 @@ export class KuloHub implements OrchestratorController {
     }
     await hub.#reconfigureOrchestratorConversations(context);
 
+    const restartInspections = await inspectBuiltInTicketsForRestartGate(harness, topicState, context);
     await harness.commit(async (tx) => {
       const state = await tx.doc(KuloStateDoc);
       for (const ticket of Object.values(state.tickets)) {
@@ -2692,14 +2719,33 @@ export class KuloHub implements OrchestratorController {
           if (!state.slots.holders.includes(ticket.id)) state.slots.holders.push(ticket.id);
           continue;
         }
+        // Positive read-only proof MUST evaluate oldEpoch strictly before incrementing runEpoch.
+        const oldEpoch = ticket.runEpoch;
+        const inspection = restartInspections.get(ticket.id);
+        const decision = evaluateTicketRestartAutoResume({
+          ticket,
+          oldEpoch,
+          wasGracefulRestart: bootGate.wasGracefulRestart,
+          bootWasFailover,
+          crashLoopTripped: bootGate.crashLoopTripped,
+          executedTools: inspection?.executedTools,
+          historyVerified: inspection?.historyVerified ?? false,
+          hasActiveSubagents: inspection?.hasActiveSubagents ?? false,
+          redact,
+        });
+        const now = Date.now();
         // abortConversation resumes Durable's driver, so fence every old run before the first abort.
         ticket.runEpoch++;
-        transitionTicketStatus(ticket, "pausing", Date.now());
-        ticket.waiting ??= { reason: "env", since: Date.now(), detail: "重启后核对旧执行与项目目录" };
+        transitionTicketStatus(ticket, "pausing", now);
+        applyTicketRestartDecision(ticket, decision, now, redact);
         ticket.cleanupPending = true;
         if (!state.slots.holders.includes(ticket.id)) state.slots.holders.push(ticket.id);
       }
     }, context);
+    await preAbortFencedWorkerTasks(harness, topicState, unfinished, restartInspections, context);
+    if (bootWasFailover || bootGate.crashLoopTripped) {
+      await abortActiveOrchestratorConversationsBeforeResume(harness, topicState, unfinished, activeRootConvId, context);
+    }
     await hub.projects.reconcileCancellations(context);
     await hub.#queueWaitReconcile();
     await hub.#queueEnvReconcile();
@@ -2722,6 +2768,7 @@ export class KuloHub implements OrchestratorController {
     hub.#topics.startAutoArchive();
     hub.#startUploadCleanup();
     await hub.memoryRuntime.start({ hasCustomStorage: Boolean(init.storage), isKnownSecret });
+    hub.#bootCompleted = true;
     return hub;
     } catch (error) {
       const cleanup = hubRef ? [() => hubRef!.close(BACKGROUND_CONTEXT)] :
@@ -4732,6 +4779,13 @@ export class KuloHub implements OrchestratorController {
     await finish(() => this.envManager.close());
     await finish(() => this.search.close());
     await finish(() => this.#releaseProxy());
+    if (this.#bootCompleted && errors.length === 0) {
+      const shutdownNodeId =
+        this.#clusterHostContext?.localNodeId && this.#clusterHostContext.localNodeId !== "local"
+          ? this.#clusterHostContext.localNodeId
+          : resolveBootGateLocalNodeId(this.config.stateDir, this.config.localEnvId);
+      await finish(() => recordGracefulShutdown(this.config.stateDir, shutdownNodeId, this.#bootGate.bootId));
+    }
     await finish(() => this.#stateOwner.close());
     if (errors.length) throw new AggregateError(errors, "关闭 Kulo 时部分资源未能正常退出。");
   }

@@ -20,6 +20,7 @@ import {
 } from "./delivery-receipts.js";
 import { userDisplayEntry } from "./hub-chat-pipeline.js";
 import { assertProjectBinding, KuloProjectsDoc, ProjectError } from "./projects.js";
+import { RESTART_GATE_CONTINUE_OPTION_ID, RESTART_GATE_WAIT_TOKEN_PREFIX } from "./restart-gate.js";
 import type { createWorkerTicketTask } from "./scheduler.js";
 import {
   isActiveSettingsConversation,
@@ -192,6 +193,19 @@ export async function admitTicketSteerInTx(
   }
   recordProcessedCommand(state, cleanCmdId, t.id, "steer");
   await writeDeliveryReceipt(tx, intent, { ticketId: t.id });
+
+  if (
+    params.decisionOptionId === RESTART_GATE_CONTINUE_OPTION_ID &&
+    (!t.waiting?.waitToken?.startsWith(RESTART_GATE_WAIT_TOKEN_PREFIX) || t.wakePending === true)
+  ) {
+    return { card: toTicketCardView(t, activeRoles), created: false, injected: false };
+  }
+  if (
+    params.internalResume === true &&
+    (t.status === "queued" || t.wakePending === true || (t.status === "running" && !t.waiting && !isParking(t.id)))
+  ) {
+    return { card: toTicketCardView(t, activeRoles), created: false, injected: false };
+  }
 
   if (!t.externalExecution && t.status === "running" && !t.waiting && !isParking(t.id) && isTicketDevicesOnline(t)) {
     await workerConv.submit(tx, {
