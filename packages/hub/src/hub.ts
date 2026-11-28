@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { chatRoutingData, queuedChatEntries, type ChatMessageSource } from "./chat-submissions.js";
-import { observeChatAttachmentGrants, repairHistoricalChatAttachments } from "./chat-attachment-deliveries.js";
+import { chatRoutingData, type ChatMessageSource } from "./chat-submissions.js";
+import { observeChatAttachmentGrants } from "./chat-attachment-deliveries.js";
 import { submitAutomaticChatInput } from "./chat-control.js";
 import { DeliveryReceiptDoc, clientDeliveryIntent, deliveryReceiptKey, validateReliableClientMessage,
   type DeliveryAck, type DeliveryIntent, type DeliveryReceipt, type ReliableClientMessage } from "./delivery-receipts.js";
@@ -62,7 +62,6 @@ import { TicketBoardProjection } from "./ticket-board.js";
 import { VoiceTranscriptEntry } from "./voice-transcripts.js";
 import { createVoiceContext } from "./voice-context.js";
 import { createVoiceToolsExtension } from "./tools-voice.js";
-import { loadSearchEvidencePrefix, SearchEvidenceHistory } from "./search-history.js";
 import { KuloMediaJobs } from "./media-jobs.js";
 import { createSkillToolsExtension } from "./tools-skills.js";
 import { detectReactWorkspace, SkillRuntimeError } from "./skill-runtime.js";
@@ -104,7 +103,7 @@ import { LarkConnectorService } from "./connectors/lark-connector.js";
 import { ContextCompactionDoc, createContextCompactionController, validateBillionKernel, type BillionKernelRuntime } from "./context-compaction.js";
 import { HubMemoryRuntime } from "./hub-memory-runtime.js";
 import { EMPTY_MEDIA_CAPABILITIES, createConversationContextWindowResolver } from "./orchestrator-prompt-wiring.js";
-import { createOrchestratorToolOverflowExtension, containsToolOverflowMarker } from "./orchestrator-tool-overflow.js";
+import { createOrchestratorToolOverflowExtension } from "./orchestrator-tool-overflow.js";
 import { createRunHealthController } from "./run-health-extension.js";
 import { ORCHESTRATOR_MAX_TURNS, PROACTIVE_WAKE_MAX_TURNS, SUBAGENT_MAX_TURNS, WORKER_MAX_TURNS } from "./run-health-policy.js";
 import { createRecentWorkSyncHook, isSystemBaselinePending } from "./recent-work-sync.js";
@@ -116,7 +115,6 @@ import {
   inferModelPurpose,
   resolveRolePresetFromPool,
   isSupportedExternalAgentKind,
-  getMessageParts,
   redactSensitiveText,
   type TicketOutwardAction,
   type AmbientLocalEngine,
@@ -204,7 +202,6 @@ import {
   assertUniqueExtensionTools,
   createSettingsTierExtension,
   injectEventToolsInTx,
-  pruneIdleDeferredToolsInTx,
   resolveDeferredAddTools,
   resolveSettingsPreloadedTools,
   resolveSurfaceTools,
@@ -245,8 +242,8 @@ import {
 import {
   extractDisplayMessages,
   extractLiveState,
-  type DisplayMessageOptions,
 } from "./hub-display-projection.js";
+import { HubMessageProjection } from "./hub-message-projection.js";
 export { extractDisplayMessages, extractLiveState };
 import { MainConversationArchiveService } from "./main-conversation-archive.js";
 import { RelationshipReviewsDoc, collectRelationshipInput } from "./relationship-evidence.js";
@@ -603,8 +600,7 @@ export class KuloHub implements OrchestratorController {
   readonly #inlineWaiters = new InlineDispatchWaiters();
   readonly #turnContext: TurnContextReader;
   readonly #runtimeGates: HubRuntimeGates;
-  readonly #cardSnapshots = new Map<string, UiCardSnapshot>();
-  readonly #searchHistories = new Map<number, SearchEvidenceHistory>();
+  readonly #projection: HubMessageProjection;
   readonly #watchdog: HubWatchdog;
   readonly #failureRecovery: HubFailureRecovery;
   readonly #computer: HubComputerController;
@@ -1231,12 +1227,26 @@ export class KuloHub implements OrchestratorController {
         }
       }
     }, onChange: (card) => {
-      this.#cardSnapshots.set(card.cardId, card);
+      this.#projection.rememberCard(card);
       for (const listener of this.#listeners) listener.onUiCard?.(card);
       this.#topics.refreshByConversation(card.originConversationId);
       void this.settingsAssistant.refreshIfConversation(card.originConversationId);
     } });
     this.actionConfirmations = new KuloActionConfirmations({ harness: this.harness, uiCards: this.uiCards });
+    this.#projection = new HubMessageProjection({
+      harness: this.harness,
+      uploads: this.uploads,
+      uiCards: this.uiCards,
+      connectionManager: this.connectionManager,
+      actionConfirmations: this.actionConfirmations,
+      getContextGuard: () => this.#contextGuard,
+      hasPendingMediaRelay: (conversationId) => this.#mediaDelivery.hasPendingRelay(conversationId),
+      getSettingsSurfaceState: (turnContext) =>
+        this.#surfaceRuntimeState("settings", {
+          settingsModule: turnContext?.module,
+          settingsActive: turnContext?.active,
+        }),
+    });
     this.deviceJoinStaging = params.deviceJoinStaging;
     this.settingsAssistant = new SettingsAssistant({
       harness: this.harness,
@@ -1331,15 +1341,8 @@ export class KuloHub implements OrchestratorController {
         else await this.#models.logout(providerId);
       },
       envs: () => this.envManager.listEnvs(),
-      hydrateConversation: async (conversationId) => {
-        for (const card of await this.uiCards.snapshot(conversationId)) {
-          if ((this.#cardSnapshots.get(card.cardId)?.revision ?? 0) <= card.revision) this.#cardSnapshots.set(card.cardId, card);
-        }
-      },
-      display: (view, conversationId) => redactCredentialData({
-        messages: conversationId !== undefined ? this.#projectMessages(view.entries, conversationId) : extractDisplayMessages(view.entries),
-        live: extractLiveState(view),
-      }, (text) => this.connectionManager.redact(text)),
+      hydrateConversation: (conversationId) => this.#projection.hydrateCards(conversationId),
+      display: (view, conversationId) => this.#projection.projectSettingsDisplay(view, conversationId),
       applied: async (doc) => {
         await this.#applyLiveSettings(doc, BACKGROUND_CONTEXT);
         this.#emitSettings(this.getSettingsView());
@@ -1388,9 +1391,9 @@ export class KuloHub implements OrchestratorController {
         mainWorkspaceDir: this.#mainWorkspaceDir,
       },
       projection: {
-        hydrateMessages: (entries, conversationId, ctx) => this.#hydrateMessages(entries, conversationId, undefined, ctx),
-        projectTopicMessages: (value, conversationId) => this.#projectTopicMessages(value, conversationId),
-        projectTopicLiveState: (value, conversationId, conversation) => this.#projectTopicLiveState(value, conversationId, conversation),
+        hydrateMessages: (entries, conversationId, ctx) => this.#projection.hydrateMessages(entries, conversationId, undefined, ctx),
+        projectTopicMessages: (value, conversationId) => this.#projection.projectTopicMessages(value, conversationId),
+        projectTopicLiveState: (value, conversationId, conversation) => this.#projection.projectTopicLiveState(value, conversationId, conversation),
       },
       cleanup: {
         closeOrchestratorBrowserSession: (topicId) => this.#computer.closeOrchestratorBrowserSession(topicId),
@@ -1612,7 +1615,7 @@ export class KuloHub implements OrchestratorController {
       watchdog: this.#watchdog,
       stateDir: this.config.stateDir,
       defaultIdentityDir: this.#defaultIdentityDir,
-      hydrateMessages: (entries, conversationId, options) => this.#hydrateMessages(entries, conversationId, options),
+      hydrateMessages: (entries, conversationId, options) => this.#projection.hydrateMessages(entries, conversationId, options),
     });
   }
 
@@ -2339,7 +2342,7 @@ export class KuloHub implements OrchestratorController {
       isActive: () => hubRef ? hubRef.#contextEnabled : false,
       getReserveTokens: () => settingsStore.getCompactionConfig().reserveTokens,
       onCompactionBaseline: async (conversationId, firstKept, ctx) => {
-        if (hubRef) { await hubRef.#pruneCompactedConversationTools(conversationId, firstKept, ctx); void hubRef.memoryRuntime.onCompactionCommitted(conversationId, firstKept, BACKGROUND_CONTEXT).catch(() => {}); }
+        if (hubRef) { await hubRef.#projection.pruneCompactedConversationTools(conversationId, firstKept, ctx); void hubRef.memoryRuntime.onCompactionCommitted(conversationId, firstKept, BACKGROUND_CONTEXT).catch(() => {}); }
       },
     });
     const registry = createRegistry();
@@ -5035,67 +5038,6 @@ export class KuloHub implements OrchestratorController {
     }
   }
 
-  async #hydrateMessages(entries: readonly EntryRecord[], conversationId: number, options?: DisplayMessageOptions, context: Context = BACKGROUND_CONTEXT): Promise<ChatDisplayItem[]> {
-    await repairHistoricalChatAttachments(this.harness, this.uploads, entries, conversationId, context);
-    if (entries[0]) {
-      const conversation = await this.harness.conversation(conversationId as ConversationId, context);
-      if (conversation) this.#searchHistory(conversationId).remember(await loadSearchEvidencePrefix(conversation, entries[0], context));
-    }
-    for (const card of await this.uiCards.snapshot(conversationId)) {
-      if ((this.#cardSnapshots.get(card.cardId)?.revision ?? 0) <= card.revision) this.#cardSnapshots.set(card.cardId, card);
-    }
-    return this.#projectMessages(entries, conversationId, options);
-  }
-
-  #projectMessages(entries: readonly EntryRecord[], conversationId: number, options?: DisplayMessageOptions): ChatDisplayItem[] {
-    return this.#decorateChatMessages(this.#searchHistory(conversationId).project(entries, (projection) => extractDisplayMessages(projection, options)), conversationId);
-  }
-
-  #decorateChatMessages(messages: ChatDisplayItem[], conversationId: number): ChatDisplayItem[] {
-    const projected = messages.map((item) => {
-      const parts = getMessageParts(item).map((part) => {
-        if (part.type === "ui") return { ...part, card: this.#cardSnapshots.get(part.cardId) };
-        if ("assetId" in part) {
-          const loaded = this.uploads.getUpload(part.assetId);
-          if (loaded) {
-            if (loaded.record.ownerId !== undefined && !loaded.record.referenceScopes?.includes(`conversation:${conversationId}`)) {
-              return { partId: part.partId, type: "markdown" as const, text: "附件不可用" };
-            }
-            return { ...part, asset: { ...this.uploads.toChatAttachment(loaded.record),
-              ...(part.asset?.transcript ? { transcript: part.asset.transcript } : {}),
-              ...(part.asset?.captions ? { captions: part.asset.captions } : {}),
-            } };
-          }
-        }
-        return part;
-      });
-      const attachments = item.attachments ? parts.flatMap((part) => "asset" in part && part.asset ? [part.asset] : []) : undefined;
-      return { ...item, parts, ...(attachments ? { attachments } : {}) };
-    });
-    return redactCredentialData(projected, (text) => this.connectionManager.redact(text));
-  }
-
-  #searchHistory(conversationId: number): SearchEvidenceHistory {
-    let history = this.#searchHistories.get(conversationId);
-    if (!history) { history = new SearchEvidenceHistory(); this.#searchHistories.set(conversationId, history); }
-    return history;
-  }
-
-  #projectTopicMessages(value: ConversationView, conversationId: number): ChatDisplayItem[] {
-    const queued = queuedChatEntries(value);
-    // Inbox receipts are not transcript boundaries and must never enter evidence history.
-    const pending = this.#decorateChatMessages(extractDisplayMessages(queued.entries), conversationId).map((item) => {
-      const delivery = queued.deliveries.get(item.id);
-      return delivery ? { ...item, ...delivery } : item;
-    });
-    return [...this.#projectMessages(value.entries, conversationId), ...pending];
-  }
-
-  #projectTopicLiveState(value: ConversationView, conversationId: number, conversation?: Conversation): LiveStreamState {
-    const live = extractLiveState(value, this.#searchHistory(conversationId).projectionEntries(value.entries));
-    return { ...live, context: this.#contextGuard.projectLiveContext(value, conversationId, conversation) };
-  }
-
   #refreshTopicContent(cache: WatchedTopicCache, value = cache.watch.value): void {
     this.#topics.refreshContent(cache, value);
   }
@@ -5165,96 +5107,6 @@ export class KuloHub implements OrchestratorController {
     this.#topics.refreshAll();
     await this.settingsAssistant.reconfigureActiveConversation(context);
     await this.#reconfigureWorkerConversations(context);
-  }
-
-  async #pruneCompactedConversationTools(
-    conversationId: ConversationId,
-    firstKept: number,
-    context: Context,
-  ): Promise<void> {
-    const conv = await this.harness.conversation(conversationId, context);
-    if (!conv) return;
-    const [view, state, settingsDoc, connSnap] = await Promise.all([
-      conv.context(context),
-      this.harness.snapshot(KuloStateDoc, context),
-      this.harness.snapshot(SettingsAssistantDoc, context),
-      this.connectionManager.snapshot(),
-    ]);
-    const retained = new Set<string>();
-    // 1. Retain tools invoked in the kept recent window (`entry.id >= firstKept`)
-    for (const [idx, entry] of view.entries.entries()) {
-      if (Number(entry.id) < firstKept) continue;
-      for (const msg of view.contributions[idx] ?? []) {
-        if (msg.role === "assistant") {
-          for (const part of msg.content) {
-            if (part.type === "toolCall") retained.add(part.name);
-          }
-        } else if (msg.role === "toolResult") {
-          retained.add(msg.toolName);
-          if (msg.content.some((part) => part.type === "text" && containsToolOverflowMarker(part.text))) retained.add("kulo_inspect_asset");
-        }
-      }
-    }
-    const convNum = Number(conversationId);
-    // 2. Retain Settings active-module preloaded tools
-    if (isActiveSettingsConversation(convNum, settingsDoc)) {
-      const turnCtx = settingsDoc?.conversationId === convNum
-        ? settingsDoc.turnContext
-        : settingsDoc?.conversations?.[String(convNum)]?.turnContext;
-      for (const name of resolveSettingsPreloadedTools(
-        this.#surfaceRuntimeState("settings", {
-          settingsModule: turnCtx?.module,
-          settingsActive: turnCtx?.active,
-        }),
-      )) {
-        retained.add(name);
-      }
-    }
-    // 3. Retain tools backed by unresolved server events on this orchestrator conversation
-    if (isOrchestratorConversation(conversationId, state) || isActiveSettingsConversation(convNum, settingsDoc)) {
-      for (const ticket of Object.values(state?.tickets ?? {})) {
-        if ((ticket.originConversationId ?? Number(ROOT_CONVERSATION_ID)) !== convNum) continue;
-        if (ticket.boardId && (isTicketUnfinished(ticket) || ticket.status === "ready")) {
-          retained.add("kulo_task_board");
-        }
-        if ((state?.workerArtifacts?.[ticket.id]?.length ?? 0) > 0) {
-          retained.add("kulo_inspect_asset");
-          retained.add("kulo_publish_asset");
-        }
-        if (
-          ticket.externalExecution?.stagedDiff ||
-          ticket.externalExecution?.stagedCwd ||
-          ticket.workspaceStaging?.stagedDiff ||
-          ticket.workspaceStaging?.stagedCwd
-        ) {
-          retained.add("kulo_inspect_staged_diff");
-          retained.add("kulo_apply_staged_changes");
-        }
-        if ((ticket.externalExecution?.pendingPermissions?.length ?? 0) > 0) {
-          retained.add("kulo_inspect");
-          retained.add("kulo_external_permission");
-        }
-        if (
-          ticket.status === "waiting" &&
-          (ticket.waiting?.reason === "coordinator" || ticket.waiting?.reason === "user")
-        ) {
-          if (ticket.waiting.waitToken?.startsWith("host-action")) {
-            retained.add("kulo_host_action_decide");
-          } else if (ticket.latestReport?.state === "blocked" || ticket.waiting.reason === "coordinator") {
-            retained.add("kulo_ticket_ask_user");
-          }
-        }
-      }
-      const pendingConfirmations = await this.actionConfirmations.listPendingForConversation(convNum, context);
-      for (const pending of pendingConfirmations) {
-        if (pending.kind === "host_action") retained.add("kulo_host_action_decide");
-        if (pending.kind === "external_permission") retained.add("kulo_external_permission");
-        if (pending.kind === "ticket_decision") retained.add("kulo_ticket_ask_user");
-      }
-      if (this.#mediaDelivery.hasPendingRelay(convNum)) { retained.add("kulo_media_job"); retained.add("kulo_inspect_asset"); }
-      if (connSnap.requests.some((req) => req.status === "pending" && (state?.tickets[req.ticketId]?.originConversationId ?? Number(ROOT_CONVERSATION_ID)) === convNum)) retained.add("kulo_connection_decide");
-    }
-    await this.harness.commit((tx) => pruneIdleDeferredToolsInTx(tx, conversationId, retained), context);
   }
 
   async #syncProviderImageCapabilities(): Promise<void> {

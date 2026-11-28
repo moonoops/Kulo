@@ -10,7 +10,6 @@ import { ConfirmDialog } from "./components/confirm-dialog";
 import { KuloTurnErrorCard } from "./features/chat/turn-error-card";
 import { useTargetDeviceSelection } from "./features/chat/use-target-device-selection";
 import { ComputerPreviewModal } from "./features/computer-preview/computer-preview";
-import { useComputerPreview } from "./features/computer-preview/use-computer-preview";
 import { describeLocalizedKuloError } from "./kulo-error";
 import {
   WorkbenchShell,
@@ -19,6 +18,7 @@ import {
 import { WorkbenchTitlebar } from "./features/shell/workbench-titlebar";
 import { ArchivedTopicBar } from "./features/shell/archived-topic-bar";
 import { useRootRotationReset } from "./features/shell/root-rotation";
+import { useWorkbenchOverlays, useWorkbenchShortcuts } from "./features/shell/use-workbench-overlays";
 import {
   readSettingsRailWidth,
   writeSettingsRailWidth,
@@ -53,7 +53,6 @@ import {
   composerPlaceholder,
   KuloComposer,
   useTopicAttachments,
-  type PreviewableImage,
 } from "./kulo-composer";
 import { KuloIcon } from "./kulo-icon";
 import { ConnectedMessageContent } from "./features/chat/connected-message-content";
@@ -72,15 +71,9 @@ import { ConversationScene } from "./features/chat/conversation-scene";
 import { useKuloNotifications } from "./features/notifications/use-kulo-notifications";
 import { isTaskUnfinished } from "./features/tasks/task-model";
 import { ConversationSearchDialog, type ConversationDestination } from "./features/chat/conversation-library";
-import { messageQuote } from "./features/chat/message-actions";
 import {
-  hasBlockingOverlay,
-  hasNonEmptyTextSelection,
-  isEditableKeyboardTarget,
-  resolveKeyboardShortcut,
   ShortcutSaveProvider,
   useShortcutSaveTrigger,
-  type AppShortcutCommand,
 } from "./features/shortcuts/shortcuts";
 import { mergeLocatedMessages, visibleMessageId } from "./features/chat/conversation-navigation";
 import { cardAdjustmentDraft } from "./features/genui/card-value-summary";
@@ -208,14 +201,6 @@ function AppShell() {
   });
   const [messageWindow, setMessageWindow] = useState<ConversationMessageWindow>();
   const [messageWindowLoading, setMessageWindowLoading] = useState(false);
-  const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
-  const [conversationSearchScope, setConversationSearchScope] = useState<"all" | "current">("all");
-  const [conversationSearchScopeVersion, setConversationSearchScopeVersion] = useState(0);
-  const openConversationSearch = useCallback((scope: "all" | "current") => {
-    setConversationSearchScope(scope);
-    setConversationSearchScopeVersion((version) => version + 1);
-    setConversationSearchOpen(true);
-  }, []);
   const [locatingMessage, setLocatingMessage] = useState(false);
   const [pendingMessageJump, setPendingMessageJump] = useState<ConversationDestination>();
   const messageNavigationRequest = useRef<AbortController | null>(null);
@@ -412,7 +397,6 @@ function AppShell() {
     setCurrentReply(reply);
     requestAnimationFrame(() => composerRef.current?.focus());
   };
-  const [lightboxImage, setLightboxImage] = useState<PreviewableImage | null>(null);
 
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const chatNavigatingRef = useRef(false);
@@ -431,7 +415,6 @@ function AppShell() {
     setMessageWindow(undefined);
     setPendingMessageJump(undefined);
     setLocatingMessage(false);
-    setConversationSearchOpen(false);
     return () => {
       messageNavigationRequest.current?.abort();
       if (navigationHighlightTimer.current) clearTimeout(navigationHighlightTimer.current);
@@ -478,14 +461,20 @@ function AppShell() {
     sizeClass === "compact" ? sheet === "left" : !collapsed.left;
   const rightExpanded =
     sizeClass === "expanded" ? !(settingsMode ? settingsRightCollapsed : collapsed.right) : sheet === "right";
-  const computerPreview = useComputerPreview("*", connected && !settingsMode, !settingsMode && rightExpanded);
-  const stopComputerPreviewTask = useCallback(async (ticketId: string) => {
-    await sendWsWithAck({ type: "ticket.stop", ticketId, reason: "手动停止" });
-  }, [sendWsWithAck]);
-  const computerPreviewBinding = useMemo(
-    () => ({ state: computerPreview.state, client: computerPreview.client, onStop: stopComputerPreviewTask }),
-    [computerPreview.state, computerPreview.client, stopComputerPreviewTask],
-  );
+  const {
+    conversationSearchOpen,
+    setConversationSearchOpen,
+    conversationSearchScope,
+    conversationSearchScopeVersion,
+    openConversationSearch,
+    lightboxImage,
+    setLightboxImage,
+    closeLightbox,
+    computerPreview,
+    stopComputerPreviewTask,
+    computerPreviewBinding,
+    openPreviewModal,
+  } = useWorkbenchOverlays({ connected, deliveryScope, settingsMode, rightExpanded, sendWsWithAck });
 
   // Auto-close narrow drawer when viewport widens past its breakpoint
   useEffect(() => {
@@ -528,38 +517,6 @@ function AppShell() {
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [settingsMode]);
-
-  const shortcutActionsRef = useRef<{
-    runCommand: (command: AppShortcutCommand) => boolean;
-    handleEscape: (event: globalThis.KeyboardEvent) => boolean;
-  }>({
-    runCommand: () => false,
-    handleEscape: () => false,
-  });
-
-  // Keyboard shortcuts and Electron native menu commands share one guarded dispatcher.
-  useEffect(() => {
-    const desktopOnCommand = typeof window === "undefined" ? undefined : window.kuloDesktop?.onCommand;
-    const desktopManaged = typeof desktopOnCommand === "function";
-    const unsubscribe = desktopOnCommand?.((command) => {
-      shortcutActionsRef.current.runCommand(command);
-    });
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      const platform = typeof navigator === "undefined" ? "" : navigator.platform;
-      const action = resolveKeyboardShortcut(event, { platform, desktopManaged });
-      if (!action) return;
-      if (action === "escape-layer") {
-        if (shortcutActionsRef.current.handleEscape(event)) event.preventDefault();
-        return;
-      }
-      if (shortcutActionsRef.current.runCommand(action)) event.preventDefault();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      unsubscribe?.();
-    };
-  }, []);
 
   const failedTaskSubmission = useMemo(() => pendingSubmissions.find((submission) =>
     submission.envelope.type === "ticket.steer" && submission.draftKey === currentConversationDraftKey && submission.state === "failed",
@@ -1223,112 +1180,36 @@ function AppShell() {
     });
   };
 
-  shortcutActionsRef.current = {
-    runCommand(command) {
-      switch (command) {
-        case "search-conversations": {
-          if (hasBlockingOverlay(document, { allowSelector: '[data-kulo-overlay="conversation-search"]' })) return false;
-          if (conversationSearchOpen && conversationSearchScope === "all") {
-            setConversationSearchOpen(false);
-          } else {
-            openConversationSearch("all");
-          }
-          return true;
-        }
-        case "find-in-conversation": {
-          if (settingsMode || projectedTicketId) return false;
-          if (hasBlockingOverlay(document, { allowSelector: '[data-kulo-overlay="conversation-search"]' })) return false;
-          openConversationSearch("current");
-          return true;
-        }
-        case "new-topic": {
-          if (hasBlockingOverlay(document)) return false;
-          runGuardedNavigation(() => { void handleCreateTopic(); });
-          return true;
-        }
-        case "open-settings": {
-          if (hasBlockingOverlay(document)) return false;
-          if (settingsMode) exitSettings();
-          else enterSettings();
-          return true;
-        }
-        case "toggle-left-panel": {
-          if (hasBlockingOverlay(document, { allowSelector: '[data-kulo-overlay="workbench-drawer"]' })) return false;
-          togglePanel("left");
-          return true;
-        }
-        case "toggle-right-panel": {
-          if (hasBlockingOverlay(document, { allowSelector: '[data-kulo-overlay="workbench-drawer"]' })) return false;
-          togglePanel("right");
-          return true;
-        }
-        case "open-main-chat": {
-          if (hasBlockingOverlay(document)) return false;
-          openChatTopic(topics.find((topic) => topic.master)?.id ?? "root");
-          return true;
-        }
-        case "stop-generation": {
-          if (settingsMode || projectedTicketId || !live.busy) return false;
-          void sendWsWithAck({ type: "chat.abort", topicId: activeTopicId, ...(activeTopicId === "root" && rootConversationId !== undefined ? { expectedConversationId: rootConversationId } : {}) }).catch((error: unknown) => {
-            setActionError(error instanceof Error ? error.message : t("停止生成失败", "Could not stop the response"));
-          });
-          return true;
-        }
-        case "copy-last-reply": {
-          if (settingsMode || projectedTicketId || hasBlockingOverlay(document) || hasNonEmptyTextSelection(window, document)) {
-            return false;
-          }
-          const streaming = live.busy ? (live.streamingText?.trim() ?? "") : "";
-          let latest = streaming;
-          if (!latest) {
-            for (let index = responseMessages.length - 1; index >= 0; index--) {
-              const candidate = responseMessages[index]!;
-              if (candidate.role !== "assistant") continue;
-              const text = messageQuote(candidate).text.trim();
-              if (text) { latest = text; break; }
-            }
-          }
-          if (!latest) return false;
-          void navigator.clipboard.writeText(latest).then(
-            () => { toast.success(t("已复制最新回复", "Copied latest reply")); },
-            () => { toast.danger(t("复制失败，请选择文字复制", "Copy failed. Select the text to copy it.")); },
-          );
-          return true;
-        }
-        case "save-active": {
-          if (!settingsMode || hasBlockingOverlay(document)) return false;
-          triggerShortcutSave();
-          return true;
-        }
-      }
-    },
-    handleEscape(event) {
-      if (hasBlockingOverlay(document)) return false;
-      if (projectedTicketId) {
-        closeProjection();
-        return true;
-      }
-      if (settingsMode) {
-        const editableTarget = isEditableKeyboardTarget(event.target)
-          ? event.target
-          : isEditableKeyboardTarget(document.activeElement)
-            ? document.activeElement
-            : null;
-        if (editableTarget) {
-          const container = document.querySelector<HTMLElement>("main.kulo-workbench-main");
-          if (container && container !== editableTarget) {
-            container.focus({ preventScroll: true });
-          } else {
-            editableTarget.blur();
-          }
-          return true;
-        }
-        exitSettings();
-        return true;
-      }
-      return false;
-    },
+  const abortGeneration = () => {
+    void sendWsWithAck({
+      type: "chat.abort",
+      topicId: activeTopicId,
+      ...(activeTopicId === "root" && rootConversationId !== undefined ? { expectedConversationId: rootConversationId } : {}),
+    }).catch((error: unknown) => {
+      setActionError(error instanceof Error ? error.message : t("停止生成失败", "Could not stop the response"));
+    });
   };
+
+  useWorkbenchShortcuts({
+    conversationSearchOpen,
+    conversationSearchScope,
+    setConversationSearchOpen,
+    openConversationSearch,
+    settingsMode,
+    projectedTicketId,
+    topics,
+    live,
+    responseMessages,
+    runGuardedNavigation,
+    onCreateTopic: handleCreateTopic,
+    onEnterSettings: enterSettings,
+    onExitSettings: exitSettings,
+    onTogglePanel: togglePanel,
+    onOpenChatTopic: openChatTopic,
+    onCloseProjection: closeProjection,
+    onAbortGeneration: abortGeneration,
+    onSaveActive: triggerShortcutSave,
+  });
 
   const sidebarNode = (
     <TopicsSidebar
@@ -1509,7 +1390,7 @@ function AppShell() {
       onToggleRightPanel={() => togglePanel("right")}
       previewSessions={computerPreview.state.sessions}
       selectedPreviewId={computerPreview.state.selectedId}
-      onOpenPreviewModal={(sessionId) => computerPreview.client.openModal(sessionId)}
+      onOpenPreviewModal={openPreviewModal}
     />
   );
 
@@ -1881,7 +1762,7 @@ function AppShell() {
               onConfigureVoice={openVoiceSettings}
               onPreviewImage={setLightboxImage}
               onSubmit={() => submitMessage()}
-              onAbort={() => { void sendWsWithAck({ type: "chat.abort", topicId: activeTopicId, ...(activeTopicId === "root" && rootConversationId !== undefined ? { expectedConversationId: rootConversationId } : {}) }).catch((error: unknown) => setActionError(error instanceof Error ? error.message : t("停止生成失败", "Could not stop the response"))); }}
+              onAbort={abortGeneration}
               busy={live.busy}
               connected={connected}
               canQueueMessages={outboxReady}
@@ -1987,7 +1868,7 @@ function AppShell() {
 
       <AttachmentLightbox
         image={lightboxImage}
-        onClose={() => setLightboxImage(null)}
+        onClose={closeLightbox}
       />
 
       <ComputerPreviewModal

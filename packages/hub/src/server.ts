@@ -2,63 +2,40 @@ import fs from "node:fs";
 import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
 import http from "node:http";
 import path from "node:path";
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { URL, fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
   CLUSTER_AUTH_HEADER,
   ClusterNonceGuard,
   DeviceRoleTransitions,
-  createClusterAuthHeader,
   localListenerOrigin,
   parseClusterAuthHeader,
-  probeUrlsHappyEyeballs,
-  readOrCreateNodeIdentity,
   renderPeerInstaller,
   saveClusterMembership,
   type ClusterNodeKeyMaterial,
   type LocalInstanceOwner,
 } from "@kulo/env";
 import {
-  CUSTOM_PROVIDER_APIS,
   KULO_VERSION,
-  formatDeviceChatInvitation,
-  normalizeKuloLanguage,
-  normalizeVertexConfig,
-  isAssistantItemAction,
-  isDesktopSystemPermissions,
-  parseDeviceJoinInput,
   type ClusterClientSummary,
-  type ClusterLocalStatusView,
   type ClusterNodeStatus,
   type DeviceChatInvitation,
   type DevicePeerConfig,
-  type DesktopSystemPermissions,
   type ClientToHubMessage,
-  type IdentityFile,
-  type CustomProviderApi,
-  type DiscoverModelsRequest,
   type HubToClientMessage,
-  type ModelProbeRequest,
-  type SettingsBlockName,
-  type ConnectionSaveRequest,
-  type ConnectionPrepareRequest,
   type NativeAppPermissionKind,
-  type ExtensionOperationRequest,
 } from "@kulo/protocol";
 import type { ConnectionVaultKeyStore } from "./connection-vault.js";
 import { ClusterSyncHttpError, ClusterSyncService, ensureLocalClusterKeys } from "./cluster-sync.js";
 import {
   ClusterFenceMonitor,
   archiveDivergedHubForConflict,
-  clearConflictBackupNotice,
-  readConflictBackupNotice,
   resolveClusterPaths,
   type ClusterPaths,
 } from "./cluster-lifecycle.js";
 import { openNativePermissionSettings } from "./connection-native-apps.js";
-import { handleComposioRoutes } from "./composio-routes.js";
-import { IdentityFilesError, getIdentityTemplate } from "./identity-files.js";
+import { IdentityFilesError } from "./identity-files.js";
 import { PersonalityError } from "./personality.js";
 import { UsageCapsError } from "./usage-caps.js";
 import { MEMORY_LLM_BRIDGE_PATH, MemoryLlmBridgeError } from "./memory-llm-bridge.js";
@@ -72,8 +49,6 @@ import { ConversationQueryError } from "./conversation-query.js";
 import { SkillError } from "./skills.js";
 import { CapabilityError } from "./capabilities.js";
 import { AgentConfigurationError } from "./agent-configuration.js";
-import { fetchAcpRegistryTemplates } from "./acp-registry.js";
-import { isNonPublicMcpUrl } from "./mcp-presets.js";
 import type { KuloHub } from "./hub.js";
 import { topicActivity } from "./topic-activity.js";
 import { SettingsUpdateError } from "./settings.js";
@@ -85,9 +60,9 @@ import { handleCapabilitiesRoutes } from "./http/capabilities-routes.js";
 import { handleDevicesAndClusterRoutes } from "./http/devices-cluster-routes.js";
 import { handleProjectsRoutes } from "./http/projects-routes.js";
 import { handleSettingsProvidersRoutes } from "./http/settings-providers-routes.js";
+import { handleSystemPermissionsRoutes, handleUiCardRoutes } from "./http/system-ui-routes.js";
 import { handleVoiceAssistantConnectionsRoutes } from "./http/voice-assistant-connections-routes.js";
 import { handleWorkspaceRoutes } from "./http/workspace-routes.js";
-import { MAINSTREAM_PROVIDER_PRESETS } from "./providers.js";
 import { UiCardError } from "./ui-cards.js";
 import { DeviceConnectionError, DeviceInterconnectionManager } from "./devices.js";
 import { isTicketUnfinished } from "./state.js";
@@ -1248,6 +1223,50 @@ export async function startKuloHubServer(
     return true;
   };
 
+  const devicesClusterRouteDeps = {
+    devices, sshDevices, mobileConnector, roleTransitions, clusterSync, fenceMonitor, clusterPaths,
+    peerRootDir: options.peerRootDir,
+    getActualPort: () => actualPort,
+    isClusterActive, ensurePrimaryClusterKeys, persistPrimaryClusterMembership,
+    requireMobileConnector, mobileMetadata, deviceView, setInterconnectionFromHttp,
+    prepareJoinPeer, performRemoveDevice,
+  };
+  const handleAssistantStreamRoute = async (ctx: HubHttpRouteContext): Promise<boolean> => {
+    if (ctx.pathname !== "/api/assistant/stream" || ctx.req.method !== "GET") return false;
+    const { req, res } = ctx;
+    res.setHeader("cache-control", "no-store");
+    const initial = await hub.getAssistantItemsSnapshot();
+    if (closing || res.writableEnded || res.destroyed) return true;
+    res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-store, must-revalidate", connection: "keep-alive", "x-accel-buffering": "no" });
+    res.write(`event: assistant_items\ndata: ${JSON.stringify(initial)}\n\n`);
+    const heartbeat = setInterval(() => {
+      if (!res.writableEnded && !res.destroyed) {
+        try { res.write(": keepalive\n\n"); } catch { /* ignore */ }
+      }
+    }, 20_000);
+    heartbeat.unref();
+    const entry = { res, heartbeat };
+    assistantStreamClients.add(entry);
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      assistantStreamClients.delete(entry);
+    };
+    req.on("close", cleanup);
+    res.on("close", cleanup);
+    return true;
+  };
+  const apiRouteHandlers: ReadonlyArray<(ctx: HubHttpRouteContext) => Promise<boolean>> = [
+    handleSystemPermissionsRoutes,
+    handleAssistantStreamRoute,
+    handleVoiceAssistantConnectionsRoutes,
+    handleUiCardRoutes,
+    (ctx) => handleDevicesAndClusterRoutes(ctx, devicesClusterRouteDeps),
+    handleCapabilitiesRoutes,
+    handleProjectsRoutes,
+    handleWorkspaceRoutes,
+    handleSettingsProvidersRoutes,
+  ];
+
   const handleHttp = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const pathname = parsedUrl.pathname;
@@ -1468,115 +1487,9 @@ export async function startKuloHubServer(
           openNativePermissionSettings: (kind) => options.openNativePermissionSettings ? options.openNativePermissionSettings(kind) : openNativePermissionSettings(kind),
         };
 
-        const systemPermissionsRoute = /^\/api\/envs\/([^/]+)\/system-permissions(\/guide)?$/.exec(pathname);
-        if (systemPermissionsRoute) {
-          res.setHeader("cache-control", "no-store");
-          if (req.headers["sec-fetch-site"] === "cross-site" || req.headers.origin && req.headers.origin !== requestOrigin(req)) {
-            throw new DeviceConnectionError("请在 Kulo 中检查和授权系统权限。", 403, "system_permissions_origin_required");
-          }
-          const guide = Boolean(systemPermissionsRoute[2]);
-          if (req.method !== (guide ? "POST" : "GET")) {
-            sendJson(res, 405, { error: "此系统权限接口不支持该操作。", code: "system_permissions_method_not_allowed" });
-            return;
-          }
-          let envId: string;
-          try { envId = decodeURIComponent(systemPermissionsRoute[1]!); }
-          catch { throw new DeviceConnectionError("设备标识无效。", 400, "system_permissions_invalid_device"); }
-          if (!envId || envId.length > 256 || /[\x00-\x1f\x7f]/.test(envId)) throw new DeviceConnectionError("设备标识无效。", 400, "system_permissions_invalid_device");
-          let guideKind: "accessibility" | "screen" | undefined;
-          if (guide) {
-            const body = await readJsonObject(req, 1024);
-            if (Object.keys(body).some((key) => key !== "kind") || body.kind !== "accessibility" && body.kind !== "screen") {
-              throw new DeviceConnectionError("请选择需要授权的桌面权限。", 400, "system_permissions_invalid_request");
-            }
-            guideKind = body.kind;
-          }
-          const descriptor = hub.envManager.getEnvDescriptor(envId);
-          if (!descriptor) throw new DeviceConnectionError("未找到此设备，请刷新设备列表。", 404, "system_permissions_device_not_found");
-          if (!descriptor.online) throw new DeviceConnectionError("设备已离线，请连接后重新检查。", 503, "system_permissions_device_offline");
-          if (descriptor.platform !== "darwin") {
-            if (guide) throw new DeviceConnectionError("此设备不支持 macOS 系统权限引导。", 409, "system_permissions_unsupported");
-            sendJson(res, 200, { platform: descriptor.platform,
-              permissions: [{ kind: "accessibility", state: "unsupported" }, { kind: "screen", state: "unsupported" }],
-            } satisfies DesktopSystemPermissions);
-            return;
-          }
-          if (!descriptor.capabilities.includes("agent-desktop")) throw new DeviceConnectionError("请在目标设备启用桌面操作后重新检查。", 409, "system_permissions_desktop_disabled");
-          const controller = new AbortController();
-          const onClose = () => { if (!res.writableEnded) controller.abort(); };
-          res.once("close", onClose);
-          try {
-            const result = await hub.envManager.requestComputerUse(
-              envId,
-              guide ? { tool: "desktop", action: "permission-guide", kind: guideKind } : { tool: "desktop", action: "permissions" },
-              controller.signal,
-            )
-              .catch(() => { throw new DeviceConnectionError("设备未能确认权限状态，请检查连接后重试；旧版本设备需要先更新。", 503, "system_permissions_device_unavailable"); });
-            if (!result.ok) {
-              const updateRequired = ["INVALID_INPUT", "CLI_INVALID_OUTPUT", "INVALID_TOOL_OUTPUT"].includes(result.error?.code ?? "");
-              throw new DeviceConnectionError(updateRequired ? "目标设备尚不支持此权限操作，请更新设备后重试。" : guide ? "未能开启系统权限引导，请在目标设备检查系统设置后重试。" : "未能检查系统权限，请检查目标设备的桌面工具后重试。", 502,
-                updateRequired ? "system_permissions_update_required" : "system_permissions_check_failed");
-            }
-            if (!isDesktopSystemPermissions(result.data) || result.data.platform !== descriptor.platform || (guide ? result.data.guide === undefined : result.data.guide !== undefined)) {
-              throw new DeviceConnectionError("目标设备返回的权限状态无效，请更新设备后重新检查。", 502, "system_permissions_invalid_response");
-            }
-            if (!res.destroyed) sendJson(res, 200, result.data);
-          } finally { res.off("close", onClose); }
-          return;
+        for (const handleRoute of apiRouteHandlers) {
+          if (await handleRoute(routeCtx)) return;
         }
-
-        if (pathname === "/api/assistant/stream" && req.method === "GET") {
-          res.setHeader("cache-control", "no-store");
-          const initial = await hub.getAssistantItemsSnapshot();
-          if (closing || res.writableEnded || res.destroyed) return;
-          res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-store, must-revalidate", connection: "keep-alive", "x-accel-buffering": "no" });
-          res.write(`event: assistant_items\ndata: ${JSON.stringify(initial)}\n\n`);
-          const heartbeat = setInterval(() => {
-            if (!res.writableEnded && !res.destroyed) {
-              try { res.write(": keepalive\n\n"); } catch { /* ignore */ }
-            }
-          }, 20_000);
-          heartbeat.unref();
-          const entry = { res, heartbeat };
-          assistantStreamClients.add(entry);
-          const cleanup = () => {
-            clearInterval(heartbeat);
-            assistantStreamClients.delete(entry);
-          };
-          req.on("close", cleanup);
-          res.on("close", cleanup);
-          return;
-        }
-        if (await handleVoiceAssistantConnectionsRoutes(routeCtx)) return;
-        const uiRoute = /^\/api\/ui\/cards\/([^/]+)(\/actions)?$/.exec(pathname);
-        if (uiRoute) {
-          const cardId = decodeURIComponent(uiRoute[1]!);
-          if (req.method === "GET" && !uiRoute[2]) {
-            const card = await hub.uiCards.get(cardId);
-            if (!card) throw new UiCardError("ui_card_not_found", "卡片不存在。", 404);
-            sendJson(res, 200, { card });
-            return;
-          }
-          if (req.method === "POST" && uiRoute[2]) {
-            const body = await readJsonBody(req, 128 * 1024) as import("@kulo/protocol").UiActionInput;
-            if (!body || body.cardId !== cardId) throw new UiCardError("invalid_ui_action", "卡片操作格式无效。");
-            sendJson(res, 200, await hub.submitUiAction(body));
-            return;
-          }
-        }
-        if (await handleDevicesAndClusterRoutes(routeCtx, {
-          devices, sshDevices, mobileConnector, roleTransitions, clusterSync, fenceMonitor, clusterPaths,
-          peerRootDir: options.peerRootDir,
-          getActualPort: () => actualPort,
-          isClusterActive, ensurePrimaryClusterKeys, persistPrimaryClusterMembership,
-          requireMobileConnector, mobileMetadata, deviceView, setInterconnectionFromHttp,
-          prepareJoinPeer, performRemoveDevice,
-        })) return;
-
-        if (await handleCapabilitiesRoutes(routeCtx)) return;
-        if (await handleProjectsRoutes(routeCtx)) return;
-        if (await handleWorkspaceRoutes(routeCtx)) return;
-        if (await handleSettingsProvidersRoutes(routeCtx)) return;
 
         sendJson(res, 404, { error: "API route not found" });
         return;

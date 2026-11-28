@@ -1,8 +1,7 @@
 import { AssistantEntry, ToolResultEntry, ROOT_CONVERSATION_ID, defineTask, type JsonObject } from "@earendil-works/pi-durable";
 import type { EnvManager } from "@kulo/env";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
-import { describeKuloError, detectOutwardShellCommandsFromToolText, isSupportedExternalAgentKind, type ExternalAgentBinding, type ExternalAgentPendingReport, type ExternalAgentQuotaProbeResult, type ExternalAgentRuntimeEvent, type ExternalAgentUncertainReason, type StagedWorkspaceDiffSummary, type TicketRecord, type TicketWait, type WorkerExecutionPhase, type WorkerReportRecord } from "@kulo/protocol";
-import { spillOversizedReport } from "./report-overflow.js";
+import { describeKuloError, isSupportedExternalAgentKind, type ExternalAgentBinding, type ExternalAgentPendingReport, type ExternalAgentQuotaProbeResult, type ExternalAgentUncertainReason, type StagedWorkspaceDiffSummary, type TicketRecord, type TicketWait, type WorkerReportRecord } from "@kulo/protocol";
 import { buildExternalAgentRunRequest, escapeXmlContent, formatExternalPermissionMessage, formatStagedDiffRelayLines, formatWorkerInitialPrompt, formatWorkerRelayMessage, reconcileConsumedResumeState, type MaterializedExternalAttachment } from "./prompts.js";
 import { KuloStateDoc, WorkerRelayEntry, getActiveStagedCwd, hasActiveSubagents, hasPendingWorkspaceApply, releaseSlot, transitionTicketStatus, tryClaimSlot, type KuloDurableState } from "./state.js";
 import { SettingsAssistantDoc, isActiveSettingsConversation, parseSettingsTopicConversationId } from "./settings-doc.js";
@@ -10,10 +9,17 @@ import { settlePendingSubagentsInTx } from "./subagent-runner.js";
 import { injectEventToolsInTx } from "./tool-surface.js";
 import type { KuloUploadStore } from "./uploads.js";
 import { nativeSearchEvidence, sanitizeSearchSources, selectCitedSources } from "./search-sources.js";
-import { appendTicketOutwardAction, beginTicketRecovery, epochOutwardActions, formatOutwardActionsSummary, resolveSupersededTickets, type createFailureRecoveryTask } from "./task-recovery.js";
+import { beginTicketRecovery, epochOutwardActions, formatOutwardActionsSummary, resolveSupersededTickets, type createFailureRecoveryTask } from "./task-recovery.js";
 import { submitAutomaticChatInput } from "./chat-control.js";
 import { bindDispatchedAttachments } from "./ticket-dispatch.js";
 import { evaluateInlineClaim } from "./android-delivery.js";
+import {
+  applyExternalRunSnapshotToTicket,
+  prepareCompletedExternalReports,
+  settleExternalPollFailure,
+  settleTerminalExternalRun,
+  updateExternalProgressReport,
+} from "./scheduler-external-settle.js";
 
 export type WorkerTicketTaskInput = {
   ticketId: string;
@@ -579,105 +585,18 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           }
           const redact = (value: string) => deps.redact?.(value) ?? value;
           const origin = run.permissions.length ? await runtime.conversation((activeTicket.originConversationId ?? ROOT_CONVERSATION_ID) as never, context) : undefined;
-          const activeExplicitReady =
-            activeTicket.externalExecution?.explicitReadyReport?.runEpoch === task.input.runEpoch
-              ? activeTicket.externalExecution.explicitReadyReport
-              : undefined;
-          const fallbackNaturalReport =
-            run.state === "completed" && !activeExplicitReady
-              ? spillOversizedReport({
-                  uploads: deps.uploads,
-                  ticketId: activeTicket.id,
-                  runEpoch: task.input.runEpoch,
-                  version: 0,
-                  ownerConversationId: activeTicket.workerConversationId,
-                  originConversationId: activeTicket.originConversationId,
-                  report: {
-                    state: "ready",
-                    summary: redact(run.text.slice(0, 1200) || "客户端已结束执行，等待主 Agent 验收。"),
-                    ...(run.text ? { deliverable: redact(run.text) } : {}),
-                    at: runtime.now(),
-                  },
-                })
-              : undefined;
-          const backfilledExplicitReady =
-            run.state === "completed" &&
-            activeExplicitReady &&
-            !activeExplicitReady.deliverable &&
-            !activeExplicitReady.overflowAsset &&
-            run.text.trim().length > 0
-              ? spillOversizedReport({
-                  uploads: deps.uploads,
-                  ticketId: activeTicket.id,
-                  runEpoch: task.input.runEpoch,
-                  version: activeExplicitReady.version,
-                  ownerConversationId: activeTicket.workerConversationId,
-                  originConversationId: activeTicket.originConversationId,
-                  report: {
-                    state: activeExplicitReady.state,
-                    summary: activeExplicitReady.summary,
-                    deliverable: redact(run.text),
-                    ...(activeExplicitReady.attachments ? { attachments: activeExplicitReady.attachments } : {}),
-                    at: activeExplicitReady.at,
-                  },
-                })
-              : undefined;
-          const phaseLabel = (phase?: WorkerExecutionPhase): string => {
-            switch (phase) {
-              case "investigating": return "正在排查分析…";
-              case "editing": return "正在编辑修改…";
-              case "verifying": return "正在运行验证…";
-              case "responding": return "正在整理回复…";
-              case "waiting_permission": return "等待客户端授权…";
-              default: return "客户端正在执行。";
-            }
-          };
-          const isHeartbeatStateEvent = (ev: ExternalAgentRuntimeEvent) =>
-            ev.type === "state" && /^(?:Thinking|Reasoning|Executing|Working|Running tool)\.\.\.$/.test(ev.text);
+          const { fallbackNaturalReport, backfilledExplicitReady } = prepareCompletedExternalReports({
+            ticket: activeTicket,
+            runEpoch: task.input.runEpoch,
+            run,
+            uploads: deps.uploads,
+            redact,
+            now: runtime.now(),
+          });
           await runtime.commit(async (tx) => {
             const live = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
             if (!live || live.runEpoch !== task.input.runEpoch) return { status: "terminal", outcome: { status: "aborted" } };
-            live.externalExecution!.sessionId = run.sessionId;
-            live.externalExecution!.lastSequence = Math.max(0, run.nextSequence - 1);
-            live.externalExecution!.pendingPermissions = run.permissions;
-            if (run.stagedCwd) live.externalExecution!.stagedCwd = run.stagedCwd;
-            if (run.stagedDiff) live.externalExecution!.stagedDiff = run.stagedDiff;
-            if (run.phase) live.externalExecution!.phase = run.phase;
-            if (run.touchedFiles?.length) live.externalExecution!.touchedFiles = [...run.touchedFiles];
-            if (run.uncertainReason) live.externalExecution!.uncertainReason = run.uncertainReason;
-            if (run.readOnlyViolation) live.externalExecution!.readOnlyViolation = run.readOnlyViolation;
-            if (run.events.length > 0) {
-              live.externalExecution!.lastActivityAt = Math.max(
-                live.externalExecution!.lastActivityAt ?? 0,
-                ...run.events.map((event) => event.at),
-              );
-              const nonMessage = run.events.filter((ev) => ev.type !== "message");
-              if (nonMessage.length > 0) {
-                const merged = [...(live.externalExecution!.recentEvents ?? [])];
-                const seenSeq = new Set(merged.map((ev) => ev.sequence));
-                for (const ev of nonMessage) {
-                  if (seenSeq.has(ev.sequence)) continue;
-                  if (ev.type === "tool") {
-                    for (const label of detectOutwardShellCommandsFromToolText(ev.text)) {
-                      appendTicketOutwardAction(live, {
-                        runEpoch: task.input.runEpoch,
-                        kind: "external_bash",
-                        label,
-                        at: ev.at,
-                      });
-                    }
-                  }
-                  const last = merged.at(-1);
-                  if (last && isHeartbeatStateEvent(ev) && isHeartbeatStateEvent(last) && last.text === ev.text) {
-                    merged[merged.length - 1] = { sequence: ev.sequence, at: ev.at, type: ev.type, text: redact(ev.text).slice(0, 500) };
-                  } else {
-                    merged.push({ sequence: ev.sequence, at: ev.at, type: ev.type, text: redact(ev.text).slice(0, 500) });
-                  }
-                  seenSeq.add(ev.sequence);
-                }
-                live.externalExecution!.recentEvents = merged.slice(-30);
-              }
-            }
+            applyExternalRunSnapshotToTicket(live, run, task.input.runEpoch, redact);
             if (origin) for (const permission of run.permissions) {
               const notified = live.externalExecution!.notifiedPermissions ?? [];
               if (notified.includes(permission.id)) continue;
@@ -694,84 +613,16 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
                 entry: { kind: WorkerRelayEntry.kind, data: { ticketId: ticket.id, title: ticket.title, role: ticket.role, state: "blocked", summary: redact(permission.title), question: "本地客户端正在等待授权决定。", deliverable: null } } });
               live.externalExecution!.notifiedPermissions = [...notified, permission.id];
             }
-            const explicitReady =
-              live.externalExecution?.explicitReadyReport?.runEpoch === task.input.runEpoch
-                ? live.externalExecution.explicitReadyReport
-                : undefined;
-            if ((run.events.length || run.permissions.length) && !explicitReady && (!live.latestReport || live.latestReport.state === "progress")) {
-              const latestTool = [...(live.externalExecution!.recentEvents ?? [])].reverse().find((ev) => ev.type === "tool");
-              live.updatedAt = runtime.now();
-              live.latestReport = {
-                state: "progress",
-                summary: redact(
-                  run.permissions[0]?.title ??
-                    (run.text.trim() ? run.text.slice(-1200) : latestTool?.text ?? phaseLabel(run.phase ?? live.externalExecution!.phase)),
-                ),
-                at: runtime.now(),
-              };
-            }
-            if (["completed", "failed", "cancelled", "uncertain"].includes(run.state)) {
-              if (live.externalExecution!.interruptPending && live.wakePending && live.resumePrompt) {
-                live.latestReport = { state: "progress", summary: "已中断上一轮执行，正在继续新指令。", at: runtime.now() };
-                return { status: "running", checkpoint: { phase: "deliver_report" } };
-              }
-              const readOnlyViolation = run.readOnlyViolation ?? live.externalExecution?.readOnlyViolation;
-              const withViolation = (base: WorkerReportRecord): WorkerReportRecord =>
-                readOnlyViolation ? { ...base, readOnlyViolation } : base;
-              const autoRecoverableFailure = run.state === "failed" && live.agentAssignment?.source === "orchestrator";
-              const resumableTimeout =
-                run.state === "uncertain" &&
-                run.uncertainReason === "timeout" &&
-                Boolean(run.sessionId);
-              if (run.state === "completed") {
-                if (live.latestReport && ["blocked", "failed"].includes(live.latestReport.state)) {
-                  live.latestReport = withViolation(live.latestReport);
-                } else if (explicitReady) {
-                  const { runEpoch: _re, version: _ver, ...preserved } = explicitReady;
-                  const resolved = !preserved.deliverable && !preserved.overflowAsset && backfilledExplicitReady
-                    ? { ...preserved, ...(backfilledExplicitReady.deliverable ? { deliverable: backfilledExplicitReady.deliverable } : {}), ...(backfilledExplicitReady.overflowAsset ? { overflowAsset: backfilledExplicitReady.overflowAsset } : {}) }
-                    : preserved;
-                  live.latestReport = withViolation(resolved);
-                } else {
-                  live.latestReport = withViolation(
-                    fallbackNaturalReport ?? {
-                      state: "ready",
-                      summary: redact(run.text.slice(0, 1200) || "客户端已结束执行，等待主 Agent 验收。"),
-                      ...(run.text ? { deliverable: redact(run.text) } : {}),
-                      at: runtime.now(),
-                    },
-                  );
-                }
-              } else if (resumableTimeout) {
-                const elapsedSec = Math.max(1, Math.round((runtime.now() - (live.startedRunningAt ?? live.createdAt)) / 1000));
-                const diff = run.stagedDiff ?? live.externalExecution?.stagedDiff;
-                const stagedCounts = diff?.hasChanges
-                  ? `+${diff.added.length} 新增 / ~${diff.modified.length} 修改 / -${diff.deleted.length} 删除`
-                  : undefined;
-                live.latestReport = withViolation({
-                  state: "blocked",
-                  summary: `外部智能体已运行约 ${elapsedSec} 秒并触发单次超时上限，原会话存档点（sessionId）已完整保留${stagedCounts ? `（暂存区已有部分改动：${stagedCounts}）` : ""}。`,
-                  question: `该任务已运行约 ${elapsedSec} 秒达到单次超时上限，但原生会话进度${stagedCounts ? `与暂存区部分改动（${stagedCounts}）` : ""}均已保留。是否基于原会话继续加时执行，或先审阅当前进度？`,
-                  at: runtime.now(),
-                });
-              } else if (autoRecoverableFailure) {
-                live.latestReport = withViolation({
-                  state: "failed",
-                  summary: redact(run.error || "外部智能体执行失败。"),
-                  at: runtime.now(),
-                });
-              } else {
-                const question = run.state === "failed"
-                  ? `具体原因：${redact(run.error || "客户端未返回失败原因")}\n请按错误原因恢复指定客户端后，再决定是否重试；不会自动改派其他智能体。`
-                  : "请检查原会话后决定是否继续；未自动重发任务。";
-                live.latestReport = withViolation({
-                  state: "blocked",
-                  summary: redact(run.error || `客户端状态：${run.state}`),
-                  question,
-                  at: runtime.now(),
-                });
-                live.waiting = { reason: "user", since: runtime.now(), detail: question };
-              }
+            updateExternalProgressReport(live, run, task.input.runEpoch, redact, runtime.now());
+            if (settleTerminalExternalRun({
+              live,
+              run,
+              runEpoch: task.input.runEpoch,
+              fallbackNaturalReport,
+              backfilledExplicitReady,
+              redact,
+              now: runtime.now(),
+            })) {
               return { status: "running", checkpoint: { phase: "deliver_report" } };
             }
             return { status: "sleeping", until: runtime.now() + 750, checkpoint: { phase: "external_wait" } };
@@ -783,24 +634,16 @@ export function createWorkerTicketTask(deps: WorkerTicketTaskDependencies) {
           await runtime.commit(async (tx) => {
             const live = (await tx.doc(KuloStateDoc)).tickets[ticket.id];
             if (!live || live.runEpoch !== task.input.runEpoch) return { status: "terminal", outcome: { status: "aborted" } };
-            const hasExplicitReady = live.externalExecution?.explicitReadyReport?.runEpoch === task.input.runEpoch;
-            if (failures < 6 && !/not found|归属不匹配|状态无效/i.test(message)) {
-              if (!hasExplicitReady && (!live.latestReport || live.latestReport.state === "progress")) {
-                live.latestReport = { state: "progress", summary: message, at: runtime.now() };
-              }
-              return { status: "sleeping", until: runtime.now() + 1500, checkpoint: { phase: "external_wait", failures } };
-            }
-            if (live?.runEpoch === task.input.runEpoch) {
-              if (hasExplicitReady) {
-                const { runEpoch: _re, version: _ver, ...preserved } = live.externalExecution!.explicitReadyReport!;
-                live.latestReport = preserved;
-              } else {
-                const question = "原执行接收状态不明确，请核对客户端后继续；未自动重发。";
-                live.latestReport = { state: "blocked", summary: message, question, at: runtime.now() };
-                live.waiting = { reason: "user", since: runtime.now(), detail: question };
-              }
-            }
-            return { status: "running", checkpoint: { phase: "deliver_report" } };
+            const action = settleExternalPollFailure({
+              live,
+              runEpoch: task.input.runEpoch,
+              failures,
+              message,
+              now: runtime.now(),
+            });
+            return action === "sleep"
+              ? { status: "sleeping", until: runtime.now() + 1500, checkpoint: { phase: "external_wait", failures } }
+              : { status: "running", checkpoint: { phase: "deliver_report" } };
           }, context);
         }
       },

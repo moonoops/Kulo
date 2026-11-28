@@ -4,23 +4,14 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { isDeepStrictEqual } from "node:util";
 import { defineDoc, type JsonObject } from "@earendil-works/pi-durable";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { migrateSettingsRolesOnHydrate } from "./settings-role-migration.js";
 import {
   CUSTOM_PROVIDER_APIS,
-  EXTERNAL_AGENT_KINDS,
-  externalClientConnectionId,
-  inferModelPurpose,
-  isBlockedCustomAcpExecutableName,
-  isBundledClaudeSdkExecutable,
   isConversationModel, supportsKeylessLocalModel,
   isImageGenerationModel,
-  isPersonalExternalAgentKind,
-  isValidCustomAcpAgentRef,
-  validateCustomAcpArgs,
   MODEL_PROTOCOL_ADAPTERS,
   MODEL_PURPOSES,
   normalizeImageGenerationParameters,
@@ -30,14 +21,12 @@ import {
   validateCustomImageAdapter,
   validateImageModelProfile,
   VertexConfigError,
-  defaultRolePresets,
   type AgentExpressionState,
   type CompactionConfig,
   type CustomModelConfig,
   type CustomProviderApi,
   type CustomProviderConfig,
   type ExecutorSlotsConfig,
-  type ExternalAgentBinding,
   type ExternalAgentModelInfo,
   type ExternalClientConnection,
   type HindsightMemoryConfig,
@@ -48,10 +37,8 @@ import {
   type ModelPurpose,
   type PresentationConfig,
   type RolePreset,
-  type RoleThinkingEffort,
   type SettingsBlockName,
   type SettingsHistoryItem,
-  type ThinkingEffort,
   type BuiltinThinkingEffort,
   type ThinkingLevelOption,
   type ThinkingLevelMapConfig,
@@ -68,7 +55,6 @@ import {
 } from "./config.js";
 import { resolveHindsightToken, resolveHindsightSharedReadToken } from "./hindsight.js";
 import { subscriptionModelTemplate } from "./subscription-models.js";
-import { AgentRoutingError, assertAgentDefaultScopes, normalizeAgentDispatchPolicy } from "./agent-routing.js";
 import {
   applyExecutorBlockUpdate,
   createFreshExecutorConfig,
@@ -76,8 +62,19 @@ import {
   resolveRollbackExecutorConfig,
   SettingsUpdateError,
 } from "./settings-executor.js";
+import {
+  VALID_THINKING_KEYS,
+  applyRolesBlockUpdate,
+  assertConversationModelSelection,
+  bindingFromExternalClient,
+  cleanupRemovedRoleModels,
+  configuredModel,
+  isValidThinkingSelection,
+  normalizeRoleThinkingSelections,
+  syncExternalClientsInSettings,
+} from "./settings-roles.js";
 
-export { normalizeExecutorConfig, SettingsUpdateError };
+export { bindingFromExternalClient, normalizeExecutorConfig, SettingsUpdateError, syncExternalClientsInSettings };
 
 const VALID_CUSTOM_APIS = new Set<CustomProviderApi>(CUSTOM_PROVIDER_APIS);
 
@@ -94,15 +91,6 @@ function sanitizeVertexConfig(raw: { vertexProject?: unknown; vertexLocation?: u
 }
 
 const VALID_MODALITIES = new Set<ModelModality>(["text", "image", "audio", "video", "pdf"]);
-const VALID_THINKING_KEYS: readonly BuiltinThinkingEffort[] = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-];
 
 function sanitizeModalities(
   raw: unknown,
@@ -388,149 +376,6 @@ function clampInt(raw: unknown, fallback: number, min: number, max: number): num
   return Math.min(max, Math.max(min, Math.round(n)));
 }
 
-function parseRoleThinking(
-  raw: unknown,
-  fallback: RoleThinkingEffort = "auto",
-): RoleThinkingEffort {
-  if (raw === "auto") return "auto";
-  if (typeof raw === "string") {
-    const trimmed = raw.trim();
-    if (!trimmed) return fallback;
-    return parseThinking(trimmed, fallback === "auto" ? "medium" : fallback);
-  }
-  return fallback;
-}
-
-function parseExternalRoleThinking(raw: unknown): RoleThinkingEffort {
-  if (raw === undefined || raw === null) return "auto";
-  if (typeof raw !== "string") {
-    throw new SettingsUpdateError(400, "外部智能体的思考深度标识无效。");
-  }
-  const trimmed = raw.trim();
-  if (!trimmed || trimmed === "auto") return "auto";
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(trimmed)) {
-    throw new SettingsUpdateError(400, "外部智能体的思考深度标识无效。");
-  }
-  return trimmed as RoleThinkingEffort;
-}
-
-function configuredModel(
-  config: ModelGatewayConfig,
-  provider: string | undefined,
-  modelId: string,
-): CustomModelConfig | undefined {
-  const providerId = provider || config.defaultProvider || (!config.gatewayDisabled ? "kulo-gateway" : undefined);
-  if (!providerId || (providerId === "kulo-gateway" && config.gatewayDisabled)) return undefined;
-  const subscriptionModels = config.subscriptionModels && Object.hasOwn(config.subscriptionModels, providerId)
-    ? config.subscriptionModels[providerId] : undefined;
-  return providerId === "kulo-gateway"
-    ? config.gatewayModels?.find((model) => model.id === modelId)
-    : subscriptionModels?.find((model) => model.id === modelId) ??
-      config.customProviders?.find((entry) => entry.id === providerId)?.models.find((model) => model.id === modelId);
-}
-
-function isValidThinkingSelection(model: CustomModelConfig | undefined, selection: string): boolean {
-  return model?.thinkingLevels?.length
-    ? model.thinkingLevels.some((option) => option.id === selection)
-    : VALID_THINKING_KEYS.includes(selection as BuiltinThinkingEffort);
-}
-
-function assertConversationModelSelection(config: ModelGatewayConfig, provider: string | undefined, modelId: string): void {
-  if (!modelId) return;
-  const candidate = configuredModel(config, provider, modelId) ?? { id: modelId };
-  const purpose = inferModelPurpose(candidate);
-  if (purpose === "image") {
-    throw new SettingsUpdateError(400, `模型「${modelId}」用于图像生成，请在工具技能的图像能力中配置。`);
-  }
-  if (purpose !== "chat") {
-    throw new SettingsUpdateError(400, `模型「${modelId}」是语音或实时通话模型，不能设为默认对话或智能体模型。`);
-  }
-}
-
-function cleanupRemovedRoleModels(
-  roles: Record<string, RolePreset>,
-  prevModel: ModelGatewayConfig,
-  nextModel: ModelGatewayConfig,
-): boolean {
-  let changed = false;
-  const prevCustomById = new Map((prevModel.customProviders ?? []).map((p) => [p.id, p]));
-  const nextCustomById = new Map((nextModel.customProviders ?? []).map((p) => [p.id, p]));
-  const prevGatewayModels = new Set((prevModel.gatewayModels ?? []).map((m) => m.id));
-  const nextGatewayChatModels = new Set(
-    (nextModel.gatewayModels ?? []).filter((m) => isConversationModel(m)).map((m) => m.id),
-  );
-
-  for (const role of Object.values(roles)) {
-    if (role.external) continue;
-    const explicitProvider = role.provider?.trim();
-    const modelId = role.modelId?.trim();
-    if (!explicitProvider && !modelId) continue;
-
-    let shouldClear = false;
-    if (explicitProvider === "kulo-gateway") {
-      if (nextModel.gatewayDisabled) {
-        shouldClear = true;
-      } else if (modelId && prevGatewayModels.has(modelId) && !nextGatewayChatModels.has(modelId)) {
-        shouldClear = true;
-      }
-    } else if (explicitProvider && prevCustomById.has(explicitProvider)) {
-      const prevCustom = prevCustomById.get(explicitProvider)!;
-      const nextCustom = nextCustomById.get(explicitProvider);
-      if (!nextCustom) {
-        shouldClear = true;
-      } else if (
-        modelId &&
-        prevCustom.models.some((m) => m.id === modelId) &&
-        !nextCustom.models.some((m) => m.id === modelId && isConversationModel(m))
-      ) {
-        shouldClear = true;
-      }
-    } else if (
-      explicitProvider &&
-      modelId &&
-      prevModel.subscriptionModels &&
-      Object.hasOwn(prevModel.subscriptionModels, explicitProvider) &&
-      prevModel.subscriptionModels[explicitProvider]!.some((m) => m.id === modelId)
-    ) {
-      const nextSub = nextModel.subscriptionModels && Object.hasOwn(nextModel.subscriptionModels, explicitProvider)
-        ? nextModel.subscriptionModels[explicitProvider]
-        : undefined;
-      if (nextSub && !nextSub.some((m) => m.id === modelId && isConversationModel(m))) {
-        shouldClear = true;
-      }
-    } else if (!explicitProvider && modelId) {
-      const prevImplicitProvider = prevModel.defaultProvider?.trim() || (!prevModel.gatewayDisabled ? "kulo-gateway" : "");
-      if (prevImplicitProvider === "kulo-gateway" && nextModel.gatewayDisabled) {
-        shouldClear = true;
-      }
-    }
-
-    if (shouldClear) {
-      delete role.provider;
-      delete role.modelId;
-      role.thinkingLevel = "auto";
-      changed = true;
-    }
-  }
-  return changed;
-}
-
-function normalizeRoleThinkingSelections(roles: Record<string, RolePreset>, config: ModelGatewayConfig): boolean {
-  let changed = false;
-  for (const role of Object.values(roles)) {
-    if (role.external) continue;
-    if (!role.thinkingLevel || role.thinkingLevel === "auto") continue;
-    const model = configuredModel(config, role.provider, role.modelId || config.defaultModel);
-    const next = model?.reasoning === false || model?.thinkingEnabled === false ? "off" :
-      isValidThinkingSelection(model, role.thinkingLevel) ? role.thinkingLevel : "auto";
-    if (role.thinkingLevel !== next) {
-      role.thinkingLevel = next;
-      changed = true;
-    }
-  }
-  return changed;
-}
-
 function normalizeCompactionConfig(raw: unknown, fallback = DEFAULT_COMPACTION_CONFIG): CompactionConfig {
   if (!raw || typeof raw !== "object") return { ...fallback };
   const obj = raw as Record<string, unknown>;
@@ -768,98 +613,6 @@ export const KuloSettingsDoc = defineDoc<KuloDurableSettings & JsonObject>({
 
 function cleanJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
-}
-
-export function bindingFromExternalClient(client: ExternalClientConnection): ExternalAgentBinding {
-  const executable =
-    client.executable && !(client.kind === "claude-code" && isBundledClaudeSdkExecutable(client.executable))
-      ? client.executable
-      : undefined;
-  return {
-    kind: client.kind,
-    envId: client.envId,
-    ...(executable ? { executable } : {}),
-    ...(client.kind === "acp" && client.acpArgs?.length ? { acpArgs: [...client.acpArgs] } : {}),
-    ...(client.agentRef ? { agentRef: client.agentRef } : {}),
-    ...(client.cdpUrl ? { cdpUrl: client.cdpUrl } : {}),
-    ...(client.experimental !== undefined ? { experimental: client.experimental } : {}),
-    ...(client.version ? { version: client.version } : {}),
-    ...(client.verifiedAt !== undefined ? { verifiedAt: client.verifiedAt } : {}),
-    ...(client.capabilities ? { capabilities: cleanJson(client.capabilities) } : {}),
-  };
-}
-
-export function syncExternalClientsInSettings(
-  doc: KuloDurableSettings,
-  clientModels?: Record<string, ExternalAgentModelInfo[]>,
-  removeClientIds?: readonly string[],
-  clientPatches?: Record<string, Partial<ExternalClientConnection>>,
-  upsertClients?: Record<string, ExternalClientConnection>,
-): void {
-  const existing = doc.externalClients ? cleanJson(doc.externalClients) : {};
-  for (const clientId of removeClientIds ?? []) {
-    delete existing[clientId];
-  }
-  if (upsertClients) {
-    for (const [clientId, client] of Object.entries(upsertClients)) {
-      const nextClient = cleanJson(client);
-      if (nextClient.kind === "claude-code" && isBundledClaudeSdkExecutable(nextClient.executable)) {
-        delete nextClient.executable;
-      }
-      existing[clientId] = { ...nextClient, id: clientId };
-    }
-  }
-  for (const client of Object.values(existing)) {
-    if (client.kind === "claude-code" && isBundledClaudeSdkExecutable(client.executable)) {
-      delete client.executable;
-    }
-  }
-  if (clientPatches) {
-    for (const [clientId, patch] of Object.entries(clientPatches)) {
-      const prior = existing[clientId];
-      if (!prior) continue;
-      const merged: ExternalClientConnection = {
-        ...prior,
-        ...cleanJson(patch),
-        id: prior.id,
-        kind: prior.kind,
-        envId: prior.envId,
-      };
-      if (merged.kind === "claude-code" && isBundledClaudeSdkExecutable(merged.executable)) {
-        delete merged.executable;
-      }
-      existing[clientId] = merged;
-    }
-  }
-  for (const role of Object.values(doc.roles)) {
-    if (!role.external) continue;
-    if (role.external.kind === "claude-code" && isBundledClaudeSdkExecutable(role.external.executable)) {
-      delete role.external.executable;
-    }
-    const clientId = role.externalClientId?.trim() || externalClientConnectionId(role.external);
-    const prior = existing[clientId];
-    const suppliedModels = clientModels?.[clientId];
-    const patched = clientPatches?.[clientId];
-    const clientLabel = prior?.label ?? (role.external.kind === "acp" ? role.label : undefined);
-    existing[clientId] = {
-      id: clientId,
-      kind: role.external.kind,
-      envId: role.external.envId,
-      ...(clientLabel ? { label: clientLabel } : {}),
-      ...(role.external.executable ? { executable: role.external.executable } : {}),
-      ...(role.external.kind === "acp" && role.external.acpArgs?.length ? { acpArgs: [...role.external.acpArgs] } : {}),
-      ...(role.external.agentRef ? { agentRef: role.external.agentRef } : {}),
-      ...(role.external.cdpUrl ? { cdpUrl: role.external.cdpUrl } : {}),
-      ...(role.external.experimental !== undefined ? { experimental: role.external.experimental } : {}),
-      ...(role.external.version ? { version: role.external.version } : {}),
-      ...(role.external.verifiedAt !== undefined ? { verifiedAt: role.external.verifiedAt } : {}),
-      ...(role.external.capabilities ? { capabilities: cleanJson(role.external.capabilities) } : {}),
-      models: suppliedModels ? cleanJson(suppliedModels) : prior?.models ?? [],
-      updatedAt: patched?.updatedAt ?? (suppliedModels ? Date.now() : prior?.updatedAt ?? Date.now()),
-    };
-  }
-  if (Object.keys(existing).length > 0) doc.externalClients = existing;
-  else delete doc.externalClients;
 }
 
 export function normalizeMemoryConfig(value: HindsightMemoryConfig): HindsightMemoryConfig {
@@ -1179,182 +932,7 @@ export function applySettingsBlockUpdate(
     }
 
     case "roles": {
-      if (!options.externalAgents) {
-        for (const [id, current] of Object.entries(doc.roles)) {
-          if (!current.external) continue;
-          const clientId = current.externalClientId?.trim() || externalClientConnectionId(current.external);
-          const connected = doc.externalClients?.[clientId];
-          const nextEntry = (val as Record<string, unknown>)[id] as Record<string, unknown> | undefined;
-          if (!connected) {
-            if (!isDeepStrictEqual(current, nextEntry)) {
-              throw new SettingsUpdateError(400, "外部智能体请通过智能体页面右侧对话修改。");
-            }
-            continue;
-          }
-          if (!nextEntry) continue;
-          const nextIsExternal = Boolean(nextEntry.external || nextEntry.externalClientId);
-          if (nextIsExternal && !isDeepStrictEqual(current.dispatchPolicy, nextEntry.dispatchPolicy)) {
-            throw new SettingsUpdateError(400, "外部智能体请通过智能体页面右侧对话修改。");
-          }
-        }
-      }
-      const parseExternalServiceTier = (raw: unknown): string | undefined => {
-        if (raw === undefined || raw === null) return undefined;
-        if (typeof raw !== "string") {
-          throw new SettingsUpdateError(400, "外部智能体服务档位无效。");
-        }
-        const clean = raw.trim();
-        if (!clean || clean === "auto" || clean === "__client_default__") return undefined;
-        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(clean)) {
-          throw new SettingsUpdateError(400, "外部智能体服务档位无效。");
-        }
-        return clean;
-      };
-      const nextRoles: Record<string, RolePreset> = {};
-      const updatedClientBindings = new Map<string, ExternalAgentBinding>();
-      for (const [roleId, entry] of Object.entries(val)) {
-        if (!/^[a-z][a-z0-9_-]{0,39}$/.test(roleId) || !entry || typeof entry !== "object") {
-          throw new SettingsUpdateError(400, `角色 ID "${roleId}" 格式非法（需小写字母开头，40 字符内）。`);
-        }
-        const r = entry as Record<string, unknown>;
-        const existingRole = doc.roles[roleId];
-        const hasExplicitClientId = typeof r.externalClientId === "string" && Boolean(r.externalClientId.trim());
-        const explicitClientId = hasExplicitClientId
-          ? (r.externalClientId as string).trim()
-          : r.external
-            ? existingRole?.externalClientId?.trim()
-            : undefined;
-        let externalClientId = explicitClientId;
-        let external = r.external as RolePreset["external"];
-        if (!options.externalAgents && externalClientId) {
-          const connected = doc.externalClients?.[externalClientId];
-          if (!connected) throw new SettingsUpdateError(400, "请通过右侧对话连接外部智能体。");
-          external = bindingFromExternalClient(connected);
-        }
-        if (external) {
-          if (typeof external !== "object" || Array.isArray(external) || !(EXTERNAL_AGENT_KINDS as readonly unknown[]).includes(external.kind) || typeof external.envId !== "string" || !external.envId.trim() || external.envId.length > 200 ||
-              Object.keys(external).some((key) => !["kind", "envId", "executable", "acpArgs", "agentRef", "cdpUrl", "experimental", "version", "verifiedAt", "capabilities"].includes(key))) {
-            throw new SettingsUpdateError(400, "外部智能体连接配置无效。");
-          }
-          if (external.kind === "claude-code" && isBundledClaudeSdkExecutable(external.executable)) {
-            external = { ...external };
-            delete external.executable;
-          }
-          if (external.executable !== undefined && (typeof external.executable !== "string" || !external.executable || !/^(?:\/|[A-Za-z]:[\\/])/.test(external.executable) || /[\x00-\x1f]/.test(external.executable))) throw new SettingsUpdateError(400, "客户端路径必须是绝对路径。");
-          if (external.acpArgs !== undefined) {
-            if (external.kind !== "acp") throw new SettingsUpdateError(400, "仅自定义 ACP 客户端支持启动参数。");
-            const validatedArgs = validateCustomAcpArgs(external.acpArgs);
-            if (!validatedArgs.ok) throw new SettingsUpdateError(400, validatedArgs.error);
-            external = { ...external, ...(validatedArgs.value.length ? { acpArgs: validatedArgs.value } : {}) };
-            if (!validatedArgs.value.length) delete external.acpArgs;
-          }
-          if (external.kind === "acp") {
-            if (!external.executable) throw new SettingsUpdateError(400, "自定义 ACP 客户端必须指定绝对可执行文件路径。");
-            if (isBlockedCustomAcpExecutableName(external.executable)) throw new SettingsUpdateError(400, "自定义 ACP 客户端路径不能是通用 Shell、脚本解释器或包拉取执行器。");
-            if (!isValidCustomAcpAgentRef(external.agentRef)) throw new SettingsUpdateError(400, "自定义 ACP 客户端标识格式无效。");
-          }
-          if (external.experimental !== undefined && typeof external.experimental !== "boolean" ||
-              external.agentRef !== undefined && (typeof external.agentRef !== "string" || !external.agentRef.trim() || external.agentRef.length > 200 || /[\x00-\x1f]/.test(external.agentRef)) ||
-              external.version !== undefined && (typeof external.version !== "string" || external.version.length > 200 || /[\x00-\x1f]/.test(external.version)) ||
-              external.verifiedAt !== undefined && (typeof external.verifiedAt !== "number" || !Number.isFinite(external.verifiedAt) || external.verifiedAt <= 0)) throw new SettingsUpdateError(400, "外部智能体连接信息无效。");
-          const derivedClientId = externalClientId || externalClientConnectionId(external);
-          const connected = doc.externalClients?.[derivedClientId];
-          if (!options.externalAgents && !existingRole?.external && !connected) {
-            throw new SettingsUpdateError(400, "请通过右侧对话连接外部智能体。");
-          }
-          if (!options.externalAgents && connected) {
-            external = bindingFromExternalClient(connected);
-          }
-          externalClientId = derivedClientId;
-          if (external.cdpUrl !== undefined) {
-            let url: URL;
-            try { url = new URL(external.cdpUrl); } catch { throw new SettingsUpdateError(400, "实验调试地址无效。"); }
-            if (external.kind !== "grok-bot" || typeof external.cdpUrl !== "string" || url.protocol !== "http:" ||
-                !["127.0.0.1", "[::1]"].includes(url.hostname) || url.username || url.password || url.search || url.hash || url.pathname !== "/") throw new SettingsUpdateError(400, "实验调试地址必须是当前设备的回环地址。");
-          }
-          if (external.capabilities !== undefined) {
-            const capabilities = external.capabilities;
-            if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities) ||
-                Object.keys(capabilities).some((key) => !["resume", "cancel", "models", "permissions", "collaboration", "terminalEvidence"].includes(key)) ||
-                ["resume", "cancel", "models", "permissions", "collaboration"].some((key) => typeof capabilities[key as keyof typeof capabilities] !== "boolean") ||
-                !["native", "observed", "none"].includes(capabilities.terminalEvidence)) throw new SettingsUpdateError(400, "外部智能体能力声明无效。");
-          }
-          if (r.enabled !== false && (!Number.isFinite(external.verifiedAt) || isPersonalExternalAgentKind(external.kind))) throw new SettingsUpdateError(400, "此连接尚未完成稳定任务通信验证，不能启用自动派发。");
-          if (options.externalAgents && (!existingRole?.external || !isDeepStrictEqual(existingRole.external, external))) {
-            updatedClientBindings.set(externalClientId, cleanJson(external));
-          }
-        }
-        let dispatchPolicy: RolePreset["dispatchPolicy"];
-        if (r.dispatchPolicy !== undefined) {
-          if (!external) throw new SettingsUpdateError(400, "默认承接设置仅适用于外部智能体。");
-          try { dispatchPolicy = normalizeAgentDispatchPolicy(r.dispatchPolicy); }
-          catch (error) { if (error instanceof AgentRoutingError) throw new SettingsUpdateError(error.status, error.message); throw error; }
-        }
-        const label = String(r.label ?? "").trim();
-        const whenToUse = String(r.whenToUse ?? "").trim();
-        const prompt = String(r.prompt ?? "").trim();
-        if (!label || !whenToUse || !prompt) {
-          throw new SettingsUpdateError(400, `角色 "${roleId}" 缺少名称、适用场景或系统提示词。`);
-        }
-        const provider =
-          typeof r.provider === "string" && r.provider.trim()
-            ? r.provider.trim()
-            : undefined;
-        const serviceTier = external ? parseExternalServiceTier(r.serviceTier) : undefined;
-        nextRoles[roleId] = {
-          id: roleId,
-          label,
-          whenToUse,
-          prompt,
-          enabled: r.enabled !== false,
-          readOnly: Boolean(r.readOnly),
-          allowSubagents: Boolean(r.allowSubagents),
-          ...(provider && !external ? { provider } : {}),
-          ...(explicitClientId ? { externalClientId: explicitClientId } : {}),
-          ...(external ? { external: cleanJson(external) } : {}),
-          ...(dispatchPolicy ? { dispatchPolicy } : {}),
-          ...(typeof r.modelId === "string" && r.modelId.trim()
-            ? { modelId: r.modelId.trim() }
-            : {}),
-          ...(serviceTier ? { serviceTier } : {}),
-          thinkingLevel: external
-            ? parseExternalRoleThinking(r.thinkingLevel)
-            : parseRoleThinking(r.thinkingLevel, "auto"),
-        };
-      }
-      if (options.externalAgents && updatedClientBindings.size > 0) {
-        for (const role of Object.values(nextRoles)) {
-          if (!role.external) continue;
-          const cid = role.externalClientId ?? externalClientConnectionId(role.external);
-          const updated = updatedClientBindings.get(cid);
-          if (updated) {
-            role.external = cleanJson(updated);
-            if (!Number.isFinite(updated.verifiedAt) || isPersonalExternalAgentKind(updated.kind)) {
-              role.enabled = false;
-            }
-          }
-        }
-      }
-      try { assertAgentDefaultScopes(nextRoles); }
-      catch (error) { if (error instanceof AgentRoutingError) throw new SettingsUpdateError(error.status, error.message); throw error; }
-      const roleValues = Object.values(nextRoles);
-      if (roleValues.length === 0) {
-        throw new SettingsUpdateError(400, "至少需要保留一个 Worker 角色预设。");
-      }
-      if (!roleValues.some((r) => r.enabled !== false)) {
-        throw new SettingsUpdateError(400, "至少需要保留一个启用状态的 Worker 角色。");
-      }
-      for (const role of roleValues) if (!role.external) assertConversationModelSelection(doc.model, role.provider, role.modelId || doc.model.defaultModel);
-      doc.roles = nextRoles;
-      if (options.externalAgents || doc.externalClients || options.removeClientIds?.length || options.clientPatches || options.upsertClients) {
-        syncExternalClientsInSettings(doc, options.clientModels, options.removeClientIds, options.clientPatches, options.upsertClients);
-      }
-      normalizeRoleThinkingSelections(doc.roles, doc.model);
-      doc.rolesMigratedV2 = true;
-      doc.rolesMigratedV3 = true;
-      doc.rolesMigratedV4 = true;
-      doc.rolesMigratedV5 = true;
-      summary = options.summaryOverride ?? `更新 Worker 角色与模型预设（共 ${roleValues.length} 个角色）`;
+      summary = applyRolesBlockUpdate(doc, val, options);
       break;
     }
 
