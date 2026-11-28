@@ -1,7 +1,7 @@
 import { translate as t, useI18n } from "../../kulo-i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Alert, Button, Chip, Dropdown, Label, Spinner, Table, Tabs } from "@heroui/react";
-import { redactSensitiveText, type ConnectionApplicationView, type ConnectionCategory, type ConnectionPrepareRequest, type ConnectionRecordView, type ConnectionWorkspaceSnapshot } from "@kulo/protocol";
+import { redactSensitiveText, type ConnectionApplicationView, type ConnectionCategory, type ConnectionPrepareRequest, type ConnectionRecordView, type ConnectionWorkspaceSnapshot, type MigrationStdioPrefill } from "@kulo/protocol";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { KuloIcon } from "../../kulo-icon";
 import { kuloRest, type AssistantWorkspaceView } from "../../kulo-api";
@@ -13,6 +13,7 @@ import { McpOAuthModal } from "./mcp-oauth-modal";
 import { ComposioConfigModal } from "./composio-config-modal";
 import { ComposioAppsModal } from "./composio-apps-modal";
 import { HomeAssistantConfigModal } from "./home-assistant-config-modal";
+import { MigrationImportModal } from "./migration-import-modal";
 import { SshFollowupModal } from "./ssh-followup-modal";
 import type { SettingsAssistantEntryIntent } from "./settings-assistant-actions";
 import "./connections-module.css";
@@ -29,6 +30,9 @@ export function connectionStatusLabel(connection: ConnectionRecordView): string 
 }
 
 export function mcpConnectionStatus(connection: ConnectionRecordView): { color: "success" | "warning" | "danger" | "default"; label: string } {
+  if (connection.mcpDisabled) {
+    return { color: "default", label: t("已禁用", "Disabled") };
+  }
   if (connection.status === "verified") {
     return {
       color: "success",
@@ -109,6 +113,8 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
   const [testingId, setTestingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [stdioPrefill, setStdioPrefill] = useState<MigrationStdioPrefill | null>(null);
+  const [migrationOpen, setMigrationOpen] = useState(false);
   const [haModalOpen, setHaModalOpen] = useState(false);
   const [oauthTarget, setOauthTarget] = useState<{ connection: ConnectionRecordView; forceReauth: boolean } | null>(null);
   const [composioConfigTarget, setComposioConfigTarget] = useState<{ mode: "create" } | { mode: "edit"; connection: ConnectionRecordView } | null>(null);
@@ -278,7 +284,31 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
       </Tabs.ListContainer>
       <Tabs.Panel id="app" shouldForceMount className="data-[inert=true]:hidden">
         <div className="flex min-w-0 flex-col gap-6">
-        <ConnectionGroup title={t("应用", "Apps")} action={<Button size="sm" variant="secondary" aria-label={t("添加应用", "Add app")} isDisabled={disabled} onPress={openAddModal}><KuloIcon name="add" size={16} />{t("添加", "Add")}</Button>}>
+        <ConnectionGroup
+          title={t("应用", "Apps")}
+          action={(
+            <div className="flex items-center gap-2">
+              {snapshot.localHost && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label={t("从本机工具导入配置", "Import local tool configs")}
+                  isDisabled={disabled}
+                  onPress={() => {
+                    setActionError(null);
+                    captureFocus();
+                    setMigrationOpen(true);
+                  }}
+                >
+                  {t("从本机导入", "Import local")}
+                </Button>
+              )}
+              <Button size="sm" variant="secondary" aria-label={t("添加应用", "Add app")} isDisabled={disabled} onPress={openAddModal}>
+                <KuloIcon name="add" size={16} />{t("添加", "Add")}
+              </Button>
+            </div>
+          )}
+        >
           <Table variant="secondary" className="kulo-settings-table">
             <Table.ScrollContainer className="kulo-settings-table-scroll">
               <Table.Content aria-label={t("应用列表", "Apps")} selectionMode="none" keyboardNavigationBehavior="tab" className="kulo-settings-table-content">
@@ -477,6 +507,7 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
         connected={connected}
         vaultAvailable={snapshot.vault.available}
         localHost={Boolean(snapshot.canManageHub ?? snapshot.localHost)}
+        initialStdioPrefill={stdioPrefill}
         onSelectApplication={(application) => {
           void prepare({ category: "app", appId: application.id, ...(application.connectionId ? { connectionId: application.connectionId } : {}) });
         }}
@@ -489,6 +520,25 @@ export function ConnectionsModule({ clientId, snapshot, loading, error, connecte
         }}
         onClose={() => {
           setAddOpen(false);
+          setStdioPrefill(null);
+          restoreFocus();
+        }}
+      />
+    )}
+    {migrationOpen && snapshot && (
+      <MigrationImportModal
+        open={migrationOpen}
+        connected={connected}
+        localHost={Boolean(snapshot.localHost)}
+        initialSection="mcp"
+        onImported={() => onRefresh()}
+        onPrefillStdio={(prefill) => {
+          setMigrationOpen(false);
+          setStdioPrefill(prefill);
+          setAddOpen(true);
+        }}
+        onClose={() => {
+          setMigrationOpen(false);
           restoreFocus();
         }}
       />

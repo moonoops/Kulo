@@ -679,6 +679,118 @@ export class KuloSkills {
     });
   }
 
+  /**
+   * Import a pre-validated local snapshot directory directly into managed immutable storage.
+   * Defaults to `enabled: false` and `audiences: ["worker"]`, skips without overwriting when
+   * another Kulo-managed skill already owns the same normalized name, and spawns zero subprocesses.
+   */
+  async importLocalSnapshot(input: {
+    stagingDirectory: string;
+    sourceLocator: string;
+    commandId: string;
+    enabled?: boolean;
+    audiences?: SkillAudience[];
+  }): Promise<{ status: "imported" | "skipped"; record?: SkillRecord; existingId?: string; snapshot: SkillSnapshot }> {
+    return this.#serial(async () => {
+      const commandId = text(input.commandId, "操作编号", 256);
+      if (["__proto__", "prototype", "constructor"].includes(commandId)) invalid("操作编号无效。");
+      const sourceLocator = text(input.sourceLocator, "Skill 来源", 4096);
+      const scope = audiences(input.audiences ?? ["worker"]);
+      const desiredEnabled = input.enabled === true;
+      this.#ensureRoot();
+      const rootInfo = fs.lstatSync(input.stagingDirectory);
+      if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) invalid("Skill 来源需要是普通目录。");
+      const canonical = fs.realpathSync(input.stagingDirectory);
+      if (canonical === this.#root || canonical.startsWith(`${this.#root}${path.sep}`) || this.#root.startsWith(`${canonical}${path.sep}`)) {
+        invalid("Skill 来源不能包含管理目录或位于其中。");
+      }
+      const id = `import-${digest(sourceLocator).slice(0, 32)}`;
+      const fingerprint = digest(JSON.stringify({ action: "import-snapshot", id, sourceLocator, audiences: scope, enabled: desiredEnabled }));
+      const before = await this.#options.harness.snapshot(KuloSkillsDoc, BACKGROUND_CONTEXT);
+      const done = own(before?.commands, commandId);
+      if (done) {
+        if (done.fingerprint !== fingerprint) throw new SkillError(409, "skill_command_conflict", "同一操作编号不能用于不同的 Skill 请求。");
+        const snap = await this.snapshot();
+        const rec = snap.skills.find((entry) => entry.id === id);
+        return { status: rec ? "imported" : "skipped", ...(rec ? { record: rec } : {}), snapshot: snap };
+      }
+      const work = fs.mkdtempSync(path.join(this.#root, ".staging-"));
+      let prepared: PreparedSkill | undefined;
+      try {
+        const destination = path.join(work, "snapshot");
+        fs.mkdirSync(destination, { mode: 0o700 });
+        const files = scanSkillDirectory(canonical, destination);
+        const { manualOnly, ...metadata } = skillMetadata(destination, files, scope);
+        const conflict = Object.values(before?.skills ?? {}).find(
+          (entry) => !entry.removed && entry.record.name === metadata.name && entry.record.id !== id,
+        );
+        if (conflict) {
+          return { status: "skipped", existingId: conflict.record.id, snapshot: await this.snapshot() };
+        }
+        const existingSame = own(before?.skills, id);
+        if (existingSame && !existingSame.removed) {
+          return { status: "skipped", existingId: existingSame.record.id, snapshot: await this.snapshot() };
+        }
+        const version = digest(JSON.stringify(Object.entries(files).sort(([a], [b]) => a.localeCompare(b))));
+        const target = this.#directory(id, version);
+        let parent = this.#root;
+        for (const component of ["packages", id]) {
+          parent = path.join(parent, component);
+          if (!fs.existsSync(parent)) fs.mkdirSync(parent, { mode: 0o700 });
+          if (!fs.lstatSync(parent).isDirectory() || fs.lstatSync(parent).isSymbolicLink()) invalid("Skill 管理目录不能包含符号链接。");
+        }
+        const created = !this.#verifiedSnapshot(id, version, files);
+        if (created) fs.renameSync(destination, target);
+        const now = Date.now();
+        prepared = {
+          record: { id, ...metadata, source: "local", sourceUrl: sourceLocator, version, enabled: desiredEnabled, createdAt: now, updatedAt: now },
+          files, manualOnly, created,
+        };
+      } finally {
+        fs.rmSync(work, { recursive: true, force: true });
+      }
+      if (!before?.skills[prepared.record.id]?.versions[prepared.record.version] &&
+        !before?.skills[prepared.record.id]?.retired?.[prepared.record.version]) {
+        try { await this.#collectHistory({ id: prepared.record.id, bytes: this.#versionBytes(prepared) }); }
+        catch (error) { await this.#discardPrepared(prepared); throw error; }
+      }
+      let skippedId: string | undefined;
+      try {
+        await this.#options.harness.commit(async (tx) => {
+          const state = await tx.doc(KuloSkillsDoc);
+          const repeat = own(state.commands, commandId);
+          if (repeat) {
+            if (repeat.fingerprint !== fingerprint) throw new SkillError(409, "skill_command_conflict", "同一操作编号不能用于不同的 Skill 请求。");
+            return;
+          }
+          const conflict = Object.values(state.skills).find(
+            (entry) => !entry.removed && (entry.record.name === prepared!.record.name || entry.record.id === prepared!.record.id),
+          );
+          if (conflict) {
+            skippedId = conflict.record.id;
+            return;
+          }
+          this.#put(state, prepared!, own(state.skills, prepared!.record.id));
+          state.skills[prepared!.record.id]!.record.enabled = desiredEnabled;
+          state.skills[prepared!.record.id]!.record.audiences = scope;
+          state.commands[commandId] = { fingerprint };
+          state.revision++;
+        }, BACKGROUND_CONTEXT);
+      } catch (error) {
+        await this.#discardPrepared(prepared);
+        throw error;
+      }
+      if (skippedId) {
+        await this.#discardPrepared(prepared);
+        return { status: "skipped", existingId: skippedId, snapshot: await this.snapshot() };
+      }
+      await this.#collectHistory();
+      await this.#options.onChanged?.();
+      const snapshot = await this.snapshot();
+      return { status: "imported", record: snapshot.skills.find((entry) => entry.id === prepared.record.id), snapshot };
+    });
+  }
+
   async #prepare(source: SkillSource, id: string, kind: SkillRecord["source"], scope?: SkillAudience[], previous?: StoredSkill): Promise<PreparedSkill> {
     this.#ensureRoot();
     const work = fs.mkdtempSync(path.join(this.#root, ".staging-"));

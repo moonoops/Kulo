@@ -92,6 +92,7 @@ export interface ConnectionFields {
   mcpComposioUserId?: string;
   mcpComposioSessionId?: string;
   mcpAllowedToolkits?: string[];
+  mcpDisabled?: boolean;
 }
 export interface ConnectionRecordView extends ConnectionFields {
   id: string;

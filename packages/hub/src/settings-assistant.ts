@@ -39,6 +39,8 @@ import { SettingsAssistantDoc, isActiveSettingsConversation, isMainOrchestratorC
 } from "./settings-doc.js";
 import type { DeviceAssistantHost, DeviceJoinStaging, HubDeviceController } from "./tools-devices.js";
 import { buildSettingsUserEntry, formatSettingsPromptContext, resolveSettingsDeviceContext, validateSettingsContextInput } from "./settings-client-context.js";
+import { describeModelCalibrationDiff, parseModelCalibrationUpdates } from "./settings-assistant-calibration.js";
+import { MigrationError, type MigrationCallerContext } from "./tools-migration.js";
 import type { PreparedDeviceRoleChange } from "@kulo/env";
 
 export {
@@ -169,6 +171,7 @@ interface AssistantHost {
   modelExtensions?: ReturnType<typeof defineExtension>[];
   agentConfigurationExtensions?: ReturnType<typeof defineExtension>[];
   deviceExtensions?: ReturnType<typeof defineExtension>[];
+  migrationExtensions?: ReturnType<typeof defineExtension>[];
   securityExtensions?: ReturnType<typeof defineExtension>[];
   customizationExtensions?: ReturnType<typeof defineExtension>[];
   processText?: (content: string, requestId?: string) => Promise<{ text: string }>;
@@ -191,6 +194,8 @@ interface AssistantHost {
 export class SettingsAssistant implements DeviceAssistantHost {
   readonly #host: AssistantHost;
   readonly #contexts = new Map<string, SettingsAssistantContext>();
+  readonly #clientLocalDisplay = new Map<string, boolean>();
+  readonly #clientPrincipals = new Map<string, string>();
   readonly #topicClients = new Map<string, string>();
   #conversation: Conversation | null = null;
   #observation: SettingsConversationObservation | null = null;
@@ -399,9 +404,11 @@ export class SettingsAssistant implements DeviceAssistantHost {
     if (changed) await this.#emit();
   }
 
-  updateContext(context: SettingsAssistantContext): void {
+  updateContext(context: SettingsAssistantContext, auth?: { isLocalDisplay?: boolean; principalId?: string }): void {
     const next = validateSettingsAssistantContext(context);
     this.#contexts.set(next.clientId, next);
+    if (auth?.isLocalDisplay !== undefined) this.#clientLocalDisplay.set(next.clientId, auth.isLocalDisplay);
+    if (auth?.principalId) this.#clientPrincipals.set(next.clientId, auth.principalId);
   }
 
   noteTopicClient(topicIdValue: string, clientId: string): void {
@@ -410,9 +417,22 @@ export class SettingsAssistant implements DeviceAssistantHost {
 
   forgetContext(clientId: string): void {
     this.#contexts.delete(clientId);
+    this.#clientLocalDisplay.delete(clientId);
+    this.#clientPrincipals.delete(clientId);
     for (const [topic, cid] of this.#topicClients) {
       if (cid === clientId) this.#topicClients.delete(topic);
     }
+  }
+
+  async assertHubLocalDisplayTurn(): Promise<MigrationCallerContext> {
+    const turn = await this.#turn();
+    const isLocalDisplay = this.#clientLocalDisplay.get(turn.clientId) === true;
+    const deviceView = this.#host.deviceController?.()?.view(turn.clientId);
+    if (!isLocalDisplay || (deviceView && deviceView.role !== "hub")) {
+      throw new MigrationError(403, "migration_local_display_required", "本机配置发现仅限 Hub 本机控制台使用，远端设备、手机与 SSH 客户端无权访问。");
+    }
+    const principalId = this.#clientPrincipals.get(turn.clientId) ?? deviceView?.currentDeviceId ?? "local";
+    return { principalId, isHubLocalDisplay: true };
   }
 
   async #resolveMainChatClient(callerConversationId?: number): Promise<SettingsAssistantContext | undefined> {
@@ -597,10 +617,14 @@ export class SettingsAssistant implements DeviceAssistantHost {
     return conversation;
   }
 
-  async send(content: string, context: SettingsAssistantContext, requestId?: string, attachments: ChatAttachment[] = [], principalId = "local", expectedTopicId?: string | null): Promise<void> {
+  async send(content: string, context: SettingsAssistantContext, requestId?: string, attachments: ChatAttachment[] = [], principalId = "local", expectedTopicId?: string | null, auth?: { isLocalDisplay?: boolean }): Promise<void> {
     context = validateSettingsAssistantContext(context);
     // Retries carry the original semantic page; only context messages refresh draft state.
-    if (!this.#contexts.has(context.clientId)) this.updateContext(context);
+    if (!this.#contexts.has(context.clientId)) this.updateContext(context, { ...auth, principalId });
+    else {
+      if (auth?.isLocalDisplay !== undefined) this.#clientLocalDisplay.set(context.clientId, auth.isLocalDisplay);
+      this.#clientPrincipals.set(context.clientId, principalId);
+    }
     if (!Array.isArray(attachments)) throw new Error("无效的设置附件列表。");
     if (typeof content !== "string" || (!content.trim() && attachments.length === 0) || content.length > 32_000) throw new Error("请输入设置需求或添加附件（文字最多 32000 字）。");
     await this.#serialize(async () => {
@@ -829,6 +853,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
       "kulo_connections",
       "kulo_connection_describe",
       "kulo_connection_prepare",
+      "kulo_migration_scan",
       "kulo_assistant_read",
       "kulo_assistant_configure",
       "kulo_spark_mail",
@@ -876,6 +901,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
       ...(context?.module === "models" ? this.#host.modelExtensions ?? [] : []),
       ...(context?.module === "workers" && context.active === true ? this.#host.agentConfigurationExtensions ?? [] : []),
       ...(includeDevices ? this.#host.deviceExtensions ?? [] : []),
+      ...(this.#host.migrationExtensions ?? []),
       ...(this.#host.settingsTierExtension ? [this.#host.settingsTierExtension] : []),
     ]));
     const tools = this.#host.tools ? this.#host.tools(context, extensions) : undefined;
@@ -1604,111 +1630,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
     if (existing) return existing;
     const context = await this.#turn();
     this.#assertWritable("model", context.clientId);
-    if (typeof rawUpdates !== "string" || rawUpdates.length > 64_000) {
-      throw new Error("模型校准参数无效或过长。");
-    }
-    if (this.#redact(rawUpdates) !== rawUpdates) {
-      throw new Error("模型校准参数包含受保护内容，已拒绝写入；密钥请通过专用保密输入提供。");
-    }
-    let parsed: unknown;
-    try { parsed = JSON.parse(rawUpdates); }
-    catch { throw new Error("模型校准参数必须为有效的 JSON 数组。"); }
-    if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 32) {
-      throw new Error("请提供至少 1 个（最多 32 个）需要校准的连接。");
-    }
-
-    const ALLOWED_PATCH_FIELDS = new Set([
-      "name", "purpose", "protocolAdapter", "voices", "imageProfile", "imageDefaults",
-      "customImageAdapter", "outputModalities", "contextWindow", "maxTokens", "reasoning",
-      "thinkingEnabled", "vision", "modalities", "thinkingLevelMap", "thinkingLevels", "nativeTools",
-    ]);
-
-    const updates: ModelCalibrationProviderUpdate[] = [];
-    const seenProviders = new Set<string>();
-    for (const entry of parsed) {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-        throw new Error("每个连接的校准项必须为对象。");
-      }
-      const rec = entry as Record<string, unknown>;
-      const providerId = typeof rec.providerId === "string" ? rec.providerId.trim() : "";
-      if (!providerId || seenProviders.has(providerId)) {
-        throw new Error("连接标识无效或存在重复连接。");
-      }
-      seenProviders.add(providerId);
-      if (!Array.isArray(rec.models) || rec.models.length === 0 || rec.models.length > 128) {
-        throw new Error(`连接「${providerId}」缺少有效的模型更新列表。`);
-      }
-      const seenModels = new Set<string>();
-      const models: ModelCalibrationProviderUpdate["models"] = [];
-      for (const m of rec.models) {
-        if (!m || typeof m !== "object" || Array.isArray(m)) {
-          throw new Error("每个模型的校准项必须为对象。");
-        }
-        const mRec = m as Record<string, unknown>;
-        const id = typeof mRec.id === "string" ? mRec.id.trim() : "";
-        if (!id || seenModels.has(id)) {
-          throw new Error(`连接「${providerId}」中存在无效或重复的模型 ID。`);
-        }
-        seenModels.add(id);
-        const patch = mRec.patch;
-        if (!patch || typeof patch !== "object" || Array.isArray(patch) || Object.keys(patch).length === 0) {
-          throw new Error(`模型「${id}」缺少有效的参数修改项。`);
-        }
-        const invalidKeys = Object.keys(patch).filter((key) => !ALLOWED_PATCH_FIELDS.has(key));
-        if (invalidKeys.length > 0) {
-          throw new Error(`模型校准仅允许修改已有模型的公开参数，不允许修改字段：${invalidKeys.join("、")}。连接地址、协议与密钥请使用模型配置卡片。`);
-        }
-        models.push({ id, patch: clone(patch as ModelCalibrationProviderUpdate["models"][number]["patch"]) });
-      }
-      updates.push({ providerId, models });
-    }
-
-    const formatK = (n: number | undefined) => n === undefined ? "默认" : n >= 1000 ? `${Math.round(n / 1000).toLocaleString("en-US")}K` : String(n);
-    const describeThinking = (m: CustomModelConfig) => {
-      if (m.reasoning === false || m.thinkingEnabled === false) return "关闭";
-      if (m.thinkingLevels?.length) return m.thinkingLevels.map((level) => level.value).join("/");
-      if (m.thinkingLevelMap) {
-        const active = Object.entries(m.thinkingLevelMap).filter(([, value]) => typeof value === "string").map(([key]) => key);
-        if (active.length) return active.join("/");
-      }
-      return m.reasoning ? "开启" : "默认";
-    };
-    const describeModelDiff = (providerName: string, beforeModel: CustomModelConfig, afterModel: CustomModelConfig): string | null => {
-      const parts: string[] = [];
-      if (beforeModel.contextWindow !== afterModel.contextWindow) {
-        parts.push(`上下文 ${formatK(beforeModel.contextWindow)} → ${formatK(afterModel.contextWindow)}`);
-      }
-      if (beforeModel.maxTokens !== afterModel.maxTokens) {
-        parts.push(`最大输出 ${formatK(beforeModel.maxTokens)} → ${formatK(afterModel.maxTokens)}`);
-      }
-      const beforeMods = (beforeModel.modalities ?? (beforeModel.vision ? ["text", "image"] : ["text"])).join("/");
-      const afterMods = (afterModel.modalities ?? (afterModel.vision ? ["text", "image"] : ["text"])).join("/");
-      if (beforeMods !== afterMods) {
-        parts.push(`模态 ${beforeMods} → ${afterMods}`);
-      }
-      const beforeThink = describeThinking(beforeModel);
-      const afterThink = describeThinking(afterModel);
-      if (beforeThink !== afterThink) {
-        parts.push(`思考档位 ${beforeThink} → ${afterThink}`);
-      }
-      const beforeSearch = beforeModel.nativeTools?.webSearch === true;
-      const afterSearch = afterModel.nativeTools?.webSearch === true;
-      if (beforeSearch !== afterSearch) {
-        parts.push(`原生搜索 ${beforeSearch ? "开启" : "关闭"} → ${afterSearch ? "开启" : "关闭"}`);
-      }
-      if (beforeModel.purpose !== afterModel.purpose) {
-        parts.push(`类型 ${beforeModel.purpose ?? "chat"} → ${afterModel.purpose ?? "chat"}`);
-      }
-      if (beforeModel.name !== afterModel.name && afterModel.name) {
-        parts.push(`名称 ${beforeModel.name ?? beforeModel.id} → ${afterModel.name}`);
-      }
-      if (parts.length === 0) {
-        if (same(beforeModel, afterModel)) return null;
-        parts.push("已更新模型参数");
-      }
-      return `${providerName} · ${afterModel.id}：${parts.join("；")}`;
-    };
-
+    const updates: ModelCalibrationProviderUpdate[] = parseModelCalibrationUpdates(rawUpdates, (value) => this.#redact(value));
     const providersCatalog = await this.#host.providers();
 
     return this.#serialize(async () => {
@@ -1813,7 +1735,7 @@ export class SettingsAssistant implements DeviceAssistantHost {
               throw new Error(`模型「${modelId}」的校准参数无效。`);
             }
 
-            const diffLine = describeModelDiff(targetLabel, beforeModel, sanitized);
+            const diffLine = describeModelCalibrationDiff(targetLabel, beforeModel, sanitized);
             if (diffLine) {
               targetList[idx] = sanitized;
               touchedKeys.add(targetKey);

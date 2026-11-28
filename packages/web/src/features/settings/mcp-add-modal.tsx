@@ -13,6 +13,7 @@ import {
   type ConnectionSetupInput,
   type McpAuthMode,
   type McpPresetDefinition,
+  type MigrationStdioPrefill,
 } from "@kulo/protocol";
 import { kuloRest } from "../../kulo-api";
 import { useI18n } from "../../kulo-i18n";
@@ -76,6 +77,22 @@ export function filterAndRankMcpPresets(
   return scored.map((entry) => entry.preset);
 }
 
+export function createDraftFromStdioPrefill(prefill: MigrationStdioPrefill): ConnectionDraft {
+  return {
+    ...createConnectionDraft(BLANK_MCP_INPUT),
+    mcpTransport: "stdio",
+    name: prefill.name,
+    mcpCommand: prefill.mcpCommand,
+    mcpArgsText: prefill.mcpArgs.join("\n"),
+    mcpCwd: prefill.mcpCwd ?? "",
+    credentialFields: prefill.envKeys.map((envKey, index) => ({
+      key: `env_${index}_${envKey}`,
+      label: envKey,
+      value: "",
+    })),
+  };
+}
+
 export function AddAppModal({
   open,
   applications,
@@ -84,6 +101,7 @@ export function AddAppModal({
   connected,
   vaultAvailable,
   localHost,
+  initialStdioPrefill = null,
   onSelectApplication,
   onSavedMcp,
   onStartOAuth,
@@ -97,6 +115,7 @@ export function AddAppModal({
   connected: boolean;
   vaultAvailable: boolean;
   localHost: boolean;
+  initialStdioPrefill?: MigrationStdioPrefill | null;
   onSelectApplication: (application: ConnectionApplicationView) => void;
   onSavedMcp: (connection: ConnectionRecordView) => void;
   onStartOAuth: (connection: ConnectionRecordView) => void;
@@ -104,24 +123,31 @@ export function AddAppModal({
   onClose: () => void;
 }) {
   const { t } = useI18n();
-  const [mode, setMode] = useState<"catalog" | "preset" | "custom">("catalog");
+  const [mode, setMode] = useState<"catalog" | "preset" | "custom">(() => (initialStdioPrefill ? "custom" : "catalog"));
   const [query, setQuery] = useState("");
   const [selectedPreset, setSelectedPreset] = useState<McpPresetDefinition | null>(null);
-  const [draft, setDraft] = useState<ConnectionDraft>(() => createConnectionDraft(BLANK_MCP_INPUT));
+  const [draft, setDraft] = useState<ConnectionDraft>(() =>
+    initialStdioPrefill ? createDraftFromStdioPrefill(initialStdioPrefill) : createConnectionDraft(BLANK_MCP_INPUT),
+  );
   const [busyId, setBusyId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
-    setMode("catalog");
     setQuery("");
     setSelectedPreset(null);
-    setDraft(createConnectionDraft(BLANK_MCP_INPUT));
+    if (initialStdioPrefill) {
+      setMode("custom");
+      setDraft(createDraftFromStdioPrefill(initialStdioPrefill));
+    } else {
+      setMode("catalog");
+      setDraft(createConnectionDraft(BLANK_MCP_INPUT));
+    }
     setBusyId(null);
     setSubmitting(false);
     setError(null);
-  }, [open]);
+  }, [open, initialStdioPrefill]);
 
   const catalogApps = useMemo(() => {
     const base = presets.length > 0
@@ -427,18 +453,30 @@ export function AddAppModal({
                   </div>
                 </>
               ) : (
-                <McpCustomForm
-                  mode={mode}
-                  selectedPreset={selectedPreset}
-                  draft={draft}
-                  authModes={authModes}
-                  busy={busy}
-                  localHost={localHost}
-                  onChange={change}
-                  onUpdateDraft={setDraft}
-                  onClearError={() => setError(null)}
-                  onSubmit={() => void handleSubmitForm()}
-                />
+                <>
+                  {initialStdioPrefill && (
+                    <Alert status="warning">
+                      <Alert.Content>
+                        <Alert.Title>{t(`已预填本机命令（绑定节点：${initialStdioPrefill.boundNodeId}）`, `Prefilled local command (bound node: ${initialStdioPrefill.boundNodeId})`)}</Alert.Title>
+                        {initialStdioPrefill.warnings.length > 0 && (
+                          <Alert.Description>{initialStdioPrefill.warnings.join(" ")}</Alert.Description>
+                        )}
+                      </Alert.Content>
+                    </Alert>
+                  )}
+                  <McpCustomForm
+                    mode={mode}
+                    selectedPreset={selectedPreset}
+                    draft={draft}
+                    authModes={authModes}
+                    busy={busy}
+                    localHost={localHost}
+                    onChange={change}
+                    onUpdateDraft={setDraft}
+                    onClearError={() => setError(null)}
+                    onSubmit={() => void handleSubmitForm()}
+                  />
+                </>
               )}
             </Modal.Body>
 

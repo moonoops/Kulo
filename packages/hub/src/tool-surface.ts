@@ -476,6 +476,13 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
     scope: "window",
   },
   {
+    name: "kulo_migration_scan",
+    audiences: ["settings"],
+    tier: "deferred",
+    tierFor: (s) => (s.settingsModule === "connections" || s.settingsModule === "capabilities" ? "resident" : "deferred"),
+    scope: "window",
+  },
+  {
     name: "kulo_settings_remove_connection",
     audiences: ["settings"],
     tier: "deferred",

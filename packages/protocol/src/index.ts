@@ -49,5 +49,6 @@ export * from "./shell-safety-floor.js";
 export * from "./execution-trust.js";
 export * from "./usage-caps.js";
 export * from "./url-hygiene.js";
+export * from "./migration.js";
 
 export type * from "./recovery.js";

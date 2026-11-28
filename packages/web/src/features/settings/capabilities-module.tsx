@@ -86,7 +86,7 @@ function MediaCapabilitiesTable({ kind, snapshot, connected, disabled, error, en
   </Table>;
 }
 
-export function CapabilitiesModule({ snapshot, settings, loading, error, connected, clientId = "", requestsDisabled = false, envs, target, view: selectedView, onViewChange, voiceSettingsRequested = false, onRequest, onRefresh, onDirtyChange, onOpenModels }: {
+export function CapabilitiesModule({ snapshot, settings, loading, error, connected, clientId = "", requestsDisabled = false, localHost = false, envs, target, view: selectedView, onViewChange, voiceSettingsRequested = false, onRequest, onRefresh, onDirtyChange, onOpenModels }: {
   snapshot: CapabilitiesWorkspaceSnapshot | null;
   settings?: KuloSettingsView | null;
   loading: boolean;
@@ -94,6 +94,7 @@ export function CapabilitiesModule({ snapshot, settings, loading, error, connect
   connected: boolean;
   clientId?: string;
   requestsDisabled?: boolean;
+  localHost?: boolean;
   envs: EnvNodeDescriptor[];
   target?: CapabilityTarget;
   view?: CapabilityView;
@@ -197,7 +198,7 @@ export function CapabilitiesModule({ snapshot, settings, loading, error, connect
       </Tabs.Panel>
       <Tabs.Panel id="search"><SearchModule snapshot={snapshot?.search} connected={connected} disabled={requestsDisabled} onRefresh={onRefresh} onDirtyChange={setSearchDirty} /></Tabs.Panel>
       <Tabs.Panel id="computer"><ComputerUseModule state={snapshot ? { revision: snapshot.revision, computerUse: snapshot.computerUse ?? { browserEnabled: true, desktopEnabled: true } } : null} envs={envs} connected={connected} disabled={requestsDisabled} onRefresh={onRefresh} /></Tabs.Panel>
-      <Tabs.Panel id="skills"><SkillsModule snapshot={snapshot ? { revision: snapshot.skillRevision, skills: snapshot.skills } : null} connected={connected} disabled={requestsDisabled} onRequest={onRequest} onRefresh={onRefresh} onDirtyChange={setSkillsDirty} /></Tabs.Panel>
+      <Tabs.Panel id="skills"><SkillsModule snapshot={snapshot ? { revision: snapshot.skillRevision, skills: snapshot.skills } : null} connected={connected} disabled={requestsDisabled} localHost={localHost} onRequest={onRequest} onRefresh={onRefresh} onDirtyChange={setSkillsDirty} /></Tabs.Panel>
       <Tabs.Panel id="colab"><SettingsSection title="Colab CLI"><div className="kulo-table-empty-state rounded-2xl bg-surface-secondary">{t("暂未开放", "Not available yet")}</div></SettingsSection></Tabs.Panel>
       <Tabs.Panel id="other"><OtherExtensionsModule snapshot={snapshot?.extensions} connected={connected} disabled={requestsDisabled} target={target} onRequest={onRequest} onRefresh={onRefresh} /></Tabs.Panel>
     </Tabs>

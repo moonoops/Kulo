@@ -58,12 +58,14 @@ import type { HubHttpRouteContext } from "./http/context.js";
 import { authenticateHttpPrincipal, isDirectLocalHttpRequest, resolveHubRequestAuthority } from "./http/authority.js";
 import { handleCapabilitiesRoutes } from "./http/capabilities-routes.js";
 import { handleDevicesAndClusterRoutes } from "./http/devices-cluster-routes.js";
+import { handleMigrationRoutes } from "./http/migration-routes.js";
 import { handleProjectsRoutes } from "./http/projects-routes.js";
 import { handleSettingsProvidersRoutes } from "./http/settings-providers-routes.js";
 import { handleSystemPermissionsRoutes, handleUiCardRoutes } from "./http/system-ui-routes.js";
 import { handleTicketResumeRoutes } from "./http/ticket-resume-routes.js";
 import { handleVoiceAssistantConnectionsRoutes } from "./http/voice-assistant-connections-routes.js";
 import { handleWorkspaceRoutes } from "./http/workspace-routes.js";
+import { MigrationError } from "./tools-migration.js";
 import { UiCardError } from "./ui-cards.js";
 import { DeviceConnectionError, DeviceInterconnectionManager } from "./devices.js";
 import { isTicketUnfinished } from "./state.js";
@@ -873,6 +875,7 @@ export async function startKuloHubServer(
     let selection = { topicId: initialTopic, version: Number.isSafeInteger(initialVersion) && initialVersion >= 0 ? initialVersion : 0 };
     let initialized = false;
     const principal = currentDevice(req, parsedUrl);
+    const isLocalDisplay = requestAuthority(req, parsedUrl).isHubLocalDisplay;
     const sourceDeviceKnown = !devices.isLocalPrincipal(principal) || isDirectLocalRequest(req);
     deviceClients.set(ws, principal);
 
@@ -1011,7 +1014,7 @@ export async function startKuloHubServer(
           case "settings.assistant.context": {
             const existingClient = settingsClients.get(ws);
             if (existingClient && existingClient !== msg.context.clientId) throw new Error("设置助手客户端标识不可更改。");
-            hub.settingsAssistant.updateContext(msg.context);
+            hub.settingsAssistant.updateContext(msg.context, { isLocalDisplay, principalId: principal });
             settingsClients.set(ws, msg.context.clientId);
             if (msg.type === "settings.assistant.subscribe") send({ type: "hub.settings_assistant", snapshot: await hub.settingsAssistant.getSnapshot(), ...(reqId ? { requestId: reqId } : {}) });
             sendAck();
@@ -1021,7 +1024,7 @@ export async function startKuloHubServer(
             const existingClient = settingsClients.get(ws);
             if (existingClient && existingClient !== msg.context.clientId) throw new Error("设置助手客户端标识不可更改。");
             settingsClients.set(ws, msg.context.clientId);
-            await hub.settingsAssistant.send(msg.content, msg.context, reqId, msg.attachments, deviceClients.get(ws) ?? devices.localNodeId, msg.expectedTopicId);
+            await hub.settingsAssistant.send(msg.content, msg.context, reqId, msg.attachments, deviceClients.get(ws) ?? devices.localNodeId, msg.expectedTopicId, { isLocalDisplay });
             sendAck();
             break;
           }
@@ -1275,6 +1278,7 @@ export async function startKuloHubServer(
   const apiRouteHandlers: ReadonlyArray<(ctx: HubHttpRouteContext) => Promise<boolean>> = [
     handleSystemPermissionsRoutes,
     handleAssistantStreamRoute,
+    handleMigrationRoutes,
     handleVoiceAssistantConnectionsRoutes,
     handleUiCardRoutes,
     (ctx) => handleDevicesAndClusterRoutes(ctx, devicesClusterRouteDeps),
@@ -1551,6 +1555,10 @@ export async function startKuloHubServer(
       }
       if (err instanceof ClusterSyncHttpError) {
         sendJson(res, err.status, { error: err.message, code: err.code });
+        return;
+      }
+      if (err instanceof MigrationError) {
+        sendJson(res, err.status, { error: hub.connectionManager.redact(err.message), code: err.code });
         return;
       }
       if (err instanceof DeviceConnectionError) {

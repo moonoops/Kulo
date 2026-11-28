@@ -131,6 +131,7 @@ export function completesIdentity(previous: ConnectionFields, next: ConnectionFi
 export function usable(record: ConnectionFields, fields: ConnectionSecrets, mcpOAuthAuthorized = false): boolean {
   if (record.kind === "app") return getConnectionApplication(record.appId).authentication === "macos" || Boolean(fields.apiKey);
   if (record.kind === "mcp") {
+    if (record.mcpDisabled) return false;
     if (record.mcpTransport === "stdio") return Boolean(record.mcpCommand);
     if ((record.mcpAuthMode ?? "oauth") === "none") return Boolean(record.url);
     if ((record.mcpAuthMode ?? "oauth") === "oauth") return Boolean(record.url && mcpOAuthAuthorized);

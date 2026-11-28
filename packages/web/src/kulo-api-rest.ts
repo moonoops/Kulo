@@ -14,7 +14,8 @@ import type {
   HindsightProbeResult, HomeAssistantMigrationAdvice, IdentityBackup, IdentityFile, IdentityList, IdentityRead,
   IdentityRollbackRequest, IdentitySaved, IdentityWriteRequest, ImageCapabilityDraft, ImageModelDiscovery,
   ImageRoutingSettings, KuloSettingsView, McpOAuthSessionView, MediaJob, MemoryConnectionUpdateRequest,
-  MemoryConnectionUpdateResult, MemoryServicePrepareRequest, MemoryServiceSnapshot, ModelProbeRequest,
+  MemoryConnectionUpdateResult, MemoryServicePrepareRequest, MemoryServiceSnapshot, MigrationImportRequest,
+  MigrationImportResult, MigrationScanResult, ModelProbeRequest,
   ModelProbeResult, NativeAppPermissionKind, OAuthSessionView, PersonalitySettingsRequest, PersonalitySnapshot,
   ProjectDirectoryListing, ProjectView, ProviderCatalogItem, RecentWorkSnapshot, RelationshipRollbackRequest,
   RelationshipWriteRequest, ResolveModelMetadataRequest, ResolveModelMetadataResponse, SearchAttempt,
@@ -233,6 +234,10 @@ export const kuloRest = {
     apiRequest<{ session: McpOAuthSessionView }>(`/api/connections/oauth/${encodeURIComponent(sessionId)}/cancel`, { method: "POST", body: { ...(clientId ? { clientId } : {}) } }),
   openConnectionPermissionSettings: (kind: NativeAppPermissionKind) =>
     apiRequest<{ ok: true }>("/api/connections/permission-settings", { method: "POST", body: { kind } }),
+  scanLocalMigration: (signal?: AbortSignal) =>
+    apiRequest<MigrationScanResult>("/api/migration/scan", { method: "POST", body: {}, signal }),
+  importLocalMigration: (body: MigrationImportRequest, signal?: AbortSignal) =>
+    apiRequest<MigrationImportResult>("/api/migration/import", { method: "POST", body, signal }),
   getAssistantWorkspace: (signal?: AbortSignal) =>
     apiRequest<AssistantWorkspaceView>("/api/assistant", { signal }),
   configureAssistantNotifications: (body: { enabled?: boolean; muteApp?: string; unmuteApp?: string }) =>

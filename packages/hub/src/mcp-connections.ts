@@ -289,6 +289,12 @@ export class McpConnectionPool {
       return { transport, authProvider };
     }
 
+    if (record.mcpDisabled) {
+      throw Object.assign(new Error("此 MCP 连接当前已禁用，请先在授权凭据中启用。"), {
+        code: "connection_mcp_disabled",
+        status: 409,
+      });
+    }
     if (record.mcpTransport === "http") {
       if (!record.url) {
         throw Object.assign(new Error("缺少远程 MCP 服务地址。"), { code: "connection_mcp_invalid_config", status: 400 });

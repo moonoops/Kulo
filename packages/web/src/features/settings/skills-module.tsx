@@ -4,6 +4,7 @@ import { Alert, Button, Checkbox, CheckboxGroup, Chip, Input, Label, Modal, Skel
 import { redactSecrets, type SkillAudience, type SkillRecord, type SkillSnapshot } from "@kulo/protocol";
 import { KuloApiError, kuloRest } from "../../kulo-api";
 import { ConfirmDialog } from "../../components/confirm-dialog";
+import { MigrationImportModal } from "./migration-import-modal";
 import { useSettingsPending } from "./settings-save-activity";
 import { SettingsSection } from "./settings-layout";
 
@@ -108,6 +109,7 @@ interface SkillsModuleProps {
   snapshot: SkillSnapshot | null;
   connected: boolean;
   disabled?: boolean;
+  localHost?: boolean;
   onRequest?: (target?: { kind: "skill"; id: string }, prompt?: string) => void;
   onRefresh: () => void;
   onDirtyChange?: (dirty: boolean) => void;
@@ -118,7 +120,7 @@ export function SkillsModule(props: SkillsModuleProps) {
   return <SkillsWorkspace key={props.snapshot === null ? "unloaded" : "loaded"} {...props} />;
 }
 
-function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRefresh, onDirtyChange }: SkillsModuleProps) {
+function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, localHost = false, onRefresh, onDirtyChange }: SkillsModuleProps) {
   const { t, language } = useI18n();
   const [snapshot, setSnapshot] = useState(incoming);
   const [error, setError] = useState<string>();
@@ -126,6 +128,7 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
   const [draft, setDraft] = useState<SkillDraft>();
   const [discardEditor, setDiscardEditor] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [migrationOpen, setMigrationOpen] = useState(false);
   const [importSource, setImportSource] = useState("");
   const [importError, setImportError] = useState<string>();
   const [importConflict, setImportConflict] = useState(false);
@@ -268,7 +271,21 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
     finally { finish(); }
   };
 
-  return <SettingsSection title={t("技能", "Skills")} action={<Button ref={importButton} variant="secondary" size="sm" isDisabled={blocked || !snapshot} onPress={() => { setImportError(undefined); setImportConflict(false); setImportOpen(true); }}>{t("导入技能", "Import skill")}</Button>}>
+  return <SettingsSection
+    title={t("技能", "Skills")}
+    action={(
+      <div className="flex items-center gap-2">
+        {localHost && (
+          <Button variant="ghost" size="sm" isDisabled={blocked || !snapshot} onPress={() => setMigrationOpen(true)}>
+            {t("扫描本机技能", "Scan local skills")}
+          </Button>
+        )}
+        <Button ref={importButton} variant="secondary" size="sm" isDisabled={blocked || !snapshot} onPress={() => { setImportError(undefined); setImportConflict(false); setImportOpen(true); }}>
+          {t("导入技能", "Import skill")}
+        </Button>
+      </div>
+    )}
+  >
     {error && <Alert status="danger" role="alert"><Alert.Content>{error}</Alert.Content><Button size="sm" variant="ghost" isDisabled={blocked} onPress={onRefresh}>{t("刷新", "Refresh")}</Button></Alert>}
     <Table variant="secondary" className="kulo-settings-table kulo-capabilities-table" aria-busy={Boolean(busy) || undefined}>
       <Table.ScrollContainer className="kulo-settings-table-scroll">
@@ -339,6 +356,19 @@ function SkillsWorkspace({ snapshot: incoming, connected, disabled = false, onRe
         </Modal.Dialog></Modal.Container>
       </Modal.Backdrop>
     </Modal>
+    {migrationOpen && (
+      <MigrationImportModal
+        open={migrationOpen}
+        connected={connected}
+        localHost={localHost}
+        initialSection="skills"
+        onImported={onRefresh}
+        onClose={() => {
+          setMigrationOpen(false);
+          requestAnimationFrame(() => importButton.current?.focus());
+        }}
+      />
+    )}
     <ConfirmDialog open={discardEditor} title={t("放弃未保存的修改？", "Discard unsaved changes?")} confirmLabel={t("放弃", "Discard")} cancelLabel={t("继续编辑", "Keep editing")} onConfirm={() => { if (!busyRef.current) discardDraft(); }} onCancel={() => setDiscardEditor(false)} />
     <ConfirmDialog open={Boolean(remove)} title={t(`删除${remove?.record.name ?? t("技能", "Skills")}？`, `Delete ${remove?.record.name ?? t("技能", "Skills")}?`)} description={t("移出技能列表，不会删除原始来源文件。", "Remove from the skill list. Source files will be kept.")} confirmLabel={t("删除", "Delete")} isPending={Boolean(busy)} isConfirmDisabled={!connected || disabled} onCancel={cancelRemove} onConfirm={() => void deleteSkill()} />
   </SettingsSection>;

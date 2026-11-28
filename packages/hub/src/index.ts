@@ -574,3 +574,29 @@ export {
   type TicketQuotaResumeDeps,
   type TicketQuotaResumePorts,
 } from "./ticket-quota-pause.js";
+export {
+  MIGRATION_MAX_CONFIG_BYTES,
+  MIGRATION_MAX_SKILL_FILE_BYTES,
+  MIGRATION_MAX_SKILL_FILES,
+  MIGRATION_MAX_SKILL_MD_BYTES,
+  MIGRATION_MAX_SKILL_PACKAGE_BYTES,
+  classifyStdioRisks,
+  isHighEntropySecret,
+  normalizeMigratedSkillName,
+  sanitizeCliArgs,
+  sanitizeDisplayText,
+  scanLocalHostConfigs,
+  stripUrlCredentialsAndQuery,
+  stripUtf8Bom,
+  type LocalMigrationScanOutput,
+} from "./migration-scan.js";
+export {
+  LocalConfigMigrationService,
+  MIGRATION_MAX_CONNECTION_RECORDS,
+  MIGRATION_SCAN_TTL_MS,
+  MigrationError,
+  createMigrationToolsExtension,
+  type LocalConfigMigrationOptions,
+  type MigrationCallerContext,
+  type MigrationToolsDeps,
+} from "./tools-migration.js";

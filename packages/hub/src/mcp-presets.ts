@@ -487,6 +487,7 @@ export function normalizeMcpConnectionFields(
       ...(mcpOAuthScope ? { mcpOAuthScope } : {}),
       ...(mcpOAuthCallbackPort !== undefined ? { mcpOAuthCallbackPort } : {}),
       ...(composioMeta ?? {}),
+      ...(input.mcpDisabled ? { mcpDisabled: true } : {}),
       ...(instructions ? { instructions } : {}),
       credentialFields,
     };
@@ -503,6 +504,7 @@ export function normalizeMcpConnectionFields(
     name, kind: "mcp", category: "app", mcpTransport: "stdio", mcpCommand,
     ...(mcpArgs?.length ? { mcpArgs } : {}),
     ...(mcpCwd ? { mcpCwd } : {}),
+    ...(input.mcpDisabled ? { mcpDisabled: true } : {}),
     ...(instructions ? { instructions } : {}),
     credentialFields: schema,
   };

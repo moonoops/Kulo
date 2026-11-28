@@ -102,6 +102,7 @@ import type { AssistantCoordinator } from "./assistant-coordinator.js";
 import type { AssistantProactiveWakeService } from "./assistant-proactive-wake.js";
 import { createHubAssistantRuntime } from "./assistant-wiring.js";
 import { createAssistantToolsExtension, type AssistantWatchRuleHost } from "./tools-assistant.js";
+import { LocalConfigMigrationService, createMigrationToolsExtension } from "./tools-migration.js";
 import { SparkMailService } from "./connectors/spark-mail-service.js";
 import { HomeAssistantService } from "./connectors/home-assistant.js";
 import { isPrivateLocalModelEndpoint } from "./local-model-endpoint.js";
@@ -476,6 +477,7 @@ function resolveAgentModelAndThinking(
 export interface KuloHubInitOptions {
   voiceAsr?: VoiceAsrEngine;
   voiceOpenLive?: KuloVoiceCallsOptions["openLive"];
+  migrationHomeDir?: string;
   config?: KuloHubConfigOverrides;
   storage?: Storage;
   models?: Models;
@@ -556,6 +558,7 @@ export class KuloHub implements OrchestratorController {
   #lanHttpEndpointProvider?: () => { lanReachable: boolean; port: number } | undefined;
   readonly connectionManager: KuloConnections;
   readonly connections: ConnectionToolController;
+  readonly migration: LocalConfigMigrationService;
 
   readonly #providerId: string;
   readonly #models: Models;
@@ -695,6 +698,7 @@ export class KuloHub implements OrchestratorController {
     modelConfigurationExt: ReturnType<typeof createModelConfigurationToolsExtension>;
     agentConfigurationExt: ReturnType<typeof createAgentConfigurationToolsExtension>;
     deviceToolsExt: ReturnType<typeof createDeviceToolsExtension>;
+    migrationToolsExt: ReturnType<typeof createMigrationToolsExtension>; migrationHomeDir?: string;
     deviceJoinStaging: DeviceJoinStaging;
     contentExt: ReturnType<typeof createContentToolsExtension>;
     projectExt: ReturnType<typeof createProjectToolsExtension>;
@@ -1292,6 +1296,7 @@ export class KuloHub implements OrchestratorController {
         }),
     });
     this.deviceJoinStaging = params.deviceJoinStaging;
+    this.migration = new LocalConfigMigrationService({ stateDir: this.config.stateDir, homeDir: params.migrationHomeDir, connections: this.connectionManager, skills: this.skills, getLocalNodeId: () => this.#clusterHostContext?.localNodeId ?? this.config.localEnvId ?? "local", onClusterDirty: (kind) => this.#onClusterDirty?.(kind) });
     this.settingsAssistant = new SettingsAssistant({
       harness: this.harness,
       extension: params.settingsAssistantExt,
@@ -1322,6 +1327,7 @@ export class KuloHub implements OrchestratorController {
       registerLocalModel: (input, signal) => this.modelConfiguration.registerLocalProvider(input, signal),
       agentConfigurationExtensions: [params.agentConfigurationExt],
       deviceExtensions: [params.deviceToolsExt],
+      migrationExtensions: [params.migrationToolsExt],
       securityExtensions: [params.redactionExt],
       customizationExtensions: this.#customizationExtensions,
       processText: async (text, requestId) => {
@@ -2094,6 +2100,7 @@ export class KuloHub implements OrchestratorController {
     const globalSettingsExt = createGlobalSettingsToolsExtension(() => hubRef!.settingsAssistant);
     const settingsAssistantExt = createSettingsAssistantExtension(() => hubRef!.settingsAssistant);
     const deviceToolsExt = createDeviceToolsExtension(() => hubRef!.settingsAssistant);
+    const migrationToolsExt = createMigrationToolsExtension({ service: () => hubRef!.migration, assertHubLocalDisplayTurn: () => hubRef!.settingsAssistant.assertHubLocalDisplayTurn(), redact });
     const customizationExt = config.customization ? createCustomizationToolsExtension({
       service: () => hubRef!.customizationService(),
       caller: (api) => hubRef!.#customizationCaller(api.conversationId),
@@ -2419,7 +2426,7 @@ export class KuloHub implements OrchestratorController {
     registry.install(computerUseExt); registry.install(routerReadExt);
     registry.install(workerExt); registry.install(orchestratorExt);
     registry.install(orchestratorTailExt); registry.install(globalSettingsExt);
-    registry.install(settingsAssistantExt); registry.install(deviceToolsExt);
+    registry.install(settingsAssistantExt); registry.install(deviceToolsExt); registry.install(migrationToolsExt);
     if (customizationExt) registry.install(customizationExt);
     registry.install(appearanceCustomizationExt); registry.install(modelConfigurationExt);
     registry.install(agentConfigurationExt); registry.install(contentExt);
@@ -2625,7 +2632,7 @@ export class KuloHub implements OrchestratorController {
       appearanceCustomizationExt,
       modelConfigurationExt,
       agentConfigurationExt,
-      deviceToolsExt,
+      deviceToolsExt, migrationToolsExt, migrationHomeDir: init.migrationHomeDir,
       deviceJoinStaging,
       contentExt,
       projectExt,
