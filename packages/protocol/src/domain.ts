@@ -197,6 +197,18 @@ export interface ChatReplyReference {
   excerpt?: boolean;
 }
 
+export type ToolActionCategory = "read" | "write" | "confirm" | "other";
+
+export type ToolActionStatus = "running" | "ok" | "error" | "awaiting_confirm";
+
+export interface ToolActionMeta {
+  category: ToolActionCategory;
+  labelKey: string;
+  targetLabel?: string;
+  status: ToolActionStatus;
+  errorBrief?: string;
+}
+
 export interface ChatDisplayItem {
   id: number;
   /** Shared by the text and tool publications belonging to one assistant response. */
@@ -220,6 +232,7 @@ export interface ChatDisplayItem {
     name: string;
     argsSummary: string;
     actionSummary?: string;
+    actionMeta?: ToolActionMeta;
     result?: {
       text: string;
       isError: boolean;
@@ -236,7 +249,12 @@ export interface LiveStreamState {
   responseId?: number;
   streamingText?: string;
   streamingThinking?: string;
-  activeTools: Array<{ callId: string; name: string; outputTail?: string }>;
+  activeTools: Array<{
+    callId: string;
+    name: string;
+    outputTail?: string;
+    actionMeta?: ToolActionMeta;
+  }>;
   queuedCount: number;
   retrying?: { attempt: number; at: number };
   runFailure?: { taskId?: number; reason: string; detail?: string };

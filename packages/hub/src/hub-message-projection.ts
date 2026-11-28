@@ -41,7 +41,8 @@ export interface HubMessageProjectionDeps {
   harness: Harness;
   uploads: KuloUploadStore;
   uiCards: Pick<KuloUiCards, "snapshot">;
-  connectionManager: Pick<KuloConnections, "redact" | "snapshot">;
+  connectionManager: Pick<KuloConnections, "redact" | "snapshot"> &
+    Partial<Pick<KuloConnections, "getConnectionRecord">>;
   actionConfirmations: Pick<KuloActionConfirmations, "listPendingForConversation">;
   getContextGuard: () => Pick<HubContextGuard, "projectLiveContext">;
   hasPendingMediaRelay: (conversationId: number) => boolean;
@@ -99,9 +100,10 @@ export class HubMessageProjection {
     conversationId: number,
     options?: DisplayMessageOptions,
   ): ChatDisplayItem[] {
+    const resolvedOptions = this.#displayOptions(options);
     return this.decorateChatMessages(
       this.#searchHistory(conversationId).project(entries, (projection) =>
-        extractDisplayMessages(projection, options),
+        extractDisplayMessages(projection, resolvedOptions),
       ),
       conversationId,
     );
@@ -149,7 +151,7 @@ export class HubMessageProjection {
         messages:
           conversationId !== undefined
             ? this.projectMessages(view.entries, conversationId)
-            : extractDisplayMessages(view.entries),
+            : extractDisplayMessages(view.entries, this.#displayOptions()),
         live: extractLiveState(view),
       },
       (text) => this.#deps.connectionManager.redact(text),
@@ -160,7 +162,7 @@ export class HubMessageProjection {
     const queued = queuedChatEntries(value);
     // Inbox receipts are not transcript boundaries and must never enter evidence history.
     const pending = this.decorateChatMessages(
-      extractDisplayMessages(queued.entries),
+      extractDisplayMessages(queued.entries, this.#displayOptions()),
       conversationId,
     ).map((item) => {
       const delivery = queued.deliveries.get(item.id);
@@ -284,6 +286,16 @@ export class HubMessageProjection {
       }
     }
     await this.#deps.harness.commit((tx) => pruneIdleDeferredToolsInTx(tx, conversationId, retained), context);
+  }
+
+  #displayOptions(options?: DisplayMessageOptions): DisplayMessageOptions {
+    return {
+      ...options,
+      redactToolText: options?.redactToolText ?? ((text) => this.#deps.connectionManager.redact(text)),
+      resolveConnectionLabel:
+        options?.resolveConnectionLabel ??
+        ((id) => this.#deps.connectionManager.getConnectionRecord?.(id)?.name),
+    };
   }
 
   #searchHistory(conversationId: number): SearchEvidenceHistory {

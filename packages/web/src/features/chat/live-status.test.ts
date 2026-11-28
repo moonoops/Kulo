@@ -78,4 +78,47 @@ describe("resolveLiveWaitStatus", () => {
       elapsedSuffix: null,
     });
   });
+
+  it("uses actionMeta labelKey and targetLabel consistently in both languages", () => {
+    expect(
+      resolveLiveWaitStatus(
+        baseLive({
+          activeTools: [
+            {
+              callId: "c-lark",
+              name: "kulo_lark_bridge",
+              actionMeta: { category: "other", labelKey: "kulo_lark_bridge", status: "running" },
+            },
+          ],
+        }),
+        { showProcess: false, language: "zh-CN" },
+      ),
+    ).toEqual({
+      label: "正在访问飞书…",
+      elapsedSuffix: null,
+    });
+
+    expect(
+      resolveLiveWaitStatus(
+        baseLive({
+          activeTools: [
+            {
+              callId: "c-fetch",
+              name: "web_fetch",
+              actionMeta: {
+                category: "read",
+                labelKey: "web_fetch",
+                targetLabel: "docs.example.com",
+                status: "running",
+              },
+            },
+          ],
+        }),
+        { showProcess: true, language: "en" },
+      ),
+    ).toEqual({
+      label: "Reading webpage · docs.example.com",
+      elapsedSuffix: null,
+    });
+  });
 });

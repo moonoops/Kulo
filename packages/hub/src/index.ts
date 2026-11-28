@@ -66,6 +66,14 @@ export {
   type HubEventListener,
   type KuloHubInitOptions,
 } from "./hub.js";
+export {
+  buildLiveToolActionMeta,
+  classifyToolAction,
+  extractSafeHostname,
+  finalizeToolActionMeta,
+  type ClassifyToolActionInput,
+  type FinalizeToolActionMetaInput,
+} from "./tool-step-summary.js";
 export { startKuloHubServer, type KuloHubServer, type KuloHubServerOptions } from "./server.js";
 export {
   ExternalAgentQuotaService,

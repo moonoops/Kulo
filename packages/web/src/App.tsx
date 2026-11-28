@@ -1,6 +1,6 @@
 /** Kulo SuperAgent shell with a single-column conversation (HeroUI v3). */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Alert, Button, Chip, Disclosure, Spinner, toast } from "@heroui/react";
+import { Alert, Button, Disclosure, Spinner, toast } from "@heroui/react";
 import {
   redactDeviceInvitationText,
   type AssistantItemAction, type AssistantItemView, type ChatReplyReference,
@@ -59,6 +59,7 @@ import { ConnectedMessageContent } from "./features/chat/connected-message-conte
 import { liveResponseMessageId, mergeResponseMessages } from "./features/chat/response-messages";
 import { KuloLiveWaitRow } from "./features/chat/live-wait-row";
 import { VoiceCallSummaryCard } from "./features/chat/voice-call-summary-card";
+import { ChatToolStepList } from "./features/chat/tool-step-list";
 import { mergeChatSubmissions, splitChatTimeline, submissionKey, type ChatViewItem, type PendingSubmissionBackup } from "./features/chat/chat-submissions";
 import { UserDeliveryStatus, useDeliveryStatusClock, visibleChatDeliveryLabel, visibleTaskSubmissionStatus } from "./features/chat/delivery-status";
 import { computeChatScrollState, useChatAutoScroll } from "./features/chat/use-chat-autoscroll";
@@ -1265,6 +1266,10 @@ function AppShell() {
   );
 
   const liveMessageId = !viewingHistory ? liveResponseMessageId(responseMessages, live) : undefined;
+  const activeToolIds = useMemo(
+    () => new Set(live.activeTools.map((tool) => tool.callId)),
+    [live.activeTools],
+  );
   const responseScopes = responseMotionScopes(responseMessages, chatTimeline.pending, live);
 
   const renderConversationMessage = (item: ChatViewItem) => {
@@ -1331,20 +1336,21 @@ function AppShell() {
         )}
         {showProcess &&
           item.toolCalls &&
-          item.toolCalls.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {item.toolCalls.map((tc) => (
-                <Chip
-                  key={tc.id}
-                  size="sm"
-                  variant="soft"
-                  className="font-mono"
-                >
-                  {tc.name}
-                </Chip>
-              ))}
-            </div>
-          )}
+          item.toolCalls.length > 0 && (() => {
+            const isLiveTurn =
+              !viewingHistory &&
+              live.busy &&
+              (item.id === liveMessageId ||
+                (live.responseId !== undefined && item.responseId === live.responseId) ||
+                item.toolCalls.some((tc) => activeToolIds.has(tc.id)));
+            return (
+              <ChatToolStepList
+                toolCalls={item.toolCalls}
+                activeToolIds={isLiveTurn ? activeToolIds : undefined}
+                liveBusy={isLiveTurn}
+              />
+            );
+          })()}
         <ConnectedMessageContent item={item} connected={connected} conversationKey={activeTopicId} deliveryScope={deliveryScope} onPreviewImage={setLightboxImage} onReply={replyToMessage} onNavigateReply={navigateReply}
           trailingContent={item.id === liveMessageId ? liveResponseNode : undefined}
           onAdjust={(card, values) => {

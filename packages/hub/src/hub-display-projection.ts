@@ -37,6 +37,7 @@ import {
   isRecoveryInputBoundary,
 } from "./state.js";
 import { ContentPublicationEntry, KuloUserEntry, UiActionEntry } from "./ui-cards.js";
+import { buildLiveToolActionMeta, classifyToolAction, finalizeToolActionMeta } from "./tool-step-summary.js";
 import { parseUserEntryContent } from "./uploads.js";
 import { VoiceCallSummaryEntry, formatVoiceCallSummaryText } from "./voice-call-summary.js";
 import { VoiceTranscriptEntry } from "./voice-transcripts.js";
@@ -183,6 +184,7 @@ export function summarizeEntryForInspect(entry: EntryRecord): WorkerInspectEntry
 export interface DisplayMessageOptions {
   includeToolResults?: boolean;
   redactToolText?: (text: string) => string;
+  resolveConnectionLabel?: (connectionId: string) => string | undefined;
 }
 
 export function extractDisplayMessages(
@@ -329,42 +331,52 @@ export function extractDisplayMessages(
             content?: Array<{ type?: string; text?: string }>;
           }
         | undefined;
-      if (options.includeToolResults && msg?.role === "toolResult" && typeof msg.toolCallId === "string") {
+      if (msg?.role === "toolResult" && typeof msg.toolCallId === "string") {
         const call = pendingToolCalls.get(msg.toolCallId);
         if (call && call.name === msg.toolName) {
-          if (BUILTIN_MEMORY_DISPLAY_REDACTED_TOOLS.has(call.name)) {
-            call.result = {
-              text: msg.isError ? "error" : "ok",
+          if (call.actionMeta) {
+            call.actionMeta = finalizeToolActionMeta(call.actionMeta, {
+              name: call.name,
               isError: Boolean(msg.isError),
-              ...(createdAt ? { createdAt } : {}),
-            };
-            pendingToolCalls.delete(msg.toolCallId);
-          } else {
-            const output = Array.isArray(msg.content)
-              ? msg.content.filter((part) => part.type === "text" && typeof part.text === "string")
-              : [];
-            const limit = Math.min(4096, toolOutputRemaining);
-            let text = "";
-            let truncated = false;
-            for (const [index, part] of output.entries()) {
-              // Redact before truncation so cutting through a credential cannot defeat exact-value filtering.
-              const safe = redactToolText(`${index ? "\n" : ""}${part.text!}`);
-              const remaining = limit - text.length;
-              text += safe.slice(0, remaining);
-              if (safe.length > remaining) {
-                truncated = true;
-                break;
-              }
-            }
-            toolOutputRemaining -= text.length;
-            call.result = {
-              text,
-              isError: Boolean(msg.isError),
-              ...(createdAt ? { createdAt } : {}),
-              ...(truncated ? { truncated: true } : {}),
-            };
-            pendingToolCalls.delete(msg.toolCallId);
+              content: msg.content,
+              details: msg.details,
+              redactText: redactToolText,
+            });
           }
+          if (options.includeToolResults) {
+            if (BUILTIN_MEMORY_DISPLAY_REDACTED_TOOLS.has(call.name)) {
+              call.result = {
+                text: msg.isError ? "error" : "ok",
+                isError: Boolean(msg.isError),
+                ...(createdAt ? { createdAt } : {}),
+              };
+            } else {
+              const output = Array.isArray(msg.content)
+                ? msg.content.filter((part) => part.type === "text" && typeof part.text === "string")
+                : [];
+              const limit = Math.min(4096, toolOutputRemaining);
+              let text = "";
+              let truncated = false;
+              for (const [index, part] of output.entries()) {
+                // Redact before truncation so cutting through a credential cannot defeat exact-value filtering.
+                const safe = redactToolText(`${index ? "\n" : ""}${part.text!}`);
+                const remaining = limit - text.length;
+                text += safe.slice(0, remaining);
+                if (safe.length > remaining) {
+                  truncated = true;
+                  break;
+                }
+              }
+              toolOutputRemaining -= text.length;
+              call.result = {
+                text,
+                isError: Boolean(msg.isError),
+                ...(createdAt ? { createdAt } : {}),
+                ...(truncated ? { truncated: true } : {}),
+              };
+            }
+          }
+          pendingToolCalls.delete(msg.toolCallId);
         }
       }
       if (msg && msg.role === "toolResult" && !msg.isError && msg.toolName) {
@@ -502,10 +514,21 @@ export function extractDisplayMessages(
             thinkingBlocks.push(block.thinking);
           } else if (block.type === "toolCall") {
             if (SILENT_UI_TOOLS.has(block.name)) continue;
+            const actionMeta = classifyToolAction({
+              name: block.name,
+              args: block.arguments,
+              redactText: redactToolText,
+              resolveConnectionLabel: options.resolveConnectionLabel,
+            });
             if (BUILTIN_MEMORY_DISPLAY_REDACTED_TOOLS.has(block.name)) {
-              const call = { id: block.id, name: block.name, argsSummary: "" };
+              const call: NonNullable<ChatDisplayItem["toolCalls"]>[number] = {
+                id: block.id,
+                name: block.name,
+                argsSummary: "",
+                actionMeta,
+              };
               toolCalls.push(call);
-              if (options.includeToolResults) pendingToolCalls.set(call.id, call);
+              pendingToolCalls.set(call.id, call);
               continue;
             }
             const rawArgs = JSON.stringify(
@@ -520,14 +543,15 @@ export function extractDisplayMessages(
               summaryValue === undefined
                 ? undefined
                 : redactToolText(summaryValue).trim().split(/[\r\n]/, 1)[0]!.slice(0, 140);
-            const call = {
+            const call: NonNullable<ChatDisplayItem["toolCalls"]>[number] = {
               id: block.id,
               name: block.name,
               argsSummary: rawArgs.length > 140 ? `${rawArgs.slice(0, 140)}...` : rawArgs,
               ...(actionSummary ? { actionSummary } : {}),
+              actionMeta,
             };
             toolCalls.push(call);
-            if (options.includeToolResults) pendingToolCalls.set(call.id, call);
+            pendingToolCalls.set(call.id, call);
           }
         }
 
@@ -609,6 +633,7 @@ export function extractLiveState(
     .map((t) => ({
       callId: t.callId,
       name: t.name,
+      actionMeta: buildLiveToolActionMeta(t.name),
       ...(t.output && !BUILTIN_MEMORY_DISPLAY_REDACTED_TOOLS.has(t.name) ? { outputTail: t.output.slice(-400) } : {}),
     }));
 
