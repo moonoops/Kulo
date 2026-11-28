@@ -392,45 +392,43 @@ export function AgentPresetFields({
           </Select>
         )}
         {!isExternal && (
-          <div className="kulo-settings-list">
-            <Select
-              variant="primary"
-              value={selectedEscalationKey}
-              onChange={(key) => onChange(applyEscalationModelChange(value, String(key ?? ESCALATION_DISABLED_KEY), groups))}
-              fullWidth
-              className="kulo-settings-row"
-            >
-              <Label className="text-sm text-foreground">{t("遇卡升级模型", "Auto-escalate model")}</Label>
-              <Select.Trigger><Select.Value className="truncate" /><Select.Indicator /></Select.Trigger>
-              <Select.Popover>
-                <ListBox>
-                  <ListBox.Item id={ESCALATION_DISABLED_KEY} textValue={t("关闭", "Off")}>
-                    {t("关闭", "Off")}
+          <Select
+            variant="primary"
+            value={selectedEscalationKey}
+            onChange={(key) => onChange(applyEscalationModelChange(value, String(key ?? ESCALATION_DISABLED_KEY), groups))}
+            fullWidth
+            className="kulo-form-field"
+          >
+            <Label className="text-sm text-foreground">{t("遇卡升级模型", "Auto-escalate model")}</Label>
+            <Select.Trigger><Select.Value className="truncate" /><Select.Indicator /></Select.Trigger>
+            <Select.Popover>
+              <ListBox>
+                <ListBox.Item id={ESCALATION_DISABLED_KEY} textValue={t("关闭", "Off")}>
+                  {t("关闭", "Off")}
+                  <ListBox.ItemIndicator />
+                </ListBox.Item>
+                {!escalationInGroups && escalationModelId && (
+                  <ListBox.Item id={selectedEscalationKey} textValue={escalationModelId}>
+                    <span className="min-w-0 whitespace-normal break-all">
+                      {groups.length > 0 ? t(`${escalationModelId}（未添加）`, `${escalationModelId} (not added)`) : escalationModelId}
+                    </span>
                     <ListBox.ItemIndicator />
                   </ListBox.Item>
-                  {!escalationInGroups && escalationModelId && (
-                    <ListBox.Item id={selectedEscalationKey} textValue={escalationModelId}>
-                      <span className="min-w-0 whitespace-normal break-all">
-                        {groups.length > 0 ? t(`${escalationModelId}（未添加）`, `${escalationModelId} (not added)`) : escalationModelId}
-                      </span>
-                      <ListBox.ItemIndicator />
-                    </ListBox.Item>
-                  )}
-                  {groups.map((group) => (
-                    <ListBox.Section key={group.providerId}>
-                      <Header>{group.label}</Header>
-                      {group.models.map((item) => (
-                        <ListBox.Item key={item.id} id={`${group.providerId}::${item.id}`} textValue={item.id}>
-                          <span className="min-w-0 whitespace-normal break-all">{item.id}</span>
-                          <ListBox.ItemIndicator />
-                        </ListBox.Item>
-                      ))}
-                    </ListBox.Section>
-                  ))}
-                </ListBox>
-              </Select.Popover>
-            </Select>
-          </div>
+                )}
+                {groups.map((group) => (
+                  <ListBox.Section key={group.providerId}>
+                    <Header>{group.label}</Header>
+                    {group.models.map((item) => (
+                      <ListBox.Item key={item.id} id={`${group.providerId}::${item.id}`} textValue={item.id}>
+                        <span className="min-w-0 whitespace-normal break-all">{item.id}</span>
+                        <ListBox.ItemIndicator />
+                      </ListBox.Item>
+                    ))}
+                  </ListBox.Section>
+                ))}
+              </ListBox>
+            </Select.Popover>
+          </Select>
         )}
         {showServiceTier && (
           <Select

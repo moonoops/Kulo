@@ -46,7 +46,9 @@ describe("agent settings fields", () => {
       expect(html).toContain(agent.prompt);
       expect(html.match(/role="switch"/g)).toHaveLength(2);
       expect(html.match(/aria-haspopup="listbox"/g)).toHaveLength(3);
-      expect(html).toContain("kulo-settings-row");
+      expect(html).toContain("kulo-form-field");
+      expect(html).not.toContain("kulo-settings-list");
+      expect(html).not.toContain("kulo-settings-row");
       expect(html).not.toContain('role="radio');
     }
     expect(create).toContain("智能体标识");
@@ -159,7 +161,9 @@ describe("agent settings fields", () => {
     const defaultHtml = renderFields({ availableGroups: strongGroups });
     expect(defaultHtml).toContain("遇卡升级模型");
     expect(defaultHtml).toContain("关闭");
-    expect(defaultHtml).toContain("kulo-settings-row");
+    expect(defaultHtml).toContain("kulo-form-field");
+    expect(defaultHtml).not.toContain("kulo-settings-list");
+    expect(defaultHtml).not.toContain("kulo-settings-row");
 
     // Selecting an escalation model populates escalationModel
     const escalated = applyEscalationModelChange(agent, "anthropic-cloud::claude-opus-4", strongGroups);

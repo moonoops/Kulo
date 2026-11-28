@@ -118,11 +118,11 @@ export function SideQuestionDrawer({
           if (!next) onClose();
         }}
       >
-        <Drawer.Content placement="right" className="w-full max-w-[440px]">
+        <Drawer.Content placement="right">
           <Drawer.Dialog
             data-kulo-overlay="side-question-drawer"
             aria-label={t("支线 · 不写入主对话", "Side question · Not saved to main chat")}
-            className="flex h-full flex-col"
+            className="flex h-full w-full max-w-[440px] flex-col"
           >
             <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-3">
               <Drawer.Heading className="min-w-0 truncate">

@@ -239,6 +239,14 @@ describe("Stage 3 P1-1 Side Question (/btw) frontend behavior", () => {
 
     const drawerSource = fs.readFileSync(path.join(here, "side-question-drawer.tsx"), "utf8");
     expect(drawerSource).toContain("Drawer.Dialog");
+    const drawerContentTag = drawerSource.match(/<Drawer\.Content\b[^>]*>/)?.[0];
+    expect(drawerContentTag).toBeDefined();
+    expect(drawerContentTag).toContain('placement="right"');
+    expect(drawerContentTag).not.toMatch(/\bmax-w-|\bw-\[/);
+    const drawerDialogTag = drawerSource.match(/<Drawer\.Dialog\b[^>]*>/)?.[0];
+    expect(drawerDialogTag).toBeDefined();
+    expect(drawerDialogTag).toContain("w-full");
+    expect(drawerDialogTag).toContain("max-w-[440px]");
     expect(drawerSource).toContain("支线 · 不写入主对话");
     expect(drawerSource).toContain("插入主框");
     expect(drawerSource).toContain("kulo-context-field");
