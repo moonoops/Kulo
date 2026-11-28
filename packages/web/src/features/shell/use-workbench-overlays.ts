@@ -6,6 +6,11 @@ import type { PreviewableImage } from "../../kulo-composer";
 import { translate as t } from "../../kulo-i18n";
 import type { ChatViewItem } from "../chat/chat-submissions";
 import { messageQuote } from "../chat/message-actions";
+import {
+  getFrozenTargetUnavailableReason,
+  type ModalFooterComposerTarget,
+  type PreviewCommandContextValue,
+} from "../chat/modal-footer-composer";
 import { useComputerPreview } from "../computer-preview/use-computer-preview";
 import {
   hasBlockingOverlay,
@@ -75,6 +80,43 @@ export function useWorkbenchOverlays({
     computerPreviewBinding,
     openPreviewModal,
   };
+}
+
+/** Assembles a stable PreviewCommandContext value that evaluates live target availability for frozen snapshots. */
+export function usePreviewCommandContextValue({
+  topicId,
+  conversationId,
+  connected,
+  topics,
+  onSendToTopic,
+}: {
+  topicId: string;
+  conversationId?: number;
+  connected: boolean;
+  topics: readonly TopicSummary[];
+  onSendToTopic: (target: ModalFooterComposerTarget, text: string) => Promise<void>;
+}): PreviewCommandContextValue {
+  const sendRef = useRef(onSendToTopic);
+  sendRef.current = onSendToTopic;
+  const stableSend = useCallback(
+    (target: ModalFooterComposerTarget, text: string) => sendRef.current(target, text),
+    [],
+  );
+  const getUnavailableReason = useCallback(
+    (target: ModalFooterComposerTarget) =>
+      getFrozenTargetUnavailableReason(target, { connected, topics }),
+    [connected, topics],
+  );
+  return useMemo(
+    () => ({
+      topicId,
+      ...(conversationId !== undefined ? { conversationId } : {}),
+      connected,
+      getUnavailableReason,
+      onSendToTopic: stableSend,
+    }),
+    [topicId, conversationId, connected, getUnavailableReason, stableSend],
+  );
 }
 
 export interface UseWorkbenchShortcutsParams {

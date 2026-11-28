@@ -1,0 +1,55 @@
+@reference "../../kulo.css";
+
+.kulo-modal-footer-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kulo-space-1);
+  min-width: 0;
+}
+
+.kulo-modal-footer-composer[data-expanded="false"] {
+  flex: 0 0 auto;
+}
+
+.kulo-modal-footer-composer[data-expanded="true"] {
+  flex: 1 1 320px;
+  width: 100%;
+}
+
+.kulo-modal-footer-composer-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--kulo-control-gap);
+  width: 100%;
+  min-width: 0;
+}
+
+.kulo-modal-footer-composer-row > .kulo-context-field {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.kulo-modal-footer-composer .textarea {
+  max-height: 96px;
+}
+
+.kulo-modal-footer-composer-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--kulo-control-gap);
+}
+
+.kulo-modal-footer-composer-feedback {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (pointer: coarse) {
+  .kulo-modal-footer-composer .button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}

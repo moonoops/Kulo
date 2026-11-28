@@ -9,6 +9,11 @@ import { CodeBlock } from "./code-block";
 import { desktopFileBridge, downloadFileAsset, openFileInDefaultApp, openHtmlInBrowser, prepareHtmlPreview, readFileAsset } from "./file-actions";
 import { FilePreview } from "./file-preview";
 import { filePreviewKind, isOversizedOfficeFile } from "./file-preview-model";
+import {
+  ModalFooterComposer,
+  usePreviewCommandContext,
+  type ModalFooterComposerTarget,
+} from "./modal-footer-composer";
 import "./file-message.css";
 
 export { isPreviewableFile } from "./file-preview-model";
@@ -26,13 +31,29 @@ export function FileMessage({
   defaultExpanded = true,
   compact = false,
   onPreviewImage,
+  topicId,
+  conversationId,
+  connected,
+  getUnavailableReason,
+  onSendToTopic,
 }: {
   asset: ChatAttachment;
   defaultExpanded?: boolean;
   compact?: boolean;
   onPreviewImage?: (image: PreviewableImage) => void;
+  topicId?: string;
+  conversationId?: number;
+  connected?: boolean;
+  getUnavailableReason?: (target: ModalFooterComposerTarget) => string | undefined;
+  onSendToTopic?: (target: ModalFooterComposerTarget, text: string) => Promise<void> | void;
 }) {
   useI18n();
+  const previewContext = usePreviewCommandContext();
+  const effectiveTopicId = topicId ?? previewContext?.topicId;
+  const effectiveConversationId = conversationId ?? previewContext?.conversationId;
+  const effectiveConnected = connected ?? previewContext?.connected ?? true;
+  const effectiveGetUnavailableReason = getUnavailableReason ?? previewContext?.getUnavailableReason;
+  const effectiveOnSendToTopic = onSendToTopic ?? previewContext?.onSendToTopic;
   const html = isHtmlArtifact(asset);
   const kind = filePreviewKind(asset);
   const officeOversized = isOversizedOfficeFile(asset);
@@ -40,6 +61,8 @@ export function FileMessage({
   const desktop = desktopFileBridge();
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [large, setLarge] = useState(false);
+  const [frozenTarget, setFrozenTarget] = useState<ModalFooterComposerTarget | null>(null);
+  const [composerExpanded, setComposerExpanded] = useState(false);
   const [sourceOpen, setSourceOpen] = useState(false);
   const [source, setSource] = useState<string>();
   const [sourceError, setSourceError] = useState("");
@@ -119,9 +142,28 @@ export function FileMessage({
     }
     movePreview(mount, large ? largeStage : inlineStage);
   }, [mount, large, inlineStage, largeStage, kind, reading]);
+  const openLarge = (expandInline: boolean) => {
+    previewTouched.current = true;
+    setNearViewport(true);
+    if (expandInline) setExpanded(true);
+    setFrozenTarget(
+      effectiveTopicId && effectiveOnSendToTopic
+        ? {
+            targetKind: "file",
+            topicId: effectiveTopicId,
+            ...(effectiveConversationId !== undefined ? { conversationId: effectiveConversationId } : {}),
+            fileLabel: asset.name,
+          }
+        : null,
+    );
+    setComposerExpanded(false);
+    setLarge(true);
+  };
   const closeLarge = () => {
     movePreview(mount, inlineStage);
     setLarge(false);
+    setComposerExpanded(false);
+    setFrozenTarget(null);
     requestAnimationFrame(() => (isCompact ? compactTrigger.current : expandTrigger.current)?.focus({ preventScroll: true }));
   };
   const run = async (kind: "open" | "browser" | "download") => {
@@ -162,7 +204,7 @@ export function FileMessage({
               variant="ghost"
               className="kulo-artifact-compact-trigger"
               aria-label={tr(`预览文件：${asset.name}`, `Preview file: ${asset.name}`)}
-              onPress={() => { previewTouched.current = true; setNearViewport(true); setLarge(true); }}
+              onPress={() => openLarge(false)}
             >
               <span className="kulo-artifact-thumb" aria-hidden="true"><KuloIcon name={html ? "code" : "document"} size={20} /></span>
               <span className="kulo-artifact-detail"><span className="kulo-item-title kulo-chat-truncate" title={asset.name}>{asset.name}</span><span className="kulo-item-description">{fileMeta}</span></span>
@@ -182,7 +224,7 @@ export function FileMessage({
           <KuloIcon name={html ? "code" : "document"} size={20} />
           <div className="kulo-artifact-detail"><span className="kulo-item-title kulo-chat-truncate" title={asset.name}>{asset.name}</span><span className="kulo-item-description">{fileMeta}</span></div>
           <div className="kulo-artifact-actions">
-            {previewable && <Button ref={expandTrigger} size="sm" variant="ghost" aria-label={tr(`放大预览：${asset.name}`, `Expand preview: ${asset.name}`)} onPress={() => { previewTouched.current = true; setNearViewport(true); setExpanded(true); setLarge(true); }}>{tr("放大", "Expand")}</Button>}
+            {previewable && <Button ref={expandTrigger} size="sm" variant="ghost" aria-label={tr(`放大预览：${asset.name}`, `Expand preview: ${asset.name}`)} onPress={() => openLarge(true)}>{tr("放大", "Expand")}</Button>}
             {openAction}
             {(!previewable || !desktop && !html) && downloadAction}
             {optionsMenu}
@@ -202,8 +244,8 @@ export function FileMessage({
         {previewUrl && <iframe key={attempt} className="kulo-artifact-frame" title={tr(`预览：${asset.name}`, `Preview: ${asset.name}`)} sandbox="allow-scripts allow-forms" referrerPolicy="no-referrer" src={previewUrl} onLoad={() => setLoaded(true)} onError={() => setPreviewError(tr("预览加载失败", "Failed to load preview"))} />}
       </>}
     </>, mount)}
-    <Modal.Backdrop isOpen={large} onOpenChange={(open) => { if (!open) closeLarge(); }}>
-      <Modal.Container size="cover" scroll="inside"><Modal.Dialog className="kulo-artifact-dialog"><Modal.Header><Modal.Heading>{asset.name}</Modal.Heading><Modal.CloseTrigger aria-label={tr("关闭文件预览", "Close file preview")} /></Modal.Header><Modal.Body className="kulo-artifact-modal-body"><div className="kulo-artifact-large-stage" ref={setLargeStage} /></Modal.Body><Modal.Footer className="kulo-artifact-modal-footer">{feedback}<div className="kulo-artifact-actions">{actions}</div></Modal.Footer></Modal.Dialog></Modal.Container>
+    <Modal.Backdrop isOpen={large} isKeyboardDismissDisabled={composerExpanded} onOpenChange={(open) => { if (!open) closeLarge(); }}>
+      <Modal.Container size="cover" scroll="inside"><Modal.Dialog className="kulo-artifact-dialog"><Modal.Header><Modal.Heading>{asset.name}</Modal.Heading><Modal.CloseTrigger aria-label={tr("关闭文件预览", "Close file preview")} /></Modal.Header><Modal.Body className="kulo-artifact-modal-body"><div className="kulo-artifact-large-stage" ref={setLargeStage} /></Modal.Body><Modal.Footer className="kulo-artifact-modal-footer">{frozenTarget && effectiveOnSendToTopic && <ModalFooterComposer target={frozenTarget} connected={effectiveConnected} unavailableReason={effectiveGetUnavailableReason?.(frozenTarget)} onExpandChange={setComposerExpanded} onSendToTopic={effectiveOnSendToTopic} />}{feedback}<div className="kulo-artifact-actions">{actions}</div></Modal.Footer></Modal.Dialog></Modal.Container>
     </Modal.Backdrop>
     <Modal.Backdrop isOpen={sourceOpen} onOpenChange={(open) => { if (!open) { setSourceOpen(false); requestAnimationFrame(() => sourceTrigger.current?.focus({ preventScroll: true })); } }}>
       <Modal.Container size="lg" scroll="inside"><Modal.Dialog><Modal.Header><Modal.Heading>{asset.name}</Modal.Heading><Modal.CloseTrigger aria-label={tr("关闭源码", "Close source")} /></Modal.Header><Modal.Body>{sourceError ? <div className="kulo-artifact-feedback" role="alert"><span>{sourceError}</span><Button size="sm" variant="secondary" onPress={() => setSourceAttempt((value) => value + 1)}>{tr("重试", "Retry")}</Button></div> : source === undefined ? <div className="kulo-artifact-feedback" role="status"><Spinner size="sm" /><span>{tr("正在读取源码", "Loading source")}</span></div> : <CodeBlock code={source} language="html" fileName={asset.name} />}</Modal.Body></Modal.Dialog></Modal.Container>

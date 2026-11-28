@@ -18,7 +18,12 @@ import {
 import { WorkbenchTitlebar } from "./features/shell/workbench-titlebar";
 import { ArchivedTopicBar } from "./features/shell/archived-topic-bar";
 import { useRootRotationReset } from "./features/shell/root-rotation";
-import { useWorkbenchOverlays, useWorkbenchShortcuts } from "./features/shell/use-workbench-overlays";
+import {
+  usePreviewCommandContextValue,
+  useWorkbenchOverlays,
+  useWorkbenchShortcuts,
+} from "./features/shell/use-workbench-overlays";
+import { PreviewCommandProvider } from "./features/chat/modal-footer-composer";
 import {
   readSettingsRailWidth,
   writeSettingsRailWidth,
@@ -1011,16 +1016,17 @@ function AppShell() {
   );
 
   const {
-    resumingQueuedTopic, dispatchSubmissionWithAck, resumeQueuedMessages, submitMessage, transcribeVoice,
+    resumingQueuedTopic, dispatchSubmissionWithAck, resumeQueuedMessages, submitMessage,
+    sendToFrozenTopic, steerFrozenTicket, transcribeVoice,
   } = useChatSubmission({
-    connected, outboxReady, deliveryScope, activeTopicId, activeTopic, rootConversationId,
+    connected, outboxReady, deliveryScope, activeTopicId, activeTopic, topics, rootConversationId,
     projectedTicketId, projectedTicketRef, ticketById, inspectedTicket, topicDrafts,
     currentDraftKey, currentConversationDraftKey, currentDraft, currentReply, currentAttachments,
     draftEditRevisionRef, editingSubmissionRef, selectedTargetDeviceId, persistedTargetDeviceId,
     topicTargetOverrides, setTopicTargetOverrides, waitForPendingTargetDevice, viewingHistory,
     clearMessageWindow: () => setMessageWindow(undefined), nearBottomRef, setShowToBottom,
     setComposerDrafts, setReplyDrafts, removeAttachment, setActionError, clearError,
-    closeProjection, selectTopic, enqueueWs, retryQueuedWs, waitForQueuedAck, sendWsWithAck,
+    closeProjection, selectTopic, enqueueWs, retryQueuedWs, waitForQueuedAck, discardFailedWs, sendWsWithAck,
     deviceJoin, clientId: settingsAssistantControls.clientId,
   });
 
@@ -1167,6 +1173,20 @@ function AppShell() {
   const projectedCallTopicId = projectedDetail?.ticket.originTopicId ?? "root";
   const projectedCallTopic = topics.find((topic) => topic.id === projectedCallTopicId);
   const projectedCallProjectId = projectedDetail?.ticket.projectId ?? projectedCallTopic?.projectId;
+  const activePreviewCommandContext = usePreviewCommandContextValue({
+    topicId: activeTopicId,
+    conversationId: activeTopicConvId,
+    connected,
+    topics,
+    onSendToTopic: sendToFrozenTopic,
+  });
+  const projectedPreviewCommandContext = usePreviewCommandContextValue({
+    topicId: projectedCallTopicId,
+    conversationId: projectedCallTopic?.conversationId,
+    connected,
+    topics,
+    onSendToTopic: sendToFrozenTopic,
+  });
   const projectedVoiceCallTarget = {
     topicId: projectedCallTopicId,
     title: projectedCallTopic?.master ? mainChatTitle : projectedCallTopic?.title || t("原始话题", "Original topic"),
@@ -1555,7 +1575,7 @@ function AppShell() {
         />
       ) : projectedTicketId ? (
         projectedDetail ? (
-          <>
+          <PreviewCommandProvider value={projectedPreviewCommandContext}>
             <KuloTaskProjection
               key={projectedTicketId}
               detail={projectedDetail}
@@ -1652,7 +1672,7 @@ function AppShell() {
                 placeholder={composerPlaceholder()}
               />
             </div>
-          </>
+          </PreviewCommandProvider>
         ) : inspectError?.ticketId === projectedTicketId ? (
           <div className="mx-auto flex w-full max-w-[520px] flex-1 flex-col items-center justify-center gap-3 px-4">
             <Alert status="danger" className="rounded-2xl p-4">
@@ -1692,6 +1712,7 @@ function AppShell() {
           </div>
         )
       ) : (
+        <PreviewCommandProvider value={activePreviewCommandContext}>
         <ConversationScene
           conversationKey={conversationViewKey(activeTopicId, currentDraftKey, activeTopicConvId)}
           empty={messages.length === 0 && !live.busy && !activeRunFailure && !canLoadHistory && !historyLoading}
@@ -1791,6 +1812,7 @@ function AppShell() {
             )}
           </>}
         />
+        </PreviewCommandProvider>
       )}
     </>
   );
@@ -1901,6 +1923,12 @@ function AppShell() {
         client={computerPreview.client}
         connected={connected}
         onStop={stopComputerPreviewTask}
+        activeTopicId={activeTopicId}
+        activeConversationId={activeTopicConvId}
+        topics={topics}
+        tickets={tickets}
+        onSendToTopic={sendToFrozenTopic}
+        onSteerTicket={steerFrozenTicket}
       />
 
       <ConfirmDialog

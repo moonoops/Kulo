@@ -1,7 +1,14 @@
 import { useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Alert, Button, Input, TextField } from "@heroui/react";
-import type { ComputerPreviewHandoffView, ComputerPreviewInputEvent } from "@kulo/protocol";
+import type {
+  ComputerPreviewHandoffView,
+  ComputerPreviewInputEvent,
+  ComputerPreviewSessionView,
+  TicketCardView,
+  TopicSummary,
+} from "@kulo/protocol";
 import { useI18n } from "../../kulo-i18n";
+import type { ModalFooterComposerTarget } from "../chat/modal-footer-composer";
 
 /**
  * Maps browser client pointer coordinates onto the remote browser viewport coordinate space,
@@ -50,6 +57,164 @@ export function mouseButtonName(button: number): "left" | "middle" | "right" {
   if (button === 1) return "middle";
   if (button === 2) return "right";
   return "left";
+}
+
+/** Freezes an immutable ModalFooterComposer target snapshot for the opened computer preview session. */
+export function buildComputerPreviewTarget(
+  selected: ComputerPreviewSessionView,
+  options: {
+    topics?: readonly TopicSummary[];
+    tickets?: readonly TicketCardView[];
+    fallbackTopicId?: string;
+    fallbackConversationId?: number;
+  } = {},
+): ModalFooterComposerTarget {
+  const { topics, tickets, fallbackTopicId = "root", fallbackConversationId } = options;
+  if (selected.ticketId.startsWith("chat:")) {
+    const seg = selected.ticketId.slice(5).split(":")[0]?.trim();
+    const matchedById = seg ? topics?.find((item) => item.id === seg) : undefined;
+    if (matchedById) {
+      return {
+        targetKind: "chat_preview",
+        topicId: matchedById.id,
+        ...(matchedById.conversationId !== undefined ? { conversationId: matchedById.conversationId } : {}),
+        ticketId: selected.ticketId,
+        previewSessionId: selected.id,
+      };
+    }
+    if (seg && /^\d+$/.test(seg)) {
+      const convId = Number(seg);
+      const matchedByConv = topics?.find((item) => item.conversationId === convId);
+      return {
+        targetKind: "chat_preview",
+        topicId: matchedByConv?.id ?? fallbackTopicId,
+        conversationId: convId,
+        ticketId: selected.ticketId,
+        previewSessionId: selected.id,
+      };
+    }
+    const topicId = seg || fallbackTopicId;
+    const conversationId =
+      topics?.find((item) => item.id === topicId)?.conversationId ??
+      (topicId === fallbackTopicId ? fallbackConversationId : undefined);
+    return {
+      targetKind: "chat_preview",
+      topicId,
+      ...(conversationId !== undefined ? { conversationId } : {}),
+      ticketId: selected.ticketId,
+      previewSessionId: selected.id,
+    };
+  }
+
+  const ticket = tickets?.find((item) => item.id === selected.ticketId);
+  const topicId = ticket?.originTopicId ?? fallbackTopicId;
+  const conversationId =
+    topics?.find((item) => item.id === topicId)?.conversationId ??
+    (topicId === fallbackTopicId ? fallbackConversationId : undefined);
+  return {
+    targetKind: "ticket_preview",
+    topicId,
+    ...(conversationId !== undefined ? { conversationId } : {}),
+    ticketId: selected.ticketId,
+    previewSessionId: selected.id,
+  };
+}
+
+/**
+ * Tracks active remote mouse buttons, touch pointers, and pressed keys while the user interacts
+ * with the live handoff viewport so focus transitions can flush release events and avoid sticky inputs.
+ */
+export class RemoteInputTracker {
+  #heldKeys = new Map<string, { key: string; code: string; windowsVirtualKeyCode: number }>();
+  #pressedMouse = new Map<"left" | "middle" | "right", { x: number; y: number }>();
+  #activeTouches = new Map<number, { x: number; y: number }>();
+
+  recordKeyDown(key: string, code: string, windowsVirtualKeyCode: number): void {
+    const id = code || key;
+    if (!id) return;
+    this.#heldKeys.set(id, { key, code, windowsVirtualKeyCode });
+  }
+
+  recordKeyUp(key: string, code: string): void {
+    const id = code || key;
+    if (!id) return;
+    this.#heldKeys.delete(id);
+  }
+
+  recordMouseDown(button: "left" | "middle" | "right", x: number, y: number): void {
+    this.#pressedMouse.set(button, { x, y });
+  }
+
+  recordMouseMove(x: number, y: number): void {
+    for (const button of this.#pressedMouse.keys()) {
+      this.#pressedMouse.set(button, { x, y });
+    }
+  }
+
+  recordMouseUp(button: "left" | "middle" | "right"): void {
+    this.#pressedMouse.delete(button);
+  }
+
+  recordTouchStart(id: number, x: number, y: number): void {
+    this.#activeTouches.set(id, { x, y });
+  }
+
+  recordTouchMove(id: number, x: number, y: number): void {
+    if (this.#activeTouches.has(id)) {
+      this.#activeTouches.set(id, { x, y });
+    }
+  }
+
+  recordTouchEnd(id: number): void {
+    this.#activeTouches.delete(id);
+  }
+
+  hasHeldInputs(): boolean {
+    return this.#heldKeys.size > 0 || this.#pressedMouse.size > 0 || this.#activeTouches.size > 0;
+  }
+
+  flush(send: (event: ComputerPreviewInputEvent) => boolean): number {
+    let flushed = 0;
+    for (const [id, point] of this.#activeTouches) {
+      send({ type: "input_touch", eventType: "touchEnd", touchPoints: [{ x: point.x, y: point.y, id }] });
+      flushed++;
+    }
+    this.#activeTouches.clear();
+
+    for (const [button, point] of this.#pressedMouse) {
+      send({
+        type: "input_mouse",
+        eventType: "mouseReleased",
+        x: point.x,
+        y: point.y,
+        button,
+        clickCount: 1,
+        modifiers: 0,
+      });
+      flushed++;
+    }
+    this.#pressedMouse.clear();
+
+    for (const held of this.#heldKeys.values()) {
+      send({
+        type: "input_keyboard",
+        eventType: "keyUp",
+        key: held.key,
+        code: held.code,
+        windowsVirtualKeyCode: held.windowsVirtualKeyCode,
+        modifiers: 0,
+      });
+      flushed++;
+    }
+    this.#heldKeys.clear();
+    return flushed;
+  }
+
+  clear(): void {
+    this.#heldKeys.clear();
+    this.#pressedMouse.clear();
+    this.#activeTouches.clear();
+  }
 }
 
 export function ComputerHandoffBar({

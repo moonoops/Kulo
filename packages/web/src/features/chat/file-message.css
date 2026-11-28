@@ -29,8 +29,9 @@
 .kulo-artifact-modal-body { display: flex; flex: 1; min-height: 0; }
 .kulo-artifact-large-stage, .kulo-artifact-large-stage > .kulo-artifact-live-preview[data-kind] { width: 100%; height: 100%; min-height: 0; max-height: none; }
 .kulo-artifact-large-stage .kulo-artifact-frame { border: 1px solid var(--border); border-radius: 8px; }
-.kulo-artifact-modal-footer { flex-wrap: wrap; }
+.kulo-artifact-modal-footer { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--kulo-space-2); }
 .kulo-artifact-modal-footer > .kulo-artifact-error { flex: 1; padding-inline: 0; }
+.kulo-artifact-modal-footer > .kulo-artifact-actions { margin-inline-start: auto; }
 
 @container (max-width: 560px) {
   .kulo-artifact-header > .kulo-artifact-actions { width: 100%; justify-content: flex-end; }

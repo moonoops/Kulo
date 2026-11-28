@@ -24,6 +24,11 @@ import { consumePersistedDraft } from "./outbox-submissions";
 import { newDeliveryId } from "./reliable-intents";
 import type { ReliableOutboxMetadata, ReliableOutboxRecord } from "./reliable-outbox";
 import { consumeReplyDraft, type ReplyDrafts } from "./reply-reference";
+import {
+  getFrozenTargetUnavailableReason,
+  resolveModalComposerRoute,
+  type ModalFooterComposerTarget,
+} from "./modal-footer-composer";
 import { resolveFailedChatRetryEnvelope } from "./use-target-device-selection";
 import type { TranscribeVoice } from "./voice-recorder";
 import { transcribeVoiceRecording } from "./voice-transcription";
@@ -34,6 +39,7 @@ export interface UseChatSubmissionParams {
   deliveryScope?: string;
   activeTopicId: string;
   activeTopic?: TopicSummary;
+  topics?: readonly TopicSummary[];
   rootConversationId?: number;
   projectedTicketId?: string;
   projectedTicketRef: MutableRefObject<string | undefined>;
@@ -72,6 +78,7 @@ export interface UseChatSubmissionParams {
   ) => Promise<ReliableOutboxRecord>;
   retryQueuedWs: (id: string, scope?: string) => Promise<ReliableOutboxRecord>;
   waitForQueuedAck: (record: ReliableOutboxRecord) => Promise<unknown>;
+  discardFailedWs?: (id: string, scope?: string) => Promise<void>;
   sendWsWithAck: (message: ClientToHubMessage) => Promise<unknown>;
   deviceJoin?: { submit: () => void };
   clientId: string;
@@ -400,11 +407,140 @@ export function useChatSubmission(params: UseChatSubmissionParams) {
     );
   };
 
+  const sendToFrozenTopic = async (
+    target: ModalFooterComposerTarget,
+    rawText: string,
+  ): Promise<void> => {
+    const unavailable = getFrozenTargetUnavailableReason(target, {
+      connected: params.connected,
+      topics: params.topics,
+    });
+    if (unavailable) {
+      throw new Error(unavailable);
+    }
+    if (!params.outboxReady) {
+      throw new Error(
+        t(
+          "待发队列尚未就绪，输入草稿已保留",
+          "The send queue is not ready. Your draft is saved.",
+        ),
+      );
+    }
+    const { content } = redactChatInvitation(rawText, undefined);
+    const raw = content.trim();
+    if (!raw) return;
+
+    const resolvedTopicId = params.topicDrafts.isLocal(target.topicId)
+      ? (await params.topicDrafts.ensure(target.topicId, {
+          title: deriveDraftTopicTitle(redactSecrets(raw), []),
+          draft: true,
+        })).id
+      : target.topicId;
+
+    await params.waitForPendingTargetDevice?.(resolvedTopicId);
+    const composed =
+      target.targetKind === "file" && target.fileLabel?.trim()
+        ? t(
+            `[关于文件「${target.fileLabel.trim()}」]\n${raw}`,
+            `[About file "${target.fileLabel.trim()}"]\n${raw}`,
+          )
+        : raw;
+    const reqId = newDeliveryId("web");
+    const record = await params.enqueueWs(
+      {
+        type: "chat.send",
+        topicId: resolvedTopicId,
+        ...(target.conversationId !== undefined
+          ? { expectedConversationId: target.conversationId }
+          : {}),
+        content: composed,
+        requestId: reqId,
+        whenBusy: "steer",
+      },
+      {
+        topicId: resolvedTopicId,
+        draftKey: composerDraftKey(resolvedTopicId),
+        rawUserText: composed,
+        draftAttachments: [],
+      },
+      params.deliveryScope,
+    );
+    try {
+      await params.waitForQueuedAck(record);
+    } catch (error) {
+      void params.discardFailedWs?.(record.id, record.scope).catch(() => {});
+      throw error;
+    }
+  };
+
+  const steerFrozenTicket = async (
+    target: ModalFooterComposerTarget,
+    rawText: string,
+  ): Promise<void> => {
+    if (resolveModalComposerRoute(target, "message") === "send_to_topic") {
+      await sendToFrozenTopic(target, rawText);
+      return;
+    }
+    const ticketId = target.ticketId;
+    if (!ticketId) {
+      throw new Error(
+        t(
+          "原任务已不存在，输入草稿已保留",
+          "The original task is no longer available. Your draft is saved.",
+        ),
+      );
+    }
+    const unavailable = getFrozenTargetUnavailableReason(target, {
+      connected: params.connected,
+      tickets: Array.from(params.ticketById.values()),
+    });
+    if (unavailable) {
+      throw new Error(unavailable);
+    }
+    if (!params.outboxReady) {
+      throw new Error(
+        t(
+          "待发队列尚未就绪，输入草稿已保留",
+          "The send queue is not ready. Your draft is saved.",
+        ),
+      );
+    }
+    const { content } = redactChatInvitation(rawText, undefined);
+    const raw = content.trim();
+    if (!raw) return;
+
+    const cmdId = newDeliveryId("steer");
+    const topicId = target.topicId || "root";
+    const record = await params.enqueueWs(
+      {
+        type: "ticket.steer",
+        ticketId,
+        text: raw,
+        commandId: cmdId,
+      },
+      {
+        topicId,
+        draftKey: composerDraftKey(topicId, ticketId),
+        rawUserText: raw,
+        draftAttachments: [],
+      },
+      params.deliveryScope,
+    );
+    try {
+      await params.waitForQueuedAck(record);
+    } catch (error) {
+      void params.discardFailedWs?.(record.id, record.scope).catch(() => {});
+      throw error;
+    }
+  };
+
   return {
     resumingQueuedTopic,
     dispatchSubmissionWithAck,
     resumeQueuedMessages,
     submitMessage,
+    sendToFrozenTopic,
+    steerFrozenTicket,
     transcribeVoice,
   };
 }

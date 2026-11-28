@@ -1,12 +1,25 @@
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type MutableRefObject, type RefObject } from "react";
 import { Button, Card, Modal, Spinner, Tooltip } from "@heroui/react";
-import type { ComputerPreviewInputEvent, ComputerPreviewSessionView } from "@kulo/protocol";
+import type { ComputerPreviewInputEvent, ComputerPreviewSessionView, TicketCardView, TopicSummary } from "@kulo/protocol";
 import { kuloRest } from "../../kulo-api";
 import { useI18n } from "../../kulo-i18n";
 import { KuloIcon } from "../../kulo-icon";
 import type { ComputerPreviewClient, ComputerPreviewState, PreviewDisplay } from "./preview-client";
 import { requestSystemPermissionHelp } from "../system-permissions/system-permissions";
-import { ComputerHandoffBar, keyEventModifiers, mapImagePointerToDeviceCoords, mouseButtonName } from "./handoff-controls";
+import {
+  ModalFooterComposer,
+  getFrozenTargetUnavailableReason,
+  type ModalFooterComposerTarget,
+} from "../chat/modal-footer-composer";
+import {
+  ComputerHandoffBar,
+  RemoteInputTracker,
+  buildComputerPreviewTarget,
+  keyEventModifiers,
+  mapImagePointerToDeviceCoords,
+  mouseButtonName,
+} from "./handoff-controls";
+export { buildComputerPreviewTarget } from "./handoff-controls";
 import "./computer-preview.css";
 
 export type ComputerPreviewActions = Pick<
@@ -60,7 +73,10 @@ function PreviewViewport({
   client,
   zoomable,
   interactive,
+  keyboardSuspended = false,
   onSendInput,
+  stageRef: externalStageRef,
+  flushInputsRef,
   className,
 }: {
   selected: ComputerPreviewSessionView;
@@ -69,17 +85,46 @@ function PreviewViewport({
   client: Pick<ComputerPreviewActions, "frameFailed" | "openModal">;
   zoomable?: boolean;
   interactive?: boolean;
+  keyboardSuspended?: boolean;
   onSendInput?: (event: ComputerPreviewInputEvent) => boolean;
+  stageRef?: RefObject<HTMLDivElement | null>;
+  flushInputsRef?: MutableRefObject<(() => void) | null>;
   className: string;
 }) {
   const { t } = useI18n();
   const imgRef = useRef<HTMLImageElement>(null);
-  const stageRef = useRef<HTMLDivElement>(null);
+  const localStageRef = useRef<HTMLDivElement>(null);
+  const stageRef = externalStageRef ?? localStageRef;
   const lastMoveAtRef = useRef(0);
+  const trackerRef = useRef<RemoteInputTracker | null>(null);
+  if (!trackerRef.current) trackerRef.current = new RemoteInputTracker();
+  const keyboardSuspendedRef = useRef(keyboardSuspended);
+  keyboardSuspendedRef.current = keyboardSuspended;
+  const sendInputRef = useRef(onSendInput);
+  sendInputRef.current = onSendInput;
   const frameError = display?.message === "invalid_frame" ? t("画面无法显示", "The frame could not be displayed") : display?.message;
   const liveImage = Boolean(display?.imageUrl && !reconnecting);
   const canZoom = Boolean(zoomable && liveImage);
   const canInteract = Boolean(interactive && liveImage && onSendInput);
+  const canForwardKeyboard = Boolean(canInteract && !keyboardSuspended);
+
+  const flushHeldInputs = () => {
+    const send = sendInputRef.current;
+    if (send) trackerRef.current?.flush(send);
+    else trackerRef.current?.clear();
+  };
+
+  if (flushInputsRef) {
+    flushInputsRef.current = flushHeldInputs;
+  }
+
+  useEffect(() => {
+    if (flushInputsRef) flushInputsRef.current = flushHeldInputs;
+    return () => {
+      if (flushInputsRef?.current === flushHeldInputs) flushInputsRef.current = null;
+      flushHeldInputs();
+    };
+  }, [selected.id, canInteract]);
 
   const mapCoords = (clientX: number, clientY: number) =>
     imgRef.current ? mapImagePointerToDeviceCoords(imgRef.current, clientX, clientY, display?.deviceWidth, display?.deviceHeight) : null;
@@ -93,25 +138,33 @@ function PreviewViewport({
       aria-label={canInteract ? t("可交互浏览器画面，点击后可直接输入", "Interactive browser viewport") : undefined}
       data-zoomable={canZoom || undefined}
       data-interactive={canInteract || undefined}
+      data-keyboard-suspended={keyboardSuspended || undefined}
       onClick={canZoom ? () => client.openModal(selected.id) : undefined}
+      onBlur={canInteract ? flushHeldInputs : undefined}
       onContextMenu={canInteract ? (event) => event.preventDefault() : undefined}
       onPointerDown={canInteract ? (event) => {
         const coords = mapCoords(event.clientX, event.clientY);
         if (!coords) return;
         stageRef.current?.focus({ preventScroll: true });
         if (event.pointerType === "touch") {
+          trackerRef.current?.recordTouchStart(event.pointerId, coords.x, coords.y);
           onSendInput!({ type: "input_touch", eventType: "touchStart", touchPoints: [{ x: coords.x, y: coords.y, id: event.pointerId }] });
         } else {
-          onSendInput!({ type: "input_mouse", eventType: "mousePressed", x: coords.x, y: coords.y, button: mouseButtonName(event.button), clickCount: Math.max(1, Math.min(3, event.detail || 1)), modifiers: keyEventModifiers(event) });
+          const button = mouseButtonName(event.button);
+          trackerRef.current?.recordMouseDown(button, coords.x, coords.y);
+          onSendInput!({ type: "input_mouse", eventType: "mousePressed", x: coords.x, y: coords.y, button, clickCount: Math.max(1, Math.min(3, event.detail || 1)), modifiers: keyEventModifiers(event) });
         }
       } : undefined}
       onPointerUp={canInteract ? (event) => {
         const coords = mapCoords(event.clientX, event.clientY);
         if (!coords) return;
         if (event.pointerType === "touch") {
+          trackerRef.current?.recordTouchEnd(event.pointerId);
           onSendInput!({ type: "input_touch", eventType: "touchEnd", touchPoints: [{ x: coords.x, y: coords.y, id: event.pointerId }] });
         } else {
-          onSendInput!({ type: "input_mouse", eventType: "mouseReleased", x: coords.x, y: coords.y, button: mouseButtonName(event.button), clickCount: 1, modifiers: keyEventModifiers(event) });
+          const button = mouseButtonName(event.button);
+          trackerRef.current?.recordMouseUp(button);
+          onSendInput!({ type: "input_mouse", eventType: "mouseReleased", x: coords.x, y: coords.y, button, clickCount: 1, modifiers: keyEventModifiers(event) });
         }
       } : undefined}
       onPointerMove={canInteract ? (event) => {
@@ -121,8 +174,10 @@ function PreviewViewport({
         if (!coords) return;
         lastMoveAtRef.current = now;
         if (event.pointerType === "touch") {
+          trackerRef.current?.recordTouchMove(event.pointerId, coords.x, coords.y);
           onSendInput!({ type: "input_touch", eventType: "touchMove", touchPoints: [{ x: coords.x, y: coords.y, id: event.pointerId }] });
         } else {
+          trackerRef.current?.recordMouseMove(coords.x, coords.y);
           onSendInput!({ type: "input_mouse", eventType: "mouseMoved", x: coords.x, y: coords.y, button: "none", modifiers: keyEventModifiers(event) });
         }
       } : undefined}
@@ -131,15 +186,19 @@ function PreviewViewport({
         if (!coords) return;
         onSendInput!({ type: "input_mouse", eventType: "mouseWheel", x: coords.x, y: coords.y, deltaX: Math.round(event.deltaX), deltaY: Math.round(event.deltaY), modifiers: keyEventModifiers(event) });
       } : undefined}
-      onKeyDown={canInteract ? (event) => {
+      onKeyDown={canForwardKeyboard ? (event) => {
+        if (keyboardSuspendedRef.current) return;
         if (event.key === "Escape" || event.nativeEvent.isComposing || event.keyCode === 229) return;
         event.preventDefault();
         const text = event.key.length === 1 && !event.ctrlKey && !event.metaKey ? event.key : undefined;
+        trackerRef.current?.recordKeyDown(event.key, event.code, event.keyCode);
         onSendInput!({ type: "input_keyboard", eventType: "keyDown", key: event.key, code: event.code, ...(text ? { text } : {}), windowsVirtualKeyCode: event.keyCode, modifiers: keyEventModifiers(event) });
       } : undefined}
-      onKeyUp={canInteract ? (event) => {
+      onKeyUp={canForwardKeyboard ? (event) => {
+        if (keyboardSuspendedRef.current) return;
         if (event.key === "Escape" || event.nativeEvent.isComposing || event.keyCode === 229) return;
         event.preventDefault();
+        trackerRef.current?.recordKeyUp(event.key, event.code);
         onSendInput!({ type: "input_keyboard", eventType: "keyUp", key: event.key, code: event.code, windowsVirtualKeyCode: event.keyCode, modifiers: keyEventModifiers(event) });
       } : undefined}
     >
@@ -442,17 +501,54 @@ export function ComputerPreviewModal({
   client,
   connected,
   onStop,
+  activeTopicId,
+  activeConversationId,
+  topics,
+  tickets,
+  onSendToTopic,
+  onSteerTicket,
+  onResolveHandoff,
 }: {
   state: ComputerPreviewState;
   client: ComputerPreviewActions;
   connected: boolean;
   onStop: (ticketId: string) => Promise<unknown>;
+  activeTopicId?: string;
+  activeConversationId?: number;
+  topics?: readonly TopicSummary[];
+  tickets?: readonly TicketCardView[];
+  onSendToTopic?: (target: ModalFooterComposerTarget, text: string) => Promise<void> | void;
+  onSteerTicket?: (target: ModalFooterComposerTarget, text: string) => Promise<void> | void;
+  onResolveHandoff?: (ticketId: string, action: "done" | "cancel", note?: string) => Promise<unknown>;
 }) {
   const { t } = useI18n();
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [handoffError, setHandoffError] = useState<string>();
+  const [composerExpanded, setComposerExpanded] = useState(false);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const flushInputsRef = useRef<(() => void) | null>(null);
+  const frozenTargetRef = useRef<{ sessionId: string; target: ModalFooterComposerTarget } | null>(null);
   const selected = state.sessions.find((item) => item.id === state.selectedId) ?? state.sessions[0];
   const open = Boolean(state.expanded && selected);
+  if (!open || !selected) {
+    frozenTargetRef.current = null;
+  } else if (frozenTargetRef.current?.sessionId !== selected.id) {
+    frozenTargetRef.current = {
+      sessionId: selected.id,
+      target: buildComputerPreviewTarget(selected, {
+        topics,
+        tickets,
+        fallbackTopicId: activeTopicId,
+        fallbackConversationId: activeConversationId,
+      }),
+    };
+  }
+  const frozenTarget = frozenTargetRef.current?.target ?? null;
+
+  useEffect(() => {
+    if (!open) setComposerExpanded(false);
+  }, [open]);
+
   const display = selected ? state.displays[selected.id] : undefined;
   const stop = selected ? state.stops[selected.ticketId] : undefined;
   const reconnecting = state.connection !== "connected";
@@ -468,22 +564,52 @@ export function ComputerPreviewModal({
   const sendPreviewInput = selected && handoff?.interactive && client.sendInput
     ? (event: ComputerPreviewInputEvent) => client.sendInput!(selected.id, event)
     : undefined;
-  const settleHandoff = async (action: "done" | "cancel") => {
-    if (!selected || handoffBusy) return;
+  const settleHandoff = async (
+    action: "done" | "cancel",
+    options: { note?: string; ticketId?: string; rethrow?: boolean } = {},
+  ) => {
+    const ticketId = options.ticketId ?? frozenTarget?.ticketId ?? selected?.ticketId;
+    if (!ticketId || handoffBusy) return;
     setHandoffBusy(true);
     setHandoffError(undefined);
     try {
-      await kuloRest.resolveComputerHandoff(selected.ticketId, action);
-      if (action === "cancel") client.closeModal();
+      const note = options.note?.trim() ? options.note.trim() : undefined;
+      const resolve = onResolveHandoff ?? ((tid, act, txt) => kuloRest.resolveComputerHandoff(tid, act, txt));
+      await resolve(ticketId, action, note);
+      if (action === "cancel") {
+        setComposerExpanded(false);
+        client.closeModal();
+      }
     } catch (err) {
       setHandoffError(err instanceof Error ? err.message : t("操作失败，请重试", "Action failed, try again"));
+      if (options.rethrow) throw err;
     } finally {
       setHandoffBusy(false);
     }
   };
+  const composerUnavailableReason = frozenTarget
+    ? getFrozenTargetUnavailableReason(frozenTarget, {
+        connected,
+        topics,
+        tickets,
+        previewClosed: display?.state === "closed",
+      })
+    : undefined;
+  const showFooterComposer = Boolean(
+    frozenTarget && (onSendToTopic || onSteerTicket || handoff || onResolveHandoff),
+  );
 
   return (
-    <Modal.Backdrop isOpen={open} onOpenChange={(next) => { if (!next) client.closeModal(); }}>
+    <Modal.Backdrop
+      isOpen={open}
+      isKeyboardDismissDisabled={composerExpanded}
+      onOpenChange={(next) => {
+        if (!next) {
+          setComposerExpanded(false);
+          client.closeModal();
+        }
+      }}
+    >
       <Modal.Container size="cover" placement="center" className="kulo-computer-preview-modal-container">
         <Modal.Dialog
           className="kulo-computer-preview-modal-dialog"
@@ -511,7 +637,11 @@ export function ComputerPreviewModal({
                           className="shrink-0"
                           aria-pressed={item.id === selected.id}
                           aria-label={t(`查看操作：${item.app ?? item.title} · ${item.deviceName}`, `View operation: ${item.app ?? item.title} · ${item.deviceName}`)}
-                          onPress={() => client.select(item.id)}
+                          onPress={() => {
+                            flushInputsRef.current?.();
+                            setComposerExpanded(false);
+                            client.select(item.id);
+                          }}
                         >
                           {labels.get(item.id)}
                         </Button>
@@ -534,7 +664,10 @@ export function ComputerPreviewModal({
                   reconnecting={reconnecting}
                   client={client}
                   interactive={Boolean(sendPreviewInput)}
+                  keyboardSuspended={composerExpanded}
                   onSendInput={sendPreviewInput}
+                  stageRef={stageRef}
+                  flushInputsRef={flushInputsRef}
                   className="kulo-computer-preview-modal-stage"
                 />
 
@@ -561,6 +694,35 @@ export function ComputerPreviewModal({
               </Modal.Body>
 
               <Modal.Footer className="kulo-computer-preview-modal-footer">
+                {showFooterComposer && frozenTarget && (
+                  <ModalFooterComposer
+                    key={frozenTarget.previewSessionId ?? frozenTarget.ticketId ?? frozenTarget.topicId}
+                    target={frozenTarget}
+                    interactiveHandoff={Boolean(handoff?.interactive)}
+                    connected={connected}
+                    unavailableReason={composerUnavailableReason}
+                    onBeforeExpand={() => {
+                      flushInputsRef.current?.();
+                    }}
+                    onExpandChange={setComposerExpanded}
+                    onCollapseFocusReturn={
+                      sendPreviewInput
+                        ? () => {
+                            stageRef.current?.focus({ preventScroll: true });
+                          }
+                        : undefined
+                    }
+                    onSendToTopic={onSendToTopic}
+                    onSteerTicket={onSteerTicket}
+                    onResolveHandoff={async (target, text) => {
+                      await settleHandoff("done", {
+                        note: text,
+                        ticketId: target.ticketId,
+                        rethrow: true,
+                      });
+                    }}
+                  />
+                )}
                 <div className="kulo-computer-preview-modal-actions">
                   {handoff && (
                     <>
@@ -630,7 +792,7 @@ export function ComputerPreviewModal({
                       {stopped ? t("停止中", "Stopping") : t("停止任务", "Stop task")}
                     </Button>
                   )}
-                  <Button type="button" size="sm" variant="secondary" onPress={() => client.closeModal()}>
+                  <Button type="button" size="sm" variant="secondary" onPress={() => { setComposerExpanded(false); client.closeModal(); }}>
                     {t("关闭", "Close")}
                   </Button>
                 </div>

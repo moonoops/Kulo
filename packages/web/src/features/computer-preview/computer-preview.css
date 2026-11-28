@@ -164,7 +164,8 @@
 
 .kulo-computer-preview-modal-footer {
   display: flex;
-  justify-content: flex-end;
+  align-items: flex-end;
+  justify-content: space-between;
   flex-wrap: wrap;
   gap: var(--kulo-space-2);
   margin: 0;
@@ -176,6 +177,7 @@
   align-items: center;
   justify-content: flex-end;
   gap: var(--kulo-control-gap);
+  margin-inline-start: auto;
 }
 
 .kulo-computer-handoff-bar {
@@ -202,6 +204,13 @@
 
 .kulo-preview-titlebar-trigger {
   flex: none;
+}
+
+@media (pointer: coarse) {
+  .kulo-computer-preview-modal-actions .button {
+    min-height: 44px;
+    min-width: 44px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
