@@ -8,7 +8,7 @@ const FLUSH_DISABLED_MS = 5 * 60_000;
 const MAX_TOKEN_LIMIT = 1_000_000_000;
 const MAX_COST_USD_LIMIT = 100_000;
 
-export type UsageCapCategory = "schedule" | "assistant" | "personality";
+export type UsageCapCategory = "schedule" | "assistant" | "personality" | "batch";
 
 export class UsageCapsError extends Error {
   constructor(

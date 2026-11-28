@@ -59,6 +59,7 @@ import { authenticateHttpPrincipal, isDirectLocalHttpRequest, resolveHubRequestA
 import { handleCapabilitiesRoutes } from "./http/capabilities-routes.js";
 import { handleDevicesAndClusterRoutes } from "./http/devices-cluster-routes.js";
 import { handleMigrationRoutes } from "./http/migration-routes.js";
+import { handleBatchWorkflowRoutes } from "./http/batch-workflow-routes.js";
 import { handleProjectsRoutes } from "./http/projects-routes.js";
 import { handleSettingsProvidersRoutes } from "./http/settings-providers-routes.js";
 import { handleSideQuestionRoutes } from "./http/side-question-routes.js";
@@ -68,6 +69,7 @@ import { handleVoiceAssistantConnectionsRoutes } from "./http/voice-assistant-co
 import { handleWorkspaceRoutes } from "./http/workspace-routes.js";
 import { SideQuestionError } from "./side-questions.js";
 import { MigrationError } from "./tools-migration.js";
+import { BatchWorkflowError } from "./batch-workflow-service.js";
 import { UiCardError } from "./ui-cards.js";
 import { DeviceConnectionError, DeviceInterconnectionManager } from "./devices.js";
 import { isTicketUnfinished } from "./state.js";
@@ -824,6 +826,7 @@ export async function startKuloHubServer(
       if (proactive.length > 0) broadcastAssistantSse("proactive_topics", { topics: proactive });
     },
     onAssistantItems: (assistantRevision, items) => { broadcastToAllClients({ type: "hub.assistant_items", assistantRevision, items }); broadcastAssistantSse("assistant_items", { assistantRevision, items }); },
+    onBatchWorkflows: (batches) => broadcastToAllClients({ type: "hub.batch_workflows", batches }),
     onProjects: (projects) => broadcastToAllClients({ type: "hub.projects", projects }),
     onTicketDelta: (delta, snapshot) => {
       let incremental: string | undefined;
@@ -1281,6 +1284,7 @@ export async function startKuloHubServer(
     handleSystemPermissionsRoutes,
     handleAssistantStreamRoute,
     handleMigrationRoutes,
+    handleBatchWorkflowRoutes,
     handleVoiceAssistantConnectionsRoutes,
     handleUiCardRoutes,
     handleSideQuestionRoutes,
@@ -1565,6 +1569,10 @@ export async function startKuloHubServer(
         return;
       }
       if (err instanceof MigrationError) {
+        sendJson(res, err.status, { error: hub.connectionManager.redact(err.message), code: err.code });
+        return;
+      }
+      if (err instanceof BatchWorkflowError) {
         sendJson(res, err.status, { error: hub.connectionManager.redact(err.message), code: err.code });
         return;
       }

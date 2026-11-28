@@ -367,6 +367,7 @@ import {
   type RunSubagentsRequest,
   type SubagentTaskOutcome,
 } from "./tools-worker.js";
+import { BatchWorkflowService, createBatchItemReadOnlyExtension, createBatchToolsExtension, createHubBatchWorkflows, resolveBatchItemExecutionEnv } from "./tools-batch.js";
 import type { createComputerUseExtension } from "./tools-computer-use.js";
 import { KuloUploadStore } from "./uploads.js";
 import { ContentPublicationEntry, KuloUserEntry, KuloUiCards, UiCardError, type ContentPublicationData } from "./ui-cards.js";
@@ -500,7 +501,7 @@ export interface HubEventListener {
   onRootView?: (messages: ChatDisplayItem[], live: LiveStreamState) => void;
   onTopics?: (topics: TopicSummary[]) => void;
   onProjects?: (projects: ProjectView[]) => void;
-  onTickets?: (tickets: TicketCardView[], slots: SlotSummary) => void;
+  onTickets?: (tickets: TicketCardView[], slots: SlotSummary) => void; onBatchWorkflows?: (batches: import("@kulo/protocol").BatchWorkflowCardView[]) => void;
   onTicketDelta?: (delta: TicketBoardDelta, snapshot: () => ReturnType<TicketBoardProjection["snapshot"]>) => void;
   onTicketTelemetry?: (telemetry: ExternalTicketTelemetry) => void;
   onAssistantItems?: (assistantRevision: number, items: AssistantItemView[]) => void;
@@ -560,7 +561,7 @@ export class KuloHub implements OrchestratorController {
   #lanHttpEndpointProvider?: () => { lanReachable: boolean; port: number } | undefined;
   readonly connectionManager: KuloConnections;
   readonly connections: ConnectionToolController;
-  readonly migration: LocalConfigMigrationService;
+  readonly migration: LocalConfigMigrationService; readonly batchWorkflows: BatchWorkflowService; readonly #batchToolsExt: ReturnType<typeof createBatchToolsExtension>;
 
   readonly #providerId: string;
   readonly #models: Models;
@@ -700,7 +701,7 @@ export class KuloHub implements OrchestratorController {
     modelConfigurationExt: ReturnType<typeof createModelConfigurationToolsExtension>;
     agentConfigurationExt: ReturnType<typeof createAgentConfigurationToolsExtension>;
     deviceToolsExt: ReturnType<typeof createDeviceToolsExtension>;
-    migrationToolsExt: ReturnType<typeof createMigrationToolsExtension>; migrationHomeDir?: string;
+    migrationToolsExt: ReturnType<typeof createMigrationToolsExtension>; migrationHomeDir?: string; batchToolsExt: ReturnType<typeof createBatchToolsExtension>; batchItemReadOnlyExt: ReturnType<typeof createBatchItemReadOnlyExtension>;
     deviceJoinStaging: DeviceJoinStaging;
     contentExt: ReturnType<typeof createContentToolsExtension>;
     projectExt: ReturnType<typeof createProjectToolsExtension>;
@@ -1283,6 +1284,7 @@ export class KuloHub implements OrchestratorController {
       void this.settingsAssistant.refreshIfConversation(card.originConversationId);
     } });
     this.actionConfirmations = new KuloActionConfirmations({ harness: this.harness, uiCards: this.uiCards });
+    this.#batchToolsExt = params.batchToolsExt; this.batchWorkflows = createHubBatchWorkflows({ harness: this.harness, actionConfirmations: this.actionConfirmations, usageCaps: this.usageCaps, redact: (text) => this.connectionManager.redact(text), isClosed: () => this.#closed, getRoles: () => this.#liveSettings.roles, getMaxSubagentsPerTicket: () => this.#liveSettings.executor.maxSubagentsPerTicket ?? 4, isWebSearchAvailable: () => this.#webSearchAvailable, resolveItemAgent: (preset) => resolveAgentModelAndThinking(this.#models, this.#providerId, preset?.provider?.trim() || this.#liveSettings.model.defaultProvider, preset?.modelId?.trim() || this.#liveSettings.model.defaultModel, preset?.thinkingLevel === "auto" ? this.#liveSettings.model.thinkingLevel : preset?.thinkingLevel ?? this.#liveSettings.model.thinkingLevel, this.#liveSettings.model), itemExtensions: [this.#redactionExt, this.#codingToolsExt, params.batchItemReadOnlyExt, this.#toolSearchExt, this.#skillExt], onChanged: (batches) => { for (const l of this.#listeners) l.onBatchWorkflows?.(batches); } });
     this.#projection = new HubMessageProjection({
       harness: this.harness,
       uploads: this.uploads,
@@ -1450,7 +1452,7 @@ export class KuloHub implements OrchestratorController {
       cleanup: {
         closeOrchestratorBrowserSession: (topicId) => this.#computer.closeOrchestratorBrowserSession(topicId),
         discardTicketStagedWorkspace: (ticket) => this.#discardTicketStagedWorkspace(ticket),
-        onTopicDeleted: async (topicId, convId, ctx) => { await this.memoryRuntime.onTopicDeleted(topicId, convId, ctx); await this.#mediaDelivery?.onConversationDeleted(convId); },
+        onTopicDeleted: async (topicId, convId, ctx) => { await this.memoryRuntime.onTopicDeleted(topicId, convId, ctx); await this.#mediaDelivery?.onConversationDeleted(convId); await this.batchWorkflows.abortForTopic(topicId, convId, ctx); },
       },
     });
     this.#chat = new HubChatPipeline({
@@ -1989,7 +1991,7 @@ export class KuloHub implements OrchestratorController {
         });
       },
       onTicketSettled: async (ticketId) => {
-        if (hubRef) { hubRef.#externalTelemetry.clear(ticketId); hubRef.#watchdog.untrack(ticketId); await hubRef.#settleStaleTicketConfirmations(ticketId); void hubRef.memoryRuntime.onTicketSettled(ticketId).catch(() => {}); }
+        if (hubRef) { hubRef.#externalTelemetry.clear(ticketId); hubRef.#watchdog.untrack(ticketId); await hubRef.#settleStaleTicketConfirmations(ticketId); void hubRef.memoryRuntime.onTicketSettled(ticketId).catch(() => {}); void hubRef.batchWorkflows.abortForTicket(ticketId).catch(() => {}); }
       },
       onInlineCandidateSettled: (ticketId) => {
         if (hubRef) hubRef.#notifyInlineWaiters(ticketId);
@@ -2104,6 +2106,7 @@ export class KuloHub implements OrchestratorController {
     const settingsAssistantExt = createSettingsAssistantExtension(() => hubRef!.settingsAssistant);
     const deviceToolsExt = createDeviceToolsExtension(() => hubRef!.settingsAssistant);
     const migrationToolsExt = createMigrationToolsExtension({ service: () => hubRef!.migration, assertHubLocalDisplayTurn: () => hubRef!.settingsAssistant.assertHubLocalDisplayTurn(), redact });
+    const batchToolsExt = createBatchToolsExtension({ getService: () => hubRef!.batchWorkflows, getProjects: () => hubRef!.projects, getLocalEnvId: () => envManager.localEnvId, getDefaultWorkspaceDir: () => mainWorkspaceDir }); const batchItemReadOnlyExt = createBatchItemReadOnlyExtension({ getIdentityDir: getLiveIdentityDir, getStateDir: () => config.stateDir, getCoreProtectedPaths: () => settingsStore.getCoreProtectedPaths(), getLocalEnvId: () => envManager.localEnvId, getSearch: () => hubRef!.search });
     const customizationExt = config.customization ? createCustomizationToolsExtension({
       service: () => hubRef!.customizationService(),
       caller: (api) => hubRef!.#customizationCaller(api.conversationId),
@@ -2429,7 +2432,7 @@ export class KuloHub implements OrchestratorController {
     registry.install(computerUseExt); registry.install(routerReadExt);
     registry.install(workerExt); registry.install(orchestratorExt);
     registry.install(orchestratorTailExt); registry.install(globalSettingsExt);
-    registry.install(settingsAssistantExt); registry.install(deviceToolsExt); registry.install(migrationToolsExt);
+    registry.install(settingsAssistantExt); registry.install(deviceToolsExt); registry.install(migrationToolsExt); registry.install(batchToolsExt); registry.install(batchItemReadOnlyExt);
     if (customizationExt) registry.install(customizationExt);
     registry.install(appearanceCustomizationExt); registry.install(modelConfigurationExt);
     registry.install(agentConfigurationExt); registry.install(contentExt);
@@ -2499,6 +2502,7 @@ export class KuloHub implements OrchestratorController {
             });
           }
 
+          const batchEnv = await resolveBatchItemExecutionEnv(target, ctx, envManager); if (batchEnv) return batchEnv;
           const execScope = resolveTicketExecutionScope(state, target.conversationId);
           const ticket = execScope?.ticket;
           if (!ticket || ticket.status !== "running") {
@@ -2635,7 +2639,7 @@ export class KuloHub implements OrchestratorController {
       appearanceCustomizationExt,
       modelConfigurationExt,
       agentConfigurationExt,
-      deviceToolsExt, migrationToolsExt, migrationHomeDir: init.migrationHomeDir,
+      deviceToolsExt, migrationToolsExt, migrationHomeDir: init.migrationHomeDir, batchToolsExt, batchItemReadOnlyExt,
       deviceJoinStaging,
       contentExt,
       projectExt,
@@ -2778,7 +2782,7 @@ export class KuloHub implements OrchestratorController {
     await hub.usageCaps.start();
     await hub.personality.start();
     hub.#watchdog.start();
-    harness.resume();
+    harness.resume(); void hub.batchWorkflows.recoverIncompleteOnStartup({ bootWasFailover, crashLoopTripped: bootGate.crashLoopTripped }, context).catch(() => {});
     await hub.#topics.startTitles(context);
     await hub.settingsAssistant.start();
     await hub.#mediaDelivery.reconcilePendingRelays();
@@ -3134,7 +3138,7 @@ export class KuloHub implements OrchestratorController {
       this.#contentExt,
       this.#projectExt,
       this.#skillExt,
-      this.#orchestratorTailExt,
+      this.#orchestratorTailExt, this.#batchToolsExt,
       this.memoryRuntime.builtinMemoryRecallExt, this.#runHealth.extension,
       this.#mediaExt,
       this.#voiceExt,
@@ -3175,7 +3179,7 @@ export class KuloHub implements OrchestratorController {
       this.#codingToolsExt,
       this.#computerUseExt,
       this.#toolSearchExt,
-      this.#workerExt,
+      this.#workerExt, this.#batchToolsExt,
       this.#contentExt,
       this.#skillExt,
       this.#mediaExt,
@@ -4068,7 +4072,7 @@ export class KuloHub implements OrchestratorController {
     originArgument?: { conversationId: number; toolTaskId: number },
     suppliedIntent?: DeliveryIntent,
   ): Promise<TicketCardView> {
-    return this.#ticketControl.stopTicket(ticketId, reason, context, commandIdOrOrigin, originArgument, suppliedIntent);
+    const stopped = await this.#ticketControl.stopTicket(ticketId, reason, context, commandIdOrOrigin, originArgument, suppliedIntent); await this.batchWorkflows.abortForTicket(ticketId, reason, context); return stopped;
   }
 
   async #settleStaleTicketConfirmations(ticketId: string): Promise<void> {
@@ -4245,12 +4249,12 @@ export class KuloHub implements OrchestratorController {
     topicId = "root",
     context: Context = BACKGROUND_CONTEXT,
   ) {
-    const [board, topics, topicView, projects, assistantDoc] = await Promise.all([
+    const [board, topics, topicView, projects, assistantDoc, batchWorkflows] = await Promise.all([
       this.getBoardSnapshot(context),
       this.listTopics(context),
       this.getTopicView(topicId, context),
       this.projects.list(context),
-      this.harness.snapshot(AssistantDoc, context),
+      this.harness.snapshot(AssistantDoc, context), this.batchWorkflows.listCardViews(context),
     ]);
     return {
       activeTopicId: topicView.topicId,
@@ -4261,7 +4265,7 @@ export class KuloHub implements OrchestratorController {
         .map((cache) => [cache.topicId, topicActivity(cache.messages, cache.live)])),
       historyBefore: topicView.historyBefore,
       live: topicView.live,
-      ...board,
+      ...board, batchWorkflows,
       assistantItems: selectActiveAssistantItems(assistantDoc?.items, Date.now()),
       assistantRevision: assistantDoc?.assistantRevision ?? 1,
       projects,
@@ -4750,7 +4754,7 @@ export class KuloHub implements OrchestratorController {
     };
     await finish(() => this.voiceCalls.close());
     this.#closed = true;
-    this.#runHealth.close();
+    this.#runHealth.close(); await finish(() => this.batchWorkflows.close());
     this.externalClientQuotas.close();
     this.#externalClientAdmin.clearReceipts();
     this.releaseHandoverBarrier();
@@ -4852,7 +4856,7 @@ export class KuloHub implements OrchestratorController {
     return this.#topics.ensureTopicWatchedByConversation(conversationId, context);
   }
 
-  async submitUiAction(input: UiActionInput): Promise<UiActionReceipt> {
+  async submitUiAction(input: UiActionInput, options?: { approverPrincipalId?: string }): Promise<UiActionReceipt> {
     const card = await this.uiCards.get(input.cardId);
     if (!card) throw new UiCardError("ui_card_not_found", "卡片不存在。", 404);
     if (!this.#liveSettings.model.defaultModel.trim()) throw new UiCardError("model_not_selected", "请先选择供应商和模型。", 400);
@@ -4872,7 +4876,7 @@ export class KuloHub implements OrchestratorController {
     const directStopTarget = resolveDirectStopCardTarget(await this.actionConfirmations.getByCardId(input.cardId), input.actionId);
     if (!directStopTarget) {
       const receipt = await this.uiCards.submit(input, { conversationId: card.originConversationId });
-      await this.#applyResolvedActionConfirmation(receipt, card.originConversationId, input.actionId, input.values);
+      await this.#applyResolvedActionConfirmation(receipt, card.originConversationId, input.actionId, input.values, options?.approverPrincipalId);
       return receipt;
     }
 
@@ -5029,7 +5033,7 @@ export class KuloHub implements OrchestratorController {
     receipt: UiActionReceipt,
     conversationId: number,
     actionId: string,
-    values?: import("@kulo/protocol").UiValues,
+    values?: import("@kulo/protocol").UiValues, approverPrincipalId?: string,
   ): Promise<void> {
     if (receipt.deduplicated) return;
     const resolved = await this.actionConfirmations.resolveFromUiSubmit(receipt.cardId, actionId, values);
@@ -5120,6 +5124,7 @@ export class KuloHub implements OrchestratorController {
       }
       return;
     }
+    if (resolved.payload.kind === "batch_dispatch") { await this.batchWorkflows.handleConfirmationResolved(resolved, approverPrincipalId); return; }
     if (resolved.status !== "approved") return;
     if (resolved.payload.kind === "ticket_decision" && resolved.selectedChoiceId) {
       try {

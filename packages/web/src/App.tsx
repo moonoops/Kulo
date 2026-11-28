@@ -173,6 +173,7 @@ function AppShell() {
     loadEarlierMessages,
     live: persistedLive,
     tickets,
+    batchWorkflows,
     assistantItems,
     topicActivities,
     ticketsLoaded,
@@ -1620,6 +1621,9 @@ function AppShell() {
               }}
               onStop={stopTicket}
               onRetry={retryTicket}
+              batchWorkflows={batchWorkflows.filter((batch) => batch.parentTicketId === projectedTicketId)}
+              onRetryBatchWorkflow={async (batchId, itemIds) => { await kuloRest.retryBatchWorkflow(batchId, itemIds ? { itemIds } : {}); }}
+              onStopBatchWorkflow={async (batchId) => { await kuloRest.stopBatchWorkflow(batchId); }}
               onResumeOverride={resumeTicketOverride}
               externalClients={settings?.externalClients}
               defaultProvider={settings?.blocks.model.value.defaultProvider}
@@ -1862,6 +1866,9 @@ function AppShell() {
     ) : (
       <KuloTaskRail
         tickets={tickets}
+        batchWorkflows={batchWorkflows}
+        onRetryBatchWorkflow={async (batchId, itemIds) => { await kuloRest.retryBatchWorkflow(batchId, itemIds ? { itemIds } : {}); }}
+        onStopBatchWorkflow={async (batchId) => { await kuloRest.stopBatchWorkflow(batchId); }}
         assistantItems={assistantItems}
         onAssistantItemAction={handleAssistantItemAction}
         projectedTicketId={projectedTicketId}

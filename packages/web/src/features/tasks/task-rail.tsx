@@ -1,7 +1,8 @@
 import { useI18n } from "../../kulo-i18n";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { Button, Card, Spinner, Tooltip } from "@heroui/react";
-import type { AssistantItemAction, AssistantItemView, ComputerPreviewSessionView, ExternalClientConnection, ProviderCatalogItem, TicketCardView } from "@kulo/protocol";
+import type { AssistantItemAction, AssistantItemView, BatchWorkflowCardView, ComputerPreviewSessionView, ExternalClientConnection, ProviderCatalogItem, TicketCardView } from "@kulo/protocol";
+import { BatchWorkflowSection, type BatchWorkflowRetryHandler, type BatchWorkflowStopHandler } from "./batch-workflow-card";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { KuloIcon } from "../../kulo-icon";
 import { ContentPresence, useReducedContentMotion } from "../chat/use-content-motion";
@@ -57,9 +58,12 @@ function RailStatus({ ticket }: { ticket: TicketCardView }) {
 }
 
 export function KuloTaskRail({
-  tickets, activeTopicId, topicTitles, assistantItems = [], onAssistantItemAction, onAssistantDismissAll, projectedTicketId, onProject, onRetry, onIgnore, onArchive, onStop, onResumeOverride, providers, externalClients, defaultProvider, defaultModel, clearingAll = false, clearAllError = null, onClearAllError, scrollContainerRef, completedTaskDisplayHours = 3, connected = true, canQueueActions = connected, loaded = true, snapshotVersion = 0, computerPreview,
+  tickets, batchWorkflows = [], onRetryBatchWorkflow, onStopBatchWorkflow, activeTopicId, topicTitles, assistantItems = [], onAssistantItemAction, onAssistantDismissAll, projectedTicketId, onProject, onRetry, onIgnore, onArchive, onStop, onResumeOverride, providers, externalClients, defaultProvider, defaultModel, clearingAll = false, clearAllError = null, onClearAllError, scrollContainerRef, completedTaskDisplayHours = 3, connected = true, canQueueActions = connected, loaded = true, snapshotVersion = 0, computerPreview,
 }: {
   tickets: TicketCardView[];
+  batchWorkflows?: readonly BatchWorkflowCardView[];
+  onRetryBatchWorkflow?: BatchWorkflowRetryHandler;
+  onStopBatchWorkflow?: BatchWorkflowStopHandler;
   activeTopicId?: string;
   topicTitles?: ReadonlyMap<string, string>;
   assistantItems?: AssistantItemView[];
@@ -531,6 +535,12 @@ export function KuloTaskRail({
         scrollRef={scrollRef}
         listRef={listRef}
       />
+      <BatchWorkflowSection
+        batches={batchWorkflows}
+        canQueueActions={canQueueActions}
+        onRetryFailed={onRetryBatchWorkflow}
+        onStop={onStopBatchWorkflow}
+      />
       <div className="kulo-task-list" ref={listRef}>
         {showGroupHeaders ? (
           <>
@@ -549,8 +559,8 @@ export function KuloTaskRail({
           renderedRows.map(row => renderTaskRow(row, false))
         )}
       </div>
-      {!loaded && renderedRows.length === 0 && orphanPreviews.length === 0 && assistantRail.visibleItems.length === 0 && <div className="kulo-task-empty" role="status"><Spinner size="sm" aria-label={t("加载任务", "Loading tasks")} /></div>}
-      {loaded && renderedRows.length === 0 && orphanPreviews.length === 0 && assistantRail.visibleItems.length === 0 && <div className="kulo-task-empty"><KuloIcon name="check" size={20} /><span>{t("暂无后台任务", "No background tasks")}</span></div>}
+      {!loaded && renderedRows.length === 0 && batchWorkflows.length === 0 && orphanPreviews.length === 0 && assistantRail.visibleItems.length === 0 && <div className="kulo-task-empty" role="status"><Spinner size="sm" aria-label={t("加载任务", "Loading tasks")} /></div>}
+      {loaded && renderedRows.length === 0 && batchWorkflows.length === 0 && orphanPreviews.length === 0 && assistantRail.visibleItems.length === 0 && <div className="kulo-task-empty"><KuloIcon name="check" size={20} /><span>{t("暂无后台任务", "No background tasks")}</span></div>}
     </div>
     <ConfirmDialog
       open={Boolean(liveDiscardTarget)}

@@ -25,6 +25,16 @@ export type {
 } from "./ticket-types.js";
 export const KULO_VERSION = "0.1.10";
 
+export type ActionConfirmationKind =
+  | "customization_validate"
+  | "external_permission"
+  | "staged_apply"
+  | "memory_service_operation"
+  | "host_action"
+  | "ticket_decision"
+  | "computer_handoff"
+  | "batch_dispatch";
+
 export type BuiltinThinkingEffort =
   | "off"
   | "minimal"

@@ -1,10 +1,12 @@
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type JsonObject, type Tx } from "@earendil-works/pi-durable";
-import type { ActionEffectState, ExecutionTrustMode, TicketWaitOption, UiCardInput, UiCardSnapshot, UiValues } from "@kulo/protocol";
+import type { ActionConfirmationKind, ActionEffectState, ExecutionTrustMode, TicketWaitOption, UiCardInput, UiCardSnapshot, UiValues } from "@kulo/protocol";
 import { hashConfirmationValue as hashValue } from "./action-confirmation-cards.js";
 import { UiCardsDoc, type KuloUiCards } from "./ui-cards.js";
 
 export {
+  batchDispatchFingerprint,
+  buildBatchDispatchConfirmCard,
   buildCustomizationConfirmCard,
   buildExternalPermissionCard,
   buildHostActionConfirmCard,
@@ -19,14 +21,7 @@ export {
   ticketDecisionFingerprint,
 } from "./action-confirmation-cards.js";
 
-export type ActionConfirmationKind =
-  | "customization_validate"
-  | "external_permission"
-  | "staged_apply"
-  | "memory_service_operation"
-  | "host_action"
-  | "ticket_decision"
-  | "computer_handoff";
+export type { ActionConfirmationKind };
 
 export type ActionConfirmationPayload =
   | {
@@ -94,6 +89,28 @@ export type ActionConfirmationPayload =
       url?: string;
       app?: string;
       expiresAt: number;
+    }
+  | {
+      kind: "batch_dispatch";
+      batchId: string;
+      commandId: string;
+      title: string;
+      itemCount: number;
+      itemLabels: string[];
+      readOnly: true;
+      mode: "parallel";
+      waveSize: number;
+      concurrency: number;
+      initiator: {
+        conversationId: number;
+        topicId?: string;
+        ticketId?: string;
+        callId: string;
+      };
+      approverPolicy: "human_only";
+      executor: "batch_workflow_service";
+      claimId: string;
+      ticketId?: string;
     };
 
 export interface PendingActionConfirmation {
@@ -162,6 +179,7 @@ function confirmationPayloadTicketId(payload: ActionConfirmationPayload): string
     case "ticket_decision":
     case "computer_handoff":
     case "host_action":
+    case "batch_dispatch":
       return payload.ticketId;
     default:
       return undefined;
@@ -251,6 +269,9 @@ export class KuloActionConfirmations {
     fingerprint: string;
     payload: ActionConfirmationPayload;
   }, context: Context = BACKGROUND_CONTEXT): Promise<PendingActionConfirmation> {
+    if (params.kind === "batch_dispatch") {
+      throw new Error("batch_dispatch confirmations must go directly to human pending approval and cannot use pending_orchestrator.");
+    }
     const existing = await this.lookup(params.conversationId, params.kind, params.fingerprint, context);
     if (existing && (existing.status === "pending_orchestrator" || existing.status === "pending")) {
       return existing;
@@ -401,6 +422,9 @@ export class KuloActionConfirmations {
       if (!logical) return undefined;
       const now = Date.now();
       if (logical === "manual") {
+        if (record.kind === "batch_dispatch") {
+          return undefined;
+        }
         const instruction = typeof values?.instruction === "string" ? values.instruction.trim() : "";
         const historicalCardRecord: PendingActionConfirmation = {
           ...(JSON.parse(JSON.stringify(record)) as PendingActionConfirmation),
@@ -458,6 +482,9 @@ export class KuloActionConfirmations {
       const record = findRecord(doc, idOrCardId);
       if (!record || record.executed || (record.status !== "pending_orchestrator" && record.status !== "pending")) {
         return undefined;
+      }
+      if (record.kind === "batch_dispatch" && resolution.status === "approved") {
+        throw new Error("batch_dispatch confirmations can only be approved by a human via the confirmation card.");
       }
       openCardId = record.cardId;
       record.status = resolution.status;

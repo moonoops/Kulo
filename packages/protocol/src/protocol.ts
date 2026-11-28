@@ -154,6 +154,7 @@ export type HubToClientMessage =
       live: LiveStreamState;
       tickets: TicketCardView[];
       ticketRevision?: number;
+      batchWorkflows?: import("./batch-workflow.js").BatchWorkflowCardView[];
       assistantItems?: AssistantItemView[];
       assistantRevision?: number;
       slots: SlotSummary;
@@ -213,11 +214,16 @@ export type HubToClientMessage =
       state: import("./builtin-memory.js").BuiltinMemoryStateView;
     }
   | {
+      type: "hub.batch_workflows";
+      batches: import("./batch-workflow.js").BatchWorkflowCardView[];
+    }
+  | {
       type: "hub.ticket_detail";
       ticket: TicketRecord;
       transcript: ChatDisplayItem[];
       live: LiveStreamState;
       subagents?: import("./task-boards.js").SubagentCardView[];
+      batchWorkflows?: import("./batch-workflow.js").BatchWorkflowCardView[];
     }
   | {
       type: "hub.ticket_telemetry";

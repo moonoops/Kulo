@@ -130,6 +130,7 @@ const CORE_TOOL_ENTRIES: readonly ToolSurfaceEntry[] = [
   { name: "kulo_inspect", audiences: ALL_ORCHESTRATOR, tier: "deferred", scope: "global" },
   { name: "kulo_close", audiences: ALL_ORCHESTRATOR, tier: "deferred", scope: "global" },
   { name: "kulo_task_board", audiences: ["chat"], tier: "deferred", scope: "global" },
+  { name: "kulo_batch_dispatch", audiences: ["chat", "computer-worker"], tier: "deferred", scope: "global" },
   { name: "kulo_external_permission", audiences: ALL_ORCHESTRATOR, tier: "event", scope: "global" },
   { name: "kulo_ticket_ask_user", audiences: ALL_ORCHESTRATOR, tier: "event", scope: "global" },
   { name: "kulo_inspect_staged_diff", audiences: ALL_ORCHESTRATOR, tier: "event", scope: "global" },

@@ -12,6 +12,7 @@ import {
   TextArea,
 } from "@heroui/react";
 import type {
+  BatchWorkflowCardView,
   ChatReplyReference,
   DispatchCardMeta,
   ExternalClientConnection,
@@ -27,6 +28,7 @@ import { KuloMarkdown } from "./kulo-markdown";
 import { TaskTimeline } from "./features/tasks/task-timeline";
 import { TaskDeliverables } from "./features/tasks/task-deliverables";
 import { TaskSubagents } from "./features/tasks/task-subagents";
+import { BatchWorkflowSection, type BatchWorkflowRetryHandler, type BatchWorkflowStopHandler } from "./features/tasks/batch-workflow-card";
 
 import { compactTaskPaths, formatExternalContextUsage, formatExternalSessionMode, isTicketQuotaPaused, isTicketRunHealthStuck, ticketHasPendingWorkspaceApply, ticketTone, taskIsRecovering, taskStatusLabel, taskTimeLabel, type TaskTone } from "./features/tasks/task-model";
 import { TaskFailureActions, type TicketAction } from "./features/tasks/task-failure-actions";
@@ -152,6 +154,9 @@ export function KuloTaskProjection({
   onStop,
   onRetry,
   onResumeOverride,
+  batchWorkflows,
+  onRetryBatchWorkflow,
+  onStopBatchWorkflow,
   providers,
   externalClients,
   defaultProvider,
@@ -177,6 +182,9 @@ export function KuloTaskProjection({
   onStop: (ticketId: string, reason?: string) => Promise<void> | void;
   onRetry: TicketAction;
   onResumeOverride?: TicketResumeOverrideAction;
+  batchWorkflows?: readonly BatchWorkflowCardView[];
+  onRetryBatchWorkflow?: BatchWorkflowRetryHandler;
+  onStopBatchWorkflow?: BatchWorkflowStopHandler;
   providers?: readonly ProviderCatalogItem[];
   externalClients?: Readonly<Record<string, ExternalClientConnection>>;
   defaultProvider?: string;
@@ -521,6 +529,12 @@ export function KuloTaskProjection({
         )}
 
         <TaskSubagents subagents={detail.subagents} />
+        <BatchWorkflowSection
+          batches={batchWorkflows}
+          canQueueActions={canQueueActions}
+          onRetryFailed={onRetryBatchWorkflow}
+          onStop={onStopBatchWorkflow}
+        />
 
         <Disclosure className="kulo-task-detail-disclosure">
           <Disclosure.Heading level={2}>

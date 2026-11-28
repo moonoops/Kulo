@@ -126,7 +126,7 @@ export async function handleUiCardRoutes(ctx: HubHttpRouteContext): Promise<bool
   if (req.method === "POST" && uiRoute[2]) {
     const body = (await readJsonBody(req, 128 * 1024)) as UiActionInput;
     if (!body || body.cardId !== cardId) throw new UiCardError("invalid_ui_action", "卡片操作格式无效。");
-    sendJson(res, 200, await hub.submitUiAction(body));
+    sendJson(res, 200, await hub.submitUiAction(body, { approverPrincipalId: ctx.authority.principalId }));
     return true;
   }
   return false;

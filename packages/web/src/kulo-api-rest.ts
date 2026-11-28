@@ -4,6 +4,7 @@ import { getLanguage, translate as t, type KuloLanguage } from "./kulo-i18n";
 import { ProviderCatalogCache } from "./features/settings/provider-catalog";
 import type {
   AcpRegistryTemplate, AmbientLocalEngine, ArchiveMainConversationResult, AssistantWorkspaceSnapshot,
+  BatchWorkflowCardView, BatchWorkflowRetryRequest,
   CapabilitiesWorkspaceSnapshot, CapabilityConfigurationInput, CapabilityRecord, ChatAttachment, ChatDisplayItem,
   ComputerUseConfigurationInput, ComputerUseSettings, ConnectionPrepareRequest, ConnectionRecordView,
   ConnectionSaveRequest, ConnectionSetupInput, ConnectionTestResult, ConnectionWorkspaceSnapshot,
@@ -494,6 +495,17 @@ export const kuloRest = {
     apiRequest<{ session: OAuthSessionView }>(`/api/providers/oauth/${encodeURIComponent(sessionId)}/respond`, { method: "POST", body: { promptId, value } }),
   cancelProviderOAuth: (sessionId: string) =>
     apiRequest<{ session: OAuthSessionView }>(`/api/providers/oauth/${encodeURIComponent(sessionId)}/cancel`, { method: "POST" }),
+  listBatchWorkflows: (filter?: { topicId?: string; ticketId?: string }) => {
+    const params = new URLSearchParams();
+    if (filter?.topicId) params.set("topicId", filter.topicId);
+    if (filter?.ticketId) params.set("ticketId", filter.ticketId);
+    const qs = params.toString();
+    return apiRequest<{ batches: BatchWorkflowCardView[] }>(`/api/batch-workflows${qs ? `?${qs}` : ""}`);
+  },
+  retryBatchWorkflow: (batchId: string, body: BatchWorkflowRetryRequest = {}) =>
+    apiRequest<{ batch: BatchWorkflowCardView }>(`/api/batch-workflows/${encodeURIComponent(batchId)}/retry`, { method: "POST", body }),
+  stopBatchWorkflow: (batchId: string, reason?: string) =>
+    apiRequest<{ batch: BatchWorkflowCardView }>(`/api/batch-workflows/${encodeURIComponent(batchId)}/stop`, { method: "POST", body: reason ? { reason } : {} }),
   uploadFile: async (
     file: File,
     overrideName?: string,

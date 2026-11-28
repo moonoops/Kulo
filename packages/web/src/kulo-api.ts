@@ -21,6 +21,7 @@ import {
 import type {
   AgentExpressionState,
   AssistantItemView,
+  BatchWorkflowCardView,
   ChatDisplayItem,
   ClientToHubMessage,
   ClusterClientSummary,
@@ -161,6 +162,7 @@ export function useKuloHubConnection() {
   });
   const [agentTerminal, setAgentTerminal] = useState<AgentTerminalState | null>(null);
   const [tickets, setTickets] = useState<TicketCardView[]>([]);
+  const [batchWorkflows, setBatchWorkflows] = useState<BatchWorkflowCardView[]>([]);
   const [assistantItems, setAssistantItems] = useState<AssistantItemView[]>([]);
   const assistantRevisionRef = useRef(-1);
   const [ticketsLoaded, setTicketsLoaded] = useState(false);
@@ -675,6 +677,9 @@ export function useKuloHubConnection() {
               boardTickets = msg.tickets;
               resyncingBoard = false;
               setTickets(boardTickets);
+              if (msg.batchWorkflows !== undefined) {
+                setBatchWorkflows(msg.batchWorkflows);
+              }
               if (msg.assistantItems !== undefined) {
                 assistantRevisionRef.current = msg.assistantRevision ?? 0;
                 setAssistantItems(msg.assistantItems);
@@ -751,6 +756,9 @@ export function useKuloHubConnection() {
                 assistantRevisionRef.current = msg.assistantRevision;
                 setAssistantItems(msg.items);
               }
+              break;
+            case "hub.batch_workflows":
+              setBatchWorkflows(msg.batches);
               break;
             case "hub.ticket_delta": {
               if (boardRevision !== undefined && msg.ticketRevision <= boardRevision) break;
@@ -1028,7 +1036,7 @@ export function useKuloHubConnection() {
     activeTopicId, selectTopic, topics, topicsLoaded, topicActivities, setTopics, projects, setProjects,
     messages, conversationLoaded, newMessageIds, canLoadHistory, historyLoading, loadEarlierMessages,
     live, terminalEntries: agentTerminal?.topicId === activeTopicId ? agentTerminal.entries : [],
-    tickets, assistantItems, ticketsLoaded, schedulesLoaded, snapshotError, refreshSnapshot, ticketSnapshotVersion,
+    tickets, batchWorkflows, assistantItems, ticketsLoaded, schedulesLoaded, snapshotError, refreshSnapshot, ticketSnapshotVersion,
     slots, envs, cluster, expression, settings, setSettings,
     settingsAssistant, settingsAssistantLoaded, settingsAssistantError, setSettingsAssistantError,
     capabilitiesUpdateVersion, voiceSnapshot, inspectedTicket, setInspectedTicket, inspectError, clearInspectError,

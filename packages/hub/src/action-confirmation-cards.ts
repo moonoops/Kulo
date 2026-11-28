@@ -506,3 +506,96 @@ export function buildMemoryServiceConfirmCard(input: {
   };
   return { input: cardInput, logicalIds: ["confirm", "cancel", "manual"] };
 }
+
+export function batchDispatchFingerprint(input: {
+  batchId: string;
+  commandId: string;
+  itemCount: number;
+  claimId: string;
+}): string {
+  return hashConfirmationValue(["batch_dispatch", input.batchId, input.commandId, input.itemCount, input.claimId]);
+}
+
+export function buildBatchDispatchConfirmCard(input: {
+  batchId: string;
+  title: string;
+  itemCount: number;
+  itemLabels: readonly string[];
+  waveSize: number;
+  concurrency: number;
+}): {
+  input: UiCardInput;
+  logicalIds: string[];
+} {
+  const cardTitle = clip(`确认批量只读派发（${input.itemCount} 项）`, 120);
+  const description = clip(
+    `${input.title} · 纯只读并行 · 单波 ≤ ${input.waveSize} · 并发 ≤ ${input.concurrency}`,
+    240,
+  );
+  const previewLines = input.itemLabels
+    .slice(0, 16)
+    .map((label, index) => `${index + 1}. ${clip(label, 120)}`);
+  if (input.itemLabels.length > 16) {
+    previewLines.push(`… +${input.itemLabels.length - 16}`);
+  }
+  const cardInput: UiCardInput = {
+    title: cardTitle,
+    fallbackText: clip(`${cardTitle}：${description}`, 400),
+    spec: {
+      root: "root",
+      elements: {
+        root: {
+          type: "Card",
+          props: {
+            title: cardTitle,
+            description,
+          },
+          children: ["body"],
+        },
+        body: {
+          type: "Stack",
+          props: { gap: "sm" },
+          children: ["tags", "items_preview", "actions"],
+        },
+        tags: {
+          type: "Grid",
+          props: { columns: 2 },
+          children: ["chip_readonly", "chip_human"],
+        },
+        chip_readonly: {
+          type: "Chip",
+          props: { text: "纯只读并行", tone: "success" },
+        },
+        chip_human: {
+          type: "Chip",
+          props: { text: `需人工批准 (${input.itemCount} 项)`, tone: "warning" },
+        },
+        items_preview: {
+          type: "Code",
+          props: {
+            fileName: `${input.batchId} 子项清单（${input.itemCount}）`,
+            code: previewLines.join("\n") || "(空清单)",
+          },
+        },
+        actions: {
+          type: "Grid",
+          props: { columns: 2 },
+          children: ["btn_confirm", "btn_cancel"],
+        },
+        btn_confirm: {
+          type: "Button",
+          props: { actionId: "confirm", label: "允许批量执行", variant: "primary" },
+        },
+        btn_cancel: {
+          type: "Button",
+          props: { actionId: "cancel", label: "拒绝", variant: "secondary" },
+        },
+      },
+    },
+    actions: [
+      { id: "confirm", label: "允许批量执行", kind: "submit" },
+      { id: "cancel", label: "拒绝", kind: "cancel" },
+    ],
+  };
+  return { input: cardInput, logicalIds: ["confirm", "cancel"] };
+}

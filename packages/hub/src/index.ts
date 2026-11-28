@@ -614,3 +614,24 @@ export {
   type MigrationCallerContext,
   type MigrationToolsDeps,
 } from "./tools-migration.js";
+export {
+  BatchWorkflowDoc,
+  BatchWorkflowError,
+  BatchWorkflowService,
+  formatBatchReportForOrchestrator,
+  validateAndCompileBatchSchema,
+  type BatchWorkflowDocState,
+  type BatchWorkflowItemExecutionInput,
+  type BatchWorkflowItemExecutionOutput,
+  type BatchWorkflowServiceHost,
+  type DispatchBatchWorkflowInput,
+  type DispatchBatchWorkflowItemInput,
+  type DispatchBatchWorkflowResult,
+} from "./batch-workflow-service.js";
+export {
+  BATCH_READ_ONLY_TOOL_ALLOWLIST,
+  createBatchItemReadOnlyExtension,
+  createBatchToolsExtension,
+  createHubBatchWorkflows,
+  resolveBatchItemExecutionEnv,
+} from "./tools-batch.js";
