@@ -40,7 +40,7 @@ function ConnectedCard({ part, connected, conversationKey, onAdjust, onPreviewIm
   />;
 }
 
-export function ConnectedMessageContent({ item, connected = true, conversationKey = "root", deliveryScope, onPreviewImage, onAdjust, onReply, animateEntry = false, contentOnly = false, trailingContent, onNavigateReply }: {
+export function ConnectedMessageContent({ item, connected = true, conversationKey = "root", deliveryScope, onPreviewImage, onAdjust, onReply, onSideQuestion, animateEntry = false, contentOnly = false, trailingContent, onNavigateReply }: {
   item: ChatDisplayItem;
   connected?: boolean;
   conversationKey?: string;
@@ -51,10 +51,11 @@ export function ConnectedMessageContent({ item, connected = true, conversationKe
   contentOnly?: boolean;
   trailingContent?: ReactNode;
   onReply?: (reply: ChatReplyReference) => void;
+  onSideQuestion?: (input: { quoteSnippet: string; sourceMessageId?: number }) => void;
   onNavigateReply?: (messageId: number) => void;
 }) {
   const content = <MessageContent item={item} conversationKey={conversationKey} onPreviewImage={onPreviewImage} animateEntry={animateEntry} onNavigateReply={onNavigateReply}
     renderDeviceInvitation={(part) => <DeviceInvitationCopy key={`${deliveryScope ?? ""}:${conversationKey}:${part.hubId}`} hubId={part.hubId} hubName={part.hubName} partId={part.partId} connected={connected} deliveryScope={deliveryScope} />}
     renderUiPart={(part) => <ConnectedCard part={part} connected={connected} conversationKey={conversationKey} onPreviewImage={onPreviewImage} onAdjust={onAdjust} />} />;
-  return contentOnly ? <>{content}{trailingContent}</> : <MessageActions item={item} onReply={onReply} showFooter={!trailingContent}>{content}{trailingContent}</MessageActions>;
+  return contentOnly ? <>{content}{trailingContent}</> : <MessageActions item={item} onReply={onReply} onSideQuestion={onSideQuestion} showFooter={!trailingContent}>{content}{trailingContent}</MessageActions>;
 }

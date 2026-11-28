@@ -60,6 +60,20 @@ export {
   type KuloDurableSettings,
 } from "./settings.js";
 export {
+  SideQuestionError,
+  SideQuestionService,
+  SideQuestionsDoc,
+  abortSideQuestionConversations,
+  buildSideQuestionSystemPrompt,
+  findSafeForkBoundary,
+  offlineSideQuestionsInTx,
+  sanitizeSideQuestionText,
+  selectSafeForkBoundaryFromDescending,
+  type SafeForkScanState,
+  type SideQuestionServiceDeps,
+  type SideQuestionsDocState,
+} from "./side-questions.js";
+export {
   KuloHub,
   extractDisplayMessages,
   extractLiveState,

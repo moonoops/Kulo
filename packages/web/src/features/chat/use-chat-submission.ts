@@ -1,5 +1,6 @@
 import { useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import {
+  parseBtwCommand,
   redactSecrets,
   type ChatReplyReference,
   type ClientToHubMessage,
@@ -81,6 +82,7 @@ export interface UseChatSubmissionParams {
   discardFailedWs?: (id: string, scope?: string) => Promise<void>;
   sendWsWithAck: (message: ClientToHubMessage) => Promise<unknown>;
   deviceJoin?: { submit: () => void };
+  onSideQuestionSubmit?: (question: string) => Promise<boolean> | boolean;
   clientId: string;
 }
 
@@ -199,6 +201,35 @@ export function useChatSubmission(params: UseChatSubmissionParams) {
     const attachmentsToSend = readyDraftAttachments.map((a) => a.attachment!);
 
     if (isUploading || (!raw && attachmentsToSend.length === 0)) return;
+    const btw =
+      !params.projectedTicketId && overrideText === undefined && params.onSideQuestionSubmit
+        ? parseBtwCommand(content)
+        : { matched: false as const };
+    if (btw.matched) {
+      if (attachmentsToSend.length > 0) {
+        params.setActionError(
+          t("支线提问暂不支持附件，请移除附件后再试", "Side questions do not support attachments yet."),
+        );
+        return;
+      }
+      submitFlightRef.current = true;
+      const sourceDraftKey = params.currentDraftKey;
+      const sourceDraft = params.currentDraft;
+      try {
+        const handled = await params.onSideQuestionSubmit!(btw.question);
+        if (handled) {
+          params.setComposerDrafts((current) =>
+            consumePersistedDraft(current, sourceDraftKey, sourceDraft),
+          );
+          params.setReplyDrafts((current) =>
+            consumeReplyDraft(current, sourceDraftKey, sourceReply),
+          );
+        }
+      } finally {
+        submitFlightRef.current = false;
+      }
+      return;
+    }
     const intent = JSON.stringify([
       params.currentDraftKey,
       params.draftEditRevisionRef.current,

@@ -30,6 +30,7 @@ import {
   hasPendingWorkspaceApply, isOrchestratorConversation, isTicketUnfinished,
   listSortedTopics, summarizeTopicPreview, transitionTicketStatus, type KuloDurableState,
 } from "./state.js";
+import { abortSideQuestionConversations, offlineSideQuestionsInTx } from "./side-questions.js";
 import { KuloTopicTitles } from "./topic-titles.js";
 import type { KuloUploadStore } from "./uploads.js";
 import type { KuloVoiceCalls } from "./voice-calls.js";
@@ -259,12 +260,15 @@ export class HubTopicManager {
   }
 
   async #archiveInactiveTopics(context: Context): Promise<TopicSummary[]> {
-    const { archived, allTopics } = await this.#deps.harness.commit(async (tx) => {
+    const { archived, allTopics, sideQuestionConvIds } = await this.#deps.harness.commit(async (tx) => {
       const settings = await tx.doc(KuloSettingsDoc);
-      if (this.#deps.runtimeGates.isClosed() || settings.executor.autoArchiveEnabled === false) return { archived: [], allTopics: [] };
+      if (this.#deps.runtimeGates.isClosed() || settings.executor.autoArchiveEnabled === false) {
+        return { archived: [], allTopics: [], sideQuestionConvIds: [] as number[] };
+      }
       const state = await tx.doc(KuloStateDoc);
       const cutoff = Date.now() - (settings.executor.autoArchiveDays ?? 7) * 86_400_000;
       const archived: TopicSummary[] = [];
+      const sideQuestionConvIds: number[] = [];
       const protectedTopics = new Set<string>();
       const protectedConversations = new Set<number>();
       for (const ticket of Object.values(state.tickets)) {
@@ -290,9 +294,21 @@ export class HubTopicManager {
         if (timestamps.some((at) => at >= cutoff) || (recent.next && timestamps.length === 0)) continue;
         topic.archived = true;
         archived.push(cloneJson(topic));
+        sideQuestionConvIds.push(
+          ...(await offlineSideQuestionsInTx(tx, {
+            topicId: topic.id,
+            conversationId: topic.conversationId,
+            reason: "话题已自动归档",
+            now: Date.now(),
+            redact: (text) => this.#deps.connectionManager.redact(text),
+          })),
+        );
       }
-      return { archived, allTopics: archived.length ? listSortedTopics(state) : [] };
+      return { archived, allTopics: archived.length ? listSortedTopics(state) : [], sideQuestionConvIds };
     }, context);
+    if (sideQuestionConvIds.length > 0) {
+      await abortSideQuestionConversations(this.#deps.harness, sideQuestionConvIds, context);
+    }
     if (archived.length) {
       for (const topic of archived) await this.#deps.cleanup.closeOrchestratorBrowserSession(topic.id);
       this.emitTopics(allTopics);
@@ -363,6 +379,7 @@ export class HubTopicManager {
       throw new ProjectError(400, "invalid_target_device", "目标设备标识无效。");
     }
     const stagedToDiscard: TicketRecord[] = [];
+    let sideQuestionConvIds: number[] = [];
     const { updated, allTopics } = await this.#deps.harness.commit(async (tx) => {
       const state = await tx.doc(KuloStateDoc);
       ensureDefaultRootTopic(state, this.#deps.settingsStore.getAgentName());
@@ -380,7 +397,16 @@ export class HubTopicManager {
           throw new Error("默认主对话不可归档");
         }
         t.archived = Boolean(patch.archived);
-        if (t.archived) stagedToDiscard.push(...discardPendingTopicStagedTickets(state, topicId, Date.now()));
+        if (t.archived) {
+          stagedToDiscard.push(...discardPendingTopicStagedTickets(state, topicId, Date.now()));
+          sideQuestionConvIds = await offlineSideQuestionsInTx(tx, {
+            topicId,
+            conversationId: t.conversationId,
+            reason: "话题已归档",
+            now: Date.now(),
+            redact: (text) => this.#deps.connectionManager.redact(text),
+          });
+        }
       }
       if (patch.targetDeviceId !== undefined) {
         const target = (patch.targetDeviceId ?? "").trim();
@@ -409,6 +435,9 @@ export class HubTopicManager {
       return { updated: cloneJson(t), allTopics: listSortedTopics(state) };
     }, context);
 
+    if (sideQuestionConvIds.length > 0) {
+      await abortSideQuestionConversations(this.#deps.harness, sideQuestionConvIds, context);
+    }
     if (stagedToDiscard.length > 0) {
       await Promise.allSettled(stagedToDiscard.map((ticket) => this.#deps.cleanup.discardTicketStagedWorkspace(ticket)));
       this.#deps.runtimeGates.resumeIfNotRecovering();
@@ -433,6 +462,7 @@ export class HubTopicManager {
         { activeTickets: active.map((t) => t.id) });
     }
     const stagedToDiscard: TicketRecord[] = [];
+    let sideQuestionConvIds: number[] = [];
     let ticketsChanged = false, hadUnfinished = false, targetConversationId: number | undefined;
     // The tombstone and cancel intents commit together before any asynchronous cleanup.
     await this.#deps.harness.commit(async (tx) => {
@@ -445,6 +475,13 @@ export class HubTopicManager {
       target.deletionId = randomUUID();
       target.updatedAt = target.deletedAt;
       targetConversationId = target.conversationId;
+      sideQuestionConvIds = await offlineSideQuestionsInTx(tx, {
+        topicId,
+        conversationId: target.conversationId,
+        reason: "会话已删除",
+        now: target.deletedAt,
+        redact: (text) => this.#deps.connectionManager.redact(text),
+      });
       const titleJob = state.topicTitles?.[topicId];
       if (titleJob?.status === "pending" || titleJob?.status === "failed") titleJob.status = "cancelled";
       const projects = await tx.doc(KuloProjectsDoc);
@@ -459,6 +496,9 @@ export class HubTopicManager {
       hadUnfinished = unfinished.length > 0;
       if (hadUnfinished || settled.closedCount > 0) ticketsChanged = true;
     }, context);
+    if (sideQuestionConvIds.length > 0) {
+      await abortSideQuestionConversations(this.#deps.harness, sideQuestionConvIds, context);
+    }
     await this.#deps.projects.reconcileCancellations(context);
     if (hadUnfinished) {
       await this.#deps.harness.commit(async (tx) => {

@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Alert, Button, Disclosure, Spinner, toast } from "@heroui/react";
 import {
+  formatSideQuestionInsertDraft,
   redactDeviceInvitationText,
   type AssistantItemAction, type AssistantItemView, type ChatReplyReference,
   type ConversationMessageWindow, type SettingsAssistantContext, type TicketCardView,
@@ -72,6 +73,8 @@ import { blockerDraftKey, consumedOutboxReceipts, outboxSubmissions } from "./fe
 import { newDeliveryId } from "./features/chat/reliable-intents";
 import { useChatDeviceJoin } from "./features/chat/use-chat-device-join";
 import { useChatSubmission } from "./features/chat/use-chat-submission";
+import { SideQuestionDrawer } from "./features/chat/side-question-drawer";
+import { useSideQuestion } from "./features/chat/use-side-question";
 import { restoreReplyDraft, type ReplyDrafts } from "./features/chat/reply-reference";
 import { ConversationOutline } from "./features/chat/conversation-outline";
 import { ConversationScene } from "./features/chat/conversation-scene";
@@ -1015,6 +1018,10 @@ function AppShell() {
     [tickets],
   );
 
+  const sideQuestion = useSideQuestion({
+    activeTopicId, activeTopicConvId, deliveryScope, connected, topicDrafts,
+  });
+
   const {
     resumingQueuedTopic, dispatchSubmissionWithAck, resumeQueuedMessages, submitMessage,
     sendToFrozenTopic, steerFrozenTicket, transcribeVoice,
@@ -1027,7 +1034,7 @@ function AppShell() {
     clearMessageWindow: () => setMessageWindow(undefined), nearBottomRef, setShowToBottom,
     setComposerDrafts, setReplyDrafts, removeAttachment, setActionError, clearError,
     closeProjection, selectTopic, enqueueWs, retryQueuedWs, waitForQueuedAck, discardFailedWs, sendWsWithAck,
-    deviceJoin, clientId: settingsAssistantControls.clientId,
+    deviceJoin, onSideQuestionSubmit: sideQuestion.openFromBtw, clientId: settingsAssistantControls.clientId,
   });
 
   const projectedCard = projectedTicketId
@@ -1309,7 +1316,7 @@ function AppShell() {
       return (
         <div key={messageMotionKey(item)} id={conversationTurnId(activeTopicId, item.id)} data-message-id={item.id} data-role="user" tabIndex={-1} data-request-id={item.requestId} data-delivery={state ?? item.delivery} className="kulo-message-target flex flex-col items-end gap-1.5">
           <MessageMotion className="w-full" scopeKey={messageMotionKey(item)} animateEntry={animateMessageEntry(item)}>
-            <ConnectedMessageContent item={item} connected={connected} conversationKey={activeTopicId} deliveryScope={deliveryScope} onPreviewImage={setLightboxImage} onReply={replyToMessage} onNavigateReply={navigateReply} />
+            <ConnectedMessageContent item={item} connected={connected} conversationKey={activeTopicId} deliveryScope={deliveryScope} onPreviewImage={setLightboxImage} onReply={replyToMessage} onSideQuestion={sideQuestion.openFromSelection} onNavigateReply={navigateReply} />
           </MessageMotion>
           <UserDeliveryStatus item={item} status={status} backup={backup} outboxReady={outboxReady} editing={Boolean(backup && editingSubmissionRef.current.has(scopedDraftKey(backup.draftKey, backup.outboxScope)))} isLastPaused={item.id === lastPausedMessageId} resumingPaused={resumingQueuedTopic === activeTopicId} liveBusy={live.busy} onRetry={(target) => { void dispatchSubmissionWithAck(target).catch((error: unknown) => setActionError(error instanceof Error ? error.message : t("无法恢复待发消息", "Could not restore the pending message"))); }} onEdit={(target) => { void recoverPendingSubmission(target); }} onResumePaused={() => resumeQueuedMessages(activeTopicId)} />
         </div>
@@ -1379,7 +1386,7 @@ function AppShell() {
               />
             );
           })()}
-        <ConnectedMessageContent item={item} connected={connected} conversationKey={activeTopicId} deliveryScope={deliveryScope} onPreviewImage={setLightboxImage} onReply={replyToMessage} onNavigateReply={navigateReply}
+        <ConnectedMessageContent item={item} connected={connected} conversationKey={activeTopicId} deliveryScope={deliveryScope} onPreviewImage={setLightboxImage} onReply={replyToMessage} onSideQuestion={sideQuestion.openFromSelection} onNavigateReply={navigateReply}
           trailingContent={item.id === liveMessageId ? liveResponseNode : undefined}
           onAdjust={(card, values) => {
             setCurrentDraft(cardAdjustmentDraft(card, values));
@@ -1912,6 +1919,22 @@ function AppShell() {
       />
 
       <ConversationSearchDialog isOpen={conversationSearchOpen} onOpenChange={setConversationSearchOpen} topicId={activeTopicId} scopeKey={deliveryScope} initialScope={conversationSearchScope} scopeVersion={conversationSearchScopeVersion} onNavigate={navigateConversation} />
+
+      <SideQuestionDrawer
+        open={sideQuestion.open}
+        sideQuestion={sideQuestion.sideQuestion}
+        loading={sideQuestion.loading}
+        submitting={sideQuestion.submitting}
+        error={sideQuestion.error}
+        connected={connected}
+        onSend={sideQuestion.sendMessage}
+        onInsertToMainComposer={(text) => {
+          setComposerDrafts((cur) => ({ ...cur, [currentDraftKey]: formatSideQuestionInsertDraft(text, cur[currentDraftKey]) }));
+          sideQuestion.hideDrawer();
+          requestAnimationFrame(() => composerRef.current?.focus());
+        }}
+        onClose={() => { void sideQuestion.closeAndDiscard(); }}
+      />
 
       <AttachmentLightbox
         image={lightboxImage}

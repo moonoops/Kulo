@@ -50,5 +50,6 @@ export * from "./execution-trust.js";
 export * from "./usage-caps.js";
 export * from "./url-hygiene.js";
 export * from "./migration.js";
+export * from "./side-questions.js";
 
 export type * from "./recovery.js";

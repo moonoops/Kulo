@@ -203,10 +203,11 @@ export function messageQuote(item: ChatDisplayItem): { text: string; attachments
   };
 }
 
-export function MessageActions({ item, children, onReply, showFooter = true }: {
+export function MessageActions({ item, children, onReply, onSideQuestion, showFooter = true }: {
   item: ChatDisplayItem;
   children: ReactNode;
   onReply?: (reply: ChatReplyReference) => void;
+  onSideQuestion?: (input: { quoteSnippet: string; sourceMessageId?: number }) => void;
   showFooter?: boolean;
 }) {
   useI18n();
@@ -240,8 +241,9 @@ export function MessageActions({ item, children, onReply, showFooter = true }: {
     const extracted = extractValidMessageSelection(root.current);
     selected.current = extracted?.text ?? "";
   }, []);
+  const canSideQuestion = Boolean(onSideQuestion && (item.role === "user" || item.role === "assistant" || item.role === "dispatch"));
   useEffect(() => {
-    if (!quoteExcerpt || !isFinePointerEnvironment()) {
+    if ((!quoteExcerpt && !canSideQuestion) || !isFinePointerEnvironment()) {
       setSelectionBar(null);
       return;
     }
@@ -265,7 +267,7 @@ export function MessageActions({ item, children, onReply, showFooter = true }: {
       window.removeEventListener("blur", clearBar);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [quoteExcerpt]);
+  }, [quoteExcerpt, canSideQuestion]);
   const copy = async () => {
     setError("");
     try {
@@ -273,7 +275,7 @@ export function MessageActions({ item, children, onReply, showFooter = true }: {
       setCopied(true);
     } catch { setError(tr("复制失败，请选择文字复制", "Copy failed. Select the text to copy it.")); }
   };
-  const selectionToolbar = selectionBar && quoteExcerpt && typeof document !== "undefined"
+  const selectionToolbar = selectionBar && (quoteExcerpt || canSideQuestion) && typeof document !== "undefined"
     ? createPortal(
       <div
         className="kulo-selection-quote-bar"
@@ -283,19 +285,39 @@ export function MessageActions({ item, children, onReply, showFooter = true }: {
         style={{ top: selectionBar.top, left: selectionBar.left }}
         onPointerDown={(event) => { event.preventDefault(); }}
       >
-        <Button
-          size="sm"
-          variant="secondary"
-          aria-label={tr("引用选中文本", "Quote selected text")}
-          onPress={() => {
-            const snippet = selectionBar.text;
-            setSelectionBar(null);
-            window.getSelection()?.removeAllRanges();
-            quoteExcerpt(snippet);
-          }}
-        >
-          {tr("引用", "Quote")}
-        </Button>
+        {quoteExcerpt && (
+          <Button
+            size="sm"
+            variant="secondary"
+            aria-label={tr("引用选中文本", "Quote selected text")}
+            onPress={() => {
+              const snippet = selectionBar.text;
+              setSelectionBar(null);
+              window.getSelection()?.removeAllRanges();
+              quoteExcerpt(snippet);
+            }}
+          >
+            {tr("引用", "Quote")}
+          </Button>
+        )}
+        {canSideQuestion && onSideQuestion && (
+          <Button
+            size="sm"
+            variant="secondary"
+            aria-label={tr("支线追问选中文本", "Ask side question about selected text")}
+            onPress={() => {
+              const snippet = selectionBar.text;
+              setSelectionBar(null);
+              window.getSelection()?.removeAllRanges();
+              onSideQuestion({
+                quoteSnippet: snippet,
+                ...(item.id > 0 ? { sourceMessageId: item.id } : {}),
+              });
+            }}
+          >
+            {tr("支线追问", "Side question")}
+          </Button>
+        )}
       </div>,
       document.body,
     )

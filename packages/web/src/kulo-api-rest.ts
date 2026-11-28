@@ -19,7 +19,9 @@ import type {
   ModelProbeResult, NativeAppPermissionKind, OAuthSessionView, PersonalitySettingsRequest, PersonalitySnapshot,
   ProjectDirectoryListing, ProjectView, ProviderCatalogItem, RecentWorkSnapshot, RelationshipRollbackRequest,
   RelationshipWriteRequest, ResolveModelMetadataRequest, ResolveModelMetadataResponse, SearchAttempt,
-  SearchFailure, SearchPlanInput, SearchSnapshot, SettingsBlockName, SetupInputRequest, SkillAudience,
+  SearchFailure, SearchPlanInput, SearchSnapshot, SettingsBlockName, SetupInputRequest,
+  SideQuestionActiveResponse, SideQuestionCloseResponse, SideQuestionCreateRequest, SideQuestionCreateResponse,
+  SideQuestionMessageRequest, SideQuestionMessageResponse, SkillAudience,
   SkillSnapshot, TicketCardView, TicketResumeOverrideRequest, TicketResumeOverrideResponse, TopicCompactResult, TopicSummary, UiActionInput, UiActionReceipt,
   UiCardSnapshot, UsageCapsSnapshot, UsageCapsUpdateInput, UsageStatsView, WebSearchResult,
 } from "@kulo/protocol";
@@ -370,6 +372,17 @@ export const kuloRest = {
   compactTopic: (topicId: string) => apiRequest<TopicCompactResult>(`/api/topics/${encodeURIComponent(topicId)}/compact`, { method: "POST" }),
   archiveMainConversation: (expectedConversationId: number) =>
     apiRequest<ArchiveMainConversationResult>("/api/topics/root/archive", { method: "POST", body: { expectedConversationId } }),
+  createSideQuestion: (topicId: string, body: SideQuestionCreateRequest = {}) =>
+    apiRequest<SideQuestionCreateResponse>(`/api/topics/${encodeURIComponent(topicId)}/side-questions`, { method: "POST", body })
+      .then((result) => result.sideQuestion),
+  getActiveSideQuestion: (topicId: string, signal?: AbortSignal) =>
+    apiRequest<SideQuestionActiveResponse>(`/api/topics/${encodeURIComponent(topicId)}/side-questions/active`, { signal })
+      .then((result) => result.sideQuestion),
+  sendSideQuestionMessage: (id: string, body: SideQuestionMessageRequest) =>
+    apiRequest<SideQuestionMessageResponse>(`/api/side-questions/${encodeURIComponent(id)}/messages`, { method: "POST", body })
+      .then((result) => result.sideQuestion),
+  closeSideQuestion: (id: string) =>
+    apiRequest<SideQuestionCloseResponse>(`/api/side-questions/${encodeURIComponent(id)}`, { method: "DELETE" }),
   getUsage: (range: "today" | "7" | "30") =>
     apiRequest<UsageStatsView>(`/api/usage?range=${range}`),
   getExternalClientQuotas: (options?: { signal?: AbortSignal }) =>

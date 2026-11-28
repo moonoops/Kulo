@@ -255,6 +255,7 @@ import {
 import { HubMessageProjection } from "./hub-message-projection.js";
 export { extractDisplayMessages, extractLiveState };
 import { MainConversationArchiveService } from "./main-conversation-archive.js";
+import { SideQuestionService } from "./side-questions.js";
 import { RelationshipReviewsDoc, collectRelationshipInput } from "./relationship-evidence.js";
 import { computeHubUsageStats } from "./hub-usage-stats.js";
 import { migrateLegacyLocalReferences } from "./cluster-migration.js";
@@ -526,6 +527,7 @@ export class KuloHub implements OrchestratorController {
   readonly personality: KuloPersonality;
   readonly uploads: KuloUploadStore;
   readonly settingsAssistant: SettingsAssistant;
+  readonly sideQuestions: SideQuestionService;
   readonly uiCards: KuloUiCards;
   readonly actionConfirmations: KuloActionConfirmations;
   readonly projects: KuloProjects;
@@ -1582,6 +1584,7 @@ export class KuloHub implements OrchestratorController {
         broadcastTicketsAndBoards: (ctx) => this.#broadcastTickets(ctx),
       },
     });
+    this.sideQuestions = new SideQuestionService({ harness: this.harness, runtimeGates: this.#runtimeGates, redactionExt: this.#redactionExt, isArchivingRoot: () => this.#mainArchive.isArchivingRoot(), resolveOrchestratorAgent: () => this.#resolveOrchestratorAgent(), redact: (text) => this.connectionManager.redact(text) });
     this.#ticketReconciler = new TicketReconciler({
       harness: this.harness,
       envManager: this.envManager,
@@ -2760,6 +2763,7 @@ export class KuloHub implements OrchestratorController {
     await preAbortFencedWorkerTasks(harness, topicState, unfinished, restartInspections, context);
     if (bootWasFailover || bootGate.crashLoopTripped) {
       await abortActiveOrchestratorConversationsBeforeResume(harness, topicState, unfinished, activeRootConvId, context);
+      await hub.sideQuestions.interruptActiveOnFailover(context);
     }
     await hub.projects.reconcileCancellations(context);
     await hub.#queueWaitReconcile();
@@ -2781,6 +2785,7 @@ export class KuloHub implements OrchestratorController {
 
     await hub.archiveInactiveTopics(context);
     hub.#topics.startAutoArchive();
+    await hub.sideQuestions.start(context);
     hub.#startUploadCleanup();
     await hub.memoryRuntime.start({ hasCustomStorage: Boolean(init.storage), isKnownSecret });
     hub.#bootCompleted = true;
@@ -4759,6 +4764,7 @@ export class KuloHub implements OrchestratorController {
     }
     this.#watchdog.stopTimer();
     this.#topics.stopAutoArchiveTimer();
+    await finish(() => this.sideQuestions.close());
     await finish(() => this.memoryRuntime.close());
     if (this.#uploadCleanupTimer) { clearInterval(this.#uploadCleanupTimer); this.#uploadCleanupTimer = null; }
     await finish(() => this.#customizationInstance?.close());

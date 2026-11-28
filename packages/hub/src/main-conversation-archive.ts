@@ -42,6 +42,7 @@ import { KuloMediaJobsDoc } from "./media-jobs.js";
 import { extractEntryTextAndRole } from "./memory-flush-extract.js";
 import { ProjectError } from "./projects.js";
 import { KuloStateDoc, ensureDefaultRootTopic } from "./state.js";
+import { abortSideQuestionConversations, offlineSideQuestionsInTx } from "./side-questions.js";
 import { UiCardsDoc } from "./ui-cards.js";
 import type { KuloVoiceCalls } from "./voice-calls.js";
 import { rehomeRootWorkingMemoryOnArchive } from "./working-memory-archive.js";
@@ -299,6 +300,13 @@ export class MainConversationArchiveService {
               card.topicId = archivedTopicId;
             }
           }
+          const sideQuestionConvIds = await offlineSideQuestionsInTx(tx, {
+            topicId: "root",
+            conversationId: oldConvId,
+            reason: "主对话已归档",
+            now,
+            redact,
+          });
 
           // Commit topic rotation & durable finalize checkpoint.
           state.topics ??= {};
@@ -332,6 +340,7 @@ export class MainConversationArchiveService {
             archived: true as const,
             archivedTopic: cloneJson(archivedTopic),
             newConvId,
+            sideQuestionConvIds,
           };
         }, context);
 
@@ -341,6 +350,9 @@ export class MainConversationArchiveService {
             reason: "empty_conversation",
             rootConversationId: commitResult.oldConvId,
           };
+        }
+        if (commitResult.sideQuestionConvIds.length > 0) {
+          await abortSideQuestionConversations(this.#deps.harness, commitResult.sideQuestionConvIds, context);
         }
 
         const longTermMemoryActive = this.#deps.hooks.isLongTermMemoryActive();

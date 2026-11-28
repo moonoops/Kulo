@@ -61,10 +61,12 @@ import { handleDevicesAndClusterRoutes } from "./http/devices-cluster-routes.js"
 import { handleMigrationRoutes } from "./http/migration-routes.js";
 import { handleProjectsRoutes } from "./http/projects-routes.js";
 import { handleSettingsProvidersRoutes } from "./http/settings-providers-routes.js";
+import { handleSideQuestionRoutes } from "./http/side-question-routes.js";
 import { handleSystemPermissionsRoutes, handleUiCardRoutes } from "./http/system-ui-routes.js";
 import { handleTicketResumeRoutes } from "./http/ticket-resume-routes.js";
 import { handleVoiceAssistantConnectionsRoutes } from "./http/voice-assistant-connections-routes.js";
 import { handleWorkspaceRoutes } from "./http/workspace-routes.js";
+import { SideQuestionError } from "./side-questions.js";
 import { MigrationError } from "./tools-migration.js";
 import { UiCardError } from "./ui-cards.js";
 import { DeviceConnectionError, DeviceInterconnectionManager } from "./devices.js";
@@ -1281,6 +1283,7 @@ export async function startKuloHubServer(
     handleMigrationRoutes,
     handleVoiceAssistantConnectionsRoutes,
     handleUiCardRoutes,
+    handleSideQuestionRoutes,
     (ctx) => handleDevicesAndClusterRoutes(ctx, devicesClusterRouteDeps),
     handleCapabilitiesRoutes,
     handleProjectsRoutes,
@@ -1551,6 +1554,10 @@ export async function startKuloHubServer(
       }
       if (err instanceof UiCardError) {
         sendJson(res, err.status, { error: err.message, code: err.code, ...(err.card ? { card: err.card } : {}) });
+        return;
+      }
+      if (err instanceof SideQuestionError) {
+        sendJson(res, err.status, { error: hub.connectionManager.redact(err.message), code: err.code });
         return;
       }
       if (err instanceof ClusterSyncHttpError) {
